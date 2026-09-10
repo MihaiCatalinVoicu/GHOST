@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "description": "Normative list of everything a GHOST relay is permitted to observe per event (threat model v2.1 section 6, ADR-09). Any field not listed here is a privacy violation. Values are opaque identifiers, buckets or coarse times; never IPs, identities, plaintext or free text.",
+  "allowed_fields": {
+    "op": { "type": "enum", "values": ["store", "get", "check", "list", "redeem", "gossip"] },
+    "protocol_version": { "type": "enum", "values": [1] },
+    "namespace_id": { "type": "hex", "len": 64, "note": "opaque channel/inbox/prekey namespace, SHA-256 sized" },
+    "blob_hash": { "type": "hex", "len": 64, "note": "SHA-256 of the exact ciphertext blob" },
+    "size_bucket": { "type": "enum", "values": [1024, 4096, 16384, 65536], "note": "FR-2.5 padding buckets, bytes" },
+    "time_bucket": { "type": "bucketed_int", "granularity": 60, "note": "unix seconds rounded down to the minute" },
+    "ttl_bucket_days": { "type": "enum", "values": [1, 7, 30, 90] },
+    "nullifier": { "type": "hex", "len": 64, "note": "one-time token nullifier (ADR-02)" },
+    "period_id": { "type": "hex", "len": 16, "note": "public token validity period" },
+    "capability_scope": { "type": "hex", "len": 64, "note": "hash of the capability scope, never the capability itself" },
+    "request_id": { "type": "hex", "len": 32, "note": "client idempotency key, random per request" },
+    "circuit_id": { "type": "hex", "len": 32, "note": "relay-local id of the onion circuit; never an IP" },
+    "batch_count": { "type": "uint" },
+    "result": { "type": "enum", "values": ["ok", "rejected_hash", "rejected_capability", "rejected_size", "rejected_ttl", "rejected_nullifier", "not_found"] }
+  },
+  "forbidden_substrings": ["ghost1", "http://", "https://", ".onion", "monero:", "user", "@"]
+}

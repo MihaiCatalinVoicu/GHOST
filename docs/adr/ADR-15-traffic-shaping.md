@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-10 (neaprobat) |
+| Status | **Aprobat** 2026-09-10 (proprietar proiect) |
 | Sursă | `docs/LIMITE_REZIDUALE_SI_MITIGARI.md` §L2 |
 | Faze | 7 (sync), 12 (hardening); P1, bucketizare P2 |
 

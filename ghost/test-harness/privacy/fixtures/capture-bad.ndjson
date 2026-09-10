@@ -1,0 +1,11 @@
+{"op":"store","source_ip":"203.0.113.42","size_bucket":4096,"time_bucket":1757491260}
+{"op":"store","client_id":"ghost1qpzry9x8gf2tvdw0s3jn54khce6mua7l","size_bucket":4096,"time_bucket":1757491260}
+{"op":"store","size_bucket":1337,"time_bucket":1757491260}
+{"op":"store","size_bucket":4096,"time_bucket":1757491261}
+{"op":"store","namespace_id":"channel-privacy-discussion","size_bucket":4096,"time_bucket":1757491260}
+{"op":"get","capability":"eyJhbGciOiJIUzI1NiJ9.eyJzY29wZSI6IndyaXRlIn0.abc","time_bucket":1757491260}
+{"op":"store","payload":"hello world this is plaintext","time_bucket":1757491260}
+{"op":"store","circuit_id":"2001:db8::dead:beef","time_bucket":1757491260}
+{"op":"list","cursor":"user@example.org","time_bucket":1757491260}
+{"op":"store","result":"ok","user_agent":"GHOST/0.1 Android 15"}
+{"op":"delete_everything","time_bucket":1757491260}

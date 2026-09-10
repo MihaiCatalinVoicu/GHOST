@@ -52,6 +52,8 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+      - name: privacy invariant T1 (relay capture validator)
+        run: bash scripts/gates/privacy-capture.sh
 
   android:
     name: android (build, unit tests, lint, dependency verification)

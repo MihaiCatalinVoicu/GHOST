@@ -19,7 +19,7 @@ Toate ADR-urile de mai jos au fost aprobate de proprietarul proiectului pe 2026-
 
 Un ADR nou primește următorul număr, status „Propus”, și se leagă de cerința FR/NFR pe care o modifică.
 
-## Propuse (neaprobate)
+## Aprobate ulterior (2026-09-10, a doua rundă)
 
 | ADR | Titlu |
 |---|---|

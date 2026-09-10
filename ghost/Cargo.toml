@@ -8,6 +8,7 @@ members = [
     "relay/crates/prune",
     "relay/crates/capability",
     "issuer",
+    "test-harness/privacy/capture-check",
 ]
 
 [workspace.package]

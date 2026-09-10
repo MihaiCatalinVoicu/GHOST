@@ -19,6 +19,7 @@ android_main_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/main/*' -print 2>/dev/null
 }
 rust_src_files() {
+  # test-harness/ is tooling, not the production path (its CLIs may print to the console).
   find "$GHOST_ROOT/relay" "$GHOST_ROOT/issuer" -path '*/target' -prune -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null
 }
 manifest_files() {
