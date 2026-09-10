@@ -1,9 +1,11 @@
 [package]
+publish = false
 name = "ghost-relay-transport"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: transport crate"
+description = "GHOST blind relay: padding framing for bucketed packets (FR-2.5, ADR-09)"
 
 [dependencies]
+ghost-relay-api = { path = "../api" }

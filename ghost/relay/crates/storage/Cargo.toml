@@ -1,9 +1,17 @@
 [package]
+publish = false
 name = "ghost-relay-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: storage crate"
+description = "GHOST blind relay: content-addressed blob store with TTL and namespace cursors (FR-5.1, FR-5.2, FR-5.5)"
 
 [dependencies]
+ghost-relay-api = { path = "../api" }
+redb = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

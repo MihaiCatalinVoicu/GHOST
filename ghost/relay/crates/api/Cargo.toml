@@ -1,9 +1,16 @@
 [package]
+publish = false
 name = "ghost-relay-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: api crate"
+description = "GHOST blind relay: wire types generated from protocol/relay/v1/relay.proto plus protocol constants"
 
 [dependencies]
+prost = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }

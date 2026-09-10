@@ -25,6 +25,8 @@ confidence-threshold = 0.9
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Workspace-internal path dependencies carry no version by design.
+allow-wildcard-paths = true
 deny = [
     # No telemetry/analytics crates, no clearnet-only HTTP clients without Tor routing decided by ADR.
     { crate = "sentry", reason = "ADR-06: no third-party crash/telemetry SDKs" },

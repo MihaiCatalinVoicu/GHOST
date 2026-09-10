@@ -1,0 +1,43 @@
+# Three-relay staging topology (spec §12.1 "Staging: three relays"). In production each relay is
+# run by an independent operator on separate infrastructure (ADR-11); this file only reproduces the
+# topology for local fault/failover drills. Run from the repository root:
+#   docker compose -f ghost/infra/relay/docker-compose.staging.yml up --build
+services:
+  relay-a:
+    build:
+      context: ../..
+      dockerfile: infra/relay/Dockerfile
+    environment:
+      GHOST_FLAGS: "--gossip"
+    volumes:
+      - relay-a-data:/var/lib/ghost
+      - relay-a-tor:/var/lib/tor/ghost-relay
+    restart: unless-stopped
+  relay-b:
+    build:
+      context: ../..
+      dockerfile: infra/relay/Dockerfile
+    environment:
+      GHOST_FLAGS: "--gossip"
+    volumes:
+      - relay-b-data:/var/lib/ghost
+      - relay-b-tor:/var/lib/tor/ghost-relay
+    restart: unless-stopped
+  relay-c:
+    build:
+      context: ../..
+      dockerfile: infra/relay/Dockerfile
+    environment:
+      GHOST_FLAGS: "--gossip"
+    volumes:
+      - relay-c-data:/var/lib/ghost
+      - relay-c-tor:/var/lib/tor/ghost-relay
+    restart: unless-stopped
+
+volumes:
+  relay-a-data:
+  relay-a-tor:
+  relay-b-data:
+  relay-b-tor:
+  relay-c-data:
+  relay-c-tor:

@@ -1,9 +1,15 @@
 [package]
+publish = false
 name = "ghost-relay-prune"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: prune crate"
+description = "GHOST blind relay: deterministic expiry sweeps (FR-5.5, ADR-11)"
 
 [dependencies]
+ghost-relay-storage = { path = "../storage" }
+ghost-relay-capability = { path = "../capability" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,9 +1,11 @@
 [package]
+publish = false
 name = "ghost-relay-gossip"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: gossip crate"
+description = "GHOST blind relay: inventory reconciliation between peers (FR-5.6)"
 
 [dependencies]
+ghost-relay-api = { path = "../api" }

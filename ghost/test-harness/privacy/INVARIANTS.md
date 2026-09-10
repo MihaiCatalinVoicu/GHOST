@@ -4,7 +4,7 @@ Fiecare invariant are: ce afirmă, cum se verifică, când devine executabil, ș
 
 | ID | Invariant | Verificare | Executabil din | Cod |
 |---|---|---|---|---|
-| T1 | Un relay observă doar câmpurile din `allowed-observables.json`; niciodată IP, identitate, plaintext, dimensiune nepadată, timp sub minut | relay-ul în mod captură scrie NDJSON; `capture-check` validează fiecare linie | **Faza 2** (validator + fixture-uri); Faza 5 (capturi reale din relay) | `capture-check/` |
+| T1 | Un relay observă doar câmpurile din `allowed-observables.json`; niciodată IP, identitate, plaintext, dimensiune nepadată, timp sub minut | relay-ul în mod captură scrie NDJSON; `capture-check` validează fiecare linie | **Faza 2** (validator + fixture-uri); **Faza 5** (captură reală din suita cu două noduri, `relay/crates/node/tests`) | `capture-check/` |
 | T2 | Jurnalul issuer-ului și nullifier-ele relay-urilor nu au nicio cheie de join | test de integrare: se rulează N plăți sintetice, se exportă ambele jurnale, se caută orice valoare comună sau corelare peste prag statistic | Faza 8 | `issuer/` tests |
 | T3 | Secretele-canar nu apar în log/telemetrie/crash | se injectează șiruri unice (seed, chei, capabilități, ID-uri) și se grep-uiește tot ce iese din proces | Faza 3 | `android/` instrumentation |
 | T4 | Backup/device-transfer nu conțin seed, cheie DB, stare protocol, cache decriptat | `bmgr`/`adb backup` pe emulator, inspecție arhivă | Faza 4 | `android/` instrumentation |

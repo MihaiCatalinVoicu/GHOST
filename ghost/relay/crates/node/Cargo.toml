@@ -1,0 +1,30 @@
+[package]
+publish = false
+name = "ghost-relay-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST blind relay node: gRPC service over the store/capability/gossip/prune crates, with privacy capture mode"
+
+[[bin]]
+name = "ghost-relay"
+path = "src/main.rs"
+
+[dependencies]
+ghost-relay-api = { path = "../api" }
+ghost-relay-storage = { path = "../storage" }
+ghost-relay-capability = { path = "../capability" }
+ghost-relay-gossip = { path = "../gossip" }
+ghost-relay-prune = { path = "../prune" }
+tonic = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+ghost-capture-check = { path = "../../../test-harness/privacy/capture-check" }
+tempfile = { workspace = true }

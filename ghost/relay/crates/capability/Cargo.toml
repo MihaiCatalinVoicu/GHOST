@@ -1,9 +1,13 @@
 [package]
+publish = false
 name = "ghost-relay-capability"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: capability crate"
+description = "GHOST blind relay: scoped unforgeable capabilities and per-period nullifiers (FR-5.3, ADR-02)"
 
 [dependencies]
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }

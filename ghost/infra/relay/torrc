@@ -1,0 +1,15 @@
+# Tor configuration for a GHOST relay (ADR-01, ADR-11).
+# The relay is reachable only as a v3 onion service; no clearnet port is published.
+DataDirectory /var/lib/tor
+SocksPort 0
+Log notice stderr
+# No request logging beyond service health (FR-5.4, §11.1).
+SafeLogging 1
+
+HiddenServiceDir /var/lib/tor/ghost-relay
+HiddenServiceVersion 3
+# gRPC relay on loopback.
+HiddenServicePort 443 127.0.0.1:7443
+# Proof-of-work DoS defence for the onion service (§11.2 "optional proof-of-work"); requires a
+# Tor build with PoW support, otherwise this line is ignored with a warning.
+HiddenServicePoWDefensesEnabled 1
