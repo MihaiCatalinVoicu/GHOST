@@ -15,3 +15,5 @@ junit
 org.junit
 org.ghost
 org.bouncycastle
+# test-only: JVM SQLite driver for schema/migration unit tests (never shipped)
+org.xerial

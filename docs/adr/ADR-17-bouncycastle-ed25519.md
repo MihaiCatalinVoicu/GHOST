@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-10 — aplicat sub rezerva aprobării în Faza 3 |
+| Status | **Aprobat** 2026-09-10 (proprietar proiect) |
 | Sursă | Faza 3 (identitate) |
 | Modifică | Allowlist dependențe (ADR-06): adaugă `org.bouncycastle` |
 

@@ -27,4 +27,4 @@ Un ADR nou primește următorul număr, status „Propus”, și se leagă de ce
 | [ADR-14](ADR-14-key-attestation-recovery.md) | Atestare hardware a cheilor și recuperare după compromitere |
 | [ADR-15](ADR-15-traffic-shaping.md) | Traffic shaping: polling constant, trimitere întârziată, bucketizare |
 | [ADR-16](ADR-16-censorship-resistance.md) | Rezistență la cenzură: bridges, WebTunnel, mod auto |
-| [ADR-17](ADR-17-bouncycastle-ed25519.md) | Ed25519 prin BouncyCastle pentru identitate (**propus**, aplicat în Faza 3) |
+| [ADR-17](ADR-17-bouncycastle-ed25519.md) | Ed25519 prin BouncyCastle pentru identitate (aprobat) |
