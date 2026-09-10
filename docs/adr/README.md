@@ -18,3 +18,12 @@ Toate ADR-urile de mai jos au fost aprobate de proprietarul proiectului pe 2026-
 | [ADR-12](ADR-12-post-quantum.md) | Post-quantum |
 
 Un ADR nou primește următorul număr, status „Propus”, și se leagă de cerința FR/NFR pe care o modifică.
+
+## Propuse (neaprobate)
+
+| ADR | Titlu |
+|---|---|
+| [ADR-13](ADR-13-in-channel-governance.md) | Guvernanță în canal: flag-uri, prag, carantină, strike pe sponsor |
+| [ADR-14](ADR-14-key-attestation-recovery.md) | Atestare hardware a cheilor și recuperare după compromitere |
+| [ADR-15](ADR-15-traffic-shaping.md) | Traffic shaping: polling constant, trimitere întârziată, bucketizare |
+| [ADR-16](ADR-16-censorship-resistance.md) | Rezistență la cenzură: bridges, WebTunnel, mod auto |

@@ -48,9 +48,10 @@ jobs:
         with:
           manifest-path: ghost/Cargo.toml
           command: check
-      - uses: rustsec/audit-check@v2
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - run: cargo audit
 
   android:
     name: android (build, unit tests, lint, dependency verification)
