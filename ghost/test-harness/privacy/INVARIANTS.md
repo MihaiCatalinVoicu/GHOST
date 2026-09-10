@@ -9,7 +9,7 @@ Fiecare invariant are: ce afirmă, cum se verifică, când devine executabil, ș
 | T3 | Secretele-canar nu apar în log/telemetrie/crash | se injectează șiruri unice (seed, chei, capabilități, ID-uri) și se grep-uiește tot ce iese din proces | Faza 3 | `android/` instrumentation |
 | T4 | Backup/device-transfer nu conțin seed, cheie DB, stare protocol, cache decriptat | `bmgr`/`adb backup` pe emulator, inspecție arhivă | Faza 4 | `android/` instrumentation |
 | T5 | Media criptată nu mai conține EXIF/XMP/GPS/atomi de locație | fișiere cu metadate cunoscute → decriptare → parser de metadate returnează gol | Faza 11 | `android/media` tests |
-| T6 | Fără Tor: zero conexiuni clearnet și zero interogări DNS | emulator cu Tor blocat + captură `tcpdump`; se aserționează 0 pachete non-Tor | Faza 6 | harness rețea |
+| T6 | Fără Tor: zero conexiuni clearnet și zero interogări DNS | structural din Faza 6: singurul tip de destinație e `OnionAddress` (teste Rust + Kotlin resping IP/DNS/URL); dinamic: emulator cu Tor blocat + captură `tcpdump`, 0 pachete non-Tor | **Faza 6** (structural); Faza 13 (emulator) | `client-core/net`, `android/network` tests |
 | T7 | Orice dependență în afara allowlist-ului oprește build-ul | `dependency-allowlist.sh` + fixture negativ | **Faza 1** | `scripts/gates/` |
 | T8 | Niciun placeholder pe calea de producție | `anti-placeholder.sh` + fixture negativ | **Faza 1** | `scripts/gates/` |
 | T9 | Pe fir apar doar dimensiuni din {1,4,16,64} KiB | captură la relay (T1) + captură rețea | Faza 5/6 | `capture-check/` (size_bucket) |

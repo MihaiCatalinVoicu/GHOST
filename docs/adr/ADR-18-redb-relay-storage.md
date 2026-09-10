@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-10 — aplicat sub rezerva aprobării în Faza 5 |
+| Status | **Aprobat** 2026-09-10 (proprietar proiect) |
 | Sursă | Faza 5 (relay v1) |
 | Modifică | Spec v2.0 §6.2 „Storage: RocksDB content-addressed blobs” și Appendix A |
 

@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      live_tor:
+        description: "Run the live Tor bootstrap test (network)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -99,3 +105,61 @@ jobs:
         with:
           packages: "platform-tools platforms;android-37.0 platforms;android-37.2 build-tools;37.0.0 build-tools;36.0.0"
       - run: bash ghost/scripts/gates/reproducible-build.sh "$RUNNER_TEMP/repro"
+
+  android-native:
+    name: android native libs (cargo-ndk arm64-v8a + x86_64)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ghost
+          key: android-native
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "ndk;30.0.16248370"
+      - name: install protoc and cargo-ndk
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler
+          cargo install cargo-ndk --locked
+      - name: build libghost_client_net.so
+        run: cargo ndk -t arm64-v8a -t x86_64 -o android/network/src/main/jniLibs build --release -p ghost-client-net
+      - name: record hashes (feed the signed release manifest)
+        run: sha256sum android/network/src/main/jniLibs/*/*.so | tee native-libs.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-client-net-jniLibs
+          path: |
+            ghost/android/network/src/main/jniLibs
+            ghost/native-libs.sha256
+          if-no-files-found: error
+
+  live-tor:
+    name: live Tor bootstrap + onion stream (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.live_tor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ghost
+      - name: install protoc
+        run: sudo apt-get update -q && sudo apt-get install -y -q protobuf-compiler
+      - name: bootstrap Arti and open an isolated onion stream
+        env:
+          GHOST_LIVE_LOG: info
+        run: cargo test -p ghost-client-net --test live_tor -- --ignored --nocapture

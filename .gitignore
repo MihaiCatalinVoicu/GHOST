@@ -40,3 +40,4 @@ secrets/
 .temp/
 .kotlin/
 build-repro/
+**/jniLibs/

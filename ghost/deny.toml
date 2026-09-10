@@ -5,7 +5,14 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # Transitive via arti (tor-keymgr -> ssh-key fork -> rsa). GHOST never uses RSA key material
+    # from Arti's keystore; the Marvin timing side channel needs an RSA decryption oracle. Tracked
+    # for removal when arti drops the dependency. Reviewed 2026-09-10 (Phase 6).
+    { id = "RUSTSEC-2023-0071", reason = "rsa: unreachable in GHOST usage; transitive via arti keymgr" },
+    # `paste` is a proc-macro used at build time only by arti's dependency tree; no runtime code.
+    { id = "RUSTSEC-2024-0436", reason = "paste: build-time proc-macro, unmaintained but inert" },
+]
 
 [licenses]
 version = 2
@@ -19,6 +26,10 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0",
+    "Unlicense",
+    "CC0-1.0",
+    "BSL-1.0",
+    "OpenSSL",
 ]
 confidence-threshold = 0.9
 

@@ -1,0 +1,39 @@
+[package]
+publish = false
+name = "ghost-client-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST client network core: Tor (Arti) onion-only transport, per-channel circuit isolation, padded relay client, JNI surface for Android (ADR-01, ADR-09, ADR-19)"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+ghost-relay-api = { path = "../../relay/crates/api" }
+ghost-relay-transport = { path = "../../relay/crates/transport" }
+arti-client = { workspace = true }
+tor-rtcompat = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
+http = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+jni = { workspace = true, optional = true }
+# Arti uses rusqlite for its directory cache; bundle SQLite so no system library is linked
+# (reproducible on every host and on Android).
+libsqlite3-sys = { version = "0.37.0", features = ["bundled"] }
+# rustls needs an explicit crypto provider; ring is pure Rust/asm and builds for Android.
+rustls = { workspace = true }
+
+[features]
+default = ["jni-bridge"]
+jni-bridge = ["dep:jni"]
+
+[dev-dependencies]
+# Diagnostics for the ignored live Tor test only.
+tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
