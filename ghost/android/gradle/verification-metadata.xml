@@ -3,6 +3,13 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>false</verify-signatures>
+      <trusted-artifacts>
+         <!-- Metadata files (.pom/.module) are resolved differently per host OS; they carry no
+              executable code. All .jar/.aar artifacts stay checksum-verified. -->
+         <trust group=".*" name=".*" file=".*\.(pom|module)" regex="true"/>
+         <!-- Platform-specific AAPT2 binaries: the metadata is generated on one OS at a time. -->
+         <trust group="com\.android\.tools\.build" name="aapt2" file="aapt2-.*-(linux|osx|windows)\.jar" regex="true"/>
+      </trusted-artifacts>
    </configuration>
    <components>
       <component group="androidx.activity" name="activity" version="1.13.0">
