@@ -1,0 +1,12 @@
+# Pinned derivation vectors for root entropy 000102...1f (FR-1.2, derivation version 1).
+# Regenerate only with a derivation-version bump; a silent change here means every existing user
+# loses the ability to recover the same identity from their mnemonic.
+mnemonic = abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey unaware
+identity_seed = 0c3f9e98cbd10b7c8e04e8184f3b7aa5fc6124d4002bb8d23032579601748dd4
+identity_pub = f40d2689fd359ca6061ca02eb5e7825cbb3d4544eeac514d0c60dec49f3359dd
+identity = ghost1yrq49jxy6zo1baf46rhq73jz5xnf1yjiq847cggp4jk73pp6zi8z18mup6ny
+messaging_seed = 82453de069051555acf43dc3b93fa3be1a218d828bc156f7c1f4ad77a66f50cf
+backup_wrap = d10bee9af8b8e44ab8b7772e1b249fd93368da82d70b09c915e514bab3767328
+invite_signing_pub = 5dcd48d326df6d525bf8bd7bee75636809feb1506ca5913a8b5e364a3f979a91
+referral_commitment = 62e7c91014f8bd39b647bdebea3f08b3a248595baa71f023b3e051f8f5f54043
+pseudonym_pub_channel_a = 47b1b1e94265166dbec496ce035e0b25f09e726d84fc9a7de3a714db587bc95c

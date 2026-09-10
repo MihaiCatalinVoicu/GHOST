@@ -18,5 +18,7 @@ android {
 }
 
 dependencies {
+    // Ed25519 (RFC 8032) deterministic from seed; reviewed library, see ADR-17.
+    implementation(libs.bouncycastle.bcprov)
     testImplementation(libs.junit)
 }

@@ -9,7 +9,8 @@
 | Faza 0 (baseline, carantină, git) | **închisă** — legacy în `legacy/`, repo git, STATUS, ADR-uri |
 | Faza 1 (monorepo `ghost/`, CI, gates) | **închisă** — build Android + Rust verde local; gates statice verzi și dovedite pe fixture-uri negative; schema proto validată; build reproductibil verificat local; CI în `.github/workflows/ci.yml` |
 | Faza 2 (threat model v2.1, harness privacy) | **livrabile complete**: `docs/THREAT_MODEL_v2.1.md`, `ghost/test-harness/privacy/` (schema observabile, validator `capture-check`, T1 în CI); **gate deschis**: review independent al threat model-ului |
-| Faza 3 (identitate și onboarding) | următoarea, poate începe în paralel cu review-ul |
+| Faza 3 (identitate și onboarding) | **nucleu livrat** în `ghost/android/identity`: entropie 256 bit, BIP-39 24 cuvinte (vectori Trezor), HKDF RFC 5869 (vectori RFC), ramuri separate, Ed25519 din seed (ADR-17), identitate `ghost1…` cu checksum, pseudonime per canal (T14), invitații semnate cu tamper/expiry/replay (T16), certificat de revocare, IdentityManager (create/restore/unlock/wipe/backup challenge), Keystore wrapper StrongBox→TEE, stocare no-backup. **Rămân**: test instrumentat pe dispozitiv pentru Keystore (emulator/device matrix), UI onboarding (Faza 13), redeem invite la issuer (Faza 8) |
+| Faza 4 (storage SQLCipher) | următoarea |
 | Faze 3–18 | neîncepute |
 | Cod de produs | schelet fără logică de produs; `legacy/` conține prototipuri simulate, în carantină |
 | Gap cunoscut | commit-urile nu sunt încă semnate (FR-8.1): proprietarul trebuie să configureze cheia (`git config commit.gpgsign true`) |

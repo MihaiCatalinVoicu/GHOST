@@ -14,3 +14,4 @@ net.zetetic
 junit
 org.junit
 org.ghost
+org.bouncycastle
