@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Determine the directory of this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Set Gradle home
+GRADLE_HOME="$SCRIPT_DIR"
+
+# Set user home for Gradle
+export GRADLE_USER_HOME="${HOME}/.gradle"
+
+# Check if Java is installed
+if ! command -v java &> /dev/null; then
+    echo "Please install Java first."
+    exit 1
+fi
+
+# Run Gradle with the wrapper jar
+java -Dorg.gradle.appname="gradlew" \
+     -classpath "$GRADLE_HOME/gradle/wrapper/gradle-wrapper.jar" \
+     org.gradle.launcher.GradleMain "$@"

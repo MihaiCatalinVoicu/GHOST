@@ -1,0 +1,20 @@
+# ADR-uri GHOST
+
+Toate ADR-urile de mai jos au fost aprobate de proprietarul proiectului pe 2026-09-10 și modifică *GHOST Technical Specification v2.0* conform `docs/GHOST_Master_Plan_v2.1_OPTIMIZAT.md`.
+
+| ADR | Titlu |
+|---|---|
+| [ADR-01](ADR-01-tor-transport.md) | Transport anonim: Tor (Arti) și relay-uri ca onion services |
+| [ADR-02](ADR-02-blind-entitlement-monero.md) | Entitlement blind-signed; rail P0 = Monero; fără blockchain în P0 |
+| [ADR-03](ADR-03-no-integrated-wallet.md) | Fără portofel integrat în P0 |
+| [ADR-04](ADR-04-per-channel-pseudonyms.md) | Pseudonim derivat per canal |
+| [ADR-05](ADR-05-blind-invite-tokens.md) | Invitații prin token-uri blind |
+| [ADR-06](ADR-06-no-third-party-sdks.md) | Zero SDK-uri terțe; allowlist dependențe |
+| [ADR-07](ADR-07-open-source-reproducible.md) | Open-source, build reproductibil, distribuție verificabilă |
+| [ADR-08](ADR-08-endpoint-hygiene.md) | Igienă de endpoint |
+| [ADR-09](ADR-09-traffic-metadata-p0.md) | Metadate de trafic ca P0 |
+| [ADR-10](ADR-10-legacy-quarantine-monorepo-gates.md) | Carantină legacy, monorepo, git, gates |
+| [ADR-11](ADR-11-independent-relay-operators.md) | Independența operatorilor de relay |
+| [ADR-12](ADR-12-post-quantum.md) | Post-quantum |
+
+Un ADR nou primește următorul număr, status „Propus”, și se leagă de cerința FR/NFR pe care o modifică.

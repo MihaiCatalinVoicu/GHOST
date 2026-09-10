@@ -1,0 +1,40 @@
+# Build outputs
+build/
+target/
+out/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Gradle
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# Rust
+**/target/
+Cargo.lock.orig
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Secrets and local state — never commit
+*.keystore
+*.jks
+*.pem
+*.p12
+*.env
+.env*
+secrets/
+**/local.secrets.*
+
+# Temporary
+*.log
+*.tmp
+.temp/

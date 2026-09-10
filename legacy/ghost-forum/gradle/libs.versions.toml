@@ -1,0 +1,19 @@
+[versions]
+kotlin = "2.0.0"
+ktor = "2.3.7"
+grpc = "1.58.0"
+sqlcipher = "4.5.0"
+libp2p = "0.8.0"
+
+[libraries]
+ktor-server-core = { group = "io.ktor", name = "ktor-server-core", version.ref = "ktor" }
+ktor-server-netty = { group = "io.ktor", name = "ktor-server-netty", version.ref = "ktor" }
+grpc-netty-shaded = { group = "io.grpc", name = "grpc-netty-shaded", version.ref = "grpc" }
+grpc-protobuf = { group = "io.grpc", name = "grpc-protobuf", version.ref = "grpc" }
+grpc-stub = { group = "io.grpc", name = "grpc-stub", version.ref = "grpc" }
+protobuf-java = { group = "com.google.protobuf", name = "protobuf-java", version = "3.24.0" }
+sqlcipher = { group = "net.zetetic", name = "android-database-sqlcipher", version.ref = "sqlcipher" }
+libp2p = { group = "com.github.libp2p", name = "java-libp2p", version.ref = "libp2p" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
