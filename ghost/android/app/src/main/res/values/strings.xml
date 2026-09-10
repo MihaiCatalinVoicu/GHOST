@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GHOST</string>
+    <string name="devpreview_title">GHOST (developer preview)</string>
+    <string name="devpreview_body">This build makes no privacy claim. It contains no messaging, relay, payment or identity functionality yet. Status and roadmap: docs/STATUS.md.</string>
+    <string name="devpreview_stage">Stage: developer preview (spec v2.0, section 3.1)</string>
+</resources>

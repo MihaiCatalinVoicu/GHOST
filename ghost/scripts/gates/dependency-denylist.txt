@@ -1,0 +1,19 @@
+# Forbidden dependency group prefixes (ADR-06). A match fails the build even if allowlisted above.
+com.google.firebase
+com.google.android.gms
+com.google.android.play
+com.google.android.libraries
+com.facebook
+io.sentry
+com.bugsnag
+com.mixpanel
+com.amplitude
+com.segment
+com.adjust
+com.appsflyer
+com.onesignal
+com.branch
+io.branch
+com.crashlytics
+org.web3j
+io.grpc.okhttp

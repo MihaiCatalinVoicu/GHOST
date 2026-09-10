@@ -1,0 +1,1 @@
+//! simulated issuer for demonstration

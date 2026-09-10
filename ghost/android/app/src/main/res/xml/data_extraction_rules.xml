@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FR-7.9 / section 8.1: seed, DB keys, protocol state and decrypted cache never leave the device
+     via cloud backup or device-to-device transfer. Everything is excluded; an approved E2E export
+     format is the only sanctioned way to move data (ADR-08). -->
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="device" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,16 @@
+# Allowed dependency group / plugin-id prefixes for the Android client (ADR-06).
+# Adding a line requires an ADR reference in the commit message.
+androidx.
+org.jetbrains.kotlin
+org.jetbrains.kotlinx
+com.android.application
+com.android.library
+com.android.tools
+org.jetbrains.kotlin.android
+org.jetbrains.kotlin.plugin.compose
+com.google.android.material
+org.signal
+net.zetetic
+junit
+org.junit
+org.ghost

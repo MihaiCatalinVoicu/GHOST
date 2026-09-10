@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ADR-01: the client never speaks clearnet. All traffic goes through the embedded Tor client to
+     .onion services; this config is defence in depth so no library can open a plaintext socket. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

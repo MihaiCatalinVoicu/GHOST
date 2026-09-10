@@ -38,3 +38,5 @@ secrets/
 *.log
 *.tmp
 .temp/
+.kotlin/
+build-repro/

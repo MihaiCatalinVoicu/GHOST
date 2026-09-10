@@ -1,0 +1,37 @@
+# cargo-deny configuration (ADR-06, ADR-10). Run: cargo deny check
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # No telemetry/analytics crates, no clearnet-only HTTP clients without Tor routing decided by ADR.
+    { crate = "sentry", reason = "ADR-06: no third-party crash/telemetry SDKs" },
+    { crate = "sentry-core", reason = "ADR-06" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

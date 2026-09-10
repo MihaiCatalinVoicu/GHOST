@@ -1,0 +1,93 @@
+// GHOST blind relay wire schema, protocol version 1.
+// Normative source: GHOST Technical Specification v2.0 §9.1, amended by ADR-01/ADR-09/ADR-11.
+// Rules: every blob is opaque ciphertext of at most 65,536 serialized bytes; blob_hash is the
+// SHA-256 of the exact ciphertext blob and is recomputed by the relay on store; unknown fields
+// follow protobuf compatibility rules; an incompatible major version fails closed.
+syntax = "proto3";
+
+package ghost.relay.v1;
+
+option java_package = "org.ghost.protocol.relay.v1";
+option java_multiple_files = true;
+
+// Maximum serialized blob size is 65,536 bytes (FR-5.1). Enforced by relays and clients.
+// Padding buckets applied before onion wrapping: 1, 4, 16, 64 KiB (FR-2.5, P0 per ADR-09).
+
+message Capability {
+  // Opaque, unforgeable authorization token scoped to one or more namespaces/blobs.
+  // Carries no user identity (FR-5.3, TB-2).
+  bytes token = 1;
+}
+
+message StoreBlobRequest {
+  uint32 version = 1;          // protocol version; MUST be 1
+  bytes blob_hash = 2;         // SHA-256 of `data`, exactly 32 bytes
+  bytes data = 3;              // ciphertext, <= 65,536 bytes
+  Capability capability = 4;   // write capability
+  uint32 ttl_seconds = 5;      // bounded by relay policy; default 90 days (FR-5.5)
+  bytes request_id = 6;        // client-chosen idempotency key, 16 bytes
+  bytes namespace_id = 7;      // opaque namespace (channel/inbox/prekeys), 32 bytes
+}
+
+message StoreBlobResponse {
+  bool success = 1;
+  bytes stored_hash = 2;
+  uint64 expiry_unix_seconds = 3;
+}
+
+message GetBlobRequest {
+  uint32 version = 1;
+  bytes blob_hash = 2;
+  Capability capability = 3;   // read capability for the namespace
+  bytes request_id = 4;
+}
+
+message GetBlobResponse {
+  bytes data = 1;
+  uint64 uploaded_at_unix_seconds = 2;   // coarse granularity as configured by relay policy
+  uint64 expiry_unix_seconds = 3;
+}
+
+message CheckBlobsRequest {
+  uint32 version = 1;
+  repeated bytes blob_hashes = 2;        // batch count bounded by relay policy
+  Capability capability = 3;
+}
+
+message CheckBlobsResponse {
+  repeated bytes available_hashes = 1;   // never enumerates outside capability scope
+}
+
+message ListNamespaceRequest {
+  // Incremental history sync with opaque cursors (FR-3.5).
+  uint32 version = 1;
+  bytes namespace_id = 2;
+  Capability capability = 3;
+  bytes cursor = 4;                      // opaque; empty = from beginning
+  uint32 limit = 5;                      // bounded by relay policy; fixed-size batches recommended
+}
+
+message ListNamespaceResponse {
+  repeated bytes blob_hashes = 1;
+  bytes next_cursor = 2;
+}
+
+message GossipInventoryBatch {
+  // Relay-to-relay authenticated inventory exchange (FR-5.6). Carries no endpoint identity.
+  uint32 version = 1;
+  repeated bytes blob_hashes = 2;
+  bytes batch_id = 3;
+}
+
+message GossipAck {
+  bytes batch_id = 1;
+  repeated bytes missing_hashes = 2;
+}
+
+service RelayService {
+  rpc StoreBlob(StoreBlobRequest) returns (StoreBlobResponse);
+  rpc GetBlob(GetBlobRequest) returns (GetBlobResponse);
+  rpc CheckBlobs(CheckBlobsRequest) returns (CheckBlobsResponse);
+  rpc ListNamespace(ListNamespaceRequest) returns (ListNamespaceResponse);
+  rpc GossipSync(stream GossipInventoryBatch) returns (stream GossipAck);
+}

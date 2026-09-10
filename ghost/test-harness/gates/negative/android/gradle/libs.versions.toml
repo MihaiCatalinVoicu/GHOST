@@ -1,0 +1,6 @@
+[libraries]
+firebase-analytics = { group = "com.google.firebase", name = "firebase-analytics", version = "22.0.0" }
+web3j = { module = "org.web3j:core", version = "4.12.0" }
+unknown = { group = "com.example.unknown", name = "thing", version = "1.0" }
+[plugins]
+gms = { id = "com.google.gms.google-services", version = "4.4.2" }

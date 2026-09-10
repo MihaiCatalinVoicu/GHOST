@@ -1,0 +1,113 @@
+// GHOST entitlement issuer wire schema, protocol version 1.
+// Normative source: ADR-02 and ADR-05 (blind-signed credentials, Monero rail). The issuer never
+// receives a GHOST identity; requests arrive over Tor and carry no stable client identifier.
+syntax = "proto3";
+
+package ghost.issuer.v1;
+
+option java_package = "org.ghost.protocol.issuer.v1";
+option java_multiple_files = true;
+
+enum Rail {
+  RAIL_UNSPECIFIED = 0;
+  RAIL_MONERO = 1;       // P0
+  RAIL_LIGHTNING = 2;    // P1, same blind issuance
+}
+
+enum TokenKind {
+  TOKEN_KIND_UNSPECIFIED = 0;
+  TOKEN_KIND_ACCESS = 1;   // redeemed at relays for write capabilities
+  TOKEN_KIND_INVITE = 2;   // redeemed at the issuer to activate a new account
+}
+
+message RequestInvoiceRequest {
+  uint32 version = 1;
+  Rail rail = 2;
+  uint32 period_days = 3;              // subscription period requested (policy-bounded)
+  bytes referral_commitment = 4;       // from the invite that onboarded this client; may be empty
+}
+
+message RequestInvoiceResponse {
+  bytes invoice_id = 1;                // 16 bytes, unlinkable to any later token
+  string payment_uri = 2;              // e.g. monero:<subaddress>?tx_amount=...
+  string amount = 3;                   // decimal string in rail currency
+  uint64 expiry_unix_seconds = 4;
+  uint32 required_confirmations = 5;
+}
+
+message PollInvoiceRequest {
+  uint32 version = 1;
+  bytes invoice_id = 2;
+}
+
+message PollInvoiceResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_PENDING = 1;
+    STATUS_CONFIRMED = 2;
+    STATUS_EXPIRED = 3;
+  }
+  Status status = 1;
+  uint32 confirmations = 2;
+}
+
+message BlindedToken {
+  TokenKind kind = 1;
+  bytes period_id = 2;                 // public metadata: validity period the token is bound to
+  bytes blinded_message = 3;           // RFC 9474 blinded message (or Privacy Pass equivalent)
+}
+
+message BlindSignRequest {
+  uint32 version = 1;
+  bytes invoice_id = 2;
+  repeated BlindedToken tokens = 3;    // count bounded by policy (access + invite)
+}
+
+message BlindSignResponse {
+  repeated bytes blind_signatures = 1; // same order as request
+  bytes issuer_key_id = 2;             // identifies the issuer public key / period set
+}
+
+message RedeemInviteRequest {
+  uint32 version = 1;
+  bytes period_id = 2;
+  bytes token = 3;                     // unblinded invite token
+  bytes signature = 4;
+  bytes nullifier = 5;                 // deterministic per token; prevents reuse
+}
+
+message RedeemInviteResponse {
+  bool accepted = 1;
+}
+
+message ClaimReferralRequest {
+  uint32 version = 1;
+  bytes referral_preimage = 2;         // proves ownership of referral_commitment
+  string payout_address = 3;           // fresh Monero subaddress supplied by the referrer
+}
+
+message ClaimReferralResponse {
+  string queued_amount = 1;            // paid in batches with randomized delay (ADR-02)
+}
+
+message IssuerKeysRequest {
+  uint32 version = 1;
+}
+
+message IssuerKeysResponse {
+  message PeriodKey {
+    bytes period_id = 1;
+    bytes public_key = 2;
+    bytes key_id = 3;
+  }
+  repeated PeriodKey keys = 1;         // also embedded in the signed release manifest for pinning
+}
+
+service IssuerService {
+  rpc RequestInvoice(RequestInvoiceRequest) returns (RequestInvoiceResponse);
+  rpc PollInvoice(PollInvoiceRequest) returns (PollInvoiceResponse);
+  rpc BlindSign(BlindSignRequest) returns (BlindSignResponse);
+  rpc RedeemInvite(RedeemInviteRequest) returns (RedeemInviteResponse);
+  rpc ClaimReferral(ClaimReferralRequest) returns (ClaimReferralResponse);
+  rpc IssuerKeys(IssuerKeysRequest) returns (IssuerKeysResponse);
+}

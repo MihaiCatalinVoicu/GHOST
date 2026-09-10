@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "relay/crates/api",
+    "relay/crates/storage",
+    "relay/crates/transport",
+    "relay/crates/gossip",
+    "relay/crates/prune",
+    "relay/crates/capability",
+    "issuer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.98"
+repository = "https://example.invalid/ghost"
+
+[workspace.dependencies]
