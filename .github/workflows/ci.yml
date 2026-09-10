@@ -59,7 +59,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - run: cargo audit
+      # Same accepted advisory as deny.toml (transitive via arti; RSA unreachable in GHOST).
+      - run: cargo audit --ignore RUSTSEC-2023-0071
       - name: privacy invariant T1 (relay capture validator)
         run: bash scripts/gates/privacy-capture.sh
 
