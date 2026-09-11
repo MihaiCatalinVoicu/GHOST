@@ -195,32 +195,54 @@ impl RelayService for RelayServer {
                     return Err(Relay::cap_error(e));
                 }
             };
-            let (hash, expiry, inserted) = match self.store.put(
+            // The quota is charged inside the store's write transaction, before anything is
+            // persisted: a store that exceeds the quota leaves no blob behind, and a retry is
+            // charged again (it is not an "idempotent success").
+            let bytes = req.data.len() as u64;
+            let mut ledger = self.ledger.lock().unwrap();
+            let mut denied: Option<CapError> = None;
+            let mut charged = false;
+            let put = self.store.put(
                 &req.blob_hash,
                 &req.data,
                 &namespace,
                 req.ttl_seconds as u64,
                 now,
-            ) {
-                Ok(r) => r,
-                Err(StoreError::HashMismatch) => {
-                    event.result = "rejected_hash";
-                    return Err(Status::invalid_argument(REJECTED));
-                }
+                &mut || match ledger.charge(cap_token, &cap, bytes) {
+                    Ok(()) => {
+                        charged = true;
+                        true
+                    }
+                    Err(e) => {
+                        denied = Some(e);
+                        false
+                    }
+                },
+            );
+            let outcome = match put {
+                Ok(o) => o,
                 Err(e) => {
-                    event.result = "rejected_size";
-                    return Err(Relay::store_error(e));
+                    if charged {
+                        ledger.refund(cap_token, bytes); // the write did not commit
+                    }
+                    return Err(match e {
+                        StoreError::HashMismatch => {
+                            event.result = "rejected_hash";
+                            Status::invalid_argument(REJECTED)
+                        }
+                        StoreError::QuotaDenied => {
+                            event.result = "rejected_capability";
+                            Relay::cap_error(denied.unwrap_or(CapError::QuotaExceeded))
+                        }
+                        e => {
+                            event.result = "rejected_size";
+                            Relay::store_error(e)
+                        }
+                    });
                 }
             };
-            if inserted {
-                let mut ledger = self.ledger.lock().unwrap();
-                if let Err(e) = ledger.charge(cap_token, &cap, req.data.len() as u64) {
-                    // Quota exceeded after insert would leave an orphan; charge first is
-                    // equivalent here because put() is idempotent and the blob is content-addressed.
-                    event.result = "rejected_capability";
-                    return Err(Relay::cap_error(e));
-                }
-            }
+            drop(ledger);
+            let (hash, expiry) = (outcome.hash, outcome.expiry);
             Ok(StoreBlobResponse {
                 success: true,
                 stored_hash: hash.to_vec(),
@@ -273,8 +295,8 @@ impl RelayService for RelayServer {
             };
             event.namespace_id = Some(hex::encode(cap.namespace));
             // Existence outside the capability's namespace is indistinguishable from absence.
-            match self.store.get(&req.blob_hash, now) {
-                Ok(Some(b)) if b.namespace == cap.namespace => {
+            match self.store.get(&req.blob_hash, &cap.namespace, now) {
+                Ok(Some(b)) => {
                     event.size_bucket = Some(b.data.len());
                     Ok(GetBlobResponse {
                         data: b.data,
@@ -383,7 +405,10 @@ impl RelayService for RelayServer {
                 event.result = "rejected_capability";
                 return Err(Relay::cap_error(e));
             }
-            match self.store.list(&namespace, &req.cursor, req.limit as usize) {
+            match self
+                .store
+                .list(&namespace, &req.cursor, req.limit as usize, now)
+            {
                 Ok((hashes, next)) => Ok(ListNamespaceResponse {
                     blob_hashes: hashes.iter().map(|h| h.to_vec()).collect(),
                     next_cursor: next,
@@ -416,7 +441,7 @@ impl RelayService for RelayServer {
                     Err(_) => break,
                 };
                 let now = now_unix();
-                let have = |h: &[u8]| matches!(relay.store.get(h, now), Ok(Some(_)));
+                let have = |h: &[u8]| matches!(relay.store.has_content(h), Ok(true));
                 let result = ghost_relay_gossip::missing_from_batch(
                     &batch.blob_hashes,
                     &batch.batch_id,

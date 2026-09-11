@@ -161,6 +161,13 @@ impl QuotaLedger {
         Ok(())
     }
 
+    /// Returns `bytes` previously charged to the capability, for a write that did not commit.
+    pub fn refund(&mut self, token: &[u8], bytes: u64) {
+        if let Some(entry) = self.used.get_mut(&scope_hash(token)) {
+            entry.0 = entry.0.saturating_sub(bytes);
+        }
+    }
+
     /// Forgets ledgers of expired capabilities (bounded memory, §11.2).
     pub fn prune(&mut self, now: u64) -> usize {
         let before = self.used.len();
@@ -293,6 +300,12 @@ mod tests {
             Err(CapError::QuotaExceeded)
         );
         assert!(ledger.charge(&token, &cap, 4_000).is_ok());
+        ledger.refund(&token, 4_000);
+        assert!(
+            ledger.charge(&token, &cap, 4_000).is_ok(),
+            "refund restores the quota"
+        );
+        ledger.refund(b"unknown token", 1); // no ledger: no-op
         assert_eq!(ledger.prune(50), 0);
         assert_eq!(ledger.prune(100), 1);
         assert!(ledger.is_empty());

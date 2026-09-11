@@ -5,16 +5,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST client network core: Tor (Arti) onion-only transport, per-channel circuit isolation, padded relay client, JNI surface for Android (ADR-01, ADR-09, ADR-19)"
+description = "GHOST client network core: Tor (Arti) onion-only transport, per-channel circuit isolation, relay client, JNI surface for Android (ADR-01, ADR-09, ADR-19)"
 
 [lib]
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
 ghost-relay-api = { path = "../../relay/crates/api" }
-ghost-relay-transport = { path = "../../relay/crates/transport" }
 arti-client = { workspace = true }
 tor-rtcompat = { workspace = true }
+# Vanguards-lite (Prop 333) against guard discovery by onion-service operators (ADR-01).
+tor-guardmgr = { workspace = true }
+tor-config = { workspace = true }
+# Full v3 onion address validation (version byte and SHA3 checksum).
+tor-hscrypto = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true }
 hyper = { workspace = true }
@@ -33,7 +37,20 @@ rustls = { workspace = true }
 [features]
 default = ["jni-bridge"]
 jni-bridge = ["dep:jni"]
+# Negative fixture for clippy.toml (scripts/gates/clippy-clearnet-fixture.sh). Never enabled in
+# a build; rust-feature-policy.sh fails if it is.
+clippy-fixture = []
 
 [dev-dependencies]
+tokio-stream = { workspace = true }
+# In-process test servers only; the library itself links tonic with codegen alone.
+tonic = { workspace = true, features = ["transport", "server", "router"] }
+tower = { workspace = true, features = ["util"] }
+# In-process relay for RelayClient round-trip tests (plain TCP connector, test-only).
+ghost-relay-node = { path = "../../relay/crates/node" }
+ghost-relay-capability = { path = "../../relay/crates/capability" }
+tempfile = { workspace = true }
+# Circuit identity of a stream, for the live isolation test.
+tor-proto = { workspace = true, features = ["stream-ctrl"] }
 # Diagnostics for the ignored live Tor test only.
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }

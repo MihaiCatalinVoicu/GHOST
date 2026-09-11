@@ -6,16 +6,29 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # Transitive via arti (tor-keymgr -> ssh-key fork -> rsa). GHOST never uses RSA key material
-    # from Arti's keystore; the Marvin timing side channel needs an RSA decryption oracle. Tracked
-    # for removal when arti drops the dependency. Reviewed 2026-09-10 (Phase 6).
-    { id = "RUSTSEC-2023-0071", reason = "rsa: unreachable in GHOST usage; transitive via arti keymgr" },
+    # rsa is a dependency of Arti crates only (tor-llcrypto, tor-key-forge, ssh-key-fork-arti).
+    # The Marvin timing attack needs RSA private-key decryption or signing. In the client, RSA is
+    # used only for PKCS#1 v1.5 *signature verification* (channel crosscerts, directory authority
+    # certificates, consensus); nothing enabled generates or uses an RSA private key:
+    #  - relay / onion-service-service / arti-relay / tor-hsservice are not in the client graph;
+    #  - Arti's native keystore IS compiled in and opened under state_dir/keystore (tor-keymgr's
+    #    keymgr feature comes unconditionally through tor-chanmgr), but nothing GHOST enables puts
+    #    a key there: the client tests check the directory exists and holds no file right after
+    #    creation (unit) and after a real bootstrap plus onion connections (live, CI job live-tor).
+    # What scripts/gates/rust-feature-policy.sh enforces: no relay / onion-service-service /
+    # keymgr features, no tor-hsservice / arti-relay, and no non-Arti crate in the workspace
+    # depending on rsa (e.g. an RSA blind-signature issuer, ADR-02): re-review this entry before
+    # any of that changes. Reviewed 2026-09-11 (Phase 6 security review, rounds 2 and 3).
+    { id = "RUSTSEC-2023-0071", reason = "rsa: verification-only in arti; no RSA private key generated or used (feature policy gate + empty-keystore tests)" },
     # `paste` is a proc-macro used at build time only by arti's dependency tree; no runtime code.
     { id = "RUSTSEC-2024-0436", reason = "paste: build-time proc-macro, unmaintained but inert" },
 ]
 
 [licenses]
 version = 2
+# Unused pre-approvals are refused so a new dependency cannot slip in under a license nobody
+# reviewed for this project (ADR-07 client license still open).
+unused-allowed-license = "deny"
 allow = [
     "MIT",
     "Apache-2.0",
@@ -28,8 +41,6 @@ allow = [
     "MPL-2.0",
     "Unlicense",
     "CC0-1.0",
-    "BSL-1.0",
-    "OpenSSL",
 ]
 confidence-threshold = 0.9
 
@@ -39,9 +50,20 @@ wildcards = "deny"
 # Workspace-internal path dependencies carry no version by design.
 allow-wildcard-paths = true
 deny = [
-    # No telemetry/analytics crates, no clearnet-only HTTP clients without Tor routing decided by ADR.
+    # ADR-06: no third-party crash/telemetry SDKs.
     { crate = "sentry", reason = "ADR-06: no third-party crash/telemetry SDKs" },
     { crate = "sentry-core", reason = "ADR-06" },
+    { crate = "bugsnag", reason = "ADR-06" },
+    { crate = "opentelemetry", reason = "ADR-06: telemetry" },
+    { crate = "opentelemetry-otlp", reason = "ADR-06: telemetry export" },
+    # ADR-01: no general-purpose HTTP clients that could open clearnet connections outside the
+    # onion-only transport in client-core/net.
+    { crate = "reqwest", reason = "ADR-01: clearnet-capable HTTP client" },
+    { crate = "ureq", reason = "ADR-01" },
+    { crate = "isahc", reason = "ADR-01" },
+    { crate = "surf", reason = "ADR-01" },
+    { crate = "attohttpc", reason = "ADR-01" },
+    { crate = "curl", reason = "ADR-01" },
 ]
 
 [sources]

@@ -17,7 +17,7 @@ ghost-relay-storage = { path = "../storage" }
 ghost-relay-capability = { path = "../capability" }
 ghost-relay-gossip = { path = "../gossip" }
 ghost-relay-prune = { path = "../prune" }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["transport", "server", "channel", "router"] }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 serde = { workspace = true }

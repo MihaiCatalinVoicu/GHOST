@@ -1,0 +1,35 @@
+# Clearnet guard for the client network library (T6, ADR-19). The only dial path is
+# `transport::connect_isolated` (onion address + isolation token). clippy (-D warnings in CI)
+# rejects any use of the APIs listed here. It bans these named APIs, not "all clearnet": code
+# reaching a socket through an API not listed here is not caught (the dynamic T6 test on the
+# emulator, Phase 13, is the complete check). Every entry is proven to fire by the negative fixture
+# src/clippy_fixture.rs (scripts/gates/clippy-clearnet-fixture.sh); tonic's Channel/Endpoint are
+# not listed because tonic is linked with `codegen` only (rust-feature-policy.sh), so they do not
+# exist in this crate's graph.
+disallowed-methods = [
+    { path = "std::net::TcpStream::connect", reason = "clearnet socket: use transport::connect_isolated" },
+    { path = "std::net::TcpStream::connect_timeout", reason = "clearnet socket: use transport::connect_isolated" },
+    { path = "std::net::UdpSocket::bind", reason = "no UDP outside Tor" },
+    { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "system DNS leaks destinations" },
+    { path = "tokio::net::TcpStream::connect", reason = "clearnet socket: use transport::connect_isolated" },
+    { path = "tokio::net::TcpSocket::new_v4", reason = "clearnet socket: use transport::connect_isolated" },
+    { path = "tokio::net::TcpSocket::new_v6", reason = "clearnet socket: use transport::connect_isolated" },
+    { path = "tokio::net::TcpSocket::connect", reason = "clearnet socket: use transport::connect_isolated" },
+    { path = "tokio::net::UdpSocket::bind", reason = "no UDP outside Tor" },
+    { path = "tokio::net::lookup_host", reason = "system DNS leaks destinations" },
+    { path = "hyper_util::client::legacy::Builder::build_http", reason = "clearnet HTTP client with system DNS: use RelayClient" },
+    { path = "hyper_util::client::legacy::connect::HttpConnector::new", reason = "clearnet connector: use OnionConnector" },
+    { path = "hyper_util::client::legacy::connect::dns::GaiResolver::new", reason = "system DNS leaks destinations" },
+    { path = "tor_rtcompat::NetStreamProvider::connect", reason = "raw clearnet TCP through the runtime: use transport::connect_isolated" },
+    { path = "tor_rtcompat::UdpProvider::bind", reason = "no UDP outside Tor" },
+    { path = "arti_client::TorClient::connect", reason = "dial only through transport::connect_isolated (explicit isolation)" },
+    { path = "arti_client::TorClient::connect_with_prefs", reason = "dial only through transport::connect_isolated (explicit isolation)" },
+    { path = "arti_client::TorClient::resolve", reason = "no DNS through Tor exits: onion-only" },
+    { path = "arti_client::TorClient::resolve_with_prefs", reason = "no DNS through Tor exits: onion-only" },
+    { path = "arti_client::TorClient::resolve_ptr", reason = "no DNS through Tor exits: onion-only" },
+    { path = "arti_client::TorClient::resolve_ptr_with_prefs", reason = "no DNS through Tor exits: onion-only" },
+]
+disallowed-types = [
+    { path = "hyper_util::client::legacy::connect::HttpConnector", reason = "clearnet connector: use OnionConnector" },
+    { path = "hyper_util::client::legacy::connect::dns::GaiResolver", reason = "system DNS leaks destinations" },
+]

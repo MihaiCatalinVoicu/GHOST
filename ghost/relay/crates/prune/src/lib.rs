@@ -42,8 +42,12 @@ mod tests {
         let ns = [1u8; 32];
         let old = vec![1u8; 1024];
         let fresh = vec![2u8; 1024];
-        store.put(&sha256(&old), &old, &ns, 10, 100).unwrap(); // expires 110
-        store.put(&sha256(&fresh), &fresh, &ns, 1_000, 100).unwrap();
+        store
+            .put(&sha256(&old), &old, &ns, 10, 100, &mut || true)
+            .unwrap(); // expires at 3_600 (expiries are rounded up to the hour)
+        store
+            .put(&sha256(&fresh), &fresh, &ns, 7_200, 100, &mut || true)
+            .unwrap();
 
         let key = RelayKey::generate();
         let mut ledger = QuotaLedger::default();
@@ -68,7 +72,7 @@ mod tests {
         nulls.record_if_fresh(b"old", [0; 32]);
         nulls.record_if_fresh(b"cur", [0; 32]);
 
-        let report = sweep(&store, &mut ledger, &mut nulls, &[b"cur"], 200).unwrap();
+        let report = sweep(&store, &mut ledger, &mut nulls, &[b"cur"], 3_600).unwrap();
         assert_eq!(
             report,
             SweepReport {
@@ -81,7 +85,7 @@ mod tests {
         assert_eq!(nulls.len(), 1);
         // Idempotent.
         assert_eq!(
-            sweep(&store, &mut ledger, &mut nulls, &[b"cur"], 200).unwrap(),
+            sweep(&store, &mut ledger, &mut nulls, &[b"cur"], 3_600).unwrap(),
             SweepReport::default()
         );
     }

@@ -17,26 +17,31 @@ pub enum IsolationScope {
 }
 
 #[derive(Default)]
-pub struct Isolations {
+pub(crate) struct Isolations {
     tokens: Mutex<HashMap<IsolationScope, IsolationToken>>,
 }
 
 impl Isolations {
     /// Returns the stable token for a scope, creating it on first use.
     pub fn token_for(&self, scope: &IsolationScope) -> IsolationToken {
-        let mut map = self.tokens.lock().unwrap();
+        let mut map = self.tokens.lock().unwrap_or_else(|e| e.into_inner());
         *map.entry(scope.clone()).or_insert_with(IsolationToken::new)
     }
 
     /// Drops every token; the next request for any scope builds fresh circuits (rotation policy).
     pub fn rotate_all(&self) {
-        self.tokens.lock().unwrap().clear();
+        self.tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.tokens.lock().unwrap().len()
+        self.tokens.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

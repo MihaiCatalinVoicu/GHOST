@@ -12,4 +12,7 @@ HiddenServiceVersion 3
 HiddenServicePort 443 127.0.0.1:7443
 # Proof-of-work DoS defence for the onion service (§11.2 "optional proof-of-work"); requires a
 # Tor build with PoW support, otherwise this line is ignored with a warning.
+# NOTE (ADR-01, review 2026-09-11): GHOST clients do not solve PoW yet (arti `hs-pow-full` is
+# experimental and costs battery), so under an introduction flood they stay in the effort-0 queue.
+# Revisit when hs-pow-full is stable.
 HiddenServicePoWDefensesEnabled 1

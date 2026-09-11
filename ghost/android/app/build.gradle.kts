@@ -13,6 +13,11 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0-devpreview"
+        // The Tor core (libghost_client_net.so) is built for these ABIs only (ADR-19). Other devices
+        // get INSTALL_FAILED_NO_MATCHING_ABIS at install time instead of a crash at first use.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -40,6 +45,9 @@ android {
     packaging {
         // Reproducibility: drop build-host metadata that varies between machines.
         resources.excludes += setOf("META-INF/*.version", "META-INF/DEPENDENCIES", "kotlin/**")
+        // The Tor core is already stripped by cargo; AGP must not re-strip it, so the packaged
+        // bytes equal the reviewed build recorded in native-libs.sha256 (reproducible-build gate).
+        jniLibs.keepDebugSymbols += "**/libghost_client_net.so"
     }
 
     dependenciesInfo {

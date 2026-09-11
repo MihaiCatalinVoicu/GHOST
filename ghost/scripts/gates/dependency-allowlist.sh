@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Gate T7 (ADR-06): every Maven coordinate and Gradle plugin used by the Android client must be
-# allowlisted by group prefix and must not match the denylist. Rust is covered by cargo-deny.
+# allowlisted by group prefix and must not match the denylist. Rust crates shipped in the client
+# are covered by rust-client-allowlist.sh (package allowlist) and cargo-deny (bans/licenses/sources).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 ALLOW="$GATES_DIR/dependency-allowlist.txt"
 DENY="$GATES_DIR/dependency-denylist.txt"

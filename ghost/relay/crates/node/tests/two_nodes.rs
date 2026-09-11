@@ -61,8 +61,9 @@ async fn start_node(gossip: bool) -> Node {
 
 async fn client(addr: &str) -> RelayServiceClient<Channel> {
     for _ in 0..50 {
-        if let Ok(c) = RelayServiceClient::connect(addr.to_string()).await {
-            return c;
+        let endpoint = Channel::from_shared(addr.to_string()).expect("relay address");
+        if let Ok(ch) = endpoint.connect().await {
+            return RelayServiceClient::new(ch);
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -230,11 +231,47 @@ async fn store_get_check_list_gossip_failover_and_capture() {
     );
     // quota: 1 KiB capability cannot store 4 KiB
     let tiny = cap(a.relay.key(), Kind::Write, [0x33; 32], 1024);
-    let over_quota = store_req([0x33; 32], &vec![4u8; 4096], tiny);
+    let over_quota = store_req([0x33; 32], &vec![4u8; 4096], tiny.clone());
+    assert_eq!(
+        ca.store_blob(over_quota.clone()).await.unwrap_err().code(),
+        Code::ResourceExhausted
+    );
+    // ... and nothing was persisted: the blob is not served, not listed, and a retry is charged
+    // (and rejected) again instead of being confirmed as an idempotent success. The same holds
+    // when the ciphertext already exists under another namespace.
+    let tiny_read = cap(a.relay.key(), Kind::Read, [0x33; 32], 0);
+    for data in [vec![4u8; 4096], blob.clone()] {
+        let attempt = store_req([0x33; 32], &data, tiny.clone());
+        assert_eq!(
+            ca.store_blob(attempt).await.unwrap_err().code(),
+            Code::ResourceExhausted
+        );
+        let g = ca
+            .get_blob(GetBlobRequest {
+                version: 1,
+                blob_hash: sha256(&data).to_vec(),
+                capability: tiny_read.clone(),
+                request_id: vec![9; 16],
+            })
+            .await;
+        assert_eq!(g.unwrap_err().code(), Code::NotFound);
+    }
     assert_eq!(
         ca.store_blob(over_quota).await.unwrap_err().code(),
         Code::ResourceExhausted
     );
+    let listed = ca
+        .list_namespace(ListNamespaceRequest {
+            version: 1,
+            namespace_id: vec![0x33; 32],
+            capability: tiny_read,
+            cursor: vec![],
+            limit: 16,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(listed.blob_hashes.is_empty() && listed.next_cursor.is_empty());
     // batch bound
     let big_batch = CheckBlobsRequest {
         version: 1,

@@ -1,0 +1,31 @@
+# Shared onion-address vectors for the Rust parser (client-core/net/src/onion.rs) and the
+# Kotlin mirror (android/network OnionAddress.kt). Format: valid|<input>  or  invalid|<input>|<why>
+# Inputs may use \uXXXX escapes. Only ASCII space and tab are trimmed; any other control or
+# whitespace character is rejected on both sides.
+valid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:80
+valid|DUCKDUCKGOGG42XJOC72X3SJASOWOARFBGCMVFIMAFTT6TWAGSWZCZAD.onion:443
+valid|2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:443
+valid|  duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443\u0020\u0020
+valid|\u0009duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443\u0009
+invalid|relay.example.com:443|dns name
+invalid|203.0.113.5:443|ipv4
+invalid|[2001:db8::1]:443|ipv6
+invalid|https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|scheme
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion|no port
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:0|port 0
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:70000|port range
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443/path|path
+invalid|user@duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|userinfo
+invalid|facebookcorewwwi.onion:443|v2 length
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzcza1.onion:443|1 not base32
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczac.onion:443|wrong version byte (2)
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczbd.onion:443|wrong version byte (0x23)
+invalid|eeckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|wrong checksum (key changed)
+invalid|sub.duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|subdomain
+invalid|ducKduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|kelvin sign (non-ascii)
+invalid|\u001Cduckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|leading U+001C (Java whitespace)
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443\u001F|trailing U+001F (Java whitespace)
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443\u0085|trailing U+0085 (Rust whitespace, non-ascii)
+invalid|\u000Aduckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443|leading newline
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443\u0000|trailing NUL
+invalid|duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:44\u007F3|DEL inside port

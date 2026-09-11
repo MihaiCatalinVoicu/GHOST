@@ -122,6 +122,15 @@ Ideea e bună și **implementabilă** în forma corectă: pragul nu „invalidea
 
 ---
 
+## L5. Riscuri reziduale ale implementării (adăugat după review-ul Fazei 6, 2026-09-11)
+
+| Risc | Stare | Plan |
+|---|---|---|
+| **PoW pe onion service nerezolvat de clienți.** Relay-ul poate cere proof-of-work la introducere (Prop 327); clientul Arti nu compilează `hs-pow-full` (experimental). Sub un flood de introduceri, clienții GHOST nu primesc prioritate și pot fi refuzați ca oricine altcineva (DoS, AS-11) | acceptat temporar (ADR-01, torrc) | reevaluare când `hs-pow-full` devine stabil în Arti; gate-ul de feature-uri împiedică activarea accidentală |
+| **Bridges doar simple până în Faza 12.** O linie `IP:PORT FINGERPRINT` ascunde relay-ul de gardă, nu faptul că traficul e Tor (AD-4) | cunoscut | transporturi pluggable (lyrebird/obfs4, snowflake, webtunnel) în Faza 12, ADR-16 |
+| **Keystore Arti compilat și deschis** (gol) | test unitar (după creare) și test live (după bootstrap și conexiuni onion, jobul CI `live-tor`) | vezi `deny.toml` (RUSTSEC-2023-0071) |
+| **Build nativ reproductibil doar la aceeași cale** | parțial | builder cu căi fixe în Faza 14 (ADR-07) |
+
 ## 5. Sinteză: ce rămâne cu adevărat imposibil după toate acestea
 
 | Limită | După mitigări rămâne |

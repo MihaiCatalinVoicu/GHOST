@@ -16,17 +16,17 @@ finish() {
 }
 # Source trees that are on the production path. Test sources are excluded on purpose.
 android_main_files() {
-  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/main/*' -print 2>/dev/null
+  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/main/*' -print 2>/dev/null || true
 }
 rust_src_files() {
   # test-harness/ is tooling, not the production path (its CLIs may print to the console).
   # Binary entry points (src/main.rs) print operator-facing constants and configuration only;
   # every library crate stays free of logging primitives.
-  find "$GHOST_ROOT/relay" "$GHOST_ROOT/issuer" -path '*/target' -prune -o -type f -name '*.rs' -not -name main.rs -path '*/src/*' -print 2>/dev/null
+  find "$GHOST_ROOT/relay" "$GHOST_ROOT/issuer" "$GHOST_ROOT/client-core" -path '*/target' -prune -o -type f -name '*.rs' -not -name main.rs -path '*/src/*' -print 2>/dev/null || true
 }
 manifest_files() {
-  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f -name 'AndroidManifest.xml' -print 2>/dev/null
+  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f -name 'AndroidManifest.xml' -print 2>/dev/null || true
 }
 gradle_files() {
-  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.gradle.kts' -o -name 'libs.versions.toml' \) -print 2>/dev/null
+  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.gradle.kts' -o -name 'libs.versions.toml' \) -print 2>/dev/null || true
 }

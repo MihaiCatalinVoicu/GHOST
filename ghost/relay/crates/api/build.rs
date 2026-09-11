@@ -8,6 +8,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
+        // No generated `connect()` (it would pull tonic Channel, a clearnet dialer, into every
+        // consumer). Clients pass their own connector; the relay node builds Channels itself.
+        .build_transport(false)
         .compile_protos(&[proto], &[proto_root])?;
     Ok(())
 }
