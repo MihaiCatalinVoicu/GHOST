@@ -21,6 +21,20 @@ done
 expect_fail sync-no-catch-all "$HARNESS/negative-sync"
 sync_hits="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
 if [ "$sync_hits" = "9" ]; then echo "self-test ok: sync-no-catch-all reports all 9 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 9 fixture lines" >&2; rc=1; fi
+# Phase 7 T6 (Kotlin side): every clearnet primitive in the fixture is reported, one line each.
+expect_fail kotlin-clearnet "$HARNESS/negative-clearnet"
+clearnet_hits="$(GHOST_ROOT="$HARNESS/negative-clearnet" bash "$DIR/kotlin-clearnet.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
+if [ "$clearnet_hits" = "12" ]; then echo "self-test ok: kotlin-clearnet reports all 12 fixture lines"; else echo "SELF-TEST FAIL: kotlin-clearnet reported $clearnet_hits of 12 fixture lines" >&2; rc=1; fi
+# Phase 7 T15m on fixture files: the negative merged manifest reports each of its 15 violations, and
+# the merged release manifest as built at Phase 7 passes (a gate failing on everything is caught).
+MERGED_FIXTURES="$HARNESS/negative-merged-manifest"
+merged_hits="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/AndroidManifest.xml" 2>&1 | grep -c '^GATE-FAIL' || true)"
+if [ "$merged_hits" = "15" ]; then echo "self-test ok: merged-manifest-lint reports all 15 violations of the negative fixture"; else echo "SELF-TEST FAIL: merged-manifest-lint reported $merged_hits of 15 violations" >&2; rc=1; fi
+if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifest.xml" >/dev/null 2>&1; then
+  echo "self-test ok: merged-manifest-lint accepts the Phase 7 merged release manifest"
+else
+  echo "SELF-TEST FAIL: merged-manifest-lint rejects the Phase 7 merged release manifest" >&2; rc=1
+fi
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"

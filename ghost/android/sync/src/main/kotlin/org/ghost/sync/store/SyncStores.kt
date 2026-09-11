@@ -104,7 +104,7 @@ class SyncStores(
             directoryStore.setRelays(tx.checked(), namespace, relays, clock.epochSeconds())
 
         override fun setListening(tx: SyncTransaction, namespace: NamespaceId, listen: Boolean) =
-            directoryStore.setListening(tx.checked(), namespace, listen)
+            directoryStore.setListening(tx.checked(), namespace, listen, clock.epochSeconds())
 
         override fun setSendDelay(tx: SyncTransaction, namespace: NamespaceId, sendDelay: SendDelay) =
             directoryStore.setSendDelay(tx.checked(), namespace, sendDelay)

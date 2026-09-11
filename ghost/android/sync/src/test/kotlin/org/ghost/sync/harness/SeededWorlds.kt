@@ -37,9 +37,26 @@ internal class SeededWorld(val seed: Long) : Scenario("seed $seed") {
     private var pStoreOnly = 0.0
     val description = StringBuilder()
 
-    override val maxTailRounds: Int = 400
+    private var world: World? = null
+
+    /**
+     * Cap of the quiescence tail, which ends as soon as the world is quiescent. It must let every op
+     * reach its decision (OUT-1, design §3.5): an op whose remaining delivery is a possible copy on a
+     * relay that never answers a check (a STALL relay), after an honest relay refused it for good,
+     * closes only once its store window H has passed and the copy is no longer resolvable
+     * (copy + TTL − σ). So the cap is H + max(0, longest TTL − σ) + 2 days of job periods, at least 400
+     * (found by seed 18291).
+     */
+    override val maxTailRounds: Int
+        get() {
+            val longestTtl = world?.ops?.values?.maxOfOrNull { it.ttl.seconds.toLong() } ?: 0L
+            val policy = org.ghost.sync.store.RetentionPolicy
+            val seconds = policy.STORE_WINDOW_SECONDS + maxOf(0L, longestTtl - policy.SKEW_SECONDS) + 2 * 86_400L
+            return maxOf(400, (seconds * 1_000 / Harness.JOB_PERIOD).toInt())
+        }
 
     override fun build(w: World) {
+        world = w
         val relayCount = 2 + rnd.nextInt(3)
         val operators = listOf(1, 2) + List(relayCount - 2) { 1 + rnd.nextInt(3) }
         val hostileIndex = if (relayCount >= 3 && rnd.nextInt(10) < 4) relayCount - 1 else -1

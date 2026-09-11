@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Gate T15 (FR-7.9, ADR-06, ADR-08): every Android manifest on the production path is hardened.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-ALLOWED_PERMISSIONS='android.permission.INTERNET|android.permission.FOREGROUND_SERVICE|android.permission.FOREGROUND_SERVICE_DATA_SYNC|android.permission.POST_NOTIFICATIONS|android.permission.CAMERA|android.permission.USE_BIOMETRIC|android.permission.VIBRATE'
+# The allowlist is T15_ALLOWED_PERMISSIONS in common.sh (ADR references there); the merged release
+# manifest is checked by merged-manifest-lint.sh (T15m) after the build.
+ALLOWED_PERMISSIONS="$T15_ALLOWED_PERMISSIONS"
 while IFS= read -r m; do
   [ -n "$m" ] || continue
   # Permissions: only the allowlisted set (each addition needs an ADR reference).

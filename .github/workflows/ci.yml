@@ -158,6 +158,9 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - run: ./gradlew build --no-daemon
+      # T15m (Phase 7 design §5.5, ADR-20): what ships is the merged manifest, not the source ones.
+      - name: merged release manifest (permissions, exported components, sync job protection)
+        run: bash ../scripts/gates/merged-manifest-lint.sh
       - name: upload unsigned release apk
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

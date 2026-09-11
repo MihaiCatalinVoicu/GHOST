@@ -194,4 +194,20 @@ class CapabilityTest {
         assertFalse(w.stores.capabilities.needed().any { it.relay == relays[2] })
         assertEquals(2, w.stores.counts().capabilityNeeds)
     }
+
+    @Test
+    fun anAcknowledgedDeliveryWithoutAWriteTokenAsksForOne(): Unit = SyncWorld().use { w ->
+        // Seeded world 18694: an ack awaiting verification on a relay whose write token is gone
+        // must ask for a new token; otherwise no check can ever verify or strike it and its op
+        // stays undecided for ever.
+        val relays = w.relays(1, 2)
+        val writeOnly = w.namespace(2, relays, listen = false)
+        relays.forEach { w.capability(it, writeOnly, CapabilityKind.WRITE) }
+        val op = w.enqueue(1, writeOnly)
+        w.tx { w.outbox.lease(it, op, relays[0], w.now, 60) }
+        w.tx { w.outbox.recordReceipt(it, op, relays[0], w.now + 7 * DAY, w.now) }
+        assertEquals("acked", w.state(op, relays[0]))
+        w.raw("DELETE FROM relay_capability WHERE relay_id = ? AND namespace_id = ?", relays[0], writeOnly)
+        assertTrue(CapabilityNeed(relays[0], writeOnly, CapabilityKind.WRITE, CapabilityNeed.Reason.MISSING) in w.stores.capabilities.needed())
+    }
 }

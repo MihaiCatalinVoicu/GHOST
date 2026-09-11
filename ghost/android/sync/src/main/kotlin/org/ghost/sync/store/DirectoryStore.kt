@@ -135,6 +135,8 @@ internal class DirectoryStore(
                 "ON CONFLICT(namespace_id) DO UPDATE SET listening = excluded.listening, send_delay = excluded.send_delay",
             listOf(ns.raw, consumer.code, if (listen) 1 else 0, sendDelay.code),
         )
+        // A known write-only namespace now listens: own tombstones for its ops (design §11.5 #1).
+        if (listen && existing != null && !existing.listening) outbox.writeOwnTombstones(tx, ns, now)
         setRelays(tx, ns, relays, now)
         tx.hint(SyncChange.TOPOLOGY)
     }
@@ -160,9 +162,14 @@ internal class DirectoryStore(
         tx.hint(SyncChange.TOPOLOGY)
     }
 
-    fun setListening(tx: SyncTransaction, ns: NamespaceId, listen: Boolean) {
-        checkNotNull(namespace(tx, ns)) { "namespace is not registered" }
+    /**
+     * Cursors and rows are kept. Turning listening on (0 → 1) writes an own `done` row for every op
+     * of the namespace in this transaction (design §11.5 #1), so none of our blobs is fetched back.
+     */
+    fun setListening(tx: SyncTransaction, ns: NamespaceId, listen: Boolean, now: Long) {
+        val existing = checkNotNull(namespace(tx, ns)) { "namespace is not registered" }
         tx.sql.updateExactly(1, "UPDATE sync_namespace SET listening = ?1 WHERE namespace_id = ?2", listOf(if (listen) 1 else 0, ns.raw))
+        if (listen && !existing.listening) outbox.writeOwnTombstones(tx, ns, now)
         tx.hint(SyncChange.TOPOLOGY)
     }
 

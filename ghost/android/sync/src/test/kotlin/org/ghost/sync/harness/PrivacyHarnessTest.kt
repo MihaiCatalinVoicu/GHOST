@@ -60,11 +60,13 @@ internal object PairIndependence {
     }
 }
 
-class PrivacyHarnessTest {
+/**
+ * The T19 worlds (design §7.2, §8.6, §11.2 #12, #13), shared by [PrivacyHarnessTest] and the T19
+ * mutants of `MutantDetectionTest` (M15–M17).
+ */
+internal object T19Worlds {
 
-    // ------------------------------------------------------------------ T19 exact (design §7.2, §8.6, §11.2 #12, #13)
-
-    private class ListRequest(val start: Long, val pair: String, val limit: Int) {
+    class ListRequest(val start: Long, val pair: String, val limit: Int) {
         override fun equals(other: Any?) = other is ListRequest && other.start == start && other.pair == pair && other.limit == limit
         override fun hashCode() = (start.hashCode() * 31 + pair.hashCode()) * 31 + limit
         override fun toString() = "($start, $pair, $limit)"
@@ -80,16 +82,40 @@ class PrivacyHarnessTest {
     }
 
     /**
+     * Runs the idle and the busy world with [mutation]'s steps (null: the real engine) and reports a
+     * T19 violation when STANDARD first list requests, or the whole HIGH list sequence, differ.
+     */
+    fun compare(mode: PrivacyMode, mutation: Mutation?) {
+        val steps = mutation?.steps ?: org.ghost.sync.engine.Steps.DEFAULT
+        val (idle, _, w1) = run(mode, busy = false, steps)
+        val (busy, _, w2) = run(mode, busy = true, steps)
+        try {
+            if (idle.size <= 200) violation("T19 world: too few list requests (${idle.size})")
+            if (idle != busy) {
+                val first = idle.indices.firstOrNull { it >= busy.size || idle[it] != busy[it] }
+                violation("T19: list requests differ with activity (${idle.size} idle, ${busy.size} busy, first difference at $first)")
+            }
+        } finally {
+            w1.close()
+            w2.close()
+        }
+    }
+
+    /**
      * One T19 world: 8 read pairs over 4 event workers (4 relays × 2 listening namespaces, read
      * through write tokens) and a write-only namespace; seeded latency with rendezvous setup per pair
      * per transport; a keyed 10 % of lists time out (a fixed trace of pair and start time). The busy
      * run adds 20 enqueues, 50 inbound blobs, a consumer transaction before every lane item and
      * 100 % failures of every work-lane call (relay-level categories only).
      */
-    private fun t19(mode: PrivacyMode, busy: Boolean): Triple<List<ListRequest>, List<HarnessRelayPort.Call>, World> {
+    fun run(
+        mode: PrivacyMode,
+        busy: Boolean,
+        steps: org.ghost.sync.engine.Steps = org.ghost.sync.engine.Steps.DEFAULT,
+    ): Triple<List<ListRequest>, List<HarnessRelayPort.Call>, World> {
         val w = World("T19", 19, JournalMode.WAL)
         val relays = (1..4).map { w.relay("R$it", it) }
-        val c = w.client(ClientSpec("kim", armed = false, mode = mode))
+        val c = w.client(ClientSpec("kim", armed = false, mode = mode, steps = steps))
         val listened = (1..2).map { i -> c.namespace("n$i", relays, listen = true).also { ns -> relays.forEach { r -> c.capability(r, ns) } } }
         val writeOnly = c.namespace("w", relays, listen = false).also { ns -> relays.forEach { r -> c.capability(r, ns) } }
         var rotation = 0
@@ -112,6 +138,13 @@ class PrivacyHarnessTest {
             .map { ListRequest(it.startMillis, "${it.relay}|${it.namespace.toByteArray().hex()}", it.limit) }
         return Triple(lists, c.port.calls.toList(), w)
     }
+}
+
+class PrivacyHarnessTest {
+
+    // ------------------------------------------------------------------ T19 exact (design §7.2, §8.6, §11.2 #12, #13)
+
+    private fun t19(mode: PrivacyMode, busy: Boolean) = T19Worlds.run(mode, busy)
 
     @Test
     fun t19StandardFirstPagesAreIdenticalWithAndWithoutActivity() {

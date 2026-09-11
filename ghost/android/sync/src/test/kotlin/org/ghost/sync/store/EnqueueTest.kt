@@ -172,7 +172,7 @@ class EnqueueTest {
         val raised = RetentionPolicy.expiryRetainDay(expiry)
         assertEquals(raised, w.retainDay(ns, h))
         // Still acked: a live delivery keeps the payload and the op undecided; the relay then lists it.
-        w.tx { tx -> w.inbox.commitPage(tx, relays[0], ns, listOf(h), ByteArray(0), w.now) }
+        w.tx { tx -> w.inbox.commitPage(tx, relays[0], ns, listOf(h), ByteArray(0), ByteArray(0), w.now) }
         assertEquals("degraded", w.outcome(first))
         assertFalse(w.hasPayload(first))
         assertTrue(w.tx { w.stores.outbox.release(it, first) })

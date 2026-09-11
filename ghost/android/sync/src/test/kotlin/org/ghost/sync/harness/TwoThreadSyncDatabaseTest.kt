@@ -108,7 +108,7 @@ class TwoThreadSyncDatabaseTest {
                     for (i in 0 until rounds) {
                         val bytes = TestBytes.ciphertext(50_000 + i)
                         val hash = BlobHash(java.security.MessageDigest.getInstance("SHA-256").digest(bytes))
-                        db.transaction { tx -> stores.inboxStore.commitPage(tx, ids[i % 3], inbox, listOf(hash), ByteArray(0), clock.now) }
+                        db.transaction { tx -> stores.inboxStore.commitPage(tx, ids[i % 3], inbox, listOf(hash), ByteArray(0), ByteArray(0), clock.now) }
                         db.transaction { tx -> stores.inboxStore.leaseFetch(tx, inbox, hash, clock.now, 60) }
                         db.transaction { tx -> stores.inboxStore.recordFetched(tx, inbox, hash, bytes, clock.now + 86_400) }
                         for (b in stores.inbox.claim(Consumer.CHANNEL, 4)) db.transaction { tx -> stores.inbox.markConsumed(tx, b.namespace, b.hash) }

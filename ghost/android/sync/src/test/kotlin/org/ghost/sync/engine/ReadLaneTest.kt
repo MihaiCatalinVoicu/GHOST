@@ -159,4 +159,71 @@ class ReadLaneTest {
         val relayId: RelayId = relay
         assertEquals(2L, w.long("SELECT generation FROM relay_capability WHERE relay_id = ?", relayId))
     }
+
+    @Test
+    fun aListInFlightAcrossRemoveAndRegisterCannotStoreItsOldCursor(): Unit = EngineWorld(TrafficPolicy(listLimit = 4)).use { w ->
+        // S9 #3: while a further page of pair (r0, ns) is in flight, the consumer removes the namespace and
+        // registers it again (design §11.2 #19: listing starts again from the beginning).
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays)
+        relays.forEach { w.capability(it, ns, CapabilityKind.READ) }
+        val hashes = w.inbound(relays[0], ns, 500, 10)
+        val first = w.address(relays[0])
+        var raced = false
+        w.net.during = { call ->
+            if (!raced && call.kind == TestRelays.Kind.LIST && call.relay == first && call.cursor.isNotEmpty()) {
+                raced = true
+                assertTrue(w.tx { w.stores.namespaces.remove(it, ns) })
+                w.tx { w.stores.namespaces.register(it, ns, org.ghost.sync.api.Consumer.DM, relays.toSet(), true) }
+                relays.forEach { w.capability(it, ns, CapabilityKind.READ, seed = 2) }
+            }
+        }
+        w.net.latency = { if (it.kind == TestRelays.Kind.LIST) 2 * SECOND else 0 }
+        val (_, driver) = w.session()
+        driver.runUntil(10 * MINUTE)
+        assertTrue(raced)
+        // The page that came back after the re-registration left the (deleted) cursor alone, the lane
+        // listed from the beginning again, and no blob was lost (IN-3, IN-1).
+        assertEquals(hashes.map { "fetched" }, hashes.map { w.inboxState(ns, it) })
+        assertEquals(TestRelays.seqOf(TestRelays.cursorOf(8)), w.cursor(relays[0], ns))
+    }
+
+    @Test
+    fun aQueuedFurtherPageNeverHoldsItsPairPastItsNextEvent(): Unit = EngineWorld(TrafficPolicy(listLimit = 4, listDeadlineMillis = 45_000)).use { w ->
+        // S9 #5: STANDARD, two read pairs whose pages are always full. Pair A's further pages stall until
+        // their deadline (a list deadline as long as the longest step lets them run up to A's next event),
+        // so pair B's further pages wait in the queue behind them. B's events must still start on time.
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays)
+        relays.forEach { w.capability(it, ns, CapabilityKind.READ) }
+        val a = PairKey(relays[0], ns)
+        val b = PairKey(relays[1], ns)
+        w.inbound(relays[0], ns, 100_000, 800)
+        w.inbound(relays[1], ns, 200_000, 2_400)
+        val schedule = PairSchedule(w.random, w.policy)
+        val aTimes = (0L until 1_000L).map { schedule.time(a, 0, it) }.toHashSet()
+        val stalling = w.address(relays[0])
+        w.net.latency = { call ->
+            when {
+                call.kind != TestRelays.Kind.LIST -> 0L
+                call.relay == stalling && call.startMillis !in aTimes -> 120 * SECOND
+                else -> 1 * SECOND
+            }
+        }
+        val (session, driver) = w.session()
+        val end = 60 * MINUTE
+        driver.runUntil(end)
+        val items = driver.readItems()
+        val aFurther = items.filter { it.pair == a && it.continuation }
+        assertTrue("pair A read further pages: ${aFurther.size}", aFurther.size > 20)
+        assertTrue("each ran to its deadline", aFurther.all { it.outcome is PageOutcome.Failed })
+        assertTrue("pair B read further pages", items.count { it.pair == b && it.continuation } > 20)
+        for (p in listOf(a, b)) {
+            val scheduled = (0L until 1_000L).map { schedule.time(p, 0, it) }.takeWhile { it <= end }
+            val firsts = items.filter { it.pair == p && !it.continuation }
+            assertEquals("every event of the pair is dispatched", scheduled, firsts.map { it.scheduledMillis })
+            for (f in firsts) assertTrue(f.startMillis - f.scheduledMillis in 0..w.policy.lateToleranceMillis)
+        }
+        assertEquals(0L, session.read.skippedLate)
+    }
 }

@@ -24,7 +24,8 @@ internal class GcReport(
 
 /**
  * Garbage collection (design §2.3, §11.2 #7 and #19). It relies on a trusted clock, so the engine
- * runs it only after the transport reached READY in this process (design §3.7). Fetched rows are
+ * runs it only while the session is online and the wall clock has not stepped since the last READY
+ * (design §3.7, §11.5 #2). Fetched rows are
  * never collected (no loss); `done` tombstones of own blobs are kept while their op exists.
  */
 internal class Gc(private val outbox: OutboxStore, private val capabilities: CapabilityStore) {

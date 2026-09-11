@@ -8,9 +8,10 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * Negative fixtures (design §8.8): each of the thirteen mutant engines runs the scenario that must
- * expose it, and the harness must report the expected kind of failure. The same scenario with the
- * real engine passes (fault-free here; its full enumeration runs in [ExhaustiveScenarioTest]).
+ * Negative fixtures (design §8.8, §11.5): each of the seventeen mutant engines runs the scenario that
+ * must expose it, and the harness must report the expected kind of failure. The same scenario with
+ * the real engine passes (fault-free here; its full enumeration runs in [ExhaustiveScenarioTest]).
+ * M14 exposes a missing own tombstone (IN-2); M15–M17 are T19 mutants checked on the T19 worlds.
  */
 class MutantDetectionTest {
 
@@ -127,11 +128,39 @@ class MutantDetectionTest {
         expect(chain, "share")
     }
 
+    @Test
+    fun m14_noOwnTombstone() {
+        faultFree(ScenarioListenLater())
+        val chain = detected("M14 NoOwnTombstone") { faultFree(mutated({ ScenarioListenLater() }, Mutants.M14)()) }
+        expect(chain, "IN-2: consumer was offered its own blob")
+    }
+
+    @Test
+    fun m15_workFailureFeedsReadBreaker() {
+        T19Worlds.compare(PrivacyMode.STANDARD, null)
+        val chain = detected("M15 WorkFailureFeedsReadBreaker") { T19Worlds.compare(PrivacyMode.STANDARD, Mutants.M15) }
+        expect(chain, "T19")
+    }
+
+    @Test
+    fun m16_workPauseSuppressesLists() {
+        T19Worlds.compare(PrivacyMode.STANDARD, null)
+        val chain = detected("M16 WorkPauseSuppressesLists") { T19Worlds.compare(PrivacyMode.STANDARD, Mutants.M16) }
+        expect(chain, "T19")
+    }
+
+    @Test
+    fun m17_continuationsUseEventWorkers() {
+        T19Worlds.compare(PrivacyMode.STANDARD, null)
+        val chain = detected("M17 ContinuationsUseEventWorkers") { T19Worlds.compare(PrivacyMode.STANDARD, Mutants.M17) }
+        expect(chain, "T19")
+    }
+
     companion object {
         @JvmStatic
         @AfterClass
         fun report() {
-            HarnessReport.add("mutants: 13 run")
+            HarnessReport.add("mutants: 17 run")
         }
     }
 }

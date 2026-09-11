@@ -359,6 +359,12 @@ internal class OracleConsumer(private val client: Client) {
         for (consumer in client.consumers) {
             val blobs = client.stores.inbox.claim(consumer, 8)
             if (blobs.isNotEmpty()) {
+                // IN-2: the consumer never sees its own blobs (S9 #4; mutant M14 NoOwnTombstone).
+                for (b in blobs) {
+                    if (client.world.ops.values.any { it.client === client && it.namespace == b.namespace && it.hash == b.hash }) {
+                        violation("IN-2: consumer was offered its own blob")
+                    }
+                }
                 claimed.addAll(blobs)
                 return true
             }

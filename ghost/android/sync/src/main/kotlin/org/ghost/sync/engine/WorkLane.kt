@@ -52,7 +52,7 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
         override fun run() {
             val ctx = session.workContext
             val online = ctx.active
-            ctx.steps.maintenance.pass(ctx, trustedClock = online && ctx.engine.readyInProcess)
+            ctx.steps.maintenance.pass(ctx, trustedClock = online && ctx.engine.clockTrusted())
             if (online) {
                 snapshot = session.loadSnapshot()
                 if (ctx.mode() == PrivacyMode.STANDARD) {

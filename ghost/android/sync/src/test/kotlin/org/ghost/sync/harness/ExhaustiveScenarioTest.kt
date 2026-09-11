@@ -64,6 +64,10 @@ class ExhaustiveScenarioTest {
     @Test
     fun sH_backlog() = both("S-H", doubles = false) { ScenarioH() }
 
+    /** S-L (S9 findings #1, #4): listening turned on while the namespace has ops. */
+    @Test
+    fun sL_listenLater() = both("S-L", doubles = false) { ScenarioListenLater() }
+
     companion object {
         private val started = System.nanoTime()
 

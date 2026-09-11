@@ -196,19 +196,30 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
         )
         check(deliveries >= StoreLimits.QUORUM) { "too few deliveries" }
 
-        // (6) Listening namespaces only: the own `done` row, so our blob is never fetched back.
-        if (listening) {
-            sql.updateExactly(
-                1,
-                "INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?1, ?2, 'done', ?3) " +
-                    "ON CONFLICT(namespace_id, blob_hash) DO UPDATE " +
-                    "SET retain_until_day = max(inbox_blob.retain_until_day, excluded.retain_until_day) " +
-                    "WHERE inbox_blob.state = 'done'",
-                listOf(ns.raw, hash.raw, RetentionPolicy.ownRetainDay(now, blob.ttl.seconds.toLong())),
-            )
-        }
+        // (6) Listening namespaces only: the own `done` row, so our blob is never fetched back. A
+        // namespace that starts listening later gets it then ([writeOwnTombstones]).
+        if (listening) sql.updateExactly(1, OWN_TOMBSTONE_UPSERT, ownTombstoneArgs(ns, hash, blob.ttl.seconds.toLong(), now))
         return EnqueueResult.Enqueued
     }
+
+    /**
+     * Listening turned on (0 → 1, design §11.5 #1): an own `done` row for every op the namespace still
+     * has, with the statement and retention rule of enqueue step 6, in the caller's transaction, so no
+     * blob of ours is fetched back; later receipts raise the rows ([raiseOwnTombstone]). An existing
+     * `done` row is raised; a row in another state (these bytes were listed from a relay before) is
+     * left to the inbox. Ops already deleted while the namespace was write-only left nothing to
+     * recognize: declared in ADR-20 point 6 and design §11.5 #1. Returns the rows written or raised.
+     */
+    fun writeOwnTombstones(tx: SyncTransaction, ns: NamespaceId, now: Long): Int {
+        val ops = tx.sql.rows(
+            "SELECT blob_hash, ttl_seconds FROM outbox_op WHERE namespace_id = ?1 ORDER BY operation_id",
+            listOf(ns.raw),
+        ) { Pair(BlobHash(it.blob(0)), it.long(1)) }
+        return ops.sumOf { (hash, ttl) -> tx.sql.execUpdate(OWN_TOMBSTONE_UPSERT, ownTombstoneArgs(ns, hash, ttl, now)) }
+    }
+
+    private fun ownTombstoneArgs(ns: NamespaceId, hash: BlobHash, ttlSeconds: Long, now: Long): List<Any?> =
+        listOf(ns.raw, hash.raw, RetentionPolicy.ownRetainDay(now, ttlSeconds))
 
     // ------------------------------------------------------------------ planning and lease (§3.3)
 
@@ -721,6 +732,17 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
         )
 
     companion object {
+        /**
+         * The own `done` row of (namespace, hash), written by enqueue step 6 and by a listening 0 → 1
+         * transition (design §11.5 #1): ?1 namespace, ?2 hash, ?3 `ownRetainDay`; an existing `done`
+         * row is raised, a row in another state is left alone.
+         */
+        private const val OWN_TOMBSTONE_UPSERT =
+            "INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?1, ?2, 'done', ?3) " +
+                "ON CONFLICT(namespace_id, blob_hash) DO UPDATE " +
+                "SET retain_until_day = max(inbox_blob.retain_until_day, excluded.retain_until_day) " +
+                "WHERE inbox_blob.state = 'done'"
+
         /** M3 closure condition; parameters ?1 now, ?2 store window, ?3 skew. */
         private const val CLOSABLE =
             "state IN ('pending', 'wait_capability') AND inflight = 0 AND operation_id IN (SELECT o.operation_id FROM outbox_op o " +

@@ -33,7 +33,7 @@ class FetchStepTest {
 
         /** Records a listing of [hashes] by relay [i], as the list step would. */
         fun listed(i: Int, vararg hashes: org.ghost.sync.api.BlobHash) {
-            w.tx { w.stores.inboxStore.commitPage(it, relays[i], ns, hashes.toList(), ByteArray(0), w.clock.epochSeconds()) }
+            w.tx { w.stores.inboxStore.commitPage(it, relays[i], ns, hashes.toList(), ByteArray(0), ByteArray(0), w.clock.epochSeconds()) }
         }
     }
 

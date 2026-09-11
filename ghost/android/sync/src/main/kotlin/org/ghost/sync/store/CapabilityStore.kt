@@ -99,7 +99,9 @@ internal class CapabilityStore {
      *  - an existing token that is rejected, exhausted, or usable but expiring within 24 h (EXPIRING
      *    also covers an already expired one);
      *  - READ MISSING for a listening namespace with no token of either kind on that relay;
-     *  - WRITE MISSING where deliveries wait to be stored and no write token exists.
+     *  - WRITE MISSING where the outbox still has work at the relay (deliveries waiting to be
+     *    stored, acknowledged ones awaiting verification, possible copies still resolvable) and no
+     *    write token exists.
      */
     fun needed(tx: SyncTransaction, now: Long): List<CapabilityNeed> {
         val sql = tx.sql
@@ -125,12 +127,21 @@ internal class CapabilityStore {
                 "WHERE c.relay_id = nr.relay_id AND c.namespace_id = nr.namespace_id) ORDER BY nr.relay_id, nr.namespace_id",
         ) { CapabilityNeed(RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.READ, CapabilityNeed.Reason.MISSING) }
             .forEach { out += it }
+        // A write token is missing wherever the outbox still has work at the relay: deliveries that
+        // may store (pending, parked), acknowledged ones awaiting verification, and possible copies
+        // still resolvable by a check (the same set as OutboxStore.workPairs). Without a token that
+        // can check, an acknowledged delivery could never be verified or struck, and its op would
+        // stay undecided for ever (found by seeded world 18694).
         sql.rows(
             "SELECT DISTINCT d.relay_id, o.namespace_id FROM outbox_delivery d " +
                 "JOIN outbox_op o ON o.operation_id = d.operation_id " +
                 "JOIN relay_directory rd ON rd.relay_id = d.relay_id " +
-                "WHERE rd.state = 'active' AND d.state IN ('pending', 'wait_capability') AND NOT EXISTS (SELECT 1 FROM relay_capability c " +
+                "WHERE rd.state = 'active' AND (d.state IN ('pending', 'wait_capability', 'acked') " +
+                "OR (d.copy_hour IS NOT NULL AND d.ack_minute IS NULL AND d.state IN ('failed', 'closed') " +
+                "AND ?1 < d.copy_hour + o.ttl_seconds - ?2)) " +
+                "AND NOT EXISTS (SELECT 1 FROM relay_capability c " +
                 "WHERE c.relay_id = d.relay_id AND c.namespace_id = o.namespace_id AND c.kind = 'write') ORDER BY d.relay_id, o.namespace_id",
+            listOf(now, RetentionPolicy.SKEW_SECONDS),
         ) { CapabilityNeed(RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.WRITE, CapabilityNeed.Reason.MISSING) }
             .forEach { out += it }
         return out.toList()

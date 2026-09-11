@@ -325,7 +325,7 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
         if (kind != SessionKind.BACKGROUND || running > 0 || ensurePending || !work.idle || !read.allConsumed) return
         when (finalGc) {
             FinalGc.NOT_POSTED ->
-                if (online && engine.readyInProcess) {
+                if (online && engine.clockTrusted()) {
                     finalGc = FinalGc.POSTED
                     work.post(WorkItem.Gc(this, last = true), now)
                 } else {

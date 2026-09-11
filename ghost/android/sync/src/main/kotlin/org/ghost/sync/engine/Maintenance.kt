@@ -9,8 +9,9 @@ internal class PassReport(val parked: Int, val closed: Int, val decided: Int) {
 
 /**
  * Outbox maintenance on the work lane (design §3.5): M1 once at session start, before any other
- * work; M2 on every pass; M3 (closure) and M4 (the D1/D2/W sweep) only while the transport is READY,
- * because they trust the clock (§3.7). Every statement is local SQL; no network.
+ * work; M2 on every pass; M3 (closure) and M4 (the D1/D2/W sweep) only while the session is online
+ * and the clock is trusted, because they rely on it (§3.7, §11.5 #2: the wall clock has moved with the
+ * monotonic clock since the last READY). Every statement is local SQL; no network.
  *
  * Open so the exit-gate harness can substitute a mutant that omits M1 (design §8.8 M12).
  */
@@ -40,13 +41,15 @@ internal open class Maintenance {
 /**
  * The garbage-collection hook of the work lane (design §2.3): one bounded pass of the store's
  * [org.ghost.sync.store.Gc] in a transaction, then, if it deleted rows, the WAL checkpoint outside
- * any transaction. Runs only after the transport reached READY in this process (trusted clock).
+ * any transaction. Runs only while the session is online and the clock is trusted (design §3.7 as
+ * corrected in §11.5 #2): a GC item that comes due offline, or after a wall-clock step since the
+ * last READY, does nothing.
  */
 internal open class GcStep {
 
-    /** Returns the pass report, or null when the clock is not trusted yet. */
-    open fun run(ctx: EngineContext): GcReport? {
-        if (!ctx.engine.readyInProcess) return null
+    /** Returns the pass report, or null when the session is offline or the clock is not trusted. */
+    open fun run(ctx: WorkContext): GcReport? {
+        if (!ctx.online || !ctx.engine.clockTrusted()) return null
         val report = ctx.db.transaction { tx -> ctx.stores.gc.pass(tx, ctx.now()) }
         if (report.total > 0) ctx.stores.gc.checkpoint(ctx.db.sql)
         return report

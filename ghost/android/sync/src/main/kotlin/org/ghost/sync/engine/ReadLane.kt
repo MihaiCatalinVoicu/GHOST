@@ -57,7 +57,8 @@ internal class ReadItem(
  *  - An event's first page is the only request whose timing T19 constrains. Further STANDARD pages
  *    (only while pages are full and the cursor advances) run on a separate continuation worker and
  *    must end before the pair's next event, so inbound volume never occupies an event worker or
- *    delays any event. Their outcomes do not feed the breaker.
+ *    delays any event. A further page still queued when its pair's next event is due is dropped;
+ *    only a running one makes its pair busy (§11.5 #5). Their outcomes do not feed the breaker.
  *  - The read-lane [breaker] counts first-page outcomes only; pauses of the read lane come from list
  *    outcomes only. Nothing the work lane does changes this lane's state, and the lane never reads
  *    the database before sending (snapshot of cursor, token and generation).
@@ -172,6 +173,7 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
 
     fun take(now: Long): ReadItem? {
         if (!loaded) return null
+        dropDueContinuations(now)
         takeContinuation(now)?.let { return it }
         while (true) {
             val p = nextActionable(now) ?: return null
@@ -244,6 +246,21 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
         return item
     }
 
+    /**
+     * A further page still waiting in the queue never holds its pair past the pair's next event
+     * (design §11.5 #5): once that event is due, the page is dropped and the pair's work bundle is
+     * queued, so inbound volume on another pair, whose further page may run up to its own deadline,
+     * never delays or skips this pair's first page (T19). Only a running further page makes its pair
+     * busy.
+     */
+    private fun dropDueContinuations(now: Long) {
+        if (session.kind != SessionKind.FOREGROUND || continuations.isEmpty()) return
+        val due = continuations.filter { c -> pairs[c.key]?.let { p -> !p.done && p.time <= now } ?: false }
+        if (due.isEmpty()) return
+        continuations.removeAll(due)
+        for (c in due) bundle(c.key, now)
+    }
+
     private fun takeContinuation(now: Long): ReadItem? {
         if (continuationRunning) return null
         while (continuations.isNotEmpty()) {
@@ -253,11 +270,11 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
             val untilNext = if (session.kind == SessionKind.FOREGROUND && !p.done) p.time - now else Long.MAX_VALUE
             val deadline = session.budget.deadline(now, minOf(policy.listDeadlineMillis.toLong(), untilNext))
             if (!session.canUseNetwork(now) || deadline == null) {
-                p.busy = false
                 bundle(p.key, now)
                 continue
             }
             continuationRunning = true
+            p.busy = true
             return ReadItem(this, p.key, p.relay, p.token, p.cursor, policy.listLimit, deadline, c.page, c.pagesAllowed, now, now)
         }
         return null
@@ -271,12 +288,14 @@ internal class ReadLane(private val session: Session, private val schedule: Pair
         p.busy = false
         when (val outcome = item.outcome ?: return) {
             is PageOutcome.Committed -> {
-                if (outcome.commit.cursorStored) p.cursor = outcome.nextCursor
+                // The cursor stored after the commit: the next one, the kept one, or the stored one
+                // reloaded when it was no longer the one this request sent (design §11.5 #3).
+                outcome.commit.cursor?.let { p.cursor = it }
                 if (!item.continuation) breaker.success(p.key.relayId)
                 when (outcome.commit.disposition) {
                     PageCommit.Disposition.ACCEPTED ->
-                        if (continues(item, outcome)) {
-                            p.busy = true
+                        if (!outcome.commit.staleCursor && continues(item, outcome)) {
+                            // Queued, not running: the pair stays free, and its next event drops the page (§11.5 #5).
                             continuations.addLast(Continuation(p.key, item.page + 1, item.pagesAllowed))
                         } else {
                             bundle(p.key, now)

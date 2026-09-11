@@ -45,7 +45,7 @@ class GcRetentionTest {
         val (ns, relays) = w.inboxSet()
         w.clock.advance(3 * DAY + 5 * HOUR)
         w.enqueue(1, ns, TtlBucket.DAY_1)
-        w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(2), w.hashOf(3)), ByteArray(0), w.now) }
+        w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(2), w.hashOf(3)), ByteArray(0), ByteArray(0), w.now) }
         w.tx { w.inbox.leaseFetch(it, ns, w.hashOf(2), w.now, 0) }
         w.tx { w.inbox.recordFetched(it, ns, w.hashOf(2), TestBytes.ciphertext(2), w.now + 3 * DAY + 17) }
         val op = TestBytes.op(1)
@@ -108,7 +108,7 @@ class GcRetentionTest {
     @Test
     fun receivedTombstonesListedRowsAndFetchedRows(): Unit = SyncWorld().use { w ->
         val (ns, relays) = w.inboxSet()
-        w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(1), w.hashOf(2), w.hashOf(3)), ByteArray(0), w.now) }
+        w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(1), w.hashOf(2), w.hashOf(3)), ByteArray(0), ByteArray(0), w.now) }
         for (seed in listOf(1, 2)) {
             w.tx { w.inbox.leaseFetch(it, ns, w.hashOf(seed), w.now, 0) }
             w.tx { w.inbox.recordFetched(it, ns, w.hashOf(seed), TestBytes.ciphertext(seed), w.now + 7 * DAY) }
@@ -141,7 +141,7 @@ class GcRetentionTest {
     fun gcDeletesAtMostOneBatchOfInboxRowsPerPass(): Unit = SyncWorld().use { w ->
         val (ns, relays) = w.inboxSet()
         val hashes = (0 until 600).map { org.ghost.sync.api.BlobHash(TestBytes.of(32, 70_000 + it)) }
-        w.tx { tx -> hashes.chunked(128).forEach { w.inbox.commitPage(tx, relays[0], ns, it, ByteArray(0), w.now) } }
+        w.tx { tx -> hashes.chunked(128).forEach { w.inbox.commitPage(tx, relays[0], ns, it, ByteArray(0), ByteArray(0), w.now) } }
         w.clock.now = (RetentionPolicy.listedRetainDay(w.now) + 1) * DAY
         assertEquals(RetentionPolicy.GC_BATCH, w.gcPass().listedRows)
         assertEquals(100, w.gcPass().listedRows)
@@ -175,7 +175,7 @@ class GcRetentionTest {
     fun namespaceRemoveKeepsTombstonesAndReRegisteringReusesThem(): Unit = SyncWorld().use { w ->
         val (ns, relays) = w.inboxSet()
         w.capability(relays[0], ns, CapabilityKind.READ)
-        w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(1), w.hashOf(2)), ByteArray(8) { 1 }, w.now) }
+        w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(1), w.hashOf(2)), ByteArray(0), ByteArray(8) { 1 }, w.now) }
         w.tx { w.inbox.leaseFetch(it, ns, w.hashOf(1), w.now, 0) }
         w.tx { w.inbox.recordFetched(it, ns, w.hashOf(1), TestBytes.ciphertext(1), w.now + 7 * DAY) }
         val op = w.enqueue(3, ns)
@@ -200,7 +200,7 @@ class GcRetentionTest {
         // Re-registered before GC: the row is reused and a relisting of the consumed hash is absorbed.
         w.tx { w.stores.namespaces.register(it, ns, Consumer.DM, relays.toSet(), listen = true) }
         w.capability(relays[0], ns, CapabilityKind.READ)
-        val page = w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(1)), ByteArray(0), w.now) }
+        val page = w.tx { w.inbox.commitPage(it, relays[0], ns, listOf(w.hashOf(1)), ByteArray(0), ByteArray(0), w.now) }
         assertEquals(0, page.listedRows)
         assertEquals("done", w.inboxState(ns, w.hashOf(1)))
         // Removed again; after the tombstones' days, GC deletes them and then the namespace row.

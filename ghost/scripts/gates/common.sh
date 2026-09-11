@@ -8,6 +8,12 @@ GATES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GHOST_ROOT="${GHOST_ROOT:-$(cd "$GATES_DIR/../.." && pwd)}"
 FAILURES=0
 
+# T15 permission allowlist, shared by manifest-lint.sh (source manifests) and merged-manifest-lint.sh
+# (the merged release manifest). Each entry needs an ADR reference:
+#   RECEIVE_BOOT_COMPLETED, ACCESS_NETWORK_STATE: ADR-20 (persisted periodic sync job with a network
+#   constraint, Phase 7 design §5.5).
+T15_ALLOWED_PERMISSIONS='android.permission.INTERNET|android.permission.FOREGROUND_SERVICE|android.permission.FOREGROUND_SERVICE_DATA_SYNC|android.permission.POST_NOTIFICATIONS|android.permission.CAMERA|android.permission.USE_BIOMETRIC|android.permission.VIBRATE|android.permission.RECEIVE_BOOT_COMPLETED|android.permission.ACCESS_NETWORK_STATE'
+
 fail() { echo "GATE-FAIL: $*" >&2; FAILURES=$((FAILURES + 1)); }
 finish() {
   local name="$1"

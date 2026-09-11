@@ -52,7 +52,7 @@
 | AD-5 | **Adversar global pasiv** | Vede toate legăturile; corelare statistică intrare/ieșire Tor | Conținut; cu polling constant, tiparul nu reflectă activitatea |
 | AD-6 | **Membru de grup rău-intenționat** | Citește tot ce se postează cât e membru; copiază; spam; flag abuziv; încearcă „reveal” | Nu decriptează după `Remove`; nu deanonimizează fără reveal; nu vede IP |
 | AD-7 | **Corespondent DM rău-intenționat** | Cunoaște identitatea de bază; păstrează istoricul; screenshot | Nu vede alte canale; nu vede IP |
-| AD-8 | **Atacator cu dispozitivul deblocat / malware cu root** | Tot ce vede utilizatorul; DB deschis | Nu exportă chei hardware; nu vede istoricul expirat; pierde accesul la revocare |
+| AD-8 | **Atacator cu dispozitivul deblocat / malware cu root** | Tot ce vede utilizatorul; DB deschis | Nu exportă chei hardware; nu vede istoricul expirat (excepție: hash-urile de deduplicare ale blob-urilor expirate recent, fără conținut, LIMITE L1.1; tot acolo, statisticile OS de trafic și baterie per aplicație, din care se vede când s-a trimis sau primit mult); pierde accesul la revocare |
 | AD-9 | **Atacator de lanț de aprovizionare** | Compromite o dependență, un registru, CI, un mainteiner | Nu trece de allowlist/checksums/cargo-deny; nu produce APK cu hash reproductibil identic fără a fi în sursă |
 | AD-10 | **Atacator de rețea activ** (MITM între client și relay) | Modifică pachete, joacă rolul relay-ului | Onion service = autentificat E2E; capabilități semnate; blob-uri hash-verificate |
 | AD-11 | **Sybil / brigading** | Cumpără N abonamente, obține invitații, coordonează flag-uri | Costă N×$10/lună + invitații; ponderare vechime + diversitate sponsori (ADR-13) |
@@ -92,14 +92,16 @@ Ce poate observa fiecare actor, per eveniment. „—” = nimic. Fiecare rând 
 | Eveniment | Relay | Issuer | Rețea locală | Membri canal | Test |
 |---|---|---|---|---|---|
 | Postare în canal | namespace, hash, bucket, moment ±granularitate | — | trafic Tor, volum bucket | pseudonim, conținut, minut | T1, T9, T13 |
-| Citire canal | namespace, cursor, moment | — | trafic Tor | — | T1 |
+| Citire canal | namespace, cursor, moment; toate cererile unui client pentru un namespace sunt legabile între ele prin `capability_scope` și prin valorile de cursor pe care le emite relay-ul (un relay rău-intenționat poate folosi cursoare unice drept cookie între circuite și sesiuni); ritm de listare fix, același pentru toți clienții | — | trafic Tor | — | T1, T19, T21 |
 | DM trimis | namespace inbox destinatar, hash, bucket | — | trafic Tor | — | T1 |
 | Publicare prekeys | namespace identitate, hash | — | trafic Tor | — | T1 |
 | Cumpărare abonament | — | factură, sumă, moment, commitment referral | trafic Tor | — | T2 |
 | Redeem token la relay | nullifier, perioadă, moment | — | trafic Tor | — | T1, T2 |
 | Invitație acceptată | — | nullifier invite | — | sponsor (la Add) | T16 |
 | Flag / Remove | namespace, hash | — | — | flagger, țintă, decizie | T1 |
-| Sync periodic (idle) | cereri de dimensiune fixă la interval fix | — | tipar constant | — | T17 (ADR-15) |
+| Sync periodic (idle) | per pereche (relay, namespace): în prim-plan, listări cu `limit` 128 la 30 s × U[0,5; 1,5], cu fază independentă per pereche; în fundal, un eveniment per pereche per job, la momente alese de OS; get-uri câte produc scrierile altora; verificări ale propriilor copii (`check`) | — | începutul și sfârșitul sesiunilor Tor (aplicație deschisă, joburi OS, câte un bootstrap Tor per job: LIMITE L4); rată agregată proporțională cu numărul de perechi; momentele listărilor nu depind de activitate, volumul da (până la cover traffic, P2) | — | T19 (Faza 7, JVM); T17 (Faza 12, doar high-privacy mode cu cover traffic P2) (ADR-15, ADR-20) |
+
+Notă (Faza 7, ADR-20, design §6.3): trimiterile (hash, bucket, bucket de TTL, minut) urmează scrierile proprii, imediat în modul standard și cu întârziere U[0, 10 min] în high-privacy mode. Namespace-urile unui client nu împart un ceas de listare în prim-plan (faze independente, izolare de circuit per namespace, T21), dar toate perechile pornesc în primele 30 s după deschiderea aplicației și în primele 90 s ale fiecărui job de fundal. Reziduurile sunt în `LIMITE_REZIDUALE_SI_MITIGARI.md` L2.1.
 
 ## 7. Scenarii de atac și răspuns
 
@@ -158,7 +160,7 @@ Obține (exchange-ul): „clientul X a plătit o subadresă asociată GHOST” d
 
 ## 9. Legătura cu harness-ul de invarianți
 
-Fiecare invariant T1–T18 are o definiție executabilă în `ghost/test-harness/privacy/`. Faza 2 livrează: schema observabilelor permise pentru relay (`allowed-observables.json`), validatorul `capture-check` (Rust) care respinge orice captură ce conține câmpuri sau valori neadmise, și fixture-uri pozitive/negative. Din Faza 5 relay-ul emite capturi în acest format în modul test, iar validatorul rulează pe fiecare PR.
+Fiecare invariant T1–T21 are o definiție executabilă în `ghost/test-harness/privacy/`. Faza 2 livrează: schema observabilelor permise pentru relay (`allowed-observables.json`), validatorul `capture-check` (Rust) care respinge orice captură ce conține câmpuri sau valori neadmise, și fixture-uri pozitive/negative. Din Faza 5 relay-ul emite capturi în acest format în modul test, iar validatorul rulează pe fiecare PR.
 
 ## 10. Gate de ieșire
 

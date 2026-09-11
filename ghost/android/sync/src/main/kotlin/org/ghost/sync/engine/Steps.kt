@@ -63,6 +63,9 @@ internal class WorkContext(engine: SyncEngine, private val session: Session) : E
     /** The session may still make calls (online, not stopping, budget left). */
     val active: Boolean get() = session.canUseNetwork(monotonic())
 
+    /** The session's transport is READY (budget and stopping aside): a precondition of GC (§11.5 #2). */
+    val online: Boolean get() = session.online
+
     /** A work-lane call for [pair] may be made now: session active, breaker closed, no pause, relay budget left. */
     fun allows(pair: PairKey): Boolean {
         val now = monotonic()

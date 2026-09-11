@@ -50,7 +50,7 @@ internal open class ListStep {
         }
         val commit = ctx.db.transaction { tx ->
             ctx.stores.inboxStore.commitPage(
-                tx, request.pair.relayId, request.pair.namespace, page.hashes, next, ctx.now(), ctx.policy.backlogCap,
+                tx, request.pair.relayId, request.pair.namespace, page.hashes, request.cursor, next, ctx.now(), ctx.policy.backlogCap,
             )
         }
         return PageOutcome.Committed(commit, page.hashes.size, next)

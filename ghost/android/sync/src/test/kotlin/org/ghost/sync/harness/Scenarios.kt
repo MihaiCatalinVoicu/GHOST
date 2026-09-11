@@ -383,3 +383,88 @@ internal class ScenarioLongTtl : Scenario("S-M8/long-ttl") {
         w.endMillis = 40 * DAY + HOUR
     }
 }
+
+/**
+ * Listening turned on later (S9 findings #1 and #4): the subject posts to a channel and to a DM
+ * namespace it does not listen to, then subscribes to the channel (`setListening`) and registers the
+ * DM namespace again with `listen = true`, while its ops still exist (the consumer is paused until
+ * then, so nothing is released or collected before). Others write into both namespaces. The consumer
+ * is never offered its own blobs (IN-2) and consumes every other blob once (IN-1). Mutant M14
+ * NoOwnTombstone is detected here.
+ */
+internal class ScenarioListenLater : Scenario("S-L/listen-later") {
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val c = w.relay("C", 3)
+        val lena = subject(w, "lena", consumer = ConsumerPolicy(paused = { it.clock.millis < 12 * MINUTE }))
+        val chan = lena.namespace("chan", listOf(a, b, c), listen = false, consumer = org.ghost.sync.api.Consumer.CHANNEL)
+        listOf(a, b, c).forEach { lena.capability(it, chan) }
+        val dm = lena.namespace("dm", listOf(a, b), listen = false)
+        listOf(a, b).forEach { lena.capability(it, dm) }
+        w.otherWrite(a, chan, "c1")
+        w.otherWrite(b, chan, "c1")
+        w.otherWrite(c, chan, "c2")
+        w.otherWrite(a, dm, "d1")
+        w.otherWrite(b, dm, "d1")
+        w.at(0, "enqueue op1") { lena.enqueue("op1", chan) }
+        w.at(0, "enqueue op2") { lena.enqueue("op2", dm) }
+        w.jobs(lena, MINUTE, MINUTE)
+        w.at(10 * MINUTE, "subscribe to chan") {
+            lena.tx { lena.stores.namespaces.setListening(it, chan, true) }
+            lena.listening += chan
+        }
+        w.at(10 * MINUTE, "register dm listening") { lena.namespace("dm", listOf(a, b), listen = true) }
+        w.at(12 * MINUTE, "enqueue op3") { lena.enqueue("op3", chan) }
+        w.jobs(lena, 16 * MINUTE, 46 * MINUTE)
+        w.endMillis = 60 * MINUTE
+    }
+}
+
+/**
+ * A forward clock step after READY, while offline (S9 finding #2): the foreground reaches READY,
+ * fetches and consumes four blobs; at 20 minutes a transport fault (`closed`) takes it offline and
+ * the network stays down until 3 h; at 25 minutes the device date jumps 120 days forward and is
+ * corrected at 2 h, so the hourly GC comes due on the stepped clock while offline. GC must not trust
+ * it: the tombstones it would delete are still live on both relays (retention check, IN-2).
+ */
+internal class ScenarioClockStepOffline : Scenario("S-K/clock-step-offline") {
+    private var faulted = false
+
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val kai = subject(w, "kai")
+        val ns = kai.namespace("inbox", listOf(a, b), listen = true)
+        kai.capability(a, ns, CapabilityKind.READ)
+        kai.capability(b, ns, CapabilityKind.READ)
+        for (i in 1..4) {
+            w.otherWrite(a, ns, "h$i")
+            w.otherWrite(b, ns, "h$i")
+        }
+        w.foreground(kai, 0, 4 * HOUR)
+        var fault = false
+        w.at(20 * MINUTE, "network down") {
+            fault = true
+            kai.offlineWindows += 20 * MINUTE until 3 * HOUR
+        }
+        w.relayHook = { client, kind, _ ->
+            if (fault && client === kai && kind == EventKind.RELAY_BEFORE_SEND) {
+                fault = false
+                faulted = true
+                w.scriptState++
+                "closed"
+            } else {
+                null
+            }
+        }
+        w.at(25 * MINUTE, "clock jumps 120 days forward") { w.clock.deviceOffsetSeconds += 120 * 86_400L }
+        w.at(2 * HOUR, "clock corrected") { w.clock.deviceOffsetSeconds -= 120 * 86_400L }
+        w.endMillis = 4 * HOUR + 15 * MINUTE
+    }
+
+    override fun finalChecks(w: World) {
+        if (!faulted) violation("S-K: the transport fault never happened")
+        if (w.otherBlobs.size != 4) violation("S-K: unexpected blobs")
+    }
+}

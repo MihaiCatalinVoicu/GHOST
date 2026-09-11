@@ -18,8 +18,23 @@ internal class PageCommit(
     val listedRows: Int,
     /** Own operations verified by this listing (design §3.4). */
     val verified: List<OperationId>,
+    /** This commit stored the page's next cursor. */
     val cursorStored: Boolean,
+    storedCursor: ByteArray?,
+    /**
+     * The stored cursor was no longer the one the request sent (a remove and re-register raced the
+     * request, design §11.5 #3): the hashes were committed, the next cursor was not stored.
+     */
+    val staleCursor: Boolean,
 ) {
+    private val after: ByteArray? = storedCursor?.copyOf()
+
+    /**
+     * The pair's stored cursor after this commit (empty = from the beginning), which the read lane
+     * adopts; null when the page was dropped because the pair is no longer listened.
+     */
+    val cursor: ByteArray? get() = after?.copyOf()
+
     enum class Disposition {
         /** Hashes and cursor committed. */
         ACCEPTED,
@@ -63,20 +78,26 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
     /**
      * Commits one page from relay [relay] for namespace [ns]: rows, sources, relisting, own-copy
      * verification and, only when [nextCursor] is non-empty, the cursor — all in the caller's one
-     * transaction (IN-3). An empty cursor keeps the stored one (sticky tail). [backlogCap] is the
-     * engine policy's BACKLOG_CAP ([StoreLimits.BACKLOG_CAP] in production).
+     * transaction (IN-3). An empty cursor keeps the stored one (sticky tail). The cursor is a
+     * compare-and-set (design §11.5 #3): it is stored only while the stored cursor is still
+     * [sentCursor], the one the request was sent with (no row = the empty cursor). Otherwise a remove
+     * and re-register raced the request: the hashes are committed, the stored cursor stays, and
+     * [PageCommit.cursor] tells the read lane where to list from. [backlogCap] is the engine policy's
+     * BACKLOG_CAP ([StoreLimits.BACKLOG_CAP] in production).
      */
     fun commitPage(
         tx: SyncTransaction,
         relay: RelayId,
         ns: NamespaceId,
         hashes: List<BlobHash>,
+        sentCursor: ByteArray,
         nextCursor: ByteArray,
         now: Long,
         backlogCap: Int = StoreLimits.BACKLOG_CAP,
     ): PageCommit {
         require(backlogCap > 0) { "backlog cap must be positive" }
         require(nextCursor.isEmpty() || nextCursor.size == StoreLimits.CURSOR_SIZE) { "cursor has the wrong length" }
+        require(sentCursor.isEmpty() || sentCursor.size == StoreLimits.CURSOR_SIZE) { "cursor has the wrong length" }
         val sql = tx.sql
         val listened = sql.single(
             "SELECT 1 FROM sync_namespace n JOIN namespace_relay nr ON nr.namespace_id = n.namespace_id " +
@@ -84,9 +105,11 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
                 "WHERE n.namespace_id = ?1 AND n.listening = 1 AND nr.relay_id = ?2 AND rd.state = 'active'",
             listOf(ns.raw, relay.value),
         ) { 1 } != null
-        if (!listened) return PageCommit(PageCommit.Disposition.DROPPED_NOT_LISTENED, 0, emptyList(), false)
+        if (!listened) return PageCommit(PageCommit.Disposition.DROPPED_NOT_LISTENED, 0, emptyList(), false, null, false)
+        val stored = cursors.cursor(tx, relay, ns) ?: ByteArray(0)
+        val stale = !stored.contentEquals(sentCursor)
         if (backlog(tx, relay, ns) >= backlogCap) {
-            return PageCommit(PageCommit.Disposition.DROPPED_BACKLOG, 0, emptyList(), false)
+            return PageCommit(PageCommit.Disposition.DROPPED_BACKLOG, 0, emptyList(), false, stored, stale)
         }
         val retain = RetentionPolicy.listedRetainDay(now)
         var listedRows = 0
@@ -113,9 +136,9 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
             )
             outbox.verifyListed(tx, relay, ns, hash, now)?.let { verified += it }
         }
-        val cursorStored = nextCursor.isNotEmpty()
+        val cursorStored = !stale && nextCursor.isNotEmpty()
         if (cursorStored) cursors.put(tx, relay, ns, nextCursor)
-        return PageCommit(PageCommit.Disposition.ACCEPTED, listedRows, verified, cursorStored)
+        return PageCommit(PageCommit.Disposition.ACCEPTED, listedRows, verified, cursorStored, if (cursorStored) nextCursor else stored, stale)
     }
 
     /** Listed or unavailable rows attributable to [relay] in [ns] (any source state), for BACKLOG_CAP. */

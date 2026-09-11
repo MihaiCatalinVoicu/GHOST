@@ -31,7 +31,7 @@ class InboxStoreTest {
     private fun cursor(b: Int) = ByteArray(8) { b.toByte() }
 
     private fun SyncWorld.page(relay: RelayId, ns: NamespaceId, hashes: List<BlobHash>, next: ByteArray = ByteArray(0)) =
-        tx { inbox.commitPage(it, relay, ns, hashes, next, now) }
+        tx { inbox.commitPage(it, relay, ns, hashes, cursors.cursor(it, relay, ns) ?: ByteArray(0), next, now) }
 
     private fun SyncWorld.fetch(relay: RelayId, ns: NamespaceId, seed: Int, expiry: Long = now + 7 * DAY) {
         val h = hashOf(seed)
@@ -98,7 +98,7 @@ class InboxStoreTest {
         val (ns, relays) = w.inboxSet()
         val batch = (0 until StoreLimits.BACKLOG_CAP - 1).map { BlobHash(TestBytes.of(32, 100_000 + it)) }
         w.tx { tx ->
-            batch.chunked(128).forEach { w.inbox.commitPage(tx, relays[0], ns, it, ByteArray(0), w.now) }
+            batch.chunked(128).forEach { w.inbox.commitPage(tx, relays[0], ns, it, ByteArray(0), ByteArray(0), w.now) }
         }
         assertEquals(StoreLimits.BACKLOG_CAP - 1, w.tx { w.inbox.backlog(it, relays[0], ns) })
         assertEquals(PageCommit.Disposition.ACCEPTED, w.page(relays[0], ns, listOf(w.hashOf(1)), cursor(1)).disposition)

@@ -33,7 +33,7 @@ internal class SyncEngine(
     val steps: Steps = Steps.DEFAULT,
     private val mode: () -> PrivacyMode,
 ) {
-    /** The transport reached READY in this process: Arti accepted the consensus clock, so M3, D2 sweeps and GC may run (§3.7). */
+    /** The transport reached READY in this process (Arti accepted the consensus clock): a precondition of [clockTrusted] (§3.7, §11.5 #2). */
     @Volatile
     var readyInProcess: Boolean = false
         private set
@@ -102,10 +102,38 @@ internal class SyncEngine(
 
     internal fun hasFlag(flag: StatusFlag): Boolean = flag in flags
 
+    /** Wall and monotonic time of the last READY, the anchor of [clockTrusted] (in memory only). */
+    private var readyWallSeconds: Long = 0
+
+    private var readyMonotonicMillis: Long = 0
+
+    /** The wall clock stepped away from the monotonic clock since the last READY. */
+    private var clockStepped: Boolean = false
+
+    @Synchronized
     internal fun markReady() {
+        readyWallSeconds = clock.epochSeconds()
+        readyMonotonicMillis = clock.monotonicMillis()
+        clockStepped = false
         readyInProcess = true
         transportFailures = 0
         transportStatus = TransportStatus.READY
+    }
+
+    /**
+     * Design §3.7 as corrected in §11.5 #2: the wall clock may be trusted (M3, the D1/D2/W sweep,
+     * GC) only after a READY in this process, and only while it has moved with the monotonic clock
+     * since the last READY, within [CLOCK_STEP_TOLERANCE_MILLIS]. A step beyond that is not trusted
+     * until the next READY re-anchors it (Arti accepted the consensus clock again). Callers also
+     * require the session to be online.
+     */
+    @Synchronized
+    internal fun clockTrusted(): Boolean {
+        if (!readyInProcess || clockStepped) return false
+        val wallMillis = (clock.epochSeconds() - readyWallSeconds) * 1_000
+        val monotonicMillis = clock.monotonicMillis() - readyMonotonicMillis
+        if (Math.abs(wallMillis - monotonicMillis) > CLOCK_STEP_TOLERANCE_MILLIS) clockStepped = true
+        return !clockStepped
     }
 
     internal fun setTransportStatus(status: TransportStatus) {
@@ -146,5 +174,8 @@ internal class SyncEngine(
     companion object {
         /** Length of the pauses for `rejected` and local bugs (design §3.6). */
         const val PAUSE_MILLIS: Long = 24 * 3_600_000L
+
+        /** Largest difference between wall and monotonic time since the last READY that [clockTrusted] accepts (§11.5 #2). */
+        const val CLOCK_STEP_TOLERANCE_MILLIS: Long = 3_600_000L
     }
 }

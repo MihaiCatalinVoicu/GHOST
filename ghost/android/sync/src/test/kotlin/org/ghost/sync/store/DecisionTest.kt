@@ -28,7 +28,7 @@ class DecisionTest {
     }
 
     private fun SyncWorld.list(relay: RelayId, ns: NamespaceId, vararg seeds: Int) =
-        tx { inbox.commitPage(it, relay, ns, seeds.map { s -> hashOf(s) }, ByteArray(0), now) }
+        tx { inbox.commitPage(it, relay, ns, seeds.map { s -> hashOf(s) }, ByteArray(0), ByteArray(0), now) }
 
     @Test
     fun listingVerifiesIdleOwnDeliveriesOfUndecidedOpsOnly(): Unit = SyncWorld().use { w ->

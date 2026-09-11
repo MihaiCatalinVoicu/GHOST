@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Only permissions the guarantee matrix can justify. Any addition must reference an ADR. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ADR-20: the periodic sync job is persisted across reboots (JobInfo.setPersisted). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- ADR-20: the sync job's network constraint (required from targetSdk 34). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
+        android:name=".GhostApp"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -22,6 +28,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ADR-20: the background sync job. Not exported: only the system binds it, holding
+             BIND_JOB_SERVICE (design 5.5). -->
+        <service
+            android:name="org.ghost.sync.android.SyncJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Design 11.1 Q7: no exported component besides the launcher. The profile installer's
+             exported receiver (protected by DUMP) is removed from the merged manifest. The library
+             is a transitive runtime dependency only, so lint cannot resolve the class it removes. -->
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            tools:ignore="MissingClass"
+            tools:node="remove" />
     </application>
 
 </manifest>

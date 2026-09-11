@@ -4,7 +4,9 @@ interface Namespaces {
     /**
      * Registers the namespace, or re-registers a known one (the row is reused, so tombstones keep
      * deduplicating). A known namespace keeps its consumer: a different one throws. Then applies
-     * [relays] as in [setRelays]. `listen = false` means write-only (no inbox rows are kept).
+     * [relays] as in [setRelays]. `listen = false` means write-only (no inbox rows are kept);
+     * registering a known write-only namespace with `listen = true` turns listening on as
+     * [setListening] does.
      */
     fun register(
         tx: SyncTransaction,

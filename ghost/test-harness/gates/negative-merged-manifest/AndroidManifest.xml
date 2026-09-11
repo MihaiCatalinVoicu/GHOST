@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Negative fixture for merged-manifest-lint.sh (T15m): 15 violations, marked V1..V15. -->
+<!-- V14, V15: RECEIVE_BOOT_COMPLETED and ACCESS_NETWORK_STATE, which the sync job needs, are missing. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.ghost.app"
+    android:versionCode="1"
+    android:versionName="0.1.0-devpreview" >
+
+    <uses-sdk
+        android:minSdkVersion="29"
+        android:targetSdkVersion="37" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- V1: not on the T15 allowlist -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- accepted: the app's own dynamic-receiver permission, signature-protected -->
+    <permission
+        android:name="org.ghost.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        android:protectionLevel="signature" />
+
+    <uses-permission android:name="org.ghost.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+    <!-- V2: a permission the app may not declare -->
+    <permission
+        android:name="org.ghost.app.SHARED"
+        android:protectionLevel="normal" />
+
+    <!-- V3 allowBackup, V4 cleartext traffic, V5 debuggable -->
+    <application
+        android:allowBackup="true"
+        android:debuggable="true"
+        android:label="@string/app_name"
+        android:usesCleartextTraffic="true" >
+        <activity
+            android:name="org.ghost.app.MainActivity"
+            android:exported="true" >
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- V6: a second exported LAUNCHER activity (reported once, at the end) -->
+        <activity
+            android:name="org.ghost.app.SecondLauncher"
+            android:exported="true" >
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- V7: an intent filter without an explicit android:exported -->
+        <activity android:name="org.ghost.app.DeepLink" >
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+            </intent-filter>
+        </activity>
+
+        <!-- V8, V9, V10: the sync job exported, without BIND_JOB_SERVICE, and not on the list -->
+        <service
+            android:name="org.ghost.sync.android.SyncJobService"
+            android:exported="true" />
+        <!-- V11: an exported library service -->
+        <service
+            android:name="androidx.work.impl.background.systemjob.SystemJobService"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+        <!-- V12: the profile installer's receiver (design Q7: removed, not allowlisted) -->
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            android:directBootAware="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP" >
+            <intent-filter>
+                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+            </intent-filter>
+        </receiver>
+        <!-- V13: an exported provider -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="org.ghost.app.androidx-startup"
+            android:exported="true" />
+        <!-- accepted: not exported -->
+        <receiver
+            android:name="org.ghost.app.Quiet"
+            android:exported="false" />
+    </application>
+
+</manifest>
