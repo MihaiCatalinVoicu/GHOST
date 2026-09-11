@@ -19,7 +19,7 @@ Argumentele și rezultatul (bytes) fiecărui apel:
 - **store** (`nativeStore`): relay, namespace (32), capabilitate, ciphertext (un bucket), TTL, `deadlineMs` → `blob_hash(32) ‖ expiry(8, BE)`.
 - **get** (`nativeGet`): relay, namespace, capabilitate, `blob_hash` (32), `deadlineMs` → `expiry(8, BE) ‖ ciphertext`: expirarea declarată de relay (cel mult acum + 90 zile + 3 zile toleranță de ceas; una mai mare e `malformed_response`), apoi ciphertext-ul verificat (hash, bucket).
 - **list** (`nativeList`): relay, namespace, capabilitate, cursor (0 sau 8 bytes), limită (1..256), `deadlineMs` → `cursor_len(1) ‖ cursor ‖ hash-uri (32 fiecare)`.
-- **check** (`nativeCheck`): relay, namespace, capabilitate, hash-uri concatenate (32 fiecare, cel mult 256), `deadlineMs` → hash-urile deținute de relay, concatenate: un subset al cererii (verificat nativ și în Kotlin).
+- **check** (`nativeCheck`): relay, namespace, capabilitate, hash-uri distincte concatenate (32 fiecare, cel mult 256; un hash repetat dă `invalid_argument`), `deadlineMs` → hash-urile deținute de relay, concatenate: un subset al cererii, fiecare cel mult o dată (verificat nativ și în Kotlin).
 
 **Termenul per apel.** `deadlineMs` limitează tot apelul (rendezvous, cerere, răspuns). Termenul efectiv este `min(deadlineMs, 60 s)` (`RELAY_RPC_DEADLINE`); 0 sau o valoare negativă dă `invalid_argument`. Kotlin acceptă 1..60 000 ms (`require`); metodele fără termen folosesc 60 000. Depășirea termenului dă `timeout`. Un singur transport servește apeluri concurente din mai multe fire JVM (runtime multi-thread; test cu două apeluri simultane pe același handle).
 
@@ -41,7 +41,7 @@ Prin JNI trec doar `String`, `ByteArray`, `Int`, `Long`. Starea nativă stă în
 
 | Categorie | Când |
 |---|---|
-| `invalid_argument` | argument invalid verificat în Rust (TTL 0 sau peste 90 zile, cursor, limită de lot, termen 0 sau negativ); capabilitate care nu se poate parsa, care numește alt namespace decât apelul sau al cărei tip nu se potrivește operației (T21), refuzată înainte de orice I/O; verificările Kotlin (`require`) aruncă `IllegalArgumentException` înainte de apelul nativ |
+| `invalid_argument` | argument invalid verificat în Rust (TTL 0 sau peste 90 zile, cursor, limită de lot, hash repetat în `check`, termen 0 sau negativ); capabilitate care nu se poate parsa, care numește alt namespace decât apelul sau al cărei tip nu se potrivește operației (T21), refuzată înainte de orice I/O; verificările Kotlin (`require`) aruncă `IllegalArgumentException` înainte de apelul nativ |
 | `not_onion` | destinația nu este o adresă onion v3 validă (inclusiv checksum) |
 | `closed` | transportul a fost închis înainte sau în timpul apelului |
 | `runtime` | runtime-ul nativ nu a putut porni |
@@ -59,6 +59,6 @@ Prin JNI trec doar `String`, `ByteArray`, `Int`, `Long`. Starea nativă stă în
 | `relay_unavailable` | eroare tranzitorie a relay-ului sau a conexiunii |
 | `not_bucket_sized` | blob-ul trimis nu are exact o dimensiune de bucket |
 | `not_stored` | relay-ul a confirmat un blob cu o expirare mai scurtă decât TTL-ul cerut (toleranță de ceas 3 zile), deci blob-ul ar dispărea mai devreme |
-| `malformed_response` | răspunsul relay-ului încalcă protocolul (hash, dimensiune, cursor, lot, `check` cu hash-uri necerute, expirare peste acum + 90 zile + toleranța de ceas) |
+| `malformed_response` | răspunsul relay-ului încalcă protocolul (hash, dimensiune, cursor, lot, `check` cu hash-uri necerute sau repetate, expirare peste acum + 90 zile + toleranța de ceas) |
 | `internal` | eroare internă (inclusiv panică prinsă la graniță) |
 | `native_missing` | doar în Kotlin: biblioteca nativă lipsește sau nu se poate încărca (`UnsatisfiedLinkError`) |

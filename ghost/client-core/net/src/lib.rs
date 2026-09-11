@@ -13,8 +13,9 @@
 //! still open sockets. The Rust package allowlist and the `deny.toml` denylist only keep
 //! unreviewed packages out. The complete check is the dynamic T6 test on the emulator (Phase 13).
 //!
-//! The Arti client stays private to the crate:
-//! ```compile_fail
+//! The Arti client stays private to the crate (the `compile_fail` examples name the expected
+//! privacy error, E0624; rustdoc checks that code only on a nightly toolchain):
+//! ```compile_fail,E0624
 //! fn leak(t: &ghost_client_net::TorTransport) {
 //!     let _ = t.client(); // error: private method
 //! }
@@ -34,7 +35,7 @@
 //! Relay calls go through [`NamespaceClient`], bound by type to one namespace: its circuits use
 //! that namespace's isolation token and every capability must name the same namespace (T21).
 //! The unbound client cannot be built outside the crate:
-//! ```compile_fail
+//! ```compile_fail,E0624
 //! fn unbound(t: &ghost_client_net::TorTransport, a: &ghost_client_net::OnionAddress) {
 //!     let scope = ghost_client_net::IsolationScope::Issuer;
 //!     let _ = ghost_client_net::RelayClient::over_tor(t, a, &scope); // error: private

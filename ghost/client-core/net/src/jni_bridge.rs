@@ -436,9 +436,9 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeList(
     })
 }
 
-/// Asks which of `hashes` (concatenated 32-byte hashes, at most 256) the relay holds in
-/// `namespace` (read or write capability for it). Returns the held ones, concatenated; natively
-/// checked to be a subset of the request.
+/// Asks which of `hashes` (concatenated distinct 32-byte hashes, at most 256; a repeated hash is
+/// `invalid_argument`) the relay holds in `namespace` (read or write capability for it). Returns
+/// the held ones, concatenated; natively checked to be a subset of the request, none twice.
 #[no_mangle]
 pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCheck(
     mut env: JNIEnv,

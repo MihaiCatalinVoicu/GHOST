@@ -42,9 +42,9 @@ interface RelayTransport : AutoCloseable {
         list(relay, namespace, capability, cursor, limit, MAX_DEADLINE_MILLIS)
 
     /**
-     * Returns which of `hashes` (1..[MAX_BATCH] hashes of 32 bytes) the relay holds in `namespace`.
-     * The answer is decoded strictly: whole 32-byte hashes, no more than requested, each one of
-     * the requested hashes.
+     * Returns which of `hashes` (1..[MAX_BATCH] distinct hashes of 32 bytes) the relay holds in
+     * `namespace`. The answer is decoded strictly: whole 32-byte hashes, each one of the requested
+     * hashes, none twice (so no more than requested); anything else is `malformed_response`.
      */
     fun check(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, hashes: List<ByteArray>, deadlineMillis: Int): List<ByteArray>
 

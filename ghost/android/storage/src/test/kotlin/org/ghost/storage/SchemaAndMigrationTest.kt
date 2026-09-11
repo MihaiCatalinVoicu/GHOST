@@ -305,6 +305,28 @@ class SchemaAndMigrationTest {
     }
 
     @Test
+    fun droppingAnyConnectionPragmaIsCaught() {
+        // The list sets exactly the pragmas verifyIntegrity asserts.
+        val named = Schema.connectionPragmas.map { Regex("""PRAGMA (\w+) = """).find(it)!!.groupValues[1] }
+        assertEquals(Schema.expectedPragmaValues.keys, named.toSet())
+        assertEquals(named.size, named.toSet().size)
+        // Without the list, the JVM connection starts at values that differ from every expected one
+        // (synchronous NORMAL as on device), so a missing pragma is visible here, not only at runtime.
+        JdbcSqlExecutor(pragmas = emptyList()).use { db ->
+            for ((pragma, expected) in Schema.expectedPragmaValues) {
+                assertTrue(pragma, db.queryLong("PRAGMA $pragma") != expected)
+            }
+        }
+        for ((i, dropped) in Schema.connectionPragmas.withIndex()) {
+            JdbcSqlExecutor(pragmas = Schema.connectionPragmas - dropped).use { db ->
+                MigrationRunner(db).migrate()
+                val e = assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+                assertTrue(e.message!!, e.message!!.contains("PRAGMA ${named[i]} "))
+            }
+        }
+    }
+
+    @Test
     fun noPlaintextContentColumnsExist() {
         // Every content-bearing column is an envelope/ciphertext by name; guards schema drift.
         fresh().use { db ->

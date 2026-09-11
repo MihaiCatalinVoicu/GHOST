@@ -93,6 +93,7 @@ class RelayWireTest {
             ByteArray(31), // not whole hashes
             a + ByteArray(1),
             a + b + a, // more than requested
+            a + a, // a requested hash twice, within the requested count
             c, // never requested
             a + c,
         )
@@ -107,6 +108,8 @@ class RelayWireTest {
         assertThrows(IllegalArgumentException::class.java) { TorRelayTransport.packHashes(emptyList()) }
         assertThrows(IllegalArgumentException::class.java) { TorRelayTransport.packHashes(List(257) { hash(it) }) }
         assertThrows(IllegalArgumentException::class.java) { TorRelayTransport.packHashes(listOf(ByteArray(31))) }
+        // A repeated hash (equal content, distinct arrays) is refused before the native call.
+        assertThrows(IllegalArgumentException::class.java) { TorRelayTransport.packHashes(listOf(hash(1), hash(2), hash(1))) }
     }
 
     @Test

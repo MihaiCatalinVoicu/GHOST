@@ -1,7 +1,7 @@
 //! Replays `protocol/test-vectors/relay_semantics.txt` (Phase 7 design §8.7) against the real
 //! relay with a virtual clock, through `Relay::{store,get,check,list}_at` and `Relay::sweep`. The
-//! Kotlin model relay of the sync harness replays the same file, so the model cannot drift from
-//! the relay. The grammar is defined at the top of the vector file.
+//! Kotlin model relay of the sync harness will replay the same file (Phase 7 step S3), so that
+//! model cannot drift from the relay. The grammar is defined at the top of the vector file.
 
 use ghost_relay_api::proto::{
     Capability as CapabilityToken, CheckBlobsRequest, GetBlobRequest, ListNamespaceRequest,
@@ -449,5 +449,5 @@ fn the_real_relay_matches_the_shared_semantics_vectors() {
     .into_iter()
     .collect();
     assert_eq!(seen, all);
-    assert!(sections >= 7, "the vector file lost a section");
+    assert!(sections >= 8, "the vector file lost a section");
 }

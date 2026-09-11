@@ -127,8 +127,8 @@ where
             .await
     }
 
-    /// Returns which of `hashes` the relay holds in the bound namespace (read or write
-    /// capability); the answer is a subset of the request.
+    /// Returns which of `hashes` (distinct) the relay holds in the bound namespace (read or
+    /// write capability); the answer is a subset of the request, each hash at most once.
     pub async fn check(
         &mut self,
         capability: Vec<u8>,

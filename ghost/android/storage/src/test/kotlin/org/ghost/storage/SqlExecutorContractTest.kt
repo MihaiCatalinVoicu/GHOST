@@ -121,6 +121,18 @@ class SqlExecutorContractTest {
     }
 
     @Test
+    fun aTransactionThatCannotStartLeavesNoTransactionFlag() {
+        val db = scratch()
+        db.close()
+        // setAutoCommit fails on the closed connection; the thread must not stay "in a transaction",
+        // or every later call would report a nested transaction instead of the real failure.
+        repeat(2) {
+            assertThrows(java.sql.SQLException::class.java) { db.transaction { } }
+            assertFalse(db.inTransaction)
+        }
+    }
+
+    @Test
     fun transactionsOfTwoThreadsNeverInterleave() {
         scratch().use { db ->
             db.exec("CREATE TABLE counter (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL)")

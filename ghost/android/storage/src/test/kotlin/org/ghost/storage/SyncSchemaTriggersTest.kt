@@ -353,11 +353,22 @@ class SyncSchemaTriggersTest {
         assertEquals(1, db.changes(fetched, bytes(4096, 2), 20_013, f.ns, hash(2)))
         assertEquals(2L, db.queryLong("SELECT fetch_seq FROM inbox_blob WHERE blob_hash = ?", listOf(hash(2))))
         assertEquals(0L, f.count("inbox_source"))
+        // The 'done' half of the trigger: sources present on a fetched row (the §4.1 source insert
+        // never adds them, so they are inserted directly here) go when the row becomes done, and
+        // only that row's. A trigger that fired on 'fetched' alone would leave both of hash 1's.
+        db.exec(source, listOf(f.ns, hash(1), 1, "candidate"))
+        db.exec(source, listOf(f.ns, hash(1), 2, "bad"))
+        db.exec(source, listOf(f.ns, hash(2), 1, "candidate"))
+        assertEquals(2L, sources(1))
         // markConsumed (§4.3) is true exactly once.
         val consumed = "UPDATE inbox_blob SET state = 'done', ciphertext = NULL, fetch_seq = NULL, offers = 0, offer_after_minute = 0 " +
             "WHERE namespace_id = ? AND blob_hash = ? AND state = 'fetched'"
         assertEquals(1, db.changes(consumed, f.ns, hash(1)))
+        assertEquals(0L, sources(1))
+        assertEquals(1L, sources(2))
         assertEquals(0, db.changes(consumed, f.ns, hash(1)))
         assertEquals("done", f.inboxState(1))
+        assertEquals(1, db.changes(consumed, f.ns, hash(2)))
+        assertEquals(0L, f.count("inbox_source"))
     }
 }

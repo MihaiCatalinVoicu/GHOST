@@ -28,6 +28,7 @@ use hyper_util::client::legacy::connect::{Connected, Connection};
 use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -332,6 +333,16 @@ pub(crate) fn validate_list(
     Ok((hashes, resp.next_cursor))
 }
 
+/// True when no hash occurs twice in `hashes`.
+fn all_distinct(hashes: &[[u8; 32]]) -> bool {
+    let mut seen = HashSet::with_capacity(hashes.len());
+    hashes.iter().all(|h| seen.insert(h))
+}
+
+/// A check answer is a set drawn from the request (which never repeats a hash, see
+/// [`RelayClient::check`]): whole 32-byte hashes, each one of the requested hashes, none twice,
+/// hence no more than were requested. Anything else is `Malformed`; a relay answering `[a, a]`
+/// to `[a, b]` cannot make one held hash count twice.
 pub(crate) fn validate_check(
     requested: &[[u8; 32]],
     resp: CheckBlobsResponse,
@@ -342,7 +353,7 @@ pub(crate) fn validate_check(
     let mut out = Vec::with_capacity(resp.available_hashes.len());
     for h in resp.available_hashes {
         let h = <[u8; 32]>::try_from(h.as_slice()).map_err(|_| RelayError::Malformed)?;
-        if !requested.contains(&h) {
+        if !requested.contains(&h) || out.contains(&h) {
             return Err(RelayError::Malformed);
         }
         out.push(h);
@@ -456,13 +467,15 @@ where
         validate_list(resp, limit)
     }
 
-    /// Returns which of `hashes` the relay holds in the capability's namespace.
+    /// Returns which of `hashes` the relay holds in the capability's namespace. The request
+    /// names each hash at most once and at most `MAX_BATCH` of them (`InvalidArgument`
+    /// otherwise, before any I/O); the answer holds each requested hash at most once.
     pub async fn check(
         &mut self,
         capability: Vec<u8>,
         hashes: Vec<[u8; 32]>,
     ) -> Result<Vec<[u8; 32]>, RelayError> {
-        if hashes.len() > MAX_BATCH {
+        if hashes.len() > MAX_BATCH || !all_distinct(&hashes) {
             return Err(RelayError::InvalidArgument);
         }
         let req = CheckBlobsRequest {
@@ -637,8 +650,20 @@ mod tests {
                 .await,
             Err(RelayError::InvalidArgument)
         ));
+        let distinct: Vec<[u8; 32]> = (0..=MAX_BATCH)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                h[..8].copy_from_slice(&(i as u64).to_be_bytes());
+                h
+            })
+            .collect();
         assert!(matches!(
-            client.check(vec![], vec![[0; 32]; MAX_BATCH + 1]).await,
+            client.check(vec![], distinct).await,
+            Err(RelayError::InvalidArgument)
+        ));
+        // A hash named twice in one request (an honest relay would answer it twice).
+        assert!(matches!(
+            client.check(vec![], vec![[1; 32], [2; 32], [1; 32]]).await,
             Err(RelayError::InvalidArgument)
         ));
         assert_eq!(
@@ -837,6 +862,25 @@ mod tests {
             validate_check(&[[7; 32]], too_many),
             Err(RelayError::Malformed)
         ));
+        // check: a requested hash answered twice, within the request's count
+        let repeated = CheckBlobsResponse {
+            available_hashes: vec![vec![7; 32]; 2],
+        };
+        assert!(matches!(
+            validate_check(&[[7; 32], [8; 32]], repeated),
+            Err(RelayError::Malformed)
+        ));
+        // check: a subset in any order, each hash once, is accepted
+        let subset = CheckBlobsResponse {
+            available_hashes: vec![vec![9; 32], vec![7; 32]],
+        };
+        assert_eq!(
+            validate_check(&[[7; 32], [8; 32], [9; 32]], subset).unwrap(),
+            vec![[9; 32], [7; 32]]
+        );
+        assert!(all_distinct(&[]));
+        assert!(all_distinct(&[[1; 32], [2; 32]]));
+        assert!(!all_distinct(&[[1; 32], [2; 32], [1; 32]]));
     }
 
     /// A relay that answers every request with a protocol-violating response.

@@ -7,6 +7,7 @@ import org.ghost.network.RelayTransport.Page
 import org.ghost.network.RelayTransport.StoreReceipt
 import java.io.File
 import java.lang.ref.Reference
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -176,10 +177,12 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
             require(deadlineMillis in 1..MAX_DEADLINE_MILLIS) { "deadline must be 1..60000 ms" }
         }
 
-        /** Check request wire format: 1..256 hashes of 32 bytes, concatenated. */
+        /** Check request wire format: 1..256 distinct hashes of 32 bytes, concatenated. */
         internal fun packHashes(hashes: List<ByteArray>): ByteArray {
             require(hashes.size in 1..MAX_BATCH) { "check takes 1..256 hashes" }
             require(hashes.all { it.size == 32 }) { "hashes must be 32 bytes" }
+            // An honest relay answers a repeated hash twice, which decodeCheck refuses.
+            require(hashes.mapTo(HashSet()) { ByteBuffer.wrap(it) }.size == hashes.size) { "check hashes must be distinct" }
             val out = ByteArray(hashes.size * 32)
             hashes.forEachIndexed { i, h -> h.copyInto(out, i * 32) }
             return out
@@ -230,8 +233,9 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
 
         /**
          * Wire format from the native side: the held hashes, 32 bytes each, concatenated. Strict:
-         * a whole number of hashes, no more than were requested, and each one of the requested
-         * hashes (the native side checks the same).
+         * a whole number of hashes, each one of the (distinct) requested hashes, none twice, hence
+         * no more than were requested (the native side checks the same). A relay answering
+         * `[a, a]` to `[a, b]` is `malformed_response`, so one held hash never counts twice.
          */
         internal fun decodeCheck(raw: ByteArray, requested: List<ByteArray>): List<ByteArray> {
             if (raw.size % 32 != 0 || raw.size / 32 > requested.size) throw NetworkException(MALFORMED)
@@ -240,6 +244,7 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
             while (i < raw.size) {
                 val h = raw.copyOfRange(i, i + 32)
                 if (requested.none { it.contentEquals(h) }) throw NetworkException(MALFORMED)
+                if (held.any { it.contentEquals(h) }) throw NetworkException(MALFORMED)
                 held += h
                 i += 32
             }

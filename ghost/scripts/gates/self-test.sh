@@ -17,6 +17,10 @@ expect_fail() {
 for g in anti-placeholder no-logging manifest-lint dependency-allowlist; do
   expect_fail "$g" "$HARNESS/negative"
 done
+# Phase 7 crash fidelity: every catch-all form in the fixture is reported, one line each.
+expect_fail sync-no-catch-all "$HARNESS/negative-sync"
+sync_hits="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
+if [ "$sync_hits" = "9" ]; then echo "self-test ok: sync-no-catch-all reports all 9 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 9 fixture lines" >&2; rc=1; fi
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"

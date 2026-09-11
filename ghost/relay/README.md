@@ -27,7 +27,7 @@ cd ghost
 cargo run -p ghost-relay-node -- serve --data-dir /tmp/relay-a --listen 127.0.0.1:7443 --capture /tmp/relay-a.ndjson
 cargo run -p ghost-relay-node -- mint --data-dir /tmp/relay-a --namespace <hex 32 bytes> --write --quota 1048576 --expiry <unix>
 cargo test -p ghost-relay-node   # suita cu două noduri: abuz, failover, captură validată T1
-cargo test -p ghost-relay-node --test semantics_vectors   # protocol/test-vectors/relay_semantics.txt, comun cu modelul Kotlin
+cargo test -p ghost-relay-node --test semantics_vectors   # protocol/test-vectors/relay_semantics.txt; modelul Kotlin (pasul S3) îl va relua și el
 ```
 
 Deploy ca onion service: `infra/relay/` (Dockerfile, torrc, compose cu trei relay-uri pentru staging).

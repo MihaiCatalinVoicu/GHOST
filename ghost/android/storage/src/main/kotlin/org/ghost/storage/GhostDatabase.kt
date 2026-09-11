@@ -17,7 +17,8 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  *     [MigrationRunner.migrateWithinTransaction]) and sets `user_version` in that same transaction,
  *     so an interrupted upgrade leaves the previous version;
  *  3. [open] enables memory security and WAL, then [MigrationRunner.verifyIntegrity] refuses a
- *     database whose tables, triggers, pragmas or version are not the expected ones.
+ *     database whose tables, triggers, pragmas or version are not the expected ones; a refused
+ *     database is closed before the failure propagates.
  */
 class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHelper) {
     val executor: SqlExecutor by lazy { SupportSqlExecutor(helper.writableDatabase) }
@@ -38,16 +39,31 @@ class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHel
                     .callback(OpenCallback)
                     .build()
                 val db = GhostDatabase(factory.create(config))
-                // First access opens the database: configure, then migrate inside the helper.
-                val ex = db.executor
+                // First access opens the database: configure, then migrate inside the helper. A
+                // failure there is closed by the helper itself.
+                finishOpen(db.executor, db::close)
+                return db
+            } finally {
+                key.fill(0)
+            }
+        }
+
+        /**
+         * The steps after the helper has opened the connection: memory security, WAL, then
+         * [MigrationRunner.verifyIntegrity]. When any of them fails, [close] runs before the
+         * failure propagates, so a refused database never leaves its connection open.
+         */
+        internal fun finishOpen(ex: SqlExecutor, close: () -> Unit) {
+            var finished = false
+            try {
                 // Wipe key material from SQLCipher's page cache and memory on free.
                 ex.exec("PRAGMA cipher_memory_security = ON")
                 // journal_mode returns the resulting mode as a row, so it runs as a query.
                 ex.query("PRAGMA journal_mode = WAL") { }
                 MigrationRunner(ex).verifyIntegrity()
-                return db
+                finished = true
             } finally {
-                key.fill(0)
+                if (!finished) close()
             }
         }
     }

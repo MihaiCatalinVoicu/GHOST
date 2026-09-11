@@ -18,9 +18,14 @@ import java.util.concurrent.locks.ReentrantLock
  *    thread's transaction;
  *  - [transaction] is not reentrant per thread: a nested call throws [IllegalStateException]
  *    before touching the connection, so the outer work is never committed early.
- * On open it applies [Schema.connectionPragmas], like SQLCipher `onConfigure` on device.
+ * On open it first sets [BASELINE_PRAGMAS], then applies [pragmas] ([Schema.connectionPragmas] by
+ * default), like SQLCipher `onConfigure` on device. Tests pass a reduced [pragmas] list only to
+ * show that dropping a connection pragma is caught.
  */
-class JdbcSqlExecutor(path: String = ":memory:") : SqlExecutor, AutoCloseable {
+class JdbcSqlExecutor(
+    path: String = ":memory:",
+    pragmas: List<String> = Schema.connectionPragmas,
+) : SqlExecutor, AutoCloseable {
     private val conn: Connection = DriverManager.getConnection("jdbc:sqlite:$path")
     private val lock = ReentrantLock()
     private val insideTransaction = ThreadLocal.withInitial { false }
@@ -30,7 +35,27 @@ class JdbcSqlExecutor(path: String = ":memory:") : SqlExecutor, AutoCloseable {
     var failOnStatementContaining: String? = null
 
     init {
-        conn.createStatement().use { st -> for (pragma in Schema.connectionPragmas) st.execute(pragma) }
+        conn.createStatement().use { st ->
+            for (pragma in BASELINE_PRAGMAS) st.execute(pragma)
+            for (pragma in pragmas) st.execute(pragma)
+        }
+    }
+
+    companion object {
+        /**
+         * The connection's starting values before [Schema.connectionPragmas], each different from
+         * its [Schema.expectedPragmaValues] entry, so a pragma missing from the list is observable
+         * on the JVM. `synchronous = NORMAL` is SQLCipher's default on device; plain sqlite-jdbc
+         * would start at FULL and hide a missing `synchronous` pragma.
+         */
+        val BASELINE_PRAGMAS: List<String> = listOf(
+            "PRAGMA foreign_keys = OFF",
+            "PRAGMA synchronous = NORMAL",
+            "PRAGMA secure_delete = OFF",
+        )
+
+        /** Prepared statements kept per executor. */
+        private const val STATEMENT_CACHE = 512
     }
 
     /** Threads currently waiting for this executor's lock (threading-contract tests). */
@@ -38,17 +63,17 @@ class JdbcSqlExecutor(path: String = ":memory:") : SqlExecutor, AutoCloseable {
 
     override fun exec(sql: String, args: List<Any?>) = locked {
         injectFailure(sql)
-        conn.prepareStatement(sql).use { ps -> bind(ps, args); ps.execute() }
+        withStatement(sql) { ps -> bind(ps, args); ps.execute() }
         Unit
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int = locked {
         injectFailure(sql)
-        conn.prepareStatement(sql).use { ps -> bind(ps, args); ps.executeUpdate() }
+        withStatement(sql) { ps -> bind(ps, args); ps.executeUpdate() }
     }
 
     override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) = locked {
-        conn.prepareStatement(sql).use { ps ->
+        withStatement(sql) { ps ->
             bind(ps, args)
             ps.executeQuery().use { rs ->
                 val row = object : SqlExecutor.Row {
@@ -65,17 +90,21 @@ class JdbcSqlExecutor(path: String = ":memory:") : SqlExecutor, AutoCloseable {
     override fun <T> transaction(block: () -> T): T {
         check(!insideTransaction.get()) { "nested transaction on the same thread" }
         return locked {
-            insideTransaction.set(true)
-            conn.autoCommit = false
             try {
-                val r = block()
-                conn.commit()
-                r
-            } catch (t: Throwable) {
-                conn.rollback()
-                throw t
+                // Inside the try: a failing setAutoCommit (closed connection) still clears the flag.
+                insideTransaction.set(true)
+                conn.autoCommit = false
+                try {
+                    val r = block()
+                    conn.commit()
+                    r
+                } catch (t: Throwable) {
+                    conn.rollback()
+                    throw t
+                } finally {
+                    conn.autoCommit = true
+                }
             } finally {
-                conn.autoCommit = true
                 insideTransaction.set(false)
             }
         }
@@ -92,6 +121,33 @@ class JdbcSqlExecutor(path: String = ":memory:") : SqlExecutor, AutoCloseable {
             conn.createStatement().use { it.execute("PRAGMA user_version = $value") }
             Unit
         }
+
+    /**
+     * Prepared statements by SQL text, reused across calls (a JVM-side speed-up for the exit-gate
+     * harness, which runs the same statements millions of times; SQLite semantics are unchanged).
+     * A statement already running (a nested use of the same text inside a row callback) gets a
+     * fresh one. Callers hold [lock].
+     */
+    private val statements = object : LinkedHashMap<String, PreparedStatement>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PreparedStatement>): Boolean {
+            if (size <= STATEMENT_CACHE || eldest.key in inUse) return false
+            eldest.value.close()
+            return true
+        }
+    }
+    private val inUse = HashSet<String>()
+
+    private inline fun <T> withStatement(sql: String, block: (PreparedStatement) -> T): T {
+        if (sql in inUse) return conn.prepareStatement(sql).use(block)
+        val ps = statements.getOrPut(sql) { conn.prepareStatement(sql) }
+        inUse += sql
+        try {
+            ps.clearParameters()
+            return block(ps)
+        } finally {
+            inUse -= sql
+        }
+    }
 
     private inline fun <T> locked(block: () -> T): T {
         lock.lock()
@@ -119,5 +175,9 @@ class JdbcSqlExecutor(path: String = ":memory:") : SqlExecutor, AutoCloseable {
         }
     }
 
-    override fun close() = locked { conn.close() }
+    override fun close() = locked {
+        statements.values.forEach { it.close() }
+        statements.clear()
+        conn.close()
+    }
 }

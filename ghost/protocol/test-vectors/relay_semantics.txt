@@ -1,7 +1,8 @@
-# Relay semantics conformance vectors (Phase 7 design §8.7). One script, two replayers:
+# Relay semantics conformance vectors (Phase 7 design §8.7). One script for two replayers:
 #   - relay/crates/node/tests/semantics_vectors.rs replays it against the real relay through
 #     Relay::{store,get,check,list}_at(request, now) and Relay::sweep(now);
-#   - the Kotlin ModelRelay (android/sync tests) replays it against the model the sync harness uses.
+#   - the Kotlin ModelRelay of the sync harness (android/sync tests) will replay it against the
+#     model once that model exists (Phase 7 step S3).
 # A behaviour that is not pinned here is not something the model may rely on.
 #
 # GRAMMAR
@@ -65,8 +66,12 @@
 #     an expired one (expiry <= now), pruned or not, is renewed (charged, new sequence);
 #   - quota is charged per token before anything is written; a denied store leaves nothing;
 #   - get/check use the namespace inside the capability; a blob outside it looks absent;
-#   - list scans at most 1024 index entries per call; next is the last examined sequence, empty
-#     when the namespace is exhausted (also when exactly `limit` entries remained);
+#   - list walks the namespace's index entries after the cursor, live and expired-but-unpruned
+#     alike, and examines at most 1024 of them per call; only live ones are returned. next is the
+#     last examined sequence, or empty when the walk reached the end of the index. Expired,
+#     unpruned index entries count: a full page followed only by expired entries returns a
+#     cursor, and the page after it is empty with an empty next. next is also empty when exactly
+#     `limit` live entries remained and no index entry follows them;
 #   - a namespace whose last membership is pruned forgets its sequence and restarts from the
 #     current hour's seed (hours << 32), above every sequence it used before.
 
@@ -161,6 +166,22 @@ store ns=L blob=P5 cap=W ttl=604800 -> ok expiry=604800
 list ns=L cap=R cursor=K1 limit=2 -> ok hashes=P3,P4 next=K2             # more entries follow now
 list ns=L cap=R cursor=K2 limit=2 -> ok hashes=P5 next=end
 list ns=L cap=R cursor=K1 limit=3 -> ok hashes=P3,P4,P5 next=end
+# A full page followed only by expired, unpruned entries is not the end of the index.
+cap WT kind=write ns=T quota=1048576 expiry=31536000
+cap RT kind=read ns=T quota=0 expiry=31536000
+blob V1 size=1024
+blob V2 size=1024
+blob V3 size=1024
+store ns=T blob=V1 cap=WT ttl=604800 -> ok expiry=604800
+store ns=T blob=V2 cap=WT ttl=604800 -> ok expiry=604800
+store ns=T blob=V3 cap=WT ttl=86400 -> ok expiry=86400
+at 86400                                                  # V3 expired (expiry <= now), not pruned
+list ns=T cap=RT cursor=start limit=2 -> ok hashes=V1,V2 next=K3         # V3's entry follows the full page
+list ns=T cap=RT cursor=K3 limit=2 -> ok hashes=none next=end            # only V3's expired entry was left
+list ns=T cap=RT cursor=start limit=3 -> ok hashes=V1,V2 next=end        # page not full: walked to the end
+prune -> ok removed=1
+list ns=T cap=RT cursor=start limit=2 -> ok hashes=V1,V2 next=end        # pruned: nothing follows V2
+list ns=L cap=R cursor=K1 limit=3 -> ok hashes=P3,P4,P5 next=end         # L untouched (all live until 604800)
 
 # ---------------------------------------------------------------------------------------------
 # 4. 1100 expired, not yet pruned entries: a list scans at most 1024 of them and returns an empty
@@ -271,3 +292,34 @@ get blob=G1 cap=R -> unauthorized
 get blob=G1 cap=W -> unauthorized
 check cap=R blobs=G1 -> unauthorized
 list ns=A cap=R cursor=start limit=10 -> unauthorized
+
+# ---------------------------------------------------------------------------------------------
+# 8. Renewal of an expired membership is charged and gets a new sequence, whether or not the
+#    expired membership was pruned first.
+relay max_ttl=7776000
+at 0
+cap W1 kind=write ns=N quota=2048 expiry=31536000
+cap W2 kind=write ns=N quota=1024 expiry=31536000
+cap WL kind=write ns=N quota=1048576 expiry=31536000
+cap R kind=read ns=N quota=0 expiry=31536000
+blob Q size=1024
+blob L size=1024
+blob M size=1024
+blob O size=1024
+store ns=N blob=Q cap=W1 ttl=86400 -> ok expiry=86400     # charged 1024 (1024 of 2048 used)
+store ns=N blob=L cap=WL ttl=604800 -> ok expiry=604800
+list ns=N cap=R cursor=start limit=10 -> ok hashes=Q,L next=end
+at 86400                                                  # Q expired, not pruned
+store ns=N blob=Q cap=W1 ttl=86400 -> ok expiry=172800    # renewal without prune: charged 1024 (2048 used)
+store ns=N blob=O cap=W1 ttl=86400 -> quota               # so the renewal was not free
+store ns=N blob=M cap=WL ttl=604800 -> ok expiry=691200
+list ns=N cap=R cursor=start limit=10 -> ok hashes=L,Q,M next=end        # Q's new sequence, after L
+list ns=N cap=R cursor=start limit=1 -> ok hashes=L next=KL
+list ns=N cap=R cursor=KL limit=1 -> ok hashes=Q next=KQ                 # KQ = Q's sequence now
+at 172800                                                 # Q expired again
+prune -> ok removed=1                                     # L and M keep the namespace's sequence
+get blob=Q cap=R -> not_found
+store ns=N blob=Q cap=W2 ttl=86400 -> ok expiry=259200    # renewal after prune: charged 1024 (1024 used)
+store ns=N blob=O cap=W2 ttl=86400 -> quota               # so this renewal was not free either
+list ns=N cap=R cursor=KQ limit=10 -> ok hashes=M,Q next=end             # new sequence, after M
+list ns=N cap=R cursor=start limit=10 -> ok hashes=L,M,Q next=end
