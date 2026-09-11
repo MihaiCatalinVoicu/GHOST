@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-10; aplicat în Faza 6, revizuit 2026-09-11 |
+| Status | **Aprobat** 2026-09-11 (proprietar proiect); aplicat în Faza 6, revizuit 2026-09-11 |
 | Sursă | Faza 6 (client Tor + network) |
 | Modifică | Spec v2.0 §6.1 (modulul `network` devine un wrapper Kotlin peste `client-core/net`) |
 

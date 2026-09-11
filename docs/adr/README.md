@@ -29,4 +29,4 @@ Un ADR nou primește următorul număr, status „Propus”, și se leagă de ce
 | [ADR-16](ADR-16-censorship-resistance.md) | Rezistență la cenzură: bridges, WebTunnel, mod auto |
 | [ADR-17](ADR-17-bouncycastle-ed25519.md) | Ed25519 prin BouncyCastle pentru identitate (aprobat) |
 | [ADR-18](ADR-18-redb-relay-storage.md) | Stocare relay pe redb în loc de RocksDB (aprobat) |
-| [ADR-19](ADR-19-rust-client-core.md) | Nucleu de client în Rust expus prin JNI (**propus**, aplicat în Faza 6) |
+| [ADR-19](ADR-19-rust-client-core.md) | Nucleu de client în Rust expus prin JNI (aprobat) |
