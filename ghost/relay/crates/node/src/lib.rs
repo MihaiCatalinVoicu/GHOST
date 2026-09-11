@@ -141,14 +141,12 @@ impl std::ops::Deref for RelayServer {
     }
 }
 
-#[tonic::async_trait]
-impl RelayService for RelayServer {
-    async fn store_blob(
-        &self,
-        request: Request<StoreBlobRequest>,
-    ) -> Result<Response<StoreBlobResponse>, Status> {
-        let now = now_unix();
-        let req = request.into_inner();
+/// Request handlers with an explicit clock. The gRPC service calls them with the wall clock;
+/// conformance tests (`tests/semantics_vectors.rs`) call them with a virtual one. Each records
+/// exactly one capture event, as the service did before the handlers were extracted.
+impl Relay {
+    /// StoreBlob at time `now` (unix seconds).
+    pub fn store_at(&self, req: StoreBlobRequest, now: u64) -> Result<StoreBlobResponse, Status> {
         let mut event = Event {
             op: "store",
             protocol_version: PROTOCOL_VERSION,
@@ -251,15 +249,11 @@ impl RelayService for RelayServer {
         })();
 
         self.record(event);
-        outcome.map(Response::new)
+        outcome
     }
 
-    async fn get_blob(
-        &self,
-        request: Request<GetBlobRequest>,
-    ) -> Result<Response<GetBlobResponse>, Status> {
-        let now = now_unix();
-        let req = request.into_inner();
+    /// GetBlob at time `now`. The namespace comes from the capability.
+    pub fn get_at(&self, req: GetBlobRequest, now: u64) -> Result<GetBlobResponse, Status> {
         let mut event = Event {
             op: "get",
             protocol_version: PROTOCOL_VERSION,
@@ -315,15 +309,11 @@ impl RelayService for RelayServer {
             }
         })();
         self.record(event);
-        outcome.map(Response::new)
+        outcome
     }
 
-    async fn check_blobs(
-        &self,
-        request: Request<CheckBlobsRequest>,
-    ) -> Result<Response<CheckBlobsResponse>, Status> {
-        let now = now_unix();
-        let req = request.into_inner();
+    /// CheckBlobs at time `now`. The namespace comes from the capability.
+    pub fn check_at(&self, req: CheckBlobsRequest, now: u64) -> Result<CheckBlobsResponse, Status> {
         let mut event = Event {
             op: "check",
             protocol_version: PROTOCOL_VERSION,
@@ -365,15 +355,15 @@ impl RelayService for RelayServer {
             }
         })();
         self.record(event);
-        outcome.map(Response::new)
+        outcome
     }
 
-    async fn list_namespace(
+    /// ListNamespace at time `now`.
+    pub fn list_at(
         &self,
-        request: Request<ListNamespaceRequest>,
-    ) -> Result<Response<ListNamespaceResponse>, Status> {
-        let now = now_unix();
-        let req = request.into_inner();
+        req: ListNamespaceRequest,
+        now: u64,
+    ) -> Result<ListNamespaceResponse, Status> {
         let mut event = Event {
             op: "list",
             protocol_version: PROTOCOL_VERSION,
@@ -420,7 +410,42 @@ impl RelayService for RelayServer {
             }
         })();
         self.record(event);
-        outcome.map(Response::new)
+        outcome
+    }
+}
+
+#[tonic::async_trait]
+impl RelayService for RelayServer {
+    async fn store_blob(
+        &self,
+        request: Request<StoreBlobRequest>,
+    ) -> Result<Response<StoreBlobResponse>, Status> {
+        self.store_at(request.into_inner(), now_unix())
+            .map(Response::new)
+    }
+
+    async fn get_blob(
+        &self,
+        request: Request<GetBlobRequest>,
+    ) -> Result<Response<GetBlobResponse>, Status> {
+        self.get_at(request.into_inner(), now_unix())
+            .map(Response::new)
+    }
+
+    async fn check_blobs(
+        &self,
+        request: Request<CheckBlobsRequest>,
+    ) -> Result<Response<CheckBlobsResponse>, Status> {
+        self.check_at(request.into_inner(), now_unix())
+            .map(Response::new)
+    }
+
+    async fn list_namespace(
+        &self,
+        request: Request<ListNamespaceRequest>,
+    ) -> Result<Response<ListNamespaceResponse>, Status> {
+        self.list_at(request.into_inner(), now_unix())
+            .map(Response::new)
     }
 
     type GossipSyncStream = GossipStream;

@@ -4,11 +4,24 @@ Logica de rețea și, în fazele următoare, de protocol a clientului Android tr
 
 | Crate | Rol | Modul Android |
 |---|---|---|
-| `net` | Tor embedded (Arti) cu onion-service client, vanguards-lite și bridges simple (`IP:PORT FINGERPRINT`; transporturile obfs4/webtunnel/snowflake vin în Faza 12); `OnionAddress` strict cu checksum v3; izolare de circuite per namespace/scop; client gRPC relay prin Tor (HTTP/2 fără `user-agent`, deadline pe fiecare RPC, validarea răspunsurilor); JNI `org.ghost.network.TorRelayTransport` | `android/network` |
+| `net` | Tor embedded (Arti) cu onion-service client, vanguards-lite și bridges simple (`IP:PORT FINGERPRINT`; transporturile obfs4/webtunnel/snowflake vin în Faza 12); `OnionAddress` strict cu checksum v3; izolare de circuite per namespace/scop; client gRPC relay prin Tor legat de un namespace (`NamespaceClient`: HTTP/2 fără `user-agent`, deadline pe fiecare RPC, validarea răspunsurilor, capabilitate verificată față de namespace înainte de orice I/O); JNI `org.ghost.network.TorRelayTransport` | `android/network` |
 
 ## Contractul de date către relay
 
 Clientul relay transportă doar blob-uri **deja criptate și de dimensiune exactă de bucket** (1/4/16/64 KiB). Padding-ul se aplică *în interiorul* plaintext-ului AEAD de stratul care criptează (`ghost_relay_transport::pad_plaintext`), niciodată pe ciphertext: un prefix de lungime în clar i-ar da relay-ului dimensiunea exactă. TTL-ul este rotunjit la bucket-urile permise (1/7/30/90 zile).
+
+## Apelurile relay (JNI `TorRelayTransport`)
+
+Fiecare apel construiește un `NamespaceClient` pentru namespace-ul apelului: circuitele folosesc izolarea `IsolationScope::Namespace(ns)`, iar înainte de orice I/O antetul capabilității (`ghost_relay_api::capability_header`, formatul v1 `version‖kind‖namespace‖quota‖expiry‖mac`, 82 bytes) trebuie să numească același namespace și un tip potrivit: write pentru `store`; read sau write pentru `get`, `list`, `check` (la relay, write include read). Altfel apelul eșuează cu `invalid_argument` fără să deschidă o conexiune (invariant T21); un token într-un format pe care build-ul nu îl cunoaște e refuzat la fel. `RelayClient` nu are constructor public.
+
+Argumentele și rezultatul (bytes) fiecărui apel:
+
+- **store** (`nativeStore`): relay, namespace (32), capabilitate, ciphertext (un bucket), TTL, `deadlineMs` → `blob_hash(32) ‖ expiry(8, BE)`.
+- **get** (`nativeGet`): relay, namespace, capabilitate, `blob_hash` (32), `deadlineMs` → `expiry(8, BE) ‖ ciphertext`: expirarea declarată de relay (cel mult acum + 90 zile + 3 zile toleranță de ceas; una mai mare e `malformed_response`), apoi ciphertext-ul verificat (hash, bucket).
+- **list** (`nativeList`): relay, namespace, capabilitate, cursor (0 sau 8 bytes), limită (1..256), `deadlineMs` → `cursor_len(1) ‖ cursor ‖ hash-uri (32 fiecare)`.
+- **check** (`nativeCheck`): relay, namespace, capabilitate, hash-uri concatenate (32 fiecare, cel mult 256), `deadlineMs` → hash-urile deținute de relay, concatenate: un subset al cererii (verificat nativ și în Kotlin).
+
+**Termenul per apel.** `deadlineMs` limitează tot apelul (rendezvous, cerere, răspuns). Termenul efectiv este `min(deadlineMs, 60 s)` (`RELAY_RPC_DEADLINE`); 0 sau o valoare negativă dă `invalid_argument`. Kotlin acceptă 1..60 000 ms (`require`); metodele fără termen folosesc 60 000. Depășirea termenului dă `timeout`. Un singur transport servește apeluri concurente din mai multe fire JVM (runtime multi-thread; test cu două apeluri simultane pe același handle).
 
 ## Build
 
@@ -28,7 +41,7 @@ Prin JNI trec doar `String`, `ByteArray`, `Int`, `Long`. Starea nativă stă în
 
 | Categorie | Când |
 |---|---|
-| `invalid_argument` | argument invalid verificat în Rust (TTL 0 sau peste 90 zile, cursor, limită de lot); verificările Kotlin (`require`) aruncă `IllegalArgumentException` înainte de apelul nativ |
+| `invalid_argument` | argument invalid verificat în Rust (TTL 0 sau peste 90 zile, cursor, limită de lot, termen 0 sau negativ); capabilitate care nu se poate parsa, care numește alt namespace decât apelul sau al cărei tip nu se potrivește operației (T21), refuzată înainte de orice I/O; verificările Kotlin (`require`) aruncă `IllegalArgumentException` înainte de apelul nativ |
 | `not_onion` | destinația nu este o adresă onion v3 validă (inclusiv checksum) |
 | `closed` | transportul a fost închis înainte sau în timpul apelului |
 | `runtime` | runtime-ul nativ nu a putut porni |
@@ -38,7 +51,7 @@ Prin JNI trec doar `String`, `ByteArray`, `Int`, `Long`. Starea nativă stă în
 | `tor_bootstrap_timeout` | bootstrap Tor peste termenul limită (180 s): transportul trebuie închis și creat altul |
 | `not_bootstrapped` | apel către relay înainte de un bootstrap reușit (conexiunile nu pornesc niciodată un bootstrap implicit) |
 | `transport` | relay-ul onion nu poate fi atins (descriptor, rendezvous, circuit) |
-| `timeout` | RPC-ul către relay a depășit termenul limită (60 s) |
+| `timeout` | RPC-ul către relay a depășit termenul apelului (`deadlineMs`, cel mult 60 s) |
 | `unauthorized` | capabilitate respinsă de relay |
 | `quota` | cota capabilității depășită |
 | `not_found` | blob inexistent în namespace-ul capabilității |
@@ -46,6 +59,6 @@ Prin JNI trec doar `String`, `ByteArray`, `Int`, `Long`. Starea nativă stă în
 | `relay_unavailable` | eroare tranzitorie a relay-ului sau a conexiunii |
 | `not_bucket_sized` | blob-ul trimis nu are exact o dimensiune de bucket |
 | `not_stored` | relay-ul a confirmat un blob cu o expirare mai scurtă decât TTL-ul cerut (toleranță de ceas 3 zile), deci blob-ul ar dispărea mai devreme |
-| `malformed_response` | răspunsul relay-ului încalcă protocolul (hash, dimensiune, cursor, lot) |
+| `malformed_response` | răspunsul relay-ului încalcă protocolul (hash, dimensiune, cursor, lot, `check` cu hash-uri necerute, expirare peste acum + 90 zile + toleranța de ceas) |
 | `internal` | eroare internă (inclusiv panică prinsă la graniță) |
 | `native_missing` | doar în Kotlin: biblioteca nativă lipsește sau nu se poate încărca (`UnsatisfiedLinkError`) |

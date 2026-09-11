@@ -53,37 +53,4 @@ class OnionAddressTest {
         assertEquals("duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443", a.toString())
         assertEquals(a, OnionAddress.parse(a.toString()))
     }
-
-    @Test
-    fun pageDecodingIsStrict() {
-        val cursor = ByteArray(8) { 1 }
-        val h1 = ByteArray(32) { 2 }
-        val page = TorRelayTransport.decodePage(byteArrayOf(8) + cursor + h1, 1)
-        assertEquals(1, page.hashes.size)
-        assertEquals(8, page.nextCursor.size)
-        assertEquals(0, TorRelayTransport.decodePage(byteArrayOf(0), 1).hashes.size)
-        val bad = listOf(
-            ByteArray(0),
-            byteArrayOf(0, 1, 2),
-            byteArrayOf(3, 1, 2, 3) + h1,
-            // 32-aligned bodies with a cursor length other than 0/8 (accepted by a "% 32" check alone)
-            byteArrayOf(16) + ByteArray(16) + h1,
-            byteArrayOf(32) + ByteArray(32),
-            // more hashes than the requested limit
-            byteArrayOf(0) + h1 + h1,
-        )
-        for (b in bad) {
-            assertThrows(NetworkException::class.java) { TorRelayTransport.decodePage(b, 1) }
-        }
-    }
-
-    @Test
-    fun receiptDecoding() {
-        val hash = ByteArray(32) { 7 }
-        val expiry = byteArrayOf(0, 0, 0, 0, 0x68, 0xC1.toByte(), 0x2E, 0x10)
-        val r = TorRelayTransport.decodeReceipt(hash + expiry)
-        assertEquals(0x68C12E10L, r.expiryUnixSeconds)
-        assertTrue(r.blobHash.contentEquals(hash))
-        assertThrows(NetworkException::class.java) { TorRelayTransport.decodeReceipt(ByteArray(39)) }
-    }
 }

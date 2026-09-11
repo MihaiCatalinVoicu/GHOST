@@ -1596,6 +1596,7 @@ dependencies = [
 name = "ghost-relay-capability"
 version = "0.1.0"
 dependencies = [
+ "ghost-relay-api",
  "hmac 0.13.0",
  "rand 0.10.2",
  "sha2 0.11.0",
