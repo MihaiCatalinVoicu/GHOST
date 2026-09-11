@@ -42,3 +42,4 @@ secrets/
 build-repro/
 **/jniLibs/
 ghost/native-libs.sha256
+.claude/worktrees/

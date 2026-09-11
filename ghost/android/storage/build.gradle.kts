@@ -15,6 +15,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    // JVM test infrastructure shared with :sync (JdbcSqlExecutor); plain source directory, so no
+    // experimental test-fixtures support is needed.
+    sourceSets {
+        getByName("test") {
+            kotlin.srcDir("src/testShared/kotlin")
+        }
+    }
 }
 
 dependencies {
