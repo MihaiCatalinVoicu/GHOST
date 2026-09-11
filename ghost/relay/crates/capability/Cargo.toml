@@ -8,6 +8,8 @@ rust-version.workspace = true
 description = "GHOST blind relay: scoped unforgeable capabilities and per-period nullifiers (FR-5.3, ADR-02)"
 
 [dependencies]
+# The v1 token layout is defined once, in the API crate (`capability_header`).
+ghost-relay-api = { path = "../api" }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }

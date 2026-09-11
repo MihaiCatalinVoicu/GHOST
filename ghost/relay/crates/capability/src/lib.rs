@@ -1,11 +1,17 @@
 //! Relay-local capabilities (FR-5.3, plan Annex B) and per-period nullifiers (ADR-02).
 //!
 //! A capability is a MAC-authenticated statement, keyed with a secret only this relay holds:
-//! `version(1) || kind(1) || namespace(32) || quota_bytes(8) || expiry_unix(8) || mac(32)`.
+//! `version(1) || kind(1) || namespace(32) || quota_bytes(8, BE) || expiry_unix(8, BE) || mac(32)`.
+//! The layout is public and defined once, in [`ghost_relay_api::capability_header`] (clients read
+//! the header to bind a token to the namespace of their circuit); this crate adds the MAC.
 //! It names a namespace and a right (read or write), never a user. Because the MAC key is local,
 //! a capability is worthless at any other relay, so relays cannot correlate a client across nodes
 //! through its capabilities.
 
+use ghost_relay_api::{
+    capability_header, CapabilityHeader, CAPABILITY_MAC_BYTES, CAPABILITY_TOKEN_BYTES,
+    CAPABILITY_VERSION,
+};
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 
@@ -14,22 +20,14 @@ use std::collections::{HashMap, HashSet};
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const TOKEN_BYTES: usize = 1 + 1 + 32 + 8 + 8 + 32;
-const VERSION: u8 = 1;
+pub const TOKEN_BYTES: usize = CAPABILITY_TOKEN_BYTES;
+const VERSION: u8 = CAPABILITY_VERSION;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Read = 1,
-    Write = 2,
-}
+/// Right granted by a capability (the API crate's [`ghost_relay_api::CapabilityKind`]).
+pub use ghost_relay_api::CapabilityKind as Kind;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Capability {
-    pub kind: Kind,
-    pub namespace: [u8; 32],
-    pub quota_bytes: u64,
-    pub expiry_unix: u64,
-}
+/// The statement a capability makes: its v1 header, once the MAC has been checked.
+pub type Capability = CapabilityHeader;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CapError {
@@ -55,18 +53,16 @@ impl RelayKey {
     }
 
     pub fn mint(&self, cap: &Capability) -> Vec<u8> {
+        let body = cap.encode_body();
         let mut out = Vec::with_capacity(TOKEN_BYTES);
-        out.push(VERSION);
-        out.push(cap.kind as u8);
-        out.extend_from_slice(&cap.namespace);
-        out.extend_from_slice(&cap.quota_bytes.to_be_bytes());
-        out.extend_from_slice(&cap.expiry_unix.to_be_bytes());
-        let mac = self.mac(&out);
+        out.extend_from_slice(&body);
+        let mac = self.mac(&body);
         out.extend_from_slice(&mac);
         out
     }
 
-    /// Verifies a token for `required` on `namespace` at time `now`.
+    /// Verifies a token for `required` on `namespace` at time `now`. Checks run in this order:
+    /// length and version, MAC, header fields, expiry, scope.
     pub fn verify(
         &self,
         token: &[u8],
@@ -77,51 +73,29 @@ impl RelayKey {
         if token.len() != TOKEN_BYTES || token[0] != VERSION {
             return Err(CapError::Malformed);
         }
-        let (body, mac) = token.split_at(TOKEN_BYTES - 32);
+        let (body, mac) = token.split_at(TOKEN_BYTES - CAPABILITY_MAC_BYTES);
         let mut verifier =
             HmacSha256::new_from_slice(&self.0).expect("HMAC accepts any key length");
         verifier.update(body);
         verifier.verify_slice(mac).map_err(|_| CapError::BadMac)?;
-        let kind = match body[1] {
-            1 => Kind::Read,
-            2 => Kind::Write,
-            _ => return Err(CapError::Malformed),
-        };
-        let mut ns = [0u8; 32];
-        ns.copy_from_slice(&body[2..34]);
-        let quota_bytes = u64::from_be_bytes(body[34..42].try_into().unwrap());
-        let expiry_unix = u64::from_be_bytes(body[42..50].try_into().unwrap());
-        if expiry_unix <= now {
+        let cap = capability_header(token).ok_or(CapError::Malformed)?;
+        if cap.expiry_unix <= now {
             return Err(CapError::Expired);
         }
         // A write capability also grants read on the same namespace; read never grants write.
-        let scope_ok = ns == *namespace
-            && (kind == required || (kind == Kind::Write && required == Kind::Read));
+        let scope_ok = cap.namespace == *namespace
+            && (cap.kind == required || (cap.kind == Kind::Write && required == Kind::Read));
         if !scope_ok {
             return Err(CapError::WrongScope);
         }
-        Ok(Capability {
-            kind,
-            namespace: ns,
-            quota_bytes,
-            expiry_unix,
-        })
+        Ok(cap)
     }
 
     /// Verifies MAC and expiry only and returns the capability with its own namespace; callers
     /// then compare that namespace against what they are about to reveal (GetBlob, CheckBlobs).
     pub fn verify_any(&self, token: &[u8], now: u64) -> Result<Capability, CapError> {
-        if token.len() != TOKEN_BYTES {
-            return Err(CapError::Malformed);
-        }
-        let mut ns = [0u8; 32];
-        ns.copy_from_slice(&token[2..34]);
-        let required = match token[1] {
-            1 => Kind::Read,
-            2 => Kind::Write,
-            _ => return Err(CapError::Malformed),
-        };
-        self.verify(token, required, &ns, now)
+        let header = capability_header(token).ok_or(CapError::Malformed)?;
+        self.verify(token, header.kind, &header.namespace, now)
     }
 
     fn mac(&self, body: &[u8]) -> [u8; 32] {
@@ -233,7 +207,10 @@ mod tests {
         };
         let token = key.mint(&cap);
         assert_eq!(token.len(), TOKEN_BYTES);
+        // The public header of a minted token is exactly what was minted (one layout, two users).
+        assert_eq!(capability_header(&token), Some(cap.clone()));
         assert_eq!(key.verify(&token, Kind::Write, &ns(1), 1_000).unwrap(), cap);
+        assert_eq!(key.verify_any(&token, 1_000).unwrap(), cap);
         // write grants read on the same namespace
         assert!(key.verify(&token, Kind::Read, &ns(1), 1_000).is_ok());
         assert_eq!(

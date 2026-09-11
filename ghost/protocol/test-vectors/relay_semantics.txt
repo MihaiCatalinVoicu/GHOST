@@ -1,0 +1,273 @@
+# Relay semantics conformance vectors (Phase 7 design §8.7). One script, two replayers:
+#   - relay/crates/node/tests/semantics_vectors.rs replays it against the real relay through
+#     Relay::{store,get,check,list}_at(request, now) and Relay::sweep(now);
+#   - the Kotlin ModelRelay (android/sync tests) replays it against the model the sync harness uses.
+# A behaviour that is not pinned here is not something the model may rely on.
+#
+# GRAMMAR
+# - One operation per line. '#' starts a comment (to the end of the line). Blank lines are ignored.
+# - Words are separated by spaces. The first word is the operation. Arguments are key=value words
+#   (except the first argument of blob/cap/token, which is a name, and the argument of at).
+# - "-> <expectation>" ends a line that has an outcome. The expectation is either
+#     ok [key=value ...]     the call succeeds and every listed field matches, or
+#     <category>             the call fails with that category (see CATEGORIES).
+# - Names (namespaces, blobs, capabilities, cursors) are symbols: [A-Za-z0-9_]+.
+#
+# Clock
+#   BASE = 1800000000 (unix seconds; a whole hour). "t" below always means BASE + t.
+#   at <t>                   sets the virtual clock to BASE + t. The clock never moves back.
+#
+# Sections
+#   relay max_ttl=<s>        starts a new, empty relay: fresh store, capability key and quota
+#                            ledger, max_ttl_seconds = s. Every symbol is forgotten and the clock
+#                            is set to t=0. Sections are independent.
+#
+# Values
+#   namespace <N>            32 bytes = SHA-256 of the ASCII name (no declaration needed).
+#   blob <B> size=<n>        declares blob B: the ASCII name followed by zero bytes up to n bytes.
+#                            Its hash is SHA-256 of those n bytes. Every size used is a bucket.
+#   cap <C> kind=read|write ns=<N> quota=<bytes> expiry=<t>
+#                            a capability minted by the current relay for namespace N, expiring at
+#                            BASE + t. No two cap lines of a section have identical fields (the
+#                            relay's quota ledger is keyed by token bytes; a model may key it by name).
+#   token <C> hex=<hex>|hex=empty
+#                            a raw token (lowercase hex; "empty" = zero bytes).
+#   token <C> from=<C0> xor=<i>
+#                            capability C0 with byte i XORed with 0x01.
+#
+# Operations (all TTLs are passed to the relay unchanged; every TTL used is a client bucket)
+#   store ns=<N> blob=<B> cap=<C> ttl=<s>  -> ok expiry=<t> | -> <category>
+#   get blob=<B> cap=<C>                   -> ok expiry=<t> | -> <category>
+#                            ok also requires that the returned bytes equal blob B.
+#   check cap=<C> blobs=<B>,<B>,...        -> ok available=<B>,...|available=none | -> <category>
+#                            available is the held subset, in request order (a replayer may
+#                            compare it as a set).
+#   list ns=<N> cap=<C> cursor=start|<K> limit=<n>
+#                                          -> ok hashes=<B>,...|hashes=none next=end|next=<K>
+#                            hashes are compared in order. cursor=start sends an empty cursor.
+#                            next=end: the returned cursor is empty. next=<K>: the returned cursor
+#                            is 8 bytes and is bound to K (a fresh name) for later lines.
+#   fill ns=<N> prefix=<P> count=<n> size=<bytes> cap=<C> ttl=<s> -> ok
+#                            declares blobs <P>0 .. <P>(n-1) as "blob" does and stores them in that
+#                            order at the current time; every store must succeed.
+#   prune -> ok removed=<n>  one relay sweep at the current time; n memberships were removed.
+#
+# CATEGORIES are the client categories of client-core/README.md for the relay's gRPC status:
+#   rejected (InvalidArgument), unauthorized (PermissionDenied), quota (ResourceExhausted),
+#   not_found (NotFound). These lines describe the relay itself: the Rust client additionally
+#   refuses, before any I/O, a token whose header it cannot parse or that names another namespace
+#   (T21, category invalid_argument), so a client never sends several of the tokens below.
+#
+# RELAY RULES these vectors pin (relay/crates/storage, relay/crates/node, relay/crates/capability)
+#   - expiry = BASE-relative (now + ttl) rounded up to a whole hour;
+#   - a store over a live membership whose expiry + 3600 >= the wanted expiry changes nothing and
+#     is not charged; a live but shorter membership is extended (charged, same sequence);
+#     an expired one (expiry <= now), pruned or not, is renewed (charged, new sequence);
+#   - quota is charged per token before anything is written; a denied store leaves nothing;
+#   - get/check use the namespace inside the capability; a blob outside it looks absent;
+#   - list scans at most 1024 index entries per call; next is the last examined sequence, empty
+#     when the namespace is exhausted (also when exactly `limit` entries remained);
+#   - a namespace whose last membership is pruned forgets its sequence and restarts from the
+#     current hour's seed (hours << 32), above every sequence it used before.
+
+# ---------------------------------------------------------------------------------------------
+# 1. New membership, same-hour no-op, extension after the hour (charged, same sequence),
+#    hour-rounded expiry and get expiry, quota denial leaves nothing.
+relay max_ttl=7776000
+at 1234
+cap W kind=write ns=A quota=6144 expiry=31536000
+cap W2 kind=write ns=A quota=1048576 expiry=31536000
+cap R kind=read ns=A quota=0 expiry=31536000
+blob B1 size=1024
+blob B2 size=4096
+blob B3 size=1024
+store ns=A blob=B1 cap=W ttl=86400 -> ok expiry=90000     # 1234 + 86400 = 87634, rounded up to the hour
+get blob=B1 cap=R -> ok expiry=90000
+list ns=A cap=R cursor=start limit=10 -> ok hashes=B1 next=end
+at 1300
+store ns=A blob=B1 cap=W ttl=86400 -> ok expiry=90000     # retry: no change, not charged
+at 4000
+store ns=A blob=B1 cap=W ttl=86400 -> ok expiry=90000     # wanted 93600 <= 90000 + 3600: still a no-op
+store ns=A blob=B2 cap=W ttl=86400 -> ok expiry=93600     # charged 4096 (5120 of 6144 used)
+list ns=A cap=R cursor=start limit=10 -> ok hashes=B1,B2 next=end
+at 8000
+store ns=A blob=B1 cap=W ttl=86400 -> ok expiry=97200     # wanted 97200 > 93600: extended, charged 1024
+get blob=B1 cap=R -> ok expiry=97200
+list ns=A cap=R cursor=start limit=10 -> ok hashes=B1,B2 next=end   # B1 kept its sequence
+store ns=A blob=B3 cap=W ttl=86400 -> quota               # 6144 used: the two retries were free
+get blob=B3 cap=R -> not_found
+check cap=R blobs=B1,B2,B3 -> ok available=B1,B2
+list ns=A cap=R cursor=start limit=10 -> ok hashes=B1,B2 next=end
+store ns=A blob=B3 cap=W2 ttl=86400 -> ok expiry=97200    # the denied store left no sequence behind
+list ns=A cap=R cursor=start limit=10 -> ok hashes=B1,B2,B3 next=end
+
+# ---------------------------------------------------------------------------------------------
+# 2. Namespace scope: get and check outside the capability's namespace look like absence; the same
+#    ciphertext has one membership per namespace; write grants read; read never grants write;
+#    a shorter TTL never shortens a live membership.
+relay max_ttl=7776000
+at 0
+cap WA kind=write ns=A quota=1048576 expiry=31536000
+cap RA kind=read ns=A quota=0 expiry=31536000
+cap WB kind=write ns=B quota=1048576 expiry=31536000
+cap RB kind=read ns=B quota=0 expiry=31536000
+blob D1 size=16384
+blob D2 size=65536
+blob NEVER size=1024
+store ns=A blob=D1 cap=WA ttl=604800 -> ok expiry=604800
+store ns=B blob=D1 cap=WB ttl=86400 -> ok expiry=86400    # same bytes, second namespace: own expiry
+get blob=D1 cap=RA -> ok expiry=604800
+get blob=D1 cap=RB -> ok expiry=86400
+store ns=A blob=D2 cap=WA ttl=2592000 -> ok expiry=2592000
+get blob=D2 cap=RB -> not_found                           # held in A only: same answer as NEVER
+get blob=NEVER cap=RB -> not_found
+check cap=RB blobs=D1,D2,NEVER -> ok available=D1
+check cap=RA blobs=D1,D2,NEVER -> ok available=D1,D2
+get blob=D2 cap=WA -> ok expiry=2592000                   # write grants read
+check cap=WA blobs=NEVER,D2 -> ok available=D2
+list ns=A cap=WA cursor=start limit=10 -> ok hashes=D1,D2 next=end
+store ns=A blob=NEVER cap=RA ttl=86400 -> unauthorized    # read never grants write
+store ns=A blob=NEVER cap=WB ttl=86400 -> unauthorized    # write capability of another namespace
+list ns=A cap=RB cursor=start limit=10 -> unauthorized
+list ns=B cap=WA cursor=start limit=10 -> unauthorized
+get blob=NEVER cap=RA -> not_found                        # the refused stores left nothing
+store ns=A blob=D2 cap=WA ttl=86400 -> ok expiry=2592000  # shorter TTL: the longer expiry stands
+at 86400
+get blob=D1 cap=RB -> not_found                           # B's membership expired (expiry <= now)
+get blob=D1 cap=RA -> ok expiry=604800                    # A's membership is independent
+check cap=RB blobs=D1 -> ok available=none
+list ns=B cap=RB cursor=start limit=10 -> ok hashes=none next=end
+
+# ---------------------------------------------------------------------------------------------
+# 3. Cursors: empty next at exhaustion and on an exact-limit tail.
+relay max_ttl=7776000
+at 0
+cap W kind=write ns=L quota=1048576 expiry=31536000
+cap R kind=read ns=L quota=0 expiry=31536000
+blob P1 size=1024
+blob P2 size=1024
+blob P3 size=1024
+blob P4 size=1024
+blob P5 size=1024
+store ns=L blob=P1 cap=W ttl=604800 -> ok expiry=604800
+store ns=L blob=P2 cap=W ttl=604800 -> ok expiry=604800
+store ns=L blob=P3 cap=W ttl=604800 -> ok expiry=604800
+store ns=L blob=P4 cap=W ttl=604800 -> ok expiry=604800
+list ns=L cap=R cursor=start limit=4 -> ok hashes=P1,P2,P3,P4 next=end   # exactly limit entries
+list ns=L cap=R cursor=start limit=2 -> ok hashes=P1,P2 next=K1
+list ns=L cap=R cursor=K1 limit=2 -> ok hashes=P3,P4 next=end            # exact-limit tail
+list ns=L cap=R cursor=K1 limit=3 -> ok hashes=P3,P4 next=end            # short tail
+store ns=L blob=P5 cap=W ttl=604800 -> ok expiry=604800
+list ns=L cap=R cursor=K1 limit=2 -> ok hashes=P3,P4 next=K2             # more entries follow now
+list ns=L cap=R cursor=K2 limit=2 -> ok hashes=P5 next=end
+list ns=L cap=R cursor=K1 limit=3 -> ok hashes=P3,P4,P5 next=end
+
+# ---------------------------------------------------------------------------------------------
+# 4. 1100 expired, not yet pruned entries: a list scans at most 1024 of them and returns an empty
+#    page with a non-empty cursor; the next page reaches the live entry behind them.
+relay max_ttl=7776000
+at 0
+cap W kind=write ns=X quota=2000000 expiry=31536000
+cap R kind=read ns=X quota=0 expiry=31536000
+fill ns=X prefix=E count=1100 size=1024 cap=W ttl=86400 -> ok
+blob Z size=1024
+store ns=X blob=Z cap=W ttl=604800 -> ok expiry=604800
+list ns=X cap=R cursor=start limit=2 -> ok hashes=E0,E1 next=K0
+at 90000                                                  # every E expired at 86400; none pruned
+list ns=X cap=R cursor=start limit=128 -> ok hashes=none next=K1         # 1024 expired entries scanned
+list ns=X cap=R cursor=K1 limit=128 -> ok hashes=Z next=end              # 76 more, then Z
+list ns=X cap=R cursor=K0 limit=128 -> ok hashes=none next=K2            # E2..E1025 scanned
+list ns=X cap=R cursor=K2 limit=128 -> ok hashes=Z next=end              # E1026..E1099, then Z
+check cap=R blobs=E0,E1099,Z -> ok available=Z
+prune -> ok removed=1100
+list ns=X cap=R cursor=start limit=128 -> ok hashes=Z next=end
+
+# ---------------------------------------------------------------------------------------------
+# 5. Renewal after expiry gets a new sequence; the hour seed after a namespace empties keeps old
+#    cursors below every new entry.
+relay max_ttl=7776000
+at 0
+cap W kind=write ns=S quota=1048576 expiry=31536000
+cap R kind=read ns=S quota=0 expiry=31536000
+blob Q1 size=1024
+blob Q2 size=1024
+blob Q3 size=1024
+blob Q4 size=4096
+store ns=S blob=Q1 cap=W ttl=86400 -> ok expiry=86400
+store ns=S blob=Q2 cap=W ttl=604800 -> ok expiry=604800
+list ns=S cap=R cursor=start limit=1 -> ok hashes=Q1 next=K1
+at 86400
+get blob=Q1 cap=R -> not_found                            # expiry <= now: never served
+list ns=S cap=R cursor=start limit=10 -> ok hashes=Q2 next=end
+store ns=S blob=Q1 cap=W ttl=86400 -> ok expiry=172800    # renewal of the expired membership
+list ns=S cap=R cursor=start limit=10 -> ok hashes=Q2,Q1 next=end        # new sequence, after Q2
+list ns=S cap=R cursor=K1 limit=10 -> ok hashes=Q2,Q1 next=end           # an old cursor sees it
+store ns=S blob=Q3 cap=W ttl=86400 -> ok expiry=172800
+list ns=S cap=R cursor=start limit=2 -> ok hashes=Q2,Q1 next=K2          # K2 = Q1's new sequence
+list ns=S cap=R cursor=K2 limit=10 -> ok hashes=Q3 next=end
+at 700000
+prune -> ok removed=3                                     # the namespace is now empty
+list ns=S cap=R cursor=start limit=10 -> ok hashes=none next=end
+prune -> ok removed=0
+at 703800
+store ns=S blob=Q4 cap=W ttl=86400 -> ok expiry=792000    # 703800 + 86400 = 790200, rounded up
+list ns=S cap=R cursor=K2 limit=10 -> ok hashes=Q4 next=end              # seeded above K2
+list ns=S cap=R cursor=K1 limit=10 -> ok hashes=Q4 next=end
+list ns=S cap=R cursor=start limit=10 -> ok hashes=Q4 next=end
+
+# ---------------------------------------------------------------------------------------------
+# 6. max_ttl: a TTL above the relay's maximum is rejected (the client sees rejected).
+relay max_ttl=604800
+at 0
+cap W kind=write ns=M quota=1048576 expiry=31536000
+cap R kind=read ns=M quota=0 expiry=31536000
+blob T1 size=1024
+store ns=M blob=T1 cap=W ttl=2592000 -> rejected
+store ns=M blob=T1 cap=W ttl=7776000 -> rejected
+get blob=T1 cap=R -> not_found
+store ns=M blob=T1 cap=W ttl=604800 -> ok expiry=604800
+
+# ---------------------------------------------------------------------------------------------
+# 7. Malformed, forged and expired tokens are refused by every operation.
+relay max_ttl=7776000
+at 0
+cap W kind=write ns=A quota=1048576 expiry=3600
+cap R kind=read ns=A quota=0 expiry=3600
+blob G1 size=1024
+blob G2 size=1024
+store ns=A blob=G1 cap=W ttl=86400 -> ok expiry=86400
+token EMPTY hex=empty
+token SHORT hex=0102030405060708
+token BADVERSION from=W xor=0                             # version byte 1 -> 0
+token BADKIND from=R xor=1                                # kind 1 (read) -> 0
+token BADNS from=W xor=2                                  # namespace changed: MAC no longer matches
+token BADEXPIRY from=R xor=49                             # expiry changed: MAC no longer matches
+token BADMAC from=W xor=81                                # last MAC byte
+store ns=A blob=G2 cap=EMPTY ttl=86400 -> unauthorized
+store ns=A blob=G2 cap=SHORT ttl=86400 -> unauthorized
+store ns=A blob=G2 cap=BADVERSION ttl=86400 -> unauthorized
+store ns=A blob=G2 cap=BADNS ttl=86400 -> unauthorized
+store ns=A blob=G2 cap=BADMAC ttl=86400 -> unauthorized
+get blob=G1 cap=EMPTY -> unauthorized
+get blob=G1 cap=SHORT -> unauthorized
+get blob=G1 cap=BADVERSION -> unauthorized
+get blob=G1 cap=BADKIND -> unauthorized
+get blob=G1 cap=BADNS -> unauthorized
+get blob=G1 cap=BADEXPIRY -> unauthorized
+get blob=G1 cap=BADMAC -> unauthorized
+check cap=EMPTY blobs=G1 -> unauthorized
+check cap=BADKIND blobs=G1 -> unauthorized
+check cap=BADEXPIRY blobs=G1 -> unauthorized
+check cap=BADMAC blobs=G1 -> unauthorized
+list ns=A cap=EMPTY cursor=start limit=10 -> unauthorized
+list ns=A cap=BADKIND cursor=start limit=10 -> unauthorized
+list ns=A cap=BADEXPIRY cursor=start limit=10 -> unauthorized
+list ns=A cap=BADMAC cursor=start limit=10 -> unauthorized
+get blob=G2 cap=R -> not_found                            # the refused stores left nothing
+get blob=G1 cap=R -> ok expiry=86400
+at 3600                                                   # both capabilities expire at 3600
+store ns=A blob=G2 cap=W ttl=86400 -> unauthorized
+get blob=G1 cap=R -> unauthorized
+get blob=G1 cap=W -> unauthorized
+check cap=R blobs=G1 -> unauthorized
+list ns=A cap=R cursor=start limit=10 -> unauthorized

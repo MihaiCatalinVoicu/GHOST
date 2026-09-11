@@ -30,11 +30,27 @@
 //! of the same client by the circuit they arrive on. Vanguards-lite is enabled for onion-service
 //! circuits. Blobs sent to relays must already be encrypted and bucket-sized; padding is applied
 //! inside the AEAD plaintext by the encrypting layer (see `ghost-relay-transport`).
+//!
+//! Relay calls go through [`NamespaceClient`], bound by type to one namespace: its circuits use
+//! that namespace's isolation token and every capability must name the same namespace (T21).
+//! The unbound client cannot be built outside the crate:
+//! ```compile_fail
+//! fn unbound(t: &ghost_client_net::TorTransport, a: &ghost_client_net::OnionAddress) {
+//!     let scope = ghost_client_net::IsolationScope::Issuer;
+//!     let _ = ghost_client_net::RelayClient::over_tor(t, a, &scope); // error: private
+//! }
+//! ```
+//! ```
+//! fn bound(t: &ghost_client_net::TorTransport, a: &ghost_client_net::OnionAddress) {
+//!     let _ = ghost_client_net::NamespaceClient::over_tor(t, a, [7u8; 32]);
+//! }
+//! ```
 
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 
 pub mod categories;
 pub mod isolation;
+pub mod namespace_client;
 pub mod onion;
 pub mod relay_client;
 pub mod transport;
@@ -45,7 +61,11 @@ pub mod jni_bridge;
 #[cfg(feature = "clippy-fixture")]
 mod clippy_fixture;
 
+#[cfg(test)]
+mod loopback;
+
 pub use isolation::IsolationScope;
+pub use namespace_client::NamespaceClient;
 pub use onion::{OnionAddress, OnionParseError};
-pub use relay_client::{RelayClient, RelayError, StoreReceipt, RELAY_RPC_DEADLINE};
+pub use relay_client::{FetchedBlob, RelayClient, RelayError, StoreReceipt, RELAY_RPC_DEADLINE};
 pub use transport::{TorTransport, TransportConfig, TransportError, BOOTSTRAP_DEADLINE};

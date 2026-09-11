@@ -1,5 +1,10 @@
 package org.ghost.network
 
+import org.ghost.network.RelayTransport.Companion.MAX_BATCH
+import org.ghost.network.RelayTransport.Companion.MAX_DEADLINE_MILLIS
+import org.ghost.network.RelayTransport.FetchedBlob
+import org.ghost.network.RelayTransport.Page
+import org.ghost.network.RelayTransport.StoreReceipt
 import java.io.File
 import java.lang.ref.Reference
 import java.util.concurrent.atomic.AtomicLong
@@ -14,16 +19,18 @@ class NetworkException(val category: String) : RuntimeException(category)
 /**
  * Android face of the Rust network core (`libghost_client_net.so`, ADR-19). All traffic goes
  * through the embedded Tor client to [OnionAddress] destinations; there is no other path. Each
- * namespace uses its own circuit isolation (ADR-09).
+ * namespace uses its own circuit isolation (ADR-09), and the capability of a call must name the
+ * call's namespace (checked natively before any I/O, T21).
  *
- * Blocking calls: run them off the main thread. Every relay call is bounded natively (60 s), and
- * [close] may be called from any thread at any time: it is idempotent, never frees state under an
- * in-flight call, and makes in-flight calls fail with category `closed`.
+ * Blocking calls: run them off the main thread. Every relay call is bounded natively by its
+ * deadline (at most 60 s), and [close] may be called from any thread at any time: it is
+ * idempotent, never frees state under an in-flight call, and makes in-flight calls fail with
+ * category `closed`. Calls from several threads may run concurrently on one transport.
  *
  * Blobs must already be encrypted and exactly bucket-sized ([BUCKET_SIZES]); padding belongs
  * inside the AEAD plaintext of the encrypting layer, never on the ciphertext.
  */
-class TorRelayTransport private constructor(id: Long) : AutoCloseable {
+class TorRelayTransport private constructor(id: Long) : RelayTransport {
     private val handle = AtomicLong(id)
 
     /**
@@ -31,9 +38,7 @@ class TorRelayTransport private constructor(id: Long) : AutoCloseable {
      * failure with category `tor_bootstrap_timeout` (or an aborted attempt) this transport cannot
      * bootstrap again: [close] it and [create] a new one.
      */
-    fun bootstrap() = call { nativeBootstrap(it) }
-
-    data class StoreReceipt(val blobHash: ByteArray, val expiryUnixSeconds: Long)
+    override fun bootstrap() = call { nativeBootstrap(it) }
 
     /**
      * Stores an encrypted, bucket-sized blob. `ttlSeconds` is rounded up natively to the next
@@ -41,29 +46,47 @@ class TorRelayTransport private constructor(id: Long) : AutoCloseable {
      * are rejected. The receipt's expiry is checked natively against the bucketed TTL (category
      * `not_stored` if the relay would drop the blob early).
      */
-    fun store(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, ciphertext: ByteArray, ttlSeconds: Int): StoreReceipt {
+    override fun store(
+        relay: OnionAddress,
+        namespace: ByteArray,
+        capability: ByteArray,
+        ciphertext: ByteArray,
+        ttlSeconds: Int,
+        deadlineMillis: Int,
+    ): StoreReceipt {
         require(namespace.size == 32) { "namespace must be 32 bytes" }
         require(ttlSeconds in 1..MAX_TTL_SECONDS) { "ttl must be 1 s .. 90 days" }
         require(ciphertext.size in BUCKET_SIZES) { "ciphertext must be exactly one padding bucket" }
-        val raw = call { nativeStore(it, relay.toString(), namespace, capability, ciphertext, ttlSeconds) }
+        requireDeadline(deadlineMillis)
+        val raw = call { nativeStore(it, relay.toString(), namespace, capability, ciphertext, ttlSeconds, deadlineMillis) }
         return decodeReceipt(raw)
     }
 
-    fun get(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, blobHash: ByteArray): ByteArray {
-        require(namespace.size == 32 && blobHash.size == 32)
-        return call { nativeGet(it, relay.toString(), namespace, capability, blobHash) }
+    override fun get(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, blobHash: ByteArray, deadlineMillis: Int): FetchedBlob {
+        require(namespace.size == 32 && blobHash.size == 32) { "namespace and hash must be 32 bytes" }
+        requireDeadline(deadlineMillis)
+        val raw = call { nativeGet(it, relay.toString(), namespace, capability, blobHash, deadlineMillis) }
+        return decodeFetched(raw)
     }
 
-    data class Page(val hashes: List<ByteArray>, val nextCursor: ByteArray)
-
-    fun list(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, cursor: ByteArray, limit: Int): Page {
-        require(namespace.size == 32 && limit in 1..256 && (cursor.isEmpty() || cursor.size == 8))
-        val raw = call { nativeList(it, relay.toString(), namespace, capability, cursor, limit) }
+    override fun list(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, cursor: ByteArray, limit: Int, deadlineMillis: Int): Page {
+        require(namespace.size == 32 && limit in 1..MAX_BATCH && (cursor.isEmpty() || cursor.size == 8)) {
+            "namespace 32 bytes, limit 1..256, cursor empty or 8 bytes"
+        }
+        requireDeadline(deadlineMillis)
+        val raw = call { nativeList(it, relay.toString(), namespace, capability, cursor, limit, deadlineMillis) }
         return decodePage(raw, limit)
     }
 
-    /** Drops every isolation token so the next request per scope builds fresh circuits. */
-    fun rotateCircuits() = call { nativeRotateCircuits(it) }
+    override fun check(relay: OnionAddress, namespace: ByteArray, capability: ByteArray, hashes: List<ByteArray>, deadlineMillis: Int): List<ByteArray> {
+        require(namespace.size == 32) { "namespace must be 32 bytes" }
+        requireDeadline(deadlineMillis)
+        val packed = packHashes(hashes)
+        val raw = call { nativeCheck(it, relay.toString(), namespace, capability, packed, deadlineMillis) }
+        return decodeCheck(raw, hashes)
+    }
+
+    override fun rotateCircuits() = call { nativeRotateCircuits(it) }
 
     override fun close() {
         val id = handle.getAndSet(0L)
@@ -103,6 +126,8 @@ class TorRelayTransport private constructor(id: Long) : AutoCloseable {
         val BUCKET_SIZES: Set<Int> = setOf(1024, 4096, 16384, 65536)
 
         const val MAX_TTL_SECONDS: Int = 90 * 86_400
+
+        private const val MALFORMED = "malformed_response"
 
         /**
          * Loaded on first use, not at class load, so pure-JVM code paths stay testable. A missing
@@ -146,12 +171,43 @@ class TorRelayTransport private constructor(id: Long) : AutoCloseable {
             return t
         }
 
+        /** A call's deadline must be 1..60 000 ms (the native side caps it at 60 s as well). */
+        internal fun requireDeadline(deadlineMillis: Int) {
+            require(deadlineMillis in 1..MAX_DEADLINE_MILLIS) { "deadline must be 1..60000 ms" }
+        }
+
+        /** Check request wire format: 1..256 hashes of 32 bytes, concatenated. */
+        internal fun packHashes(hashes: List<ByteArray>): ByteArray {
+            require(hashes.size in 1..MAX_BATCH) { "check takes 1..256 hashes" }
+            require(hashes.all { it.size == 32 }) { "hashes must be 32 bytes" }
+            val out = ByteArray(hashes.size * 32)
+            hashes.forEachIndexed { i, h -> h.copyInto(out, i * 32) }
+            return out
+        }
+
+        private fun readLong(raw: ByteArray, offset: Int): Long {
+            var v = 0L
+            for (i in offset until offset + 8) v = (v shl 8) or (raw[i].toLong() and 0xff)
+            return v
+        }
+
         /** Wire format from the native side: `blobHash(32) || expiryUnixSeconds(8, big-endian)`. */
         internal fun decodeReceipt(raw: ByteArray): StoreReceipt {
-            if (raw.size != 40) throw NetworkException("malformed_response")
-            var expiry = 0L
-            for (i in 32 until 40) expiry = (expiry shl 8) or (raw[i].toLong() and 0xff)
+            if (raw.size != 40) throw NetworkException(MALFORMED)
+            val expiry = readLong(raw, 32)
+            if (expiry < 0) throw NetworkException(MALFORMED)
             return StoreReceipt(raw.copyOfRange(0, 32), expiry)
+        }
+
+        /**
+         * Wire format from the native side: `expiryUnixSeconds(8, big-endian) || ciphertext`, the
+         * ciphertext exactly one bucket (the native side has verified its hash).
+         */
+        internal fun decodeFetched(raw: ByteArray): FetchedBlob {
+            if (raw.size < 8 || (raw.size - 8) !in BUCKET_SIZES) throw NetworkException(MALFORMED)
+            val expiry = readLong(raw, 0)
+            if (expiry < 0) throw NetworkException(MALFORMED)
+            return FetchedBlob(raw.copyOfRange(8, raw.size), expiry)
         }
 
         /**
@@ -159,12 +215,12 @@ class TorRelayTransport private constructor(id: Long) : AutoCloseable {
          * or 8 bytes, at most [limit] hashes (the native side enforces the same bounds).
          */
         internal fun decodePage(raw: ByteArray, limit: Int): Page {
-            if (raw.isEmpty()) throw NetworkException("malformed_response")
+            if (raw.isEmpty()) throw NetworkException(MALFORMED)
             val cursorLen = raw[0].toInt() and 0xff
             if ((cursorLen != 0 && cursorLen != 8) || raw.size < 1 + cursorLen || (raw.size - 1 - cursorLen) % 32 != 0) {
-                throw NetworkException("malformed_response")
+                throw NetworkException(MALFORMED)
             }
-            if ((raw.size - 1 - cursorLen) / 32 > limit) throw NetworkException("malformed_response")
+            if ((raw.size - 1 - cursorLen) / 32 > limit) throw NetworkException(MALFORMED)
             val cursor = raw.copyOfRange(1, 1 + cursorLen)
             val hashes = ArrayList<ByteArray>()
             var i = 1 + cursorLen
@@ -172,12 +228,39 @@ class TorRelayTransport private constructor(id: Long) : AutoCloseable {
             return Page(hashes, cursor)
         }
 
+        /**
+         * Wire format from the native side: the held hashes, 32 bytes each, concatenated. Strict:
+         * a whole number of hashes, no more than were requested, and each one of the requested
+         * hashes (the native side checks the same).
+         */
+        internal fun decodeCheck(raw: ByteArray, requested: List<ByteArray>): List<ByteArray> {
+            if (raw.size % 32 != 0 || raw.size / 32 > requested.size) throw NetworkException(MALFORMED)
+            val held = ArrayList<ByteArray>(raw.size / 32)
+            var i = 0
+            while (i < raw.size) {
+                val h = raw.copyOfRange(i, i + 32)
+                if (requested.none { it.contentEquals(h) }) throw NetworkException(MALFORMED)
+                held += h
+                i += 32
+            }
+            return held
+        }
+
         @JvmStatic private external fun nativeCreate(stateDir: String, cacheDir: String, bridgeLines: String): Long
         @JvmStatic private external fun nativeBootstrap(id: Long)
         @JvmStatic private external fun nativeStop(id: Long)
         @JvmStatic private external fun nativeRotateCircuits(id: Long)
-        @JvmStatic private external fun nativeStore(id: Long, relay: String, namespace: ByteArray, capability: ByteArray, ciphertext: ByteArray, ttlSeconds: Int): ByteArray
-        @JvmStatic private external fun nativeGet(id: Long, relay: String, namespace: ByteArray, capability: ByteArray, blobHash: ByteArray): ByteArray
-        @JvmStatic private external fun nativeList(id: Long, relay: String, namespace: ByteArray, capability: ByteArray, cursor: ByteArray, limit: Int): ByteArray
+        @JvmStatic private external fun nativeStore(
+            id: Long, relay: String, namespace: ByteArray, capability: ByteArray, ciphertext: ByteArray, ttlSeconds: Int, deadlineMs: Int,
+        ): ByteArray
+        @JvmStatic private external fun nativeGet(
+            id: Long, relay: String, namespace: ByteArray, capability: ByteArray, blobHash: ByteArray, deadlineMs: Int,
+        ): ByteArray
+        @JvmStatic private external fun nativeList(
+            id: Long, relay: String, namespace: ByteArray, capability: ByteArray, cursor: ByteArray, limit: Int, deadlineMs: Int,
+        ): ByteArray
+        @JvmStatic private external fun nativeCheck(
+            id: Long, relay: String, namespace: ByteArray, capability: ByteArray, hashes: ByteArray, deadlineMs: Int,
+        ): ByteArray
     }
 }

@@ -7,8 +7,12 @@
 //!
 //! The client only moves opaque, already-encrypted, bucket-sized blobs. It never frames or pads
 //! plaintext itself (padding belongs inside the AEAD plaintext, see `ghost-relay-transport`), it
-//! snaps TTLs to the allowed buckets, bounds every RPC with [`RELAY_RPC_DEADLINE`], and treats
-//! every relay response as hostile input.
+//! snaps TTLs to the allowed buckets, bounds every RPC with a deadline of at most
+//! [`RELAY_RPC_DEADLINE`], and treats every relay response as hostile input.
+//!
+//! A `RelayClient` is built only inside this crate: callers get one bound to a namespace through
+//! [`crate::NamespaceClient::over_tor`], which also checks each capability against that namespace
+//! before any I/O (T21).
 
 use crate::isolation::IsolationScope;
 use crate::onion::OnionAddress;
@@ -49,9 +53,10 @@ pub enum RelayError {
     InvalidArgument,
     /// The relay acknowledged a store that it would not serve (already-expired membership).
     NotStored,
-    /// The relay returned data that violates the protocol (hash, size, cursor, batch bounds).
+    /// The relay returned data that violates the protocol (hash, size, expiry, cursor, batch
+    /// bounds).
     Malformed,
-    /// [`RELAY_RPC_DEADLINE`] elapsed.
+    /// The call's deadline (at most [`RELAY_RPC_DEADLINE`]) elapsed.
     Timeout,
 }
 
@@ -77,7 +82,7 @@ impl From<tonic::Status> for RelayError {
     }
 }
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// A byte stream usable by hyper. Generic so tests can run the same client over loopback TCP.
 pub struct Io<T> {
@@ -85,7 +90,7 @@ pub struct Io<T> {
 }
 
 impl<T> Io<T> {
-    fn new(t: T) -> Self {
+    pub(crate) fn new(t: T) -> Self {
         Io {
             inner: Box::pin(TokioIo::new(t)),
         }
@@ -175,6 +180,24 @@ pub struct StoreReceipt {
     pub expiry_unix_seconds: u64,
 }
 
+/// Result of a successful get: the hash-verified, bucket-sized ciphertext and the expiry the
+/// relay declares for it (at most now + 90 days + clock skew; a relay can still under-state it).
+#[derive(Clone, PartialEq, Eq)]
+pub struct FetchedBlob {
+    pub data: Vec<u8>,
+    pub expiry_unix_seconds: u64,
+}
+
+impl std::fmt::Debug for FetchedBlob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Ciphertext bytes stay out of debug output (test failures, panics).
+        f.debug_struct("FetchedBlob")
+            .field("len", &self.data.len())
+            .field("expiry_unix_seconds", &self.expiry_unix_seconds)
+            .finish()
+    }
+}
+
 pub struct RelayClient<C> {
     inner: RelayServiceClient<HyperClient<C, tonic::body::Body>>,
     deadline: Duration,
@@ -251,12 +274,7 @@ pub(crate) fn validate_store(
         return Err(RelayError::Malformed);
     }
     let expiry = resp.expiry_unix_seconds;
-    let max_ttl = u64::from(*TTL_BUCKETS_DAYS.last().expect("buckets")) * 86_400;
-    if expiry
-        > now
-            .saturating_add(max_ttl)
-            .saturating_add(CLOCK_SKEW_SECONDS)
-    {
+    if expiry > latest_valid_expiry(now) {
         return Err(RelayError::Malformed);
     }
     if expiry.saturating_add(CLOCK_SKEW_SECONDS) < now.saturating_add(u64::from(ttl_seconds)) {
@@ -268,11 +286,32 @@ pub(crate) fn validate_store(
     })
 }
 
-pub(crate) fn validate_get(hash: &[u8; 32], resp: GetBlobResponse) -> Result<Vec<u8>, RelayError> {
+/// Latest expiry a relay can truthfully declare at `now`: the maximum TTL bucket (90 days) plus
+/// [`CLOCK_SKEW_SECONDS`].
+fn latest_valid_expiry(now: u64) -> u64 {
+    let max_ttl = u64::from(*TTL_BUCKETS_DAYS.last().expect("buckets")) * 86_400;
+    now.saturating_add(max_ttl)
+        .saturating_add(CLOCK_SKEW_SECONDS)
+}
+
+/// Checks a get response: bucket-sized data hashing to the requested blob, and an expiry no later
+/// than [`latest_valid_expiry`] (a relay could otherwise make a recipient keep dedup state for an
+/// arbitrary time). An early expiry cannot be detected here.
+pub(crate) fn validate_get(
+    hash: &[u8; 32],
+    resp: GetBlobResponse,
+    now: u64,
+) -> Result<FetchedBlob, RelayError> {
     if !is_bucket_size(resp.data.len()) || sha256(&resp.data) != *hash {
         return Err(RelayError::Malformed);
     }
-    Ok(resp.data)
+    if resp.expiry_unix_seconds > latest_valid_expiry(now) {
+        return Err(RelayError::Malformed);
+    }
+    Ok(FetchedBlob {
+        data: resp.data,
+        expiry_unix_seconds: resp.expiry_unix_seconds,
+    })
 }
 
 pub(crate) fn validate_list(
@@ -313,8 +352,9 @@ pub(crate) fn validate_check(
 
 impl RelayClient<OnionConnector> {
     /// Client for `relay` over Tor on the circuit set of `scope`. No connection is opened until
-    /// the first request; every request is bounded by [`RELAY_RPC_DEADLINE`].
-    pub fn over_tor(
+    /// the first request; every request is bounded by [`RELAY_RPC_DEADLINE`]. Crate-private: the
+    /// public way in is [`crate::NamespaceClient::over_tor`] (isolation scope = capability scope).
+    pub(crate) fn over_tor(
         transport: &TorTransport,
         relay: &OnionAddress,
         scope: &IsolationScope,
@@ -341,9 +381,14 @@ where
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_deadline(&mut self, deadline: Duration) {
-        self.deadline = deadline;
+    /// Sets the deadline of every later call to `min(deadline, RELAY_RPC_DEADLINE)`. A zero
+    /// deadline is refused with [`RelayError::InvalidArgument`] (it could only fail every call).
+    pub fn set_deadline(&mut self, deadline: Duration) -> Result<(), RelayError> {
+        if deadline.is_zero() {
+            return Err(RelayError::InvalidArgument);
+        }
+        self.deadline = deadline.min(RELAY_RPC_DEADLINE);
+        Ok(())
     }
 
     /// Stores an already-encrypted, bucket-sized blob. The TTL is snapped to an allowed bucket.
@@ -372,12 +417,13 @@ where
         validate_store(&hash, &resp, ttl_seconds, now_unix())
     }
 
-    /// Fetches a blob and verifies its size and hash. Returns the ciphertext unchanged.
+    /// Fetches a blob and verifies its size, hash and declared expiry. Returns the ciphertext
+    /// unchanged, with the relay's expiry.
     pub async fn get(
         &mut self,
         blob_hash: [u8; 32],
         capability: Vec<u8>,
-    ) -> Result<Vec<u8>, RelayError> {
+    ) -> Result<FetchedBlob, RelayError> {
         let req = GetBlobRequest {
             version: PROTOCOL_VERSION,
             blob_hash: blob_hash.to_vec(),
@@ -385,7 +431,7 @@ where
             request_id: request_id(),
         };
         let resp = with_deadline(self.deadline, self.inner.get_blob(req)).await?;
-        validate_get(&blob_hash, resp)
+        validate_get(&blob_hash, resp, now_unix())
     }
 
     /// Lists a namespace page; the cursor returned is either empty (done) or 8 bytes.
@@ -445,6 +491,7 @@ const _: () = assert!(HASH_BYTES == 32);
 #[allow(clippy::disallowed_methods, clippy::disallowed_types)] // loopback relays and TCP connectors
 mod tests {
     use super::*;
+    use crate::loopback::TcpConnector;
     use ghost_relay_api::proto::relay_service_server::RelayServiceServer;
     use ghost_relay_capability::{Capability as Cap, Kind, RelayKey};
     use ghost_relay_node::{Relay, RelayConfig, RelayServer};
@@ -452,27 +499,6 @@ mod tests {
     use std::sync::Mutex;
     use tokio::net::{TcpListener, TcpStream};
     use tokio_stream::wrappers::TcpListenerStream;
-
-    /// Loopback TCP connector: test-only, never compiled into the library.
-    #[derive(Clone)]
-    struct TcpConnector(SocketAddr);
-
-    impl StreamType for TcpConnector {
-        type Stream = TcpStream;
-    }
-
-    impl tower::Service<http::Uri> for TcpConnector {
-        type Response = Io<TcpStream>;
-        type Error = BoxError;
-        type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
-        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            Poll::Ready(Ok(()))
-        }
-        fn call(&mut self, _uri: http::Uri) -> Self::Future {
-            let addr = self.0;
-            Box::pin(async move { Ok(Io::new(TcpStream::connect(addr).await?)) })
-        }
-    }
 
     type Seen = Arc<Mutex<Vec<(bool, Option<String>)>>>;
 
@@ -523,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn round_trip_against_a_real_relay_without_user_agent() {
         let (relay, addr, seen, _dir) = relay().await;
-        let mut client = RelayClient::with_connector(TcpConnector(addr));
+        let mut client = RelayClient::with_connector(TcpConnector::new(addr));
         let ns = [0x42u8; 32];
         let write = mint(&relay, Kind::Write, ns);
         let read = mint(&relay, Kind::Read, ns);
@@ -544,9 +570,11 @@ mod tests {
             receipt.expiry_unix_seconds
         );
 
+        let fetched = client.get(receipt.blob_hash, read.clone()).await.unwrap();
+        assert_eq!(fetched.data, blob);
         assert_eq!(
-            client.get(receipt.blob_hash, read.clone()).await.unwrap(),
-            blob
+            fetched.expiry_unix_seconds, receipt.expiry_unix_seconds,
+            "get returns the relay's expiry for the membership"
         );
         let (page, cursor) = client.list(ns, read.clone(), vec![], 16).await.unwrap();
         assert_eq!(page, vec![receipt.blob_hash]);
@@ -579,7 +607,12 @@ mod tests {
 
     #[tokio::test]
     async fn arguments_are_checked_before_any_request() {
-        let mut client = RelayClient::with_connector(TcpConnector("127.0.0.1:9".parse().unwrap()));
+        let connector = TcpConnector::new("127.0.0.1:9".parse().unwrap());
+        let mut client = RelayClient::with_connector(connector.clone());
+        assert!(matches!(
+            client.set_deadline(Duration::ZERO),
+            Err(RelayError::InvalidArgument)
+        ));
         assert!(matches!(
             client.store([0; 32], vec![], vec![0u8; 1000], 86_400).await,
             Err(RelayError::NotBucketSized)
@@ -604,6 +637,35 @@ mod tests {
                 .await,
             Err(RelayError::InvalidArgument)
         ));
+        assert!(matches!(
+            client.check(vec![], vec![[0; 32]; MAX_BATCH + 1]).await,
+            Err(RelayError::InvalidArgument)
+        ));
+        assert_eq!(
+            connector.dials(),
+            0,
+            "no argument error may open a connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_deadline_is_capped_at_the_rpc_deadline() {
+        let mut client =
+            RelayClient::with_connector(TcpConnector::new("127.0.0.1:9".parse().unwrap()));
+        assert_eq!(client.deadline, RELAY_RPC_DEADLINE);
+        client.set_deadline(Duration::from_millis(1)).unwrap();
+        assert_eq!(client.deadline, Duration::from_millis(1));
+        client.set_deadline(Duration::from_secs(20)).unwrap();
+        assert_eq!(client.deadline, Duration::from_secs(20));
+        client.set_deadline(Duration::from_secs(61)).unwrap();
+        assert_eq!(client.deadline, RELAY_RPC_DEADLINE);
+        client.set_deadline(Duration::MAX).unwrap();
+        assert_eq!(client.deadline, RELAY_RPC_DEADLINE);
+        assert!(client.set_deadline(Duration::ZERO).is_err());
+        assert_eq!(
+            client.deadline, RELAY_RPC_DEADLINE,
+            "a refused deadline changes nothing"
+        );
     }
 
     #[tokio::test]
@@ -617,8 +679,8 @@ mod tests {
                 held.push(s);
             }
         });
-        let mut client = RelayClient::with_connector(TcpConnector(addr));
-        client.set_deadline(Duration::from_millis(300));
+        let mut client = RelayClient::with_connector(TcpConnector::new(addr));
+        client.set_deadline(Duration::from_millis(300)).unwrap();
         let started = std::time::Instant::now();
         let r = client.get([1; 32], vec![]).await;
         assert!(matches!(r, Err(RelayError::Timeout)), "got {r:?}");
@@ -691,7 +753,8 @@ mod tests {
                 GetBlobResponse {
                     data: tampered,
                     ..Default::default()
-                }
+                },
+                now
             ),
             Err(RelayError::Malformed)
         ));
@@ -702,18 +765,41 @@ mod tests {
                 GetBlobResponse {
                     data: short,
                     ..Default::default()
-                }
+                },
+                now
             ),
             Err(RelayError::Malformed)
         ));
-        assert!(validate_get(
-            &h,
-            GetBlobResponse {
-                data: blob,
-                ..Default::default()
-            }
-        )
-        .is_ok());
+        // get: the declared expiry is bounded by now + 90 days + clock skew, inclusive.
+        let served = |expiry| GetBlobResponse {
+            data: blob.clone(),
+            expiry_unix_seconds: expiry,
+            ..Default::default()
+        };
+        let limit = now + 90 * DAY + CLOCK_SKEW_SECONDS;
+        let fetched = validate_get(&h, served(limit), now).unwrap();
+        assert_eq!(
+            (fetched.data.as_slice(), fetched.expiry_unix_seconds),
+            (&blob[..], limit)
+        );
+        assert!(matches!(
+            validate_get(&h, served(limit + 1), now),
+            Err(RelayError::Malformed)
+        ));
+        assert!(
+            matches!(
+                validate_get(&h, served(u64::MAX), u64::MAX - 10),
+                Ok(FetchedBlob { .. })
+            ),
+            "saturating bound near the end of time"
+        );
+        // An early (even past) expiry is not detectable here and is passed on unchanged.
+        assert_eq!(
+            validate_get(&h, served(0), now)
+                .unwrap()
+                .expiry_unix_seconds,
+            0
+        );
         // list: oversized cursor (used to truncate through `as u8`), over-limit page, bad hash
         let long_cursor = ListNamespaceResponse {
             blob_hashes: vec![],
@@ -816,7 +902,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let mut c = RelayClient::with_connector(TcpConnector(addr));
+        let mut c = RelayClient::with_connector(TcpConnector::new(addr));
         let blob = vec![3u8; 1024];
         let r = c.store([1; 32], vec![], blob.clone(), 86_400).await;
         assert!(matches!(r, Err(RelayError::NotStored)), "store: {r:?}");
