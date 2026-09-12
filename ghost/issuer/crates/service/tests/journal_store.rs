@@ -1,0 +1,284 @@
+//! `issued.journal` and `issuer.redb` formats (Phase 8 design §6.1, §6.3, §19.5): frames, torn
+//! tails, corruption, sequence gaps, weekly segments, pruning; schema refusal and row encodings.
+
+use ghost_entitlement::grid::week_start;
+use ghost_issuer::journal::{
+    ClaimEntry, Entry, FileJournal, InvoiceEntry, Journal, JournalError, SEGMENT_PREFIX,
+};
+use ghost_issuer::store::{
+    self, ClaimRow, ClaimState, CreditUse, InvoiceRow, InvoiceState, MetaKey, PayWith, RedbStore,
+    Store, StoreError, Table,
+};
+
+fn entries() -> Vec<Entry> {
+    vec![
+        Entry::Invoice(InvoiceEntry {
+            invoice_id: [1; 16],
+            claim_hash: [2; 32],
+            request_digest: [3; 32],
+            pay_with: PayWith::Monero,
+            minor: 7,
+            subaddress: [b'8'; 95],
+            amount: 200_000_000_000,
+            base_week: 2960,
+            created_height: 1_000,
+            grace_height: 3_880,
+            credits: Vec::new(),
+        }),
+        Entry::Invoice(InvoiceEntry {
+            invoice_id: [4; 16],
+            claim_hash: [5; 32],
+            request_digest: [6; 32],
+            pay_with: PayWith::Credits,
+            minor: 0,
+            subaddress: [0; 95],
+            amount: 0,
+            base_week: 2960,
+            created_height: 0,
+            grace_height: 0,
+            credits: (0..20).map(|i| (227, [i; 32])).collect(),
+        }),
+        Entry::Issue {
+            invoice_id: [1; 16],
+            digest: [9; 32],
+        },
+        Entry::Invite {
+            epoch: 740,
+            nullifier: [10; 32],
+            digest: [11; 32],
+            base_week: 2960,
+        },
+        Entry::Claim(ClaimEntry {
+            claim_id: [12; 16],
+            digest: [13; 32],
+            amount: 250_000_000_000,
+            address: [b'4'; 95],
+            credits: (0..64).map(|i| (229, [i; 32])).collect(),
+        }),
+    ]
+}
+
+fn segment(dir: &std::path::Path, week: u64) -> std::path::PathBuf {
+    dir.join(format!("{SEGMENT_PREFIX}{week}"))
+}
+
+#[test]
+fn frames_round_trip_and_sequence_numbers_continue() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    for (i, e) in entries().iter().enumerate() {
+        assert_eq!(j.append(2960, e).unwrap(), i as u64 + 1);
+    }
+    drop(j);
+    let j = FileJournal::open(dir.path()).unwrap();
+    let read: Vec<Entry> = j.entries().unwrap().into_iter().map(|(_, e)| e).collect();
+    assert_eq!(read, entries());
+    assert_eq!(j.append(2960, &entries()[2]).unwrap(), 6);
+}
+
+#[test]
+fn a_torn_tail_is_discarded_and_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2960, &entries()[2]).unwrap();
+    drop(j);
+    let path = segment(dir.path(), 2960);
+    let valid = std::fs::metadata(&path).unwrap().len();
+    let frame = entries()[3].encode(3).unwrap();
+    for cut in [1, 3, 4, 20, frame.len() - 1] {
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.truncate(valid as usize);
+        bytes.extend_from_slice(&frame[..cut]);
+        std::fs::write(&path, &bytes).unwrap();
+        let j = FileJournal::open(dir.path()).unwrap();
+        assert_eq!(j.entries().unwrap().len(), 2, "cut {cut}");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), valid);
+    }
+    // A complete final frame with a bad checksum is a torn write too.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut bad = frame.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 1;
+    bytes.extend_from_slice(&bad);
+    std::fs::write(&path, &bytes).unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    assert_eq!(j.append(2960, &entries()[3]).unwrap(), 3);
+    assert_eq!(j.entries().unwrap().len(), 3);
+}
+
+#[test]
+fn damage_before_the_tail_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2960, &entries()[2]).unwrap();
+    drop(j);
+    let path = segment(dir.path(), 2960);
+    let good = std::fs::read(&path).unwrap();
+    let mut bytes = good.clone();
+    bytes[30] ^= 0x01;
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).err(),
+        Some(JournalError::Corrupt)
+    );
+    // An out-of-range length field that is present.
+    let mut bytes = good.clone();
+    bytes[..4].copy_from_slice(&u32::MAX.to_be_bytes());
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).err(),
+        Some(JournalError::Corrupt)
+    );
+    // A torn frame in a segment that is not the last one.
+    std::fs::write(&path, &good[..good.len() - 5]).unwrap();
+    std::fs::write(segment(dir.path(), 2961), entries()[3].encode(3).unwrap()).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).err(),
+        Some(JournalError::Corrupt)
+    );
+}
+
+#[test]
+fn an_unknown_tag_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut frame = entries()[2].encode(1).unwrap();
+    frame[12] = 9;
+    let body_end = frame.len() - 32;
+    let checksum = <sha2::Sha256 as sha2::Digest>::digest(&frame[..body_end]);
+    frame[body_end..].copy_from_slice(&checksum);
+    std::fs::write(segment(dir.path(), 2960), &frame).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).err(),
+        Some(JournalError::Format)
+    );
+}
+
+#[test]
+fn segments_roll_weekly_and_a_gap_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2961, &entries()[2]).unwrap();
+    // A clock step back keeps writing to the latest segment.
+    j.append(2960, &entries()[3]).unwrap();
+    drop(j);
+    assert_eq!(std::fs::read(segment(dir.path(), 2961)).unwrap().len(), {
+        entries()[2].encode(2).unwrap().len() + entries()[3].encode(3).unwrap().len()
+    });
+    let j = FileJournal::open(dir.path()).unwrap();
+    let seqs: Vec<u64> = j.entries().unwrap().into_iter().map(|(s, _)| s).collect();
+    assert_eq!(seqs, vec![1, 2, 3]);
+    drop(j);
+    std::fs::write(segment(dir.path(), 2963), entries()[3].encode(5).unwrap()).unwrap();
+    assert_eq!(FileJournal::open(dir.path()).err(), Some(JournalError::Gap));
+}
+
+#[test]
+fn pruning_needs_age_and_a_newer_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2960, &entries()[2]).unwrap();
+    j.append(2961, &entries()[3]).unwrap();
+    j.append(2962, &entries()[4]).unwrap();
+    let week = 604_800;
+    // Segment 2960 ends at start(2961); it is prunable 7 days later.
+    assert_eq!(
+        j.prune(week_start(2961) + week - 1, 4).unwrap(),
+        Vec::<u64>::new()
+    );
+    assert_eq!(
+        j.prune(week_start(2961) + week, 1).unwrap(),
+        Vec::<u64>::new()
+    );
+    assert_eq!(j.prune(week_start(2961) + week, 2).unwrap(), vec![2960]);
+    assert_eq!(
+        j.prune(week_start(2963) + week, 2).unwrap(),
+        Vec::<u64>::new()
+    );
+    // The latest segment is never pruned.
+    assert_eq!(j.prune(u64::MAX, 4).unwrap(), vec![2961]);
+    let seqs: Vec<u64> = j.entries().unwrap().into_iter().map(|(s, _)| s).collect();
+    assert_eq!(seqs, vec![4]);
+    assert_eq!(j.append(2962, &entries()[2]).unwrap(), 5);
+}
+
+#[test]
+fn store_refuses_another_schema_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("issuer.redb");
+    let s = RedbStore::open(&path).unwrap();
+    let mut tx = s.write().unwrap();
+    store::set_meta(&mut *tx, MetaKey::SchemaVersion, 2).unwrap();
+    tx.commit().unwrap();
+    drop(s);
+    assert_eq!(RedbStore::open(&path).err(), Some(StoreError::Schema));
+}
+
+#[test]
+fn an_uncommitted_transaction_leaves_no_trace() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = RedbStore::open(&dir.path().join("issuer.redb")).unwrap();
+    let mut tx = s.write().unwrap();
+    tx.put(Table::ClaimIndex, &[1; 32], &[2; 16]).unwrap();
+    drop(tx);
+    let tx = s.read().unwrap();
+    assert_eq!(tx.get(Table::ClaimIndex, &[1; 32]).unwrap(), None);
+    for t in Table::ALL {
+        assert!(!t.name().is_empty());
+    }
+}
+
+#[test]
+fn rows_round_trip() {
+    let row = InvoiceRow {
+        state: InvoiceState::Issued,
+        pay_with: PayWith::Monero,
+        minor: 9,
+        amount: 1,
+        claim_hash: [1; 32],
+        request_digest: [2; 32],
+        base_week: 3,
+        es_seq: 4,
+        created_height: 5,
+        seen_deadline: 6,
+        grace_height: 7,
+        confirmed_height: 8,
+        credited: 9,
+        seen: 10,
+        issued_digest: Some([3; 32]),
+        issued_height: 11,
+        purge_height: 12,
+        subaddress: [b'8'; 95],
+    };
+    assert_eq!(InvoiceRow::decode(&row.encode()).unwrap(), row);
+    assert_eq!(row.encode().len(), 285);
+    let none = InvoiceRow {
+        issued_digest: None,
+        ..row.clone()
+    };
+    assert_eq!(InvoiceRow::decode(&none.encode()).unwrap(), none);
+    assert_eq!(
+        InvoiceRow::decode(&row.encode()[1..]),
+        Err(StoreError::Corrupt)
+    );
+    let claim = ClaimRow {
+        state: ClaimState::Queued,
+        amount: 5,
+        credits: 10,
+        digest: [4; 32],
+        address: [b'4'; 95],
+        batch_id: [0; 16],
+    };
+    assert_eq!(ClaimRow::decode(&claim.encode()).unwrap(), claim);
+    for u in [
+        CreditUse::Discount([1; 16]),
+        CreditUse::Payout([2; 16]),
+        CreditUse::Refresh([3; 16]),
+    ] {
+        assert_eq!(CreditUse::decode(&u.encode()).unwrap(), u);
+    }
+    assert_eq!(CreditUse::decode(&[4; 17]), Err(StoreError::Corrupt));
+}

@@ -3,7 +3,10 @@
 
 use std::collections::BTreeMap;
 
+pub mod chain_port;
+pub mod faults;
 pub mod fixture;
+pub mod world;
 
 pub const FILE: &str = include_str!("../../../../../protocol/test-vectors/blind_rsa_pp2.txt");
 

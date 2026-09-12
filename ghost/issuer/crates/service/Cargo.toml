@@ -10,16 +10,28 @@ description = "GHOST entitlement issuer: blind-signed credentials over a Monero 
 [dependencies]
 ghost-blind-rsa = { path = "../blind-rsa" }
 ghost-entitlement = { path = "../entitlement" }
+ghost-issuer-api = { path = "../api" }
 # Reference signer (design §2.7, ADR-22): RFC 9474 co-author's implementation on the constant-time
 # crypto-bigint path of rsa 0.10.0-rc.18. Only this graph (and ghost-issuer-ops) may link it.
 blind-rsa-signatures = { workspace = true }
-# Sealed per-epoch key files: ChaCha20-Poly1305 and HKDF-SHA256 from ring, no AEAD crate (§14.3).
+# Sealed per-epoch key files: ChaCha20-Poly1305 and HKDF-SHA256 from ring, no AEAD crate (§14.3);
+# the operating-system random source for invoice ids.
 ring = { workspace = true }
+# Storage (design §6.1) and the journal checksum (§19.5: SHA-256, no CRC crate).
+redb = { workspace = true }
+sha2 = { workspace = true }
+# gRPC status codes of the handlers and the wall-clock facade (blocking pool, signing semaphore,
+# reply quantum, §5.9, §2.8); the tonic server itself is wired in slice S5/S11.
+tonic = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
-sha2 = { workspace = true }
 # Independent HKDF-SHA256 (RFC 5869 over HMAC-SHA256) for the seal-key derivation test.
 hmac = { workspace = true }
-# Signs the test Entitlement Schedule fixtures (tests/fixture_gen.rs).
+# Signs the test Entitlement Schedule fixtures (tests/fixture_gen.rs, the small crash-suite ES).
 ed25519-dalek = { workspace = true }
+tempfile = { workspace = true }
+# The ChainPort double builds valid regtest subaddresses (Keccak-256 checksum, Ed25519 points).
+sha3 = { workspace = true }
+curve25519-dalek = { workspace = true }

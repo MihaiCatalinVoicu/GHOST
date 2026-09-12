@@ -1,6 +1,9 @@
-// GHOST entitlement issuer wire schema, protocol version 1.
-// Normative source: ADR-02 and ADR-05 (blind-signed credentials, Monero rail). The issuer never
-// receives a GHOST identity; requests arrive over Tor and carry no stable client identifier.
+// GHOST entitlement issuer wire schema, protocol version 1 (Phase 8; ADR-02, ADR-22..ADR-24).
+// The issuer never receives a GHOST identity, a relay name, a namespace or a referral identifier.
+// Every value a client needs to validate a response (keys, prices, periods, constants) comes from the
+// Entitlement Schedule built into the client, never from this service.
+// Normative design: docs/design/faza8-issuer.md §5.2 (with §19). This file replaces the unreleased
+// draft in place; the protocol version stays 1.
 syntax = "proto3";
 
 package ghost.issuer.v1;
@@ -10,104 +13,142 @@ option java_multiple_files = true;
 
 enum Rail {
   RAIL_UNSPECIFIED = 0;
-  RAIL_MONERO = 1;       // P0
+  RAIL_MONERO = 1;       // P0; the only value accepted in protocol version 1
   RAIL_LIGHTNING = 2;    // P1, same blind issuance
 }
 
-enum TokenKind {
-  TOKEN_KIND_UNSPECIFIED = 0;
-  TOKEN_KIND_ACCESS = 1;   // redeemed at relays for write capabilities
-  TOKEN_KIND_INVITE = 2;   // redeemed at the issuer to activate a new account
+enum Product {
+  PRODUCT_UNSPECIFIED = 0;
+  PRODUCT_PACK = 1;      // ES layout: weeks base..base+4 x slots x access_per_slot, invites_per_pack, 1 credit if XMR
 }
 
 message RequestInvoiceRequest {
-  uint32 version = 1;
-  Rail rail = 2;
-  uint32 period_days = 3;              // subscription period requested (policy-bounded)
-  bytes referral_commitment = 4;       // from the invite that onboarded this client; may be empty
+  uint32 version = 1;           // MUST be 1
+  Rail rail = 2;                // MUST be RAIL_MONERO
+  Product product = 3;          // MUST be PRODUCT_PACK
+  bytes claim_hash = 4;         // 32 bytes: SHA-256("ghost/v1/issuer-claim" || claim_key)
+  repeated bytes credits = 5;   // empty, or the smallest set (>= ES.credits_per_free_pack, <= 20) of distinct CREDIT tokens
+                                // (354 bytes each) whose values cover the price (§4.6, §19.8)
+  reserved 6;                   // was schedule_seq: the layout and price depend on base_week only (§19.2)
+  uint64 base_week = 7;         // the client's week (device clock); validated with a ±4 h tolerance, never chosen by the issuer
+}
+
+enum RequestInvoiceResult {
+  REQUEST_INVOICE_RESULT_UNSPECIFIED = 0;
+  REQUEST_INVOICE_RESULT_OK = 1;
+  REQUEST_INVOICE_RESULT_WRONG_PERIOD = 2;   // nothing recorded; base_week outside {week(t − 4 h), week(t + 4 h)}
+  REQUEST_INVOICE_RESULT_CREDITS_SPENT = 3;  // nothing consumed; spent_mask names the credits already used
+  REQUEST_INVOICE_RESULT_CLAIM_CONFLICT = 4; // claim_hash known with a different request
 }
 
 message RequestInvoiceResponse {
-  bytes invoice_id = 1;                // 16 bytes, unlinkable to any later token
-  string payment_uri = 2;              // e.g. monero:<subaddress>?tx_amount=...
-  string amount = 3;                   // decimal string in rail currency
-  uint64 expiry_unix_seconds = 4;
-  uint32 required_confirmations = 5;
-}
-
-message PollInvoiceRequest {
-  uint32 version = 1;
-  bytes invoice_id = 2;
-}
-
-message PollInvoiceResponse {
-  enum Status {
-    STATUS_UNSPECIFIED = 0;
-    STATUS_PENDING = 1;
-    STATUS_CONFIRMED = 2;
-    STATUS_EXPIRED = 3;
-  }
-  Status status = 1;
-  uint32 confirmations = 2;
-}
-
-message BlindedToken {
-  TokenKind kind = 1;
-  bytes period_id = 2;                 // public metadata: validity period the token is bound to
-  bytes blinded_message = 3;           // RFC 9474 blinded message (or Privacy Pass equivalent)
+  RequestInvoiceResult result = 1;
+  bytes invoice_id = 2;         // 16 random bytes (OK only)
+  uint64 amount_atomic = 3;     // MUST equal the client's own computation (price or 0)
+  string subaddress = 4;        // 95 chars, ES network, subaddress prefix; empty iff amount_atomic == 0
+  uint32 spent_mask = 5;        // CREDITS_SPENT only: bit i set iff credits[i] was already used
 }
 
 message BlindSignRequest {
   uint32 version = 1;
-  bytes invoice_id = 2;
-  repeated BlindedToken tokens = 3;    // count bounded by policy (access + invite)
+  bytes invoice_id = 2;         // 16 bytes
+  bytes claim_key = 3;          // 32 bytes; bearer proof for this invoice
+  bytes blinded = 4;            // exactly N x 256 bytes in ES layout order (§4.2); each value in [1, n-1]
+}
+
+enum InvoiceState {
+  INVOICE_STATE_UNSPECIFIED = 0;
+  INVOICE_STATE_SIGNED = 1;                  // blind_signatures present (BlindSign) or already issued (InvoiceStatus)
+  INVOICE_STATE_AWAITING_PAYMENT = 2;        // nothing seen
+  INVOICE_STATE_AWAITING_CONFIRMATIONS = 3;  // seen (pool or < confirmations) covers the amount
+  INVOICE_STATE_UNDERPAID = 4;               // 0 < seen + credited < amount: top up to the same subaddress
+  INVOICE_STATE_EXPIRED = 5;                 // grace passed without full credit (decided from a synced view)
+  INVOICE_STATE_OTHER_REQUEST_ISSUED = 6;    // issued for a different blinded request; nothing signed
 }
 
 message BlindSignResponse {
-  repeated bytes blind_signatures = 1; // same order as request
-  bytes issuer_key_id = 2;             // identifies the issuer public key / period set
+  InvoiceState state = 1;
+  bytes blind_signatures = 2;   // SIGNED only: same length and order as `blinded`
+  uint64 credited_atomic = 3;   // qualifying (>= ES.confirmations, unlock_time 0, not double-spent)
+  uint64 seen_atomic = 4;       // pool or below ES.confirmations
+}
+
+message InvoiceStatusRequest {  // optional "check now" (user action, declared presence sample, STANDARD mode only)
+  uint32 version = 1;
+  bytes invoice_id = 2;
+  bytes claim_key = 3;
+}
+
+message InvoiceStatusResponse {
+  InvoiceState state = 1;       // never carries signatures; those come only from BlindSign
+  uint64 credited_atomic = 2;
+  uint64 seen_atomic = 3;
 }
 
 message RedeemInviteRequest {
   uint32 version = 1;
-  bytes period_id = 2;
-  bytes token = 3;                     // unblinded invite token
-  bytes signature = 4;
-  bytes nullifier = 5;                 // deterministic per token; prevents reuse
+  bytes invite_token = 2;       // 354 bytes, kind INVITE (challenge origin "issuer-invite")
+  uint64 base_week = 3;         // the client's week; validated with the ±4 h tolerance of RequestInvoice (§19.4)
+  bytes blinded = 4;            // exactly trial layout N_t x 256 bytes (§4.3)
+}
+
+enum RedeemInviteResult {
+  REDEEM_INVITE_RESULT_UNSPECIFIED = 0;
+  REDEEM_INVITE_RESULT_OK = 1;
+  REDEEM_INVITE_RESULT_REPLAYED = 2;         // nullifier used with a different request (revoked or already used)
+  REDEEM_INVITE_RESULT_WRONG_PERIOD = 3;     // base_week mismatch; nothing recorded
 }
 
 message RedeemInviteResponse {
-  bool accepted = 1;
+  RedeemInviteResult result = 1;
+  bytes blind_signatures = 2;   // OK only: same length and order as `blinded`
 }
 
-message ClaimReferralRequest {
+message ClaimPayoutRequest {
   uint32 version = 1;
-  bytes referral_preimage = 2;         // proves ownership of referral_commitment
-  string payout_address = 3;           // fresh Monero subaddress supplied by the referrer
+  bytes claim_id = 2;           // 16 random bytes; idempotency key (client write-ahead)
+  repeated bytes credits = 3;   // ES.min_claim_credits (10) .. ES.max_claim_credits (50) distinct CREDIT tokens
+  string payout_address = 4;    // 95 chars: ES-network standard address or subaddress (integrated refused)
 }
 
-message ClaimReferralResponse {
-  string queued_amount = 1;            // paid in batches with randomized delay (ADR-02)
+enum ClaimPayoutResult {
+  CLAIM_PAYOUT_RESULT_UNSPECIFIED = 0;
+  CLAIM_PAYOUT_RESULT_QUEUED = 1;
+  CLAIM_PAYOUT_RESULT_CREDITS_SPENT = 2;     // nothing consumed; spent_mask names the credits already used
+  CLAIM_PAYOUT_RESULT_CLAIM_CONFLICT = 3;    // claim_id known with a different body
+  CLAIM_PAYOUT_RESULT_ADDRESS_REJECTED = 4;  // network, type, checksum or point decompression failed
 }
 
-message IssuerKeysRequest {
+message ClaimPayoutResponse {
+  ClaimPayoutResult result = 1;
+  uint64 queued_atomic = 2;     // QUEUED only: Σ price(epoch of each credit's key) / 10; paid later, one recipient per
+                                // transaction, at a random time
+  uint64 spent_mask = 3;        // CREDITS_SPENT only: bit i set iff credits[i] was already used. uint64, not the
+                                // design's uint32: a claim carries up to 50 credits (S4 deviation, wire-compatible)
+}
+
+message RefreshCreditRequest {  // §19.8: a credit received through a drop is exchanged before any use
   uint32 version = 1;
+  bytes credit = 2;             // 354 bytes, a CREDIT token of an accepted epoch
+  bytes blinded = 3;            // exactly 256 bytes: one CREDIT position under the key of the SAME credit epoch
 }
 
-message IssuerKeysResponse {
-  message PeriodKey {
-    bytes period_id = 1;
-    bytes public_key = 2;
-    bytes key_id = 3;
-  }
-  repeated PeriodKey keys = 1;         // also embedded in the signed release manifest for pinning
+enum RefreshCreditResult {
+  REFRESH_CREDIT_RESULT_UNSPECIFIED = 0;
+  REFRESH_CREDIT_RESULT_OK = 1;
+  REFRESH_CREDIT_RESULT_REPLAYED = 2;         // nullifier already used for another purpose or another blinded value
+}
+
+message RefreshCreditResponse {
+  RefreshCreditResult result = 1;
+  bytes blind_signature = 2;    // OK only: 256 bytes
 }
 
 service IssuerService {
   rpc RequestInvoice(RequestInvoiceRequest) returns (RequestInvoiceResponse);
-  rpc PollInvoice(PollInvoiceRequest) returns (PollInvoiceResponse);
   rpc BlindSign(BlindSignRequest) returns (BlindSignResponse);
+  rpc InvoiceStatus(InvoiceStatusRequest) returns (InvoiceStatusResponse);
   rpc RedeemInvite(RedeemInviteRequest) returns (RedeemInviteResponse);
-  rpc ClaimReferral(ClaimReferralRequest) returns (ClaimReferralResponse);
-  rpc IssuerKeys(IssuerKeysRequest) returns (IssuerKeysResponse);
+  rpc ClaimPayout(ClaimPayoutRequest) returns (ClaimPayoutResponse);
+  rpc RefreshCredit(RefreshCreditRequest) returns (RefreshCreditResponse);
 }

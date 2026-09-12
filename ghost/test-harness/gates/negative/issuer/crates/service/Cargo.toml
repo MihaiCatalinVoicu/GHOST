@@ -1,0 +1,9 @@
+[package]
+name = "negative-issuer-service"
+version = "0.0.0"
+# Negative fixture (Phase 8 design §6.5, §14.1): lines 6 and 9 must be reported.
+[dependencies]
+tracing = "0.1"
+
+[dev-dependencies]
+log = { version = "0.4" }

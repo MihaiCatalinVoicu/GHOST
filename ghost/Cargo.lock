@@ -1687,13 +1687,30 @@ name = "ghost-issuer"
 version = "0.1.0"
 dependencies = [
  "blind-rsa-signatures",
+ "curve25519-dalek",
  "ed25519-dalek",
  "ghost-blind-rsa",
  "ghost-entitlement",
+ "ghost-issuer-api",
  "hex",
  "hmac 0.13.0",
+ "redb",
  "ring",
  "sha2 0.11.0",
+ "sha3 0.10.9",
+ "tempfile",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
+name = "ghost-issuer-api"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

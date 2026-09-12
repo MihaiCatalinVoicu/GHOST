@@ -41,6 +41,7 @@ const PRK_SALT: &[u8] = b"ghost/v1/blind-batch";
 const LAYOUT_DOMAIN: &[u8] = b"ghost/v1/layout";
 const BLINDSIGN_DOMAIN: &[u8] = b"ghost/v1/blindsign";
 const TRIAL_DOMAIN: &[u8] = b"ghost/v1/trial";
+const CLAIM_DOMAIN: &[u8] = b"ghost/v1/issuer-claim";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BatchError {
@@ -363,6 +364,15 @@ pub fn request_digest(invoice_id: &[u8; 16], request: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// `claim_hash = SHA-256("ghost/v1/issuer-claim" || claim_key)` (design §5.2): the client sends
+/// the hash with `RequestInvoice` and the 32-byte key itself as the bearer proof of `BlindSign`.
+pub fn claim_hash(claim_key: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(CLAIM_DOMAIN);
+    h.update(claim_key);
+    h.finalize().into()
+}
+
 /// `SHA-256("ghost/v1/trial" || invite_nullifier || base_week(8, BE) || request)`.
 pub fn trial_digest(invite_nullifier: &[u8; 32], base_week: u64, request: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -387,4 +397,22 @@ fn expand(prk: &hkdf::Prk, info: &[&[u8]], len: usize) -> Result<Vec<u8>, BatchE
         .and_then(|okm| okm.fill(&mut out))
         .map_err(|_| BatchError::Derivation)?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_hash_is_the_domain_separated_sha256_of_the_key() {
+        let key = [7u8; 32];
+        let mut h = Sha256::new();
+        h.update(b"ghost/v1/issuer-claim");
+        h.update(key);
+        let expected: [u8; 32] = h.finalize().into();
+        assert_eq!(claim_hash(&key), expected);
+        assert_ne!(claim_hash(&key), claim_hash(&[8u8; 32]));
+        // Distinct from the other issuer digests over the same bytes.
+        assert_ne!(claim_hash(&key), request_digest(&[7; 16], &[7; 16]));
+    }
 }

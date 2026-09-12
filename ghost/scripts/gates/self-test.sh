@@ -66,6 +66,59 @@ if printf '%s\n' "$out" | grep -qF "issuer/crates/ops/src/report.rs:5:"; then
 else
   echo "self-test ok: no-logging exempts println!/eprintln! in ops/src/report.rs only"
 fi
+# Phase 8 (design §6.5, §14.1): logging-framework paths and bare logging macros are reported in the
+# issuer, relay and client-core sources, and logging crates in issuer manifests, one line each.
+out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/no-logging.sh" 2>&1 || true)"
+for want in issuer/crates/service/src/logging.rs:3: issuer/crates/service/src/logging.rs:5: \
+  issuer/crates/service/src/logging.rs:6: issuer/crates/service/src/logging.rs:7: \
+  issuer/crates/service/src/logging.rs:8: issuer/crates/service/src/logging.rs:9: \
+  issuer/crates/service/Cargo.toml:6: issuer/crates/service/Cargo.toml:9: relay/crates/bad/src/logging.rs:3:; do
+  if printf '%s\n' "$out" | grep -qF "$want"; then
+    echo "self-test ok: no-logging reports $want"
+  else
+    echo "SELF-TEST FAIL: no-logging does not report $want" >&2; rc=1
+  fi
+done
+out="$(GHOST_ROOT="$HARNESS/negative-client-core" bash "$DIR/no-logging.sh" 2>&1 || true)"
+if printf '%s\n' "$out" | grep -qF "client-core/bad/src/logging.rs:3:"; then
+  echo "self-test ok: no-logging reports client-core/bad/src/logging.rs:3:"
+else
+  echo "SELF-TEST FAIL: no-logging does not report client-core/bad/src/logging.rs:3:" >&2; rc=1
+fi
+# Phase 8 (design §6.5, §14.1, §19.17 point 4): issuer-output.sh reports every forbidden file or
+# console write by file and line, and none of the allowed ones.
+expect_fail issuer-output "$HARNESS/negative-issuer-output"
+out="$(GHOST_ROOT="$HARNESS/negative-issuer-output" bash "$DIR/issuer-output.sh" 2>&1 || true)"
+for want in service/src/service.rs:4: service/src/service.rs:5: service/src/service.rs:6: \
+  service/src/status.rs:4: service/src/store.rs:4: ops/src/report.rs:4: ops/src/output.rs:4: \
+  ops/src/keygen.rs:3: api/src/lib.rs:3:; do
+  if printf '%s\n' "$out" | grep -qF "issuer/crates/$want"; then
+    echo "self-test ok: issuer-output reports $want"
+  else
+    echo "SELF-TEST FAIL: issuer-output does not report $want" >&2; rc=1
+  fi
+done
+for allowed in service/src/status.rs:3: service/src/store.rs:3: ops/src/report.rs:3: ops/src/output.rs:3:; do
+  if printf '%s\n' "$out" | grep -qF "issuer/crates/$allowed"; then
+    echo "SELF-TEST FAIL: issuer-output reports the allowed $allowed" >&2; rc=1
+  else
+    echo "self-test ok: issuer-output allows $allowed"
+  fi
+done
+# Phase 8 (design §5.2, §14.1): proto-check.sh checks every request message, not every file.
+if command -v protoc >/dev/null; then
+  expect_fail proto-check "$HARNESS/negative-proto"
+  out="$(GHOST_ROOT="$HARNESS/negative-proto" bash "$DIR/proto-check.sh" 2>&1 || true)"
+  proto_hits="$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)"
+  if [ "$proto_hits" = "3" ]; then echo "self-test ok: proto-check reports the 3 unversioned request messages"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 3 unversioned request messages" >&2; rc=1; fi
+  for m in MissingRequest WrongNumberRequest NestedRequest; do
+    if printf '%s\n' "$out" | grep -qF "message $m lacks"; then echo "self-test ok: proto-check reports $m"; else echo "SELF-TEST FAIL: proto-check does not report $m" >&2; rc=1; fi
+  done
+elif [ -n "${CI:-}" ]; then
+  echo "SELF-TEST FAIL: protoc missing in CI; proto-check not proven" >&2; rc=1
+else
+  echo "self-test skipped: proto-check (protoc not installed)"
+fi
 # Phase 8 (design §14.1): entitlement-schedule.sh on its fixture roots
 # (test-harness/gates/entitlement-schedule/README.md). Each case must end as expected and report
 # the named reason, so a gate failing for another reason (or on everything) is caught.

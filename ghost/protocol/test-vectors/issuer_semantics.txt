@@ -1,0 +1,189 @@
+# Issuer semantics conformance vectors (Phase 8 design §13.2 "Conformance models", §5.4-§5.7,
+# §19.9). One script, two replayers:
+#   - issuer/crates/service/tests/semantics_vectors.rs replays it against the real issuer through
+#     Issuer::{request_invoice,blind_sign,invoice_status,redeem_invite,claim_payout}_at(request,
+#     now), scan_tick_at and sweep_at, on the real redb store and journal, with a ChainPort wallet;
+#   - the Kotlin ModelIssuer of the :entitlement harness (slice S9) replays it against the model.
+# A behaviour that is not pinned here is not something the model may rely on.
+#
+# GRAMMAR
+# - One operation per line. '#' starts a comment (to the end of the line). Blank lines are ignored.
+# - Words are separated by spaces. The first word is the operation; then positional names, then
+#   key=value arguments.
+# - "-> <expectation>" ends a line that has an outcome: an in-band result word or state word
+#   followed by key=value fields that must match, or a CATEGORY.
+# - Names (claims, invoices, seeds, tokens, credit sets, payout claims) are symbols
+#   [A-Za-z0-9_]+.
+#
+# World of a section
+#   issuer                   starts a new section: a fresh issuer (fresh store and journal) whose
+#                            Entitlement Schedule is the committed test schedule with
+#                            access_per_slot = 1 and trial_per_slot = 1 (3 slots per week: a pack
+#                            has 18 positions, 17 when paid with credits, a trial 6); network
+#                            regtest; pack price 200000000000 in price epoch 227; clock at BASE
+#                            (Monday of access week 2960, 12:00 UTC; invite epoch 740, credit epoch
+#                            227); wallet at 1000 blocks, synced; address pool refilled; one tick.
+#                            Every symbol is forgotten; sections are independent.
+#   at <t>                   clock = BASE + t seconds. The clock never moves back in a section.
+#   week <d>                 clock = 12:00 UTC on the Monday of access week 2960 + d.
+#   tick                     one scanner tick.
+#   mine <n>                 mines every pool transfer into the next block, adds n blocks, ticks.
+#   synced yes|no            the wallet's daemon reports itself synchronized or not.
+#   pay <I> <amount>         a pool transfer to invoice I's subaddress; amount: an integer, "price"
+#                            (200000000000) or "half" (100000000000).
+#   sweep                    nullifier, counter and key housekeeping.
+#
+# Values
+#   claim key of <C>         SHA-256("vector-claim/" || C); RequestInvoice sends its claim hash.
+#   blinded request of <S>   the seed SHA-256("vector-seed/" || S) blinded over the layout of the
+#                            invoice (sign) or of the trial of the given week (redeem), design §2.6.
+#   credits <K> count=<n> epoch=<e>
+#                            n CREDIT tokens of credit epoch e, minted with the test keys.
+#                            credits=<K> sends all of them in order, credits=<K>/<a>/<b> the tokens
+#                            a..b-1.
+#   invite <T> epoch=<e>     an INVITE token of invite epoch e, minted with the test key.
+#   token <T> from=<T0> flip=<i>
+#                            the bytes of token T0 with byte i XORed with 0x01.
+#   payout claim id of <Q>   the first 16 bytes of SHA-256("vector-payout/" || Q).
+#   address=valid|other|checksum|stagenet
+#                            two distinct valid regtest subaddresses, the first with its last
+#                            character changed, and a stagenet subaddress.
+#
+# Operations
+#   request <C> week=<d> [credits=...]
+#       -> ok invoice=<I> amount=price|0 | wrong_period | claim_conflict | credits_spent mask=<hex>
+#          | <category>
+#       ok binds I to the returned invoice id, or requires the same id if I is bound already.
+#       The subaddress is present iff the amount is not 0.
+#   sign <I> claim=<C> seed=<S> [block=zero]
+#       -> signed | awaiting_payment | awaiting_confirmations | underpaid | expired
+#          | other_request_issued   [credited=<n>] [seen=<n>]   | <category>
+#       block=zero replaces the first blinded block by zeros. signed requires that the answer
+#       finalizes into valid tokens and equals every earlier signed answer to (I, S) byte for byte.
+#   status <I> claim=<C>     -> the state words of sign (never signatures) [credited=] [seen=]
+#   redeem <T> week=<d> seed=<S>
+#       -> ok | replayed | wrong_period | <category>
+#       ok requires valid trial tokens, byte-identical to every earlier ok of (T, S, week).
+#   payout <Q> credits=... address=...
+#       -> queued amount=<n> | credits_spent mask=<hex> | claim_conflict | address_rejected
+#          | <category>
+#
+# CATEGORIES are the client categories of client-core/README.md for the issuer's gRPC status
+# (design §5.7, for_issuer): rejected (InvalidArgument), unauthorized (PermissionDenied),
+# relay_unavailable (Unavailable, and every other code), quota (ResourceExhausted).
+
+# ---- 1. RequestInvoice: idempotency first, then the base week -----------------------------------
+issuer
+request c1 week=0 -> ok invoice=i1 amount=price
+request c1 week=0 -> ok invoice=i1 amount=price        # identical retry: the same invoice
+request c1 week=1 -> claim_conflict                     # the claim hash is known with another R
+request c2 week=1 -> wrong_period                       # nothing recorded ...
+request c2 week=0 -> ok invoice=i2 amount=price         # ... so the same claim hash still works
+request c3 week=-1 -> wrong_period
+status i1 claim=c1 -> awaiting_payment credited=0 seen=0
+status i1 claim=c2 -> unauthorized                      # another claim key: no existence oracle
+at 518400                                               # Sunday 12:00: week 2961 is 12 h away
+request c5 week=1 -> wrong_period
+at 547200                                               # Sunday 20:00: within 4 h of week 2961
+request c5 week=1 -> relay_unavailable                  # an accepted week, but no fresh tick
+tick
+request c5 week=1 -> ok invoice=i5 amount=price
+request c6 week=0 -> ok invoice=i6 amount=price         # the current week is accepted too
+week 1
+request c1 week=0 -> ok invoice=i1 amount=price         # a retry after the week changed
+request c4 week=0 -> wrong_period
+
+# ---- 2. Payment states, BlindSign and the re-serve ----------------------------------------------
+issuer
+request c week=0 -> ok invoice=i amount=price
+sign i claim=c seed=s -> awaiting_payment credited=0 seen=0
+pay i half
+tick
+sign i claim=c seed=s -> underpaid credited=0 seen=100000000000
+mine 10
+sign i claim=c seed=s -> underpaid credited=100000000000 seen=0
+pay i half
+tick
+sign i claim=c seed=s -> awaiting_confirmations credited=100000000000 seen=100000000000
+mine 9
+sign i claim=c seed=s -> awaiting_confirmations
+mine 1
+status i claim=c -> awaiting_confirmations credited=200000000000 seen=0   # paid, not signed yet
+sign i claim=x seed=s -> unauthorized
+sign i claim=c seed=s block=zero -> rejected
+sign i claim=c seed=s -> signed
+sign i claim=c seed=s -> signed                         # byte-identical re-serve
+sign i claim=c seed=t -> other_request_issued
+status i claim=c -> signed
+pay i 5
+mine 10
+sign i claim=c seed=s -> signed credited=200000000005   # overpaid: the same signatures
+
+# ---- 3. Expiry is decided from a synced view only -----------------------------------------------
+issuer
+request c week=0 -> ok invoice=i amount=price
+synced no
+mine 2891                                               # past grace_height + 10 confirmations
+sign i claim=c seed=s -> awaiting_payment
+synced yes
+tick
+sign i claim=c seed=s -> expired credited=0 seen=0
+status i claim=c -> expired
+pay i price                                             # a late payment is never credited
+mine 10
+sign i claim=c seed=s -> expired credited=0
+mine 5040                                               # purged
+sign i claim=c seed=s -> unauthorized
+status i claim=c -> unauthorized
+
+# ---- 4. Fresh ticks for XMR invoices; credits-paid packs ----------------------------------------
+issuer
+at 120
+request c week=0 -> relay_unavailable                   # the last tick is 2 minutes old
+tick
+request c week=0 -> ok invoice=i amount=price
+credits k count=10 epoch=227
+at 400
+request d week=0 credits=k -> ok invoice=j amount=0     # no tick needed
+sign j claim=d seed=s -> signed
+request e week=0 credits=k -> credits_spent mask=3ff
+credits m count=9 epoch=227
+request f week=0 credits=m -> unauthorized              # 9 credits do not cover the price
+credits n count=11 epoch=227
+request g week=0 credits=n -> unauthorized              # 11 is not the smallest covering set
+request h week=0 credits=n/0/10 -> ok invoice=l amount=0
+request h2 week=0 credits=n/1/11 -> credits_spent mask=1ff
+
+# ---- 5. RedeemInvite ------------------------------------------------------------------------------
+issuer
+invite t epoch=740
+redeem t week=0 seed=a -> ok
+redeem t week=0 seed=a -> ok                            # identical retry: the same signatures
+redeem t week=0 seed=b -> replayed                      # another request for a used invite
+invite u epoch=740
+redeem u week=1 seed=a -> wrong_period                  # nothing recorded ...
+redeem u week=0 seed=a -> ok                            # ... so it still redeems
+token f from=u flip=200
+redeem f week=0 seed=c -> unauthorized                  # forged authenticator
+token g from=u flip=0
+redeem g week=0 seed=c -> unauthorized                  # not type 0x0002
+invite previous epoch=739
+redeem previous week=0 seed=d -> ok                     # the previous invite epoch is accepted
+week 4                                                  # invite epoch 741
+invite old epoch=739
+redeem old week=4 seed=e -> unauthorized                # epoch e - 2
+redeem t week=0 seed=a -> ok                            # a recorded redemption across the boundary
+
+# ---- 6. ClaimPayout -------------------------------------------------------------------------------
+issuer
+credits k count=10 epoch=227
+payout q credits=k address=valid -> queued amount=200000000000
+payout q credits=k address=valid -> queued amount=200000000000   # identical retry
+payout q credits=k address=other -> claim_conflict
+payout r credits=k address=valid -> credits_spent mask=3ff
+credits m count=10 epoch=227
+payout s credits=m address=checksum -> address_rejected
+payout s credits=m address=stagenet -> address_rejected
+payout s credits=m/0/9 address=valid -> unauthorized     # below min_claim_credits
+request c week=0 credits=k -> credits_spent mask=3ff
+payout s credits=m address=valid -> queued amount=200000000000
