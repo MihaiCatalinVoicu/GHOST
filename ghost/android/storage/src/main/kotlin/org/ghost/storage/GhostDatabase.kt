@@ -126,8 +126,9 @@ class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
         }
 
     /**
-     * The bind types of the [SqlExecutor] contract, on every path. A Double would be stored as a REAL,
-     * and a `% 60 = 0` CHECK casts it to INTEGER first, so a sub-minute time would pass it.
+     * The bind types of the [SqlExecutor] contract, on every path (design faza8-issuer.md §19.20
+     * point 1). A Double would be stored as a REAL, and a `% 60 = 0` CHECK casts it to INTEGER
+     * first, so a sub-minute time would pass it.
      */
     private fun requireBindable(arg: Any?) {
         if (arg != null && arg !is ByteArray && arg !is Long && arg !is Int && arg !is String) {

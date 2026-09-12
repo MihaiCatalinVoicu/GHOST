@@ -6,7 +6,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * T20 for the v3 entitlement tables by schema introspection (Phase 8 design §11.3, §19.15, §19.17):
+ * T20 for the v3 entitlement tables by schema introspection (Phase 8 design §11.3, §19.15, §19.17,
+ * §19.20), and the shape of the ES rule 5 memory (§19.2, §19.20 point 2):
  * the persisted time columns are exactly the listed `*_minute`, `*_hour` and `*_day` columns, each
  * with its granularity CHECK; no other column has a time-like name under the Phase 7 rule
  * (sync `SchemaIntrospectionTest`), whose only exemptions here are the `epoch` grid indices; and the
@@ -21,7 +22,11 @@ class EntitlementSchemaIntrospectionTest {
     /** The Phase 7 time-name rule, unchanged (sync SchemaIntrospectionTest). */
     private val timeLike = Regex("(_at$|time|date|epoch|_ms$|_seconds$|expir|_ts$|stamp|last_|since|until)")
 
-    /** Week and epoch indices of the grid (design §4.1), not points in time: the explicit exemptions (§19.17). */
+    /**
+     * Week and epoch indices of the grid (design §4.1), not points in time: the explicit exemptions
+     * (§19.17). `ent_schedule_fact.epoch` is a week (slots), a price epoch (price) or the epoch of a
+     * revoked key (revoked_<kind>, §19.20 point 2).
+     */
     private val gridIndexExemptions = setOf("ent_key.epoch", "ent_schedule_fact.epoch", "ent_token.epoch")
 
     /** Every persisted time of the entitlement tables (design §11.3). */
@@ -115,6 +120,36 @@ class EntitlementSchemaIntrospectionTest {
         val sql = createSql(db, "ent_purchase")
         for (column in listOf("created_hour", "receipt_minute", "outstanding_atomic", "next_due_minute")) {
             assertTrue(column, sql.contains("$column IS NULL AND") || sql.contains("AND $column IS NULL"))
+        }
+    }
+
+    /** The values a `CHECK (column IN ('a', 'b'))` of the whitespace-normalized [sql] allows. */
+    private fun allowed(sql: String, column: String): Set<String> {
+        val list = Regex("CHECK \\($column IN \\(([^)]*)\\)\\)").find(sql)
+        assertTrue("no IN list for $column in $sql", list != null)
+        return Regex("'([^']*)'").findAll(list!!.groupValues[1]).map { it.groupValues[1] }.toSet()
+    }
+
+    @Test
+    fun theScheduleMemoryHoldsEveryRule5FactWithRevocationsPerTokenKind(): Unit = JdbcSqlExecutor().use { db ->
+        MigrationRunner(db).migrate()
+        // ES rule 5 (design §3.1, §19.2, §19.20 point 2) remembers the keys (ent_key), the slot set of
+        // every covered week, the price of every covered price epoch and every revoked (kind, epoch).
+        // One revocation fact per kind of ent_key: (fact, epoch) is the key, and access weeks, invite
+        // epochs and credit epochs can share an index, so a kind added to ent_key needs its own fact.
+        val kinds = allowed(createSql(db, "ent_key"), "kind")
+        assertEquals(setOf("access", "invite", "credit"), kinds)
+        assertEquals(setOf("slots", "price") + kinds.map { "revoked_$it" }, allowed(createSql(db, "ent_schedule_fact"), "fact"))
+        assertTrue(createSql(db, "ent_schedule_fact").contains("PRIMARY KEY (fact, epoch)"))
+        // Append-only for every fact, revocations included: the UPDATE and DELETE triggers carry no WHEN.
+        val triggers = ArrayList<String>()
+        db.query("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'ent_schedule_fact'") {
+            triggers += it.string(0).replace(Regex("\\s+"), " ")
+        }
+        for (event in listOf("UPDATE", "DELETE")) {
+            val on = triggers.filter { it.contains("BEFORE $event ON ent_schedule_fact") }
+            assertEquals(event, 1, on.size)
+            assertTrue(on.single(), on.single().contains("ON ent_schedule_fact BEGIN SELECT RAISE(ABORT, 'ent_schedule_fact is append-only')"))
         }
     }
 

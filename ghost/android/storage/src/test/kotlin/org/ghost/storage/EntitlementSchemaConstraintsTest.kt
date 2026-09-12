@@ -6,9 +6,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The CHECK constraints of the v3 entitlement tables (Phase 8 design §11.3): for each table a valid
- * base row, and each single deviation from it refused with a CHECK failure. The base row itself is
- * inserted last, so no refusal comes from a key conflict.
+ * The CHECK constraints of the v3 entitlement tables (Phase 8 design §11.3 as corrected by §19.20):
+ * for each table a valid base row, and each single deviation from it refused with a CHECK failure.
+ * The base row itself is inserted last, so no refusal comes from a key conflict.
  */
 class EntitlementSchemaConstraintsTest {
     private fun SqlExecutor.insert(table: String, row: Map<String, Any?>) =
@@ -30,7 +30,17 @@ class EntitlementSchemaConstraintsTest {
         )
         checks(
             "ent_schedule_fact", mapOf("fact" to "slots", "epoch" to WEEK0, "digest" to hash(1)),
-            listOf(mapOf("fact" to "onion"), mapOf("epoch" to -1), mapOf("digest" to bytes(33, 1))),
+            listOf(
+                mapOf("fact" to "onion"), mapOf("epoch" to -1), mapOf("digest" to bytes(33, 1)),
+                // A remembered revocation names its token kind (design §19.20 point 2).
+                mapOf("fact" to "revoked"), mapOf("fact" to "revoked_"), mapOf("fact" to "revoked_pack"),
+                mapOf("fact" to "revoked_Access"),
+            ),
+        )
+        // Its digest is the revoked key's id, and its epoch is a whole index of that kind's grid.
+        checks(
+            "ent_schedule_fact", mapOf("fact" to "revoked_credit", "epoch" to 223, "digest" to hash(1)),
+            listOf(mapOf("epoch" to -1), mapOf("digest" to bytes(31, 1)), mapOf("digest" to bytes(33, 1))),
         )
         checks(
             "ent_state", mapOf("id" to 1, "schedule_seq" to 1, "schedule_digest" to hash(1), "payout_salt" to hash(2)),
@@ -183,7 +193,8 @@ class EntitlementSchemaConstraintsTest {
     /**
      * Every time column and every grid index (week, epoch) with a valid row of its table. SQLite's `%`
      * casts its operands to INTEGER, so `x % 60 = 0` alone accepts a REAL whose whole part is aligned
-     * (1757491200.5); `typeof(x) = 'integer'` keeps times finer than a minute out (design §11.3).
+     * (1757491200.5); `typeof(x) = 'integer'` keeps times finer than a minute out (design §11.3,
+     * §19.20 point 1).
      */
     private val timeBearing: List<Triple<String, String, Map<String, Any?>>> = run {
         val terminalPack = mapOf(
@@ -200,6 +211,7 @@ class EntitlementSchemaConstraintsTest {
         listOf(
             Triple("ent_key", "epoch", mapOf("kind" to "access", "epoch" to WEEK0, "key_id" to hash(1))),
             Triple("ent_schedule_fact", "epoch", mapOf("fact" to "slots", "epoch" to WEEK0, "digest" to hash(1))),
+            Triple("ent_schedule_fact", "epoch", mapOf("fact" to "revoked_access", "epoch" to WEEK0, "digest" to hash(1))),
             Triple("ent_state", "restore_scan_until_day", state),
             Triple("ent_purchase", "base_week", livePack),
             Triple("ent_purchase", "created_hour", livePack),

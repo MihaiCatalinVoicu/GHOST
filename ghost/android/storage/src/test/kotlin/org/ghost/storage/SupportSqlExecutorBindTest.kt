@@ -12,8 +12,9 @@ import java.lang.reflect.Proxy
 /**
  * The device executor binds only the types of the [SqlExecutor] contract, on `exec` as on
  * `execUpdate`: a Double bound into a time column would be stored as a REAL, and a `% 60 = 0`
- * CHECK of a v2 table casts it to INTEGER first, so its sub-minute part would pass (design §11.3,
- * "times finer than a minute" are never persisted).
+ * CHECK of a v2 table casts it to INTEGER first, so its sub-minute part would pass (Phase 8 design
+ * §11.3, "times finer than a minute" are never persisted; §19.20 point 1, both executors refuse
+ * bind types outside the contract).
  */
 class SupportSqlExecutorBindTest {
     /** Bind arguments of every `execSQL` call, and every executed compiled statement. */

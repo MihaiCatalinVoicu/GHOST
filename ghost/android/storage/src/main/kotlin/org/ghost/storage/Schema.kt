@@ -10,12 +10,17 @@ package org.ghost.storage
  *  - v2 (Phase 7 sync, docs/design/faza7-sync-engine.md §2 and §11): sync state lives in
  *    SQLCipher only, persisted times are minute/hour/day values checked by CHECK constraints, and
  *    the outbox/inbox state machines are enforced by triggers ([expectedTriggers]);
- *  - v3 (Phase 8 client entitlement, docs/design/faza8-issuer.md §11.3): the unused v1
- *    `entitlement`/`referral` tables are dropped behind a fail-closed guard; the nine `ent_*`
- *    tables hold issuance flows, tokens, invites, the drop target and payout claims, and their
- *    state machines and write-once rules are enforced by triggers.
+ *  - v3 (Phase 8 client entitlement, docs/design/faza8-issuer.md §11.3 as corrected by §19.20):
+ *    the unused v1 `entitlement`/`referral` tables are dropped behind a fail-closed guard; the
+ *    nine `ent_*` tables hold the remembered schedule facts, issuance flows, tokens, invites, the
+ *    drop target and payout claims, and their state machines and write-once rules are enforced by
+ *    triggers. §19.20 point 1 makes this code, not the §11.3 listing, the reference for the v3 SQL
+ *    (NULL-safe trigger comparisons, integer-typed times and grid indices); §19.20 point 2 adds
+ *    the remembered revocations of `ent_schedule_fact`.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
+ * The one exception is a version no release has carried: v3 has never shipped and is amended in
+ * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2.
  */
 object Schema {
     const val CURRENT_VERSION = 3
@@ -366,6 +371,8 @@ object Schema {
         Migration(
             version = 3,
             statements = listOf(
+                // v3 has never shipped in a release, so the design's corrections (§19.20) amend this
+                // migration in place instead of adding a v4: no device holds an earlier v3.
                 // (0) Fail-closed guard: the v1 entitlement and referral tables never had a writer (RC
                 // G15). A CHECK failure aborts the migration transaction and the database stays at v2.
                 "CREATE TABLE v3_migration_guard (row_count INTEGER NOT NULL CHECK (row_count = 0))",
@@ -376,7 +383,8 @@ object Schema {
                 "DROP TABLE referral",
                 // Every time column and grid index (week, epoch) also CHECKs typeof(x) = 'integer':
                 // SQLite's % casts a REAL to INTEGER first, so `x % 60 = 0` alone would accept
-                // 1757491200.5, a time finer than a minute (never persisted, design §11.3).
+                // 1757491200.5, a time finer than a minute (never persisted, design §11.3; the typeof
+                // CHECKs are §19.20 point 1).
                 // (1) Accepted ES keys: the device's append-only memory of (kind, epoch) -> key id (ES
                 // rule 5). epoch is a week or epoch index of the grid, not a time.
                 """CREATE TABLE ent_key (
@@ -385,11 +393,17 @@ object Schema {
                     key_id  BLOB    NOT NULL CHECK (length(key_id) = 32),
                     PRIMARY KEY (kind, epoch)
                 ) WITHOUT ROWID""",
-                // (1b) Accepted ES layout and price facts (ES rule 5, design §19.2): the slot-number set
-                // of every covered week and the price of every covered price epoch, as SHA-256
-                // digests. Append-only like ent_key.
+                // (1b) The other facts of ES rule 5 (design §19.2, §19.20 point 2), append-only like
+                // ent_key: 'slots' = SHA-256 of the slot-number set of a covered week; 'price' =
+                // SHA-256 of the price of a covered price epoch; 'revoked_<kind>' = a (kind, epoch)
+                // that an accepted ES revoked, whose digest is the revoked key's id (its
+                // ent_key.key_id: an ES revokes only keys it lists). A later ES that drops a
+                // remembered revocation is refused (SCHEDULE_CONFLICT), or a leaked key's tokens
+                // would become valid again. The token kind is part of the fact name because
+                // (fact, epoch) is the key and access weeks, invite epochs and credit epochs are
+                // separate indices that can share a number. epoch is a grid index, not a time.
                 """CREATE TABLE ent_schedule_fact (
-                    fact    TEXT    NOT NULL CHECK (fact IN ('slots', 'price')),
+                    fact    TEXT    NOT NULL CHECK (fact IN ('slots', 'price', 'revoked_access', 'revoked_invite', 'revoked_credit')),
                     epoch   INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
                     digest  BLOB    NOT NULL CHECK (length(digest) = 32),
                     PRIMARY KEY (fact, epoch)
@@ -542,9 +556,10 @@ object Schema {
                 BEGIN SELECT RAISE(ABORT, 'illegal purchase transition'); END""",
                 // Seed, claim key, layout and base week may change only while nothing has been sent
                 // (prepared, sent = 0); sent never goes back; kind and pay_with never change. Wiping at
-                // a terminal state is allowed. `sent` is compared NULL-safely: under UPDATE OR REPLACE
-                // a NULL becomes the column DEFAULT (0) after this trigger ran, and `NULL < 1` would make
-                // the whole WHEN NULL, so SQLite would skip the trigger and unfreeze a sent request.
+                // a terminal state is allowed. `sent` is compared NULL-safely (§19.20 point 1): under
+                // UPDATE OR REPLACE a NULL becomes the column DEFAULT (0) after this trigger ran, and
+                // `NULL < 1` would make the whole WHEN NULL, so SQLite would skip the trigger and
+                // unfreeze a sent request.
                 """CREATE TRIGGER ent_purchase_frozen BEFORE UPDATE ON ent_purchase
                 WHEN NEW.kind IS NOT OLD.kind OR NEW.pay_with IS NOT OLD.pay_with
                   OR (NEW.state NOT IN ('finalized', 'expired', 'failed', 'lost')
@@ -563,9 +578,10 @@ object Schema {
                 WHEN OLD.state NOT IN ('finalized', 'expired', 'failed', 'lost')
                 BEGIN SELECT RAISE(ABORT, 'a live purchase is never deleted'); END""",
                 // A reservation ends only by deletion, except that credits of a failed flow return to
-                // fresh. The flow's state is compared with IS, not =: for a reference to no row (a
-                // flow deleted by GC) the subquery is NULL, `NULL = 'failed'` would make the whole
-                // WHEN NULL and SQLite would skip the trigger, releasing a credit of no failed flow.
+                // fresh. The flow's state is compared with IS, not = (§19.20 point 1): for a reference
+                // to no row (a flow deleted by GC) the subquery is NULL, `NULL = 'failed'` would make
+                // the whole WHEN NULL and SQLite would skip the trigger, releasing a credit of no
+                // failed flow.
                 """CREATE TRIGGER ent_token_state BEFORE UPDATE OF state ON ent_token
                 WHEN NOT ((OLD.state = NEW.state)
                        OR (OLD.state = 'fresh' AND NEW.state = 'reserved')
@@ -590,7 +606,7 @@ object Schema {
                        OR (OLD.state = 'created'  AND NEW.state IN ('credited', 'closed'))
                        OR (OLD.state = 'credited' AND NEW.state = 'closed'))
                 BEGIN SELECT RAISE(ABORT, 'illegal invite transition'); END""",
-                // `sent` is compared NULL-safely, as in ent_purchase_frozen.
+                // `sent` is compared NULL-safely, as in ent_purchase_frozen (§19.20 point 1).
                 """CREATE TRIGGER ent_claim_guard BEFORE UPDATE ON ent_claim
                 WHEN NOT ((OLD.state = NEW.state AND (NEW.payout_address IS OLD.payout_address)
                            AND NEW.sent IS NOT NULL AND NEW.sent >= OLD.sent)
