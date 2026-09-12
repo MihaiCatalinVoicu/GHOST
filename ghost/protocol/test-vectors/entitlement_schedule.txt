@@ -1,0 +1,84 @@
+# Entitlement Schedule vectors (Phase 8 design §3.1 rules 1-6, §19.2), replayed by
+# issuer/crates/entitlement/tests/schedule_vectors.rs against the committed test schedule.
+#
+# Format:
+#   fixture|<file under issuer/crates/entitlement/tests/fixtures>|<sha256>|<schedule key>|<facts>
+#   case|<mutation>|<verdict>
+# The fixture is a regtest schedule (seq 1, issuer "ghost-issuer-test", 26 access weeks from week
+# 2957 = Monday 2026-09-07, 36 RSA-2048 keys with permutation proofs, slots 0-2 with slot 2 moving
+# relay at week 2967). Its schedule key is Ed25519 from SHA-256("ghost/test/schedule-key"): test
+# schedules only, never pinned. Mutations are defined by the replayer (one named edit each):
+# byte-level edits break the signature; "re-signed" edits change the parsed content and sign it
+# again with the test key, so they reach the rule they target; "memory-*" cases accept the fixture
+# (or a named variant) first and then check another schedule against that memory (rule 5).
+# Verdicts: ok, or the ScheduleError in kebab case.
+fixture|test_schedule.ghes|a311baa540c08c9335581ee00a8a2b7b8546e20d1eced7020fab0319403a4975|3466898f48dace3e2715583ee3d5ff128959839fdfe0fd24b49c079e86bb126b|seq=1|network=regtest|first_week=2957|last_week=2982|keys=36|slot_entries=4
+
+# Rule 1: signature over the exact bytes, under the given key; lengths.
+case|as-is|ok
+case|flip-body-byte|signature
+case|flip-signature-byte|signature
+case|truncate-1|signature
+case|append-1|signature
+case|other-key|signature
+case|shorter-than-a-signature|encoding
+case|pinned-key|no-pinned-key
+case|magic|encoding
+case|version-2|encoding
+case|trailing-byte|encoding
+case|network-4|network
+case|issuer-name-empty|issuer-name
+case|issuer-name-space|issuer-name
+case|issuer-name-65|issuer-name
+case|issuer-onion-checksum|onion
+case|issuer-onion-uppercase|onion
+case|constants-access-per-slot-0|constants
+case|constants-claim-min-above-max|constants
+# Rule 2: keys.
+case|key-unknown-kind|key-format
+case|key-duplicate-kind-epoch|duplicate-key
+case|key-same-spki-twice|duplicate-key
+case|key-2047-bit|key-format
+case|key-2049-bit|key-format
+case|key-e-3|key-format
+case|key-spki-trailing-byte|key-format
+case|key-spki-rsaencryption|key-format
+case|key-proof-tampered|key-proof
+case|key-proof-of-other-key|key-proof
+case|key-small-factor|key-proof
+case|key-proof-not-canonical|key-proof
+# Rule 3: coverage.
+case|coverage-access-gap|coverage
+case|coverage-25-weeks|coverage
+case|coverage-missing-invite|coverage
+case|coverage-missing-credit|coverage
+case|coverage-missing-price|coverage
+case|coverage-week-without-slot|coverage
+case|coverage-epoch-extremes|coverage
+# Rule 4: slot table, prices.
+case|slots-empty|slot-table
+case|slot-32|slot-table
+case|slot-overlap|slot-table
+case|slot-until-before-from|slot-table
+case|slot-onion-checksum|onion
+case|price-not-divisible-by-10|price-table
+case|price-zero|price-table
+case|price-duplicate|price-table
+# Revocations.
+case|revoked-access-week|ok
+case|revoked-unknown|revocation
+case|revoked-duplicate|revocation
+# Rule 5: append-only against memory.
+case|memory-same|ok
+case|memory-successor-seq-2|ok
+case|memory-onion-moved|ok
+case|memory-rollback|rollback
+case|memory-key-changed|key-changed
+case|memory-slot-set-changed|slot-set-changed
+case|memory-price-changed|price-changed
+case|memory-revocation-added|ok
+case|memory-revocation-kept|ok
+case|memory-revocation-dropped|revocation-dropped
+# Rule 6: the production client refuses regtest.
+case|client-regtest|regtest-refused
+case|client-stagenet|ok

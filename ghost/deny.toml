@@ -6,20 +6,24 @@ all-features = true
 version = 2
 yanked = "deny"
 ignore = [
-    # rsa is a dependency of Arti crates only (tor-llcrypto, tor-key-forge, ssh-key-fork-arti).
-    # The Marvin timing attack needs RSA private-key decryption or signing. In the client, RSA is
-    # used only for PKCS#1 v1.5 *signature verification* (channel crosscerts, directory authority
-    # certificates, consensus); nothing enabled generates or uses an RSA private key:
-    #  - relay / onion-service-service / arti-relay / tor-hsservice are not in the client graph;
-    #  - Arti's native keystore IS compiled in and opened under state_dir/keystore (tor-keymgr's
-    #    keymgr feature comes unconditionally through tor-chanmgr), but nothing GHOST enables puts
-    #    a key there: the client tests check the directory exists and holds no file right after
-    #    creation (unit) and after a real bootstrap plus onion connections (live, CI job live-tor).
-    # What scripts/gates/rust-feature-policy.sh enforces: no relay / onion-service-service /
-    # keymgr features, no tor-hsservice / arti-relay, and no non-Arti crate in the workspace
-    # depending on rsa (e.g. an RSA blind-signature issuer, ADR-02): re-review this entry before
-    # any of that changes. Reviewed 2026-09-11 (Phase 6 security review, rounds 2 and 3).
-    { id = "RUSTSEC-2023-0071", reason = "rsa: verification-only in arti; no RSA private key generated or used (feature policy gate + empty-keystore tests)" },
+    # Two rsa versions, two scopes (ADR-22, Phase 8 design §2.8, §14.1):
+    #  - rsa 0.9.10 is a dependency of Arti crates only (tor-llcrypto, tor-key-forge,
+    #    ssh-key-fork-arti). In the client, RSA is used only for PKCS#1 v1.5 *signature
+    #    verification* (channel crosscerts, directory authority certificates, consensus); nothing
+    #    enabled generates or uses an RSA private key: relay / onion-service-service / arti-relay /
+    #    tor-hsservice are not in the client graph, and Arti's native keystore (compiled in through
+    #    tor-chanmgr) stays empty, which the client tests check (unit and live-tor).
+    #  - rsa 0.10.0-rc.18 (hazmat rsa_decrypt_and_check on crypto-bigint 0.7.5) is reached only
+    #    through blind-rsa-signatures =0.17.2 in ghost-issuer (and ghost-issuer-ops): the blind
+    #    signer. It is payment-gated, every blind signature is re-checked (s'^e == B) by GHOST code
+    #    before release, and replies leave on a 2 s quantum. A blind signer returns B^d to whoever
+    #    asks by design, so Marvin's decryption-oracle class adds nothing; the residual
+    #    exponent-timing key-recovery risk is mitigated as ADR-22 states.
+    # scripts/gates/rust-feature-policy.sh enforces both scopes per version (and keeps the issuer
+    # crates out of the client and relay graphs); scripts/gates/rust-crypto-pins.sh pins the exact
+    # versions per graph. Re-review this entry when rsa 0.10.0 is final or either scope changes.
+    # Reviewed 2026-09-11 (Phase 6 security review), 2026-09-12 (Phase 8 design review).
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10: verification only, inside Arti (client). rsa 0.10.0-rc.18: only through blind-rsa-signatures in ghost-issuer and ghost-issuer-ops (constant-time crypto-bigint path; payment-gated, independently fault-checked, 2 s reply quantum). A blind signer returns B^d by design, so the Marvin decryption-oracle class adds nothing; the residual exponent-timing risk is mitigated as stated in ADR-22. rust-feature-policy.sh and rust-crypto-pins.sh enforce both scopes. Re-review when rsa 0.10.0 is final." },
     # `paste` is a proc-macro used at build time only by arti's dependency tree; no runtime code.
     { id = "RUSTSEC-2024-0436", reason = "paste: build-time proc-macro, unmaintained but inert" },
 ]

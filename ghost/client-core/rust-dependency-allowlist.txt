@@ -116,7 +116,10 @@ futures-util
 generic-array
 getrandom
 getset
+ghost-blind-rsa
 ghost-client-net
+ghost-entitlement
+ghost-issuer-api
 ghost-relay-api
 glob-match
 h2

@@ -54,6 +54,9 @@ jobs:
         working-directory: ghost
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # entitlement-schedule.sh compares the schedule with its predecessor in git (rule 5).
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: 1.98.1
@@ -75,18 +78,25 @@ jobs:
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
         with:
           tool: cargo-audit@0.22.2
-      # Same accepted advisory as deny.toml: rsa is verification-only in arti; nothing in the client
-      # generates or uses RSA private keys (feature policy below; keystore-empty tests).
+      # Same accepted advisory and scopes as deny.toml (ADR-22): rsa 0.9.10 is verification-only
+      # inside Arti (client); rsa 0.10.0-rc.18 is reached only through blind-rsa-signatures in the
+      # issuer (payment-gated, fault-checked, 2 s reply quantum). The feature policy and the crypto
+      # pins below enforce both scopes.
       - run: cargo audit --ignore RUSTSEC-2023-0071
       - name: Rust client package allowlist (T7 for the native library)
         run: bash scripts/gates/rust-client-allowlist.sh
-      - name: Arti/tonic feature policy (vanguards on; relay/onion-service-service/keymgr/pt-client off; tonic codegen only; rsa only via arti)
+      - name: Arti/tonic feature policy (vanguards on; relay/onion-service-service/keymgr/pt-client off; tonic codegen only; rsa per version; issuer crates out of client and relay)
         run: bash scripts/gates/rust-feature-policy.sh
+      - name: Rust crypto version pins per graph (rsa, crypto-bigint, blind-rsa-signatures, num-bigint-dig, ring)
+        run: bash scripts/gates/rust-crypto-pins.sh
+      - name: Entitlement Schedule (pinned key, rule 5 against its git predecessor, relay directory, one path, no test material in production)
+        run: bash scripts/gates/entitlement-schedule.sh
       - name: clippy clearnet bans fire on the negative fixture (T6)
         run: bash scripts/gates/clippy-clearnet-fixture.sh
-      - name: Rust gate self-tests (feature policy and clippy fixture reject counter-examples)
+      - name: Rust gate self-tests (feature policy, clippy fixture and Entitlement Schedule reject counter-examples)
         env:
           GHOST_SELFTEST_CLIPPY: "1"
+          GHOST_SELFTEST_OPS: "1"
         run: bash scripts/gates/self-test.sh
       - name: privacy invariant T1 (relay capture validator)
         run: bash scripts/gates/privacy-capture.sh

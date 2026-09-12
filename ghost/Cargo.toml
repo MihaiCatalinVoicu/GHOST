@@ -8,7 +8,8 @@ members = [
     "relay/crates/prune",
     "relay/crates/capability",
     "relay/crates/node",
-    "issuer",
+    # Issuer crates (Phase 8 design §5.1): inside rust_src_files, so every gate scans them.
+    "issuer/crates/*",
     "client-core/net",
     "test-harness/privacy/capture-check",
 ]
@@ -51,6 +52,28 @@ tower = "0.5.3"
 http = "1.5.0"
 jni = "0.21.1"
 rustls = { version = "0.23.44", default-features = false, features = ["ring", "std", "tls12"] }
+# Entitlement crypto (Phase 8 design §2.7, §14.3). Public-key work stays on crates the Android
+# library already links, with no feature beyond those it already enables (no `std`/`rand` on
+# num-bigint-dig: they would pull rand 0.8 with getrandom into the client graph).
+num-bigint-dig = { version = "0.8.6", default-features = false, features = ["u64_digit"] }
+ring = "0.17.14"
+sha3 = "0.10.9"
+curve25519-dalek = "4.1.3"
+ed25519-dalek = "2.2.0"
+# Issuer signer only (ADR-22): confined to the issuer graphs by rust-feature-policy.sh and pinned
+# by rust-crypto-pins.sh. No `serde` (its default feature).
+blind-rsa-signatures = { version = "=0.17.2", default-features = false }
+
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.blind-rsa-signatures]
+opt-level = 3
+[profile.dev.package.ghost-blind-rsa]
+opt-level = 3
+[profile.dev.package.ghost-entitlement]
+opt-level = 3
 
 [profile.release]
 # Native client libraries ship in the APK (NFR-4): strip symbols, keep panics unwinding for JNI safety.

@@ -1,0 +1,22 @@
+[package]
+publish = false
+name = "ghost-entitlement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST entitlement formats: grid, TokenChallenge, Privacy Pass type 0x0002 tokens, nullifiers, the Entitlement Schedule, seed-derived batches, Monero addresses (ADR-22)"
+
+[dependencies]
+ghost-blind-rsa = { path = "../blind-rsa" }
+sha2 = { workspace = true }
+# HKDF-SHA256 for the seed derivation (design §2.6); ring is already the signature verifier.
+ring = { workspace = true }
+num-bigint-dig = { workspace = true }
+# Keccak-256 (Monero checksum) and SHA3-256 (v3 onion checksum), the version the client already links.
+sha3 = { workspace = true }
+curve25519-dalek = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }

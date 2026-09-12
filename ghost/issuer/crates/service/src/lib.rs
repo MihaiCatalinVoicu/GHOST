@@ -1,6 +1,10 @@
 //! Entitlement issuer: blind signatures (RFC 9474 / Privacy Pass) with public period metadata,
 //! Monero invoices via a view-only wallet, invite tokens and referral ledger (ADR-02, ADR-05).
-//! Wire schema: `protocol/issuer/v1/issuer.proto`.
+//! Wire schema: `protocol/issuer/v1/issuer.proto`. Phase 8 design: `docs/design/faza8-issuer.md`.
+#![forbid(unsafe_code)]
+
+pub mod custody;
+pub mod signer;
 
 /// Wire protocol version implemented by this issuer.
 pub const PROTOCOL_VERSION: u32 = 1;

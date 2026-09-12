@@ -15,14 +15,19 @@
 #   - pt-client (Phase 12), hs-pow-full, experimental-api, experimental, full (arti-client);
 #   - any tonic feature beyond `codegen` (Channel/Endpoint = clearnet dialer with system DNS);
 #   - ghost-client-net's own `clippy-fixture` feature (negative fixture, never shipped);
-#  and, for the whole workspace on every target: rsa may only be reached through Arti's crates
-#  (re-review RUSTSEC-2023-0071 in deny.toml before any GHOST crate depends on rsa).
+#  and, for the whole workspace on every target, rsa per version (ADR-22, Phase 8 design §14.1):
+#  rsa 0.9.10 only through Arti's crates, rsa 0.10.0-rc.18 only through blind-rsa-signatures (the
+#  issuer's signer); re-review RUSTSEC-2023-0071 in deny.toml before either scope changes. The
+#  issuer-only crates (blind-rsa-signatures, crypto-bigint 0.7.5, md-5, ghost-issuer and the operator
+#  tools ghost-issuer-ops) must not be linked into the client library (both Android targets) or the
+#  relay node (normal and build edges).
 # Every cargo query result is stored in a variable first, so a failing `cargo tree` (e.g. an
 # ambiguous spec after an Arti bump) aborts the gate instead of being read as "no features".
 # Self-test hooks (scripts/gates/self-test.sh): GHOST_POLICY_REQUIRE_EXTRA / _FORBID_EXTRA add an
 # arti-client feature to the required / forbidden list; GHOST_POLICY_FORBID_ON="crate:feature"
-# forbids one more feature on one more crate; GHOST_POLICY_RSA_ALLOWED overrides the allowed rsa
-# dependents; GHOST_POLICY_BAD_SPEC="crate" makes that crate's query fail.
+# forbids one more feature on one more crate; GHOST_POLICY_RSA_ALLOWED / GHOST_POLICY_RSA10_ALLOWED
+# override the allowed direct dependents of rsa 0.9.10 / 0.10.0-rc.18; GHOST_POLICY_ISSUER_ONLY_EXTRA
+# adds a package to the issuer-only list; GHOST_POLICY_BAD_SPEC="crate" makes that crate's query fail.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
 cd "$GHOST_ROOT"
@@ -85,14 +90,39 @@ for p in tor-hsservice arti-relay tor-relay-crypto; do
   if has "$pkgs" "$p"; then fail "package '$p' is linked into the client"; fi
 done
 
-# rsa: direct dependents across the whole workspace, all targets, must be Arti crates only.
-rsa_raw="$(tree --workspace -i rsa -e normal,build --depth 1 --target all --prefix none -f '{p}')"
-rsa_users="$(printf '%s\n' "$rsa_raw" | awk 'NR>1 && NF {print $1}' | sort -u)"
-allowed_rsa="${GHOST_POLICY_RSA_ALLOWED:-tor-llcrypto tor-key-forge ssh-key-fork-arti}"
-while IFS= read -r u; do
-  [ -n "$u" ] || continue
-  if ! printf '%s\n' $allowed_rsa | grep -qx "$u"; then
-    fail "'$u' depends on rsa directly: re-review RUSTSEC-2023-0071 in deny.toml first"
-  fi
-done <<< "$rsa_users"
+# rsa, per version: direct dependents across the whole workspace, all targets (dev edges excluded,
+# so the differential test's dev-dependency on the reference signer does not count).
+check_rsa() { # $1 = version, $2 = allowed direct dependents
+  local raw users u
+  raw="$(tree --workspace -i "rsa@$1" -e normal,build --depth 1 --target all --prefix none -f '{p}')" || { FAILURES=$((FAILURES + 1)); return; }
+  users="$(printf '%s\n' "$raw" | awk 'NR>1 && NF {print $1}' | sort -u)"
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    if ! printf '%s\n' $2 | grep -qx "$u"; then
+      fail "'$u' depends on rsa $1 directly: re-review RUSTSEC-2023-0071 in deny.toml first"
+    fi
+  done <<< "$users"
+}
+check_rsa 0.9.10 "${GHOST_POLICY_RSA_ALLOWED:-tor-llcrypto tor-key-forge ssh-key-fork-arti}"
+check_rsa 0.10.0-rc.18 "${GHOST_POLICY_RSA10_ALLOWED:-blind-rsa-signatures}"
+
+# Issuer-only packages ("name" or "name@version") stay out of the client and relay graphs.
+issuer_only="blind-rsa-signatures crypto-bigint@0.7.5 md-5 ghost-issuer ghost-issuer-ops ${GHOST_POLICY_ISSUER_ONLY_EXTRA:-}"
+check_absent() { # $1 = graph label, $2 = packages ("name vX.Y.Z" lines)
+  local spec name version
+  for spec in $issuer_only; do
+    name="${spec%@*}"
+    version=""
+    [ "$spec" != "$name" ] && version="${spec#*@}"
+    if printf '%s\n' "$2" | awk -v n="$name" -v v="v$version" '$1 == n && (v == "v" || $2 == v) {found = 1} END {exit !found}'; then
+      fail "package '$spec' is linked into $1: issuer graphs only (ADR-22)"
+    fi
+  done
+}
+for t in aarch64-linux-android x86_64-linux-android; do # keep in sync with scripts/build-native.sh
+  client_raw="$(tree -p ghost-client-net -e normal,build --target "$t" --prefix none -f '{p}')" || { FAILURES=$((FAILURES + 1)); continue; }
+  check_absent "ghost-client-net ($t)" "$client_raw"
+done
+relay_raw="$(tree -p ghost-relay-node -e normal,build --target all --prefix none -f '{p}')" && check_absent "ghost-relay-node" "$relay_raw" || true
+[ -n "${relay_raw:-}" ] || fail "no ghost-relay-node packages resolved"
 finish rust-feature-policy
