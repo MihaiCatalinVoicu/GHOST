@@ -39,6 +39,18 @@ fi
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"
 done
+# Phase 8 (design §14.1, E-2): crates nested under issuer/crates/ are scanned, and an issuer main.rs
+# is not exempt. Each fixture file must be reported by name (the rest of the fixture already fails).
+for g in anti-placeholder no-logging; do
+  out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/$g.sh" 2>&1 || true)"
+  for f in issuer/crates/blind-rsa/src/lib.rs issuer/crates/service/src/main.rs; do
+    if printf '%s\n' "$out" | grep -qF "$f:"; then
+      echo "self-test ok: $g reports $f"
+    else
+      echo "SELF-TEST FAIL: $g does not report $f" >&2; rc=1
+    fi
+  done
+done
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive
@@ -107,9 +119,35 @@ if command -v cargo >/dev/null; then
   expect_fail_msg "rust-feature-policy fails when a secondary cargo query fails" \
     "GATE-FAIL: cargo tree" \
     env GHOST_POLICY_BAD_SPEC=tor-hsclient bash "$DIR/rust-feature-policy.sh"
-  expect_fail_msg "rust-feature-policy rejects a non-Arti rsa dependent" \
-    "'ssh-key-fork-arti' depends on rsa directly" \
+  expect_fail_msg "rust-feature-policy rejects a non-Arti rsa 0.9.10 dependent" \
+    "'ssh-key-fork-arti' depends on rsa 0.9.10 directly" \
     env GHOST_POLICY_RSA_ALLOWED="tor-llcrypto tor-key-forge" bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "rust-feature-policy rejects an rsa 0.10.0-rc.18 dependent other than the signer" \
+    "'blind-rsa-signatures' depends on rsa 0.10.0-rc.18 directly" \
+    env GHOST_POLICY_RSA10_ALLOWED="none" bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "rust-feature-policy rejects an issuer-only package in the client graph" \
+    "package 'num-bigint-dig' is linked into ghost-client-net (aarch64-linux-android)" \
+    env GHOST_POLICY_ISSUER_ONLY_EXTRA=num-bigint-dig bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "rust-feature-policy rejects an issuer-only package in the relay graph" \
+    "package 'redb' is linked into ghost-relay-node" \
+    env GHOST_POLICY_ISSUER_ONLY_EXTRA=redb bash "$DIR/rust-feature-policy.sh"
+  # Crypto pins: a mutated copy of Cargo.lock (a second rsa 0.9 version), a mutated pins file (a
+  # version drift in one graph, a required crate missing from a graph).
+  tmp="$(mktemp)"
+  awk 'prev == "name = \"rsa\"" && $0 == "version = \"0.9.10\"" {$0 = "version = \"0.9.9\""} {print; prev = $0}' \
+    "$DIR/../../Cargo.lock" > "$tmp"
+  expect_fail_msg "rust-crypto-pins rejects a mutated Cargo.lock" "Cargo.lock holds rsa [0.10.0-rc.18 0.9.9]" \
+    env GHOST_CRYPTO_PINS_LOCK="$tmp" bash "$DIR/rust-crypto-pins.sh"
+  sed 's/^\(graph ghost-client-net .* ring\) 0\.17\.14 required$/\1 0.17.13 required/' \
+    "$DIR/rust-crypto-pins.txt" > "$tmp"
+  expect_fail_msg "rust-crypto-pins rejects a version drift in one graph" \
+    "ghost-client-net (aarch64-linux-android,x86_64-linux-android): ring resolves to [0.17.14], pinned 0.17.13" \
+    env GHOST_CRYPTO_PINS="$tmp" bash "$DIR/rust-crypto-pins.sh"
+  { cat "$DIR/rust-crypto-pins.txt"; echo "graph ghost-relay-node all blind-rsa-signatures 0.17.2 required"; } > "$tmp"
+  expect_fail_msg "rust-crypto-pins rejects a required crate missing from a graph" \
+    "ghost-relay-node (all): blind-rsa-signatures is missing" \
+    env GHOST_CRYPTO_PINS="$tmp" bash "$DIR/rust-crypto-pins.sh"
+  rm -f "$tmp"
   # The clippy fixture compiles the client library: opt-in (the CI rust job sets it, cache warm).
   if [ -n "${GHOST_SELFTEST_CLIPPY:-}" ]; then
     expect_fail_msg "clippy-clearnet-fixture reports a ban that does not fire" \

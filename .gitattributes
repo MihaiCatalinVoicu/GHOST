@@ -6,3 +6,5 @@ gradlew text eol=lf
 *.png binary
 *.pdf binary
 *.apk binary
+# Entitlement Schedules (Phase 8): signed binary documents, hashed byte for byte.
+*.ghes binary

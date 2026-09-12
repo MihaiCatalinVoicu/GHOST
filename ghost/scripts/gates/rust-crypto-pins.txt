@@ -1,0 +1,28 @@
+# Exact versions of the crypto crates, in the lock file and per shipped graph (Phase 8 design
+# §14.1, G-11; ADR-22). Read by rust-crypto-pins.sh. The name-based allowlists cannot see a second
+# version of a crate; this gate can. Changing a line is a crypto dependency change: review it.
+#
+#   lock <crate> <version>...
+#       Cargo.lock holds exactly these versions of <crate>.
+#   graph <package> <targets> <crate> <version> <required|optional>
+#       the normal and build edges of <package> for <targets> (comma-separated triples, or "all")
+#       reach <crate> only at <version>; "required": they must reach it.
+lock rsa 0.9.10 0.10.0-rc.18
+lock crypto-bigint 0.5.5 0.7.5
+lock blind-rsa-signatures 0.17.2
+lock num-bigint-dig 0.8.6
+lock ring 0.17.14
+
+# Client library (both shipped ABIs): rsa only inside Arti; blinding and verification crates.
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android rsa 0.9.10 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android num-bigint-dig 0.8.6 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android ring 0.17.14 required
+# Relay node: token verification arrives with redemption (slice S3), which makes these required.
+graph ghost-relay-node all num-bigint-dig 0.8.6 optional
+graph ghost-relay-node all ring 0.17.14 optional
+# Issuer: the reference signer on the pre-release rsa and crypto-bigint 0.7.5.
+graph ghost-issuer all rsa 0.10.0-rc.18 required
+graph ghost-issuer all crypto-bigint 0.7.5 required
+graph ghost-issuer all blind-rsa-signatures 0.17.2 required
+graph ghost-issuer all num-bigint-dig 0.8.6 required
+graph ghost-issuer all ring 0.17.14 required

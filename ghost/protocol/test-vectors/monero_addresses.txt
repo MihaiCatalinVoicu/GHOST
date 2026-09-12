@@ -1,0 +1,101 @@
+# Monero address vectors for ghost-entitlement::monero (Phase 8 design §7.7), replayed by
+# issuer/crates/entitlement/tests/monero_vectors.rs; the S5 regtest job (step 12) additionally
+# compares verdicts with wallet-rpc validate_address.
+#
+# Format: valid|<network>|<purpose>|<standard|subaddress>|<address>|<source>
+#         invalid|<network>|<purpose>|<error>|<address>|<source or derivation>
+# network: mainnet | stagenet | regtest (FAKECHAIN, mainnet prefixes); purpose: invoice (subaddress
+# only) | payout (standard or subaddress). In <address>, \s stands for one ASCII space.
+# error: length | integrated | alphabet | encoding | wrong-network | wrong-type | prefix | checksum
+#        | invalid-key
+#
+# Published addresses (retrieved 2026-09-12), copied verbatim:
+#  [GF]  https://www.getmonero.org/get-started/contributing/ : Monero General Fund donation address
+#        (standard, 44AFFq...) and subaddress (888tNk..., also the OpenAlias donate@getmonero.org
+#        address of validate_address.py:97)
+#  [CS]  https://github.com/monero-project/monero/blob/v0.18.5.1/tests/functional_tests/cold_signing.py
+#        lines 40-41: STANDARD_ADDRESS and SUBADDRESS of the test seed
+#  [VA]  https://github.com/monero-project/monero/blob/v0.18.5.1/tests/functional_tests/validate_address.py
+#        line 58 (a bad address), lines 68-80 (good addresses per network and type)
+#  [IA]  https://github.com/monero-project/monero/blob/v0.18.5.1/tests/functional_tests/integrated_address.py
+#        lines 63-93 (integrated addresses, a second standard address and its corrupted form)
+#  [DOC] https://github.com/monero-project/monero-docs/blob/master/docs/en/public-address/standard-address.md
+#        example standard address (decoded in the file; checksum a57120a3)
+# Derived cases (after the published ones) come from issuer/crates/entitlement/tests/monero_vectors.rs
+# derive_negative_cases: each names the published address it mutates and how.
+
+# Mainnet payout: standard addresses and subaddresses.
+valid|mainnet|payout|standard|44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A|GF
+valid|mainnet|payout|standard|42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm|CS:40
+valid|mainnet|payout|standard|44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW|VA:69
+valid|mainnet|payout|standard|4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge|DOC
+valid|mainnet|payout|standard|46r4nYSevkfBUMhuykdK3gQ98XDqDTYW1hNLaXNvjpsJaSbNtdXh1sKMsdVgqkaihChAzEy29zEDPMR3NHQvGoZCLGwTerK|IA:70
+valid|mainnet|payout|subaddress|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|GF
+valid|mainnet|payout|subaddress|84QRUYawRNrU3NN1VpFRndSukeyEb3Xpv8qZjjsoJZnTYpDYceuUTpog13D7qPxpviS7J29bSgSkR11hFFoXWk2yNdsR9WF|CS:41
+valid|mainnet|payout|subaddress|8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm|VA:73
+valid|mainnet|payout|subaddress|86kKnBKFqzCLxtK1Jmx2BkNBDBSMDEVaRYMMyVbeURYDWs8uNGDZURKCA5yRcyMxHzPcmCf1q2fSdhQVcaKsFrtGRsdGfNk|VA:74
+# Mainnet invoice: subaddresses only.
+valid|mainnet|invoice|subaddress|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|GF
+valid|mainnet|invoice|subaddress|84QRUYawRNrU3NN1VpFRndSukeyEb3Xpv8qZjjsoJZnTYpDYceuUTpog13D7qPxpviS7J29bSgSkR11hFFoXWk2yNdsR9WF|CS:41
+valid|mainnet|invoice|subaddress|8AsN91rznfkBGTY8psSNkJBg9SZgxxGGRUhGwRptBhgr5XSQ1XzmA9m8QAnoxydecSh5aLJXdrgXwTDMMZ1AuXsN1EX5Mtm|VA:73
+valid|mainnet|invoice|subaddress|86kKnBKFqzCLxtK1Jmx2BkNBDBSMDEVaRYMMyVbeURYDWs8uNGDZURKCA5yRcyMxHzPcmCf1q2fSdhQVcaKsFrtGRsdGfNk|VA:74
+invalid|mainnet|invoice|wrong-type|44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A|GF: a standard address is no invoice destination
+invalid|mainnet|invoice|wrong-type|42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm|CS:40
+invalid|mainnet|invoice|wrong-type|44Kbx4sJ7JDRDV5aAhLJzQCjDz2ViLRduE3ijDZu3osWKBjMGkV1XPk4pfDUMqt1Aiezvephdqm6YD19GKFD9ZcXVUTp6BW|VA:69
+invalid|mainnet|invoice|wrong-type|4AdUndXHHZ6cfufTMvppY6JwXNouMBzSkbLYfpAV5Usx3skxNgYeYTRj5UzqtReoS44qo9mtmXCqY45DJ852K5Jv2684Rge|DOC
+# Regtest (FAKECHAIN) uses the mainnet prefixes.
+valid|regtest|invoice|subaddress|84QRUYawRNrU3NN1VpFRndSukeyEb3Xpv8qZjjsoJZnTYpDYceuUTpog13D7qPxpviS7J29bSgSkR11hFFoXWk2yNdsR9WF|CS:41
+valid|regtest|invoice|subaddress|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|GF
+valid|regtest|payout|standard|42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWDm|CS:40
+invalid|regtest|invoice|wrong-network|73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa|VA:79 (stagenet subaddress)
+# Stagenet.
+valid|stagenet|payout|standard|53teqCAESLxeJ1REzGMAat1ZeHvuajvDiXqboEocPaDRRmqWoVPzy46GLo866qRFjbNhfkNckyhST3WEvBviDwpUDd7DSzB|VA:71
+valid|stagenet|payout|subaddress|73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa|VA:79
+valid|stagenet|payout|subaddress|7A1Hr63MfgUa8pkWxueD5xBqhQczkusYiCMYMnJGcGmuQxa7aDBxN1G7iCuLCNB3VPeb2TW7U9FdxB27xKkWKfJ8VhUZthF|VA:80
+valid|stagenet|invoice|subaddress|73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa|VA:79
+valid|stagenet|invoice|subaddress|7A1Hr63MfgUa8pkWxueD5xBqhQczkusYiCMYMnJGcGmuQxa7aDBxN1G7iCuLCNB3VPeb2TW7U9FdxB27xKkWKfJ8VhUZthF|VA:80
+invalid|stagenet|invoice|wrong-type|53teqCAESLxeJ1REzGMAat1ZeHvuajvDiXqboEocPaDRRmqWoVPzy46GLo866qRFjbNhfkNckyhST3WEvBviDwpUDd7DSzB|VA:71
+invalid|stagenet|payout|wrong-network|44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A|GF (mainnet)
+invalid|stagenet|payout|wrong-network|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|GF (mainnet)
+invalid|stagenet|invoice|wrong-network|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|GF (mainnet)
+invalid|stagenet|invoice|wrong-network|84QRUYawRNrU3NN1VpFRndSukeyEb3Xpv8qZjjsoJZnTYpDYceuUTpog13D7qPxpviS7J29bSgSkR11hFFoXWk2yNdsR9WF|CS:41 (mainnet)
+# Other networks on mainnet (testnet is never used by GHOST).
+invalid|mainnet|payout|wrong-network|53teqCAESLxeJ1REzGMAat1ZeHvuajvDiXqboEocPaDRRmqWoVPzy46GLo866qRFjbNhfkNckyhST3WEvBviDwpUDd7DSzB|VA:71 (stagenet)
+invalid|mainnet|payout|wrong-network|73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa|VA:79 (stagenet)
+invalid|mainnet|invoice|wrong-network|7A1Hr63MfgUa8pkWxueD5xBqhQczkusYiCMYMnJGcGmuQxa7aDBxN1G7iCuLCNB3VPeb2TW7U9FdxB27xKkWKfJ8VhUZthF|VA:80 (stagenet)
+invalid|mainnet|payout|wrong-network|9ujeXrjzf7bfeK3KZdCqnYaMwZVFuXemPU8Ubw335rj2FN1CdMiWNyFV3ksEfMFvRp9L9qum5UxkP5rN9aLcPxbH1au4WAB|VA:70 (testnet)
+invalid|mainnet|payout|wrong-network|BdKg9udkvckC5T58a8Nmtb6BNsgRAxs7uA2D49sWNNX5HPW5Us6Wxu8QMXrnSx3xPBQQ2iu9kwEcRGAoiz6EPmcZKbF62GS|VA:76 (testnet subaddress)
+invalid|mainnet|invoice|wrong-network|BcFvPa3fT4gVt5QyRDe5Vv7VtUFao9ci8NFEy3r254KF7R1N2cNB5FYhGvrHbMStv4D6VDzZ5xtxeKV8vgEPMnDcNFuwZb9|VA:77 (testnet subaddress)
+# Integrated addresses (106 characters) are always refused.
+invalid|mainnet|payout|integrated|4BxSHvcgTwu25WooY4BVmgdcKwZu5EksVZSZkDd6ooxSVVqQ4ubxXkhLF6hEqtw96i9cf3cVfLw8UWe95bdDKfRQeYtPwLm1Jiw7AKt2LY|VA:72
+invalid|mainnet|payout|integrated|4CMe2PUhs4J4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfSbLRB61BQVATzerHGj|IA:63
+invalid|mainnet|invoice|integrated|4GYjoMG9Y2BBUMhuykdK3gQ98XDqDTYW1hNLaXNvjpsJaSbNtdXh1sKMsdVgqkaihChAzEy29zEDPMR3NHQvGoZCVSs1ZojwrDCGS5rUuo|IA:71
+invalid|stagenet|payout|integrated|5K8mwfjumVseCcQEjNbf59Um6R9NfVUNkHTLhhPCmNvgDLVS88YW5tScnm83rw9mfgYtchtDDTW5jEfMhygi27j1QYphX38hg6m4VMtN29|VA:78
+invalid|mainnet|payout|integrated|AApMA1VuhiCaHzr5X2KXi2Zc9oJ3VaGjkfChxxpRpxkyKf1NetvbRbQTbFMrGkr85DjnEH7JsBaoUFsgKwZnmtnVWnoB8MDotCsLb7eWwz|VA:75 (testnet)
+# Published corrupted addresses.
+invalid|mainnet|payout|checksum|42ey1afDFnn4886T7196doS9GPMzexD9gXpsZJDwVjeRVdFCSoHnv7KPbBeGpzJBzHRCAs9UxqeoyFQMYbqSWYTfJJQAWD9|VA:58 (bad address: last character changed)
+invalid|mainnet|payout|checksum|46r4nYSevkfBUMhuykdK3gQ98XDqDTYW1hNLaXNvjpsJaSbNtdXh1sKMsdVgqkaihChAzEy29zEDPMR3NHQvGoZCLGwTerr|IA:91 (bad standard address)
+# Derived cases.
+invalid|mainnet|invoice|checksum|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxxANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|derived: 888tNk subaddress with character 40 replaced
+invalid|mainnet|invoice|checksum|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDdTkD5h|derived: 888tNk bytes with a SHA3-256 (not Keccak-256) checksum
+invalid|mainnet|invoice|wrong-type|47Jk3Nv1nwgJsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDZjKV9w|derived: 888tNk keys under the mainnet standard prefix 18, Keccak checksum recomputed
+invalid|mainnet|invoice|wrong-network|77vrHuetjkzJsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDbdJPKJ|derived: 888tNk keys under the stagenet subaddress prefix 36, checksum recomputed
+invalid|mainnet|invoice|wrong-network|Bds1fhmD9yxJsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDb4ZMHB|derived: 888tNk keys under the testnet subaddress prefix 63, checksum recomputed
+invalid|mainnet|invoice|integrated|4H1R4BjWQDCJsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDbdWTSp|derived: 888tNk keys under the integrated prefix 19 at 95 characters, checksum recomputed
+invalid|mainnet|invoice|prefix|Hf7EAmEy3caJsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDbp5QJL|derived: 888tNk keys under the unknown prefix 99, checksum recomputed
+invalid|mainnet|invoice|invalid-key|82XeYeMNNYX111111111111111111111111111111111164xan6SSt1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDYHyuxr|derived: 888tNk with a spend key that is not an Ed25519 point, checksum recomputed
+invalid|mainnet|invoice|invalid-key|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAhkQmZTG6po11111111111111111111111111111111115k6xYe|derived: 888tNk with a view key that is not an Ed25519 point, checksum recomputed
+invalid|mainnet|invoice|encoding|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogzzzzzzz|derived: 888tNk with the final 7-character block zzzzzzz (58^7 - 1 > 2^40 - 1)
+invalid|mainnet|invoice|encoding|zzzzzzzzzzzJsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|derived: 888tNk with the first 11-character block zzzzzzzzzzz (> 2^64 - 1)
+invalid|mainnet|invoice|length|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3|derived: 888tNk truncated to 94 characters
+invalid|mainnet|invoice|length|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H1|derived: 888tNk with a character appended (96)
+invalid|mainnet|invoice|length|\s888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|derived: 888tNk with a leading space
+invalid|mainnet|invoice|length|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H\s|derived: 888tNk with a trailing space
+invalid|mainnet|invoice|length||derived: empty
+invalid|mainnet|invoice|alphabet|088tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|derived: 888tNk with '0' (not in the Base58 alphabet)
+invalid|mainnet|invoice|alphabet|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3O|derived: 888tNk with 'O'
+invalid|mainnet|invoice|alphabet|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbI3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|derived: 888tNk with 'I'
+invalid|mainnet|invoice|alphabet|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1lXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H|derived: 888tNk with 'l'
+invalid|mainnet|invoice|checksum|888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3h|derived: 888tNk with the last character lowercased
+invalid|mainnet|payout|checksum|44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3B|derived: 44AFFq with the last character replaced
+invalid|mainnet|payout|wrong-network|73LhUiix4DVFMcKhsPRG51QmCsv8dYYbL6GcQoLwEEFvPvkVvc7BhebfA4pnEFF9Lq66hwvLqBvpHjTcqvpJMHmmNjPPBqa|derived: stagenet subaddress 73LhUi offered on mainnet

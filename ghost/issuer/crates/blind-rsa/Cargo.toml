@@ -1,0 +1,22 @@
+[package]
+publish = false
+name = "ghost-blind-rsa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST public-side RSA blind signatures (RFC 9474, SHA-384 PSS): EMSA-PSS, blind, finalize, ring verification, permutation proofs (ADR-22)"
+
+[dependencies]
+# Public-key work only, on crates already linked into the Android library (design §2.7): no
+# private-key operation exists in this crate.
+sha2 = { workspace = true }
+num-bigint-dig = { workspace = true }
+ring = { workspace = true }
+
+[dev-dependencies]
+# Reference implementation (RFC 9474 co-author) as the differential oracle (design §2.9). Dev
+# edges are outside the shipped graphs that rust-feature-policy.sh and rust-crypto-pins.sh check.
+blind-rsa-signatures = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }

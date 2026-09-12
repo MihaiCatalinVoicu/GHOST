@@ -26,9 +26,12 @@ android_main_files() {
 }
 rust_src_files() {
   # test-harness/ is tooling, not the production path (its CLIs may print to the console).
-  # Binary entry points (src/main.rs) print operator-facing constants and configuration only;
-  # every library crate stays free of logging primitives.
-  find "$GHOST_ROOT/relay" "$GHOST_ROOT/issuer" "$GHOST_ROOT/client-core" -path '*/target' -prune -o -type f -name '*.rs' -not -name main.rs -path '*/src/*' -print 2>/dev/null || true
+  # Relay and client binary entry points (src/main.rs) print operator-facing constants and
+  # configuration only; every library crate stays free of logging primitives. Under issuer/ every
+  # crate is found at any depth (issuer/crates/*) and main.rs is not exempt: the issuer keeps no
+  # logs at all (Phase 8 design §14.1, ADR-26).
+  find "$GHOST_ROOT/relay" "$GHOST_ROOT/client-core" -path '*/target' -prune -o -type f -name '*.rs' -not -name main.rs -path '*/src/*' -print 2>/dev/null || true
+  find "$GHOST_ROOT/issuer" -path '*/target' -prune -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true
 }
 manifest_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f -name 'AndroidManifest.xml' -print 2>/dev/null || true

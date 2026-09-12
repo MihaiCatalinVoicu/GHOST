@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "ghost-issuer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST entitlement issuer: blind-signed credentials over a Monero rail (ADR-02, ADR-05, ADR-22)"
+
+[dependencies]
+ghost-blind-rsa = { path = "../blind-rsa" }
+ghost-entitlement = { path = "../entitlement" }
+# Reference signer (design §2.7, ADR-22): RFC 9474 co-author's implementation on the constant-time
+# crypto-bigint path of rsa 0.10.0-rc.18. Only this graph (and ghost-issuer-ops) may link it.
+blind-rsa-signatures = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+sha2 = { workspace = true }
+# Signs the test Entitlement Schedule fixtures (tests/fixture_gen.rs).
+ed25519-dalek = { workspace = true }
