@@ -1,4 +1,5 @@
-//! JNI surface for the Android `network` module (`org.ghost.network.TorRelayTransport`).
+//! JNI surface for the Android `network` module: `org.ghost.network.TorRelayTransport`,
+//! `org.ghost.network.TorIssuerTransport` and `org.ghost.network.EntitlementCrypto`.
 //!
 //! Lifetime model: native state lives in a process-wide registry keyed by an opaque, never-reused
 //! `jlong` id. Every call clones an `Arc` of its handle for the duration of the call, so
@@ -9,24 +10,38 @@
 //! Every entry point runs under `catch_unwind`, so a Rust panic becomes an `internal` exception
 //! instead of aborting the process at the `extern "system"` boundary. A silent panic hook keeps
 //! panic messages (which may carry detail) off stderr; a panic during unwinding or an allocation
-//! failure still aborts. Only byte arrays, strings
-//! and integers cross the boundary; errors surface as `org.ghost.network.NetworkException` with a
-//! constant category (see [`crate::categories`]), never with relay or network detail.
+//! failure still aborts. Only byte arrays, strings and integers cross the boundary; results are
+//! fixed-layout byte strings (integers big-endian) that the Kotlin decoders read strictly; errors
+//! surface as `org.ghost.network.NetworkException` with a constant category (see
+//! [`crate::categories`]), never with relay, issuer or network detail.
 //!
-//! Relay calls (store, get, list, check) go through a [`NamespaceClient`] built per call for the
-//! call's namespace, so the capability must name that namespace (T21), and each takes a
+//! Relay calls (store, get, list, check, redeem) go through a [`NamespaceClient`] built per call
+//! for the call's namespace, so the capability must name that namespace (T21), and each takes a
 //! `deadlineMs`: the effective deadline is `min(deadlineMs, RELAY_RPC_DEADLINE)`; zero or a
 //! negative value is `invalid_argument`. One handle serves concurrent calls from several JVM
 //! threads: its runtime is multi-threaded and each call blocks only its own thread.
+//!
+//! Issuer calls (`TorIssuerTransport`, Phase 8 design §11.7) use the same handle, hence the same
+//! Tor client, on the circuits of the call's issuer flow (`flow16`, 16 random bytes per flow
+//! instance): an [`IssuerClient`] is built per call for the issuer onion of the embedded
+//! Entitlement Schedule, and [`crate::issuer_flow`] checks the request before any I/O and the
+//! answer against the ES. `nativeEndFlow` drops the flow's isolation token. `EntitlementCrypto` is
+//! stateless: its functions read the embedded ES only ([`crate::entitlement`]). A schedule that
+//! fails verification makes every entitlement call fail with `internal`.
 
 use crate::categories as cat;
+use crate::entitlement::{self, embedded_schedule, Product};
+use crate::issuer_client::{IssuerClient, IssuerError};
+use crate::issuer_flow;
 use crate::namespace_client::NamespaceClient;
 use crate::onion::OnionAddress;
 use crate::relay_client::{FetchedBlob, OnionConnector, RelayError, RELAY_RPC_DEADLINE};
 use crate::transport::{TorTransport, TransportConfig};
+use ghost_entitlement::monero::AddressPurpose;
+use ghost_entitlement::{Kind, Schedule, Token};
 use ghost_relay_api::MAX_BATCH;
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jbyteArray, jint, jlong};
+use jni::sys::{jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
 use std::collections::HashMap;
 use std::future::Future;
@@ -121,6 +136,16 @@ fn lookup(id: jlong) -> Outcome<Arc<Handle>> {
         .ok_or(cat::CLOSED)
 }
 
+/// Ends an issuer flow on the transport of `id`: its isolation token is dropped. A stopped or
+/// unknown id is a no-op (the transport's flow map went with it).
+fn end_flow(id: jlong, flow: &[u8; 16]) {
+    if let Ok(h) = lookup(id) {
+        if let Ok(t) = h.transport() {
+            t.end_issuer_flow(flow);
+        }
+    }
+}
+
 fn throw(env: &mut JNIEnv, category: &str) {
     // Never stack a second exception on a pending one (e.g. from a failed JNI conversion).
     if env.exception_check().unwrap_or(true) {
@@ -164,11 +189,13 @@ fn bytes(env: &JNIEnv, arr: &JByteArray) -> Outcome<Vec<u8>> {
         .map_err(|_| cat::INVALID_ARGUMENT)
 }
 
-fn fixed32(env: &JNIEnv, arr: &JByteArray) -> Outcome<[u8; 32]> {
-    bytes(env, arr)?
-        .as_slice()
-        .try_into()
-        .map_err(|_| cat::INVALID_ARGUMENT)
+/// A byte array of exactly `N` bytes.
+fn fixed<const N: usize>(env: &JNIEnv, arr: &JByteArray) -> Outcome<[u8; N]> {
+    exact(&bytes(env, arr)?)
+}
+
+fn exact<const N: usize>(raw: &[u8]) -> Outcome<[u8; N]> {
+    raw.try_into().map_err(|_| cat::INVALID_ARGUMENT)
 }
 
 fn string(env: &mut JNIEnv, s: &JString) -> Outcome<String> {
@@ -201,10 +228,21 @@ fn new_runtime() -> Outcome<Runtime> {
 /// Per-call deadline from Kotlin: `min(deadline_ms, RELAY_RPC_DEADLINE)`; zero or negative is
 /// `invalid_argument`.
 fn deadline(deadline_ms: jint) -> Outcome<Duration> {
-    match u64::try_from(deadline_ms) {
-        Ok(ms) if ms > 0 => Ok(Duration::from_millis(ms).min(RELAY_RPC_DEADLINE)),
+    positive_millis(deadline_ms).map(|d| d.min(RELAY_RPC_DEADLINE))
+}
+
+/// A positive deadline in milliseconds; the issuer client caps it per call (60 s, or 120 s for
+/// `BlindSign` and `RedeemInvite`).
+fn positive_millis(ms: jint) -> Outcome<Duration> {
+    match u64::try_from(ms) {
+        Ok(ms) if ms > 0 => Ok(Duration::from_millis(ms)),
         _ => Err(cat::INVALID_ARGUMENT),
     }
+}
+
+/// A week, epoch or amount from Kotlin: never negative.
+fn unsigned(v: jlong) -> Outcome<u64> {
+    u64::try_from(v).map_err(|_| cat::INVALID_ARGUMENT)
 }
 
 /// Concatenated 32-byte hashes (the check request and response wire format), at most
@@ -254,6 +292,44 @@ fn namespace_client(
 
 fn relay_category(e: RelayError) -> &'static str {
     cat::for_relay(&e)
+}
+
+fn issuer_category(e: IssuerError) -> &'static str {
+    cat::for_issuer(&e)
+}
+
+/// The embedded Entitlement Schedule; a schedule that fails verification is `internal` (a broken
+/// build, never a caller error).
+fn schedule() -> Outcome<&'static Schedule> {
+    embedded_schedule().map_err(|_| cat::INTERNAL)
+}
+
+/// One token of 354 bytes and type 0x0002.
+fn one_token(raw: &[u8]) -> Outcome<Token> {
+    Token::parse(raw).map_err(|_| cat::INVALID_ARGUMENT)
+}
+
+/// Concatenated 354-byte tokens.
+fn token_list(raw: &[u8]) -> Outcome<Vec<Token>> {
+    issuer_flow::parse_tokens(raw).map_err(issuer_category)
+}
+
+/// Runs one issuer call on the transport of `id`: a client for the embedded schedule's issuer
+/// onion on the circuits of `flow`, with the caller's deadline.
+fn with_issuer<T, F, Fut>(id: jlong, flow: [u8; 16], deadline: Duration, call: F) -> Outcome<T>
+where
+    F: FnOnce(IssuerClient<OnionConnector>, &'static Schedule) -> Fut,
+    Fut: Future<Output = Result<T, IssuerError>>,
+{
+    let schedule = schedule()?;
+    let h = lookup(id)?;
+    let transport = h.transport()?;
+    h.run(async move {
+        let mut client =
+            IssuerClient::over_tor(transport, schedule, flow).map_err(issuer_category)?;
+        client.set_deadline(deadline).map_err(issuer_category)?;
+        call(client, schedule).await.map_err(issuer_category)
+    })
 }
 
 /// Creates the Tor client without network access and returns an opaque id (never 0).
@@ -352,7 +428,7 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeStore(
 ) -> jbyteArray {
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let addr = onion(env, &relay)?;
-        let ns = fixed32(env, &namespace)?;
+        let ns = fixed::<32>(env, &namespace)?;
         let cap = bytes(env, &capability)?;
         let data = bytes(env, &ciphertext)?;
         let ttl = u32::try_from(ttl_seconds).map_err(|_| cat::INVALID_ARGUMENT)?;
@@ -387,9 +463,9 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeGet(
 ) -> jbyteArray {
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let addr = onion(env, &relay)?;
-        let ns = fixed32(env, &namespace)?;
+        let ns = fixed::<32>(env, &namespace)?;
         let cap = bytes(env, &capability)?;
-        let hash = fixed32(env, &blob_hash)?;
+        let hash = fixed::<32>(env, &blob_hash)?;
         let deadline = deadline(deadline_ms)?;
         let h = lookup(id)?;
         let transport = h.transport()?;
@@ -419,7 +495,7 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeList(
 ) -> jbyteArray {
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let addr = onion(env, &relay)?;
-        let ns = fixed32(env, &namespace)?;
+        let ns = fixed::<32>(env, &namespace)?;
         let cap = bytes(env, &capability)?;
         let cur = bytes(env, &cursor)?;
         let limit = u32::try_from(limit).map_err(|_| cat::INVALID_ARGUMENT)?;
@@ -452,7 +528,7 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCheck(
 ) -> jbyteArray {
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let addr = onion(env, &relay)?;
-        let ns = fixed32(env, &namespace)?;
+        let ns = fixed::<32>(env, &namespace)?;
         let cap = bytes(env, &capability)?;
         let asked = hash_list(&bytes(env, &hashes)?)?;
         let deadline = deadline(deadline_ms)?;
@@ -468,9 +544,337 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeCheck(
     })
 }
 
+/// Redeems an entitlement token (354 bytes) for a write capability of `namespace` at `relay`
+/// (design §10.9), with a 16-byte `requestId` identical on every retry. Before any I/O the token
+/// must be bound by the embedded ES to this relay's slot in its week. Returns
+/// `result(1) || relay_period(8) || relay_minute(8) || expiry(8) || capability(98 or 0)`, result
+/// 1 OK (with the capability), 2 REPLAYED, 3 WRONG_PERIOD.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeRedeem(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    relay: JString,
+    namespace: JByteArray,
+    token: JByteArray,
+    request_id: JByteArray,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let addr = onion(env, &relay)?;
+        let ns = fixed::<32>(env, &namespace)?;
+        let token = bytes(env, &token)?;
+        let request_id = fixed::<16>(env, &request_id)?;
+        let deadline = deadline(deadline_ms)?;
+        let schedule = schedule()?;
+        let h = lookup(id)?;
+        let transport = h.transport()?;
+        let outcome = h.run(async {
+            namespace_client(transport, &addr, ns, deadline)?
+                .redeem(schedule, &token, request_id)
+                .await
+                .map_err(relay_category)
+        })?;
+        to_java(env, &outcome.pack())
+    })
+}
+
+/// `RequestInvoice` on flow `flow16` (16 bytes): `claimHash` (32), `credits` (0, or 10..20
+/// concatenated CREDIT tokens covering the price), `baseWeek` (the device-clock week). Returns
+/// `result(1) || invoice_id(16) || amount(8) || subaddress(0 or 95) || spent_mask(4)`, validated
+/// against the ES (amount = ES price or 0, subaddress of the ES network).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeRequestInvoice(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+    claim_hash: JByteArray,
+    credits: JByteArray,
+    base_week: jlong,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        let claim_hash = fixed::<32>(env, &claim_hash)?;
+        let credits = token_list(&bytes(env, &credits)?)?;
+        let base_week = unsigned(base_week)?;
+        let deadline = positive_millis(deadline_ms)?;
+        let answer = with_issuer(id, flow, deadline, |mut c, s| async move {
+            issuer_flow::request_invoice(&mut c, s, &claim_hash, &credits, base_week).await
+        })?;
+        to_java(env, &answer.pack())
+    })
+}
+
+/// `BlindSign` on flow `flow16`: `invoiceId` (16), `claimKey` (32), `seed` (32), `product` (1
+/// pack-xmr, 2 pack-credits), `baseWeek` and the stored `layoutDigest` (32). Rust recomputes the
+/// request from the seed. Returns `state(1) || credited(8) || seen(8)`, followed on SIGNED by
+/// `N x (nullifier(32) || token(354))` in layout order.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeBlindSign(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+    invoice_id: JByteArray,
+    claim_key: JByteArray,
+    seed: JByteArray,
+    product: jint,
+    base_week: jlong,
+    layout_digest: JByteArray,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        let invoice_id = fixed::<16>(env, &invoice_id)?;
+        let claim_key = fixed::<32>(env, &claim_key)?;
+        let seed = fixed::<32>(env, &seed)?;
+        let product = Product::from_code(product).ok_or(cat::INVALID_ARGUMENT)?;
+        let base_week = unsigned(base_week)?;
+        let layout_digest = fixed::<32>(env, &layout_digest)?;
+        let deadline = positive_millis(deadline_ms)?;
+        let answer = with_issuer(id, flow, deadline, |mut c, s| async move {
+            issuer_flow::blind_sign(
+                &mut c,
+                s,
+                &invoice_id,
+                &claim_key,
+                &seed,
+                product,
+                base_week,
+                &layout_digest,
+            )
+            .await
+        })?;
+        to_java(env, &answer.pack())
+    })
+}
+
+/// `InvoiceStatus` on flow `flow16` (the optional "check now"). Returns
+/// `state(1) || credited(8) || seen(8)`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeInvoiceStatus(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+    invoice_id: JByteArray,
+    claim_key: JByteArray,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        let invoice_id = fixed::<16>(env, &invoice_id)?;
+        let claim_key = fixed::<32>(env, &claim_key)?;
+        let deadline = positive_millis(deadline_ms)?;
+        let answer = with_issuer(id, flow, deadline, |mut c, _s| async move {
+            issuer_flow::invoice_status(&mut c, &invoice_id, &claim_key).await
+        })?;
+        to_java(env, &answer.pack())
+    })
+}
+
+/// `RedeemInvite` on flow `flow16`: the invite token (354, verified offline first), `seed` (32),
+/// `baseWeek` and the stored `layoutDigest`. Returns `result(1)` followed on OK by
+/// `N_t x (nullifier(32) || token(354))`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeRedeemInvite(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+    invite_token: JByteArray,
+    seed: JByteArray,
+    base_week: jlong,
+    layout_digest: JByteArray,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        let invite = one_token(&bytes(env, &invite_token)?)?;
+        let seed = fixed::<32>(env, &seed)?;
+        let base_week = unsigned(base_week)?;
+        let layout_digest = fixed::<32>(env, &layout_digest)?;
+        let deadline = positive_millis(deadline_ms)?;
+        let answer = with_issuer(id, flow, deadline, |mut c, s| async move {
+            issuer_flow::redeem_invite(&mut c, s, &invite, &seed, base_week, &layout_digest).await
+        })?;
+        to_java(env, &answer.pack())
+    })
+}
+
+/// `ClaimPayout` on flow `flow16`: `claimId` (16), the credits (concatenated CREDIT tokens,
+/// `min_claim_credits .. max_claim_credits`) and the payout address (ES network). Returns
+/// `result(1) || queued(8) || spent_mask(8)`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeClaimPayout(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+    claim_id: JByteArray,
+    credits: JByteArray,
+    address: JString,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        let claim_id = fixed::<16>(env, &claim_id)?;
+        let credits = token_list(&bytes(env, &credits)?)?;
+        let address = string(env, &address)?;
+        let deadline = positive_millis(deadline_ms)?;
+        let answer = with_issuer(id, flow, deadline, |mut c, s| async move {
+            issuer_flow::claim_payout(&mut c, s, &claim_id, &credits, &address).await
+        })?;
+        to_java(env, &answer.pack())
+    })
+}
+
+/// `RefreshCredit` on flow `flow16` (design §19.8): the received credit (354), `seed` (32) and the
+/// stored `layoutDigest` of `refresh(epoch of the credit)`. Returns `result(1)` followed on OK by
+/// `nullifier(32) || token(354)` of the fresh credit.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeRefreshCredit(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+    received_credit: JByteArray,
+    seed: JByteArray,
+    layout_digest: JByteArray,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        let credit = one_token(&bytes(env, &received_credit)?)?;
+        let seed = fixed::<32>(env, &seed)?;
+        let layout_digest = fixed::<32>(env, &layout_digest)?;
+        let deadline = positive_millis(deadline_ms)?;
+        let answer = with_issuer(id, flow, deadline, |mut c, s| async move {
+            issuer_flow::refresh_credit(&mut c, s, &credit, &seed, &layout_digest).await
+        })?;
+        to_java(env, &answer.pack())
+    })
+}
+
+/// Drops the isolation token of flow `flow16` (16 bytes): later calls under that id get fresh
+/// circuits. A stopped or unknown handle is a no-op.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorIssuerTransport_nativeEndFlow(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    flow: JByteArray,
+) {
+    guarded(&mut env, (), |env| {
+        let flow = fixed::<16>(env, &flow)?;
+        end_flow(id, &flow);
+        Ok(())
+    })
+}
+
+/// The verified summary of the embedded ES ([`entitlement::schedule_summary`]).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativeScheduleSummary(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let summary = entitlement::schedule_summary(schedule()?).map_err(|_| cat::INTERNAL)?;
+        to_java(env, &summary)
+    })
+}
+
+/// `digest(32) || N(4)` of `product` (1 pack-xmr, 2 pack-credits, 3 trial, 4 refresh) at `index`
+/// (the base week; the credit epoch for a refresh). A layout the ES cannot build is
+/// `invalid_argument`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativeLayoutDigest(
+    mut env: JNIEnv,
+    _class: JClass,
+    product: jint,
+    index: jlong,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let product = Product::from_code(product).ok_or(cat::INVALID_ARGUMENT)?;
+        let index = unsigned(index)?;
+        let layout = entitlement::layout_digest(schedule()?, product, index)
+            .map_err(|_| cat::INVALID_ARGUMENT)?;
+        to_java(env, &layout)
+    })
+}
+
+/// Offline check of a token under the embedded ES for `kind` (1 access, any slot; 2 invite; 3
+/// credit). Returns `kind(1) || epoch(8) || slot(1, 0xFF without) || nullifier(32)`; a refused
+/// token is category `rejected`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativeVerifyToken(
+    mut env: JNIEnv,
+    _class: JClass,
+    token: JByteArray,
+    kind: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let kind = u8::try_from(kind)
+            .ok()
+            .and_then(Kind::from_byte)
+            .ok_or(cat::INVALID_ARGUMENT)?;
+        let raw = bytes(env, &token)?;
+        let verified = entitlement::verify_token(schedule()?, &raw, kind).ok_or(cat::REJECTED)?;
+        to_java(env, &entitlement::pack_verified(&verified))
+    })
+}
+
+/// Validates a Monero address of the ES network for `purpose` (1 invoice, 2 payout). Returns
+/// `(network << 8) | type` (type 1 standard, 2 subaddress); a refused address is `rejected`.
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativeValidateAddress(
+    mut env: JNIEnv,
+    _class: JClass,
+    address: JString,
+    purpose: jint,
+) -> jint {
+    guarded(&mut env, 0, |env| {
+        let purpose = match purpose {
+            1 => AddressPurpose::Invoice,
+            2 => AddressPurpose::Payout,
+            _ => return Err(cat::INVALID_ARGUMENT),
+        };
+        let address = string(env, &address)?;
+        entitlement::validate_address(schedule()?, &address, purpose)
+            .map(jint::from)
+            .map_err(|_| cat::REJECTED)
+    })
+}
+
+/// `monero:<subaddress>?tx_amount=<12 decimals>` for an ES-network subaddress and a positive
+/// amount (a refused subaddress is `rejected`, an amount of 0 or less `invalid_argument`).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_EntitlementCrypto_nativePaymentUri(
+    mut env: JNIEnv,
+    _class: JClass,
+    subaddress: JString,
+    amount_atomic: jlong,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let amount = unsigned(amount_atomic)
+            .ok()
+            .filter(|a| *a > 0)
+            .ok_or(cat::INVALID_ARGUMENT)?;
+        let subaddress = string(env, &subaddress)?;
+        let uri = entitlement::payment_uri(schedule()?, &subaddress, amount)
+            .map_err(|_| cat::REJECTED)?;
+        env.new_string(uri)
+            .map(|s| s.into_raw())
+            .map_err(|_| cat::INTERNAL)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::isolation::IsolationScope;
 
     /// A handle like `nativeCreate` builds (same runtime), without a Tor transport.
     fn test_handle() -> Arc<Handle> {
@@ -479,6 +883,26 @@ mod tests {
         Arc::new(Handle {
             rt: Some(rt),
             transport: None,
+            cancel,
+        })
+    }
+
+    /// A handle exactly as `nativeCreate` builds it (a Tor client that has not bootstrapped).
+    fn tor_handle(dir: &std::path::Path) -> Arc<Handle> {
+        let rt = new_runtime().unwrap();
+        let transport = {
+            let _ctx = rt.enter();
+            TorTransport::create(&TransportConfig {
+                state_dir: dir.join("state"),
+                cache_dir: dir.join("cache"),
+                bridge_lines: vec![],
+            })
+            .unwrap()
+        };
+        let (cancel, _) = watch::channel(false);
+        Arc::new(Handle {
+            rt: Some(rt),
+            transport: Some(Arc::new(transport)),
             cancel,
         })
     }
@@ -522,6 +946,36 @@ mod tests {
         stop(c);
     }
 
+    /// The M4 target at the JNI boundary (design §19.17 point 6): two flows of one transport get
+    /// distinct tokens, the function `nativeEndFlow` calls drops a flow's token, and a transport
+    /// created after the first was stopped never hands out an earlier token.
+    #[test]
+    fn native_end_flow_drops_the_token_and_no_token_outlives_its_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let f1 = IsolationScope::IssuerFlow([0x51; 16]);
+        let f2 = IsolationScope::IssuerFlow([0x52; 16]);
+        let h = tor_handle(&dir.path().join("a"));
+        let id = register(Arc::clone(&h));
+        let token = |h: &Handle, s: &IsolationScope| h.transport().unwrap().isolation_token(s);
+        let a1 = token(&h, &f1);
+        let a2 = token(&h, &f2);
+        assert_ne!(a1, a2);
+        assert_eq!(token(&h, &f1), a1);
+        end_flow(id, &[0x51; 16]);
+        let b1 = token(&h, &f1);
+        assert_ne!(b1, a1, "nativeEndFlow drops the flow's token");
+        assert_eq!(token(&h, &f2), a2, "other flows keep theirs");
+        stop(id);
+        end_flow(id, &[0x52; 16]); // a stopped handle: no-op, no error
+        drop(h);
+        let h2 = tor_handle(&dir.path().join("b"));
+        let id2 = register(Arc::clone(&h2));
+        for s in [&f1, &f2] {
+            assert!(![a1, a2, b1].contains(&token(&h2, s)), "reused after close");
+        }
+        stop(id2);
+    }
+
     #[test]
     fn deadlines_are_capped_and_must_be_positive() {
         assert_eq!(deadline(0), Err(cat::INVALID_ARGUMENT));
@@ -532,6 +986,28 @@ mod tests {
         assert_eq!(deadline(60_000), Ok(RELAY_RPC_DEADLINE));
         assert_eq!(deadline(60_001), Ok(RELAY_RPC_DEADLINE));
         assert_eq!(deadline(jint::MAX), Ok(RELAY_RPC_DEADLINE));
+        // Issuer deadlines are only required positive here; the issuer client caps them.
+        assert_eq!(positive_millis(0), Err(cat::INVALID_ARGUMENT));
+        assert_eq!(positive_millis(-5), Err(cat::INVALID_ARGUMENT));
+        assert_eq!(positive_millis(120_000), Ok(Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn integers_and_fixed_arrays_from_kotlin_are_strict() {
+        assert_eq!(unsigned(0), Ok(0));
+        assert_eq!(unsigned(2957), Ok(2957));
+        assert_eq!(unsigned(-1), Err(cat::INVALID_ARGUMENT));
+        assert_eq!(unsigned(jlong::MIN), Err(cat::INVALID_ARGUMENT));
+        assert_eq!(exact::<16>(&[1; 16]), Ok([1; 16]));
+        assert_eq!(exact::<16>(&[1; 15]), Err(cat::INVALID_ARGUMENT));
+        assert_eq!(exact::<16>(&[1; 17]), Err(cat::INVALID_ARGUMENT));
+        let mut t = [0u8; 354];
+        t[1] = 2;
+        assert!(one_token(&t).is_ok());
+        assert_eq!(one_token(&t[..353]).err(), Some(cat::INVALID_ARGUMENT));
+        assert_eq!(token_list(&[t, t].concat()).map(|v| v.len()), Ok(2));
+        assert_eq!(token_list(&t[..100]).err(), Some(cat::INVALID_ARGUMENT));
+        assert_eq!(schedule().map(|s| s.digest().len()), Ok(32));
     }
 
     #[test]
@@ -600,12 +1076,17 @@ mod tests {
                 .await
         });
 
+        let onion = OnionAddress::parse(
+            "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443",
+        )
+        .unwrap();
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
         let calls: Vec<_> = [0x11u8, 0x22u8]
             .into_iter()
             .map(|seed| {
                 let h = Arc::clone(&h);
                 let barrier = Arc::clone(&barrier);
+                let onion = onion.clone();
                 let ns = [seed; 32];
                 let cap = relay.key().mint(&Capability {
                     kind: Kind::Write,
@@ -619,7 +1100,7 @@ mod tests {
                             .await
                             .map_err(|_| cat::TIMEOUT)?;
                         let mut client =
-                            NamespaceClient::with_connector(TcpConnector::new(addr), ns);
+                            NamespaceClient::with_connector(TcpConnector::new(addr), onion, ns);
                         client
                             .set_deadline(Duration::from_secs(20))
                             .map_err(relay_category)?;

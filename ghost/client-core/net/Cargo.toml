@@ -12,6 +12,11 @@ crate-type = ["lib", "cdylib"]
 
 [dependencies]
 ghost-relay-api = { path = "../../relay/crates/api" }
+# Entitlement formats, the ES verifier and seed-derived blinding (ADR-22): workspace crates on
+# packages the library already links (rust-dependency-allowlist.txt).
+ghost-entitlement = { path = "../../issuer/crates/entitlement" }
+# Issuer wire types (codegen only, no transport).
+ghost-issuer-api = { path = "../../issuer/crates/api" }
 arti-client = { workspace = true }
 tor-rtcompat = { workspace = true }
 # Vanguards-lite (Prop 333) against guard discovery by onion-service operators (ADR-01).
@@ -54,3 +59,8 @@ tempfile = { workspace = true }
 tor-proto = { workspace = true, features = ["stream-ctrl"] }
 # Diagnostics for the ignored live Tor test only.
 tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
+# Entitlement integration tests (tests/): the test Entitlement Schedule, its test signing keys
+# (PKCS #8, parsed and applied with num-bigint-dig) and the redemption vectors.
+hex = { workspace = true }
+ed25519-dalek = { workspace = true }
+num-bigint-dig = { workspace = true }

@@ -206,6 +206,12 @@ impl TorTransport {
         self.isolations.rotate_all();
     }
 
+    /// Ends an issuer flow (Phase 8 design §11.7): its isolation token is dropped, so no later call
+    /// reuses the flow's circuits. Unknown flows are ignored.
+    pub fn end_issuer_flow(&self, flow: &[u8; 16]) {
+        self.isolations.end_flow(flow);
+    }
+
     pub(crate) fn client(&self) -> Arc<TorClient<PreferredRuntime>> {
         Arc::clone(&self.client)
     }

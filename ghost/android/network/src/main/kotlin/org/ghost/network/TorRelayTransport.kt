@@ -87,7 +87,45 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
         return decodeCheck(raw, hashes)
     }
 
+    /**
+     * Redeems an entitlement token ([EntitlementCrypto.TOKEN_BYTES] bytes) for a write capability of
+     * [namespace] at [relay] (Phase 8 design §10.9), on the namespace's own circuits. Before any I/O
+     * the native side requires the token to be bound by the embedded Entitlement Schedule to this
+     * relay's slot in its week, so a token bound elsewhere never leaves the device; the answer is
+     * checked against the ES (capability v2 for this namespace, ES quota, week-aligned expiry, relay
+     * week within one week of the device's). [requestId] (16 bytes) is identical on every retry.
+     * `REPLAYED` and `WRONG_PERIOD` are results, not exceptions.
+     */
+    fun redeem(
+        relay: OnionAddress,
+        namespace: ByteArray,
+        token: ByteArray,
+        requestId: ByteArray,
+        deadlineMillis: Int = MAX_DEADLINE_MILLIS,
+    ): RedeemAnswer {
+        require(namespace.size == 32 && token.size == EntitlementCrypto.TOKEN_BYTES && requestId.size == 16) {
+            "namespace 32, token 354, request id 16 bytes"
+        }
+        requireDeadline(deadlineMillis)
+        val raw = call { nativeRedeem(it, relay.toString(), namespace, token, requestId, deadlineMillis) }
+        return decodeRedeem(raw)
+    }
+
+    /**
+     * A `RedeemToken` answer: [result] one of the `REDEEM_*` values. [relayPeriodId] and
+     * [relayMinute] feed relay-facing decisions only, never issuer-facing ones (design §19.4).
+     * [capability] (98 bytes, a bearer secret, stored with `Capabilities.put`) on OK only.
+     */
+    class RedeemAnswer(val result: Int, val relayPeriodId: Long, val relayMinute: Long, val expiryUnixSeconds: Long, capability: ByteArray?) {
+        private val cap = capability?.copyOf()
+        fun capability(): ByteArray? = cap?.copyOf()
+        override fun toString(): String = "RedeemAnswer(result=$result)"
+    }
+
     override fun rotateCircuits() = call { nativeRotateCircuits(it) }
+
+    /** Runs one native call with this transport's id (the issuer calls share the handle, §11.7). */
+    internal fun withHandle(block: (Long) -> ByteArray): ByteArray = call(block)
 
     override fun close() {
         val id = handle.getAndSet(0L)
@@ -130,17 +168,12 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
 
         private const val MALFORMED = "malformed_response"
 
-        /**
-         * Loaded on first use, not at class load, so pure-JVM code paths stay testable. A missing
-         * or unloadable library surfaces as category `native_missing`, not as an Error.
-         */
-        private val nativeLibrary: Unit by lazy {
-            try {
-                System.loadLibrary("ghost_client_net")
-            } catch (e: UnsatisfiedLinkError) {
-                throw NetworkException("native_missing")
-            }
-        }
+        const val REDEEM_OK = 1
+        const val REDEEM_REPLAYED = 2
+        const val REDEEM_WRONG_PERIOD = 3
+
+        /** Length of a redeemed write capability (v2, design §10.3). */
+        const val CAPABILITY_V2_BYTES = 98
 
         /**
          * Creates the Tor client without network access. State lives under `stateDir` (must be
@@ -149,7 +182,7 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
          * fail with category `bridge_config`). Call [bootstrap] next, or use [start].
          */
         fun create(stateDir: File, cacheDir: File, bridgeLines: List<String> = emptyList()): TorRelayTransport {
-            nativeLibrary
+            NativeLibrary.ensureLoaded()
             stateDir.mkdirs(); cacheDir.mkdirs()
             val id = nativeCreate(stateDir.absolutePath, cacheDir.absolutePath, bridgeLines.joinToString("\n"))
             if (id == 0L) throw NetworkException("internal")
@@ -251,6 +284,27 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
             return held
         }
 
+        /**
+         * Wire format from the native side: `result(1) || relayPeriod(8) || relayMinute(8) ||
+         * expiry(8) || capability(98 or 0)`. Strict: the capability and a positive expiry exactly on
+         * OK, none and expiry 0 on REPLAYED and WRONG_PERIOD, no negative value.
+         */
+        internal fun decodeRedeem(raw: ByteArray): RedeemAnswer {
+            if (raw.size != 25 && raw.size != 25 + CAPABILITY_V2_BYTES) throw NetworkException(MALFORMED)
+            val result = raw[0].toInt() and 0xff
+            val period = readLong(raw, 1)
+            val minute = readLong(raw, 9)
+            val expiry = readLong(raw, 17)
+            if (period < 0 || minute < 0 || expiry < 0) throw NetworkException(MALFORMED)
+            val ok = when (result) {
+                REDEEM_OK -> raw.size > 25 && expiry > 0
+                REDEEM_REPLAYED, REDEEM_WRONG_PERIOD -> raw.size == 25 && expiry == 0L
+                else -> false
+            }
+            if (!ok) throw NetworkException(MALFORMED)
+            return RedeemAnswer(result, period, minute, expiry, if (raw.size > 25) raw.copyOfRange(25, raw.size) else null)
+        }
+
         @JvmStatic private external fun nativeCreate(stateDir: String, cacheDir: String, bridgeLines: String): Long
         @JvmStatic private external fun nativeBootstrap(id: Long)
         @JvmStatic private external fun nativeStop(id: Long)
@@ -266,6 +320,9 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
         ): ByteArray
         @JvmStatic private external fun nativeCheck(
             id: Long, relay: String, namespace: ByteArray, capability: ByteArray, hashes: ByteArray, deadlineMs: Int,
+        ): ByteArray
+        @JvmStatic private external fun nativeRedeem(
+            id: Long, relay: String, namespace: ByteArray, token: ByteArray, requestId: ByteArray, deadlineMs: Int,
         ): ByteArray
     }
 }

@@ -14,14 +14,31 @@
 //!
 //! Anything else, including a token whose format this build cannot parse, fails with
 //! [`RelayError::InvalidArgument`] (category `invalid_argument`) without opening a connection.
+//!
+//! [`NamespaceClient::redeem`] exchanges an entitlement token for a write capability of the bound
+//! namespace (Phase 8 design §10.9), on the namespace's own circuits: the relay links the
+//! redemption to the namespace anyway by minting for it. Before any I/O the token must be an
+//! ACCESS token of the Entitlement Schedule whose challenge names the slot the ES assigns to *this*
+//! relay's onion in the token's week, so a token bound elsewhere never leaves the device (0 requests,
+//! 0 connections; mutant M6). The answer is checked against the ES ([`redeem_with`]).
 
 use crate::isolation::IsolationScope;
 use crate::onion::OnionAddress;
 use crate::relay_client::{
-    BoxError, FetchedBlob, Io, OnionConnector, RelayClient, RelayError, StoreReceipt, StreamType,
+    now_unix, BoxError, FetchedBlob, Io, OnionConnector, RelayClient, RelayError, StoreReceipt,
+    StreamType,
 };
 use crate::transport::TorTransport;
-use ghost_relay_api::{capability_header, CapabilityKind};
+use ghost_entitlement::grid::{self, LATE_WINDOW_SECS};
+use ghost_entitlement::onion::{parse_hostname, Onion};
+use ghost_entitlement::{Expect, Kind, Schedule, Token};
+use ghost_relay_api::proto::{RedeemResult, RedeemTokenRequest, RedeemTokenResponse};
+use ghost_relay_api::{
+    capability_format, capability_header, CapabilityFormat, CapabilityKind, PROTOCOL_VERSION,
+    REQUEST_ID_BYTES,
+};
+use std::fmt;
+use std::future::Future;
 use std::time::Duration;
 
 /// What an operation needs from its capability.
@@ -37,6 +54,8 @@ enum Access {
 pub struct NamespaceClient<C> {
     inner: RelayClient<C>,
     namespace: [u8; 32],
+    /// The relay this client talks to (the redemption check needs its onion).
+    relay: OnionAddress,
 }
 
 impl NamespaceClient<OnionConnector> {
@@ -46,6 +65,7 @@ impl NamespaceClient<OnionConnector> {
         NamespaceClient {
             inner: RelayClient::over_tor(transport, relay, &IsolationScope::Namespace(namespace)),
             namespace,
+            relay: relay.clone(),
         }
     }
 }
@@ -59,10 +79,11 @@ where
 {
     /// Test constructor over another connector (loopback relays).
     #[cfg(test)]
-    pub(crate) fn with_connector(connector: C, namespace: [u8; 32]) -> Self {
+    pub(crate) fn with_connector(connector: C, relay: OnionAddress, namespace: [u8; 32]) -> Self {
         NamespaceClient {
             inner: RelayClient::with_connector(connector),
             namespace,
+            relay,
         }
     }
 
@@ -137,6 +158,206 @@ where
         self.authorize(&capability, Access::Read)?;
         self.inner.check(capability, hashes).await
     }
+
+    /// Redeems an entitlement token for a write capability of the bound namespace at this relay
+    /// (design §10.9): [`redeem_with`] under the device clock. An identical retry (same token,
+    /// namespace and `request_id`) gets the identical capability; `REPLAYED` and `WRONG_PERIOD`
+    /// are in-band answers.
+    pub async fn redeem(
+        &mut self,
+        schedule: &Schedule,
+        token: &[u8],
+        request_id: [u8; REQUEST_ID_BYTES],
+    ) -> Result<RedeemOutcome, RelayError> {
+        let relay = self.relay.clone();
+        let namespace = self.namespace;
+        redeem_with(
+            &mut self.inner,
+            schedule,
+            &relay,
+            namespace,
+            token,
+            request_id,
+            now_unix(),
+        )
+        .await
+    }
+}
+
+/// The `RedeemToken` RPC (design §10.1). The relay client implements it over Tor; the checks of
+/// [`redeem_with`] run against any implementation.
+pub trait RedeemRpc {
+    fn redeem_token(
+        &mut self,
+        req: RedeemTokenRequest,
+    ) -> impl Future<Output = Result<RedeemTokenResponse, RelayError>> + Send;
+}
+
+impl<C> RedeemRpc for RelayClient<C>
+where
+    C: tower::Service<http::Uri, Response = Io<C::Stream>> + Clone + Send + Sync + 'static,
+    C: StreamType,
+    C::Future: Unpin + Send,
+    C::Error: Into<BoxError>,
+{
+    fn redeem_token(
+        &mut self,
+        req: RedeemTokenRequest,
+    ) -> impl Future<Output = Result<RedeemTokenResponse, RelayError>> + Send {
+        self.redeem_raw(req)
+    }
+}
+
+/// Where a token may be redeemed: its week and the slot this relay holds in that week.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedeemBinding {
+    pub week: u64,
+    pub slot: u8,
+}
+
+/// The pre-I/O check of a redemption (design §10.9, mutant M6): the token is 354 bytes of type
+/// 0x0002 under an ES ACCESS key of week p, the ES lists `relay`'s onion (by service key) for a
+/// slot s in week p, and the token verifies for (ACCESS, p, s) (challenge, `ring`, not revoked).
+/// Anything else is [`RelayError::InvalidArgument`]: the token never leaves the device.
+pub fn redeem_binding(
+    schedule: &Schedule,
+    relay: &OnionAddress,
+    token: &[u8],
+) -> Result<RedeemBinding, RelayError> {
+    let refused = |_| RelayError::InvalidArgument;
+    let token = Token::parse(token).map_err(refused)?;
+    let key = schedule
+        .key_by_id(token.key_id())
+        .ok_or(RelayError::InvalidArgument)?;
+    if key.kind != Kind::Access {
+        return Err(RelayError::InvalidArgument);
+    }
+    let week = key.epoch;
+    let relay_key = parse_hostname(relay.host()).map_err(refused)?;
+    let slot = schedule
+        .slots_in_week(week)
+        .into_iter()
+        .find(|&s| {
+            schedule
+                .slot_onion(s, week)
+                .and_then(|o| Onion::parse(o).ok())
+                .is_some_and(|o| o.pubkey == relay_key)
+        })
+        .ok_or(RelayError::InvalidArgument)?;
+    schedule
+        .verify_token(&token, Expect::AccessAtSlot(slot))
+        .map_err(|_| RelayError::InvalidArgument)?;
+    Ok(RedeemBinding { week, slot })
+}
+
+/// A validated `RedeemToken` answer.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RedeemOutcome {
+    pub result: RedeemResult,
+    /// The relay's week and minute (relay-facing clock source only, §12.5; never an input to
+    /// issuer-facing decisions, §19.4).
+    pub relay_period_id: u64,
+    pub relay_minute: u64,
+    /// OK only: the capability's expiry, `start(week + 1) + 1 h`; 0 otherwise.
+    pub expiry_unix: u64,
+    /// OK only: the minted write capability v2 (98 bytes), a bearer secret.
+    pub capability: Option<Vec<u8>>,
+}
+
+impl RedeemOutcome {
+    /// `result(1) || relay_period(8) || relay_minute(8) || expiry(8) || capability(98 or 0)`:
+    /// what `Capabilities.put` needs; Kotlin never parses the capability.
+    pub fn pack(&self) -> Vec<u8> {
+        let cap = self.capability.as_deref().unwrap_or_default();
+        let mut out = Vec::with_capacity(25 + cap.len());
+        out.push(self.result as i32 as u8);
+        out.extend_from_slice(&self.relay_period_id.to_be_bytes());
+        out.extend_from_slice(&self.relay_minute.to_be_bytes());
+        out.extend_from_slice(&self.expiry_unix.to_be_bytes());
+        out.extend_from_slice(cap);
+        out
+    }
+}
+
+impl fmt::Debug for RedeemOutcome {
+    // The capability is a bearer secret: never printed.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RedeemOutcome({:?}, ..)", self.result)
+    }
+}
+
+/// Redeems `token` for `namespace` at `relay` over `rpc` (design §10.9): [`redeem_binding`] before
+/// any I/O, then the answer must fit it. Every answer carries `relay_period_id` within one week of
+/// the client's week (from `client_now`) and a `relay_minute` inside that week. `OK` carries a v2
+/// write capability for exactly this namespace, with the ES quota and the expiry
+/// `start(p + 1) + 1 h` of the token's week p; `REPLAYED` and `WRONG_PERIOD` carry none. Anything
+/// else is [`RelayError::Malformed`].
+pub async fn redeem_with<R: RedeemRpc>(
+    rpc: &mut R,
+    schedule: &Schedule,
+    relay: &OnionAddress,
+    namespace: [u8; 32],
+    token: &[u8],
+    request_id: [u8; REQUEST_ID_BYTES],
+    client_now: u64,
+) -> Result<RedeemOutcome, RelayError> {
+    let binding = redeem_binding(schedule, relay, token)?;
+    let answer = rpc
+        .redeem_token(RedeemTokenRequest {
+            version: PROTOCOL_VERSION,
+            token: token.to_vec(),
+            namespace_id: namespace.to_vec(),
+            request_id: request_id.to_vec(),
+        })
+        .await?;
+    check_redeem(
+        schedule,
+        &binding,
+        &namespace,
+        answer,
+        grid::week(client_now),
+    )
+}
+
+fn check_redeem(
+    schedule: &Schedule,
+    binding: &RedeemBinding,
+    namespace: &[u8; 32],
+    r: RedeemTokenResponse,
+    client_week: u64,
+) -> Result<RedeemOutcome, RelayError> {
+    let period = r.relay_period_id;
+    let minute_week = r.relay_minute.checked_mul(60).map(grid::week);
+    if period.abs_diff(client_week) > 1 || minute_week != Some(period) {
+        return Err(RelayError::Malformed);
+    }
+    let result = RedeemResult::try_from(r.result).map_err(|_| RelayError::Malformed)?;
+    let (capability, expiry_unix) = match result {
+        RedeemResult::Ok => {
+            let cap = r.capability.ok_or(RelayError::Malformed)?.token;
+            let expiry =
+                grid::week_start(binding.week.saturating_add(1)).saturating_add(LATE_WINDOW_SECS);
+            let header = capability_header(&cap).ok_or(RelayError::Malformed)?;
+            if capability_format(&cap) != Some(CapabilityFormat::V2)
+                || header.kind != CapabilityKind::Write
+                || header.namespace != *namespace
+                || header.quota_bytes != schedule.constants().capability_quota_bytes
+                || header.expiry_unix != expiry
+            {
+                return Err(RelayError::Malformed);
+            }
+            (Some(cap), expiry)
+        }
+        RedeemResult::Replayed | RedeemResult::WrongPeriod if r.capability.is_none() => (None, 0),
+        _ => return Err(RelayError::Malformed),
+    };
+    Ok(RedeemOutcome {
+        result,
+        relay_period_id: period,
+        relay_minute: r.relay_minute,
+        expiry_unix,
+        capability,
+    })
 }
 
 #[cfg(test)]
@@ -154,6 +375,11 @@ mod tests {
 
     const NS_A: [u8; 32] = [0xA1; 32];
     const NS_B: [u8; 32] = [0xB2; 32];
+
+    fn relay_onion() -> OnionAddress {
+        OnionAddress::parse("duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443")
+            .unwrap()
+    }
 
     /// A token with a v1 header; the MAC is irrelevant to the client-side guard.
     fn token(kind: CapabilityKind, namespace: [u8; 32]) -> Vec<u8> {
@@ -223,6 +449,7 @@ mod tests {
     async fn the_guard_accepts_only_this_namespace_and_a_fitting_kind() {
         let client = NamespaceClient::with_connector(
             TcpConnector::new("127.0.0.1:9".parse().unwrap()),
+            relay_onion(),
             NS_A,
         );
         assert_eq!(client.namespace(), &NS_A);
@@ -334,10 +561,18 @@ mod tests {
         }
         async fn redeem_token(
             &self,
-            _r: tonic::Request<RedeemTokenRequest>,
+            r: tonic::Request<RedeemTokenRequest>,
         ) -> Result<tonic::Response<RedeemTokenResponse>, tonic::Status> {
             self.count();
-            Err(tonic::Status::unimplemented("redeem"))
+            // Echoes the week of the device clock and answers REPLAYED (no capability).
+            let now = now_unix();
+            let _ = r.into_inner();
+            Ok(tonic::Response::new(RedeemTokenResponse {
+                result: RedeemResult::Replayed as i32,
+                capability: None,
+                relay_period_id: grid::week(now),
+                relay_minute: now / 60,
+            }))
         }
     }
 
@@ -365,7 +600,7 @@ mod tests {
         let hash: [u8; 32] = Sha256::digest(&blob).into();
         let (relay, addr) = counting_relay(blob.clone()).await;
         let connector = TcpConnector::new(addr);
-        let mut client = NamespaceClient::with_connector(connector.clone(), NS_A);
+        let mut client = NamespaceClient::with_connector(connector.clone(), relay_onion(), NS_A);
 
         let mut refused = refused_for_every_operation();
         // Store additionally refuses a read capability of the right namespace.
@@ -420,5 +655,89 @@ mod tests {
         assert_eq!(client.check(write_a, vec![hash]).await.unwrap(), vec![hash]);
         assert_eq!(relay.requests.load(Ordering::SeqCst), 5);
         assert!(connector.dials() >= 1);
+    }
+
+    /// Tokens that are no ACCESS token of the embedded schedule never leave the device (the
+    /// schedule-bound cases, with valid tokens of the test schedule, are in `tests/redeem.rs`).
+    #[tokio::test]
+    async fn a_token_the_schedule_does_not_bind_to_this_relay_is_never_sent() {
+        let schedule = crate::entitlement::embedded_schedule().unwrap();
+        let (relay, addr) = counting_relay(vec![]).await;
+        let connector = TcpConnector::new(addr);
+        let mut client = NamespaceClient::with_connector(connector.clone(), relay_onion(), NS_A);
+        let mut forged = [0u8; 354];
+        forged[1] = 2;
+        // A real ES key id with a forged authenticator, at a relay the ES does not list.
+        let key_id = schedule
+            .keys()
+            .find(|k| k.kind == Kind::Access)
+            .unwrap()
+            .key_id;
+        let mut real_key = forged;
+        real_key[66..98].copy_from_slice(&key_id);
+        let mut wrong_type = forged;
+        wrong_type[1] = 3;
+        for (why, t) in [
+            ("unknown key", forged.to_vec()),
+            ("unlisted relay", real_key.to_vec()),
+            ("wrong type", wrong_type.to_vec()),
+            ("short", forged[..353].to_vec()),
+            ("long", [&forged[..], &[0]].concat()),
+            ("empty", vec![]),
+        ] {
+            let r = client.redeem(schedule, &t, [1; 16]).await;
+            assert!(
+                matches!(r, Err(RelayError::InvalidArgument)),
+                "{why}: {r:?}"
+            );
+        }
+        assert_eq!(relay.requests.load(Ordering::SeqCst), 0);
+        assert_eq!(connector.dials(), 0, "no connection was opened");
+    }
+
+    /// The raw redeem plumbing: the request reaches the relay unchanged and its answer comes back.
+    #[tokio::test]
+    async fn the_redeem_rpc_reaches_the_relay() {
+        let (relay, addr) = counting_relay(vec![]).await;
+        let mut client = RelayClient::with_connector(TcpConnector::new(addr));
+        let answer = RedeemRpc::redeem_token(
+            &mut client,
+            RedeemTokenRequest {
+                version: PROTOCOL_VERSION,
+                token: vec![1; 354],
+                namespace_id: NS_A.to_vec(),
+                request_id: vec![2; 16],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.result, RedeemResult::Replayed as i32);
+        assert_eq!(relay.requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn packed_outcomes_have_the_documented_layout() {
+        let ok = RedeemOutcome {
+            result: RedeemResult::Ok,
+            relay_period_id: 2959,
+            relay_minute: 29_812_345,
+            expiry_unix: 1_790_000_000,
+            capability: Some(vec![0x77; 98]),
+        };
+        let p = ok.pack();
+        assert_eq!(p.len(), 25 + 98);
+        assert_eq!(p[0], 1);
+        assert_eq!(&p[1..9], &2959u64.to_be_bytes());
+        assert_eq!(&p[9..17], &29_812_345u64.to_be_bytes());
+        assert_eq!(&p[17..25], &1_790_000_000u64.to_be_bytes());
+        assert_eq!(format!("{ok:?}"), "RedeemOutcome(Ok, ..)");
+        let replayed = RedeemOutcome {
+            result: RedeemResult::Replayed,
+            expiry_unix: 0,
+            capability: None,
+            ..ok
+        };
+        assert_eq!(replayed.pack().len(), 25);
+        assert_eq!(replayed.pack()[0], 2);
     }
 }

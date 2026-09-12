@@ -54,20 +54,11 @@ pub fn verify(
 }
 
 /// The set pays for a pack of `price` (§4.6, §19.8): at least `floor` (`credits_per_free_pack`)
-/// and at most 20 credits whose values sum to at least the price, and the smallest such set:
-/// dropping its least valuable credit would no longer cover the price (unless it has exactly
-/// `floor` credits).
+/// and at most 20 credits whose values sum to at least the price, and the smallest such set
+/// (`ghost_entitlement::credit::covers`, the rule the client checks before it sends a set).
 pub fn covers(credits: &[PresentedCredit], price: u64, floor: u8) -> bool {
-    let n = credits.len();
-    if n == 0 || n < usize::from(floor) || n > MAX_DISCOUNT_CREDITS {
-        return false;
-    }
-    let sum = credits
-        .iter()
-        .map(|c| c.value)
-        .fold(0u64, u64::saturating_add);
-    let least = credits.iter().map(|c| c.value).min().unwrap_or(0);
-    sum >= price && (n == usize::from(floor) || sum - least < price)
+    let values: Vec<u64> = credits.iter().map(|c| c.value).collect();
+    ghost_entitlement::credit::covers(&values, price, floor, MAX_DISCOUNT_CREDITS)
 }
 
 /// Bit i is set iff `credits[i]` is already in `credit_nullifier` (any use).

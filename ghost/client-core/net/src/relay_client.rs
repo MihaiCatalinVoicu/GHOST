@@ -161,6 +161,17 @@ impl tower::Service<http::Uri> for OnionConnector {
     }
 }
 
+#[cfg(test)]
+impl OnionConnector {
+    pub(crate) fn isolation_token(&self) -> arti_client::IsolationToken {
+        self.isolation
+    }
+
+    pub(crate) fn address(&self) -> &OnionAddress {
+        &self.addr
+    }
+}
+
 /// Builds the connector for `scope`: the scope's isolation token, taken from the transport.
 pub(crate) fn onion_connector(
     transport: &TorTransport,
@@ -212,7 +223,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -235,7 +246,7 @@ async fn with_deadline<T>(
 /// A connector failure (e.g. onion service unreachable) reaches us wrapped by hyper and tonic as
 /// a `Status` with code `Unknown`; recover it so it is reported as a transport error, not as a
 /// relay answer.
-fn transport_cause(status: &tonic::Status) -> Option<TransportError> {
+pub(crate) fn transport_cause(status: &tonic::Status) -> Option<TransportError> {
     let mut cur: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(status);
     while let Some(e) = cur {
         if let Some(t) = e.downcast_ref::<TransportError>() {
@@ -485,6 +496,15 @@ where
         };
         let resp = with_deadline(self.deadline, self.inner.check_blobs(req)).await?;
         validate_check(&hashes, resp)
+    }
+
+    /// Sends one `RedeemToken` request as given. Crate-private: every redemption goes through
+    /// [`crate::namespace_client::redeem_with`], which checks the token before and the answer after.
+    pub(crate) async fn redeem_raw(
+        &mut self,
+        req: RedeemTokenRequest,
+    ) -> Result<RedeemTokenResponse, RelayError> {
+        with_deadline(self.deadline, self.inner.redeem_token(req)).await
     }
 }
 

@@ -3,6 +3,7 @@
 //! so nothing identifying can reach a log or crash report through an exception.
 //! `client-core/README.md` must list every entry of [`ALL`] (enforced by a unit test).
 
+use crate::issuer_client::IssuerError;
 use crate::relay_client::RelayError;
 use crate::transport::TransportError;
 
@@ -81,6 +82,33 @@ pub fn for_relay(e: &RelayError) -> &'static str {
     }
 }
 
+/// Issuer outcomes onto the existing categories (Phase 8 design §5.7, G-3: no new category, and
+/// the sync `ErrorPolicy` never sees issuer calls). Protocol outcomes (`WRONG_PERIOD`, `REPLAYED`,
+/// `OTHER_REQUEST_ISSUED`, `CREDITS_SPENT`, `CLAIM_CONFLICT`, `ADDRESS_REJECTED`) are in-band
+/// answers, never errors.
+pub fn for_issuer(e: &IssuerError) -> &'static str {
+    match e {
+        IssuerError::Transport(t) => for_transport(t),
+        IssuerError::Rpc(code) => for_issuer_code(*code),
+        IssuerError::InvalidArgument => INVALID_ARGUMENT,
+        IssuerError::Malformed => MALFORMED_RESPONSE,
+        IssuerError::Timeout => TIMEOUT,
+    }
+}
+
+/// The gRPC status of an issuer answer (design §5.7): `INVALID_ARGUMENT` -> `rejected` (a client
+/// or issuer bug, never a mutated retry), `PERMISSION_DENIED` -> `unauthorized`,
+/// `RESOURCE_EXHAUSTED` -> `quota`; `UNAVAILABLE` and every other code -> `relay_unavailable`
+/// (remote onion service, relay or issuer, transient).
+pub fn for_issuer_code(code: tonic::Code) -> &'static str {
+    match code {
+        tonic::Code::InvalidArgument => REJECTED,
+        tonic::Code::PermissionDenied => UNAUTHORIZED,
+        tonic::Code::ResourceExhausted => QUOTA,
+        _ => RELAY_UNAVAILABLE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +181,45 @@ mod tests {
         );
         for c in ALL {
             assert!(c.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
+        }
+    }
+
+    #[test]
+    fn issuer_outcomes_use_existing_categories_only() {
+        use tonic::Code;
+        // Design §5.7: no new category (ErrorPolicyTest stays at 21: these 20 + native_missing).
+        assert_eq!(ALL.len(), 20);
+        let table = [
+            (Code::InvalidArgument, REJECTED),
+            (Code::PermissionDenied, UNAUTHORIZED),
+            (Code::Unavailable, RELAY_UNAVAILABLE),
+            (Code::ResourceExhausted, QUOTA),
+            // Any other code is transient (the default of for_issuer).
+            (Code::Unknown, RELAY_UNAVAILABLE),
+            (Code::Internal, RELAY_UNAVAILABLE),
+            (Code::Unauthenticated, RELAY_UNAVAILABLE),
+            (Code::NotFound, RELAY_UNAVAILABLE),
+            (Code::FailedPrecondition, RELAY_UNAVAILABLE),
+            (Code::Unimplemented, RELAY_UNAVAILABLE),
+            (Code::DeadlineExceeded, RELAY_UNAVAILABLE),
+            (Code::OutOfRange, RELAY_UNAVAILABLE),
+        ];
+        for (code, category) in table {
+            assert_eq!(for_issuer(&IssuerError::Rpc(code)), category, "{code:?}");
+        }
+        assert_eq!(for_issuer(&IssuerError::InvalidArgument), INVALID_ARGUMENT);
+        assert_eq!(for_issuer(&IssuerError::Malformed), MALFORMED_RESPONSE);
+        assert_eq!(for_issuer(&IssuerError::Timeout), TIMEOUT);
+        assert_eq!(
+            for_issuer(&IssuerError::Transport(TransportError::NotBootstrapped)),
+            NOT_BOOTSTRAPPED
+        );
+        assert_eq!(
+            for_issuer(&IssuerError::Transport(TransportError::Connect("x".into()))),
+            TRANSPORT
+        );
+        for code in 0..=16 {
+            assert!(ALL.contains(&for_issuer_code(Code::from_i32(code))));
         }
     }
 }
