@@ -15,7 +15,7 @@ class SchemaAndMigrationTest {
     private val v2 = Schema.migrations.single { it.version == 2 }
     private val v3 = Schema.migrations.single { it.version == 3 }
 
-    /** The nine tables and 13 triggers of v3 (Phase 8 design §11.3, §19.19). */
+    /** The nine tables and 13 triggers of v3 (Phase 8 design §11.3, §19.19; SQL as corrected by §19.20). */
     private val v3Tables = setOf(
         "ent_key", "ent_schedule_fact", "ent_state", "ent_purchase", "ent_token", "ent_invite", "ent_drop_target",
         "ent_claim", "ent_payout_used",
@@ -137,6 +137,31 @@ class SchemaAndMigrationTest {
             assertEquals(9, v3Tables.size)
             assertEquals(13, v3Triggers.size)
             assertEquals(setOf("idx_ent_token_one_reservation", "idx_ent_claim_one_open"), db.names("index").filter { it.startsWith("idx_ent_") }.toSet())
+        }
+    }
+
+    @Test
+    fun everyUpgradePathReachesTheSameAmendedV3() {
+        // v3 is unreleased and amended in place (design §19.20): a fresh install, a v1 upgrade and a
+        // v2 upgrade end with the identical schema, which remembers revocations per token kind.
+        val freshSchema = fresh().use { db ->
+            MigrationRunner(db).migrate()
+            db.schemaSnapshot()
+        }
+        val paths: List<Pair<String, () -> JdbcSqlExecutor>> = listOf(
+            "v1" to { atV1().also { seedV1Data(it) } },
+            "v2" to { atV2WithData() },
+        )
+        for ((from, open) in paths) open().use { db ->
+            MigrationRunner(db).migrate()
+            MigrationRunner(db).verifyIntegrity()
+            assertEquals(from, freshSchema, db.schemaSnapshot())
+            for (kind in listOf("access", "invite", "credit")) {
+                db.exec("INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES (?, 726, ?)", listOf("revoked_$kind", hash(1)))
+            }
+            db.rejects(CHECK_FAILED, "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked', 727, ?)", hash(1))
+            db.rejects("ent_schedule_fact is append-only", "DELETE FROM ent_schedule_fact WHERE fact = 'revoked_access'")
+            assertEquals(from, 3L, db.count("ent_schedule_fact"))
         }
     }
 

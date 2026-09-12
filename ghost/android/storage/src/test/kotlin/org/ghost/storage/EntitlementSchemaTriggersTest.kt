@@ -4,7 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * The 13 state-machine and write-once triggers of migration v3 (Phase 8 design §11.3, §11.4; G-12):
+ * The 13 state-machine and write-once triggers of migration v3 (Phase 8 design §11.3 as corrected by
+ * §19.20, §11.4; G-12):
  * each legal transition is accepted, each illegal one is refused with the trigger's message, and the
  * client flows of §11.4 run through them without a refusal.
  */
@@ -36,6 +37,40 @@ class EntitlementSchemaTriggersTest {
         db.exec("INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('price', 223, ?)", listOf(hash(5)))
         assertEquals(2L, db.queryLong("SELECT count(*) FROM ent_key"))
         assertEquals(2L, db.queryLong("SELECT count(*) FROM ent_schedule_fact"))
+    }
+
+    @Test
+    fun revocationsAreRememberedPerTokenKindAndNeverDropped() = EntitlementFixture().use { f ->
+        val db = f.db
+        // Design §19.20 point 2. 726 is the invite epoch of week 2905, and the same number is a valid
+        // access-week and credit-epoch index: each kind's revocation is its own fact, whose digest is
+        // the revoked key's id.
+        val kinds = listOf("access", "invite", "credit")
+        for ((i, kind) in kinds.withIndex()) {
+            db.exec("INSERT INTO ent_key(kind, epoch, key_id) VALUES (?, 726, ?)", listOf(kind, hash(0x10 + i)))
+            db.exec("INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES (?, 726, ?)", listOf("revoked_$kind", hash(0x10 + i)))
+        }
+        // A remembered revocation is never dropped, rewritten, moved to another fact or index, or
+        // recorded a second time; a later schedule that drops it is a SCHEDULE_CONFLICT, not a new memory.
+        db.rejects("ent_schedule_fact is append-only", "DELETE FROM ent_schedule_fact WHERE fact = 'revoked_invite'")
+        db.rejects("ent_schedule_fact is append-only", "DELETE FROM ent_schedule_fact")
+        db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET fact = 'price' WHERE fact = 'revoked_credit'")
+        db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET fact = 'revoked_invite' WHERE fact = 'revoked_access'")
+        db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET epoch = 727 WHERE fact = 'revoked_access'")
+        db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET digest = ? WHERE fact = 'revoked_access'", hash(9))
+        db.rejects(UNIQUE_FAILED, "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked_access', 726, ?)", hash(0x10))
+        // A later schedule may add revocations.
+        db.exec("INSERT INTO ent_key(kind, epoch, key_id) VALUES ('access', 727, ?)", listOf(hash(0x20)))
+        db.exec("INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked_access', 727, ?)", listOf(hash(0x20)))
+        // Every revocation still names exactly its remembered key.
+        assertEquals(4L, db.queryLong("SELECT count(*) FROM ent_schedule_fact WHERE fact LIKE 'revoked\\_%' ESCAPE '\\'"))
+        assertEquals(
+            4L,
+            db.queryLong(
+                "SELECT count(*) FROM ent_schedule_fact f JOIN ent_key k " +
+                    "ON f.fact = 'revoked_' || k.kind AND f.epoch = k.epoch AND f.digest = k.key_id",
+            ),
+        )
     }
 
     /** Puts pack [i] into [state] through legal steps. */
