@@ -36,10 +36,11 @@ pub enum Code {
     AckWritten,
     ReconciliationOk,
     ReconciliationMismatch,
+    CountersWritten,
 }
 
 impl Code {
-    pub const ALL: [Code; 26] = [
+    pub const ALL: [Code; 27] = [
         Code::Usage,
         Code::IoError,
         Code::InputRefused,
@@ -66,6 +67,7 @@ impl Code {
         Code::AckWritten,
         Code::ReconciliationOk,
         Code::ReconciliationMismatch,
+        Code::CountersWritten,
     ];
 
     pub fn name(self) -> &'static str {
@@ -96,6 +98,7 @@ impl Code {
             Code::AckWritten => "ACK_WRITTEN",
             Code::ReconciliationOk => "RECONCILIATION_OK",
             Code::ReconciliationMismatch => "RECONCILIATION_MISMATCH",
+            Code::CountersWritten => "COUNTERS_WRITTEN",
         }
     }
 
@@ -153,10 +156,12 @@ pub enum Field {
     Txid,
     Images,
     Relays,
+    Refused,
+    Counters,
 }
 
 impl Field {
-    pub const ALL: [Field; 32] = [
+    pub const ALL: [Field; 34] = [
         Field::Reason,
         Field::Flag,
         Field::File,
@@ -189,6 +194,8 @@ impl Field {
         Field::Txid,
         Field::Images,
         Field::Relays,
+        Field::Refused,
+        Field::Counters,
     ];
 
     pub fn name(self) -> &'static str {
@@ -225,6 +232,8 @@ impl Field {
             Field::Txid => "txid",
             Field::Images => "images",
             Field::Relays => "relays",
+            Field::Refused => "refused",
+            Field::Counters => "counters",
         }
     }
 }

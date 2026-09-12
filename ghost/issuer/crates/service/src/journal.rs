@@ -15,7 +15,8 @@
 //! REFRESH    tag 5: credit epoch u64 || N 32 || refresh digest 32
 //! BATCH      tag 6: batch_id 16 || week u64 || cumulative_credited u64 || count u16 (1..200)
 //!                   || count x claim_id 16
-//! BATCH_PAID tag 7: batch_id 16 || week u64
+//! BATCH_PAID tag 7: batch_id 16 || week u64 || count u16 (0..200)
+//!                   || count x claim_id 16 (the refused entries, strictly ascending)
 //! (an unknown tag refuses the start, it is never skipped)
 //! ```
 //! Big-endian fixed fields; the checksum is SHA-256 from `sha2` (no CRC crate, §19.5).
@@ -36,7 +37,9 @@
 //! credited revenue at the batch's creation (a field of the signed batch file, so the file of an
 //! unacknowledged batch is re-exported byte for byte after a restore, §9.5 step 1); BATCH_PAID
 //! carries the week of the acknowledgement (the `payout_paid_atomic` counter and the retention of
-//! the paid batch's claims are per week, and a replay must not date them by the restart).
+//! the paid batch's claims are per week, and a replay must not date them by the restart) and the
+//! ids of the claims whose entries the workstation refused (a payout address it had seen before,
+//! §9.5 step 2: those claims close unpaid, so one address cannot stall its whole batch).
 //!
 //! **Files.** Weekly segments `issued.journal.<week>` in one directory; a segment is never renamed.
 //! Entries are numbered from 1 without gaps across segments. At open, a torn tail of the last
@@ -166,11 +169,18 @@ pub enum Entry {
         digest: [u8; 32],
     },
     Batch(BatchEntry),
-    /// Every entry of the batch was acknowledged by the workstation (§9.5 step 4).
+    /// Every entry of the batch was acknowledged by the workstation (§9.5 step 4): paid, or
+    /// refused (`refused`, strictly ascending claim ids).
     BatchPaid {
         batch_id: [u8; 16],
         week: u64,
+        refused: Vec<[u8; 16]>,
     },
+}
+
+/// A list of claim ids: 0 ..= [`MAX_BATCH_CLAIMS`] of them, strictly ascending (distinct).
+fn canonical_ids(ids: &[[u8; 16]]) -> bool {
+    ids.len() <= MAX_BATCH_CLAIMS && ids.windows(2).all(|w| w[0] < w[1])
 }
 
 impl Entry {
@@ -244,9 +254,20 @@ impl Entry {
                     w.extend_from_slice(c);
                 }
             }
-            Entry::BatchPaid { batch_id, week } => {
+            Entry::BatchPaid {
+                batch_id,
+                week,
+                refused,
+            } => {
+                if !canonical_ids(refused) {
+                    return Err(JournalError::Format);
+                }
                 w.extend_from_slice(batch_id);
                 w.extend_from_slice(&week.to_be_bytes());
+                w.extend_from_slice(&(refused.len() as u16).to_be_bytes());
+                for c in refused {
+                    w.extend_from_slice(c);
+                }
             }
         }
         Ok(w)
@@ -322,10 +343,25 @@ impl Entry {
                     claims,
                 })
             }
-            TAG_BATCH_PAID => Entry::BatchPaid {
-                batch_id: r.array()?,
-                week: r.u64()?,
-            },
+            TAG_BATCH_PAID => {
+                let batch_id = r.array()?;
+                let week = r.u64()?;
+                let count = usize::from(u16::from_be_bytes(r.array()?));
+                if count > MAX_BATCH_CLAIMS {
+                    return Err(JournalError::Format);
+                }
+                let refused = (0..count)
+                    .map(|_| r.array())
+                    .collect::<Result<Vec<[u8; 16]>, _>>()?;
+                if !canonical_ids(&refused) {
+                    return Err(JournalError::Format);
+                }
+                Entry::BatchPaid {
+                    batch_id,
+                    week,
+                    refused,
+                }
+            }
             _ => return Err(JournalError::Format),
         };
         if !r.0.is_empty() {

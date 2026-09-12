@@ -21,10 +21,10 @@ use std::sync::{Arc, Mutex};
 use ghost_entitlement::batch::{self, Layout, Position};
 use ghost_entitlement::grid::week;
 use ghost_entitlement::{Kind, Schedule, Token};
-use ghost_issuer::credit::{refresh_digest, refresh_reference};
+use ghost_issuer::credit::refresh_digest;
 use ghost_issuer::custody::KeyWindow;
 use ghost_issuer::journal::{Entry, FileJournal, Journal};
-use ghost_issuer::payout::{self, AckFile, BatchFile, OpsKey, PayoutReport};
+use ghost_issuer::payout::{self, AckFile, BatchFile, EntryOutcome, OpsKey, PayoutReport};
 use ghost_issuer::reconcile::{self, CounterId, Counters, Mismatch};
 use ghost_issuer::scanner::TickReport;
 use ghost_issuer::service::{
@@ -98,11 +98,6 @@ pub fn claim_id(label: &str) -> [u8; 16] {
 /// The test ops key (payout batch files): the Ed25519 seed SHA-256("ghost/test/ops-key").
 pub fn ops_key() -> OpsKey {
     OpsKey::from_seed(&Sha256::digest(b"ghost/test/ops-key").into())
-}
-
-/// A txid of the workstation's payout of entry `i` (test values).
-pub fn payout_txid(tag: u8, i: usize) -> [u8; 32] {
-    Sha256::digest([&[tag][..], &(i as u64).to_be_bytes()].concat()).into()
 }
 
 /// A purchase the client holds: its invoice and the flow's blinding seed.
@@ -863,16 +858,28 @@ impl World {
         out
     }
 
-    /// The workstation's acknowledgement of `file` (one distinct txid per entry) in the export
-    /// directory; the next export imports it.
-    pub fn write_ack(&self, file: &BatchFile, tag: u8) -> AckFile {
+    /// The workstation's acknowledgement of `file`, every entry paid, in the export directory; the
+    /// next export imports it.
+    pub fn write_ack(&self, file: &BatchFile) -> AckFile {
+        self.write_ack_refusing(file, &[])
+    }
+
+    /// [`World::write_ack`] with the entries of the claims `refused` refused (a payout address
+    /// the workstation had seen before).
+    pub fn write_ack_refusing(&self, file: &BatchFile, refused: &[[u8; 16]]) -> AckFile {
         let ack = AckFile {
             batch_id: file.batch_id,
             entries: file
                 .entries
                 .iter()
-                .enumerate()
-                .map(|(i, e)| (e.claim_id, payout_txid(tag, i)))
+                .map(|e| {
+                    let outcome = if refused.contains(&e.claim_id) {
+                        EntryOutcome::Refused
+                    } else {
+                        EntryOutcome::Paid
+                    };
+                    (e.claim_id, outcome)
+                })
                 .collect(),
         };
         std::fs::write(
@@ -981,34 +988,41 @@ impl World {
             if let Some(used) = store::credit_nullifier(&*tx, *epoch, n).unwrap() {
                 assert_eq!(
                     used,
-                    CreditUse::Refresh(refresh_reference(digest)),
+                    CreditUse::Refresh(*digest),
                     "MS-3: a refreshed credit recorded otherwise"
                 );
             }
         }
         // Payouts (§9.5, §19.5): a batch file never changes, a claim never joins a second batch,
-        // a batch's total is the sum of its claims, a paid claim keeps no payout address.
+        // a batch's total is the sum of its claims, a closed claim keeps no payout address, and
+        // no two pending (queued or batched) claims share one (S6 review: no batch can hold an
+        // address twice).
         for files in self.observed.batch_files.values() {
             assert_eq!(files.len(), 1, "a batch file changed on re-export");
         }
         let batches: BTreeMap<[u8; 16], _> = store::batches(&*tx).unwrap().into_iter().collect();
         let claims = store::claims(&*tx).unwrap();
         let mut sums: BTreeMap<[u8; 16], (u64, usize)> = BTreeMap::new();
+        let mut pending = BTreeSet::new();
         for (id, c) in &claims {
             match c.state {
                 ClaimState::Queued => assert_eq!(c.batch_id, [0; 16], "a queued claim in a batch"),
-                ClaimState::Batched | ClaimState::Paid => {
+                ClaimState::Batched | ClaimState::Paid | ClaimState::Refused => {
                     assert!(batches.contains_key(&c.batch_id), "a claim of no batch");
                     let s = sums.entry(c.batch_id).or_default();
                     s.0 += c.amount;
                     s.1 += 1;
                 }
             }
-            if c.state == ClaimState::Paid {
-                assert_eq!(
+            match c.state {
+                ClaimState::Paid | ClaimState::Refused => assert_eq!(
                     c.address, [0u8; ADDRESS_LEN],
-                    "RET: a paid claim keeps its payout address"
-                );
+                    "RET: a closed claim keeps its payout address"
+                ),
+                ClaimState::Queued | ClaimState::Batched => assert!(
+                    pending.insert(c.address),
+                    "two pending claims to one payout address"
+                ),
             }
             if let Some(b) = self.observed.batch_of_claim.get(id) {
                 assert_eq!(c.batch_id, *b, "a claim re-queued into another batch");
@@ -1023,13 +1037,13 @@ impl World {
         }
         // RET (§6.1, §19.1 rule 5): a credit spent for a discount (use 1) or a payout (use 2)
         // keeps no reference to its invoice or claim, which are deleted within weeks while the
-        // nullifier stays for 52–65; only a refresh (use 3) keeps the first 16 bytes of its digest.
+        // nullifier stays for 52–65; only a refresh (use 3) keeps its request's digest, whole.
         for (_, value) in tx.range(Table::CreditNullifier, &[], None).unwrap() {
-            assert_eq!(value.len(), 17, "credit_nullifier row length");
+            assert_eq!(value.len(), 33, "credit_nullifier row length");
             if matches!(value[0], 1 | 2) {
                 assert_eq!(
                     value[1..],
-                    [0u8; 16],
+                    [0u8; 32],
                     "RET: a spent credit references its invoice or claim"
                 );
             }

@@ -398,7 +398,7 @@ fn i_g(w: &mut World) {
 
     // §9.5 step 4: the workstation's acknowledgement marks the batch paid; its files go, the
     // claim keeps no payout address, and an identical claim retry still answers QUEUED.
-    w.write_ack(&file, 7);
+    w.write_ack(&file);
     w.export();
     assert!(
         w.batch_files().is_empty(),

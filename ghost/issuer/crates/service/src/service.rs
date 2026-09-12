@@ -277,6 +277,8 @@ pub(crate) struct Volatile {
     pub(crate) keys_missing: u64,
     /// Alarm `SIGN_FAULT`: signatures withheld by the fault check.
     pub(crate) sign_faults: u64,
+    /// Alarm `PAYOUT_ACKS_REFUSED`: acknowledgement files the last payout run refused.
+    pub(crate) payout_acks_refused: u64,
 }
 
 /// Why a batch of positions could not be signed.
@@ -628,7 +630,11 @@ impl Issuer {
                 digest,
             } => self.apply_refresh(tx, *epoch, nullifier, digest),
             Entry::Batch(e) => self.apply_batch(tx, e),
-            Entry::BatchPaid { batch_id, week } => self.apply_batch_paid(tx, batch_id, *week),
+            Entry::BatchPaid {
+                batch_id,
+                week,
+                refused,
+            } => self.apply_batch_paid(tx, batch_id, *week, refused),
         }
     }
 
@@ -639,7 +645,7 @@ impl Issuer {
         nullifier: &[u8; 32],
         digest: &[u8; 32],
     ) -> Result<(), ApplyError> {
-        let used = CreditUse::Refresh(credit::refresh_reference(digest));
+        let used = CreditUse::Refresh(*digest);
         match store::credit_nullifier(tx, epoch, nullifier)? {
             Some(stored) if stored == used => return Ok(()),
             Some(_) => return Err(ApplyError::Inconsistent),

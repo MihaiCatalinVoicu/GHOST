@@ -10,8 +10,10 @@
 //! state); the nullifier lookup (a refresh with the same blinded value is re-signed, any other use
 //! of the nullifier is `REPLAYED`: idempotency before validity, §19.9); only then the epoch
 //! (`c_now` or `c_now − 1`, not revoked, not closed) and the blinded value's range. One decided
-//! transaction records the nullifier with `use = refresh` and the first 16 bytes of the refresh
-//! digest, and counts `credits_refreshed` and `signed[CREDIT]` of the epoch (net zero for the cap).
+//! transaction records the nullifier with `use = refresh` and the whole refresh digest (§5.6 step
+//! 3 re-serves "the same blinded digest": all 32 bytes are compared, so a second request cannot
+//! pass for the first by sharing a prefix of its digest), and counts `credits_refreshed` and
+//! `signed[CREDIT]` of the epoch (net zero for the cap).
 //! A re-serve after the epoch's key was destroyed (`end(c + 1) + 8 d`, §19.1) answers `REPLAYED`,
 //! as a trial re-serve does (§19.1 rule 2).
 
@@ -104,21 +106,14 @@ pub fn spent_mask(tx: &dyn ReadTx, credits: &[PresentedCredit]) -> Result<u64, S
     Ok(mask)
 }
 
-/// `SHA-256("ghost/v1/refresh-credit" || N || blinded)`: the idempotency digest of a refresh; its
-/// first 16 bytes are kept in the nullifier row.
+/// `SHA-256("ghost/v1/refresh-credit" || N || blinded)`: the idempotency digest of a refresh, kept
+/// whole in the nullifier row.
 pub fn refresh_digest(nullifier: &[u8; 32], blinded: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(REFRESH_DOMAIN);
     h.update(nullifier);
     h.update(blinded);
     h.finalize().into()
-}
-
-/// The reference a refresh keeps: the first 16 bytes of its digest.
-pub fn refresh_reference(digest: &[u8; 32]) -> [u8; 16] {
-    let mut r = [0u8; 16];
-    r.copy_from_slice(&digest[..16]);
-    r
 }
 
 fn refreshed(result: wire::RefreshCreditResult, sig: Vec<u8>) -> wire::RefreshCreditResponse {
@@ -201,7 +196,7 @@ impl Issuer {
         blinded: &[u8],
     ) -> Result<wire::RefreshCreditResponse, Status> {
         let replayed = || Ok(refreshed(wire::RefreshCreditResult::Replayed, Vec::new()));
-        if used != CreditUse::Refresh(refresh_reference(digest)) {
+        if used != CreditUse::Refresh(*digest) {
             return replayed();
         }
         let Ok(layout) = Layout::refresh(&self.schedule, epoch) else {
@@ -262,6 +257,5 @@ mod tests {
         let d = refresh_digest(&[1; 32], &[2; 256]);
         assert_ne!(d, refresh_digest(&[1; 32], &[3; 256]));
         assert_ne!(d, refresh_digest(&[4; 32], &[2; 256]));
-        assert_eq!(refresh_reference(&d), d[..16]);
     }
 }

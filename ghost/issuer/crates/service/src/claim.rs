@@ -1,7 +1,15 @@
 //! `ClaimPayout` (Phase 8 design §5.6, §9.4, §19.9): credits are exchanged for a queued XMR payout
 //! to a payout address the client typed. The claim is idempotent by `claim_id`, looked up before
 //! any address or credit check; the credits are spent in the same decided transaction that queues
-//! the claim. Batching, export, the workstation check and acknowledgement are slice S6.
+//! the claim. Batching, export, the workstation check and acknowledgement are in `payout.rs`.
+//!
+//! **One pending claim per address** (recorded addition to §5.6 step 5). The workstation pays an
+//! address once (§9.5 step 2), so the decided transaction, after its re-checks of the claim id and
+//! the credits, answers `ADDRESS_REJECTED` (nothing consumed, nothing journaled) when the address
+//! is that of a queued or batched claim: no batch ever holds one address twice. An address of a
+//! closed batch is deleted with it and cannot be checked here; the workstation refuses that entry
+//! alone. Residue: a holder of unspent credits enough for a claim learns whether an address it
+//! already knows belongs to a pending claim.
 
 use ghost_entitlement::monero::{AddressPurpose, MoneroAddress};
 use ghost_entitlement::token::TOKEN_LEN;
@@ -13,7 +21,7 @@ use tonic::Status;
 use crate::credit;
 use crate::journal::{ClaimEntry, Entry, MAX_ENTRY_CREDITS};
 use crate::service::{claim_digest, fixed, rejected, unauthorized, Issuer};
-use crate::store::{self, ClaimRow, MetaKey, ADDRESS_LEN};
+use crate::store::{self, ClaimRow, ClaimState, MetaKey, ReadTx, StoreError, ADDRESS_LEN};
 use crate::PROTOCOL_VERSION;
 
 /// Longest payout address text accepted before validation (integrated addresses are 106).
@@ -36,6 +44,13 @@ fn known(row: &ClaimRow, digest: &[u8; 32]) -> wire::ClaimPayoutResponse {
     } else {
         answer(wire::ClaimPayoutResult::ClaimConflict)
     }
+}
+
+/// The payout address of a queued or batched claim (closed claims keep none).
+fn address_pending(tx: &dyn ReadTx, address: &[u8; ADDRESS_LEN]) -> Result<bool, StoreError> {
+    Ok(store::claims(tx)?.iter().any(|(_, c)| {
+        matches!(c.state, ClaimState::Queued | ClaimState::Batched) && c.address == *address
+    }))
 }
 
 fn spent(mask: u64) -> wire::ClaimPayoutResponse {
@@ -117,6 +132,9 @@ impl Issuer {
         let mask = credit::spent_mask(&*tx, &credits)?;
         if mask != 0 {
             return Ok(spent(mask));
+        }
+        if address_pending(&*tx, &address)? {
+            return Ok(answer(wire::ClaimPayoutResult::AddressRejected));
         }
         let entry = Entry::Claim(ClaimEntry {
             claim_id,

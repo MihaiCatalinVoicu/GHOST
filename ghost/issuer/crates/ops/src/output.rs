@@ -2,8 +2,9 @@
 //! Its named outputs: the custody secret, the schedule key and the ops key (`keygen`), public key
 //! entries and sealed key files (`keygen`), the key load file (`keys-seal`), the signed schedule
 //! (`schedule-sign`), Tor onion service key sets (`onion-keygen`), the payout workstation's ledger
-//! (`payout-check` creates it; `payout-check`, `payout-entry` and `payout-ack` append records) and
-//! acknowledgement files (`payout-ack`). Every file but the ledger is created new (an existing
+//! (`payout-check` creates it; `payout-check`, `payout-entry` and `payout-ack` append records),
+//! acknowledgement files (`payout-ack`) and the counters file (`counters-export`). Every file but
+//! the ledger is created new (an existing
 //! file is never replaced); the ledger is only ever appended to. Each write is complete and
 //! flushed to disk, and on Unix a created file is readable by its owner only.
 
@@ -78,6 +79,12 @@ pub fn append_ledger(path: &Path, text: &str, flag: &'static str) -> Result<(), 
 /// A payout acknowledgement file for the issuer (design §9.5 step 4).
 pub fn write_ack(path: &Path, bytes: &[u8], flag: &'static str) -> Result<(), Failure> {
     create_new(path, bytes, flag)
+}
+
+/// The issuer's reconciliation counters, exported from a snapshot for the workstation (design
+/// §6.9, runbook R2).
+pub fn write_counters(path: &Path, text: &str, flag: &'static str) -> Result<(), Failure> {
+    create_new(path, text.as_bytes(), flag)
 }
 
 pub fn write_sealed_key(

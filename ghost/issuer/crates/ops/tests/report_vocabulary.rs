@@ -43,6 +43,7 @@ fn code_index(c: Code) -> usize {
         Code::AckWritten => 23,
         Code::ReconciliationOk => 24,
         Code::ReconciliationMismatch => 25,
+        Code::CountersWritten => 26,
     }
 }
 
@@ -80,6 +81,8 @@ fn field_index(f: Field) -> usize {
         Field::Txid => 29,
         Field::Images => 30,
         Field::Relays => 31,
+        Field::Refused => 32,
+        Field::Counters => 33,
     }
 }
 
@@ -213,6 +216,7 @@ fn lines_of_real_runs_are_well_formed() {
         .as_bytes(),
     ));
     let out = arg(&dir.path().join("load.ghkl"));
+    let counters = arg(&dir.path().join("counters.txt"));
     let hs = arg(&dir.path().join("hs"));
     let ops_key = arg(&dir.path().join("ops.key"));
     let missing = arg(&dir.path().join("missing"));
@@ -241,6 +245,13 @@ fn lines_of_real_runs_are_well_formed() {
             &key,
             "--now",
             "1790557200",
+        ],
+        vec![
+            "counters-export",
+            "--database",
+            &missing,
+            "--out",
+            &counters,
         ],
         vec!["onion-keygen", "--hs-dir", &hs],
         vec!["onion-keygen", "--hs-dir", &hs],

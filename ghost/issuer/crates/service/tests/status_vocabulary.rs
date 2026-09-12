@@ -88,6 +88,9 @@ fn every_reachable_status_uses_the_fixed_vocabulary() {
                             sign_fault: n,
                             keys_missing: n,
                             payout_batch_ready: flag,
+                            payout_batches_open: n,
+                            payout_oldest_batch_weeks: n,
+                            payout_acks_refused: n,
                             halted: !flag,
                         });
                         count += 1;

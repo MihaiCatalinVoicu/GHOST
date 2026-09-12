@@ -11,8 +11,10 @@ use common::world::{World, BASE_WEEK};
 use ghost_blind_rsa::BigUint;
 use ghost_entitlement::grid::{invite_epoch, week_start, DAY_SECS};
 use ghost_entitlement::{Expect, Kind, Schedule, Token};
+use ghost_issuer::credit::refresh_digest;
 use ghost_issuer::custody::destroy_after;
 use ghost_issuer::reconcile::{self, CounterId};
+use ghost_issuer::store::{self, Table};
 use ghost_issuer_api::proto as wire;
 use tonic::Code;
 
@@ -242,6 +244,36 @@ fn forged_and_malformed_refreshes_are_refused() {
         );
     }
     assert_eq!(refresh(bytes, blinded, 1).unwrap().result, REFRESHED);
+}
+
+/// S6 review (MONEY-2): the re-serve of a refresh compares the whole 32-byte digest of the recorded
+/// request. A recorded digest that agrees with a new request's digest in its first 16 bytes only (a
+/// birthday search on the prefix costs about 2^64 hashes) belongs to another request: REPLAYED,
+/// never a second fresh credit.
+#[test]
+fn a_refresh_reserve_compares_the_whole_digest() {
+    let mut w = World::new(true);
+    let credit = w.mint(Kind::Credit, 227, "h");
+    let first = w.refresh_blinded("h1", 227);
+    assert_eq!(w.refresh(&credit, first).unwrap().result, REFRESHED);
+    let second = w.refresh_blinded("h2", 227);
+    let n = credit.nullifier();
+    let mut recorded = refresh_digest(&n, &second);
+    for b in &mut recorded[16..] {
+        *b ^= 0xff;
+    }
+    {
+        let mut tx = w.issuer().store().write().unwrap();
+        tx.put(
+            Table::CreditNullifier,
+            &store::nullifier_key(227, &n),
+            &[&[3u8][..], &recorded].concat(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    let r = w.refresh(&credit, second).unwrap();
+    assert_eq!((r.result, r.blind_signature.len()), (REPLAYED, 0));
 }
 
 #[test]

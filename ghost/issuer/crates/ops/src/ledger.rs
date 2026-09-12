@@ -5,7 +5,7 @@
 //! ```text
 //! ghost-payout-ledger 1 salt <64 hex>
 //! batch <batch id, 32 hex> week <n> total <n> entries <n>
-//! entry <batch id> <k> claim <64 hex> address <64 hex> amount <n>
+//! entry <batch id> <k> claim <64 hex> address <64 hex> amount <n>[ refused]
 //! built <batch id> <k>
 //! signed <batch id> <k> txid <64 hex> images <64 hex>[,<64 hex>]...
 //! submitted <batch id> <k>
@@ -19,16 +19,21 @@
 //! batch its total, so the cumulative payouts survive the deletion of batch files. The salt is
 //! drawn when the ledger is created.
 //!
-//! **Rules.** A batch id, a claim and a payout address are accepted once (§19.7 point 2). The
-//! entries of a batch follow its batch record in order, and their amounts sum to its total. Per
-//! entry `accepted → built → signed → submitted → confirmed` (§19.7 point 1): an entry is built
-//! only while no entry of the ledger is built or signed and not yet submitted, so entry k + 1 is
-//! built only after entry k was submitted (a watch-only `transfer` reserves nothing: two entries
+//! **Rules.** A batch id and a claim are accepted once (§19.7 point 2): an honest issuer never
+//! repeats them, so a repeat refuses the whole batch. A payout address is paid once, but a claimant
+//! chooses it, so a repeat refuses only its entry (S6 review): an entry whose address an earlier
+//! entry had, in any batch or earlier in its own, is recorded `refused`, is never built or paid,
+//! and every other entry of its batch is paid; on replay an entry is `refused` exactly when its
+//! address is repeated. The cumulative payouts are the batch totals less their refused entries.
+//! The entries of a batch follow its batch record in order, and their amounts sum to its total.
+//! Per entry `accepted → built → signed → submitted → confirmed` (§19.7 point 1): an entry is
+//! built only while no entry of the ledger is built or signed and not yet submitted, so entry k + 1
+//! is built only after entry k was submitted (a watch-only `transfer` reserves nothing: two entries
 //! built from one wallet state could select the same inputs); a signed entry names its txid and
 //! the key images of its inputs, distinct from every other entry's; a built or signed entry may be
 //! abandoned back to accepted (a signed one only once its inputs are proven unspent, checked by
 //! `payout-entry`; the runbook destroys its signed transaction), a submitted one never. A batch is
-//! acknowledged once, when every entry is confirmed.
+//! acknowledged once, when every entry is confirmed or refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -41,6 +46,7 @@ use crate::hexfmt;
 pub const HEADER: &str = "ghost-payout-ledger 1";
 const CLAIM_DOMAIN: &[u8] = b"ghost/v1/ledger-claim";
 const ADDRESS_DOMAIN: &[u8] = b"ghost/v1/ledger-address";
+const REFUSED: &str = "refused";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntryState {
@@ -49,6 +55,8 @@ pub enum EntryState {
     Signed,
     Submitted,
     Confirmed,
+    /// Its payout address was seen before: never built, never paid.
+    Refused,
 }
 
 impl EntryState {
@@ -59,6 +67,7 @@ impl EntryState {
             EntryState::Signed => "signed",
             EntryState::Submitted => "submitted",
             EntryState::Confirmed => "confirmed",
+            EntryState::Refused => REFUSED,
         }
     }
 }
@@ -121,6 +130,25 @@ impl LedgerBatch {
     fn complete(&self) -> bool {
         self.entries.len() == self.expected
     }
+
+    /// Its refused entries.
+    pub fn refused(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| e.state == EntryState::Refused)
+            .count()
+    }
+
+    /// Its total less its refused entries: what the workstation pays for it.
+    pub fn payable(&self) -> u64 {
+        let refused = self
+            .entries
+            .iter()
+            .filter(|e| e.state == EntryState::Refused)
+            .map(|e| e.amount)
+            .fold(0u64, u64::saturating_add);
+        self.total.saturating_sub(refused)
+    }
 }
 
 /// A record the ledger refused: its line (from 1; the next line for a new record) and why.
@@ -144,6 +172,7 @@ enum Record {
         claim: [u8; 32],
         address: [u8; 32],
         amount: u64,
+        refused: bool,
     },
     State {
         id: [u8; 16],
@@ -175,11 +204,13 @@ impl Record {
                 claim,
                 address,
                 amount,
+                refused,
             } => format!(
-                "entry {} {k} claim {} address {} amount {amount}\n",
+                "entry {} {k} claim {} address {} amount {amount}{}\n",
                 hexfmt::encode(id),
                 hexfmt::encode(claim),
-                hexfmt::encode(address)
+                hexfmt::encode(address),
+                if *refused { " refused" } else { "" }
             ),
             Record::State {
                 id,
@@ -217,13 +248,21 @@ impl Record {
                 total: parse_u64(total)?,
                 entries: index(n)?,
             }),
-            ["entry", b, k, "claim", c, "address", a, "amount", amount] => Some(Record::Entry {
-                id: id(b)?,
-                k: index(k)?,
-                claim: h32(c)?,
-                address: h32(a)?,
-                amount: parse_u64(amount)?,
-            }),
+            ["entry", b, k, "claim", c, "address", a, "amount", amount, rest @ ..] => {
+                let refused = match rest {
+                    [] => false,
+                    [REFUSED] => true,
+                    _ => return None,
+                };
+                Some(Record::Entry {
+                    id: id(b)?,
+                    k: index(k)?,
+                    claim: h32(c)?,
+                    address: h32(a)?,
+                    amount: parse_u64(amount)?,
+                    refused,
+                })
+            }
             ["signed", b, k, "txid", t, "images", images] => Some(Record::State {
                 id: id(b)?,
                 k: index(k)?,
@@ -313,12 +352,12 @@ impl Ledger {
         self.batches.get(id)
     }
 
-    /// Σ totals of every batch the ledger accepted: the cumulative payouts of §19.7 point 2
-    /// (accepted batches count before they are paid).
+    /// Σ payable amounts of every batch the ledger accepted: the cumulative payouts of §19.7
+    /// point 2 (accepted batches count before they are paid; refused entries never do).
     pub fn paid_so_far(&self) -> u64 {
         self.batches
             .values()
-            .map(|b| b.total)
+            .map(LedgerBatch::payable)
             .fold(0u64, u64::saturating_add)
     }
 
@@ -362,12 +401,18 @@ impl Ledger {
                 claim,
                 address,
                 amount,
+                refused,
             } => {
                 if self.entries().any(|(_, _, e)| e.claim == *claim) {
                     return Err("claim-seen");
                 }
-                if self.entries().any(|(_, _, e)| e.address == *address) {
-                    return Err("address-repeated");
+                let repeated = self.entries().any(|(_, _, e)| e.address == *address);
+                if repeated != *refused {
+                    return Err(if repeated {
+                        "address-repeated"
+                    } else {
+                        "not-repeated"
+                    });
                 }
                 let batch = self.batches.get_mut(id).ok_or("sequence")?;
                 if batch.complete() || *k != batch.entries.len() || *amount == 0 {
@@ -377,7 +422,11 @@ impl Ledger {
                     claim: *claim,
                     address: *address,
                     amount: *amount,
-                    state: EntryState::Accepted,
+                    state: if *refused {
+                        EntryState::Refused
+                    } else {
+                        EntryState::Accepted
+                    },
                     txid: None,
                     images: Vec::new(),
                 });
@@ -408,7 +457,7 @@ impl Ledger {
                     || batch
                         .entries
                         .iter()
-                        .any(|e| e.state != EntryState::Confirmed)
+                        .any(|e| !matches!(e.state, EntryState::Confirmed | EntryState::Refused))
                 {
                     return Err("not-confirmed");
                 }
@@ -504,8 +553,10 @@ impl Ledger {
         Ok(text)
     }
 
-    /// `payout-check`: the batch and its entries (§9.5 step 2).
+    /// `payout-check`: the batch and its entries (§9.5 step 2), each entry whose payout address
+    /// the ledger or an earlier entry of the batch holds recorded refused.
     pub fn accept(&mut self, file: &BatchFile) -> Result<String, LedgerError> {
+        let mut seen: BTreeSet<[u8; 32]> = self.entries().map(|(_, _, e)| e.address).collect();
         let mut records = vec![Record::Batch {
             id: file.batch_id,
             week: file.week,
@@ -513,12 +564,14 @@ impl Ledger {
             entries: file.entries.len(),
         }];
         for (k, e) in file.entries.iter().enumerate() {
+            let address = self.address_hash(e.address_text());
             records.push(Record::Entry {
                 id: file.batch_id,
                 k,
                 claim: self.claim_hash(&e.claim_id),
-                address: self.address_hash(e.address_text()),
+                address,
                 amount: e.amount,
+                refused: !seen.insert(address),
             });
         }
         self.commit(&records)
@@ -542,7 +595,7 @@ impl Ledger {
         }])
     }
 
-    /// `payout-ack`: every entry of the batch is confirmed (§9.5 step 4).
+    /// `payout-ack`: every entry of the batch is confirmed or refused (§9.5 step 4).
     pub fn ack(&mut self, id: &[u8; 16]) -> Result<String, LedgerError> {
         self.commit(&[Record::Acked { id: *id }])
     }
@@ -554,11 +607,13 @@ mod tests {
     use ghost_entitlement::monero::MoneroNetwork;
     use ghost_issuer::payout::BatchLine;
 
-    fn file(id: u8, n: usize, first_claim: u8) -> BatchFile {
+    /// A batch of `n` entries of 10 whose claim ids and addresses (ASCII letters) start at
+    /// `first` (at most 25 − n).
+    fn file(id: u8, n: usize, first: u8) -> BatchFile {
         let entries: Vec<BatchLine> = (0..n)
             .map(|i| BatchLine {
-                claim_id: [first_claim + i as u8; 16],
-                address: [b'a' + first_claim + i as u8; 95],
+                claim_id: [first + i as u8; 16],
+                address: [b'a' + first + i as u8; 95],
                 amount: 10,
             })
             .collect();
@@ -664,17 +719,67 @@ mod tests {
     }
 
     #[test]
-    fn batches_claims_and_addresses_are_accepted_once() {
+    fn batches_and_claims_are_accepted_once_and_a_repeated_address_refuses_its_entry() {
         let mut l = Ledger::new([9; 32]);
         l.accept(&file(1, 2, 0)).unwrap();
-        assert_eq!(l.accept(&file(1, 1, 50)).unwrap_err().reason, "batch-seen");
+        assert_eq!(l.accept(&file(1, 1, 5)).unwrap_err().reason, "batch-seen");
         assert_eq!(l.accept(&file(2, 1, 1)).unwrap_err().reason, "claim-seen");
-        let mut repeated = file(3, 1, 60);
-        repeated.entries[0].address = [b'a'; 95];
-        assert_eq!(l.accept(&repeated).unwrap_err().reason, "address-repeated");
         assert_eq!(l.paid_so_far(), 20, "a refused batch changes nothing");
-        l.accept(&file(4, 1, 70)).unwrap();
-        assert_eq!(l.paid_so_far(), 30);
+        // An address of batch 1, then a new one twice: the repeats are refused, the batch taken.
+        let mut repeated = file(3, 3, 5);
+        repeated.entries[0].address = [b'a'; 95];
+        repeated.entries[2].address = repeated.entries[1].address;
+        let text = l.accept(&repeated).unwrap();
+        assert_eq!(text.matches(" refused\n").count(), 2);
+        let b = l.batch(&[3; 16]).unwrap();
+        let states: Vec<EntryState> = b.entries.iter().map(|e| e.state).collect();
+        assert_eq!(
+            states,
+            [
+                EntryState::Refused,
+                EntryState::Accepted,
+                EntryState::Refused
+            ]
+        );
+        assert_eq!((b.refused(), b.payable()), (2, 10));
+        assert_eq!(l.paid_so_far(), 30, "a refused entry is not a payout");
+        for k in [0, 2] {
+            let r = l.transition(&[3; 16], k, Transition::Built, None, Vec::new());
+            assert_eq!(
+                r.unwrap_err().reason,
+                "state",
+                "a refused entry never moves"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_entry_replays_only_on_a_repeated_address() {
+        let mut l = Ledger::new([9; 32]);
+        let mut text = l.accept(&file(1, 1, 0)).unwrap();
+        let mut twice = file(2, 2, 5);
+        twice.entries[1].address = twice.entries[0].address;
+        text += &l.accept(&twice).unwrap();
+        assert_eq!(replay(&l, &text), l);
+        let header = l.header();
+        let unmarked = text.replace(" refused", "");
+        assert_eq!(
+            Ledger::parse(&format!("{header}{unmarked}"))
+                .unwrap_err()
+                .reason,
+            "address-repeated"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let marked = format!("{header}{}\n{} refused\n", lines[0], lines[1]);
+        assert_eq!(Ledger::parse(&marked).unwrap_err().reason, "not-repeated");
+        let bad_word = format!("{header}{}\n{} paid\n", lines[0], lines[1]);
+        assert_eq!(Ledger::parse(&bad_word).unwrap_err().reason, "record");
+        // A batch whose every entry is refused is acknowledged at once.
+        let mut only = file(3, 1, 10);
+        only.entries[0].address = [b'a'; 95];
+        l.accept(&only).unwrap();
+        assert_eq!(l.batch(&[3; 16]).unwrap().payable(), 0);
+        l.ack(&[3; 16]).unwrap();
     }
 
     #[test]

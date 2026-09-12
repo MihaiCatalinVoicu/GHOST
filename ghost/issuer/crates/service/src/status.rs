@@ -4,8 +4,13 @@
 //! free text can appear in it. `tests/status_vocabulary.rs` serialises every reachable status and
 //! proves that no key or code outside [`KEYS`] and [`CODES`] appears.
 //!
-//! This module, `store.rs` and `journal.rs` are the only service modules that write files
-//! (`issuer-output.sh`).
+//! Recorded additions to the §6.5 list (S6 review): `PAYOUT_BATCHES_OPEN` and
+//! `PAYOUT_OLDEST_BATCH_WEEKS` (a batch the workstation never acknowledges keeps its claims and
+//! payout addresses, so its age is the alarm) and `PAYOUT_ACKS_REFUSED` (acknowledgement files the
+//! last payout run refused).
+//!
+//! This module, `store.rs`, `journal.rs` and `payout.rs` are the only service modules that write
+//! files (`issuer-output.sh`).
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -16,7 +21,7 @@ use ghost_entitlement::grid::week;
 use crate::rail::RailError;
 use crate::reconcile::{self, CounterId};
 use crate::service::{Issuer, TickOutcome};
-use crate::store::{self, ClaimState, InvoiceState, StoreError};
+use crate::store::{self, BatchState, ClaimState, InvoiceState, StoreError};
 
 /// File name of the status file in the issuer's data directory.
 pub const STATUS_FILE_NAME: &str = "status.json";
@@ -28,7 +33,7 @@ pub const POOL_LOW_BELOW: usize = 16;
 pub const OPEN_INVOICES_BUCKET: u64 = 100;
 
 /// Every key of the status object, in output order.
-pub const KEYS: [&str; 13] = [
+pub const KEYS: [&str; 16] = [
     "SCANNER",
     "KEYS_READY_UNTIL_WEEK",
     "ES_HORIZON_WEEKS",
@@ -41,6 +46,9 @@ pub const KEYS: [&str; 13] = [
     "SIGN_FAULT",
     "KEYS_MISSING",
     "PAYOUT_BATCH_READY",
+    "PAYOUT_BATCHES_OPEN",
+    "PAYOUT_OLDEST_BATCH_WEEKS",
+    "PAYOUT_ACKS_REFUSED",
     "HALTED",
 ];
 
@@ -154,6 +162,14 @@ pub struct StatusReport {
     pub keys_missing: u64,
     /// Queued claims wait for the weekly batch.
     pub payout_batch_ready: bool,
+    /// Exported batches waiting for the workstation's acknowledgement (runbook P1).
+    pub payout_batches_open: u64,
+    /// Weeks since the oldest of them was created (0 when none is open): a batch that is never
+    /// acknowledged keeps its claims and payout addresses, so its age is the alarm.
+    pub payout_oldest_batch_weeks: u64,
+    /// Acknowledgement files the last payout run refused (they do not match an exported batch or
+    /// cannot be read).
+    pub payout_acks_refused: u64,
     /// A failure between a journal append and its commit halted the issuer (restart required).
     pub halted: bool,
 }
@@ -175,6 +191,9 @@ impl StatusReport {
             self.sign_fault.to_string(),
             self.keys_missing.to_string(),
             self.payout_batch_ready.to_string(),
+            self.payout_batches_open.to_string(),
+            self.payout_oldest_batch_weeks.to_string(),
+            self.payout_acks_refused.to_string(),
             self.halted.to_string(),
         ];
         let fields: Vec<String> = KEYS
@@ -204,7 +223,7 @@ impl Issuer {
     /// The status at `now` (§6.5).
     pub fn status_at(&self, now: u64) -> Result<StatusReport, StoreError> {
         let w = week(now);
-        let (scanner, sign_fault, keys_missing) = {
+        let (scanner, sign_fault, keys_missing, payout_acks_refused) = {
             let v = self.volatile();
             let scanner = match v.last_tick {
                 None => ScannerCode::Stalled,
@@ -217,7 +236,12 @@ impl Issuer {
                     TickOutcome::Failed(_) => ScannerCode::WalletUnreachable,
                 },
             };
-            (scanner, v.sign_faults, v.keys_missing)
+            (
+                scanner,
+                v.sign_faults,
+                v.keys_missing,
+                v.payout_acks_refused,
+            )
         };
         let tx = self.store.read()?;
         let open = store::invoices(&*tx)?
@@ -232,6 +256,11 @@ impl Issuer {
         let counters = reconcile::all(&*tx)?;
         let this_week = |id: CounterId| counters.get(&(id, w)).copied().unwrap_or(0);
         let mismatches = reconcile::check(&counters, &self.schedule, now);
+        let open_batches: Vec<u64> = store::batches(&*tx)?
+            .into_iter()
+            .filter(|(_, b)| b.state == BatchState::Exported)
+            .map(|(_, b)| b.week)
+            .collect();
         Ok(StatusReport {
             scanner,
             keys_ready_until_week: self.keys().ready_until_week(w).unwrap_or(0),
@@ -255,6 +284,12 @@ impl Issuer {
             payout_batch_ready: store::claims(&*tx)?
                 .iter()
                 .any(|(_, c)| c.state == ClaimState::Queued),
+            payout_batches_open: open_batches.len() as u64,
+            payout_oldest_batch_weeks: open_batches
+                .iter()
+                .min()
+                .map_or(0, |&oldest| w.saturating_sub(oldest)),
+            payout_acks_refused,
             halted: self.is_halted(),
         })
     }

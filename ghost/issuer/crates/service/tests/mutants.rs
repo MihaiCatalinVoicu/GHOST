@@ -441,7 +441,9 @@ fn credits_keep_the_price_of_their_epoch(mutant: bool) {
         }));
         let more = mint_credits(&w, 10, "m20-mutant-claim");
         let bytes: Vec<Vec<u8>> = more.iter().map(|t| t.as_bytes().to_vec()).collect();
-        let address = claim_address();
+        // Another address than claim "q"'s: the mutant is caught by the value, not by a pending
+        // address repeated.
+        let address = common::chain_port::address(9_997);
         w.append_journal_entry(&Entry::Claim(ClaimEntry {
             claim_id: claim_id("m20-mutant"),
             digest: claim_digest(&address, &bytes),

@@ -16,7 +16,7 @@
 //! | `minor_index` | minor u32 | invoice id [16] |
 //! | `credited_tx` | invoice id [16] ‖ txid [32] | height u64 |
 //! | `invite_nullifier` | epoch u64 ‖ N [32] | trial digest [32] |
-//! | `credit_nullifier` | epoch u64 ‖ N [32] | use u8 ‖ ref [16] (zero except for a refresh) |
+//! | `credit_nullifier` | epoch u64 ‖ N [32] | use u8 ‖ ref [32] (zero except for a refresh) |
 //! | `claim` | claim id [16] | [`ClaimRow`] (153 bytes) |
 //! | `batch` | batch id [16] | [`BatchRow`] (35 bytes) |
 //! | `counter` | index u64 ‖ counter id u8 | u64 |
@@ -26,9 +26,14 @@
 //! carries its 95-byte subaddress (the byte-identical `RequestInvoice` re-serve of §5.6 step 2 must
 //! return it after the pool entry is gone, also after a restore); the batch row adds
 //! `cumulative_credited` (a field of the signed batch file, re-exported byte for byte) and
-//! `paid_week` (the week of the acknowledgement: the paid batch's claims are deleted two weeks
-//! later and the batch six weeks later, at least the 7 and 30 days of §6.1, with no time finer
-//! than a week, §19.15).
+//! `paid_week` (the week of the acknowledgement: the closed batch's claims are deleted at the
+//! start of the next week and its row four weeks later, never more than the 7 and 30 days of §6.1
+//! after the acknowledgement, with no time finer than a week, §19.15); a refresh's
+//! `credit_nullifier` row keeps its whole 32-byte digest instead of the first 16 bytes (with a
+//! 16-byte prefix a birthday search of about 2^64 hashes turned one credit into two fresh ones; the
+//! whole digest reveals nothing its prefix does not); `claim.state` adds refused (the workstation
+//! refused the entry, §9.5 step 2); `meta` adds `payout_export_hour` and `payout_done_week` (the
+//! week's drawn export hour, §9.5 step 1).
 
 use std::path::Path;
 
@@ -346,6 +351,10 @@ pub enum MetaKey {
     ClosedThroughInviteEpoch,
     /// Credit nullifiers of epochs <= this one were deleted; such tokens are refused (§19.10).
     ClosedThroughCreditEpoch,
+    /// The payout export hour drawn for its week, as an absolute hour (Unix seconds / 3 600).
+    PayoutExportHour,
+    /// The last week whose payout export ran (§9.5 step 1: at most one a week).
+    PayoutDoneWeek,
 }
 
 impl MetaKey {
@@ -359,6 +368,8 @@ impl MetaKey {
             MetaKey::JournalApplied => "journal_applied",
             MetaKey::ClosedThroughInviteEpoch => "closed_through_invite_epoch",
             MetaKey::ClosedThroughCreditEpoch => "closed_through_credit_epoch",
+            MetaKey::PayoutExportHour => "payout_export_hour",
+            MetaKey::PayoutDoneWeek => "payout_done_week",
         }
     }
 }
@@ -635,21 +646,25 @@ pub fn invite_nullifier(
         .transpose()
 }
 
+/// Length of a `credit_nullifier` value: use u8 ‖ reference [32].
+pub const CREDIT_USE_LEN: usize = 33;
+
 /// What a credit was used for (`credit_nullifier.use`, §6.1). Only a refresh keeps a reference,
-/// the first 16 bytes of its blinded digest (its idempotent re-serve compares it, §5.6). A
-/// discount or a payout keeps none: the nullifier outlives the invoice (≈ 7 days after issuance)
-/// and the claim (batch paid + 7 days) by up to 65 weeks, and a reference would keep the set of
-/// credits presented together, a purchase-cadence fingerprint (§19.1 rule 5), for that long.
+/// the whole 32-byte digest of its request (its idempotent re-serve compares it, §5.6 step 3; a
+/// prefix would let two requests that share it be served as one). A discount or a payout keeps
+/// none: the nullifier outlives the invoice (≈ 7 days after issuance) and the claim (≤ 7 days after
+/// its batch closed) by up to 65 weeks, and a reference would keep the set of credits presented
+/// together, a purchase-cadence fingerprint (§19.1 rule 5), for that long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CreditUse {
     Discount,
     Payout,
-    Refresh([u8; 16]),
+    Refresh([u8; 32]),
 }
 
 impl CreditUse {
-    pub fn encode(&self) -> [u8; 17] {
-        let mut out = [0u8; 17];
+    pub fn encode(&self) -> [u8; CREDIT_USE_LEN] {
+        let mut out = [0u8; CREDIT_USE_LEN];
         match self {
             CreditUse::Discount => out[0] = 1,
             CreditUse::Payout => out[0] = 2,
@@ -663,11 +678,11 @@ impl CreditUse {
 
     /// Strict: a discount or payout row with a non-zero reference does not decode.
     pub fn decode(bytes: &[u8]) -> Result<Self, StoreError> {
-        if bytes.len() != 17 {
+        if bytes.len() != CREDIT_USE_LEN {
             return Err(StoreError::Corrupt);
         }
-        let reference: [u8; 16] = array(&bytes[1..])?;
-        Ok(match (bytes[0], reference == [0; 16]) {
+        let reference: [u8; 32] = array(&bytes[1..])?;
+        Ok(match (bytes[0], reference == [0; 32]) {
             (1, true) => CreditUse::Discount,
             (2, true) => CreditUse::Payout,
             (3, _) => CreditUse::Refresh(reference),
@@ -693,8 +708,13 @@ pub enum ClaimState {
     Queued,
     /// Assigned to a batch (journaled `BATCH`).
     Batched,
-    /// Its batch was paid (journaled `BATCH_PAID`); the payout address is deleted.
+    /// Its batch was acknowledged with this entry paid (journaled `BATCH_PAID`); the payout address
+    /// is deleted.
     Paid,
+    /// Its batch was acknowledged with this entry refused by the workstation (a payout address it
+    /// had seen before, §9.5 step 2): never paid, its credits stay spent; the payout address is
+    /// deleted.
+    Refused,
 }
 
 /// A row of `claim` (§6.1; no time column, §19.15).
@@ -718,6 +738,7 @@ impl ClaimRow {
             ClaimState::Queued => 1,
             ClaimState::Batched => 2,
             ClaimState::Paid => 3,
+            ClaimState::Refused => 4,
         });
         w.extend_from_slice(&self.amount.to_be_bytes());
         w.push(self.credits);
@@ -736,6 +757,7 @@ impl ClaimRow {
             1 => ClaimState::Queued,
             2 => ClaimState::Batched,
             3 => ClaimState::Paid,
+            4 => ClaimState::Refused,
             _ => return Err(StoreError::Corrupt),
         };
         Ok(Self {

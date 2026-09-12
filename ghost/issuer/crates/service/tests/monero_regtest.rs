@@ -15,7 +15,8 @@
 //!   built, cold-signed, submitted and confirmed entry by entry in the workstation ledger, the
 //!   acknowledgement back to the issuer, the payees paid, and a second batch over the same
 //!   revenue refused by the cumulative cap), and the reconciliation of this scenario
-//!   (`ghost-issuer-ops reconcile-check` on a copy of the issuer's database).
+//!   (`ghost-issuer-ops reconcile-check` on a copy of the issuer's database, and on the counters
+//!   `counters-export` takes from it with the workstation's view and ledger).
 //!
 //! Ignored by default. `GHOST_MONERO_BIN` names the directory of the pinned binaries
 //! (`ghost/infra/issuer/monero-release.pin`; the `monero-regtest` workflow downloads and checks
@@ -1580,6 +1581,22 @@ fn regtest_credits_and_payouts() {
         )
         .unwrap();
     assert_eq!(r.queued_atomic, 20 * credit_value);
+    // A claim to an address paid in the first batch: the issuer deleted it with that batch, so
+    // the claim queues, and the workstation refuses that entry alone (S6 review, MONEY-1).
+    let reuse = credits_of(t.buy_packs(&labels("reuse", 10)));
+    let r = t
+        .issuer()
+        .claim_payout_at(
+            wire::ClaimPayoutRequest {
+                version: 1,
+                claim_id: claim_id("reuse").to_vec(),
+                credits: reuse.iter().map(|c| c.as_bytes().to_vec()).collect(),
+                payout_address: file.entries[0].address_text().to_string(),
+            },
+            t.now,
+        )
+        .unwrap();
+    assert_eq!(r.result, wire::ClaimPayoutResult::Queued as i32);
     let report = t
         .issuer()
         .payout_export_at(t.now, &ops_key, &export)
@@ -1594,6 +1611,7 @@ fn regtest_credits_and_payouts() {
         status == 0 && line.starts_with("PAYOUT_ACCEPTED"),
         "{status} {line}"
     );
+    assert!(line.contains(" refused=1"), "{line}");
 
     // Reconciliation of this scenario: the issuer's invariants; incoming to minors >= 1 equals
     // the credited revenue (every invoice issued at its price); the payout change reached minor
@@ -1628,20 +1646,63 @@ fn regtest_credits_and_payouts() {
     )
     .unwrap();
     let view3 = view_dump("view-3.json");
+    // Runbook R2: on the issuer host the snapshot's invariants with the relay counts, and the
+    // counters export; on the workstation the exported counters with its view and ledger. The
+    // snapshot never leaves the issuer host.
+    let snapshot_arg = path_arg(&snapshot);
+    let schedule_arg = path_arg(&schedule_path);
+    let schedule_key = hex::encode(fixture::schedule_public_key());
+    let now = t.now.to_string();
+    let relay_arg = path_arg(&relay_counts);
     let (status, line) = ops(
         &ops_bin,
         &[
             "reconcile-check",
             "--database",
-            &path_arg(&snapshot),
+            &snapshot_arg,
             "--schedule",
-            &path_arg(&schedule_path),
+            &schedule_arg,
             "--schedule-public-key",
-            &hex::encode(fixture::schedule_public_key()),
+            &schedule_key,
             "--now",
-            &t.now.to_string(),
+            &now,
             "--relay-counts",
-            &path_arg(&relay_counts),
+            &relay_arg,
+        ],
+    );
+    assert!(
+        status == 0 && line.starts_with("RECONCILIATION_OK"),
+        "{status} {line}"
+    );
+    let counters = path_arg(&files.join("counters.txt"));
+    let (status, line) = ops(
+        &ops_bin,
+        &[
+            "counters-export",
+            "--database",
+            &snapshot_arg,
+            "--out",
+            &counters,
+        ],
+    );
+    assert!(
+        status == 0 && line.starts_with("COUNTERS_WRITTEN"),
+        "{status} {line}"
+    );
+    let (status, line) = ops(
+        &ops_bin,
+        &[
+            "reconcile-check",
+            "--counters",
+            &counters,
+            "--schedule",
+            &schedule_arg,
+            "--schedule-public-key",
+            &schedule_key,
+            "--now",
+            &now,
+            "--relay-counts",
+            &relay_arg,
             "--view-dump",
             &view3,
             "--restore-height",

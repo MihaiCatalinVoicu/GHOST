@@ -21,6 +21,10 @@
 //! wallet received) and the payouts queued and paid, compared with each other (a claim queued in
 //! one week may be paid in a later one, so the per-week counters of the two sides are swept at
 //! different times).
+//!
+//! **Refused payouts** (recorded addition to §6.9, S6 review): `payout_refused_atomic`, per week
+//! of the acknowledgement, counts queued payouts the workstation refused (a payout address it had
+//! seen before, §9.5 step 2). Their credits stay spent; `payout_paid_atomic` never includes them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,6 +69,9 @@ pub enum CounterId {
     PayoutQueuedTotal,
     /// Σ `payout_paid_atomic` since the first start (never swept).
     PayoutPaidTotal,
+    /// Queued payouts the workstation refused (a payout address it had seen before, §9.5 step 2),
+    /// per week of the acknowledgement; their credits stay spent.
+    PayoutRefusedAtomic,
 }
 
 /// What a counter's index means.
@@ -84,7 +91,7 @@ pub enum IndexKind {
 }
 
 impl CounterId {
-    pub const ALL: [CounterId; 21] = [
+    pub const ALL: [CounterId; 22] = [
         CounterId::PacksXmr,
         CounterId::PacksCredit,
         CounterId::XmrCreditedAtomic,
@@ -106,6 +113,7 @@ impl CounterId {
         CounterId::XmrCreditedTotal,
         CounterId::PayoutQueuedTotal,
         CounterId::PayoutPaidTotal,
+        CounterId::PayoutRefusedAtomic,
     ];
 
     pub fn code(self) -> u8 {
@@ -131,6 +139,7 @@ impl CounterId {
             CounterId::XmrCreditedTotal => 19,
             CounterId::PayoutQueuedTotal => 20,
             CounterId::PayoutPaidTotal => 21,
+            CounterId::PayoutRefusedAtomic => 22,
         }
     }
 
@@ -155,6 +164,7 @@ impl CounterId {
             | CounterId::UnattributedAtomic
             | CounterId::PayoutQueuedAtomic
             | CounterId::PayoutPaidAtomic
+            | CounterId::PayoutRefusedAtomic
             | CounterId::ReorgAfterIssue
             | CounterId::ConfirmedUnissued
             | CounterId::PoolReconciled => IndexKind::EventWeek,

@@ -1,7 +1,7 @@
 //! The payout pipeline, issuer side (Phase 8 design §9.5, §19.5, §19.7; ADR-26): queued claims
 //! are assigned to batches (journaled `BATCH`), each batch is exported as a file signed with the
 //! Ed25519 ops key for the operator workstation, and the workstation's acknowledgement (every
-//! entry paid, each with its own txid) marks the batch paid (journaled `BATCH_PAID`).
+//! entry paid or refused) closes the batch (journaled `BATCH_PAID`).
 //!
 //! ```text
 //! batch file := "GHPB" || version u8 = 1 || network u8 (the ES byte) || batch_id 16 || week u64
@@ -9,7 +9,7 @@
 //!               || total u64 || cumulative_credited u64
 //!               || Ed25519(ops key, "ghost/v1/payout-batch" || every preceding byte) (64)
 //! ack file   := "GHPA" || version u8 = 1 || batch_id 16 || count u16 (1..200)
-//!               || count x (claim_id 16 || txid 32)
+//!               || count x (claim_id 16 || outcome u8: 1 paid, 2 refused)
 //! ```
 //! Big-endian fixed fields. The entries of a batch are ordered by
 //! `SHA-256("ghost/v1/payout-order" || batch_id || claim_id)`: shuffled against the order the
@@ -18,20 +18,41 @@
 //! `BATCH` entry carries every field). Files: `batch-<batch id hex>.ghpb` and
 //! `ack-<batch id hex>.ghpa` in the export directory.
 //!
-//! **When** (§9.5 step 1). The server runs [`Issuer::payout_job_at`] hourly. New batches are
-//! created at most once a week, at the first run of the week whose draw succeeds with probability
-//! 1 / (hours left in the week): a uniformly random hour, independent of when claims arrived.
-//! Every run imports acknowledgements and rewrites the files of unacknowledged batches.
+//! **When** (§9.5 step 1). The server runs [`Issuer::payout_job_at`] hourly. The first run of a
+//! week draws the week's export hour uniformly among its 168 hours ([`export_hour`]) and keeps it
+//! in `meta`, so a restart does not draw again. The first run at or after that hour batches every
+//! queued claim, and nothing more is batched that week, also when the queue was empty then: a claim
+//! queued later waits for the next week's hour. When a batch is created therefore never depends on
+//! when its claims arrived. A crash between that decision and the batches leaves the claims queued
+//! for the next week. Every run imports acknowledgements, removes residues and rewrites the files
+//! of unacknowledged batches.
 //!
-//! **Acknowledgement** (§9.5 step 4). An ack file must name exactly the claims of an exported
-//! batch, each with a distinct non-zero txid (`ghost-issuer-ops payout-ack` writes it once every
-//! entry has its confirmations). The issuer journals `BATCH_PAID`, marks the claims paid, deletes
-//! their payout addresses, adds the batch total to `payout_paid_atomic`, and deletes the batch and
-//! ack files; a paid batch's claims are deleted two weeks and the batch row six weeks after the
-//! week of its acknowledgement. An ack that does not match stays in place and is counted
-//! ([`PayoutReport::acks_refused`]). Recorded: the ack file carries no signature; it moves no
-//! value (the batch file does), and the export directory is on the issuer's encrypted volume,
-//! where the operator who carries the ack file over already has write access.
+//! **Acknowledgement** (§9.5 step 4). An ack file names exactly the claims of an exported batch,
+//! each paid or refused (`ghost-issuer-ops payout-ack` writes it once every entry is confirmed or
+//! refused). The workstation refuses an entry whose payout address it has seen before (§9.5 step
+//! 2); a claimant chooses that address, so it refuses the entry and never the batch, and one
+//! address can never stall the other payouts of its batch. The issuer journals `BATCH_PAID` with
+//! the refused claim ids, marks the claims paid or refused, deletes every payout address of the
+//! batch, adds the paid amounts to `payout_paid_atomic` and the refused ones to
+//! `payout_refused_atomic`, and deletes the batch and ack files. A refused claim's credits stay
+//! spent: no refund path exists (§0.6), and the client refuses to reuse an address it paid to
+//! (§9.4). The ack carries no payout txid: the issuer could not check one, and it would link a
+//! claim to its on-chain transaction on the internet-facing host. Recorded: the ack file carries
+//! no signature; it moves no value (the batch file does), and the export directory is on the
+//! issuer's encrypted volume, where the operator who carries the ack file over already has write
+//! access.
+//!
+//! **Residues** (§6.4). Every run deletes a temporary batch file a crash left behind, the file of a
+//! batch that is no longer exported, and an ack file that can never apply (its batch is not
+//! exported). It counts every refused ack ([`PayoutReport::acks_refused`], `PAYOUT_ACKS_REFUSED` in
+//! status.json); an ack of an exported batch that does not match stays for the operator to replace.
+//! An entry that cannot be read (a directory, a read error) is a refused ack, never a failed run.
+//!
+//! **Retention** (§6.1, §6.4). A closed batch's claims are deleted at the start of the week after
+//! its acknowledgement ([`CLAIMS_KEEP_WEEKS`]) and its row four weeks after it
+//! ([`BATCH_KEEP_WEEKS`]): never more than 7 and 30 days after the acknowledgement. Weeks are the
+//! only clock (§19.15), so an acknowledgement late in its week keeps them for less; an identical
+//! `ClaimPayout` retry after the deletion answers `CREDITS_SPENT` (its payout was made or refused).
 //!
 //! This module, `status.rs`, `store.rs` and `journal.rs` are the only service modules that write
 //! files (`issuer-output.sh`).
@@ -51,7 +72,8 @@ use crate::rail::hex_encode;
 use crate::reconcile::{self, CounterId};
 use crate::service::{ApplyError, Issuer};
 use crate::store::{
-    self, BatchRow, BatchState, ClaimState, ReadTx, StoreError, Table, WriteTx, ADDRESS_LEN,
+    self, BatchRow, BatchState, ClaimState, MetaKey, ReadTx, StoreError, Table, WriteTx,
+    ADDRESS_LEN,
 };
 
 pub const BATCH_MAGIC: &[u8; 4] = b"GHPB";
@@ -62,20 +84,24 @@ pub const BATCH_SIGNATURE_DOMAIN: &[u8] = b"ghost/v1/payout-batch";
 /// Length of the ops key's seed file and of its public key.
 pub const OPS_SEED_LEN: usize = 32;
 pub const SIGNATURE_LEN: usize = 64;
-/// A paid batch's claims are deleted this many weeks after the week of its acknowledgement
-/// (at least the 7 days of §6.4).
-pub const CLAIMS_KEEP_WEEKS: u64 = 2;
-/// A paid batch row is deleted this many weeks after the week of its acknowledgement (at least
-/// the 30 days of §6.1).
-pub const BATCH_KEEP_WEEKS: u64 = 6;
+/// A closed batch's claims are deleted at the start of the week after the week of its
+/// acknowledgement: at most the 7 days of §6.1 and §6.4 after it.
+pub const CLAIMS_KEEP_WEEKS: u64 = 1;
+/// A closed batch row is deleted this many weeks after the week of its acknowledgement: at most
+/// the 30 days of §6.1 after it.
+pub const BATCH_KEEP_WEEKS: u64 = 4;
+/// Hours in an ISO week: the candidates of the weekly export hour.
+pub const WEEK_HOURS: u64 = 168;
 
 const ORDER_DOMAIN: &[u8] = b"ghost/v1/payout-order";
 const BATCH_PREFIX: &str = "batch-";
 const BATCH_SUFFIX: &str = ".ghpb";
+/// A batch file is written as `batch-<id>.tmp` and renamed (see [`write_atomically`]).
+const TMP_SUFFIX: &str = ".tmp";
 const ACK_PREFIX: &str = "ack-";
 const ACK_SUFFIX: &str = ".ghpa";
 const LINE_LEN: usize = 16 + ADDRESS_LEN + 8;
-const ACK_LINE_LEN: usize = 16 + 32;
+const ACK_LINE_LEN: usize = 16 + 1;
 const HOUR_SECS: u64 = 3_600;
 
 /// The ops key: signs payout batch files (§9.5 step 1). `Debug` never shows it.
@@ -271,12 +297,38 @@ impl BatchFile {
     }
 }
 
-/// The workstation's acknowledgement of a paid batch (§9.5 step 4).
+/// What the workstation did with one entry of a batch (§9.5 steps 2–4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryOutcome {
+    /// Paid, with at least 10 confirmations.
+    Paid,
+    /// Refused: its payout address was seen before (§9.5 step 2); never paid.
+    Refused,
+}
+
+impl EntryOutcome {
+    pub fn code(self) -> u8 {
+        match self {
+            EntryOutcome::Paid => 1,
+            EntryOutcome::Refused => 2,
+        }
+    }
+
+    pub fn from_code(c: u8) -> Option<Self> {
+        match c {
+            1 => Some(EntryOutcome::Paid),
+            2 => Some(EntryOutcome::Refused),
+            _ => None,
+        }
+    }
+}
+
+/// The workstation's acknowledgement of a closed batch (§9.5 step 4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AckFile {
     pub batch_id: [u8; 16],
-    /// (claim id, txid of its payout), in the batch file's order.
-    pub entries: Vec<([u8; 16], [u8; 32])>,
+    /// (claim id, its outcome), in the batch file's order.
+    pub entries: Vec<([u8; 16], EntryOutcome)>,
 }
 
 impl AckFile {
@@ -287,9 +339,9 @@ impl AckFile {
         w.push(FORMAT_VERSION);
         w.extend_from_slice(&self.batch_id);
         w.extend_from_slice(&count);
-        for (claim, txid) in &self.entries {
+        for (claim, outcome) in &self.entries {
             w.extend_from_slice(claim);
-            w.extend_from_slice(txid);
+            w.push(outcome.code());
         }
         Ok(w)
     }
@@ -301,7 +353,12 @@ impl AckFile {
         let batch_id = take_array(&mut r)?;
         let count = take_count(&mut r)?;
         let entries = (0..count)
-            .map(|_| Ok((take_array(&mut r)?, take_array(&mut r)?)))
+            .map(|_| {
+                let claim = take_array(&mut r)?;
+                let outcome =
+                    EntryOutcome::from_code(take(&mut r, 1)?[0]).ok_or(PayoutFileError::Format)?;
+                Ok((claim, outcome))
+            })
             .collect::<Result<Vec<_>, PayoutFileError>>()?;
         if !r.is_empty() {
             return Err(PayoutFileError::Format);
@@ -320,9 +377,14 @@ pub fn ack_file_name(batch_id: &[u8; 16]) -> String {
     format!("{ACK_PREFIX}{}{ACK_SUFFIX}", hex_encode(batch_id))
 }
 
-/// The batch id an ack file name names (32 lowercase hex digits), if it is one.
+/// The batch id a file name `<prefix><32 lowercase hex digits><suffix>` names, if it is one.
+fn named_batch_id(name: &str, prefix: &str, suffix: &str) -> Option<[u8; 16]> {
+    crate::rail::hex_decode(name.strip_prefix(prefix)?.strip_suffix(suffix)?)
+}
+
+/// The batch id an ack file name names.
 fn ack_batch_id(name: &str) -> Option<[u8; 16]> {
-    crate::rail::hex_decode(name.strip_prefix(ACK_PREFIX)?.strip_suffix(ACK_SUFFIX)?)
+    named_batch_id(name, ACK_PREFIX, ACK_SUFFIX)
 }
 
 /// The position key of a claim in its batch file.
@@ -334,12 +396,10 @@ fn order_key(batch_id: &[u8; 16], claim_id: &[u8; 16]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// True when the weekly export should run at `now` given a uniform `draw`: with probability
-/// 1 / (hours left in the week), so the export hour is uniform over the week (§9.5 step 1).
-pub fn export_due(now: u64, draw: u64) -> bool {
-    let end = week_start(week(now).saturating_add(1));
-    let hours_left = end.saturating_sub(now).div_ceil(HOUR_SECS).max(1);
-    draw.is_multiple_of(hours_left)
+/// The export hour of week `w` for a uniform `draw`, as an absolute hour (Unix seconds / 3 600):
+/// one of the week's 168 hours, uniformly (§9.5 step 1).
+pub fn export_hour(w: u64, draw: u64) -> u64 {
+    week_start(w) / HOUR_SECS + draw % WEEK_HOURS
 }
 
 /// What one payout run did.
@@ -351,7 +411,7 @@ pub struct PayoutReport {
     pub written: usize,
     /// Batches acknowledged in this run (journaled `BATCH_PAID`).
     pub acknowledged: Vec<[u8; 16]>,
-    /// Ack files that do not match an exported batch (left in place).
+    /// Ack files that do not match an exported batch or cannot be read.
     pub acks_refused: usize,
 }
 
@@ -378,7 +438,7 @@ impl From<StoreError> for PayoutError {
 pub enum AckOutcome {
     Paid,
     AlreadyPaid,
-    /// It does not name exactly the claims of an exported batch with distinct non-zero txids.
+    /// It does not name exactly the claims of an exported batch.
     Refused,
 }
 
@@ -405,6 +465,36 @@ fn remove_if_present(path: &Path) -> Result<(), PayoutError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err(PayoutError::Io),
     }
+}
+
+/// What the export directory holds that a run looks at.
+#[derive(Default)]
+struct ExportFiles {
+    acks: BTreeMap<[u8; 16], PathBuf>,
+    batches: Vec<([u8; 16], PathBuf)>,
+    temporary: Vec<PathBuf>,
+}
+
+/// Lists the export directory; entries that cannot be listed or named are skipped.
+fn export_files(dir: &Path) -> Result<ExportFiles, PayoutError> {
+    let mut files = ExportFiles::default();
+    for item in std::fs::read_dir(dir)
+        .map_err(|_| PayoutError::Io)?
+        .flatten()
+    {
+        let name = item.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if let Some(id) = ack_batch_id(name) {
+            files.acks.insert(id, item.path());
+        } else if let Some(id) = named_batch_id(name, BATCH_PREFIX, BATCH_SUFFIX) {
+            files.batches.push((id, item.path()));
+        } else if named_batch_id(name, BATCH_PREFIX, TMP_SUFFIX).is_some() {
+            files.temporary.push(item.path());
+        }
+    }
+    Ok(files)
 }
 
 impl Issuer {
@@ -459,7 +549,7 @@ impl Issuer {
     }
 
     /// The signed file of an exported (unacknowledged) batch, from the database; `None` for an
-    /// unknown or paid batch.
+    /// unknown or closed batch.
     pub fn batch_file(
         &self,
         batch_id: &[u8; 16],
@@ -519,8 +609,8 @@ impl Issuer {
         Ok(written)
     }
 
-    /// §9.5 step 4: the acknowledgement of every entry of an exported batch; one decided
-    /// transaction (`BATCH_PAID`).
+    /// §9.5 step 4: the acknowledgement of every entry of an exported batch, each paid or refused;
+    /// one decided transaction (`BATCH_PAID`).
     pub fn acknowledge_at(&self, ack: &AckFile, now: u64) -> Result<AckOutcome, PayoutError> {
         self.ensure_payout_running()?;
         let tx = self.store.write()?;
@@ -536,21 +626,22 @@ impl Issuer {
             .map(|(id, _)| id)
             .collect();
         let acked: BTreeSet<[u8; 16]> = ack.entries.iter().map(|(c, _)| *c).collect();
-        let txids: BTreeSet<[u8; 32]> = ack.entries.iter().map(|(_, t)| *t).collect();
         let n = ack.entries.len();
-        if acked != claims
-            || acked.len() != n
-            || txids.len() != n
-            || txids.contains(&[0u8; 32])
-            || n != usize::from(row.entries)
-        {
+        if acked != claims || acked.len() != n || n != usize::from(row.entries) {
             return Ok(AckOutcome::Refused);
         }
+        let refused: BTreeSet<[u8; 16]> = ack
+            .entries
+            .iter()
+            .filter(|(_, o)| *o == EntryOutcome::Refused)
+            .map(|(c, _)| *c)
+            .collect();
         self.decide(
             tx,
             &Entry::BatchPaid {
                 batch_id: ack.batch_id,
                 week: week(now),
+                refused: refused.into_iter().collect(),
             },
             now,
             0,
@@ -559,49 +650,86 @@ impl Issuer {
         Ok(AckOutcome::Paid)
     }
 
-    /// Reads every ack file of `dir`; a matching one (or one of a batch already paid) is applied
-    /// and removed together with its batch file.
+    fn exported(&self, batch_id: &[u8; 16]) -> Result<bool, PayoutError> {
+        Ok(store::batch(&*self.store.read()?, batch_id)?
+            .is_some_and(|b| b.state == BatchState::Exported))
+    }
+
+    /// Reads every ack file of `dir`: a matching one (or one of a batch already closed) is applied
+    /// and removed together with its batch file; one that does not match or cannot be read is
+    /// refused (counted), and removed unless its batch is still exported. Then removes the
+    /// residues of the export directory (§6.4): temporary batch files and the files of batches no
+    /// longer exported. A file that cannot be removed is left for the next run.
     pub fn import_acks_at(
         &self,
         now: u64,
         dir: &Path,
         report: &mut PayoutReport,
     ) -> Result<(), PayoutError> {
-        let mut acks: BTreeMap<[u8; 16], PathBuf> = BTreeMap::new();
-        for item in std::fs::read_dir(dir).map_err(|_| PayoutError::Io)? {
-            let item = item.map_err(|_| PayoutError::Io)?;
-            let name = item.file_name();
-            if let Some(id) = name.to_str().and_then(ack_batch_id) {
-                acks.insert(id, item.path());
-            }
+        let files = export_files(dir)?;
+        for path in &files.temporary {
+            let _ = remove_if_present(path);
         }
-        for (id, path) in acks {
-            let bytes = std::fs::read(&path).map_err(|_| PayoutError::Io)?;
-            let outcome = match AckFile::parse(&bytes) {
-                Ok(ack) if ack.batch_id == id => self.acknowledge_at(&ack, now)?,
+        for (id, path) in files.acks {
+            let ack = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| AckFile::parse(&bytes).ok());
+            let outcome = match ack {
+                Some(ack) if ack.batch_id == id => self.acknowledge_at(&ack, now)?,
                 _ => AckOutcome::Refused,
             };
             match outcome {
-                AckOutcome::Refused => report.acks_refused += 1,
+                AckOutcome::Refused => {
+                    report.acks_refused += 1;
+                    if !self.exported(&id)? {
+                        let _ = remove_if_present(&path);
+                    }
+                }
                 AckOutcome::Paid | AckOutcome::AlreadyPaid => {
-                    remove_if_present(&dir.join(batch_file_name(&id)))?;
-                    remove_if_present(&path)?;
+                    if remove_if_present(&dir.join(batch_file_name(&id))).is_ok() {
+                        let _ = remove_if_present(&path);
+                    }
                     if outcome == AckOutcome::Paid {
                         report.acknowledged.push(id);
                     }
                 }
             }
         }
+        for (id, path) in files.batches {
+            if !self.exported(&id)? {
+                let _ = remove_if_present(&path);
+            }
+        }
+        self.volatile().payout_acks_refused = report.acks_refused as u64;
         Ok(())
     }
 
-    fn batch_created_in(&self, w: u64) -> Result<bool, StoreError> {
-        Ok(store::batches(&*self.store.read()?)?
-            .iter()
-            .any(|(_, b)| b.week == w))
+    /// Whether this week's export runs now (§9.5 step 1): the week's hour is drawn from `draw` at
+    /// its first run and kept in `meta`; the export is due at the first run at or after it, once a
+    /// week. A due export is recorded done in the same transaction, before any batch is created.
+    fn export_due_at(&self, now: u64, draw: u64) -> Result<bool, PayoutError> {
+        let w = week(now);
+        let mut tx = self.store.write()?;
+        let hour = match store::meta(&*tx, MetaKey::PayoutExportHour)? {
+            Some(h) if week(h.saturating_mul(HOUR_SECS)) == w => h,
+            _ => {
+                let h = export_hour(w, draw);
+                store::set_meta(&mut *tx, MetaKey::PayoutExportHour, h)?;
+                h
+            }
+        };
+        let done = store::meta(&*tx, MetaKey::PayoutDoneWeek)? == Some(w)
+            || store::batches(&*tx)?.iter().any(|(_, b)| b.week == w);
+        let due = !done && now / HOUR_SECS >= hour;
+        if due {
+            store::set_meta(&mut *tx, MetaKey::PayoutDoneWeek, w)?;
+        }
+        tx.commit()?;
+        Ok(due)
     }
 
-    /// One export run: acknowledgements, new batches of every queued claim, batch files.
+    /// One export run without the weekly hour (runbook P1 by hand, and the tests):
+    /// acknowledgements and residues, new batches of every queued claim, batch files.
     pub fn payout_export_at(
         &self,
         now: u64,
@@ -617,8 +745,9 @@ impl Issuer {
         Ok(report)
     }
 
-    /// The hourly payout job of the server: acknowledgements and batch files at every run, new
-    /// batches at most once a week at a uniformly random hour ([`export_due`] with `draw`).
+    /// The hourly payout job of the server: acknowledgements, residues and batch files at every
+    /// run, new batches once a week at the week's drawn hour (`draw` is used by the first run of a
+    /// week only, [`export_hour`]).
     pub fn payout_job_at(
         &self,
         now: u64,
@@ -630,7 +759,7 @@ impl Issuer {
         std::fs::create_dir_all(dir).map_err(|_| PayoutError::Io)?;
         let mut report = PayoutReport::default();
         self.import_acks_at(now, dir, &mut report)?;
-        if export_due(now, draw) && !self.batch_created_in(week(now))? {
+        if self.export_due_at(now, draw)? {
             report.created = self.create_batches_at(now)?;
         }
         report.written = self.write_batch_files(key, dir)?;
@@ -684,34 +813,53 @@ impl Issuer {
         Ok(())
     }
 
-    /// `BATCH_PAID` (live and replay): the batch and its claims are paid, the payout addresses
-    /// deleted, `payout_paid_atomic` of the week counted. Already applied: nothing changes.
+    /// `BATCH_PAID` (live and replay): the batch is closed, its claims paid or (`refused`)
+    /// refused, every payout address of the batch deleted, `payout_paid_atomic` and
+    /// `payout_refused_atomic` of the week counted. Already applied: nothing changes.
     pub(crate) fn apply_batch_paid(
         &self,
         tx: &mut dyn WriteTx,
         batch_id: &[u8; 16],
         w: u64,
+        refused: &[[u8; 16]],
     ) -> Result<(), ApplyError> {
         let mut row = store::batch(tx, batch_id)?.ok_or(ApplyError::Inconsistent)?;
         if row.state == BatchState::Paid {
             return Ok(());
         }
+        let refused: BTreeSet<[u8; 16]> = refused.iter().copied().collect();
+        let (mut paid, mut closed, mut matched) = (0u64, 0u64, 0usize);
         for (id, mut claim) in store::claims(tx)? {
-            if claim.batch_id == *batch_id {
-                claim.state = ClaimState::Paid;
-                claim.address = [0u8; ADDRESS_LEN];
-                store::put_claim(tx, &id, &claim)?;
+            if claim.batch_id != *batch_id {
+                continue;
             }
+            if claim.state != ClaimState::Batched {
+                return Err(ApplyError::Inconsistent);
+            }
+            if refused.contains(&id) {
+                claim.state = ClaimState::Refused;
+                closed = closed.saturating_add(claim.amount);
+                matched += 1;
+            } else {
+                claim.state = ClaimState::Paid;
+                paid = paid.saturating_add(claim.amount);
+            }
+            claim.address = [0u8; ADDRESS_LEN];
+            store::put_claim(tx, &id, &claim)?;
+        }
+        if matched != refused.len() {
+            return Err(ApplyError::Inconsistent);
         }
         row.state = BatchState::Paid;
         row.paid_week = w;
         store::put_batch(tx, batch_id, &row)?;
-        reconcile::add(tx, CounterId::PayoutPaidAtomic, w, row.total)?;
+        reconcile::add(tx, CounterId::PayoutPaidAtomic, w, paid)?;
+        reconcile::add(tx, CounterId::PayoutRefusedAtomic, w, closed)?;
         Ok(())
     }
 }
 
-/// Retention of paid batches (§6.1, §6.4): their claims [`CLAIMS_KEEP_WEEKS`] and the batch row
+/// Retention of closed batches (§6.1, §6.4): their claims [`CLAIMS_KEEP_WEEKS`] and the batch row
 /// [`BATCH_KEEP_WEEKS`] after the week of the acknowledgement. Returns the rows deleted.
 pub(crate) fn sweep_paid(tx: &mut dyn WriteTx, w: u64) -> Result<usize, StoreError> {
     let paid: BTreeMap<[u8; 16], u64> = store::batches(tx)?
@@ -724,7 +872,7 @@ pub(crate) fn sweep_paid(tx: &mut dyn WriteTx, w: u64) -> Result<usize, StoreErr
         let due = paid
             .get(&claim.batch_id)
             .is_some_and(|pw| w >= pw.saturating_add(CLAIMS_KEEP_WEEKS));
-        if claim.state == ClaimState::Paid && due {
+        if matches!(claim.state, ClaimState::Paid | ClaimState::Refused) && due {
             tx.delete(Table::Claim, &id)?;
             deleted += 1;
         }
@@ -802,26 +950,42 @@ mod tests {
     fn an_ack_file_round_trips_and_names_parse() {
         let ack = AckFile {
             batch_id: [9; 16],
-            entries: vec![([1; 16], [2; 32]), ([3; 16], [4; 32])],
+            entries: vec![
+                ([1; 16], EntryOutcome::Paid),
+                ([3; 16], EntryOutcome::Refused),
+            ],
         };
         let bytes = ack.encode().unwrap();
+        assert_eq!(bytes.len(), 23 + 2 * 17, "no payout txid");
         assert_eq!(AckFile::parse(&bytes).unwrap(), ack);
         assert!(AckFile::parse(&bytes[..bytes.len() - 1]).is_err());
         assert!(AckFile::parse(&[bytes.as_slice(), &[0]].concat()).is_err());
+        for outcome in [0u8, 3, 0xff] {
+            let mut bad = bytes.clone();
+            let last = bad.len() - 1;
+            bad[last] = outcome;
+            assert_eq!(AckFile::parse(&bad), Err(PayoutFileError::Format));
+        }
         let name = ack_file_name(&[0xab; 16]);
         assert_eq!(name, format!("ack-{}.ghpa", "ab".repeat(16)));
         assert_eq!(ack_batch_id(&name), Some([0xab; 16]));
         assert_eq!(ack_batch_id(&name.to_uppercase()), None);
         assert_eq!(ack_batch_id("ack-ab.ghpa"), None);
         assert_eq!(ack_batch_id(&batch_file_name(&[0xab; 16])), None);
+        let tmp = Path::new(&batch_file_name(&[0xab; 16])).with_extension("tmp");
+        assert_eq!(
+            named_batch_id(tmp.to_str().unwrap(), BATCH_PREFIX, TMP_SUFFIX),
+            Some([0xab; 16]),
+            "the temporary name write_atomically uses"
+        );
     }
 
     #[test]
-    fn the_export_hour_is_drawn_over_the_hours_left_in_the_week() {
-        let start = week_start(2960);
-        // The last hour of the week always exports; the first one with probability 1/168.
-        assert!(export_due(week_start(2961) - 1, 12_345));
-        assert!(export_due(start, 168 * 7));
-        assert!(!export_due(start, 168 * 7 + 1));
+    fn the_export_hour_is_one_of_the_weeks_hours() {
+        let start = week_start(2960) / HOUR_SECS;
+        assert_eq!(export_hour(2960, 0), start);
+        assert_eq!(export_hour(2960, 167), start + 167);
+        assert_eq!(export_hour(2960, 168), start);
+        assert_eq!(week(export_hour(2960, u64::MAX) * HOUR_SECS), 2960);
     }
 }

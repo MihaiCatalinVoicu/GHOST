@@ -8,15 +8,15 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::fixture;
-use common::scenarios::{claim_address, NOON, QUEUED};
-use common::world::{claim_id, ops_key, payout_txid, World, BASE_WEEK, PRICE};
-use ghost_entitlement::grid::week_start;
+use common::scenarios::{claim_address, CLAIM_SPENT, NOON, QUEUED};
+use common::world::{claim_id, ops_key, World, BASE_WEEK, PRICE};
+use ghost_entitlement::grid::{week_start, DAY_SECS};
 use ghost_entitlement::monero::MoneroNetwork;
 use ghost_entitlement::{Kind, Schedule, Token};
 use ghost_issuer::journal::{BatchEntry, Entry, MAX_BATCH_CLAIMS};
-use ghost_issuer::payout::{self, AckFile, BatchFile, PayoutFileError};
+use ghost_issuer::payout::{self, AckFile, BatchFile, EntryOutcome, PayoutFileError};
 use ghost_issuer::reconcile::{self, CounterId, Mismatch};
-use ghost_issuer::store::{self, BatchState, ClaimState};
+use ghost_issuer::store::{self, BatchState, ClaimState, ADDRESS_LEN};
 use ghost_issuer_api::proto as wire;
 
 fn mint_many(w: &World, n: usize, tag: &str) -> Vec<Token> {
@@ -130,8 +130,7 @@ fn an_acknowledgement_must_name_exactly_the_batch() {
         entries: file
             .entries
             .iter()
-            .enumerate()
-            .map(|(i, e)| (e.claim_id, payout_txid(3, i)))
+            .map(|e| (e.claim_id, EntryOutcome::Paid))
             .collect(),
     };
     let write = |ack: &AckFile, id: &[u8; 16]| {
@@ -141,17 +140,16 @@ fn an_acknowledgement_must_name_exactly_the_batch() {
     let mut missing = good.clone();
     missing.entries.pop();
     bad.push((missing, file.batch_id));
-    let mut duplicate_txid = good.clone();
-    duplicate_txid.entries[1].1 = duplicate_txid.entries[0].1;
-    bad.push((duplicate_txid, file.batch_id));
-    let mut zero_txid = good.clone();
-    zero_txid.entries[0].1 = [0; 32];
-    bad.push((zero_txid, file.batch_id));
+    let mut duplicate = good.clone();
+    duplicate.entries[1].0 = duplicate.entries[0].0;
+    bad.push((duplicate, file.batch_id));
     let mut other_claim = good.clone();
     other_claim.entries[1].0 = claim_id("nobody");
     bad.push((other_claim, file.batch_id));
     let mut extra = good.clone();
-    extra.entries.push((claim_id("nobody"), payout_txid(3, 9)));
+    extra
+        .entries
+        .push((claim_id("nobody"), EntryOutcome::Refused));
     bad.push((extra, file.batch_id));
     let mut unknown = good.clone();
     unknown.batch_id = [0x55; 16];
@@ -166,7 +164,10 @@ fn an_acknowledgement_must_name_exactly_the_batch() {
             (1, 0),
             "{ack:?}"
         );
-        std::fs::remove_file(dir.join(payout::ack_file_name(id))).unwrap();
+        // Kept for the operator to replace only while it names an exported batch (§6.4).
+        let path = dir.join(payout::ack_file_name(id));
+        assert_eq!(path.exists(), *id == file.batch_id, "{ack:?}");
+        let _ = std::fs::remove_file(path);
     }
     std::fs::write(dir.join(payout::ack_file_name(&file.batch_id)), b"garbage").unwrap();
     assert_eq!(w.export().acks_refused, 1);
@@ -220,7 +221,7 @@ fn a_restore_never_requeues_a_batched_claim() {
         std::fs::read(w.export_dir().join(payout::batch_file_name(&file.batch_id))).unwrap(),
         bytes
     );
-    w.write_ack(&file, 4);
+    w.write_ack(&file);
     w.export();
     assert_eq!(counter_total(&w, CounterId::PayoutPaidAtomic), 2 * PRICE);
     // Restored again from the snapshot: BATCH and BATCH_PAID replay; paid once.
@@ -228,63 +229,6 @@ fn a_restore_never_requeues_a_batched_claim() {
     assert!(w.export().created.is_empty());
     assert_eq!(counter_total(&w, CounterId::PayoutPaidAtomic), 2 * PRICE);
     w.check();
-}
-
-#[test]
-fn the_weekly_job_creates_batches_once_a_week_at_a_drawn_hour() {
-    let mut w = with_claims(1);
-    let key = ops_key();
-    let dir = w.export_dir();
-    let now = week_start(BASE_WEEK) + NOON; // 156 hours left in the week
-    let job = |w: &World, now: u64, draw: u64| {
-        w.issuer()
-            .payout_job_at(now, &key, &dir, draw)
-            .unwrap()
-            .created
-            .len()
-    };
-    assert_eq!(job(&w, now, 1), 0, "not the drawn hour");
-    assert_eq!(job(&w, now, 156), 1, "the drawn hour");
-    let credits = mint_many(&w, 10, "later");
-    assert_eq!(
-        w.claim("later", &credits, &claim_address()).unwrap().result,
-        QUEUED
-    );
-    assert_eq!(job(&w, now + 3_600, 0), 0, "one batch a week");
-    assert_eq!(job(&w, week_start(BASE_WEEK + 1), 0), 1, "the next week");
-    w.check();
-}
-
-#[test]
-fn paid_batches_are_deleted_after_their_retention() {
-    let mut w = with_claims(1);
-    w.export();
-    let file = w.batch_files()[0].clone();
-    w.write_ack(&file, 5);
-    w.export();
-    let rows = |w: &World| {
-        let tx = w.issuer().store().read().unwrap();
-        (
-            store::claims(&*tx).unwrap().len(),
-            store::batches(&*tx).unwrap().len(),
-        )
-    };
-    let paid_week = BASE_WEEK;
-    w.now = week_start(paid_week + 1) + NOON;
-    w.sweep();
-    assert_eq!(rows(&w), (1, 1));
-    w.now = week_start(paid_week + payout::CLAIMS_KEEP_WEEKS) + NOON;
-    w.sweep();
-    assert_eq!(rows(&w), (0, 1), "claims: paid + 7 d");
-    w.now = week_start(paid_week + payout::BATCH_KEEP_WEEKS) + NOON;
-    w.sweep();
-    assert_eq!(rows(&w), (0, 0), "batch: paid + 30 d");
-    // The claim id is forgotten; its credits stay spent.
-    let credits = mint_many(&w, 10, "q0");
-    let r = w
-        .claim("q0", &credits, &common::chain_port::address(9_001))
-        .unwrap();
-    assert_eq!(r.result, wire::ClaimPayoutResult::CreditsSpent as i32);
 }
 
 #[test]
@@ -302,9 +246,13 @@ fn a_batch_holds_at_most_200_claims() {
     for i in 0..=MAX_BATCH_CLAIMS {
         let credit = w.mint(Kind::Credit, 227, &format!("one-{i}"));
         assert_eq!(
-            w.claim(&format!("one-{i}"), &[credit], &claim_address())
-                .unwrap()
-                .result,
+            w.claim(
+                &format!("one-{i}"),
+                &[credit],
+                &common::chain_port::address(10_000 + i as u32)
+            )
+            .unwrap()
+            .result,
             QUEUED
         );
     }
@@ -313,6 +261,246 @@ fn a_batch_holds_at_most_200_claims() {
     let mut sizes: Vec<usize> = w.batch_files().iter().map(|f| f.entries.len()).collect();
     sizes.sort();
     assert_eq!(sizes, vec![1, MAX_BATCH_CLAIMS]);
+    w.check();
+}
+
+const ADDRESS_REJECTED: i32 = wire::ClaimPayoutResult::AddressRejected as i32;
+
+/// S6 review (MONEY-1, PRIV-1): a payout address is in at most one queued or batched claim, so no
+/// batch ever carries it twice; a duplicate is refused in-band and consumes nothing. Once its batch
+/// is paid the issuer has deleted the address and cannot know it any more: the workstation refuses
+/// such a repeat per entry.
+#[test]
+fn a_payout_address_of_a_queued_or_batched_claim_is_rejected() {
+    let mut w = World::new(true);
+    w.external_credits = true;
+    let address = claim_address();
+    let first = mint_many(&w, 10, "a");
+    assert_eq!(w.claim("a", &first, &address).unwrap().result, QUEUED);
+    let second = mint_many(&w, 10, "b");
+    let r = w.claim("b", &second, &address).unwrap();
+    assert_eq!(
+        (r.result, r.queued_atomic, r.spent_mask),
+        (ADDRESS_REJECTED, 0, 0),
+        "queued"
+    );
+    // Nothing was consumed: the same credits queue a claim to another address.
+    let other = common::chain_port::address(9_002);
+    assert_eq!(w.claim("b2", &second, &other).unwrap().result, QUEUED);
+    w.export();
+    let third = mint_many(&w, 10, "c");
+    assert_eq!(
+        w.claim("c", &third, &address).unwrap().result,
+        ADDRESS_REJECTED,
+        "batched"
+    );
+    let file = w.batch_files()[0].clone();
+    assert_eq!(file.entries.len(), 2);
+    w.write_ack(&file);
+    w.export();
+    assert_eq!(w.claim("c", &third, &address).unwrap().result, QUEUED);
+    w.check();
+}
+
+/// S6 review (MONEY-3): an entry named like an acknowledgement that cannot be read (here a
+/// directory) is counted as refused; the run still creates and writes the week's batches.
+#[test]
+fn an_unreadable_acknowledgement_does_not_stop_the_payout_run() {
+    let w = with_claims(1);
+    let dir = w.export_dir();
+    std::fs::create_dir_all(dir.join(payout::ack_file_name(&[0x42; 16]))).unwrap();
+    let report = w
+        .issuer()
+        .payout_export_at(w.now, &ops_key(), &dir)
+        .expect("an unreadable acknowledgement does not fail the run");
+    assert_eq!(
+        (report.created.len(), report.written, report.acks_refused),
+        (1, 1, 1)
+    );
+}
+
+/// S6 review (PRIV-4): payout residues that no retention rule covers are removed at every run: a
+/// temporary batch file a crash left behind, and an acknowledgement that can never apply (its
+/// batch is unknown, or already paid and swept). An acknowledgement of an exported batch that does
+/// not match stays, for the operator to replace.
+#[test]
+fn payout_residues_are_removed_at_every_run() {
+    let mut w = with_claims(1);
+    let dir = w.export_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = dir.join(format!("batch-{}.tmp", "ab".repeat(16)));
+    std::fs::write(&tmp, b"claim ids and payout addresses").unwrap();
+    let unknown = dir.join(payout::ack_file_name(&[0x55; 16]));
+    std::fs::write(&unknown, b"garbage").unwrap();
+    let report = w.export();
+    assert_eq!((report.created.len(), report.acks_refused), (1, 1));
+    assert!(!tmp.exists(), "a stale temporary batch file");
+    assert!(!unknown.exists(), "an acknowledgement of no exported batch");
+    let file = w.batch_files()[0].clone();
+    let own = dir.join(payout::ack_file_name(&file.batch_id));
+    std::fs::write(&own, b"garbage").unwrap();
+    assert_eq!(w.export().acks_refused, 1);
+    assert!(own.exists(), "the operator replaces it");
+    w.write_ack(&file);
+    assert_eq!(w.export().acknowledged, vec![file.batch_id]);
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
+    w.check();
+}
+
+/// S6 review (PRIV-3): the week's export hour is drawn once, at the first run of the week, and kept
+/// across restarts. At that hour whatever is queued is batched; a claim queued after it waits for
+/// the next week's hour, so the time a batch is created never follows the time a claim arrived.
+#[test]
+fn the_export_hour_is_drawn_once_a_week_whatever_the_queue_holds() {
+    let mut w = World::new(true);
+    w.external_credits = true;
+    let key = ops_key();
+    let dir = w.export_dir();
+    let job = |w: &World, now: u64, draw: u64| {
+        w.issuer()
+            .payout_job_at(now, &key, &dir, draw)
+            .unwrap()
+            .created
+            .len()
+    };
+    let start = week_start(BASE_WEEK);
+    // The first run of the week draws hour 12 (draw mod 168); the queue is empty then.
+    assert_eq!(job(&w, start + 12 * 3_600, 12), 0);
+    let credits = mint_many(&w, 10, "late");
+    assert_eq!(
+        w.claim("late", &credits, &claim_address()).unwrap().result,
+        QUEUED
+    );
+    let end = week_start(BASE_WEEK + 1);
+    for (now, draw) in [(start + 13 * 3_600, 0), (end - 3_600, 0), (end - 1, 7)] {
+        assert_eq!(job(&w, now, draw), 0, "after the week's hour: {now}");
+    }
+    // The next week draws hour 30 at its first run; a restart keeps it.
+    assert_eq!(job(&w, end, 30), 0);
+    w.reopen();
+    assert_eq!(job(&w, end + 29 * 3_600, 0), 0, "before the drawn hour");
+    assert_eq!(job(&w, end + 30 * 3_600, 5), 1, "the drawn hour");
+    assert_eq!(job(&w, end + 31 * 3_600, 0), 0, "one export a week");
+    w.check();
+}
+
+/// S6 review (PRIV-5): §6.1 and §6.4 delete a paid batch's claims 7 days and its row 30 days after
+/// the acknowledgement. With weeks as the only clock (§19.15) the claims go at the start of the
+/// week after the acknowledgement and the row four weeks after it: never later than 7 and 30 days,
+/// wherever in its week the acknowledgement came (here its first second, the worst case).
+#[test]
+fn paid_claims_and_batches_are_deleted_within_seven_and_thirty_days() {
+    let mut w = with_claims(1);
+    w.export();
+    let file = w.batch_files()[0].clone();
+    w.now = week_start(BASE_WEEK + 1);
+    w.write_ack(&file);
+    assert_eq!(w.export().acknowledged, vec![file.batch_id]);
+    let acked = w.now;
+    let rows = |w: &World| {
+        let tx = w.issuer().store().read().unwrap();
+        (
+            store::claims(&*tx).unwrap().len(),
+            store::batches(&*tx).unwrap().len(),
+        )
+    };
+    w.sweep();
+    assert_eq!(rows(&w), (1, 1), "kept in the week of the acknowledgement");
+    w.now = acked + 7 * DAY_SECS;
+    w.sweep();
+    assert_eq!(
+        rows(&w),
+        (0, 1),
+        "claims: at most 7 d after the acknowledgement"
+    );
+    w.now = acked + 30 * DAY_SECS;
+    w.sweep();
+    assert_eq!(
+        rows(&w),
+        (0, 0),
+        "batch: at most 30 d after the acknowledgement"
+    );
+    // The claim id is forgotten; its credits stay spent.
+    let credits = mint_many(&w, 10, "q0");
+    let r = w
+        .claim("q0", &credits, &common::chain_port::address(9_001))
+        .unwrap();
+    assert_eq!(r.result, CLAIM_SPENT);
+}
+
+/// S6 review (MONEY-1, PRIV-1): the workstation refused an entry (a payout address it had seen
+/// before): the acknowledgement names it refused and the batch closes. That claim closes unpaid
+/// with its address deleted and its credits spent; only the paid entries count as paid; a restore
+/// replays the refusal.
+#[test]
+fn a_refused_entry_closes_its_claim_unpaid_and_the_batch_is_acknowledged() {
+    let mut w = with_claims(3);
+    w.export();
+    let file = w.batch_files()[0].clone();
+    w.snapshot();
+    let refused = file.entries[1].claim_id;
+    w.write_ack_refusing(&file, &[refused]);
+    assert_eq!(w.export().acknowledged, vec![file.batch_id]);
+    assert!(std::fs::read_dir(w.export_dir()).unwrap().next().is_none());
+    let closed = |w: &World| {
+        let tx = w.issuer().store().read().unwrap();
+        for (id, c) in store::claims(&*tx).unwrap() {
+            let expected = if id == refused {
+                ClaimState::Refused
+            } else {
+                ClaimState::Paid
+            };
+            assert_eq!(c.state, expected);
+            assert_eq!(c.address, [0u8; ADDRESS_LEN], "the address is deleted");
+        }
+        assert_eq!(
+            store::batch(&*tx, &file.batch_id).unwrap().unwrap().state,
+            BatchState::Paid
+        );
+    };
+    closed(&w);
+    assert_eq!(counter_total(&w, CounterId::PayoutPaidAtomic), 2 * PRICE);
+    assert_eq!(counter_total(&w, CounterId::PayoutRefusedAtomic), PRICE);
+    w.restore();
+    closed(&w);
+    assert_eq!(counter_total(&w, CounterId::PayoutPaidAtomic), 2 * PRICE);
+    assert_eq!(counter_total(&w, CounterId::PayoutRefusedAtomic), PRICE);
+    let i = (0..3)
+        .find(|i| claim_id(&format!("q{i}")) == refused)
+        .unwrap();
+    let credits = mint_many(&w, 10, &format!("q{i}"));
+    let r = w
+        .claim("again", &credits, &common::chain_port::address(9_100))
+        .unwrap();
+    assert_eq!(
+        r.result, CLAIM_SPENT,
+        "a refused claim's credits stay spent"
+    );
+    w.check();
+}
+
+/// Two concurrent claims to one address (the I-K interleaving): both pass the checks before the
+/// transaction, and the transaction's re-check queues one and answers the other ADDRESS_REJECTED.
+#[test]
+fn concurrent_claims_to_one_address_queue_one() {
+    let mut w = World::new(true);
+    w.external_credits = true;
+    let request = |label: &str, credits: Vec<Token>| wire::ClaimPayoutRequest {
+        version: 1,
+        claim_id: claim_id(label).to_vec(),
+        credits: credits.iter().map(|t| t.as_bytes().to_vec()).collect(),
+        payout_address: claim_address(),
+    };
+    let ra = request("x", mint_many(&w, 10, "x"));
+    let rb = request("y", mint_many(&w, 10, "y"));
+    let (a, b) = w.race(
+        move |i, now| i.claim_payout_at(ra, now),
+        move |i, now| i.claim_payout_at(rb, now),
+    );
+    let mut results = [a.unwrap().result, b.unwrap().result];
+    results.sort();
+    assert_eq!(results, [QUEUED, ADDRESS_REJECTED]);
+    w.reopen();
     w.check();
 }
 

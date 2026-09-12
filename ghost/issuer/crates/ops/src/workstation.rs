@@ -4,24 +4,28 @@
 //! the revenue, and its ledger ([`crate::ledger`]) the record of every payout.
 //!
 //! - `payout-check`: the batch file's signature under the ops key; its network; every payout
-//!   address (§7.7); the ledger's rules (a batch id, a claim and an address once); the
-//!   **cumulative cap** `paid_so_far + total ≤ 10 % × Σ incoming to minors ≥ 1 since the
-//!   treasury's restore height` (qualifying transfers of the view dump: at least 10
-//!   confirmations, `unlock_time` 0, not double-spent); and the issuer's cumulative credited
-//!   revenue not above that incoming. Then the batch and its entries are appended to the ledger.
+//!   address (§7.7); the ledger's rules (a batch id and a claim once, else the batch is refused;
+//!   an entry whose payout address was seen before is recorded refused and the rest of the batch
+//!   is taken, so a claimant's address cannot stall the batch); the **cumulative cap**
+//!   `paid_so_far + payable ≤ 10 % × Σ incoming to minors ≥ 1 since the treasury's restore
+//!   height` (payable: the batch total less its refused entries; qualifying transfers of the view
+//!   dump: at least 10 confirmations, `unlock_time` 0, not double-spent); and the issuer's
+//!   cumulative credited revenue not above that incoming. Then the batch and its entries are
+//!   appended to the ledger.
 //! - `payout-entry`: one state change of one entry: `built` (only while no other entry is built
 //!   or signed and not yet submitted), `signed` (the txid of `sign_transfer` and the key images
 //!   read from its `tx_raw_list` entry, distinct from every other entry's), `submitted`,
 //!   `confirmed` (the workstation's `get_transfer_by_txid` answer: the same txid, type `out`, at
 //!   least 10 confirmations), `abandoned` (a signed entry only with the daemon's
 //!   `is_key_image_spent` answer showing every one of its key images unspent).
-//! - `payout-ack`: once every entry of the batch is confirmed, the acknowledgement file for the
-//!   issuer (claim ids from the batch file, txids from the ledger).
+//! - `payout-ack`: once every entry of the batch is confirmed or refused, the acknowledgement file
+//!   for the issuer: each claim id of the batch file with its outcome, paid or refused. No txid
+//!   goes to the issuer; the ledger keeps them.
 
 use std::path::Path;
 
 use ghost_entitlement::monero::{AddressPurpose, MoneroAddress, MoneroNetwork};
-use ghost_issuer::payout::{AckFile, BatchFile, PayoutFileError};
+use ghost_issuer::payout::{AckFile, BatchFile, EntryOutcome, PayoutFileError};
 use ghost_issuer::rail::monero::incoming_from_dump;
 use ghost_issuer::reconcile::within_cap;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -29,7 +33,7 @@ use serde_json::Value;
 
 use crate::args::Flags;
 use crate::input::{input_refused, read, read_text};
-use crate::ledger::{EntryState, Ledger, LedgerError, Transition};
+use crate::ledger::{EntryState, Ledger, Transition};
 use crate::report::{network_name, Code, Field, Line, Sink};
 use crate::{hexfmt, output, rawtx, Failure};
 
@@ -39,10 +43,6 @@ pub const CONFIRMATIONS: u64 = 10;
 
 fn refused(reason: &'static str) -> Line {
     Line::new(Code::PayoutRefused).word(Field::Reason, reason)
-}
-
-fn ledger_refused(e: LedgerError) -> Failure {
-    Failure::refused(refused(e.reason).num(Field::Line, e.line))
 }
 
 pub(crate) fn parse_network(flags: &Flags) -> Result<MoneroNetwork, Failure> {
@@ -150,12 +150,15 @@ pub fn check(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
     let records = ledger
         .accept(&file)
         .map_err(|e| Failure::refused(batch_line(refused(e.reason))))?;
+    let (refused_entries, payable) = ledger
+        .batch(&file.batch_id)
+        .map_or((0, file.total), |b| (b.refused(), b.payable()));
     let amounts = |line: Line| {
         line.num(Field::PaidSoFar, paid_so_far)
             .num(Field::Total, file.total)
             .num(Field::Incoming, incoming)
     };
-    if !within_cap(paid_so_far.saturating_add(file.total), incoming) {
+    if !within_cap(paid_so_far.saturating_add(payable), incoming) {
         return Err(Failure::refused(amounts(batch_line(refused("cap")))));
     }
     if file.cumulative_credited > incoming {
@@ -173,7 +176,9 @@ pub fn check(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
         )?;
     }
     sink.emit(amounts(
-        batch_line(Line::new(Code::PayoutAccepted)).num(Field::Entries, file.entries.len() as u64),
+        batch_line(Line::new(Code::PayoutAccepted))
+            .num(Field::Entries, file.entries.len() as u64)
+            .num(Field::Refused, refused_entries as u64),
     ));
     Ok(())
 }
@@ -329,12 +334,15 @@ pub fn ack(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
         .entries
         .iter()
         .zip(&batch.entries)
-        .map(|(f, l)| l.txid.map(|t| (f.claim_id, t)))
-        .collect::<Option<Vec<_>>>()
-        .ok_or(ledger_refused(LedgerError {
-            line: 0,
-            reason: "txid",
-        }))?;
+        .map(|(f, l)| {
+            let outcome = if l.state == EntryState::Refused {
+                EntryOutcome::Refused
+            } else {
+                EntryOutcome::Paid
+            };
+            (f.claim_id, outcome)
+        })
+        .collect();
     let ack = AckFile {
         batch_id: file.batch_id,
         entries,

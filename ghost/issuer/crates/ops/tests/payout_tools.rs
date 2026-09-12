@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use common::*;
 use ghost_entitlement::monero::MoneroNetwork;
-use ghost_issuer::payout::{AckFile, BatchFile, BatchLine, OpsKey};
+use ghost_issuer::payout::{AckFile, BatchFile, BatchLine, EntryOutcome, OpsKey};
 use ghost_issuer::reconcile::{self, CounterId};
 use ghost_issuer::store::{RedbStore, Store};
 use ghost_issuer_ops::ledger::{Ledger, HEADER};
@@ -172,7 +172,8 @@ fn payout_check_keeps_the_cumulative_payouts_within_ten_percent_of_the_view() {
         "nothing recorded"
     );
 
-    // A batch id, a claim id and an address are accepted once.
+    // A batch id and a claim id are accepted once (an honest issuer never repeats them); a
+    // repeated address refuses its entry only (a_repeated_payout_address_refuses_its_entry_...).
     assert_refused(
         &check(&first, &view, &ledger, "regtest"),
         Code::PayoutRefused,
@@ -184,22 +185,6 @@ fn payout_check_keeps_the_cumulative_payouts_within_ten_percent_of_the_view() {
         Code::PayoutRefused,
         "claim-seen",
     );
-    let address = write_batch(d, "b4.ghpb", &batch(4, &[(1, ADDRESSES[3])], 20));
-    assert_refused(
-        &check(&address, &view, &ledger, "regtest"),
-        Code::PayoutRefused,
-        "address-repeated",
-    );
-    let twice = write_batch(
-        d,
-        "b5.ghpb",
-        &batch(5, &[(1, ADDRESSES[2]), (1, ADDRESSES[2])], 30),
-    );
-    assert_refused(
-        &check(&twice, &view, &ledger, "regtest"),
-        Code::PayoutRefused,
-        "address-repeated",
-    );
 
     // More revenue measured by the view: the second batch now fits.
     let more = view_dump(d, "view2.json", &[(20 * PRICE, 1, 20, 100)]);
@@ -208,6 +193,94 @@ fn payout_check_keeps_the_cumulative_payouts_within_ten_percent_of_the_view() {
         Code::PayoutAccepted,
     );
     assert_eq!(num(&line, Field::PaidSoFar), Some(PRICE));
+}
+
+/// S6 review (MONEY-1, PRIV-1): a payout address is a claimant's input, so a repeat refuses its own
+/// entry and never the batch: the entry is recorded refused (never built, never paid, not counted
+/// in the cumulative payouts) and every other entry of the batch is paid. Repeats are an address
+/// paid in an earlier batch (the issuer has deleted it) and a second occurrence in one batch.
+#[test]
+fn a_repeated_payout_address_refuses_its_entry_and_the_batch_is_paid() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let ledger = d.join("ledger.txt");
+    let view = view_dump(d, "view.json", &[(100 * PRICE, 1, 20, 100)]);
+    let first = write_batch(d, "b1.ghpb", &batch(1, &[(PRICE / 10, ADDRESSES[0])], 0));
+    ok(
+        &check(&first, &view, &ledger, "regtest"),
+        Code::PayoutAccepted,
+    );
+    let entries = [
+        (PRICE / 10, ADDRESSES[0]),
+        (PRICE / 10, ADDRESSES[1]),
+        (PRICE / 10, ADDRESSES[1]),
+    ];
+    let second = write_batch(d, "b2.ghpb", &batch(2, &entries, 10));
+    let line = ok(
+        &check(&second, &view, &ledger, "regtest"),
+        Code::PayoutAccepted,
+    );
+    assert!(line.render().contains(" refused=2"), "{}", line.render());
+    assert_eq!(num(&line, Field::Refused), Some(2));
+    assert_eq!(num(&line, Field::PaidSoFar), Some(PRICE / 10));
+    let third = write_batch(d, "b3.ghpb", &batch(3, &[(1, ADDRESSES[2])], 20));
+    let line = ok(
+        &check(&third, &view, &ledger, "regtest"),
+        Code::PayoutAccepted,
+    );
+    assert_eq!(
+        num(&line, Field::PaidSoFar),
+        Some(2 * PRICE / 10),
+        "a refused entry is not a payout"
+    );
+
+    // The refused entries never move; the payable one is paid; the acknowledgement names each
+    // entry's outcome.
+    for k in [0, 2] {
+        assert_refused(
+            &entry_in(&ledger, 2, k, "built", &[]),
+            Code::PayoutRefused,
+            "state",
+        );
+    }
+    let tx = arg(&raw_tx(d, "tx.hex", &[[7; 32]]));
+    let txid = hex(&[0xc1; 32]);
+    ok(&entry_in(&ledger, 2, 1, "built", &[]), Code::EntryState);
+    ok(
+        &entry_in(&ledger, 2, 1, "signed", &["--raw-tx", &tx, "--txid", &txid]),
+        Code::EntryState,
+    );
+    ok(&entry_in(&ledger, 2, 1, "submitted", &[]), Code::EntryState);
+    let t = arg(&transfer(d, "t.json", &[0xc1; 32], 10));
+    ok(
+        &entry_in(&ledger, 2, 1, "confirmed", &["--transfer", &t]),
+        Code::EntryState,
+    );
+    let out = d.join("ack.ghpa");
+    let line = ok(
+        &run(&[
+            "payout-ack",
+            "--ledger",
+            &arg(&ledger),
+            "--batch",
+            &arg(&second),
+            "--ops-public-key",
+            &hex(&ops().public()),
+            "--out",
+            &arg(&out),
+        ]),
+        Code::AckWritten,
+    );
+    assert_eq!(num(&line, Field::Entries), Some(3));
+    let ack = AckFile::parse(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(
+        ack.entries,
+        vec![
+            ([10; 16], EntryOutcome::Refused),
+            ([11; 16], EntryOutcome::Paid),
+            ([12; 16], EntryOutcome::Refused)
+        ]
+    );
 }
 
 #[test]
@@ -293,8 +366,13 @@ fn accepted(d: &Path, n: usize) -> (PathBuf, BatchFile, PathBuf) {
 }
 
 fn entry(ledger: &Path, k: usize, to: &str, extra: &[&str]) -> (Status, Vec<Line>) {
+    entry_in(ledger, 1, k, to, extra)
+}
+
+/// `payout-entry` for entry `k` of batch `[id; 16]`.
+fn entry_in(ledger: &Path, id: u8, k: usize, to: &str, extra: &[&str]) -> (Status, Vec<Line>) {
     let k = k.to_string();
-    let batch = hex(&[1; 16]);
+    let batch = hex(&[id; 16]);
     let mut args = vec![
         "payout-entry",
         "--ledger",
@@ -467,13 +545,19 @@ fn payout_ack_writes_the_acknowledgement_once_every_entry_is_confirmed() {
     }
     let line = ok(&ack("ack.ghpa"), Code::AckWritten);
     assert_eq!(num(&line, Field::Entries), Some(2));
+    // S6 review (PRIV-4): the issuer learns each entry's outcome, never its payout transaction.
+    assert_eq!(
+        std::fs::read(d.join("ack.ghpa")).unwrap().len(),
+        4 + 1 + 16 + 2 + 2 * (16 + 1),
+        "claim id and outcome per entry, no txid"
+    );
     let written = AckFile::parse(&std::fs::read(d.join("ack.ghpa")).unwrap()).unwrap();
     assert_eq!(written.batch_id, file.batch_id);
     assert_eq!(
         written.entries,
         vec![
-            (file.entries[0].claim_id, txids[0]),
-            (file.entries[1].claim_id, txids[1])
+            (file.entries[0].claim_id, EntryOutcome::Paid),
+            (file.entries[1].claim_id, EntryOutcome::Paid)
         ]
     );
     assert_refused(&ack("again.ghpa"), Code::PayoutRefused, "acked");
@@ -588,15 +672,76 @@ fn reconcile_check_reads_a_snapshot_with_relay_aggregates_and_the_view() {
         "line",
     );
 
+    // The workstation's view and ledger are checked against exported counters, never next to the
+    // database (reconcile_check_runs_on_the_workstation_from_exported_counters).
+}
+
+/// `reconcile-check` of a counters file.
+fn reconcile_counters(counters: &Path, extra: &[&str]) -> (Status, Vec<Line>) {
+    let es = arg(&test_schedule_path());
+    let key = schedule_public_hex();
+    let c = arg(counters);
+    let mut args = vec![
+        "reconcile-check",
+        "--counters",
+        &c,
+        "--schedule",
+        &es,
+        "--schedule-public-key",
+        &key,
+        "--now",
+        NOW,
+    ];
+    args.extend_from_slice(extra);
+    run(&args)
+}
+
+/// S6 review (PRIV-2): the workstation never needs `issuer.redb`. `counters-export` runs on the
+/// issuer host against a snapshot there and writes the counters only (aggregates, no identifier);
+/// `reconcile-check --counters` checks them on the workstation with the relay counts, its view and
+/// its ledger. A database is never combined with the workstation's view or ledger.
+#[test]
+fn reconcile_check_runs_on_the_workstation_from_exported_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let db = snapshot(d, &[]);
+    let counters = d.join("counters.txt");
+    let (status, lines) = run(&[
+        "counters-export",
+        "--database",
+        &arg(&db),
+        "--out",
+        &arg(&counters),
+    ]);
+    let rendered: Vec<String> = lines.iter().map(Line::render).collect();
+    assert_eq!(status, Status::Ok, "{rendered:?}");
+    assert_eq!(rendered, vec!["COUNTERS_WRITTEN counters=10".to_string()]);
+    let text = std::fs::read_to_string(&counters).unwrap();
+    assert_eq!(
+        text.lines().count(),
+        11,
+        "a header and one line per counter"
+    );
+    assert!(text
+        .lines()
+        .skip(1)
+        .all(|l| l.split(' ').count() == 3 && l.bytes().all(|b| b.is_ascii_digit() || b == b' ')));
+
+    let line = ok(&reconcile_counters(&counters, &[]), Code::ReconciliationOk);
+    assert_eq!(num(&line, Field::Relays), Some(0));
+
     // The workstation's view: the credited revenue must have arrived, payouts within 10 %.
     let view = arg(&view_dump(d, "view.json", &[(PRICE, 1, 20, 100)]));
     ok(
-        &reconcile(&db, &["--view-dump", &view, "--restore-height", "10"]),
+        &reconcile_counters(&counters, &["--view-dump", &view, "--restore-height", "10"]),
         Code::ReconciliationOk,
     );
     let short = arg(&view_dump(d, "short.json", &[(PRICE - 1, 1, 20, 100)]));
     assert_refused(
-        &reconcile(&db, &["--view-dump", &short, "--restore-height", "10"]),
+        &reconcile_counters(
+            &counters,
+            &["--view-dump", &short, "--restore-height", "10"],
+        ),
         Code::ReconciliationMismatch,
         "view-below-credited",
     );
@@ -604,31 +749,46 @@ fn reconcile_check_reads_a_snapshot_with_relay_aggregates_and_the_view() {
     let text = ledger
         .accept(&batch(1, &[(PRICE / 10 + 1, ADDRESSES[0])], 0))
         .unwrap();
-    let ledger_path = write(
+    let ledger_path = arg(&write(
         d,
         "ledger.txt",
         format!("{}{text}", ledger.header()).as_bytes(),
-    );
+    ));
     assert_refused(
-        &reconcile(
-            &db,
+        &reconcile_counters(
+            &counters,
             &[
                 "--view-dump",
                 &view,
                 "--restore-height",
                 "10",
                 "--ledger",
-                &arg(&ledger_path),
+                &ledger_path,
             ],
         ),
         Code::ReconciliationMismatch,
         "payout-cap",
     );
     assert_refused(
-        &reconcile(&db, &["--ledger", &arg(&ledger_path)]),
+        &reconcile_counters(&counters, &["--ledger", &ledger_path]),
         Code::Usage,
         "missing-flag",
     );
+
+    // The database stays on the issuer host: never with the workstation's view or ledger.
+    for extra in [
+        vec!["--view-dump", view.as_str(), "--restore-height", "10"],
+        vec!["--ledger", ledger_path.as_str()],
+        vec!["--counters", c_path(&counters)],
+    ] {
+        assert_refused(&reconcile(&db, &extra), Code::Usage, "conflicting-flags");
+    }
+    let bad = write(d, "bad.txt", b"ghost-issuer-counters 1\n3 2960 x\n");
+    assert_refused(&reconcile_counters(&bad, &[]), Code::InputRefused, "line");
+}
+
+fn c_path(path: &Path) -> &str {
+    path.to_str().unwrap()
 }
 
 #[test]
