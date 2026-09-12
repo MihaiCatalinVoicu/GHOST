@@ -7,7 +7,7 @@
 //! refused; (3) the network byte: a subaddress for invoices (mainnet and regtest 42, stagenet 36),
 //! a standard address or subaddress for payouts (mainnet 18/42, stagenet 24/36); (4)
 //! `Keccak-256(bytes[0..65])[0..4] == bytes[65..69]` (original Keccak padding, not SHA3-256);
-//! (5) both 32-byte keys decompress to Ed25519 points.
+//! (5) both 32-byte keys are canonical encodings of Ed25519 points (Monero's `check_key`).
 
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use sha3::{Digest, Keccak256};
@@ -104,7 +104,7 @@ pub enum AddressError {
     Prefix,
     /// Keccak-256 checksum mismatch.
     Checksum,
-    /// A public key does not decompress to an Ed25519 point.
+    /// A public key is not the canonical encoding of an Ed25519 point.
     InvalidKey,
     /// A payment URI needs a subaddress and a non-zero amount.
     UriInput,
@@ -172,7 +172,7 @@ impl MoneroAddress {
         let spend_key: [u8; 32] = bytes[1..33].try_into().map_err(|_| AddressError::Length)?;
         let view_key: [u8; 32] = bytes[33..65].try_into().map_err(|_| AddressError::Length)?;
         for key in [&spend_key, &view_key] {
-            if CompressedEdwardsY(*key).decompress().is_none() {
+            if !is_canonical_point(key) {
                 return Err(AddressError::InvalidKey);
             }
         }
@@ -218,6 +218,16 @@ pub fn payment_uri(subaddress: &MoneroAddress, amount_atomic: u64) -> Result<Str
         amount_atomic / ATOMIC_PER_XMR,
         amount_atomic % ATOMIC_PER_XMR
     ))
+}
+
+/// Rule 5, with Monero's `check_key` semantics (`ge_frombytes_vartime == 0`): the key decompresses
+/// and is the canonical encoding of its point. `curve25519-dalek` alone also accepts y >= p and
+/// x = 0 with the sign bit set, which wallet-rpc refuses; re-compressing yields the reduced y and a
+/// zero sign bit for x = 0, so comparing with the input refuses both.
+fn is_canonical_point(key: &[u8; 32]) -> bool {
+    CompressedEdwardsY(*key)
+        .decompress()
+        .is_some_and(|point| point.compress().to_bytes() == *key)
 }
 
 /// Rules 1 and 2: length, alphabet and canonical block decoding to 69 bytes.

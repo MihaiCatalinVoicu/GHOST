@@ -123,6 +123,61 @@ fn reencode(mut bytes: Vec<u8>, keccak: bool) -> String {
     base58_encode(&bytes)
 }
 
+/// y = 1 (the identity) with the sign bit set: x = 0 cannot be negative (`check_key` refuses it).
+fn negative_zero() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[0] = 0x01;
+    key[31] = 0x80;
+    key
+}
+
+/// y = p + k (little-endian, sign bit clear) for small k: a non-canonical encoding of y = k.
+fn y_above_p(k: u8) -> [u8; 32] {
+    let mut key = [0xffu8; 32];
+    key[0] = 0xed + k;
+    key[31] = 0x7f;
+    key
+}
+
+fn with_keys(address: &str, spend: Option<[u8; 32]>, view: Option<[u8; 32]>) -> String {
+    let mut raw = base58_decode(address).unwrap();
+    if let Some(s) = spend {
+        raw[1..33].copy_from_slice(&s);
+    }
+    if let Some(v) = view {
+        raw[33..65].copy_from_slice(&v);
+    }
+    reencode(raw, true)
+}
+
+/// Rule 5 follows Monero's `check_key` (`ge_frombytes_vartime`, src/crypto/crypto-ops.c): a key
+/// must be a canonical encoding (y < p, and x = 0 only with a clear sign bit). Canonical encodings
+/// of small-order points are keys `check_key` accepts, so GHOST accepts them too.
+#[test]
+fn keys_follow_monero_check_key() {
+    let sub = "888tNkZrPN6JsEgekjMnABU4TBzc2Dt29EPAvkRxbANsAnjyPbb3iQ1YBRk1UXcdRsiKc9dhwMVgN5S9cQUiyoogDavup3H";
+    let parse = |a: &str| MoneroAddress::parse(a, MoneroNetwork::Mainnet, AddressPurpose::Invoice);
+    let mut identity = [0u8; 32];
+    identity[0] = 0x01;
+    // y = 1 (identity) and y = 0 (x = sqrt(-1), order 4), canonically encoded: accepted.
+    for key in [identity, [0u8; 32]] {
+        assert!(parse(&with_keys(sub, Some(key), None)).is_ok());
+        assert!(parse(&with_keys(sub, None, Some(key))).is_ok());
+    }
+    // The same points under non-canonical encodings: refused.
+    for key in [negative_zero(), y_above_p(0), y_above_p(1)] {
+        assert!(CompressedEdwardsY(key).decompress().is_some());
+        assert_eq!(
+            parse(&with_keys(sub, Some(key), None)).err(),
+            Some(AddressError::InvalidKey)
+        );
+        assert_eq!(
+            parse(&with_keys(sub, None, Some(key))).err(),
+            Some(AddressError::InvalidKey)
+        );
+    }
+}
+
 fn not_a_point() -> [u8; 32] {
     (2u8..)
         .map(|i| {
@@ -219,6 +274,24 @@ fn derive_negative_cases() {
             "invalid-key",
             reencode(view, true),
             "888tNk with a view key that is not an Ed25519 point, checksum recomputed",
+        ),
+        (
+            "invoice",
+            "invalid-key",
+            with_keys(sub, Some(negative_zero()), None),
+            "888tNk with the spend key 01 00..00 80 (x = 0 with the sign bit set, refused by check_key), checksum recomputed",
+        ),
+        (
+            "invoice",
+            "invalid-key",
+            with_keys(sub, Some(y_above_p(1)), None),
+            "888tNk with the spend key ee ff..ff 7f (y = p + 1, a non-canonical encoding of 1), checksum recomputed",
+        ),
+        (
+            "invoice",
+            "invalid-key",
+            with_keys(sub, None, Some(y_above_p(1))),
+            "888tNk with the view key ee ff..ff 7f (y = p + 1, a non-canonical encoding of 1), checksum recomputed",
         ),
         (
             "invoice",

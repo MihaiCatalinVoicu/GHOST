@@ -88,6 +88,38 @@ fn appendix_a_negatives() {
     }
 }
 
+/// s' + n satisfies (s' + n)^e == B (mod n) but is not a signature representative (RSAVP1, RFC 8017
+/// §5.2.2 step 1: 0 <= s <= n - 1, which RFC 9474 §4.3 applies to the blind signature): the fault
+/// check refuses it, and so does Finalize.
+#[test]
+fn a_non_canonical_blind_signature_is_refused() {
+    for v in vectors() {
+        let pk = PublicKey::from_components(&v.hex("n"), &v.hex("e")).unwrap();
+        let k = pk.modulus_len();
+        // A pair (B, s') with s' small, so that s' + n always fits k bytes.
+        let s = BigUint::from(2u32);
+        let b = i2osp(&s.modpow(pk.e(), pk.n()), k).unwrap();
+        let lifted = &s + pk.n();
+        assert_eq!(
+            lifted.modpow(pk.e(), pk.n()),
+            BigUint::from_bytes_be(&b),
+            "still an e-th root of B"
+        );
+        assert!(check_blind_signature(&pk, &b, &i2osp(&s, k).unwrap()));
+        assert!(!check_blind_signature(&pk, &b, &i2osp(&lifted, k).unwrap()));
+        // The vector's own blind signature, lifted by n, when that fits k bytes.
+        let (blinded, blind_sig) = (v.hex("blinded_msg"), v.hex("blind_sig"));
+        let inv = BigUint::from_bytes_be(&v.hex("inv"));
+        if let Ok(bytes) = i2osp(&(BigUint::from_bytes_be(&blind_sig) + pk.n()), k) {
+            assert!(!check_blind_signature(&pk, &blinded, &bytes));
+            assert_eq!(
+                finalize_raw(&pk, &v.hex("prepared_msg"), &bytes, &inv),
+                Err(Error::OutOfRange)
+            );
+        }
+    }
+}
+
 fn boxed(bytes: &[u8]) -> BoxedUint {
     BoxedUint::from_be_slice_vartime(bytes)
 }

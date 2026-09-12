@@ -46,6 +46,7 @@ case|key-spki-rsaencryption|key-format
 case|key-proof-tampered|key-proof
 case|key-proof-of-other-key|key-proof
 case|key-small-factor|key-proof
+case|key-proof-not-canonical|key-proof
 # Rule 3: coverage.
 case|coverage-access-gap|coverage
 case|coverage-25-weeks|coverage
@@ -53,6 +54,7 @@ case|coverage-missing-invite|coverage
 case|coverage-missing-credit|coverage
 case|coverage-missing-price|coverage
 case|coverage-week-without-slot|coverage
+case|coverage-epoch-extremes|coverage
 # Rule 4: slot table, prices.
 case|slots-empty|slot-table
 case|slot-32|slot-table
@@ -74,6 +76,9 @@ case|memory-rollback|rollback
 case|memory-key-changed|key-changed
 case|memory-slot-set-changed|slot-set-changed
 case|memory-price-changed|price-changed
+case|memory-revocation-added|ok
+case|memory-revocation-kept|ok
+case|memory-revocation-dropped|revocation-dropped
 # Rule 6: the production client refuses regtest.
 case|client-regtest|regtest-refused
 case|client-stagenet|ok

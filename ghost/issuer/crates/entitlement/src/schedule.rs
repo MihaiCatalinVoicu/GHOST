@@ -25,7 +25,8 @@
 //! proof valid; (3) access keys cover >= 26 consecutive weeks, invite and credit keys and prices
 //! cover the epochs those weeks touch; (4) per slot number non-overlapping week ranges, onions
 //! valid, every covered week has a slot; (5) append-only against local memory
-//! ([`ScheduleMemory`]); (6) the production client refuses regtest ([`Schedule::refuse_regtest`]).
+//! ([`ScheduleMemory`]: keys, slot sets, prices and revocations); (6) the production client
+//! refuses regtest ([`Schedule::refuse_regtest`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -99,6 +100,8 @@ pub enum ScheduleError {
     SlotSetChanged,
     /// The price of a remembered price epoch changed (rule 5, §19.2).
     PriceChanged,
+    /// A remembered revocation is missing: revocations are append-only too (rule 5, runbook I1).
+    RevocationDropped,
     /// A regtest schedule offered to the production client (rule 6).
     RegtestRefused,
 }
@@ -314,6 +317,9 @@ pub struct ScheduleMemory {
     pub keys: BTreeMap<(Kind, u64), [u8; 32]>,
     pub week_slots: BTreeMap<u64, BTreeSet<u8>>,
     pub prices: BTreeMap<u64, u64>,
+    /// Every (kind, epoch) a previously accepted schedule revoked: a later schedule may add
+    /// revocations but never drop one, or a leaked key's tokens would become valid again.
+    pub revoked: BTreeSet<(Kind, u64)>,
 }
 
 /// A parsed schedule whose signature and rules 1–4 hold.
@@ -420,7 +426,10 @@ impl Schedule {
             .first()
             .zip(access.last())
             .ok_or(ScheduleError::Coverage)?;
-        let span = last - first + 1;
+        // first <= last (BTreeMap order); the + 1 overflows for epochs 0 and u64::MAX.
+        let span = (last - first)
+            .checked_add(1)
+            .ok_or(ScheduleError::Coverage)?;
         if span != access.len() as u64 || span < MIN_ACCESS_WEEKS {
             return Err(ScheduleError::Coverage);
         }
@@ -453,8 +462,8 @@ impl Schedule {
     }
 
     /// Rule 5: the schedule is append-only against what was accepted before (keys, the slot sets
-    /// of covered weeks and the prices of covered price epochs never change; seq never goes
-    /// backwards).
+    /// of covered weeks and the prices of covered price epochs never change; revocations are never
+    /// dropped; seq never goes backwards).
     pub fn check_memory(&self, memory: &ScheduleMemory) -> Result<(), ScheduleError> {
         if memory.max_seq.is_some_and(|s| self.content.seq < s) {
             return Err(ScheduleError::Rollback);
@@ -479,6 +488,9 @@ impl Schedule {
                 return Err(ScheduleError::PriceChanged);
             }
         }
+        if !memory.revoked.is_subset(&self.revoked) {
+            return Err(ScheduleError::RevocationDropped);
+        }
         Ok(())
     }
 
@@ -500,6 +512,7 @@ impl Schedule {
         for p in &self.content.prices {
             memory.prices.insert(p.price_epoch, p.pack_price_atomic);
         }
+        memory.revoked.extend(self.revoked.iter().copied());
     }
 
     /// Rule 6: the production client refuses regtest schedules.

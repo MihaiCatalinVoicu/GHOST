@@ -4,7 +4,7 @@
 mod common;
 
 use common::fixture::{self, FIRST_WEEK, FIXTURE, WEEKS};
-use ghost_blind_rsa::PublicKey;
+use ghost_blind_rsa::{i2osp, BigUint, PublicKey, PROOF_BLOCK_LEN};
 use ghost_entitlement::grid::{credit_epoch, invite_epoch, price_epoch, Kind};
 use ghost_entitlement::monero::MoneroNetwork;
 use ghost_entitlement::schedule::{KeyContent, ScheduleContent, ScheduleMemory, SlotEntry};
@@ -208,14 +208,42 @@ fn run(case: &str) -> Result<(), ScheduleError> {
             c.keys[access0].proof = c.keys[access0 + 1].proof
         })),
         "key-small-factor" => check(edited(|c| {
-            // 0xff..ff (2048 bits) = 3 x 0x55..55: odd, 2048-bit, divisible by 3.
-            c.keys[access0] = fake_key(
-                &[0xff; 256],
-                &[1, 0, 1],
-                &c.keys[access0],
-                Kind::Access,
-                FIRST_WEEK,
-            );
+            // n = 65537 * p * q with its own mathematically valid permutation proof
+            // (blind-rsa tests/permutation_proof.rs): only the trial division refuses it.
+            let v = common::section("perm-proof-negative")
+                .into_iter()
+                .find(|v| v.id == "small-factor-65537")
+                .unwrap();
+            let proof = v.hex("proof");
+            c.keys[access0] = KeyContent {
+                kind: Kind::Access,
+                epoch: FIRST_WEEK,
+                spki: PublicKey::from_components(&v.hex("n"), &[1, 0, 1])
+                    .unwrap()
+                    .to_spki(),
+                proof: std::array::from_fn(|i| {
+                    proof[i * PROOF_BLOCK_LEN..(i + 1) * PROOF_BLOCK_LEN]
+                        .try_into()
+                        .unwrap()
+                }),
+            };
+        })),
+        "key-proof-not-canonical" => check(edited(|c| {
+            // The first proof element sigma_i of any key for which sigma_i + n fits 256 bytes:
+            // (sigma_i + n)^e == rho_i still holds, only the canonical range sigma_i < n refuses it.
+            let (k, i, lifted) = c
+                .keys
+                .iter()
+                .enumerate()
+                .find_map(|(k, key)| {
+                    let pk = PublicKey::from_spki(&key.spki).unwrap();
+                    key.proof.iter().enumerate().find_map(|(i, sigma)| {
+                        let lifted = BigUint::from_bytes_be(sigma) + pk.n();
+                        i2osp(&lifted, PROOF_BLOCK_LEN).ok().map(|b| (k, i, b))
+                    })
+                })
+                .unwrap();
+            c.keys[k].proof[i].copy_from_slice(&lifted);
         })),
         "coverage-access-gap" => check(edited(|c| {
             c.keys.remove(key_index(c, Kind::Access, FIRST_WEEK + 5));
@@ -247,6 +275,12 @@ fn run(case: &str) -> Result<(), ScheduleError> {
             {
                 s.valid_from_week = FIRST_WEEK + 1;
             }
+        })),
+        "coverage-epoch-extremes" => check(edited(|c| {
+            // Correctly signed keys at access epochs 0 and u64::MAX: the week span must not overflow.
+            let last = key_index(c, Kind::Access, FIRST_WEEK + WEEKS - 1);
+            c.keys[access0].epoch = 0;
+            c.keys[last].epoch = u64::MAX;
         })),
         "slots-empty" => check(edited(|c| c.slots.clear())),
         "slot-32" => check(edited(|c| c.slots[0].slot = 32)),
@@ -318,6 +352,32 @@ fn run(case: &str) -> Result<(), ScheduleError> {
                 c.seq = 2;
                 c.prices[0].pack_price_atomic += 10;
             }),
+        ),
+        "memory-revocation-added" => memory_case(
+            FIXTURE,
+            &edited(|c| {
+                c.seq = 2;
+                c.revoked.push((Kind::Access, FIRST_WEEK + 3));
+            }),
+        ),
+        "memory-revocation-kept" => memory_case(
+            &edited(|c| {
+                c.seq = 2;
+                c.revoked.push((Kind::Access, FIRST_WEEK + 3));
+            }),
+            &edited(|c| {
+                c.seq = 3;
+                c.revoked.push((Kind::Credit, credit_epoch(FIRST_WEEK)));
+                c.revoked.push((Kind::Access, FIRST_WEEK + 3));
+            }),
+        ),
+        "memory-revocation-dropped" => memory_case(
+            &edited(|c| {
+                // Runbook I1 revoked a leaked week; a later schedule must not silently restore it.
+                c.seq = 2;
+                c.revoked.push((Kind::Access, FIRST_WEEK + 3));
+            }),
+            &edited(|c| c.seq = 3),
         ),
         "client-regtest" => fixture::schedule().refuse_regtest(),
         "client-stagenet" => verify(&edited(|c| c.network = MoneroNetwork::Stagenet))

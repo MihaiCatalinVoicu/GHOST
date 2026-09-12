@@ -4,7 +4,7 @@
 
 mod common;
 
-use ghost_blind_rsa::{BigUint, PublicKey};
+use ghost_blind_rsa::{i2osp, BigUint, PublicKey};
 use ghost_entitlement::token::AUTHENTICATOR_LEN;
 use ghost_entitlement::Kind;
 use ghost_issuer::signer::{CheckedSigner, ReferenceSigner, SignError, Signer};
@@ -115,6 +115,63 @@ fn an_injected_fault_is_withheld_and_counted() {
     assert_eq!(checked.blind_sign(&blinded), Err(SignError::Fault));
     assert_eq!(checked.faults(), 1);
     assert!(checked.blind_sign(&blinded).is_ok());
+}
+
+/// A test-only signer whose output on one call is s' + n: still an e-th root of B modulo n, but not
+/// the canonical s' < n that RFC 9474 §4.3 (RSAVP1) requires.
+struct NonCanonicalSigner {
+    inner: ReferenceSigner,
+    n: BigUint,
+    lift_on_call: std::sync::atomic::AtomicU32,
+}
+
+impl Signer for NonCanonicalSigner {
+    fn key(&self) -> (Kind, u64) {
+        self.inner.key()
+    }
+
+    fn blind_sign(
+        &self,
+        blinded: &[u8; AUTHENTICATOR_LEN],
+    ) -> Result<[u8; AUTHENTICATOR_LEN], SignError> {
+        let sig = self.inner.blind_sign(blinded)?;
+        if self
+            .lift_on_call
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+            == 1
+        {
+            let lifted = BigUint::from_bytes_be(&sig) + &self.n;
+            let bytes = i2osp(&lifted, AUTHENTICATOR_LEN).map_err(|_| SignError::Internal)?;
+            return Ok(block(&bytes));
+        }
+        Ok(sig)
+    }
+}
+
+#[test]
+fn a_non_canonical_signature_is_withheld_and_counted() {
+    let (signer, pk) = rfc_signer();
+    // B = 5^e mod n, so the unique signature is s' = 5 and s' + n fits 256 bytes.
+    let five = BigUint::from(5u32);
+    let blinded = block(&i2osp(&five.modpow(pk.e(), pk.n()), AUTHENTICATOR_LEN).unwrap());
+    assert_eq!(
+        BigUint::from_bytes_be(&signer.blind_sign(&blinded).unwrap()),
+        five
+    );
+    // Call 1 is the construction self-check; call 2 returns s' + n.
+    let lifting = NonCanonicalSigner {
+        inner: signer,
+        n: pk.n().clone(),
+        lift_on_call: 2.into(),
+    };
+    let checked = CheckedSigner::new(lifting, pk).unwrap();
+    assert_eq!(checked.blind_sign(&blinded), Err(SignError::Fault));
+    assert_eq!(checked.faults(), 1);
+    assert_eq!(
+        BigUint::from_bytes_be(&checked.blind_sign(&blinded).unwrap()),
+        five
+    );
+    assert_eq!(checked.faults(), 1);
 }
 
 #[test]
