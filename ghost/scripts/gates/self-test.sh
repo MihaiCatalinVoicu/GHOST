@@ -109,6 +109,30 @@ for allowed in service/src/status.rs:3: service/src/store.rs:3: ops/src/report.r
     echo "self-test ok: issuer-output allows $allowed"
   fi
 done
+# Phase 8 (design §6.7, §14.1): monero-pin.sh on its fixture roots (test-harness/gates/monero-pin/
+# README.md). Each case must end as expected and report the named reason, so a gate failing for
+# another reason (or on everything) is caught.
+MP_FIX="$HARNESS/monero-pin"
+mp_case() { # $1 = case, $2 = pass|fail, $3 = text the output must contain
+  local out got
+  if out="$(GHOST_ROOT="$MP_FIX/$1/ghost" bash "$DIR/monero-pin.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$2" ]; then
+    echo "SELF-TEST FAIL: monero-pin $1 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! printf '%s\n' "$out" | grep -qF -- "$3"; then
+    echo "SELF-TEST FAIL: monero-pin $1 without reporting: $3" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: monero-pin $1"
+  fi
+}
+mp_case positive pass "[monero-pin] OK"
+mp_case no-pin fail "monero-release.pin missing"
+mp_case malformed fail "malformed SHA-256"
+mp_case no-linux fail "no linux-x64 archive"
+mp_case second-hash fail "docker-compose.stagenet.yml: second copy of a pinned SHA-256"
+mp_case unpinned-fetch fail "Dockerfile: fetches Monero binaries without reading"
+mp_case own-archive fail "fetch-monero.sh:3: a Monero archive name of its own"
+mp_case missing-job fail "the regtest workflow is missing"
+mp_case job-no-check fail "does not check the archive with sha256sum -c"
 # Phase 8 (design §5.2, §14.1, RC G18): proto-check.sh checks every request message, not every
 # file. The fixture (test-harness/gates/negative-proto/README.md) has eight unversioned requests in
 # two files, each next to a versioned one: exactly those eight are reported, by name, and none of

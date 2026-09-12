@@ -8,6 +8,8 @@ cd "$GHOST_ROOT"
 cargo fmt --all -- --check || fail "rustfmt"
 cargo clippy --locked --workspace --all-targets -- -D warnings || fail "clippy"
 cargo test --locked --workspace || fail "cargo test"
+# The issuer crash suite runs in the release profile (Phase 8 design §19.17 point 2; CI job rust).
+cargo test --locked --release -p ghost-issuer --test crash || fail "issuer crash suite (release)"
 if command -v cargo-deny >/dev/null; then cargo deny check || fail "cargo deny"; else echo "cargo-deny missing (install: cargo install cargo-deny)" >&2; FAILURES=$((FAILURES+1)); fi
 bash "$GATES_DIR/rust-client-allowlist.sh" || fail "rust-client-allowlist"
 bash "$GATES_DIR/rust-feature-policy.sh" || fail "rust-feature-policy"

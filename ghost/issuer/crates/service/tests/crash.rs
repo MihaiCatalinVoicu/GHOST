@@ -14,6 +14,10 @@
 //! Mutant MM3 `NoJournal` (§13.5) is implemented here, in `tests/` only: the ISSUE or the INVITE
 //! entries decided after the snapshot are removed from the journal before the restore, and I-H
 //! must fail on each.
+//!
+//! The suite runs in the release profile (§19.17 point 2; CI job `rust`):
+//! `cargo test -p ghost-issuer --release --test crash`. A debug build lists its tests as ignored,
+//! which keeps the debug workspace run fast (the suite takes minutes there).
 
 mod common;
 
@@ -102,6 +106,10 @@ fn i_a(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_a_request_pay_confirm_sign_reserve() {
     report("I-A", enumerate(&fresh(), i_a, DEPTH));
 }
@@ -126,6 +134,10 @@ fn i_b(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_b_underpay_and_top_up() {
     report("I-B", enumerate(&fresh(), i_b, 0));
 }
@@ -161,6 +173,10 @@ fn i_c(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_c_expiry_from_a_synced_view_only() {
     report("I-C", enumerate(&fresh(), i_c, 0));
 }
@@ -185,6 +201,10 @@ fn i_c_underpaid(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_c_underpaid_invoice_expires_into_unattributed_revenue() {
     report("I-C underpaid", enumerate(&fresh(), i_c_underpaid, 0));
 }
@@ -209,6 +229,10 @@ fn i_d(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_d_reorg_before_and_after_issuance() {
     report("I-D", enumerate(&fresh(), i_d, DEPTH));
 }
@@ -245,6 +269,10 @@ fn i_d_timely(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_d_credited_txid_re_mined_after_grace_stays_timely() {
     report("I-D timely re-mine", enumerate(&fresh(), i_d_timely, 0));
 }
@@ -279,6 +307,10 @@ fn i_e(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_e_invite_redeem_and_revoke() {
     report("I-E", enumerate(&fresh(), i_e, 0));
 }
@@ -311,6 +343,10 @@ fn i_f(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_f_credits_pack() {
     report("I-F", enumerate(&with_credits("f").template(), i_f, 0));
 }
@@ -346,6 +382,10 @@ fn i_g(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_g_claim() {
     report("I-G", enumerate(&with_credits("g").template(), i_g, 0));
 }
@@ -444,6 +484,10 @@ fn i_h_world() -> World {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_h_restore_from_snapshot_with_journal_replay() {
     report("I-H", enumerate(&i_h_world().template(), i_h, DEPTH));
 }
@@ -495,6 +539,10 @@ fn i_h_with_lost_entries(lost: fn(&Entry) -> bool) -> (usize, Result<(), String>
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn mm3_control_a_rewritten_journal_passes_i_h() {
     let (removed, outcome) = i_h_with_lost_entries(|_| false);
     assert_eq!(removed, 0);
@@ -502,6 +550,10 @@ fn mm3_control_a_rewritten_journal_passes_i_h() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn mm3_lost_issue_entries_are_caught_by_i_h() {
     let (removed, outcome) = i_h_with_lost_entries(|e| matches!(e, Entry::Issue { .. }));
     assert!(removed > 0);
@@ -513,6 +565,10 @@ fn mm3_lost_issue_entries_are_caught_by_i_h() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn mm3_lost_invite_entries_are_caught_by_i_h() {
     let (removed, outcome) = i_h_with_lost_entries(|e| matches!(e, Entry::Invite { .. }));
     assert!(removed > 0);

@@ -48,6 +48,7 @@ tor-proto = { version = "0.46.0", default-features = false }
 tor-rtcompat = { version = "0.46.0", default-features = false, features = ["tokio", "rustls"] }
 hyper = "1.11.1"
 hyper-util = { version = "0.1.20", features = ["tokio", "client-legacy", "http2"] }
+http-body-util = "0.1.5"
 tower = "0.5.3"
 http = "1.5.0"
 jni = "0.21.1"
@@ -63,6 +64,12 @@ ed25519-dalek = "2.2.0"
 # Issuer signer only (ADR-22): confined to the issuer graphs by rust-feature-policy.sh and pinned
 # by rust-crypto-pins.sh. No `serde` (its default feature).
 blind-rsa-signatures = { version = "=0.17.2", default-features = false }
+# Issuer only (ADR-26, design §7.1, §14.3): MD5 for the RFC 2617 digest authentication of
+# monero-wallet-rpc and monerod (the only algorithm their epee server offers). Kept out of the
+# client and relay graphs by rust-feature-policy.sh.
+md-5 = "0.10.6"
+# The issuer's configuration file (design §6.6); the version already in the lock file.
+toml = { version = "0.8.23", default-features = false, features = ["parse"] }
 
 [profile.dev.package.crypto-bigint]
 opt-level = 3

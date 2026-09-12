@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 pub mod chain_port;
+pub mod epee;
 pub mod faults;
 pub mod fixture;
 pub mod world;

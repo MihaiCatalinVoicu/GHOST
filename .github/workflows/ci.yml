@@ -71,6 +71,10 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # Design §19.17 point 2: the issuer crash suite (I-A … I-H, double crashes) runs in the
+      # release profile; a debug build lists its tests as ignored.
+      - name: issuer crash suite (release profile)
+        run: cargo test -p ghost-issuer --release --locked --test crash
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           manifest-path: ghost/Cargo.toml

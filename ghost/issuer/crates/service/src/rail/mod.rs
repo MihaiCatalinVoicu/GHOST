@@ -1,10 +1,17 @@
 //! The payment rail boundary (Phase 8 design §7.6; FCMP++ contingency, RM §10). The issuer core
 //! (scanner, pool, handlers) sees the view-only wallet only through [`PaymentRail`]. The production
-//! implementation over `monero-wallet-rpc` (JSON-RPC with digest auth) is slice S5; tests use the
-//! `ChainPort` double in `tests/`, which exposes exactly these fields (RP §6.8).
+//! implementation is [`monero::MoneroWalletRpc`] (JSON-RPC to `monero-wallet-rpc` and `monerod`
+//! with RFC 2617 digest authentication, [`digest`]); tests use the `ChainPort` double in `tests/`,
+//! which exposes exactly these fields (RP §6.8).
 //!
 //! Client calls never reach the rail: `BlindSign`, `InvoiceStatus`, `RedeemInvite` and
 //! `ClaimPayout` read the database only (§7.3), and `RequestInvoice` takes a pre-created pool entry.
+//!
+//! Amounts are `u64` atomic units end to end; float arithmetic is denied in the whole rail (§7.1).
+#![deny(clippy::float_arithmetic)]
+
+pub mod digest;
+pub mod monero;
 
 /// Heights of one rail view: the wallet's scanned height and the daemon's height, as block counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,10 +86,39 @@ pub trait PaymentRail: Send + Sync {
     fn address_count(&self) -> Result<u32, RailError>;
     /// `refresh` then the wallet and daemon heights.
     fn height(&self) -> Result<RailHeight, RailError>;
-    /// `get_transfers {"in":true,"pool":true,"account_index":0,"filter_by_height":true,
-    /// "min_height":from,"max_height":to}`: `in` transfers mined in `[from, to]` and every pool
-    /// transfer.
+    /// `get_transfers {"in":true,"pool":true,"account_index":0,"filter_by_height":true,…}`: `in`
+    /// transfers mined in `[from, to]` and every pool transfer.
     fn transfers(&self, from: u64, to: u64) -> Result<Vec<IncomingEntry>, RailError>;
-    /// `get_transfer_by_txid` (restore and reconciliation checks, S5).
+    /// `get_transfer_by_txid`: the incoming entry of one transaction, `None` when the wallet does
+    /// not know it (restore and reconciliation checks).
     fn transfer_by_txid(&self, txid: &[u8; 32]) -> Result<Option<IncomingEntry>, RailError>;
+}
+
+/// Lowercase hex.
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 0x0f)]));
+    }
+    out
+}
+
+/// Exactly 64 lowercase hex digits (a txid as wallet-rpc writes it).
+pub(crate) fn hex_decode_32(text: &str) -> Option<[u8; 32]> {
+    let digit = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        _ => None,
+    };
+    let bytes = text.as_bytes();
+    if bytes.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (o, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0) {
+        *o = (digit(pair[0])? << 4) | digit(pair[1])?;
+    }
+    Some(out)
 }

@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod claim;
+pub mod config;
 pub mod credit;
 pub mod custody;
 pub mod invite;
@@ -20,6 +21,7 @@ pub mod quantum;
 pub mod rail;
 pub mod reconcile;
 pub mod scanner;
+pub mod server;
 pub mod service;
 pub mod signer;
 pub mod status;

@@ -43,14 +43,24 @@ pub struct ChainPort(Mutex<Chain>);
 /// A deterministic, valid regtest subaddress for `minor`: two Ed25519 points, prefix 42,
 /// Keccak-256 checksum, Monero Base58.
 pub fn address(minor: u32) -> String {
+    encode_address(
+        SUBADDRESS_PREFIX,
+        u64::from(minor) + 1,
+        u64::from(minor) + 1_000_003,
+    )
+}
+
+/// A valid address of any network byte: the points `spend·G` and `view·G`, Keccak-256 checksum,
+/// Monero Base58 (18: mainnet and regtest standard, 24: stagenet standard, 42: subaddress).
+pub fn encode_address(prefix: u8, spend: u64, view: u64) -> String {
     let point = |x: u64| {
         EdwardsPoint::mul_base(&Scalar::from(x))
             .compress()
             .to_bytes()
     };
-    let mut data = vec![SUBADDRESS_PREFIX];
-    data.extend_from_slice(&point(u64::from(minor) + 1));
-    data.extend_from_slice(&point(u64::from(minor) + 1_000_003));
+    let mut data = vec![prefix];
+    data.extend_from_slice(&point(spend));
+    data.extend_from_slice(&point(view));
     let check = Keccak256::digest(&data);
     data.extend_from_slice(&check[..4]);
     base58_encode(&data)

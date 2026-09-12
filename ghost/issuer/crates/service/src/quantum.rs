@@ -29,6 +29,15 @@ pub fn wall_now() -> u64 {
         .unwrap_or(0)
 }
 
+/// The clock of the network handlers and the periodic jobs, in seconds since the Unix epoch;
+/// injected (relay precedent), so the whole process runs on a virtual clock in tests.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The wall clock ([`wall_now`]).
+pub fn wall_clock() -> Clock {
+    Arc::new(wall_now)
+}
+
 /// A fixed reply quantum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReplyQuantum(Duration);
@@ -64,15 +73,28 @@ pub struct TimedIssuer {
     issuer: Arc<Issuer>,
     quantum: ReplyQuantum,
     signing: Arc<Semaphore>,
+    clock: Clock,
 }
 
 impl TimedIssuer {
-    /// `signing_permits`: concurrent signing calls (the core count in production).
+    /// `signing_permits`: concurrent signing calls (the core count in production). Handlers see
+    /// the wall clock.
     pub fn new(issuer: Arc<Issuer>, quantum: ReplyQuantum, signing_permits: usize) -> Self {
+        Self::with_clock(issuer, quantum, signing_permits, wall_clock())
+    }
+
+    /// [`TimedIssuer::new`] with handlers on `clock`.
+    pub fn with_clock(
+        issuer: Arc<Issuer>,
+        quantum: ReplyQuantum,
+        signing_permits: usize,
+        clock: Clock,
+    ) -> Self {
         Self {
             issuer,
             quantum,
             signing: Arc::new(Semaphore::new(signing_permits.max(1))),
+            clock,
         }
     }
 
@@ -86,7 +108,8 @@ impl TimedIssuer {
         F: FnOnce(&Issuer, u64) -> Result<T, Status> + Send + 'static,
     {
         let issuer = Arc::clone(&self.issuer);
-        tokio::task::spawn_blocking(move || f(&issuer, wall_now()))
+        let clock = Arc::clone(&self.clock);
+        tokio::task::spawn_blocking(move || f(&issuer, clock()))
             .await
             .map_err(|_| unavailable())?
     }

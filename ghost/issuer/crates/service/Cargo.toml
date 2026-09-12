@@ -20,12 +20,26 @@ ring = { workspace = true }
 # Storage (design §6.1) and the journal checksum (§19.5: SHA-256, no CRC crate).
 redb = { workspace = true }
 sha2 = { workspace = true }
-# gRPC status codes of the handlers and the wall-clock facade (blocking pool, signing semaphore,
-# reply quantum, §5.9, §2.8); the tonic server itself is wired in slice S5/S11.
-tonic = { workspace = true }
+# The gRPC server (design §5.1, §6.7: loopback listener behind the onion service), the wall-clock
+# facade (blocking pool, signing semaphore, reply quantum, §5.9, §2.8) and the periodic jobs.
+tonic = { workspace = true, features = ["transport", "server", "router"] }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
+# The Monero rail adapter (design §7.1, slice S5): JSON-RPC to monero-wallet-rpc and monerod on
+# loopback, plain HTTP/1.1 through hyper's connection API, RFC 2617 digest with MD5 (ADR-26), and
+# strict typed decoding of the answers.
+hyper = { workspace = true, features = ["client", "http1"] }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+md-5 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The configuration file (design §6.6).
+toml = { workspace = true }
 
 [dev-dependencies]
+# The gRPC client of the server test (a tonic Channel; test graph only).
+tonic = { workspace = true, features = ["transport", "channel"] }
 hex = { workspace = true }
 # Independent HKDF-SHA256 (RFC 5869 over HMAC-SHA256) for the seal-key derivation test.
 hmac = { workspace = true }
