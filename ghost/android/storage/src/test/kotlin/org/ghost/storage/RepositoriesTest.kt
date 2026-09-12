@@ -25,11 +25,15 @@ class RepositoriesTest {
     @Test
     fun inviteNonceRepositoryBlocksReplayAcrossInstances() {
         val db = db()
-        val invite = Invite.create(ByteArray(32) { 7 }, root.referralCommitment(), now + 3600, root.inviteSigningKeyPair())
-        Invite.parseAndVerify(invite.encode(), now, InviteNonceRepository(db) { now })
+        // The token is opaque to :identity; the schedule check belongs to the native library. This
+        // stand-in accepts it as an INVITE token of epoch 726, the invite epoch of `now` (Phase 8 §4.1).
+        val token = ByteArray(Invite.TOKEN_BYTES) { (if (it == 0) 0 else if (it == 1) 2 else 7).toByte() }
+        val schedule = Invite.TokenCheck { if (it.contentEquals(token)) 726L else null }
+        val invite = Invite.create(token, 726L, now / 86_400 + 7, listOf(5, 0, 17), root.inviteKeys(0))
+        Invite.parseAndVerify(invite.encode(), now, schedule, InviteNonceRepository(db) { now })
         // A "restart": a new repository over the same database still remembers the nonce.
         assertThrows(Invite.Rejection.Replayed::class.java) {
-            Invite.parseAndVerify(invite.encode(), now, InviteNonceRepository(db) { now })
+            Invite.parseAndVerify(invite.encode(), now, schedule, InviteNonceRepository(db) { now })
         }
     }
 

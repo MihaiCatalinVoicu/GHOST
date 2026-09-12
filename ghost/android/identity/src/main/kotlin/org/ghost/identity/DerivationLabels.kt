@@ -27,13 +27,24 @@ object DerivationLabels {
     /** Per-channel pseudonym signing key: HKDF(info = CHANNEL_PSEUDONYM || channelId) (ADR-04). */
     const val CHANNEL_PSEUDONYM: String = PREFIX + "channel-pseudonym"
 
-    /** Ephemeral invite-signing key, distinct from the base identity (ADR-05). */
+    /**
+     * Per-invite signing key, distinct from the base identity (ADR-05): seed = HKDF(info =
+     * INVITE_SIGNING || u16_be(index)) since Phase 8 (ADR-24, design §8.4). The bare label (one key
+     * per identity) is no longer derived and stays reserved.
+     */
     const val INVITE_SIGNING: String = PREFIX + "invite-signing"
 
-    /** Referral secret whose commitment travels inside invites (ADR-02, ADR-05). */
+    /** Retired by ADR-24 (blind credit tokens replace the referral commitment). Reserved, never reused. */
     const val REFERRAL_SECRET: String = PREFIX + "referral-secret"
+
+    /** Per-invite drop namespace: HKDF(info = INVITE_DROP_NAMESPACE || u16_be(index), 32) (ADR-24, design §8.4). */
+    const val INVITE_DROP_NAMESPACE: String = PREFIX + "invite-drop-namespace"
+
+    /** Per-invite drop key, an X25519 secret (clamped): HKDF(info = INVITE_DROP_KEY || u16_be(index), 32). */
+    const val INVITE_DROP_KEY: String = PREFIX + "invite-drop-key"
 
     val ALL: List<String> = listOf(
         IDENTITY, MESSAGING, WALLET_RESERVED, BACKUP_WRAP, CHANNEL_PSEUDONYM, INVITE_SIGNING, REFERRAL_SECRET,
+        INVITE_DROP_NAMESPACE, INVITE_DROP_KEY,
     )
 }

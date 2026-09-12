@@ -1,6 +1,5 @@
 package org.ghost.identity
 
-import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
@@ -32,24 +31,57 @@ class RootEntropy private constructor(private val bytes: ByteArray) {
         return Hkdf.derive(ikm = bytes, salt = null, info = info, length = 32)
     }
 
+    /**
+     * Per-invite branch (Phase 8 design §8.4, ADR-24): info = label || u16_be(index). The suffix has
+     * a fixed length, so the encoding is injective and never equals a bare label (no label is a
+     * prefix of another, see DerivationLabelsTest).
+     */
+    private fun deriveInviteBranch(label: String, index: Int): ByteArray {
+        require(index in 0..MAX_INVITE_INDEX) { "invite index must be 0..$MAX_INVITE_INDEX" }
+        val info = label.toByteArray(Charsets.UTF_8) + byteArrayOf((index ushr 8).toByte(), index.toByte())
+        return Hkdf.derive(ikm = bytes, salt = null, info = info, length = 32)
+    }
+
     fun identityKeyPair(): Ed25519KeyPair = Ed25519KeyPair.fromSeed(deriveBranch(DerivationLabels.IDENTITY))
 
-    fun inviteSigningKeyPair(): Ed25519KeyPair = Ed25519KeyPair.fromSeed(deriveBranch(DerivationLabels.INVITE_SIGNING))
+    /** Signing key of invite [index]; two invites of one identity never share it (ADR-24). */
+    fun inviteSigningKeyPair(index: Int): Ed25519KeyPair {
+        val seed = deriveInviteBranch(DerivationLabels.INVITE_SIGNING, index)
+        try {
+            return Ed25519KeyPair.fromSeed(seed)
+        } finally {
+            seed.fill(0)
+        }
+    }
+
+    /** Drop namespace of invite [index], where its invitee writes one sealed blob (design §9.3). */
+    fun inviteDropNamespace(index: Int): ByteArray = deriveInviteBranch(DerivationLabels.INVITE_DROP_NAMESPACE, index)
+
+    /** X25519 drop key of invite [index] (clamped secret); re-derived to open drop blobs, never stored. */
+    fun inviteDropKeyPair(index: Int): X25519KeyPair {
+        val secret = deriveInviteBranch(DerivationLabels.INVITE_DROP_KEY, index)
+        try {
+            return X25519KeyPair.fromSecret(secret)
+        } finally {
+            secret.fill(0)
+        }
+    }
+
+    /** Every key of invite [index] (design §8.4): signing key, drop namespace, drop key. */
+    fun inviteKeys(index: Int): InviteKeys =
+        InviteKeys(index, inviteSigningKeyPair(index), inviteDropNamespace(index), inviteDropKeyPair(index))
 
     fun channelPseudonymKeyPair(channelId: ByteArray): Ed25519KeyPair =
         Ed25519KeyPair.fromSeed(deriveChannelPseudonymSeed(channelId))
-
-    fun referralSecret(): ByteArray = deriveBranch(DerivationLabels.REFERRAL_SECRET)
-
-    /** Commitment to the referral secret that travels inside invites (ADR-05); the secret never does. */
-    fun referralCommitment(): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest("ghost/v1/referral-commitment".toByteArray() + referralSecret())
 
     fun publicIdentity(): GhostIdentity = GhostIdentity.fromPublicKey(identityKeyPair().publicKey)
 
     fun zeroize() = bytes.fill(0)
 
     companion object {
+        /** Invite indices are u16 (`ent_state.next_invite_index`, design §11.3). */
+        const val MAX_INVITE_INDEX = 65535
+
         /** FR-1.1: 256 bits from `SecureRandom` (platform CSPRNG). Two installs never collide. */
         fun generate(random: SecureRandom = SecureRandom()): RootEntropy =
             RootEntropy(ByteArray(Bip39.ENTROPY_BYTES).also(random::nextBytes))
