@@ -72,7 +72,10 @@ out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/no-logging.sh" 2>&1 || true)"
 for want in issuer/crates/service/src/logging.rs:3: issuer/crates/service/src/logging.rs:5: \
   issuer/crates/service/src/logging.rs:6: issuer/crates/service/src/logging.rs:7: \
   issuer/crates/service/src/logging.rs:8: issuer/crates/service/src/logging.rs:9: \
-  issuer/crates/service/Cargo.toml:6: issuer/crates/service/Cargo.toml:9: relay/crates/bad/src/logging.rs:3:; do
+  issuer/crates/service/Cargo.toml:6: issuer/crates/service/Cargo.toml:9: relay/crates/bad/src/logging.rs:3: \
+  issuer/crates/service/Cargo.toml:12: issuer/crates/service/Cargo.toml:15: \
+  issuer/crates/service/src/renamed.rs:3: issuer/crates/service/src/renamed.rs:4: \
+  issuer/crates/service/src/renamed.rs:5:; do
   if printf '%s\n' "$out" | grep -qF "$want"; then
     echo "self-test ok: no-logging reports $want"
   else
@@ -90,7 +93,8 @@ fi
 expect_fail issuer-output "$HARNESS/negative-issuer-output"
 out="$(GHOST_ROOT="$HARNESS/negative-issuer-output" bash "$DIR/issuer-output.sh" 2>&1 || true)"
 for want in service/src/service.rs:4: service/src/service.rs:5: service/src/service.rs:6: \
-  service/src/status.rs:4: service/src/store.rs:4: ops/src/report.rs:4: ops/src/output.rs:4: \
+  service/src/service.rs:7: service/src/service.rs:8: service/src/service.rs:9: \
+  service/src/service.rs:10: service/src/status.rs:4: service/src/store.rs:4: ops/src/report.rs:4: ops/src/output.rs:4: \
   ops/src/keygen.rs:3: api/src/lib.rs:3:; do
   if printf '%s\n' "$out" | grep -qF "issuer/crates/$want"; then
     echo "self-test ok: issuer-output reports $want"
@@ -110,8 +114,8 @@ if command -v protoc >/dev/null; then
   expect_fail proto-check "$HARNESS/negative-proto"
   out="$(GHOST_ROOT="$HARNESS/negative-proto" bash "$DIR/proto-check.sh" 2>&1 || true)"
   proto_hits="$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)"
-  if [ "$proto_hits" = "3" ]; then echo "self-test ok: proto-check reports the 3 unversioned request messages"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 3 unversioned request messages" >&2; rc=1; fi
-  for m in MissingRequest WrongNumberRequest NestedRequest; do
+  if [ "$proto_hits" = "5" ]; then echo "self-test ok: proto-check reports the 5 unversioned request messages"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 5 unversioned request messages" >&2; rc=1; fi
+  for m in MissingRequest WrongNumberRequest NestedRequest NestedVersionRequest BraceOnNextLineRequest; do
     if printf '%s\n' "$out" | grep -qF "message $m lacks"; then echo "self-test ok: proto-check reports $m"; else echo "SELF-TEST FAIL: proto-check does not report $m" >&2; rc=1; fi
   done
 elif [ -n "${CI:-}" ]; then

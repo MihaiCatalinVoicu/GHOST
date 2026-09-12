@@ -207,6 +207,61 @@ fn trial_reserve_window() {
     );
 }
 
+/// §19.1 rule 2 for a trial redeemed in the last week of the invite epoch after the token's: the
+/// sweep at the next epoch boundary closes the token's epoch for new redemptions, but the trial's
+/// nullifier stays until its re-serve window ends, so the identical retry is served until
+/// `end(base + 1) + 8 d` (REPLAYED afterwards); the row is deleted later (RET).
+#[test]
+fn trial_redeemed_in_the_last_week_of_the_next_epoch_is_reserved() {
+    let mut w = World::new(true);
+    let base = 2967; // the last week of invite epoch 741
+    w.now = week_start(base) + DAY_SECS / 2;
+    let invite = w.mint(Kind::Invite, 740, "i");
+    let trial = w.trial_blinded("t", base);
+    let first = w.redeem(&invite, base, trial.clone()).unwrap();
+    assert_eq!(first.result, wire::RedeemInviteResult::Ok as i32);
+    // Invite epoch 742 begins: epoch 740 is closed for new redemptions.
+    w.now = week_start(base + 1) + DAY_SECS;
+    w.sweep();
+    assert!(w.issuer().keys_held().contains(&(Kind::Access, base)));
+    assert_eq!(
+        w.redeem(&invite, base, trial.clone())
+            .unwrap()
+            .blind_signatures,
+        first.blind_signatures
+    );
+    let fresh = w.mint(Kind::Invite, 740, "fresh");
+    let other = w.trial_blinded("t2", base + 1);
+    assert_eq!(
+        w.redeem(&fresh, base + 1, other).unwrap_err().code(),
+        tonic::Code::PermissionDenied
+    );
+    // The last second of the guarantee.
+    w.now = week_start(base + 2) + 8 * DAY_SECS - 1;
+    w.sweep();
+    assert_eq!(
+        w.redeem(&invite, base, trial.clone())
+            .unwrap()
+            .blind_signatures,
+        first.blind_signatures
+    );
+    w.now = week_start(base + 2) + 8 * DAY_SECS;
+    w.sweep();
+    assert_eq!(
+        w.redeem(&invite, base, trial).unwrap().result,
+        wire::RedeemInviteResult::Replayed as i32
+    );
+    // Once no trial of the epoch can be re-served any more, its nullifiers are deleted.
+    w.now = week_start(base + 3) + 8 * DAY_SECS;
+    w.sweep();
+    let tx = w.issuer().store().read().unwrap();
+    assert_eq!(
+        ghost_issuer::store::invite_nullifier(&*tx, 740, &invite.nullifier()).unwrap(),
+        None,
+        "RET: an invite nullifier outlives its rule"
+    );
+}
+
 #[test]
 fn the_window_reports_readiness() {
     let (_, full) = fixture::small();

@@ -55,6 +55,25 @@ impl Site {
     }
 }
 
+/// A transaction another task commits on the database while a handler is between two of its
+/// store calls (the interleaving of a concurrent sweep, §19.10). It runs on the inner store, so
+/// it is neither a fault site nor counted.
+pub type StoreHook = Box<dyn FnOnce(&RedbStore) + Send>;
+
+/// Which store call a [`StoreHook`] precedes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HookAt {
+    Read,
+    Write,
+}
+
+struct PendingHook {
+    at: HookAt,
+    /// Calls of that kind still to pass before the hook runs.
+    skip: usize,
+    hook: StoreHook,
+}
+
 /// Which fault sites fire. Sites are numbered from 0 in the order they are reached after `arm`.
 pub struct FaultPlan {
     armed: AtomicBool,
@@ -63,6 +82,7 @@ pub struct FaultPlan {
     sites: Mutex<Vec<Site>>,
     fired: AtomicUsize,
     pending: AtomicBool,
+    hook: Mutex<Option<PendingHook>>,
 }
 
 impl FaultPlan {
@@ -74,7 +94,41 @@ impl FaultPlan {
             sites: Mutex::new(Vec::new()),
             fired: AtomicUsize::new(0),
             pending: AtomicBool::new(false),
+            hook: Mutex::new(None),
         })
+    }
+
+    /// Runs `hook` on the database right before the `n`-th (from 1) store call of kind `at` made
+    /// after this call.
+    pub fn before(&self, at: HookAt, n: usize, hook: StoreHook) {
+        assert!(n >= 1);
+        *self.hook.lock().unwrap() = Some(PendingHook {
+            at,
+            skip: n - 1,
+            hook,
+        });
+    }
+
+    /// True once the hook installed by [`FaultPlan::before`] has run.
+    pub fn hook_ran(&self) -> bool {
+        self.hook.lock().unwrap().is_none()
+    }
+
+    fn run_hook(&self, at: HookAt, db: &RedbStore) {
+        let hook = {
+            let mut slot = self.hook.lock().unwrap();
+            match slot.as_mut() {
+                Some(p) if p.at == at && p.skip > 0 => {
+                    p.skip -= 1;
+                    None
+                }
+                Some(p) if p.at == at => slot.take().map(|p| p.hook),
+                _ => None,
+            }
+        };
+        if let Some(hook) = hook {
+            hook(db);
+        }
     }
 
     pub fn arm(&self) {
@@ -151,9 +205,11 @@ impl WriteTx for FaultyWrite<'_> {
 
 impl Store for FaultyStore {
     fn read(&self) -> Result<Box<dyn ReadTx + '_>, StoreError> {
+        self.plan.run_hook(HookAt::Read, &self.inner);
         self.inner.read()
     }
     fn write(&self) -> Result<Box<dyn WriteTx + '_>, StoreError> {
+        self.plan.run_hook(HookAt::Write, &self.inner);
         if self.plan.hit(Site::StoreBegin).is_some() {
             return Err(StoreError::Db);
         }
@@ -195,6 +251,9 @@ impl Journal for FaultyJournal {
             }
             None => self.inner.append(week, entry),
         }
+    }
+    fn next_seq(&self) -> Result<u64, JournalError> {
+        self.inner.next_seq()
     }
 }
 

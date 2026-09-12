@@ -107,6 +107,72 @@ fn a_torn_tail_is_discarded_and_truncated() {
     assert_eq!(j.entries().unwrap().len(), 3);
 }
 
+/// A crash after the file was extended but before the data reached the disk leaves a zero-filled
+/// (or garbage) region at the end of the last segment: its length field is 0 or out of range, or
+/// a torn frame is followed by zeros. Nothing valid follows, so it is a torn tail (§6.3, §19.5).
+#[test]
+fn a_zero_filled_or_garbage_tail_is_torn() {
+    let frame = entries()[3].encode(3).unwrap();
+    let mut tails: Vec<(String, Vec<u8>)> = Vec::new();
+    for fill in [0x00u8, 0xFF] {
+        for n in [4usize, 16, 93] {
+            tails.push((format!("{n} bytes of {fill:#04x}"), vec![fill; n]));
+        }
+    }
+    tails.push((
+        "a torn frame followed by zeros".into(),
+        [&frame[..20], &[0u8; 64][..]].concat(),
+    ));
+    tails.push((
+        "a whole frame with a bad checksum followed by zeros".into(),
+        [&frame[..frame.len() - 1], &[0u8; 40][..]].concat(),
+    ));
+    for (what, tail) in tails {
+        let dir = tempfile::tempdir().unwrap();
+        let j = FileJournal::open(dir.path()).unwrap();
+        j.append(2960, &entries()[0]).unwrap();
+        j.append(2960, &entries()[2]).unwrap();
+        drop(j);
+        let path = segment(dir.path(), 2960);
+        let valid = std::fs::metadata(&path).unwrap().len();
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&tail);
+        std::fs::write(&path, &bytes).unwrap();
+        let j = FileJournal::open(dir.path()).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(j.entries().unwrap().len(), 2, "{what}");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), valid, "{what}");
+        assert_eq!(j.append(2960, &entries()[3]).unwrap(), 3, "{what}");
+    }
+}
+
+/// Damage followed by a valid frame is never a torn tail, whatever the damage looks like.
+#[test]
+fn damage_followed_by_a_valid_frame_refuses() {
+    for (what, gap) in [
+        ("zeros", vec![0u8; 16]),
+        ("0xFF bytes", vec![0xFF; 16]),
+        (
+            "a torn frame",
+            entries()[3].encode(3).unwrap()[..20].to_vec(),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = segment(dir.path(), 2960);
+        let bytes = [
+            entries()[0].encode(1).unwrap(),
+            gap,
+            entries()[2].encode(2).unwrap(),
+        ]
+        .concat();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            FileJournal::open(dir.path()).err(),
+            Some(JournalError::Corrupt),
+            "{what}"
+        );
+    }
+}
+
 #[test]
 fn damage_before_the_tail_refuses() {
     let dir = tempfile::tempdir().unwrap();
@@ -123,7 +189,7 @@ fn damage_before_the_tail_refuses() {
         FileJournal::open(dir.path()).err(),
         Some(JournalError::Corrupt)
     );
-    // An out-of-range length field that is present.
+    // An out-of-range length field followed by a valid frame.
     let mut bytes = good.clone();
     bytes[..4].copy_from_slice(&u32::MAX.to_be_bytes());
     std::fs::write(&path, &bytes).unwrap();
@@ -274,11 +340,23 @@ fn rows_round_trip() {
     };
     assert_eq!(ClaimRow::decode(&claim.encode()).unwrap(), claim);
     for u in [
-        CreditUse::Discount([1; 16]),
-        CreditUse::Payout([2; 16]),
+        CreditUse::Discount,
+        CreditUse::Payout,
         CreditUse::Refresh([3; 16]),
     ] {
         assert_eq!(CreditUse::decode(&u.encode()).unwrap(), u);
+    }
+    // Only a refresh keeps a reference (§6.1): a discount or payout row carrying one is refused.
+    assert_eq!(
+        CreditUse::Discount.encode(),
+        [[1u8].as_slice(), &[0; 16]].concat()[..]
+    );
+    assert_eq!(CreditUse::Payout.encode()[1..], [0; 16]);
+    for code in [1u8, 2] {
+        let mut row = [0u8; 17];
+        row[0] = code;
+        row[16] = 1;
+        assert_eq!(CreditUse::decode(&row), Err(StoreError::Corrupt));
     }
     assert_eq!(CreditUse::decode(&[4; 17]), Err(StoreError::Corrupt));
 }

@@ -7,9 +7,15 @@
 //!   CREATED ─────────────────────► SEEN ─────────────────────────► CONFIRMED ─────────────────► ISSUED
 //!      │ (amount 0: created CONFIRMED)  ▲  reorg: credited < amount    │                            │
 //!      │                                └──────────────────────────────┘  unissued 30 d: purge      │ +7 d
-//!      │ synced ∧ wallet_height ≥ grace_height + C ∧ credited < amount                              ▼
+//!      │ synced ∧ wallet_height ≥ grace_height + C ∧ credited < amount (∧ no timely reorg pending)   ▼
 //!      └──────────────────────────────► EXPIRED ──(+7 d)──► purged                               purged
 //! ```
+//!
+//! A timely reorg is pending (§19.6 rule 3, §7.4) while a txid recorded in `credited_tx` is not
+//! credited in the current view (back in the pool, re-mined with fewer than C confirmations, or
+//! not visible) and `wallet_height < grace_height + 100 + C`: re-mined at most 100 blocks above
+//! `grace_height` it still counts, so the invoice is not expired (EXPIRED is terminal) before such a
+//! transfer could have its C confirmations.
 
 use std::collections::BTreeSet;
 
@@ -87,9 +93,35 @@ pub fn credits_invoice(row: &InvoiceRow, t: &IncomingEntry, recorded: &BTreeSet<
                 && h <= row.grace_height.saturating_add(TIMELY_REORG_BLOCKS)))
 }
 
-/// The state after a recomputation of a CREATED, SEEN or CONFIRMED XMR invoice (§5.4 table).
+/// True while a txid recorded in `credited_tx` for the invoice is not credited in this view and
+/// could still be, re-mined at most [`TIMELY_REORG_BLOCKS`] above `grace_height` (§19.6 rule 3).
+fn timely_reorg_pending(
+    row: &InvoiceRow,
+    a: &Amounts,
+    h: &RailHeight,
+    confirmations: u64,
+    recorded: &BTreeSet<[u8; 32]>,
+) -> bool {
+    let window_end = row
+        .grace_height
+        .saturating_add(TIMELY_REORG_BLOCKS)
+        .saturating_add(confirmations);
+    h.wallet < window_end
+        && recorded
+            .iter()
+            .any(|txid| !a.credited_txids.iter().any(|(t, _)| t == txid))
+}
+
+/// The state after a recomputation of a CREATED, SEEN or CONFIRMED XMR invoice (§5.4 table, with
+/// the timely-reorg hold of §19.6 rule 3). `recorded` are the txids in `credited_tx` for it.
 /// Returns the new row fields (state, confirmed_height, purge_height, credited, seen).
-pub fn recompute(row: &InvoiceRow, a: &Amounts, h: &RailHeight, confirmations: u64) -> InvoiceRow {
+pub fn recompute(
+    row: &InvoiceRow,
+    a: &Amounts,
+    h: &RailHeight,
+    confirmations: u64,
+    recorded: &BTreeSet<[u8; 32]>,
+) -> InvoiceRow {
     let mut next = row.clone();
     next.credited = a.credited;
     next.seen = a.seen;
@@ -98,7 +130,10 @@ pub fn recompute(row: &InvoiceRow, a: &Amounts, h: &RailHeight, confirmations: u
             next.confirmed_height = h.wallet;
         }
         next.state = InvoiceState::Confirmed;
-    } else if h.synced_view() && h.wallet >= row.grace_height.saturating_add(confirmations) {
+    } else if h.synced_view()
+        && h.wallet >= row.grace_height.saturating_add(confirmations)
+        && !timely_reorg_pending(row, a, h, confirmations, recorded)
+    {
         // Negative decisions only from a synced view (MM10 ExpireFromStaleView).
         next.state = InvoiceState::Expired;
         next.purge_height = h.wallet.saturating_add(PURGE_AFTER_BLOCKS);

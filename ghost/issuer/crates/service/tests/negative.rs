@@ -297,21 +297,94 @@ fn forged_invites_every_byte_flipped_and_bad_authenticators() {
     );
 }
 
+/// A forged credit among ten valid ones, in `RequestInvoice` and in `ClaimPayout` (§13.1, the
+/// invite cases): every byte flipped (354 cases), authenticators 0, 1, n − 1, n and all ones,
+/// `token_type` 0x0001 and 0x0003 → `PERMISSION_DENIED` (an invalid credit, §5.6 step 5 and
+/// step 4); truncated or extended → `INVALID_ARGUMENT` (a size, step 1). Nothing is recorded.
 #[test]
-fn forged_credits_are_refused() {
-    let mut w = World::new(true);
-    let mut credits = mint_many(&w, Kind::Credit, 227, 10, "c");
-    let mut bytes = credits[3].as_bytes().to_vec();
-    bytes[200] ^= 0x01;
-    credits[3] = Token::parse(&bytes).unwrap();
-    assert_eq!(
-        code(w.request("r", BASE_WEEK, &credits)),
-        Code::PermissionDenied
+fn forged_credits_every_byte_flipped_and_bad_authenticators() {
+    let mut w = World::with_params(
+        true,
+        IssuerParams {
+            rate_burst: 100_000,
+            ..harness_params()
+        },
     );
-    assert_eq!(
-        code(w.claim("q", &credits, &address())),
-        Code::PermissionDenied
-    );
+    w.external_credits = true;
+    let credits = mint_many(&w, Kind::Credit, 227, 10, "c");
+    let genuine = credits[3].as_bytes().to_vec();
+    let mut forged: Vec<(String, Vec<u8>)> = Vec::new();
+    for i in 0..genuine.len() {
+        let mut bytes = genuine.clone();
+        bytes[i] ^= 0x01;
+        forged.push((format!("byte {i} flipped"), bytes));
+    }
+    let n = w
+        .schedule
+        .key(Kind::Credit, 227)
+        .unwrap()
+        .public_key
+        .n()
+        .clone();
+    let pad = |v: &BigUint| {
+        let b = v.to_bytes_be();
+        let mut out = vec![0u8; 256 - b.len()];
+        out.extend_from_slice(&b);
+        out
+    };
+    for (what, auth) in [
+        ("authenticator 0", vec![0u8; 256]),
+        ("authenticator 1", pad(&BigUint::from(1u32))),
+        (
+            "authenticator n - 1",
+            pad(&(n.clone() - BigUint::from(1u32))),
+        ),
+        ("authenticator n", pad(&n)),
+        ("authenticator all ones", vec![0xFF; 256]),
+    ] {
+        forged.push((what.into(), [&genuine[..98], &auth[..]].concat()));
+    }
+    for token_type in [0x0001u16, 0x0003] {
+        let mut bytes = genuine.clone();
+        bytes[..2].copy_from_slice(&token_type.to_be_bytes());
+        forged.push((format!("token_type {token_type:#06x}"), bytes));
+    }
+    let set_with = |bytes: &[u8]| -> Vec<Vec<u8>> {
+        let mut set: Vec<Vec<u8>> = credits.iter().map(|t| t.as_bytes().to_vec()).collect();
+        set[3] = bytes.to_vec();
+        set
+    };
+    let request = |set: Vec<Vec<u8>>| wire::RequestInvoiceRequest {
+        credits: set,
+        ..rq("r", BASE_WEEK, &[])
+    };
+    let claim = |set: Vec<Vec<u8>>| wire::ClaimPayoutRequest {
+        version: 1,
+        claim_id: vec![7; 16],
+        credits: set,
+        payout_address: address(),
+    };
+    let now = w.now;
+    for (what, bytes) in &forged {
+        let r = w.issuer().request_invoice_at(request(set_with(bytes)), now);
+        assert_eq!(code(r), Code::PermissionDenied, "RequestInvoice: {what}");
+        let r = w.issuer().claim_payout_at(claim(set_with(bytes)), now);
+        assert_eq!(code(r), Code::PermissionDenied, "ClaimPayout: {what}");
+    }
+    for (what, bytes) in [
+        ("truncated", genuine[..353].to_vec()),
+        ("extended", [&genuine[..], &[0u8][..]].concat()),
+    ] {
+        let r = w
+            .issuer()
+            .request_invoice_at(request(set_with(&bytes)), now);
+        assert_eq!(code(r), Code::InvalidArgument, "RequestInvoice: {what}");
+        let r = w.issuer().claim_payout_at(claim(set_with(&bytes)), now);
+        assert_eq!(code(r), Code::InvalidArgument, "ClaimPayout: {what}");
+    }
+    // Nothing above was recorded: the genuine credits still pay.
+    assert_eq!(w.request("r", BASE_WEEK, &credits).unwrap().result, OK);
+    w.check();
 }
 
 #[test]
@@ -904,6 +977,45 @@ fn revoked_epochs_refuse_new_redemptions_and_serve_recorded_ones() {
         code(w.claim("q", &credits, &address())),
         Code::PermissionDenied
     );
+}
+
+// ------------------------------------------------------------------------------------------------
+// Retention.
+// ------------------------------------------------------------------------------------------------
+
+/// RET (§6.1, §6.4, §19.1 rule 5): the credit nullifiers of a credits-paid invoice and of a claim
+/// are kept 52–65 weeks, the invoice about 7 days after issuance; the nullifier rows carry no
+/// reference to the invoice or the claim, so the set of credits presented together is not kept
+/// beyond the invoice row and the journal segment.
+#[test]
+fn retention_spent_credits_keep_no_invoice_or_claim_reference() {
+    let mut w = World::new(true);
+    w.external_credits = true;
+    let pack = mint_many(&w, Kind::Credit, 227, 10, "d");
+    assert_eq!(w.request("d", BASE_WEEK, &pack).unwrap().result, OK);
+    assert_eq!(
+        w.sign("d").unwrap().state,
+        wire::InvoiceState::Signed as i32
+    );
+    let claimed = mint_many(&w, Kind::Credit, 227, 10, "q");
+    assert_eq!(w.claim("q", &claimed, &address()).unwrap().result, QUEUED);
+    w.mine(5_040);
+    let tx = w.issuer().store().read().unwrap();
+    assert_eq!(
+        store::invoice(&*tx, &w.purchase("d").id).unwrap(),
+        None,
+        "the credits-paid invoice is purged"
+    );
+    let rows = tx
+        .range(ghost_issuer::store::Table::CreditNullifier, &[], None)
+        .unwrap();
+    assert_eq!(rows.len(), 20);
+    for (_, value) in &rows {
+        assert!(matches!(value[0], 1 | 2), "use discount or payout");
+        assert_eq!(value[1..], [0u8; 16], "a spent credit keeps a reference");
+    }
+    drop(tx);
+    w.check();
 }
 
 // ------------------------------------------------------------------------------------------------

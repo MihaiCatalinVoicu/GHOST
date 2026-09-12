@@ -6,13 +6,15 @@ KT_REGEX='\bLog\.[dievw]\(|\bprintln\(|\bprint\(|printStackTrace\(|System\.(out|
 RS_REGEX='\b(println!|print!|eprintln!|eprint!|dbg!)'
 # Phase 8 (design §6.5, §14.1; ADR-26): logging frameworks are banned in every Rust source of the
 # production path (issuer, relay and client-core; the S1 scan found no use in relay or
-# client-core): the paths `tracing::` and `log::` and the bare macros info!, warn!, error!,
-# debug!, trace!, event!, span! (compile_error! and other names ending in them are not matched).
-RS_LOG_REGEX='\b(tracing|log)::|(?<![A-Za-z0-9_:.])(info|warn|error|debug|trace|event|span)!'
+# client-core): the paths `tracing::` and `log::`, the bare macros info!, warn!, error!, debug!,
+# trace!, event!, span! (compile_error! and other names ending in them are not matched), and
+# bringing either crate in under any name (`use tracing as t;`, `extern crate log as l;`), after
+# which `t::info!` would match nothing else.
+RS_LOG_REGEX='\b(tracing|log)::|(?<![A-Za-z0-9_:.])(info|warn|error|debug|trace|event|span)!|\b(use|extern\s+crate)\s+(::)?(tracing|log)\b'
 # The issuer keeps no logs at all: no issuer crate may depend on a logging crate, in any
-# dependency table.
+# dependency table, under its own name or renamed (`t = { package = "tracing" }`).
 LOG_CRATES='tracing|tracing-[A-Za-z0-9_-]+|log|env_logger|log4rs|slog|fern|simplelog'
-LOG_DEPENDENCY_REGEX="^[[:space:]]*($LOG_CRATES)[[:space:]]*(=|\\.)|^[[:space:]]*\\[[^]]*dependencies\\.($LOG_CRATES)\\]"
+LOG_DEPENDENCY_REGEX="^[[:space:]]*($LOG_CRATES)[[:space:]]*(=|\\.)|^[[:space:]]*\\[[^]]*dependencies\\.($LOG_CRATES)\\]|package[[:space:]]*=[[:space:]]*\"($LOG_CRATES)\""
 # One exemption (Phase 8 design §14.1, §19.17; ADR-26 point 7): the report module of the operator
 # tools, the only one that prints, keeps println!/eprintln! for its fixed-vocabulary lines; print!,
 # eprint!, dbg! and every logging macro stay banned there. The path is exact: a report.rs anywhere

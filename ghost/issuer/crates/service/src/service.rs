@@ -10,10 +10,14 @@
 //!
 //! **Handlers** check sizes, then idempotency, then validity (§19.9), and answer with constant
 //! messages only (a handler never echoes client input). Signing happens outside every transaction;
-//! the transaction re-reads what it depends on, appends the journal entry, applies the transition
-//! through [`Issuer::apply`] (the same function replay uses) and commits. A failure between the
-//! journal append and the commit halts the issuer (every call answers `UNAVAILABLE`) until a
-//! restart replays the journal, so a decided outcome is never contradicted in process.
+//! the transaction re-reads what it depends on (closed-through marks included, §19.10), appends
+//! the journal entry, applies the transition through [`Issuer::apply`] (the same function replay
+//! uses) and commits. A failed journal append, apply or commit halts the issuer (every call
+//! answers `UNAVAILABLE`) until a restart replays the journal, so a decided outcome is never
+//! contradicted in process. A handler that was already past its entry checks and queued on the
+//! store's one writer decides nothing after a failure either: inside its transaction it finds the
+//! halt (set before the failed writer released the transaction) or a journal holding one entry
+//! more than the database applied (a failed commit), and answers `UNAVAILABLE`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +25,8 @@ use std::sync::{Mutex, MutexGuard, RwLock};
 
 use ghost_blind_rsa::BigUint;
 use ghost_entitlement::batch::{self, Layout};
-use ghost_entitlement::grid::{price_epoch, week};
-use ghost_entitlement::token::AUTHENTICATOR_LEN;
+use ghost_entitlement::grid::{invite_epoch, price_epoch, week};
+use ghost_entitlement::token::{self, AUTHENTICATOR_LEN, TOKEN_INPUT_LEN, TOKEN_LEN};
 use ghost_entitlement::{Kind, Schedule, ScheduleError, Token};
 use ghost_issuer_api::proto as wire;
 use ghost_issuer_api::{
@@ -46,6 +50,12 @@ use crate::PROTOCOL_VERSION;
 
 /// `base_week` is accepted within ±4 h of the issuer's clock (§19.4).
 pub const BASE_WEEK_TOLERANCE_SECS: u64 = 4 * 3_600;
+/// How long after the start of invite epoch e + 2 the invite nullifiers of epoch e are kept
+/// (§19.1 rule 2 over §6.4): a trial of an epoch-e invite has a base week of at most the first week
+/// of epoch e + 2 (redeemed in the last 4 h of e + 1), and its re-serve must work until
+/// `end(base + 1) + 8 d`, two weeks and 8 days after that start. The rows carry no base week, so
+/// the whole epoch is kept that long; new redemptions of it are refused from the start of e + 2.
+pub const TRIAL_RESERVE_HOLD_SECS: u64 = 22 * 86_400;
 /// A new XMR invoice needs a synced scanner tick younger than this (§19.6).
 pub const TICK_FRESH_SECS: u64 = 120;
 /// Open unpaid invoices at most (§5.9).
@@ -555,7 +565,13 @@ impl Issuer {
 
     /// Decide, then journal (§19.5): the caller has re-checked, inside `tx`, the state the
     /// transition depends on. Appends and syncs the entry, applies it, records it as applied and
-    /// commits. Any failure after the append halts the issuer.
+    /// commits. Any failure from the append on halts the issuer.
+    ///
+    /// Journal order equals commit order only if nothing is appended after an entry that was not
+    /// committed, so inside the transaction, before the append: the issuer is not halted (a failed
+    /// writer halts before it releases the transaction), and the journal's next sequence number is
+    /// `journal_applied + 1` (a failed commit leaves its entry in the journal; it is replayed at the
+    /// restart, never followed in process).
     pub(crate) fn decide(
         &self,
         mut tx: Box<dyn WriteTx + '_>,
@@ -563,9 +579,17 @@ impl Issuer {
         now: u64,
         height: u64,
     ) -> Result<(), Status> {
+        if self.is_halted() {
+            return Err(unavailable());
+        }
+        let applied = store::meta(&*tx, MetaKey::JournalApplied)?.unwrap_or(0);
+        let expected = applied.checked_add(1).ok_or_else(unavailable)?;
+        if self.journal.next_seq() != Ok(expected) {
+            return Err(self.halt());
+        }
         let seq = match self.journal.append(week(now), entry) {
-            Ok(seq) => seq,
-            Err(_) => return Err(self.halt()),
+            Ok(seq) if seq == expected => seq,
+            _ => return Err(self.halt()),
         };
         if self.apply(&mut *tx, entry, now, height).is_err()
             || store::set_meta(&mut *tx, MetaKey::JournalApplied, seq).is_err()
@@ -652,7 +676,7 @@ impl Issuer {
                 tx.put(
                     Table::CreditNullifier,
                     &store::nullifier_key(*epoch, n),
-                    &CreditUse::Discount(e.invoice_id).encode(),
+                    &CreditUse::Discount.encode(),
                 )?;
                 reconcile::add(tx, CounterId::CreditsDiscount, *epoch, 1)?;
             }
@@ -762,7 +786,7 @@ impl Issuer {
             tx.put(
                 Table::CreditNullifier,
                 &store::nullifier_key(*epoch, n),
-                &CreditUse::Payout(e.claim_id).encode(),
+                &CreditUse::Payout.encode(),
             )?;
             reconcile::add(tx, CounterId::CreditsPayout, *epoch, 1)?;
         }
@@ -851,6 +875,19 @@ impl Issuer {
     pub(crate) fn closed_through(&self, key: MetaKey) -> Result<Option<u64>, StoreError> {
         let tx = self.store.read()?;
         store::meta(&*tx, key)
+    }
+
+    /// Inside a decided transaction (§19.5 rule 2, §19.10): true when a sweep committed after the
+    /// handler's checks closed the epoch of any credit, whose nullifiers may then be gone, so
+    /// the spent check that follows could not be trusted.
+    pub(crate) fn credits_closed(
+        tx: &dyn ReadTx,
+        credits: &[credit::PresentedCredit],
+    ) -> Result<bool, StoreError> {
+        let closed = store::meta(tx, MetaKey::ClosedThroughCreditEpoch)?;
+        Ok(credits
+            .iter()
+            .any(|c| closed.is_some_and(|mark| c.epoch <= mark)))
     }
 
     /// The scanner's last tick if it was synced and is younger than [`TICK_FRESH_SECS`].
@@ -956,30 +993,32 @@ impl Issuer {
     ) -> Result<wire::RequestInvoiceResponse, Status> {
         self.ensure_running()?;
         self.take_rate_token(now)?;
-        // 1. Sizes and enum values.
+        // 1. Sizes and enum values (a credit is exactly 354 bytes; its content is a validity
+        // question, step 5).
         if req.version != PROTOCOL_VERSION
             || wire::Rail::try_from(req.rail) != Ok(wire::Rail::Monero)
             || wire::Product::try_from(req.product) != Ok(wire::Product::Pack)
             || req.claim_hash.len() != CLAIM_BYTES
             || req.credits.len() > MAX_DISCOUNT_CREDITS
+            || req.credits.iter().any(|c| c.len() != TOKEN_LEN)
         {
             return Err(rejected());
         }
         let claim_hash: [u8; 32] = fixed(&req.claim_hash)?;
-        let tokens = req
+        // The nullifier covers `token_input` whatever its `token_type`.
+        let nullifiers = req
             .credits
             .iter()
-            .map(|c| Token::parse(c))
-            .collect::<Result<Vec<_>, _>>()
+            .map(|c| c[..TOKEN_INPUT_LEN].try_into().map(token::nullifier))
+            .collect::<Result<Vec<[u8; 32]>, _>>()
             .map_err(|_| rejected())?;
-        let nullifiers: Vec<[u8; 32]> = tokens.iter().map(Token::nullifier).collect();
         let r = request_invoice_digest(req.base_week, &nullifiers);
         // 2. Idempotency first: nothing else is checked for a known claim hash.
         if let Some(answer) = self.known_claim(&*self.store.read()?, &claim_hash, &r)? {
             return Ok(answer);
         }
         // 3. The ES covers the layout and every layout key is held.
-        let paid_in_xmr = tokens.is_empty();
+        let paid_in_xmr = req.credits.is_empty();
         let layout =
             Layout::pack(&self.schedule, req.base_week, paid_in_xmr).map_err(|_| unavailable())?;
         self.require_keys(&layout).map_err(SignFailure::status)?;
@@ -998,6 +1037,12 @@ impl Issuer {
         let credits = if paid_in_xmr {
             Vec::new()
         } else {
+            let tokens = req
+                .credits
+                .iter()
+                .map(|c| Token::parse(c))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| unauthorized())?;
             let closed = self.closed_through(MetaKey::ClosedThroughCreditEpoch)?;
             let credits =
                 credit::verify(&self.schedule, &tokens, now, closed).ok_or_else(unauthorized)?;
@@ -1028,6 +1073,9 @@ impl Issuer {
         let tx = self.store.write()?;
         if let Some(answer) = self.known_claim(&*tx, &claim_hash, &r)? {
             return Ok(answer);
+        }
+        if Self::credits_closed(&*tx, &credits)? {
+            return Err(unauthorized());
         }
         let mask = credit::spent_mask(&*tx, &credits)?;
         if mask != 0 {
@@ -1195,11 +1243,12 @@ impl Issuer {
         })
     }
 
-    /// Runbook housekeeping (§6.4, §19.10): deletes invite nullifiers of epochs before
-    /// `e_now − 1` and credit nullifiers of epochs before `c_now − 4`, raising the persisted
-    /// closed-through high-water marks in the same transaction (a token of a closed epoch is
-    /// refused whatever the clock says later), deletes counters past retention, and destroys
-    /// keys (K4).
+    /// Runbook housekeeping (§6.4, §19.1 rule 2, §19.10): closes invite epochs before
+    /// `e_now − 1` and credit epochs before `c_now − 4` by raising the persisted closed-through
+    /// high-water marks (a new redemption of a closed epoch is refused whatever the clock says
+    /// later), deletes in the same transaction the credit nullifiers of the closed epochs and the
+    /// invite nullifiers of epochs whose trials are all past their re-serve window
+    /// ([`TRIAL_RESERVE_HOLD_SECS`]), deletes counters past retention, and destroys keys (K4).
     pub fn sweep_at(&self, now: u64) -> Result<SweepReport, StoreError> {
         if self.is_halted() {
             return Err(StoreError::Db);
@@ -1207,12 +1256,14 @@ impl Issuer {
         let w = week(now);
         let mut report = SweepReport::default();
         let mut tx = self.store.write()?;
-        if let Some(e) = ghost_entitlement::grid::invite_epoch(w).checked_sub(2) {
+        if let Some(e) = invite_epoch(w).checked_sub(2) {
+            let held = invite_epoch(week(now.saturating_sub(TRIAL_RESERVE_HOLD_SECS)));
             report.invite_nullifiers = close_through(
                 &mut *tx,
                 Table::InviteNullifier,
                 MetaKey::ClosedThroughInviteEpoch,
                 e,
+                held.checked_sub(2),
             )?;
         }
         if let Some(c) = ghost_entitlement::grid::credit_epoch(w).checked_sub(5) {
@@ -1221,6 +1272,7 @@ impl Issuer {
                 Table::CreditNullifier,
                 MetaKey::ClosedThroughCreditEpoch,
                 c,
+                Some(c),
             )?;
         }
         reconcile::sweep(&mut *tx, now)?;
@@ -1239,20 +1291,24 @@ pub struct SweepReport {
 }
 
 /// Raises the closed-through mark to `through` (never lowers it) and deletes every nullifier of
-/// an epoch at or below the mark.
+/// an epoch at or below `delete_through` (never above the mark; `None`: nothing is deleted).
 fn close_through(
     tx: &mut dyn WriteTx,
     table: Table,
     key: MetaKey,
     through: u64,
+    delete_through: Option<u64>,
 ) -> Result<usize, StoreError> {
     let mark = store::meta(tx, key)?.map_or(through, |old| old.max(through));
-    let end = mark.checked_add(1).map(u64::to_be_bytes);
+    store::set_meta(tx, key, mark)?;
+    let Some(last) = delete_through.map(|d| d.min(mark)) else {
+        return Ok(0);
+    };
+    let end = last.checked_add(1).map(u64::to_be_bytes);
     let rows = tx.range(table, &[], end.as_ref().map(|e| e.as_slice()))?;
     for (k, _) in &rows {
         tx.delete(table, k)?;
     }
-    store::set_meta(tx, key, mark)?;
     Ok(rows.len())
 }
 

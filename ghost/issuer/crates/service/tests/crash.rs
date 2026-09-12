@@ -10,15 +10,23 @@
 //! Scope of S4: the payout export and acknowledgement of I-G are slice S6 (this suite covers the
 //! claim itself). The depth of the double-crash enumeration can be raised with
 //! `GHOST_ISSUER_CRASH_DEPTH` (default 2 sites after the first crash).
+//!
+//! Mutant MM3 `NoJournal` (§13.5) is implemented here, in `tests/` only: the ISSUE or the INVITE
+//! entries decided after the snapshot are removed from the journal before the restore, and I-H
+//! must fail on each.
 
 mod common;
+
+use std::panic::AssertUnwindSafe;
 
 use common::chain_port;
 use common::world::{enumerate, seed, Template, World, BASE_WEEK, PRICE};
 use ghost_entitlement::batch;
 use ghost_entitlement::grid::invite_epoch;
-use ghost_entitlement::Kind;
+use ghost_entitlement::{Kind, Token};
+use ghost_issuer::journal::{Entry, FileJournal, Journal};
 use ghost_issuer::reconcile::{self, CounterId};
+use ghost_issuer::store::{self, MetaKey};
 use ghost_issuer_api::proto as wire;
 
 const SIGNED: i32 = wire::InvoiceState::Signed as i32;
@@ -157,6 +165,30 @@ fn i_c_expiry_from_a_synced_view_only() {
     report("I-C", enumerate(&fresh(), i_c, 0));
 }
 
+/// I-C (underpaid, §19.6 rule 2): an underpaid invoice expires. Its credited transfer was
+/// attributed to the invoice when it became final; at the expiry it becomes unattributed revenue,
+/// so incoming = credited + overpaid + unattributed still holds after the purge
+/// (`World::check`).
+fn i_c_underpaid(w: &mut World) {
+    assert_eq!(w.request("u", BASE_WEEK, &[]).unwrap().result, OK);
+    w.pay("u", PRICE / 2);
+    w.mine(10);
+    assert_eq!(w.sign("u").unwrap().state, UNDERPAID);
+    w.mine(720 + 2_160);
+    assert_eq!(w.sign("u").unwrap().state, EXPIRED);
+    assert_eq!(counter(w, CounterId::UnattributedAtomic), PRICE / 2);
+    w.mine(5_040);
+    assert_eq!(
+        w.sign("u").unwrap_err().code(),
+        tonic::Code::PermissionDenied
+    );
+}
+
+#[test]
+fn i_c_underpaid_invoice_expires_into_unattributed_revenue() {
+    report("I-C underpaid", enumerate(&fresh(), i_c_underpaid, 0));
+}
+
 /// I-D: a reorg below 10 confirmations before issuance reverts the credit; a reorg after issuance
 /// is counted and the tokens are re-served.
 fn i_d(w: &mut World) {
@@ -179,6 +211,42 @@ fn i_d(w: &mut World) {
 #[test]
 fn i_d_reorg_before_and_after_issuance() {
     report("I-D", enumerate(&fresh(), i_d, DEPTH));
+}
+
+/// I-D (timely re-mine, §19.6 rule 3, §7.4): the transfer is credited a few blocks before
+/// `grace_height`; after `grace_height + C` a reorg puts it back in the pool, and it is re-mined
+/// above `grace_height` but at most 100 blocks above it. The invoice never expires in between and
+/// is signed once the re-mined transfer has 10 confirmations (MS-6).
+fn i_d_timely(w: &mut World) {
+    let grace = w.chain.blocks() + 720 + 2_160;
+    assert_eq!(w.request("t", BASE_WEEK, &[]).unwrap().result, OK);
+    w.chain.mine_empty(grace - 5 - w.chain.blocks());
+    w.tick();
+    w.pay("t", PRICE);
+    w.mine(10);
+    assert_eq!(w.status("t").unwrap().state, AWAITING_CONFIRMATIONS);
+    w.mine(5);
+    // Wallet at grace + C; the credited transfer goes back to the pool and stays there.
+    w.chain.pop(16, true);
+    w.chain.mine_empty(16);
+    w.tick();
+    assert_eq!(
+        w.sign("t").unwrap().state,
+        AWAITING_CONFIRMATIONS,
+        "expired while its credited txid is in the pool"
+    );
+    // Re-mined at grace + 10, 6 confirmations.
+    w.mine(6);
+    assert_eq!(w.sign("t").unwrap().state, AWAITING_CONFIRMATIONS);
+    w.mine(4);
+    let s = w.sign("t").unwrap();
+    assert_eq!(s.state, SIGNED);
+    w.finalize("t", &s.blind_signatures);
+}
+
+#[test]
+fn i_d_credited_txid_re_mined_after_grace_stays_timely() {
+    report("I-D timely re-mine", enumerate(&fresh(), i_d_timely, 0));
 }
 
 /// I-E: an invite is redeemed once for a trial (identical retries re-served, another request
@@ -282,11 +350,19 @@ fn i_g_claim() {
     report("I-G", enumerate(&with_credits("g").template(), i_g, 0));
 }
 
-/// I-H: restore from a snapshot plus journal replay, with an XMR invoice issued, a credits-paid
-/// invoice issued, a trial and an unpaid invoice all created after the snapshot, and a pool that
-/// must be reset: identical retries are served, different ones refused, no credit or invite is
-/// spent twice and no minor is handed out twice.
-fn i_h(w: &mut World) {
+/// What the I-H client holds across the restore.
+struct HeldAcrossRestore {
+    credits: Vec<Token>,
+    signed_b: Vec<u8>,
+    signed_c: Vec<u8>,
+    invite: Token,
+    trial: Vec<u8>,
+    trial_signatures: Vec<u8>,
+}
+
+/// I-H before the restore: an XMR invoice issued, a credits-paid invoice issued, a trial and an
+/// unpaid invoice, all after the snapshot.
+fn i_h_before(w: &mut World) -> HeldAcrossRestore {
     let credits: Vec<_> = w.wallet.credits[..10].to_vec();
     w.buy_pack("h-b");
     let signed_b = w.sign("h-b").unwrap().blind_signatures;
@@ -299,38 +375,150 @@ fn i_h(w: &mut World) {
     let t = w.redeem(&invite, BASE_WEEK, trial.clone()).unwrap();
     assert_eq!(t.result, wire::RedeemInviteResult::Ok as i32);
     assert_eq!(w.request("h-e", BASE_WEEK, &[]).unwrap().result, OK);
+    HeldAcrossRestore {
+        credits,
+        signed_b,
+        signed_c: signed_c.blind_signatures,
+        invite,
+        trial,
+        trial_signatures: t.blind_signatures,
+    }
+}
 
-    w.restore();
-
-    assert_eq!(w.sign("h-b").unwrap().blind_signatures, signed_b);
+/// I-H after the restore: different requests are refused, identical retries served, no credit or
+/// invite is spent twice and no minor is handed out twice.
+///
+/// The different request always comes first. An identical retry on a CONFIRMED invoice (or for an
+/// unrecorded invite) re-signs the same digest, so it would recreate a decided ISSUE or INVITE
+/// outcome the restore lost and hide it (MM3); only a different request shows whether the
+/// outcome survived the snapshot restore and the journal replay.
+fn i_h_after(w: &mut World, held: &HeldAcrossRestore) {
     let other = other_blinded(w, "h-b");
-    assert_eq!(w.sign_with("h-b", other).unwrap().state, OTHER);
     assert_eq!(
-        w.sign("h-c").unwrap().blind_signatures,
-        signed_c.blind_signatures
+        w.sign_with("h-b", other).unwrap().state,
+        OTHER,
+        "MS-1: another request signed after the restore"
     );
-    let spent = w.request("h-c2", BASE_WEEK, &credits).unwrap();
+    assert_eq!(w.sign("h-b").unwrap().blind_signatures, held.signed_b);
+    let other = other_blinded(w, "h-c");
+    assert_eq!(
+        w.sign_with("h-c", other).unwrap().state,
+        OTHER,
+        "MS-1: another request signed after the restore"
+    );
+    assert_eq!(w.sign("h-c").unwrap().blind_signatures, held.signed_c);
+    let spent = w.request("h-c2", BASE_WEEK, &held.credits).unwrap();
     assert_eq!((spent.result, spent.spent_mask), (CREDITS_SPENT, 0x3FF));
-    assert_eq!(
-        w.redeem(&invite, BASE_WEEK, trial)
-            .unwrap()
-            .blind_signatures,
-        t.blind_signatures
-    );
     let other_trial = w.trial_blinded("h-trial-2", BASE_WEEK);
     assert_eq!(
-        w.redeem(&invite, BASE_WEEK, other_trial).unwrap().result,
-        wire::RedeemInviteResult::Replayed as i32
+        w.redeem(&held.invite, BASE_WEEK, other_trial)
+            .unwrap()
+            .result,
+        wire::RedeemInviteResult::Replayed as i32,
+        "MS-3: an invite redeemed again after the restore"
+    );
+    assert_eq!(
+        w.redeem(&held.invite, BASE_WEEK, held.trial.clone())
+            .unwrap()
+            .blind_signatures,
+        held.trial_signatures
     );
     assert_eq!(w.request("h-e", BASE_WEEK, &[]).unwrap().result, OK);
     assert_eq!(w.request("h-f", BASE_WEEK, &[]).unwrap().result, OK);
     assert_eq!(w.sign("h-a").unwrap().state, SIGNED);
 }
 
-#[test]
-fn i_h_restore_from_snapshot_with_journal_replay() {
+/// I-H: restore from a snapshot plus journal replay, with a pool that must be reset.
+fn i_h(w: &mut World) {
+    let held = i_h_before(w);
+    w.restore();
+    i_h_after(w, &held);
+}
+
+/// The I-H world: ten credits, pack "h-a" bought, then the snapshot.
+fn i_h_world() -> World {
     let mut w = with_credits("h");
     w.buy_pack("h-a");
     w.snapshot();
-    report("I-H", enumerate(&w.template(), i_h, DEPTH));
+    w
+}
+
+#[test]
+fn i_h_restore_from_snapshot_with_journal_replay() {
+    report("I-H", enumerate(&i_h_world().template(), i_h, DEPTH));
+}
+
+/// Rewrites the (closed) journal without the entries after sequence number `after` that `lost`
+/// selects: the decided outcomes a `NoJournal` issuer would not have recorded. Returns how many
+/// entries were removed.
+fn lose_journal_entries(w: &World, after: u64, lost: fn(&Entry) -> bool) -> usize {
+    let dir = w.dir.path().join("journal");
+    let all = FileJournal::open(&dir).unwrap().entries().unwrap();
+    let kept: Vec<Entry> = all
+        .iter()
+        .filter(|(seq, e)| *seq <= after || !lost(e))
+        .map(|(_, e)| e.clone())
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let journal = FileJournal::open(&dir).unwrap();
+    for e in &kept {
+        journal.append(w.week(), e).unwrap();
+    }
+    all.len() - kept.len()
+}
+
+/// Runs I-H with the entries `lost` selects missing from the journal at the restore: how many were
+/// removed, and how I-H after the restore (with `World::check`) ended (the panic message).
+fn i_h_with_lost_entries(lost: fn(&Entry) -> bool) -> (usize, Result<(), String>) {
+    let mut w = i_h_world();
+    let applied = {
+        let tx = w.issuer().store().read().unwrap();
+        store::meta(&*tx, MetaKey::JournalApplied)
+            .unwrap()
+            .unwrap_or(0)
+    };
+    let held = i_h_before(&mut w);
+    w.crash();
+    let removed = lose_journal_entries(&w, applied, lost);
+    w.restore();
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        i_h_after(&mut w, &held);
+        w.check();
+    }))
+    .map_err(|e| {
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default()
+    });
+    (removed, outcome)
+}
+
+#[test]
+fn mm3_control_a_rewritten_journal_passes_i_h() {
+    let (removed, outcome) = i_h_with_lost_entries(|_| false);
+    assert_eq!(removed, 0);
+    outcome.unwrap();
+}
+
+#[test]
+fn mm3_lost_issue_entries_are_caught_by_i_h() {
+    let (removed, outcome) = i_h_with_lost_entries(|e| matches!(e, Entry::Issue { .. }));
+    assert!(removed > 0);
+    let message = outcome.expect_err("MM3 (ISSUE entries not journaled) survived I-H");
+    assert!(
+        message.contains("MS-1"),
+        "caught for another reason: {message}"
+    );
+}
+
+#[test]
+fn mm3_lost_invite_entries_are_caught_by_i_h() {
+    let (removed, outcome) = i_h_with_lost_entries(|e| matches!(e, Entry::Invite { .. }));
+    assert!(removed > 0);
+    let message = outcome.expect_err("MM3 (INVITE entries not journaled) survived I-H");
+    assert!(
+        message.contains("MS-3"),
+        "caught for another reason: {message}"
+    );
 }

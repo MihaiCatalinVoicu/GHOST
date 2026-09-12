@@ -105,10 +105,14 @@ impl Issuer {
             .iter()
             .map(|c| c.value)
             .fold(0u64, u64::saturating_add);
-        // 5. One decided transaction; a loser of the re-check journals nothing.
+        // 5. One decided transaction; a loser of the re-check journals nothing. A sweep that
+        // closed a credit's epoch since step 4 refuses it (its nullifiers may be gone, §19.10).
         let tx = self.store.write()?;
         if let Some(row) = store::claim(&*tx, &claim_id)? {
             return Ok(known(&row, &digest));
+        }
+        if Self::credits_closed(&*tx, &credits)? {
+            return Err(unauthorized());
         }
         let mask = credit::spent_mask(&*tx, &credits)?;
         if mask != 0 {

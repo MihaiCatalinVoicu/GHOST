@@ -12,6 +12,12 @@
 //!   one write transaction: unattributed revenue over (scan_final_height, h.wallet − C] (synced
 //!   views only), every invoice recomputed, stamped or purged, reorg_after_issue counted
 //! ```
+//!
+//! Unattributed revenue (§19.6 rule 2) is decided per transfer when it becomes final; a transfer
+//! credited to an invoice that later expires was counted as attributed then, so at the expiry the
+//! invoice's credited amount is added to `unattributed_atomic` in the same transaction. With the
+//! issuance (`xmr_credited_atomic`) and purge (`overpaid_atomic`) counters every final transfer to a
+//! minor ≥ 1 is thus counted once: incoming = credited + overpaid + unattributed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -154,6 +160,7 @@ impl Issuer {
             store::set_meta(&mut *tx, MetaKey::ScanFinalHeight, mark)?;
         }
 
+        let mut expired_credit = 0u64;
         for (id, row) in &rows {
             let mut next = row.clone();
             // Heights a credits-paid invoice or a journal replay could not know yet.
@@ -174,7 +181,11 @@ impl Issuer {
                 let a = invoice::amounts(row, xs, c, &txids(id));
                 match row.state {
                     InvoiceState::Created | InvoiceState::Seen | InvoiceState::Confirmed => {
-                        next = invoice::recompute(&next, &a, h, c);
+                        next = invoice::recompute(&next, &a, h, c, &txids(id));
+                        if next.state == InvoiceState::Expired {
+                            // Revenue no invoice will use (§19.6 rule 2).
+                            expired_credit = expired_credit.saturating_add(next.credited);
+                        }
                         for (txid, th) in &a.credited_txids {
                             let known = rec.iter().find(|(t, _)| t == txid).map(|(_, x)| *x);
                             if known != Some(*th) {
@@ -229,6 +240,13 @@ impl Issuer {
             week(now),
             report.reorg_after_issue,
         )?;
+        reconcile::add(
+            &mut *tx,
+            CounterId::UnattributedAtomic,
+            week(now),
+            expired_credit,
+        )?;
+        report.unattributed_atomic = report.unattributed_atomic.saturating_add(expired_credit);
         tx.commit()?;
         Ok(report)
     }

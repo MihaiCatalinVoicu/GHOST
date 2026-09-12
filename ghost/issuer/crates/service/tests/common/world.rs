@@ -20,12 +20,14 @@ use ghost_entitlement::grid::week;
 use ghost_entitlement::{Kind, Schedule, Token};
 use ghost_issuer::custody::KeyWindow;
 use ghost_issuer::journal::FileJournal;
-use ghost_issuer::reconcile::{self, Mismatch};
+use ghost_issuer::reconcile::{self, CounterId, Counters, Mismatch};
 use ghost_issuer::scanner::TickReport;
 use ghost_issuer::service::{
     Issuer, IssuerParams, OpenMode, Ports, Random, RandomError, StartupError,
 };
-use ghost_issuer::store::{self, InvoiceState, PayWith, RedbStore};
+use ghost_issuer::store::{
+    self, InvoiceRow, InvoiceState, MetaKey, PayWith, ReadTx, RedbStore, Table,
+};
 use ghost_issuer_api::proto as wire;
 use sha2::{Digest, Sha256};
 use tonic::Status;
@@ -742,6 +744,19 @@ impl World {
                 "MS-3: credit nullifier lost"
             );
         }
+        // RET (§6.1, §19.1 rule 5): a credit spent for a discount (use 1) or a payout (use 2)
+        // keeps no reference to its invoice or claim, which are deleted within weeks while the
+        // nullifier stays for 52–65; only a refresh (use 3) keeps the first 16 bytes of its digest.
+        for (_, value) in tx.range(Table::CreditNullifier, &[], None).unwrap() {
+            assert_eq!(value.len(), 17, "credit_nullifier row length");
+            if matches!(value[0], 1 | 2) {
+                assert_eq!(
+                    value[1..],
+                    [0u8; 16],
+                    "RET: a spent credit references its invoice or claim"
+                );
+            }
+        }
         let counters = reconcile::all(&*tx).unwrap();
         let mismatches: Vec<Mismatch> = reconcile::check(&counters, &self.schedule, self.now)
             .into_iter()
@@ -750,6 +765,67 @@ impl World {
             })
             .collect();
         assert!(mismatches.is_empty(), "reconciliation: {mismatches:?}");
+        self.check_incoming(&*tx, &rows, &counters);
+    }
+
+    /// §6.9, §19.6 rule 2, computed from the `ChainPort`: every qualifying transfer to a minor ≥ 1
+    /// mined at or below `scan_final_height` is counted exactly once, as credited revenue
+    /// (`xmr_credited_atomic`), overpayment, unattributed revenue, or as the credited amount of an
+    /// invoice that is not settled yet (for an ISSUED invoice the amount is already in
+    /// `xmr_credited_atomic`, so only the excess is pending). Checked when the scanner's last
+    /// synced tick saw the current chain (`scan_final_height = blocks − C`) and no reorg after
+    /// issuance (a declared financial residue, §5.4) happened.
+    fn check_incoming(
+        &self,
+        tx: &dyn ReadTx,
+        rows: &[([u8; 16], InvoiceRow)],
+        counters: &Counters,
+    ) {
+        let c = u64::from(self.schedule.constants().confirmations);
+        let chain = self.chain.state();
+        let Some(final_height) = store::meta(tx, MetaKey::ScanFinalHeight).unwrap() else {
+            return;
+        };
+        let total = |id: CounterId| -> i128 {
+            counters
+                .iter()
+                .filter(|((i, _), _)| *i == id)
+                .map(|(_, v)| i128::from(*v))
+                .sum()
+        };
+        if chain.blocks.saturating_sub(c) != final_height || total(CounterId::ReorgAfterIssue) > 0 {
+            return;
+        }
+        let incoming: i128 = chain
+            .txs
+            .iter()
+            .filter(|t| {
+                t.minor >= 1
+                    && t.unlock_time == 0
+                    && !t.double_spend_seen
+                    && t.height.is_some_and(|h| h <= final_height)
+            })
+            .map(|t| i128::from(t.amount))
+            .sum();
+        let counted = total(CounterId::XmrCreditedAtomic)
+            + total(CounterId::OverpaidAtomic)
+            + total(CounterId::UnattributedAtomic);
+        let pending: i128 = rows
+            .iter()
+            .filter(|(_, r)| r.pay_with == PayWith::Monero)
+            .map(|(_, r)| match r.state {
+                InvoiceState::Created | InvoiceState::Seen | InvoiceState::Confirmed => {
+                    i128::from(r.credited)
+                }
+                InvoiceState::Issued => i128::from(r.credited) - i128::from(r.amount),
+                InvoiceState::Expired => 0,
+            })
+            .sum();
+        assert_eq!(
+            incoming,
+            counted + pending,
+            "§19.6: incoming to minors >= 1 != credited + overpaid + unattributed"
+        );
     }
 }
 

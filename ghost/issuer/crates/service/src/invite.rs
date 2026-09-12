@@ -1,7 +1,8 @@
 //! `RedeemInvite` (Phase 8 design §5.6, §8.3, §8.7, §19.9): an unspent invite token buys a trial,
 //! blind access tokens for the base week and the next one under the ordinary access keys. The
-//! issuer keeps only `invite_nullifier[(epoch, N)] → trial digest` (journaled, until the start of
-//! epoch + 2) and the trial counters.
+//! issuer keeps only `invite_nullifier[(epoch, N)] → trial digest` (journaled; closed for new
+//! redemptions from the start of epoch + 2, deleted once every trial of the epoch is past its
+//! re-serve window, [`crate::service::TRIAL_RESERVE_HOLD_SECS`]) and the trial counters.
 //!
 //! Order: sizes; the token verifies under an ES INVITE key of **any** listed epoch; the nullifier
 //! lookup (an identical request is re-served whatever the epoch, a different one is `REPLAYED`);
@@ -96,6 +97,10 @@ impl Issuer {
             drop(tx);
             drop(sigs);
             return self.reserve_trial(stored == digest, req.base_week, &req.blinded);
+        }
+        // A sweep that closed the epoch since step 5 refuses the new redemption (§19.10).
+        if store::meta(&*tx, MetaKey::ClosedThroughInviteEpoch)?.is_some_and(|c| epoch <= c) {
+            return Err(unauthorized());
         }
         self.decide(
             tx,

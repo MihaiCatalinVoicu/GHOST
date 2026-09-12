@@ -130,6 +130,12 @@ impl ChainPort {
         c.blocks += n;
     }
 
+    /// Adds `n` blocks that mine nothing: pool transfers stay in the pool (a miner that leaves a
+    /// transaction out, so it is mined later, at a greater height).
+    pub fn mine_empty(&self, n: u64) {
+        self.lock().blocks += n;
+    }
+
     /// Removes the top `n` blocks; their transfers go back to the pool (`keep`) or vanish.
     pub fn pop(&self, n: u64, keep: bool) {
         let mut c = self.lock();

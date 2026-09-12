@@ -21,6 +21,10 @@
 //! transaction, after re-checking the state it depends on, and commits after the append returned:
 //! only decided outcomes are journaled and journal order equals commit order. An entry whose
 //! commit never happened (a crash between fsync and commit) is the outcome that had already won.
+//! The next entry is appended only while the journal holds exactly the entries the database has
+//! applied ([`Journal::next_seq`] = `journal_applied + 1`, checked inside the transaction), and a
+//! [`FileJournal`] whose write or sync failed refuses every later append until it is reopened
+//! (the file may hold part of the failed frame).
 //!
 //! Recorded deviations from the §6.3 entry list, each needed to replay "exactly as the handler
 //! would": INVOICE carries the subaddress (the idempotent re-serve returns it) and the epoch of each
@@ -28,10 +32,14 @@
 //! the trial's base week (the trial counters need it).
 //!
 //! **Files.** Weekly segments `issued.journal.<week>` in one directory; a segment is never renamed.
-//! Entries are numbered from 1 without gaps across segments. At open, a torn final frame of the
-//! last segment (short, or a bad checksum on the frame that ends the file) is discarded and the
-//! file truncated: its commit cannot have happened. Anything else that does not decode refuses the
-//! start. Segments are pruned only by [`FileJournal::prune`] (runbook B1).
+//! Entries are numbered from 1 without gaps across segments. At open, a torn tail of the last
+//! segment is discarded and the file truncated: its commit cannot have happened. A torn tail is
+//! everything from the first frame that does not verify (short, a length out of range, a bad
+//! checksum) to the end of the file, provided no valid frame starts anywhere after it: a partial
+//! write, or a region a crash left zero-filled or with stale bytes after the file was extended.
+//! Anything else that does not decode (damage followed by a valid frame, damage in an earlier
+//! segment, a verified frame of an unknown format) refuses the start. Segments are pruned only by
+//! [`FileJournal::prune`] (runbook B1).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -289,12 +297,17 @@ pub trait Journal: Send + Sync {
     /// Appends `entry` with the next sequence number to the segment of `week` (or of the latest
     /// segment, if that is later) and makes it durable before returning its sequence number.
     fn append(&self, week: u64, entry: &Entry) -> Result<u64, JournalError>;
+    /// The sequence number the next append gets; an error while appends are refused.
+    fn next_seq(&self) -> Result<u64, JournalError>;
 }
 
 struct Active {
     next_seq: u64,
     /// Week and handle of the segment the next entry goes to (the latest existing one).
     segment: Option<(u64, File)>,
+    /// A write or sync failed: the segment may end in part of a frame, so nothing is appended
+    /// after it until the journal is reopened (which truncates the torn tail).
+    poisoned: bool,
 }
 
 /// The production journal: segment files in one directory.
@@ -313,8 +326,9 @@ struct Segment {
 }
 
 impl FileJournal {
-    /// Opens (creating the directory if needed) and validates every segment. A torn final frame
-    /// of the last segment is truncated away; any other damage or a sequence gap refuses the open.
+    /// Opens (creating the directory if needed) and validates every segment. A torn tail of the
+    /// last segment (nothing valid after the first frame that does not verify) is truncated away;
+    /// any other damage or a sequence gap refuses the open.
     pub fn open(dir: &Path) -> Result<Self, JournalError> {
         std::fs::create_dir_all(dir).map_err(|_| JournalError::Io)?;
         let segments = read_segments(dir)?;
@@ -341,7 +355,11 @@ impl FileJournal {
         };
         Ok(Self {
             dir: dir.to_path_buf(),
-            active: Mutex::new(Active { next_seq, segment }),
+            active: Mutex::new(Active {
+                next_seq,
+                segment,
+                poisoned: false,
+            }),
         })
     }
 
@@ -402,6 +420,9 @@ impl Journal for FileJournal {
 
     fn append(&self, week: u64, entry: &Entry) -> Result<u64, JournalError> {
         let mut active = self.lock();
+        if active.poisoned {
+            return Err(JournalError::Io);
+        }
         let seq = active.next_seq;
         let frame = entry.encode(seq)?;
         if frame.len() > 4 + MAX_FRAME_LEN + CHECKSUM_LEN {
@@ -418,11 +439,25 @@ impl Journal for FileJournal {
             active.segment = Some((target, file));
         }
         let (_, file) = active.segment.as_mut().ok_or(JournalError::Io)?;
-        file.write_all(&frame)
+        if file
+            .write_all(&frame)
             .and_then(|()| file.sync_data())
-            .map_err(|_| JournalError::Io)?;
+            .is_err()
+        {
+            active.poisoned = true;
+            return Err(JournalError::Io);
+        }
         active.next_seq = seq + 1;
         Ok(seq)
+    }
+
+    fn next_seq(&self) -> Result<u64, JournalError> {
+        let active = self.lock();
+        if active.poisoned {
+            Err(JournalError::Io)
+        } else {
+            Ok(active.next_seq)
+        }
     }
 }
 
@@ -494,47 +529,40 @@ fn read_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
     Ok(segments)
 }
 
-/// Parses one segment: its entries and the length of its valid prefix. A torn tail is accepted
-/// only in the last segment.
+/// Parses one segment: its entries and the length of its valid prefix. From the first frame that
+/// does not verify, the rest of the last segment is a torn tail if no valid frame starts at any
+/// later offset (a crash may leave a partial frame, zeros or stale bytes after the last durable
+/// frame, but never a valid frame after a torn one: appends stop at the first failure). A valid
+/// frame after the damage, or damage in an earlier segment, is corruption.
 fn parse_segment(bytes: &[u8], is_last: bool) -> Result<(Vec<(u64, Entry)>, u64), JournalError> {
     let mut entries = Vec::new();
     let mut pos = 0usize;
     while pos < bytes.len() {
-        let rest = &bytes[pos..];
-        let torn = || {
-            if is_last {
-                Ok(())
-            } else {
-                Err(JournalError::Corrupt)
+        let Some((seq, tag, body, next)) = frame_at(bytes, pos) else {
+            if !is_last || (pos + 1..bytes.len()).any(|p| frame_at(bytes, p).is_some()) {
+                return Err(JournalError::Corrupt);
             }
+            break;
         };
-        if rest.len() < 4 {
-            torn()?;
-            break;
-        }
-        let len = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
-        // The length field is written in the same write as the frame: a present, out-of-range
-        // length is damage, not a torn write.
-        if !(9..=MAX_FRAME_LEN).contains(&len) {
-            return Err(JournalError::Corrupt);
-        }
-        let need = 4 + len + CHECKSUM_LEN;
-        if rest.len() < need {
-            torn()?;
-            break;
-        }
-        let (frame, checksum) = rest[..need].split_at(4 + len);
-        if Sha256::digest(frame).as_slice() != checksum {
-            if pos + need == bytes.len() {
-                torn()?;
-                break;
-            }
-            return Err(JournalError::Corrupt);
-        }
-        let seq = u64::from_be_bytes(frame[4..12].try_into().map_err(|_| JournalError::Corrupt)?);
-        let entry = Entry::decode(frame[12], &frame[13..])?;
-        entries.push((seq, entry));
-        pos += need;
+        entries.push((seq, Entry::decode(tag, body)?));
+        pos = next;
     }
     Ok((entries, pos as u64))
+}
+
+/// The frame starting at `pos`, if it is whole, its length in range and its checksum verified:
+/// its sequence number, tag, body and the offset after it.
+fn frame_at(bytes: &[u8], pos: usize) -> Option<(u64, u8, &[u8], usize)> {
+    let rest = bytes.get(pos..)?;
+    let len = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+    if !(9..=MAX_FRAME_LEN).contains(&len) {
+        return None;
+    }
+    let need = 4 + len + CHECKSUM_LEN;
+    let (frame, checksum) = rest.get(..need)?.split_at(4 + len);
+    if Sha256::digest(frame).as_slice() != checksum {
+        return None;
+    }
+    let seq = u64::from_be_bytes(frame[4..12].try_into().ok()?);
+    Some((seq, frame[12], &frame[13..], pos + need))
 }

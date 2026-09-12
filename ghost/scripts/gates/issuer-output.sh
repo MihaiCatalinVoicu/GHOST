@@ -2,15 +2,16 @@
 # Gate (Phase 8 design §6.5, §14.1, §19.17 point 4, §19.20 point 5; ADR-26 point 7): what the
 # issuer crates may write.
 #   - ghost/issuer/crates/service: only src/status.rs, src/store.rs and src/journal.rs create,
-#     open for writing, rename, truncate or remove files (the payout export module joins them in
-#     slice S6), and no module writes to stdout or stderr: the issuer keeps no logs, operators read
-#     status.json.
+#     open for writing, rename, truncate, link or remove files or directories (a redb database is
+#     written by Database::create, Database::open and Builder::new().create; the payout export
+#     module joins them in slice S6), and no module writes to stdout or stderr: the issuer keeps
+#     no logs, operators read status.json.
 #   - ghost/issuer/crates/ops: only src/report.rs writes to the console (fixed vocabulary) and only
 #     src/output.rs writes files.
 #   - every other issuer crate writes neither files nor to the console.
 # Build scripts and tests are outside the scan (src/ only), as in every other gate.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-WRITE_REGEX='\bFile::(create|create_new|options)\b|\bOpenOptions\b|\bfs::(write|copy|rename|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|hard_link|set_permissions)\b|\bDatabase::(create|builder)\b|\.set_len\(|\bNamedTempFile\b|\btempfile::'
+WRITE_REGEX='\bFile::(create|create_new|options)\b|\bOpenOptions\b|\bDirBuilder\b|\bfs::(write|copy|rename|remove_file|remove_dir|remove_dir_all|create_dir|create_dir_all|hard_link|soft_link|symlink|symlink_file|symlink_dir|set_permissions)\b|\bDatabase::(create|open|builder)\b|\bBuilder::new\(\)\s*\.\s*create|\.set_len\(|\bNamedTempFile\b|\btempfile::'
 CONSOLE_REGEX='\b(println!|print!|eprintln!|eprint!|dbg!)|\b(std::)?io::(stdout|stderr)\b|\bstdout\(\)|\bstderr\(\)'
 while IFS= read -r f; do
   [ -n "$f" ] || continue

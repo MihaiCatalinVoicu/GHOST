@@ -16,7 +16,7 @@
 //! | `minor_index` | minor u32 | invoice id [16] |
 //! | `credited_tx` | invoice id [16] ‖ txid [32] | height u64 |
 //! | `invite_nullifier` | epoch u64 ‖ N [32] | trial digest [32] |
-//! | `credit_nullifier` | epoch u64 ‖ N [32] | use u8 ‖ ref [16] |
+//! | `credit_nullifier` | epoch u64 ‖ N [32] | use u8 ‖ ref [16] (zero except for a refresh) |
 //! | `claim` | claim id [16] | [`ClaimRow`] (153 bytes) |
 //! | `batch` | batch id [16] | state u8 ‖ week u64 ‖ total u64 ‖ entries u16 (written from S6) |
 //! | `counter` | index u64 ‖ counter id u8 | u64 |
@@ -608,37 +608,42 @@ pub fn invite_nullifier(
         .transpose()
 }
 
-/// What a credit was used for (`credit_nullifier.use`) and its reference: the invoice id
-/// (discount), the claim id (payout) or the first 16 bytes of the blinded digest (refresh).
+/// What a credit was used for (`credit_nullifier.use`, §6.1). Only a refresh keeps a reference,
+/// the first 16 bytes of its blinded digest (its idempotent re-serve compares it, §5.6). A
+/// discount or a payout keeps none: the nullifier outlives the invoice (≈ 7 days after issuance)
+/// and the claim (batch paid + 7 days) by up to 65 weeks, and a reference would keep the set of
+/// credits presented together, a purchase-cadence fingerprint (§19.1 rule 5), for that long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CreditUse {
-    Discount([u8; 16]),
-    Payout([u8; 16]),
+    Discount,
+    Payout,
     Refresh([u8; 16]),
 }
 
 impl CreditUse {
     pub fn encode(&self) -> [u8; 17] {
-        let (code, reference) = match self {
-            CreditUse::Discount(r) => (1, r),
-            CreditUse::Payout(r) => (2, r),
-            CreditUse::Refresh(r) => (3, r),
-        };
         let mut out = [0u8; 17];
-        out[0] = code;
-        out[1..].copy_from_slice(reference);
+        match self {
+            CreditUse::Discount => out[0] = 1,
+            CreditUse::Payout => out[0] = 2,
+            CreditUse::Refresh(r) => {
+                out[0] = 3;
+                out[1..].copy_from_slice(r);
+            }
+        }
         out
     }
 
+    /// Strict: a discount or payout row with a non-zero reference does not decode.
     pub fn decode(bytes: &[u8]) -> Result<Self, StoreError> {
         if bytes.len() != 17 {
             return Err(StoreError::Corrupt);
         }
-        let reference = array(&bytes[1..])?;
-        Ok(match bytes[0] {
-            1 => CreditUse::Discount(reference),
-            2 => CreditUse::Payout(reference),
-            3 => CreditUse::Refresh(reference),
+        let reference: [u8; 16] = array(&bytes[1..])?;
+        Ok(match (bytes[0], reference == [0; 16]) {
+            (1, true) => CreditUse::Discount,
+            (2, true) => CreditUse::Payout,
+            (3, _) => CreditUse::Refresh(reference),
             _ => return Err(StoreError::Corrupt),
         })
     }
