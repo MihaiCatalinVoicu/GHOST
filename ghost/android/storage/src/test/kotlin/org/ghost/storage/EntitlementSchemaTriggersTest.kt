@@ -129,6 +129,37 @@ class EntitlementSchemaTriggersTest {
     }
 
     @Test
+    fun sentNeverGoesBackEvenUnderOrReplace() = EntitlementFixture().use { f ->
+        // Under OR REPLACE, a NULL written into a NOT NULL column with a DEFAULT becomes that default
+        // (0) after the BEFORE triggers ran. `NEW.sent < OLD.sent` is NULL for it, SQLite then skips
+        // the trigger, and a sent request would get unfrozen secrets. The comparison is NULL-safe.
+        val orReplace = "UPDATE OR REPLACE ent_purchase SET sent = NULL WHERE purchase_id = ?"
+        val sentOf = "SELECT sent FROM ent_purchase WHERE purchase_id = ?"
+        f.purchase(1)
+        assertEquals(1, f.updatePurchase(1, "sent = 1"))
+        f.db.rejects(frozen, orReplace, purchaseId(1))
+        assertEquals(1L, f.db.queryLong(sentOf, listOf(purchaseId(1))))
+        f.rejectsPurchaseUpdate(frozen, 1, "seed = ?, layout_digest = ?, base_week = ?", bytes(32, 9), bytes(32, 9), WEEK0 + 1)
+        assertEquals(1, f.invoice(1))
+        f.db.rejects(frozen, orReplace, purchaseId(1))
+        // An unsent flow never takes a NULL either, and a plain UPDATE is refused by the trigger too.
+        f.purchase(2)
+        f.db.rejects(frozen, orReplace, purchaseId(2))
+        f.rejectsPurchaseUpdate(frozen, 2, "sent = NULL")
+        assertEquals(0L, f.db.queryLong(sentOf, listOf(purchaseId(2))))
+
+        val claimGuard = "a claim keeps its address and is decided once"
+        val claimOrReplace = "UPDATE OR REPLACE ent_claim SET sent = NULL WHERE claim_id = ?"
+        f.claim(1)
+        assertEquals(1, f.db.changes("UPDATE ent_claim SET sent = 1 WHERE claim_id = ?", claimId(1)))
+        f.db.rejects(claimGuard, claimOrReplace, claimId(1))
+        f.db.rejects(claimGuard, "UPDATE ent_claim SET sent = NULL WHERE claim_id = ?", claimId(1))
+        assertEquals(1L, f.db.queryLong("SELECT sent FROM ent_claim WHERE claim_id = ?", listOf(claimId(1))))
+        assertEquals(1, f.decideClaim(1, "queued", 50_000L))
+        f.db.rejects(claimGuard, claimOrReplace, claimId(1))
+    }
+
+    @Test
     fun kindAndPaymentNeverChange() = EntitlementFixture().use { f ->
         f.purchase(1)
         f.rejectsPurchaseUpdate(frozen, 1, "pay_with = 'credits'")

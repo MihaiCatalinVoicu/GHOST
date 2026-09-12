@@ -58,6 +58,11 @@ class EntitlementSchemaIntrospectionTest {
             for (column in columns(db, table)) {
                 val lower = column.lowercase()
                 val qualified = "$table.$column"
+                // `%` casts a REAL to INTEGER first, so granularity also needs the stored type.
+                val typed = sql.contains("typeof($column) = 'integer'")
+                if (lower.endsWith("_minute") || lower.endsWith("_hour") || lower.endsWith("_day") || timeLike.containsMatchIn(lower)) {
+                    assertTrue("$qualified needs typeof($column) = 'integer'", typed)
+                }
                 when {
                     lower.endsWith("_minute") -> {
                         assertTrue("$qualified needs % 60 = 0", sql.contains("$column % 60 = 0"))
@@ -89,6 +94,7 @@ class EntitlementSchemaIntrospectionTest {
         MigrationRunner(db).migrate()
         val weekColumns = entTables.flatMap { t -> columns(db, t).filter { it.contains("week") }.map { "$t.$it" } }
         assertEquals(listOf("ent_purchase.base_week"), weekColumns)
+        assertTrue(createSql(db, "ent_purchase").contains("typeof(base_week) = 'integer'"))
     }
 
     @Test

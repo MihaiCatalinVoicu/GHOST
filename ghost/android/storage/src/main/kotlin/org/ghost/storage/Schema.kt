@@ -374,11 +374,14 @@ object Schema {
                 "DROP TABLE v3_migration_guard",
                 "DROP TABLE entitlement",
                 "DROP TABLE referral",
+                // Every time column and grid index (week, epoch) also CHECKs typeof(x) = 'integer':
+                // SQLite's % casts a REAL to INTEGER first, so `x % 60 = 0` alone would accept
+                // 1757491200.5, a time finer than a minute (never persisted, design §11.3).
                 // (1) Accepted ES keys: the device's append-only memory of (kind, epoch) -> key id (ES
                 // rule 5). epoch is a week or epoch index of the grid, not a time.
                 """CREATE TABLE ent_key (
                     kind    TEXT    NOT NULL CHECK (kind IN ('access', 'invite', 'credit')),
-                    epoch   INTEGER NOT NULL CHECK (epoch >= 0),
+                    epoch   INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
                     key_id  BLOB    NOT NULL CHECK (length(key_id) = 32),
                     PRIMARY KEY (kind, epoch)
                 ) WITHOUT ROWID""",
@@ -387,7 +390,7 @@ object Schema {
                 // digests. Append-only like ent_key.
                 """CREATE TABLE ent_schedule_fact (
                     fact    TEXT    NOT NULL CHECK (fact IN ('slots', 'price')),
-                    epoch   INTEGER NOT NULL CHECK (epoch >= 0),
+                    epoch   INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
                     digest  BLOB    NOT NULL CHECK (length(digest) = 32),
                     PRIMARY KEY (fact, epoch)
                 ) WITHOUT ROWID""",
@@ -399,7 +402,7 @@ object Schema {
                     schedule_digest        BLOB    NOT NULL CHECK (length(schedule_digest) = 32),
                     next_invite_index      INTEGER NOT NULL DEFAULT 0 CHECK (next_invite_index BETWEEN 0 AND 65535),
                     payout_salt            BLOB    NOT NULL CHECK (length(payout_salt) = 32),
-                    restore_scan_until_day INTEGER CHECK (restore_scan_until_day IS NULL OR restore_scan_until_day >= 0),
+                    restore_scan_until_day INTEGER CHECK (restore_scan_until_day IS NULL OR (typeof(restore_scan_until_day) = 'integer' AND restore_scan_until_day >= 0)),
                     auto_renew_credits     INTEGER NOT NULL DEFAULT 0 CHECK (auto_renew_credits IN (0, 1)),
                     alarm_flags            INTEGER NOT NULL DEFAULT 0 CHECK (alarm_flags BETWEEN 0 AND 7)
                 )""",
@@ -422,19 +425,19 @@ object Schema {
                     subaddress         TEXT    CHECK (subaddress IS NULL OR length(subaddress) = 95),
                     amount_atomic      INTEGER CHECK (amount_atomic IS NULL OR amount_atomic >= 0),
                     input_token        BLOB    CHECK (input_token IS NULL OR length(input_token) = 354),
-                    base_week          INTEGER CHECK (base_week IS NULL OR base_week >= 0),
+                    base_week          INTEGER CHECK (base_week IS NULL OR (typeof(base_week) = 'integer' AND base_week >= 0)),
                     schedule_seq       INTEGER CHECK (schedule_seq IS NULL OR schedule_seq >= 1),
                     layout_digest      BLOB    CHECK (layout_digest IS NULL OR length(layout_digest) = 32),
                     sent               INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1)),
                     disclosed          INTEGER NOT NULL DEFAULT 0 CHECK (disclosed IN (0, 1)),
                     shown              INTEGER NOT NULL DEFAULT 0 CHECK (shown IN (0, 1)),
                     prev_state         INTEGER NOT NULL DEFAULT 0 CHECK (prev_state BETWEEN 0 AND 6),
-                    created_hour       INTEGER CHECK (created_hour IS NULL OR created_hour % 3600 = 0),
-                    receipt_minute     INTEGER CHECK (receipt_minute IS NULL OR receipt_minute % 60 = 0),
+                    created_hour       INTEGER CHECK (created_hour IS NULL OR (typeof(created_hour) = 'integer' AND created_hour % 3600 = 0)),
+                    receipt_minute     INTEGER CHECK (receipt_minute IS NULL OR (typeof(receipt_minute) = 'integer' AND receipt_minute % 60 = 0)),
                     outstanding_atomic INTEGER CHECK (outstanding_atomic IS NULL OR outstanding_atomic >= 0),
-                    next_due_minute    INTEGER CHECK (next_due_minute IS NULL OR next_due_minute % 60 = 0),
+                    next_due_minute    INTEGER CHECK (next_due_minute IS NULL OR (typeof(next_due_minute) = 'integer' AND next_due_minute % 60 = 0)),
                     attempt            INTEGER NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 40),
-                    terminal_day       INTEGER CHECK (terminal_day IS NULL OR terminal_day >= 0),
+                    terminal_day       INTEGER CHECK (terminal_day IS NULL OR (typeof(terminal_day) = 'integer' AND terminal_day >= 0)),
                     CHECK ((kind = 'trial') = (pay_with = 'invite')),
                     CHECK ((kind = 'refresh') = (pay_with = 'credit')),
                     CHECK (kind = 'pack' OR (claim_key IS NULL AND invoice_id IS NULL AND subaddress IS NULL AND amount_atomic IS NULL
@@ -459,11 +462,11 @@ object Schema {
                 """CREATE TABLE ent_token (
                     nullifier          BLOB    PRIMARY KEY NOT NULL CHECK (length(nullifier) = 32),
                     kind               TEXT    NOT NULL CHECK (kind IN ('access', 'invite', 'credit')),
-                    epoch              INTEGER NOT NULL CHECK (epoch >= 0),
+                    epoch              INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
                     slot               INTEGER CHECK (slot IS NULL OR slot BETWEEN 0 AND 31),
                     token              BLOB    NOT NULL CHECK (length(token) = 354),
                     state              TEXT    NOT NULL CHECK (state IN ('fresh', 'reserved')),
-                    eligible_minute    INTEGER NOT NULL CHECK (eligible_minute % 60 = 0),
+                    eligible_minute    INTEGER NOT NULL CHECK (typeof(eligible_minute) = 'integer' AND eligible_minute % 60 = 0),
                     reserved_for       TEXT    CHECK (reserved_for IS NULL OR reserved_for IN ('relay', 'purchase', 'claim')),
                     reserved_relay     INTEGER,
                     reserved_namespace BLOB    CHECK (reserved_namespace IS NULL OR length(reserved_namespace) = 32),
@@ -486,7 +489,7 @@ object Schema {
                     state            TEXT    NOT NULL CHECK (state IN ('created', 'credited', 'closed')),
                     payload          BLOB    CHECK (payload IS NULL OR length(payload) = 538),
                     drop_namespace   BLOB    NOT NULL CHECK (length(drop_namespace) = 32),
-                    listen_until_day INTEGER NOT NULL CHECK (listen_until_day >= 0),
+                    listen_until_day INTEGER NOT NULL CHECK (typeof(listen_until_day) = 'integer' AND listen_until_day >= 0),
                     CHECK (state = 'created' OR payload IS NULL)
                 ) WITHOUT ROWID""",
                 // (6) The inviter's drop this identity owes its first XMR-pack credit to (invited
@@ -498,8 +501,8 @@ object Schema {
                     drop_slots     BLOB    NOT NULL CHECK (length(drop_slots) = 3),
                     state          TEXT    NOT NULL CHECK (state IN ('waiting', 'enqueued')),
                     operation_id   BLOB    CHECK (operation_id IS NULL OR length(operation_id) = 16),
-                    drop_minute    INTEGER NOT NULL CHECK (drop_minute % 60 = 0),
-                    until_day      INTEGER NOT NULL CHECK (until_day >= 0),
+                    drop_minute    INTEGER NOT NULL CHECK (typeof(drop_minute) = 'integer' AND drop_minute % 60 = 0),
+                    until_day      INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
                     CHECK ((state = 'enqueued') = (operation_id IS NOT NULL))
                 )""",
                 // (7) Payout claims (write-ahead).
@@ -509,9 +512,9 @@ object Schema {
                     payout_address  TEXT    CHECK (payout_address IS NULL OR length(payout_address) = 95),
                     queued_atomic   INTEGER CHECK (queued_atomic IS NULL OR queued_atomic > 0),
                     sent            INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1)),
-                    next_due_minute INTEGER CHECK (next_due_minute IS NULL OR next_due_minute % 60 = 0),
+                    next_due_minute INTEGER CHECK (next_due_minute IS NULL OR (typeof(next_due_minute) = 'integer' AND next_due_minute % 60 = 0)),
                     attempt         INTEGER NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 20),
-                    terminal_day    INTEGER CHECK (terminal_day IS NULL OR terminal_day >= 0),
+                    terminal_day    INTEGER CHECK (terminal_day IS NULL OR (typeof(terminal_day) = 'integer' AND terminal_day >= 0)),
                     CHECK ((state = 'prepared') = (payout_address IS NOT NULL AND next_due_minute IS NOT NULL AND terminal_day IS NULL)),
                     CHECK ((state = 'queued') = (queued_atomic IS NOT NULL)),
                     CHECK (state = 'prepared' OR terminal_day IS NOT NULL)
@@ -521,7 +524,7 @@ object Schema {
                 // HMAC-SHA256(payout_salt, address).
                 """CREATE TABLE ent_payout_used (
                     address_hash BLOB    PRIMARY KEY NOT NULL CHECK (length(address_hash) = 32),
-                    until_day    INTEGER NOT NULL CHECK (until_day >= 0)
+                    until_day    INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0)
                 ) WITHOUT ROWID""",
                 // State machines and write-once rules enforced in SQL (Phase 7 D8 precedent; G-12).
                 """CREATE TRIGGER ent_key_append_only BEFORE UPDATE ON ent_key
@@ -539,11 +542,13 @@ object Schema {
                 BEGIN SELECT RAISE(ABORT, 'illegal purchase transition'); END""",
                 // Seed, claim key, layout and base week may change only while nothing has been sent
                 // (prepared, sent = 0); sent never goes back; kind and pay_with never change. Wiping at
-                // a terminal state is allowed.
+                // a terminal state is allowed. `sent` is compared NULL-safely: under UPDATE OR REPLACE
+                // a NULL becomes the column DEFAULT (0) after this trigger ran, and `NULL < 1` would make
+                // the whole WHEN NULL, so SQLite would skip the trigger and unfreeze a sent request.
                 """CREATE TRIGGER ent_purchase_frozen BEFORE UPDATE ON ent_purchase
                 WHEN NEW.kind IS NOT OLD.kind OR NEW.pay_with IS NOT OLD.pay_with
                   OR (NEW.state NOT IN ('finalized', 'expired', 'failed', 'lost')
-                      AND (NEW.sent < OLD.sent
+                      AND (NEW.sent IS NULL OR NEW.sent < OLD.sent
                            OR ((OLD.sent = 1 OR OLD.state <> 'prepared')
                                AND (NEW.seed IS NOT OLD.seed OR NEW.claim_key IS NOT OLD.claim_key
                                     OR NEW.base_week IS NOT OLD.base_week OR NEW.schedule_seq IS NOT OLD.schedule_seq
@@ -585,8 +590,10 @@ object Schema {
                        OR (OLD.state = 'created'  AND NEW.state IN ('credited', 'closed'))
                        OR (OLD.state = 'credited' AND NEW.state = 'closed'))
                 BEGIN SELECT RAISE(ABORT, 'illegal invite transition'); END""",
+                // `sent` is compared NULL-safely, as in ent_purchase_frozen.
                 """CREATE TRIGGER ent_claim_guard BEFORE UPDATE ON ent_claim
-                WHEN NOT ((OLD.state = NEW.state AND (NEW.payout_address IS OLD.payout_address) AND NEW.sent >= OLD.sent)
+                WHEN NOT ((OLD.state = NEW.state AND (NEW.payout_address IS OLD.payout_address)
+                           AND NEW.sent IS NOT NULL AND NEW.sent >= OLD.sent)
                        OR (OLD.state = 'prepared' AND NEW.state IN ('queued', 'failed')))
                 BEGIN SELECT RAISE(ABORT, 'a claim keeps its address and is decided once'); END""",
                 """CREATE TRIGGER ent_drop_target_transitions BEFORE UPDATE ON ent_drop_target

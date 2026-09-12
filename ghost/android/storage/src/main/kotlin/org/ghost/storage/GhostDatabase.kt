@@ -106,7 +106,7 @@ class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHel
  */
 class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
     override fun exec(sql: String, args: List<Any?>) {
-        if (args.isEmpty()) db.execSQL(sql) else db.execSQL(sql, args.toTypedArray())
+        if (args.isEmpty()) db.execSQL(sql) else db.execSQL(sql, args.onEach(::requireBindable).toTypedArray())
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int =
@@ -119,11 +119,21 @@ class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
                     is Long -> statement.bindLong(index, arg)
                     is Int -> statement.bindLong(index, arg.toLong())
                     is String -> statement.bindString(index, arg)
-                    else -> throw IllegalArgumentException("unsupported bind type ${arg::class}")
+                    else -> requireBindable(arg)
                 }
             }
             statement.executeUpdateDelete()
         }
+
+    /**
+     * The bind types of the [SqlExecutor] contract, on every path. A Double would be stored as a REAL,
+     * and a `% 60 = 0` CHECK casts it to INTEGER first, so a sub-minute time would pass it.
+     */
+    private fun requireBindable(arg: Any?) {
+        if (arg != null && arg !is ByteArray && arg !is Long && arg !is Int && arg !is String) {
+            throw IllegalArgumentException("unsupported bind type ${arg::class}")
+        }
+    }
 
     override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) {
         db.query(sql, args.toTypedArray()).use { cursor ->

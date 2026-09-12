@@ -1,5 +1,6 @@
 package org.ghost.storage
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -177,5 +178,67 @@ class EntitlementSchemaConstraintsTest {
             "ent_payout_used", mapOf("address_hash" to hash(1), "until_day" to DAY0 + 365),
             listOf(mapOf("address_hash" to bytes(31, 1)), mapOf("until_day" to -1)),
         )
+    }
+
+    /**
+     * Every time column and every grid index (week, epoch) with a valid row of its table. SQLite's `%`
+     * casts its operands to INTEGER, so `x % 60 = 0` alone accepts a REAL whose whole part is aligned
+     * (1757491200.5); `typeof(x) = 'integer'` keeps times finer than a minute out (design §11.3).
+     */
+    private val timeBearing: List<Triple<String, String, Map<String, Any?>>> = run {
+        val terminalPack = mapOf(
+            "purchase_id" to purchaseId(1), "kind" to "pack", "pay_with" to "xmr", "state" to "failed", "terminal_day" to DAY0,
+            "base_week" to WEEK0, "schedule_seq" to 1, "layout_digest" to hash(3),
+        )
+        val scheduledPack = livePack + mapOf("receipt_minute" to T0, "next_due_minute" to T0)
+        val state = mapOf("id" to 1, "schedule_seq" to 1, "schedule_digest" to hash(1), "payout_salt" to hash(2), "restore_scan_until_day" to DAY0)
+        val invite = mapOf("invite_index" to 0, "state" to "created", "payload" to bytes(538, 1), "drop_namespace" to hash(1), "listen_until_day" to DAY0)
+        val drop = mapOf(
+            "id" to 1, "drop_namespace" to hash(1), "drop_key" to hash(2), "drop_slots" to byteArrayOf(5, 0, 17), "state" to "waiting",
+            "drop_minute" to T0, "until_day" to DAY0,
+        )
+        listOf(
+            Triple("ent_key", "epoch", mapOf("kind" to "access", "epoch" to WEEK0, "key_id" to hash(1))),
+            Triple("ent_schedule_fact", "epoch", mapOf("fact" to "slots", "epoch" to WEEK0, "digest" to hash(1))),
+            Triple("ent_state", "restore_scan_until_day", state),
+            Triple("ent_purchase", "base_week", livePack),
+            Triple("ent_purchase", "created_hour", livePack),
+            Triple("ent_purchase", "receipt_minute", scheduledPack),
+            Triple("ent_purchase", "next_due_minute", scheduledPack),
+            Triple("ent_purchase", "terminal_day", terminalPack),
+            Triple("ent_token", "epoch", freshAccess),
+            Triple("ent_token", "eligible_minute", freshAccess),
+            Triple("ent_invite", "listen_until_day", invite),
+            Triple("ent_drop_target", "drop_minute", drop),
+            Triple("ent_drop_target", "until_day", drop),
+            Triple("ent_claim", "next_due_minute", mapOf("claim_id" to claimId(1), "state" to "prepared", "payout_address" to subaddress(1), "next_due_minute" to T0)),
+            Triple("ent_claim", "terminal_day", mapOf("claim_id" to claimId(1), "state" to "failed", "terminal_day" to DAY0)),
+            Triple("ent_payout_used", "until_day", mapOf("address_hash" to hash(1), "until_day" to DAY0 + 365)),
+        )
+    }
+
+    /** INSERT of [row] with [column] written as the SQL [literal] instead of a bound value. */
+    private fun SqlExecutor.insertLiteral(table: String, row: Map<String, Any?>, column: String, literal: String) {
+        val others = row - column
+        exec(
+            "INSERT INTO $table(${(others.keys + column).joinToString(", ")}) VALUES (${others.keys.joinToString("") { "?, " }}$literal)",
+            others.values.toList(),
+        )
+    }
+
+    @Test
+    fun timesAndGridIndicesAreWholeIntegers() {
+        for ((table, column, base) in timeBearing) EntitlementFixture().use { f ->
+            val whole = base.getValue(column) as Long
+            val what = "$table.$column"
+            // A REAL literal and a numeric string (converted to REAL by the column's affinity).
+            val literal = assertThrows(what, java.sql.SQLException::class.java) { f.db.insertLiteral(table, base, column, "$whole.5") }
+            assertTrue("$what: ${literal.message}", literal.message.orEmpty().contains(CHECK_FAILED))
+            val text = assertThrows(what, java.sql.SQLException::class.java) { f.db.insert(table, base + (column to "$whole.5")) }
+            assertTrue("$what: ${text.message}", text.message.orEmpty().contains(CHECK_FAILED))
+            // A whole value is an INTEGER whichever way it is written (affinity runs before the CHECK).
+            f.db.insertLiteral(table, base, column, "$whole.0")
+            assertEquals(what, "integer", f.db.queryString("SELECT typeof($column) FROM $table"))
+        }
     }
 }

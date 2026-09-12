@@ -292,6 +292,27 @@ class InviteTest {
     }
 
     @Test
+    fun nonAsciiLookalikesOfTheAlphabetAreRejectedWithoutConsumingTheNonce() {
+        val inv = create()
+        val body = inv.encode().removePrefix(Invite.SCHEME)
+        val store = Invite.InMemoryNonceStore()
+        fun replaced(letter: Char, by: Char): String {
+            val at = body.indexOf(letter)
+            assertTrue("no '$letter' in the body", at >= 0)
+            return Invite.SCHEME + body.substring(0, at) + by + body.substring(at + 1)
+        }
+        // U+212A KELVIN SIGN lowercases to 'k' and keeps the length; U+0130 lowercases to 'i' plus a
+        // combining dot. Only ASCII case folds, so neither is a second spelling of the invite.
+        for (text in listOf(replaced('k', 'K'), replaced('i', 'İ'), replaced('k', 'ｋ'))) {
+            assertEquals(Invite.SCHEME.length + 861, text.length)
+            assertThrows(Invite.Rejection.Malformed::class.java) { parse(text, store) }
+        }
+        // ASCII upper case is the same invite; the lookalikes consumed no nonce.
+        assertEquals(inv, parse(replaced('k', 'K'), store))
+        assertThrows(Invite.Rejection.Replayed::class.java) { parse(inv.encode(), store) }
+    }
+
+    @Test
     fun webHostsSchemesAndUrlStructureAreRejected() {
         val body = create().encode().removePrefix(Invite.SCHEME)
         val bad = listOf(

@@ -2,7 +2,7 @@ package org.ghost.identity
 
 /**
  * z-base-32 (Zooko's human-oriented base-32) used for the public identity string and invite
- * payloads (FR-1.3). No padding; case-insensitive on input; strict alphabet on decode.
+ * payloads (FR-1.3). No padding; ASCII case-insensitive on input; strict alphabet on decode.
  */
 object ZBase32 {
     private const val ALPHABET = "ybndrfg8ejkmcpqxot1uwisza345h769"
@@ -34,8 +34,11 @@ object ZBase32 {
         var buffer = 0
         var bitsInBuffer = 0
         var index = 0
-        for (ch in text.lowercase()) {
-            val v = if (ch.code < 128) decodeMap[ch.code] else -1
+        for (ch in text) {
+            // Only ASCII letters fold. Unicode lowercasing would map U+212A KELVIN SIGN to 'k' and
+            // accept a second, non-ASCII spelling of the same payload.
+            val c = if (ch in 'A'..'Z') ch + ('a' - 'A') else ch
+            val v = if (c.code < 128) decodeMap[c.code] else -1
             if (v < 0) throw IllegalArgumentException("invalid z-base-32 character")
             buffer = (buffer shl 5) or v
             bitsInBuffer += 5
