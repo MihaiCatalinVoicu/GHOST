@@ -116,10 +116,11 @@ pub enum Field {
     PreviousSeq,
     Week,
     Slot,
+    History,
 }
 
 impl Field {
-    pub const ALL: [Field; 22] = [
+    pub const ALL: [Field; 23] = [
         Field::Reason,
         Field::Flag,
         Field::File,
@@ -142,6 +143,7 @@ impl Field {
         Field::PreviousSeq,
         Field::Week,
         Field::Slot,
+        Field::History,
     ];
 
     pub fn name(self) -> &'static str {
@@ -168,6 +170,7 @@ impl Field {
             Field::PreviousSeq => "previous_seq",
             Field::Week => "week",
             Field::Slot => "slot",
+            Field::History => "history",
         }
     }
 }

@@ -73,33 +73,44 @@ pub fn run(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
     let schedule =
         Schedule::verify_with_key(&bytes, &schedule_key).map_err(|e| es_refused("schedule", e))?;
     if let Some(previous) = &previous {
-        append_only(&schedule, previous)?;
+        append_only(&schedule, "schedule", std::slice::from_ref(previous))?;
     }
     output::write_schedule(&out, &bytes, "out")?;
     sink.emit(es_ok_line(Code::EsSigned, &schedule).hex(Field::ScheduleKey, &schedule_key));
     Ok(())
 }
 
-/// Rule 5 of `schedule` against `previous` (same network, keys, slot sets, prices, revocations,
-/// seq not backwards).
-pub(crate) fn append_only(schedule: &Schedule, previous: &Schedule) -> Result<(), Failure> {
-    if schedule.network() != previous.network() {
-        return Err(Failure::refused(
-            Line::new(Code::EsRefused)
-                .word(Field::File, "schedule")
-                .word(Field::Reason, "network-changed"),
-        ));
-    }
-    let mut memory = ScheduleMemory::default();
-    previous.remember(&mut memory);
-    schedule.check_memory(&memory).map_err(|e| {
+/// Rule 5 of `schedule` (reported as `file`) against `history`, the versions accepted before it,
+/// oldest first: the network of every one of them, and the memory of all of them together (keys,
+/// slot sets of covered weeks, prices, revocations unchanged, seq not backwards), as a verifier
+/// that accepted each version in turn holds it. An empty history fixes nothing.
+pub(crate) fn append_only(
+    schedule: &Schedule,
+    file: &'static str,
+    history: &[Schedule],
+) -> Result<(), Failure> {
+    let Some(last) = history.last() else {
+        return Ok(());
+    };
+    let refused = |reason: &'static str| {
         Failure::refused(
             Line::new(Code::EsRefused)
-                .word(Field::File, "schedule")
-                .word(Field::Reason, schedule_error(e))
-                .num(Field::PreviousSeq, previous.seq()),
+                .word(Field::File, file)
+                .word(Field::Reason, reason)
+                .num(Field::Seq, schedule.seq())
+                .num(Field::PreviousSeq, last.seq()),
         )
-    })
+    };
+    if history.iter().any(|p| p.network() != schedule.network()) {
+        return Err(refused("network-changed"));
+    }
+    let mut memory = ScheduleMemory::default();
+    for previous in history {
+        previous.remember(&mut memory);
+    }
+    schedule
+        .check_memory(&memory)
+        .map_err(|e| refused(schedule_error(e)))
 }
 
 fn key_material(

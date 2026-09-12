@@ -73,8 +73,12 @@ pub fn write_public_entry(
     create_new(&path, public_entry::encode(entry).as_bytes(), flag)
 }
 
-pub fn write_seal_load(path: &Path, load: &[u8], flag: &'static str) -> Result<(), Failure> {
-    create_new(path, load, flag)
+/// Writes the key load file, then wipes `load` (every `k_seal` of the window in plaintext), also
+/// when the write was refused.
+pub fn write_seal_load(path: &Path, load: &mut [u8], flag: &'static str) -> Result<(), Failure> {
+    let written = create_new(path, load, flag);
+    load.fill(0);
+    written
 }
 
 pub fn write_schedule(path: &Path, schedule: &[u8], flag: &'static str) -> Result<(), Failure> {

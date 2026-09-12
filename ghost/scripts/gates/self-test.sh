@@ -93,8 +93,29 @@ es_case "rejects infrastructure naming another path" fail "$ES_FIX/infra-other-p
   "infra/relay/Dockerfile:4: 'infra/relay/schedule.ghes'"
 es_case "rejects production code naming a test fixture" fail "$ES_FIX/fixture-in-src" "production source names test material"
 es_case "rejects a committed sealed key" fail "$ES_FIX/sealed-key-committed" "sealed key or key load file outside tests/fixtures"
+# No directory name hides a copy or a key (only the issuer crates' tests/fixtures, test-harness/gates
+# and real build outputs are skipped), and infra references resolve to the one schedule exactly.
+es_case "rejects a copy under an infra tests/fixtures directory" fail "$ES_FIX/infra-fixtures-copy" \
+  "infra/relay/tests/fixtures/protocol/entitlement/schedule.ghes: an Entitlement Schedule outside"
+es_case "rejects infrastructure copying from an infra tests/fixtures directory" fail "$ES_FIX/infra-fixtures-copy" \
+  "infra/relay/Dockerfile:4: 'infra/relay/tests/fixtures/protocol/entitlement/schedule.ghes'"
+es_case "rejects a copy under an infra build directory" fail "$ES_FIX/infra-build-copy" \
+  "infra/relay/build/protocol/entitlement/schedule.ghes: an Entitlement Schedule outside"
+es_case "rejects a volume mounting an infra build directory" fail "$ES_FIX/infra-build-copy" \
+  "infra/relay/docker-compose.yml:6: './build/protocol/entitlement/schedule.ghes'"
+es_case "rejects a reference through a variable" fail "$ES_FIX/infra-variable-path" \
+  "infra/relay/Dockerfile:5: '\${SRC}/copy.ghes'"
+es_case "rejects an absolute path naming a gate fixture" fail "$ES_FIX/infra-stage-path" \
+  "names the repository file test-harness/gates/copy/protocol/entitlement/schedule.ghes"
+es_case "rejects a sealed key under an infra build directory" fail "$ES_FIX/sealed-key-hidden" \
+  "infra/issuer/build/access-2957.ghks: sealed key or key load file"
+es_case "rejects a sealed key under an infra tests/fixtures directory" fail "$ES_FIX/sealed-key-hidden" \
+  "infra/issuer/tests/fixtures/access-2957.ghks: sealed key or key load file"
+es_case "accepts infrastructure naming the one schedule" pass "$ES_FIX/infra-one-path" "absent and never committed"
 es_case "refuses its self-test hooks on the repository" fail "$DIR/../.." "self-test hook for fixture roots only" \
   GHOST_ES_TEST_KEY="$ES_TEST_KEY"
+es_case "refuses its git hook on the repository" fail "$DIR/../.." "self-test hook for fixture roots only" \
+  GHOST_ES_GIT=1
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive
@@ -212,6 +233,34 @@ if command -v cargo >/dev/null; then
       "reason=single-operator" "${es_env[@]}"
     es_case "rejects a schedule without a relay directory" fail "$ES_FIX/directory-absent" "relay-directory.txt missing" \
       "${es_env[@]}"
+    # Rule 5 over the whole first-parent history, in a throwaway repository: every committed
+    # version is checked against all versions before it, not only the head against its predecessor.
+    ES_B="$ES_FIX/slot-set-changed/protocol/entitlement/schedule.ghes"
+    ES_C="$ES_FIX/resigned-slot-set-changed/protocol/entitlement/schedule.ghes"
+    es_case "accepts a re-signed schedule against its immediate predecessor alone" pass \
+      "$ES_FIX/resigned-slot-set-changed" "ES_APPEND_ONLY previous_seq=2" "${es_env[@]}" GHOST_ES_PREDECESSOR="$ES_B"
+    es_git_case() { # $1 = description, $2 = pass|fail, $3 = expected text, rest = schedule versions to commit, oldest first ("-" removes it)
+      local desc="$1" expect="$2" want="$3" repo v n=0
+      shift 3
+      repo="$(mktemp -d)"
+      git -C "$repo" init -q
+      mkdir -p "$repo/protocol/entitlement"
+      cp "$ES_FIX/positive/protocol/entitlement/relay-directory.txt" "$repo/protocol/entitlement/"
+      for v in "$@"; do
+        n=$((n + 1))
+        if [ "$v" = - ]; then rm "$repo/protocol/entitlement/schedule.ghes"; else cp "$v" "$repo/protocol/entitlement/schedule.ghes"; fi
+        git -C "$repo" add -A
+        git -C "$repo" -c user.name=gate -c user.email=gate@self.test -c commit.gpgsign=false commit -q -m "version $n"
+      done
+      es_case "$desc" "$expect" "$repo" "$want" "${es_env[@]}" GHOST_ES_GIT=1
+      rm -rf "$repo"
+    }
+    es_git_case "rejects a violating middle version of the git history (A, B, C)" fail \
+      "ES_REFUSED file=previous reason=slot-set-changed seq=2 previous_seq=1" "$ES_PRED" "$ES_B" "$ES_C"
+    es_git_case "accepts a valid git history" pass "ES_APPEND_ONLY previous_seq=1 history=1" \
+      "$ES_PRED" "$ES_FIX/positive/protocol/entitlement/schedule.ghes"
+    es_git_case "rejects a schedule removed after a commit (git history)" fail "committed before and is now missing" \
+      "$ES_PRED" -
   fi
   # The clippy fixture compiles the client library: opt-in (the CI rust job sets it, cache warm).
   if [ -n "${GHOST_SELFTEST_CLIPPY:-}" ]; then

@@ -9,12 +9,22 @@ use ghost_entitlement::Kind;
 use crate::Failure;
 
 pub struct Flags {
-    values: BTreeMap<&'static str, String>,
+    /// Each present flag with its values in command-line order (one, unless it is repeatable).
+    values: BTreeMap<&'static str, Vec<String>>,
 }
 
 impl Flags {
     pub fn parse(argv: &[String], allowed: &[&'static str]) -> Result<Self, Failure> {
-        let mut values = BTreeMap::new();
+        Self::parse_repeatable(argv, allowed, &[])
+    }
+
+    /// [`Flags::parse`], where each flag of `repeatable` may be given more than once.
+    pub fn parse_repeatable(
+        argv: &[String],
+        allowed: &[&'static str],
+        repeatable: &[&'static str],
+    ) -> Result<Self, Failure> {
+        let mut values: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
         let mut it = argv.iter();
         while let Some(arg) = it.next() {
             let Some(name) = arg.strip_prefix("--") else {
@@ -27,9 +37,11 @@ impl Flags {
                 Some(v) if !v.starts_with("--") => v.clone(),
                 _ => return Err(Failure::usage("missing-value", Some(flag))),
             };
-            if values.insert(flag, value).is_some() {
+            let given = values.entry(flag).or_default();
+            if !given.is_empty() && !repeatable.contains(&flag) {
                 return Err(Failure::usage("repeated-flag", Some(flag)));
             }
+            given.push(value);
         }
         Ok(Self { values })
     }
@@ -49,6 +61,7 @@ impl Flags {
     pub fn text(&self, flag: &'static str) -> Result<&str, Failure> {
         self.values
             .get(flag)
+            .and_then(|v| v.first())
             .map(String::as_str)
             .ok_or(Failure::usage("missing-flag", Some(flag)))
     }
@@ -58,7 +71,18 @@ impl Flags {
     }
 
     pub fn opt_path(&self, flag: &'static str) -> Option<PathBuf> {
-        self.values.get(flag).map(PathBuf::from)
+        self.values
+            .get(flag)
+            .and_then(|v| v.first())
+            .map(PathBuf::from)
+    }
+
+    /// Every value of a repeatable flag, in command-line order (none when it is absent).
+    pub fn paths(&self, flag: &'static str) -> Vec<PathBuf> {
+        self.values
+            .get(flag)
+            .map(|v| v.iter().map(PathBuf::from).collect())
+            .unwrap_or_default()
     }
 
     pub fn u64(&self, flag: &'static str) -> Result<u64, Failure> {

@@ -12,7 +12,7 @@ use ghost_entitlement::{token, Kind};
 use ghost_issuer::custody::{self, CustodySecret, SealLoad};
 use ghost_issuer::signer::CheckedSigner;
 use ghost_issuer_ops::report::{Code, Field, Line, Value};
-use ghost_issuer_ops::{public_entry, Status};
+use ghost_issuer_ops::{output, public_entry, Status};
 use ring::rand::SystemRandom;
 
 fn custody_file(dir: &Path) -> PathBuf {
@@ -357,4 +357,20 @@ fn keys_seal_refuses_what_it_cannot_prove() {
 
     let (result, _) = keys_seal(dir.path(), &sealed, 2961, 2960, &custody, false);
     assert_refused(&result, Code::Usage, "bad-value");
+}
+
+#[test]
+fn the_encoded_load_is_wiped_once_written_or_refused() {
+    // The encoded load holds every k_seal of the window in plaintext.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("load.ghkl");
+    let mut load = vec![0xa5; 64];
+    output::write_seal_load(&path, &mut load, "out").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), vec![0xa5; 64]);
+    assert!(load.iter().all(|&b| b == 0), "written load not wiped");
+
+    let mut again = vec![0x5a; 64];
+    assert!(output::write_seal_load(&path, &mut again, "out").is_err());
+    assert!(again.iter().all(|&b| b == 0), "refused load not wiped");
+    assert_eq!(std::fs::read(&path).unwrap(), vec![0xa5; 64]);
 }

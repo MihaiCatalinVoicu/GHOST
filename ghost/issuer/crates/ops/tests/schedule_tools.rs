@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use common::*;
 use ghost_entitlement::grid::week_start;
+use ghost_entitlement::monero::MoneroNetwork;
 use ghost_entitlement::schedule::SlotEntry;
 use ghost_entitlement::Kind;
 use ghost_issuer_ops::report::{Code, Field, Line, Value};
@@ -377,6 +378,90 @@ fn verify_checks_rule_5_against_the_previous_schedule() {
     let last = lines.last().unwrap();
     assert_eq!(word(last, Field::File), Some("previous"));
     assert_eq!(word(last, Field::Reason), Some("signature"));
+}
+
+/// The test schedule with `seq` and a slot 3 valid from `from_week`.
+fn with_slot_3(from_week: u64, seq: u64) -> Vec<u8> {
+    let mut c = test_content();
+    c.seq = seq;
+    c.slots.push(SlotEntry {
+        slot: 3,
+        onion: onion("ghost/test/relay-e", 443),
+        valid_from_week: from_week,
+        valid_until_week: 0,
+    });
+    resign(&c)
+}
+
+#[test]
+fn verify_checks_rule_5_across_the_whole_history_in_order() {
+    let a = arg(&test_schedule_path());
+    let key = schedule_public_hex();
+    let dir = tempfile::tempdir().unwrap();
+    // B (seq 2) changes the slot set of covered week 2970; C (seq 3) is B re-signed.
+    let b = arg(&write(dir.path(), "b.ghes", &with_slot_3(2970, 2)));
+    let c = arg(&write(dir.path(), "c.ghes", &with_slot_3(2970, 3)));
+    let with_history = |schedule: &str, history: &[&str]| {
+        let mut args = vec!["--schedule", schedule, "--schedule-public-key", &key];
+        for h in history {
+            args.extend(["--previous", h]);
+        }
+        verify(&args)
+    };
+
+    // C against B alone holds rule 5; with the whole history the middle version B is refused.
+    assert_eq!(with_history(&c, &[&b]).0, Status::Ok);
+    let result = with_history(&c, &[&a, &b]);
+    assert_refused(&result, Code::EsRefused, "slot-set-changed");
+    let last = result.1.last().unwrap();
+    assert_eq!(word(last, Field::File), Some("previous"));
+    assert_eq!(num(last, Field::Seq), Some(2));
+    assert_eq!(num(last, Field::PreviousSeq), Some(1));
+
+    // A valid history: P (seq 2) adds a slot after coverage, P3 (seq 3) re-signs it.
+    let p = arg(&write(dir.path(), "p.ghes", &with_slot_3(LAST_WEEK + 1, 2)));
+    let p3 = arg(&write(
+        dir.path(),
+        "p3.ghes",
+        &with_slot_3(LAST_WEEK + 1, 3),
+    ));
+    let (status, lines) = with_history(&p3, &[&a, &p]);
+    assert_eq!(status, Status::Ok, "{lines:?}");
+    let last = lines.last().unwrap();
+    assert_eq!(last.code, Code::EsAppendOnly);
+    assert_eq!(num(last, Field::PreviousSeq), Some(2));
+    assert_eq!(num(last, Field::History), Some(2));
+
+    // Going back to an earlier version is a rollback against the history.
+    let result = with_history(&a, &[&a, &p]);
+    assert_refused(&result, Code::EsRefused, "rollback");
+    assert_eq!(
+        word(result.1.last().unwrap(), Field::File),
+        Some("schedule")
+    );
+
+    // Every version keeps the network of the first.
+    let mut stagenet = test_content();
+    stagenet.seq = 2;
+    stagenet.network = MoneroNetwork::Stagenet;
+    let s = arg(&write(dir.path(), "s.ghes", &resign(&stagenet)));
+    let result = with_history(&p3, &[&a, &s]);
+    assert_refused(&result, Code::EsRefused, "network-changed");
+    assert_eq!(
+        word(result.1.last().unwrap(), Field::File),
+        Some("previous")
+    );
+
+    // Each earlier version verifies under the same key.
+    let mut tampered = std::fs::read(&p).unwrap();
+    tampered[200] ^= 0x01;
+    let t = arg(&write(dir.path(), "t.ghes", &tampered));
+    let result = with_history(&p3, &[&a, &t]);
+    assert_refused(&result, Code::EsRefused, "signature");
+    assert_eq!(
+        word(result.1.last().unwrap(), Field::File),
+        Some("previous")
+    );
 }
 
 fn all_relays(operators: [u8; 4]) -> Vec<(&'static str, u8)> {

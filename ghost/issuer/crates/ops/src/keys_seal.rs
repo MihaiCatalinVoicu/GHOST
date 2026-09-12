@@ -102,8 +102,9 @@ pub fn run(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
                 .hex(Field::KeyId, &entry.key_id),
         );
     }
-    let bytes = load.encode().map_err(|_| io_error("out", "encode"))?;
-    output::write_seal_load(&out, &bytes, "out")?;
+    // The encoded load is plaintext key material: write_seal_load wipes it on every path.
+    let mut bytes = load.encode().map_err(|_| io_error("out", "encode"))?;
+    output::write_seal_load(&out, &mut bytes, "out")?;
     sink.emit(Line::new(Code::SealLoadWritten).num(Field::Entries, load.len() as u64));
     Ok(())
 }

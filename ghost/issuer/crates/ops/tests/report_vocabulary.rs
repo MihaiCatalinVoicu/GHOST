@@ -60,6 +60,7 @@ fn field_index(f: Field) -> usize {
         Field::PreviousSeq => 19,
         Field::Week => 20,
         Field::Slot => 21,
+        Field::History => 22,
     }
 }
 

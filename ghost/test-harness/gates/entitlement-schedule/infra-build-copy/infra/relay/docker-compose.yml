@@ -1,0 +1,6 @@
+# Negative fixture (entitlement-schedule.sh): a relay mounts a schedule kept under an infra build
+# directory (a directory name hides no second copy).
+services:
+  relay-a:
+    volumes:
+      - ./build/protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro

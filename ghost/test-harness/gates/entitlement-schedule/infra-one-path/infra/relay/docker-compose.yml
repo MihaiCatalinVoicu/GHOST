@@ -1,0 +1,11 @@
+# Positive fixture (entitlement-schedule.sh): a volume mounting the one schedule by its path
+# relative to this file, and the relay flag naming its in-container location.
+services:
+  relay-a:
+    build:
+      context: ../..
+      dockerfile: infra/relay/Dockerfile
+    environment:
+      GHOST_FLAGS: "--schedule=/etc/ghost/schedule.ghes"
+    volumes:
+      - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro

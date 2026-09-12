@@ -1,8 +1,10 @@
 //! `schedule-verify` (design §3.1, §14.1, §19.12): what `entitlement-schedule.sh` runs on the
 //! committed schedule. Rules 1-4 under the schedule key pinned in `ghost-entitlement` for the
 //! schedule's network (`Schedule::verify`, the production entry point), or under an explicit key
-//! for test schedules and for a schedule signed before its key is pinned; rule 5 against the
-//! previous schedule; the relay directory check for the current and the next week.
+//! for test schedules and for a schedule signed before its key is pinned; rule 5 over the earlier
+//! versions (`--previous`, repeatable, oldest first: the git history), each checked against all
+//! versions before it and the schedule against all of them; the relay directory check for the
+//! current and the next week.
 
 use ghost_entitlement::{Schedule, ScheduleError};
 
@@ -68,7 +70,7 @@ pub(crate) fn load_schedule(flags: &Flags, flag: &'static str) -> Result<Schedul
 }
 
 pub fn run(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
-    let flags = Flags::parse(argv, &FLAGS)?;
+    let flags = Flags::parse_repeatable(argv, &FLAGS, &["previous"])?;
     let key = explicit_key(&flags)?;
     let directory_now = match (flags.has("relay-directory"), flags.has("now")) {
         (true, true) => Some((flags.path("relay-directory")?, flags.u64("now")?)),
@@ -83,11 +85,22 @@ pub fn run(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
     };
     sink.emit(key_field);
 
-    if let Some(path) = flags.opt_path("previous") {
+    // A version committed before is not trusted for having been checked once: CI may never have
+    // run on it (a push or a fast-forward merge brings several versions at once).
+    let mut history: Vec<Schedule> = Vec::new();
+    for path in flags.paths("previous") {
         let previous = verify(&read(&path, "previous")?, key.as_ref())
             .map_err(|e| es_refused("previous", e))?;
-        append_only(&schedule, &previous)?;
-        sink.emit(Line::new(Code::EsAppendOnly).num(Field::PreviousSeq, previous.seq()));
+        append_only(&previous, "previous", &history)?;
+        history.push(previous);
+    }
+    if let Some(last) = history.last() {
+        append_only(&schedule, "schedule", &history)?;
+        sink.emit(
+            Line::new(Code::EsAppendOnly)
+                .num(Field::PreviousSeq, last.seq())
+                .num(Field::History, history.len() as u64),
+        );
     }
 
     if let Some((path, now)) = directory_now {

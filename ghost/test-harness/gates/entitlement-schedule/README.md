@@ -18,11 +18,24 @@ schedule (`GHOST_ES_PREDECESSOR`), and the relay directory check runs in week 29
 | `directory-missing-onion` | fails: slot 2's relay of week 2960 is not in the directory |
 | `directory-single-operator` | fails: every relay under one operator |
 | `directory-absent` | fails: a schedule without `relay-directory.txt` |
+| `resigned-slot-set-changed` | passes against `slot-set-changed` alone: seq 3, that schedule re-signed; the head of the history case below |
 | `second-copy` | fails: a schedule copy under `infra/relay` |
 | `infra-other-path` | fails: infrastructure copying the schedule from another repository path |
+| `infra-fixtures-copy` | fails: a copy under `infra/relay/tests/fixtures`, and a Dockerfile copying it |
+| `infra-build-copy` | fails: a copy under `infra/relay/build`, and a compose volume mounting it |
+| `infra-variable-path` | fails: a Dockerfile naming the schedule through `${SRC}` |
+| `infra-stage-path` | fails: an absolute build-stage path naming a schedule under `test-harness/gates` |
+| `infra-one-path` | passes: infrastructure naming the one schedule by context, repository, file-relative and in-container paths |
 | `fixture-in-src` | fails: production source embedding a test fixture |
 | `sealed-key-committed` | fails: a sealed key file outside `tests/fixtures` |
+| `sealed-key-hidden` | fails: sealed key files under `infra/issuer/build` and `infra/issuer/tests/fixtures` |
 
-The binary files and directory lists are generated and checked byte for byte by
+Rule 5 over the git history is exercised in throwaway repositories built by `self-test.sh`
+(`GHOST_ES_GIT=1`): the versions test schedule, `slot-set-changed`, `resigned-slot-set-changed`
+committed in turn fail on the middle version; the test schedule followed by `positive` passes; a
+schedule committed and then removed fails.
+
+The `build/` directories are ignored by `.gitignore` and committed with `git add -f`. The binary
+files and directory lists are generated and checked byte for byte by
 `issuer/crates/ops/tests/fixtures_check.rs` (`write_gate_fixtures` regenerates them). Nothing here
 is compiled or shipped.

@@ -79,9 +79,9 @@ fn source_for(content: &ScheduleContent) -> String {
 /// Unix instant used by the gate self-test for the relay directory check: week 2960, 01:00 UTC.
 pub const GATE_NOW: u64 = 1_790_557_200;
 
-fn with_slot_3(from_week: u64) -> Vec<u8> {
+fn with_slot_3(from_week: u64, seq: u64) -> Vec<u8> {
     let mut c = test_content();
-    c.seq = 2;
+    c.seq = seq;
     c.slots.push(SlotEntry {
         slot: 3,
         onion: onion("ghost/test/relay-e", 443),
@@ -114,7 +114,8 @@ fn gate_files() -> Vec<(PathBuf, Vec<u8>)> {
         )
         .into_bytes()
     };
-    let positive = with_slot_3(LAST_WEEK + 1);
+    let positive = with_slot_3(LAST_WEEK + 1, 2);
+    let sealed = std::fs::read(ops_fixtures().join("sealed/access-2957.ghks")).unwrap();
     let mut tampered = positive.clone();
     tampered[200] ^= 0x01;
     let mut duplicated = test_content();
@@ -133,8 +134,10 @@ fn gate_files() -> Vec<(PathBuf, Vec<u8>)> {
         (dir("positive"), ok.clone()),
         (es("tampered"), tampered),
         (dir("tampered"), ok.clone()),
-        (es("slot-set-changed"), with_slot_3(2970)),
+        (es("slot-set-changed"), with_slot_3(2970, 2)),
         (dir("slot-set-changed"), ok.clone()),
+        (es("resigned-slot-set-changed"), with_slot_3(2970, 3)),
+        (dir("resigned-slot-set-changed"), ok.clone()),
         (es("duplicated-key"), resign(&duplicated)),
         (dir("duplicated-key"), ok.clone()),
         (es("directory-missing-onion"), positive.clone()),
@@ -142,10 +145,37 @@ fn gate_files() -> Vec<(PathBuf, Vec<u8>)> {
         (es("directory-single-operator"), positive.clone()),
         (dir("directory-single-operator"), relays([1; 5])),
         (es("directory-absent"), positive.clone()),
-        (root.join("second-copy/infra/relay/schedule.ghes"), positive),
+        (
+            root.join("second-copy/infra/relay/schedule.ghes"),
+            positive.clone(),
+        ),
+        (
+            root.join(
+                "infra-fixtures-copy/infra/relay/tests/fixtures/protocol/entitlement/schedule.ghes",
+            ),
+            positive.clone(),
+        ),
+        (
+            root.join("infra-build-copy/infra/relay/build/protocol/entitlement/schedule.ghes"),
+            positive.clone(),
+        ),
+        (
+            root.join(
+                "infra-stage-path/test-harness/gates/copy/protocol/entitlement/schedule.ghes",
+            ),
+            positive,
+        ),
         (
             root.join("sealed-key-committed/infra/issuer/access-2957.ghks"),
-            std::fs::read(ops_fixtures().join("sealed/access-2957.ghks")).unwrap(),
+            sealed.clone(),
+        ),
+        (
+            root.join("sealed-key-hidden/infra/issuer/build/access-2957.ghks"),
+            sealed.clone(),
+        ),
+        (
+            root.join("sealed-key-hidden/infra/issuer/tests/fixtures/access-2957.ghks"),
+            sealed,
         ),
     ]
 }

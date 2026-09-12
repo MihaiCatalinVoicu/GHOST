@@ -9,7 +9,7 @@
 //!                            --sealed-dir <dir> --from-week <w> --through-week <w> --out <file>
 //! ghost-issuer-ops schedule-sign --source <file> --schedule-key <file> [--public-dir <dir>]
 //!                                [--previous <es>] --out <es>
-//! ghost-issuer-ops schedule-verify --schedule <es> [--schedule-public-key <hex>] [--previous <es>]
+//! ghost-issuer-ops schedule-verify --schedule <es> [--schedule-public-key <hex>] [--previous <es>]...
 //!                                  [--relay-directory <file> --now <unix seconds>]
 //! ```
 //!
@@ -26,8 +26,9 @@
 //! - `schedule-sign` (K1): the ES from a source file, its keys from public entries or the previous
 //!   ES; the result is verified (rules 1-4, and rule 5 against `--previous`) before it is written.
 //! - `schedule-verify`: rules 1-4 under the pinned schedule key (or an explicit one for test and
-//!   pre-pin schedules), rule 5 against `--previous`, and the relay directory check of §19.12 for
-//!   the current and the next week.
+//!   pre-pin schedules), rule 5 over the earlier versions (`--previous` repeated, oldest first: each
+//!   against all before it, the schedule against all of them), and the relay directory check of
+//!   §19.12 for the current and the next week.
 //!
 //! Output: fixed-vocabulary lines through [`report`] only (exit 0 ok, 1 refused, 2 usage). Files
 //! are written only by [`output`].
