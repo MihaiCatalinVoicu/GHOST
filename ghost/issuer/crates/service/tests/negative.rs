@@ -1012,7 +1012,7 @@ fn retention_spent_credits_keep_no_invoice_or_claim_reference() {
     assert_eq!(rows.len(), 20);
     for (_, value) in &rows {
         assert!(matches!(value[0], 1 | 2), "use discount or payout");
-        assert_eq!(value[1..], [0u8; 16], "a spent credit keeps a reference");
+        assert_eq!(value[1..], [0u8; 32], "a spent credit keeps a reference");
     }
     drop(tx);
     w.check();

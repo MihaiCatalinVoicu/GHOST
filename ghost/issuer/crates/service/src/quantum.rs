@@ -3,10 +3,11 @@
 //! quantum to the `*_at(request, now)` handlers.
 //!
 //! - Every handler runs on `spawn_blocking` (redb and signing are synchronous).
-//! - `BlindSign` and `RedeemInvite` take a permit of a semaphore sized to the core count first,
-//!   so a burst of signing cannot starve the scanner, and their responses (errors included)
-//!   leave at `t_request + Q · max(1, ceil(elapsed / Q))` with Q = 2 s (Q18): over Tor the signing
-//!   time is visible only at the quantum's granularity, whichever signer is in use.
+//! - `BlindSign`, `RedeemInvite` and `RefreshCredit` (the three signing calls) take a permit of a
+//!   semaphore sized to the core count first, so a burst of signing cannot starve the scanner, and
+//!   their responses (errors included) leave at `t_request + Q · max(1, ceil(elapsed / Q))` with
+//!   Q = 2 s (Q18): over Tor the signing time is visible only at the quantum's granularity,
+//!   whichever signer is in use.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -27,6 +28,15 @@ pub fn wall_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The clock of the network handlers and the periodic jobs, in seconds since the Unix epoch;
+/// injected (relay precedent), so the whole process runs on a virtual clock in tests.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The wall clock ([`wall_now`]).
+pub fn wall_clock() -> Clock {
+    Arc::new(wall_now)
 }
 
 /// A fixed reply quantum.
@@ -64,15 +74,28 @@ pub struct TimedIssuer {
     issuer: Arc<Issuer>,
     quantum: ReplyQuantum,
     signing: Arc<Semaphore>,
+    clock: Clock,
 }
 
 impl TimedIssuer {
-    /// `signing_permits`: concurrent signing calls (the core count in production).
+    /// `signing_permits`: concurrent signing calls (the core count in production). Handlers see
+    /// the wall clock.
     pub fn new(issuer: Arc<Issuer>, quantum: ReplyQuantum, signing_permits: usize) -> Self {
+        Self::with_clock(issuer, quantum, signing_permits, wall_clock())
+    }
+
+    /// [`TimedIssuer::new`] with handlers on `clock`.
+    pub fn with_clock(
+        issuer: Arc<Issuer>,
+        quantum: ReplyQuantum,
+        signing_permits: usize,
+        clock: Clock,
+    ) -> Self {
         Self {
             issuer,
             quantum,
             signing: Arc::new(Semaphore::new(signing_permits.max(1))),
+            clock,
         }
     }
 
@@ -86,7 +109,8 @@ impl TimedIssuer {
         F: FnOnce(&Issuer, u64) -> Result<T, Status> + Send + 'static,
     {
         let issuer = Arc::clone(&self.issuer);
-        tokio::task::spawn_blocking(move || f(&issuer, wall_now()))
+        let clock = Arc::clone(&self.clock);
+        tokio::task::spawn_blocking(move || f(&issuer, clock()))
             .await
             .map_err(|_| unavailable())?
     }
@@ -97,8 +121,20 @@ impl TimedIssuer {
         F: FnOnce(&Issuer, u64) -> Result<T, Status> + Send + 'static,
     {
         let received = Instant::now();
-        let result = match self.signing.acquire().await {
-            Ok(_permit) => self.blocking(f).await,
+        let result = match Arc::clone(&self.signing).acquire_owned().await {
+            Ok(permit) => {
+                let issuer = Arc::clone(&self.issuer);
+                let clock = Arc::clone(&self.clock);
+                // The permit moves into the blocking work and is released when that work ends. A
+                // caller that stops waiting (a client grpc-timeout, a reset stream) drops only this
+                // future, so it cannot free the permit while its signing still runs (§5.9).
+                tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    f(&issuer, clock())
+                })
+                .await
+                .unwrap_or_else(|_| Err(unavailable()))
+            }
             Err(_) => Err(unavailable()),
         };
         tokio::time::sleep_until(received + self.quantum.release_after(received.elapsed())).await;
@@ -142,6 +178,14 @@ impl TimedIssuer {
         req: wire::ClaimPayoutRequest,
     ) -> Result<wire::ClaimPayoutResponse, Status> {
         self.blocking(move |i, now| i.claim_payout_at(req, now))
+            .await
+    }
+
+    pub async fn refresh_credit(
+        &self,
+        req: wire::RefreshCreditRequest,
+    ) -> Result<wire::RefreshCreditResponse, Status> {
+        self.quantized(move |i, now| i.refresh_credit_at(req, now))
             .await
     }
 }

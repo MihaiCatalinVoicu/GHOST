@@ -116,7 +116,8 @@ enum ClaimPayoutResult {
   CLAIM_PAYOUT_RESULT_QUEUED = 1;
   CLAIM_PAYOUT_RESULT_CREDITS_SPENT = 2;     // nothing consumed; spent_mask names the credits already used
   CLAIM_PAYOUT_RESULT_CLAIM_CONFLICT = 3;    // claim_id known with a different body
-  CLAIM_PAYOUT_RESULT_ADDRESS_REJECTED = 4;  // network, type, checksum or point decompression failed
+  CLAIM_PAYOUT_RESULT_ADDRESS_REJECTED = 4;  // network, type, checksum or point decompression failed, or the
+                                             // address of a queued or batched claim; nothing consumed
 }
 
 message ClaimPayoutResponse {

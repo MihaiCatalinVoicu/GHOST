@@ -57,7 +57,8 @@ impl MoneroNetwork {
         }
     }
 
-    /// The `network` byte of the Entitlement Schedule (inverse of [`Self::from_schedule_byte`]).
+    /// The `network` byte of the Entitlement Schedule and of the issuer's payout batch files
+    /// (inverse of [`Self::from_schedule_byte`]).
     pub fn schedule_byte(self) -> u8 {
         match self {
             Self::Mainnet => 1,

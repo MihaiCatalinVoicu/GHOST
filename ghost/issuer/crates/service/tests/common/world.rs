@@ -8,33 +8,40 @@
 //! Invariants checked by [`World::check`] after every scenario: MS-1 (one digest and one signature
 //! set per invoice over every answer ever produced, equal to the stored issued digest), MS-2 (the
 //! first signature of an XMR invoice is backed by qualifying transfers on the chain), MS-3 (every
-//! accepted invite and credit nullifier is still recorded), no minor handed out twice, no pool
-//! entry assigned, `claim_index`/`minor_index` consistent, and the reconciliation invariants.
+//! accepted invite and credit nullifier is still recorded, or its epoch is closed by the persisted
+//! high-water mark, §19.10; one answer per refreshed credit), no minor handed out twice, no pool
+//! entry assigned, `claim_index`/`minor_index` consistent, the payout invariants (a batch file is
+//! the same bytes at every export, a claim never joins two batches, batch totals are the sums of
+//! their claims, a paid claim keeps no address), and the reconciliation invariants.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ghost_entitlement::batch::{self, Layout, Position};
 use ghost_entitlement::grid::week;
 use ghost_entitlement::{Kind, Schedule, Token};
+use ghost_issuer::credit::refresh_digest;
 use ghost_issuer::custody::KeyWindow;
-use ghost_issuer::journal::FileJournal;
+use ghost_issuer::journal::{Entry, FileJournal, Journal};
+use ghost_issuer::payout::{self, AckFile, BatchFile, EntryOutcome, OpsKey, PayoutReport};
 use ghost_issuer::reconcile::{self, CounterId, Counters, Mismatch};
 use ghost_issuer::scanner::TickReport;
 use ghost_issuer::service::{
     Issuer, IssuerParams, OpenMode, Ports, Random, RandomError, StartupError,
 };
 use ghost_issuer::store::{
-    self, InvoiceRow, InvoiceState, MetaKey, PayWith, ReadTx, RedbStore, Table,
+    self, ClaimState, CreditUse, InvoiceRow, InvoiceState, MetaKey, PayWith, ReadTx, RedbStore,
+    Table, ADDRESS_LEN,
 };
 use ghost_issuer_api::proto as wire;
 use sha2::{Digest, Sha256};
 use tonic::Status;
 
-use super::chain_port::{Chain, ChainPort};
+use super::chain_port::{Chain, ChainPort, RailHandle};
 use super::faults::{FaultPlan, FaultyJournal, FaultyRail, FaultyStore};
 use super::fixture;
+use super::race::{Gate, RaceStore};
 
 /// Monday 2026-09-28 12:00 UTC: the middle of access week 2960 (invite epoch 740, credit 227).
 pub const BASE: u64 = 1_790_596_800;
@@ -88,6 +95,11 @@ pub fn claim_id(label: &str) -> [u8; 16] {
         .unwrap()
 }
 
+/// The test ops key (payout batch files): the Ed25519 seed SHA-256("ghost/test/ops-key").
+pub fn ops_key() -> OpsKey {
+    OpsKey::from_seed(&Sha256::digest(b"ghost/test/ops-key").into())
+}
+
 /// A purchase the client holds: its invoice and the flow's blinding seed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Purchase {
@@ -114,9 +126,15 @@ pub type Answers = BTreeSet<([u8; 32], Vec<u8>)>;
 pub struct Observed {
     pub signed: BTreeMap<[u8; 16], Answers>,
     pub trials: BTreeMap<(u64, [u8; 32]), Answers>,
+    /// Refreshed credits: (epoch, N) → (refresh digest, blind signature).
+    pub refreshes: BTreeMap<(u64, [u8; 32]), Answers>,
     pub spent: BTreeSet<(u64, [u8; 32])>,
     pub minors: BTreeMap<u32, [u8; 16]>,
     pub claims: BTreeMap<[u8; 16], u64>,
+    /// Every batch file ever found in the export directory, per batch.
+    pub batch_files: BTreeMap<[u8; 16], BTreeSet<Vec<u8>>>,
+    /// The batch each exported claim was in.
+    pub batch_of_claim: BTreeMap<[u8; 16], [u8; 16]>,
 }
 
 /// A prepared world, closed, from which every crash run starts.
@@ -355,6 +373,12 @@ impl World {
 
     /// Calls the issuer; a crash during the call is followed by recovery and the identical retry.
     pub fn call<T>(&mut self, f: impl Fn(&Issuer, u64) -> Result<T, Status>) -> Result<T, Status> {
+        self.run(f)
+    }
+
+    /// Runs an issuer call or job; a crash during it is followed by recovery and the identical
+    /// call again.
+    pub fn run<T>(&mut self, f: impl Fn(&Issuer, u64) -> T) -> T {
         for _ in 0..64 {
             let r = f(self.issuer(), self.now);
             if self.plan.take_crash() {
@@ -364,6 +388,85 @@ impl World {
             return r;
         }
         panic!("no progress after 64 crashes");
+    }
+
+    /// Crash scenario I-K: runs `a` and `b` concurrently on an issuer over the same files whose
+    /// store lets the first writer commit only after the second asked for its transaction (both
+    /// passed their checks). The issuer is dropped afterwards: the world is left crashed, and a
+    /// restart, a template or a restore follows. No fault is injected during the race.
+    pub fn race<A: Send, B: Send>(
+        &mut self,
+        a: impl FnOnce(&Issuer, u64) -> A + Send,
+        b: impl FnOnce(&Issuer, u64) -> B + Send,
+    ) -> (A, B) {
+        self.issuer = None;
+        let gate = Arc::new(Gate::default());
+        let issuer = Issuer::open(
+            self.schedule.clone(),
+            self.keys.clone(),
+            Ports {
+                store: Box::new(RaceStore {
+                    inner: RedbStore::open(&self.dir.path().join("issuer.redb")).unwrap(),
+                    gate: Arc::clone(&gate),
+                }),
+                journal: Box::new(FileJournal::open(&self.dir.path().join("journal")).unwrap()),
+                rail: Box::new(RailHandle(Arc::clone(&self.chain))),
+                random: Box::new(RandomHandle(Arc::clone(&self.random))),
+            },
+            self.params,
+            OpenMode::Normal,
+            self.now,
+        )
+        .unwrap();
+        gate.arm();
+        let now = self.now;
+        let answers = std::thread::scope(|scope| {
+            let issuer = &issuer;
+            let ha = scope.spawn(move || a(issuer, now));
+            let hb = scope.spawn(move || b(issuer, now));
+            (ha.join().unwrap(), hb.join().unwrap())
+        });
+        assert_eq!(gate.writers(), 2, "I-K: each request takes one transaction");
+        assert!(!issuer.is_halted());
+        drop(issuer);
+        self.crashes += 1;
+        answers
+    }
+
+    /// Rewrites the (closed) journal without the entries after sequence number `after` that
+    /// `lost` selects: the decided outcomes an issuer that did not journal them would not have
+    /// recorded (mutants MM3, MM15). Returns how many entries were removed.
+    pub fn lose_journal_entries(&self, after: u64, lost: impl Fn(&Entry) -> bool) -> usize {
+        let dir = self.dir.path().join("journal");
+        let all = FileJournal::open(&dir).unwrap().entries().unwrap();
+        let kept: Vec<Entry> = all
+            .iter()
+            .filter(|(seq, e)| *seq <= after || !lost(e))
+            .map(|(_, e)| e.clone())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let journal = FileJournal::open(&dir).unwrap();
+        for e in &kept {
+            journal.append(self.week(), e).unwrap();
+        }
+        all.len() - kept.len()
+    }
+
+    /// Appends `entry` to the (closed) journal: an outcome an issuer journaled without deciding
+    /// it (mutant MM16, MM20).
+    pub fn append_journal_entry(&self, entry: &Entry) {
+        FileJournal::open(&self.dir.path().join("journal"))
+            .unwrap()
+            .append(self.week(), entry)
+            .unwrap();
+    }
+
+    /// `journal_applied` of the current database.
+    pub fn journal_applied(&self) -> u64 {
+        let tx = self.issuer().store().read().unwrap();
+        store::meta(&*tx, MetaKey::JournalApplied)
+            .unwrap()
+            .unwrap_or(0)
     }
 
     pub fn tick(&mut self) -> Option<TickReport> {
@@ -438,13 +541,18 @@ impl World {
     /// Host loss: the snapshot replaces the database, the journal is kept; open in restore mode
     /// (replay, pool reset), refill above the wallet's subaddress count, tick.
     pub fn restore(&mut self) {
+        self.restore_with(OpenMode::Restore);
+    }
+
+    /// [`World::restore`] opening in `mode` (`Normal` is mutant MM15 `PoolNotResetOnRestore`).
+    pub fn restore_with(&mut self, mode: OpenMode) {
         self.issuer = None;
         std::fs::copy(
             self.dir.path().join("snapshot.redb"),
             self.dir.path().join("issuer.redb"),
         )
         .unwrap();
-        self.open(OpenMode::Restore);
+        self.open(mode);
         self.refill();
         self.tick();
     }
@@ -661,6 +769,128 @@ impl World {
         Ok(r)
     }
 
+    /// The refresh request of `label` for a credit of `epoch`: one blinded CREDIT position.
+    pub fn refresh_blinded(&self, label: &str, epoch: u64) -> Vec<u8> {
+        let layout = Layout::refresh(&self.schedule, epoch).unwrap();
+        batch::blind(&self.schedule, &seed(label), &layout).unwrap()
+    }
+
+    /// `RefreshCredit` of `credit` with `blinded`.
+    pub fn refresh(
+        &mut self,
+        credit: &Token,
+        blinded: Vec<u8>,
+    ) -> Result<wire::RefreshCreditResponse, Status> {
+        let req = wire::RefreshCreditRequest {
+            version: 1,
+            credit: credit.as_bytes().to_vec(),
+            blinded: blinded.clone(),
+        };
+        let r = self.call(|i, now| i.refresh_credit_at(req.clone(), now))?;
+        if r.result == wire::RefreshCreditResult::Ok as i32 {
+            let epoch = self.schedule.key_by_id(credit.key_id()).unwrap().epoch;
+            let n = credit.nullifier();
+            self.observed
+                .refreshes
+                .entry((epoch, n))
+                .or_default()
+                .insert((refresh_digest(&n, &blinded), r.blind_signature.clone()));
+            self.observed.spent.insert((epoch, n));
+        }
+        Ok(r)
+    }
+
+    /// The fresh credit of a refresh by `label` of a credit of `epoch`.
+    pub fn finalize_refresh(&self, label: &str, epoch: u64, sig: &[u8]) -> Token {
+        let layout = Layout::refresh(&self.schedule, epoch).unwrap();
+        batch::finalize(&self.schedule, &seed(label), &layout, sig)
+            .expect("MS-6: the fresh credit")
+            .remove(0)
+    }
+
+    pub fn export_dir(&self) -> PathBuf {
+        self.dir.path().join("export")
+    }
+
+    /// One payout export run (acknowledgements imported, batches created, files written); every
+    /// batch file then in the export directory is recorded.
+    pub fn export(&mut self) -> PayoutReport {
+        let dir = self.export_dir();
+        let key = ops_key();
+        let report = self
+            .run(|i, now| i.payout_export_at(now, &key, &dir))
+            .expect("payout export");
+        for file in self.batch_files() {
+            let bytes = std::fs::read(dir.join(payout::batch_file_name(&file.batch_id))).unwrap();
+            self.observed
+                .batch_files
+                .entry(file.batch_id)
+                .or_default()
+                .insert(bytes);
+            for e in &file.entries {
+                let previous = self
+                    .observed
+                    .batch_of_claim
+                    .insert(e.claim_id, file.batch_id);
+                assert!(
+                    previous.is_none_or(|b| b == file.batch_id),
+                    "a claim exported in two batches"
+                );
+            }
+        }
+        report
+    }
+
+    /// The batch files in the export directory, verified under the test ops key.
+    pub fn batch_files(&self) -> Vec<BatchFile> {
+        let Ok(items) = std::fs::read_dir(self.export_dir()) else {
+            return Vec::new();
+        };
+        let mut out: Vec<BatchFile> = items
+            .map(|i| i.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "ghpb"))
+            .map(|p| {
+                BatchFile::verify(&std::fs::read(&p).unwrap(), &ops_key().public())
+                    .expect("a batch file verifies under the ops key")
+            })
+            .collect();
+        out.sort_by_key(|f| f.batch_id);
+        out
+    }
+
+    /// The workstation's acknowledgement of `file`, every entry paid, in the export directory; the
+    /// next export imports it.
+    pub fn write_ack(&self, file: &BatchFile) -> AckFile {
+        self.write_ack_refusing(file, &[])
+    }
+
+    /// [`World::write_ack`] with the entries of the claims `refused` refused (a payout address
+    /// the workstation had seen before).
+    pub fn write_ack_refusing(&self, file: &BatchFile, refused: &[[u8; 16]]) -> AckFile {
+        let ack = AckFile {
+            batch_id: file.batch_id,
+            entries: file
+                .entries
+                .iter()
+                .map(|e| {
+                    let outcome = if refused.contains(&e.claim_id) {
+                        EntryOutcome::Refused
+                    } else {
+                        EntryOutcome::Paid
+                    };
+                    (e.claim_id, outcome)
+                })
+                .collect(),
+        };
+        std::fs::write(
+            self.export_dir()
+                .join(payout::ack_file_name(&file.batch_id)),
+            ack.encode().unwrap(),
+        )
+        .unwrap();
+        ack
+    }
+
     pub fn claim(
         &mut self,
         label: &str,
@@ -729,30 +959,91 @@ impl World {
                 assert_eq!(row.issued_digest, Some(*digest), "MS-1: another digest");
             }
         }
+        // A nullifier row may be gone only once its epoch is closed by the persisted high-water
+        // mark (§19.10): the mark then refuses the token whatever the clock says.
+        let closed_invite = store::meta(&*tx, MetaKey::ClosedThroughInviteEpoch).unwrap();
+        let closed_credit = store::meta(&*tx, MetaKey::ClosedThroughCreditEpoch).unwrap();
         for ((epoch, n), set) in &self.observed.trials {
             assert_eq!(set.len(), 1, "MS-3: two trial answers for one invite");
             let (digest, _) = set.iter().next().unwrap();
-            assert_eq!(
-                store::invite_nullifier(&*tx, *epoch, n).unwrap(),
-                Some(*digest),
-                "MS-3: invite nullifier lost"
-            );
+            match store::invite_nullifier(&*tx, *epoch, n).unwrap() {
+                Some(stored) => assert_eq!(stored, *digest, "MS-3: invite nullifier changed"),
+                None => assert!(
+                    closed_invite.is_some_and(|m| *epoch <= m),
+                    "MS-3: invite nullifier lost"
+                ),
+            }
         }
         for (epoch, n) in &self.observed.spent {
-            assert!(
-                store::credit_nullifier(&*tx, *epoch, n).unwrap().is_some(),
-                "MS-3: credit nullifier lost"
-            );
+            if store::credit_nullifier(&*tx, *epoch, n).unwrap().is_none() {
+                assert!(
+                    closed_credit.is_some_and(|m| *epoch <= m),
+                    "MS-3: credit nullifier lost"
+                );
+            }
+        }
+        for ((epoch, n), set) in &self.observed.refreshes {
+            assert_eq!(set.len(), 1, "MS-3: two refresh answers for one credit");
+            let (digest, _) = set.iter().next().unwrap();
+            if let Some(used) = store::credit_nullifier(&*tx, *epoch, n).unwrap() {
+                assert_eq!(
+                    used,
+                    CreditUse::Refresh(*digest),
+                    "MS-3: a refreshed credit recorded otherwise"
+                );
+            }
+        }
+        // Payouts (§9.5, §19.5): a batch file never changes, a claim never joins a second batch,
+        // a batch's total is the sum of its claims, a closed claim keeps no payout address, and
+        // no two pending (queued or batched) claims share one (S6 review: no batch can hold an
+        // address twice).
+        for files in self.observed.batch_files.values() {
+            assert_eq!(files.len(), 1, "a batch file changed on re-export");
+        }
+        let batches: BTreeMap<[u8; 16], _> = store::batches(&*tx).unwrap().into_iter().collect();
+        let claims = store::claims(&*tx).unwrap();
+        let mut sums: BTreeMap<[u8; 16], (u64, usize)> = BTreeMap::new();
+        let mut pending = BTreeSet::new();
+        for (id, c) in &claims {
+            match c.state {
+                ClaimState::Queued => assert_eq!(c.batch_id, [0; 16], "a queued claim in a batch"),
+                ClaimState::Batched | ClaimState::Paid | ClaimState::Refused => {
+                    assert!(batches.contains_key(&c.batch_id), "a claim of no batch");
+                    let s = sums.entry(c.batch_id).or_default();
+                    s.0 += c.amount;
+                    s.1 += 1;
+                }
+            }
+            match c.state {
+                ClaimState::Paid | ClaimState::Refused => assert_eq!(
+                    c.address, [0u8; ADDRESS_LEN],
+                    "RET: a closed claim keeps its payout address"
+                ),
+                ClaimState::Queued | ClaimState::Batched => assert!(
+                    pending.insert(c.address),
+                    "two pending claims to one payout address"
+                ),
+            }
+            if let Some(b) = self.observed.batch_of_claim.get(id) {
+                assert_eq!(c.batch_id, *b, "a claim re-queued into another batch");
+            }
+        }
+        for (id, b) in &batches {
+            if let Some(&(sum, n)) = sums.get(id) {
+                if n == usize::from(b.entries) {
+                    assert_eq!(sum, b.total, "a batch total is not the sum of its claims");
+                }
+            }
         }
         // RET (§6.1, §19.1 rule 5): a credit spent for a discount (use 1) or a payout (use 2)
         // keeps no reference to its invoice or claim, which are deleted within weeks while the
-        // nullifier stays for 52–65; only a refresh (use 3) keeps the first 16 bytes of its digest.
+        // nullifier stays for 52–65; only a refresh (use 3) keeps its request's digest, whole.
         for (_, value) in tx.range(Table::CreditNullifier, &[], None).unwrap() {
-            assert_eq!(value.len(), 17, "credit_nullifier row length");
+            assert_eq!(value.len(), 33, "credit_nullifier row length");
             if matches!(value[0], 1 | 2) {
                 assert_eq!(
                     value[1..],
-                    [0u8; 16],
+                    [0u8; 32],
                     "RET: a spent credit references its invoice or claim"
                 );
             }

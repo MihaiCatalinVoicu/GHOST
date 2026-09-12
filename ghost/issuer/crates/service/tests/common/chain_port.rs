@@ -29,6 +29,8 @@ pub struct Tx {
 pub struct Chain {
     pub blocks: u64,
     pub daemon_ahead: u64,
+    /// The configured daemon lags the wallet (it is not the wallet's own daemon).
+    pub daemon_behind: u64,
     pub synced: bool,
     /// Every call fails with this error while set.
     pub failure: Option<RailError>,
@@ -36,6 +38,8 @@ pub struct Chain {
     pub addresses: Vec<String>,
     pub txs: Vec<Tx>,
     pub next_txid: u64,
+    /// The next `create_address` takes effect but its answer is lost (crash scenario I-M).
+    pub lose_next_address: bool,
 }
 
 pub struct ChainPort(Mutex<Chain>);
@@ -43,14 +47,24 @@ pub struct ChainPort(Mutex<Chain>);
 /// A deterministic, valid regtest subaddress for `minor`: two Ed25519 points, prefix 42,
 /// Keccak-256 checksum, Monero Base58.
 pub fn address(minor: u32) -> String {
+    encode_address(
+        SUBADDRESS_PREFIX,
+        u64::from(minor) + 1,
+        u64::from(minor) + 1_000_003,
+    )
+}
+
+/// A valid address of any network byte: the points `spend·G` and `view·G`, Keccak-256 checksum,
+/// Monero Base58 (18: mainnet and regtest standard, 24: stagenet standard, 42: subaddress).
+pub fn encode_address(prefix: u8, spend: u64, view: u64) -> String {
     let point = |x: u64| {
         EdwardsPoint::mul_base(&Scalar::from(x))
             .compress()
             .to_bytes()
     };
-    let mut data = vec![SUBADDRESS_PREFIX];
-    data.extend_from_slice(&point(u64::from(minor) + 1));
-    data.extend_from_slice(&point(u64::from(minor) + 1_000_003));
+    let mut data = vec![prefix];
+    data.extend_from_slice(&point(spend));
+    data.extend_from_slice(&point(view));
     let check = Keccak256::digest(&data);
     data.extend_from_slice(&check[..4]);
     base58_encode(&data)
@@ -61,12 +75,20 @@ impl ChainPort {
         Self::from_chain(Chain {
             blocks,
             daemon_ahead: 0,
+            daemon_behind: 0,
             synced: true,
             failure: None,
             addresses: vec![address(0)],
             txs: Vec::new(),
             next_txid: 1,
+            lose_next_address: false,
         })
+    }
+
+    /// The next `create_address` creates its subaddress in the wallet, but the issuer never gets
+    /// the answer (a lost response without a crash, §19.6 rule 4).
+    pub fn lose_next_address_answer(&self) {
+        self.lock().lose_next_address = true;
     }
 
     pub fn from_chain(chain: Chain) -> Arc<Self> {
@@ -158,6 +180,26 @@ impl ChainPort {
         self.lock().daemon_ahead = blocks;
     }
 
+    pub fn set_daemon_behind(&self, blocks: u64) {
+        self.lock().daemon_behind = blocks;
+    }
+
+    /// The view-only wallet restored from its keys without runbook R5's replay (§7.5): it holds
+    /// only its first `keep` subaddresses and sees no transfer to a later minor.
+    pub fn restore_without_replay(&self, keep: u32) {
+        self.lock().addresses.truncate(keep as usize);
+    }
+
+    /// Runbook R5's replay (`create_address` through `highest`) and rescan: the wallet holds every
+    /// minor through `highest` again and sees their transfers.
+    pub fn replay_through(&self, highest: u32) {
+        let mut c = self.lock();
+        while c.addresses.len() <= highest as usize {
+            let minor = c.addresses.len() as u32;
+            c.addresses.push(address(minor));
+        }
+    }
+
     pub fn set_failure(&self, failure: Option<RailError>) {
         self.lock().failure = failure;
     }
@@ -185,6 +227,9 @@ impl PaymentRail for ChainPort {
         let minor = c.addresses.len() as u32;
         let text = address(minor);
         c.addresses.push(text.clone());
+        if std::mem::take(&mut c.lose_next_address) {
+            return Err(RailError::Transport);
+        }
         Ok((minor, text))
     }
 
@@ -202,12 +247,14 @@ impl PaymentRail for ChainPort {
             Some(e) => Err(e),
             None => Ok(RailHeight {
                 wallet: c.blocks,
-                daemon: c.blocks + c.daemon_ahead,
+                daemon: (c.blocks + c.daemon_ahead).saturating_sub(c.daemon_behind),
                 synced: c.synced,
             }),
         }
     }
 
+    // A wallet sees transfers to the subaddresses it holds (a restored wallet without the replay
+    // misses the later ones, §7.5).
     fn transfers(&self, from: u64, to: u64) -> Result<Vec<IncomingEntry>, RailError> {
         let c = self.lock();
         if let Some(e) = c.failure {
@@ -215,6 +262,7 @@ impl PaymentRail for ChainPort {
         }
         Ok(c.txs
             .iter()
+            .filter(|t| (t.minor as usize) < c.addresses.len())
             .filter(|t| t.height.is_none_or(|h| from <= h && h <= to))
             .map(|t| Self::entry(&c, t))
             .collect())
@@ -227,6 +275,7 @@ impl PaymentRail for ChainPort {
         }
         Ok(c.txs
             .iter()
+            .filter(|t| (t.minor as usize) < c.addresses.len())
             .find(|t| t.txid == *txid)
             .map(|t| Self::entry(&c, t)))
     }

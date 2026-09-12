@@ -1,0 +1,20 @@
+name: monero-regtest
+on:
+  pull_request:
+    paths:
+      - "ghost/issuer/**"
+      - "ghost/infra/issuer/**"
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
+  workflow_dispatch:
+jobs:
+  monero-regtest:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: download the pinned archive, check it, extract it
+        run: |
+          read -r _ _ file sha dir < <(awk '$1 == "archive" && $2 == "linux-x64"' ghost/infra/issuer/monero-release.pin)
+          url="$(awk '$1 == "url" {print $2}' ghost/infra/issuer/monero-release.pin)"
+          curl -fsSL -o "$file" "$url$file"
+          # the archive is checked with sha256sum -c against ghost/infra/issuer/monero-release.pin
+          tar -xjf "$file" --strip-components=1 "$dir/monerod" "$dir/monero-wallet-rpc"

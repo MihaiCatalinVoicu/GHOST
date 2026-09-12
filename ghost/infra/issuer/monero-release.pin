@@ -1,0 +1,22 @@
+# Monero release pinned for the issuer (Phase 8 design §6.7, §7.1, §13.3, §14.1; RM §9.1; ADR-26).
+# The one place of these hashes and archive names: .github/workflows/monero-regtest.yml reads this
+# file, and so will the issuer Dockerfile and compose file (slice S11); scripts/gates/monero-pin.sh
+# fails on a second copy anywhere. A bump is a reviewed pull request (runbook M1; before a hard
+# fork, M2), and the regtest scenario must pass on the new release.
+#
+# Source of the hashes: https://www.getmonero.org/downloads/hashes.txt, PGP clear-signed by
+# binaryFate <binaryfate@getmonero.org>, key fingerprint 81AC 591F E9C4 B65C 5806 AFC3 F0AF 4D46
+# 2A0B DF92 (utils/gpg_keys/binaryfate.asc at tag v0.18.5.1). Signature made 2026-07-20; checked
+# 2026-09-12 with gpg 2.4.9 in a throwaway keyring ("Good signature"). Both archives below were
+# downloaded from the url line on 2026-09-12 and hashed; each equals its signed line.
+#
+#   version <release tag>
+#   url <base URL; the archive name is appended>
+#   archive <platform> <file> <sha256> <directory inside the archive>
+#
+# linux-x64 is the archive of the CI job and of the issuer image; win-x64 serves local runs of the
+# regtest scenario on Windows development machines.
+version v0.18.5.1
+url https://downloads.getmonero.org/cli/
+archive linux-x64 monero-linux-x64-v0.18.5.1.tar.bz2 22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958 monero-x86_64-linux-gnu-v0.18.5.1
+archive win-x64 monero-win-x64-v0.18.5.1.zip cf2ae8273977697d9ef2031c7337b781e6e5936578f602444b2990a173a2437d monero-x86_64-w64-mingw32-v0.18.5.1

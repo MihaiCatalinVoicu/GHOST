@@ -18,6 +18,14 @@
 //! invoice's credited amount is added to `unattributed_atomic` in the same transaction. With the
 //! issuance (`xmr_credited_atomic`) and purge (`overpaid_atomic`) counters every final transfer to a
 //! minor ≥ 1 is thus counted once: incoming = credited + overpaid + unattributed.
+//!
+//! **Complete view** (review finding S5-MON-1). A view-only wallet restored from its keys without
+//! runbook R5's replay holds fewer subaddresses than the issuer handed out and misses every
+//! payment beyond its lookahead. Every tick therefore compares the wallet's subaddress count with
+//! `highest_minor` after the refresh; while `count − 1 < highest_minor` it decides nothing (no
+//! state change, no EXPIRED, no unattributed revenue), and the missing synced tick makes new XMR
+//! invoices `UNAVAILABLE`; `status.json` reports `WALLET_INCOMPLETE` until the replay
+//! (`ghost-issuer --restore-wallet`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -45,6 +53,8 @@ pub struct TickReport {
 pub enum TickError {
     Rail(RailError),
     Store(StoreError),
+    /// The wallet holds fewer subaddresses than `highest_minor + 1`: nothing was decided.
+    WalletIncomplete,
 }
 
 impl From<StoreError> for TickError {
@@ -66,14 +76,27 @@ impl Issuer {
                 return Err(TickError::Rail(e));
             }
         };
+        let count = match self.rail.address_count() {
+            Ok(count) => u64::from(count),
+            Err(e) => {
+                self.record_tick(now, TickOutcome::Failed(e), Some(h));
+                return Err(TickError::Rail(e));
+            }
+        };
         let c = u64::from(self.schedule.constants().confirmations);
-        let (rows, scan_final) = {
+        let (rows, scan_final, highest) = {
             let tx = self.store.read()?;
             (
                 store::invoices(&*tx)?,
                 store::meta(&*tx, MetaKey::ScanFinalHeight)?,
+                store::meta(&*tx, MetaKey::HighestMinor)?.unwrap_or(0),
             )
         };
+        if count <= highest {
+            // A restore without the replay: the wallet cannot see every minor handed out.
+            self.record_tick(now, TickOutcome::WalletIncomplete, Some(h));
+            return Err(TickError::WalletIncomplete);
+        }
         let mut from = scan_final.map_or(h.wallet.saturating_sub(c), |f| f.saturating_add(1));
         for (_, row) in &rows {
             if row.pay_with == PayWith::Monero && row.state.is_open() {
