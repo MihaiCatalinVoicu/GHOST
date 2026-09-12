@@ -1,0 +1,51 @@
+// Negative fixture (Phase 8 design §5.2, §14.1): proto-check.sh checks every request message, not
+// every file, and only the field the message itself declares. GoodRequest, InlineGoodRequest and
+// GoodNextLineRequest carry the version, so a per-file check would pass; MissingRequest,
+// WrongNumberRequest, NestedRequest, NestedVersionRequest (the version belongs to its nested
+// message) and BraceOnNextLineRequest must each be reported, and the good ones and Response not.
+syntax = "proto3";
+
+package ghost.bad.v1;
+
+message GoodRequest {
+  uint32 version = 1;
+  bytes body = 2;
+}
+
+message InlineGoodRequest { uint32 version = 1; }
+
+message GoodNextLineRequest
+{
+  uint32 version = 1;
+}
+
+message MissingRequest {
+  bytes body = 1;
+}
+
+message WrongNumberRequest {
+  uint32 version = 2;
+}
+
+message NestedRequest {
+  message Inner {
+    uint32 other = 1;
+  }
+  Inner inner = 1;
+}
+
+message NestedVersionRequest {
+  message Inner {
+    uint32 version = 1;
+  }
+  Inner inner = 2;
+}
+
+message BraceOnNextLineRequest
+{
+  bytes body = 1;
+}
+
+message Response {
+  bytes body = 1;
+}

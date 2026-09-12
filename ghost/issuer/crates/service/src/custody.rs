@@ -21,14 +21,21 @@
 //! presented under another (kind, epoch); the nonce is drawn from the operating system for every
 //! file, so re-sealing a (kind, epoch) never reuses a nonce under its `k_seal`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::sync::Arc;
 
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305, NONCE_LEN};
 use ring::hkdf;
 use ring::rand::SecureRandom;
 
-use crate::signer::{ReferenceSigner, SignError};
-use ghost_entitlement::Kind;
+use crate::signer::{CheckedSigner, ReferenceSigner, SignError, Signer};
+use ghost_blind_rsa::PublicKey;
+use ghost_entitlement::grid::{
+    credit_epoch, invite_epoch, week_start, DAY_SECS, WEEKS_PER_CREDIT_EPOCH,
+    WEEKS_PER_INVITE_EPOCH,
+};
+use ghost_entitlement::{Kind, Schedule};
 
 /// Domain label of the seal-key derivation.
 pub const SEAL_KEY_LABEL: &[u8] = b"ghost/v1/key-seal";
@@ -317,5 +324,187 @@ impl SealLoad {
             load.insert(kind, epoch, SealKey(key))?;
         }
         Ok(load)
+    }
+}
+
+/// Keys are destroyed no earlier than 8 days after the end of their epoch (§3.3 K4, §19.1).
+pub const DESTROY_GRACE_SECS: u64 = 8 * DAY_SECS;
+
+/// The instant from which the private key of (kind, epoch) may leave memory once no open invoice
+/// references it (§19.1 rule 1):
+///
+/// - ACCESS week p: `end(p + 1) + 8 d`. One week later than the bare `end(p) + 8 d` of K4, so the
+///   base-week key of a trial redeemed in week p stays held for the trial re-serve until
+///   `end(base + 1) + 8 d` (§19.1 rule 2); the issuer stores no trial base week to do it per
+///   trial. Past access keys add no forging power (relays refuse week p after `start(p+1) + 1 h`).
+/// - INVITE epoch e: `end(e) + 8 d`.
+/// - CREDIT epoch c: `end(c + 1) + 8 d` (kept for `RefreshCredit` of the previous epoch, §19.8).
+pub fn destroy_after(kind: Kind, epoch: u64) -> u64 {
+    let end_week = match kind {
+        Kind::Access => epoch.saturating_add(2),
+        Kind::Invite => epoch
+            .saturating_add(1)
+            .saturating_mul(WEEKS_PER_INVITE_EPOCH),
+        Kind::Credit => epoch
+            .saturating_add(2)
+            .saturating_mul(WEEKS_PER_CREDIT_EPOCH),
+    };
+    week_start(end_week).saturating_add(DESTROY_GRACE_SECS)
+}
+
+/// Why a key load was refused. The issuer refuses to start on any of them (§3.1, §6.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LoadError {
+    /// The load file names a (kind, epoch) the schedule does not list.
+    NotInSchedule(Kind, u64),
+    /// The sealed file of a listed (kind, epoch) is missing or unreadable.
+    SealedFileMissing(Kind, u64),
+    /// The sealed file does not open into a key under its `k_seal`.
+    Custody(Kind, u64, CustodyError),
+    /// The unsealed private key does not match the schedule's public key.
+    Mismatch(Kind, u64),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (what, kind, epoch) = match self {
+            LoadError::NotInSchedule(k, e) => ("key not in the schedule", k, e),
+            LoadError::SealedFileMissing(k, e) => ("sealed key file missing", k, e),
+            LoadError::Custody(k, e, _) => ("sealed key file refused", k, e),
+            LoadError::Mismatch(k, e) => ("key does not match its schedule entry", k, e),
+        };
+        write!(f, "{what}: {} {epoch}", kind_name(*kind))
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+#[derive(Clone)]
+struct HeldKey {
+    public_key: PublicKey,
+    signer: Arc<dyn Signer>,
+}
+
+/// The private keys held in process memory (§3.3 window, §19.1): every one behind the fault check
+/// of [`CheckedSigner`], each proven at load to be the key its schedule entry names. Keys leave
+/// memory through [`KeyWindow::destroy_due`] only.
+#[derive(Clone, Default)]
+pub struct KeyWindow {
+    keys: BTreeMap<(Kind, u64), HeldKey>,
+}
+
+impl std::fmt::Debug for KeyWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.keys.keys()).finish()
+    }
+}
+
+impl KeyWindow {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Runbook K3: unseals, for every (kind, epoch) of `load`, the file
+    /// `sealed_dir/<kind>-<epoch>.ghks` into process memory and proves it is the key the schedule
+    /// lists for (kind, epoch), with one checked signature (`CheckedSigner::new`).
+    pub fn load(
+        schedule: &Schedule,
+        load: &SealLoad,
+        sealed_dir: &Path,
+    ) -> Result<Self, LoadError> {
+        let mut window = Self::new();
+        for (kind, epoch) in load.keys() {
+            let entry = schedule
+                .key(kind, epoch)
+                .ok_or(LoadError::NotInSchedule(kind, epoch))?;
+            let sealed = std::fs::read(sealed_dir.join(sealed_file_name(kind, epoch)))
+                .map_err(|_| LoadError::SealedFileMissing(kind, epoch))?;
+            let seal_key = load
+                .get(kind, epoch)
+                .ok_or(LoadError::SealedFileMissing(kind, epoch))?;
+            let signer = unseal(seal_key, kind, epoch, &sealed)
+                .map_err(|e| LoadError::Custody(kind, epoch, e))?;
+            let checked = CheckedSigner::new(signer, entry.public_key.clone())
+                .map_err(|_| LoadError::Mismatch(kind, epoch))?;
+            window.insert(checked);
+        }
+        Ok(window)
+    }
+
+    /// Holds one checked signer (keyed by its (kind, epoch)).
+    pub fn insert<S: Signer + 'static>(&mut self, signer: CheckedSigner<S>) {
+        let key = signer.key();
+        let public_key = signer.public_key().clone();
+        self.keys.insert(
+            key,
+            HeldKey {
+                public_key,
+                signer: Arc::new(signer),
+            },
+        );
+    }
+
+    pub fn get(&self, kind: Kind, epoch: u64) -> Option<Arc<dyn Signer>> {
+        self.keys.get(&(kind, epoch)).map(|k| Arc::clone(&k.signer))
+    }
+
+    pub fn contains(&self, kind: Kind, epoch: u64) -> bool {
+        self.keys.contains_key(&(kind, epoch))
+    }
+
+    /// The (kind, epoch) pairs held, ascending.
+    pub fn held(&self) -> Vec<(Kind, u64)> {
+        self.keys.keys().copied().collect()
+    }
+
+    /// Every held key must be the key the schedule lists for its (kind, epoch) (startup, §3.1).
+    pub fn check_against(&self, schedule: &Schedule) -> Result<(), LoadError> {
+        for ((kind, epoch), held) in &self.keys {
+            let entry = schedule
+                .key(*kind, *epoch)
+                .ok_or(LoadError::NotInSchedule(*kind, *epoch))?;
+            if entry.public_key.n() != held.public_key.n()
+                || entry.public_key.e() != held.public_key.e()
+            {
+                return Err(LoadError::Mismatch(*kind, *epoch));
+            }
+        }
+        Ok(())
+    }
+
+    /// Runbook K4 (§19.1 rule 1): drops every key with `now ≥ destroy_after(kind, epoch)` that no
+    /// open invoice's layout references. Returns the keys destroyed.
+    pub fn destroy_due(
+        &mut self,
+        now: u64,
+        referenced: &BTreeSet<(Kind, u64)>,
+    ) -> Vec<(Kind, u64)> {
+        let due: Vec<(Kind, u64)> = self
+            .keys
+            .keys()
+            .copied()
+            .filter(|&(kind, epoch)| {
+                now >= destroy_after(kind, epoch) && !referenced.contains(&(kind, epoch))
+            })
+            .collect();
+        for k in &due {
+            self.keys.remove(k);
+        }
+        due
+    }
+
+    /// The last access week `w ≥ week` such that the ACCESS key of every week in `week..=w` and
+    /// the INVITE and CREDIT keys of those weeks are held (status `KEYS_READY_UNTIL_WEEK`).
+    pub fn ready_until_week(&self, week: u64) -> Option<u64> {
+        let mut ready = None;
+        let mut w = week;
+        while self.contains(Kind::Access, w)
+            && self.contains(Kind::Invite, invite_epoch(w))
+            && self.contains(Kind::Credit, credit_epoch(w))
+        {
+            ready = Some(w);
+            w = w.checked_add(1)?;
+        }
+        ready
     }
 }

@@ -21,27 +21,6 @@ done
 expect_fail sync-no-catch-all "$HARNESS/negative-sync"
 sync_hits="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
 if [ "$sync_hits" = "9" ]; then echo "self-test ok: sync-no-catch-all reports all 9 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 9 fixture lines" >&2; rc=1; fi
-# Phase 8 (design §14.1, RC G18): proto-check checks every *Request message, not the file. The
-# fixture has one request with a version and three without a top-level one (none, nested only,
-# commented out): exactly those three are reported, by name.
-if command -v protoc >/dev/null; then
-  proto_out="$(GHOST_ROOT="$HARNESS/negative-proto" bash "$DIR/proto-check.sh" 2>&1 || true)"
-  proto_hits="$(printf '%s\n' "$proto_out" | grep -c '^GATE-FAIL' || true)"
-  proto_named=0
-  for m in RedeemTokenRequest GetBlobRequest ListNamespaceRequest; do
-    printf '%s\n' "$proto_out" | grep -qF "message $m must carry" && proto_named=$((proto_named + 1))
-  done
-  if [ "$proto_hits" = "3" ] && [ "$proto_named" = "3" ] && ! printf '%s\n' "$proto_out" | grep -qF "message StoreBlobRequest"; then
-    echo "self-test ok: proto-check reports the 3 requests without a top-level version"
-  else
-    echo "SELF-TEST FAIL: proto-check reported $proto_hits line(s), $proto_named of the 3 requests" >&2
-    printf '%s\n' "$proto_out" | tail -5 >&2; rc=1
-  fi
-elif [ -n "${CI:-}" ]; then
-  echo "SELF-TEST FAIL: protoc missing in CI; proto-check not proven" >&2; rc=1
-else
-  echo "self-test skipped: proto-check (protoc not installed)"
-fi
 # Phase 7 T6 (Kotlin side): every clearnet primitive in the fixture is reported, one line each.
 expect_fail kotlin-clearnet "$HARNESS/negative-clearnet"
 clearnet_hits="$(GHOST_ROOT="$HARNESS/negative-clearnet" bash "$DIR/kotlin-clearnet.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
@@ -86,6 +65,70 @@ if printf '%s\n' "$out" | grep -qF "issuer/crates/ops/src/report.rs:5:"; then
   echo "SELF-TEST FAIL: no-logging reports the exempt eprintln! of ops/src/report.rs" >&2; rc=1
 else
   echo "self-test ok: no-logging exempts println!/eprintln! in ops/src/report.rs only"
+fi
+# Phase 8 (design §6.5, §14.1): logging-framework paths and bare logging macros are reported in the
+# issuer, relay and client-core sources, and logging crates in issuer manifests, one line each.
+out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/no-logging.sh" 2>&1 || true)"
+for want in issuer/crates/service/src/logging.rs:3: issuer/crates/service/src/logging.rs:5: \
+  issuer/crates/service/src/logging.rs:6: issuer/crates/service/src/logging.rs:7: \
+  issuer/crates/service/src/logging.rs:8: issuer/crates/service/src/logging.rs:9: \
+  issuer/crates/service/Cargo.toml:6: issuer/crates/service/Cargo.toml:9: relay/crates/bad/src/logging.rs:3: \
+  issuer/crates/service/Cargo.toml:12: issuer/crates/service/Cargo.toml:15: \
+  issuer/crates/service/src/renamed.rs:3: issuer/crates/service/src/renamed.rs:4: \
+  issuer/crates/service/src/renamed.rs:5:; do
+  if printf '%s\n' "$out" | grep -qF "$want"; then
+    echo "self-test ok: no-logging reports $want"
+  else
+    echo "SELF-TEST FAIL: no-logging does not report $want" >&2; rc=1
+  fi
+done
+out="$(GHOST_ROOT="$HARNESS/negative-client-core" bash "$DIR/no-logging.sh" 2>&1 || true)"
+if printf '%s\n' "$out" | grep -qF "client-core/bad/src/logging.rs:3:"; then
+  echo "self-test ok: no-logging reports client-core/bad/src/logging.rs:3:"
+else
+  echo "SELF-TEST FAIL: no-logging does not report client-core/bad/src/logging.rs:3:" >&2; rc=1
+fi
+# Phase 8 (design §6.5, §14.1, §19.17 point 4): issuer-output.sh reports every forbidden file or
+# console write by file and line, and none of the allowed ones.
+expect_fail issuer-output "$HARNESS/negative-issuer-output"
+out="$(GHOST_ROOT="$HARNESS/negative-issuer-output" bash "$DIR/issuer-output.sh" 2>&1 || true)"
+for want in service/src/service.rs:4: service/src/service.rs:5: service/src/service.rs:6: \
+  service/src/service.rs:7: service/src/service.rs:8: service/src/service.rs:9: \
+  service/src/service.rs:10: service/src/status.rs:4: service/src/store.rs:4: ops/src/report.rs:4: ops/src/output.rs:4: \
+  ops/src/keygen.rs:3: api/src/lib.rs:3:; do
+  if printf '%s\n' "$out" | grep -qF "issuer/crates/$want"; then
+    echo "self-test ok: issuer-output reports $want"
+  else
+    echo "SELF-TEST FAIL: issuer-output does not report $want" >&2; rc=1
+  fi
+done
+for allowed in service/src/status.rs:3: service/src/store.rs:3: ops/src/report.rs:3: ops/src/output.rs:3:; do
+  if printf '%s\n' "$out" | grep -qF "issuer/crates/$allowed"; then
+    echo "SELF-TEST FAIL: issuer-output reports the allowed $allowed" >&2; rc=1
+  else
+    echo "self-test ok: issuer-output allows $allowed"
+  fi
+done
+# Phase 8 (design §5.2, §14.1, RC G18): proto-check.sh checks every request message, not every
+# file. The fixture (test-harness/gates/negative-proto/README.md) has eight unversioned requests in
+# two files, each next to a versioned one: exactly those eight are reported, by name, and none of
+# the versioned ones.
+if command -v protoc >/dev/null; then
+  expect_fail proto-check "$HARNESS/negative-proto"
+  out="$(GHOST_ROOT="$HARNESS/negative-proto" bash "$DIR/proto-check.sh" 2>&1 || true)"
+  proto_hits="$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)"
+  if [ "$proto_hits" = "8" ]; then echo "self-test ok: proto-check reports the 8 unversioned request messages"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 8 unversioned request messages" >&2; rc=1; fi
+  for m in MissingRequest WrongNumberRequest NestedRequest NestedVersionRequest BraceOnNextLineRequest \
+    RedeemTokenRequest GetBlobRequest ListNamespaceRequest; do
+    if printf '%s\n' "$out" | grep -qF "message $m lacks"; then echo "self-test ok: proto-check reports $m"; else echo "SELF-TEST FAIL: proto-check does not report $m" >&2; rc=1; fi
+  done
+  for m in GoodRequest InlineGoodRequest GoodNextLineRequest StoreBlobRequest; do
+    if printf '%s\n' "$out" | grep -qF "message $m "; then echo "SELF-TEST FAIL: proto-check reports the versioned $m" >&2; rc=1; else echo "self-test ok: proto-check accepts $m"; fi
+  done
+elif [ -n "${CI:-}" ]; then
+  echo "SELF-TEST FAIL: protoc missing in CI; proto-check not proven" >&2; rc=1
+else
+  echo "self-test skipped: proto-check (protoc not installed)"
 fi
 # Phase 8 (design §14.1): entitlement-schedule.sh on its fixture roots
 # (test-harness/gates/entitlement-schedule/README.md). Each case must end as expected and report
