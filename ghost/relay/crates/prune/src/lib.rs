@@ -84,7 +84,8 @@ mod tests {
         ledger.charge(&key.mint(&live_cap), &live_cap, 1).unwrap();
 
         let nulls =
-            NullifierStore::open(&dir.path().join("n.redb"), NullifierStart::Create).unwrap();
+            NullifierStore::open(&dir.path().join("n.redb"), NullifierStart::Create, &[0; 8])
+                .unwrap();
         nulls.record_or_get(7, &[0; 32], &[1; 16]).unwrap();
         nulls.record_or_get(8, &[0; 32], &[1; 16]).unwrap();
         let periods = |closed| {

@@ -43,6 +43,10 @@ pub const BINDING_TAG_BYTES: usize = 16;
 pub const REDEEM_BINDING_LABEL: &[u8] = b"ghost/v1/redeem-binding";
 /// Label of the deterministic serial of a redeemed capability (design §10.2 step 10).
 pub const CAP_SERIAL_LABEL: &[u8] = b"ghost/v1/cap-serial";
+/// Label of the key check value the nullifier store keeps of the relay key it was written under.
+pub const NULLIFIER_STORE_KEY_LABEL: &[u8] = b"ghost/v1/nullifier-store-key";
+/// Length of that key check value.
+pub const STORE_CHECK_BYTES: usize = 8;
 
 /// Right granted by a capability (the API crate's [`ghost_relay_api::CapabilityKind`]).
 pub use ghost_relay_api::CapabilityKind as Kind;
@@ -62,7 +66,8 @@ pub enum CapError {
 /// The relay's capability-signing secret. Generated at first start and kept on the relay's
 /// encrypted disk; rotating it invalidates outstanding capabilities (FR-5.7 key rotation) and
 /// changes every binding tag, so a relay whose key changes must also reset its nullifier store
-/// (runbook O1).
+/// (runbook O1). The store keeps [`RelayKey::store_check`] and refuses to open under another key
+/// until that reset.
 #[derive(Clone)]
 pub struct RelayKey([u8; 32]);
 
@@ -159,6 +164,14 @@ impl RelayKey {
         truncate(&mac)
     }
 
+    /// The key check value of the nullifier store: `HMAC-SHA256(relay_key,
+    /// "ghost/v1/nullifier-store-key")[0..8]`. The store records it at creation, so a relay whose
+    /// key changed (and every binding tag with it) refuses to start over the old store instead of
+    /// answering identical retries `REPLAYED`. It tells keys apart; it proves nothing about them.
+    pub fn store_check(&self) -> [u8; STORE_CHECK_BYTES] {
+        truncate(&self.hmac(&[NULLIFIER_STORE_KEY_LABEL]))
+    }
+
     fn hmac(&self, parts: &[&[u8]]) -> [u8; 32] {
         let mut m = HmacSha256::new_from_slice(&self.0).expect("HMAC accepts any key length");
         for part in parts {
@@ -185,15 +198,24 @@ pub fn scope_hash(token: &[u8]) -> [u8; 32] {
 
 /// Write-quota accounting per capability (keyed by scope hash), bounded by the capability expiry.
 /// It stays in memory (design §10.4, RC G4): a writer may exceed its quota once per restart,
-/// bounded by the capability's week-aligned expiry (declared in ADR-25).
+/// bounded by the capability's week-aligned expiry (declared in ADR-25). A clock excursion does
+/// not reset it: once the ledger was pruned at time t, a capability expiring by t (whose entry may
+/// be gone) is never charged again, whatever the clock says later.
 #[derive(Default)]
 pub struct QuotaLedger {
     used: HashMap<[u8; 32], (u64, u64)>, // scope hash -> (used bytes, expiry)
+    /// The highest time the ledger was pruned at (never lowered).
+    pruned_through: u64,
 }
 
 impl QuotaLedger {
-    /// Charges `bytes` against the capability; fails without charging if the quota would be exceeded.
+    /// Charges `bytes` against the capability; fails without charging if the quota would be
+    /// exceeded, or with [`CapError::Expired`] if the capability expired by the highest time the
+    /// ledger was pruned at.
     pub fn charge(&mut self, token: &[u8], cap: &Capability, bytes: u64) -> Result<(), CapError> {
+        if cap.expiry_unix <= self.pruned_through {
+            return Err(CapError::Expired);
+        }
         let key = scope_hash(token);
         let entry = self.used.entry(key).or_insert((0, cap.expiry_unix));
         if entry.0.saturating_add(bytes) > cap.quota_bytes {
@@ -210,8 +232,10 @@ impl QuotaLedger {
         }
     }
 
-    /// Forgets ledgers of expired capabilities (bounded memory, §11.2).
+    /// Forgets ledgers of expired capabilities (bounded memory, §11.2) and raises the time below
+    /// which no capability is charged again.
     pub fn prune(&mut self, now: u64) -> usize {
+        self.pruned_through = self.pruned_through.max(now);
         let before = self.used.len();
         self.used.retain(|_, (_, expiry)| *expiry > now);
         before - self.used.len()
@@ -402,5 +426,50 @@ mod tests {
         assert_eq!(ledger.prune(50), 0);
         assert_eq!(ledger.prune(100), 1);
         assert!(ledger.is_empty());
+    }
+
+    #[test]
+    fn a_pruned_ledger_never_charges_an_expired_capability_again() {
+        let key = RelayKey::generate();
+        let cap = |expiry_unix| Capability {
+            kind: Kind::Write,
+            namespace: ns(1),
+            quota_bytes: 10,
+            expiry_unix,
+        };
+        let spent = cap(100);
+        let token = key.mint(&spent);
+        let mut ledger = QuotaLedger::default();
+        assert!(ledger.charge(&token, &spent, 10).is_ok());
+        assert_eq!(
+            ledger.charge(&token, &spent, 1),
+            Err(CapError::QuotaExceeded)
+        );
+        // The clock jumps past the expiry (the entry is forgotten), then steps back: the spent
+        // quota is not restored.
+        assert_eq!(ledger.prune(150), 1);
+        assert_eq!(ledger.charge(&token, &spent, 1), Err(CapError::Expired));
+        // A lower prune never lowers that time; later capabilities are charged as before.
+        assert_eq!(ledger.prune(120), 0);
+        let edge = cap(150);
+        assert_eq!(
+            ledger.charge(&key.mint(&edge), &edge, 1),
+            Err(CapError::Expired)
+        );
+        let later = cap(151);
+        assert!(ledger.charge(&key.mint(&later), &later, 10).is_ok());
+    }
+
+    #[test]
+    fn the_store_check_is_keyed_and_recomputable() {
+        let key = RelayKey::from_bytes([3; 32]);
+        assert_eq!(key.store_check(), key.store_check());
+        assert_ne!(
+            key.store_check(),
+            RelayKey::from_bytes([4; 32]).store_check()
+        );
+        let mut m = HmacSha256::new_from_slice(&[3; 32]).unwrap();
+        m.update(b"ghost/v1/nullifier-store-key");
+        assert_eq!(key.store_check()[..], m.finalize().into_bytes()[..8]);
     }
 }

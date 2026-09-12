@@ -75,8 +75,8 @@ impl Relay {
     /// Opens the relay's data directory. With `config.entitlement` set, the start-up checks of
     /// design §10.5 run first, at `config.clock`'s time, and any failure is a refusal to start
     /// ([`StartError`]): the relay's onion must be listed for its slot in the current week, the
-    /// nullifier store must open as the policy's [`NullifierMode`] says, and the schedule must be
-    /// append-only against the relay's memory of earlier schedules (rule 5).
+    /// nullifier store must open as the policy's [`NullifierMode`] says and under `key`, and the
+    /// schedule must be append-only against the relay's memory of earlier schedules (rule 5).
     pub fn open(
         data_dir: &Path,
         key: RelayKey,
@@ -85,7 +85,12 @@ impl Relay {
     ) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(data_dir)?;
         let redeem = match config.entitlement.take() {
-            Some(policy) => Some(redeem::Redeem::open(policy, data_dir, (config.clock)())?),
+            Some(policy) => Some(redeem::Redeem::open(
+                policy,
+                data_dir,
+                &key,
+                (config.clock)(),
+            )?),
             None => None,
         };
         let store = BlobStore::open(&data_dir.join("blobs.redb"))?;

@@ -14,7 +14,8 @@
 //! [`Relay::redeem_at`] applies the checks in exactly the order of design §10.2 and records exactly
 //! one capture event.
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use ghost_entitlement::grid::{self, Kind as TokenKind};
@@ -26,7 +27,7 @@ use ghost_relay_api::proto::{
     Capability as CapabilityMessage, RedeemResult, RedeemTokenRequest, RedeemTokenResponse,
 };
 use ghost_relay_api::{time_bucket, HASH_BYTES, PROTOCOL_VERSION, REQUEST_ID_BYTES};
-use ghost_relay_capability::{scope_hash, Capability, Kind};
+use ghost_relay_capability::{scope_hash, Capability, Kind, RelayKey};
 use ghost_relay_storage::nullifiers::{EsMemory, NullifierStart, NullifierStore, Record};
 use ghost_relay_storage::StoreError;
 use tonic::Status;
@@ -37,16 +38,29 @@ use crate::{fixed, Relay, REJECTED, UNAUTHORIZED};
 /// File name of the nullifier store inside the data directory (design §10.4).
 pub const NULLIFIERS_FILE: &str = "nullifiers.redb";
 
+/// File name of the redemption marker inside the data directory. It is written once a nullifier
+/// store exists there and never removed, so a lost store is told from a directory that never had
+/// one: `--nullifiers-init` is then refused for good and a lost store is never recreated empty
+/// (design §19.10 point 2, review S3-MR-1). Its name does not start with `nullifiers`, so removing
+/// the store's files leaves it in place.
+pub const REDEMPTION_MARKER_FILE: &str = "redemption.marker";
+
+const MARKER_TEXT: &[u8] =
+    b"ghost-relay: this data directory has had a nullifier store; never delete this file (runbook O1)\n";
+
 /// How the relay opens `nullifiers.redb` at start (design §10.5, §19.10 point 2, runbook O1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NullifierMode {
     /// The store must exist (a data directory whose `relay.key` already existed).
     Existing,
-    /// A missing store is created empty: a fresh data directory, or the one-time Phase 8 upgrade
-    /// of a relay that never redeemed (`--nullifiers-init`).
+    /// A fresh data directory: a missing store is created empty, unless the directory has had one
+    /// (its redemption marker exists), which is a lost store and a refusal to start.
     Create,
+    /// `--nullifiers-init`, the one-time Phase 8 upgrade of a data directory that never redeemed:
+    /// a missing store is created empty; refused in a directory that has had a store.
+    Init,
     /// `--nullifiers-reset` after losing the store: every period whose acceptance window is open
-    /// at the reset is refused (`UNAVAILABLE`) for good.
+    /// at the reset is refused (`UNAVAILABLE`) for good, and the store adopts the relay's key.
     Reset,
 }
 
@@ -91,6 +105,20 @@ impl EntitlementPolicy {
             rate: RedeemRate::default(),
         })
     }
+
+    /// The start-up checks that read nothing from the data directory: the slot is 0..31 and the
+    /// ES lists this relay's onion for it in the week of `now`. [`Relay::open`] runs them first;
+    /// the binary also runs them before it creates `relay.key`, so a refused first start leaves
+    /// a fresh data directory fresh (review S3-MR-2).
+    pub fn check_start(&self, now: u64) -> Result<(), StartError> {
+        if self.slot > ghost_entitlement::challenge::MAX_SLOT {
+            return Err(StartError::Slot);
+        }
+        if !listed(&self.schedule, self.slot, grid::week(now), &self.onion) {
+            return Err(StartError::OnionNotListed);
+        }
+        Ok(())
+    }
 }
 
 /// The service key of the onion named by the contents of Tor's `HiddenServiceDir/hostname`: exactly
@@ -112,8 +140,12 @@ pub enum StartError {
     OnionNotListed,
     /// The ES is not append-only against the relay's memory (rule 5).
     Schedule(ScheduleError),
-    /// The nullifier store is missing, of another schema, or unreadable.
+    /// The nullifier store is missing, of another schema, of another relay key, or unreadable.
     NullifierStore(StoreError),
+    /// `--nullifiers-init` in a data directory that has had a nullifier store.
+    InitAfterStore,
+    /// The redemption marker could not be written.
+    Marker(std::io::ErrorKind),
 }
 
 impl std::fmt::Display for StartError {
@@ -130,7 +162,16 @@ impl std::fmt::Display for StartError {
             StartError::NullifierStore(StoreError::Missing) => f.write_str(
                 "nullifier store is missing: after a loss start with --nullifiers-reset (runbook O1)",
             ),
+            StartError::NullifierStore(StoreError::KeyMismatch) => f.write_str(
+                "the nullifier store was written under another relay key: start with \
+                 --nullifiers-reset (runbook O1)",
+            ),
             StartError::NullifierStore(e) => write!(f, "nullifier store: {e}"),
+            StartError::InitAfterStore => f.write_str(
+                "--nullifiers-init is one-time and this data directory has had a nullifier store: \
+                 after a loss start with --nullifiers-reset (runbook O1)",
+            ),
+            StartError::Marker(kind) => write!(f, "redemption marker: {kind}"),
         }
     }
 }
@@ -186,7 +227,9 @@ impl Bucket {
                 self.tokens = burst.min(self.tokens.saturating_add(refill));
                 self.last = Some(now);
             }
-            Some(_) => {}
+            // A clock stepped back refills nothing, and the rate resumes from the new time
+            // instead of waiting until the clock passes the old one (review S3-MR-4).
+            Some(_) => self.last = Some(now),
         }
         if self.tokens == 0 {
             return false;
@@ -207,25 +250,30 @@ pub(crate) struct Redeem {
 }
 
 impl Redeem {
-    /// The start-up checks of design §10.5, in this order: the onion is listed for the slot in
-    /// the current week (before anything is written); the nullifier store opens as `nullifiers`
-    /// says; the ES is append-only against the remembered facts (rule 5); then the ES's facts are
-    /// remembered.
+    /// The start-up checks of design §10.5, in this order: [`EntitlementPolicy::check_start`]
+    /// (before anything is written); the nullifier store opens as `nullifiers` says, under
+    /// `key` (a lost store of a directory that had one, or `--nullifiers-init` there, is refused);
+    /// the redemption marker is written; the ES is append-only against the remembered facts (rule
+    /// 5); then the ES's facts are remembered.
     pub(crate) fn open(
         policy: EntitlementPolicy,
         data_dir: &Path,
+        key: &RelayKey,
         now: u64,
     ) -> Result<Self, StartError> {
+        policy.check_start(now)?;
         let schedule = policy.schedule;
-        if policy.slot > ghost_entitlement::challenge::MAX_SLOT {
-            return Err(StartError::Slot);
-        }
-        if !listed(&schedule, policy.slot, grid::week(now), &policy.onion) {
-            return Err(StartError::OnionNotListed);
-        }
+        let store_path = data_dir.join(NULLIFIERS_FILE);
+        let marker = data_dir.join(REDEMPTION_MARKER_FILE);
+        let had_store = marker.exists();
         let start = match policy.nullifiers {
             NullifierMode::Existing => NullifierStart::Existing,
+            NullifierMode::Create if had_store && !store_path.exists() => {
+                return Err(StartError::NullifierStore(StoreError::Missing));
+            }
             NullifierMode::Create => NullifierStart::Create,
+            NullifierMode::Init if had_store => return Err(StartError::InitAfterStore),
+            NullifierMode::Init => NullifierStart::Create,
             // The last period whose window is open now: p + 1 during the last early_window of
             // week p, otherwise p (design §19.10 point 2).
             NullifierMode::Reset => NullifierStart::Reset {
@@ -234,7 +282,10 @@ impl Redeem {
                 ),
             },
         };
-        let store = NullifierStore::open(&data_dir.join(NULLIFIERS_FILE), start)?;
+        let store = NullifierStore::open(&store_path, start, &key.store_check())?;
+        if !had_store {
+            write_marker(&marker).map_err(|e| StartError::Marker(e.kind()))?;
+        }
         schedule
             .check_memory(&schedule_memory(&store.es_memory()?)?)
             .map_err(StartError::Schedule)?;
@@ -255,6 +306,30 @@ impl Redeem {
     pub(crate) fn store(&self) -> &NullifierStore {
         &self.store
     }
+}
+
+/// Writes the redemption marker: under a temporary name, synced, then renamed into place.
+fn write_marker(path: &Path) -> std::io::Result<()> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".creating");
+    let tmp = PathBuf::from(name);
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(MARKER_TEXT)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+/// Whether the capture event of step 9 names the nullifier: only when the store holds it, bound
+/// now or before (`ok`, `rejected_nullifier`). A period closed or refused since step 5, or a store
+/// error, leaves the event as nullifier-free as a step-5 refusal, so every `rejected_period` and
+/// `rejected_capability` event has one shape (review S3-PRIV-1).
+fn captures_nullifier(record: &Result<Record, StoreError>) -> bool {
+    matches!(
+        record,
+        Ok(Record::Inserted | Record::Identical | Record::Bound)
+    )
 }
 
 /// The relay's remembered facts as rule 5 reads them (the relay remembers keys, revocations and
@@ -296,7 +371,8 @@ fn es_memory_of(schedule: &Schedule) -> EsMemory {
 impl Relay {
     /// RedeemToken at time `now` (unix seconds): design §10.2, exactly one capture event
     /// (`op = "redeem"`; `period_id` once the key id names an ES ACCESS key, `nullifier` once the
-    /// token verifies, `capability_scope` for `ok` only).
+    /// store holds it, i.e. for `ok` and `rejected_nullifier` only, `capability_scope` for `ok`
+    /// only).
     pub fn redeem_at(
         &self,
         req: RedeemTokenRequest,
@@ -400,12 +476,16 @@ impl Relay {
             }
         };
         // 8. The nullifier (computed, never read from the wire) and the binding tag.
-        event.nullifier = Some(hex::encode(nullifier));
         let tag = self
             .key
             .redeem_binding(p, &nullifier, Kind::Write, &namespace);
-        // 9. Record or read the binding, committed (fsync) before minting.
-        match r.store.record_or_get(p, &nullifier, &tag) {
+        // 9. Record or read the binding, committed (fsync) before minting. The capture names the
+        //    nullifier only if the store holds it.
+        let record = r.store.record_or_get(p, &nullifier, &tag);
+        if captures_nullifier(&record) {
+            event.nullifier = Some(hex::encode(nullifier));
+        }
+        match record {
             Ok(Record::Inserted | Record::Identical) => {}
             Ok(Record::Bound) => {
                 event.result = "rejected_nullifier";
@@ -472,13 +552,45 @@ mod tests {
         };
         assert!((0..3).all(|_| b.take(&rate, 100)));
         assert!(!b.take(&rate, 100));
-        // A clock stepped back refills nothing.
-        assert!(!b.take(&rate, 99));
         assert!(b.take(&rate, 101) && b.take(&rate, 101));
         assert!(!b.take(&rate, 101));
         // Refill is capped at the burst.
         assert!((0..3).all(|_| b.take(&rate, 10_000)));
         assert!(!b.take(&rate, 10_000));
+    }
+
+    #[test]
+    fn the_bucket_resumes_its_rate_after_the_clock_steps_back() {
+        let rate = RedeemRate {
+            per_second: 50,
+            burst: 3,
+        };
+        let mut b = Bucket {
+            tokens: 0,
+            last: None,
+        };
+        let t0 = grid::week_start(2959) + 86_400;
+        assert!((0..3).all(|_| b.take(&rate, t0)));
+        // The clock steps back an hour: the step itself refills nothing...
+        let back = t0 - 3_600;
+        assert!(!b.take(&rate, back));
+        // ... and one second later the rate applies again, not an hour later (review S3-MR-4).
+        assert!(b.take(&rate, back + 1));
+        assert_eq!(b.tokens, 2);
+    }
+
+    #[test]
+    fn only_a_nullifier_the_store_holds_is_captured() {
+        for (record, captured) in [
+            (Ok(Record::Inserted), true),
+            (Ok(Record::Identical), true),
+            (Ok(Record::Bound), true),
+            (Ok(Record::Closed), false),
+            (Ok(Record::Refused), false),
+            (Err(StoreError::Missing), false),
+        ] {
+            assert_eq!(captures_nullifier(&record), captured, "{record:?}");
+        }
     }
 
     #[test]

@@ -5,9 +5,12 @@
 //! nullifiers : period(8, BE) || nullifier(32) -> binding tag(16)
 //! es_keys    : kind(1) || epoch(8, BE)        -> key id(32)   (Entitlement Schedule rule 5 memory)
 //! es_revoked : kind(1) || epoch(8, BE)        -> ()           (revocations are append-only too)
-//! meta       : schema_version, closed_through_period, refuse_through_period,
+//! meta       : schema_version, relay_key_check, closed_through_period, refuse_through_period,
 //!              sweep_high_water_minute, es_max_seq
 //! ```
+//!
+//! `relay_key_check` identifies the relay key the binding tags were computed under: a store opens
+//! only under that key, or under a new one through a reset (review S3-MR-3).
 //!
 //! No time of any event, no namespace and no request id is stored; rows live in key order, so the
 //! file shows the redemption count per week and nothing about the order of redemptions.
@@ -33,6 +36,8 @@ use crate::StoreError;
 pub const NULLIFIER_SCHEMA_VERSION: u64 = 1;
 /// Length of a binding tag.
 pub const TAG_BYTES: usize = 16;
+/// Length of the relay key check value the store records.
+pub const KEY_CHECK_BYTES: usize = 8;
 
 const NULLIFIERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("nullifiers");
 const ES_KEYS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("es_keys");
@@ -40,6 +45,7 @@ const ES_REVOKED: TableDefinition<&[u8], ()> = TableDefinition::new("es_revoked"
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
+const KEY_CHECK: &str = "relay_key_check";
 const CLOSED_THROUGH: &str = "closed_through_period";
 const REFUSE_THROUGH: &str = "refuse_through_period";
 const SWEEP_HIGH_WATER: &str = "sweep_high_water_minute";
@@ -55,7 +61,8 @@ pub enum NullifierStart {
     /// missing store is a refusal to start, never a silent empty set.
     Existing,
     /// A fresh data directory, or the one-time Phase 8 upgrade (`--nullifiers-init`): a missing
-    /// store is created empty.
+    /// store is created empty. The relay's redemption marker keeps a data directory that has had
+    /// a store from ever getting here again.
     Create,
     /// `--nullifiers-reset` after the store was lost: the store is created (or kept) and refuses
     /// every period up to `refuse_through_period`, the last period whose acceptance window was
@@ -116,11 +123,20 @@ pub struct NullifierStore {
 }
 
 impl NullifierStore {
-    /// Opens the store at `path` as `start` says. A file written by another schema version (or
-    /// one without a schema version, such as a creation interrupted by a crash) is refused with
+    /// Opens the store at `path` as `start` says, for the relay key whose check value is
+    /// `key_check` (recorded when the store is created). A store recorded under another key is
+    /// refused with [`StoreError::KeyMismatch`] unless `start` is a reset, which records the new
+    /// key: every binding tag changes with the key, so only a reset, which refuses the open
+    /// periods, may adopt one. A file written by another schema version (or one without a schema
+    /// version or a key check, such as a creation interrupted by a crash) is refused with
     /// [`StoreError::IncompatibleSchema`]. A new file is written under a temporary name and
     /// renamed into place once initialized, so the store either exists complete or not at all.
-    pub fn open(path: &Path, start: NullifierStart) -> Result<Self, StoreError> {
+    pub fn open(
+        path: &Path,
+        start: NullifierStart,
+        key_check: &[u8; KEY_CHECK_BYTES],
+    ) -> Result<Self, StoreError> {
+        let check = u64::from_be_bytes(*key_check);
         if !path.exists() {
             let refuse = match start {
                 NullifierStart::Existing => return Err(StoreError::Missing),
@@ -139,6 +155,7 @@ impl NullifierStore {
                 {
                     let mut meta = txn.open_table(META)?;
                     meta.insert(SCHEMA_VERSION_KEY, NULLIFIER_SCHEMA_VERSION)?;
+                    meta.insert(KEY_CHECK, check)?;
                     if let Some(r) = refuse {
                         meta.insert(REFUSE_THROUGH, r)?;
                     }
@@ -157,6 +174,15 @@ impl NullifierStore {
             let version = meta.get(SCHEMA_VERSION_KEY)?.map(|g| g.value());
             if version != Some(NULLIFIER_SCHEMA_VERSION) {
                 return Err(StoreError::IncompatibleSchema);
+            }
+            let stored = meta.get(KEY_CHECK)?.map(|g| g.value());
+            match stored {
+                None => return Err(StoreError::IncompatibleSchema),
+                Some(s) if s == check => {}
+                Some(_) if matches!(start, NullifierStart::Reset { .. }) => {
+                    meta.insert(KEY_CHECK, check)?;
+                }
+                Some(_) => return Err(StoreError::KeyMismatch),
             }
             if let NullifierStart::Reset {
                 refuse_through_period,
@@ -397,8 +423,56 @@ fn io_error(e: std::io::Error) -> StoreError {
 mod tests {
     use super::*;
 
+    const CHECK: [u8; KEY_CHECK_BYTES] = [1; KEY_CHECK_BYTES];
+
     fn open(dir: &tempfile::TempDir, start: NullifierStart) -> Result<NullifierStore, StoreError> {
-        NullifierStore::open(&dir.path().join("nullifiers.redb"), start)
+        NullifierStore::open(&dir.path().join("nullifiers.redb"), start, &CHECK)
+    }
+
+    #[test]
+    fn a_store_opens_only_under_its_relay_key_until_a_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nullifiers.redb");
+        let other = [2u8; KEY_CHECK_BYTES];
+        let store = NullifierStore::open(&path, NullifierStart::Create, &CHECK).unwrap();
+        store.record_or_get(10, &[1; 32], &[7; 16]).unwrap();
+        drop(store);
+        for start in [NullifierStart::Existing, NullifierStart::Create] {
+            assert!(matches!(
+                NullifierStore::open(&path, start, &other),
+                Err(StoreError::KeyMismatch)
+            ));
+        }
+        // A reset adopts the new key, keeps the rows and refuses the open periods.
+        let reset = NullifierStart::Reset {
+            refuse_through_period: 10,
+        };
+        let store = NullifierStore::open(&path, reset, &other).unwrap();
+        assert_eq!(store.count().unwrap(), 1);
+        assert_eq!(store.state().unwrap().refuse_through_period, Some(10));
+        drop(store);
+        drop(NullifierStore::open(&path, NullifierStart::Existing, &other).unwrap());
+        assert!(matches!(
+            NullifierStore::open(&path, NullifierStart::Existing, &CHECK),
+            Err(StoreError::KeyMismatch)
+        ));
+        // A file of this schema without a key check was not written by `open`: never opened.
+        let bare = dir.path().join("bare.redb");
+        {
+            let db = Database::create(&bare).unwrap();
+            let txn = db.begin_write().unwrap();
+            txn.open_table(META)
+                .unwrap()
+                .insert(SCHEMA_VERSION_KEY, NULLIFIER_SCHEMA_VERSION)
+                .unwrap();
+            txn.commit().unwrap();
+        }
+        for start in [NullifierStart::Existing, reset] {
+            assert!(matches!(
+                NullifierStore::open(&bare, start, &CHECK),
+                Err(StoreError::IncompatibleSchema)
+            ));
+        }
     }
 
     #[test]
@@ -479,7 +553,11 @@ mod tests {
         drop(store);
         // A leftover of an interrupted creation is discarded, never opened as a store.
         std::fs::write(dir.path().join("fresh.redb.creating"), b"torn").unwrap();
-        let fresh = NullifierStore::open(&dir.path().join("fresh.redb"), NullifierStart::Create);
+        let fresh = NullifierStore::open(
+            &dir.path().join("fresh.redb"),
+            NullifierStart::Create,
+            &CHECK,
+        );
         assert!(fresh.is_ok());
         assert!(!dir.path().join("fresh.redb.creating").exists());
     }
@@ -498,7 +576,7 @@ mod tests {
             txn.commit().unwrap();
         }
         assert!(matches!(
-            NullifierStore::open(&path, NullifierStart::Existing),
+            NullifierStore::open(&path, NullifierStart::Existing, &CHECK),
             Err(StoreError::IncompatibleSchema)
         ));
         // A reset never reinterprets a file of another schema either.
@@ -507,7 +585,8 @@ mod tests {
                 &path,
                 NullifierStart::Reset {
                     refuse_through_period: 1
-                }
+                },
+                &CHECK
             ),
             Err(StoreError::IncompatibleSchema)
         ));
@@ -519,7 +598,7 @@ mod tests {
         drop(crate::BlobStore::open(&blobs).unwrap());
         for file in [&empty, &blobs] {
             assert!(matches!(
-                NullifierStore::open(file, NullifierStart::Create),
+                NullifierStore::open(file, NullifierStart::Create, &CHECK),
                 Err(StoreError::IncompatibleSchema)
             ));
         }

@@ -12,8 +12,8 @@ use ghost_entitlement::grid::Kind as TokenKind;
 use ghost_entitlement::schedule::ScheduleError;
 use ghost_relay_api::capability_header;
 use ghost_relay_api::proto::StoreBlobRequest;
-use ghost_relay_capability::{Kind, RelayKey};
-use ghost_relay_node::redeem::{capability_expiry, NULLIFIERS_FILE};
+use ghost_relay_capability::{Capability, Kind, RelayKey};
+use ghost_relay_node::redeem::{capability_expiry, NULLIFIERS_FILE, REDEMPTION_MARKER_FILE};
 use ghost_relay_node::{NullifierMode, RedeemRate, Relay, StartError};
 use ghost_relay_storage::StoreError;
 use std::path::PathBuf;
@@ -356,6 +356,249 @@ fn the_global_token_bucket_limits_redemptions() {
     );
 }
 
+/// A sweep that closes the week between steps 5 and 9 is answered at step 9 like step 5
+/// (`WRONG_PERIOD`, `rejected_period`), and that capture event names no nullifier: only a nullifier
+/// the store holds (`ok`, `rejected_nullifier`) is ever captured, so every `rejected_period` event
+/// has one shape (review S3-PRIV-1). Identical retries run in a loop while the sweep commits; a
+/// retry spends most of its time in steps 6 and 7 (the challenge and the RSA verification), so
+/// one of them is between steps 5 and 9 when the week closes. The capture must hold whatever the
+/// interleaving.
+#[test]
+fn a_week_closed_during_a_redemption_captures_no_nullifier() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let a1 = token("a1");
+    let closing_sweep = at("2960+3600");
+    for round in 0..10 {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = VirtualClock::new(tuesday());
+        let capture = dir.path().join("capture.ndjson");
+        let relay = open_relay(
+            &dir.path().join("data"),
+            &RelayKey::from_bytes([0x42; 32]),
+            Some(policy(test_schedule(), 1, RELAY_B, NullifierMode::Create)),
+            &clock,
+            Some(&capture),
+        )
+        .unwrap();
+        let tries = Arc::new(AtomicUsize::new(0));
+        let redeemer = {
+            let (relay, tries, a1) = (Arc::clone(&relay), Arc::clone(&tries), a1.clone());
+            std::thread::spawn(move || loop {
+                let got = redeem(
+                    &relay,
+                    &a1,
+                    &namespace("alpha"),
+                    &request_id("race"),
+                    tuesday(),
+                );
+                tries.fetch_add(1, Ordering::SeqCst);
+                match got {
+                    Outcome::Ok(_) => {}
+                    Outcome::WrongPeriod => break,
+                    other => panic!("{other:?}"),
+                }
+            })
+        };
+        while tries.load(Ordering::SeqCst) < 20 && !redeemer.is_finished() {
+            std::thread::yield_now();
+        }
+        relay.sweep(closing_sweep).unwrap();
+        redeemer.join().unwrap();
+        let text = std::fs::read_to_string(&capture).unwrap();
+        for line in text.lines() {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            match event["result"].as_str().unwrap() {
+                "ok" => assert!(event.get("nullifier").is_some(), "round {round}"),
+                "rejected_period" => assert!(
+                    event.get("nullifier").is_none(),
+                    "round {round}: a rejected_period event named the nullifier"
+                ),
+                other => panic!("round {round}: {other}"),
+            }
+        }
+        assert!(text.lines().count() > 20, "round {round}");
+    }
+}
+
+/// `--nullifiers-init` is one-time (design §19.10 point 2): the redemption marker written with the
+/// first store refuses it for good, and a lost store is never recreated empty, so no token redeemed
+/// in an open week is spent twice at this relay (review S3-MR-1).
+#[test]
+fn init_is_one_time_and_a_lost_store_is_never_recreated_empty() {
+    let mut r = TestRelay::new(tuesday());
+    assert!(matches!(
+        r.redeem(&token("a1"), "alpha", "1"),
+        Outcome::Ok(_)
+    ));
+    assert!(r.data_dir().join(REDEMPTION_MARKER_FILE).exists());
+    drop(r.relay.take());
+    // Refused while the store exists, and after it is lost.
+    assert!(matches!(
+        start_error(r.open(NullifierMode::Init).err().unwrap()),
+        StartError::InitAfterStore
+    ));
+    std::fs::remove_file(r.data_dir().join(NULLIFIERS_FILE)).unwrap();
+    for mode in [
+        NullifierMode::Init,
+        NullifierMode::Create,
+        NullifierMode::Existing,
+    ] {
+        let e = start_error(r.open(mode).err().unwrap());
+        assert!(
+            matches!(
+                (mode, &e),
+                (NullifierMode::Init, StartError::InitAfterStore)
+                    | (_, StartError::NullifierStore(StoreError::Missing))
+            ),
+            "{mode:?}: {e}"
+        );
+    }
+    assert!(!r.data_dir().join(NULLIFIERS_FILE).exists());
+    // Only the reset starts it, and it refuses the week open at the reset: a1 is not spent again.
+    r.relay = Some(r.open(NullifierMode::Reset).unwrap());
+    assert_eq!(
+        r.redeem(&token("a1"), "beta", "2"),
+        Outcome::Denied(Code::Unavailable)
+    );
+
+    // A data directory that never had a store (the Phase 8 upgrade) is initialized once.
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let clock = VirtualClock::new(tuesday());
+    let key = RelayKey::from_bytes([0x42; 32]);
+    let open = |mode| {
+        open_relay(
+            &data,
+            &key,
+            Some(policy(test_schedule(), 1, RELAY_B, mode)),
+            &clock,
+            None,
+        )
+    };
+    let relay = open(NullifierMode::Init).unwrap();
+    assert!(matches!(
+        redeem(
+            &relay,
+            &token("a1"),
+            &namespace("a"),
+            &request_id("x"),
+            tuesday()
+        ),
+        Outcome::Ok(_)
+    ));
+    drop(relay);
+    assert!(matches!(
+        start_error(open(NullifierMode::Init).err().unwrap()),
+        StartError::InitAfterStore
+    ));
+    drop(open(NullifierMode::Existing).unwrap());
+}
+
+/// The store keeps a check value of the relay key it was written under. A new key would change
+/// every binding tag, so an identical retry would be answered `REPLAYED` and its token deleted by
+/// the client (MS-8): the relay refuses to start until `--nullifiers-reset`, which adopts the new
+/// key and refuses the open weeks (review S3-MR-3).
+#[test]
+fn a_store_kept_under_another_relay_key_is_refused_until_reset() {
+    let mut r = TestRelay::new(tuesday());
+    assert!(matches!(
+        r.redeem(&token("a1"), "alpha", "1"),
+        Outcome::Ok(_)
+    ));
+    drop(r.relay.take());
+    r.key = RelayKey::from_bytes([0x43; 32]);
+    for mode in [NullifierMode::Existing, NullifierMode::Create] {
+        assert!(matches!(
+            start_error(r.open(mode).err().unwrap()),
+            StartError::NullifierStore(StoreError::KeyMismatch)
+        ));
+    }
+    r.relay = Some(r.open(NullifierMode::Reset).unwrap());
+    assert_eq!(
+        r.redeem(&token("a1"), "alpha", "1"),
+        Outcome::Denied(Code::Unavailable)
+    );
+    r.restart();
+    assert_eq!(
+        r.redeem(&token("a1"), "beta", "2"),
+        Outcome::Denied(Code::Unavailable)
+    );
+    // The reset store now belongs to the new key; the old one is refused in turn.
+    drop(r.relay.take());
+    r.key = RelayKey::from_bytes([0x42; 32]);
+    assert!(matches!(
+        start_error(r.open(NullifierMode::Existing).err().unwrap()),
+        StartError::NullifierStore(StoreError::KeyMismatch)
+    ));
+}
+
+/// The quota ledger stays in memory and is bounded by restarts only (ADR-25): a clock excursion
+/// past a capability's expiry, during which the sweep forgets its ledger, and back again must not
+/// give its writer a fresh quota (review S3-MR-5).
+#[test]
+fn a_clock_excursion_never_restores_a_spent_quota() {
+    let r = TestRelay::new(tuesday());
+    let now = tuesday();
+    let cap = r.key.mint(&Capability {
+        kind: Kind::Write,
+        namespace: namespace("alpha"),
+        quota_bytes: 2_048,
+        expiry_unix: now + 7_200,
+    });
+    let store = |fill: u8, t: u64| {
+        let data = vec![fill; 1024];
+        r.relay().store_at(
+            StoreBlobRequest {
+                version: 1,
+                blob_hash: ghost_relay_storage::sha256(&data).to_vec(),
+                data,
+                capability: Some(ghost_relay_api::proto::Capability { token: cap.clone() }),
+                ttl_seconds: 86_400,
+                request_id: vec![fill; 16],
+                namespace_id: namespace("alpha").to_vec(),
+            },
+            t,
+        )
+    };
+    assert!(store(1, now).is_ok());
+    assert!(store(2, now).is_ok());
+    assert_eq!(
+        store(3, now).unwrap_err().code(),
+        Code::ResourceExhausted,
+        "the quota is spent"
+    );
+    // The clock jumps past the expiry and a sweep runs, then the clock steps back.
+    r.relay().sweep(now + 7_201).unwrap();
+    assert_eq!(
+        store(3, now + 10).map(|_| ()).map_err(|s| s.code()),
+        Err(Code::PermissionDenied),
+        "a writer regained its quota through a clock excursion"
+    );
+    // A capability that expires after the excursion is unaffected.
+    let later = r.key.mint(&Capability {
+        kind: Kind::Write,
+        namespace: namespace("alpha"),
+        quota_bytes: 2_048,
+        expiry_unix: now + 86_400,
+    });
+    let data = vec![4u8; 1024];
+    assert!(r
+        .relay()
+        .store_at(
+            StoreBlobRequest {
+                version: 1,
+                blob_hash: ghost_relay_storage::sha256(&data).to_vec(),
+                data,
+                capability: Some(ghost_relay_api::proto::Capability { token: later }),
+                ttl_seconds: 86_400,
+                request_id: vec![4; 16],
+                namespace_id: namespace("alpha").to_vec(),
+            },
+            now + 10,
+        )
+        .is_ok());
+}
+
 fn start_error(e: Box<dyn std::error::Error>) -> StartError {
     match e.downcast::<StartError>() {
         Ok(e) => *e,
@@ -581,7 +824,8 @@ impl UnderTest for Real {
     }
 }
 
-/// MM13 `NullifierMemoryOnly`: the nullifiers are not persisted, so a restart starts empty.
+/// MM13 `NullifierMemoryOnly`: the nullifiers are not persisted, so a restart starts empty. Nothing
+/// of the store survives, its redemption marker included.
 struct NullifierMemoryOnly(TestRelay);
 
 impl UnderTest for NullifierMemoryOnly {
@@ -592,6 +836,7 @@ impl UnderTest for NullifierMemoryOnly {
         let r = &mut self.0;
         drop(r.relay.take());
         std::fs::remove_file(r.data_dir().join(NULLIFIERS_FILE)).unwrap();
+        std::fs::remove_file(r.data_dir().join(REDEMPTION_MARKER_FILE)).unwrap();
         r.relay = Some(r.open(NullifierMode::Create).unwrap());
     }
 }

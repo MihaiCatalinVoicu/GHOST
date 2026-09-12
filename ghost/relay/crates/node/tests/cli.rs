@@ -295,8 +295,23 @@ fn every_refusal_exits_before_listening() {
         ],
         "schedule file:",
     );
-    // No refusal created a nullifier store.
+    // No refusal wrote anything into the data directory: neither a nullifier store nor a relay
+    // key, so a refused first start never turns a fresh directory into one that "redeemed before"
+    // (review S3-MR-2), and the correct flags then start it.
     assert!(!data.join("nullifiers.redb").exists());
+    assert!(!data.join("relay.key").exists());
+    starts(
+        &data,
+        &[
+            "--schedule",
+            es,
+            "--slot",
+            &slot,
+            "--onion-hostname-file",
+            &good_host,
+        ],
+    );
+    assert!(data.join("nullifiers.redb").exists());
 }
 
 #[test]
@@ -323,11 +338,22 @@ fn a_listed_relay_starts_and_a_lost_store_needs_a_reset() {
     let data = f.data("fresh");
     starts(&data, &flags);
     assert!(data.join("nullifiers.redb").exists());
-    // A restart finds it.
+    // A restart finds it. --nullifiers-init is for a directory that never had a store.
     starts(&data, &flags);
-    // Lost: refused, then started with --nullifiers-reset (runbook O1).
+    refused(
+        &data,
+        &with("--nullifiers-init"),
+        "--nullifiers-init is one-time",
+    );
+    // Lost: refused, --nullifiers-init is still refused (it would reopen every redeemed token of
+    // the open weeks, review S3-MR-1), and --nullifiers-reset starts it (runbook O1).
     std::fs::remove_file(data.join("nullifiers.redb")).unwrap();
     refused(&data, &flags, "nullifier store is missing");
+    refused(
+        &data,
+        &with("--nullifiers-init"),
+        "--nullifiers-init is one-time",
+    );
     starts(&data, &with("--nullifiers-reset"));
     starts(&data, &flags);
 
@@ -339,8 +365,67 @@ fn a_listed_relay_starts_and_a_lost_store_needs_a_reset() {
     refused(&old, &flags, "nullifier store is missing");
     starts(&old, &with("--nullifiers-init"));
     starts(&old, &flags);
+    // Once is once: after that store is lost, init is refused as in any directory that had one.
+    std::fs::remove_file(old.join("nullifiers.redb")).unwrap();
+    refused(
+        &old,
+        &with("--nullifiers-init"),
+        "--nullifiers-init is one-time",
+    );
+    refused(&old, &flags, "nullifier store is missing");
+    starts(&old, &with("--nullifiers-reset"));
     // Without the redemption flags no store is needed at all.
     let plain = f.data("plain");
     starts(&plain, &[]);
     assert!(!plain.join("nullifiers.redb").exists());
+}
+
+/// Every binding tag and serial is keyed with `relay.key`, so a store kept under another key would
+/// answer an identical retry `REPLAYED` (MS-8). The key is never silently replaced (review
+/// S3-MR-3): a key file of the wrong length is refused and left as it is, and a new key next to a
+/// kept store is refused until `--nullifiers-reset` (runbook O1).
+#[test]
+fn the_relay_key_is_never_replaced_under_a_kept_store() {
+    let f = Files::new();
+    let (slot, host) = listed_slot();
+    let slot = slot.to_string();
+    let hostname_file = f.write("hostname", format!("{host}\n").as_bytes());
+    let flags = [
+        "--schedule",
+        STAGENET_ES,
+        "--slot",
+        &slot,
+        "--onion-hostname-file",
+        &hostname_file,
+    ];
+    let data = f.data("keyed");
+    starts(&data, &flags);
+    let key_file = data.join("relay.key");
+    let key = std::fs::read(&key_file).unwrap();
+    assert_eq!(key.len(), 32);
+
+    // A truncated key file is refused, by `serve` and by `mint`, and never overwritten.
+    std::fs::write(&key_file, &key[..31]).unwrap();
+    refused(&data, &flags, "relay key");
+    refused(&data, &[], "relay key");
+    let ns = "00".repeat(32);
+    let status = Command::new(BIN)
+        .args(["mint", "--data-dir"])
+        .arg(&data)
+        .args(["--namespace", &ns, "--read", "--expiry", "4000000000"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(2));
+    assert_eq!(std::fs::read(&key_file).unwrap(), &key[..31]);
+
+    // A lost key next to the kept store: refused, also on the next try; the reset adopts the new
+    // key and refuses the open weeks.
+    std::fs::remove_file(&key_file).unwrap();
+    refused(&data, &flags, "another relay key");
+    refused(&data, &flags, "another relay key");
+    let with_reset = [&flags[..], &["--nullifiers-reset"]].concat();
+    starts(&data, &with_reset);
+    starts(&data, &flags);
 }

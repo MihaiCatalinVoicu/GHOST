@@ -96,6 +96,8 @@ pub enum StoreError {
     Missing,
     #[error("a remembered schedule key changed")]
     EsConflict,
+    #[error("the store was written under another relay key")]
+    KeyMismatch,
     #[error("database error")]
     Db(#[from] redb::Error),
 }

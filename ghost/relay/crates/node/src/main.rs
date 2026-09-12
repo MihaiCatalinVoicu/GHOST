@@ -7,7 +7,10 @@
 //! ghost-relay mint  --data-dir <dir> --namespace <hex32> (--write --quota <bytes> | --read) --expiry <unix>
 //! ```
 //! The listener binds to loopback only: reachability comes from the onion service configured in
-//! `infra/relay/torrc` (ADR-01). The relay key lives in `<data-dir>/relay.key` (32 bytes).
+//! `infra/relay/torrc` (ADR-01). The relay key lives in `<data-dir>/relay.key` (32 bytes). It is
+//! created only after every check that reads nothing from the data directory has passed (flags,
+//! schedule, onion listing), so a refused first start leaves the directory as it was; a key file of
+//! another length is refused, never replaced.
 //!
 //! Token redemption (Phase 8 design §10.5) is enabled by `--schedule`, `--slot` and
 //! `--onion-hostname-file` together. The schedule is verified under the pinned schedule key; the
@@ -16,8 +19,10 @@
 //! against the relay's memory in `<data-dir>/nullifiers.redb` (rule 5). Otherwise the relay refuses
 //! to start. A data directory whose `relay.key` exists but whose `nullifiers.redb` is missing
 //! refuses to start unless `--nullifiers-reset` (runbook O1, after losing the store) or the
-//! one-time `--nullifiers-init` (the Phase 8 upgrade of a relay that never redeemed) is given. An
-//! ES update is a restart; persisted nullifiers survive it.
+//! one-time `--nullifiers-init` (the Phase 8 upgrade of a relay that never redeemed) is given.
+//! `--nullifiers-init` is refused in a data directory that has had a store (its
+//! `redemption.marker`), and the store refuses a relay key other than the one it was written under
+//! until `--nullifiers-reset`. An ES update is a restart; persisted nullifiers survive it.
 
 use ghost_entitlement::Schedule;
 use ghost_relay_api::proto::relay_service_server::RelayServiceServer;
@@ -25,10 +30,14 @@ use ghost_relay_capability::{Capability, Kind, RelayKey};
 use ghost_relay_node::redeem::onion_from_hostname_file;
 use ghost_relay_node::{EntitlementPolicy, NullifierMode, Relay, RelayConfig, RelayServer};
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
+
+/// File name of the relay key inside the data directory.
+const KEY_FILE: &str = "relay.key";
 
 fn parse_args(args: &[String]) -> HashMap<String, String> {
     let mut out = HashMap::new();
@@ -56,24 +65,50 @@ fn parse_args(args: &[String]) -> HashMap<String, String> {
     out
 }
 
-fn load_or_create_key(data_dir: &Path) -> std::io::Result<RelayKey> {
-    std::fs::create_dir_all(data_dir)?;
-    let path = data_dir.join("relay.key");
-    if let Ok(bytes) = std::fs::read(&path) {
-        if bytes.len() == 32 {
-            let mut k = [0u8; 32];
-            k.copy_from_slice(&bytes);
-            return Ok(RelayKey::from_bytes(k));
+/// Reads `<data-dir>/relay.key`: `None` when it does not exist. A file that is not exactly 32
+/// bytes is an error, never replaced: every capability, binding tag and serial is keyed with it.
+fn load_key(data_dir: &Path) -> std::io::Result<Option<RelayKey>> {
+    match std::fs::read(data_dir.join(KEY_FILE)) {
+        Ok(bytes) => {
+            let k = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "relay.key is not 32 bytes")
+            })?;
+            Ok(Some(RelayKey::from_bytes(k)))
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
     }
+}
+
+/// Loads `relay.key`, or creates it when it does not exist: written under a temporary name,
+/// synced, then renamed into place, so it exists complete or not at all.
+fn load_or_create_key(data_dir: &Path) -> std::io::Result<RelayKey> {
+    if let Some(key) = load_key(data_dir)? {
+        return Ok(key);
+    }
+    std::fs::create_dir_all(data_dir)?;
     let k = rand::random::<[u8; 32]>();
-    std::fs::write(&path, k)?;
-    #[cfg(unix)]
+    let tmp = data_dir.join("relay.key.creating");
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        let mut file = std::fs::File::create(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(&k)?;
+        file.sync_all()?;
     }
+    std::fs::rename(&tmp, data_dir.join(KEY_FILE))?;
     Ok(RelayKey::from_bytes(k))
+}
+
+/// The relay key, or its refusal (printed) as exit status 2.
+fn key_or_exit(data_dir: &Path) -> Result<RelayKey, ExitCode> {
+    load_or_create_key(data_dir).map_err(|e| {
+        eprintln!("relay key: {e}");
+        ExitCode::from(2)
+    })
 }
 
 fn usage() -> ExitCode {
@@ -121,10 +156,12 @@ fn entitlement(
         .map_err(|e| FlagError::Refused(e.to_string()))?;
     policy.nullifiers = if reset {
         NullifierMode::Reset
-    } else if init || !key_existed {
-        NullifierMode::Create
-    } else {
+    } else if init {
+        NullifierMode::Init
+    } else if key_existed {
         NullifierMode::Existing
+    } else {
+        NullifierMode::Create
     };
     Ok(Some(policy))
 }
@@ -138,16 +175,6 @@ async fn main() -> ExitCode {
     let opts = parse_args(&argv[1..]);
     let Some(data_dir) = opts.get("data-dir").map(PathBuf::from) else {
         return usage();
-    };
-    // Whether this data directory existed before (a relay that may have redeemed), read before
-    // the key is created.
-    let key_existed = data_dir.join("relay.key").exists();
-    let key = match load_or_create_key(&data_dir) {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("relay key: {e}");
-            return ExitCode::from(2);
-        }
     };
 
     match cmd.as_str() {
@@ -184,6 +211,10 @@ async fn main() -> ExitCode {
             } else {
                 return usage();
             };
+            let key = match key_or_exit(&data_dir) {
+                Ok(k) => k,
+                Err(code) => return code,
+            };
             println!("{}", hex::encode(key.mint(&cap)));
             ExitCode::SUCCESS
         }
@@ -192,6 +223,9 @@ async fn main() -> ExitCode {
                 Some(a) => a,
                 None => return usage(),
             };
+            // Whether this data directory held a relay key before (a relay that may have
+            // redeemed), read before anything is written.
+            let key_existed = data_dir.join(KEY_FILE).exists();
             let entitlement = match entitlement(&opts, key_existed) {
                 Ok(e) => e,
                 Err(FlagError::Usage) => return usage(),
@@ -204,6 +238,18 @@ async fn main() -> ExitCode {
                 gossip_enabled: opts.contains_key("gossip"),
                 entitlement,
                 ..RelayConfig::default()
+            };
+            // The checks that read nothing from the data directory run before the key is
+            // created, so a refused first start leaves a fresh directory fresh.
+            if let Some(policy) = &config.entitlement {
+                if let Err(e) = policy.check_start((config.clock)()) {
+                    eprintln!("refusing to start: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            let key = match key_or_exit(&data_dir) {
+                Ok(k) => k,
+                Err(code) => return code,
             };
             let relay =
                 match Relay::open(&data_dir, key, config, opts.get("capture").map(Path::new)) {
