@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-11; aplicat în Faza 7 (proprietarul decide după livrare, ca la ADR-17/18/19) |
+| Status | **Aprobat** 2026-09-12 (proprietar proiect), împreună cu valorile implicite Q1–Q7 de mai jos; propus 2026-09-11 și aplicat în Faza 7 |
 | Sursă | Design Faza 7 (`docs/design/faza7-sync-engine.md`: §2.3, §3.5, §5, §6 și corecțiile normative §11, care au prioritate) |
 | Modifică | ADR-06 („Sync prin WorkManager”); Master Plan §6.2 (rândul Fazei 7) și §6.6 (`sync/ # WorkManager`); Spec v2.0 FR-7.3 („Background synchronization MUST use WorkManager and coroutines…”) și tabelul de module §6.1 (`sync`: „WorkManager jobs”); setul de permisiuni T15, plus verificarea manifestului fuzionat (T15m). Precizează ADR-09 („fetch în loturi de dimensiune fixă”), ADR-11 („clientul scrie fiecare blob pe ≥ 2 relay-uri”) și ADR-15 („polling la interval fix + jitter”). Modifică LIMITE L1, L2 și L4, invariantul T17 (mutat în Faza 12) și rândul „Sync periodic (idle)” din THREAT_MODEL §6. Declară un conflict cu NFR-1 și un reziduu față de THREAT_MODEL AD-8 („nu vede istoricul expirat”). |
 
@@ -27,7 +27,7 @@ WorkManager 2.11.2 aduce Room, lifecycle-service/livedata, kotlinx-coroutines-an
 9. **Limită de capacitate (în LIMITE L2).** Peste `BACKLOG_CAP` = 4 096 de rânduri listate sau indisponibile per (relay, namespace), cererea de listare pleacă în continuare (programul nu se schimbă), dar pagina e aruncată și cursorul rămâne pe loc. `FETCHED_CAP` = 256 de blob-uri aduse, scadente și nesuspecte per namespace oprește aducerile noi până le consumă consumatorul. Bugetul de aduceri per eveniment de pereche e 8 în prim-plan și 32 în fundal. O pereche nu pierde nimic cât rata ei de intrare rămâne sub capacitatea de aducere pe durata unui TTL; numai în fundal, 32 × (joburi pe zi) × (zile de TTL): la ~96 de joburi pe zi (câte unul la 15 min; Doze reduce numărul) și TTL de 7 zile, circa 21 500 de blob-uri per namespace DM. Garanția de ieșire a fazei are precondiția „consumatorii golesc coada și dispozitivul e online cel puțin o dată per TTL”.
 10. **Conflict L4: bootstrap-uri Tor periodice.** Fiecare job de fundal creează un transport nou și face bootstrap Tor, deci un observator de rețea local (AD-4) vede un bootstrap la fiecare job (~15 min, moment ales de OS), și în idle: o amprentă temporală a aplicației. Mitigări pentru Faza 12: offset aleator al perioadei per instalare, păstrarea transportului între joburi.
 
-## Valori implicite aplicate (Q1–Q7, design §11.1), de confirmat de proprietar
+## Valori implicite aplicate (Q1–Q7, design §11.1), confirmate de proprietar 2026-09-12
 
 | Q | Valoare aplicată | Unde |
 |---|---|---|

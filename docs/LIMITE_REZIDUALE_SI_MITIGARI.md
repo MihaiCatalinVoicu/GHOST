@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | Analiză + ADR-13…ADR-16 **propuse** (neaprobate) |
+| Status | Analiză + ADR-13…ADR-16 (**aprobate** 2026-09-10); ADR-20 (aprobat 2026-09-12) |
 | Completează | `GHOST_Master_Plan_v2.1_OPTIMIZAT.md` §7 |
 | Data | 2026-09-10 |
 | Completări | 2026-09-11, Faza 7 (ADR-20): L1.1 (reziduuri locale ale sincronizării), L2.1 (reziduuri de trafic și limita de capacitate), conflictul din L4 (bootstrap-uri Tor periodice), trei rânduri noi în L5, sinteza din §5 |
@@ -172,7 +172,7 @@ Formularea permisă în UI: „Reducem paguba și o facem vizibilă. Nu o putem 
 
 ---
 
-## 6. ADR-uri propuse (de aprobat)
+## 6. ADR-urile rezultate (aprobate 2026-09-10)
 
 - **ADR-13 — Guvernanță în canal: flag-uri, prag, carantină, strike pe sponsor, liste de excludere opt-in.** Implementare: politica canalului ca obiect MLS semnat; `Flag`, `Quarantine`, `Remove`, `Strike` ca mesaje/commit-uri MLS; ponderare după vechime și diversitatea sponsorilor; canale „cu verificare” pentru portabilitatea excluderii. Fază: 10 (MLS) pentru primitive, 13 (UX) pentru interfață. P1.
 - **ADR-14 — Atestare hardware a cheilor și recuperare după compromitere.** Key Attestation în prekey bundle; certificat de revocare ca blob; re-verificare safety number; duress PIN (P2). Fază: 3 și 9. P1 (revocarea este P0 deja).

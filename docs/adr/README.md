@@ -30,9 +30,4 @@ Un ADR nou primește următorul număr, status „Propus”, și se leagă de ce
 | [ADR-17](ADR-17-bouncycastle-ed25519.md) | Ed25519 prin BouncyCastle pentru identitate (aprobat) |
 | [ADR-18](ADR-18-redb-relay-storage.md) | Stocare relay pe redb în loc de RocksDB (aprobat) |
 | [ADR-19](ADR-19-rust-client-core.md) | Nucleu de client în Rust expus prin JNI (aprobat) |
-
-## Propuse (aplicate, în așteptarea deciziei proprietarului)
-
-| ADR | Titlu |
-|---|---|
-| [ADR-20](ADR-20-sync-jobscheduler.md) | Sincronizare: JobScheduler în loc de WorkManager, program per (relay, namespace), reziduuri declarate (propus 2026-09-11; aplicat în Faza 7) |
+| [ADR-20](ADR-20-sync-jobscheduler.md) | Sincronizare: JobScheduler în loc de WorkManager, program per (relay, namespace), reziduuri declarate (aprobat 2026-09-12, cu valorile implicite Q1–Q7) |

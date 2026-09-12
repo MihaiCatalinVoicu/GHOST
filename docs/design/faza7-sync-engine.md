@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Approved for implementation** ("începe Faza 7", 2026-09-11) with the §11 corrections and defaults; ADR-20 propus |
+| Status | **Approved for implementation** ("începe Faza 7", 2026-09-11) with the §11 corrections and defaults; ADR-20 and the Q1–Q7 defaults approved 2026-09-12 |
 | Date | 2026-09-11 |
 | Phase | 7: "Sync engine: outbox/inbox idempotent, WorkManager, cursors opace, jitter, retry" (Android track) |
 | Depends on | Phase 4 (`ghost/android/storage`), Phase 6 (`ghost/android/network`, `ghost/client-core/net`) |
