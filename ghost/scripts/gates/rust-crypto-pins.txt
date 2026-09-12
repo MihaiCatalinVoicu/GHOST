@@ -26,3 +26,9 @@ graph ghost-issuer all crypto-bigint 0.7.5 required
 graph ghost-issuer all blind-rsa-signatures 0.17.2 required
 graph ghost-issuer all num-bigint-dig 0.8.6 required
 graph ghost-issuer all ring 0.17.14 required
+# Operator tools (key ceremony and key load): the same signer, and ring for the sealed key files.
+graph ghost-issuer-ops all rsa 0.10.0-rc.18 required
+graph ghost-issuer-ops all crypto-bigint 0.7.5 required
+graph ghost-issuer-ops all blind-rsa-signatures 0.17.2 required
+graph ghost-issuer-ops all num-bigint-dig 0.8.6 required
+graph ghost-issuer-ops all ring 0.17.14 required

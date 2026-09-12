@@ -8,3 +8,6 @@ gradlew text eol=lf
 *.apk binary
 # Entitlement Schedules (Phase 8): signed binary documents, hashed byte for byte.
 *.ghes binary
+# Sealed key files and key load files of the issuer (Phase 8): binary; committed as test fixtures only.
+*.ghks binary
+*.ghkl binary

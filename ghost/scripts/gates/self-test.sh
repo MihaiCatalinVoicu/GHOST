@@ -51,6 +51,50 @@ for g in anti-placeholder no-logging; do
     fi
   done
 done
+# Phase 8 (design §14.1, §19.17): the one no-logging exemption is exactly the operator tools'
+# ops/src/report.rs, and only for println!/eprintln! there.
+out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/no-logging.sh" 2>&1 || true)"
+for want in issuer/crates/ops/src/keygen.rs: issuer/crates/service/src/report.rs: issuer/crates/ops/src/report.rs:6:; do
+  if printf '%s\n' "$out" | grep -qF "$want"; then
+    echo "self-test ok: no-logging reports $want"
+  else
+    echo "SELF-TEST FAIL: no-logging does not report $want" >&2; rc=1
+  fi
+done
+if printf '%s\n' "$out" | grep -qF "issuer/crates/ops/src/report.rs:5:"; then
+  echo "SELF-TEST FAIL: no-logging reports the exempt eprintln! of ops/src/report.rs" >&2; rc=1
+else
+  echo "self-test ok: no-logging exempts println!/eprintln! in ops/src/report.rs only"
+fi
+# Phase 8 (design §14.1): entitlement-schedule.sh on its fixture roots
+# (test-harness/gates/entitlement-schedule/README.md). Each case must end as expected and report
+# the named reason, so a gate failing for another reason (or on everything) is caught.
+ES_FIX="$HARNESS/entitlement-schedule"
+ES_PRED="$DIR/../../issuer/crates/entitlement/tests/fixtures/test_schedule.ghes"
+ES_TEST_KEY=3466898f48dace3e2715583ee3d5ff128959839fdfe0fd24b49c079e86bb126b
+ES_NOW=1790557200 # week 2960, Monday 01:00 UTC
+es_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the output must contain, rest = VAR=value
+  local desc="$1" expect="$2" root="$3" want="$4" out got
+  shift 4
+  if out="$(env GHOST_ROOT="$root" "$@" bash "$DIR/entitlement-schedule.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$expect" ]; then
+    echo "SELF-TEST FAIL: entitlement-schedule $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+    echo "SELF-TEST FAIL: entitlement-schedule $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: entitlement-schedule $desc"
+  fi
+}
+es_case "passes while the schedule was never committed" pass "$ES_FIX/absent" "absent and never committed"
+es_case "rejects a schedule removed after a commit" fail "$ES_FIX/absent" "committed before and is now missing" \
+  GHOST_ES_PREDECESSOR="$ES_PRED"
+es_case "rejects a second copy" fail "$ES_FIX/second-copy" "infra/relay/schedule.ghes: an Entitlement Schedule outside"
+es_case "rejects infrastructure naming another path" fail "$ES_FIX/infra-other-path" \
+  "infra/relay/Dockerfile:4: 'infra/relay/schedule.ghes'"
+es_case "rejects production code naming a test fixture" fail "$ES_FIX/fixture-in-src" "production source names test material"
+es_case "rejects a committed sealed key" fail "$ES_FIX/sealed-key-committed" "sealed key or key load file outside tests/fixtures"
+es_case "refuses its self-test hooks on the repository" fail "$DIR/../.." "self-test hook for fixture roots only" \
+  GHOST_ES_TEST_KEY="$ES_TEST_KEY"
 # T12 native-library check on fabricated archives: the right bytes pass; a missing ABI, changed
 # bytes or an extra ABI directory fail.
 make_zip() { # $1 = zip path, $2 = directory to archive
@@ -148,6 +192,27 @@ if command -v cargo >/dev/null; then
     "ghost-relay-node (all): blind-rsa-signatures is missing" \
     env GHOST_CRYPTO_PINS="$tmp" bash "$DIR/rust-crypto-pins.sh"
   rm -f "$tmp"
+  # entitlement-schedule.sh cases that run ghost-issuer-ops (they build it): opt-in like the clippy
+  # fixture below; the CI rust job sets GHOST_SELFTEST_OPS.
+  if [ -n "${GHOST_SELFTEST_OPS:-}" ]; then
+    es_env=(GHOST_ES_TEST_KEY="$ES_TEST_KEY" GHOST_ES_NOW="$ES_NOW")
+    es_case "accepts a valid successor (rule 5)" pass "$ES_FIX/positive" "ES_APPEND_ONLY previous_seq=1" \
+      "${es_env[@]}" GHOST_ES_PREDECESSOR="$ES_PRED"
+    es_case "checks the relay directory of the current and the next week" pass "$ES_FIX/positive" "DIRECTORY_OK weeks=2" \
+      "${es_env[@]}" GHOST_ES_PREDECESSOR="$ES_PRED"
+    es_case "never accepts a test schedule under the pinned key" fail "$ES_FIX/positive" \
+      "ES_REFUSED file=schedule reason=no-pinned-key" GHOST_ES_NOW="$ES_NOW"
+    es_case "rejects a tampered schedule" fail "$ES_FIX/tampered" "ES_REFUSED file=schedule reason=signature" "${es_env[@]}"
+    es_case "rejects a changed slot set" fail "$ES_FIX/slot-set-changed" "reason=slot-set-changed" \
+      "${es_env[@]}" GHOST_ES_PREDECESSOR="$ES_PRED"
+    es_case "rejects a duplicated key" fail "$ES_FIX/duplicated-key" "reason=duplicate-key" "${es_env[@]}"
+    es_case "rejects a slot onion missing from the relay directory" fail "$ES_FIX/directory-missing-onion" \
+      "reason=onion-not-in-directory week=2960 slot=2" "${es_env[@]}"
+    es_case "rejects a week whose relays have one operator" fail "$ES_FIX/directory-single-operator" \
+      "reason=single-operator" "${es_env[@]}"
+    es_case "rejects a schedule without a relay directory" fail "$ES_FIX/directory-absent" "relay-directory.txt missing" \
+      "${es_env[@]}"
+  fi
   # The clippy fixture compiles the client library: opt-in (the CI rust job sets it, cache warm).
   if [ -n "${GHOST_SELFTEST_CLIPPY:-}" ]; then
     expect_fail_msg "clippy-clearnet-fixture reports a ban that does not fire" \

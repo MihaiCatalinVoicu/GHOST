@@ -1691,7 +1691,22 @@ dependencies = [
  "ghost-blind-rsa",
  "ghost-entitlement",
  "hex",
+ "hmac 0.13.0",
+ "ring",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "ghost-issuer-ops"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "ghost-blind-rsa",
+ "ghost-entitlement",
+ "ghost-issuer",
+ "ring",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]

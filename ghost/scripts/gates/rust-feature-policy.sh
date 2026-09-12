@@ -18,8 +18,9 @@
 #  and, for the whole workspace on every target, rsa per version (ADR-22, Phase 8 design §14.1):
 #  rsa 0.9.10 only through Arti's crates, rsa 0.10.0-rc.18 only through blind-rsa-signatures (the
 #  issuer's signer); re-review RUSTSEC-2023-0071 in deny.toml before either scope changes. The
-#  issuer-only crates (blind-rsa-signatures, crypto-bigint 0.7.5, md-5, ghost-issuer) must not be
-#  linked into the client library (both Android targets) or the relay node (normal and build edges).
+#  issuer-only crates (blind-rsa-signatures, crypto-bigint 0.7.5, md-5, ghost-issuer and the operator
+#  tools ghost-issuer-ops) must not be linked into the client library (both Android targets) or the
+#  relay node (normal and build edges).
 # Every cargo query result is stored in a variable first, so a failing `cargo tree` (e.g. an
 # ambiguous spec after an Arti bump) aborts the gate instead of being read as "no features".
 # Self-test hooks (scripts/gates/self-test.sh): GHOST_POLICY_REQUIRE_EXTRA / _FORBID_EXTRA add an
@@ -106,7 +107,7 @@ check_rsa 0.9.10 "${GHOST_POLICY_RSA_ALLOWED:-tor-llcrypto tor-key-forge ssh-key
 check_rsa 0.10.0-rc.18 "${GHOST_POLICY_RSA10_ALLOWED:-blind-rsa-signatures}"
 
 # Issuer-only packages ("name" or "name@version") stay out of the client and relay graphs.
-issuer_only="blind-rsa-signatures crypto-bigint@0.7.5 md-5 ghost-issuer ${GHOST_POLICY_ISSUER_ONLY_EXTRA:-}"
+issuer_only="blind-rsa-signatures crypto-bigint@0.7.5 md-5 ghost-issuer ghost-issuer-ops ${GHOST_POLICY_ISSUER_ONLY_EXTRA:-}"
 check_absent() { # $1 = graph label, $2 = packages ("name vX.Y.Z" lines)
   local spec name version
   for spec in $issuer_only; do

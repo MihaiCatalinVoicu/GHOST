@@ -49,6 +49,61 @@ impl std::fmt::Display for SignError {
 
 impl std::error::Error for SignError {}
 
+/// A key-ceremony condition on the primes of a generated key that does not hold (design §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PrimeCheck {
+    /// The key does not have exactly two prime factors.
+    PrimeCount,
+    /// p * q != n.
+    Product,
+    /// p == q.
+    Equal,
+    /// |p - q| <= 2^1000.
+    TooClose,
+    /// gcd(e, lambda(n)) != 1: x -> x^e would not permute Z_n^* (the permutation proof would fail
+    /// too, design §3.2; the ceremony refuses the key before it computes one).
+    ExponentNotCoprime,
+}
+
+/// Distance below which |p - q| is refused: 2^1000 (design §3.3).
+pub const MIN_PRIME_DISTANCE_BITS: usize = 1000;
+
+/// Runbook K1 checks on a generated key: exactly two primes with p * q = n, p != q,
+/// |p - q| > 2^1000 and gcd(e, lambda(n)) = 1, i.e. gcd(e, p - 1) = gcd(e, q - 1) = 1. Primality
+/// itself comes from the reference signer's key generation (`crypto-primes`).
+pub fn check_prime_conditions(
+    n: &BigUint,
+    e: &BigUint,
+    primes: &[BigUint],
+) -> Result<(), PrimeCheck> {
+    let one = BigUint::from(1u32);
+    let [p, q] = primes else {
+        return Err(PrimeCheck::PrimeCount);
+    };
+    // A factor 0 or 1 is not a prime (and p - 1 below must be non-zero).
+    if p <= &one || q <= &one {
+        return Err(PrimeCheck::PrimeCount);
+    }
+    if &(p * q) != n {
+        return Err(PrimeCheck::Product);
+    }
+    if p == q {
+        return Err(PrimeCheck::Equal);
+    }
+    let distance = if p > q { p - q } else { q - p };
+    if distance <= (BigUint::from(1u32) << MIN_PRIME_DISTANCE_BITS) {
+        return Err(PrimeCheck::TooClose);
+    }
+    for prime in [p, q] {
+        let order = prime - &one;
+        // gcd(e, p - 1) = 1 exactly when e has an inverse modulo p - 1.
+        if ghost_blind_rsa::mod_inv(&(e % &order), &order).is_none() {
+            return Err(PrimeCheck::ExponentNotCoprime);
+        }
+    }
+    Ok(())
+}
+
 type RefSecretKey = SecretKey<Sha384, PSS, Deterministic>;
 
 /// The default signer: blind-rsa-signatures =0.17.2, RSABSSA-SHA384-PSS-Deterministic.
@@ -104,6 +159,19 @@ impl ReferenceSigner {
 
     pub fn public_key(&self) -> &PublicKey {
         &self.public_key
+    }
+
+    /// The key ceremony's conditions on the primes of this key (runbook K1, design §3.3); see
+    /// [`check_prime_conditions`].
+    pub fn check_prime_conditions(&self) -> Result<(), PrimeCheck> {
+        let primes: Vec<BigUint> = self
+            .secret
+            .components()
+            .primes()
+            .iter()
+            .map(|p| BigUint::from_bytes_be(p))
+            .collect();
+        check_prime_conditions(self.public_key.n(), self.public_key.e(), &primes)
     }
 
     /// The private key as PKCS #8 DER (for the operator tools that seal it).

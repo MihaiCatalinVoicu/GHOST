@@ -3,6 +3,7 @@
 //! Wire schema: `protocol/issuer/v1/issuer.proto`. Phase 8 design: `docs/design/faza8-issuer.md`.
 #![forbid(unsafe_code)]
 
+pub mod custody;
 pub mod signer;
 
 /// Wire protocol version implemented by this issuer.

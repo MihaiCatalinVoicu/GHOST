@@ -1,0 +1,27 @@
+[package]
+publish = false
+name = "ghost-issuer-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST issuer operator tools (offline): key ceremony, key load, Entitlement Schedule signing and verification (ADR-22, ADR-26)"
+
+[[bin]]
+name = "ghost-issuer-ops"
+path = "src/main.rs"
+
+[dependencies]
+ghost-blind-rsa = { path = "../blind-rsa" }
+ghost-entitlement = { path = "../entitlement" }
+# The reference signer (key generation, permutation proofs) and the sealed key format (ADR-22:
+# blind-rsa-signatures stays confined to ghost-issuer and ghost-issuer-ops).
+ghost-issuer = { path = "../service" }
+# Signs the Entitlement Schedule with the offline schedule key (design §3.1).
+ed25519-dalek = { workspace = true }
+# Operating-system randomness for the custody secret, the schedule key and seal nonces.
+ring = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+tempfile = { workspace = true }

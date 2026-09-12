@@ -54,6 +54,9 @@ jobs:
         working-directory: ghost
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # entitlement-schedule.sh compares the schedule with its predecessor in git (rule 5).
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: 1.98.1
@@ -86,11 +89,14 @@ jobs:
         run: bash scripts/gates/rust-feature-policy.sh
       - name: Rust crypto version pins per graph (rsa, crypto-bigint, blind-rsa-signatures, num-bigint-dig, ring)
         run: bash scripts/gates/rust-crypto-pins.sh
+      - name: Entitlement Schedule (pinned key, rule 5 against its git predecessor, relay directory, one path, no test material in production)
+        run: bash scripts/gates/entitlement-schedule.sh
       - name: clippy clearnet bans fire on the negative fixture (T6)
         run: bash scripts/gates/clippy-clearnet-fixture.sh
-      - name: Rust gate self-tests (feature policy and clippy fixture reject counter-examples)
+      - name: Rust gate self-tests (feature policy, clippy fixture and Entitlement Schedule reject counter-examples)
         env:
           GHOST_SELFTEST_CLIPPY: "1"
+          GHOST_SELFTEST_OPS: "1"
         run: bash scripts/gates/self-test.sh
       - name: privacy invariant T1 (relay capture validator)
         run: bash scripts/gates/privacy-capture.sh
