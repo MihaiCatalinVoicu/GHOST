@@ -16,6 +16,7 @@ pub mod custody;
 pub mod invite;
 pub mod invoice;
 pub mod journal;
+pub mod payout;
 pub mod pool;
 pub mod quantum;
 pub mod rail;

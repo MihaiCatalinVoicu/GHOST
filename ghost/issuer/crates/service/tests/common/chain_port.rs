@@ -38,6 +38,8 @@ pub struct Chain {
     pub addresses: Vec<String>,
     pub txs: Vec<Tx>,
     pub next_txid: u64,
+    /// The next `create_address` takes effect but its answer is lost (crash scenario I-M).
+    pub lose_next_address: bool,
 }
 
 pub struct ChainPort(Mutex<Chain>);
@@ -79,7 +81,14 @@ impl ChainPort {
             addresses: vec![address(0)],
             txs: Vec::new(),
             next_txid: 1,
+            lose_next_address: false,
         })
+    }
+
+    /// The next `create_address` creates its subaddress in the wallet, but the issuer never gets
+    /// the answer (a lost response without a crash, §19.6 rule 4).
+    pub fn lose_next_address_answer(&self) {
+        self.lock().lose_next_address = true;
     }
 
     pub fn from_chain(chain: Chain) -> Arc<Self> {
@@ -218,6 +227,9 @@ impl PaymentRail for ChainPort {
         let minor = c.addresses.len() as u32;
         let text = address(minor);
         c.addresses.push(text.clone());
+        if std::mem::take(&mut c.lose_next_address) {
+            return Err(RailError::Transport);
+        }
         Ok((minor, text))
     }
 

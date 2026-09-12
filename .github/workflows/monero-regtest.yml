@@ -95,7 +95,10 @@ jobs:
           echo "$SHA  $FILE" | sha256sum -c -
           tar -xjf "$FILE" -C "$RUNNER_TEMP/monero-bin" --strip-components=1 "$DIR/monerod" "$DIR/monero-wallet-rpc"
           "$RUNNER_TEMP/monero-bin/monerod" --version
+      - name: build the operator tools (the payout workstation's commands of steps 16 and 16b)
+        run: cargo build -p ghost-issuer-ops --release --locked
       - name: regtest scenario on the production rail (release profile)
         env:
           GHOST_MONERO_BIN: ${{ runner.temp }}/monero-bin
+          GHOST_ISSUER_OPS: ${{ github.workspace }}/ghost/target/release/ghost-issuer-ops
         run: cargo test -p ghost-issuer --release --locked --test monero_regtest -- --ignored --test-threads=1

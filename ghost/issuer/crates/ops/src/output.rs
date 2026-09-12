@@ -1,9 +1,11 @@
 //! The only module of the operator tools that writes files (design §14.1, §19.17; ADR-26 point 7).
-//! Its named outputs: the custody secret and the schedule key (`keygen`), public key entries and
-//! sealed key files (`keygen`), the key load file (`keys-seal`), the signed schedule
-//! (`schedule-sign`) and Tor onion service key sets (`onion-keygen`). Every file is created new
-//! (an existing file is never replaced), written in full, flushed to disk, and on Unix readable by
-//! its owner only.
+//! Its named outputs: the custody secret, the schedule key and the ops key (`keygen`), public key
+//! entries and sealed key files (`keygen`), the key load file (`keys-seal`), the signed schedule
+//! (`schedule-sign`), Tor onion service key sets (`onion-keygen`), the payout workstation's ledger
+//! (`payout-check` creates it; `payout-check`, `payout-entry` and `payout-ack` append records) and
+//! acknowledgement files (`payout-ack`). Every file but the ledger is created new (an existing
+//! file is never replaced); the ledger is only ever appended to. Each write is complete and
+//! flushed to disk, and on Unix a created file is readable by its owner only.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -50,6 +52,32 @@ pub fn write_custody_secret(
 
 pub fn write_schedule_key(path: &Path, seed: &[u8; 32], flag: &'static str) -> Result<(), Failure> {
     create_new(path, seed, flag)
+}
+
+/// The issuer's ops key seed (it signs payout batch files, design §9.5).
+pub fn write_ops_key(path: &Path, seed: &[u8; 32], flag: &'static str) -> Result<(), Failure> {
+    create_new(path, seed, flag)
+}
+
+/// Creates the payout ledger with its first records.
+pub fn create_ledger(path: &Path, text: &str, flag: &'static str) -> Result<(), Failure> {
+    create_new(path, text.as_bytes(), flag)
+}
+
+/// Appends records to an existing payout ledger and flushes them to disk.
+pub fn append_ledger(path: &Path, text: &str, flag: &'static str) -> Result<(), Failure> {
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|_| io_error(flag, "write"))?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|_| io_error(flag, "write"))
+}
+
+/// A payout acknowledgement file for the issuer (design §9.5 step 4).
+pub fn write_ack(path: &Path, bytes: &[u8], flag: &'static str) -> Result<(), Failure> {
+    create_new(path, bytes, flag)
 }
 
 pub fn write_sealed_key(

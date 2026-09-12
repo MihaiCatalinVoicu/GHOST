@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Gate (Phase 8 design §6.5, §14.1, §19.17 point 4, §19.20 point 5; ADR-26 point 7): what the
 # issuer crates may write.
-#   - ghost/issuer/crates/service: only src/status.rs, src/store.rs and src/journal.rs create,
-#     open for writing, rename, truncate, link or remove files or directories (a redb database is
-#     written by Database::create, Database::open and Builder::new().create; the payout export
-#     module joins them in slice S6), and no module writes to stdout or stderr: the issuer keeps
-#     no logs, operators read status.json.
+#   - ghost/issuer/crates/service: only src/status.rs, src/store.rs, src/journal.rs and
+#     src/payout.rs (the payout batch export, design §9.5) create, open for writing, rename,
+#     truncate, link or remove files or directories (a redb database is written by
+#     Database::create, Database::open and Builder::new().create), and no module writes to stdout
+#     or stderr: the issuer keeps no logs, operators read status.json.
 #   - ghost/issuer/crates/ops: only src/report.rs writes to the console (fixed vocabulary) and only
 #     src/output.rs writes files.
 #   - every other issuer crate writes neither files nor to the console.
@@ -18,7 +18,8 @@ while IFS= read -r f; do
   rel="${f#"$GHOST_ROOT"/}"
   case "$rel" in
     issuer/crates/service/src/status.rs | issuer/crates/service/src/store.rs | \
-      issuer/crates/service/src/journal.rs | issuer/crates/ops/src/output.rs) may_write=1 ;;
+      issuer/crates/service/src/journal.rs | issuer/crates/service/src/payout.rs | \
+      issuer/crates/ops/src/output.rs) may_write=1 ;;
     *) may_write=0 ;;
   esac
   case "$rel" in

@@ -3,10 +3,11 @@
 //! quantum to the `*_at(request, now)` handlers.
 //!
 //! - Every handler runs on `spawn_blocking` (redb and signing are synchronous).
-//! - `BlindSign` and `RedeemInvite` take a permit of a semaphore sized to the core count first,
-//!   so a burst of signing cannot starve the scanner, and their responses (errors included)
-//!   leave at `t_request + Q · max(1, ceil(elapsed / Q))` with Q = 2 s (Q18): over Tor the signing
-//!   time is visible only at the quantum's granularity, whichever signer is in use.
+//! - `BlindSign`, `RedeemInvite` and `RefreshCredit` (the three signing calls) take a permit of a
+//!   semaphore sized to the core count first, so a burst of signing cannot starve the scanner, and
+//!   their responses (errors included) leave at `t_request + Q · max(1, ceil(elapsed / Q))` with
+//!   Q = 2 s (Q18): over Tor the signing time is visible only at the quantum's granularity,
+//!   whichever signer is in use.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -177,6 +178,14 @@ impl TimedIssuer {
         req: wire::ClaimPayoutRequest,
     ) -> Result<wire::ClaimPayoutResponse, Status> {
         self.blocking(move |i, now| i.claim_payout_at(req, now))
+            .await
+    }
+
+    pub async fn refresh_credit(
+        &self,
+        req: wire::RefreshCreditRequest,
+    ) -> Result<wire::RefreshCreditResponse, Status> {
+        self.quantized(move |i, now| i.refresh_credit_at(req, now))
             .await
     }
 }

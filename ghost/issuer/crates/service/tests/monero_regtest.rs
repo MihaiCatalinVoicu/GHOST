@@ -1,22 +1,42 @@
-//! The live Monero scenario (Phase 8 design §13.3; RM §9.3; slice S5 runs steps 1–10, 12, 13, 17
-//! and 18): the production rail ([`MoneroWalletRpc`], JSON-RPC with digest authentication) and the
-//! real issuer (redb store, journal, handlers, scanner, pool) against `monerod --regtest --offline
-//! --fixed-difficulty 1` and three `monero-wallet-rpc` processes with digest authentication on:
-//! the payer (a full wallet), the issuer's view-only wallet (its process also hosts the payout
-//! workstation's view wallet in step 10), and the treasury as the cold signer (`--offline`).
+//! The live Monero scenario (Phase 8 design §13.3; RM §9.3): the production rail
+//! ([`MoneroWalletRpc`], JSON-RPC with digest authentication) and the real issuer (redb store,
+//! journal, handlers, scanner, pool) against `monerod --regtest --offline --fixed-difficulty 1` and
+//! `monero-wallet-rpc` processes with digest authentication on: the payer (a full wallet), the
+//! issuer's view-only wallet (its process also hosts a workstation view wallet in step 10), the
+//! treasury as the cold signer (`--offline`), and in `regtest_credits_and_payouts` the payout
+//! workstation's own view-only wallet.
+//!
+//! - `regtest_scenario`: steps 1–10, 12, 13, 17, 17b and 18.
+//! - `regtest_credits_and_payouts` (slice S6): step 14 (a pack paid, signed, finalized with the
+//!   production client crypto and redeemed at an in-process relay for a namespace capability),
+//!   step 15 (credits-paid packs, one needing 11 credits after a price increase, with a received
+//!   credit refreshed first), steps 11, 16 and 16b (claims, the weekly batch export, the
+//!   workstation's `ghost-issuer-ops payout-check` against its own view dump, a 5-entry batch
+//!   built, cold-signed, submitted and confirmed entry by entry in the workstation ledger, the
+//!   acknowledgement back to the issuer, the payees paid, and a second batch over the same
+//!   revenue refused by the cumulative cap), and the reconciliation of this scenario
+//!   (`ghost-issuer-ops reconcile-check` on a copy of the issuer's database).
 //!
 //! Ignored by default. `GHOST_MONERO_BIN` names the directory of the pinned binaries
 //! (`ghost/infra/issuer/monero-release.pin`; the `monero-regtest` workflow downloads and checks
-//! them); a run without it fails:
+//! them) and `GHOST_ISSUER_OPS` the `ghost-issuer-ops` binary (the workflow builds it); a run
+//! without them fails:
 //!
 //! ```text
-//! GHOST_MONERO_BIN=<dir> cargo test -p ghost-issuer --release --test monero_regtest -- --ignored
+//! cargo build -p ghost-issuer-ops --release
+//! GHOST_MONERO_BIN=<dir> GHOST_ISSUER_OPS=<target>/release/ghost-issuer-ops \
+//!   cargo test -p ghost-issuer --release --test monero_regtest -- --ignored --test-threads=1
 //! ```
 //!
-//! `daemon_digest_authentication` needs `monerod` only. The scenario uses the test Entitlement
+//! `daemon_digest_authentication` needs `monerod` only. The scenarios use the test Entitlement
 //! Schedule re-signed with 30 invoice blocks and 20 grace blocks (an expiry takes 60 blocks, not
-//! 2 890) and one access and trial position per slot. Not here: step 11 (the workstation's cap
-//! guard is `payout-check`) and steps 14–16b, slice S6.
+//! 2 890), one access and trial position per slot, and the pack price of price epoch 229 raised to
+//! 220 000 000 000 (a 10 % increase over the credits of epoch 227).
+//!
+//! Recorded (Appendix D, §19.19): the watch-only wallet's `freeze` is not exercised, so building
+//! several payout entries in one cold session stays disallowed (the ledger builds them one at a
+//! time); wallet-rpc has no call that reads or sets `store-tx-info`, so the workstation's setting
+//! is a runbook item, not a check of this job.
 
 mod common;
 
@@ -28,14 +48,17 @@ use std::time::{Duration, Instant};
 
 use common::chain_port::encode_address;
 use common::fixture;
-use common::world::{claim_key, seed, BASE, BASE_WEEK, PRICE};
+use common::relay::{capability, redeem, relay_for_slot};
+use common::world::{claim_id, claim_key, seed, BASE, BASE_WEEK, PRICE};
 use ghost_entitlement::batch::{self, Layout};
+use ghost_entitlement::grid::{price_epoch, week, week_start};
 use ghost_entitlement::monero::{
     base58_decode, base58_encode, AddressPurpose, AddressType, MoneroAddress, MoneroNetwork,
 };
-use ghost_entitlement::Schedule;
+use ghost_entitlement::{Kind, Schedule, Token};
 use ghost_issuer::custody::KeyWindow;
 use ghost_issuer::journal::FileJournal;
+use ghost_issuer::payout::{self, BatchFile, OpsKey};
 use ghost_issuer::pool::PoolError;
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{
@@ -48,6 +71,7 @@ use ghost_issuer::server;
 use ghost_issuer::service::{Issuer, IssuerParams, OpenMode, OsRandom, Ports};
 use ghost_issuer::store::{self, MetaKey, RedbStore};
 use ghost_issuer_api::proto as wire;
+use ghost_relay_api::CapabilityKind;
 use serde_json::{json, Value};
 use sha3::{Digest, Keccak256};
 use tonic::Code;
@@ -241,19 +265,29 @@ impl Wallet {
     }
 }
 
-/// The test schedule with 30 invoice blocks and 20 grace blocks and one access and trial position
-/// per slot, re-signed with the test key.
-fn regtest_schedule() -> (Schedule, KeyWindow) {
+/// The price of price epoch 229 in the regtest schedule: 10 % above the credits of epoch 227.
+const PRICE_229: u64 = 220_000_000_000;
+
+/// The test schedule with 30 invoice blocks and 20 grace blocks, one access and trial position
+/// per slot and the price of epoch 229 at [`PRICE_229`], re-signed with the test key.
+fn regtest_schedule_bytes() -> Vec<u8> {
     let mut content = fixture::schedule().content().clone();
     content.constants.access_per_slot = 1;
     content.constants.trial_per_slot = 1;
     content.constants.invoice_blocks = 30;
     content.constants.grace_blocks = 20;
-    let schedule = Schedule::verify_with_key(
-        &fixture::sign_content(&content),
-        &fixture::schedule_public_key(),
-    )
-    .unwrap();
+    for p in &mut content.prices {
+        if p.price_epoch == 229 {
+            p.pack_price_atomic = PRICE_229;
+        }
+    }
+    fixture::sign_content(&content)
+}
+
+fn regtest_schedule() -> (Schedule, KeyWindow) {
+    let schedule =
+        Schedule::verify_with_key(&regtest_schedule_bytes(), &fixture::schedule_public_key())
+            .unwrap();
     let mut keys = KeyWindow::new();
     for (_, signer) in fixture::signers(&schedule) {
         keys.insert(signer);
@@ -261,14 +295,18 @@ fn regtest_schedule() -> (Schedule, KeyWindow) {
     (schedule, keys)
 }
 
-fn request_for(label: &str) -> wire::RequestInvoiceRequest {
+fn request_for(label: &str, base_week: u64) -> wire::RequestInvoiceRequest {
+    request_with(label, base_week, &[])
+}
+
+fn request_with(label: &str, base_week: u64, credits: &[Token]) -> wire::RequestInvoiceRequest {
     wire::RequestInvoiceRequest {
         version: 1,
         rail: wire::Rail::Monero as i32,
         product: wire::Product::Pack as i32,
         claim_hash: batch::claim_hash(&claim_key(label)).to_vec(),
-        credits: Vec::new(),
-        base_week: BASE_WEEK,
+        credits: credits.iter().map(|t| t.as_bytes().to_vec()).collect(),
+        base_week,
     }
 }
 
@@ -288,12 +326,15 @@ fn hex32(text: &str) -> [u8; 32] {
 struct Invoice {
     label: String,
     id: [u8; 16],
+    base_week: u64,
     minor: u32,
     subaddress: String,
     grace_height: u64,
 }
 
 struct Regtest {
+    /// The issuer's clock (BASE unless a scenario moves it).
+    now: u64,
     issuer: Option<Issuer>,
     payer: Wallet,
     issuer_wallet: Wallet,
@@ -341,6 +382,7 @@ impl Regtest {
             .unwrap();
         let (schedule, keys) = regtest_schedule();
         let t = Self {
+            now: BASE,
             issuer: None,
             payer,
             issuer_wallet,
@@ -438,7 +480,7 @@ impl Regtest {
                 ports,
                 self.params,
                 OpenMode::Normal,
-                BASE,
+                self.now,
             )
             .unwrap(),
         );
@@ -450,21 +492,26 @@ impl Regtest {
 
     fn tick(&self) -> TickReport {
         self.issuer()
-            .scan_tick_at(BASE)
+            .scan_tick_at(self.now)
             .unwrap_or_else(|e| panic!("scanner tick: {e:?}"))
     }
 
     fn refill(&self) {
-        self.issuer().pool_refill_at(BASE).unwrap();
+        self.issuer().pool_refill_at(self.now).unwrap();
     }
 
     fn request(&self, label: &str) -> Invoice {
+        let base_week = week(self.now);
         let r = self
             .issuer()
-            .request_invoice_at(request_for(label), BASE)
+            .request_invoice_at(request_for(label, base_week), self.now)
             .unwrap();
         assert_eq!(r.result, wire::RequestInvoiceResult::Ok as i32, "{label}");
-        assert_eq!(r.amount_atomic, PRICE, "the ES price");
+        assert_eq!(
+            Some(r.amount_atomic),
+            self.schedule.pack_price(price_epoch(base_week)),
+            "the ES price"
+        );
         let address = MoneroAddress::parse(
             &r.subaddress,
             MoneroNetwork::Regtest,
@@ -478,6 +525,7 @@ impl Regtest {
         Invoice {
             label: label.to_string(),
             id,
+            base_week,
             minor: row.minor,
             subaddress: address.as_str().to_string(),
             grace_height: row.grace_height,
@@ -485,7 +533,11 @@ impl Regtest {
     }
 
     fn blind_sign(&self, inv: &Invoice) -> wire::BlindSignResponse {
-        let layout = Layout::pack(&self.schedule, BASE_WEEK, true).unwrap();
+        self.blind_sign_layout(inv, true)
+    }
+
+    fn blind_sign_layout(&self, inv: &Invoice, xmr: bool) -> wire::BlindSignResponse {
+        let layout = Layout::pack(&self.schedule, inv.base_week, xmr).unwrap();
         let blinded = batch::blind(&self.schedule, &seed(&inv.label), &layout).unwrap();
         self.issuer()
             .blind_sign_at(
@@ -495,9 +547,15 @@ impl Regtest {
                     claim_key: claim_key(&inv.label).to_vec(),
                     blinded,
                 },
-                BASE,
+                self.now,
             )
             .unwrap()
+    }
+
+    /// The tokens of a signed pack, finalized with the production client crypto.
+    fn finalize(&self, inv: &Invoice, xmr: bool, sigs: &[u8]) -> Vec<Token> {
+        let layout = Layout::pack(&self.schedule, inv.base_week, xmr).unwrap();
+        batch::finalize(&self.schedule, &seed(&inv.label), &layout, sigs).expect("MS-6: tokens")
     }
 
     fn status(&self, inv: &Invoice) -> Result<wire::InvoiceStatusResponse, tonic::Status> {
@@ -507,8 +565,74 @@ impl Regtest {
                 invoice_id: inv.id.to_vec(),
                 claim_key: claim_key(&inv.label).to_vec(),
             },
-            BASE,
+            self.now,
         )
+    }
+
+    /// XMR packs of the current week, one per label: requested, paid by the payer in transfers of
+    /// at most 15 destinations, confirmed, signed and finalized. Returns each pack's tokens.
+    fn buy_packs(&self, labels: &[String]) -> Vec<Vec<Token>> {
+        let invoices: Vec<Invoice> = labels
+            .iter()
+            .map(|label| {
+                self.refill();
+                self.request(label)
+            })
+            .collect();
+        let price = self
+            .schedule
+            .pack_price(price_epoch(week(self.now)))
+            .unwrap();
+        for chunk in invoices.chunks(15) {
+            let destinations: Vec<Value> = chunk
+                .iter()
+                .map(|inv| json!({"amount": price, "address": inv.subaddress}))
+                .collect();
+            rpc(&self.payer.rpc, "refresh", json!({}));
+            rpc(
+                &self.payer.rpc,
+                "transfer",
+                json!({
+                    "destinations": destinations,
+                    "account_index": 0,
+                    "priority": 0,
+                    "ring_size": 16,
+                    "get_tx_key": false,
+                }),
+            );
+            self.mine(CONFIRMATIONS + 1);
+        }
+        self.tick();
+        invoices
+            .iter()
+            .map(|inv| {
+                let s = self.blind_sign(inv);
+                assert_eq!(s.state, SIGNED, "{}", inv.label);
+                self.finalize(inv, true, &s.blind_signatures)
+            })
+            .collect()
+    }
+
+    /// A credits-paid pack of the current week (amount 0, created CONFIRMED), signed.
+    fn credits_pack(&self, label: &str, credits: &[Token]) -> Vec<Token> {
+        let base_week = week(self.now);
+        let r = self
+            .issuer()
+            .request_invoice_at(request_with(label, base_week, credits), self.now)
+            .unwrap();
+        assert_eq!(r.result, wire::RequestInvoiceResult::Ok as i32, "{label}");
+        assert_eq!((r.amount_atomic, r.subaddress.as_str()), (0, ""));
+        let inv = Invoice {
+            label: label.to_string(),
+            id: r.invoice_id.as_slice().try_into().unwrap(),
+            base_week,
+            minor: 0,
+            subaddress: String::new(),
+            grace_height: 0,
+        };
+        let s = self.blind_sign_layout(&inv, false);
+        assert_eq!(s.state, SIGNED, "{label}");
+        self.finalize(&inv, false, &s.blind_signatures)
     }
 
     fn pay(&self, address: &str, amount: u64) -> String {
@@ -1015,7 +1139,7 @@ fn regtest_scenario() {
     t.refill();
     let refused = t
         .issuer()
-        .request_invoice_at(request_for("lagging"), BASE)
+        .request_invoice_at(request_for("lagging", BASE_WEEK), BASE)
         .unwrap_err();
     assert_eq!(refused.code(), Code::Unavailable);
     let daemon_port = t.daemon_port;
@@ -1075,6 +1199,461 @@ fn regtest_scenario() {
             assert!(e.get(f).is_some(), "{f} missing in {e}");
         }
     }
+}
+
+/// The operator tools of the payout workstation (`GHOST_ISSUER_OPS`).
+fn ops_binary() -> PathBuf {
+    let path = PathBuf::from(std::env::var_os("GHOST_ISSUER_OPS").expect(
+        "GHOST_ISSUER_OPS: the ghost-issuer-ops binary (cargo build -p ghost-issuer-ops --release)",
+    ));
+    assert!(path.is_file(), "no ghost-issuer-ops at {}", path.display());
+    path
+}
+
+/// Runs the operator tools: the exit status and the last report line.
+fn ops(bin: &Path, args: &[&str]) -> (i32, String) {
+    let out = Command::new(bin)
+        .args(args)
+        .output()
+        .expect("ghost-issuer-ops runs");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (
+        out.status.code().unwrap_or(-1),
+        text.lines().last().unwrap_or("").to_string(),
+    )
+}
+
+fn labels(prefix: &str, n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("{prefix}-{i}")).collect()
+}
+
+/// The credit token of each pack (the last position of an XMR pack).
+fn credits_of(packs: Vec<Vec<Token>>) -> Vec<Token> {
+    packs
+        .into_iter()
+        .map(|mut tokens| tokens.pop().unwrap())
+        .collect()
+}
+
+fn write_json(path: &Path, value: &Value) -> String {
+    std::fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+fn path_arg(path: &Path) -> String {
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+#[ignore = "needs the pinned Monero binaries and the operator tools: GHOST_MONERO_BIN=<dir> GHOST_ISSUER_OPS=<ghost-issuer-ops>"]
+fn regtest_credits_and_payouts() {
+    let ops_bin = ops_binary();
+    let mut t = Regtest::start();
+    t.mine(80);
+    t.open_issuer();
+    t.refill();
+    t.tick();
+    let files = t.dir.path().to_path_buf();
+
+    // Step 14: invoice → pay → confirm → BlindSign → finalize with the production client crypto
+    // → redeem at an in-process relay → a write capability for a namespace.
+    let e2e = t.buy_packs(&labels("e2e", 1)).remove(0);
+    let layout = Layout::pack(&t.schedule, BASE_WEEK, true).unwrap();
+    let access = layout
+        .positions()
+        .iter()
+        .zip(&e2e)
+        .find(|(p, _)| p.kind == Kind::Access && p.epoch == BASE_WEEK && p.slot == Some(1))
+        .map(|(_, token)| token.clone())
+        .unwrap();
+    let relay = relay_for_slot(&files.join("relay"), &t.schedule, 1, t.now);
+    let namespace = [0x5a; 32];
+    let cap = capability(&redeem(&relay, &access, &namespace, &[1; 16], t.now).unwrap())
+        .expect("a write capability");
+    let header = relay.key().verify_any(&cap, t.now).unwrap();
+    assert_eq!(
+        (header.kind, header.namespace),
+        (CapabilityKind::Write, namespace)
+    );
+    assert_eq!(
+        capability(&redeem(&relay, &access, &namespace, &[1; 16], t.now).unwrap()),
+        Some(cap),
+        "MS-8: the identical retry"
+    );
+    // The e2e pack's credit stands for a credit received through a drop.
+    let received = e2e.last().unwrap().clone();
+
+    // Step 15: a credits-paid pack of ten credits at an unchanged price; the received credit is
+    // refreshed first (§19.8) and joins ten more to pay a pack of price epoch 229, whose price
+    // is 10 % higher: eleven credits of epoch 227, not ten.
+    let ten = credits_of(t.buy_packs(&labels("warm", 10)));
+    assert_eq!(
+        t.credits_pack("d10", &ten).len(),
+        17,
+        "no credit on a credits-paid pack"
+    );
+    let refresh_layout = Layout::refresh(&t.schedule, 227).unwrap();
+    let blinded = batch::blind(&t.schedule, &seed("received"), &refresh_layout).unwrap();
+    let r = t
+        .issuer()
+        .refresh_credit_at(
+            wire::RefreshCreditRequest {
+                version: 1,
+                credit: received.as_bytes().to_vec(),
+                blinded,
+            },
+            t.now,
+        )
+        .unwrap();
+    assert_eq!(r.result, wire::RefreshCreditResult::Ok as i32);
+    let fresh = batch::finalize(
+        &t.schedule,
+        &seed("received"),
+        &refresh_layout,
+        &r.blind_signature,
+    )
+    .unwrap()
+    .remove(0);
+    let mut eleven = credits_of(t.buy_packs(&labels("more", 10)));
+    eleven.push(fresh);
+    t.now = week_start(2977) + 43_200;
+    t.tick();
+    let short = t
+        .issuer()
+        .request_invoice_at(request_with("d11-short", 2977, &eleven[..10]), t.now)
+        .unwrap_err();
+    assert_eq!(short.code(), Code::PermissionDenied, "ten do not cover");
+    assert_eq!(t.credits_pack("d11", &eleven).len(), 17);
+
+    // Steps 16 and 11: claims → the weekly batch export → payout-check with the workstation's
+    // own view dump.
+    let claim_credits = credits_of(t.buy_packs(&labels("claim", 50)));
+    let credit_value = PRICE_229 / 10;
+    let payee = |t: &Regtest| {
+        rpc(&t.payer.rpc, "create_address", json!({"account_index": 0}))["address"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    for i in 0..5 {
+        let r = t
+            .issuer()
+            .claim_payout_at(
+                wire::ClaimPayoutRequest {
+                    version: 1,
+                    claim_id: claim_id(&format!("claim-{i}")).to_vec(),
+                    credits: claim_credits[10 * i..10 * i + 10]
+                        .iter()
+                        .map(|c| c.as_bytes().to_vec())
+                        .collect(),
+                    payout_address: payee(&t),
+                },
+                t.now,
+            )
+            .unwrap();
+        assert_eq!(
+            (r.result, r.queued_atomic),
+            (wire::ClaimPayoutResult::Queued as i32, 10 * credit_value)
+        );
+    }
+    let ops_key = OpsKey::from_seed(&[0x0c; 32]);
+    let ops_public = hex::encode(ops_key.public());
+    let export = files.join("export");
+    let report = t
+        .issuer()
+        .payout_export_at(t.now, &ops_key, &export)
+        .unwrap();
+    assert_eq!(report.created.len(), 1);
+    let batch_id = report.created[0];
+    let batch_path = export.join(payout::batch_file_name(&batch_id));
+    let file = BatchFile::verify(&std::fs::read(&batch_path).unwrap(), &ops_key.public()).unwrap();
+    assert_eq!((file.entries.len(), file.total), (5, 50 * credit_value));
+
+    let ws = Wallet::start(&t.bin, files.join("workstation"), Some(t.daemon_port));
+    rpc(
+        &ws.rpc,
+        "generate_from_keys",
+        json!({
+            "restore_height": t.restore_height,
+            "filename": "workstation-view",
+            "address": t.treasury_address,
+            "viewkey": t.view_key,
+            "password": "",
+            "autosave_current": true,
+        }),
+    );
+    let view_dump = |name: &str| {
+        rpc(&ws.rpc, "refresh", json!({}));
+        let transfers = rpc(
+            &ws.rpc,
+            "get_transfers",
+            json!({"in": true, "account_index": 0}),
+        );
+        write_json(&files.join(name), &transfers)
+    };
+    let view1 = view_dump("view-1.json");
+    let ledger = path_arg(&files.join("ledger.txt"));
+    let restore = t.restore_height.to_string();
+    let check = |batch: &Path, view: &str| {
+        ops(
+            &ops_bin,
+            &[
+                "payout-check",
+                "--batch",
+                &path_arg(batch),
+                "--ops-public-key",
+                &ops_public,
+                "--network",
+                "regtest",
+                "--view-dump",
+                view,
+                "--restore-height",
+                &restore,
+                "--ledger",
+                &ledger,
+            ],
+        )
+    };
+    let (status, line) = check(&batch_path, &view1);
+    assert!(
+        status == 0 && line.starts_with("PAYOUT_ACCEPTED"),
+        "{status} {line}"
+    );
+
+    // The cold wallet learns the treasury's outputs, the workstation their key images (RM §6.1).
+    let outputs = rpc(&ws.rpc, "export_outputs", json!({"all": true}))["outputs_data_hex"].clone();
+    rpc(
+        &t.treasury.rpc,
+        "import_outputs",
+        json!({"outputs_data_hex": outputs}),
+    );
+    let images = rpc(&t.treasury.rpc, "export_key_images", json!({"all": true}));
+    rpc(
+        &ws.rpc,
+        "import_key_images",
+        json!({"offset": images["offset"], "signed_key_images": images["signed_key_images"]}),
+    );
+
+    // Step 16b (§19.7 point 1): the five entries built, cold-signed and submitted one after
+    // another, each recorded in the workstation ledger with its txid and input key images.
+    let id_hex = hex::encode(batch_id);
+    let entry = |k: usize, to: &str, extra: &[&str]| {
+        let k = k.to_string();
+        let mut args = vec![
+            "payout-entry",
+            "--ledger",
+            ledger.as_str(),
+            "--batch-id",
+            id_hex.as_str(),
+            "--entry",
+            k.as_str(),
+            "--to",
+            to,
+        ];
+        args.extend_from_slice(extra);
+        ops(&ops_bin, &args)
+    };
+    let mut txids = Vec::new();
+    for (k, e) in file.entries.iter().enumerate() {
+        let (status, line) = entry(k, "built", &[]);
+        assert!(status == 0 && line.contains("state=built"), "{line}");
+        if k + 1 < file.entries.len() {
+            // MM19 PayoutInputReuse: no entry is built from the wallet state of an unsubmitted one.
+            let (status, line) = entry(k + 1, "built", &[]);
+            assert!(status == 1 && line.contains("reason=sequence"), "{line}");
+        }
+        let unsigned = rpc(
+            &ws.rpc,
+            "transfer",
+            json!({
+                "destinations": [{"amount": e.amount, "address": e.address_text()}],
+                "account_index": 0,
+                "priority": 0,
+                "ring_size": 16,
+                "get_tx_key": false,
+            }),
+        )["unsigned_txset"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let desc = rpc(
+            &t.treasury.rpc,
+            "describe_transfer",
+            json!({"unsigned_txset": unsigned}),
+        );
+        let d = &desc["desc"][0];
+        assert_eq!(d["recipients"].as_array().unwrap().len(), 1);
+        assert_eq!(d["recipients"][0]["address"], json!(e.address_text()));
+        assert_eq!(d["recipients"][0]["amount"], json!(e.amount));
+        assert_eq!(d["change_address"], json!(t.treasury_address));
+        let signed = rpc(
+            &t.treasury.rpc,
+            "sign_transfer",
+            json!({"unsigned_txset": unsigned, "export_raw": true, "get_tx_keys": false}),
+        );
+        let txid = signed["tx_hash_list"][0].as_str().unwrap().to_string();
+        let raw = files.join(format!("tx-{k}.hex"));
+        std::fs::write(&raw, signed["tx_raw_list"][0].as_str().unwrap()).unwrap();
+        let (status, line) = entry(k, "signed", &["--raw-tx", &path_arg(&raw), "--txid", &txid]);
+        assert!(status == 0 && line.contains("state=signed"), "{line}");
+        let submitted = rpc(
+            &ws.rpc,
+            "submit_transfer",
+            json!({"tx_data_hex": signed["signed_txset"]}),
+        );
+        assert_eq!(submitted["tx_hash_list"], json!([txid]));
+        let (status, line) = entry(k, "submitted", &[]);
+        assert!(status == 0 && line.contains("state=submitted"), "{line}");
+        txids.push(txid);
+    }
+    assert_eq!(
+        txids.iter().collect::<BTreeSet<_>>().len(),
+        5,
+        "one transaction per entry"
+    );
+    t.mine(CONFIRMATIONS + 1);
+    rpc(&ws.rpc, "refresh", json!({}));
+    for (k, txid) in txids.iter().enumerate() {
+        let transfer = write_json(
+            &files.join(format!("transfer-{k}.json")),
+            &rpc(&ws.rpc, "get_transfer_by_txid", json!({"txid": txid})),
+        );
+        let (status, line) = entry(k, "confirmed", &["--transfer", &transfer]);
+        assert!(status == 0 && line.contains("state=confirmed"), "{line}");
+    }
+
+    // The acknowledgement, per entry with its own txid, back to the issuer: the batch is paid.
+    let ack = export.join(payout::ack_file_name(&batch_id));
+    let (status, line) = ops(
+        &ops_bin,
+        &[
+            "payout-ack",
+            "--ledger",
+            &ledger,
+            "--batch",
+            &path_arg(&batch_path),
+            "--ops-public-key",
+            &ops_public,
+            "--out",
+            &path_arg(&ack),
+        ],
+    );
+    assert!(
+        status == 0 && line.starts_with("ACK_WRITTEN") && line.contains("entries=5"),
+        "{line}"
+    );
+    let report = t
+        .issuer()
+        .payout_export_at(t.now, &ops_key, &export)
+        .unwrap();
+    assert_eq!(report.acknowledged, vec![batch_id]);
+    assert!(!batch_path.exists() && !ack.exists());
+    assert_eq!(
+        total(&t.counters(), CounterId::PayoutPaidAtomic),
+        50 * credit_value
+    );
+    rpc(&t.payer.rpc, "refresh", json!({}));
+    for (txid, e) in txids.iter().zip(&file.entries) {
+        let received =
+            rpc(&t.payer.rpc, "get_transfer_by_txid", json!({"txid": txid}))["transfer"].clone();
+        assert_eq!(received["type"], "in", "the payee received its payout");
+        assert_eq!(received["amount"], json!(e.amount));
+    }
+
+    // Two consecutive batches over the same revenue: the second is refused by the cumulative cap
+    // (§19.7 point 2) until the view shows the revenue that pays for it.
+    let second = credits_of(t.buy_packs(&labels("second", 20)));
+    let r = t
+        .issuer()
+        .claim_payout_at(
+            wire::ClaimPayoutRequest {
+                version: 1,
+                claim_id: claim_id("second").to_vec(),
+                credits: second.iter().map(|c| c.as_bytes().to_vec()).collect(),
+                payout_address: payee(&t),
+            },
+            t.now,
+        )
+        .unwrap();
+    assert_eq!(r.queued_atomic, 20 * credit_value);
+    let report = t
+        .issuer()
+        .payout_export_at(t.now, &ops_key, &export)
+        .unwrap();
+    assert_eq!(report.created.len(), 1);
+    let second_path = export.join(payout::batch_file_name(&report.created[0]));
+    let (status, line) = check(&second_path, &view1);
+    assert!(status == 1 && line.contains("reason=cap"), "{line}");
+    let view2 = view_dump("view-2.json");
+    let (status, line) = check(&second_path, &view2);
+    assert!(
+        status == 0 && line.starts_with("PAYOUT_ACCEPTED"),
+        "{status} {line}"
+    );
+
+    // Reconciliation of this scenario: the issuer's invariants; incoming to minors >= 1 equals
+    // the credited revenue (every invoice issued at its price); the payout change reached minor
+    // 0 and is counted nowhere; reconcile-check on a copy of the database with the relay counts,
+    // the workstation's view and its ledger.
+    t.tick();
+    let counters = t.counters();
+    assert_eq!(reconcile::check(&counters, &t.schedule, t.now), Vec::new());
+    let all_in = rpc(
+        &t.issuer_wallet.rpc,
+        "get_transfers",
+        json!({"in": true, "account_index": 0}),
+    );
+    let entries = all_in["in"].as_array().unwrap();
+    let minor = |e: &Value| e["subaddr_index"]["minor"].as_u64().unwrap();
+    let incoming: u64 = entries
+        .iter()
+        .filter(|e| minor(e) >= 1 && e["unlock_time"] == 0 && e["double_spend_seen"] == false)
+        .map(|e| e["amount"].as_u64().unwrap())
+        .sum();
+    assert_eq!(incoming, total(&counters, CounterId::XmrCreditedAtomic));
+    assert!(entries.iter().any(|e| minor(e) == 0), "the payout change");
+    t.issuer = None;
+    let snapshot = files.join("snapshot.redb");
+    std::fs::copy(files.join("issuer.redb"), &snapshot).unwrap();
+    let schedule_path = files.join("schedule.ghes");
+    std::fs::write(&schedule_path, regtest_schedule_bytes()).unwrap();
+    let relay_counts = files.join("relay-counts.txt");
+    std::fs::write(
+        &relay_counts,
+        format!("week {BASE_WEEK} slot 1 redemptions 1\n"),
+    )
+    .unwrap();
+    let view3 = view_dump("view-3.json");
+    let (status, line) = ops(
+        &ops_bin,
+        &[
+            "reconcile-check",
+            "--database",
+            &path_arg(&snapshot),
+            "--schedule",
+            &path_arg(&schedule_path),
+            "--schedule-public-key",
+            &hex::encode(fixture::schedule_public_key()),
+            "--now",
+            &t.now.to_string(),
+            "--relay-counts",
+            &path_arg(&relay_counts),
+            "--view-dump",
+            &view3,
+            "--restore-height",
+            &restore,
+            "--ledger",
+            &ledger,
+        ],
+    );
+    assert!(
+        status == 0 && line.starts_with("RECONCILIATION_OK"),
+        "{status} {line}"
+    );
 }
 
 /// A deterministic generator for the mutated addresses.

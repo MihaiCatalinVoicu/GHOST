@@ -17,14 +17,15 @@
 //! | `max_open_invoices` | open unpaid invoices at most (default and ceiling 20 000, §5.9) |
 //! | `scan_interval_seconds` | scanner period, 15…90 (default 30; ±10 s jitter keeps a tick younger than 120 s) |
 //! | `pool_target` | subaddress pool target, 1…1024 (default 32) |
-//! | `reply_quantum_ms` | reply quantum of `BlindSign` and `RedeemInvite`, 100…10 000 (default 2 000) |
+//! | `reply_quantum_ms` | reply quantum of `BlindSign`, `RedeemInvite` and `RefreshCredit`, 100…10 000 (default 2 000) |
+//! | `ops_key_file` | the 32-byte Ed25519 seed of the ops key that signs payout batch files (§9.5) |
+//! | `export_dir` | where payout batch files are written and acknowledgement files are read (§9.5) |
 //!
 //! Recorded additions to the §6.6 key list, each needed to start the process: `key_load_file`
 //! (K3 hands the `k_seal` values over in a file next to the sealed ones), `daemon_rpc_url` and
 //! `daemon_rpc_login_file` (the synced-view rule of §5.4 and §19.6 needs the daemon's height and
 //! synchronization state, which wallet-rpc does not expose), `treasury_address` (the §6.6 startup
-//! check) and `restore_height` (R5 reads it from `meta`). `ops_key_file` and `export_dir` arrive
-//! with the payout export in slice S6.
+//! check) and `restore_height` (R5 reads it from `meta`).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -87,6 +88,8 @@ struct FileConfig {
     pool_target: u32,
     #[serde(default = "default_reply_quantum")]
     reply_quantum_ms: u64,
+    ops_key_file: PathBuf,
+    export_dir: PathBuf,
 }
 
 fn default_max_open_invoices() -> u64 {
@@ -124,6 +127,8 @@ pub struct Config {
     pub scan_interval: Duration,
     pub pool_target: u32,
     pub reply_quantum: Duration,
+    pub ops_key_file: PathBuf,
+    pub export_dir: PathBuf,
 }
 
 fn network(name: &str) -> Option<MoneroNetwork> {
@@ -183,6 +188,8 @@ impl Config {
             scan_interval: Duration::from_secs(f.scan_interval_seconds),
             pool_target: f.pool_target,
             reply_quantum: Duration::from_millis(f.reply_quantum_ms),
+            ops_key_file: f.ops_key_file,
+            export_dir: f.export_dir,
         })
     }
 

@@ -93,10 +93,15 @@ impl Flags {
         parse_kind(self.text(flag)?).ok_or(Failure::usage("bad-value", Some(flag)))
     }
 
-    /// A 32-byte value in lowercase hex (a schedule public key).
+    /// A 32-byte value in lowercase hex (a schedule or ops public key, a txid).
     pub fn hex32(&self, flag: &'static str) -> Result<[u8; 32], Failure> {
+        self.hex(flag)
+    }
+
+    /// An `N`-byte value in lowercase hex (a batch id).
+    pub fn hex<const N: usize>(&self, flag: &'static str) -> Result<[u8; N], Failure> {
         crate::hexfmt::decode(self.text(flag)?)
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .and_then(|b| <[u8; N]>::try_from(b).ok())
             .ok_or(Failure::usage("bad-value", Some(flag)))
     }
 }

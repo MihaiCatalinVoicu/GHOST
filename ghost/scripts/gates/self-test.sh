@@ -94,15 +94,16 @@ expect_fail issuer-output "$HARNESS/negative-issuer-output"
 out="$(GHOST_ROOT="$HARNESS/negative-issuer-output" bash "$DIR/issuer-output.sh" 2>&1 || true)"
 for want in service/src/service.rs:4: service/src/service.rs:5: service/src/service.rs:6: \
   service/src/service.rs:7: service/src/service.rs:8: service/src/service.rs:9: \
-  service/src/service.rs:10: service/src/status.rs:4: service/src/store.rs:4: ops/src/report.rs:4: ops/src/output.rs:4: \
-  ops/src/keygen.rs:3: api/src/lib.rs:3:; do
+  service/src/service.rs:10: service/src/status.rs:4: service/src/store.rs:4: service/src/payout.rs:4: \
+  ops/src/report.rs:4: ops/src/output.rs:4: ops/src/keygen.rs:3: api/src/lib.rs:3:; do
   if printf '%s\n' "$out" | grep -qF "issuer/crates/$want"; then
     echo "self-test ok: issuer-output reports $want"
   else
     echo "SELF-TEST FAIL: issuer-output does not report $want" >&2; rc=1
   fi
 done
-for allowed in service/src/status.rs:3: service/src/store.rs:3: ops/src/report.rs:3: ops/src/output.rs:3:; do
+for allowed in service/src/status.rs:3: service/src/store.rs:3: service/src/payout.rs:3: \
+  ops/src/report.rs:3: ops/src/output.rs:3:; do
   if printf '%s\n' "$out" | grep -qF "issuer/crates/$allowed"; then
     echo "SELF-TEST FAIL: issuer-output reports the allowed $allowed" >&2; rc=1
   else

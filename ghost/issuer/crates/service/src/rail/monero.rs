@@ -588,6 +588,31 @@ enum Lane {
     Pool,
 }
 
+/// The incoming transfers of a `get_transfers` answer an operator saved (the payout workstation's
+/// view dump, design §19.7): the `result` object, or the whole JSON-RPC answer holding it. Every
+/// `in` and `pool` entry is decoded as strictly as the rail decodes the issuer's own wallet; the
+/// `in` entries are returned (a pool entry is not received yet).
+pub fn incoming_from_dump(dump: Value) -> Result<Vec<IncomingEntry>, RailError> {
+    let result = match dump {
+        Value::Object(mut map) if map.contains_key("result") => {
+            map.remove("result").ok_or(RailError::Decode)?
+        }
+        other => other,
+    };
+    if !result.is_object() {
+        return Err(RailError::Decode);
+    }
+    let answer: Transfers = decode(result)?;
+    for row in answer.pool {
+        entry(row, Lane::Pool)?;
+    }
+    answer
+        .incoming
+        .into_iter()
+        .map(|row| entry(row, Lane::Mined))
+        .collect()
+}
+
 fn entry(row: TransferRow, lane: Lane) -> Result<IncomingEntry, RailError> {
     let txid = hex_decode_32(&row.txid).ok_or(RailError::Decode)?;
     if row.subaddr_index.major != 0 {

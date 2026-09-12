@@ -135,20 +135,25 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Exactly 64 lowercase hex digits (a txid as wallet-rpc writes it).
-pub(crate) fn hex_decode_32(text: &str) -> Option<[u8; 32]> {
+/// Exactly `2·N` lowercase hex digits.
+pub(crate) fn hex_decode<const N: usize>(text: &str) -> Option<[u8; N]> {
     let digit = |c: u8| match c {
         b'0'..=b'9' => Some(c - b'0'),
         b'a'..=b'f' => Some(c - b'a' + 10),
         _ => None,
     };
     let bytes = text.as_bytes();
-    if bytes.len() != 64 {
+    if bytes.len() != 2 * N {
         return None;
     }
-    let mut out = [0u8; 32];
+    let mut out = [0u8; N];
     for (o, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0) {
         *o = (digit(pair[0])? << 4) | digit(pair[1])?;
     }
     Some(out)
+}
+
+/// Exactly 64 lowercase hex digits (a txid as wallet-rpc writes it).
+pub(crate) fn hex_decode_32(text: &str) -> Option<[u8; 32]> {
+    hex_decode(text)
 }

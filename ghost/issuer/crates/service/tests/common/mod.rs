@@ -7,6 +7,9 @@ pub mod chain_port;
 pub mod epee;
 pub mod faults;
 pub mod fixture;
+pub mod race;
+pub mod relay;
+pub mod scenarios;
 pub mod world;
 
 pub const FILE: &str = include_str!("../../../../../protocol/test-vectors/blind_rsa_pp2.txt");

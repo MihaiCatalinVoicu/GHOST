@@ -18,13 +18,17 @@
 //! | `invite_nullifier` | epoch u64 ‖ N [32] | trial digest [32] |
 //! | `credit_nullifier` | epoch u64 ‖ N [32] | use u8 ‖ ref [16] (zero except for a refresh) |
 //! | `claim` | claim id [16] | [`ClaimRow`] (153 bytes) |
-//! | `batch` | batch id [16] | state u8 ‖ week u64 ‖ total u64 ‖ entries u16 (written from S6) |
+//! | `batch` | batch id [16] | [`BatchRow`] (35 bytes) |
 //! | `counter` | index u64 ‖ counter id u8 | u64 |
 //!
-//! Two recorded deviations from the §6.1 table: the `es_memory` key carries the token kind (key
-//! and revocation facts are per (kind, epoch); a bare epoch collides across kinds), and the invoice
-//! row carries its 95-byte subaddress (the byte-identical `RequestInvoice` re-serve of §5.6 step 2
-//! must return it after the pool entry is gone, also after a restore).
+//! Recorded deviations from the §6.1 table: the `es_memory` key carries the token kind (key and
+//! revocation facts are per (kind, epoch); a bare epoch collides across kinds); the invoice row
+//! carries its 95-byte subaddress (the byte-identical `RequestInvoice` re-serve of §5.6 step 2 must
+//! return it after the pool entry is gone, also after a restore); the batch row adds
+//! `cumulative_credited` (a field of the signed batch file, re-exported byte for byte) and
+//! `paid_week` (the week of the acknowledgement: the paid batch's claims are deleted two weeks
+//! later and the batch six weeks later, at least the 7 and 30 days of §6.1, with no time finer
+//! than a week, §19.15).
 
 use std::path::Path;
 
@@ -222,6 +226,29 @@ impl RedbStore {
         }
         txn.commit()?;
         Ok(Self { db })
+    }
+}
+
+/// A read-only view of a copy of `issuer.redb` (runbook R2: `ghost-issuer-ops reconcile-check`
+/// reads a snapshot, never the live database, which the issuer holds open). Another schema version
+/// is refused.
+pub struct RedbSnapshot {
+    db: redb::ReadOnlyDatabase,
+}
+
+impl RedbSnapshot {
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let snapshot = Self {
+            db: redb::ReadOnlyDatabase::open(path)?,
+        };
+        if meta(&*snapshot.read()?, MetaKey::SchemaVersion)? != Some(SCHEMA_VERSION) {
+            return Err(StoreError::Schema);
+        }
+        Ok(snapshot)
+    }
+
+    pub fn read(&self) -> Result<Box<dyn ReadTx + '_>, StoreError> {
+        Ok(Box::new(RedbRead(self.db.begin_read()?)))
     }
 }
 
@@ -662,11 +689,11 @@ pub fn credit_nullifier(
 /// `claim.state`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClaimState {
-    /// Accepted, waiting for the weekly batch (S6).
+    /// Accepted, waiting for the weekly batch.
     Queued,
-    /// Assigned to a batch (S6).
+    /// Assigned to a batch (journaled `BATCH`).
     Batched,
-    /// Its batch was paid (S6).
+    /// Its batch was paid (journaled `BATCH_PAID`); the payout address is deleted.
     Paid,
 }
 
@@ -733,6 +760,89 @@ pub fn claims(tx: &dyn ReadTx) -> Result<Vec<([u8; 16], ClaimRow)>, StoreError> 
     tx.range(Table::Claim, &[], None)?
         .into_iter()
         .map(|(k, v)| Ok((array(&k)?, ClaimRow::decode(&v)?)))
+        .collect()
+}
+
+pub fn put_claim(tx: &mut dyn WriteTx, id: &[u8; 16], row: &ClaimRow) -> Result<(), StoreError> {
+    tx.put(Table::Claim, id, &row.encode())
+}
+
+/// `batch.state`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BatchState {
+    /// Written to the export directory, waiting for the workstation's acknowledgement.
+    Exported,
+    /// Every entry was acknowledged.
+    Paid,
+}
+
+/// A row of `batch` (§6.1 plus `cumulative_credited` and `paid_week`; weeks only, §19.15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchRow {
+    pub state: BatchState,
+    /// The week the batch was created in.
+    pub week: u64,
+    /// Σ amounts of its claims.
+    pub total: u64,
+    pub entries: u16,
+    pub cumulative_credited: u64,
+    /// The week of the acknowledgement (0 while exported).
+    pub paid_week: u64,
+}
+
+const BATCH_ROW_LEN: usize = 1 + 8 + 8 + 2 + 8 + 8;
+
+impl BatchRow {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Vec::with_capacity(BATCH_ROW_LEN);
+        w.push(match self.state {
+            BatchState::Exported => 1,
+            BatchState::Paid => 2,
+        });
+        w.extend_from_slice(&self.week.to_be_bytes());
+        w.extend_from_slice(&self.total.to_be_bytes());
+        w.extend_from_slice(&self.entries.to_be_bytes());
+        w.extend_from_slice(&self.cumulative_credited.to_be_bytes());
+        w.extend_from_slice(&self.paid_week.to_be_bytes());
+        w
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, StoreError> {
+        if bytes.len() != BATCH_ROW_LEN {
+            return Err(StoreError::Corrupt);
+        }
+        let mut r = Cursor(bytes);
+        let state = match r.u8()? {
+            1 => BatchState::Exported,
+            2 => BatchState::Paid,
+            _ => return Err(StoreError::Corrupt),
+        };
+        Ok(Self {
+            state,
+            week: r.u64()?,
+            total: r.u64()?,
+            entries: u16::from_be_bytes(r.array()?),
+            cumulative_credited: r.u64()?,
+            paid_week: r.u64()?,
+        })
+    }
+}
+
+pub fn batch(tx: &dyn ReadTx, id: &[u8; 16]) -> Result<Option<BatchRow>, StoreError> {
+    tx.get(Table::Batch, id)?
+        .map(|v| BatchRow::decode(&v))
+        .transpose()
+}
+
+pub fn put_batch(tx: &mut dyn WriteTx, id: &[u8; 16], row: &BatchRow) -> Result<(), StoreError> {
+    tx.put(Table::Batch, id, &row.encode())
+}
+
+/// Every batch, in id order.
+pub fn batches(tx: &dyn ReadTx) -> Result<Vec<([u8; 16], BatchRow)>, StoreError> {
+    tx.range(Table::Batch, &[], None)?
+        .into_iter()
+        .map(|(k, v)| Ok((array(&k)?, BatchRow::decode(&v)?)))
         .collect()
 }
 

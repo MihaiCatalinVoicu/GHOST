@@ -745,11 +745,7 @@ fn canonical_onion(text: &str) -> Result<(), ScheduleError> {
 }
 
 fn network_byte(n: MoneroNetwork) -> u8 {
-    match n {
-        MoneroNetwork::Mainnet => 1,
-        MoneroNetwork::Stagenet => 2,
-        MoneroNetwork::Regtest => 3,
-    }
+    n.schedule_byte()
 }
 
 fn put_u16_bytes(w: &mut Vec<u8>, bytes: &[u8]) -> Result<(), ScheduleError> {

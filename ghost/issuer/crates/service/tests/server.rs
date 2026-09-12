@@ -20,6 +20,7 @@ use ghost_entitlement::monero::MoneroNetwork;
 use ghost_entitlement::Kind;
 use ghost_issuer::config::{Config, ConfigError};
 use ghost_issuer::custody::{CustodySecret, SealLoad};
+use ghost_issuer::payout::OpsKey;
 use ghost_issuer::quantum::{Clock, ReplyQuantum};
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{MoneroWalletRpc, RpcClient, Timeouts};
@@ -70,6 +71,8 @@ fn config_text(dir: &Path, changes: &[(&str, Option<&str>)]) -> String {
         ("network", lit("regtest")),
         ("treasury_address", lit(regtest_treasury())),
         ("restore_height", "1".to_string()),
+        ("ops_key_file", lit(dir.join("ops.key").display())),
+        ("export_dir", lit(dir.join("export").display())),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -148,8 +151,9 @@ fn the_configuration_refuses_unknown_keys_ranges_and_addresses_off_loopback() {
     let stagenet = lit(stagenet_treasury());
     let cases: Vec<(Changes, ConfigError)> = vec![
         (vec![("unknown_key", Some("1"))], ConfigError::Syntax),
-        // The payout export's keys arrive with slice S6.
-        (vec![("export_dir", Some("'x'"))], ConfigError::Syntax),
+        // The payout export's keys are required (§6.6, §9.5).
+        (vec![("export_dir", None)], ConfigError::Syntax),
+        (vec![("ops_key_file", None)], ConfigError::Syntax),
         (vec![("restore_height", None)], ConfigError::Syntax),
         (vec![("restore_height", Some("1.5"))], ConfigError::Syntax),
         (vec![("restore_height", Some("-1"))], ConfigError::Syntax),
@@ -340,6 +344,33 @@ fn arguments_and_exit_status() {
         ExitCode::from(4),
         "no key load file"
     );
+}
+
+#[test]
+fn the_ops_key_is_a_32_byte_seed() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::parse(&config_text(dir.path(), &[])).unwrap();
+    assert_eq!(
+        server::load_ops_key(&config).err(),
+        Some(Refusal::Keys),
+        "missing"
+    );
+    std::fs::write(&config.ops_key_file, [7u8; 31]).unwrap();
+    assert_eq!(
+        server::load_ops_key(&config).err(),
+        Some(Refusal::Keys),
+        "short"
+    );
+    std::fs::write(&config.ops_key_file, [7u8; 33]).unwrap();
+    assert_eq!(
+        server::load_ops_key(&config).err(),
+        Some(Refusal::Keys),
+        "long"
+    );
+    std::fs::write(&config.ops_key_file, [7u8; 32]).unwrap();
+    let key = server::load_ops_key(&config).unwrap();
+    assert_eq!(key.public(), OpsKey::from_seed(&[7; 32]).public());
+    assert_eq!(format!("{key:?}"), "OpsKey(redacted)");
 }
 
 #[test]
@@ -654,6 +685,9 @@ fn serves_on_loopback_with_its_jobs_on_the_injected_clock() {
         sweep_interval: Duration::from_secs(3_600),
         status_interval: Duration::from_millis(100),
         status_file: status_file.clone(),
+        payout_interval: Duration::from_secs(3_600),
+        ops_key: Arc::new(OpsKey::from_seed(&[5; 32])),
+        export_dir: dir.path().join("export"),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -756,7 +790,11 @@ fn serves_on_loopback_with_its_jobs_on_the_injected_clock() {
             })
             .await
             .unwrap_err();
-        assert_eq!(refresh.code(), Code::Unimplemented, "slice S6");
+        assert_eq!(
+            refresh.code(),
+            Code::PermissionDenied,
+            "RefreshCredit is served (§19.8): a credit of zeros is no token"
+        );
 
         // The clock the handlers see is the injected one: two weeks later the same base week is
         // refused.

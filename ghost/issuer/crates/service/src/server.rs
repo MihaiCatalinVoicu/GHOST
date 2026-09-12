@@ -6,7 +6,8 @@
 //!
 //! **Startup** refuses to run on the first failure, in this order (§6.6): the configuration
 //! ([`crate::config`]); the Entitlement Schedule under the pinned schedule key and its network
-//! against the configuration; the key load (every held key is its ES entry); the wallet (both
+//! against the configuration; the key load (every held key is its ES entry) and the ops key (a
+//! 32-byte Ed25519 seed, §9.5); the wallet (both
 //! login files, `query_key spend_key` must fail with −29, the primary address must be the
 //! treasury, the daemon must run the configured network); the database and the journal (ES rule 5
 //! against `es_memory`, journal replay without a gap; `--restore` is runbook B1: the address pool
@@ -24,10 +25,11 @@
 //! (§6.7). Before the first request the pool is refilled, the scanner ticks once and `status.json`
 //! is written. Periodic jobs run on the blocking pool with `now` from the injected clock: the
 //! scanner every `scan_interval_seconds` ± 10 s (independent of client calls, §7.3), the pool
-//! refill every 60 s, the sweep (closed epochs, retention, key destruction) hourly and the status
-//! file every 60 s. A job's failure is visible in `status.json` (the scanner's outcome, the pool
-//! size, a halt) and retried at its next run. `RefreshCredit` (§19.8) is served from slice S6 on;
-//! until then it answers `UNIMPLEMENTED`, which the client treats as transient (§5.7).
+//! refill every 60 s, the sweep (closed epochs, retention, key destruction) hourly, the payout job
+//! hourly (acknowledgements, batch files, and new batches once a week at a uniformly random hour,
+//! [`crate::payout`]) and the status file every 60 s. A job's failure is visible in
+//! `status.json` (the scanner's outcome, the pool size, `PAYOUT_BATCH_READY`, a halt) and retried
+//! at its next run.
 //!
 //! **Exit status.** The issuer keeps no logs and prints nothing (ADR-26): a refusal is its exit
 //! status, and a running issuer reports through `status.json`.
@@ -37,7 +39,7 @@
 //! | 1 | the listener or the gRPC server failed |
 //! | 2 | usage, or the configuration file |
 //! | 3 | the Entitlement Schedule: its signature, its network, rule 5 against the database's memory |
-//! | 4 | the keys: the load file, a sealed file, a key that is not its ES entry |
+//! | 4 | the keys: the load file, a sealed file, a key that is not its ES entry, the ops key file |
 //! | 5 | the wallet: a login file, unreachable, not watch-only, primary address not the treasury, a daemon of another network; `--restore-wallet`: the replay or the rescan failed |
 //! | 6 | the state: database, journal, replay, restore height other than the recorded one |
 
@@ -57,6 +59,7 @@ use tonic::{Request, Response, Status};
 use crate::config::Config;
 use crate::custody::{KeyWindow, SealLoad};
 use crate::journal::FileJournal;
+use crate::payout::{OpsKey, OPS_SEED_LEN};
 use crate::quantum::{wall_clock, Clock, ReplyQuantum, TimedIssuer};
 use crate::rail::digest::Credentials;
 use crate::rail::monero::{MoneroWalletRpc, RpcClient, Timeouts};
@@ -77,6 +80,8 @@ pub const REFILL_INTERVAL: Duration = Duration::from_secs(60);
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(3_600);
 /// The status file period (§6.5).
 pub const STATUS_INTERVAL: Duration = Duration::from_secs(60);
+/// The payout job period (§9.5: acknowledgements and files hourly, new batches weekly).
+pub const PAYOUT_INTERVAL: Duration = Duration::from_secs(3_600);
 /// tonic's decoding bound (§5.9): the largest `BlindSign` is 2 563 × 256 bytes ≈ 641 KiB.
 pub const MAX_MESSAGE_BYTES: usize = 1 << 20;
 /// Time limit of runbook R5's `rescan_blockchain`: a restored wallet scans the chain from its
@@ -169,6 +174,18 @@ pub fn load_keys(config: &Config, schedule: &Schedule) -> Result<KeyWindow, Refu
     let bytes = std::fs::read(&config.key_load_file).map_err(|_| Refusal::Keys)?;
     let load = SealLoad::parse(&bytes).map_err(|_| Refusal::Keys)?;
     KeyWindow::load(schedule, &load, &config.sealed_keys_dir).map_err(|_| Refusal::Keys)
+}
+
+/// The ops key that signs payout batch files: exactly a 32-byte Ed25519 seed (runbook P1;
+/// `ghost-issuer-ops keygen --new-ops-key`).
+pub fn load_ops_key(config: &Config) -> Result<OpsKey, Refusal> {
+    let mut bytes = std::fs::read(&config.ops_key_file).map_err(|_| Refusal::Keys)?;
+    let seed = <[u8; OPS_SEED_LEN]>::try_from(bytes.as_slice()).map_err(|_| Refusal::Keys);
+    bytes.fill(0);
+    let mut seed = seed?;
+    let key = OpsKey::from_seed(&seed);
+    seed.fill(0);
+    Ok(key)
 }
 
 fn read_login(path: &Path) -> Result<Credentials, Refusal> {
@@ -276,10 +293,14 @@ pub struct ServeSettings {
     pub sweep_interval: Duration,
     pub status_interval: Duration,
     pub status_file: PathBuf,
+    pub payout_interval: Duration,
+    /// Signs the payout batch files written to `export_dir`.
+    pub ops_key: Arc<OpsKey>,
+    pub export_dir: PathBuf,
 }
 
 impl ServeSettings {
-    pub fn from_config(config: &Config) -> Self {
+    pub fn from_config(config: &Config, ops_key: Arc<OpsKey>) -> Self {
         Self {
             quantum: ReplyQuantum::new(config.reply_quantum),
             signing_permits: std::thread::available_parallelism().map_or(1, |n| n.get()),
@@ -289,6 +310,9 @@ impl ServeSettings {
             sweep_interval: SWEEP_INTERVAL,
             status_interval: STATUS_INTERVAL,
             status_file: config.data_dir.join(STATUS_FILE_NAME),
+            payout_interval: PAYOUT_INTERVAL,
+            ops_key,
+            export_dir: config.export_dir.clone(),
         }
     }
 }
@@ -299,6 +323,17 @@ enum Job {
     Refill,
     Sweep,
     Status(PathBuf),
+    Payout(Arc<OpsKey>, PathBuf),
+}
+
+/// A uniform draw from the operating system's random source (the payout job's weekly hour); 0
+/// if it fails, which only makes the current hour's export due.
+fn draw() -> u64 {
+    let mut bytes = [0u8; 8];
+    match SystemRandom::new().fill(&mut bytes) {
+        Ok(()) => u64::from_le_bytes(bytes),
+        Err(_) => 0,
+    }
 }
 
 fn work(issuer: &Issuer, job: &Job, now: u64) {
@@ -317,6 +352,9 @@ fn work(issuer: &Issuer, job: &Job, now: u64) {
             if let Ok(report) = issuer.status_at(now) {
                 let _ = status::write_status_file(path, &report);
             }
+        }
+        Job::Payout(key, dir) => {
+            let _ = issuer.payout_job_at(now, key, dir, draw());
         }
     }
 }
@@ -414,10 +452,12 @@ impl IssuerService for IssuerGrpc {
 
     async fn refresh_credit(
         &self,
-        _request: Request<wire::RefreshCreditRequest>,
+        request: Request<wire::RefreshCreditRequest>,
     ) -> Result<Response<wire::RefreshCreditResponse>, Status> {
-        // Slice S6 (§19.8, §15.1). A constant message, as every issuer status.
-        Err(Status::unimplemented("unimplemented"))
+        self.0
+            .refresh_credit(request.into_inner())
+            .await
+            .map(Response::new)
     }
 }
 
@@ -468,6 +508,13 @@ pub async fn serve(
         settings.status_interval,
         Duration::ZERO,
     );
+    spawn_job(
+        &issuer,
+        &clock,
+        Job::Payout(Arc::clone(&settings.ops_key), settings.export_dir.clone()),
+        settings.payout_interval,
+        Duration::ZERO,
+    );
     let timed = TimedIssuer::with_clock(issuer, settings.quantum, settings.signing_permits, clock);
     let service = IssuerServiceServer::new(IssuerGrpc::new(timed))
         .max_decoding_message_size(MAX_MESSAGE_BYTES);
@@ -484,6 +531,7 @@ fn run(args: &[String]) -> Result<(), Refusal> {
     let clock = wall_clock();
     let schedule = load_schedule(&config)?;
     let keys = load_keys(&config, &schedule)?;
+    let ops_key = Arc::new(load_ops_key(&config)?);
     // The rail blocks on its own runtime: every startup call happens here, outside the server's.
     let rail = Arc::new(connect_wallet(&config)?);
     let issuer = open_issuer(
@@ -498,7 +546,7 @@ fn run(args: &[String]) -> Result<(), Refusal> {
     if invocation.restore_wallet {
         restore_wallet(&issuer, &rail)?;
     }
-    let settings = ServeSettings::from_config(&config);
+    let settings = ServeSettings::from_config(&config, ops_key);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

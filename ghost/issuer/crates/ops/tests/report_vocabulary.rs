@@ -11,6 +11,8 @@ use common::*;
 use ghost_entitlement::monero::MoneroNetwork;
 use ghost_entitlement::{Kind, ScheduleError};
 use ghost_issuer::custody::kind_name;
+use ghost_issuer::reconcile::Mismatch;
+use ghost_issuer_ops::ledger::Transition;
 use ghost_issuer_ops::report::{self, Code, Field, Line};
 
 fn code_index(c: Code) -> usize {
@@ -34,6 +36,13 @@ fn code_index(c: Code) -> usize {
         Code::DirectoryOk => 16,
         Code::DirectoryRefused => 17,
         Code::OnionKeyCreated => 18,
+        Code::OpsKeyCreated => 19,
+        Code::PayoutAccepted => 20,
+        Code::PayoutRefused => 21,
+        Code::EntryState => 22,
+        Code::AckWritten => 23,
+        Code::ReconciliationOk => 24,
+        Code::ReconciliationMismatch => 25,
     }
 }
 
@@ -62,6 +71,15 @@ fn field_index(f: Field) -> usize {
         Field::Week => 20,
         Field::Slot => 21,
         Field::History => 22,
+        Field::Batch => 23,
+        Field::Entry => 24,
+        Field::State => 25,
+        Field::Total => 26,
+        Field::PaidSoFar => 27,
+        Field::Incoming => 28,
+        Field::Txid => 29,
+        Field::Images => 30,
+        Field::Relays => 31,
     }
 }
 
@@ -150,6 +168,31 @@ fn every_static_word_is_in_the_vocabulary() {
     let words: BTreeSet<&str> = errors.iter().map(|e| report::schedule_error(*e)).collect();
     assert_eq!(words.len(), errors.len());
     assert!(words.iter().all(|w| is_value(w)));
+    // Every reconciliation mismatch renders as a well-formed line with a distinct reason.
+    let mismatches = [
+        Mismatch::SignedAccess { week: 1 },
+        Mismatch::SignedInvite { epoch: 1 },
+        Mismatch::SignedCredit { epoch: 1 },
+        Mismatch::CreditsExceedSigned { epoch: 1 },
+        Mismatch::XmrCredited { base_week: 1 },
+        Mismatch::DiscountValue,
+        Mismatch::PayoutValue,
+        Mismatch::RelayRedemptions { week: 1 },
+        Mismatch::ViewBelowCredited,
+        Mismatch::PayoutCap,
+    ];
+    let reasons: BTreeSet<String> = mismatches
+        .iter()
+        .map(|m| {
+            let text = report::mismatch_line(m).render();
+            assert!(well_formed(&text), "{text}");
+            text.split(' ').nth(1).unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(reasons.len(), mismatches.len());
+    for t in Transition::ALL {
+        assert!(is_value(t.word()));
+    }
 }
 
 #[test]
@@ -171,7 +214,34 @@ fn lines_of_real_runs_are_well_formed() {
     ));
     let out = arg(&dir.path().join("load.ghkl"));
     let hs = arg(&dir.path().join("hs"));
+    let ops_key = arg(&dir.path().join("ops.key"));
+    let missing = arg(&dir.path().join("missing"));
     let runs: Vec<Vec<&str>> = vec![
+        vec!["keygen", "--new-ops-key", &ops_key],
+        vec!["payout-check", "--batch", &missing],
+        vec!["payout-entry", "--ledger", &missing, "--to", "sideways"],
+        vec![
+            "payout-ack",
+            "--ledger",
+            &missing,
+            "--batch",
+            &missing,
+            "--ops-public-key",
+            &key,
+            "--out",
+            &missing,
+        ],
+        vec![
+            "reconcile-check",
+            "--database",
+            &missing,
+            "--schedule",
+            &es,
+            "--schedule-public-key",
+            &key,
+            "--now",
+            "1790557200",
+        ],
         vec!["onion-keygen", "--hs-dir", &hs],
         vec!["onion-keygen", "--hs-dir", &hs],
         vec![],
@@ -253,6 +323,8 @@ fn lines_of_real_runs_are_well_formed() {
         "SEAL_LOAD_WRITTEN",
         "IO_ERROR",
         "ONION_KEY_CREATED",
+        "OPS_KEY_CREATED",
+        "INPUT_REFUSED",
     ] {
         assert!(codes.contains(expected), "{expected} not exercised");
     }
