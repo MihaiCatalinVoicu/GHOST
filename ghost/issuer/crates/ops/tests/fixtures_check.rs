@@ -18,7 +18,7 @@ use ghost_entitlement::schedule::{ScheduleContent, SlotEntry};
 use ghost_entitlement::Kind;
 use ghost_issuer::custody::{self, kind_name, CustodySecret};
 use ghost_issuer::signer::CheckedSigner;
-use ghost_issuer_ops::report;
+use ghost_issuer_ops::{onion_keygen, report};
 use ring::rand::SystemRandom;
 
 /// The schedule source that reproduces `content` (without its keys' material).
@@ -121,6 +121,11 @@ fn gate_files() -> Vec<(PathBuf, Vec<u8>)> {
     let mut duplicated = test_content();
     duplicated.keys[1].spki = duplicated.keys[0].spki.clone();
     duplicated.keys[1].proof = duplicated.keys[0].proof;
+    // A Tor onion service secret key is refused by its file name and, under any other name, by C
+    // Tor's secret key header (the one onion-keygen writes). Filler follows the header, not a key
+    // (byte 0 is not clamped as an expanded Ed25519 secret key is).
+    let mut onion_secret = onion_keygen::secret_header().to_vec();
+    onion_secret.extend_from_slice(&[0x5a; 64]);
     let ok = relays([1, 1, 2, 2, 2]);
     let mut missing_c = String::from_utf8(ok.clone()).unwrap();
     let c = onion("ghost/test/relay-c", 443);
@@ -176,6 +181,14 @@ fn gate_files() -> Vec<(PathBuf, Vec<u8>)> {
         (
             root.join("sealed-key-hidden/infra/issuer/tests/fixtures/access-2957.ghks"),
             sealed,
+        ),
+        (
+            root.join("onion-key-committed/infra/relay/tor-keys/hs_ed25519_secret_key"),
+            b"not a key: refused by its file name alone\n".to_vec(),
+        ),
+        (
+            root.join("onion-key-committed/infra/relay/slot-1.key"),
+            onion_secret,
         ),
     ]
 }

@@ -19,8 +19,13 @@ The stagenet schedule public key, pinned for the stagenet network only in
 verifies a mainnet or regtest schedule. No mainnet key is pinned: the first mainnet ES needs the
 K1 ceremony with the real offline key (Phase 16/17). The schedule key, the custody secret, the
 sealed RSA keys and the onion service keys were generated with `ghost-issuer-ops` outside the
-repository and are never committed (`entitlement-schedule.sh` refuses `*.ghks` and `*.ghkl`
-files).
+repository and are never committed. `entitlement-schedule.sh` refuses, anywhere outside the test
+fixture roots, sealed key files (`*.ghks`), key load files (`*.ghkl`) and Tor onion service
+secret keys (a file named `hs_ed25519_secret_key`, or any file starting with C Tor's secret key
+header). The custody secret and the schedule key are 32 raw bytes under names the operator
+chooses, so no check can recognise them: only the procedure keeps them out (runbook K1, outside
+the repository tree); `.gitignore` covers their default names `custody.secret` and
+`schedule.key` only.
 
 Verify (what `scripts/gates/entitlement-schedule.sh` runs, plus the git history for rule 5):
 
@@ -28,6 +33,13 @@ Verify (what `scripts/gates/entitlement-schedule.sh` runs, plus the git history 
 cargo run -p ghost-issuer-ops -- schedule-verify --schedule protocol/entitlement/schedule.ghes \
   --relay-directory protocol/entitlement/relay-directory.txt --now "$(date +%s)"
 ```
+
+Release rule (§3.1, a release ships at least 26 weeks of keys): a release that embeds seq 1
+ships by week 2964 (Monday 2026-10-26) at the latest, whose weeks 2964..2989 are exactly 26. Any
+later release embeds a later version whose last access week is at least its release week + 25,
+so seq 2 is signed before the first release after week 2964, not only by the K2 deadline below.
+No gate checks this rule: `entitlement-schedule.sh` counts the horizon from the schedule's own
+first week so that nothing depends on the build date (T12); the release process applies it.
 
 Runbook K2: the next version (seq 2) must reach an app release and every relay operator at least
 8 weeks before week 2990, that is by week 2982 (Monday 2027-03-01). A later version keeps every

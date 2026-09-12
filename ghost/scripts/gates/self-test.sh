@@ -111,6 +111,12 @@ es_case "rejects a sealed key under an infra build directory" fail "$ES_FIX/seal
   "infra/issuer/build/access-2957.ghks: sealed key or key load file"
 es_case "rejects a sealed key under an infra tests/fixtures directory" fail "$ES_FIX/sealed-key-hidden" \
   "infra/issuer/tests/fixtures/access-2957.ghks: sealed key or key load file"
+# Tor onion service secret keys (onion-keygen, S2b): by the file name Tor gives them, and under any
+# other name by C Tor's secret key header (each file of the root trips one rule only).
+es_case "rejects a committed onion service secret key by its name" fail "$ES_FIX/onion-key-committed" \
+  "infra/relay/tor-keys/hs_ed25519_secret_key: Tor onion service secret key file (hs_ed25519_secret_key)"
+es_case "rejects an onion service secret key under another name by its header" fail "$ES_FIX/onion-key-committed" \
+  "infra/relay/slot-1.key: Tor onion service secret key (C Tor secret key header)"
 es_case "accepts infrastructure naming the one schedule" pass "$ES_FIX/infra-one-path" "absent and never committed"
 es_case "refuses its self-test hooks on the repository" fail "$DIR/../.." "self-test hook for fixture roots only" \
   GHOST_ES_TEST_KEY="$ES_TEST_KEY"

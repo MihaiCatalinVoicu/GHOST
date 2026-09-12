@@ -34,9 +34,11 @@ Thumbs.db
 secrets/
 **/local.secrets.*
 # Entitlement operator material (Phase 8 runbooks K1/K3): Tor onion service secret keys
-# (ghost-issuer-ops onion-keygen), key load files, the custody secret and the schedule key live
-# outside the repository (%USERPROFILE%\.ghost-stagenet-keys\ for stagenet).
+# (ghost-issuer-ops onion-keygen), sealed key files, key load files, the custody secret and the
+# schedule key live outside the repository (%USERPROFILE%\.ghost-stagenet-keys\ for stagenet).
+# The committed test fixtures of these kinds were added with `git add -f`.
 hs_ed25519_secret_key
+*.ghks
 *.ghkl
 custody.secret
 schedule.key

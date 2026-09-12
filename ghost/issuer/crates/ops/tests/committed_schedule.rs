@@ -29,6 +29,56 @@ fn directory_text() -> String {
     std::fs::read_to_string(protocol_dir().join("relay-directory.txt")).unwrap()
 }
 
+/// The date (YYYY-MM-DD, proleptic Gregorian) of the day `days` after 1970-01-01 (H. Hinnant's
+/// `civil_from_days`).
+fn civil_date(days: u64) -> String {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// The Monday that starts access week `week`.
+fn monday(week: u64) -> String {
+    civil_date(week_start(week) / 86_400)
+}
+
+#[test]
+fn the_readme_deadlines_follow_from_the_committed_horizon() {
+    assert_eq!(monday(2957), "2026-09-07");
+    let schedule = committed();
+    let (first, last) = (schedule.first_access_week(), schedule.last_access_week());
+    let readme = std::fs::read_to_string(protocol_dir().join("README.md")).unwrap();
+    let wanted = [
+        format!("access weeks {first}..{last}"),
+        // §3.1: a release ships >= 26 weeks of keys, so week last - 25 is the last release week
+        // that may embed this schedule.
+        format!("ships by week {} (Monday {})", last - 25, monday(last - 25)),
+        // Runbook K2: the next version reaches a release 8 weeks before the first week this one
+        // does not cover.
+        format!("by week {} (Monday {})", last + 1 - 8, monday(last + 1 - 8)),
+    ];
+    for text in wanted {
+        assert!(readme.contains(&text), "README.md lacks: {text}");
+    }
+    // Every "week N (Monday D)" of the README names the Monday of week N.
+    for (at, _) in readme.match_indices("week ") {
+        let rest = &readme[at + 5..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let Some(date) = rest[digits.len()..].strip_prefix(" (Monday ") else {
+            continue;
+        };
+        let week: u64 = digits.parse().unwrap();
+        assert_eq!(&date[..10], monday(week), "week {week}");
+    }
+}
+
 #[test]
 fn schedule_verify_accepts_the_committed_schedule_under_the_pinned_key() {
     let es = arg(&protocol_dir().join("schedule.ghes"));

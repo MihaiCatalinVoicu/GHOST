@@ -29,13 +29,15 @@ schedule (`GHOST_ES_PREDECESSOR`), and the relay directory check runs in week 29
 | `fixture-in-src` | fails: production source embedding a test fixture |
 | `sealed-key-committed` | fails: a sealed key file outside `tests/fixtures` |
 | `sealed-key-hidden` | fails: sealed key files under `infra/issuer/build` and `infra/issuer/tests/fixtures` |
+| `onion-key-committed` | fails twice: `infra/relay/tor-keys/hs_ed25519_secret_key` (by its name; its text is no key) and `infra/relay/slot-1.key` (by C Tor's secret key header, followed by 64 filler bytes, not a key) |
 
 Rule 5 over the git history is exercised in throwaway repositories built by `self-test.sh`
 (`GHOST_ES_GIT=1`): the versions test schedule, `slot-set-changed`, `resigned-slot-set-changed`
 committed in turn fail on the middle version; the test schedule followed by `positive` passes; a
 schedule committed and then removed fails.
 
-The `build/` directories are ignored by `.gitignore` and committed with `git add -f`. The binary
+The `build/` directories, the `*.ghks` files and `hs_ed25519_secret_key` are ignored by
+`.gitignore` and committed with `git add -f`. The binary
 files and directory lists are generated and checked byte for byte by
 `issuer/crates/ops/tests/fixtures_check.rs` (`write_gate_fixtures` regenerates them). Nothing here
 is compiled or shipped.

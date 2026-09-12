@@ -13,8 +13,13 @@
 #  - every slot onion of the current and the next week is listed in the relay directory
 #    (protocol/entitlement/relay-directory.txt, `relay <onion:port> <operator id hex>`), and three
 #    slots of the week can be chosen whose relays span at least two operators (§19.12);
-#  - one path: no other *.ghes file under GHOST_ROOT, and no sealed key file (*.ghks) or key load
-#    file (*.ghkl) at all (issuer keys are never committed). Skipped are only the gate fixture roots
+#  - one path: no other *.ghes file under GHOST_ROOT, and no sealed key file (*.ghks), key load
+#    file (*.ghkl) or Tor onion service secret key at all (issuer and onion keys are never
+#    committed, §19.17 point 1). An onion secret key is found by the name Tor gives it
+#    (hs_ed25519_secret_key) and, under any other name, by C Tor's 32-byte secret key header
+#    ("== ed25519v1-secret: type0 ==" NUL-padded, what onion-keygen writes). The custody secret and
+#    the schedule key are 32 raw bytes under names the operator chooses: no check can recognise
+#    them, so runbook K1 keeps them outside the repository. Skipped are only the gate fixture roots
 #    (test-harness/gates), the issuer crates' committed test fixtures (issuer/crates/*/tests/fixtures)
 #    and build outputs where a build file makes them one (target/ beside a Cargo.toml, build/ beside
 #    a build.gradle.kts, .gradle/ and .kotlin/ beside a settings.gradle.kts); any other directory is
@@ -94,6 +99,18 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   fail "${f#"$GHOST_ROOT"/}: sealed key or key load file outside tests/fixtures (issuer keys are never committed)"
 done < <(outside_fixtures -name '*.ghks' -o -name '*.ghkl')
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  fail "${f#"$GHOST_ROOT"/}: Tor onion service secret key file (hs_ed25519_secret_key) outside tests/fixtures (onion keys are never committed)"
+done < <(outside_fixtures -name hs_ed25519_secret_key)
+# Files holding the tag anywhere are candidates; a key file starts with the whole header.
+ONION_SECRET_TAG='== ed25519v1-secret: type0 =='
+printf '%s\0\0\0' "$ONION_SECRET_TAG" > "$work/onion-secret-header"
+while IFS= read -r f; do
+  [ -n "$f" ] && [ "${f##*/}" != hs_ed25519_secret_key ] || continue
+  cmp -s -n 32 "$f" "$work/onion-secret-header" || continue
+  fail "${f#"$GHOST_ROOT"/}: Tor onion service secret key (C Tor secret key header) outside tests/fixtures (onion keys are never committed)"
+done < <(find "$GHOST_ROOT" \( "${prune[@]}" \) -prune -o -type f -exec grep -laF -- "$ONION_SECRET_TAG" {} + 2>/dev/null || true)
 
 # A /-separated path with "." and ".." resolved lexically and repeated "/" collapsed; fails when
 # ".." climbs above the start of the path.
