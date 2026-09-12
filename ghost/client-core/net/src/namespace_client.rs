@@ -169,6 +169,20 @@ mod tests {
         t
     }
 
+    /// A token with a v2 header (a redeemed write capability, Phase 8 design §10.3).
+    fn token_v2(kind: CapabilityKind, namespace: [u8; 32]) -> Vec<u8> {
+        let mut t = CapabilityHeader {
+            kind,
+            namespace,
+            quota_bytes: 1 << 28,
+            expiry_unix: u64::MAX,
+        }
+        .encode_body_v2(&[0x44; 16])
+        .to_vec();
+        t.extend_from_slice(&[0x33; CAPABILITY_MAC_BYTES]);
+        t
+    }
+
     /// Tokens the guard must refuse for a client bound to `NS_A`, whatever the operation.
     fn refused_for_every_operation() -> Vec<(&'static str, Vec<u8>)> {
         let good = token(CapabilityKind::Write, NS_A);
@@ -180,11 +194,18 @@ mod tests {
         kind3[1] = 3;
         let mut longer = good.clone();
         longer.push(0);
+        let mut v2_as_v1 = token_v2(CapabilityKind::Write, NS_A);
+        v2_as_v1[0] = 1;
         vec![
             ("empty", Vec::new()),
             ("truncated", good[..good.len() - 1].to_vec()),
             ("longer", longer),
             ("version 2", version2),
+            ("v2 length with version 1", v2_as_v1),
+            (
+                "v2 write for another namespace",
+                token_v2(CapabilityKind::Write, NS_B),
+            ),
             ("kind 0", kind0),
             ("kind 3", kind3),
             (
@@ -220,6 +241,10 @@ mod tests {
             ),
             "read never grants write"
         );
+        // A redeemed (v2) write capability for this namespace passes the same guard.
+        let redeemed = token_v2(CapabilityKind::Write, NS_A);
+        assert!(client.authorize(&redeemed, Access::Write).is_ok());
+        assert!(client.authorize(&redeemed, Access::Read).is_ok());
         for (why, t) in refused_for_every_operation() {
             for access in [Access::Write, Access::Read] {
                 assert!(
@@ -306,6 +331,13 @@ mod tests {
         ) -> Result<tonic::Response<Self::GossipSyncStream>, tonic::Status> {
             self.count();
             Err(tonic::Status::unimplemented("gossip"))
+        }
+        async fn redeem_token(
+            &self,
+            _r: tonic::Request<RedeemTokenRequest>,
+        ) -> Result<tonic::Response<RedeemTokenResponse>, tonic::Status> {
+            self.count();
+            Err(tonic::Status::unimplemented("redeem"))
         }
     }
 

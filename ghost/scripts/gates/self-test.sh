@@ -21,6 +21,27 @@ done
 expect_fail sync-no-catch-all "$HARNESS/negative-sync"
 sync_hits="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
 if [ "$sync_hits" = "9" ]; then echo "self-test ok: sync-no-catch-all reports all 9 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 9 fixture lines" >&2; rc=1; fi
+# Phase 8 (design §14.1, RC G18): proto-check checks every *Request message, not the file. The
+# fixture has one request with a version and three without a top-level one (none, nested only,
+# commented out): exactly those three are reported, by name.
+if command -v protoc >/dev/null; then
+  proto_out="$(GHOST_ROOT="$HARNESS/negative-proto" bash "$DIR/proto-check.sh" 2>&1 || true)"
+  proto_hits="$(printf '%s\n' "$proto_out" | grep -c '^GATE-FAIL' || true)"
+  proto_named=0
+  for m in RedeemTokenRequest GetBlobRequest ListNamespaceRequest; do
+    printf '%s\n' "$proto_out" | grep -qF "message $m must carry" && proto_named=$((proto_named + 1))
+  done
+  if [ "$proto_hits" = "3" ] && [ "$proto_named" = "3" ] && ! printf '%s\n' "$proto_out" | grep -qF "message StoreBlobRequest"; then
+    echo "self-test ok: proto-check reports the 3 requests without a top-level version"
+  else
+    echo "SELF-TEST FAIL: proto-check reported $proto_hits line(s), $proto_named of the 3 requests" >&2
+    printf '%s\n' "$proto_out" | tail -5 >&2; rc=1
+  fi
+elif [ -n "${CI:-}" ]; then
+  echo "SELF-TEST FAIL: protoc missing in CI; proto-check not proven" >&2; rc=1
+else
+  echo "self-test skipped: proto-check (protoc not installed)"
+fi
 # Phase 7 T6 (Kotlin side): every clearnet primitive in the fixture is reported, one line each.
 expect_fail kotlin-clearnet "$HARNESS/negative-clearnet"
 clearnet_hits="$(GHOST_ROOT="$HARNESS/negative-clearnet" bash "$DIR/kotlin-clearnet.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"

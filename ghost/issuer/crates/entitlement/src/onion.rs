@@ -24,19 +24,14 @@ impl Onion {
     /// Parses the canonical `"<56 base32>.onion:<port>"`.
     pub fn parse(text: &str) -> Result<Self, FormatError> {
         let (host, port) = text.rsplit_once(':').ok_or(FormatError::Onion)?;
-        let label = host.strip_suffix(".onion").ok_or(FormatError::Onion)?;
-        if label.len() != V3_LABEL_LEN || port.is_empty() || port.len() > 5 {
+        if port.is_empty() || port.len() > 5 {
             return Err(FormatError::Onion);
         }
         if !port.bytes().all(|b| b.is_ascii_digit()) || port.starts_with('0') {
             return Err(FormatError::Onion);
         }
         let port: u16 = port.parse().map_err(|_| FormatError::Onion)?;
-        let raw = base32_decode(label).ok_or(FormatError::Onion)?;
-        let pubkey: [u8; 32] = raw[..32].try_into().map_err(|_| FormatError::Onion)?;
-        if raw[34] != V3_VERSION || raw[32..34] != checksum(&pubkey) {
-            return Err(FormatError::Onion);
-        }
+        let pubkey = parse_hostname(host)?;
         Ok(Self { pubkey, port })
     }
 
@@ -44,6 +39,22 @@ impl Onion {
     pub fn format(&self) -> String {
         format!("{}:{}", hostname(&self.pubkey), self.port)
     }
+}
+
+/// Parses a canonical host name `"<56 base32>.onion"` (no port: what Tor writes to
+/// `HiddenServiceDir/hostname`, without the newline) and returns the service key. A relay reads
+/// its own onion this way (design §10.5, §19.10 point 3).
+pub fn parse_hostname(host: &str) -> Result<[u8; 32], FormatError> {
+    let label = host.strip_suffix(".onion").ok_or(FormatError::Onion)?;
+    if label.len() != V3_LABEL_LEN {
+        return Err(FormatError::Onion);
+    }
+    let raw = base32_decode(label).ok_or(FormatError::Onion)?;
+    let pubkey: [u8; 32] = raw[..32].try_into().map_err(|_| FormatError::Onion)?;
+    if raw[34] != V3_VERSION || raw[32..34] != checksum(&pubkey) {
+        return Err(FormatError::Onion);
+    }
+    Ok(pubkey)
 }
 
 /// The host name `"<56 base32>.onion"` of a v3 service key (rend-spec-v3 §6 [ONIONADDRESS]):
@@ -143,6 +154,33 @@ mod tests {
         for port in ["0443", "+443", "0", "65536", "", "44 3"] {
             assert!(Onion::parse(&format!("{host}:{port}")).is_err(), "{port}");
         }
+    }
+
+    #[test]
+    fn host_names_parse_without_a_port_and_only_in_canonical_form() {
+        let key = [7u8; 32];
+        let host = hostname(&key);
+        assert_eq!(parse_hostname(&host), Ok(key));
+        let with_port = format!("{host}:443");
+        let upper = host.to_ascii_uppercase().replace(".ONION", ".onion");
+        let mut bad_checksum = host.clone().into_bytes();
+        bad_checksum[53] = if bad_checksum[53] == b'a' { b'b' } else { b'a' };
+        let bad_checksum = String::from_utf8(bad_checksum).unwrap();
+        for bad in [
+            with_port.as_str(),
+            upper.as_str(),
+            &host[1..],
+            &format!("a{host}"),
+            host.trim_end_matches(".onion"),
+            &format!("{host}\n"),
+            &format!(" {host}"),
+            bad_checksum.as_str(),
+            "",
+        ] {
+            assert!(parse_hostname(bad).is_err(), "{bad:?}");
+        }
+        // The port parser and the host parser agree on the key.
+        assert_eq!(Onion::parse(&with_port).unwrap().pubkey, key);
     }
 
     #[test]

@@ -222,9 +222,12 @@ impl<S: Signer> CheckedSigner<S> {
         };
         let challenges = ghost_blind_rsa::permutation_proof_challenges(&signer.public_key)
             .map_err(|_| SignError::Key)?;
+        // The challenge is a valid input for the ES key, so a pair that does not match fails the
+        // self-check in one of two ways, both a key mismatch: the inner key refuses the value
+        // (it lies above the inner modulus) or its signature fails the s'^e check.
         match signer.blind_sign(&challenges[0]) {
             Ok(_) => Ok(signer),
-            Err(SignError::Fault) => Err(SignError::Key),
+            Err(SignError::Fault | SignError::InvalidInput) => Err(SignError::Key),
             Err(e) => Err(e),
         }
     }

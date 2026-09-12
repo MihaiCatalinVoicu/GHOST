@@ -1,14 +1,23 @@
 //! Two-node integration suite (Phase 5 exit gate: "two-node fault and abuse suite; relay-capture
 //! green"). Runs real gRPC servers on loopback, exercises store/get/check/list/gossip, the abuse
 //! controls, a failover (node A stops, node B serves), and validates node A's privacy capture
-//! against the normative allowed-observables schema (T1).
+//! against the normative allowed-observables schema (T1). Phase 8 (design §10.6, §14.1) adds token
+//! redemption over gRPC: ok, identical retry, replay to another namespace, wrong slot, wrong week
+//! and forged, with captures holding only the capability's scope hash, never the token, its
+//! authenticator or the minted capability.
 
+mod common;
+
+use common::{
+    at, namespace, outcome, policy, request, request_id, test_schedule, token, Outcome,
+    VirtualClock, RELAY_A, RELAY_B,
+};
 use ghost_relay_api::proto::relay_service_client::RelayServiceClient;
 use ghost_relay_api::proto::relay_service_server::RelayServiceServer;
 use ghost_relay_api::proto::*;
 use ghost_relay_api::{MAX_BATCH, PROTOCOL_VERSION};
 use ghost_relay_capability::{Kind, RelayKey};
-use ghost_relay_node::{Relay, RelayConfig, RelayServer};
+use ghost_relay_node::{EntitlementPolicy, NullifierMode, Relay, RelayConfig, RelayServer};
 use ghost_relay_storage::sha256;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -25,15 +34,29 @@ struct Node {
 }
 
 async fn start_node(gossip: bool) -> Node {
+    start_node_with(gossip, None, None).await
+}
+
+/// A node with optional redemption, on the system clock or a shared virtual one.
+async fn start_node_with(
+    gossip: bool,
+    entitlement: Option<EntitlementPolicy>,
+    clock: Option<&VirtualClock>,
+) -> Node {
     let dir = tempfile::tempdir().unwrap();
     let capture_path = dir.path().join("capture.ndjson");
+    let mut config = RelayConfig {
+        gossip_enabled: gossip,
+        entitlement,
+        ..RelayConfig::default()
+    };
+    if let Some(c) = clock {
+        config.clock = c.clock();
+    }
     let relay = Relay::open(
         &dir.path().join("data"),
         RelayKey::generate(),
-        RelayConfig {
-            gossip_enabled: gossip,
-            ..RelayConfig::default()
-        },
+        config,
         Some(&capture_path),
     )
     .unwrap();
@@ -372,6 +395,165 @@ async fn store_get_check_list_gossip_failover_and_capture() {
     // and it never contains the blob content or the raw capability token
     assert!(!capture.contains(&hex::encode(&blob[..64])));
     assert!(!capture.contains(&hex::encode(&write_a.unwrap().token)));
+}
+
+#[tokio::test]
+async fn redemptions_over_grpc_and_their_capture() {
+    // Node A holds slot 1 (relay-b), node B slot 0 (relay-a), both on one virtual clock in week
+    // 2959 of the test schedule.
+    let clock = VirtualClock::new(at("2959+86400"));
+    let now = clock.get();
+    let a = start_node_with(
+        false,
+        Some(policy(test_schedule(), 1, RELAY_B, NullifierMode::Create)),
+        Some(&clock),
+    )
+    .await;
+    let b = start_node_with(
+        false,
+        Some(policy(test_schedule(), 0, RELAY_A, NullifierMode::Create)),
+        Some(&clock),
+    )
+    .await;
+    let mut ca = client(&a.addr).await;
+    let mut cb = client(&b.addr).await;
+    let ns = namespace("two-nodes");
+    let other = namespace("two-nodes-other");
+    let (a1, a2, s0, c4) = (token("a1"), token("a2"), token("s0"), token("c4"));
+    let mut forged = a2.clone();
+    forged[300] ^= 0x01;
+    let answer = |r: Result<tonic::Response<RedeemTokenResponse>, tonic::Status>| {
+        outcome(r.map(tonic::Response::into_inner), now)
+    };
+
+    // ok, and an identical retry gets identical bytes
+    let cap = match answer(ca.redeem_token(request(&a1, &ns, &request_id("1"))).await) {
+        Outcome::Ok(c) => c,
+        o => panic!("expected OK, got {o:?}"),
+    };
+    assert_eq!(
+        answer(ca.redeem_token(request(&a1, &ns, &request_id("1"))).await),
+        Outcome::Ok(cap.clone())
+    );
+    // replay to another namespace
+    assert_eq!(
+        answer(
+            ca.redeem_token(request(&a1, &other, &request_id("2")))
+                .await
+        ),
+        Outcome::Replayed
+    );
+    // wrong slot at A; the same token is good at B, the relay of its slot
+    assert_eq!(
+        answer(ca.redeem_token(request(&s0, &ns, &request_id("3"))).await),
+        Outcome::Denied(Code::PermissionDenied)
+    );
+    assert!(matches!(
+        answer(cb.redeem_token(request(&s0, &ns, &request_id("3"))).await),
+        Outcome::Ok(_)
+    ));
+    // wrong week, and a forged authenticator
+    assert_eq!(
+        answer(ca.redeem_token(request(&c4, &ns, &request_id("4"))).await),
+        Outcome::WrongPeriod
+    );
+    assert_eq!(
+        answer(
+            ca.redeem_token(request(&forged, &ns, &request_id("5")))
+                .await
+        ),
+        Outcome::Denied(Code::PermissionDenied)
+    );
+
+    // The minted capability writes and reads at A, and is worthless at B.
+    let blob = vec![0x77u8; 1024];
+    let redeemed = Some(Capability { token: cap.clone() });
+    let stored = ca
+        .store_blob(store_req(ns, &blob, redeemed.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(stored.success);
+    let fetched = ca
+        .get_blob(GetBlobRequest {
+            version: 1,
+            blob_hash: sha256(&blob).to_vec(),
+            capability: redeemed.clone(),
+            request_id: vec![6; 16],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(fetched.data, blob);
+    assert_eq!(
+        cb.store_blob(store_req(ns, &blob, redeemed))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied
+    );
+
+    // T1: both captures hold only allowed observables; A's shows every redeem result it produced,
+    // the capability's scope hash and the nullifier, and never a token, an authenticator or the
+    // capability itself.
+    let schema = ghost_capture_check::Schema::parse(include_str!(
+        "../../../../test-harness/privacy/allowed-observables.json"
+    ))
+    .unwrap();
+    for node in [&a, &b] {
+        let capture = std::fs::read_to_string(&node.capture_path).unwrap();
+        let violations = schema.check_capture(&capture);
+        assert!(violations.is_empty(), "capture violations: {violations:#?}");
+        for secret in [&a1, &a2, &s0, &c4, &forged] {
+            assert!(
+                !capture.contains(&hex::encode(secret)),
+                "token in the capture"
+            );
+            assert!(
+                !capture.contains(&hex::encode(&secret[98..])),
+                "authenticator in the capture"
+            );
+        }
+        assert!(
+            !capture.contains(&hex::encode(&cap)),
+            "capability in the capture"
+        );
+    }
+    let capture_a = std::fs::read_to_string(&a.capture_path).unwrap();
+    assert!(capture_a.contains(&hex::encode(sha256(&cap))), "scope hash");
+    let results: Vec<String> = common::capture_results(&a.capture_path)
+        .into_iter()
+        .filter(|r| r != "ok")
+        .collect();
+    assert_eq!(
+        results,
+        [
+            "rejected_nullifier",
+            "rejected_token",
+            "rejected_period",
+            "rejected_token"
+        ]
+    );
+    let redeem_events = capture_a
+        .lines()
+        .filter(|l| l.contains("\"op\":\"redeem\""))
+        .count();
+    assert_eq!(redeem_events, 6);
+}
+
+#[tokio::test]
+async fn redeem_is_unimplemented_without_a_schedule() {
+    let n = start_node(false).await;
+    let mut c = client(&n.addr).await;
+    let err = c
+        .redeem_token(request(&token("a1"), &namespace("x"), &request_id("x")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::Unimplemented);
+    assert_eq!(
+        common::capture_results(&n.capture_path),
+        ["rejected_capability"]
+    );
 }
 
 #[tokio::test]

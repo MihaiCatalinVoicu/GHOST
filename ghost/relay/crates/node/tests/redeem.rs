@@ -1,0 +1,730 @@
+//! Relay redemption negatives (Phase 8 design §13.1 relay column, §13.2 relay crash safety) and
+//! the relay mutants of §13.5 this slice hosts (MM13, MM14, MM18). The conformance cases of
+//! `redeem.txt` (window edges, wrong kind, slot and week, revocation, store reset) run in
+//! `redeem_vectors.rs`; this file adds what a line-oriented script cannot express: crashes and
+//! restarts, concurrency, all 354 flipped bytes, forged authenticators around n, the start-up
+//! checks against remembered schedules, and the global token bucket.
+
+mod common;
+
+use common::*;
+use ghost_entitlement::grid::Kind as TokenKind;
+use ghost_entitlement::schedule::ScheduleError;
+use ghost_relay_api::capability_header;
+use ghost_relay_api::proto::StoreBlobRequest;
+use ghost_relay_capability::{Kind, RelayKey};
+use ghost_relay_node::redeem::{capability_expiry, NULLIFIERS_FILE};
+use ghost_relay_node::{NullifierMode, RedeemRate, Relay, StartError};
+use ghost_relay_storage::StoreError;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tonic::Code;
+
+/// Tuesday 00:00 UTC of week 2959: tokens of 2959 are accepted, 2958 and 2960 are not.
+fn tuesday() -> u64 {
+    at("2959+86400")
+}
+
+struct TestRelay {
+    dir: tempfile::TempDir,
+    key: RelayKey,
+    clock: VirtualClock,
+    relay: Option<Arc<Relay>>,
+}
+
+impl TestRelay {
+    /// A slot-1 relay (relay-b) with a fresh data directory at `now`.
+    fn new(now: u64) -> Self {
+        let mut r = TestRelay {
+            dir: tempfile::tempdir().unwrap(),
+            key: RelayKey::from_bytes([0x42; 32]),
+            clock: VirtualClock::new(now),
+            relay: None,
+        };
+        r.relay = Some(r.open(NullifierMode::Create).unwrap());
+        r
+    }
+
+    fn data_dir(&self) -> PathBuf {
+        self.dir.path().join("data")
+    }
+
+    fn open(&self, mode: NullifierMode) -> Result<Arc<Relay>, Box<dyn std::error::Error>> {
+        open_relay(
+            &self.data_dir(),
+            &self.key,
+            Some(policy(test_schedule(), 1, RELAY_B, mode)),
+            &self.clock,
+            None,
+        )
+    }
+
+    fn relay(&self) -> &Relay {
+        self.relay.as_deref().unwrap()
+    }
+
+    /// Drops every in-memory object and reopens the same files (a crash, then a restart).
+    fn restart(&mut self) {
+        drop(self.relay.take());
+        self.relay = Some(self.open(NullifierMode::Existing).unwrap());
+    }
+
+    fn redeem(&self, token: &[u8], ns: &str, req: &str) -> Outcome {
+        let now = self.clock.get();
+        redeem(self.relay(), token, &namespace(ns), &request_id(req), now)
+    }
+
+    fn rows(&self) -> u64 {
+        self.relay().nullifier_store().unwrap().count().unwrap()
+    }
+}
+
+fn capability(o: Outcome) -> Vec<u8> {
+    match o {
+        Outcome::Ok(cap) => cap,
+        other => panic!("expected OK, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_crash_after_the_commit_gets_the_identical_capability_after_restart() {
+    let mut r = TestRelay::new(tuesday());
+    let a1 = token("a1");
+    // The relay commits the nullifier and mints; the response is lost with the process.
+    let lost = capability(r.redeem(&a1, "alpha", "r1"));
+    r.restart();
+    // The identical retry after the restart gets the identical capability (MS-8)...
+    assert_eq!(capability(r.redeem(&a1, "alpha", "r1")), lost);
+    // ... any other reuse stays REPLAYED, also after another restart (MS-3).
+    assert_eq!(r.redeem(&a1, "beta", "r2"), Outcome::Replayed);
+    r.restart();
+    assert_eq!(r.redeem(&a1, "beta", "r2"), Outcome::Replayed);
+    assert_eq!(capability(r.redeem(&a1, "alpha", "r1")), lost);
+    // A crash before the commit left nothing: the first try after the restart mints normally.
+    let a2 = token("a2");
+    let first = capability(r.redeem(&a2, "alpha", "r3"));
+    assert_ne!(
+        first, lost,
+        "each token has its own serial and quota ledger"
+    );
+    assert_eq!(r.rows(), 2);
+
+    // The capability is a v2 write capability for the namespace, week-aligned, and it works.
+    assert_eq!(first.len(), 98);
+    let header = capability_header(&first).unwrap();
+    assert_eq!(header.kind, Kind::Write);
+    assert_eq!(header.namespace, namespace("alpha"));
+    assert_eq!(header.quota_bytes, 268_435_456);
+    assert_eq!(header.expiry_unix, capability_expiry(2959));
+    assert_eq!(header.expiry_unix, at("2960+3600"));
+    let data = vec![0x5Au8; 1024];
+    let store = |cap: &[u8], now: u64| {
+        r.relay().store_at(
+            StoreBlobRequest {
+                version: 1,
+                blob_hash: ghost_relay_storage::sha256(&data).to_vec(),
+                data: data.clone(),
+                capability: Some(ghost_relay_api::proto::Capability {
+                    token: cap.to_vec(),
+                }),
+                ttl_seconds: 86_400,
+                request_id: vec![1; 16],
+                namespace_id: namespace("alpha").to_vec(),
+            },
+            now,
+        )
+    };
+    assert!(store(&first, tuesday()).is_ok());
+    assert_eq!(
+        store(&first, at("2960+3600")).unwrap_err().code(),
+        Code::PermissionDenied,
+        "expired at the end of the week plus one hour"
+    );
+}
+
+#[test]
+fn concurrent_duplicates_leave_exactly_one_row() {
+    let r = TestRelay::new(tuesday());
+    let relay = Arc::clone(r.relay.as_ref().unwrap());
+    let now = tuesday();
+    let a1 = token("a1");
+    // Eight identical requests and eight replays for other namespaces, all at once.
+    let handles: Vec<_> = (0..16)
+        .map(|i| {
+            let relay = Arc::clone(&relay);
+            let a1 = a1.clone();
+            std::thread::spawn(move || {
+                let ns = if i % 2 == 0 {
+                    "alpha".to_string()
+                } else {
+                    format!("other-{i}")
+                };
+                redeem(&relay, &a1, &namespace(&ns), &request_id("c"), now)
+            })
+        })
+        .collect();
+    let outcomes: Vec<Outcome> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let caps: std::collections::BTreeSet<Vec<u8>> = outcomes
+        .iter()
+        .filter_map(|o| match o {
+            Outcome::Ok(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect();
+    // Exactly one binding won. If "alpha" won, its 8 requests got one capability and the 8
+    // others were replays; if another namespace won, only that one got a capability.
+    assert_eq!(caps.len(), 1, "{outcomes:?}");
+    let oks = outcomes
+        .iter()
+        .filter(|o| matches!(o, Outcome::Ok(_)))
+        .count();
+    let replays = outcomes.iter().filter(|o| **o == Outcome::Replayed).count();
+    assert_eq!(oks + replays, 16);
+    assert!(oks == 8 || oks == 1, "{outcomes:?}");
+    assert_eq!(r.rows(), 1);
+}
+
+#[test]
+fn every_flipped_byte_is_refused_before_any_write() {
+    let r = TestRelay::new(tuesday());
+    let a1 = token("a1");
+    for i in 0..a1.len() {
+        let mut t = a1.clone();
+        t[i] ^= 0x01;
+        assert_eq!(
+            r.redeem(&t, "alpha", "f"),
+            Outcome::Denied(Code::PermissionDenied),
+            "byte {i}"
+        );
+    }
+    assert_eq!(r.rows(), 0);
+    // The genuine token still redeems: nothing was bound by the forgeries.
+    assert!(matches!(r.redeem(&a1, "alpha", "f"), Outcome::Ok(_)));
+}
+
+/// `x - 1` and `x + 1` of a big-endian number (no overflow at the values used here).
+fn add(bytes: &[u8], delta: i8) -> Vec<u8> {
+    let mut out = bytes.to_vec();
+    for b in out.iter_mut().rev() {
+        let (v, carry) = if delta > 0 {
+            b.overflowing_add(1)
+        } else {
+            b.overflowing_sub(1)
+        };
+        *b = v;
+        if !carry {
+            break;
+        }
+    }
+    out
+}
+
+#[test]
+fn forged_authenticators_are_refused() {
+    let r = TestRelay::new(tuesday());
+    let a1 = token("a1");
+    let schedule = test_schedule();
+    let n = schedule
+        .key(TokenKind::Access, 2959)
+        .unwrap()
+        .public_key
+        .n_bytes()
+        .to_vec();
+    assert_eq!(n.len(), 256);
+    let mut one = vec![0u8; 256];
+    one[255] = 1;
+    let authenticators = [
+        vec![0u8; 256],
+        one,
+        add(&n, -1),
+        n.clone(),
+        add(&n, 1),
+        vec![0xFF; 256],
+        (0..=255u8).collect(),
+        a1[98..].iter().rev().copied().collect(),
+    ];
+    for (i, auth) in authenticators.iter().enumerate() {
+        let forged = [&a1[..98], auth.as_slice()].concat();
+        assert_eq!(
+            r.redeem(&forged, "alpha", "g"),
+            Outcome::Denied(Code::PermissionDenied),
+            "authenticator {i}"
+        );
+    }
+    assert_eq!(r.rows(), 0);
+}
+
+#[test]
+fn versions_and_lengths_are_refused_before_the_token_is_read() {
+    let r = TestRelay::new(tuesday());
+    let a1 = token("a1");
+    let ns = namespace("alpha");
+    let req = request_id("s");
+    let mut bad = Vec::new();
+    for version in [0, 2] {
+        let mut q = request(&a1, &ns, &req);
+        q.version = version;
+        bad.push(q);
+    }
+    for len in [0usize, 353, 355] {
+        let mut t = a1.clone();
+        t.resize(len, 0);
+        bad.push(request(&t, &ns, &req));
+    }
+    for len in [0usize, 31, 33] {
+        let mut q = request(&a1, &ns, &req);
+        q.namespace_id.resize(len, 0);
+        bad.push(q);
+    }
+    for len in [0usize, 15, 17] {
+        let mut q = request(&a1, &ns, &req);
+        q.request_id.resize(len, 0);
+        bad.push(q);
+    }
+    for q in bad {
+        let now = r.clock.get();
+        assert_eq!(
+            outcome(r.relay().redeem_at(q, now), now),
+            Outcome::Denied(Code::InvalidArgument)
+        );
+    }
+    assert_eq!(r.rows(), 0);
+}
+
+#[test]
+fn the_global_token_bucket_limits_redemptions() {
+    let dir = tempfile::tempdir().unwrap();
+    let clock = VirtualClock::new(tuesday());
+    let mut p = policy(test_schedule(), 1, RELAY_B, NullifierMode::Create);
+    p.rate = RedeemRate {
+        per_second: 1,
+        burst: 3,
+    };
+    let capture = dir.path().join("capture.ndjson");
+    let relay = open_relay(
+        &dir.path().join("data"),
+        &RelayKey::generate(),
+        Some(p),
+        &clock,
+        Some(&capture),
+    )
+    .unwrap();
+    let now = tuesday();
+    let short = vec![0u8; 10];
+    // The bucket is checked before the sizes: three malformed requests spend the burst.
+    for _ in 0..3 {
+        assert_eq!(
+            redeem(&relay, &short, &namespace("a"), &request_id("b"), now),
+            Outcome::Denied(Code::InvalidArgument)
+        );
+    }
+    assert_eq!(
+        redeem(&relay, &token("a1"), &namespace("a"), &request_id("b"), now),
+        Outcome::Denied(Code::ResourceExhausted)
+    );
+    // One second later one more request is admitted.
+    assert!(matches!(
+        redeem(
+            &relay,
+            &token("a1"),
+            &namespace("a"),
+            &request_id("b"),
+            now + 1
+        ),
+        Outcome::Ok(_)
+    ));
+    assert_eq!(
+        redeem(
+            &relay,
+            &token("a2"),
+            &namespace("a"),
+            &request_id("b"),
+            now + 1
+        ),
+        Outcome::Denied(Code::ResourceExhausted)
+    );
+    assert_eq!(
+        capture_results(&capture),
+        [
+            "rejected_size",
+            "rejected_size",
+            "rejected_size",
+            "rejected_capability",
+            "ok",
+            "rejected_capability"
+        ]
+    );
+}
+
+fn start_error(e: Box<dyn std::error::Error>) -> StartError {
+    match e.downcast::<StartError>() {
+        Ok(e) => *e,
+        Err(e) => panic!("not a start refusal: {e}"),
+    }
+}
+
+#[test]
+fn the_relay_refuses_to_start_on_its_onion_its_slot_and_its_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let clock = VirtualClock::new(tuesday());
+    let key = RelayKey::generate();
+    let open = |slot: u8, label: &str, mode: NullifierMode, clock: &VirtualClock| {
+        open_relay(
+            &data,
+            &key,
+            Some(policy(test_schedule(), slot, label, mode)),
+            clock,
+            None,
+        )
+    };
+    // An onion the schedule does not list, a slot another relay holds, a slot that does not exist.
+    for (slot, label) in [
+        (1, "ghost/test/relay-z"),
+        (1, RELAY_A),
+        (0, RELAY_B),
+        (5, RELAY_B),
+    ] {
+        let e = start_error(
+            open(slot, label, NullifierMode::Create, &clock)
+                .err()
+                .unwrap(),
+        );
+        assert!(
+            matches!(e, StartError::OnionNotListed),
+            "{slot} {label}: {e}"
+        );
+    }
+    // Before the slot's first week, and relay-c in the week slot 2 moved to relay-d.
+    let early = VirtualClock::new(at("2957-1"));
+    assert!(matches!(
+        start_error(
+            open(1, RELAY_B, NullifierMode::Create, &early)
+                .err()
+                .unwrap()
+        ),
+        StartError::OnionNotListed
+    ));
+    let moved = VirtualClock::new(at("2967+0"));
+    assert!(matches!(
+        start_error(
+            open(2, "ghost/test/relay-c", NullifierMode::Create, &moved)
+                .err()
+                .unwrap()
+        ),
+        StartError::OnionNotListed
+    ));
+    // No refusal wrote anything: the store of this data directory was never created.
+    assert!(!data.join(NULLIFIERS_FILE).exists());
+    assert!(matches!(
+        EntitlementPolicyCheck::slot(32),
+        Err(StartError::Slot)
+    ));
+    // A data directory that redeemed before and lost its store refuses to start (runbook O1).
+    assert!(matches!(
+        start_error(
+            open(1, RELAY_B, NullifierMode::Existing, &clock)
+                .err()
+                .unwrap()
+        ),
+        StartError::NullifierStore(StoreError::Missing)
+    ));
+    // Created once, it opens as existing; the Phase 8 upgrade (create) over it keeps its rows.
+    let relay = open(1, RELAY_B, NullifierMode::Create, &clock).unwrap();
+    assert!(matches!(
+        redeem(
+            &relay,
+            &token("a1"),
+            &namespace("a"),
+            &request_id("x"),
+            tuesday()
+        ),
+        Outcome::Ok(_)
+    ));
+    drop(relay);
+    for mode in [NullifierMode::Existing, NullifierMode::Create] {
+        let relay = open(1, RELAY_B, mode, &clock).unwrap();
+        assert_eq!(
+            redeem(
+                &relay,
+                &token("a1"),
+                &namespace("b"),
+                &request_id("x"),
+                tuesday()
+            ),
+            Outcome::Replayed
+        );
+    }
+    // A reset over an existing store keeps its rows and refuses the open weeks.
+    let relay = open(1, RELAY_B, NullifierMode::Reset, &clock).unwrap();
+    assert_eq!(relay.nullifier_store().unwrap().count().unwrap(), 1);
+    assert_eq!(
+        redeem(
+            &relay,
+            &token("a2"),
+            &namespace("a"),
+            &request_id("x"),
+            tuesday()
+        ),
+        Outcome::Denied(Code::Unavailable)
+    );
+}
+
+/// `EntitlementPolicy::new` with a given slot (the slot rule of the policy constructor).
+struct EntitlementPolicyCheck;
+
+impl EntitlementPolicyCheck {
+    fn slot(slot: u8) -> Result<(), StartError> {
+        ghost_relay_node::EntitlementPolicy::new(test_schedule(), slot, onion(RELAY_B)).map(|_| ())
+    }
+}
+
+#[test]
+fn a_schedule_must_be_append_only_against_the_relays_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let clock = VirtualClock::new(tuesday());
+    let key = RelayKey::generate();
+    let open = |schedule, mode| {
+        open_relay(
+            &data,
+            &key,
+            Some(policy(schedule, 1, RELAY_B, mode)),
+            &clock,
+            None,
+        )
+    };
+    let refused = |schedule| start_error(open(schedule, NullifierMode::Existing).err().unwrap());
+    // seq 2 revokes a future week: accepted, and remembered with the keys.
+    let seq2 = schedule_variant(2, &[(TokenKind::Access, 2970)]);
+    drop(open(seq2, NullifierMode::Create).unwrap());
+    // Rolling back to seq 1 is refused, and seq 1 would also drop the remembered revocation.
+    assert!(matches!(
+        refused(test_schedule()),
+        StartError::Schedule(ScheduleError::Rollback)
+    ));
+    // A later seq that drops the revocation is refused.
+    assert!(matches!(
+        refused(schedule_variant(3, &[])),
+        StartError::Schedule(ScheduleError::RevocationDropped)
+    ));
+    // A later seq that moves a key to another week (two access keys swapped) is refused.
+    let mut content = test_schedule().content().clone();
+    content.seq = 3;
+    content.revoked = vec![(TokenKind::Access, 2970)];
+    let i = content
+        .keys
+        .iter()
+        .position(|k| k.kind == TokenKind::Access && k.epoch == 2958)
+        .unwrap();
+    let j = content
+        .keys
+        .iter()
+        .position(|k| k.kind == TokenKind::Access && k.epoch == 2959)
+        .unwrap();
+    let (spki_i, proof_i) = (content.keys[i].spki.clone(), content.keys[i].proof);
+    content.keys[i].spki = content.keys[j].spki.clone();
+    content.keys[i].proof = content.keys[j].proof;
+    content.keys[j].spki = spki_i;
+    content.keys[j].proof = proof_i;
+    assert!(matches!(
+        refused(resign(&content)),
+        StartError::Schedule(ScheduleError::KeyChanged)
+    ));
+    // A valid successor (seq 3, one more revocation) is accepted and enforced.
+    let seq3 = schedule_variant(3, &[(TokenKind::Access, 2970), (TokenKind::Access, 2959)]);
+    let relay = open(seq3, NullifierMode::Existing).unwrap();
+    assert_eq!(
+        redeem(
+            &relay,
+            &token("a1"),
+            &namespace("a"),
+            &request_id("x"),
+            tuesday()
+        ),
+        Outcome::Denied(Code::PermissionDenied)
+    );
+    drop(relay);
+    // ... and the revocation it added is now remembered too.
+    assert!(matches!(
+        refused(schedule_variant(4, &[(TokenKind::Access, 2970)])),
+        StartError::Schedule(ScheduleError::RevocationDropped)
+    ));
+}
+
+// --- Relay mutants (design §13.5; implemented only here). Each detector returns an error when
+// the relay under test breaks the property; it passes on the real relay and fails on its mutant.
+
+/// A relay the detectors drive: the real one, or a mutant built around it.
+trait UnderTest {
+    fn inner(&mut self) -> &mut TestRelay;
+    fn redeem(&mut self, token: &[u8], ns: &str, req: &str) -> Outcome {
+        self.inner().redeem(token, ns, req)
+    }
+    fn restart(&mut self) {
+        self.inner().restart();
+    }
+    fn sweep(&mut self) {
+        let r = self.inner();
+        r.relay().sweep(r.clock.get()).unwrap();
+    }
+    fn set_clock(&mut self, t: u64) {
+        self.inner().clock.set(t);
+    }
+}
+
+struct Real(TestRelay);
+
+impl UnderTest for Real {
+    fn inner(&mut self) -> &mut TestRelay {
+        &mut self.0
+    }
+}
+
+/// MM13 `NullifierMemoryOnly`: the nullifiers are not persisted, so a restart starts empty.
+struct NullifierMemoryOnly(TestRelay);
+
+impl UnderTest for NullifierMemoryOnly {
+    fn inner(&mut self) -> &mut TestRelay {
+        &mut self.0
+    }
+    fn restart(&mut self) {
+        let r = &mut self.0;
+        drop(r.relay.take());
+        std::fs::remove_file(r.data_dir().join(NULLIFIERS_FILE)).unwrap();
+        r.relay = Some(r.open(NullifierMode::Create).unwrap());
+    }
+}
+
+/// MM14 `RandomMint`: the capability serial is random (a valid capability, re-MACed).
+struct RandomMint(TestRelay);
+
+impl UnderTest for RandomMint {
+    fn inner(&mut self) -> &mut TestRelay {
+        &mut self.0
+    }
+    fn redeem(&mut self, token: &[u8], ns: &str, req: &str) -> Outcome {
+        match self.0.redeem(token, ns, req) {
+            Outcome::Ok(cap) => {
+                let header = capability_header(&cap).unwrap();
+                Outcome::Ok(self.0.key.mint_v2(&header, &rand::random::<[u8; 16]>()))
+            }
+            other => other,
+        }
+    }
+}
+
+/// MM18 `ClosedPeriodReopened`: no persisted high-water, so a restart forgets the closed periods.
+struct ClosedPeriodReopened(TestRelay);
+
+impl UnderTest for ClosedPeriodReopened {
+    fn inner(&mut self) -> &mut TestRelay {
+        &mut self.0
+    }
+    fn restart(&mut self) {
+        let r = &mut self.0;
+        drop(r.relay.take());
+        let db = redb::Database::create(r.data_dir().join(NULLIFIERS_FILE)).unwrap();
+        let txn = db.begin_write().unwrap();
+        {
+            let mut meta = txn
+                .open_table(redb::TableDefinition::<&str, u64>::new("meta"))
+                .unwrap();
+            meta.remove("closed_through_period").unwrap();
+            meta.remove("sweep_high_water_minute").unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+        r.relay = Some(r.open(NullifierMode::Existing).unwrap());
+    }
+}
+
+/// MS-3 across a restart: a token redeemed before the restart is REPLAYED for another namespace.
+fn detects_replay_after_restart(r: &mut dyn UnderTest) -> Result<(), String> {
+    let a1 = token("a1");
+    r.redeem(&a1, "alpha", "1");
+    r.restart();
+    match r.redeem(&a1, "beta", "2") {
+        Outcome::Replayed => Ok(()),
+        other => Err(format!("replay after restart answered {other:?}")),
+    }
+}
+
+/// MS-8: an identical retry after a restart receives identical bytes.
+fn detects_changed_bytes_after_restart(r: &mut dyn UnderTest) -> Result<(), String> {
+    let a1 = token("a1");
+    let before = r.redeem(&a1, "alpha", "1");
+    r.restart();
+    let after = r.redeem(&a1, "alpha", "1");
+    if matches!(before, Outcome::Ok(_)) && before == after {
+        Ok(())
+    } else {
+        Err(format!("identical retry: {before:?} then {after:?}"))
+    }
+}
+
+/// §19.10: a swept period stays closed when the clock steps back, across a restart.
+fn detects_reopened_period(r: &mut dyn UnderTest) -> Result<(), String> {
+    let a1 = token("a1");
+    r.set_clock(tuesday());
+    r.redeem(&a1, "alpha", "1");
+    r.set_clock(at("2960+3600"));
+    r.sweep();
+    r.restart();
+    r.set_clock(at("2960-60"));
+    match r.redeem(&a1, "beta", "2") {
+        Outcome::WrongPeriod => Ok(()),
+        other => Err(format!("a closed period answered {other:?}")),
+    }
+}
+
+type Detector = fn(&mut dyn UnderTest) -> Result<(), String>;
+
+fn detected(name: &str, detector: Detector, mutant: &mut dyn UnderTest) {
+    assert_eq!(
+        detector(&mut Real(TestRelay::new(tuesday()))),
+        Ok(()),
+        "{name}: the real relay"
+    );
+    let verdict = detector(mutant);
+    assert!(verdict.is_err(), "{name} was not detected");
+}
+
+#[test]
+fn mm13_nullifier_memory_only_is_detected() {
+    detected(
+        "MM13 NullifierMemoryOnly",
+        detects_replay_after_restart,
+        &mut NullifierMemoryOnly(TestRelay::new(tuesday())),
+    );
+}
+
+#[test]
+fn mm14_random_mint_is_detected() {
+    detected(
+        "MM14 RandomMint",
+        detects_changed_bytes_after_restart,
+        &mut RandomMint(TestRelay::new(tuesday())),
+    );
+}
+
+#[test]
+fn mm18_closed_period_reopened_is_detected() {
+    detected(
+        "MM18 ClosedPeriodReopened",
+        detects_reopened_period,
+        &mut ClosedPeriodReopened(TestRelay::new(tuesday())),
+    );
+}
+
+#[test]
+fn the_real_relay_passes_every_detector() {
+    let detectors: [Detector; 3] = [
+        detects_replay_after_restart,
+        detects_changed_bytes_after_restart,
+        detects_reopened_period,
+    ];
+    for d in detectors {
+        assert_eq!(d(&mut Real(TestRelay::new(tuesday()))), Ok(()));
+    }
+}

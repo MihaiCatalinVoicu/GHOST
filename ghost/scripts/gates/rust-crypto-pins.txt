@@ -17,9 +17,10 @@ lock ring 0.17.14
 graph ghost-client-net aarch64-linux-android,x86_64-linux-android rsa 0.9.10 required
 graph ghost-client-net aarch64-linux-android,x86_64-linux-android num-bigint-dig 0.8.6 required
 graph ghost-client-net aarch64-linux-android,x86_64-linux-android ring 0.17.14 required
-# Relay node: token verification arrives with redemption (slice S3), which makes these required.
-graph ghost-relay-node all num-bigint-dig 0.8.6 optional
-graph ghost-relay-node all ring 0.17.14 optional
+# Relay node: token redemption (slice S3) verifies authenticators with ring through
+# ghost-entitlement / ghost-blind-rsa (num-bigint-dig for the key checks).
+graph ghost-relay-node all num-bigint-dig 0.8.6 required
+graph ghost-relay-node all ring 0.17.14 required
 # Issuer: the reference signer on the pre-release rsa and crypto-bigint 0.7.5.
 graph ghost-issuer all rsa 0.10.0-rc.18 required
 graph ghost-issuer all crypto-bigint 0.7.5 required

@@ -1,0 +1,224 @@
+# Relay redemption conformance vectors (Phase 8 design §10.8, §13.1). One script for two replayers:
+#   - relay/crates/node/tests/redeem_vectors.rs replays it against the real relay through
+#     Relay::redeem_at(request, now), Relay::sweep(now) and reopening the same data directory;
+#   - the Kotlin ModelRedeemRelay of the entitlement harness (slice S9) will replay it against the
+#     model.
+# relay_semantics.txt and its two replayers stay unchanged (RC G19). A behaviour that is not pinned
+# here is not something the model may rely on.
+#
+# GRAMMAR
+# - One operation per line. '#' starts a comment (to the end of the line). Blank lines are ignored.
+# - Words are separated by spaces. The first word is the operation. Arguments are key=value words
+#   (except the first argument of token and capability, which is a name).
+# - "-> <expectation>" ends a line that has an outcome.
+# - Names are symbols: [A-Za-z0-9_]+.
+#
+# Schedule
+#   Every section uses the committed test Entitlement Schedule
+#   (issuer/crates/entitlement/tests/fixtures/test_schedule.ghes, verified under the test schedule
+#   key, the Ed25519 key from SHA-256("ghost/test/schedule-key")): issuer name ghost-issuer-test,
+#   early_window_hours 24, capability_quota_bytes 268435456, access weeks 2957..2982, invite epochs
+#   739..745, credit epochs 227..229. Slot table: slot 0 = onion ghost/test/relay-a and slot 1 =
+#   ghost/test/relay-b from week 2957; slot 2 = ghost/test/relay-c in weeks 2957..2966 and
+#   ghost/test/relay-d from week 2967. An onion label L names the service key SHA-256(L).
+#
+# Time
+#   <time> is <week>+<s> or <week>-<s>: start(week) + s or - s seconds, where
+#   start(p) = 345600 + 604800 p (Monday 00:00 UTC). A week's tokens are accepted in
+#   [start(p) - 24 h, start(p + 1) + 1 h). "at <time>" sets the clock. Unlike relay_semantics.txt
+#   the clock MAY move back: a stepped-back clock is one of the cases.
+#
+# Sections
+#   relay slot=<n> onion=<label> start=<time> [key=<hex32>] [nullifiers=create|reset|existing]
+#         [revoke=<week>,<week>...] [schedule=none] [-> refused]
+#     starts a relay with a fresh data directory, the clock at <time>, relay key <hex32> (default
+#     32 bytes 0x42) and redemption for slot n under the onion's service key. nullifiers= says how
+#     the store opens (default create: a fresh directory). revoke= re-signs the schedule as seq 2
+#     with those ACCESS weeks revoked. schedule=none disables redemption (slot and onion ignored).
+#     "-> refused": the relay refuses to start (design §10.5); the section then has no relay.
+#     Capabilities are forgotten; tokens are global to the file.
+#   restart [nullifiers=existing|reset]
+#     drops the relay and reopens the same data directory with the same key and schedule at the
+#     current clock (default existing).
+#
+# Values
+#   namespace <N>  SHA-256 of the ASCII name (no declaration).
+#   request <R>    the first 16 bytes of SHA-256("ghost/test/request/" || R) (no declaration).
+#   token <T> kind=access|invite|credit epoch=<e> [slot=<s>] signer=<kind>:<epoch>|spki:<hex> hex=<hex>
+#     a pinned 354-byte token over the challenge of (kind, epoch, slot) under the test issuer name,
+#     with nonce SHA-256("ghost/test/redeem-nonce/" || T) and PSS salt
+#     SHA-384("ghost/test/redeem-salt/" || T), signed by the named key of the test schedule or, for
+#     spki, by a key outside the schedule (its SPKI DER; token_key_id = SHA-256 of it).
+#     issuer/crates/service/tests/redeem_tokens.rs re-derives every schedule-signed token.
+#   token <T> from=<T0> xor=<i> [mask=<hh>]   T0 with byte i XORed with mask (default 01).
+#   token <T> from=<T0> len=<n>               T0 cut to n bytes, or extended with zero bytes to n.
+#
+# Operations
+#   redeem token=<T> ns=<N> req=<R> -> <expectation>
+#     The expectation, with the capture result of the one event the replayer also checks:
+#       ok cap=<C>      OK with a capability [ok]. The first ok naming C binds it; later ones must
+#                       return identical bytes. The capability is v2 (98 bytes):
+#                       02 || 02 (write) || N || quota(8, BE) = 268435456 || expiry(8, BE) ||
+#                       serial(16) || mac(32), expiry = start(p + 1) + 3600 for the week p of the
+#                       token's key, serial = HMAC-SHA256(key, "ghost/v1/cap-serial" || p(8, BE) ||
+#                       nullifier)[0..16], mac = HMAC-SHA256(key, bytes 0..66), nullifier =
+#                       SHA-256("ghost/v1/nullifier" || token bytes 0..98).
+#       replayed        OK with REPLAYED [rejected_nullifier]
+#       wrong_period    OK with WRONG_PERIOD [rejected_period]; nothing recorded
+#       rejected_token  PERMISSION_DENIED [rejected_token]
+#       rejected_size   INVALID_ARGUMENT [rejected_size]
+#       unavailable     UNAVAILABLE [rejected_capability]
+#       unimplemented   UNIMPLEMENTED [rejected_capability]
+#     Every OK answer carries relay_period_id = week(now) and relay_minute = floor(now / 60).
+#     The request id is only a T1 field: it is not bound, so a retry with another one is identical.
+#   capability <C> hex=<hex>    C is exactly these bytes (a byte-exact pin).
+#   distinct <C>,<C>,...        the named capabilities are pairwise different.
+#   sweep -> ok closed=<week>|closed=none removed=<n>
+#                               one relay sweep at the current clock: n nullifier rows removed,
+#                               closed = the persisted closed-through period afterwards.
+#   sweep -> skipped            the clock is below the sweep's high-water minute: nothing ran.
+#   nullifiers -> <n>           the store holds n nullifier rows.
+
+# TOKENS
+token a1 kind=access epoch=2959 slot=1 signer=access:2959 hex=00022954881ba56f7dc8b5128d4e8c984b8c5be9f77efcc2ca60a5ae80636ff8486403e3de37eae433b14cd5f6772cbf24745a09367ade5040113008c8b4d0471c3dfacc2b0acfa0217ab77e435f1d6871cacb09635c72d33ac9c291d914799963216c6dea4df537e12c68e2019cb245f632cdcceb4716c70f32f73f42aa0e080041d59c002eb034c1d4a61c839d42e13f5b67468df8929bdde71b5c475cc63e8d4cf871226848116716a888617782a61585fc9504ecdfd3340ad7ac47b8c42e44c67e0876ffbdd89c569935b1348e0f406785943e0f34f5c94925c8a0865c7a86acec28af78afe8b85e9fab931e21fd5daa59854aae1c9276680da8cd1d2840cd97156abd9a55e28de12c50dc070a3401c1eb6a8509d73b44cf3ee2abc5a81ebaecb25ba50695592297f3cb3f3d0441be1aea911f63e5f9c0cf3066484f7b448a442679bdd981a5462dd92fb12e8e805457e528233950702fe0faf6d52828ed4997
+token a2 kind=access epoch=2959 slot=1 signer=access:2959 hex=000233c5894f7c5a3ecbedc18cf869f6c10becf9f665cdb287f0b3ff09640fbf844f03e3de37eae433b14cd5f6772cbf24745a09367ade5040113008c8b4d0471c3dfacc2b0acfa0217ab77e435f1d6871cacb09635c72d33ac9c291d91479996321dea52a49bfaa597132fe17574e4af7ac10ba177eace733b0c00503a57edfcf3a466c1a264d4f27be1c1e992e4aa6a10e8c9e8bb91079453493ee23d4d0502ed0ae944c51349ba47f70335c58f69be9d84c10da393eec676ad3e0b176f59e0bb77b38d9a273430270ae2bcf6d4f62b411f3486a903b88c4555026f8a26a5ac075088330409d0b2cc52aa46117bfb3d311e71256ca2e9d774b1f90f5482d8263e892bdb6df6daf761fd4f5b22bc7bbb8f89e518553d83822b1a1137f31ab924b859920ea5383e8451b7391247722cfa4ab8d315b9f02d5e31e1ca91f94e35f89f46705074dc1872a2d3c42bd0441a6b5f26848d359dd4f85510a159278cceeeec0
+token a3 kind=access epoch=2959 slot=1 signer=access:2959 hex=0002381f8ca4b3efd3c501ca1bd6fbda50ac4ca96d982ae451ee88c9fae070020ccb03e3de37eae433b14cd5f6772cbf24745a09367ade5040113008c8b4d0471c3dfacc2b0acfa0217ab77e435f1d6871cacb09635c72d33ac9c291d9147999632174b1e3337e26f4557460dedd33ebae2eba8941b69f88eb727e95d526a5007a8f4ef5b9082b2908bf6525cd33d274559e8e33fc7f4484366a117643b03d4acf501c382d7a7ff26f1d32420ba0d4b57be283d1ccd8a424e5b0822f997c95d6040a303a054f9bb1a38a6b8e906ea04e0dbbdb47b0b6bec3d96f6c9182ae103c56e65ff4804f01876735c013e747e2a62fce40ba1fc743e901b3f84abce81fe14bec266f06c6c17c209c903e8f96ea33845233b8f596f4f72fbc034b51942c5969c79e2d2e05b494023f548468ba98891d97505a025a453e44aecac67088abf626d21b3ec7de15b85d21dddd290688193c9a4d63da0a518f3f40616e5c64be81b02a
+token b0 kind=access epoch=2958 slot=1 signer=access:2958 hex=0002ad4107512ae19ce18f0b5fa57c1fea15b5944f1e7763eefc7ab6b983b0aea81c0f960ca9211ce352586a0e80895a23d41344ba0d95a076f5db93910b474bfeabfc7cff9f63d86564e75de9e015fe528bdaea36976c3a0688ed18804e4ca921ba60a31d67d97597d5527b4e07e101516eb0ec7dce5e5e12eff884783182c71e3f753f1083f80c3b46c4a09106813102031f501b7450f55a76b8f140b2ee9c765ab92b2ade6f7a09ff82065074189765da62fe53e610961fdeec1090fbcbdb318a1d0d99ccbce48e1314aee1c42e9b601c7ba373dd9dd844074f591001b12d48b9d73870c4737578dbd3e4b45ecb6ea0af6be19a3031d6337e9a1c10ca2b2aee1675ba60f95a8b72bc712fa21f4b7a5981a2491e1a10b7863fb68c03095b8155c878d43b932792999bd3bbdef940b6f1723942b4b81ad25e96e216dd3cbdfd8a7b20ca3937d8cd1d522aa7514e069ae56cd3d1e6da4738b5c7b9b3d99c71f24bdd
+token b1 kind=access epoch=2960 slot=1 signer=access:2960 hex=00023ae451e3be94a48ae3ece687565f7f4de48696f6813e35b6dfa17d65e8666fc6b61ddf97958f779b18e7fa52281ce3e9fb4019146eb3199ff1ccb819e052ef69e846b469a97d1566cab0fa49156e6efc08f365368f7b3e6620d262411a35028a421267d54135533175d3a552e052bd13541ec1a7bb480040cb4a63c6f8cd149524a05af97f5ce1b4b37ff81b8c6e0c673e1ede2bebe6174ad388da21b85b384a9b89c33e81c537cda2c8fb1774e34868c7ee18447db8242807220b863e0274771035097e3dbed80072b9f380172fa145e52ca2db0d23f6a34c639b348704d3ddc31770eea95a959c0eb1c3ea1bd7b40acd01b327e792598deac4d0ad58168c4569773ceed601ac23d0e9c39b70b78bbcad5f2499c4f9e7446b78ee913f8409908e94f0e3c1cd068a4a12a2a4e944ed698233856035d28d5b755a23c70a7e6a8b936d91adc3dea570615a0e44145c3b2f70b7ec0da8dee68294517ce7ac0d0b74
+token c2 kind=access epoch=2957 slot=1 signer=access:2957 hex=0002e438d0765ed1bc4ab938bdbc33392ebc8786ac9eb30aeb0436f33066883286b8ab0d920443665af6775029c87bb22416534da15350a270402a9d63606d185a95f683ef8e7e4c1f6de31569a4bdc37025b09b49d3e022b44951627c8447db30bca1a208cf023af1e121c619784c4754042986cf0262eb0f152d4cf4827f4bb73d893988032de452b55d7c1a451166edb476b4f942f4a98ae9dfa69a0718b3ac7ca98f63eb969f30ba7365e02c23b1eea46e0fc3ed50516634a753fb0fae1e73834d3660dced7fb8f406b504b4f8af475a0ea4dacc0f9849783298163447465d07ec2c746ee799b33b0dd7b17ed34f080f0123fb8ead39bba29ef5ea043d4f1746164150c03d2dd13cf61c743ad7d622f0797bbcfb92a857f53c5ae83188819f0fbb971cbc3c974f9d7e2c83e4610aee5360b9d561f8b696a2201d628d7b696148c586c786e38f1c215826b9295e91b3f92698bc4585bc31bae6c2190a1cf9b855
+token c4 kind=access epoch=2961 slot=1 signer=access:2961 hex=00024255dd5aba30dc50aab3e70451d28715bf1a61b3e86c7c3b91c77313af1a2315f9481944f17a8c2987a0668fd492642ff419d1873c29aced035cee1cfe6caca64fa3d8612ce91d345a6111f4fa8f7ee53947cd1e5ef7ff3167d5b4830af7064c8668b18f519dc58c5cf7697ba7006a7d7ad1c9bdada894c9425f331753e1cc265feb7a132ade3e9504d7a24c2afc8b05330e110f98c634882fa57265a61a80072a7e6945aad6a98a2b07560c7565071c846ec71858aa5ded85409c86ad6fd3ebe1539749a9a5784f66d044c6fda7e6d394568c7062dfa2d5a04d14d4cc96d5fea0325f99f7706fd0ba286437cc528f7f24e415209d8f8d5c9f981dfb27c7bdefaad59b4fc3a0a2fbfc2cf3ce530c5c64f861bb2df763b882f8e9b7820aa53f1e9b0e2d9d5d725354ecb6cced4b40fcd0216ac967168998e76694a70145c48535d649402a5cb053e504d29128cfe10fa6964b97b88e4fcc64743dd233567274f5
+token s0 kind=access epoch=2959 slot=0 signer=access:2959 hex=000281052face96fa75296bd601eb5fc4e062fde2fa86462ebf2db8bcaca7b5da58481b114bc365aef1e588bbc35cf461bfe93b56ad5c1b3aa121784146c559dc349facc2b0acfa0217ab77e435f1d6871cacb09635c72d33ac9c291d91479996321363d7a496de27335ad847382ca69440c50a5d73fc1b36b362d0b3548161fc5a0c1f8be56729e3d7ffa3ff69d648205374c59ee1a4e1a7bbbc109b27b047c7ae4616cf8e1cc1ebed3ca14e9f9c05ea60c8b16779547706e900ed175e88c59ad2eb159a734d7ed571f86aa6ead4241b5522fe92d515bfdb37daea75fc143a911b3f9d3d796de76d16b3d175197bfdaf8a0c9cfbe369e7afd5e4c6c0cb35267f6ea6d56786c9facd5d35975ede777637ad5be67ece903e1caee7ed7a83ba82bea4cb68713ad5b05dc6d7b8a1e5aa6531a1451271f842293567e24c507308f6a15c5a1e06025a8a0ea86baa6c94285ce1e0f8496ec967295b7c8a95bed8d1c511bf0
+token m1 kind=access epoch=2966 slot=2 signer=access:2966 hex=0002ede59fdd5c48193e3503b9cacbad668b6b26931a2075b24064e53150339786a63a9fe325c4f1e5ade278b3b6abb7500f20d70a29a5c709dc86a82c133feb7ab350100c697ca57cb9504d68c4b0331012b42001fa33c953116fb50edf735b927114796cfc5661b469e3f765646c305d9a52642728e15312edd103ccee96631bb54c66b4912bf22a039d95051f5c3db95c83b31315fa14696f6138931680e5ad8c24602fca6a5e9b0afbbd7adae6d416c319d70afbf9822e3cb48329c2d068030e76f9ce286017edd677a916e7f1e88f7820b8336b836a8919988d1f07f7e2a906273d578c7fe9fd6593b63be1e4e876ab49d6b47b452cb67fda490cdb70331c8f7e72f3992e2da891d045e8a29c4f0651a7e0115a7ad48ce163068fbe0663e0c252b9070285cf63710e90a4ab6dfe645cab9c5de07b5f807881ecda3a33a3a1d2ceb5d7065764a44d452b0d479e6afe18a0007e12020994b864e774133064aa20
+token m2 kind=access epoch=2967 slot=2 signer=access:2967 hex=000273f33cbeff54b7ba4f1195d39eca46c3c82979ce888f43faaf40ad69cf2599b870d663a6b8c35e1c84112462655016eef3492dd088af7609bffe5f4f147f9f5541d982593470dd2f91f9cb817b7680194a559bb1de58503c64426501329102e672da8287175a400ef2831267412ddf2451eae2897dafd98bc6b7338acfa784bf45f4e51b10a604f61a68c2696ca5bbb88782aaafbeb2bf0eeecf1e1df44d3d95d20bc86ae49542acf149236448277cf33bad337e66c79c04249ddcf87bb626f3e0106c4754e988398c7a1d30b8daa00f5bd6d562799a67383f5683b75b19aeaaa699366d151cf25ff677b62275c599594b56c9f65485ceeeb82c3cd69665adbdf5822b702be386a0300c222956fbd2010f51634fde8de07825ede6cc8ccc3ef7b034947c52629b010596bef3fd68247e35912ed5a3bfbf48c7f3d0b1cb2b32beb776e5d0c3b7753a0b0680b84b85a6d909d7cfbe1ae5f0c42324d40924c7d087
+token i1 kind=invite epoch=739 signer=invite:739 hex=0002de26309408b13ee244c915c81f74e8ae1565e786235823e4a238c2286e90fc5492f597676444bf4d51b25567d045dab50f7ded388bfdc892cb9b665d0a8b1da4ba96d0d523e174d8f742e14f5dc5692f1e582bfcfc0bbc47fd862a879c4b40261ce7097b7147e124ceda15dea879476a20b01e54087c8f8d183153604da379d20312248e1ac40fba76b986079a85a83b0593c4233db4a3c7b3b21e4bf7a123a02f7d2ba3aa62c666c216043ef1bf96ba8cf29ada7a231a8967d355e455d34c5d8757b2e3b7aa3c4d00b7e8f390effb7a532f328cf99e0bf16512b6aef6ca61525bf48437030785db9d8aa5c33de1bd04c796eaaa7f7955435b2dac35b2daf88ab897a5e4d1789d26bee661b54bd8e803f95247fb7bf16b76cfbfac9d5e49ca1900a74016f16f667035f6a9ce22be3ce8d73d038fb69d3e12f72bcfa4f28cceda6a0f3a12618e35765d411cd8d248b9c6dcc19d394160cf5576a005116b0f4aa2
+token k1 kind=credit epoch=227 signer=credit:227 hex=0002e3302cbda237a89c90f2901334ab4febc232f0e70cedd302761a5474ab02fb0287ec4e2f429f5fe462d0560d6970b8647311c2ef5f674b1cb26072e28b923f8c22e82259d6ef93df17639830cc7a0eb1eab2b28be200e9f568d00e0526a95ff5a175b5e668edbbf7e05ed15b8703bb04245100c1f9948f3763fc4e63be817618ad75a7da320c9f824d17229d0f7a9a514a856ff76d8c7ae49c4977553471fdef28df17d6eb75aa3811e9ab30044ef3ef82c89f497dd8f9868009b4528cceccf19dedd6675e0b81a61eac253d0ccacdb4a540d77d61ee6579efc9a6e9adeac190b27fe2ff74154b6752dc37ec6b411bfc30ec7888f9bad7affc39c63e1391b8caa13b770a954f6d5df04b7de6cb0110602620e120e7c79f87a396821d217bc291a808e29c5149ece377c07ceac4978290f7addcc71256d714a3fe3b7edd6e8484980af171ac6acfb5841da7aaf8139c76eb7c9c700afae2a5a5aad2a5a671f355
+token x1 kind=access epoch=2959 slot=1 signer=invite:739 hex=00023533c745c4b44107cf07c6a010a9d5b2650920a3ec2721f20fff319dd41b326c03e3de37eae433b14cd5f6772cbf24745a09367ade5040113008c8b4d0471c3dba96d0d523e174d8f742e14f5dc5692f1e582bfcfc0bbc47fd862a879c4b40263309d9048f09dedca5be383a757386876a9ea05c91128a79798ffced7e3d9850cbbf85700566c8c461fa8388afb1eb393240cff71eba154c80e50d41805cba0d700a71d6c3d6a06ae64cb58aa76bfd42849b95b9fa5533f144d2f53d7a6c9f308aa436024b6638a8f5ddd3d5153d3519fd4ffc8623c50fb2619c4880b0e5e3b14ab25e7397512e783bb088d3fd1e1cd6a2dad73795eef226534280d61e5c7b97cc16a3a111703124e3af9bee1785f55f04943f109e6bfa9038d122906507889ad4b56bd0f4141bd0dcca0ba8d650e009591bbfeefe74def0628b700323f8b3773b0a6ce694450a46d247b4648f04847894de04b3338da05afbe97e5d64dc810a
+token y1 kind=access epoch=2959 slot=1 signer=access:2960 hex=00020e108489c175ad9f9c73ffc50e33f833ab387ce66948acfe53b792c95bbc20d003e3de37eae433b14cd5f6772cbf24745a09367ade5040113008c8b4d0471c3de846b469a97d1566cab0fa49156e6efc08f365368f7b3e6620d262411a35028a5082c520e87158a7df3477bd82e9a94f7097492356645687b25e9cc7c956920c69cabfe60a752c426aa7e3b8b4db1c8eddada54bd5f053d86b10c564a7f9beec39da416990881db13905b132b8b1cfaa1716e4bd56171b3ecd23186201ec63f28179c63ec46a8e58d981e313f08569f8f7cd6052837cc126d59de42419107e85ea468316deeae2fcf65f20d173efdbdd1af4f84e4e12411853e35c8cc9c21f99c6a44855796e1d378672a4bea054668c3e1c78842907cf8cfa2ca73a3de015d809265e7f2d5363cd10f0cfa69eb39ff89ab637e84b41614c8298d3c1152d43fd481ac076861a1eaa9cf554e1e0ea199fc90a33635b27725b7e1591add8821cdc
+token n1 kind=access epoch=2959 slot=1 signer=spki:30820152303d06092a864886f70d01010a3030a00d300b0609608648016503040202a11a301806092a864886f70d010108300b0609608648016503040202a2030201300382010f003082010a02820101009add9f3dd8fb1831258a5cb8b843213587924d6f323538c10ae372e9c5bed3452bf322b1df66c4ff7f46ea1c170c32897c28aa18a5bd53681d4de0302138bc2eaf4e4865e70d949c661e7d0b0dee4356b37408c304f355ee8c0ddd4961574e6da92725d645e045ee778c0e1c306d7f16304e97703ceedbe384130191b6b4a8430fafffe3b0d47da3e17636fa88530a8452dcedabae22cc1fc2456feefe1be8e057a0b2c8bb2bf4fa23016ca1a988340ea3e48596f58a4e1b1ccfe469641ef882a1128375ab0ae4eeabf760240304b09430236afaa9666c232bb29fd51e33932478fe49a37737dc041f3c32a092ef4dc791de4529d6132aa4759f05727a9307930203010001 hex=0002e3cdf4aa0479a897d747669bddfc3c4775e99b9fa6987bec01d96ed5f7572aaa03e3de37eae433b14cd5f6772cbf24745a09367ade5040113008c8b4d0471c3da7405ee4d09be6f8d4aa5b00a97486dba0937fcfa11fe573b06ec2105f7bc9fd63fdf795a9803e8d5a8b5ae361f31b13f0fd3f229c64b4e87b74890fbbf54f58a68130c43adb2ebab8b4477576f128a62562d40add5de3138fed1fe27d655d862f7fd1a8468f9bb1e62ca45793b6b7d0533a0bb6b994ee45912be0eeacda252e9c2c9fcd9d056f29a0f05069dd31826c0521c0b92ffd7ae569917e6a033239643ee80449fd1fca63ac0cbbeeb21bd1196e3fe7e6aa97870f916a22b2ba0d0e6a9796bd9320aa3463b80935768e5778b828160338bd04fab76ee04aa3df97e6c0f23f0c4c8dffb9c1d164d305c0edf9417ed73d708793fc14a65ba9e1eb10d509225323dfb464dc08adad06a366ad479e02f6660661a09417c94aba1eed76ffff
+
+# Derived tokens: a flipped byte in each of the five fields, token types 0x0003 and 0x0001, and
+# lengths 353 and 355.
+token a1t from=a1 xor=1              # token_type 0x0003
+token a1u from=a1 xor=1 mask=03      # token_type 0x0001
+token a1n from=a1 xor=10             # nonce
+token a1c from=a1 xor=40             # challenge_digest
+token a1k from=a1 xor=70             # token_key_id: no key of the schedule
+token a1a from=a1 xor=200            # authenticator
+token a1s from=a1 len=353
+token a1l from=a1 len=355
+
+# --- The relay of slot 1 in week 2959 (p): reuse, restart, forged, wrong kind, slot and week.
+relay slot=1 onion=ghost/test/relay-b start=2959+86400
+nullifiers -> 0
+redeem token=a1 ns=alpha req=r1 -> ok cap=A1
+redeem token=a1 ns=alpha req=r1 -> ok cap=A1        # identical retry, identical bytes
+redeem token=a1 ns=alpha req=r2 -> ok cap=A1        # the request id is not bound
+redeem token=a1 ns=beta req=r3 -> replayed          # another namespace
+nullifiers -> 1
+redeem token=a2 ns=alpha req=r4 -> ok cap=A2        # a second token, same namespace: its own serial
+distinct A1,A2
+nullifiers -> 2
+restart                                             # identical retries survive a restart (MS-8)
+redeem token=a1 ns=alpha req=r1 -> ok cap=A1
+redeem token=a1 ns=beta req=r5 -> replayed
+redeem token=a2 ns=alpha req=r4 -> ok cap=A2
+nullifiers -> 2
+redeem token=s0 ns=alpha req=r6 -> rejected_token   # a slot-0 token at the slot-1 relay
+redeem token=i1 ns=alpha req=r7 -> rejected_token   # an invite-key token
+redeem token=k1 ns=alpha req=r7 -> rejected_token   # a credit-key token
+redeem token=x1 ns=alpha req=r7 -> rejected_token   # an ACCESS challenge under the INVITE key
+redeem token=n1 ns=alpha req=r7 -> rejected_token   # a correct signature under a non-schedule key
+redeem token=c2 ns=alpha req=r8 -> wrong_period     # week p - 2
+redeem token=c4 ns=alpha req=r8 -> wrong_period     # week p + 2
+redeem token=y1 ns=alpha req=r8 -> wrong_period     # the key's week (2960) is not open yet
+redeem token=a1t ns=alpha req=r9 -> rejected_token
+redeem token=a1u ns=alpha req=r9 -> rejected_token
+redeem token=a1n ns=alpha req=r9 -> rejected_token
+redeem token=a1c ns=alpha req=r9 -> rejected_token
+redeem token=a1k ns=alpha req=r9 -> rejected_token
+redeem token=a1a ns=alpha req=r9 -> rejected_token
+redeem token=a1s ns=alpha req=r9 -> rejected_size
+redeem token=a1l ns=alpha req=r9 -> rejected_size
+nullifiers -> 2                                     # no rejected token recorded anything
+# The early edge of week p + 1 (2960).
+at 2960-86401
+redeem token=b1 ns=alpha req=e1 -> wrong_period
+at 2960-86400
+redeem token=b1 ns=alpha req=e2 -> ok cap=B1
+at 2960-3600
+redeem token=y1 ns=alpha req=e3 -> rejected_token   # 2960 is open now: the challenge names 2959
+# The late edge of week p and the sweep boundary.
+at 2960+3599
+sweep -> ok closed=2958 removed=0
+redeem token=a3 ns=gamma req=e4 -> ok cap=A3
+distinct A1,A2,A3,B1
+nullifiers -> 4
+at 2960+3600
+redeem token=a1 ns=alpha req=r1 -> wrong_period     # the window of p closed, before any sweep
+sweep -> ok closed=2959 removed=3
+nullifiers -> 1
+# The clock steps back into the window of p: the closed period stays refused, no sweep runs.
+at 2960-60
+sweep -> skipped
+redeem token=a1 ns=beta req=e5 -> wrong_period      # a replay after its row was deleted
+redeem token=a2 ns=alpha req=r4 -> wrong_period
+redeem token=b1 ns=alpha req=e2 -> ok cap=B1        # p + 1 is open and its row is kept
+restart
+redeem token=a1 ns=beta req=e5 -> wrong_period      # the high-water survives a restart
+sweep -> skipped
+nullifiers -> 1
+
+# --- The late edge of week 2958 at a relay started in the first hour of week 2959.
+relay slot=1 onion=ghost/test/relay-b start=2959+3599
+redeem token=b0 ns=alpha req=l1 -> ok cap=B0
+at 2959+3600
+redeem token=b0 ns=alpha req=l1 -> wrong_period
+
+# --- Slot 2 moves from relay-c to relay-d at week 2967.
+relay slot=2 onion=ghost/test/relay-c start=2966+86400
+redeem token=m1 ns=alpha req=m1 -> ok cap=M1
+at 2967-86400
+redeem token=m2 ns=alpha req=m2 -> rejected_token   # relay-d holds slot 2 in week 2967
+relay slot=2 onion=ghost/test/relay-d start=2967-3600 -> refused   # not listed in week 2966
+relay slot=2 onion=ghost/test/relay-d start=2967+0
+redeem token=m2 ns=alpha req=m2 -> ok cap=M2
+redeem token=m1 ns=alpha req=m1 -> rejected_token   # week 2966 is still open, but was relay-c's
+
+# --- A revoked epoch.
+relay slot=1 onion=ghost/test/relay-b start=2959+86400 revoke=2959
+redeem token=a1 ns=alpha req=v1 -> rejected_token
+at 2960-86400
+redeem token=b1 ns=alpha req=v2 -> ok cap=V1
+
+# --- Redemption disabled.
+relay start=2959+86400 schedule=none
+redeem token=a1 ns=alpha req=d1 -> unimplemented
+
+# --- Store reset (runbook O1): the periods open at the reset are refused.
+relay slot=1 onion=ghost/test/relay-b start=2959+86400 nullifiers=reset
+redeem token=a1 ns=alpha req=z1 -> unavailable
+at 2960-86400
+redeem token=b1 ns=alpha req=z2 -> ok cap=Z1
+restart
+redeem token=a1 ns=alpha req=z1 -> unavailable      # the refusal survives a restart
+redeem token=b1 ns=alpha req=z2 -> ok cap=Z1
+# A reset in the last 24 h of week 2959 also refuses week 2960.
+relay slot=1 onion=ghost/test/relay-b start=2960-3600 nullifiers=reset
+redeem token=a1 ns=alpha req=z3 -> unavailable
+redeem token=b1 ns=alpha req=z4 -> unavailable
+at 2961-86400
+redeem token=c4 ns=alpha req=z5 -> ok cap=Z2
+
+# --- Refusals to start (design §10.5).
+relay slot=1 onion=ghost/test/relay-b start=2959+86400 nullifiers=existing -> refused   # no store
+relay slot=1 onion=ghost/test/relay-a start=2959+86400 -> refused   # relay-a holds slot 0
+relay slot=5 onion=ghost/test/relay-b start=2959+86400 -> refused   # no slot 5
+relay slot=1 onion=ghost/test/relay-z start=2959+86400 -> refused   # an unlisted onion
+relay slot=1 onion=ghost/test/relay-b start=2956+86400 -> refused   # before the slot's first week
+
+# --- Byte-exact pins of two minted capabilities (relay key 32 bytes 0x42).
+relay slot=1 onion=ghost/test/relay-b start=2959+86400
+redeem token=a1 ns=alpha req=p1 -> ok cap=P1
+redeem token=a2 ns=beta req=p2 -> ok cap=P2
+capability P1 hex=02028ed3f6ad685b959ead7022518e1af76cd816f8e8ec7ccdda1ed4018e8f2223f80000000010000000000000006ab9bc1091b37243e8547e734dbd409793a914e35269506ceddeeee49d6dbbd0af192c08a630e4d055fc1b15db7e07ce2189ea66
+capability P2 hex=0202f44e64e75f3948e9f73f8dfa94721c4ce8cbb4f265c4790c702b2d41cfbf27530000000010000000000000006ab9bc10d78368c6259af2e829709a5ace802f5cea61f51186283023a47a110aefa7c19ba4b4b45b244c74156698f041db81dea9

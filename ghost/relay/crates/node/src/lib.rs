@@ -4,6 +4,7 @@
 //! peer is unknown and treats every request as untrusted input with bounded parsing.
 
 pub mod capture;
+pub mod redeem;
 
 use capture::{hex_or_none, Capture, Event};
 use ghost_relay_api::proto::relay_service_server::RelayService;
@@ -12,10 +13,11 @@ use ghost_relay_api::{
     is_bucket_size, time_bucket, ttl_bucket_days, DEFAULT_TTL_SECONDS, HASH_BYTES, MAX_BATCH,
     PROTOCOL_VERSION, REQUEST_ID_BYTES,
 };
-use ghost_relay_capability::{
-    scope_hash, CapError, Capability, Kind, NullifierSet, QuotaLedger, RelayKey,
-};
+use ghost_relay_capability::{scope_hash, CapError, Capability, Kind, QuotaLedger, RelayKey};
+use ghost_relay_prune::{NullifierPeriods, SweepReport};
+use ghost_relay_storage::nullifiers::NullifierStore;
 use ghost_relay_storage::{BlobStore, StoreError};
+pub use redeem::{EntitlementPolicy, NullifierMode, RedeemRate, StartError};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -23,9 +25,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
+/// The relay's time source, in unix seconds. The gRPC service and the start-up checks read it; the
+/// `*_at(request, now)` handlers take an explicit time instead.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
 pub struct RelayConfig {
     pub gossip_enabled: bool,
     pub max_ttl_seconds: u32,
+    /// Token redemption (Phase 8 design §10.5). `None`, the default, disables `RedeemToken`
+    /// (`UNIMPLEMENTED`) and opens no nullifier store.
+    pub entitlement: Option<EntitlementPolicy>,
+    /// Time source of the gRPC service and of the start-up checks (default: the system clock).
+    pub clock: Clock,
 }
 
 impl Default for RelayConfig {
@@ -33,6 +44,8 @@ impl Default for RelayConfig {
         RelayConfig {
             gossip_enabled: false,
             max_ttl_seconds: DEFAULT_TTL_SECONDS,
+            entitlement: None,
+            clock: Arc::new(now_unix),
         }
     }
 }
@@ -41,7 +54,7 @@ pub struct Relay {
     store: BlobStore,
     key: RelayKey,
     ledger: Mutex<QuotaLedger>,
-    nullifiers: Mutex<NullifierSet>,
+    redeem: Option<redeem::Redeem>,
     capture: Option<Capture>,
     config: RelayConfig,
 }
@@ -59,13 +72,22 @@ const UNAUTHORIZED: &str = "unauthorized";
 const NOT_FOUND: &str = "not found";
 
 impl Relay {
+    /// Opens the relay's data directory. With `config.entitlement` set, the start-up checks of
+    /// design §10.5 run first, at `config.clock`'s time, and any failure is a refusal to start
+    /// ([`StartError`]): the relay's onion must be listed for its slot in the current week, the
+    /// nullifier store must open as the policy's [`NullifierMode`] says, and the schedule must be
+    /// append-only against the relay's memory of earlier schedules (rule 5).
     pub fn open(
         data_dir: &Path,
         key: RelayKey,
-        config: RelayConfig,
+        mut config: RelayConfig,
         capture_path: Option<&Path>,
     ) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         std::fs::create_dir_all(data_dir)?;
+        let redeem = match config.entitlement.take() {
+            Some(policy) => Some(redeem::Redeem::open(policy, data_dir, (config.clock)())?),
+            None => None,
+        };
         let store = BlobStore::open(&data_dir.join("blobs.redb"))?;
         let capture = match capture_path {
             Some(p) => Some(Capture::open(p)?),
@@ -75,7 +97,7 @@ impl Relay {
             store,
             key,
             ledger: Mutex::new(QuotaLedger::default()),
-            nullifiers: Mutex::new(NullifierSet::default()),
+            redeem,
             capture,
             config,
         }))
@@ -89,13 +111,28 @@ impl Relay {
         &self.store
     }
 
-    /// One prune sweep; called periodically by the binary and by tests.
-    pub fn sweep(&self, now: u64) -> Result<ghost_relay_prune::SweepReport, StoreError> {
+    /// The nullifier store, when redemption is enabled.
+    pub fn nullifier_store(&self) -> Option<&NullifierStore> {
+        self.redeem.as_ref().map(|r| r.store())
+    }
+
+    /// The relay's current time (its configured [`Clock`]).
+    pub fn now(&self) -> u64 {
+        (self.config.clock)()
+    }
+
+    /// One prune sweep at `now`: expired blobs and quota ledgers, and, with redemption enabled,
+    /// the nullifier rows of every access week whose acceptance window has closed (design §10.4:
+    /// the closed-period high-water is raised in the same transaction, and nothing runs while
+    /// `now` is below the persisted high-water minute). Called periodically by the binary and by
+    /// tests.
+    pub fn sweep(&self, now: u64) -> Result<SweepReport, StoreError> {
         let mut ledger = self.ledger.lock().unwrap();
-        let mut nulls = self.nullifiers.lock().unwrap();
-        let period = current_period(now);
-        let prev = current_period(now.saturating_sub(86_400));
-        ghost_relay_prune::sweep(&self.store, &mut ledger, &mut nulls, &[&period, &prev], now)
+        let nullifiers = self.redeem.as_ref().map(|r| NullifierPeriods {
+            store: r.store(),
+            closed_through: redeem::closed_through(now),
+        });
+        ghost_relay_prune::sweep(&self.store, &mut ledger, nullifiers, now)
     }
 
     fn record(&self, event: Event) {
@@ -117,11 +154,6 @@ impl Relay {
             _ => Status::invalid_argument(REJECTED),
         }
     }
-}
-
-/// Nullifier validity periods are UTC days encoded as 8 big-endian bytes.
-pub fn current_period(now: u64) -> [u8; 8] {
-    (now / 86_400).to_be_bytes()
 }
 
 fn fixed<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
@@ -155,6 +187,8 @@ impl Relay {
             size_bucket: is_bucket_size(req.data.len()).then_some(req.data.len()),
             time_bucket: time_bucket(now),
             ttl_bucket_days: ttl_bucket_days(req.ttl_seconds),
+            nullifier: None,
+            period_id: None,
             capability_scope: req
                 .capability
                 .as_ref()
@@ -420,7 +454,7 @@ impl RelayService for RelayServer {
         &self,
         request: Request<StoreBlobRequest>,
     ) -> Result<Response<StoreBlobResponse>, Status> {
-        self.store_at(request.into_inner(), now_unix())
+        self.store_at(request.into_inner(), self.now())
             .map(Response::new)
     }
 
@@ -428,7 +462,7 @@ impl RelayService for RelayServer {
         &self,
         request: Request<GetBlobRequest>,
     ) -> Result<Response<GetBlobResponse>, Status> {
-        self.get_at(request.into_inner(), now_unix())
+        self.get_at(request.into_inner(), self.now())
             .map(Response::new)
     }
 
@@ -436,7 +470,7 @@ impl RelayService for RelayServer {
         &self,
         request: Request<CheckBlobsRequest>,
     ) -> Result<Response<CheckBlobsResponse>, Status> {
-        self.check_at(request.into_inner(), now_unix())
+        self.check_at(request.into_inner(), self.now())
             .map(Response::new)
     }
 
@@ -444,7 +478,15 @@ impl RelayService for RelayServer {
         &self,
         request: Request<ListNamespaceRequest>,
     ) -> Result<Response<ListNamespaceResponse>, Status> {
-        self.list_at(request.into_inner(), now_unix())
+        self.list_at(request.into_inner(), self.now())
+            .map(Response::new)
+    }
+
+    async fn redeem_token(
+        &self,
+        request: Request<RedeemTokenRequest>,
+    ) -> Result<Response<RedeemTokenResponse>, Status> {
+        self.redeem_at(request.into_inner(), self.now())
             .map(Response::new)
     }
 
@@ -465,7 +507,7 @@ impl RelayService for RelayServer {
                     Ok(b) => b,
                     Err(_) => break,
                 };
-                let now = now_unix();
+                let now = relay.now();
                 let have = |h: &[u8]| matches!(relay.store.has_content(h), Ok(true));
                 let result = ghost_relay_gossip::missing_from_batch(
                     &batch.blob_hashes,

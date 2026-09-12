@@ -12,7 +12,7 @@ Clientul relay transportă doar blob-uri **deja criptate și de dimensiune exact
 
 ## Apelurile relay (JNI `TorRelayTransport`)
 
-Fiecare apel construiește un `NamespaceClient` pentru namespace-ul apelului: circuitele folosesc izolarea `IsolationScope::Namespace(ns)`, iar înainte de orice I/O antetul capabilității (`ghost_relay_api::capability_header`, formatul v1 `version‖kind‖namespace‖quota‖expiry‖mac`, 82 bytes) trebuie să numească același namespace și un tip potrivit: write pentru `store`; read sau write pentru `get`, `list`, `check` (la relay, write include read). Altfel apelul eșuează cu `invalid_argument` fără să deschidă o conexiune (invariant T21); un token într-un format pe care build-ul nu îl cunoaște e refuzat la fel. `RelayClient` nu are constructor public.
+Fiecare apel construiește un `NamespaceClient` pentru namespace-ul apelului: circuitele folosesc izolarea `IsolationScope::Namespace(ns)`, iar înainte de orice I/O antetul capabilității (`ghost_relay_api::capability_header`: formatul v1 `version‖kind‖namespace‖quota‖expiry‖mac`, 82 bytes, emis din CLI-ul relay-ului, sau v2 cu un serial de 16 bytes înaintea MAC-ului, 98 bytes, emis de `RedeemToken`) trebuie să numească același namespace și un tip potrivit: write pentru `store`; read sau write pentru `get`, `list`, `check` (la relay, write include read). Altfel apelul eșuează cu `invalid_argument` fără să deschidă o conexiune (invariant T21); un token într-un format pe care build-ul nu îl cunoaște e refuzat la fel. `RelayClient` nu are constructor public.
 
 Argumentele și rezultatul (bytes) fiecărui apel:
 

@@ -26,6 +26,8 @@
 //! What the store knows about a blob: its SHA-256, its bucket-sized ciphertext, the opaque
 //! namespaces holding it, an upload minute and an hour-rounded expiry per namespace.
 
+pub mod nullifiers;
+
 use ghost_relay_api::{is_bucket_size, time_bucket, HASH_BYTES, MAX_BATCH};
 use redb::{
     Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
@@ -90,6 +92,10 @@ pub enum StoreError {
     QuotaDenied,
     #[error("database was written by an incompatible schema version")]
     IncompatibleSchema,
+    #[error("store file is missing")]
+    Missing,
+    #[error("a remembered schedule key changed")]
+    EsConflict,
     #[error("database error")]
     Db(#[from] redb::Error),
 }

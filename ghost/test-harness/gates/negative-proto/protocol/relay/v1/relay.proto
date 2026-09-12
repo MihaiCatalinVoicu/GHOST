@@ -1,0 +1,35 @@
+// Negative fixture of scripts/gates/proto-check.sh (Phase 8 design §14.1, RC G18): a valid schema
+// in which three *Request messages lack a top-level `uint32 version = 1;` while another message
+// of the same file has one, so a whole-file check would pass. The gate must report exactly
+// RedeemTokenRequest (no version), GetBlobRequest (version only in a nested message) and
+// ListNamespaceRequest (version only in a comment), and not StoreBlobRequest.
+syntax = "proto3";
+
+package ghost.relay.v1;
+
+message StoreBlobRequest {
+  uint32 version = 1;
+  bytes blob_hash = 2;
+}
+
+message GetBlobRequest {
+  message Inner {
+    uint32 version = 1;
+  }
+  bytes blob_hash = 2;
+  Inner inner = 3;
+}
+
+message ListNamespaceRequest {
+  // uint32 version = 1;
+  bytes namespace_id = 2;
+}
+
+message RedeemTokenRequest {
+  bytes token = 2;
+  bytes namespace_id = 3;
+}
+
+message RedeemTokenResponse {
+  uint32 result = 1;
+}

@@ -15,7 +15,7 @@
     "request_id": { "type": "hex", "len": 32, "note": "client idempotency key, random per request" },
     "circuit_id": { "type": "hex", "len": 32, "note": "relay-local id of the onion circuit; never an IP" },
     "batch_count": { "type": "uint" },
-    "result": { "type": "enum", "values": ["ok", "rejected_hash", "rejected_capability", "rejected_size", "rejected_ttl", "rejected_nullifier", "not_found"] }
+    "result": { "type": "enum", "values": ["ok", "rejected_hash", "rejected_capability", "rejected_size", "rejected_ttl", "rejected_nullifier", "not_found", "rejected_token", "rejected_period"], "note": "rejected_token: a redeemed token is malformed, forged, of another kind, slot or key, or revoked; rejected_period: outside its acceptance window or of a closed period (ADR-25, Phase 8 design §10.6)" }
   },
   "forbidden_substrings": ["ghost1", "http://", "https://", ".onion", "monero:", "user", "@"]
 }

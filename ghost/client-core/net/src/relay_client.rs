@@ -933,6 +933,12 @@ mod tests {
         ) -> Result<tonic::Response<Self::GossipSyncStream>, tonic::Status> {
             Err(tonic::Status::unimplemented("test"))
         }
+        async fn redeem_token(
+            &self,
+            _r: tonic::Request<RedeemTokenRequest>,
+        ) -> Result<tonic::Response<RedeemTokenResponse>, tonic::Status> {
+            Err(tonic::Status::unimplemented("test"))
+        }
     }
 
     #[tokio::test]

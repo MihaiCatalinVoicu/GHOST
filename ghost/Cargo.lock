@@ -1742,16 +1742,22 @@ dependencies = [
 name = "ghost-relay-node"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "ghost-blind-rsa",
  "ghost-capture-check",
+ "ghost-entitlement",
  "ghost-relay-api",
  "ghost-relay-capability",
  "ghost-relay-gossip",
  "ghost-relay-prune",
  "ghost-relay-storage",
  "hex",
+ "hmac 0.13.0",
  "rand 0.10.2",
+ "redb",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tokio-stream",

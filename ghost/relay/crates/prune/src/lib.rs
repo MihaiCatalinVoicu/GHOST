@@ -1,31 +1,45 @@
 //! Deterministic removal of expired state (FR-5.5, ADR-11): blobs past their TTL, quota ledgers of
-//! expired capabilities and nullifier periods that are no longer valid. Sweeps are idempotent and
-//! their only output is a count, which is an allowed aggregate metric (§11.1).
+//! expired capabilities and redemption nullifiers of closed periods (Phase 8 design §10.4).
+//! Sweeps are idempotent and their only output is a count, which is an allowed aggregate metric
+//! (§11.1).
 
-use ghost_relay_capability::{NullifierSet, QuotaLedger};
+use ghost_relay_capability::QuotaLedger;
+use ghost_relay_storage::nullifiers::NullifierStore;
 use ghost_relay_storage::{BlobStore, StoreError};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
     pub blobs_removed: usize,
     pub ledgers_removed: usize,
+    /// Nullifier rows of closed periods removed (0 when redemption is disabled or the nullifier
+    /// sweep did not run because the clock is below its high-water minute).
+    pub nullifiers_removed: usize,
 }
 
-/// Runs one sweep at `now`. `keep_periods` are the nullifier periods still valid (current and
-/// previous); everything else is dropped.
+/// The nullifier part of a sweep: the store and the last period whose acceptance window has
+/// closed at the sweep's time (`None`: no period closed yet).
+pub struct NullifierPeriods<'a> {
+    pub store: &'a NullifierStore,
+    pub closed_through: Option<u64>,
+}
+
+/// Runs one sweep at `now_unix`.
 pub fn sweep(
     store: &BlobStore,
     ledger: &mut QuotaLedger,
-    nullifiers: &mut NullifierSet,
-    keep_periods: &[&[u8]],
+    nullifiers: Option<NullifierPeriods<'_>>,
     now_unix: u64,
 ) -> Result<SweepReport, StoreError> {
     let blobs_removed = store.prune_expired(now_unix)?;
     let ledgers_removed = ledger.prune(now_unix);
-    nullifiers.retain_periods(keep_periods);
+    let nullifiers_removed = match nullifiers {
+        Some(n) => n.store.sweep(now_unix / 60, n.closed_through)?.removed,
+        None => 0,
+    };
     Ok(SweepReport {
         blobs_removed,
         ledgers_removed,
+        nullifiers_removed,
     })
 }
 
@@ -33,6 +47,7 @@ pub fn sweep(
 mod tests {
     use super::*;
     use ghost_relay_capability::{Capability, Kind, RelayKey};
+    use ghost_relay_storage::nullifiers::NullifierStart;
     use ghost_relay_storage::sha256;
 
     #[test]
@@ -68,24 +83,37 @@ mod tests {
             .unwrap();
         ledger.charge(&key.mint(&live_cap), &live_cap, 1).unwrap();
 
-        let mut nulls = NullifierSet::default();
-        nulls.record_if_fresh(b"old", [0; 32]);
-        nulls.record_if_fresh(b"cur", [0; 32]);
+        let nulls =
+            NullifierStore::open(&dir.path().join("n.redb"), NullifierStart::Create).unwrap();
+        nulls.record_or_get(7, &[0; 32], &[1; 16]).unwrap();
+        nulls.record_or_get(8, &[0; 32], &[1; 16]).unwrap();
+        let periods = |closed| {
+            Some(NullifierPeriods {
+                store: &nulls,
+                closed_through: closed,
+            })
+        };
 
-        let report = sweep(&store, &mut ledger, &mut nulls, &[b"cur"], 3_600).unwrap();
+        let report = sweep(&store, &mut ledger, periods(Some(7)), 3_600).unwrap();
         assert_eq!(
             report,
             SweepReport {
                 blobs_removed: 1,
-                ledgers_removed: 1
+                ledgers_removed: 1,
+                nullifiers_removed: 1,
             }
         );
         assert_eq!(store.count().unwrap(), 1);
         assert_eq!(ledger.len(), 1);
-        assert_eq!(nulls.len(), 1);
+        assert_eq!(nulls.count().unwrap(), 1);
         // Idempotent.
         assert_eq!(
-            sweep(&store, &mut ledger, &mut nulls, &[b"cur"], 3_600).unwrap(),
+            sweep(&store, &mut ledger, periods(Some(7)), 3_600).unwrap(),
+            SweepReport::default()
+        );
+        // Without a nullifier store the sweep still prunes blobs and ledgers.
+        assert_eq!(
+            sweep(&store, &mut ledger, None, 3_600).unwrap(),
             SweepReport::default()
         );
     }

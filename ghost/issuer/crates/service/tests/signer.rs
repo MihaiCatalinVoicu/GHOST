@@ -191,6 +191,33 @@ fn a_signer_that_does_not_match_its_key_is_refused_at_load() {
     assert_eq!(CheckedSigner::new(faulty, pk).err(), Some(SignError::Key));
 }
 
+/// Both ways a mismatched pair fails the load-time self-check are `Key`, deterministically: the
+/// inner key refuses the ES key's challenge (it lies above the inner modulus), or signs it and the
+/// s'^e check fails. The ES keys come from the committed test schedule, so both cases are fixed.
+#[test]
+fn both_mismatch_paths_are_refused_as_a_key_error() {
+    let rfc_n = rfc_signer().1.n().clone();
+    let schedule = common::fixture::schedule();
+    let challenge = |pk: &PublicKey| {
+        BigUint::from_bytes_be(&ghost_blind_rsa::permutation_proof_challenges(pk).unwrap()[0])
+    };
+    let above = schedule
+        .keys()
+        .find(|k| challenge(&k.public_key) >= rfc_n)
+        .expect("a test key whose first challenge exceeds the RFC modulus");
+    let below = schedule
+        .keys()
+        .find(|k| challenge(&k.public_key) < rfc_n)
+        .expect("a test key whose first challenge is below the RFC modulus");
+    for es_key in [&above.public_key, &below.public_key] {
+        let (signer, _) = rfc_signer();
+        assert_eq!(
+            CheckedSigner::new(signer, es_key.clone()).err(),
+            Some(SignError::Key)
+        );
+    }
+}
+
 #[test]
 fn generated_keys_are_type_0x0002_keys() {
     let signer = ReferenceSigner::generate(Kind::Invite, 740).unwrap();

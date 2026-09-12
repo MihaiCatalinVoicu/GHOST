@@ -33,12 +33,52 @@ pub const REQUEST_ID_BYTES: usize = 16;
 
 /// Version byte of the v1 capability token layout.
 pub const CAPABILITY_VERSION: u8 = 1;
-/// Length of the MAC that ends a v1 capability token (HMAC-SHA256, keyed by the minting relay).
+/// Length of the MAC that ends a capability token of either layout (HMAC-SHA256, keyed by the
+/// minting relay).
 pub const CAPABILITY_MAC_BYTES: usize = 32;
 /// Length of the authenticated body of a v1 capability token (everything before the MAC).
 pub const CAPABILITY_BODY_BYTES: usize = 1 + 1 + 32 + 8 + 8;
 /// Total length of a v1 capability token.
 pub const CAPABILITY_TOKEN_BYTES: usize = CAPABILITY_BODY_BYTES + CAPABILITY_MAC_BYTES;
+/// Version byte of the v2 capability token layout (Phase 8 design §10.3, ADR-25): the write
+/// capability a relay mints for a redeemed entitlement token.
+pub const CAPABILITY_V2_VERSION: u8 = 2;
+/// Length of the serial of a v2 capability: one per redeemed token, so writers of one namespace
+/// never share a quota ledger.
+pub const CAPABILITY_SERIAL_BYTES: usize = 16;
+/// Length of the authenticated body of a v2 capability token: the v1 body plus the serial.
+pub const CAPABILITY_V2_BODY_BYTES: usize = CAPABILITY_BODY_BYTES + CAPABILITY_SERIAL_BYTES;
+/// Total length of a v2 capability token (98 bytes).
+pub const CAPABILITY_V2_TOKEN_BYTES: usize = CAPABILITY_V2_BODY_BYTES + CAPABILITY_MAC_BYTES;
+
+/// The layout of a capability token, told apart by its exact length and version byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CapabilityFormat {
+    /// 82 bytes, version 1: minted by the relay operator's CLI (`ghost-relay mint`).
+    V1,
+    /// 98 bytes, version 2: minted by `RedeemToken` for a redeemed entitlement token.
+    V2,
+}
+
+impl CapabilityFormat {
+    /// Length of the authenticated body (everything before the MAC).
+    pub fn body_len(self) -> usize {
+        match self {
+            CapabilityFormat::V1 => CAPABILITY_BODY_BYTES,
+            CapabilityFormat::V2 => CAPABILITY_V2_BODY_BYTES,
+        }
+    }
+}
+
+/// The layout of `token`: exactly 82 bytes with version 1, or exactly 98 bytes with version 2.
+/// Any other length/version pair is no capability of this build.
+pub fn capability_format(token: &[u8]) -> Option<CapabilityFormat> {
+    match (token.len(), token.first()) {
+        (CAPABILITY_TOKEN_BYTES, Some(&CAPABILITY_VERSION)) => Some(CapabilityFormat::V1),
+        (CAPABILITY_V2_TOKEN_BYTES, Some(&CAPABILITY_V2_VERSION)) => Some(CapabilityFormat::V2),
+        _ => None,
+    }
+}
 
 /// Right granted by a capability. A write capability also grants read on the same namespace at
 /// the relay; read never grants write.
@@ -48,9 +88,15 @@ pub enum CapabilityKind {
     Write = 2,
 }
 
-/// Public header of a v1 capability token. The v1 layout, defined only here, is
-/// `version(1) || kind(1) || namespace(32) || quota_bytes(8, BE) || expiry_unix(8, BE) || mac(32)`.
+/// Public header of a capability token. The layouts, defined only here, are
+///
+/// ```text
+/// v1 (82 bytes): version(1) = 1 || kind(1) || namespace(32) || quota_bytes(8, BE) || expiry_unix(8, BE) || mac(32)
+/// v2 (98 bytes): version(1) = 2 || kind(1) || namespace(32) || quota_bytes(8, BE) || expiry_unix(8, BE) || serial(16) || mac(32)
+/// ```
+///
 /// The header is readable by anyone holding the token; only the minting relay can check the MAC.
+/// The v2 serial is not part of the header: it only makes each redeemed capability distinct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityHeader {
     pub kind: CapabilityKind,
@@ -60,26 +106,41 @@ pub struct CapabilityHeader {
 }
 
 impl CapabilityHeader {
-    /// The authenticated body of the token (the bytes the minting relay MACs).
+    /// The authenticated body of a v1 token (the bytes the minting relay MACs).
     pub fn encode_body(&self) -> [u8; CAPABILITY_BODY_BYTES] {
         let mut out = [0u8; CAPABILITY_BODY_BYTES];
         out[0] = CAPABILITY_VERSION;
+        self.encode_fields(&mut out);
+        out
+    }
+
+    /// The authenticated body of a v2 token: the v1 fields under version 2, then the serial.
+    pub fn encode_body_v2(
+        &self,
+        serial: &[u8; CAPABILITY_SERIAL_BYTES],
+    ) -> [u8; CAPABILITY_V2_BODY_BYTES] {
+        let mut out = [0u8; CAPABILITY_V2_BODY_BYTES];
+        out[0] = CAPABILITY_V2_VERSION;
+        self.encode_fields(&mut out);
+        out[CAPABILITY_BODY_BYTES..].copy_from_slice(serial);
+        out
+    }
+
+    fn encode_fields(&self, out: &mut [u8]) {
         out[1] = self.kind as u8;
         out[2..34].copy_from_slice(&self.namespace);
         out[34..42].copy_from_slice(&self.quota_bytes.to_be_bytes());
         out[42..50].copy_from_slice(&self.expiry_unix.to_be_bytes());
-        out
     }
 }
 
-/// Parses the public header of a capability token. Returns `None` unless the token has the exact
-/// v1 length, version 1 and a known kind. The MAC is not checked (only the minting relay can), so
-/// a `Some` says what the token claims, not that it is valid. A token of any other format is
-/// refused until that format is added here explicitly.
+/// Parses the public header of a capability token of either layout. Returns `None` unless the
+/// token has exactly the v1 length with version 1 or the v2 length with version 2, and a known
+/// kind. The MAC is not checked (only the minting relay can), so a `Some` says what the token
+/// claims, not that it is valid. A token of any other format is refused until that format is
+/// added here explicitly.
 pub fn capability_header(token: &[u8]) -> Option<CapabilityHeader> {
-    if token.len() != CAPABILITY_TOKEN_BYTES || token[0] != CAPABILITY_VERSION {
-        return None;
-    }
+    capability_format(token)?;
     let kind = match token[1] {
         1 => CapabilityKind::Read,
         2 => CapabilityKind::Write,
@@ -183,6 +244,51 @@ mod tests {
             let mut t = token.clone();
             t[index] = value;
             assert_eq!(capability_header(&t), None, "byte {index} = {value}");
+        }
+        assert_eq!(capability_format(&token), Some(CapabilityFormat::V1));
+    }
+
+    #[test]
+    fn capability_header_parses_the_v2_layout_and_ignores_the_serial() {
+        let header = CapabilityHeader {
+            kind: CapabilityKind::Write,
+            namespace: [0x5A; 32],
+            quota_bytes: 268_435_456,
+            expiry_unix: 1_789_347_600,
+        };
+        let serial = [0xC3; CAPABILITY_SERIAL_BYTES];
+        let body = header.encode_body_v2(&serial);
+        assert_eq!(body[0], CAPABILITY_V2_VERSION);
+        // The v2 body is the v1 body under version 2, followed by the serial.
+        assert_eq!(&body[1..CAPABILITY_BODY_BYTES], &header.encode_body()[1..]);
+        assert_eq!(&body[CAPABILITY_BODY_BYTES..], &serial);
+        let mut token = body.to_vec();
+        token.extend_from_slice(&[0xEE; CAPABILITY_MAC_BYTES]);
+        assert_eq!(token.len(), 98);
+        assert_eq!(capability_format(&token), Some(CapabilityFormat::V2));
+        assert_eq!(CapabilityFormat::V2.body_len(), 66);
+        assert_eq!(capability_header(&token), Some(header.clone()));
+        let mut other_serial = token.clone();
+        other_serial[60] ^= 0xFF;
+        assert_eq!(capability_header(&other_serial), Some(header));
+
+        // A version byte must match its length: v1 bytes at the v2 length and v2 bytes at the
+        // v1 length are refused, as are lengths 97 and 99 and unknown kinds.
+        let mut v1_at_98 = token.clone();
+        v1_at_98[0] = CAPABILITY_VERSION;
+        let mut v2_at_82 = token[..82].to_vec();
+        v2_at_82[0] = CAPABILITY_V2_VERSION;
+        let mut longer = token.clone();
+        longer.push(0);
+        let mut kind0 = token.clone();
+        kind0[1] = 0;
+        for t in [v1_at_98, v2_at_82, token[..97].to_vec(), longer, kind0] {
+            assert_eq!(capability_header(&t), None);
+        }
+        for version in [0u8, 3, 0xFF] {
+            let mut t = token.clone();
+            t[0] = version;
+            assert_eq!(capability_format(&t), None, "version {version}");
         }
     }
 

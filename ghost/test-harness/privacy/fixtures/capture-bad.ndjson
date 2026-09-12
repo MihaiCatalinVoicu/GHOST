@@ -9,3 +9,8 @@
 {"op":"list","cursor":"user@example.org","time_bucket":1757491260}
 {"op":"store","result":"ok","user_agent":"GHOST/0.1 Android 15"}
 {"op":"delete_everything","time_bucket":1757491260}
+{"op":"redeem","protocol_version":1,"token":"0002aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899","time_bucket":1789434120,"result":"rejected_token"}
+{"op":"redeem","protocol_version":1,"period_id":"0000000000000b8f00","time_bucket":1789434120,"result":"rejected_period"}
+{"op":"redeem","protocol_version":1,"nullifier":"6f1d2b3c4a5e6f708192a3b4c5d6e7f8","time_bucket":1789434120,"result":"ok"}
+{"op":"redeem","protocol_version":1,"time_bucket":1789434120,"result":"rejected_signature"}
+{"op":"redeem","protocol_version":1,"capability":"02025a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a","time_bucket":1789434120,"result":"ok"}

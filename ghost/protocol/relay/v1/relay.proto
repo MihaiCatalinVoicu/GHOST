@@ -84,10 +84,36 @@ message GossipAck {
   repeated bytes missing_hashes = 2;
 }
 
+// Relay redemption (Phase 8 design §10, ADR-25): a Privacy Pass type 0x0002 ACCESS token of the
+// Entitlement Schedule, bound to this relay's slot and to one ISO week, buys one write capability
+// v2 for one namespace. Protocol-meaningful outcomes travel in-band in `result`; malformed,
+// forged, wrong-kind and wrong-slot tokens are one gRPC status (PERMISSION_DENIED).
+enum RedeemResult {
+  REDEEM_RESULT_UNSPECIFIED = 0;
+  REDEEM_RESULT_OK = 1;
+  REDEEM_RESULT_REPLAYED = 2;       // nullifier already bound to another namespace
+  REDEEM_RESULT_WRONG_PERIOD = 3;   // outside the acceptance window; nothing recorded, the token stays spendable
+}
+
+message RedeemTokenRequest {
+  uint32 version = 1;               // MUST be 1
+  bytes token = 2;                  // 354 bytes, Privacy Pass type 0x0002, kind ACCESS for this relay's slot
+  bytes namespace_id = 3;           // 32 bytes: the namespace the write capability is for
+  bytes request_id = 4;             // 16 random bytes; identical on an identical retry (T1 field)
+}
+
+message RedeemTokenResponse {
+  RedeemResult result = 1;
+  Capability capability = 2;        // OK only: write capability v2 (98 bytes, design §10.3)
+  uint64 relay_period_id = 3;       // always: the relay's current week (R9 clock source)
+  uint64 relay_minute = 4;          // always: the relay's unix time / 60 (R9 clock source)
+}
+
 service RelayService {
   rpc StoreBlob(StoreBlobRequest) returns (StoreBlobResponse);
   rpc GetBlob(GetBlobRequest) returns (GetBlobResponse);
   rpc CheckBlobs(CheckBlobsRequest) returns (CheckBlobsResponse);
   rpc ListNamespace(ListNamespaceRequest) returns (ListNamespaceResponse);
   rpc GossipSync(stream GossipInventoryBatch) returns (stream GossipAck);
+  rpc RedeemToken(RedeemTokenRequest) returns (RedeemTokenResponse);
 }

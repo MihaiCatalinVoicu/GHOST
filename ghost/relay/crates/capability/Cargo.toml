@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST blind relay: scoped unforgeable capabilities and per-period nullifiers (FR-5.3, ADR-02)"
+description = "GHOST blind relay: scoped unforgeable capabilities (v1 and redeemed v2), redemption binding tags and serials (FR-5.3, ADR-25)"
 
 [dependencies]
 # The v1 token layout is defined once, in the API crate (`capability_header`).
