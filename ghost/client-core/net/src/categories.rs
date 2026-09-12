@@ -98,13 +98,15 @@ pub fn for_issuer(e: &IssuerError) -> &'static str {
 
 /// The gRPC status of an issuer answer (design §5.7): `INVALID_ARGUMENT` -> `rejected` (a client
 /// or issuer bug, never a mutated retry), `PERMISSION_DENIED` -> `unauthorized`,
-/// `RESOURCE_EXHAUSTED` -> `quota`; `UNAVAILABLE` and every other code -> `relay_unavailable`
-/// (remote onion service, relay or issuer, transient).
+/// `RESOURCE_EXHAUSTED` -> `quota`; `OUT_OF_RANGE` -> `malformed_response` (the client's 1 MiB
+/// answer cap; an issuer answering an honest request never sends it); `UNAVAILABLE` and every
+/// other code -> `relay_unavailable` (remote onion service, relay or issuer, transient).
 pub fn for_issuer_code(code: tonic::Code) -> &'static str {
     match code {
         tonic::Code::InvalidArgument => REJECTED,
         tonic::Code::PermissionDenied => UNAUTHORIZED,
         tonic::Code::ResourceExhausted => QUOTA,
+        tonic::Code::OutOfRange => MALFORMED_RESPONSE,
         _ => RELAY_UNAVAILABLE,
     }
 }
@@ -202,7 +204,8 @@ mod tests {
             (Code::FailedPrecondition, RELAY_UNAVAILABLE),
             (Code::Unimplemented, RELAY_UNAVAILABLE),
             (Code::DeadlineExceeded, RELAY_UNAVAILABLE),
-            (Code::OutOfRange, RELAY_UNAVAILABLE),
+            // The client's own answer cap: never sent by an issuer answering an honest request.
+            (Code::OutOfRange, MALFORMED_RESPONSE),
         ];
         for (code, category) in table {
             assert_eq!(for_issuer(&IssuerError::Rpc(code)), category, "{code:?}");

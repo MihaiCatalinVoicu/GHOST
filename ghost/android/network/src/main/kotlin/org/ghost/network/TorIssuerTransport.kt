@@ -144,12 +144,20 @@ class TorIssuerTransport internal constructor(private val native: HandleCall) {
         return decodeRefresh(raw)
     }
 
-    /** Ends a flow: its circuits are never used again. Idempotent. */
+    /**
+     * Ends a flow: its circuits are never used again. Idempotent, and a no-op on a closed transport
+     * (closing dropped every flow; the native side ignores a stopped handle too), so ending a flow
+     * in a `finally` never replaces the outcome of the flow's call.
+     */
     fun endFlow(flow: ByteArray) {
         requireFlow(flow)
-        native.run {
-            nativeEndFlow(it, flow)
-            ByteArray(0)
+        try {
+            native.run {
+                nativeEndFlow(it, flow)
+                ByteArray(0)
+            }
+        } catch (e: NetworkException) {
+            if (e.category != CLOSED) throw e
         }
     }
 
@@ -232,6 +240,7 @@ class TorIssuerTransport internal constructor(private val native: HandleCall) {
         const val REFRESH_REPLAYED = 2
 
         private const val MALFORMED = "malformed_response"
+        private const val CLOSED = "closed"
         private const val SUBADDRESS_CHARS = 95
 
         /** A fresh 16-byte flow id from [random] (a CSPRNG; one per flow instance, never reused). */

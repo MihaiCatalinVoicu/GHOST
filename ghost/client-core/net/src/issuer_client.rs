@@ -3,21 +3,22 @@
 //! It uses the hyper-over-Arti connector of [`crate::RelayClient`]: HTTP/2 only, a constant origin
 //! (`issuer.invalid`, identical for every client), no `user-agent` header (tonic is linked with
 //! `codegen` only), every call bounded by a deadline. The destination is fixed: the issuer onion of
-//! the Entitlement Schedule built into the library (`ES.issuer_onion`); no caller chooses it. The
-//! circuits are those of one issuer flow ([`IsolationScope::IssuerFlow`]), so a flow never shares a
-//! circuit with another flow or a namespace.
+//! the Entitlement Schedule built into the library (`ES.issuer_onion`); [`IssuerClient::over_tor`]
+//! takes neither a destination nor a schedule, so no caller chooses it. The circuits are those of
+//! one issuer flow ([`IsolationScope::IssuerFlow`]), so a flow never shares a circuit with another
+//! flow or a namespace.
 //!
 //! This module only moves messages. The checks made before any byte leaves the device and the
 //! validation of every answer against the ES live in [`crate::issuer_flow`], generic over
 //! [`IssuerRpc`]. An error keeps the gRPC code of an answer, never its text.
 
+use crate::entitlement::embedded_schedule;
 use crate::isolation::IsolationScope;
 use crate::onion::OnionAddress;
 use crate::relay_client::{
     onion_connector, transport_cause, BoxError, Io, OnionConnector, StreamType,
 };
 use crate::transport::{TorTransport, TransportError};
-use ghost_entitlement::Schedule;
 use ghost_issuer_api::proto::issuer_service_client::IssuerServiceClient;
 use ghost_issuer_api::proto::{
     BlindSignRequest, BlindSignResponse, ClaimPayoutRequest, ClaimPayoutResponse,
@@ -106,21 +107,30 @@ pub struct IssuerClient<C> {
 }
 
 impl IssuerClient<OnionConnector> {
-    /// Client for the issuer onion of `schedule` over Tor, on the circuits of
-    /// `IsolationScope::IssuerFlow(flow)`. No connection is opened until the first call.
-    pub fn over_tor(
-        transport: &TorTransport,
-        schedule: &Schedule,
-        flow: [u8; 16],
-    ) -> Result<Self, IssuerError> {
-        let issuer = OnionAddress::parse(&schedule.content().issuer_onion)
-            .map_err(|_| IssuerError::InvalidArgument)?;
-        Ok(Self::with_connector(onion_connector(
-            transport,
-            &issuer,
-            &IsolationScope::IssuerFlow(flow),
-        )))
+    /// Client for the issuer onion of the Entitlement Schedule built into the library
+    /// ([`embedded_schedule`]) over Tor, on the circuits of `IsolationScope::IssuerFlow(flow)`. It
+    /// takes neither a destination nor a schedule, so no caller can point it anywhere else; a
+    /// schedule that fails verification is [`IssuerError::InvalidArgument`], with nothing sent. No
+    /// connection is opened until the first call. This is the only public constructor.
+    pub fn over_tor(transport: &TorTransport, flow: [u8; 16]) -> Result<Self, IssuerError> {
+        Ok(Self::with_connector(issuer_connector(transport, flow)?))
     }
+}
+
+/// The connector of every issuer client over Tor: the issuer onion of the embedded ES, on the
+/// circuits of `flow`.
+fn issuer_connector(
+    transport: &TorTransport,
+    flow: [u8; 16],
+) -> Result<OnionConnector, IssuerError> {
+    let schedule = embedded_schedule().map_err(|_| IssuerError::InvalidArgument)?;
+    let issuer = OnionAddress::parse(&schedule.content().issuer_onion)
+        .map_err(|_| IssuerError::InvalidArgument)?;
+    Ok(onion_connector(
+        transport,
+        &issuer,
+        &IsolationScope::IssuerFlow(flow),
+    ))
 }
 
 impl<C> IssuerClient<C>
@@ -163,15 +173,38 @@ where
     }
 }
 
+/// The text tonic gives an answer body that does not decode as the expected protobuf message
+/// (tonic-prost `from_decode_error`: code INTERNAL, no source). Read only to classify the error
+/// here; it never leaves this module.
+const UNDECODABLE: &str = "failed to decode Protobuf message";
+
+/// A status that makes the answer a protocol violation (design §5.7 `malformed_response`) rather
+/// than an issuer refusal: OUT_OF_RANGE, which tonic raises for an answer over
+/// [`MAX_ANSWER_BYTES`] and which an issuer answering an honest request never sends (the requests
+/// stay under the issuer's own cap), or tonic's own error for a body that is not the expected
+/// protobuf message. An INTERNAL the issuer sends (an honest one never does; one copying that text
+/// is hostile anyway) and an HTTP/2 reset (which carries its cause) stay [`IssuerError::Rpc`].
+fn violates_protocol(status: &tonic::Status) -> bool {
+    match status.code() {
+        tonic::Code::OutOfRange => true,
+        tonic::Code::Internal => {
+            std::error::Error::source(status).is_none() && status.message().starts_with(UNDECODABLE)
+        }
+        _ => false,
+    }
+}
+
 async fn with_deadline<T>(
     deadline: Duration,
     fut: impl Future<Output = Result<tonic::Response<T>, tonic::Status>>,
 ) -> Result<T, IssuerError> {
     match tokio::time::timeout(deadline, fut).await {
         Ok(Ok(resp)) => Ok(resp.into_inner()),
-        Ok(Err(status)) => Err(transport_cause(&status)
-            .map(IssuerError::Transport)
-            .unwrap_or(IssuerError::Rpc(status.code()))),
+        Ok(Err(status)) => Err(match transport_cause(&status) {
+            Some(cause) => IssuerError::Transport(cause),
+            None if violates_protocol(&status) => IssuerError::Malformed,
+            None => IssuerError::Rpc(status.code()),
+        }),
         Err(_) => Err(IssuerError::Timeout),
     }
 }
@@ -481,7 +514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_oversized_answer_is_refused() {
+    async fn an_oversized_answer_is_malformed() {
         let (addr, _) = serve(LoopbackIssuer {
             big: true,
             ..Default::default()
@@ -489,7 +522,59 @@ mod tests {
         .await;
         let mut c = IssuerClient::with_connector(TcpConnector::new(addr));
         let e = c.blind_sign(BlindSignRequest::default()).await.unwrap_err();
-        assert!(matches!(e, IssuerError::Rpc(_)), "{e:?}");
+        assert!(matches!(e, IssuerError::Malformed), "{e:?}");
+        assert_eq!(for_issuer(&e), MALFORMED_RESPONSE);
+    }
+
+    /// An issuer whose every answer body is one uncompressed gRPC frame holding the byte 0x0F
+    /// (field 1, wire type 7: no such wire type), so no answer decodes as protobuf.
+    async fn serve_undecodable() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .layer(tower::util::MapResponseLayer::new(
+                    |res: http::Response<tonic::body::Body>| {
+                        res.map(|_| tonic::body::Body::new(String::from("\0\0\0\0\u{1}\u{f}")))
+                    },
+                ))
+                .add_service(IssuerServiceServer::new(LoopbackIssuer::default()))
+                .serve_with_incoming(TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_protobuf_is_malformed() {
+        let addr = serve_undecodable().await;
+        let mut c = IssuerClient::with_connector(TcpConnector::new(addr));
+        let e = c
+            .invoice_status(InvoiceStatusRequest::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(e, IssuerError::Malformed), "{e:?}");
+        assert_eq!(for_issuer(&e), MALFORMED_RESPONSE);
+    }
+
+    /// OUT_OF_RANGE is the client's own answer cap; an issuer answering an honest request never
+    /// sends it (the requests stay under the issuer's cap), so from an issuer it is malformed too.
+    #[tokio::test]
+    async fn an_issuer_sending_out_of_range_is_malformed() {
+        let (addr, _) = serve(LoopbackIssuer {
+            status: Some(Code::OutOfRange),
+            ..Default::default()
+        })
+        .await;
+        let mut c = IssuerClient::with_connector(TcpConnector::new(addr));
+        let e = c
+            .invoice_status(InvoiceStatusRequest::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(e, IssuerError::Malformed), "{e:?}");
+        assert_eq!(for_issuer(&e), MALFORMED_RESPONSE);
+        assert!(!format!("{e} {e:?}").contains(ISSUER_TEXT));
     }
 
     #[tokio::test]
@@ -572,8 +657,10 @@ mod tests {
         assert_eq!(for_issuer(&IssuerError::Malformed), MALFORMED_RESPONSE);
     }
 
+    /// The one public constructor takes no destination and no schedule: its connector is the
+    /// issuer onion of the embedded ES, on the circuits of the flow.
     #[test]
-    fn the_client_dials_the_schedule_issuer_onion_on_the_flow_scope() {
+    fn the_client_dials_the_embedded_issuer_onion_on_the_flow_scope() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _g = rt.enter();
         let dir = tempfile::tempdir().unwrap();
@@ -585,13 +672,9 @@ mod tests {
         .unwrap();
         let schedule = crate::entitlement::embedded_schedule().expect("embedded schedule");
         let flow = [0x3C; 16];
-        let _client = IssuerClient::over_tor(&t, schedule, flow).unwrap();
+        let _client = IssuerClient::over_tor(&t, flow).unwrap();
         let token = t.isolation_token(&IsolationScope::IssuerFlow(flow));
-        let connector = onion_connector(
-            &t,
-            &OnionAddress::parse(&schedule.content().issuer_onion).unwrap(),
-            &IsolationScope::IssuerFlow(flow),
-        );
+        let connector = issuer_connector(&t, flow).unwrap();
         assert_eq!(connector.isolation_token(), token);
         assert_eq!(
             connector.address().to_string(),

@@ -325,8 +325,7 @@ where
     let h = lookup(id)?;
     let transport = h.transport()?;
     h.run(async move {
-        let mut client =
-            IssuerClient::over_tor(transport, schedule, flow).map_err(issuer_category)?;
+        let mut client = IssuerClient::over_tor(transport, flow).map_err(issuer_category)?;
         client.set_deadline(deadline).map_err(issuer_category)?;
         call(client, schedule).await.map_err(issuer_category)
     })
@@ -566,12 +565,14 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeRedeem(
         let token = bytes(env, &token)?;
         let request_id = fixed::<16>(env, &request_id)?;
         let deadline = deadline(deadline_ms)?;
-        let schedule = schedule()?;
+        // The client binds the token with the embedded ES itself; a schedule that fails
+        // verification is `internal` here, like every other entitlement call.
+        schedule()?;
         let h = lookup(id)?;
         let transport = h.transport()?;
         let outcome = h.run(async {
             namespace_client(transport, &addr, ns, deadline)?
-                .redeem(schedule, &token, request_id)
+                .redeem(&token, request_id)
                 .await
                 .map_err(relay_category)
         })?;

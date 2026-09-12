@@ -228,6 +228,30 @@ class IssuerWireTest {
         assertFalse(flow.contentEquals(other))
     }
 
+    /**
+     * `TorRelayTransport.withHandle` throws `closed` once the transport is closed, before any native
+     * call. Ending a flow then is a no-op (closing dropped every flow; the native side ignores a
+     * stopped handle as well), so a `finally { endFlow(..) }` never replaces a call's outcome.
+     */
+    @Test
+    fun endFlowOnAClosedTransportIsANoOp() {
+        val flow = TorIssuerTransport.newFlow()
+        val closed = TorIssuerTransport(TorIssuerTransport.HandleCall { throw NetworkException("closed") })
+        closed.endFlow(flow)
+        closed.endFlow(flow)
+        // Every other call on a closed transport still fails with `closed`.
+        val e = assertThrows(NetworkException::class.java) { closed.invoiceStatus(flow, ByteArray(16), ByteArray(32)) }
+        assertEquals("closed", e.category)
+        // Any other failure of the native call still surfaces.
+        val broken = TorIssuerTransport(TorIssuerTransport.HandleCall { throw NetworkException("internal") })
+        assertEquals("internal", assertThrows(NetworkException::class.java) { broken.endFlow(flow) }.category)
+        // On an open transport the call reaches the handle.
+        var calls = 0
+        val open = TorIssuerTransport(TorIssuerTransport.HandleCall { calls++; ByteArray(0) })
+        open.endFlow(flow)
+        assertEquals(1, calls)
+    }
+
     @Test
     fun tokenListsArePackedWhole() {
         val a = ByteArray(354) { 1 }

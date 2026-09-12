@@ -9,7 +9,7 @@ mod common;
 use common::*;
 use ghost_client_net::categories::{for_relay, MALFORMED_RESPONSE, UNAUTHORIZED};
 use ghost_client_net::namespace_client::{redeem_binding, redeem_with, RedeemBinding};
-use ghost_client_net::RelayError;
+use ghost_client_net::{NamespaceClient, RelayError, TorTransport, TransportConfig};
 use ghost_entitlement::grid;
 use ghost_entitlement::Kind;
 use ghost_relay_api::proto::{Capability, RedeemResult, RedeemTokenResponse};
@@ -149,6 +149,92 @@ async fn tokens_bound_elsewhere_never_leave_the_device() {
         );
     }
     assert_eq!(relay.calls, 0, "no token bound elsewhere reached the relay");
+}
+
+/// `NamespaceClient::redeem`, the one redemption path that opens a Tor connection, binds tokens
+/// with the ES built into the library and takes no schedule: a real token of the test schedule,
+/// at the relay that schedule assigns it to, is refused before any I/O (had the client tried to
+/// connect, the transport, never bootstrapped, would have answered `not_bootstrapped`).
+#[tokio::test(flavor = "multi_thread")]
+async fn redemption_over_tor_binds_with_the_embedded_schedule_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = TorTransport::create(&TransportConfig {
+        state_dir: dir.path().join("state"),
+        cache_dir: dir.path().join("cache"),
+        bridge_lines: vec![],
+    })
+    .unwrap();
+    let addr = relay_address("ghost/test/relay-b", 443);
+    let a1 = pinned("a1");
+    assert!(
+        redeem_binding(schedule(), &addr, &a1).is_ok(),
+        "bound by the test ES"
+    );
+    let r = NamespaceClient::over_tor(&t, &addr, NS)
+        .redeem(&a1, [8; 16])
+        .await;
+    assert!(matches!(r, Err(RelayError::InvalidArgument)), "{r:?}");
+}
+
+/// One onion service under two slots in one week: two relay processes behind one onion service on
+/// different ports, which relays allow (they match their own onion by service key, §19.21 point
+/// 2). A token binds to the slot the ES lists under the relay's exact address and that the token
+/// was made for: a paid token is redeemable at its own relay, and the other slot's token never
+/// leaves the device (it would be refused there and deleted). An unlisted port of that service key
+/// names no slot: which process answers there is unknown.
+#[tokio::test]
+async fn one_service_key_under_two_slots_binds_by_address_and_token() {
+    let at_443 = relay_address("ghost/test/relay-b", 443);
+    let at_444 = relay_address("ghost/test/relay-b", 444);
+    let at_9001 = relay_address("ghost/test/relay-b", 9001);
+    // Slot 0 moves behind relay-b's onion service on port 444; slot 1 stays relay-b:443.
+    let shared = resigned(|c| {
+        for s in c.slots.iter_mut().filter(|s| s.slot == 0) {
+            s.onion = at_444.to_string();
+        }
+    });
+    let (a1, s0) = (pinned("a1"), pinned("s0"));
+    assert_eq!(
+        redeem_binding(&shared, &at_443, &a1).unwrap(),
+        RedeemBinding {
+            week: 2959,
+            slot: 1
+        }
+    );
+    assert_eq!(
+        redeem_binding(&shared, &at_444, &s0).unwrap(),
+        RedeemBinding {
+            week: 2959,
+            slot: 0
+        }
+    );
+    for (why, addr, token) in [
+        ("a slot-0 token at the slot-1 port", &at_443, &s0),
+        ("a slot-1 token at the slot-0 port", &at_444, &a1),
+        ("a slot-1 token at an unlisted port", &at_9001, &a1),
+        ("a slot-0 token at an unlisted port", &at_9001, &s0),
+    ] {
+        let r = redeem_binding(&shared, addr, token);
+        assert!(
+            matches!(r, Err(RelayError::InvalidArgument)),
+            "{why}: {r:?}"
+        );
+    }
+
+    // End to end: the slot-1 relay behind :443 redeems a1; s0 never reaches it.
+    let dir = tempfile::tempdir().unwrap();
+    let now = at(2959, 86_400);
+    let mut relay = InProcessRelay::new(
+        open_relay(dir.path(), shared.clone(), 1, "ghost/test/relay-b", now),
+        now,
+    );
+    let ok = redeem_with(&mut relay, &shared, &at_443, NS, &a1, [9; 16], now)
+        .await
+        .unwrap();
+    assert_eq!(ok.result, RedeemResult::Ok);
+    let r = redeem_with(&mut relay, &shared, &at_443, NS, &s0, [9; 16], now).await;
+    assert!(matches!(r, Err(RelayError::InvalidArgument)), "{r:?}");
+    assert_eq!(relay.calls, 1);
 }
 
 #[tokio::test]

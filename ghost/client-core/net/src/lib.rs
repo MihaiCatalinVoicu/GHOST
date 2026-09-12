@@ -3,8 +3,8 @@
 //! Everything the client sends leaves through this crate. Its public API can only target `.onion`
 //! destinations over an embedded Tor client (Arti): a relay connection takes an [`OnionAddress`],
 //! which rejects IPs, DNS names and URLs and validates the v3 checksum, and the issuer connection
-//! ([`IssuerClient::over_tor`]) takes the issuer onion of the Entitlement Schedule built into the
-//! library, never a caller's destination; the underlying Arti client is not exposed. tonic is
+//! ([`IssuerClient::over_tor`]) takes no destination at all: it dials the issuer onion of the
+//! Entitlement Schedule built into the library; the underlying Arti client is not exposed. tonic is
 //! linked with `codegen` only, so its clearnet `Channel`/`Endpoint` do not exist in the client
 //! graph (rust-feature-policy.sh). Inside the crate, clippy `disallowed-methods`/`disallowed-types`
 //! (`clippy.toml`) ban a listed set of clearnet and DNS APIs (std/tokio sockets and resolvers,
@@ -51,9 +51,36 @@
 //!     let _ = ghost_client_net::NamespaceClient::over_tor(t, a, [7u8; 32]);
 //! }
 //! ```
-//! Issuer calls go through [`issuer_flow`] over an [`IssuerClient`] bound to one flow; the checks
-//! before and after every call use the Entitlement Schedule built into the library
-//! ([`entitlement::embedded_schedule`]).
+//! Issuer calls go through [`issuer_flow`] over an [`IssuerClient`] bound to one flow. Neither
+//! [`IssuerClient::over_tor`] nor [`NamespaceClient::redeem`] takes a schedule: the issuer onion
+//! they dial and the relay slot a token is bound to come from the Entitlement Schedule built into
+//! the library ([`entitlement::embedded_schedule`]), so no caller can redirect an issuer call or
+//! bind a token to another relay:
+//! ```compile_fail,E0061
+//! fn redirect(t: &ghost_client_net::TorTransport, s: &ghost_entitlement::Schedule) {
+//!     let _ = ghost_client_net::IssuerClient::over_tor(t, s, [7u8; 16]); // error: no schedule
+//! }
+//! ```
+//! ```compile_fail,E0061
+//! async fn rebind(
+//!     c: &mut ghost_client_net::NamespaceClient<ghost_client_net::relay_client::OnionConnector>,
+//!     s: &ghost_entitlement::Schedule,
+//! ) {
+//!     let _ = c.redeem(s, &[0u8; 354], [0u8; 16]).await; // error: no schedule
+//! }
+//! ```
+//! ```
+//! async fn fixed(
+//!     t: &ghost_client_net::TorTransport,
+//!     c: &mut ghost_client_net::NamespaceClient<ghost_client_net::relay_client::OnionConnector>,
+//!     _s: &ghost_entitlement::Schedule,
+//! ) {
+//!     let _ = ghost_client_net::IssuerClient::over_tor(t, [7u8; 16]);
+//!     let _ = c.redeem(&[0u8; 354], [0u8; 16]).await;
+//! }
+//! ```
+//! The checks [`issuer_flow`] makes before and after each call are generic over the schedule and
+//! the [`IssuerRpc`] (I/O-free seams for the tests); the JNI runs them with the embedded ES.
 
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 

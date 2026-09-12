@@ -17,11 +17,13 @@
 //!
 //! [`NamespaceClient::redeem`] exchanges an entitlement token for a write capability of the bound
 //! namespace (Phase 8 design §10.9), on the namespace's own circuits: the relay links the
-//! redemption to the namespace anyway by minting for it. Before any I/O the token must be an
-//! ACCESS token of the Entitlement Schedule whose challenge names the slot the ES assigns to *this*
-//! relay's onion in the token's week, so a token bound elsewhere never leaves the device (0 requests,
-//! 0 connections; mutant M6). The answer is checked against the ES ([`redeem_with`]).
+//! redemption to the namespace anyway by minting for it. It binds with the Entitlement Schedule
+//! built into the library and takes no schedule of the caller's. Before any I/O the token must be
+//! an ACCESS token of that ES whose challenge names a slot the ES assigns to *this* relay in the
+//! token's week ([`redeem_binding`]), so a token bound elsewhere never leaves the device (0
+//! requests, 0 connections; mutant M6). The answer is checked against the ES ([`redeem_with`]).
 
+use crate::entitlement::embedded_schedule;
 use crate::isolation::IsolationScope;
 use crate::onion::OnionAddress;
 use crate::relay_client::{
@@ -160,15 +162,18 @@ where
     }
 
     /// Redeems an entitlement token for a write capability of the bound namespace at this relay
-    /// (design §10.9): [`redeem_with`] under the device clock. An identical retry (same token,
+    /// (design §10.9): [`redeem_with`] under the Entitlement Schedule built into the library
+    /// ([`embedded_schedule`]) and the device clock. It takes no schedule, so no caller can bind a
+    /// token to another relay; a schedule that fails verification is
+    /// [`RelayError::InvalidArgument`], with nothing sent. An identical retry (same token,
     /// namespace and `request_id`) gets the identical capability; `REPLAYED` and `WRONG_PERIOD`
     /// are in-band answers.
     pub async fn redeem(
         &mut self,
-        schedule: &Schedule,
         token: &[u8],
         request_id: [u8; REQUEST_ID_BYTES],
     ) -> Result<RedeemOutcome, RelayError> {
+        let schedule = embedded_schedule().map_err(|_| RelayError::InvalidArgument)?;
         let relay = self.relay.clone();
         let namespace = self.namespace;
         redeem_with(
@@ -216,16 +221,16 @@ pub struct RedeemBinding {
 }
 
 /// The pre-I/O check of a redemption (design §10.9, mutant M6): the token is 354 bytes of type
-/// 0x0002 under an ES ACCESS key of week p, the ES lists `relay`'s onion (by service key) for a
-/// slot s in week p, and the token verifies for (ACCESS, p, s) (challenge, `ring`, not revoked).
-/// Anything else is [`RelayError::InvalidArgument`]: the token never leaves the device.
+/// 0x0002 under an ES ACCESS key of week p, it verifies for (ACCESS, p, s) (challenge, `ring`, not
+/// revoked), and s is a slot of `relay` in week p: a slot the ES lists under `relay`'s exact
+/// address (onion and port), or, if none is, the one slot listed under its service key. Anything
+/// else is [`RelayError::InvalidArgument`]: the token never leaves the device.
 pub fn redeem_binding(
     schedule: &Schedule,
     relay: &OnionAddress,
     token: &[u8],
 ) -> Result<RedeemBinding, RelayError> {
-    let refused = |_| RelayError::InvalidArgument;
-    let token = Token::parse(token).map_err(refused)?;
+    let token = Token::parse(token).map_err(|_| RelayError::InvalidArgument)?;
     let key = schedule
         .key_by_id(token.key_id())
         .ok_or(RelayError::InvalidArgument)?;
@@ -233,21 +238,47 @@ pub fn redeem_binding(
         return Err(RelayError::InvalidArgument);
     }
     let week = key.epoch;
-    let relay_key = parse_hostname(relay.host()).map_err(refused)?;
-    let slot = schedule
-        .slots_in_week(week)
+    // The challenge names one slot, so at most one candidate verifies.
+    let slot = relay_slots(schedule, relay, week)?
         .into_iter()
         .find(|&s| {
             schedule
-                .slot_onion(s, week)
-                .and_then(|o| Onion::parse(o).ok())
-                .is_some_and(|o| o.pubkey == relay_key)
+                .verify_token(&token, Expect::AccessAtSlot(s))
+                .is_ok()
         })
         .ok_or(RelayError::InvalidArgument)?;
-    schedule
-        .verify_token(&token, Expect::AccessAtSlot(slot))
-        .map_err(|_| RelayError::InvalidArgument)?;
     Ok(RedeemBinding { week, slot })
+}
+
+/// The slots `relay` holds in `week`: those the ES lists under its exact address (onion and port),
+/// or, if none is, the one slot listed under its service key. Relays match their own onion by
+/// service key (§19.21 point 2), so one onion service may front relays of several slots on
+/// different ports; an unlisted port of such a service names no slot, since which relay answers
+/// there is unknown.
+fn relay_slots(
+    schedule: &Schedule,
+    relay: &OnionAddress,
+    week: u64,
+) -> Result<Vec<u8>, RelayError> {
+    let relay_key = parse_hostname(relay.host()).map_err(|_| RelayError::InvalidArgument)?;
+    let listed: Vec<(u8, u16)> = schedule
+        .slots_in_week(week)
+        .into_iter()
+        .filter_map(|s| {
+            let onion = Onion::parse(schedule.slot_onion(s, week)?).ok()?;
+            (onion.pubkey == relay_key).then_some((s, onion.port))
+        })
+        .collect();
+    let exact: Vec<u8> = listed
+        .iter()
+        .filter(|&&(_, port)| port == relay.port())
+        .map(|&(s, _)| s)
+        .collect();
+    Ok(match listed.as_slice() {
+        _ if !exact.is_empty() => exact,
+        [(only, _)] => vec![*only],
+        _ => Vec::new(),
+    })
 }
 
 /// A validated `RedeemToken` answer.
@@ -685,7 +716,7 @@ mod tests {
             ("long", [&forged[..], &[0]].concat()),
             ("empty", vec![]),
         ] {
-            let r = client.redeem(schedule, &t, [1; 16]).await;
+            let r = client.redeem(&t, [1; 16]).await;
             assert!(
                 matches!(r, Err(RelayError::InvalidArgument)),
                 "{why}: {r:?}"
