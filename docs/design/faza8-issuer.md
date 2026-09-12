@@ -2400,6 +2400,15 @@ Relays count a cluster's redemptions and see when it runs out; a user who then b
 - **Questions.** Q5, Q10, Q14 and Q18 are revised; Q19–Q24 are new (§17).
 - **Evidence** (Appendix D): new assumptions are checked in S6 (watch-only `transfer` and `freeze`, `store-tx-info`), S7 (Arti consensus lifetime) and S10 (T2 budget).
 
+### 19.20 Corrections found during implementation (wave A: S1, S2, S8; normative)
+
+1. **Schema v3 SQL (S8).** `ent_token_state` compares with `IS 'failed'`; `ent_purchase_frozen` and `ent_claim_guard` compare `sent` NULL-safely (a NULL written by `UPDATE OR REPLACE` must not skip them); every v3 time and grid-index CHECK (including `epoch` and `base_week`) adds `typeof(x) = 'integer'`; both SQL executors refuse bind types outside the `SqlExecutor` contract. The exact SQL of §11.3 is read with these changes; the code (`Schema.kt`, migration 3) is the reference.
+2. **Revocations are append-only (S1-FG-3).** Rule 5 of §3.1 also covers `revoked`: a later ES must keep every (kind, epoch) revoked by an earlier accepted ES. Remembered revocations are stored by every verifier: the client in `ent_schedule_fact` (new fact kind `revoked`; v3 is unreleased and is amended in place), the issuer in `es_memory` (fact kind 4), the relay next to `es_keys` in `nullifiers.redb`. `entitlement-schedule.sh` checks each committed version against the whole first-parent history.
+3. **Encodings fixed by vectors (S1).** Permutation-proof hashes encode n as I2OSP(n, 256) and e as I2OSP(e, 4); the seed derivation's HKDF-SHA256 uses `ring::hkdf` (standard RFC 5869); `Schedule::verify_token(&token, Expect)` with `Expect ∈ {AccessAtSlot(s), AccessAnySlot, Invite, Credit}` is the one verification entry point; the pinned schedule key table is per network and `Schedule::verify` refuses every ES until a key is pinned (S2b).
+4. **Relay directory file (S2).** Until the Phase 14 signed manifest exists, `ghost/protocol/entitlement/relay-directory.txt` (`relay <onion:port> <16-byte operator id hex>`, the client's `RelayEntry` pair) is committed next to the ES; `entitlement-schedule.sh` requires every week to have ≥ 3 slots whose relays span ≥ 2 operators. S2b commits it with the ES and the pinned key in one change.
+5. **Ops tools (S2).** One binary `ghost-issuer-ops` with subcommands; `keys-seal` is the K3 load tool (per-epoch `k_seal` values into a `GHKL` load file); only `ops/src/report.rs` prints and only `ops/src/output.rs` writes files.
+6. **Invite v2 (S8).** The offline token check is injected into `:identity` (`Invite.TokenCheck`, adapter over `nativeVerifyToken` in S7/S9); an invite is usable on days before `expiry_day`; an invite whose token epoch has not started is refused; drop slots are 0..31; drop keys and ephemeral keys must be canonical, non-small-order X25519 points; the invite nonce is recorded inside the activation transaction through a transaction-bound `NonceStore` (S9).
+
 ---
 
 ## Appendix A: ADR drafts (Romanian)
