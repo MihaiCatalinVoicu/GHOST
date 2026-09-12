@@ -27,6 +27,12 @@
 //!   (`block` for a coinbase, whose unlock time never lets it count). Bodies are bounded. Fields
 //!   the issuer does not read are ignored: [`TRANSFER_FIELDS`] lists the ones it reads, the
 //!   `ChainPort` field set plus `type` (RP §6.8; regtest step 18).
+//! - **Subaddress count.** Probed one index at a time (`get_address` with `address_index`, −15
+//!   beyond the count), galloping from the last count then bisecting: never the whole list, which
+//!   outgrows any body bound as minors are used up and costs wallet-rpc a scan of every transfer
+//!   per row (review finding S5-MON-2).
+//! - **Network.** At startup the daemon must run the configured network (`get_info` `nettype`,
+//!   review finding S5-MON-5).
 //! - **Errors.** Typed, no catch-all: `Transport` (unreachable, timed out, an HTTP status other
 //!   than 200 and 401, a broken body), `Auth`, `Rpc { code }` (the server's JSON-RPC error),
 //!   `Decode`, `ReorgDepth` (the wallet refused a reorganisation deeper than its window). The
@@ -38,6 +44,7 @@ use std::net::SocketAddr;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use ghost_entitlement::monero::MoneroNetwork;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1::{self, SendRequest};
@@ -58,12 +65,13 @@ use super::{hex_decode_32, hex_encode, IncomingEntry, PaymentRail, RailError, Ra
 pub const JSON_RPC_PATH: &str = "/json_rpc";
 /// Bound of an answer body.
 pub const MAX_BODY_BYTES: usize = 1 << 20;
-/// Bound of the list answers (`get_transfers`, `get_address` with every subaddress of account 0).
+/// Bound of the list answers (`get_transfers`, the addresses of one `create_address` replay chunk).
 pub const MAX_LIST_BODY_BYTES: usize = 64 << 20;
 /// Most subaddresses one `create_address` call creates (RM §3.3).
 pub const MAX_CREATE_COUNT: u32 = 65_536;
 /// wallet-rpc error codes the rail tells apart (`wallet_rpc_server_error_codes.h`).
 pub const ERROR_WRONG_TXID: i64 = -8;
+pub const ERROR_ADDRESS_INDEX_OUT_OF_BOUNDS: i64 = -15;
 pub const ERROR_WATCH_ONLY: i64 = -29;
 /// The text of wallet2's `reorg_depth_error`, which wallet-rpc reports under a generic code.
 const REORG_DEPTH_TEXT: &str = "reorg exceeds maximum allowed depth";
@@ -534,6 +542,12 @@ struct DaemonInfo {
 }
 
 #[derive(Deserialize)]
+struct DaemonNetwork {
+    nettype: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
 struct Transfers {
     // wallet-rpc leaves an empty list out.
     #[serde(default, rename = "in")]
@@ -603,6 +617,8 @@ pub enum WalletCheckError {
     NotWatchOnly,
     /// The wallet's primary address is not the configured treasury.
     TreasuryMismatch,
+    /// The daemon runs another network than the configured one.
+    NetworkMismatch,
     Rail(RailError),
 }
 
@@ -612,6 +628,9 @@ impl std::fmt::Display for WalletCheckError {
             WalletCheckError::NotWatchOnly => f.write_str("the wallet is not watch-only"),
             WalletCheckError::TreasuryMismatch => {
                 f.write_str("the wallet's primary address is not the treasury")
+            }
+            WalletCheckError::NetworkMismatch => {
+                f.write_str("the daemon runs another network than the configured one")
             }
             WalletCheckError::Rail(e) => write!(f, "{e}"),
         }
@@ -625,11 +644,17 @@ impl std::error::Error for WalletCheckError {}
 pub struct MoneroWalletRpc {
     wallet: RpcClient,
     daemon: RpcClient,
+    /// The last subaddress count: where the next count's search starts (a hint only).
+    known_count: Mutex<u32>,
 }
 
 impl MoneroWalletRpc {
     pub fn new(wallet: RpcClient, daemon: RpcClient) -> Self {
-        Self { wallet, daemon }
+        Self {
+            wallet,
+            daemon,
+            known_count: Mutex::new(1),
+        }
     }
 
     pub fn wallet(&self) -> &RpcClient {
@@ -674,6 +699,31 @@ impl MoneroWalletRpc {
         }
     }
 
+    /// The daemon runs the configured network: `get_info` `nettype` is `mainnet`, `stagenet`, or
+    /// `fakechain` for regtest (review finding S5-MON-5). With [`RailHeight::synced_view`], which
+    /// refuses a daemon behind the wallet, this is what the issuer can check of "the synced view
+    /// is the wallet's own daemon" (§5.4): wallet-rpc does not name its daemon.
+    pub fn check_daemon_network(&self, network: MoneroNetwork) -> Result<(), WalletCheckError> {
+        let answer = self
+            .daemon
+            .call("get_info", json!({}))
+            .map_err(WalletCheckError::Rail)?;
+        let info: DaemonNetwork = decode(answer).map_err(WalletCheckError::Rail)?;
+        if info.status != "OK" {
+            return Err(WalletCheckError::Rail(RailError::Decode));
+        }
+        let expected = match network {
+            MoneroNetwork::Mainnet => "mainnet",
+            MoneroNetwork::Stagenet => "stagenet",
+            MoneroNetwork::Regtest => "fakechain",
+        };
+        if info.nettype == expected {
+            Ok(())
+        } else {
+            Err(WalletCheckError::NetworkMismatch)
+        }
+    }
+
     /// Runbook R5 step 2 (§7.5, RM §3.3): `create_address` in chunks of at most
     /// [`MAX_CREATE_COUNT`] until the restored wallet holds every minor through `highest_minor`,
     /// so its scan covers every invoice ever handed out. Returns the subaddress count.
@@ -698,16 +748,42 @@ impl MoneroWalletRpc {
         Ok(count)
     }
 
-    /// Runbook R5 step 3: `rescan_blockchain` (within the long timeout).
-    pub fn rescan(&self) -> Result<(), RailError> {
+    /// Runbook R5 step 3: `rescan_blockchain` within `timeout` (a restored wallet scans the chain
+    /// from its restore height: it may take longer than the long timeout of `refresh`).
+    pub fn rescan(&self, timeout: Duration) -> Result<(), RailError> {
         self.wallet
             .call_with(
                 "rescan_blockchain",
                 json!({"hard": false}),
-                self.wallet.timeouts().long,
+                timeout,
                 MAX_BODY_BYTES,
             )
             .map(|_| ())
+    }
+
+    /// `get_address {"account_index":0,"address_index":[k]}`: true when minor `k` exists, false
+    /// for wallet-rpc's −15 (an index at or beyond the count).
+    fn has_minor(&self, k: u32) -> Result<bool, RailError> {
+        match self.wallet.call(
+            "get_address",
+            json!({"account_index": 0, "address_index": [k]}),
+        ) {
+            Ok(answer) => {
+                let answer: AccountAddresses = decode(answer)?;
+                match answer.addresses.as_slice() {
+                    [row] if row.address_index == k => Ok(true),
+                    _ => Err(RailError::Decode),
+                }
+            }
+            Err(RailError::Rpc {
+                code: ERROR_ADDRESS_INDEX_OUT_OF_BOUNDS,
+            }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn known_count(&self) -> MutexGuard<'_, u32> {
+        self.known_count.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -732,22 +808,57 @@ impl PaymentRail for MoneroWalletRpc {
     }
 
     fn address_count(&self) -> Result<u32, RailError> {
-        let answer: AccountAddresses = decode(self.wallet.call_with(
-            "get_address",
-            json!({"account_index": 0}),
-            self.wallet.timeouts().call,
-            MAX_LIST_BODY_BYTES,
-        )?)?;
-        // Every minor from 0, in order: the count is the next minor the wallet creates.
-        let contiguous = answer
-            .addresses
-            .iter()
-            .enumerate()
-            .all(|(i, row)| usize::try_from(row.address_index).is_ok_and(|m| m == i));
-        if !contiguous || answer.addresses.is_empty() {
-            return Err(RailError::Decode);
+        // The subaddresses of an account are the minors 0..count, so "minor k exists" holds below
+        // the count and fails from it on: the count is the first missing minor. The search starts
+        // at the last count (two probes when nothing changed), gallops up or down, then bisects.
+        // An index beyond u32 does not exist; a count of 2^32 does not decode.
+        let exists = |k: u64| match u32::try_from(k) {
+            Ok(k) => self.has_minor(k),
+            Err(_) => Ok(false),
+        };
+        let hint = u64::from(*self.known_count()).max(1);
+        // From here on minor `lo` exists and minor `hi` does not.
+        let (mut lo, mut hi);
+        if exists(hint - 1)? {
+            lo = hint - 1;
+            let mut step = 1u64;
+            loop {
+                let probe = lo + step;
+                if !exists(probe)? {
+                    hi = probe;
+                    break;
+                }
+                lo = probe;
+                step = step.saturating_mul(2);
+            }
+        } else {
+            hi = hint - 1;
+            let mut step = 1u64;
+            loop {
+                // Minor 0 is the primary address: a wallet without it does not decode.
+                if hi == 0 {
+                    return Err(RailError::Decode);
+                }
+                let probe = hi.saturating_sub(step);
+                if exists(probe)? {
+                    lo = probe;
+                    break;
+                }
+                hi = probe;
+                step = step.saturating_mul(2);
+            }
         }
-        u32::try_from(answer.addresses.len()).map_err(|_| RailError::Decode)
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if exists(mid)? {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let count = u32::try_from(hi).map_err(|_| RailError::Decode)?;
+        *self.known_count() = count;
+        Ok(count)
     }
 
     fn height(&self) -> Result<RailHeight, RailError> {

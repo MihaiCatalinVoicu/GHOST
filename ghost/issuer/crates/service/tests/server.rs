@@ -7,7 +7,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,8 +21,11 @@ use ghost_entitlement::Kind;
 use ghost_issuer::config::{Config, ConfigError};
 use ghost_issuer::custody::{CustodySecret, SealLoad};
 use ghost_issuer::quantum::{Clock, ReplyQuantum};
+use ghost_issuer::rail::digest::Credentials;
+use ghost_issuer::rail::monero::{MoneroWalletRpc, RpcClient, Timeouts};
 use ghost_issuer::server::{self, Invocation, Refusal, ServeSettings};
 use ghost_issuer::service::OpenMode;
+use ghost_issuer::store::{self, MetaKey};
 use ghost_issuer_api::proto as wire;
 use ghost_issuer_api::proto::issuer_service_client::IssuerServiceClient;
 use serde_json::json;
@@ -234,6 +237,7 @@ fn arguments_and_exit_status() {
     let normal = Invocation {
         config: "c.toml".into(),
         mode: OpenMode::Normal,
+        restore_wallet: false,
     };
     assert_eq!(
         server::parse_args(&args(&["--config", "c.toml"])),
@@ -244,16 +248,29 @@ fn arguments_and_exit_status() {
         &["--restore", "--config", "c.toml"],
     ] {
         assert_eq!(
-            server::parse_args(&args(restore)).map(|i| i.mode),
-            Ok(OpenMode::Restore)
+            server::parse_args(&args(restore)).map(|i| (i.mode, i.restore_wallet)),
+            Ok((OpenMode::Restore, false))
         );
     }
+    // Runbook R5 (review finding S5-MON-1), alone or with a B1 restore.
+    assert_eq!(
+        server::parse_args(&args(&["--restore-wallet", "--config", "c.toml"]))
+            .map(|i| (i.mode, i.restore_wallet)),
+        Ok((OpenMode::Normal, true))
+    );
+    assert_eq!(
+        server::parse_args(&args(&["--config", "c", "--restore", "--restore-wallet"]))
+            .map(|i| (i.mode, i.restore_wallet)),
+        Ok((OpenMode::Restore, true))
+    );
     for bad in [
         &[][..],
         &["--config"],
         &["--restore"],
+        &["--restore-wallet"],
         &["--config", "a", "--config", "b"],
         &["--config", "a", "--restore", "--restore"],
+        &["--config", "a", "--restore-wallet", "--restore-wallet"],
         &["--config", "a", "--verbose"],
     ] {
         assert_eq!(
@@ -424,13 +441,20 @@ fn the_wallet_must_be_watch_only_and_the_treasury() {
     let watch_only = answering(false, treasury.clone());
     let full = answering(true, treasury.clone());
     let other = answering(false, encode_address(18, 9, 10));
-    let daemon = Emulator::start(Options::default(), |_| {
-        Reply::Error(-32601, "Method not found")
-    });
+    let daemon_on = |nettype: &'static str| {
+        Emulator::start(Options::default(), move |c| match c.method.as_str() {
+            "get_info" => Reply::Result(json!({"height": 5, "synchronized": true,
+                                               "busy_syncing": false, "status": "OK",
+                                               "nettype": nettype})),
+            _ => Reply::Error(-32601, "Method not found"),
+        })
+    };
+    let daemon = daemon_on("fakechain");
+    let stagenet_daemon = daemon_on("stagenet");
     let login = format!("{}:{}\n", epee::USER, epee::PASSWORD);
     std::fs::write(dir.path().join("wallet.login"), &login).unwrap();
     std::fs::write(dir.path().join("daemon.login"), &login).unwrap();
-    let config_for = |wallet: &Emulator| {
+    let config_with = |wallet: &Emulator, daemon: &Emulator| {
         let w = lit(format!("http://{}", wallet.endpoint().addr()));
         let d = lit(format!("http://{}", daemon.endpoint().addr()));
         Config::parse(&config_text(
@@ -442,7 +466,13 @@ fn the_wallet_must_be_watch_only_and_the_treasury() {
         ))
         .unwrap()
     };
+    let config_for = |wallet: &Emulator| config_with(wallet, &daemon);
     assert!(server::connect_wallet(&config_for(&watch_only)).is_ok());
+    assert_eq!(
+        server::connect_wallet(&config_with(&watch_only, &stagenet_daemon)).err(),
+        Some(Refusal::Wallet),
+        "a regtest configuration over a stagenet daemon (review finding S5-MON-5)"
+    );
     assert_eq!(
         server::connect_wallet(&config_for(&full)).err(),
         Some(Refusal::Wallet),
@@ -509,6 +539,84 @@ fn the_state_opens_in_the_data_directory_and_keeps_the_restore_height() {
         Err(Refusal::State)
     );
     assert_eq!(server::record_restore_height(&issuer, 5), Ok(()));
+}
+
+/// Runbook R5 steps 2–3 as `--restore-wallet` runs them (review finding S5-MON-1): the operator
+/// gives no number; the replay reaches the database's `highest_minor`, then the chain is rescanned
+/// once, after the last `create_address`.
+#[test]
+fn restore_wallet_replays_through_the_highest_minor_then_rescans() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("data")).unwrap();
+    let config = Config::parse(&config_text(dir.path(), &[])).unwrap();
+    let (schedule, keys) = fixture::small().clone();
+    let issuer = server::open_issuer(
+        &config,
+        schedule,
+        keys,
+        Box::new(RailHandle(ChainPort::new(START_BLOCKS))),
+        OpenMode::Normal,
+        BASE,
+    )
+    .unwrap();
+    {
+        let mut tx = issuer.store().write().unwrap();
+        store::set_meta(&mut *tx, MetaKey::HighestMinor, 70_000).unwrap();
+        tx.commit().unwrap();
+    }
+    let rescan_fails = Arc::new(AtomicBool::new(false));
+    let fails = Arc::clone(&rescan_fails);
+    let count = Arc::new(AtomicU64::new(3));
+    let n = Arc::clone(&count);
+    let wallet = Emulator::start(Options::default(), move |c| match c.method.as_str() {
+        "get_address" => epee::get_address_reply(c, n.load(Ordering::SeqCst)),
+        "create_address" => {
+            let k = c.params["count"].as_u64().unwrap();
+            let first = n.fetch_add(k, Ordering::SeqCst);
+            Reply::Result(json!({
+                "address": epee::SUBADDRESS,
+                "address_index": first,
+                "address_indices": (first..first + k).collect::<Vec<u64>>(),
+                "addresses": vec![epee::SUBADDRESS; k as usize],
+            }))
+        }
+        "rescan_blockchain" if fails.load(Ordering::SeqCst) => Reply::Error(-1, "refused"),
+        "rescan_blockchain" => Reply::Result(json!({})),
+        _ => Reply::Error(-32601, "Method not found"),
+    });
+    let daemon = Emulator::start(Options::default(), |_| {
+        Reply::Error(-32601, "Method not found")
+    });
+    let client = |e: &Emulator| {
+        let credentials = Credentials::new(epee::USER, epee::PASSWORD).unwrap();
+        RpcClient::new(e.endpoint(), credentials, Timeouts::default()).unwrap()
+    };
+    let rail = MoneroWalletRpc::new(client(&wallet), client(&daemon));
+    assert_eq!(server::restore_wallet(&issuer, &rail), Ok(70_001));
+    let calls = wallet.calls();
+    let created: Vec<u64> = calls
+        .iter()
+        .filter(|c| c.method == "create_address")
+        .map(|c| c.params["count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(created, [65_536, 70_001 - 3 - 65_536]);
+    let last_create = calls
+        .iter()
+        .rposition(|c| c.method == "create_address")
+        .unwrap();
+    let rescans: Vec<usize> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.method == "rescan_blockchain")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(rescans.len(), 1);
+    assert!(rescans[0] > last_create, "the rescan follows the replay");
+    assert_eq!(calls[rescans[0]].params, json!({"hard": false}));
+    // A failed rescan refuses the start (exit status 5): the issuer never serves a wallet whose
+    // view may miss payments.
+    rescan_fails.store(true, Ordering::SeqCst);
+    assert_eq!(server::restore_wallet(&issuer, &rail), Err(Refusal::Wallet));
 }
 
 #[test]

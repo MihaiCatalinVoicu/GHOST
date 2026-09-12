@@ -120,8 +120,20 @@ impl TimedIssuer {
         F: FnOnce(&Issuer, u64) -> Result<T, Status> + Send + 'static,
     {
         let received = Instant::now();
-        let result = match self.signing.acquire().await {
-            Ok(_permit) => self.blocking(f).await,
+        let result = match Arc::clone(&self.signing).acquire_owned().await {
+            Ok(permit) => {
+                let issuer = Arc::clone(&self.issuer);
+                let clock = Arc::clone(&self.clock);
+                // The permit moves into the blocking work and is released when that work ends. A
+                // caller that stops waiting (a client grpc-timeout, a reset stream) drops only this
+                // future, so it cannot free the permit while its signing still runs (§5.9).
+                tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    f(&issuer, clock())
+                })
+                .await
+                .unwrap_or_else(|_| Err(unavailable()))
+            }
             Err(_) => Err(unavailable()),
         };
         tokio::time::sleep_until(received + self.quantum.release_after(received.elapsed())).await;

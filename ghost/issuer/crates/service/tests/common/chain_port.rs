@@ -29,6 +29,8 @@ pub struct Tx {
 pub struct Chain {
     pub blocks: u64,
     pub daemon_ahead: u64,
+    /// The configured daemon lags the wallet (it is not the wallet's own daemon).
+    pub daemon_behind: u64,
     pub synced: bool,
     /// Every call fails with this error while set.
     pub failure: Option<RailError>,
@@ -71,6 +73,7 @@ impl ChainPort {
         Self::from_chain(Chain {
             blocks,
             daemon_ahead: 0,
+            daemon_behind: 0,
             synced: true,
             failure: None,
             addresses: vec![address(0)],
@@ -168,6 +171,26 @@ impl ChainPort {
         self.lock().daemon_ahead = blocks;
     }
 
+    pub fn set_daemon_behind(&self, blocks: u64) {
+        self.lock().daemon_behind = blocks;
+    }
+
+    /// The view-only wallet restored from its keys without runbook R5's replay (§7.5): it holds
+    /// only its first `keep` subaddresses and sees no transfer to a later minor.
+    pub fn restore_without_replay(&self, keep: u32) {
+        self.lock().addresses.truncate(keep as usize);
+    }
+
+    /// Runbook R5's replay (`create_address` through `highest`) and rescan: the wallet holds every
+    /// minor through `highest` again and sees their transfers.
+    pub fn replay_through(&self, highest: u32) {
+        let mut c = self.lock();
+        while c.addresses.len() <= highest as usize {
+            let minor = c.addresses.len() as u32;
+            c.addresses.push(address(minor));
+        }
+    }
+
     pub fn set_failure(&self, failure: Option<RailError>) {
         self.lock().failure = failure;
     }
@@ -212,12 +235,14 @@ impl PaymentRail for ChainPort {
             Some(e) => Err(e),
             None => Ok(RailHeight {
                 wallet: c.blocks,
-                daemon: c.blocks + c.daemon_ahead,
+                daemon: (c.blocks + c.daemon_ahead).saturating_sub(c.daemon_behind),
                 synced: c.synced,
             }),
         }
     }
 
+    // A wallet sees transfers to the subaddresses it holds (a restored wallet without the replay
+    // misses the later ones, §7.5).
     fn transfers(&self, from: u64, to: u64) -> Result<Vec<IncomingEntry>, RailError> {
         let c = self.lock();
         if let Some(e) = c.failure {
@@ -225,6 +250,7 @@ impl PaymentRail for ChainPort {
         }
         Ok(c.txs
             .iter()
+            .filter(|t| (t.minor as usize) < c.addresses.len())
             .filter(|t| t.height.is_none_or(|h| from <= h && h <= to))
             .map(|t| Self::entry(&c, t))
             .collect())
@@ -237,6 +263,7 @@ impl PaymentRail for ChainPort {
         }
         Ok(c.txs
             .iter()
+            .filter(|t| (t.minor as usize) < c.addresses.len())
             .find(|t| t.txid == *txid)
             .map(|t| Self::entry(&c, t)))
     }

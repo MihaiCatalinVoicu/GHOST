@@ -36,13 +36,15 @@ use ghost_entitlement::monero::{
 use ghost_entitlement::Schedule;
 use ghost_issuer::custody::KeyWindow;
 use ghost_issuer::journal::FileJournal;
+use ghost_issuer::pool::PoolError;
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{
     Endpoint, MoneroWalletRpc, RpcClient, Timeouts, WalletCheckError, TRANSFER_FIELDS,
 };
 use ghost_issuer::rail::{PaymentRail, RailError};
 use ghost_issuer::reconcile::{self, CounterId, Counters};
-use ghost_issuer::scanner::TickReport;
+use ghost_issuer::scanner::{TickError, TickReport};
+use ghost_issuer::server;
 use ghost_issuer::service::{Issuer, IssuerParams, OpenMode, OsRandom, Ports};
 use ghost_issuer::store::{self, MetaKey, RedbStore};
 use ghost_issuer_api::proto as wire;
@@ -663,6 +665,22 @@ fn regtest_scenario() {
     let happy = t.request("happy");
     t.pay(&happy.subaddress, PRICE);
     t.tick();
+    // RP §6.8 (with step 18): a pool entry of the real wallet carries every field the issuer
+    // reads (review finding S5-MON-4).
+    let pooled = rpc(
+        &t.issuer_wallet.rpc,
+        "get_transfers",
+        json!({"pool": true, "account_index": 0}),
+    );
+    let pooled = pooled["pool"]
+        .as_array()
+        .expect("the payment is in the pool");
+    assert!(!pooled.is_empty());
+    for e in pooled {
+        for f in TRANSFER_FIELDS {
+            assert!(e.get(f).is_some(), "{f} missing in the pool entry {e}");
+        }
+    }
     let s = t.blind_sign(&happy);
     assert_eq!(
         (s.state, s.credited_atomic, s.seen_atomic),
@@ -777,7 +795,9 @@ fn regtest_scenario() {
 
     // Step 9: a restored wallet scans only minors below its lookahead (200 above the highest one
     // it received on). Without runbook R5's create_address replay the payment to invoice #240 is
-    // missed (the negative control); with it, found.
+    // missed (the negative control), and the issuer, seeing fewer subaddresses than it handed out,
+    // decides nothing (review finding S5-MON-1); after `--restore-wallet`'s replay and rescan it
+    // is found.
     let mut batch_invoices = Vec::new();
     for i in 0..250 {
         t.refill();
@@ -804,7 +824,11 @@ fn regtest_scenario() {
         std::fs::remove_file(t.issuer_wallet.dir.join(name)).unwrap();
     }
     t.generate_view_wallet("issuer-view");
-    t.tick();
+    assert_eq!(
+        t.issuer().scan_tick_at(BASE).unwrap_err(),
+        TickError::WalletIncomplete,
+        "the refreshed restored wallet holds fewer subaddresses than the issuer handed out"
+    );
     assert!(
         rail.transfers(t.restore_height, t.height())
             .unwrap()
@@ -815,17 +839,24 @@ fn regtest_scenario() {
     let s = t.status(&target).unwrap();
     assert_eq!(
         (s.state, s.credited_atomic),
-        (AWAITING_PAYMENT, 0),
-        "negative control"
+        (AWAITING_CONFIRMATIONS, PRICE),
+        "fail closed: nothing is decided from the restored wallet"
+    );
+    let restored_count = rail.address_count().unwrap();
+    assert_eq!(
+        t.issuer().pool_refill_at(BASE).unwrap_err(),
+        PoolError::WalletIncomplete
+    );
+    assert_eq!(
+        rail.address_count().unwrap(),
+        restored_count,
+        "the refill never replays the wallet itself"
     );
     let highest = store::meta(&*t.issuer().store().read().unwrap(), MetaKey::HighestMinor)
         .unwrap()
         .unwrap();
-    let count = rail
-        .replay_subaddresses(u32::try_from(highest).unwrap())
-        .unwrap();
+    let count = server::restore_wallet(t.issuer(), &rail).unwrap();
     assert!(u64::from(count) > highest);
-    rail.rescan().unwrap();
     t.tick();
     let s = t.status(&target).unwrap();
     assert_eq!(
@@ -928,6 +959,28 @@ fn regtest_scenario() {
     t.open_issuer();
     let report = t.issuer().pool_refill_at(BASE).unwrap();
     assert!(report.reconciled && report.added >= 1, "{report:?}");
+    // The probed count equals the length of the wallet's whole list, and a probe beyond it is
+    // wallet-rpc's −15 (review finding S5-MON-2).
+    let listed = rpc(
+        &t.issuer_wallet.rpc,
+        "get_address",
+        json!({"account_index": 0}),
+    )["addresses"]
+        .as_array()
+        .unwrap()
+        .len();
+    let probed = t.rail();
+    assert_eq!(
+        usize::try_from(probed.address_count().unwrap()).unwrap(),
+        listed
+    );
+    assert_eq!(
+        probed.wallet().call(
+            "get_address",
+            json!({"account_index": 0, "address_index": [listed]})
+        ),
+        Err(RailError::Rpc { code: -15 })
+    );
     t.tick();
     let after = t.request("after-restart");
     {

@@ -133,6 +133,13 @@ mp_case unpinned-fetch fail "Dockerfile: fetches Monero binaries without reading
 mp_case own-archive fail "fetch-monero.sh:3: a Monero archive name of its own"
 mp_case missing-job fail "the regtest workflow is missing"
 mp_case job-no-check fail "does not check the archive with sha256sum -c"
+# Review fixes S5-MON-3, S5-SEC-2, S5-SEC-3, S5-SEC-4.
+mp_case job-comment-check fail "monero-regtest.yml: does not check the archive with sha256sum -c"
+mp_case job-check-after-extract fail "checks the archive with sha256sum -c only before its download or after its extraction"
+mp_case job-paths fail "pull_request paths miss ghost/Cargo.lock"
+mp_case dlsrc-templated fail "Dockerfile: fetches Monero binaries without reading"
+mp_case dockerfile-no-check fail "Dockerfile: fetches Monero binaries without checking them with sha256sum -c"
+mp_case monero-image fail "docker-compose.stagenet.yml:3: a Monero image not built from"
 # Phase 8 (design §5.2, §14.1, RC G18): proto-check.sh checks every request message, not every
 # file. The fixture (test-harness/gates/negative-proto/README.md) has eight unversioned requests in
 # two files, each next to a versioned one: exactly those eight are reported, by name, and none of

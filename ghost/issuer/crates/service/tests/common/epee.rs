@@ -19,6 +19,41 @@ use serde_json::{json, Value};
 pub const USER: &str = "ci";
 pub const PASSWORD: &str = "emulated-password";
 const REALM: &str = "monero-rpc";
+/// A 95-character subaddress as wallet-rpc writes it.
+pub const SUBADDRESS: &str =
+    "8BnERTpvL5MbCLtj5n9No7J5oE5hHiB3tVCK5cjSvCsYWD2WRJLFuWeKTLiXo5QJqt2ZwUaLy2Vh1Ad51K7FNgqcHgjW85o";
+
+/// wallet-rpc's `get_address` of account 0 over `count` subaddresses (`on_get_address`): the rows
+/// `address_index` asks for, error −15 (`ADDRESS_INDEX_OUT_OF_BOUNDS`) for an index at or beyond
+/// the count, and without `address_index` every row (about 150 bytes each, so a large wallet's
+/// list exceeds any body bound).
+pub fn get_address_reply(call: &Call, count: u64) -> Reply {
+    let row = |i: u64| {
+        format!(r#"{{"address":"{SUBADDRESS}","address_index":{i},"label":"","used":false}}"#)
+    };
+    let rows: Vec<String> = match call.params.get("address_index").and_then(Value::as_array) {
+        Some(indices) => {
+            let mut rows = Vec::new();
+            for i in indices {
+                let i = i.as_u64().unwrap();
+                if i >= count {
+                    return Reply::Error(-15, "address index is out of bound");
+                }
+                rows.push(row(i));
+            }
+            rows
+        }
+        None => (0..count).map(row).collect(),
+    };
+    Reply::Body(
+        format!(
+            r#"{{"id":{},"jsonrpc":"2.0","result":{{"address":"{SUBADDRESS}","addresses":[{}]}}}}"#,
+            call.id,
+            rows.join(",")
+        )
+        .into_bytes(),
+    )
+}
 
 /// One authenticated request as the script sees it.
 #[derive(Debug, Clone)]

@@ -96,7 +96,7 @@ fn every_reachable_status_uses_the_fixed_vocabulary() {
             }
         }
     }
-    assert_eq!(count, 4 * 3 * 2 * 6 * 2);
+    assert_eq!(count, 5 * 3 * 2 * 6 * 2);
 }
 
 #[test]

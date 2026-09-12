@@ -250,6 +250,9 @@ pub enum TickOutcome {
     Synced,
     /// The rail answered, but the view was not synced.
     Unsynced,
+    /// The wallet holds fewer subaddresses than the issuer handed out (restored without runbook
+    /// R5's replay): nothing was decided (review finding S5-MON-1).
+    WalletIncomplete,
     Failed(RailError),
 }
 

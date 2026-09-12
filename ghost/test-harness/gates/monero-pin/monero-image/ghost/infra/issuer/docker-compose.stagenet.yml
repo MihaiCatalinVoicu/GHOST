@@ -1,0 +1,4 @@
+services:
+  monerod:
+    image: ghcr.io/example/monerod:v0.18.4.0
+    network_mode: service:issuer

@@ -45,10 +45,11 @@ pub const KEYS: [&str; 13] = [
 ];
 
 /// Every string value the status object can carry.
-pub const CODES: [&str; 9] = [
+pub const CODES: [&str; 10] = [
     "SCANNER_OK",
     "SCANNER_STALLED",
     "WALLET_UNREACHABLE",
+    "WALLET_INCOMPLETE",
     "REORG_DEPTH",
     "POOL_EMPTY",
     "POOL_LOW",
@@ -62,14 +63,17 @@ pub enum ScannerCode {
     Ok,
     Stalled,
     WalletUnreachable,
+    /// The wallet was restored without runbook R5's replay: run `ghost-issuer --restore-wallet`.
+    WalletIncomplete,
     ReorgDepth,
 }
 
 impl ScannerCode {
-    pub const ALL: [ScannerCode; 4] = [
+    pub const ALL: [ScannerCode; 5] = [
         ScannerCode::Ok,
         ScannerCode::Stalled,
         ScannerCode::WalletUnreachable,
+        ScannerCode::WalletIncomplete,
         ScannerCode::ReorgDepth,
     ];
 
@@ -78,6 +82,7 @@ impl ScannerCode {
             ScannerCode::Ok => "SCANNER_OK",
             ScannerCode::Stalled => "SCANNER_STALLED",
             ScannerCode::WalletUnreachable => "WALLET_UNREACHABLE",
+            ScannerCode::WalletIncomplete => "WALLET_INCOMPLETE",
             ScannerCode::ReorgDepth => "REORG_DEPTH",
         }
     }
@@ -207,6 +212,7 @@ impl Issuer {
                 Some(t) => match t.outcome {
                     TickOutcome::Synced => ScannerCode::Ok,
                     TickOutcome::Unsynced => ScannerCode::Stalled,
+                    TickOutcome::WalletIncomplete => ScannerCode::WalletIncomplete,
                     TickOutcome::Failed(RailError::ReorgDepth) => ScannerCode::ReorgDepth,
                     TickOutcome::Failed(_) => ScannerCode::WalletUnreachable,
                 },

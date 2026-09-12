@@ -24,9 +24,14 @@ pub struct RailHeight {
 
 impl RailHeight {
     /// A **synced view** (§5.4): the daemon is synchronized and the wallet is at most one block
-    /// behind it. Negative decisions (EXPIRED) and new XMR invoices need one.
+    /// behind it. Negative decisions (EXPIRED) and new XMR invoices need one. The wallet is also at
+    /// most one block ahead of it: the wallet's `refresh` has just reached its own daemon's height,
+    /// so a daemon further behind is not the wallet's daemon (a lagging or misconfigured one) and
+    /// says nothing about the wallet's view (review finding S5-MON-5).
     pub fn synced_view(&self) -> bool {
-        self.synced && self.wallet.saturating_add(1) >= self.daemon
+        self.synced
+            && self.wallet.saturating_add(1) >= self.daemon
+            && self.wallet <= self.daemon.saturating_add(1)
     }
 }
 
@@ -81,8 +86,9 @@ pub trait PaymentRail: Send + Sync {
     /// `create_address {"account_index":0,"count":1}`: the new minor and its address text,
     /// validated by the caller (§7.7).
     fn new_address(&self) -> Result<(u32, String), RailError>;
-    /// `get_address {"account_index":0}`: the number of subaddresses of account 0 (startup and
-    /// in-process reconciliation of `highest_minor`, §7.2, §19.6).
+    /// The number of subaddresses of account 0 (`get_address`): the reconciliation of
+    /// `highest_minor` (§7.2, §19.6) and the completeness check of the scanner and the refill (a
+    /// wallet holding fewer than `highest_minor + 1` was restored without runbook R5's replay).
     fn address_count(&self) -> Result<u32, RailError>;
     /// `refresh` then the wallet and daemon heights.
     fn height(&self) -> Result<RailHeight, RailError>;
@@ -92,6 +98,30 @@ pub trait PaymentRail: Send + Sync {
     /// `get_transfer_by_txid`: the incoming entry of one transaction, `None` when the wallet does
     /// not know it (restore and reconciliation checks).
     fn transfer_by_txid(&self, txid: &[u8; 32]) -> Result<Option<IncomingEntry>, RailError>;
+}
+
+/// A shared rail: the process keeps the wallet for runbook R5 (`--restore-wallet`) while the
+/// issuer owns it.
+impl<R: PaymentRail + ?Sized> PaymentRail for std::sync::Arc<R> {
+    fn new_address(&self) -> Result<(u32, String), RailError> {
+        (**self).new_address()
+    }
+
+    fn address_count(&self) -> Result<u32, RailError> {
+        (**self).address_count()
+    }
+
+    fn height(&self) -> Result<RailHeight, RailError> {
+        (**self).height()
+    }
+
+    fn transfers(&self, from: u64, to: u64) -> Result<Vec<IncomingEntry>, RailError> {
+        (**self).transfers(from, to)
+    }
+
+    fn transfer_by_txid(&self, txid: &[u8; 32]) -> Result<Option<IncomingEntry>, RailError> {
+        (**self).transfer_by_txid(txid)
+    }
 }
 
 /// Lowercase hex.

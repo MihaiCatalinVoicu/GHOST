@@ -4,11 +4,15 @@ name: monero-regtest
 # monerod and monero-wallet-rpc on regtest, driven by the issuer's production rail and handlers
 # (ghost/issuer/crates/service/tests/monero_regtest.rs). A workflow file of its own: GitHub Actions
 # has no job-level path filter and ci.yml has no schedule. Required for merge on the issuer, infra
-# and protocol paths.
+# and protocol paths and on the workspace manifests: the rail's HTTP, digest and JSON behaviour
+# comes from the locked hyper, hyper-util, http-body-util, md-5, serde_json and tokio versions, so a
+# lockfile-only bump runs the live job before it merges (review finding S5-SEC-4; the gate checks
+# the pull-request paths).
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag);
 # Rust builds use --locked. The Monero archive's name, URL and SHA-256 come only from
 # ghost/infra/issuer/monero-release.pin (scripts/gates/monero-pin.sh); the archive is checked with
-# sha256sum -c on every run, a cache hit included, and the cache key is the pinned hash.
+# sha256sum -c after the download and before the extraction on every run, a cache hit included,
+# and the cache key is the pinned hash.
 on:
   push:
     branches: [main]
@@ -16,12 +20,16 @@ on:
       - "ghost/issuer/**"
       - "ghost/infra/issuer/**"
       - "ghost/protocol/**"
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
       - ".github/workflows/monero-regtest.yml"
   pull_request:
     paths:
       - "ghost/issuer/**"
       - "ghost/infra/issuer/**"
       - "ghost/protocol/**"
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
       - ".github/workflows/monero-regtest.yml"
   schedule:
     - cron: "23 2 * * *"

@@ -1,17 +1,24 @@
 //! The `ghost-issuer` process (Phase 8 design §5.1, §5.9, §6.2, §6.5–§6.7; ADR-26):
 //!
 //! ```text
-//! ghost-issuer --config <file> [--restore]
+//! ghost-issuer --config <file> [--restore] [--restore-wallet]
 //! ```
 //!
 //! **Startup** refuses to run on the first failure, in this order (§6.6): the configuration
 //! ([`crate::config`]); the Entitlement Schedule under the pinned schedule key and its network
 //! against the configuration; the key load (every held key is its ES entry); the wallet (both
 //! login files, `query_key spend_key` must fail with −29, the primary address must be the
-//! treasury); the database and the journal (ES rule 5 against `es_memory`, journal replay without
-//! a gap; `--restore` is runbook B1: the address pool is emptied after the replay); the treasury
-//! restore height against the one recorded in `meta` (recorded at the first start). The wallet is
-//! checked before the database is opened, so a refused start writes nothing.
+//! treasury, the daemon must run the configured network); the database and the journal (ES rule 5
+//! against `es_memory`, journal replay without a gap; `--restore` is runbook B1: the address pool
+//! is emptied after the replay); the treasury restore height against the one recorded in `meta`
+//! (recorded at the first start). The wallet is checked before the database is opened, so a
+//! refused start writes nothing.
+//!
+//! **`--restore-wallet`** is runbook R5 steps 2–3 (§7.5, [`restore_wallet`]): after the operator
+//! regenerated the view-only wallet from its keys with the original restore height, and before
+//! anything is served, the wallet gets every minor through `highest_minor` (read from the
+//! database, so the operator needs no number) and rescans the chain. Without it a restored wallet
+//! is refused by the scanner and the refill (`WALLET_INCOMPLETE`, review finding S5-MON-1).
 //!
 //! **Serving.** The gRPC listener binds a loopback address only; the onion service forwards to it
 //! (§6.7). Before the first request the pool is refilled, the scanner ticks once and `status.json`
@@ -31,7 +38,7 @@
 //! | 2 | usage, or the configuration file |
 //! | 3 | the Entitlement Schedule: its signature, its network, rule 5 against the database's memory |
 //! | 4 | the keys: the load file, a sealed file, a key that is not its ES entry |
-//! | 5 | the wallet: a login file, unreachable, not watch-only, primary address not the treasury |
+//! | 5 | the wallet: a login file, unreachable, not watch-only, primary address not the treasury, a daemon of another network; `--restore-wallet`: the replay or the rescan failed |
 //! | 6 | the state: database, journal, replay, restore height other than the recorded one |
 
 use std::path::{Path, PathBuf};
@@ -72,6 +79,9 @@ pub const SWEEP_INTERVAL: Duration = Duration::from_secs(3_600);
 pub const STATUS_INTERVAL: Duration = Duration::from_secs(60);
 /// tonic's decoding bound (§5.9): the largest `BlindSign` is 2 563 × 256 bytes ≈ 641 KiB.
 pub const MAX_MESSAGE_BYTES: usize = 1 << 20;
+/// Time limit of runbook R5's `rescan_blockchain`: a restored wallet scans the chain from its
+/// restore height.
+pub const RESCAN_TIMEOUT: Duration = Duration::from_secs(6 * 3_600);
 
 /// Why the process refused to start or stopped; the exit status names the class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,12 +113,16 @@ impl Refusal {
 pub struct Invocation {
     pub config: PathBuf,
     pub mode: OpenMode,
+    /// Runbook R5 steps 2–3 before serving ([`restore_wallet`]).
+    pub restore_wallet: bool,
 }
 
-/// `--config <file>` exactly once, `--restore` at most once, nothing else.
+/// `--config <file>` exactly once, `--restore` and `--restore-wallet` at most once each, nothing
+/// else.
 pub fn parse_args(args: &[String]) -> Result<Invocation, Refusal> {
     let mut config = None;
     let mut mode = OpenMode::Normal;
+    let mut restore_wallet = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -116,12 +130,14 @@ pub fn parse_args(args: &[String]) -> Result<Invocation, Refusal> {
                 config = Some(PathBuf::from(it.next().ok_or(Refusal::Usage)?));
             }
             "--restore" if mode == OpenMode::Normal => mode = OpenMode::Restore,
+            "--restore-wallet" if !restore_wallet => restore_wallet = true,
             _ => return Err(Refusal::Usage),
         }
     }
     Ok(Invocation {
         config: config.ok_or(Refusal::Usage)?,
         mode,
+        restore_wallet,
     })
 }
 
@@ -160,7 +176,8 @@ fn read_login(path: &Path) -> Result<Credentials, Refusal> {
     Credentials::parse_login(&text).map_err(|_| Refusal::Wallet)
 }
 
-/// The wallet and daemon clients, after the §6.6 checks: watch-only, primary address = treasury.
+/// The wallet and daemon clients, after the §6.6 checks: watch-only, primary address = treasury,
+/// and the daemon on the configured network (review finding S5-MON-5).
 pub fn connect_wallet(config: &Config) -> Result<MoneroWalletRpc, Refusal> {
     let wallet = RpcClient::new(
         config.wallet_rpc,
@@ -178,7 +195,30 @@ pub fn connect_wallet(config: &Config) -> Result<MoneroWalletRpc, Refusal> {
     rail.check_watch_only().map_err(|_| Refusal::Wallet)?;
     rail.check_treasury(config.treasury_address.as_str())
         .map_err(|_| Refusal::Wallet)?;
+    rail.check_daemon_network(config.network)
+        .map_err(|_| Refusal::Wallet)?;
     Ok(rail)
+}
+
+/// Runbook R5 steps 2–3 (§7.5; `--restore-wallet`): the view-only wallet, regenerated from its
+/// keys with the original restore height (step 1, by the operator), gets every minor through the
+/// database's `highest_minor` (`create_address` in chunks) and rescans the chain, so its view
+/// covers every invoice ever handed out. Until this has run on a restored wallet the scanner and
+/// the refill refuse it (`WALLET_INCOMPLETE`) and new XMR invoices are `UNAVAILABLE`. Returns the
+/// wallet's subaddress count.
+pub fn restore_wallet(issuer: &Issuer, rail: &MoneroWalletRpc) -> Result<u32, Refusal> {
+    let highest = {
+        let tx = issuer.store().read().map_err(|_| Refusal::State)?;
+        store::meta(&*tx, MetaKey::HighestMinor)
+            .map_err(|_| Refusal::State)?
+            .unwrap_or(0)
+    };
+    let highest = u32::try_from(highest).map_err(|_| Refusal::State)?;
+    let count = rail
+        .replay_subaddresses(highest)
+        .map_err(|_| Refusal::Wallet)?;
+    rail.rescan(RESCAN_TIMEOUT).map_err(|_| Refusal::Wallet)?;
+    Ok(count)
 }
 
 /// Opens `issuer.redb` and the journal in `data_dir` and starts the issuer over `rail`.
@@ -445,16 +485,19 @@ fn run(args: &[String]) -> Result<(), Refusal> {
     let schedule = load_schedule(&config)?;
     let keys = load_keys(&config, &schedule)?;
     // The rail blocks on its own runtime: every startup call happens here, outside the server's.
-    let rail = connect_wallet(&config)?;
+    let rail = Arc::new(connect_wallet(&config)?);
     let issuer = open_issuer(
         &config,
         schedule,
         keys,
-        Box::new(rail),
+        Box::new(Arc::clone(&rail)),
         invocation.mode,
         clock(),
     )?;
     record_restore_height(&issuer, config.restore_height)?;
+    if invocation.restore_wallet {
+        restore_wallet(&issuer, &rail)?;
+    }
     let settings = ServeSettings::from_config(&config);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

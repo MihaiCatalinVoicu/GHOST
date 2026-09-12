@@ -5,10 +5,12 @@
 
 mod common;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::epee::{self, Call, Emulator, Options, Reply};
+use ghost_entitlement::monero::MoneroNetwork;
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{
     Endpoint, EndpointError, MoneroWalletRpc, RpcClient, Timeouts, WalletCheckError,
@@ -55,7 +57,7 @@ fn txid(n: u8) -> String {
 /// A `get_transfers` entry with every field wallet-rpc v0.18.5.1 writes.
 fn row(kind: &str, minor: u32, amount: u64, height: u64, confirmations: u64, id: &str) -> Value {
     json!({
-        "address": "8BnERTpvL5MbCLtj5n9No7J5oE5hHiB3tVCK5cjSvCsYWD2WRJLFuWeKTLiXo5QJqt2ZwUaLy2Vh1Ad51K7FNgqcHgjW85o",
+        "address": epee::SUBADDRESS,
         "amount": amount,
         "amounts": [amount],
         "confirmations": confirmations,
@@ -377,6 +379,7 @@ fn addresses_decode_strictly() {
         assert_eq!(r.new_address(), Err(RailError::Decode), "{bad}");
     }
 
+    // A count probe asks for one index and must get exactly that row back.
     let rows = |indices: &[u32]| {
         let rows: Vec<Value> = indices
             .iter()
@@ -384,12 +387,20 @@ fn addresses_decode_strictly() {
             .collect();
         json!({"address": "4Primary", "addresses": rows})
     };
-    set(rows(&[0, 1, 2, 3]));
-    assert_eq!(r.address_count(), Ok(4));
-    for bad in [rows(&[0, 2]), rows(&[1]), rows(&[])] {
+    for bad in [rows(&[7]), rows(&[0, 1]), rows(&[])] {
         set(bad.clone());
         assert_eq!(r.address_count(), Err(RailError::Decode), "{bad}");
     }
+    let refusing = |code: i64| {
+        let wallet = emulator(Options::default(), move |c| {
+            (c.method == "get_address").then_some(Reply::Error(code, "refused"))
+        });
+        let count = rail(&wallet, &daemon).address_count();
+        (wallet, count)
+    };
+    // Not even minor 0 (the primary address); another wallet error.
+    assert_eq!(refusing(-15).1, Err(RailError::Decode));
+    assert_eq!(refusing(-13).1, Err(RailError::Rpc { code: -13 }));
 }
 
 #[test]
@@ -444,6 +455,110 @@ fn height_refreshes_the_wallet_then_reads_both_heights() {
     daemon_info(|_| {});
     *refresh.lock().unwrap() = json!({"received_money": false});
     assert_eq!(r.height(), Err(RailError::Decode));
+    // A daemon more than one block behind the wallet is not the wallet's own daemon, whose height
+    // the refresh has just reached: no synced view (review finding S5-MON-5).
+    *refresh.lock().unwrap() = json!({"blocks_fetched": 0, "received_money": false});
+    daemon_info(|v| v["height"] = json!(118));
+    let h = r.height().unwrap();
+    assert!(h.synced && !h.synced_view(), "{h:?}");
+    daemon_info(|v| v["height"] = json!(119));
+    assert!(r.height().unwrap().synced_view());
+}
+
+#[test]
+fn the_subaddress_count_is_probed_without_listing_every_subaddress() {
+    // More subaddresses than one list answer may carry (review finding S5-MON-2).
+    let count = Arc::new(AtomicU64::new(800_000));
+    let n = Arc::clone(&count);
+    let wallet = emulator(Options::default(), move |c| {
+        (c.method == "get_address").then(|| epee::get_address_reply(c, n.load(Ordering::SeqCst)))
+    });
+    let daemon = emulator(Options::default(), |_| None);
+    let r = rail(&wallet, &daemon);
+    assert_eq!(r.address_count(), Ok(800_000));
+    let calls = wallet.calls();
+    assert!(
+        calls.iter().all(|c| c.params["address_index"]
+            .as_array()
+            .is_some_and(|a| a.len() == 1)),
+        "one index per probe, never the whole list"
+    );
+    assert!(calls.len() <= 44, "{} probes", calls.len());
+    // The next count starts where the last one ended: two probes.
+    let before = wallet.calls().len();
+    assert_eq!(r.address_count(), Ok(800_000));
+    assert_eq!(wallet.calls().len() - before, 2);
+    // It follows the wallet up, and down (a restored wallet holds fewer).
+    for n in [800_123, 800_124, 3, 1, 2] {
+        count.store(n, Ordering::SeqCst);
+        assert_eq!(r.address_count(), Ok(n as u32), "{n}");
+    }
+}
+
+/// A `get_transfers` entry holding exactly [`TRANSFER_FIELDS`].
+fn exact_row(kind: &str, height: u64, confirmations: u64) -> Value {
+    let mut v = serde_json::Map::new();
+    for f in TRANSFER_FIELDS {
+        let value = match f {
+            "amount" => json!(5),
+            "confirmations" => json!(confirmations),
+            "double_spend_seen" => json!(false),
+            "height" => json!(height),
+            "subaddr_index" => json!({"major": 0, "minor": 3}),
+            "timestamp" => json!(1_789_237_444u64),
+            "txid" => json!(txid(1)),
+            "type" => json!(kind),
+            "unlock_time" => json!(0),
+            other => panic!("TRANSFER_FIELDS names {other}: give it a value here"),
+        };
+        v.insert(f.to_string(), value);
+    }
+    Value::Object(v)
+}
+
+/// RP §6.8, §13.3 step 18: the fields the decoder needs are exactly [`TRANSFER_FIELDS`]: an entry
+/// holding only them decodes (mined, pool, by txid), and one without any of them does not
+/// (review finding S5-MON-4). With `IncomingEntry` they are the `ChainPort` field set: minor from
+/// `subaddr_index`, `amount_atomic` from `amount`, `height` from `height` and `type`,
+/// `confirmations`, `unlock_time`, `double_spend_seen`, `txid`, and `timestamp` (T2 view only).
+#[test]
+fn the_decoder_reads_exactly_the_transfer_fields() {
+    let answer = Arc::new(Mutex::new(json!({})));
+    let a = Arc::clone(&answer);
+    let wallet = emulator(Options::default(), move |c| {
+        matches!(c.method.as_str(), "get_transfers" | "get_transfer_by_txid")
+            .then(|| Reply::Result(a.lock().unwrap().clone()))
+    });
+    let daemon = emulator(Options::default(), |_| None);
+    let r = rail(&wallet, &daemon);
+    let set = |v: Value| *answer.lock().unwrap() = v;
+
+    set(json!({"in": [exact_row("in", 100, 12)], "pool": [exact_row("pool", 0, 0)]}));
+    let got = r.transfers(100, 110).unwrap();
+    assert_eq!(
+        (got.len(), got[0].height, got[1].height),
+        (2, Some(100), None)
+    );
+    set(json!({"transfers": [exact_row("in", 100, 12)]}));
+    assert!(r.transfer_by_txid(&[1; 32]).unwrap().is_some());
+
+    for f in TRANSFER_FIELDS {
+        let without = |kind: &str, height: u64, confirmations: u64| {
+            let mut v = exact_row(kind, height, confirmations);
+            v.as_object_mut().unwrap().remove(f);
+            v
+        };
+        set(json!({ "in": [without("in", 100, 12)] }));
+        assert_eq!(r.transfers(100, 110), Err(RailError::Decode), "in: {f}");
+        set(json!({ "pool": [without("pool", 0, 0)] }));
+        assert_eq!(r.transfers(100, 110), Err(RailError::Decode), "pool: {f}");
+        set(json!({ "transfers": [without("in", 100, 12)] }));
+        assert_eq!(
+            r.transfer_by_txid(&[1; 32]),
+            Err(RailError::Decode),
+            "by txid: {f}"
+        );
+    }
 }
 
 #[test]
@@ -488,20 +603,56 @@ fn startup_checks_of_the_wallet() {
 }
 
 #[test]
+fn the_daemon_must_run_the_configured_network() {
+    let info = Arc::new(Mutex::new(Value::Null));
+    let i = Arc::clone(&info);
+    let daemon = emulator(Options::default(), move |c| {
+        (c.method == "get_info").then(|| Reply::Result(i.lock().unwrap().clone()))
+    });
+    let wallet = emulator(Options::default(), |_| None);
+    let r = rail(&wallet, &daemon);
+    let set = |nettype: Value, status: &str| {
+        *info.lock().unwrap() = json!({"height": 5, "synchronized": true, "busy_syncing": false,
+                                       "status": status, "nettype": nettype});
+    };
+    for (nettype, network) in [
+        ("mainnet", MoneroNetwork::Mainnet),
+        ("stagenet", MoneroNetwork::Stagenet),
+        ("fakechain", MoneroNetwork::Regtest),
+    ] {
+        set(json!(nettype), "OK");
+        assert_eq!(r.check_daemon_network(network), Ok(()), "{nettype}");
+    }
+    set(json!("stagenet"), "OK");
+    assert_eq!(
+        r.check_daemon_network(MoneroNetwork::Mainnet),
+        Err(WalletCheckError::NetworkMismatch)
+    );
+    set(json!("testnet"), "OK");
+    assert_eq!(
+        r.check_daemon_network(MoneroNetwork::Stagenet),
+        Err(WalletCheckError::NetworkMismatch)
+    );
+    set(json!("mainnet"), "BUSY");
+    assert_eq!(
+        r.check_daemon_network(MoneroNetwork::Mainnet),
+        Err(WalletCheckError::Rail(RailError::Decode))
+    );
+    set(Value::Null, "OK");
+    assert_eq!(
+        r.check_daemon_network(MoneroNetwork::Mainnet),
+        Err(WalletCheckError::Rail(RailError::Decode))
+    );
+}
+
+#[test]
 fn replay_creates_subaddresses_through_the_highest_minor() {
     let count = Arc::new(Mutex::new(3u64));
     let c = Arc::clone(&count);
     let wallet = emulator(Options::default(), move |call| {
         let mut n = c.lock().unwrap();
         match call.method.as_str() {
-            "get_address" => {
-                let rows: Vec<Value> = (0..*n)
-                    .map(|i| json!({"address": "8x", "address_index": i}))
-                    .collect();
-                Some(Reply::Result(
-                    json!({"address": "4Primary", "addresses": rows}),
-                ))
-            }
+            "get_address" => Some(epee::get_address_reply(call, *n)),
             "create_address" => {
                 let k = call.params["count"].as_u64().unwrap();
                 let first = *n;
@@ -569,24 +720,4 @@ fn endpoints_are_loopback_addresses_only() {
             "{bad}"
         );
     }
-}
-
-#[test]
-fn the_fields_read_are_the_chain_port_fields() {
-    // IncomingEntry: minor <- subaddr_index, amount_atomic <- amount, height <- height and type,
-    // confirmations, unlock_time, double_spend_seen, txid, timestamp (the T2 view only).
-    assert_eq!(
-        TRANSFER_FIELDS,
-        [
-            "amount",
-            "confirmations",
-            "double_spend_seen",
-            "height",
-            "subaddr_index",
-            "timestamp",
-            "txid",
-            "type",
-            "unlock_time"
-        ]
-    );
 }
