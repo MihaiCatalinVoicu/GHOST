@@ -19,9 +19,18 @@ ghost-entitlement = { path = "../entitlement" }
 ghost-issuer = { path = "../service" }
 # Signs the Entitlement Schedule with the offline schedule key (design §3.1).
 ed25519-dalek = { workspace = true }
-# Operating-system randomness for the custody secret, the schedule key and seal nonces.
+# Operating-system randomness for the custody secret, the schedule key, onion service seeds and
+# seal nonces.
 ring = { workspace = true }
+# SHA-512 of an onion service seed: the expanded Ed25519 secret key Tor stores (onion-keygen).
+sha2 = { workspace = true }
 
 [dev-dependencies]
-sha2 = { workspace = true }
 tempfile = { workspace = true }
+# The client's own onion address parser (its v3 checksum check runs through Arti's HsId): every
+# onion-keygen host name must pass it.
+ghost-client-net = { path = "../../../client-core/net", default-features = false }
+# Arti's reader of C Tor's expanded Ed25519 secret key (ExpandedKeypair::from_secret_key_bytes, the
+# function tor-keymgr's C Tor keystore applies to hs_ed25519_secret_key): every onion-keygen secret
+# key file must load there into its public key.
+tor-llcrypto = { version = "0.46.0", default-features = false }

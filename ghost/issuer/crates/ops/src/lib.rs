@@ -11,6 +11,7 @@
 //!                                [--previous <es>] --out <es>
 //! ghost-issuer-ops schedule-verify --schedule <es> [--schedule-public-key <hex>] [--previous <es>]...
 //!                                  [--relay-directory <file> --now <unix seconds>]
+//! ghost-issuer-ops onion-keygen --hs-dir <dir>
 //! ```
 //!
 //! - `keygen` (runbook K1): a custody secret, an Ed25519 schedule key, or RSA-2048 token keys for
@@ -29,6 +30,10 @@
 //!   pre-pin schedules), rule 5 over the earlier versions (`--previous` repeated, oldest first: each
 //!   against all before it, the schedule against all of them), and the relay directory check of
 //!   §19.12 for the current and the next week.
+//! - `onion-keygen` (§19.17 point 1): a Tor v3 onion service key set (`hs_ed25519_secret_key`,
+//!   `hs_ed25519_public_key`, `hostname`) in a new `HiddenServiceDir`, so a schedule can name a
+//!   relay's or the issuer's onion before the service first starts. The report carries the public
+//!   key only.
 //!
 //! Output: fixed-vocabulary lines through [`report`] only (exit 0 ok, 1 refused, 2 usage). Files
 //! are written only by [`output`].
@@ -40,6 +45,7 @@ mod hexfmt;
 mod input;
 mod keygen;
 mod keys_seal;
+pub mod onion_keygen;
 pub mod output;
 pub mod public_entry;
 pub mod report;
@@ -110,6 +116,7 @@ pub fn execute(argv: &[String], sink: &mut dyn Sink) -> Status {
         "keys-seal" => keys_seal::run(rest, sink),
         "schedule-sign" => schedule_sign::run(rest, sink),
         "schedule-verify" => schedule_verify::run(rest, sink),
+        "onion-keygen" => onion_keygen::run(rest, sink),
         _ => Err(Failure::usage("unknown-command", None)),
     };
     match result {

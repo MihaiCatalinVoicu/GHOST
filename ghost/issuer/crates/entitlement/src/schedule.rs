@@ -55,10 +55,25 @@ const SIGNATURE_LEN: usize = 64;
 /// A pack price is divisible by 10 so a credit's value (price / 10) is exact (design §4.6).
 const CREDITS_PER_PRICE: u64 = 10;
 
-/// Schedule public keys pinned per network (design §3.1 rule 1). The first stagenet key is pinned
-/// by slice S2b (§15.1) and the mainnet key by the K1 ceremony; until then no key is pinned and
-/// [`Schedule::verify`] refuses every schedule (fail closed).
-const PINNED_SCHEDULE_KEYS: &[(MoneroNetwork, [u8; 32])] = &[];
+/// Schedule public keys pinned per network (design §3.1 rule 1, §19.20 point 3), at most one per
+/// network and pairwise distinct. [`Schedule::verify`] picks the key by the schedule's network
+/// byte, which the signature covers, so a key pinned for one network never verifies a schedule of
+/// another.
+///
+/// - Stagenet: the stagenet-only schedule key of slice S2b (§15.1, §19.17 point 1, Q20 as revised
+///   2026-09-12), generated with `ghost-issuer-ops keygen --new-schedule-key` on the owner's
+///   machine outside the repository. It signs the alpha's stagenet schedules only.
+/// - Mainnet: none until the K1 ceremony with the real offline key (Phase 16/17); until then every
+///   mainnet schedule is refused (fail closed).
+/// - Regtest: never pinned; regtest schedules are test schedules (rule 6).
+const PINNED_SCHEDULE_KEYS: &[(MoneroNetwork, [u8; 32])] = &[(
+    MoneroNetwork::Stagenet,
+    [
+        0x8b, 0x95, 0xa7, 0x51, 0x97, 0x43, 0x52, 0x37, 0x27, 0x33, 0x71, 0x8e, 0x49, 0x35, 0x8b,
+        0xe2, 0xf2, 0x8b, 0xbc, 0x5c, 0x45, 0xd1, 0xbf, 0x4a, 0x4d, 0xd7, 0xb6, 0xc1, 0x66, 0x4b,
+        0x7d, 0xad,
+    ],
+)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScheduleError {
@@ -338,12 +353,22 @@ impl Schedule {
     /// The production entry point: verifies under the schedule key pinned for the schedule's
     /// network, then rules 1–4.
     pub fn verify(bytes: &[u8]) -> Result<Self, ScheduleError> {
+        Self::verify_pinned(bytes, PINNED_SCHEDULE_KEYS)
+    }
+
+    /// [`Schedule::verify`] over a given pin table. The key is chosen by the network byte, which
+    /// the signature covers: a schedule signed for one network cannot be read as another, and a
+    /// key pinned for one network never verifies a schedule of another.
+    fn verify_pinned(
+        bytes: &[u8],
+        pinned: &[(MoneroNetwork, [u8; 32])],
+    ) -> Result<Self, ScheduleError> {
         let network = bytes
             .get(MAGIC.len() + 1 + 8)
             .copied()
             .ok_or(ScheduleError::Encoding)?;
         let network = MoneroNetwork::from_schedule_byte(network).ok_or(ScheduleError::Network)?;
-        let key = PINNED_SCHEDULE_KEYS
+        let key = pinned
             .iter()
             .find(|(n, _)| *n == network)
             .map(|(_, k)| k)
@@ -860,5 +885,117 @@ impl<'a> Reader<'a> {
             return Err(ScheduleError::Encoding);
         }
         String::from_utf8(bytes.to_vec()).map_err(|_| ScheduleError::Encoding)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    /// A schedule of `network` signed by `key`. Its content fails rule 4 (no issuer onion), so a
+    /// verification that reports `Onion` got past the signature.
+    fn signed(network: MoneroNetwork, key: &SigningKey) -> Vec<u8> {
+        let content = ScheduleContent {
+            seq: 1,
+            network,
+            issuer_name: "ghost-issuer".into(),
+            issuer_onion: String::new(),
+            constants: Constants {
+                confirmations: 10,
+                invoice_blocks: 720,
+                grace_blocks: 2160,
+                access_per_slot: 16,
+                trial_per_slot: 8,
+                invites_per_pack: 2,
+                credits_per_free_pack: 10,
+                min_claim_credits: 10,
+                max_claim_credits: 50,
+                early_window_hours: 24,
+                capability_quota_bytes: 268_435_456,
+            },
+            slots: Vec::new(),
+            prices: Vec::new(),
+            keys: Vec::new(),
+            revoked: Vec::new(),
+        };
+        let signature = key.sign(&content.signing_message().unwrap()).to_bytes();
+        content.to_signed_bytes(&signature).unwrap()
+    }
+
+    #[test]
+    fn pinned_keys_are_one_per_network_and_distinct() {
+        let networks: BTreeSet<u8> = PINNED_SCHEDULE_KEYS
+            .iter()
+            .map(|(n, _)| network_byte(*n))
+            .collect();
+        let keys: BTreeSet<[u8; 32]> = PINNED_SCHEDULE_KEYS.iter().map(|(_, k)| *k).collect();
+        assert_eq!(networks.len(), PINNED_SCHEDULE_KEYS.len());
+        assert_eq!(keys.len(), PINNED_SCHEDULE_KEYS.len());
+        let pinned = |n: MoneroNetwork| PINNED_SCHEDULE_KEYS.iter().any(|(m, _)| *m == n);
+        // S2b pins the stagenet key; the mainnet key comes from the K1 ceremony (Phase 16/17);
+        // regtest schedules are test schedules, verified under an explicit key only (rule 6).
+        assert!(pinned(MoneroNetwork::Stagenet));
+        assert!(!pinned(MoneroNetwork::Mainnet));
+        assert!(!pinned(MoneroNetwork::Regtest));
+        for (_, key) in PINNED_SCHEDULE_KEYS {
+            assert!(VerifyingKey::from_bytes(key).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_key_pinned_for_one_network_never_verifies_another() {
+        let key = SigningKey::from_bytes(&[0x5a; 32]);
+        let other = SigningKey::from_bytes(&[0xa5; 32]);
+        let public = key.verifying_key().to_bytes();
+        let stagenet_only = [(MoneroNetwork::Stagenet, public)];
+        let both = [
+            (MoneroNetwork::Stagenet, public),
+            (MoneroNetwork::Mainnet, other.verifying_key().to_bytes()),
+        ];
+        let verdict = |bytes: &[u8], table: &[(MoneroNetwork, [u8; 32])]| {
+            Schedule::verify_pinned(bytes, table).err()
+        };
+        // Past the signature under its own network's pin.
+        let stagenet = signed(MoneroNetwork::Stagenet, &key);
+        assert_eq!(
+            verdict(&stagenet, &stagenet_only),
+            Some(ScheduleError::Onion)
+        );
+        // A mainnet or regtest schedule signed by the stagenet key: no pin for its network, or the
+        // mainnet pin, which is another key.
+        for network in [MoneroNetwork::Mainnet, MoneroNetwork::Regtest] {
+            let bytes = signed(network, &key);
+            assert_eq!(
+                verdict(&bytes, &stagenet_only),
+                Some(ScheduleError::NoPinnedKey)
+            );
+        }
+        assert_eq!(
+            verdict(&signed(MoneroNetwork::Mainnet, &key), &both),
+            Some(ScheduleError::Signature)
+        );
+        // The network byte is signed: a stagenet schedule relabelled as mainnet verifies under
+        // no key, not even the one that signed it.
+        let offset = MAGIC.len() + 1 + 8;
+        for network in [MoneroNetwork::Mainnet, MoneroNetwork::Regtest] {
+            let mut relabelled = stagenet.clone();
+            relabelled[offset] = network_byte(network);
+            assert_eq!(
+                Schedule::verify_with_key(&relabelled, &public).err(),
+                Some(ScheduleError::Signature)
+            );
+            assert!(verdict(&relabelled, &both).is_some());
+        }
+        // The production table: whatever key signed a mainnet or regtest schedule, the stagenet
+        // pin never verifies it.
+        for signer in [&key, &other] {
+            for network in [MoneroNetwork::Mainnet, MoneroNetwork::Regtest] {
+                assert!(matches!(
+                    Schedule::verify(&signed(network, signer)),
+                    Err(ScheduleError::NoPinnedKey | ScheduleError::Signature)
+                ));
+            }
+        }
     }
 }

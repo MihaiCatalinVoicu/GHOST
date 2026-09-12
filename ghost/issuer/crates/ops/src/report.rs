@@ -27,10 +27,11 @@ pub enum Code {
     EsAppendOnly,
     DirectoryOk,
     DirectoryRefused,
+    OnionKeyCreated,
 }
 
 impl Code {
-    pub const ALL: [Code; 18] = [
+    pub const ALL: [Code; 19] = [
         Code::Usage,
         Code::IoError,
         Code::InputRefused,
@@ -49,6 +50,7 @@ impl Code {
         Code::EsAppendOnly,
         Code::DirectoryOk,
         Code::DirectoryRefused,
+        Code::OnionKeyCreated,
     ];
 
     pub fn name(self) -> &'static str {
@@ -71,6 +73,7 @@ impl Code {
             Code::EsAppendOnly => "ES_APPEND_ONLY",
             Code::DirectoryOk => "DIRECTORY_OK",
             Code::DirectoryRefused => "DIRECTORY_REFUSED",
+            Code::OnionKeyCreated => "ONION_KEY_CREATED",
         }
     }
 

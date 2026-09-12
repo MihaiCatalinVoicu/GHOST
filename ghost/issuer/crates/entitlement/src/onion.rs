@@ -42,12 +42,19 @@ impl Onion {
 
     /// The canonical text form.
     pub fn format(&self) -> String {
-        let mut raw = [0u8; 35];
-        raw[..32].copy_from_slice(&self.pubkey);
-        raw[32..34].copy_from_slice(&checksum(&self.pubkey));
-        raw[34] = V3_VERSION;
-        format!("{}.onion:{}", base32_encode(&raw), self.port)
+        format!("{}:{}", hostname(&self.pubkey), self.port)
     }
+}
+
+/// The host name `"<56 base32>.onion"` of a v3 service key (rend-spec-v3 §6 [ONIONADDRESS]):
+/// `base32(pubkey || checksum || 0x03)`, `checksum = SHA3-256(".onion checksum" || pubkey ||
+/// 0x03)[..2]`. It is what Tor writes to `HiddenServiceDir/hostname` (without the newline).
+pub fn hostname(pubkey: &[u8; 32]) -> String {
+    let mut raw = [0u8; 35];
+    raw[..32].copy_from_slice(pubkey);
+    raw[32..34].copy_from_slice(&checksum(pubkey));
+    raw[34] = V3_VERSION;
+    format!("{}.onion", base32_encode(&raw))
 }
 
 fn checksum(pubkey: &[u8; 32]) -> [u8; 2] {

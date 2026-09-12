@@ -33,6 +33,7 @@ fn code_index(c: Code) -> usize {
         Code::EsAppendOnly => 15,
         Code::DirectoryOk => 16,
         Code::DirectoryRefused => 17,
+        Code::OnionKeyCreated => 18,
     }
 }
 
@@ -169,7 +170,10 @@ fn lines_of_real_runs_are_well_formed() {
         .as_bytes(),
     ));
     let out = arg(&dir.path().join("load.ghkl"));
+    let hs = arg(&dir.path().join("hs"));
     let runs: Vec<Vec<&str>> = vec![
+        vec!["onion-keygen", "--hs-dir", &hs],
+        vec!["onion-keygen", "--hs-dir", &hs],
         vec![],
         vec!["nothing"],
         vec!["keygen", "--kind", "access"],
@@ -248,6 +252,7 @@ fn lines_of_real_runs_are_well_formed() {
         "SEAL_KEY_READY",
         "SEAL_LOAD_WRITTEN",
         "IO_ERROR",
+        "ONION_KEY_CREATED",
     ] {
         assert!(codes.contains(expected), "{expected} not exercised");
     }

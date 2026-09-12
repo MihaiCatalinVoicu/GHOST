@@ -1,8 +1,9 @@
 //! The only module of the operator tools that writes files (design §14.1, §19.17; ADR-26 point 7).
 //! Its named outputs: the custody secret and the schedule key (`keygen`), public key entries and
-//! sealed key files (`keygen`), the key load file (`keys-seal`) and the signed schedule
-//! (`schedule-sign`). Every file is created new (an existing file is never replaced), written in
-//! full, flushed to disk, and on Unix readable by its owner only.
+//! sealed key files (`keygen`), the key load file (`keys-seal`), the signed schedule
+//! (`schedule-sign`) and Tor onion service key sets (`onion-keygen`). Every file is created new
+//! (an existing file is never replaced), written in full, flushed to disk, and on Unix readable by
+//! its owner only.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -13,6 +14,7 @@ use ghost_entitlement::Kind;
 use ghost_issuer::custody::{self, CustodySecret};
 
 use crate::input::io_error;
+use crate::onion_keygen::{self, KeySet};
 use crate::public_entry;
 use crate::Failure;
 
@@ -83,4 +85,40 @@ pub fn write_seal_load(path: &Path, load: &mut [u8], flag: &'static str) -> Resu
 
 pub fn write_schedule(path: &Path, schedule: &[u8], flag: &'static str) -> Result<(), Failure> {
     create_new(path, schedule, flag)
+}
+
+/// Creates a Tor `HiddenServiceDir` (and its parents) if it does not exist; on Unix readable by
+/// its owner only, as Tor requires of the directory.
+fn create_private_dir(path: &Path, flag: &'static str) -> Result<(), Failure> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|_| io_error(flag, "create-dir"))
+}
+
+/// Writes an onion service key set into `dir`: the secret key first and the host name last, so a
+/// present `hostname` means a complete set.
+pub fn write_onion_keys(dir: &Path, keys: &KeySet, flag: &'static str) -> Result<(), Failure> {
+    create_private_dir(dir, flag)?;
+    create_new(
+        &dir.join(onion_keygen::SECRET_KEY_FILE),
+        &keys.secret_key_file,
+        flag,
+    )?;
+    create_new(
+        &dir.join(onion_keygen::PUBLIC_KEY_FILE),
+        &keys.public_key_file,
+        flag,
+    )?;
+    create_new(
+        &dir.join(onion_keygen::HOSTNAME_FILE),
+        keys.hostname_file.as_bytes(),
+        flag,
+    )
 }
