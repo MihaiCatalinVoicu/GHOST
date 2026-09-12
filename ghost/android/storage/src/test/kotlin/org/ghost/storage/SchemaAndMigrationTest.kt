@@ -10,13 +10,34 @@ import org.junit.Test
 class SchemaAndMigrationTest {
     private fun fresh(): JdbcSqlExecutor = JdbcSqlExecutor()
 
-    private val v1Only = Schema.migrations.filter { it.version == 1 }
+    private val upToV1 = Schema.migrations.filter { it.version <= 1 }
+    private val upToV2 = Schema.migrations.filter { it.version <= 2 }
     private val v2 = Schema.migrations.single { it.version == 2 }
+    private val v3 = Schema.migrations.single { it.version == 3 }
+
+    /** The nine tables and 13 triggers of v3 (Phase 8 design §11.3, §19.19). */
+    private val v3Tables = setOf(
+        "ent_key", "ent_schedule_fact", "ent_state", "ent_purchase", "ent_token", "ent_invite", "ent_drop_target",
+        "ent_claim", "ent_payout_used",
+    )
+    private val v3Triggers = setOf(
+        "ent_key_append_only", "ent_key_no_delete", "ent_schedule_fact_append_only", "ent_schedule_fact_no_delete",
+        "ent_purchase_transitions", "ent_purchase_frozen", "ent_purchase_invoice_frozen", "ent_purchase_delete_terminal_only",
+        "ent_token_state", "ent_token_binding", "ent_invite_transitions", "ent_claim_guard", "ent_drop_target_transitions",
+    )
 
     /** A database at v1 exactly as Phase 4 shipped it. */
     private fun atV1(): JdbcSqlExecutor = fresh().also {
-        assertEquals(listOf(1), MigrationRunner(it, v1Only).migrate())
+        assertEquals(listOf(1), MigrationRunner(it, upToV1).migrate())
         assertEquals(1, it.userVersion)
+    }
+
+    /** A database at v2 exactly as Phase 7 shipped it, holding v1 rows and sync rows. */
+    private fun atV2WithData(): JdbcSqlExecutor = atV1().also {
+        seedV1Data(it)
+        assertEquals(listOf(2), MigrationRunner(it, upToV2).migrate())
+        seedV2Data(it)
+        assertEquals(2, it.userVersion)
     }
 
     private fun JdbcSqlExecutor.names(type: String): Set<String> {
@@ -36,7 +57,7 @@ class SchemaAndMigrationTest {
 
     private fun JdbcSqlExecutor.count(table: String): Long = queryLong("SELECT count(*) FROM $table")!!
 
-    /** Rows in tables that v2 keeps, written at v1. */
+    /** Rows in tables that v2 and v3 keep, written at v1. */
     private fun seedV1Data(db: JdbcSqlExecutor) {
         db.exec(
             "INSERT INTO identity(id, public_identity, identity_public_key, derivation_version, created_at) VALUES (1, 'ghost:me', ?, 1, 7)",
@@ -68,23 +89,62 @@ class SchemaAndMigrationTest {
         assertEquals("1", db.queryString("SELECT value FROM schema_meta WHERE key = 'created_schema_version'"))
     }
 
+    private val syncNamespace = bytes(32, 0x21)
+
+    /** Sync rows written at v2 (Phase 7), which v3 keeps. */
+    private fun seedV2Data(db: JdbcSqlExecutor) {
+        db.exec(
+            "INSERT INTO relay_directory(relay_id, onion_address, operator_id, state, source) VALUES (1, ?, ?, 'active', 'config')",
+            listOf(onion(1), bytes(16, 1)),
+        )
+        db.exec("INSERT INTO sync_namespace(namespace_id, consumer, listening) VALUES (?, 'dm', 1)", listOf(syncNamespace))
+        db.exec("INSERT INTO namespace_relay(namespace_id, relay_id) VALUES (?, 1)", listOf(syncNamespace))
+        db.exec(
+            "INSERT INTO relay_capability(relay_id, namespace_id, kind, token, expires_hour, state, generation) VALUES (1, ?, 'write', ?, 7200, 'usable', 1)",
+            listOf(syncNamespace, bytes(82, 3)),
+        )
+        db.exec("INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?, ?, 'listed', 112)", listOf(syncNamespace, hash(4)))
+    }
+
+    private fun assertV2DataIntact(db: JdbcSqlExecutor) {
+        assertEquals(onion(1), db.queryString("SELECT onion_address FROM relay_directory WHERE relay_id = 1"))
+        assertEquals(1L, db.count("namespace_relay"))
+        assertArrayEquals(bytes(82, 3), db.queryBlob("SELECT token FROM relay_capability WHERE relay_id = 1 AND namespace_id = ?", listOf(syncNamespace)))
+        assertEquals("listed", db.queryString("SELECT state FROM inbox_blob WHERE namespace_id = ? AND blob_hash = ?", listOf(syncNamespace, hash(4))))
+    }
+
+    /** A row in the v1 `entitlement` table, which v3 refuses to drop. */
+    private fun entitlementRow(db: JdbcSqlExecutor) = db.exec(
+        "INSERT INTO entitlement(period_id, issuer_key_id, tokens_envelope, valid_from, valid_until) VALUES (?, ?, ?, 1, 2)",
+        listOf(ByteArray(8), ByteArray(32), ByteArray(64)),
+    )
+
+    /** A row in the v1 `referral` table, which v3 refuses to drop. */
+    private fun referralRow(db: JdbcSqlExecutor) = db.exec("INSERT INTO referral(id, commitment) VALUES (1, ?)", listOf(ByteArray(32)))
+
     @Test
     fun freshDatabaseMigratesToCurrentVersionWithAllTables() {
         fresh().use { db ->
             val applied = MigrationRunner(db).migrate()
-            assertEquals(listOf(1, 2), applied)
+            assertEquals(listOf(1, 2, 3), applied)
             assertEquals(Schema.CURRENT_VERSION, db.userVersion)
             MigrationRunner(db).verifyIntegrity()
             assertEquals(Schema.expectedTables, db.names("table"))
             assertEquals(Schema.expectedTriggers, db.names("trigger"))
-            assertEquals(12, Schema.expectedTriggers.size)
+            assertEquals(25, Schema.expectedTriggers.size)
+            assertTrue(Schema.expectedTables.containsAll(v3Tables))
+            assertEquals(v3Triggers, Schema.expectedTriggers.filter { it.startsWith("ent_") }.toSet())
+            assertEquals(9, v3Tables.size)
+            assertEquals(13, v3Triggers.size)
+            assertEquals(setOf("idx_ent_token_one_reservation", "idx_ent_claim_one_open"), db.names("index").filter { it.startsWith("idx_ent_") }.toSet())
         }
     }
 
     @Test
     fun currentVersionIsTheLastMigration() {
+        assertEquals(3, Schema.CURRENT_VERSION)
+        assertEquals(listOf(1, 2, 3), Schema.migrations.map { it.version })
         assertEquals(Schema.CURRENT_VERSION, Schema.migrations.maxOf { it.version })
-        assertEquals(Schema.migrations.map { it.version }.distinct().size, Schema.migrations.size)
     }
 
     @Test
@@ -99,13 +159,37 @@ class SchemaAndMigrationTest {
     }
 
     @Test
-    fun v1DatabaseWithDataMigratesToV2AndKeepsIt() {
+    fun v3DropsTheUnusedV1EntitlementTablesAndItsGuard() {
+        fresh().use { db ->
+            MigrationRunner(db).migrate()
+            val present = db.names("table")
+            for (gone in listOf("entitlement", "referral", "v3_migration_guard")) {
+                assertFalse("$gone must not survive v3", gone in present)
+            }
+        }
+    }
+
+    @Test
+    fun v1DatabaseWithDataMigratesToV3AndKeepsIt() {
         atV1().use { db ->
             seedV1Data(db)
-            assertEquals(listOf(2), MigrationRunner(db).migrate())
+            assertEquals(listOf(2, 3), MigrationRunner(db).migrate())
             MigrationRunner(db).verifyIntegrity()
             assertV1DataIntact(db)
             assertEquals(Schema.expectedTables, db.names("table"))
+        }
+    }
+
+    @Test
+    fun v2DatabaseWithDataMigratesToV3AndKeepsIt() {
+        atV2WithData().use { db ->
+            assertEquals(listOf(3), MigrationRunner(db).migrate())
+            MigrationRunner(db).verifyIntegrity()
+            assertV1DataIntact(db)
+            assertV2DataIntact(db)
+            assertEquals(Schema.expectedTables, db.names("table"))
+            assertEquals(Schema.expectedTriggers, db.names("trigger"))
+            for (table in v3Tables) assertEquals(table, 0L, db.count(table))
         }
     }
 
@@ -126,7 +210,7 @@ class SchemaAndMigrationTest {
             assertV1DataIntact(db)
             // Recovery path: once the table is empty the migration succeeds.
             db.exec("DELETE FROM relay_queue")
-            assertEquals(listOf(2), MigrationRunner(db).migrate())
+            assertEquals(listOf(2, 3), MigrationRunner(db).migrate())
             assertV1DataIntact(db)
         }
     }
@@ -140,6 +224,46 @@ class SchemaAndMigrationTest {
             assertEquals(1, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
             assertEquals(1L, db.count("sync_cursor"))
+        }
+    }
+
+    @Test
+    fun guardAbortsV3WhenEntitlementOrReferralHasRows() {
+        for ((table, writeRow) in listOf("entitlement" to ::entitlementRow, "referral" to ::referralRow)) {
+            atV2WithData().use { db ->
+                writeRow(db)
+                val before = db.schemaSnapshot()
+                val e = assertThrows(table, java.sql.SQLException::class.java) { MigrationRunner(db).migrate() }
+                assertTrue(e.message!!, e.message!!.contains("CHECK constraint failed"))
+                assertEquals(table, 2, db.userVersion)
+                assertEquals(table, before, db.schemaSnapshot())
+                assertEquals(table, 1L, db.count(table))
+                assertV1DataIntact(db)
+                assertV2DataIntact(db)
+                // A database the guard stopped is never used: the version check refuses it.
+                assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+                // Recovery path: once the table is empty the migration succeeds.
+                db.exec("DELETE FROM $table")
+                assertEquals(listOf(3), MigrationRunner(db).migrate())
+                MigrationRunner(db).verifyIntegrity()
+                assertV1DataIntact(db)
+                assertV2DataIntact(db)
+            }
+        }
+    }
+
+    @Test
+    fun guardOnAV1DatabaseStopsAfterTheCompletedV2() {
+        // Each migration commits on its own: a v1 database with an entitlement row reaches v2 and stops.
+        atV1().use { db ->
+            seedV1Data(db)
+            entitlementRow(db)
+            assertThrows(java.sql.SQLException::class.java) { MigrationRunner(db).migrate() }
+            assertEquals(2, db.userVersion)
+            assertEquals(1L, db.count("entitlement"))
+            assertFalse("ent_token" in db.names("table"))
+            assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+            assertV1DataIntact(db)
         }
     }
 
@@ -175,7 +299,7 @@ class SchemaAndMigrationTest {
                 assertEquals("statement $i", before, db.schemaSnapshot())
                 assertV1DataIntact(db)
                 assertFalse(db.inTransaction)
-                assertEquals(listOf(2), MigrationRunner(db).migrate())
+                assertEquals(listOf(2, 3), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
             }
@@ -186,7 +310,59 @@ class SchemaAndMigrationTest {
             assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 2)).migrate() }
             assertEquals(1, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
-            assertEquals(listOf(2), MigrationRunner(db).migrate())
+            assertEquals(listOf(2, 3), MigrationRunner(db).migrate())
+        }
+    }
+
+    @Test
+    fun interruptionAtEveryStatementOfV3LeavesV2Intact() {
+        for (i in v3.statements.indices) {
+            atV2WithData().use { db ->
+                val before = db.schemaSnapshot()
+                val faulty = FailAtExec(db, i)
+                assertThrows("statement $i", IllegalStateException::class.java) { MigrationRunner(faulty).migrate() }
+                assertEquals("statement $i ran", i + 1, faulty.calls)
+                assertEquals("statement $i", 2, db.userVersion)
+                assertEquals("statement $i", before, db.schemaSnapshot())
+                assertV1DataIntact(db)
+                assertV2DataIntact(db)
+                assertFalse(db.inTransaction)
+                assertEquals(listOf(3), MigrationRunner(db).migrate())
+                MigrationRunner(db).verifyIntegrity()
+                assertV1DataIntact(db)
+                assertV2DataIntact(db)
+            }
+        }
+        atV2WithData().use { db ->
+            val before = db.schemaSnapshot()
+            assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 3)).migrate() }
+            assertEquals(2, db.userVersion)
+            assertEquals(before, db.schemaSnapshot())
+            assertEquals(listOf(3), MigrationRunner(db).migrate())
+            assertV2DataIntact(db)
+        }
+    }
+
+    @Test
+    fun aV3InterruptionAfterV2InOneRunKeepsTheCompletedV2() {
+        val v2Schema = atV1().use { db ->
+            seedV1Data(db)
+            MigrationRunner(db, upToV2).migrate()
+            db.schemaSnapshot()
+        }
+        for (i in v3.statements.indices) {
+            atV1().use { db ->
+                seedV1Data(db)
+                val faulty = FailAtExec(db, v2.statements.size + i)
+                assertThrows("statement $i", IllegalStateException::class.java) { MigrationRunner(faulty).migrate() }
+                assertEquals("statement $i", 2, db.userVersion)
+                assertEquals("statement $i", v2Schema, db.schemaSnapshot())
+                assertV1DataIntact(db)
+                // Until the upgrade completes, the database is refused.
+                assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+                assertEquals(listOf(3), MigrationRunner(db).migrate())
+                MigrationRunner(db).verifyIntegrity()
+            }
         }
     }
 
@@ -200,7 +376,7 @@ class SchemaAndMigrationTest {
             assertTrue("rollback must remove partially created tables, found $tables", tables.isEmpty())
             // Recovery path: the same runner succeeds once the fault is gone.
             db.failOnStatementContaining = null
-            assertEquals(listOf(1, 2), MigrationRunner(db).migrate())
+            assertEquals(listOf(1, 2, 3), MigrationRunner(db).migrate())
         }
     }
 
@@ -214,15 +390,21 @@ class SchemaAndMigrationTest {
             applied
         }
         fresh().use { db ->
-            assertEquals(listOf(1, 2), helperOpen(db))
+            assertEquals(listOf(1, 2, 3), helperOpen(db))
             MigrationRunner(db).verifyIntegrity()
             assertEquals(emptyList<Int>(), MigrationRunner(db).migrate())
         }
         atV1().use { db ->
             seedV1Data(db)
-            assertEquals(listOf(2), helperOpen(db))
+            assertEquals(listOf(2, 3), helperOpen(db))
             MigrationRunner(db).verifyIntegrity()
             assertV1DataIntact(db)
+        }
+        atV2WithData().use { db ->
+            assertEquals(listOf(3), helperOpen(db))
+            MigrationRunner(db).verifyIntegrity()
+            assertV1DataIntact(db)
+            assertV2DataIntact(db)
         }
         atV1().use { db ->
             db.exec("INSERT INTO sync_cursor(namespace_id) VALUES (?)", listOf(ByteArray(32)))
@@ -230,6 +412,23 @@ class SchemaAndMigrationTest {
             assertThrows(java.sql.SQLException::class.java) { helperOpen(db) }
             assertEquals(1, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
+        }
+        // On device every pending migration shares the helper's transaction: a v3 guard failure on a
+        // v1 database rolls v2 back too.
+        atV1().use { db ->
+            referralRow(db)
+            val before = db.schemaSnapshot()
+            assertThrows(java.sql.SQLException::class.java) { helperOpen(db) }
+            assertEquals(1, db.userVersion)
+            assertEquals(before, db.schemaSnapshot())
+        }
+        atV2WithData().use { db ->
+            entitlementRow(db)
+            val before = db.schemaSnapshot()
+            assertThrows(java.sql.SQLException::class.java) { helperOpen(db) }
+            assertEquals(2, db.userVersion)
+            assertEquals(before, db.schemaSnapshot())
+            assertV2DataIntact(db)
         }
         fresh().use { db ->
             // Outside a transaction the helper entry point refuses to run.
@@ -255,6 +454,18 @@ class SchemaAndMigrationTest {
             db.userVersion = Schema.CURRENT_VERSION + 1
             assertThrows(MigrationRunner.DowngradeException::class.java) { MigrationRunner(db).migrate() }
         }
+        // An older app (it knows v1 and v2 only) refuses a v3 database and leaves it untouched.
+        fresh().use { db ->
+            MigrationRunner(db).migrate()
+            val before = db.schemaSnapshot()
+            assertThrows(MigrationRunner.DowngradeException::class.java) { MigrationRunner(db, upToV2).migrate() }
+            assertThrows(MigrationRunner.DowngradeException::class.java) {
+                db.transaction { MigrationRunner(db, upToV2).migrateWithinTransaction(db.userVersion) }
+            }
+            assertEquals(3, db.userVersion)
+            assertEquals(before, db.schemaSnapshot())
+            MigrationRunner(db).verifyIntegrity()
+        }
     }
 
     @Test
@@ -265,6 +476,14 @@ class SchemaAndMigrationTest {
             db.exec("DROP TRIGGER outbox_delivery_state")
             val e = assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
             assertTrue(e.message!!, e.message!!.contains("outbox_delivery_state"))
+        }
+        for (trigger in v3Triggers) {
+            fresh().use { db ->
+                MigrationRunner(db).migrate()
+                db.exec("DROP TRIGGER $trigger")
+                val e = assertThrows(trigger, IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+                assertTrue(e.message!!, e.message!!.contains(trigger))
+            }
         }
         fresh().use { db ->
             MigrationRunner(db).migrate()
@@ -289,8 +508,18 @@ class SchemaAndMigrationTest {
             db.exec("DROP TABLE inbox_source")
             assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
         }
+        fresh().use { db ->
+            MigrationRunner(db).migrate()
+            db.exec("DROP TABLE ent_payout_used")
+            val e = assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+            assertTrue(e.message!!, e.message!!.contains("ent_payout_used"))
+        }
         atV1().use { db ->
             // A v1 database (tables of v2 missing, version 1) is refused, never used.
+            assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+        }
+        atV2WithData().use { db ->
+            // So is a v2 database (entitlement tables missing, version 2).
             assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
         }
     }

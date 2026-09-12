@@ -9,12 +9,16 @@ package org.ghost.storage
  *  - foreign keys and uniqueness guard conversation/channel/message integrity (§8.1);
  *  - v2 (Phase 7 sync, docs/design/faza7-sync-engine.md §2 and §11): sync state lives in
  *    SQLCipher only, persisted times are minute/hour/day values checked by CHECK constraints, and
- *    the outbox/inbox state machines are enforced by triggers ([expectedTriggers]).
+ *    the outbox/inbox state machines are enforced by triggers ([expectedTriggers]);
+ *  - v3 (Phase 8 client entitlement, docs/design/faza8-issuer.md §11.3): the unused v1
+ *    `entitlement`/`referral` tables are dropped behind a fail-closed guard; the nine `ent_*`
+ *    tables hold issuance flows, tokens, invites, the drop target and payout claims, and their
+ *    state machines and write-once rules are enforced by triggers.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  */
 object Schema {
-    const val CURRENT_VERSION = 2
+    const val CURRENT_VERSION = 3
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -359,23 +363,269 @@ object Schema {
                 BEGIN DELETE FROM inbox_source WHERE namespace_id = NEW.namespace_id AND blob_hash = NEW.blob_hash; END""",
             ),
         ),
+        Migration(
+            version = 3,
+            statements = listOf(
+                // (0) Fail-closed guard: the v1 entitlement and referral tables never had a writer (RC
+                // G15). A CHECK failure aborts the migration transaction and the database stays at v2.
+                "CREATE TABLE v3_migration_guard (row_count INTEGER NOT NULL CHECK (row_count = 0))",
+                "INSERT INTO v3_migration_guard(row_count) SELECT count(*) FROM entitlement",
+                "INSERT INTO v3_migration_guard(row_count) SELECT count(*) FROM referral",
+                "DROP TABLE v3_migration_guard",
+                "DROP TABLE entitlement",
+                "DROP TABLE referral",
+                // Every time column and grid index (week, epoch) also CHECKs typeof(x) = 'integer':
+                // SQLite's % casts a REAL to INTEGER first, so `x % 60 = 0` alone would accept
+                // 1757491200.5, a time finer than a minute (never persisted, design §11.3).
+                // (1) Accepted ES keys: the device's append-only memory of (kind, epoch) -> key id (ES
+                // rule 5). epoch is a week or epoch index of the grid, not a time.
+                """CREATE TABLE ent_key (
+                    kind    TEXT    NOT NULL CHECK (kind IN ('access', 'invite', 'credit')),
+                    epoch   INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                    key_id  BLOB    NOT NULL CHECK (length(key_id) = 32),
+                    PRIMARY KEY (kind, epoch)
+                ) WITHOUT ROWID""",
+                // (1b) Accepted ES layout and price facts (ES rule 5, design §19.2): the slot-number set
+                // of every covered week and the price of every covered price epoch, as SHA-256
+                // digests. Append-only like ent_key.
+                """CREATE TABLE ent_schedule_fact (
+                    fact    TEXT    NOT NULL CHECK (fact IN ('slots', 'price')),
+                    epoch   INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                    digest  BLOB    NOT NULL CHECK (length(digest) = 32),
+                    PRIMARY KEY (fact, epoch)
+                ) WITHOUT ROWID""",
+                // (2) Singleton. payout_salt is created with the row (SecureRandom) and never leaves the
+                // device. alarm_flags = SCHEDULE_CONFLICT | ISSUER_MISMATCH | REFUSED_BY_RELAY.
+                """CREATE TABLE ent_state (
+                    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+                    schedule_seq           INTEGER NOT NULL CHECK (schedule_seq >= 1),
+                    schedule_digest        BLOB    NOT NULL CHECK (length(schedule_digest) = 32),
+                    next_invite_index      INTEGER NOT NULL DEFAULT 0 CHECK (next_invite_index BETWEEN 0 AND 65535),
+                    payout_salt            BLOB    NOT NULL CHECK (length(payout_salt) = 32),
+                    restore_scan_until_day INTEGER CHECK (restore_scan_until_day IS NULL OR (typeof(restore_scan_until_day) = 'integer' AND restore_scan_until_day >= 0)),
+                    auto_renew_credits     INTEGER NOT NULL DEFAULT 0 CHECK (auto_renew_credits IN (0, 1)),
+                    alarm_flags            INTEGER NOT NULL DEFAULT 0 CHECK (alarm_flags BETWEEN 0 AND 7)
+                )""",
+                // (3) Issuance flows (packs, the trial, and refreshes of received credits, §19.8). Live
+                // rows carry their secrets; terminal rows carry none and are deleted by GC at
+                // terminal_day + 7. purchase_id is local only, never sent. sent = the current request
+                // has left the device at least once; shown = payment instructions ever shown;
+                // prev_state = the latest InvoiceState (UX, lost vs expired); input_token = the invite
+                // (trial) or the received credit (refresh); created_hour is NULL in terminal states
+                // (§19.15); receipt_minute = invoice receipt (deadline = + 24 h); outstanding_atomic =
+                // amount − credited − seen.
+                """CREATE TABLE ent_purchase (
+                    purchase_id        BLOB    PRIMARY KEY NOT NULL CHECK (length(purchase_id) = 16),
+                    kind               TEXT    NOT NULL CHECK (kind IN ('pack', 'trial', 'refresh')),
+                    pay_with           TEXT    NOT NULL CHECK (pay_with IN ('xmr', 'credits', 'invite', 'credit')),
+                    state              TEXT    NOT NULL CHECK (state IN ('prepared', 'invoiced', 'finalized', 'expired', 'failed', 'lost')),
+                    seed               BLOB    CHECK (seed IS NULL OR length(seed) = 32),
+                    claim_key          BLOB    CHECK (claim_key IS NULL OR length(claim_key) = 32),
+                    invoice_id         BLOB    CHECK (invoice_id IS NULL OR length(invoice_id) = 16),
+                    subaddress         TEXT    CHECK (subaddress IS NULL OR length(subaddress) = 95),
+                    amount_atomic      INTEGER CHECK (amount_atomic IS NULL OR amount_atomic >= 0),
+                    input_token        BLOB    CHECK (input_token IS NULL OR length(input_token) = 354),
+                    base_week          INTEGER CHECK (base_week IS NULL OR (typeof(base_week) = 'integer' AND base_week >= 0)),
+                    schedule_seq       INTEGER CHECK (schedule_seq IS NULL OR schedule_seq >= 1),
+                    layout_digest      BLOB    CHECK (layout_digest IS NULL OR length(layout_digest) = 32),
+                    sent               INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1)),
+                    disclosed          INTEGER NOT NULL DEFAULT 0 CHECK (disclosed IN (0, 1)),
+                    shown              INTEGER NOT NULL DEFAULT 0 CHECK (shown IN (0, 1)),
+                    prev_state         INTEGER NOT NULL DEFAULT 0 CHECK (prev_state BETWEEN 0 AND 6),
+                    created_hour       INTEGER CHECK (created_hour IS NULL OR (typeof(created_hour) = 'integer' AND created_hour % 3600 = 0)),
+                    receipt_minute     INTEGER CHECK (receipt_minute IS NULL OR (typeof(receipt_minute) = 'integer' AND receipt_minute % 60 = 0)),
+                    outstanding_atomic INTEGER CHECK (outstanding_atomic IS NULL OR outstanding_atomic >= 0),
+                    next_due_minute    INTEGER CHECK (next_due_minute IS NULL OR (typeof(next_due_minute) = 'integer' AND next_due_minute % 60 = 0)),
+                    attempt            INTEGER NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 40),
+                    terminal_day       INTEGER CHECK (terminal_day IS NULL OR (typeof(terminal_day) = 'integer' AND terminal_day >= 0)),
+                    CHECK ((kind = 'trial') = (pay_with = 'invite')),
+                    CHECK ((kind = 'refresh') = (pay_with = 'credit')),
+                    CHECK (kind = 'pack' OR (claim_key IS NULL AND invoice_id IS NULL AND subaddress IS NULL AND amount_atomic IS NULL
+                                             AND receipt_minute IS NULL AND outstanding_atomic IS NULL)),
+                    CHECK (kind <> 'pack' OR input_token IS NULL),
+                    CHECK (kind = 'pack' OR state <> 'invoiced'),
+                    CHECK (state IN ('finalized', 'expired', 'failed', 'lost')
+                           OR (terminal_day IS NULL AND seed IS NOT NULL AND base_week IS NOT NULL AND schedule_seq IS NOT NULL
+                               AND layout_digest IS NOT NULL AND created_hour IS NOT NULL AND (kind <> 'pack' OR claim_key IS NOT NULL)
+                               AND (kind = 'pack' OR input_token IS NOT NULL))),
+                    CHECK (state NOT IN ('finalized', 'expired', 'failed', 'lost')
+                           OR (terminal_day IS NOT NULL AND seed IS NULL AND claim_key IS NULL AND invoice_id IS NULL
+                               AND subaddress IS NULL AND amount_atomic IS NULL AND input_token IS NULL AND next_due_minute IS NULL
+                               AND created_hour IS NULL AND receipt_minute IS NULL AND outstanding_atomic IS NULL)),
+                    CHECK (state <> 'invoiced' OR (invoice_id IS NOT NULL AND amount_atomic IS NOT NULL AND receipt_minute IS NOT NULL
+                           AND ((amount_atomic = 0) = (subaddress IS NULL))))
+                ) WITHOUT ROWID""",
+                // (4) Tokens. Keyed by the (random) nullifier: no insertion order, no purchase link at
+                // rest. A token leaves the table when spent, lost or out of its window; it is never
+                // marked "spent". reserved_relay = relay_directory.relay_id, without a foreign key
+                // (Phase 7 GC of retired relays).
+                """CREATE TABLE ent_token (
+                    nullifier          BLOB    PRIMARY KEY NOT NULL CHECK (length(nullifier) = 32),
+                    kind               TEXT    NOT NULL CHECK (kind IN ('access', 'invite', 'credit')),
+                    epoch              INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                    slot               INTEGER CHECK (slot IS NULL OR slot BETWEEN 0 AND 31),
+                    token              BLOB    NOT NULL CHECK (length(token) = 354),
+                    state              TEXT    NOT NULL CHECK (state IN ('fresh', 'reserved')),
+                    eligible_minute    INTEGER NOT NULL CHECK (typeof(eligible_minute) = 'integer' AND eligible_minute % 60 = 0),
+                    reserved_for       TEXT    CHECK (reserved_for IS NULL OR reserved_for IN ('relay', 'purchase', 'claim')),
+                    reserved_relay     INTEGER,
+                    reserved_namespace BLOB    CHECK (reserved_namespace IS NULL OR length(reserved_namespace) = 32),
+                    request_id         BLOB    CHECK (request_id IS NULL OR length(request_id) = 16),
+                    reserved_ref       BLOB    CHECK (reserved_ref IS NULL OR length(reserved_ref) = 16),
+                    CHECK ((kind = 'access') = (slot IS NOT NULL)),
+                    CHECK ((state = 'reserved') = (reserved_for IS NOT NULL)),
+                    CHECK (reserved_for IS NULL OR reserved_for <> 'relay'
+                           OR (kind = 'access' AND reserved_relay IS NOT NULL AND reserved_namespace IS NOT NULL
+                               AND request_id IS NOT NULL AND reserved_ref IS NULL)),
+                    CHECK (reserved_for IS NULL OR reserved_for = 'relay'
+                           OR (kind = 'credit' AND reserved_ref IS NOT NULL AND reserved_relay IS NULL
+                               AND reserved_namespace IS NULL AND request_id IS NULL))
+                ) WITHOUT ROWID""",
+                """CREATE UNIQUE INDEX idx_ent_token_one_reservation
+                    ON ent_token(reserved_relay, reserved_namespace, epoch) WHERE reserved_for = 'relay'""",
+                // (5) Invites this identity created (inviter side).
+                """CREATE TABLE ent_invite (
+                    invite_index     INTEGER NOT NULL PRIMARY KEY CHECK (invite_index BETWEEN 0 AND 65535),
+                    state            TEXT    NOT NULL CHECK (state IN ('created', 'credited', 'closed')),
+                    payload          BLOB    CHECK (payload IS NULL OR length(payload) = 538),
+                    drop_namespace   BLOB    NOT NULL CHECK (length(drop_namespace) = 32),
+                    listen_until_day INTEGER NOT NULL CHECK (typeof(listen_until_day) = 'integer' AND listen_until_day >= 0),
+                    CHECK (state = 'created' OR payload IS NULL)
+                ) WITHOUT ROWID""",
+                // (6) The inviter's drop this identity owes its first XMR-pack credit to (invited
+                // identities only). drop_minute = t_drop, drawn at activation (§19.12).
+                """CREATE TABLE ent_drop_target (
+                    id             INTEGER PRIMARY KEY CHECK (id = 1),
+                    drop_namespace BLOB    NOT NULL CHECK (length(drop_namespace) = 32),
+                    drop_key       BLOB    NOT NULL CHECK (length(drop_key) = 32),
+                    drop_slots     BLOB    NOT NULL CHECK (length(drop_slots) = 3),
+                    state          TEXT    NOT NULL CHECK (state IN ('waiting', 'enqueued')),
+                    operation_id   BLOB    CHECK (operation_id IS NULL OR length(operation_id) = 16),
+                    drop_minute    INTEGER NOT NULL CHECK (typeof(drop_minute) = 'integer' AND drop_minute % 60 = 0),
+                    until_day      INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                    CHECK ((state = 'enqueued') = (operation_id IS NOT NULL))
+                )""",
+                // (7) Payout claims (write-ahead).
+                """CREATE TABLE ent_claim (
+                    claim_id        BLOB    PRIMARY KEY NOT NULL CHECK (length(claim_id) = 16),
+                    state           TEXT    NOT NULL CHECK (state IN ('prepared', 'queued', 'failed')),
+                    payout_address  TEXT    CHECK (payout_address IS NULL OR length(payout_address) = 95),
+                    queued_atomic   INTEGER CHECK (queued_atomic IS NULL OR queued_atomic > 0),
+                    sent            INTEGER NOT NULL DEFAULT 0 CHECK (sent IN (0, 1)),
+                    next_due_minute INTEGER CHECK (next_due_minute IS NULL OR (typeof(next_due_minute) = 'integer' AND next_due_minute % 60 = 0)),
+                    attempt         INTEGER NOT NULL DEFAULT 0 CHECK (attempt BETWEEN 0 AND 20),
+                    terminal_day    INTEGER CHECK (terminal_day IS NULL OR (typeof(terminal_day) = 'integer' AND terminal_day >= 0)),
+                    CHECK ((state = 'prepared') = (payout_address IS NOT NULL AND next_due_minute IS NOT NULL AND terminal_day IS NULL)),
+                    CHECK ((state = 'queued') = (queued_atomic IS NOT NULL)),
+                    CHECK (state = 'prepared' OR terminal_day IS NOT NULL)
+                ) WITHOUT ROWID""",
+                "CREATE UNIQUE INDEX idx_ent_claim_one_open ON ent_claim(state) WHERE state = 'prepared'",
+                // (8) Salted hashes of payout addresses already used (refuse reuse, RP V11):
+                // HMAC-SHA256(payout_salt, address).
+                """CREATE TABLE ent_payout_used (
+                    address_hash BLOB    PRIMARY KEY NOT NULL CHECK (length(address_hash) = 32),
+                    until_day    INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0)
+                ) WITHOUT ROWID""",
+                // State machines and write-once rules enforced in SQL (Phase 7 D8 precedent; G-12).
+                """CREATE TRIGGER ent_key_append_only BEFORE UPDATE ON ent_key
+                BEGIN SELECT RAISE(ABORT, 'ent_key is append-only'); END""",
+                """CREATE TRIGGER ent_key_no_delete BEFORE DELETE ON ent_key
+                BEGIN SELECT RAISE(ABORT, 'ent_key is append-only'); END""",
+                """CREATE TRIGGER ent_schedule_fact_append_only BEFORE UPDATE ON ent_schedule_fact
+                BEGIN SELECT RAISE(ABORT, 'ent_schedule_fact is append-only'); END""",
+                """CREATE TRIGGER ent_schedule_fact_no_delete BEFORE DELETE ON ent_schedule_fact
+                BEGIN SELECT RAISE(ABORT, 'ent_schedule_fact is append-only'); END""",
+                """CREATE TRIGGER ent_purchase_transitions BEFORE UPDATE OF state ON ent_purchase
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'prepared' AND NEW.state IN ('invoiced', 'finalized', 'failed'))
+                       OR (OLD.state = 'invoiced' AND NEW.state IN ('finalized', 'expired', 'failed', 'lost')))
+                BEGIN SELECT RAISE(ABORT, 'illegal purchase transition'); END""",
+                // Seed, claim key, layout and base week may change only while nothing has been sent
+                // (prepared, sent = 0); sent never goes back; kind and pay_with never change. Wiping at
+                // a terminal state is allowed. `sent` is compared NULL-safely: under UPDATE OR REPLACE
+                // a NULL becomes the column DEFAULT (0) after this trigger ran, and `NULL < 1` would make
+                // the whole WHEN NULL, so SQLite would skip the trigger and unfreeze a sent request.
+                """CREATE TRIGGER ent_purchase_frozen BEFORE UPDATE ON ent_purchase
+                WHEN NEW.kind IS NOT OLD.kind OR NEW.pay_with IS NOT OLD.pay_with
+                  OR (NEW.state NOT IN ('finalized', 'expired', 'failed', 'lost')
+                      AND (NEW.sent IS NULL OR NEW.sent < OLD.sent
+                           OR ((OLD.sent = 1 OR OLD.state <> 'prepared')
+                               AND (NEW.seed IS NOT OLD.seed OR NEW.claim_key IS NOT OLD.claim_key
+                                    OR NEW.base_week IS NOT OLD.base_week OR NEW.schedule_seq IS NOT OLD.schedule_seq
+                                    OR NEW.layout_digest IS NOT OLD.layout_digest OR NEW.input_token IS NOT OLD.input_token))))
+                BEGIN SELECT RAISE(ABORT, 'issuance secrets and layout are frozen once sent'); END""",
+                """CREATE TRIGGER ent_purchase_invoice_frozen BEFORE UPDATE OF invoice_id, subaddress, amount_atomic ON ent_purchase
+                WHEN NEW.state NOT IN ('finalized', 'expired', 'failed', 'lost') AND OLD.invoice_id IS NOT NULL
+                 AND (NEW.invoice_id IS NOT OLD.invoice_id OR NEW.subaddress IS NOT OLD.subaddress
+                      OR NEW.amount_atomic IS NOT OLD.amount_atomic)
+                BEGIN SELECT RAISE(ABORT, 'an invoice is recorded once'); END""",
+                """CREATE TRIGGER ent_purchase_delete_terminal_only BEFORE DELETE ON ent_purchase
+                WHEN OLD.state NOT IN ('finalized', 'expired', 'failed', 'lost')
+                BEGIN SELECT RAISE(ABORT, 'a live purchase is never deleted'); END""",
+                // A reservation ends only by deletion, except that credits of a failed flow return to
+                // fresh. The flow's state is compared with IS, not =: for a reference to no row (a
+                // flow deleted by GC) the subquery is NULL, `NULL = 'failed'` would make the whole
+                // WHEN NULL and SQLite would skip the trigger, releasing a credit of no failed flow.
+                """CREATE TRIGGER ent_token_state BEFORE UPDATE OF state ON ent_token
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'fresh' AND NEW.state = 'reserved')
+                       OR (OLD.state = 'reserved' AND NEW.state = 'fresh' AND OLD.kind = 'credit' AND
+                           ((OLD.reserved_for = 'purchase'
+                             AND (SELECT state FROM ent_purchase WHERE purchase_id = OLD.reserved_ref) IS 'failed')
+                         OR (OLD.reserved_for = 'claim'
+                             AND (SELECT state FROM ent_claim WHERE claim_id = OLD.reserved_ref) IS 'failed'))))
+                BEGIN SELECT RAISE(ABORT, 'a reservation ends only by deletion'); END""",
+                // R8 in SQL: a token never changes, and a reserved token keeps its relay, namespace,
+                // request id and reference.
+                """CREATE TRIGGER ent_token_binding BEFORE UPDATE ON ent_token
+                WHEN NEW.nullifier IS NOT OLD.nullifier OR NEW.kind IS NOT OLD.kind OR NEW.epoch IS NOT OLD.epoch
+                  OR NEW.slot IS NOT OLD.slot OR NEW.token IS NOT OLD.token OR NEW.eligible_minute IS NOT OLD.eligible_minute
+                  OR (OLD.state = 'reserved' AND NEW.state = 'reserved'
+                      AND (NEW.reserved_for IS NOT OLD.reserved_for OR NEW.reserved_relay IS NOT OLD.reserved_relay
+                           OR NEW.reserved_namespace IS NOT OLD.reserved_namespace OR NEW.request_id IS NOT OLD.request_id
+                           OR NEW.reserved_ref IS NOT OLD.reserved_ref))
+                BEGIN SELECT RAISE(ABORT, 'a token and its reservation keep their binding'); END""",
+                """CREATE TRIGGER ent_invite_transitions BEFORE UPDATE OF state ON ent_invite
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'created'  AND NEW.state IN ('credited', 'closed'))
+                       OR (OLD.state = 'credited' AND NEW.state = 'closed'))
+                BEGIN SELECT RAISE(ABORT, 'illegal invite transition'); END""",
+                // `sent` is compared NULL-safely, as in ent_purchase_frozen.
+                """CREATE TRIGGER ent_claim_guard BEFORE UPDATE ON ent_claim
+                WHEN NOT ((OLD.state = NEW.state AND (NEW.payout_address IS OLD.payout_address)
+                           AND NEW.sent IS NOT NULL AND NEW.sent >= OLD.sent)
+                       OR (OLD.state = 'prepared' AND NEW.state IN ('queued', 'failed')))
+                BEGIN SELECT RAISE(ABORT, 'a claim keeps its address and is decided once'); END""",
+                """CREATE TRIGGER ent_drop_target_transitions BEFORE UPDATE ON ent_drop_target
+                WHEN NOT ((OLD.state = NEW.state AND NEW.operation_id IS OLD.operation_id)
+                       OR (OLD.state = 'waiting' AND NEW.state = 'enqueued'))
+                BEGIN SELECT RAISE(ABORT, 'illegal drop target transition'); END""",
+            ),
+        ),
     )
 
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices", "contacts", "conversations", "signal_state", "messages",
         "channels", "channel_pseudonyms", "mls_state", "posts", "media", "media_blobs",
-        "entitlement", "referral", "invite_nonces", "revocations",
+        "invite_nonces", "revocations",
         // v2 (sync)
         "relay_directory", "sync_namespace", "namespace_relay", "relay_capability", "relay_cursor",
         "outbox_op", "outbox_delivery", "inbox_blob", "inbox_source",
+        // v3 (entitlement; v1 entitlement and referral are dropped)
+        "ent_key", "ent_schedule_fact", "ent_state", "ent_purchase", "ent_token", "ent_invite",
+        "ent_drop_target", "ent_claim", "ent_payout_used",
     )
 
-    /** State-machine triggers of v2; a missing one fails [MigrationRunner.verifyIntegrity]. */
+    /** State-machine triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
     val expectedTriggers: Set<String> = setOf(
         "outbox_op_immutable", "outbox_op_payload", "outbox_op_outcome", "outbox_op_release", "outbox_op_delete",
         "outbox_delivery_insert", "outbox_delivery_state", "outbox_delivery_copy",
         "inbox_blob_insert", "inbox_blob_identity", "inbox_blob_state", "inbox_blob_sources",
+        // v3 (entitlement)
+        "ent_key_append_only", "ent_key_no_delete", "ent_schedule_fact_append_only", "ent_schedule_fact_no_delete",
+        "ent_purchase_transitions", "ent_purchase_frozen", "ent_purchase_invoice_frozen", "ent_purchase_delete_terminal_only",
+        "ent_token_state", "ent_token_binding", "ent_invite_transitions", "ent_claim_guard", "ent_drop_target_transitions",
     )
 
     /**

@@ -26,6 +26,31 @@ class ZBase32AndIdentityTest {
     }
 
     @Test
+    fun zbase32FoldsOnlyAsciiCase() {
+        val data = ByteArray(20) { (it * 37 + 11).toByte() }
+        val rest = ZBase32.encode(data).substring(1)
+        assertArrayEquals(ZBase32.decode("k$rest", 20), ZBase32.decode("K$rest", 20))
+        assertArrayEquals(ZBase32.decode("i$rest", 20), ZBase32.decode("I$rest", 20))
+        // U+212A KELVIN SIGN lowercases to 'k', U+0130 to 'i' plus a combining dot, U+FF4B is a
+        // fullwidth 'k': none of them is an alphabet letter.
+        for (lookalike in listOf('K', 'İ', 'ｋ', 'ı')) {
+            assertThrows(lookalike.code.toString(16), IllegalArgumentException::class.java) { ZBase32.decode("$lookalike$rest", 20) }
+        }
+    }
+
+    @Test
+    fun identityParserRefusesNonAsciiLookalikes() {
+        // A fixed identity whose body holds a 'k'.
+        val text = (0 until 256).asSequence()
+            .map { seed -> RootEntropy.fromRaw(ByteArray(32) { (seed + it).toByte() }).publicIdentity().encode() }
+            .first { it.indexOf('k', 6) >= 0 }
+        val k = text.indexOf('k', 6)
+        fun with(c: Char) = text.substring(0, k) + c + text.substring(k + 1)
+        assertEquals(GhostIdentity.parse(text), GhostIdentity.parse(with('K')))
+        assertThrows(IllegalArgumentException::class.java) { GhostIdentity.parse(with('K')) }
+    }
+
+    @Test
     fun identityRoundTripAndFormat() {
         val root = RootEntropy.generate()
         val id = root.publicIdentity()

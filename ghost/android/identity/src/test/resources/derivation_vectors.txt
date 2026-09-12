@@ -10,3 +10,16 @@ backup_wrap = d10bee9af8b8e44ab8b7772e1b249fd93368da82d70b09c915e514bab3767328
 invite_signing_pub = 5dcd48d326df6d525bf8bd7bee75636809feb1506ca5913a8b5e364a3f979a91
 referral_commitment = 62e7c91014f8bd39b647bdebea3f08b3a248595baa71f023b3e051f8f5f54043
 pseudonym_pub_channel_a = 47b1b1e94265166dbec496ce035e0b25f09e726d84fc9a7de3a714db587bc95c
+
+# Phase 8 (ADR-24, design §8.4): per-invite branches, info = label || u16_be(index); the drop key is
+# the clamped X25519 secret. Computed with an independent implementation (Node.js 20 crypto, i.e.
+# OpenSSL 3: HKDF-SHA256, Ed25519, X25519), which also reproduces every value above.
+invite_0_signing_seed = 82a6ad49628db73d58677de39d8c694fc5fd1798a3cd58ad0dd9eb0c59c3a00f
+invite_0_signing_pub = 396a8d8d66d05c1610409180539051a7e1a629d4c6ec9f6978f0090e6750cf40
+invite_1_signing_pub = 264622bd1b0d71ce1a8c3b1e36dfc25b2082800f8551eda21864f1f93b4ecc94
+invite_65535_signing_pub = 50f052c64e1c83b64fc783efe43c2c27e25f356445429771045181fc335bc287
+invite_0_drop_namespace = 3f26e76851ad51cb740674211977012eeae14067d31a25f8da1aca013959182b
+invite_1_drop_namespace = 0e6037e5e994d21217b490296f0a18329bc7345787f0419e2060b180f05310dc
+invite_0_drop_secret = 70d2d0e023eb32da9674bdf622032c48c64cc567ed191e79f80f947bdd0d3b56
+invite_0_drop_pub = aa277d026e42184a5be041a1e6244df5c6bb8815a7c7c6b9eeb52b9d14e40d6f
+invite_1_drop_pub = 04528883454bbf8711e0554f873848b2c64efca255ef4c190f00ef7ab9719d1f
