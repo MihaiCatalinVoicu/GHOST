@@ -130,13 +130,39 @@ class GridPolicyTest {
         r.uniforms.addAll(listOf(0.1, 0.2, 0.7, 0.5))
         assertEquals(thursday + 2 * Grid.DAY + 3 * Grid.HOUR, Slots.packEligibleMinute(T0, r, PrivacyMode.HIGH))
         // Trial tokens: at once in STANDARD, by the pack rule in HIGH.
-        assertEquals(T0 - T0 % 60, Slots.trialEligibleMinute(T0 + 59, r, PrivacyMode.STANDARD))
+        assertEquals(T0 - T0 % 60, Slots.trialEligibleMinute(T0 + 59, WEEK0, r, PrivacyMode.STANDARD))
         // HIGH: the geometric draw stops at once (0.9), then an offset of 0.
         r.uniforms.addAll(listOf(0.9, 0.0))
-        assertEquals(thursday, Slots.trialEligibleMinute(T0, r, PrivacyMode.HIGH))
+        assertEquals(thursday, Slots.trialEligibleMinute(T0, WEEK0, r, PrivacyMode.HIGH))
         // The extra days are capped, so a run of successes cannot push eligibility out of the pack's weeks.
         r.uniformValue = 0.0
         assertEquals(thursday + 16 * Grid.DAY, Slots.packEligibleMinute(T0, r, PrivacyMode.HIGH))
+    }
+
+    @Test
+    fun aHighModeTrialIsEligibleByTheLastDayOfItsLastWeek() {
+        // Q30 (§19.23 point 5): the same 16 successes that move a pack to Saturday of WEEK0 + 2 stop a
+        // trial of base WEEK0 on Sunday of WEEK0 + 1 (from Thursday of WEEK0: 10 days), offset kept.
+        val sunday = Grid.start(WEEK0 + 2) - Grid.DAY
+        val r = TestRandom()
+        r.uniformValue = 0.0
+        assertEquals(sunday, Slots.trialEligibleMinute(T0, WEEK0, r, PrivacyMode.HIGH))
+        // Fewer successes than the cap: the pack rule exactly, with the same draws consumed.
+        val pack = TestRandom().apply { uniforms.addAll(listOf(0.1, 0.2, 0.7, 0.5)) }
+        val trial = TestRandom().apply { uniforms.addAll(listOf(0.1, 0.2, 0.7, 0.5)) }
+        assertEquals(Slots.packEligibleMinute(T0, pack, PrivacyMode.HIGH), Slots.trialEligibleMinute(T0, WEEK0, trial, PrivacyMode.HIGH))
+        assertTrue(pack.uniforms.isEmpty() && trial.uniforms.isEmpty())
+        // For every draw, a HIGH-mode trial finalized in its first week is eligible before 06:00 of its
+        // last Sunday, and never before the slot of the pack rule without extra days.
+        for (hour in 0 until 7 * 24) {
+            val finalized = Grid.start(WEEK0) + hour * Grid.HOUR
+            val eligible = Slots.trialEligibleMinute(finalized, WEEK0, TestRandom().also { it.uniformValue = 0.0 }, PrivacyMode.HIGH)
+            val slot = Slots.packEligibleMinute(finalized, TestRandom().also { it.uniformValue = 0.0 }, PrivacyMode.STANDARD)
+            assertTrue("finalized at +${hour}h", eligible in slot until sunday + 6 * Grid.HOUR)
+        }
+        // A trial retried into its last week: the cap is the same last day (base, not the finalization week).
+        val late = Slots.trialEligibleMinute(Grid.start(WEEK0 + 1) + 4 * Grid.DAY, WEEK0, TestRandom().also { it.uniformValue = 0.0 }, PrivacyMode.HIGH)
+        assertEquals(sunday, late)
     }
 
     @Test

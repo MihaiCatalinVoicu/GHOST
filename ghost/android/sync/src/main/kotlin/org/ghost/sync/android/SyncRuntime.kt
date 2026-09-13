@@ -11,6 +11,7 @@ import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.api.SyncStatus
 import org.ghost.sync.api.TransportStatus
 import org.ghost.sync.engine.QuietRunScheduler
+import org.ghost.sync.engine.RedeemHold
 import org.ghost.sync.engine.Session
 import org.ghost.sync.engine.SessionKind
 import org.ghost.sync.engine.Steps
@@ -111,6 +112,13 @@ internal object ClosedLeases : LeasePort {
  *  - Relay sessions: once the session's transport is READY the participant gets
  *    [SessionParticipant.onRelaySession] on its own thread, with a lease that closes when the
  *    session stops. Neither callback thread is a lane thread: the session never waits for it.
+ *  - The redeem hold (§17 Q29, §19.23 point 5; [RedeemHold]): a background session that started,
+ *    with a participant installed, while a write need was pending stays the activity after its lanes
+ *    have ended (transport READY, lease open) until the participant reports a redeem-lane step, the
+ *    job's deadline, or a stop (a foreground wanted, the payment screen, onStopJob, a wipe). It is
+ *    decided by the count of pending write needs at the session's start alone and never touches the
+ *    lanes, so the read lane is that of the session without it (T19); a session whose transport
+ *    failed is not held.
  *  - User issuer calls ([runUserIssuerCall]) are foreground actions (§8.3, §12.2: declared L3
  *    samples) and run only while the app is visible: on the foreground session's transport, or,
  *    when no relay session may run (the payment hold), on a transport made READY for them. A call
@@ -139,9 +147,16 @@ internal class SyncRuntime(
     private val steps: Steps = Steps.DEFAULT,
     private val leases: LeasePort = ClosedLeases,
 ) {
-    private class Run(val kind: SessionKind, val session: Session, val ticket: JobTicket?, val lease: TransportLease) {
+    private class Run(val kind: SessionKind, val session: Session, val ticket: JobTicket?, val lease: TransportLease, val hold: RedeemHold) {
         lateinit var runner: ThreadedLaneRunner
         var stopping = false
+
+        /** Its lanes have ended and its redeem hold keeps it the activity (written on the runtime thread; Q29). */
+        @Volatile
+        var holding = false
+
+        /** Counted down when the run has ended (its hold's watchdog stops then). */
+        val done = CountDownLatch(1)
 
         /** Leases of user issuer calls on this session's transport (runtime thread). */
         val userLeases = ArrayList<TransportLease>()
@@ -292,6 +307,9 @@ internal class SyncRuntime(
 
     /** A quiet run is in progress. */
     val quietRunning: Boolean get() = quiet != null
+
+    /** A background session's lanes have ended and its redeem hold keeps it open (Q29). */
+    val redeemHeld: Boolean get() = running?.holding == true
 
     /** The one session participant; it takes effect from the next session, quiet run or user call. */
     fun setParticipant(p: SessionParticipant?) {
@@ -451,6 +469,8 @@ internal class SyncRuntime(
             run.session.stop()
         }
         if (abortNow) transport.abort()
+        // A held run has no lane left to end it: it ends through ended() now.
+        if (run.holding) post { ended(run) }
     }
 
     private fun closeLeases(run: Run) {
@@ -473,13 +493,18 @@ internal class SyncRuntime(
     }
 
     private fun start(e: SyncEngine, kind: SessionKind, ticket: JobTicket?) {
-        val run = Run(kind, e.startSession(kind), ticket, leases.openLease())
+        val p = participant
+        // The one input of the redeem hold (Q29), read before the session starts.
+        val writeNeeds = if (kind == SessionKind.BACKGROUND && p != null) RedeemHold.pendingWriteNeeds(e.stores) else 0
+        val session = e.startSession(kind)
+        val hold = if (kind == SessionKind.BACKGROUND) RedeemHold.background(writeNeeds, session.startedAt + policy.backgroundSessionMillis) else RedeemHold.none()
+        val run = Run(kind, session, ticket, leases.openLease(), hold)
         setActivity { running = run }
         val lanes = LaneThreads(run)
         run.runner = ThreadedLaneRunner(run.session, clock, lanes)
         run.runner.start()
         lanes.seal()
-        participant?.let { startRelayParticipant(it, e, run) }
+        p?.let { startRelayParticipant(it, e, run) }
     }
 
     /** The participant's thread of a relay session: it waits for READY, then runs until it returns. */
@@ -487,13 +512,21 @@ internal class SyncRuntime(
         val foreground = run.kind == SessionKind.FOREGROUND
         val deadline = if (foreground) Long.MAX_VALUE else run.session.startedAt + policy.backgroundSessionMillis
         val kind = if (foreground) ParticipantKind.FOREGROUND else ParticipantKind.BACKGROUND
-        val session = schedule.session(kind, run.lease, deadline, e::clockTrusted) { e.stores.database.inTransaction }
+        val session = schedule.session(kind, run.lease, deadline, e::clockTrusted, { e.stores.database.inTransaction }) {
+            // The lane's first step ends a hold (Q29); later steps change nothing.
+            if (run.hold.stepDone() && run.hold.armed) post { if (running === run && run.holding) ended(run) }
+        }
         threads.newThread { if (run.lease.awaitReady(deadline)) p.onRelaySession(session) }.start()
     }
 
-    /** Every lane thread of [run] has ended: the session is finished (or its runner failed). */
+    /**
+     * Every lane thread of [run] has ended: the session is finished (or its runner failed). The run
+     * ends, unless its redeem hold keeps it; this runs again when the hold ends.
+     */
     private fun ended(run: Run) {
         if (running !== run) return
+        if (held(run)) return
+        run.done.countDown()
         closeLeases(run)
         // Closed before the runtime reads as idle: an idle runtime holds no transport.
         transport.abort()
@@ -503,6 +536,34 @@ internal class SyncRuntime(
         if (run.runner.hasFailed) halted = true
         run.ticket?.finish()
         reconcile()
+    }
+
+    /**
+     * The redeem hold (Q29, [RedeemHold]): true while [run], whose lanes have ended, stays the
+     * activity for its participant's first redeem-lane step. Never for a run that is stopping, whose
+     * runner failed or whose transport went offline. A watchdog ends the hold at its deadline.
+     */
+    private fun held(run: Run): Boolean {
+        if (run.stopping || run.runner.hasFailed || !run.session.online || !run.hold.holds(clock.monotonicMillis())) return false
+        if (!run.holding) {
+            run.holding = true
+            watchHold(run)
+        }
+        return true
+    }
+
+    /** Ends [run]'s hold at its deadline, on the sync clock (elapsed realtime): re-read every second. */
+    private fun watchHold(run: Run) {
+        threads.newThread {
+            while (true) {
+                val left = run.hold.deadlineMonotonicMillis - clock.monotonicMillis()
+                if (left <= 0) {
+                    post { ended(run) }
+                    break
+                }
+                if (run.done.await(minOf(left, WATCHDOG_STEP_MILLIS), TimeUnit.MILLISECONDS)) break
+            }
+        }.start()
     }
 
     private fun setActivity(change: () -> Unit) = idleLock.withLock {
@@ -516,7 +577,7 @@ internal class SyncRuntime(
         val startedAt = clock.monotonicMillis()
         val q = Quiet(e, ticket, leases.openLease(), startedAt + policy.backgroundSessionMillis)
         setActivity { quiet = q }
-        val session = schedule.session(ParticipantKind.QUIET, q.lease, q.deadline, e::clockTrusted) { e.stores.database.inTransaction }
+        val session = schedule.session(ParticipantKind.QUIET, q.lease, q.deadline, e::clockTrusted, { e.stores.database.inTransaction })
         threads.newThread {
             try {
                 if (!q.lease.closed) {

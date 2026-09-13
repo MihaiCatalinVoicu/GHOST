@@ -14,5 +14,7 @@ class TorRedeemPort(private val access: RelayRedeemAccess) : RedeemPort {
     override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray): TorRelayTransport.RedeemAnswer =
         access.redeem(relay, namespace, token, requestId)
 
+    override fun stepDone() = access.stepDone()
+
     override fun toString(): String = "TorRedeemPort"
 }

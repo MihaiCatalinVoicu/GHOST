@@ -105,10 +105,15 @@ class AdaptersTest {
 
     private class RecordingRedeem : RelayRedeemAccess {
         val calls = ArrayList<OnionAddress>()
+        var steps = 0
 
         override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray, deadlineMillis: Int): TorRelayTransport.RedeemAnswer {
             calls += relay
             return TorRelayTransport.RedeemAnswer(TorRelayTransport.REDEEM_REPLAYED, 1, 1, 0, null)
+        }
+
+        override fun stepDone() {
+            steps++
         }
     }
 
@@ -155,6 +160,8 @@ class AdaptersTest {
         val redeem = RecordingRedeem()
         TorRedeemPort(redeem).redeem(TestOnions.of(1), NamespaceId(b), TestBytes.token(4), ByteArray(16))
         assertEquals(listOf(TestOnions.of(1)), redeem.calls)
+        TorRedeemPort(redeem).stepDone()
+        assertEquals("a lane step reaches the session (Q29)", 1, redeem.steps)
     }
 
     @Test

@@ -40,7 +40,9 @@ class QuietRunScheduler(private val random: RandomSources, private val clock: Sy
     /**
      * The participant's view of one activity over [lease]: accesses granted by [kind], calls cut to
      * [deadlineMonotonicMillis]. [clockTrusted] is the engine's clock trust; [inTransaction] tells
-     * whether the calling thread is inside a sync transaction (such a call is refused).
+     * whether the calling thread is inside a sync transaction (such a call is refused); [onStep] runs
+     * at each redeem-lane step the participant reports in a relay session (the runtime's
+     * [RedeemHold], Q29).
      */
     fun session(
         kind: ParticipantKind,
@@ -48,7 +50,8 @@ class QuietRunScheduler(private val random: RandomSources, private val clock: Sy
         deadlineMonotonicMillis: Long,
         clockTrusted: () -> Boolean,
         inTransaction: () -> Boolean,
-    ): ParticipantSession = LeasedSession(kind, lease, deadlineMonotonicMillis, clock, clockTrusted, inTransaction)
+        onStep: () -> Unit = {},
+    ): ParticipantSession = LeasedSession(kind, lease, deadlineMonotonicMillis, clock, clockTrusted, inTransaction, onStep)
 
     override fun toString(): String = "QuietRunScheduler"
 

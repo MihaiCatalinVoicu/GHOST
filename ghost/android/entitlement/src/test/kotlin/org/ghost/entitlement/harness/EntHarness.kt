@@ -24,6 +24,7 @@ import org.ghost.sync.api.CapabilityNeed
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.engine.KeyedRandomSources
 import org.ghost.sync.engine.QuietRunScheduler
+import org.ghost.sync.engine.RedeemHold
 import org.ghost.sync.engine.Session
 import org.ghost.sync.harness.Client
 import org.ghost.sync.harness.RelayNode
@@ -64,8 +65,10 @@ internal data class EntConfig(
     /**
      * Every n-th periodic relay job of the harness is a 5-minute foreground session instead (the user
      * opens the app about once a day at the 15-minute cadence, n = 96); 0: background only. A
-     * background session without a read pair ends before the redeem lane's first step (READY +
-     * U[0, 30 s]), so a client whose capabilities all lapsed redeems in the foreground only.
+     * background session that starts with a pending write need is held until the redeem lane's first
+     * step (Q29, [RedeemHold]), so a client whose capabilities all lapsed recovers in the background
+     * ([ScenarioLapsed] runs with 0); one without a read pair and with read needs only still ends
+     * before that step (READY + U[0, 30 s]) and redeems in the foreground or in a longer session.
      */
     val dailyForegroundJobs: Int = 96,
 ) {
@@ -134,6 +137,9 @@ internal class EntRecords {
     /** INVITE tokens (nullifier hex) the client embedded in an invite of its own. */
     val embedded = HashSet<String>()
 
+    /** Token (nullifier hex) → the `eligible_minute` the client stored it with (activation slots, Q30). */
+    val eligibleOf = HashMap<String, Long>()
+
     fun present(nullifier: String, pair: String) {
         val pairs = presented.getOrPut(nullifier) { LinkedHashSet() }
         if (pairs.add(pair)) version++
@@ -184,6 +190,7 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
             listOf("issuer ${issuer.digest()}") + redeemRelays.values.map { "redeem ${it.slot} ${it.disk.digest()}" } + "ent-records ${records.digest()}"
         }
         w.in1Exempt = { c, ns -> clients[c]?.dropNamespace(ns) == true }
+        w.sessionHold = { c, s -> clients[c]?.holds(s) == true }
         issuer.tick(issuerNow())
     }
 
@@ -438,6 +445,18 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
     /** Quiet runs of this client: start time and issuer calls made in each (J9: at most one). */
     val quietRuns = ArrayList<LongArray>()
 
+    /** The running relay session's redeem hold (Q29): the production [RedeemHold], as SyncRuntime keeps it. */
+    private var hold: Pair<Session, RedeemHold>? = null
+
+    /**
+     * [s], whose lanes have finished, stays the client's session (SyncRuntime's `held`): its hold is
+     * armed, no lane step yet, before the job's deadline, its transport online, no foreground waiting.
+     */
+    fun holds(s: Session): Boolean {
+        val (session, h) = hold ?: return false
+        return session === s && !c.foregroundPending && s.online && h.holds(w.clock.millis)
+    }
+
     fun boot() {
         val boot = c.boots
         val key = Bytes.sha256(Bytes.ascii("ent-random|${w.seed}|${c.name}|$boot"))
@@ -445,6 +464,7 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
         quietIndex = 0
         flows = 0
         flowIndex.clear()
+        hold = null
         val stores = c.stores
         val deps = EngineDeps(ent.enginePort, HarnessEntClock(w), SiteRandom(key), identity, HarnessSeal(this, key), userCalls) { c.mode }
         engine = EntitlementEngine(deps) { stores }
@@ -489,6 +509,11 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
                 val purchase = hex(2)
                 val to = args[0] as String
                 uncommitted += { r.ended[purchase] = to }
+            }
+            sql.startsWith("INSERT INTO ent_token(") -> {
+                val nullifier = hex(0)
+                val eligible = (args[5] as Number).toLong()
+                uncommitted += { r.eligibleOf[nullifier] = eligible }
             }
             sql.startsWith("INSERT INTO ent_invite(") -> {
                 val nullifier = Bytes.hex(TestSchedule.nullifier((args[1] as ByteArray).copyOfRange(1, 1 + Invite.TOKEN_BYTES)))
@@ -598,17 +623,25 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
 
     fun flowIndex(flow: ByteArray): Long = flowIndex[Bytes.hex(flow)] ?: -1
 
-    /** The participant's view of a relay session: waits for READY, then the redeem lane at its own pace. */
+    /**
+     * The participant's view of a relay session: waits for READY, then the redeem lane at its own pace.
+     * A background session's redeem hold (Q29) is decided here from the pending write needs at its
+     * start, as SyncRuntime does; the driver keeps the session while [holds] says so, and a no-op
+     * action at the deadline makes it look again.
+     */
     fun relaySession(s: Session) {
         val e = engine ?: return
         val foreground = s.kind == SyncKind.FOREGROUND
         if (foreground) e.onForeground()
         val policy = c.spec.policy
         val deadline = if (foreground) Long.MAX_VALUE else s.startedAt + policy.backgroundSessionMillis
-        val lease = HarnessLease(this) { c.session !== s || s.isFinished() }
+        val h = if (foreground) RedeemHold.none() else RedeemHold.background(RedeemHold.pendingWriteNeeds(c.stores), deadline)
+        hold = s to h
+        if (h.armed) w.driver.scheduleProcess(deadline, c, "redeem-hold-deadline:${c.name}") { }
+        val lease = HarnessLease(this) { c.session !== s || (s.isFinished() && !holds(s)) }
         val session = scheduler.session(
             if (foreground) ParticipantKind.FOREGROUND else ParticipantKind.BACKGROUND, lease, deadline,
-            { c.engine.clockTrusted() }, { c.stores.database.inTransaction },
+            { c.engine.clockTrusted() }, { c.stores.database.inTransaction }, { h.stepDone() },
         )
         awaitReady(s, e, ParticipantSessionPort(session), lease)
     }
@@ -620,7 +653,12 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
                 awaitReady(s, e, port, lease)
                 return@scheduleProcess
             }
-            val lane = e.redeemLane() ?: return@scheduleProcess
+            val lane = e.redeemLane()
+            if (lane == null) {
+                // An inert engine runs no lane: its pass reports the empty step at once (onRelaySession).
+                e.relayPass(port)
+                return@scheduleProcess
+            }
             pass(e, port, lane.firstWait())
         }
     }

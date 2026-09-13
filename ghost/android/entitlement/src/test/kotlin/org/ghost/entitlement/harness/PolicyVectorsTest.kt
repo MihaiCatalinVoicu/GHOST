@@ -101,7 +101,12 @@ class PolicyVectorsTest {
                 val draws = Draws(0.0, uniforms)
                 val mode = if (a.getValue("mode") == "high") PrivacyMode.HIGH else PrivacyMode.STANDARD
                 val t = time(a.getValue("finalized"))
-                val got = if (a.getValue("batch") == "pack") Slots.packEligibleMinute(t, draws, mode) else Slots.trialEligibleMinute(t, draws, mode)
+                val got = if (a.getValue("batch") == "pack") {
+                    assertTrue("a pack line names no base week", "base" !in a)
+                    Slots.packEligibleMinute(t, draws, mode)
+                } else {
+                    Slots.trialEligibleMinute(t, a.getValue("base").toLong(), draws, mode)
+                }
                 sameTime(checkNotNull(e), got)
                 assertTrue("every listed uniform is consumed", draws.queue.isEmpty())
             }

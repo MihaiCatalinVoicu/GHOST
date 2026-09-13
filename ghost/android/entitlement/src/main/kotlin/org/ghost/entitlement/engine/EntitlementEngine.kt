@@ -66,22 +66,37 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
 
     // ------------------------------------------------------------------ participant entry points
 
+    /**
+     * A relay session: the redeem lane until the session closes. An inert engine runs no lane, so it
+     * reports its one (empty) step at once: a background session held open for a lane step (Q29,
+     * §19.23 point 5) is not kept until its deadline for nothing.
+     */
     fun onRelaySession(session: SessionPort) {
-        val c = ready() ?: return
+        val c = ready()
+        if (c == null) {
+            session.redeem?.stepDone()
+            return
+        }
         c.redeemLane.run(session) { tick(c, session) }
     }
 
     /**
-     * One pass of a relay session's loop (GC and drops, then one redeem-lane step), for a driver
-     * that keeps the lane's pace itself with [redeemLane]'s waits in virtual time (the JVM harness,
-     * design §11.9); [onRelaySession] runs the same passes on its own thread.
+     * One pass of a relay session's loop (GC and drops, then one redeem-lane step, reported), for a
+     * driver that keeps the lane's pace itself with [redeemLane]'s waits in virtual time (the JVM
+     * harness, design §11.9); [onRelaySession] runs the same passes on its own thread, and an inert
+     * engine reports its empty step as it does.
      */
     internal fun relayPass(session: SessionPort) {
-        val c = ready() ?: return
         val redeem = session.redeem ?: return
+        val c = ready()
+        if (c == null) {
+            redeem.stepDone()
+            return
+        }
         if (session.closed) return
         tick(c, session)
         c.redeemLane.step(session, redeem)
+        redeem.stepDone()
     }
 
     /** The redeem lane of the open database, or null while the engine is inert. */

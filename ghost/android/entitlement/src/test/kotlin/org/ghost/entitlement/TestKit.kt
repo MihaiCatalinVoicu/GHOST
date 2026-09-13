@@ -360,6 +360,13 @@ internal class FakeRedeem(private val clock: ManualClock, private val crypto: Te
     /** The relays' clock minus the device clock (a relay set that lies about the time shifts it). */
     var skewSeconds = 0L
 
+    /** Redeem-lane steps reported (Q29). */
+    var steps = 0
+
+    override fun stepDone() {
+        steps++
+    }
+
     override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray): TorRelayTransport.RedeemAnswer {
         calls += Call(relay, namespace, token, requestId)
         failOnce?.let {

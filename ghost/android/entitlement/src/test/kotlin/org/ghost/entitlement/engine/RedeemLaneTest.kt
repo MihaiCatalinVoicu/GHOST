@@ -1,11 +1,14 @@
 package org.ghost.entitlement.engine
 
+import org.ghost.entitlement.FakeSession
 import org.ghost.entitlement.T0
 import org.ghost.entitlement.TestBytes
 import org.ghost.entitlement.WEEK0
 import org.ghost.entitlement.World
 import org.ghost.entitlement.api.EntitlementFlag
+import org.ghost.entitlement.port.RedeemPort
 import org.ghost.entitlement.store.TokenStore
+import org.ghost.network.OnionAddress
 import org.ghost.network.TorRelayTransport
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
@@ -14,6 +17,7 @@ import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.RelayId
+import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.TtlBucket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -59,6 +63,37 @@ class RedeemLaneTest {
         assertTrue(w.stores.capabilities.needed().isEmpty())
         w.laneStep()
         assertEquals("no need, no call", 2, w.redeem.calls.size)
+    }
+
+    @Test
+    fun everyStepIsReportedAndAnInertEngineReportsItsEmptyStepAtOnce(): Unit = World().use { w ->
+        w.writeNeed(setOf(w.relayIds[0], w.relayIds[1]))
+        w.addAccess(WEEK0, 0, 1)
+        w.addAccess(WEEK0, 1, 1)
+        // A driven pass (the harness): the step's redemptions, then the report (Q29).
+        w.engine.relayPass(FakeSession(SessionKind.BACKGROUND, redeem = w.redeem))
+        assertEquals(2, w.redeem.calls.size)
+        assertEquals(1, w.redeem.steps)
+        // The engine's own loop reports after its first step, at READY + U[0, 30 s], and not before.
+        lateinit var session: FakeSession
+        val closing = object : RedeemPort {
+            override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray) = w.redeem.redeem(relay, namespace, token, requestId)
+
+            override fun stepDone() {
+                w.redeem.stepDone()
+                session.closed = true
+            }
+        }
+        session = FakeSession(SessionKind.BACKGROUND, redeem = closing)
+        val before = w.clock.monotonic
+        w.engine.onRelaySession(session)
+        assertEquals(2, w.redeem.steps)
+        assertTrue(w.clock.monotonic - before <= RedeemLane.FIRST_STEP_MILLIS)
+        // An inert engine (no database open) runs no lane: it reports its empty step at once.
+        w.storesOpen = false
+        w.engine.onRelaySession(FakeSession(SessionKind.BACKGROUND, redeem = w.redeem))
+        assertEquals(3, w.redeem.steps)
+        assertEquals(2, w.redeem.calls.size)
     }
 
     @Test

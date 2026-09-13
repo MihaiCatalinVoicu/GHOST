@@ -35,13 +35,18 @@ internal class RedeemLane(private val c: EngineContext) {
         object Covered : Reservation()
     }
 
-    /** Runs until the session closes; [tick] is the engine's other relay-session work (drops, GC). */
+    /**
+     * Runs until the session closes; [tick] is the engine's other relay-session work (drops, GC). Each
+     * step is reported to the session, which ends a background session held open for the pending write
+     * needs it started with (design §17 Q29, §19.23 point 5).
+     */
     fun run(session: SessionPort, tick: () -> Unit) {
         val redeem = session.redeem ?: return
         var wait = firstWait()
         while (pause(session, wait)) {
             tick()
             step(session, redeem)
+            redeem.stepDone()
             wait = nextWait()
         }
     }
