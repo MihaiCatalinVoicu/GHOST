@@ -1,0 +1,30 @@
+# ghost-issuer configuration of the stagenet deployment (Phase 8 design §6.6, §19.22 point 1;
+# ghost/issuer/crates/service/src/config.rs). This committed template holds no secret and no
+# operator value. The host copy, config/issuer.toml in the issuer host directory (RUNBOOK.md,
+# Instalare), is this file with two keys appended by the operator:
+#   treasury_address  the treasury's primary stagenet address, which the view-only wallet's primary
+#                     address must equal
+#   restore_height    the treasury wallet's restore height, recorded at the first start (runbook R5)
+# Every path is a location inside the issuer container (docker-compose.stagenet.yml, entrypoint.sh):
+# the files under /run/ghost are the entrypoint's tmpfs copies of Docker secrets and read-only
+# mounts. ghost/issuer/crates/service/tests/infra_config.rs parses this template with the two keys
+# appended and checks it against torrc and entrypoint.sh.
+
+# The gRPC listener; Tor forwards the issuer onion's port 443 here (torrc: HiddenServicePort).
+listen = "127.0.0.1:7444"
+data_dir = "/var/lib/ghost-issuer/data"
+# The committed schedule, ghost/protocol/entitlement/schedule.ghes, mounted read-only.
+schedule_file = "/etc/ghost/schedule.ghes"
+sealed_keys_dir = "/run/ghost/sealed-keys"
+key_load_file = "/run/ghost/key-load"
+wallet_rpc_url = "http://127.0.0.1:38083"
+wallet_rpc_login_file = "/run/ghost/wallet-rpc.login"
+daemon_rpc_url = "http://127.0.0.1:38081"
+daemon_rpc_login_file = "/run/ghost/daemon-rpc.login"
+network = "stagenet"
+ops_key_file = "/run/ghost/ops.key"
+export_dir = "/var/lib/ghost-issuer/export"
+max_open_invoices = 20000
+scan_interval_seconds = 30
+pool_target = 32
+reply_quantum_ms = 2000

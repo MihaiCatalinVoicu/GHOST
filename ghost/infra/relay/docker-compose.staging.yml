@@ -1,43 +1,57 @@
 # Three-relay staging topology (spec §12.1 "Staging: three relays"). In production each relay is
 # run by an independent operator on separate infrastructure (ADR-11); this file only reproduces the
-# topology for local fault/failover drills. Run from the repository root:
-#   docker compose -f ghost/infra/relay/docker-compose.staging.yml up --build
+# topology for local fault/failover drills and the stagenet alpha.
+#
+# Token redemption (Phase 8 design §3.1, §10.5, §19.10, §19.21 point 2): relay-a, relay-b and
+# relay-c serve slots 0, 1 and 2 of the committed Entitlement Schedule, mounted read-only from
+# ghost/protocol/entitlement/schedule.ghes (one path, scripts/gates/entitlement-schedule.sh). A
+# relay starts only behind the onion its slot names (protocol/entitlement/relay-directory.txt), so
+# its Tor onion service key set, generated with the schedule (slice S2b, ghost-issuer-ops
+# onion-keygen), is mounted from the host, outside the repository, from the directory that
+# GHOST_STAGING_KEYS names:
+#   relay-a/  relay-b/  relay-c/    hs_ed25519_secret_key, hs_ed25519_public_key, hostname
+# The key sets are never committed. GHOST_RELAY_A_NULLIFIERS (and _B, _C) may carry
+# --nullifiers-init (the one-time Phase 8 upgrade of a relay that never redeemed) or
+# --nullifiers-reset (after losing nullifiers.redb), for one start only (runbook O1 in
+# ghost/infra/issuer/RUNBOOK.md).
+# Run from the repository root:
+#   GHOST_STAGING_KEYS=/srv/ghost-staging-keys docker compose -f ghost/infra/relay/docker-compose.staging.yml up --build
 services:
   relay-a:
     build:
       context: ../..
       dockerfile: infra/relay/Dockerfile
     environment:
-      GHOST_FLAGS: "--gossip"
+      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 0 --onion-hostname-file /run/ghost-relay/onion-hostname ${GHOST_RELAY_A_NULLIFIERS:-}"
     volumes:
       - relay-a-data:/var/lib/ghost
-      - relay-a-tor:/var/lib/tor/ghost-relay
+      - ${GHOST_STAGING_KEYS:?name the directory of the staging onion key sets}/relay-a:/var/lib/tor/ghost-relay
+      - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro
     restart: unless-stopped
   relay-b:
     build:
       context: ../..
       dockerfile: infra/relay/Dockerfile
     environment:
-      GHOST_FLAGS: "--gossip"
+      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 1 --onion-hostname-file /run/ghost-relay/onion-hostname ${GHOST_RELAY_B_NULLIFIERS:-}"
     volumes:
       - relay-b-data:/var/lib/ghost
-      - relay-b-tor:/var/lib/tor/ghost-relay
+      - ${GHOST_STAGING_KEYS:?name the directory of the staging onion key sets}/relay-b:/var/lib/tor/ghost-relay
+      - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro
     restart: unless-stopped
   relay-c:
     build:
       context: ../..
       dockerfile: infra/relay/Dockerfile
     environment:
-      GHOST_FLAGS: "--gossip"
+      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 2 --onion-hostname-file /run/ghost-relay/onion-hostname ${GHOST_RELAY_C_NULLIFIERS:-}"
     volumes:
       - relay-c-data:/var/lib/ghost
-      - relay-c-tor:/var/lib/tor/ghost-relay
+      - ${GHOST_STAGING_KEYS:?name the directory of the staging onion key sets}/relay-c:/var/lib/tor/ghost-relay
+      - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro
     restart: unless-stopped
 
 volumes:
   relay-a-data:
-  relay-a-tor:
   relay-b-data:
-  relay-b-tor:
   relay-c-data:
-  relay-c-tor:
