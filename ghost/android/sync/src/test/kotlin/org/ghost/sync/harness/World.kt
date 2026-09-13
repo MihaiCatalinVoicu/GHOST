@@ -229,6 +229,28 @@ internal class World(val name: String, val seed: Long, val journal: JournalMode)
     /** Messages of findings the harness tolerates by design (for the report), never failures. */
     val notes = ArrayList<String>()
 
+    // ------------------------------------------------------------------ extension points
+    // The `:entitlement` harness (Phase 8 design §11.9) adds the real entitlement engine to this
+    // world through these; the defaults are the Phase 7 behaviour.
+
+    /** Runs at the end of every boot of a client (per-process components of an extension). */
+    var onBoot: ((Client) -> Unit)? = null
+
+    /** Runs when a client's sync session starts (an extension's session participant). */
+    var onSessionStart: ((Client, org.ghost.sync.engine.Session) -> Unit)? = null
+
+    /** One periodic job of a client: a background session unless one runs (an extension may make it a quiet run). */
+    var runJob: (Client) -> Unit = { c -> if (c.session == null) c.startSession(org.ghost.sync.engine.SessionKind.BACKGROUND) }
+
+    /** State changes of an extension's models (part of the crash-point classification key). */
+    var extraMutations: () -> Long = { 0L }
+
+    /** Lines describing an extension's models (part of the crash digest). */
+    var extraState: () -> List<String> = { emptyList() }
+
+    /** Listened namespaces another consumer than the oracle drains (IN-1 is the extension's check there). */
+    var in1Exempt: (Client, NamespaceId) -> Boolean = { _, _ -> false }
+
     fun relayNow(node: RelayNode): Long = clock.trueEpochSeconds() + node.skewSeconds
 
     fun relay(name: String, operator: Int, maxTtl: Long = ModelRelay.MAX_TTL, hostile: Hostile? = null, skewSeconds: Long = 0): RelayNode {
@@ -280,7 +302,7 @@ internal class World(val name: String, val seed: Long, val journal: JournalMode)
     }
 
     /** Sum of every relay's state changes and hostile counters (classification key). */
-    fun relayMutations(): Long = relays.sumOf { it.model.mutations + it.hostileCalls }
+    fun relayMutations(): Long = relays.sumOf { it.model.mutations + it.hostileCalls } + extraMutations()
 
     /** Model relays prune once per hour of true time, lazily before a call (the relay's periodic sweep). */
     private var lastPruneHour = Long.MIN_VALUE

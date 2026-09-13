@@ -34,7 +34,7 @@ internal class QuietRunWork(private val c: EngineContext) {
 
     /** Runs the most overdue item (one issuer call at most); returns it, or null when nothing was due. */
     fun run(issuer: IssuerPort, now: Long): Item? {
-        val item = due(now).firstOrNull() ?: return null
+        val item = pick(c.tx { tx -> collect(tx, now) }, now) ?: return null
         when (item) {
             is Item.Request -> c.purchaseSteps.requestInvoice(issuer, item.id, now)
             is Item.Sign -> c.purchaseSteps.blindSign(issuer, item.id, now)
@@ -77,7 +77,14 @@ internal class QuietRunWork(private val c: EngineContext) {
 
     override fun toString(): String = "QuietRunWork"
 
-    private companion object {
-        const val RENEW_WITHIN_WEEKS = 2L
+    companion object {
+        private const val RENEW_WITHIN_WEEKS = 2L
+
+        /**
+         * The one item a quiet run serves (J9): the most overdue of the items due at [now], ties in the
+         * order of [items] (purchases by id, then the claim, then the renewal). Pinned by
+         * `entitlement_policy.txt` (`work`).
+         */
+        fun pick(items: List<Item>, now: Long): Item? = items.filter { it.due <= now }.minByOrNull { it.due }
     }
 }

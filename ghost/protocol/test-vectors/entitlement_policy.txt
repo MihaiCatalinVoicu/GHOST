@@ -1,0 +1,197 @@
+# Entitlement client policy vectors (Phase 8 design §11.9, §13.4 "reference policy", §12.3–§12.5,
+# §19.4, §19.8, §19.11, §19.14). The pure decisions of the client's schedule: redemption planning,
+# slot eligibility (activation slots), quiet-run work selection and retries. One file, two replayers:
+#   - ghost/android/entitlement/src/test/kotlin/org/ghost/entitlement/harness/PolicyVectorsTest.kt
+#     replays it against the real Kotlin engine (RedeemPlanner, ClockEstimate, Slots, RetryPolicy,
+#     QuietRunWork, Pricing);
+#   - the Rust T2 reference policy (slice S10) replays it against its mirror of those decisions.
+# A decision that is not pinned here is not one the reference policy may assume.
+#
+# GRAMMAR
+# - One operation per line. '#' starts a comment (to the end of the line). Blank lines are ignored.
+# - Words are separated by spaces; the first word is the operation, then key=value arguments (the
+#   first argument of `classify` is a category word). "-> <expectation>" ends a line with an outcome.
+#
+# Values
+#   <time>     <week>+<s> or <week>-<s>: start(week) ± s seconds, start(p) = 345600 + 604800 p
+#              (Monday 00:00 UTC). Week 2975 starts Monday 2027-01-11.
+#   <onion>    <label>:<port>: the onion whose service key is SHA-256(label) (as in redeem.txt), at
+#              that port.
+#   <u>        a draw in [0, 1): a PRF output or a uniform the decision consumes (in order).
+#   none       no value.
+#
+# Operations
+#   slot <n> onion=<onion> from=<week> until=<week>|open
+#       adds an entry to the slot table of the file (ES slot n served by that onion from week `from`,
+#       until `until` exclusive). Every later line uses the table built so far.
+#   boundary t=<time> -> yes|no
+#       the ±1 h redeem guard (§12.4): t lies within one hour of a week boundary.
+#   slotsfor relay=<onion> week=<w> -> <n>,<n>…|none
+#       the ES slots the relay serves in week w (§19.22 point 3): those listed under its exact
+#       onion:port, otherwise the single slot listed under its service key; a key holding several
+#       slots in the week with an unlisted port serves none.
+#   plan kind=write|read reason=missing|expiring|exhausted|rejected relay=<onion> now=<time>
+#        week=<w> trusted=yes|no first=<time> write_expiry=<time>|none prf=<u>
+#       -> redeem week=<w> slots=<list> due=<time> | deferred | no_slot | skip
+#       one need (§12.4): now is the relay-facing estimate, week the relay's week, first the first
+#       sighting of the need in this process, write_expiry the expiry of the pair's usable write
+#       capability, prf the need's PRF draw. Deferred without a trusted clock or within ±1 h of a
+#       boundary; EXPIRING in the last 23 h of week p targets p + 1 at start(p+1) − 23 h + prf × 22 h;
+#       READ MISSING is due at first + prf × 6 h; everything else at once; skipped when the write
+#       capability reaches start(target + 1); no_slot when the relay serves no slot of the target week.
+#       Due times truncate the PRF's fraction of the window to whole seconds.
+#   estimate reset | estimate record relay=<id> relay_minute=<m> local=<time> period=<w> wrong=yes|no
+#   estimate now wall=<time> -> <time> | estimate week relay=<id> wall=<time> -> <w>
+#       the relay-facing clock (§12.5, §19.4): each relay's latest offset relay_minute − local minute,
+#       clipped to ±24 h; with ≥ 2 relays the median (the lower-rounded mean of the two middle ones
+#       for an even count), else none; a WRONG_PERIOD answer's period is adopted for that relay while
+#       it names a week within 24 h of the wall clock, and any other answer drops the adoption.
+#   eligible batch=pack|trial mode=standard|high finalized=<time> uniforms=<u>,…|none -> <time>
+#       activation slots (§12.3): a pack's tokens at floor_minute(first UTC-day boundary ≥ t + 4 h
+#       + U[0, 6 h)), plus Geometric(1/2) whole days in HIGH (a draw < 0.5 adds a day, at most 16;
+#       the draws come first, then the offset's); a trial's at floor_minute(t) in STANDARD and by the
+#       pack rule in HIGH.
+#   attempt seed=<hex32> receipt=<time> k=<0..4> -> <time>
+#       the due minute of BlindSign attempt k (§19.11): receipt + window_k low + u × window width,
+#       rounded up to a minute, u the top 53 bits of HKDF-SHA256(ikm = seed, salt = none,
+#       info = "ghost/v1/attempt" ‖ u8(k), 8 bytes); windows [3 h, 5 h], [44 h, 52 h],
+#       [100 h, 112 h], [7 d, 8 d], [20 d, 22 d].
+#   retry attempt=<n> current=<time>|none now=<time> uniform=<u> -> <time>|none
+#       the due time written ahead with a capped call's send (§19.11): at the first send the one
+#       retry at ceil_minute(now + 20 h + u × 8 h), afterwards the current one unchanged.
+#   classify <category> -> transient|unauthorized|rejected|malformed
+#       what a failed call means to its flow (§5.7).
+#   work now=<time> items=<kind>@<time>,… -> <index>|none
+#       quiet-run work (§11.6, §12.2, J9): the one issuer call of a quiet run is the most overdue due
+#       item (due ≤ now), ties in the listed order; kinds request, sign, refresh, revocation, claim,
+#       renewal. The answer is the item's 0-based position.
+#   cover prices=<epoch>:<price>,… credits=<epoch>,… base=<week> now=<week> -> <index>,…|none
+#       the credits a credits-paid pack sends (§4.6, §19.8): a credit is worth the price of its epoch
+#       / 10 and is accepted in its epoch and the four following; the smallest set of at least 10 and
+#       at most 20 accepted credits covering price(price_epoch(base)), taken highest value first, the
+#       older epoch first among equal values, then in the listed order. The answer lists the chosen
+#       credits' 0-based positions in the order taken.
+
+# ---- The slot table ------------------------------------------------------------------------------
+slot 0 onion=ghost/test/relay-a:443 from=2957 until=open
+slot 1 onion=ghost/test/relay-b:443 from=2957 until=open
+slot 2 onion=ghost/test/relay-c:443 from=2957 until=2967
+slot 2 onion=ghost/test/relay-d:443 from=2967 until=open
+slot 3 onion=ghost/test/relay-e:443 from=2957 until=open
+slot 4 onion=ghost/test/relay-e:8443 from=2957 until=open
+
+# ---- The ±1 h redeem guard -----------------------------------------------------------------------
+boundary t=2975+0 -> yes
+boundary t=2975+3599 -> yes
+boundary t=2975+3600 -> no
+boundary t=2975+300000 -> no
+boundary t=2976-3600 -> no
+boundary t=2976-3599 -> yes
+
+# ---- Slots a relay serves --------------------------------------------------------------------------
+slotsfor relay=ghost/test/relay-a:443 week=2960 -> 0
+slotsfor relay=ghost/test/relay-a:9000 week=2960 -> 0              # one slot under the key: served
+slotsfor relay=ghost/test/relay-c:443 week=2966 -> 2
+slotsfor relay=ghost/test/relay-c:443 week=2967 -> none            # relay-d holds slot 2 from 2967
+slotsfor relay=ghost/test/relay-d:443 week=2966 -> none
+slotsfor relay=ghost/test/relay-d:443 week=2967 -> 2
+slotsfor relay=ghost/test/relay-e:443 week=2975 -> 3
+slotsfor relay=ghost/test/relay-e:8443 week=2975 -> 4
+slotsfor relay=ghost/test/relay-e:1234 week=2975 -> none           # two slots under the key, port unlisted
+slotsfor relay=ghost/test/relay-z:443 week=2975 -> none
+
+# ---- Redemption planning -------------------------------------------------------------------------
+plan kind=write reason=missing relay=ghost/test/relay-a:443 now=2975+100000 week=2975 trusted=yes first=2975+100000 write_expiry=none prf=0.5 -> redeem week=2975 slots=0 due=2975+100000
+plan kind=read reason=missing relay=ghost/test/relay-a:443 now=2975+100000 week=2975 trusted=yes first=2975+90000 write_expiry=none prf=0.25 -> redeem week=2975 slots=0 due=2975+95400
+plan kind=read reason=missing relay=ghost/test/relay-a:443 now=2975+100000 week=2975 trusted=yes first=2975+90000 write_expiry=none prf=0.999999 -> redeem week=2975 slots=0 due=2975+111599
+plan kind=write reason=expiring relay=ghost/test/relay-a:443 now=2976-82800 week=2975 trusted=yes first=2976-82800 write_expiry=2976+3600 prf=0.5 -> redeem week=2976 slots=0 due=2976-43200
+plan kind=read reason=expiring relay=ghost/test/relay-b:443 now=2976-7200 week=2975 trusted=yes first=2976-7200 write_expiry=none prf=0 -> redeem week=2976 slots=1 due=2976-82800
+plan kind=write reason=expiring relay=ghost/test/relay-a:443 now=2976-82801 week=2975 trusted=yes first=2976-82801 write_expiry=none prf=0.5 -> redeem week=2975 slots=0 due=2976-82801
+plan kind=write reason=expiring relay=ghost/test/relay-a:443 now=2976-82800 week=2975 trusted=yes first=2976-82800 write_expiry=2977+3600 prf=0.5 -> skip
+plan kind=write reason=missing relay=ghost/test/relay-a:443 now=2975+100000 week=2975 trusted=yes first=2975+100000 write_expiry=2976+3600 prf=0.5 -> skip
+plan kind=write reason=missing relay=ghost/test/relay-a:443 now=2975+100000 week=2975 trusted=no first=2975+100000 write_expiry=none prf=0.5 -> deferred
+plan kind=write reason=missing relay=ghost/test/relay-a:443 now=2976-3000 week=2975 trusted=yes first=2976-3000 write_expiry=none prf=0.5 -> deferred
+plan kind=write reason=missing relay=ghost/test/relay-a:443 now=2975+1800 week=2975 trusted=yes first=2975+1800 write_expiry=none prf=0.5 -> deferred
+plan kind=write reason=exhausted relay=ghost/test/relay-b:443 now=2975+200000 week=2975 trusted=yes first=2975+100000 write_expiry=2976+3600 prf=0.1 -> skip
+plan kind=write reason=exhausted relay=ghost/test/relay-b:443 now=2975+200000 week=2975 trusted=yes first=2975+100000 write_expiry=none prf=0.1 -> redeem week=2975 slots=1 due=2975+200000
+plan kind=read reason=rejected relay=ghost/test/relay-b:443 now=2975+200000 week=2975 trusted=yes first=2975+100000 write_expiry=none prf=0.1 -> redeem week=2975 slots=1 due=2975+200000
+plan kind=write reason=missing relay=ghost/test/relay-d:443 now=2966+100000 week=2966 trusted=yes first=2966+100000 write_expiry=none prf=0.5 -> no_slot
+plan kind=write reason=missing relay=ghost/test/relay-e:1234 now=2975+100000 week=2975 trusted=yes first=2975+100000 write_expiry=none prf=0.5 -> no_slot
+plan kind=write reason=missing relay=ghost/test/relay-a:443 now=2975+100000 week=2976 trusted=yes first=2975+100000 write_expiry=none prf=0.5 -> redeem week=2976 slots=0 due=2975+100000
+
+# ---- The relay-facing clock (wall 2975+100020 is local minute 29995427) ---------------------------
+estimate reset
+estimate record relay=1 relay_minute=29995437 local=2975+100020 period=2975 wrong=no
+estimate now wall=2975+100020 -> 2975+100020                         # one relay: the wall clock
+estimate record relay=2 relay_minute=29995423 local=2975+100020 period=2975 wrong=no
+estimate now wall=2975+100020 -> 2975+100200                         # offsets 10, -4: floor(6 / 2) = 3 min
+estimate record relay=3 relay_minute=29997427 local=2975+100020 period=2975 wrong=no
+estimate now wall=2975+100020 -> 2975+100620                         # 2000 min clipped to 1440; median 10
+estimate record relay=3 relay_minute=29992427 local=2975+100020 period=2975 wrong=no
+estimate now wall=2975+100020 -> 2975+99780                          # -3000 clipped to -1440; median -4
+estimate week relay=2 wall=2975+100020 -> 2975
+estimate record relay=2 relay_minute=29995427 local=2975+100020 period=2976 wrong=yes
+estimate week relay=2 wall=2975+100020 -> 2975                       # 2976 is not within 24 h of Tuesday
+estimate week relay=2 wall=2976-3600 -> 2976                         # Sunday 23:00: adopted
+estimate week relay=1 wall=2976-3600 -> 2975
+estimate record relay=2 relay_minute=29995427 local=2975+100020 period=2975 wrong=no
+estimate week relay=2 wall=2976-3600 -> 2975                         # another answer drops the adoption
+estimate reset
+estimate now wall=2975+100020 -> 2975+100020
+
+# ---- Activation slots ------------------------------------------------------------------------------
+eligible batch=pack mode=standard finalized=2975+43200 uniforms=0.5 -> 2975+97200
+eligible batch=pack mode=standard finalized=2975+72000 uniforms=0 -> 2975+86400
+eligible batch=pack mode=standard finalized=2975+72001 uniforms=0.9999 -> 2975+194340
+eligible batch=pack mode=high finalized=2975+43200 uniforms=0.4,0.3,0.7,0.5 -> 2975+270000
+eligible batch=trial mode=standard finalized=2975+43237 uniforms=none -> 2975+43200
+eligible batch=trial mode=high finalized=2975+43200 uniforms=0.6,0.25 -> 2975+91800
+
+# ---- BlindSign attempt plan ------------------------------------------------------------------------
+attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=0 -> 2975+46920
+attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=1 -> 2975+205680
+attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=2 -> 2975+406380
+attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=3 -> 2975+713040
+attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=4 -> 2975+1824360
+attempt seed=beba8382e2f77f394c678c1c7e8d0269994ca267d4614351c11ff1c1bf975d27 receipt=2975+36000 k=0 -> 2975+49920
+attempt seed=beba8382e2f77f394c678c1c7e8d0269994ca267d4614351c11ff1c1bf975d27 receipt=2975+36000 k=1 -> 2975+209580
+attempt seed=beba8382e2f77f394c678c1c7e8d0269994ca267d4614351c11ff1c1bf975d27 receipt=2975+36000 k=2 -> 2975+418440
+attempt seed=beba8382e2f77f394c678c1c7e8d0269994ca267d4614351c11ff1c1bf975d27 receipt=2975+36000 k=3 -> 2975+678600
+attempt seed=beba8382e2f77f394c678c1c7e8d0269994ca267d4614351c11ff1c1bf975d27 receipt=2975+36000 k=4 -> 2975+1767480
+
+# ---- Capped calls: the one retry ------------------------------------------------------------------
+retry attempt=0 current=none now=2975+1000 uniform=0.5 -> 2975+87420
+retry attempt=0 current=none now=2975+60 uniform=0 -> 2975+72060
+retry attempt=1 current=2975+87420 now=2975+90000 uniform=0.5 -> 2975+87420
+retry attempt=1 current=none now=2975+90000 uniform=0.5 -> none
+
+# ---- Failure categories -----------------------------------------------------------------------------
+classify unauthorized -> unauthorized
+classify rejected -> rejected
+classify invalid_argument -> rejected
+classify not_onion -> rejected
+classify malformed_response -> malformed
+classify transport -> transient
+classify timeout -> transient
+classify relay_unavailable -> transient
+classify closed -> transient
+classify quota -> transient
+classify tor_bootstrap -> transient
+classify not_a_known_category -> transient
+
+# ---- Quiet-run work ---------------------------------------------------------------------------------
+work now=2975+3600 items=sign@2975+3000,request@2975+1000 -> 1
+work now=2975+3600 items=sign@2975+4000 -> none
+work now=2975+3600 items=claim@2975+1000,sign@2975+1000 -> 0
+work now=2975+3600 items=renewal@2975+3600,refresh@2975+3601 -> 0
+work now=2975+3600 items=revocation@2975+3700,refresh@2975+2000,sign@2975+2500 -> 1
+work now=2975+3600 items=none -> none
+
+# ---- Credits paying for a pack -----------------------------------------------------------------------
+cover prices=228:200 credits=228,228,228,228,228,228,228,228,228,228 base=2975 now=2975 -> 0,1,2,3,4,5,6,7,8,9
+cover prices=228:200 credits=228,228,228,228,228,228,228,228,228 base=2975 now=2975 -> none
+cover prices=228:200 credits=228,228,228,228,228,228,228,228,228,228,228 base=2975 now=2975 -> 0,1,2,3,4,5,6,7,8,9
+cover prices=227:200,228:250 credits=227,227,227,227,227,227,227,227,227,227,227,227 base=2975 now=2975 -> none
+cover prices=227:200,228:250 credits=227,227,227,227,227,227,227,227,227,227,227,227,227 base=2975 now=2975 -> 0,1,2,3,4,5,6,7,8,9,10,11,12
+cover prices=227:200,228:300 credits=227,228,228,227,228,228,228,228,228,228,228,227 base=2975 now=2975 -> 1,2,4,5,6,7,8,9,10,0,3
+cover prices=223:200,228:200 credits=223,228,228,228,228,228,228,228,228,228,228 base=2975 now=2975 -> 1,2,3,4,5,6,7,8,9,10

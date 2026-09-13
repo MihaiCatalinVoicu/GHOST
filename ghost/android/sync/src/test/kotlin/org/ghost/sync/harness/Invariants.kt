@@ -244,6 +244,7 @@ internal object Invariants {
         val listened = rows(sql, "SELECT namespace_id FROM sync_namespace WHERE listening = 1") { NamespaceId(it.blob(0)) }
         val own = w.ops.values.filter { it.client === c }.map { Pair(it.namespace, it.hash) }.toSet()
         for (ns in listened) {
+            if (w.in1Exempt(c, ns)) continue
             val relays = rows(
                 sql,
                 "SELECT nr.relay_id FROM namespace_relay nr JOIN relay_directory rd ON rd.relay_id = nr.relay_id " +
@@ -353,6 +354,7 @@ internal object Invariants {
         }
         w.relays.forEach { out += "relay ${it.name} ${it.model.digest()}" }
         out += "records ${w.records.digest()}"
+        out += w.extraState()
         return out
     }
 

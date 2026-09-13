@@ -177,6 +177,7 @@ internal class Client(val world: World, val index: Int, val spec: ClientSpec) : 
             if (SyncChange.INBOX in changes || SyncChange.OUTCOMES in changes) oracle.requestDrain()
         }
         open = true
+        world.onBoot?.invoke(this)
     }
 
     /** Process death: the connection closes without committing and every in-memory object is dropped. */
@@ -192,6 +193,7 @@ internal class Client(val world: World, val index: Int, val spec: ClientSpec) : 
         check(session == null) { "session already running" }
         val s = engine.startSession(kind)
         session = s
+        world.onSessionStart?.invoke(this, s)
         return s
     }
 

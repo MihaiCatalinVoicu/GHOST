@@ -38,13 +38,19 @@ internal class RedeemLane(private val c: EngineContext) {
     /** Runs until the session closes; [tick] is the engine's other relay-session work (drops, GC). */
     fun run(session: SessionPort, tick: () -> Unit) {
         val redeem = session.redeem ?: return
-        var wait = (c.random.uniform() * FIRST_STEP_MILLIS).toLong()
+        var wait = firstWait()
         while (pause(session, wait)) {
             tick()
             step(session, redeem)
-            wait = (STEP_MILLIS * (0.5 + c.random.uniform())).toLong()
+            wait = nextWait()
         }
     }
+
+    /** The wait from READY to the first step: U[0, 30 s]. */
+    fun firstWait(): Long = (c.random.uniform() * FIRST_STEP_MILLIS).toLong()
+
+    /** The wait after a step: 60 s ± 50 %. */
+    fun nextWait(): Long = (STEP_MILLIS * (0.5 + c.random.uniform())).toLong()
 
     /** Waits in short slices; false once the session closed or the thread was interrupted. */
     private fun pause(session: SessionPort, millis: Long): Boolean {

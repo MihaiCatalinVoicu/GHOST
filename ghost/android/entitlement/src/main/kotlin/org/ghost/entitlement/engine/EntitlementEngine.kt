@@ -71,6 +71,22 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         c.redeemLane.run(session) { tick(c, session) }
     }
 
+    /**
+     * One pass of a relay session's loop (GC and drops, then one redeem-lane step), for a driver
+     * that keeps the lane's pace itself with [redeemLane]'s waits in virtual time (the JVM harness,
+     * design §11.9); [onRelaySession] runs the same passes on its own thread.
+     */
+    internal fun relayPass(session: SessionPort) {
+        val c = ready() ?: return
+        val redeem = session.redeem ?: return
+        if (session.closed) return
+        tick(c, session)
+        c.redeemLane.step(session, redeem)
+    }
+
+    /** The redeem lane of the open database, or null while the engine is inert. */
+    internal fun redeemLane(): RedeemLane? = ready()?.redeemLane
+
     fun onQuietRun(session: SessionPort) {
         val issuer = session.issuer ?: return
         val c = ready() ?: return
