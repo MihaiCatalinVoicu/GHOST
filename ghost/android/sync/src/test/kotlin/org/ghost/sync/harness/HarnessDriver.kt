@@ -178,11 +178,11 @@ internal class HarnessDriver(private val world: World) {
         return true
     }
 
-    /** Clears finished sessions (a stop with nothing running finishes at once). */
+    /** Clears finished sessions (a stop with nothing running finishes at once) that no extension holds. */
     private fun settle() {
         for (c in world.clients) {
             val s = c.session ?: continue
-            if (s.lock.withLock { s.finished } && pending.none { it.session === s }) {
+            if (s.lock.withLock { s.finished } && pending.none { it.session === s } && !world.sessionHold(c, s)) {
                 c.session = null
                 onSessionFinished?.invoke(c, s)
             }

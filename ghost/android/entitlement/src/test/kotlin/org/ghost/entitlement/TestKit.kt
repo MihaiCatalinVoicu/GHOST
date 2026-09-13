@@ -369,6 +369,13 @@ internal class FakeRedeem(private val clock: ManualClock, private val crypto: Te
     /** The answers given, in call order. */
     val answers = ArrayList<Int>()
 
+    /** Redeem-lane steps reported (Q29). */
+    var steps = 0
+
+    override fun stepDone() {
+        steps++
+    }
+
     override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray): TorRelayTransport.RedeemAnswer {
         calls += Call(relay, namespace, token, requestId)
         failOnce?.let {

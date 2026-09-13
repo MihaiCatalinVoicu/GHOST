@@ -242,6 +242,12 @@ internal class World(val name: String, val seed: Long, val journal: JournalMode)
     /** One periodic job of a client: a background session unless one runs (an extension may make it a quiet run). */
     var runJob: (Client) -> Unit = { c -> if (c.session == null) c.startSession(org.ghost.sync.engine.SessionKind.BACKGROUND) }
 
+    /**
+     * A finished session stays its client's session while this returns true: an extension's hold of
+     * the session's transport for its participant (the redeem hold of Phase 8 Q29). Never by default.
+     */
+    var sessionHold: (Client, org.ghost.sync.engine.Session) -> Boolean = { _, _ -> false }
+
     /** State changes of an extension's models (part of the crash-point classification key). */
     var extraMutations: () -> Long = { 0L }
 

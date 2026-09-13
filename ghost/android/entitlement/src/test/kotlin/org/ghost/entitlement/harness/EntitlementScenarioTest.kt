@@ -1,6 +1,9 @@
 package org.ghost.entitlement.harness
 
 import org.ghost.entitlement.api.ActivationState
+import org.ghost.entitlement.engine.Grid
+import org.ghost.entitlement.engine.Layouts
+import org.ghost.network.EntitlementCrypto
 import org.ghost.sync.harness.JournalMode
 import org.ghost.sync.harness.RunSpec
 import org.ghost.sync.harness.Runner
@@ -110,5 +113,44 @@ class EntitlementScenarioTest {
         assertEquals(listOf("failed", "finalized"), s.alice.purchaseStates().map { it.second }.sorted())
         assertEquals(2, s.calls("requestInvoice"))
         assertEquals(1, s.ent.issuer.history.size)
+    }
+
+    @Test
+    fun q29_aClientWhoseCapabilitiesAllLapsedRecoversInTheBackground() = faultFree(ScenarioLapsed()) { s ->
+        assertEquals("no foreground ever ran", Long.MIN_VALUE, s.alice.c.foregroundUntil)
+        assertEquals("A and B redeemed once each, in background sessions", 2, s.ent.records.minted.size)
+        assertEquals(0L, s.count("SELECT count(*) FROM outbox_op WHERE released = 0"))
+    }
+
+    /**
+     * Q30 (design §17, §19.23 point 5), harness seed 3819: a HIGH-mode invitee whose trial's activation
+     * slot, with uncapped Geometric(1/2) extra days, fell after both trial weeks, so the trial was never
+     * usable and the invitee had to buy a pack. With the cap, every trial token is eligible on a day of
+     * the trial's last week at the latest (before 06:00 of its Sunday).
+     */
+    @Test
+    fun q30_seed3819_aHighModeTrialIsEligibleWithinItsLastWeek() {
+        val world = EntitlementSeededWorld(SEED_3819)
+        world.outcome = { s ->
+            val where = world.description.toString()
+            assertTrue(where, "invitee=true mode=HIGH" in where)
+            val trial = s.ent.records.issued.filter { it.value.kind == EntitlementCrypto.KIND_ACCESS && it.value.invoice == null }
+            assertTrue("the trial finalized ($where)", trial.isNotEmpty())
+            val base = trial.values.minOf { it.epoch }
+            val lastDay = Grid.start(base + Layouts.TRIAL_WEEKS) - Grid.DAY
+            for (n in trial.keys) {
+                val eligible = checkNotNull(s.ent.records.eligibleOf[n]) { "a trial token was stored without its eligible minute" }
+                assertTrue(
+                    "a trial token of base week $base is eligible ${eligible - Grid.start(base)} s after start(base), past its last week's last day ($where)",
+                    eligible < lastDay + 6 * Grid.HOUR,
+                )
+            }
+        }
+        // Odd seeds run in the DELETE journal mode (EntitlementSeededWorldsTest).
+        Runner(world, JournalMode.DELETE, SEED_3819).run(RunSpec(plan = { w -> world.plan(w) }))
+    }
+
+    private companion object {
+        const val SEED_3819 = 3819L
     }
 }

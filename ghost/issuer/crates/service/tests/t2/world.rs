@@ -1299,7 +1299,7 @@ impl World {
         match r {
             Ok(a) if a.result == wire::RedeemInviteResult::Ok => {
                 let w_resp = self.clients[c].wall(t_resp);
-                let eligible = self.trial_eligible(c, instance, w_resp);
+                let eligible = self.trial_eligible(c, instance, base, w_resp);
                 self.store_tokens(
                     c,
                     a.tokens,
@@ -2330,7 +2330,9 @@ impl World {
         policy::pack_eligible_minute(w, &mut || r.uniform(), self.clients[c].spec.high)
     }
 
-    fn trial_eligible(&mut self, c: usize, instance: u64, w: i64) -> i64 {
+    /// The slot of a trial of base week `base` finalized at `w` (Q30 caps its HIGH-mode extra days
+    /// at the trial's last week).
+    fn trial_eligible(&mut self, c: usize, instance: u64, base: u64, w: i64) -> i64 {
         let mut r = Rng::new(
             self.cfg.seeds.sched,
             &[
@@ -2339,7 +2341,12 @@ impl World {
                 &instance.to_be_bytes(),
             ],
         );
-        policy::trial_eligible_minute(w, &mut || r.uniform(), self.clients[c].spec.high)
+        policy::trial_eligible_minute(
+            w,
+            base as i64,
+            &mut || r.uniform(),
+            self.clients[c].spec.high,
+        )
     }
 
     /// Stores finalized tokens in layout order: ACCESS as held tokens, INVITE as invites, CREDIT as
@@ -2527,7 +2534,7 @@ impl World {
                 self.clients[c].invites[idx].revoke = None;
                 if a.result == wire::RedeemInviteResult::Ok {
                     let w_resp = self.clients[c].wall(t_resp);
-                    let eligible = self.trial_eligible(c, instance, w_resp);
+                    let eligible = self.trial_eligible(c, instance, base, w_resp);
                     self.store_tokens(
                         c,
                         a.tokens,

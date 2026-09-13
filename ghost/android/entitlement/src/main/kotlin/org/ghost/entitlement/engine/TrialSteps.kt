@@ -191,9 +191,13 @@ internal class TrialSteps(private val c: EngineContext) {
                 c.tx { tx ->
                     val p = c.purchases.get(tx, id)
                     if (p != null && p.state == PurchaseStore.PREPARED) {
-                        // Onboarding: eligible at once in STANDARD, at an activation slot in HIGH (§12.3);
-                        // a revocation's spares follow the pack rule.
-                        val eligible = if (call.onboarding) Slots.trialEligibleMinute(now, c.random, c.mode()) else Slots.packEligibleMinute(now, c.random, c.mode())
+                        // Onboarding: eligible at once in STANDARD, at an activation slot in HIGH whose extra
+                        // days stop at the trial's last week (§12.3, Q30); a revocation's spares follow the pack rule.
+                        val eligible = if (call.onboarding) {
+                            Slots.trialEligibleMinute(now, call.base, c.random, c.mode())
+                        } else {
+                            Slots.packEligibleMinute(now, c.random, c.mode())
+                        }
                         c.purchaseSteps.storeTokens(tx, order, outcome.tokens, eligible)
                         c.purchases.terminal(tx, id, PurchaseStore.PREPARED, PurchaseStore.FINALIZED, Grid.day(now))
                         c.memory.clearMalformed(id)

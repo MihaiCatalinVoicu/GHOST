@@ -154,9 +154,15 @@ impl Replay {
                 let high = a["mode"] == "high";
                 let t = time(a["finalized"]);
                 let got = if a["batch"] == "pack" {
+                    assert!(!a.contains_key("base"), "a pack line names no base week");
                     policy::pack_eligible_minute(t, &mut draw, high)
                 } else {
-                    policy::trial_eligible_minute(t, &mut draw, high)
+                    let base: i64 = a
+                        .get("base")
+                        .expect("a trial line names its base week")
+                        .parse()
+                        .unwrap();
+                    policy::trial_eligible_minute(t, base, &mut draw, high)
                 };
                 assert_eq!(time(e.unwrap()), got);
                 assert!(queue.is_empty(), "every listed uniform is consumed");

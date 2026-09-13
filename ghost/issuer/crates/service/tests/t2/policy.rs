@@ -46,10 +46,41 @@ pub fn ceil_minute(t: i64) -> i64 {
 const SLOT_DELAY: i64 = 4 * HOUR;
 const SPREAD: i64 = 6 * HOUR;
 const MAX_EXTRA_DAYS: i64 = 16;
+/// The weeks a trial covers, `base` and `base + 1` (`Layouts.TRIAL_WEEKS`).
+const TRIAL_WEEKS: i64 = 2;
 
 /// A pack's tokens: `floor_minute(first UTC-day boundary ≥ t_f + 4 h + U[0, 6 h))`, plus
 /// Geometric(1/2) whole days in HIGH mode (the geometric draws first, then the offset's).
 pub fn pack_eligible_minute(finalized: i64, uniform: &mut dyn FnMut() -> f64, high: bool) -> i64 {
+    slot(finalized, uniform, high, None)
+}
+
+/// An onboarding trial of base week `base`: at once in STANDARD mode; in HIGH mode by the pack
+/// rule, its extra days cut so that they reach at most the last day of the trial's last week
+/// (`start(base + TRIAL_WEEKS) − 1 day`) and never fewer than none (Q30, §19.23 point 5). The draws
+/// are exactly the pack rule's; the cap applies after them and never moves eligibility earlier
+/// than the slot itself.
+pub fn trial_eligible_minute(
+    finalized: i64,
+    base: i64,
+    uniform: &mut dyn FnMut() -> f64,
+    high: bool,
+) -> i64 {
+    if high {
+        let last_day = week_start(base + TRIAL_WEEKS) - DAY;
+        slot(finalized, uniform, high, Some(last_day))
+    } else {
+        floor_minute(finalized)
+    }
+}
+
+/// The pack rule; with `last_day` the extra days reach at most the day starting then.
+fn slot(
+    finalized: i64,
+    uniform: &mut dyn FnMut() -> f64,
+    high: bool,
+    last_day: Option<i64>,
+) -> i64 {
     let shifted = finalized + SLOT_DELAY;
     let boundary = -(-shifted).div_euclid(DAY) * DAY;
     let mut extra = 0;
@@ -59,16 +90,11 @@ pub fn pack_eligible_minute(finalized: i64, uniform: &mut dyn FnMut() -> f64, hi
         }
     }
     let offset = (SPREAD - 1).min((uniform() * SPREAD as f64) as i64);
-    floor_minute(boundary + offset + extra * DAY)
-}
-
-/// A trial's tokens: at once in STANDARD mode, by the pack rule in HIGH mode.
-pub fn trial_eligible_minute(finalized: i64, uniform: &mut dyn FnMut() -> f64, high: bool) -> i64 {
-    if high {
-        pack_eligible_minute(finalized, uniform, high)
-    } else {
-        floor_minute(finalized)
-    }
+    let days = match last_day {
+        None => extra,
+        Some(last) => extra.min(0.max((last - boundary).div_euclid(DAY))),
+    };
+    floor_minute(boundary + offset + days * DAY)
 }
 
 // ---------------------------------------------------------------------------------------------

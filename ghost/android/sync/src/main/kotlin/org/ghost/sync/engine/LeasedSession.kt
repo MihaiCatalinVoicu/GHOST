@@ -24,7 +24,9 @@ import org.ghost.sync.api.SessionKind as ParticipantKind
  *  - every issuer call runs on a fresh flow, ended after the call (R5);
  *  - no call from inside a sync transaction ([IllegalStateException]), none after the lease closed
  *    or with less than [QuietRunScheduler.MIN_CALL_MILLIS] left (`closed`), and each call's
- *    deadline is cut to the time left.
+ *    deadline is cut to the time left;
+ *  - a redeem-lane step ([RelayRedeemAccess.stepDone]) is handed to [onStep], the runtime's redeem
+ *    hold (Q29, [RedeemHold]).
  *
  * Nothing here touches a session, a lane or the engine's breakers, pauses or transport faults: a
  * participant's calls cannot change the read lane (T19).
@@ -36,6 +38,7 @@ internal class LeasedSession(
     private val clock: SyncClock,
     private val trusted: () -> Boolean,
     private val inTransaction: () -> Boolean,
+    private val onStep: () -> Unit,
 ) : ParticipantSession {
 
     override val relayRedeem: RelayRedeemAccess? =
@@ -62,6 +65,8 @@ internal class LeasedSession(
             val deadline = callDeadline(deadlineMillis)
             return lease.use { it.redeem(relay, namespace.toByteArray(), token, requestId, deadline) }
         }
+
+        override fun stepDone() = onStep()
 
         override fun toString(): String = "RelayRedeemAccess"
     }
