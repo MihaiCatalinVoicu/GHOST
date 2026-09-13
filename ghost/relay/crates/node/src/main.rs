@@ -3,7 +3,7 @@
 //! ```text
 //! ghost-relay serve --data-dir <dir> --listen 127.0.0.1:7443 [--capture <file>] [--gossip]
 //!                   [--schedule <file> --slot <n> --onion-hostname-file <path>
-//!                    [--nullifiers-reset | --nullifiers-init]]
+//!                    [--nullifiers-reset | --nullifiers-init] [--redemption-counts <file>]]
 //! ghost-relay mint  --data-dir <dir> --namespace <hex32> (--write --quota <bytes> | --read) --expiry <unix>
 //! ```
 //! The listener binds to loopback only: reachability comes from the onion service configured in
@@ -23,6 +23,12 @@
 //! `--nullifiers-init` is refused in a data directory that has had a store (its
 //! `redemption.marker`), and the store refuses a relay key other than the one it was written under
 //! until `--nullifiers-reset`. An ES update is a restart; persisted nullifiers survive it.
+//!
+//! `--redemption-counts <file>` (runbook R2, design §6.9 check 2; redemption only) keeps `<file>`
+//! equal to the final redemption count of every closed week the nullifier store keeps, in the
+//! format `ghost-issuer-ops reconcile-check --relay-counts` reads: written at start (a failure is
+//! a refusal to start) and again whenever a sweep has closed a week. The store is held open by the
+//! running relay, so the file is how its operator reads the counts.
 
 use ghost_entitlement::Schedule;
 use ghost_relay_api::proto::relay_service_server::RelayServiceServer;
@@ -115,7 +121,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: ghost-relay serve --data-dir <dir> --listen <addr> [--capture <file>] [--gossip]"
     );
-    eprintln!("                         [--schedule <file> --slot <n> --onion-hostname-file <path> [--nullifiers-reset | --nullifiers-init]]");
+    eprintln!("                         [--schedule <file> --slot <n> --onion-hostname-file <path> [--nullifiers-reset | --nullifiers-init] [--redemption-counts <file>]]");
     eprintln!("       ghost-relay mint  --data-dir <dir> --namespace <hex32> (--write --quota <bytes> | --read) --expiry <unix>");
     ExitCode::from(2)
 }
@@ -127,19 +133,21 @@ enum FlagError {
 }
 
 /// The redemption policy of the `serve` flags: `None` without `--schedule`, `--slot` and
-/// `--onion-hostname-file`; all three (or none) must be given.
+/// `--onion-hostname-file`; all three (or none) must be given, and the redemption-only flags need
+/// them.
 fn entitlement(
     opts: &HashMap<String, String>,
     key_existed: bool,
 ) -> Result<Option<EntitlementPolicy>, FlagError> {
     let reset = opts.contains_key("nullifiers-reset");
     let init = opts.contains_key("nullifiers-init");
+    let counts = opts.contains_key("redemption-counts");
     let (schedule_path, slot, hostname_path) = match (
         opts.get("schedule"),
         opts.get("slot"),
         opts.get("onion-hostname-file"),
     ) {
-        (None, None, None) if !reset && !init => return Ok(None),
+        (None, None, None) if !reset && !init && !counts => return Ok(None),
         (Some(s), Some(n), Some(h)) if !(reset && init) => (s, n, h),
         _ => return Err(FlagError::Usage),
     };
@@ -259,12 +267,23 @@ async fn main() -> ExitCode {
                         return ExitCode::from(2);
                     }
                 };
+            let counts_file = opts.get("redemption-counts").map(PathBuf::from);
+            if let Some(path) = &counts_file {
+                if let Err(e) = relay.write_redemption_counts(path) {
+                    eprintln!("refusing to start: redemption counts file: {e}");
+                    return ExitCode::from(2);
+                }
+            }
             let pruner = std::sync::Arc::clone(&relay);
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(60));
                 loop {
                     tick.tick().await;
                     let _ = pruner.sweep(pruner.now());
+                    // A failed write is retried at the next sweep; the file keeps final counts.
+                    if let Some(path) = &counts_file {
+                        let _ = pruner.write_redemption_counts(path);
+                    }
                 }
             });
             eprintln!("ghost-relay listening on {listen} (protocol v1)");

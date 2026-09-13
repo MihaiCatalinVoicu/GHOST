@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use ghost_issuer::reconcile::{self, CounterId, Counters, TOTAL_INDEX};
-use ghost_issuer::store::RedbSnapshot;
+use ghost_issuer::store::{self, MetaKey, RedbSnapshot};
 
 use crate::args::{parse_u64, Flags};
 use crate::input::{input_refused, read_text};
@@ -98,8 +98,16 @@ fn add_relay_counts(
     Ok(())
 }
 
-/// The counters of a snapshot copy of `issuer.redb`.
-fn snapshot_counters(path: &Path) -> Result<Counters, Failure> {
+/// What the operator tools read from a snapshot of `issuer.redb`, in one read transaction.
+pub(crate) struct SnapshotView {
+    pub counters: Counters,
+    /// The last journal sequence number the snapshot applied (0 before the first entry).
+    pub journal_applied: u64,
+}
+
+/// Reads the snapshot `path` through a recovered private copy (`RedbSnapshot`; the snapshot keeps
+/// its bytes). Another schema version, or a file that is not an issuer database, is refused.
+pub(crate) fn read_snapshot(path: &Path) -> Result<SnapshotView, Failure> {
     let snapshot = RedbSnapshot::open(path)
         .map_err(|_| Failure::refused(input_refused("database", "open")))?;
     let tx = snapshot
@@ -107,7 +115,18 @@ fn snapshot_counters(path: &Path) -> Result<Counters, Failure> {
         .map_err(|_| Failure::refused(input_refused("database", "read")))?;
     let counters =
         reconcile::all(&*tx).map_err(|_| Failure::refused(input_refused("database", "read")))?;
-    Ok(counters)
+    let journal_applied = store::meta(&*tx, MetaKey::JournalApplied)
+        .map_err(|_| Failure::refused(input_refused("database", "read")))?
+        .unwrap_or(0);
+    Ok(SnapshotView {
+        counters,
+        journal_applied,
+    })
+}
+
+/// The counters of a snapshot copy of `issuer.redb`.
+fn snapshot_counters(path: &Path) -> Result<Counters, Failure> {
+    read_snapshot(path).map(|s| s.counters)
 }
 
 /// The counters file of `counters`.

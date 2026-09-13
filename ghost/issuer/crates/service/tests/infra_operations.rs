@@ -13,10 +13,15 @@
 //!   step checks that file against the ES only once Tor runs;
 //! - `docker compose stop` ends the issuer at once (`init: true`: as PID 1 the issuer ignored
 //!   SIGTERM and was killed after 10 s), and the ops tools, which read the snapshot of an issuer
-//!   ended so through a recovered private copy (`RedbSnapshot`), have a private tmpfs for it.
+//!   ended so through a recovered private copy (`RedbSnapshot`), have a private tmpfs for it;
+//! - the hourly journal prune (`infra/issuer/journal-prune.sh`, §6.3, §6.4) runs
+//!   `ghost-issuer-ops journal-prune` on the newest snapshot, under the snapshot lock, outside
+//!   maintenance windows, with the journal mounted and `DAC_OVERRIDE` for that run only, silently
+//!   unless the tool refuses; cron runs it hourly, at another minute than the snapshot;
+//! - the install checks Tor's onion against the schedule's `issuer_onion` through
+//!   `ghost-issuer-ops schedule-onions`, not by searching the schedule's bytes.
 //!
-//! The snapshot script runs under `bash` with `docker` and `flock` replaced on `PATH` by recording
-//! doubles.
+//! The scripts run under `bash` with `docker` and `flock` replaced on `PATH` by recording doubles.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -73,10 +78,17 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
 // ---------------------------------------------------------------------------------------------
 
 /// Records every call in `docker.log`; `ps` answers like `docker compose ps --quiet` for a running
-/// issuer; `stop` and `start` move the issuer between the two states.
+/// issuer; `stop` and `start` move the issuer between the two states; `run` prints a report line
+/// like `ghost-issuer-ops`, or with `refuse` present a failure line on stderr and exit status 1.
 const DOCKER_DOUBLE: &str = r#"#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOUBLE_DIR/docker.log"
 case " $* " in
+  *" run "*)
+    if [ -e "$DOUBLE_DIR/refuse" ]; then
+      echo "PRUNE_REFUSED reason=snapshot-unverified" >&2
+      exit 1
+    fi
+    echo "JOURNAL_PRUNED removed=1 kept=2 first_seq=4 last_seq=5 applied=4" ;;
   *" ps "*) if [ -e "$DOUBLE_DIR/running" ]; then echo 5b1d0c2f9a3e; fi ;;
   *" stop issuer "*) rm -f "$DOUBLE_DIR/running" ;;
   *" start issuer "*) touch "$DOUBLE_DIR/running" ;;
@@ -127,17 +139,31 @@ impl Host {
     }
 
     fn snapshot(&self) -> Output {
+        self.script("issuer/snapshot.sh")
+    }
+
+    fn prune(&self) -> Output {
+        self.script("issuer/journal-prune.sh")
+    }
+
+    fn script(&self, rel: &str) -> Output {
         let mut paths = vec![self.doubles.join("bin")];
         paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
         Command::new("bash")
-            .arg(infra_path("issuer/snapshot.sh"))
+            .arg(infra_path(rel))
             .env("PATH", std::env::join_paths(paths).unwrap())
             .env("GHOST_ISSUER_HOST_DIR", &self.host)
             .env("DOUBLE_DIR", &self.doubles)
             .output()
-            .expect("bash runs the snapshot script")
+            .unwrap_or_else(|e| panic!("bash runs {rel}: {e}"))
+    }
+
+    fn add_snapshots(&self, names: &[&str]) {
+        for name in names {
+            std::fs::write(self.host.join("snapshots").join(name), b"snapshot").unwrap();
+        }
     }
 
     fn running(&self) -> bool {
@@ -283,8 +309,9 @@ fn a_failed_copy_still_restarts_the_issuer_the_snapshot_stopped() {
     assert!(h.snapshots().is_empty());
 }
 
-/// One line of the runbook's cron block: how often it runs and what.
+/// One line of the runbook's cron block: its minute, how often it runs and what.
 struct CronLine {
+    minute: u8,
     every_minutes: u64,
     command: String,
 }
@@ -301,13 +328,14 @@ fn cron_lines(text: &str) -> Vec<CronLine> {
                 f.len() > 6 && f[2..5] == ["*", "*", "*"] && f[5] == "root",
                 "{l}"
             );
-            assert!(f[0].parse::<u8>().is_ok(), "{l}");
+            let minute: u8 = f[0].parse().unwrap_or_else(|_| panic!("{l}"));
             let every_minutes = match f[1] {
                 "*" => 60,
                 h if h.parse::<u8>().is_ok() => 1_440,
                 _ => panic!("{l}"),
             };
             CronLine {
+                minute,
                 every_minutes,
                 command: f[6..].join(" "),
             }
@@ -334,6 +362,131 @@ fn the_cron_runs_the_snapshot_script_only() {
             l.command
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// B1: the journal prune (§6.3, §6.4).
+// ---------------------------------------------------------------------------------------------
+
+/// The one `docker` call of a prune run: the ops tool on the newest snapshot, with the journal
+/// mounted and `DAC_OVERRIDE` for this run only; returns the `--now` it passed.
+fn assert_prune_call(h: &Host, snapshot: &str) -> u64 {
+    let calls = h.docker_calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let prefix = format!(
+        "run --rm --cap-add DAC_OVERRIDE -v {}/data/journal:/journal ops journal-prune \
+         --database /snapshots/{snapshot} --journal /journal --schedule /etc/ghost/schedule.ghes \
+         --now ",
+        h.host.display()
+    );
+    let now = calls[0]
+        .strip_prefix(&prefix)
+        .unwrap_or_else(|| panic!("{}", calls[0]));
+    now.parse().unwrap_or_else(|_| panic!("{}", calls[0]))
+}
+
+#[test]
+fn the_journal_prune_runs_the_ops_tool_on_the_newest_snapshot_silently() {
+    let h = Host::new(true);
+    h.add_snapshots(&[
+        "issuer-2026092810.redb",
+        "issuer-2026092812.redb",
+        "issuer-2026092811.redb",
+        "issuer-latest.redb",
+        "issuer-20260928123.redb",
+    ]);
+    std::fs::write(h.host.join("snapshots").join("notes.txt"), b"").unwrap();
+    let out = h.prune();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        out.stdout.is_empty() && out.stderr.is_empty(),
+        "a pruning run prints nothing: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        stderr(&out)
+    );
+    let now = assert_prune_call(&h, "issuer-2026092812.redb");
+    assert!(now > 1_700_000_000, "--now is the host's clock: {now}");
+    // The issuer keeps running: the prune never stops or starts a container.
+    assert!(h.running());
+    let flock = std::fs::read_to_string(h.doubles.join("flock.log")).unwrap();
+    assert_eq!(
+        flock.trim(),
+        "-n 9",
+        "the snapshot lock is held for the run"
+    );
+}
+
+#[test]
+fn the_journal_prune_leaves_a_maintenance_window_and_a_held_lock_alone() {
+    let h = Host::new(true);
+    h.add_snapshots(&["issuer-2026092812.redb"]);
+    std::fs::write(h.host.join("maintenance"), b"").unwrap();
+    let out = h.prune();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(out.stderr.is_empty(), "{}", stderr(&out));
+    assert!(h.docker_calls().is_empty(), "{:?}", h.docker_calls());
+
+    let h = Host::new(true);
+    h.add_snapshots(&["issuer-2026092812.redb"]);
+    std::fs::write(h.doubles.join("held"), b"").unwrap();
+    let out = h.prune();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("snapshot.lock is held"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(h.docker_calls().is_empty(), "{:?}", h.docker_calls());
+}
+
+/// Cron mails what a run prints: a missing snapshot and a refusal of the tool reach it, and the
+/// script's status is the tool's.
+#[test]
+fn the_journal_prune_reports_a_missing_snapshot_and_a_refusal() {
+    let h = Host::new(true);
+    h.add_snapshots(&["issuer-latest.redb"]);
+    let out = h.prune();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("no snapshot"), "{}", stderr(&out));
+    assert!(h.docker_calls().is_empty(), "{:?}", h.docker_calls());
+
+    let h = Host::new(true);
+    h.add_snapshots(&["issuer-2026092812.redb"]);
+    std::fs::write(h.doubles.join("refuse"), b"").unwrap();
+    let out = h.prune();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert!(
+        stderr(&out).contains("PRUNE_REFUSED reason=snapshot-unverified"),
+        "{}",
+        stderr(&out)
+    );
+    assert_prune_call(&h, "issuer-2026092812.redb");
+}
+
+#[test]
+fn the_cron_prunes_the_journal_hourly_away_from_the_snapshot() {
+    let lines = cron_lines(&section(&runbook(), "## 6. B1"));
+    let find = |script: &str| -> Vec<&CronLine> {
+        lines
+            .iter()
+            .filter(|l| l.command.contains(script))
+            .collect()
+    };
+    let prune = find("journal-prune.sh");
+    let snapshot = find("snapshot.sh");
+    assert_eq!(prune.len(), 1);
+    assert_eq!(
+        prune[0].every_minutes, 60,
+        "the 7-14 day retention needs hourly runs"
+    );
+    assert!(prune[0]
+        .command
+        .contains("GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer /srv/ghost-src/ghost/infra/issuer/journal-prune.sh"));
+    assert_ne!(
+        prune[0].minute, snapshot[0].minute,
+        "both take the snapshot lock; the prune runs away from the snapshot's minute"
+    );
 }
 
 /// The byte offsets of `$C stop|start|restart|up` in `text`: a command that stops, starts or
@@ -517,12 +670,25 @@ fn the_issuer_onion_is_checked_on_the_hostname_tor_wrote() {
     let up = install
         .find("$C up -d tor")
         .expect("Tor starts in the install");
+    let build = install
+        .find("$C --profile ops build ops")
+        .expect("the install builds the ops tools");
+    let onions = install
+        .find("$C run --rm ops schedule-onions --schedule /etc/ghost/schedule.ghes")
+        .expect("the install prints the schedule's onions");
     let check = install
-        .find(r#"$(cat "$H/tor/ghost-issuer/hostname"):443"#)
-        .expect("the install checks the issuer onion against the ES");
+        .find(
+            r#"grep -c -x -F "ISSUER_ONION onion=$(cat "$H/tor/ghost-issuer/hostname") port=443""#,
+        )
+        .expect("the install checks Tor's onion against the schedule's issuer_onion");
     assert!(
         up < check,
         "the ES check reads a hostname that Tor has not written yet"
+    );
+    assert!(build < onions && onions < check);
+    assert!(
+        !install.contains("grep -a"),
+        "the schedule's bytes also list the relays' onions with port 443"
     );
 }
 
