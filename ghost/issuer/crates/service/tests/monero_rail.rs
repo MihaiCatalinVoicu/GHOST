@@ -115,6 +115,29 @@ fn a_connection_the_server_closed_is_replaced() {
     assert!(calls.iter().all(|x| x.nc == 1));
 }
 
+/// Regression (CI run 34744508158, regtest step 17b): a kept-alive connection the server closed
+/// while no call ran, without `Connection: close` (a restarted wallet-rpc), is known closed before
+/// the next request, which goes out once, on a new connection.
+#[test]
+fn a_connection_the_server_dropped_while_idle_is_replaced() {
+    let e = emulator(Options::default(), height_answer);
+    let c = client(&e);
+    for round in 0..3 {
+        assert_eq!(
+            c.call("get_height", json!({})),
+            Ok(json!({"height": 77})),
+            "round {round}"
+        );
+        e.drop_connections();
+        // The server's close arrives while no call runs.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let calls = e.calls();
+    assert_eq!(calls.len(), 3, "every request reached the server once");
+    assert!(calls.windows(2).all(|w| w[0].connection != w[1].connection));
+    assert!(calls.iter().all(|x| x.nc == 1));
+}
+
 #[test]
 fn wrong_credentials_are_an_auth_error() {
     let e = emulator(Options::default(), |_| Some(Reply::Result(json!({}))));

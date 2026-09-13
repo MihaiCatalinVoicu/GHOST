@@ -135,6 +135,8 @@ pub struct Emulator {
     addr: SocketAddr,
     calls: Arc<Mutex<Vec<Call>>>,
     challenges: Arc<AtomicU64>,
+    /// The server side of every connection accepted and not dropped yet.
+    streams: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 impl Emulator {
@@ -146,11 +148,19 @@ impl Emulator {
         let addr = listener.local_addr().unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let challenges = Arc::new(AtomicU64::new(0));
+        let streams = Arc::new(Mutex::new(Vec::new()));
         let script: Script = Arc::new(script);
-        let (c, ch) = (Arc::clone(&calls), Arc::clone(&challenges));
+        let (c, ch, st) = (
+            Arc::clone(&calls),
+            Arc::clone(&challenges),
+            Arc::clone(&streams),
+        );
         std::thread::spawn(move || {
             for (id, stream) in listener.incoming().enumerate() {
                 let Ok(stream) = stream else { continue };
+                if let Ok(server_side) = stream.try_clone() {
+                    st.lock().unwrap().push(server_side);
+                }
                 let (c, ch, s) = (Arc::clone(&c), Arc::clone(&ch), Arc::clone(&script));
                 std::thread::spawn(move || connection(id as u64, stream, options, &s, &c, &ch));
             }
@@ -159,6 +169,15 @@ impl Emulator {
             addr,
             calls,
             challenges,
+            streams,
+        }
+    }
+
+    /// Closes every open connection at once, as a restarted wallet-rpc (or one timing out idle
+    /// connections) does: no `Connection: close`, the client learns it from the socket alone.
+    pub fn drop_connections(&self) {
+        for s in self.streams.lock().unwrap().drain(..) {
+            let _ = s.shutdown(std::net::Shutdown::Both);
         }
     }
 

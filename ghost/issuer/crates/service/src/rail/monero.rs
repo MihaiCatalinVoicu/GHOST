@@ -5,9 +5,10 @@
 //! - **Transport.** Plain HTTP/1.1 on one kept-alive connection per server, through hyper's
 //!   connection API over `hyper-util`'s tokio adapter, bodies through `http-body-util`: no
 //!   connection pool, no name resolution, no TLS, and [`Endpoint`] refuses every address but a
-//!   loopback one. [`PaymentRail`] is synchronous: every [`RpcClient`] owns a current-thread tokio
-//!   runtime and blocks on it, so the rail is called from blocking threads (the periodic jobs run
-//!   on `spawn_blocking`), never from an async task.
+//!   loopback one. [`PaymentRail`] is synchronous: every [`RpcClient`] owns a tokio runtime with
+//!   one worker, which drives its connection between calls too, and blocks on it, so the rail is
+//!   called from blocking threads (the periodic jobs run on `spawn_blocking`), never from an async
+//!   task.
 //! - **Authentication.** RFC 2617 digest, `qop=auth`, MD5 ([`super::digest`]), kept per connection
 //!   as the epee server keeps it. A 401 answering credentials computed from a challenge that
 //!   arrived on the same connection in the same call means wrong credentials ([`RailError::Auth`]).
@@ -217,7 +218,13 @@ impl RpcClient {
         credentials: Credentials,
         timeouts: Timeouts,
     ) -> Result<Self, RailError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        // One worker drives the kept-alive connection between calls too, so a connection the
+        // server closed while idle is known closed before the next request (the resending rule);
+        // a runtime driven only inside calls learns it from a request written into the closed
+        // socket, which may not be sent again (CI run 34744508158, a restarted wallet-rpc).
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ghost-rail-rpc")
             .enable_io()
             .enable_time()
             .build()
