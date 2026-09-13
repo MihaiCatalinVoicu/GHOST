@@ -10,8 +10,9 @@
 #
 # Build from the repository root:
 #   docker build -f ghost/infra/issuer/Dockerfile -t ghost-issuer-stagenet:local ghost
-# The operator tools the issuer host needs (runbooks B1 and R2: reconcile-check and counters-export
-# on a database copy) are a separate target and never part of the issuer image:
+# The operator tools the issuer host needs (runbooks B1 and R2: reconcile-check, counters-export
+# and journal-prune on a database copy; the install check: schedule-onions) are a separate target
+# and never part of the issuer image:
 #   docker build -f ghost/infra/issuer/Dockerfile --target ops -t ghost-issuer-ops:local ghost
 
 FROM rust:1.98.1-bookworm AS build

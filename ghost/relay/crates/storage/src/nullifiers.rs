@@ -2,12 +2,24 @@
 //! own database file `<data-dir>/nullifiers.redb` (the blob store stays at its schema v2).
 //!
 //! ```text
-//! nullifiers : period(8, BE) || nullifier(32) -> binding tag(16)
-//! es_keys    : kind(1) || epoch(8, BE)        -> key id(32)   (Entitlement Schedule rule 5 memory)
-//! es_revoked : kind(1) || epoch(8, BE)        -> ()           (revocations are append-only too)
-//! meta       : schema_version, relay_key_check, closed_through_period, refuse_through_period,
-//!              sweep_high_water_minute, es_max_seq
+//! nullifiers        : period(8, BE) || nullifier(32) -> binding tag(16)
+//! redemption_counts : period u64                     -> rows the sweep deleted for it (u64)
+//! es_keys           : kind(1) || epoch(8, BE)        -> key id(32)   (Entitlement Schedule rule 5
+//!                                                                     memory)
+//! es_revoked        : kind(1) || epoch(8, BE)        -> ()           (revocations are append-only
+//!                                                                     too)
+//! meta              : schema_version, relay_key_check, closed_through_period,
+//!                     refuse_through_period, sweep_high_water_minute, es_max_seq
 //! ```
+//!
+//! **Redemption counts** (runbook R2, design §6.9 check 2, §19.3; a recorded addition to the §10.4
+//! table list). The sweep that closes a period deletes its rows and, in the same transaction, adds
+//! their number to `redemption_counts[period]`: the final number of redemptions this relay
+//! accepted in that week, the aggregate its operator reports for the reconciliation (and knows
+//! anyway). Counts of the last [`REDEMPTION_COUNT_WEEKS`] closed periods are kept; older ones go
+//! in the same transaction. A count is a number per week, nothing else: no nullifier, tag,
+//! namespace or time finer than the week. A store written before the table existed gets it, empty,
+//! at its next open (its periods closed before then have no count); the schema version stays 1.
 //!
 //! `relay_key_check` identifies the relay key the binding tags were computed under: a store opens
 //! only under that key, or under a new one through a reset (review S3-MR-3).
@@ -38,8 +50,11 @@ pub const NULLIFIER_SCHEMA_VERSION: u64 = 1;
 pub const TAG_BYTES: usize = 16;
 /// Length of the relay key check value the store records.
 pub const KEY_CHECK_BYTES: usize = 8;
+/// Closed periods whose redemption counts are kept (one quarter of weekly reconciliations).
+pub const REDEMPTION_COUNT_WEEKS: u64 = 13;
 
 const NULLIFIERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("nullifiers");
+const REDEMPTION_COUNTS: TableDefinition<u64, u64> = TableDefinition::new("redemption_counts");
 const ES_KEYS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("es_keys");
 const ES_REVOKED: TableDefinition<&[u8], ()> = TableDefinition::new("es_revoked");
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
@@ -160,6 +175,7 @@ impl NullifierStore {
                         meta.insert(REFUSE_THROUGH, r)?;
                     }
                     txn.open_table(NULLIFIERS)?;
+                    txn.open_table(REDEMPTION_COUNTS)?;
                     txn.open_table(ES_KEYS)?;
                     txn.open_table(ES_REVOKED)?;
                 }
@@ -194,6 +210,7 @@ impl NullifierStore {
                 meta.insert(REFUSE_THROUGH, raised)?;
             }
             txn.open_table(NULLIFIERS)?;
+            txn.open_table(REDEMPTION_COUNTS)?;
             txn.open_table(ES_KEYS)?;
             txn.open_table(ES_REVOKED)?;
         }
@@ -257,7 +274,9 @@ impl NullifierStore {
 
     /// One sweep at `now_minute`: unless the clock is below the persisted high-water minute, in one
     /// write transaction it raises the high-water minute, raises `closed_through_period` to
-    /// `closed_through` (never lowering it) and deletes every row of a closed period.
+    /// `closed_through` (never lowering it), deletes every row of a closed period, adds the number
+    /// deleted per period to its redemption count and drops the counts of periods more than
+    /// [`REDEMPTION_COUNT_WEEKS`] closed periods old.
     pub fn sweep(
         &self,
         now_minute: u64,
@@ -294,10 +313,31 @@ impl NullifierStore {
                         }
                         doomed.push(k.to_vec());
                     }
+                    let mut per_period: BTreeMap<u64, u64> = BTreeMap::new();
                     for key in &doomed {
                         rows.remove(key.as_slice())?;
+                        let period = key
+                            .get(..8)
+                            .and_then(|p| <[u8; 8]>::try_from(p).ok())
+                            .map(u64::from_be_bytes)
+                            .ok_or(StoreError::IncompatibleSchema)?;
+                        *per_period.entry(period).or_default() += 1;
                     }
                     removed = doomed.len();
+                    let mut counts = txn.open_table(REDEMPTION_COUNTS)?;
+                    for (period, n) in per_period {
+                        let old = counts.get(period)?.map(|g| g.value()).unwrap_or(0);
+                        counts.insert(period, old.saturating_add(n))?;
+                    }
+                    // Keep periods c - 12 ..= c (13 weeks); every count below goes.
+                    let oldest_kept = c.saturating_sub(REDEMPTION_COUNT_WEEKS - 1);
+                    let stale: Vec<u64> = counts
+                        .range(..oldest_kept)?
+                        .map(|row| row.map(|(k, _)| k.value()))
+                        .collect::<Result<_, _>>()?;
+                    for period in stale {
+                        counts.remove(period)?;
+                    }
                 }
                 Some(NullifierSweep {
                     ran: true,
@@ -387,6 +427,19 @@ impl NullifierStore {
     pub fn count(&self) -> Result<u64, StoreError> {
         let txn = self.db.begin_read()?;
         Ok(txn.open_table(NULLIFIERS)?.len()?)
+    }
+
+    /// The redemption count of every closed period the store still counts (the last
+    /// [`REDEMPTION_COUNT_WEEKS`]), by period. A period closed without redemptions has no count.
+    pub fn redemption_counts(&self) -> Result<BTreeMap<u64, u64>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let counts = txn.open_table(REDEMPTION_COUNTS)?;
+        let mut out = BTreeMap::new();
+        for row in counts.iter()? {
+            let (period, n) = row?;
+            out.insert(period.value(), n.value());
+        }
+        Ok(out)
     }
 }
 
@@ -650,6 +703,67 @@ mod tests {
         let all = store.sweep(1_003, Some(u64::MAX)).unwrap();
         assert_eq!(all.removed, 1);
         assert_eq!(store.count().unwrap(), 0);
+    }
+
+    /// Runbook R2: the sweep that closes a week counts its rows in the same transaction; live
+    /// weeks are not counted, a count never changes once written, and only the last 13 closed
+    /// weeks are kept.
+    #[test]
+    fn the_sweep_counts_each_closed_week_and_keeps_thirteen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(&dir, NullifierStart::Create).unwrap();
+        for (p, n) in [(9u64, 2u8), (10, 3), (11, 1)] {
+            for i in 0..n {
+                store
+                    .record_or_get(p, &[p as u8 * 16 + i; 32], &[1; 16])
+                    .unwrap();
+            }
+        }
+        assert!(store.redemption_counts().unwrap().is_empty());
+        store.sweep(1_000, Some(10)).unwrap();
+        let counted = BTreeMap::from([(9, 2), (10, 3)]);
+        assert_eq!(store.redemption_counts().unwrap(), counted);
+        // A repeated sweep, a lower target and a clock below the high-water change nothing.
+        store.sweep(1_001, Some(10)).unwrap();
+        store.sweep(1_002, Some(5)).unwrap();
+        store.sweep(999, Some(11)).unwrap();
+        assert_eq!(store.redemption_counts().unwrap(), counted);
+        drop(store);
+        let store = open(&dir, NullifierStart::Existing).unwrap();
+        assert_eq!(store.redemption_counts().unwrap(), counted);
+        store.sweep(1_003, Some(11)).unwrap();
+        let all = BTreeMap::from([(9, 2), (10, 3), (11, 1)]);
+        assert_eq!(store.redemption_counts().unwrap(), all);
+        // Weeks 12..=21 close without redemptions: no count, and 9 is still one of the last 13.
+        store.sweep(1_004, Some(21)).unwrap();
+        assert_eq!(store.redemption_counts().unwrap(), all);
+        store.sweep(1_005, Some(22)).unwrap();
+        assert_eq!(
+            store.redemption_counts().unwrap(),
+            BTreeMap::from([(10, 3), (11, 1)])
+        );
+        store.sweep(1_006, Some(u64::MAX)).unwrap();
+        assert!(store.redemption_counts().unwrap().is_empty());
+        assert_eq!(store.count().unwrap(), 0);
+    }
+
+    /// A store written before the count table existed gets it at its next open.
+    #[test]
+    fn a_store_without_the_count_table_gains_it_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(&dir, NullifierStart::Create).unwrap();
+        store.record_or_get(7, &[7; 32], &[1; 16]).unwrap();
+        drop(store);
+        {
+            let db = Database::create(dir.path().join("nullifiers.redb")).unwrap();
+            let txn = db.begin_write().unwrap();
+            assert!(txn.delete_table(REDEMPTION_COUNTS).unwrap());
+            txn.commit().unwrap();
+        }
+        let store = open(&dir, NullifierStart::Existing).unwrap();
+        assert!(store.redemption_counts().unwrap().is_empty());
+        store.sweep(1_000, Some(7)).unwrap();
+        assert_eq!(store.redemption_counts().unwrap(), BTreeMap::from([(7, 1)]));
     }
 
     #[test]

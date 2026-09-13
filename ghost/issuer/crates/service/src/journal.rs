@@ -48,8 +48,18 @@
 //! checksum) to the end of the file, provided no valid frame starts anywhere after it: a partial
 //! write, or a region a crash left zero-filled or with stale bytes after the file was extended.
 //! Anything else that does not decode (damage followed by a valid frame, damage in an earlier
-//! segment, a verified frame of an unknown format) refuses the start. Segments are pruned only by
-//! [`FileJournal::prune`] (runbook B1).
+//! segment, a verified frame of an unknown format) refuses the start.
+//!
+//! **Pruning** (§6.3, §6.4; runbook B1). Segments are removed only by [`prune_dir`] (and
+//! [`FileJournal::prune`] over it), which `ghost-issuer-ops journal-prune` runs hourly from the
+//! host after verifying the newest snapshot. A segment goes when every entry in it is older than
+//! the 7-day re-serve window and covered by that snapshot's `journal_applied`; the latest segment
+//! is never removed. Segments go in ascending order, so a crash between two removals leaves a
+//! contiguous suffix whose first entry is at most `journal_applied + 1` of the snapshot and of the
+//! live database: the issuer restarts, and a restore from any snapshot B1 keeps (at most 7 days
+//! old) replays. [`prune_dir`] never truncates or writes a segment, so it may run while the issuer
+//! appends; a segment it removes between the listing and the read of an issuer that starts at that
+//! moment is skipped, and the sequence checks refuse anything but a removed prefix.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -506,30 +516,16 @@ impl FileJournal {
         (segment_path(&self.dir, target), active.next_seq)
     }
 
-    /// Runbook B1: deletes every segment except the latest whose entries are all older than the
-    /// 7-day re-serve window (the segment's week ended at least 7 days before `now`) and covered by
-    /// a verified snapshot (`snapshot_journal_applied`, the `journal_applied` of the newest
-    /// verified snapshot, is at least the segment's last sequence number). Returns the weeks
-    /// deleted.
+    /// [`prune_dir`] on this journal's directory, holding its append lock. A snapshot that does
+    /// not fit the journal ([`PruneError::SnapshotAhead`], [`PruneError::SnapshotBehind`]) is
+    /// [`JournalError::Gap`]. Returns the weeks deleted.
     pub fn prune(&self, now: u64, snapshot_journal_applied: u64) -> Result<Vec<u64>, JournalError> {
-        let active = self.lock();
-        let segments = read_segments(&self.dir)?;
-        let latest = segments.last().map(|s| s.week);
-        let mut deleted = Vec::new();
-        for s in &segments {
-            let ended = week_start(s.week.saturating_add(1)).saturating_add(RESERVE_WINDOW_SECS);
-            let covered = s
-                .entries
-                .last()
-                .is_none_or(|(seq, _)| *seq <= snapshot_journal_applied);
-            if Some(s.week) == latest || ended > now || !covered {
-                break;
-            }
-            std::fs::remove_file(&s.path).map_err(|_| JournalError::Io)?;
-            deleted.push(s.week);
+        let _active = self.lock();
+        match prune_dir(&self.dir, now, snapshot_journal_applied) {
+            Ok(pruned) => Ok(pruned.removed),
+            Err(PruneError::Journal(e)) => Err(e),
+            Err(PruneError::SnapshotAhead | PruneError::SnapshotBehind) => Err(JournalError::Gap),
         }
-        drop(active);
-        Ok(deleted)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Active> {
@@ -589,6 +585,106 @@ impl Journal for FileJournal {
     }
 }
 
+/// Why [`prune_dir`] removed nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PruneError {
+    /// The journal does not read (a file operation failed, a frame is corrupt or of an unknown
+    /// format, sequence numbers are not contiguous).
+    Journal(JournalError),
+    /// The snapshot has applied entries the journal does not hold: it is not a snapshot of this
+    /// journal's issuer, or the journal lost its end.
+    SnapshotAhead,
+    /// The journal no longer holds the entry after the snapshot's last applied one: a restore
+    /// from this snapshot would refuse the start (a sequence gap).
+    SnapshotBehind,
+}
+
+impl std::fmt::Display for PruneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PruneError::Journal(e) => e.fmt(f),
+            PruneError::SnapshotAhead => f.write_str("snapshot newer than the journal"),
+            PruneError::SnapshotBehind => f.write_str("journal starts after the snapshot"),
+        }
+    }
+}
+
+impl std::error::Error for PruneError {}
+
+/// What [`prune_dir`] found and removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pruned {
+    /// The weeks of the removed segments, ascending.
+    pub removed: Vec<u64>,
+    /// Segments left.
+    pub kept: usize,
+    /// Sequence number of the first entry left (0 in an empty journal).
+    pub first_seq: u64,
+    /// Sequence number of the last entry (0 in an empty journal).
+    pub last_seq: u64,
+}
+
+/// Runbook B1 (§6.3, §6.4): removes, in ascending order, every segment of the journal in `dir`
+/// except the latest whose entries are all older than the 7-day re-serve window (the segment's
+/// week ended at least [`RESERVE_WINDOW_SECS`] before `now`) and covered by a verified snapshot
+/// (`snapshot_journal_applied`, the snapshot's `journal_applied`, is at least the segment's last
+/// sequence number); it stops at the first segment that is not both. Nothing is removed unless the
+/// journal holds every entry after the snapshot: `first ≤ snapshot_journal_applied + 1` and
+/// `snapshot_journal_applied ≤ last`, the conditions of the issuer's own replay (an empty journal
+/// fits only a snapshot that applied nothing). No segment is opened for writing, so a torn tail
+/// the issuer is writing is left as it is.
+pub fn prune_dir(
+    dir: &Path,
+    now: u64,
+    snapshot_journal_applied: u64,
+) -> Result<Pruned, PruneError> {
+    let segments = read_segments(dir).map_err(PruneError::Journal)?;
+    let first_seq = segments
+        .iter()
+        .flat_map(|s| s.entries.first())
+        .next()
+        .map_or(0, |(seq, _)| *seq);
+    let last_seq = segments
+        .iter()
+        .flat_map(|s| s.entries.last())
+        .last()
+        .map_or(0, |(seq, _)| *seq);
+    if snapshot_journal_applied > last_seq {
+        return Err(PruneError::SnapshotAhead);
+    }
+    if first_seq > snapshot_journal_applied.saturating_add(1) {
+        return Err(PruneError::SnapshotBehind);
+    }
+    let latest = segments.last().map(|s| s.week);
+    let mut removed = Vec::new();
+    for s in &segments {
+        let ended = week_start(s.week.saturating_add(1)).saturating_add(RESERVE_WINDOW_SECS);
+        let covered = s
+            .entries
+            .last()
+            .is_none_or(|(seq, _)| *seq <= snapshot_journal_applied);
+        if Some(s.week) == latest || ended > now || !covered {
+            break;
+        }
+        std::fs::remove_file(&s.path).map_err(|_| PruneError::Journal(JournalError::Io))?;
+        removed.push(s.week);
+    }
+    if !removed.is_empty() {
+        sync_dir(dir).map_err(PruneError::Journal)?;
+    }
+    let left: Vec<&Segment> = segments.iter().skip(removed.len()).collect();
+    Ok(Pruned {
+        kept: left.len(),
+        first_seq: left
+            .iter()
+            .flat_map(|s| s.entries.first())
+            .next()
+            .map_or(0, |(seq, _)| *seq),
+        last_seq,
+        removed,
+    })
+}
+
 fn segment_path(dir: &Path, week: u64) -> PathBuf {
     dir.join(format!("{SEGMENT_PREFIX}{week}"))
 }
@@ -614,7 +710,9 @@ fn sync_dir(dir: &Path) -> Result<(), JournalError> {
     Ok(())
 }
 
-/// Reads and validates every segment, ascending by week.
+/// Reads and validates every segment, ascending by week. A segment listed but gone before it is
+/// read was removed by a concurrent [`prune_dir`], which removes a prefix only: it is skipped, and
+/// the sequence checks here and at the replay refuse any other missing entries.
 fn read_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
     let mut weeks = Vec::new();
     for item in std::fs::read_dir(dir).map_err(|_| JournalError::Io)? {
@@ -632,12 +730,19 @@ fn read_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
         weeks.push(week);
     }
     weeks.sort_unstable();
-    let count = weeks.len();
+    let mut files = Vec::with_capacity(weeks.len());
+    for week in weeks {
+        match std::fs::read(segment_path(dir, week)) {
+            Ok(bytes) => files.push((week, bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(JournalError::Io),
+        }
+    }
+    let count = files.len();
     let mut segments = Vec::with_capacity(count);
     let mut expected_seq: Option<u64> = None;
-    for (i, week) in weeks.into_iter().enumerate() {
+    for (i, (week, bytes)) in files.into_iter().enumerate() {
         let path = segment_path(dir, week);
-        let bytes = std::fs::read(&path).map_err(|_| JournalError::Io)?;
         let is_last = i + 1 == count;
         let (entries, valid_len) = parse_segment(&bytes, is_last)?;
         for (seq, _) in &entries {

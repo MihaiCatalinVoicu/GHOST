@@ -28,6 +28,10 @@
 //!                                  [--schedule-public-key <hex>] --now <unix seconds>
 //!                                  [--relay-counts <file>]... [--view-dump <json>
 //!                                  --restore-height <h> [--ledger <file>]]
+//! ghost-issuer-ops journal-prune --database <issuer.redb snapshot> --journal <dir> --schedule <es>
+//!                                [--schedule-public-key <hex>] --now <unix seconds>
+//! ghost-issuer-ops schedule-onions --schedule <es> [--schedule-public-key <hex>]
+//!                                  [--now <unix seconds>]
 //! ```
 //!
 //! - `keygen` (runbook K1): a custody secret, an Ed25519 schedule key, or RSA-2048 token keys for
@@ -59,15 +63,24 @@
 //!   issuer host, or from the counters file `counters-export` writes there, which is the only
 //!   issuer input the workstation checks together with its own view and ledger
 //!   ([`reconcile_check`]).
+//! - `journal-prune` (§6.3, §6.4, runbook B1, hourly from the host's cron through
+//!   `infra/issuer/journal-prune.sh`): verifies a snapshot as B1 does, then removes the
+//!   `issued.journal` segments it covers that are older than the 7-day re-serve window
+//!   ([`journal_prune`]).
+//! - `schedule-onions` (runbooks "Instalare" and O1): the schedule's `issuer_onion` and, with
+//!   `--now`, the slot onions of the current and the next week, as host names Tor writes
+//!   ([`schedule_onions`]).
 //!
 //! Output: fixed-vocabulary lines through [`report`] only (exit 0 ok, 1 refused, 2 usage). Files
-//! are written only by [`output`].
+//! are written only by [`output`]; `journal-prune` removes journal segments through
+//! `ghost_issuer::journal::prune_dir`, the module that owns them.
 #![forbid(unsafe_code)]
 
 mod args;
 pub mod directory;
 mod hexfmt;
 mod input;
+pub mod journal_prune;
 mod keygen;
 mod keys_seal;
 pub mod ledger;
@@ -77,6 +90,7 @@ pub mod public_entry;
 pub mod rawtx;
 pub mod reconcile_check;
 pub mod report;
+pub mod schedule_onions;
 mod schedule_sign;
 mod schedule_verify;
 pub mod source;
@@ -151,6 +165,8 @@ pub fn execute(argv: &[String], sink: &mut dyn Sink) -> Status {
         "payout-ack" => workstation::ack(rest, sink),
         "reconcile-check" => reconcile_check::run(rest, sink),
         "counters-export" => reconcile_check::export(rest, sink),
+        "journal-prune" => journal_prune::run(rest, sink),
+        "schedule-onions" => schedule_onions::run(rest, sink),
         _ => Err(Failure::usage("unknown-command", None)),
     };
     match result {

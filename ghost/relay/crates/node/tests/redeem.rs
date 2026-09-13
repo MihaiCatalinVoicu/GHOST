@@ -13,7 +13,9 @@ use ghost_entitlement::schedule::ScheduleError;
 use ghost_relay_api::capability_header;
 use ghost_relay_api::proto::StoreBlobRequest;
 use ghost_relay_capability::{Capability, Kind, RelayKey};
-use ghost_relay_node::redeem::{capability_expiry, NULLIFIERS_FILE, REDEMPTION_MARKER_FILE};
+use ghost_relay_node::redeem::{
+    capability_expiry, COUNTS_HEADER, NULLIFIERS_FILE, REDEMPTION_MARKER_FILE,
+};
 use ghost_relay_node::{NullifierMode, RedeemRate, Relay, StartError};
 use ghost_relay_storage::StoreError;
 use std::path::PathBuf;
@@ -140,6 +142,66 @@ fn a_crash_after_the_commit_gets_the_identical_capability_after_restart() {
         Code::PermissionDenied,
         "expired at the end of the week plus one hour"
     );
+}
+
+/// Runbook R2 (design §6.9 check 2): the counts file holds the final count of every closed week
+/// of this relay's slot and nothing else, is rewritten only when a sweep has counted a week, and
+/// survives a restart through the store.
+#[test]
+fn the_counts_file_holds_the_final_count_of_each_closed_week() {
+    let mut r = TestRelay::new(tuesday());
+    let path = r.dir.path().join("redemption-counts.txt");
+    let read = || std::fs::read_to_string(&path).unwrap();
+    assert!(r.relay().write_redemption_counts(&path).unwrap());
+    assert_eq!(read(), COUNTS_HEADER);
+    assert!(!r.relay().write_redemption_counts(&path).unwrap());
+    for (t, ns) in [("a1", "alpha"), ("a2", "beta"), ("a3", "gamma")] {
+        capability(r.redeem(&token(t), ns, t));
+    }
+    // An identical retry and a replay are not redemptions.
+    capability(r.redeem(&token("a1"), "alpha", "a1"));
+    assert_eq!(r.redeem(&token("a1"), "delta", "x1"), Outcome::Replayed);
+    // Week 2959 is open: not counted yet.
+    r.relay().sweep(tuesday()).unwrap();
+    assert!(!r.relay().write_redemption_counts(&path).unwrap());
+    // Its window closes at start(2960) + 1 h; the sweep then counts it.
+    r.relay().sweep(at("2960+3599")).unwrap();
+    assert!(!r.relay().write_redemption_counts(&path).unwrap());
+    r.clock.set(at("2960+3600"));
+    r.relay().sweep(at("2960+3600")).unwrap();
+    assert!(r.relay().write_redemption_counts(&path).unwrap());
+    assert_eq!(
+        read(),
+        format!("{COUNTS_HEADER}week 2959 slot 1 redemptions 3\n")
+    );
+    r.clock.set(at("2960+86400"));
+    capability(r.redeem(&token("b1"), "alpha", "b1"));
+    r.restart();
+    assert!(!r.relay().write_redemption_counts(&path).unwrap());
+    r.relay().sweep(at("2961+3600")).unwrap();
+    assert!(r.relay().write_redemption_counts(&path).unwrap());
+    let text = read();
+    assert_eq!(
+        text,
+        format!("{COUNTS_HEADER}week 2959 slot 1 redemptions 3\nweek 2960 slot 1 redemptions 1\n")
+    );
+    // Aggregates only: the header and count lines, nothing a token, a nullifier or a namespace
+    // could be read from.
+    for line in text.lines().skip(1) {
+        let words: Vec<&str> = line.split(' ').collect();
+        assert!(
+            matches!(words.as_slice(), ["week", w, "slot", "1", "redemptions", n]
+                if w.parse::<u64>().is_ok() && n.parse::<u64>().is_ok()),
+            "{line}"
+        );
+    }
+    assert!(!r.dir.path().join("redemption-counts.txt.writing").exists());
+    // Without redemption there is no count to write.
+    let plain = tempfile::tempdir().unwrap();
+    let relay = open_relay(plain.path(), &r.key, None, &r.clock, None).unwrap();
+    assert!(relay
+        .write_redemption_counts(&plain.path().join("counts.txt"))
+        .is_err());
 }
 
 #[test]

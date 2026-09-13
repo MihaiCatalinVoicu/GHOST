@@ -126,6 +126,21 @@ impl Relay {
         (self.config.clock)()
     }
 
+    /// Runbook R2 (design §6.9 check 2): writes the redemption counts file
+    /// ([`redeem::redemption_counts_text`]: the final count of every closed week the nullifier
+    /// store keeps, for this relay's slot) to `path` when its content changed. The binary calls it
+    /// at start and after every sweep. Returns whether it wrote; an error without redemption.
+    pub fn write_redemption_counts(&self, path: &Path) -> std::io::Result<bool> {
+        let Some(r) = &self.redeem else {
+            return Err(std::io::Error::other("redemption is disabled"));
+        };
+        let counts = r
+            .store()
+            .redemption_counts()
+            .map_err(std::io::Error::other)?;
+        redeem::write_if_changed(path, &redeem::redemption_counts_text(r.slot(), &counts))
+    }
+
     /// One prune sweep at `now`: expired blobs and quota ledgers, and, with redemption enabled,
     /// the nullifier rows of every access week whose acceptance window has closed (design §10.4:
     /// the closed-period high-water is raised in the same transaction, and nothing runs while

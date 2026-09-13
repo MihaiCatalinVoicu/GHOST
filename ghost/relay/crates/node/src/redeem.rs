@@ -14,6 +14,7 @@
 //! [`Relay::redeem_at`] applies the checks in exactly the order of design §10.2 and records exactly
 //! one capture event.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -306,6 +307,56 @@ impl Redeem {
     pub(crate) fn store(&self) -> &NullifierStore {
         &self.store
     }
+
+    pub(crate) fn slot(&self) -> u8 {
+        self.slot
+    }
+}
+
+/// First line of the redemption counts file: a comment, which `reconcile-check --relay-counts`
+/// skips.
+pub const COUNTS_HEADER: &str = "# ghost-relay redemption counts, closed weeks only (runbook R2)\n";
+
+/// The redemption counts file of runbook R2 (`ghost-issuer-ops reconcile-check --relay-counts`,
+/// design §6.9 check 2, §19.3): [`COUNTS_HEADER`], then one line `week <w> slot <s> redemptions
+/// <n>` per closed week whose count the nullifier store keeps, ascending by week. A week is listed
+/// once its acceptance window has closed and the sweep has counted it, so its count is final.
+/// Aggregates only: no nullifier, tag, namespace or time finer than the week.
+pub fn redemption_counts_text(slot: u8, counts: &BTreeMap<u64, u64>) -> String {
+    let mut out = String::from(COUNTS_HEADER);
+    for (week, n) in counts {
+        out.push_str(&format!("week {week} slot {slot} redemptions {n}\n"));
+    }
+    out
+}
+
+/// Writes `text` to `path` unless the file already holds exactly it: under a temporary name,
+/// synced, then renamed into place, so a reader sees the old file or the new one, never a part.
+/// Returns whether it wrote.
+pub(crate) fn write_if_changed(path: &Path, text: &str) -> std::io::Result<bool> {
+    if std::fs::read(path).is_ok_and(|old| old == text.as_bytes()) {
+        return Ok(false);
+    }
+    let mut name = path.as_os_str().to_owned();
+    name.push(".writing");
+    let tmp = PathBuf::from(name);
+    let written = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.map(|()| true)
 }
 
 /// Writes the redemption marker: under a temporary name, synced, then renamed into place.

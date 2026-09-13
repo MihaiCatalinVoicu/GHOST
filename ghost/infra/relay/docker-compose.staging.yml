@@ -22,7 +22,7 @@ services:
       context: ../..
       dockerfile: infra/relay/Dockerfile
     environment:
-      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 0 --onion-hostname-file /run/ghost-relay/onion-hostname ${GHOST_RELAY_A_NULLIFIERS:-}"
+      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 0 --onion-hostname-file /run/ghost-relay/onion-hostname --redemption-counts /var/lib/ghost/redemption-counts.txt ${GHOST_RELAY_A_NULLIFIERS:-}"
     volumes:
       - relay-a-data:/var/lib/ghost
       - ${GHOST_STAGING_KEYS:?name the directory of the staging onion key sets}/relay-a:/var/lib/tor/ghost-relay
@@ -33,7 +33,7 @@ services:
       context: ../..
       dockerfile: infra/relay/Dockerfile
     environment:
-      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 1 --onion-hostname-file /run/ghost-relay/onion-hostname ${GHOST_RELAY_B_NULLIFIERS:-}"
+      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 1 --onion-hostname-file /run/ghost-relay/onion-hostname --redemption-counts /var/lib/ghost/redemption-counts.txt ${GHOST_RELAY_B_NULLIFIERS:-}"
     volumes:
       - relay-b-data:/var/lib/ghost
       - ${GHOST_STAGING_KEYS:?name the directory of the staging onion key sets}/relay-b:/var/lib/tor/ghost-relay
@@ -44,7 +44,7 @@ services:
       context: ../..
       dockerfile: infra/relay/Dockerfile
     environment:
-      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 2 --onion-hostname-file /run/ghost-relay/onion-hostname ${GHOST_RELAY_C_NULLIFIERS:-}"
+      GHOST_FLAGS: "--gossip --schedule /etc/ghost/schedule.ghes --slot 2 --onion-hostname-file /run/ghost-relay/onion-hostname --redemption-counts /var/lib/ghost/redemption-counts.txt ${GHOST_RELAY_C_NULLIFIERS:-}"
     volumes:
       - relay-c-data:/var/lib/ghost
       - ${GHOST_STAGING_KEYS:?name the directory of the staging onion key sets}/relay-c:/var/lib/tor/ghost-relay
