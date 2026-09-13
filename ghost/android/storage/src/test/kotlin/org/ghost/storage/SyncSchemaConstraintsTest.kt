@@ -147,8 +147,10 @@ class SyncSchemaConstraintsTest {
         bad(CHECK_FAILED, released = 1)
         bad(FOREIGN_KEY_FAILED, ns = bytes(32, 9))
         // (namespace, hash) is unique across ops (§11.2 #5); the same hash in another namespace is fine.
-        bad(UNIQUE_FAILED, blobHash = hash(1))
-        bad(UNIQUE_FAILED, id = opId(1), blobHash = hash(91))
+        // The REPLACE guard of migration 3 (Phase 8 design §19.21 point 4) answers before the UNIQUE and
+        // PRIMARY KEY constraints do.
+        bad("outbox_op rows are never replaced", blobHash = hash(1))
+        bad("outbox_op rows are never replaced", id = opId(1), blobHash = hash(91))
         f.namespace(bytes(32, 2))
         assertEquals(1, db.changes(insertOp, opId(91), bytes(32, 2), hash(1), bytes(1024, 1), 604800, 0, null, 2, "pending", 0))
     }

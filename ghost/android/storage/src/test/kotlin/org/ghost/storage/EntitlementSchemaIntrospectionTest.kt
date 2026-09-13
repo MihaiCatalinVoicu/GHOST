@@ -10,8 +10,9 @@ import org.junit.Test
  * §19.20), and the shape of the ES rule 5 memory (§19.2, §19.20 point 2):
  * the persisted time columns are exactly the listed `*_minute`, `*_hour` and `*_day` columns, each
  * with its granularity CHECK; no other column has a time-like name under the Phase 7 rule
- * (sync `SchemaIntrospectionTest`), whose only exemptions here are the `epoch` grid indices; and the
- * former `last_state` is `prev_state`, so the rule's `last_` does not match it.
+ * (sync `SchemaIntrospectionTest`), whose only exemptions here are the `epoch` grid indices; the
+ * former `last_state` is `prev_state`, so the rule's `last_` does not match it; and every table with
+ * rules carries its REPLACE guard (§19.21 point 4).
  */
 class EntitlementSchemaIntrospectionTest {
     private val entTables = listOf(
@@ -150,6 +151,36 @@ class EntitlementSchemaIntrospectionTest {
             val on = triggers.filter { it.contains("BEFORE $event ON ent_schedule_fact") }
             assertEquals(event, 1, on.size)
             assertTrue(on.single(), on.single().contains("ON ent_schedule_fact BEGIN SELECT RAISE(ABORT, 'ent_schedule_fact is append-only')"))
+        }
+        // And through REPLACE (§19.21 point 4): an insert of a remembered (fact, epoch) is refused before
+        // the conflict is resolved, since REPLACE would delete the old row without its DELETE trigger.
+        val insert = triggers.filter { it.contains("BEFORE INSERT ON ent_schedule_fact") }
+        assertEquals(1, insert.size)
+        assertTrue(
+            insert.single(),
+            insert.single().contains(
+                "WHEN EXISTS (SELECT 1 FROM ent_schedule_fact WHERE fact = NEW.fact AND epoch = NEW.epoch) " +
+                    "BEGIN SELECT RAISE(ABORT, 'ent_schedule_fact is append-only')",
+            ),
+        )
+        assertEquals(3, triggers.size)
+    }
+
+    @Test
+    fun everyEntitlementTableWithRulesRefusesAConflictingInsert(): Unit = JdbcSqlExecutor().use { db ->
+        MigrationRunner(db).migrate()
+        // §19.21 point 4: REPLACE deletes a conflicting row without its DELETE trigger and writes one past
+        // the UPDATE triggers, so each table with a rule also carries `<table>_no_replace` (its key
+        // coverage is checked for every guard in ReplaceGuardsTest). ent_state and ent_payout_used carry
+        // no trigger: nothing of theirs is write-once in the schema.
+        val byTable = HashMap<String, MutableSet<String>>()
+        db.query("SELECT tbl_name, name FROM sqlite_master WHERE type = 'trigger' AND tbl_name LIKE 'ent\\_%' ESCAPE '\\'") {
+            byTable.getOrPut(it.string(0)) { HashSet() } += it.string(1)
+        }
+        assertEquals(entTables.toSet() - setOf("ent_state", "ent_payout_used"), byTable.keys)
+        for ((table, names) in byTable) {
+            assertTrue(table, "${table}_no_replace" in names)
+            assertTrue("$table has no rule besides its guard", names.size >= 2)
         }
     }
 
