@@ -116,6 +116,67 @@ internal class RsaKey(val kind: Int, val epoch: Long, private val key: RSAPrivat
     }
 }
 
+/**
+ * The ES key well-formedness proof of design §3.2 (`ghost_blind_rsa::verify_permutation_proof`) on
+ * BigInteger, so the `[ghost] perm-proof` vector is replayed independently of the Rust code: challenges
+ * `ρ_i = OS2IP(H_i,0 ‖ … ‖ H_i,4) mod n` with `H_i,c = SHA-512("ghost/v1/perm-proof" ‖ I2OSP(n, 256) ‖
+ * I2OSP(e, 4) ‖ u8(i) ‖ u8(c))` for i = 0…7; a proof σ_0…σ_7 holds iff n is odd with exactly 2048 bits,
+ * e = 65537, n has no prime factor ≤ 65 537, and for every i gcd(ρ_i, n) = 1, σ_i < n and
+ * σ_i^e ≡ ρ_i (mod n). Vector evidence only: the harness never verifies a schedule (the native layer does).
+ */
+internal object PermutationProof {
+    const val ROUNDS = 8
+    val EXPONENT: BigInteger = BigInteger.valueOf(65_537)
+    private const val HASH_BLOCKS = 5
+    private const val MODULUS_BITS = 2048
+    private const val SMALL_PRIME_LIMIT = 65_537
+    private val DOMAIN = Bytes.ascii("ghost/v1/perm-proof")
+
+    /** The challenges ρ_0…ρ_7 of the key with modulus [n]. */
+    fun challenges(n: BigInteger): List<BigInteger> = List(ROUNDS) { challenge(n, it) }
+
+    /** True iff [proof] (8 blocks of 256 bytes) proves that x ↦ x^e permutes Z_n^* for the key (n, [e]). */
+    fun verify(n: BigInteger, e: BigInteger, proof: ByteArray): Boolean {
+        if (n.bitLength() != MODULUS_BITS || !n.testBit(0) || e != EXPONENT || proof.size != ROUNDS * RsaKey.MODULUS_BYTES) return false
+        if (smallPrimes.any { p -> n.mod(BigInteger.valueOf(p.toLong())).signum() == 0 }) return false
+        return (0 until ROUNDS).all { i ->
+            val rho = challenge(n, i)
+            val sigma = Bytes.os2ip(proof.copyOfRange(i * RsaKey.MODULUS_BYTES, (i + 1) * RsaKey.MODULUS_BYTES))
+            rho.gcd(n) == BigInteger.ONE && sigma < n && sigma.modPow(e, n) == rho
+        }
+    }
+
+    private fun challenge(n: BigInteger, i: Int): BigInteger {
+        val fixed = Bytes.i2osp(n, RsaKey.MODULUS_BYTES)
+        val exponent = Bytes.i2osp(EXPONENT, 4)
+        val wide = (0 until HASH_BLOCKS).fold(ByteArray(0)) { acc, c ->
+            val md = java.security.MessageDigest.getInstance("SHA-512")
+            md.update(DOMAIN)
+            md.update(fixed)
+            md.update(exponent)
+            md.update(byteArrayOf(i.toByte(), c.toByte()))
+            acc + md.digest()
+        }
+        return Bytes.os2ip(wide).mod(n)
+    }
+
+    /** The primes ≤ 65 537 (a sieve). */
+    private val smallPrimes: List<Int> by lazy {
+        val composite = BooleanArray(SMALL_PRIME_LIMIT + 1)
+        val out = ArrayList<Int>()
+        for (i in 2..SMALL_PRIME_LIMIT) {
+            if (composite[i]) continue
+            out += i
+            var j = i.toLong() * i
+            while (j <= SMALL_PRIME_LIMIT) {
+                composite[j.toInt()] = true
+                j += i
+            }
+        }
+        out
+    }
+}
+
 /** The test keys of the committed test schedule, loaded once per JVM. */
 internal object TestKeys {
     /** Relative to the module directory (ghost/android/entitlement), the Gradle test working directory. */

@@ -13,6 +13,7 @@ import org.ghost.entitlement.port.SecureEntitlementRandom
 import org.ghost.entitlement.port.SessionPort
 import org.ghost.entitlement.port.TokenCryptoPort
 import org.ghost.entitlement.port.UserCallPort
+import org.ghost.entitlement.store.PurchaseStore
 import org.ghost.identity.DropSeal
 import org.ghost.identity.Invite
 import org.ghost.identity.InviteKeys
@@ -103,7 +104,7 @@ internal class EntRecords {
     /** Issuer calls as the issuer sees them: time, operation, flow, request size (NI-2). */
     val issuerLog = ArrayList<String>()
 
-    /** Redemptions as the relays see them: time, relay, namespace, token (NI-1). */
+    /** Redemptions as the relays see them: time, relay, namespace, token, request id (NI-1: every byte of the request). */
     val relayLog = ArrayList<String>()
 
     /** Device times at which a pack's signatures reached the engine (the activation slots of NI-1). */
@@ -112,8 +113,26 @@ internal class EntRecords {
     /** Every distinct `eligible_minute` the client stored a token with (NI-1: worlds whose tokens activate alike). */
     val eligible = java.util.TreeSet<Long>()
 
-    /** Invoice ids (hex) the client recorded (prepared → invoiced): the invoices MS-6 holds it to. */
-    val invoicedAtClient = HashSet<String>()
+    // What the client made durable, from committed transactions only ([EntClient.uncommitted]): MS-6 and
+    // the token accounting read it at the end.
+
+    /** Claim hash (hex) of every flow the client wrote ahead with a claim key → its purchase id (hex). */
+    val purchaseOfClaim = HashMap<String, String>()
+
+    /** Invoice id (hex) the client recorded (prepared → invoiced) → its purchase id (hex): the invoices MS-6 holds it to. */
+    val invoiced = HashMap<String, String>()
+
+    /** Per purchase id (hex): its committed call write-aheads, as "state|attempt before" (the attempts the engine spent). */
+    val writeAheads = HashMap<String, MutableSet<String>>()
+
+    /** The terminal state each purchase (id hex) ended in. */
+    val ended = HashMap<String, String>()
+
+    /** CREDIT tokens (nullifier hex) the client sealed into a drop blob. */
+    val sealed = HashSet<String>()
+
+    /** INVITE tokens (nullifier hex) the client embedded in an invite of its own. */
+    val embedded = HashSet<String>()
 
     fun present(nullifier: String, pair: String) {
         val pairs = presented.getOrPut(nullifier) { LinkedHashSet() }
@@ -121,7 +140,12 @@ internal class EntRecords {
         if (pairs.size > 1) violation("RED-2: a token was presented at ${pairs.size} (relay, namespace) pairs (R8)")
     }
 
-    fun digest(): String = "v$version p${presented.size} m${minted.size} r${refused.size} i${issued.size}"
+    /** The write-aheads purchase [purchase] committed in [state] (`prepared`: `RequestInvoice`, `invoiced`: `BlindSign`). */
+    fun writeAheads(purchase: String, state: String): Int = writeAheads[purchase]?.count { it.startsWith("$state|") } ?: 0
+
+    fun digest(): String =
+        "v$version p${presented.size} m${minted.size} r${refused.size} i${issued.size} c${purchaseOfClaim.size} k${invoiced.size} " +
+            "a${writeAheads.values.sumOf { it.size }} e${ended.size} s${sealed.size} n${embedded.size}"
 
     override fun toString(): String = "EntRecords"
 }
@@ -279,34 +303,61 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
     }
 
     /**
-     * At the end (design §13.2): MS-6 and the token accounting (every ACCESS token the native layer
-     * finalized is still held, or spent at a relay, or refused, or past its window: fresh + reserved
-     * + spent = finalized; none is both held and spent), and the T3 canaries.
+     * At the end (design §13.2): MS-6, the token accounting and the T3 canaries.
+     *
+     * MS-6 (a paid invoice ends with its N tokens when retries are allowed): every invoice the issuer
+     * holds CONFIRMED or ISSUED belongs to a flow the client wrote ahead (by invoice id, else by claim
+     * hash). One the client recorded ends with its purchase `finalized` and all N tokens the native layer
+     * finalized from its signatures, unless the engine spent its whole `BlindSign` plan (5 attempts, 4
+     * when the invoice came on the `RequestInvoice` retry, E5) without them: a note. One the client never
+     * learned of (a credits invoice, confirmed at once, every answer lost) is a note only once both capped
+     * `RequestInvoice` attempts were spent: its credits are lost by design (§11.4, `failPrepared`).
+     * Attempts count committed write-aheads, not sends: a crash between a write-ahead and its send spends
+     * an attempt that never reaches the wire (§11.5), which a double crash of E-D does.
+     *
+     * Token accounting (fresh + reserved + spent = finalized) for every kind the native layer finalized:
+     * an ACCESS token is held, spent at a relay, refused, or past its window, and a token a relay recorded
+     * is never fresh again; a CREDIT token is held, used at the issuer (discount, payout, refresh), sealed
+     * into a drop blob, or of an epoch GC drops (before c_now − 4, §19.8); an INVITE token is held,
+     * embedded in an invite, redeemed at the issuer, or of an epoch GC drops (before e_now − 1). Two
+     * states stay exempt by design: an ACCESS token a relay recorded may stay reserved for its identical
+     * retry until GC, and a credit a failed flow released is held again although the issuer may have
+     * spent it (§11.4).
      */
     fun finalChecks() {
         structural("end")
-        // MS-6: a paid invoice ends issued when retries are allowed (design §13.2): every invoice the
-        // client recorded. An invoice it never learned of, every `RequestInvoice` answer lost and its
-        // two capped attempts spent (J9), is a credits invoice whose credits are lost by design
-        // (§11.4, `failPrepared`): a note, not a failure.
-        for (inv in issuer.history.values.filter { it.state == ModelIssuer.State.CONFIRMED }) {
-            if (Bytes.hex(inv.id) in records.invoicedAtClient) violation("MS-6: a paid invoice was never issued (its purchase ended ${alicePurchases()})")
-            w.notes += "a credits invoice the issuer confirmed never reached the client (both capped RequestInvoice answers lost): its credits are lost (§11.4)"
-        }
+        ms6()
         val now = w.clock.trueEpochSeconds()
+        val week = Grid.week(now)
         for ((c, ec) in clients) {
             val held = HashMap<String, String>()
             c.jdbc.query("SELECT nullifier, state FROM ent_token") { held[Bytes.hex(it.blob(0))] = it.string(1) }
             for ((n, info) in records.issued) {
-                if (info.kind != EntitlementCrypto.KIND_ACCESS) continue
                 val present = n in held
-                val atRelay = bound(n, info.epoch)
-                val over = now >= Grid.start(info.epoch + 1) + 3_600
-                // A token a relay recorded stays reserved for its identical retry (or until GC when its
-                // pair's need is gone, a drop namespace retired, say); it is never fresh again (R8).
-                if (atRelay && held[n] == "fresh") violation("a token a relay recorded is fresh again (a reservation was released after the redemption)")
-                if (!present && !atRelay && n !in records.refused && !over) {
-                    violation("MS-6: an issued token of week ${info.epoch} is neither held, spent nor out of its window")
+                when (info.kind) {
+                    EntitlementCrypto.KIND_ACCESS -> {
+                        val atRelay = bound(n, info.epoch)
+                        val over = now >= Grid.start(info.epoch + 1) + 3_600
+                        // A token a relay recorded stays reserved for its identical retry (or until GC when its
+                        // pair's need is gone, a drop namespace retired, say); it is never fresh again (R8).
+                        if (atRelay && held[n] == "fresh") violation("a token a relay recorded is fresh again (a reservation was released after the redemption)")
+                        if (!present && !atRelay && n !in records.refused && !over) {
+                            violation("MS-6: an issued token of week ${info.epoch} is neither held, spent nor out of its window")
+                        }
+                    }
+                    EntitlementCrypto.KIND_CREDIT -> {
+                        val over = info.epoch < Grid.creditEpoch(week) - CREDIT_EPOCHS_KEPT
+                        if (!present && !issuer.creditUsed(info.epoch, n) && n !in records.sealed && !over) {
+                            violation("token accounting: an issued CREDIT token of epoch ${info.epoch} is neither held, used at the issuer, sealed into a drop nor out of its window")
+                        }
+                    }
+                    EntitlementCrypto.KIND_INVITE -> {
+                        val over = info.epoch < Grid.inviteEpoch(week) - 1
+                        if (!present && n !in records.embedded && !issuer.inviteUsed(info.epoch, n) && !over) {
+                            violation("token accounting: an issued INVITE token of epoch ${info.epoch} is neither held, in an invite, redeemed at the issuer nor out of its window")
+                        }
+                    }
+                    else -> violation("token accounting: a finalized token of unknown kind ${info.kind}")
                 }
             }
             // T3: nothing the engine emits carries a secret the native layer saw.
@@ -317,9 +368,52 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
         }
     }
 
+    /** MS-6 over every paid invoice at the issuer (see [finalChecks]). */
+    private fun ms6() {
+        for (inv in issuer.history.values) {
+            if (inv.state != ModelIssuer.State.CONFIRMED && inv.state != ModelIssuer.State.ISSUED) continue
+            val recorded = records.invoiced[Bytes.hex(inv.id)]
+            val purchase = recorded ?: records.purchaseOfClaim[Bytes.hex(inv.claimHash)]
+                ?: violation("MS-6: a paid invoice belongs to no flow the client wrote ahead (purchases ${alicePurchases()})")
+            val requests = records.writeAheads(purchase, PurchaseStore.PREPARED)
+            val signs = records.writeAheads(purchase, PurchaseStore.INVOICED)
+            val ended = records.ended[purchase]
+            val where = "${if (inv.xmr) "xmr" else "credits"} invoice ${inv.state}, its purchase ${ended ?: "live"} after $requests RequestInvoice " +
+                "and $signs BlindSign attempts; purchases ${alicePurchases()}"
+            if (recorded == null) {
+                if (requests >= CAPPED_CALL_ATTEMPTS) {
+                    w.notes += "a paid invoice never reached the client, both capped RequestInvoice attempts spent ($where): its credits are lost (§11.4)"
+                } else {
+                    violation("MS-6: a paid invoice never reached the client although a RequestInvoice retry was left ($where)")
+                }
+                continue
+            }
+            val n = schedule.positions(if (inv.xmr) EntitlementCrypto.PRODUCT_PACK_XMR else EntitlementCrypto.PRODUCT_PACK_CREDITS, inv.baseWeek)?.size
+            if (ended == PurchaseStore.FINALIZED && inv.state == ModelIssuer.State.ISSUED && inv.finalized.size == n) continue
+            // Five attempts, the first window skipped when the invoice came on the RequestInvoice retry (E5).
+            val plan = BLIND_SIGN_PLAN - (requests - 1).coerceIn(0, BLIND_SIGN_PLAN - 1)
+            if (ended != PurchaseStore.FINALIZED && signs >= plan) {
+                w.notes += "a paid invoice's whole BlindSign plan ended without its signatures reaching the engine ($where)"
+            } else {
+                violation("MS-6: a paid invoice did not end with its $n tokens although a BlindSign attempt was left ($where; ${inv.finalized.size} finalized)")
+            }
+        }
+    }
+
     private fun alicePurchases(): String = clients.values.joinToString { ec -> ec.purchaseStates().toString() }
 
     override fun toString(): String = "EntWorld"
+
+    private companion object {
+        /** `BlindSign` attempts per invoice (design §19.11). */
+        const val BLIND_SIGN_PLAN = 5
+
+        /** A capped issuer call: the planned attempt and at most one identical retry (§11.5, §19.11). */
+        const val CAPPED_CALL_ATTEMPTS = 2
+
+        /** Own credits are accepted in their epoch and the four following ones (§19.8); GC drops older ones. */
+        const val CREDIT_EPOCHS_KEPT = 4L
+    }
 }
 
 /**
@@ -354,15 +448,53 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
         val stores = c.stores
         val deps = EngineDeps(ent.enginePort, HarnessEntClock(w), SiteRandom(key), identity, HarnessSeal(this, key), userCalls) { c.mode }
         engine = EntitlementEngine(deps) { stores }
+        uncommitted.clear()
         c.sql.onCommit += { ent.checkCommit(this) }
         c.sql.onUpdate += { sql, args, changed ->
             if (changed == 1 && sql.startsWith("INSERT INTO outbox_op(")) registerEngineOp(args)
             if (changed == 1 && sql.startsWith("INSERT INTO ent_token(")) ent.records.eligible += (args[6 - 1] as Number).toLong()
-            if (changed == 1 && sql.startsWith("UPDATE ent_purchase SET state = 'invoiced', invoice_id = ?1")) {
-                ent.records.invoicedAtClient += Bytes.hex(args[0] as ByteArray)
-            }
+            if (changed == 1) track(sql, args)
+        }
+        c.sql.onTransactionEnd += { committed ->
+            if (committed) uncommitted.forEach { it() }
+            uncommitted.clear()
         }
         if (boot > 1) ent.structural("reboot")
+    }
+
+    /** Bookkeeping of the open transaction: applied to [EntWorld.records] when it commits, dropped when it rolls back. */
+    val uncommitted = ArrayList<() -> Unit>()
+
+    /** What the engine writes ahead and ends (MS-6 and the token accounting), kept once its transaction commits. */
+    private fun track(sql: String, args: List<Any?>) {
+        val r = ent.records
+        fun hex(i: Int) = Bytes.hex(args[i] as ByteArray)
+        when {
+            sql.startsWith("INSERT INTO ent_purchase(") -> (args[4] as? ByteArray)?.let { claimKey ->
+                val purchase = hex(0)
+                val claim = Bytes.hex(Batch.claimHash(claimKey))
+                uncommitted += { r.purchaseOfClaim[claim] = purchase }
+            }
+            sql.startsWith("UPDATE ent_purchase SET sent = 1,") -> {
+                val purchase = hex(2)
+                val attempt = "${args[3]}|${args[4]}"
+                uncommitted += { r.writeAheads.getOrPut(purchase) { LinkedHashSet() } += attempt }
+            }
+            sql.startsWith("UPDATE ent_purchase SET state = 'invoiced', invoice_id = ?1") -> {
+                val invoice = hex(0)
+                val purchase = hex(7)
+                uncommitted += { r.invoiced[invoice] = purchase }
+            }
+            sql.startsWith("UPDATE ent_purchase SET state = ?1, terminal_day = ?2") -> {
+                val purchase = hex(2)
+                val to = args[0] as String
+                uncommitted += { r.ended[purchase] = to }
+            }
+            sql.startsWith("INSERT INTO ent_invite(") -> {
+                val nullifier = Bytes.hex(TestSchedule.nullifier((args[1] as ByteArray).copyOfRange(1, 1 + Invite.TOKEN_BYTES)))
+                uncommitted += { r.embedded += nullifier }
+            }
+        }
     }
 
     /**
@@ -682,8 +814,12 @@ internal class HarnessIdentity(val root: RootEntropy) : IdentityPort {
 internal class HarnessSeal(private val owner: EntClient, key: ByteArray) : SealPort {
     private val random = SecureRandom.getInstance("SHA1PRNG").apply { setSeed(Bytes.sha256(key, Bytes.ascii("seal"))) }
 
-    override fun sealCredit(creditToken: ByteArray, dropKey: ByteArray, dropNamespace: ByteArray): ByteArray =
-        DropSeal.sealCredit(creditToken, dropKey, dropNamespace, random)
+    /** Seals [creditToken]; the token accounting learns it left in a drop blob once the engine's transaction commits. */
+    override fun sealCredit(creditToken: ByteArray, dropKey: ByteArray, dropNamespace: ByteArray): ByteArray {
+        val nullifier = Bytes.hex(TestSchedule.nullifier(creditToken))
+        owner.uncommitted += { owner.ent.records.sealed += nullifier }
+        return DropSeal.sealCredit(creditToken, dropKey, dropNamespace, random)
+    }
 
     override fun sealDummy(dropKey: ByteArray, dropNamespace: ByteArray): ByteArray = DropSeal.sealDummy(dropKey, dropNamespace, random)
 

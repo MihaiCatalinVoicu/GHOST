@@ -208,18 +208,27 @@ jobs:
       # DELETE and WAL, double crashes for S-A, S-D, S-F in both), 20 000 seeded worlds, the 13
       # mutants, T19/T3/T20 and the model-relay conformance replay. World databases go to /dev/shm
       # (the crash model is process death, not power loss).
+      # --rerun: org.gradle.caching is on and setup-gradle restores the local build cache, so without it
+      # an unchanged test task is restored FROM-CACHE and the gate runs nothing; the summary step then
+      # fails unless a complete report was written.
       - name: exit-gate harness
-        run: ./gradlew --no-daemon :sync:testDebugUnitTest -Dghost.sync.seeds=20000 -Dghost.sync.exhaustive=full
+        run: ./gradlew --no-daemon :sync:testDebugUnitTest --rerun -Dghost.sync.seeds=20000 -Dghost.sync.exhaustive=full
       - name: job summary (seeds, K/R event counts, mutants, time budget)
         if: always()
         run: |
+          report=sync/build/harness/report.txt
           {
             echo "## Sync exit gate"
             echo
             echo '```'
-            cat sync/build/harness/report.txt 2>/dev/null || echo "no harness report was written"
+            cat "$report" 2>/dev/null || echo "no harness report was written"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          for line in '^seeded worlds: 20000 seeds, ' '^mutants: 17 run' '^crashes injected=[0-9]+ caught at the top level=[0-9]+$'; do
+            if ! grep -Eq "$line" "$report" 2>/dev/null; then echo "::error::sync harness report: no line matching $line"; fail=1; fi
+          done
+          exit "$fail"
       - name: upload the test reports
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

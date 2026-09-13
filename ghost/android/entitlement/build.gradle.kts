@@ -89,6 +89,9 @@ tasks.withType<Test>().configureEach {
     inputs.file(rootProject.file("../issuer/crates/entitlement/tests/fixtures/test_keys.txt"))
         .withPropertyName("testKeys")
         .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(rootProject.file("../issuer/crates/entitlement/tests/fixtures/test_schedule.ghes"))
+        .withPropertyName("testSchedule")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     for ((name, value) in harnessProperties) {
         inputs.property(name, value.orElse(""))
         value.orNull?.let { v ->

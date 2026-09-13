@@ -1,9 +1,11 @@
 package org.ghost.entitlement.harness
 
 import org.ghost.entitlement.engine.Grid
+import org.ghost.identity.Ed25519KeyPair
 import org.ghost.network.EntitlementCrypto
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -11,20 +13,31 @@ import java.io.File
 import java.nio.ByteBuffer
 
 /**
- * Replays the `[ghost]` section of `protocol/test-vectors/blind_rsa_pp2.txt` (Phase 8 design §2.9,
- * §11.9) through the harness's `TestTokenCrypto` (BigInteger + JCA): redemption contexts,
- * challenges, SPKI and key ids of the committed test keys, every pinned seed-derived position
- * (nonce, salt, r, blinded message), the blind signatures of the harness signer (which must equal
- * the Rust signer's byte for byte), finalized tokens and nullifiers, layout and request digests.
- * The same file is replayed by `ghost-entitlement` (`tests/ghost_vectors.rs`).
+ * Replays the whole `[ghost]` section of `protocol/test-vectors/blind_rsa_pp2.txt` (Phase 8 design
+ * §2.9, §11.9) through the harness's `TestTokenCrypto` (BigInteger + JCA): the test schedule key and
+ * the committed test ES's digest and signature, redemption contexts, challenges, SPKI and key ids of
+ * the committed test keys, the permutation proof (and its tampered copy), every pinned seed-derived
+ * position (nonce, salt, r, blinded message), the blind signatures of the harness signer (which must
+ * equal the Rust signer's byte for byte), finalized tokens and nullifiers, layout and request
+ * digests; a test checks that every vector and field of the section is read. The same file is
+ * replayed by `ghost-entitlement` (`tests/ghost_vectors.rs`).
  */
 class TestTokenCryptoVectorsTest {
 
-    private class Vector(val id: String, val fields: Map<String, String>) {
-        fun hex(key: String): ByteArray = Bytes.unhex(fields[key] ?: error("vector $id: missing field $key"))
+    /** One vector; every field read is recorded in [used] ("id.field"), so a test can prove the section was consumed. */
+    private class Vector(val id: String, val fields: Map<String, String>, private val used: MutableSet<String>) {
+        fun hex(key: String): ByteArray {
+            used += "$id.$key"
+            return Bytes.unhex(fields[key] ?: error("vector $id: missing field $key"))
+        }
+
         fun u64(key: String): Long = ByteBuffer.wrap(hex(key)).long
         fun u32(key: String): Int = ByteBuffer.wrap(hex(key)).int
     }
+
+    /** Every `[ghost]` field this test instance read (JUnit makes one instance per test method). */
+    private val used = HashSet<String>()
+    private val ghost: List<Vector> by lazy { section("ghost") }
 
     private fun section(name: String): List<Vector> {
         val file = File(VECTORS)
@@ -47,10 +60,10 @@ class TestTokenCryptoVectorsTest {
             check(at > 0) { "malformed line: $line" }
             check(out.last().second.put(line.substring(0, at), line.substring(at + 2).trim()) == null) { "duplicate field" }
         }
-        return out.map { Vector(it.first, it.second) }
+        return out.map { Vector(it.first, it.second, used) }
     }
 
-    private fun vector(id: String): Vector = section("ghost").firstOrNull { it.id == id } ?: error("no [ghost] vector $id")
+    private fun vector(id: String): Vector = ghost.firstOrNull { it.id == id } ?: error("no [ghost] vector $id")
 
     /** The committed test schedule: access_per_slot 16, trial_per_slot 8, its slot table. */
     private val committed = TestSchedule(16, 8, TestSchedule.committedSlots())
@@ -165,8 +178,49 @@ class TestTokenCryptoVectorsTest {
         assertArrayEquals(refresh.hex("layout_digest"), Batch.layoutDigest(rList))
     }
 
+    @Test
+    fun theTestScheduleKeyAndTheCommittedTestSchedule() {
+        val v = vector("schedule")
+        val key = Ed25519KeyPair.fromSeed(Bytes.sha256(Bytes.ascii("ghost/test/schedule-key"))).publicKey
+        assertArrayEquals("the test schedule key: Ed25519 from SHA-256(\"ghost/test/schedule-key\")", v.hex("schedule_key"), key)
+        val file = File(SCHEDULE)
+        assertTrue("test schedule missing: ${file.absolutePath}", file.isFile)
+        val bytes = file.readBytes()
+        assertArrayEquals("SHA-256 of the committed test schedule", v.hex("schedule_sha256"), Bytes.sha256(bytes))
+        val body = bytes.copyOfRange(0, bytes.size - SIGNATURE_BYTES)
+        val signature = bytes.copyOfRange(bytes.size - SIGNATURE_BYTES, bytes.size)
+        assertTrue("the committed test schedule is signed by the test schedule key", Ed25519KeyPair.verify(key, Bytes.ascii(SIGNATURE_DOMAIN) + body, signature))
+    }
+
+    @Test
+    fun thePermutationProofVerifiesAndItsTamperedCopyDoesNot() {
+        val v = vector("perm-proof")
+        val n = checkNotNull(RsaKey.modulusOf(v.hex("spki"))) { "perm-proof: not a type 0x0002 RSASSA-PSS SPKI" }
+        val challenges = PermutationProof.challenges(n).fold(ByteArray(0)) { acc, rho -> acc + Bytes.i2osp(rho, RsaKey.MODULUS_BYTES) }
+        assertArrayEquals("the hash-derived challenges", v.hex("challenges"), challenges)
+        assertTrue("the proof verifies", PermutationProof.verify(n, PermutationProof.EXPONENT, v.hex("proof")))
+        assertFalse("the tampered proof is refused", PermutationProof.verify(n, PermutationProof.EXPONENT, v.hex("tampered_proof")))
+    }
+
+    /** The replays together read every field of every `[ghost]` vector: a vector added there is never ignored. */
+    @Test
+    fun everyGhostVectorAndFieldIsReplayed() {
+        challengesSpkisAndKeyIdsOfTheTestKeys()
+        theTestScheduleKeyAndTheCommittedTestSchedule()
+        thePermutationProofVerifiesAndItsTamperedCopyDoesNot()
+        aPackPaidInXmrEveryPinnedPositionTheResponseAndTheTokens()
+        aPackPaidWithCreditsATrialAndARefresh()
+        val all = ghost.flatMap { v -> v.fields.keys.map { "${v.id}.$it" } }.toSortedSet()
+        assertEquals("[ghost] fields no replay reads", emptySet<String>(), all - used)
+    }
+
     companion object {
         /** Test working directory is the module directory (ghost/android/entitlement). */
         const val VECTORS = "../../protocol/test-vectors/blind_rsa_pp2.txt"
+
+        /** The committed test ES the vector's `schedule_sha256` pins (signed by the test schedule key). */
+        const val SCHEDULE = "../../issuer/crates/entitlement/tests/fixtures/test_schedule.ghes"
+        const val SIGNATURE_DOMAIN = "ghost/v1/entitlement-schedule"
+        const val SIGNATURE_BYTES = 64
     }
 }

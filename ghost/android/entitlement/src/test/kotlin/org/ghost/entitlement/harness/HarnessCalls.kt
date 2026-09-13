@@ -81,7 +81,8 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
         event(EventKind.RELAY_BEFORE_SEND, info)?.let { fail(it) }
         if (c.offline()) fail("transport")
         if (!node.reachable) fail(node.unreachableCategory)
-        ent.records.relayLog += "t=${w.clock.millis}|redeem|${node.name}|$nsHex|${Bytes.hex(token)}"
+        // Every byte of the RedeemToken request a relay observes: token, namespace and request id (NI-1, P-3).
+        ent.records.relayLog += "t=${w.clock.millis}|redeem|${node.name}|$nsHex|${Bytes.hex(token)}|${Bytes.hex(requestId)}"
         val first = c.transport.circuits.add("work|${node.name}|$nsHex")
         val latency = w.latency.of(c.name, node.name, NamespaceId(namespace), CallKind.REDEEM, w.clock.millis, first)
         val arrives = latency <= deadlineMillis || latency / 2 <= deadlineMillis
@@ -147,14 +148,19 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
         return list
     }
 
-    private fun issued(list: List<Position>, tokens: List<ByteArray>, invoice: String?): List<TorIssuerTransport.IssuedToken> =
-        tokens.mapIndexed { i, t ->
+    /** Records every token finalized from an answer; an invoice's own ([invoice]) also on its model invoice (MS-6). */
+    private fun issued(list: List<Position>, tokens: List<ByteArray>, invoice: ByteArray?): List<TorIssuerTransport.IssuedToken> {
+        val finalized = invoice?.let { ent.issuer.invoice(it)?.finalized }
+        return tokens.mapIndexed { i, t ->
             val n = TestSchedule.nullifier(t)
+            val hex = Bytes.hex(n)
             // Part of the crash digest: a crash after this answer was validated leaves other records.
-            if (ent.records.issued.putIfAbsent(Bytes.hex(n), EntRecords.Issued(list[i].kind, list[i].epoch, invoice)) == null) ent.records.bump()
+            if (ent.records.issued.putIfAbsent(hex, EntRecords.Issued(list[i].kind, list[i].epoch, invoice?.let(Bytes::hex))) == null) ent.records.bump()
+            finalized?.add(hex)
             ent.records.secrets += Bytes.hex(t)
             TorIssuerTransport.IssuedToken(n, t)
         }
+    }
 
     override fun requestInvoice(flow: ByteArray, claimHash: ByteArray, credits: List<ByteArray>, baseWeek: Long, deadlineMillis: Int): TorIssuerTransport.InvoiceAnswer =
         issuer("requestInvoice", flow, 32 + 8 + credits.size * TestSchedule.TOKEN_BYTES, { now -> ent.issuer.requestInvoice(claimHash, credits, baseWeek, now) }) { a ->
@@ -198,7 +204,7 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
             if (a.state == TorIssuerTransport.STATE_SIGNED) {
                 val tokens = Batch.finalize(schedule, seed, list, a.signatures) ?: fail("malformed_response")
                 ent.records.finalizedAt += owner.w.clock.epochSeconds()
-                TorIssuerTransport.SignAnswer(a.state, a.credited, a.seen, issued(list, tokens, Bytes.hex(invoiceId)))
+                TorIssuerTransport.SignAnswer(a.state, a.credited, a.seen, issued(list, tokens, invoiceId))
             } else {
                 TorIssuerTransport.SignAnswer(a.state, a.credited, a.seen, emptyList())
             }

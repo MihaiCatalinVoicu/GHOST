@@ -97,7 +97,7 @@ internal class ModelIssuer(
         /** Every `BlindSign` digest D this invoice was ever asked for (MS-1: at most one). */
         val requestDigests = LinkedHashSet<String>()
 
-        /** The tokens the harness client finalized from this invoice's signatures (MS-6). */
+        /** The tokens (nullifier hex) the harness's native layer finalized from this invoice's signatures (MS-6: all N of them). */
         val finalized = LinkedHashSet<String>()
 
         override fun toString(): String = "Invoice($state)"
@@ -150,6 +150,12 @@ internal class ModelIssuer(
     fun minorOf(invoiceId: ByteArray): Int = checkNotNull(history[Bytes.hex(invoiceId)]) { "unknown invoice" }.minor
 
     fun invoice(invoiceId: ByteArray): Invoice? = history[Bytes.hex(invoiceId)]
+
+    /** True once the issuer recorded the CREDIT token [nullifier] (hex) of [epoch] as used: a discount, a payout or a refresh. */
+    fun creditUsed(epoch: Long, nullifier: String): Boolean = creditUse.containsKey("$epoch:$nullifier")
+
+    /** True once the issuer recorded the INVITE token [nullifier] (hex) of [epoch] as redeemed: a trial or a revocation. */
+    fun inviteUsed(epoch: Long, nullifier: String): Boolean = inviteUse.containsKey("$epoch:$nullifier")
 
     /** The invoice holding [subaddress] (the user pays what the payment instructions show). */
     fun bySubaddress(subaddress: String): Invoice? = history.values.firstOrNull { it.subaddress == subaddress }

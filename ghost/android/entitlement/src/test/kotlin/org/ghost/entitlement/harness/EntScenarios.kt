@@ -244,7 +244,7 @@ internal class ScenarioECLost : EntScenario("E-C/lost") {
  * with the first `RequestInvoice`, the invoice (amount 0) is CONFIRMED at once, the first planned
  * `BlindSign` signs and the finalizing transaction deletes the credits.
  */
-internal class ScenarioED : EntScenario("E-D") {
+internal open class ScenarioED : EntScenario("E-D") {
     override fun build(w: World) {
         val e = standard(w)
         e.addTokens("credit", Grid.creditEpoch(WEEK0), null, 10, Time.floorMinute(w.clock.epochSeconds()) - 3_600)

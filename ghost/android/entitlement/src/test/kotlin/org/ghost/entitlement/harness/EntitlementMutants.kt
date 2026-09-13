@@ -28,8 +28,10 @@ internal class EntMutant(
 }
 
 /**
- * The client mutants EM1–EM9 of design §13.5 and the NI-K-caught privacy mutants M3, M8 and M20, each
- * detected by `EntitlementMutantDetectionTest` in the world named there.
+ * The client mutants EM1–EM9 of design §13.5, the NI-K-caught privacy mutants M3, M8 and M20, and four
+ * fixtures of the S9c review that pin what the harness checks beyond them (MS-6 for issued and
+ * never-delivered invoices, the accounting of every finalized kind, every redemption byte in NI-1),
+ * each detected by `EntitlementMutantDetectionTest` in the world named there.
  */
 internal object EntMutants {
     private const val PURCHASE_ATTEMPT = "UPDATE ent_purchase SET sent = 1, attempt = ?1, next_due_minute = ?2 WHERE"
@@ -38,6 +40,7 @@ internal object EntMutants {
     private const val RESERVATION_LOOKUP = "reserved_for = 'relay' AND reserved_relay = ?1 AND reserved_namespace = ?2 AND epoch = ?3"
     private const val TOKEN_INSERT = "INSERT INTO ent_token("
     private const val PURCHASE_COLUMNS = "state, seed, claim_key, invoice_id"
+    private const val RESERVE_REQUEST_ID = "request_id = ?3 WHERE nullifier = ?4 AND kind = 'access' AND state = 'fresh'"
 
     /** What the hostile issuer of EM8 states above the ES price, in atomic units. */
     const val HOSTILE_OFFSET = 1_000_000L
@@ -136,6 +139,46 @@ internal object EntMutants {
     /** M20 QuietWhenWorkDue: a quiet run is forced whenever a `BlindSign` is due. */
     val M20 = EntMutant("M20 QuietWhenWorkDue", configure = { c, _ -> c.copy(quietOverride = { ec, _, drawn -> drawn || blindSignDue(ec) }) })
 
+    /**
+     * GiveUpAfterLostSign (S9c review): the first `BlindSign` write-ahead spends the whole attempt
+     * plan, so a signed answer that is lost is never retried: a paid invoice ends issued at the
+     * issuer and `lost` at the client, without its tokens (MS-6).
+     */
+    val GIVE_UP_AFTER_LOST_SIGN = EntMutant("GiveUpAfterLostSign", rewrite { _, sql, args ->
+        if (sql.startsWith(PURCHASE_ATTEMPT)) Pair(sql.replace("attempt = ?1,", "attempt = CASE WHEN ?4 = 'invoiced' THEN 5 ELSE ?1 END,"), args) else null
+    })
+
+    /**
+     * NoRequestInvoiceRetry (S9c review): the first `RequestInvoice` write-ahead spends both capped
+     * attempts, so an answer that is lost is never retried identically: a credits invoice the issuer
+     * confirmed never reaches the client and its credits are lost while a retry was allowed (MS-6).
+     */
+    val NO_REQUEST_INVOICE_RETRY = EntMutant("NoRequestInvoiceRetry", rewrite { _, sql, args ->
+        if (sql.startsWith(PURCHASE_ATTEMPT)) Pair(sql.replace("attempt = ?1,", "attempt = CASE WHEN ?4 = 'prepared' THEN 2 ELSE ?1 END,"), args) else null
+    })
+
+    /**
+     * LoseCreditAndInviteTokens (S9c review): the CREDIT and INVITE tokens of a finalized batch never
+     * reach `ent_token` (their inserts land in EM6's side table): the token accounting of design
+     * §13.2 covers every finalized kind, not only ACCESS.
+     */
+    val LOSE_CREDIT_AND_INVITE_TOKENS = EntMutant("LoseCreditAndInviteTokens", rewrite { _, sql, args ->
+        if (sql.startsWith(TOKEN_INSERT) && (args[1] == "credit" || args[1] == "invite")) Pair(sql.replace(TOKEN_INSERT, "INSERT INTO em6_pending("), args) else null
+    })
+
+    /**
+     * RequestIdFromIssuerState (S9c review): a redemption's `request_id` is the token's nullifier prefix
+     * while a purchase is still unanswered, so the relays learn whether the issuer answered the first
+     * `RequestInvoice` (NI-1 covers every byte a relay observes, P-3).
+     */
+    val REQUEST_ID_FROM_ISSUER_STATE = EntMutant("RequestIdFromIssuerState", rewrite { _, sql, args ->
+        if (sql.contains(RESERVE_REQUEST_ID)) {
+            Pair(sql.replace("request_id = ?3", "request_id = CASE WHEN (SELECT count(*) FROM ent_purchase WHERE state = 'prepared') > 0 THEN substr(?4, 1, 16) ELSE ?3 END"), args)
+        } else {
+            null
+        }
+    })
+
     private fun blindSignDue(ec: EntClient): Boolean {
         var n = 0L
         ec.c.jdbc.query(
@@ -190,11 +233,54 @@ internal class ScenarioEM4 : ScenarioEA() {
     }
 }
 
-/** EM6's world: E-A without writes, with EM6's side table. */
+/** EM6's world (and LoseCreditAndInviteTokens'): E-A without writes, with EM6's side table. */
 internal class ScenarioEM6 : ScenarioEA(writes = false) {
     override fun build(w: World) {
         super.build(w)
         EntMutants.em6Setup(alice)
+    }
+}
+
+/**
+ * GiveUpAfterLostSign's world: E-A, where the answer of the first `BlindSign` that signs is lost after
+ * the issuer applied it (the invoice is ISSUED). The real engine retries at the next planned attempt and
+ * gets the identical signatures again; the mutant ends the purchase `lost`.
+ */
+internal class ScenarioLostSign : ScenarioEA() {
+    override fun build(w: World) {
+        super.build(w)
+        var lost = false
+        w.relayHook = { client, kind, info ->
+            val signed = ent.issuer.history.values.any { it.state == ModelIssuer.State.ISSUED }
+            if (!lost && signed && client === alice.c && kind == EventKind.RELAY_AFTER_APPLY && info.kind == CallKind.ISSUER) {
+                lost = true
+                w.scriptState++
+                "timeout"
+            } else {
+                null
+            }
+        }
+    }
+}
+
+/**
+ * NoRequestInvoiceRetry's world: E-D, where the answer of the first `RequestInvoice` is lost after the
+ * issuer confirmed the credits invoice. The real engine retries identically a day later and gets the
+ * same invoice; the mutant fails the flow at once.
+ */
+internal class ScenarioLostRequest : ScenarioED() {
+    override fun build(w: World) {
+        super.build(w)
+        var lost = false
+        w.relayHook = { client, kind, info ->
+            if (!lost && client === alice.c && kind == EventKind.RELAY_AFTER_APPLY && info.kind == CallKind.ISSUER) {
+                lost = true
+                w.scriptState++
+                "timeout"
+            } else {
+                null
+            }
+        }
     }
 }
 

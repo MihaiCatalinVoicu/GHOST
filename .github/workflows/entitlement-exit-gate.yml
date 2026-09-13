@@ -16,6 +16,11 @@ name: entitlement-exit-gate
 # Release-like settings: the full enumeration and seed count a release is gated on; the Android
 # plugin builds unit tests for the debug build type only, the one JVM variant there is (as in
 # sync-exit-gate). World databases go to /dev/shm (the crash model is process death, not power loss).
+# Evidence: the test task runs with --rerun (org.gradle.caching is on and setup-gradle restores the local
+# build cache, so an unchanged commit would otherwise restore the task FROM-CACHE and run nothing); the
+# summary step fails unless this shard's report is complete (its seeds, every scenario in both journal
+# modes, every injected crash caught, every mutant detected, NI-K); each shard uploads its report and
+# JUnit results whatever the outcome.
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
   push:
@@ -34,6 +39,7 @@ defaults:
 env:
   ANDROID_PACKAGES: "platform-tools platforms;android-37.0 platforms;android-37.2 build-tools;37.0.0 build-tools;36.0.0"
   SHARDS: "12"
+  SEEDS: "20000"
 
 jobs:
   entitlement-exit-gate:
@@ -66,24 +72,43 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          ./gradlew --no-daemon :entitlement:testDebugUnitTest \
-            -Dghost.entitlement.seeds=20000 -Dghost.entitlement.exhaustive=full -Dghost.entitlement.shard="$SHARD/$SHARDS"
-      - name: job summary (seeds, K/R event counts, mutants, NI-K, time budget)
+          ./gradlew --no-daemon :entitlement:testDebugUnitTest --rerun \
+            -Dghost.entitlement.seeds="$SEEDS" -Dghost.entitlement.exhaustive=full -Dghost.entitlement.shard="$SHARD/$SHARDS"
+      - name: job summary and report check (seeds, K/R event counts, crashes, mutants, NI-K, time budget)
         if: always()
         env:
           SHARD: ${{ matrix.shard }}
         run: |
+          report=entitlement/build/harness/report.txt
           {
             echo "## Entitlement exit gate, shard $SHARD/$SHARDS"
             echo
             echo '```'
-            cat entitlement/build/harness/report.txt 2>/dev/null || echo "no harness report was written"
+            cat "$report" 2>/dev/null || echo "no harness report was written"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: upload the test reports
-        if: failure()
+          fail=0
+          need() { if ! grep -Eq "$1" "$report" 2>/dev/null; then echo "::error::harness report: no $2"; fail=1; fi; }
+          count() {
+            n="$(grep -Ec "$1" "$report" 2>/dev/null || true)"
+            if [ "$n" != "$2" ]; then echo "::error::harness report: ${n:-0} $3, expected $2"; fail=1; fi
+          }
+          seeds=$(( (SEEDS - 1 - SHARD) / SHARDS + 1 ))
+          need "^entitlement seeded worlds: $seeds seeds, " "seeded-worlds line for this shard's $seeds seeds"
+          crashes="$(sed -n 's/^entitlement crashes injected=\([0-9]*\) caught=\([0-9]*\)$/\1 \2/p' "$report" 2>/dev/null || true)"
+          if [ -z "$crashes" ] || [ "${crashes% *}" != "${crashes#* }" ]; then echo "::error::harness report: no crash line, or injected and caught crashes differ"; fail=1; fi
+          count '^E-[A-I][^ ]* (DELETE|WAL): K=[1-9]' 22 "enumeration lines (E-A ... E-I in both journal modes)"
+          need '^entitlement mutants: 16 run ' "mutant line (16 run)"
+          count ' DETECTED: ' 16 "detected mutants"
+          count '^NI-K ' 3 "NI-K lines"
+          exit "$fail"
+      - name: upload the harness report and the test results
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: entitlement-exit-gate-reports-${{ matrix.shard }}
-          path: ghost/android/entitlement/build/reports/tests
-          if-no-files-found: ignore
+          name: entitlement-exit-gate-${{ matrix.shard }}
+          path: |
+            ghost/android/entitlement/build/harness/report.txt
+            ghost/android/entitlement/build/test-results/testDebugUnitTest
+            ghost/android/entitlement/build/reports/tests
+          if-no-files-found: error

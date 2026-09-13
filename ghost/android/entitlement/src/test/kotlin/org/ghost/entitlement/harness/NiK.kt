@@ -41,7 +41,7 @@ internal class NiVariant(
 
 /** What an NI-K world leaves for the comparisons. */
 internal class NiViews(
-    /** Every relay-facing call of the subject in time order: its relay-port calls and its redemptions (time, line). */
+    /** Every relay-facing call of the subject in time order: its relay-port calls and its redemptions with every request byte (time, line). */
     val relay: List<Pair<Long, String>>,
     /** Every issuer call as the issuer sees it: time, operation, flow, request size. */
     val issuer: List<String>,

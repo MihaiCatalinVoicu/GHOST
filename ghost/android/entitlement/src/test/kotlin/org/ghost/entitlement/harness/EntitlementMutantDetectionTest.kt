@@ -13,8 +13,10 @@ import org.junit.Test
  * Negative fixtures of the `:entitlement` harness (Phase 8 design §13.5, the Phase 7
  * `MutantDetectionTest` pattern): each client mutant EM1–EM9 runs the world that must expose it, and
  * the harness must report the expected kind of failure (a trigger, a commit check, RED-2, MS-6, the
- * amount check); M3, M8 and M20 run the NI-K comparisons. The same world with the real engine passes
- * first (EM8's in hostile-issuer mode).
+ * amount check); M3, M8 and M20 run the NI-K comparisons. The S9c review added four fixtures for what
+ * the harness checks beyond them (MS-6 of issued and never-delivered invoices, the accounting of CREDIT
+ * and INVITE tokens, the `request_id` in NI-1). The same world with the real engine passes first (EM8's
+ * in hostile-issuer mode).
  */
 class EntitlementMutantDetectionTest {
 
@@ -113,11 +115,41 @@ class EntitlementMutantDetectionTest {
         expect(detected(EntMutants.M20) { for (seed in 1L..3L) NiK.ni1(seed, NiK.PROMPT, NiK.PROMPT_VARIED, EntMutants.M20) }, "NI-1")
     }
 
+    @Test
+    fun giveUpAfterLostSign() {
+        run(ScenarioLostSign())
+        expect(detected(EntMutants.GIVE_UP_AFTER_LOST_SIGN) { run(ScenarioLostSign().with(EntMutants.GIVE_UP_AFTER_LOST_SIGN)) }, "MS-6")
+    }
+
+    @Test
+    fun noRequestInvoiceRetry() {
+        run(ScenarioLostRequest())
+        expect(detected(EntMutants.NO_REQUEST_INVOICE_RETRY) { run(ScenarioLostRequest().with(EntMutants.NO_REQUEST_INVOICE_RETRY)) }, "MS-6")
+    }
+
+    @Test
+    fun loseCreditAndInviteTokens() {
+        run(ScenarioEM6())
+        expect(detected(EntMutants.LOSE_CREDIT_AND_INVITE_TOKENS) { run(ScenarioEM6().with(EntMutants.LOSE_CREDIT_AND_INVITE_TOKENS)) }, "token accounting")
+    }
+
+    @Test
+    fun requestIdFromIssuerState() {
+        NiK.ni1(1, NiK.PROMPT, NiK.PROMPT_VARIED)
+        expect(
+            detected(EntMutants.REQUEST_ID_FROM_ISSUER_STATE) { for (seed in 1L..3L) NiK.ni1(seed, NiK.PROMPT, NiK.PROMPT_VARIED, EntMutants.REQUEST_ID_FROM_ISSUER_STATE) },
+            "NI-1",
+        )
+    }
+
     companion object {
         @JvmStatic
         @AfterClass
         fun report() {
-            HarnessReport.add("entitlement mutants: 12 run (EM1-EM9, M3, M8, M20)")
+            HarnessReport.add(
+                "entitlement mutants: 16 run (EM1-EM9, M3, M8, M20; review fixtures GiveUpAfterLostSign, NoRequestInvoiceRetry, " +
+                    "LoseCreditAndInviteTokens, RequestIdFromIssuerState)",
+            )
         }
     }
 }

@@ -22,9 +22,11 @@ import org.junit.Test
  *
  * Budget (measured in S9, see the entitlement-exit-gate workflow): single crashes always run in both
  * modes. The default build runs the double crashes of every [DEFAULT_STRIDE]-th first-crash class in
- * WAL mode; `-Dghost.entitlement.exhaustive=full` runs every double crash in both modes, and
- * `-Dghost.entitlement.shard=i/n` one n-th of them (the singles in part 0 only), so the exit gate
- * spreads the enumeration over a job matrix.
+ * WAL mode; `-Dghost.entitlement.exhaustive=full` runs every double crash in both modes.
+ * `-Dghost.entitlement.shard=i/n` runs part i of n, so the exit gate spreads the enumeration over a job
+ * matrix: the single crashes of every crash class whose number is i modulo n (a class stays whole, so
+ * its digests are compared), every n-th "timeout after apply" run and every n-th first-crash class's
+ * double crashes (both from i); `EntitlementSeededWorldsTest` runs the seeds s with (s − 1) mod n = i.
  */
 class EntitlementExhaustiveTest {
 
