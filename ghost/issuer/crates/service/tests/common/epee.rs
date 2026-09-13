@@ -55,6 +55,47 @@ pub fn get_address_reply(call: &Call, count: u64) -> Reply {
     )
 }
 
+/// An incoming `transfer_entry` of `get_transfers` and `get_transfer_by_txid` (`kind` `in`,
+/// `block` or `pool`) as wallet-rpc v0.18.5.1 writes it (`wallet_rpc_server_commands_defs.h`;
+/// `fill_transfer_entry` and `set_confirmations` in `wallet_rpc_server.cpp`): every `KV_SERIALIZE`
+/// field, `confirmations` only when it is not 0 (`KV_SERIALIZE_OPT(confirmations, 0)`: epee's
+/// `KV_SERIALIZE_OPT_N` stores nothing for the default value, so a pool entry, whose
+/// confirmations are always 0, never has the key), and `destinations`, empty for an incoming
+/// transfer, left out (epee stores nothing for an empty list). A pool entry has height 0 and is
+/// locked; a coinbase (`block`) unlocks 60 blocks after its height.
+pub fn transfer_entry(
+    kind: &str,
+    minor: u32,
+    amount: u64,
+    height: u64,
+    confirmations: u64,
+    txid: &str,
+) -> Value {
+    let unlock_time = if kind == "block" { height + 60 } else { 0 };
+    let mut v = json!({
+        "address": SUBADDRESS,
+        "amount": amount,
+        "amounts": [amount],
+        "double_spend_seen": false,
+        "fee": 30_660_000u64,
+        "height": height,
+        "locked": kind == "pool" || confirmations < 10,
+        "note": "",
+        "payment_id": "0000000000000000",
+        "subaddr_index": {"major": 0, "minor": minor},
+        "subaddr_indices": [{"major": 0, "minor": minor}],
+        "suggested_confirmations_threshold": 1,
+        "timestamp": 1_789_237_444u64,
+        "txid": txid,
+        "type": kind,
+        "unlock_time": unlock_time
+    });
+    if confirmations != 0 {
+        v["confirmations"] = json!(confirmations);
+    }
+    v
+}
+
 /// One authenticated request as the script sees it.
 #[derive(Debug, Clone)]
 pub struct Call {
@@ -94,6 +135,8 @@ pub struct Emulator {
     addr: SocketAddr,
     calls: Arc<Mutex<Vec<Call>>>,
     challenges: Arc<AtomicU64>,
+    /// The server side of every connection accepted and not dropped yet.
+    streams: Arc<Mutex<Vec<TcpStream>>>,
 }
 
 impl Emulator {
@@ -105,11 +148,19 @@ impl Emulator {
         let addr = listener.local_addr().unwrap();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let challenges = Arc::new(AtomicU64::new(0));
+        let streams = Arc::new(Mutex::new(Vec::new()));
         let script: Script = Arc::new(script);
-        let (c, ch) = (Arc::clone(&calls), Arc::clone(&challenges));
+        let (c, ch, st) = (
+            Arc::clone(&calls),
+            Arc::clone(&challenges),
+            Arc::clone(&streams),
+        );
         std::thread::spawn(move || {
             for (id, stream) in listener.incoming().enumerate() {
                 let Ok(stream) = stream else { continue };
+                if let Ok(server_side) = stream.try_clone() {
+                    st.lock().unwrap().push(server_side);
+                }
                 let (c, ch, s) = (Arc::clone(&c), Arc::clone(&ch), Arc::clone(&script));
                 std::thread::spawn(move || connection(id as u64, stream, options, &s, &c, &ch));
             }
@@ -118,6 +169,15 @@ impl Emulator {
             addr,
             calls,
             challenges,
+            streams,
+        }
+    }
+
+    /// Closes every open connection at once, as a restarted wallet-rpc (or one timing out idle
+    /// connections) does: no `Connection: close`, the client learns it from the socket alone.
+    pub fn drop_connections(&self) {
+        for s in self.streams.lock().unwrap().drain(..) {
+            let _ = s.shutdown(std::net::Shutdown::Both);
         }
     }
 

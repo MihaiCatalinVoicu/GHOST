@@ -13,8 +13,8 @@ use common::epee::{self, Call, Emulator, Options, Reply};
 use ghost_entitlement::monero::MoneroNetwork;
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{
-    Endpoint, EndpointError, MoneroWalletRpc, RpcClient, Timeouts, WalletCheckError,
-    TRANSFER_FIELDS,
+    incoming_from_dump, Endpoint, EndpointError, MoneroWalletRpc, RpcClient, Timeouts,
+    WalletCheckError, TRANSFER_FIELDS, TRANSFER_FIELDS_OMITTED_AT_ZERO,
 };
 use ghost_issuer::rail::{IncomingEntry, PaymentRail, RailError, RailHeight};
 use serde_json::{json, Value};
@@ -54,27 +54,10 @@ fn txid(n: u8) -> String {
     format!("{n:02x}").repeat(32)
 }
 
-/// A `get_transfers` entry with every field wallet-rpc v0.18.5.1 writes.
+/// A `get_transfers` entry as wallet-rpc v0.18.5.1 writes it ([`epee::transfer_entry`]: no
+/// `confirmations` key when it is 0).
 fn row(kind: &str, minor: u32, amount: u64, height: u64, confirmations: u64, id: &str) -> Value {
-    json!({
-        "address": epee::SUBADDRESS,
-        "amount": amount,
-        "amounts": [amount],
-        "confirmations": confirmations,
-        "double_spend_seen": false,
-        "fee": 30_660_000u64,
-        "height": height,
-        "locked": false,
-        "note": "",
-        "payment_id": "0000000000000000",
-        "subaddr_index": {"major": 0, "minor": minor},
-        "subaddr_indices": [{"major": 0, "minor": minor}],
-        "suggested_confirmations_threshold": 1,
-        "timestamp": 1_789_237_444u64,
-        "txid": id,
-        "type": kind,
-        "unlock_time": 0
-    })
+    epee::transfer_entry(kind, minor, amount, height, confirmations, id)
 }
 
 fn height_answer(c: &Call) -> Option<Reply> {
@@ -128,6 +111,29 @@ fn a_connection_the_server_closed_is_replaced() {
     }
     let calls = e.calls();
     assert_eq!(calls.len(), 3);
+    assert!(calls.windows(2).all(|w| w[0].connection != w[1].connection));
+    assert!(calls.iter().all(|x| x.nc == 1));
+}
+
+/// Regression (CI run 34744508158, regtest step 17b): a kept-alive connection the server closed
+/// while no call ran, without `Connection: close` (a restarted wallet-rpc), is known closed before
+/// the next request, which goes out once, on a new connection.
+#[test]
+fn a_connection_the_server_dropped_while_idle_is_replaced() {
+    let e = emulator(Options::default(), height_answer);
+    let c = client(&e);
+    for round in 0..3 {
+        assert_eq!(
+            c.call("get_height", json!({})),
+            Ok(json!({"height": 77})),
+            "round {round}"
+        );
+        e.drop_connections();
+        // The server's close arrives while no call runs.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let calls = e.calls();
+    assert_eq!(calls.len(), 3, "every request reached the server once");
     assert!(calls.windows(2).all(|w| w[0].connection != w[1].connection));
     assert!(calls.iter().all(|x| x.nc == 1));
 }
@@ -349,6 +355,91 @@ fn transfers_ask_for_the_exclusive_lower_bound_and_decode_strictly() {
     }
 }
 
+/// A pool entry exactly as wallet-rpc v0.18.5.1 writes it (`fill_transfer_entry` for
+/// `pool_payment_details`): height 0, locked, and no `confirmations` key: `set_confirmations`
+/// gives a pool entry 0 and `KV_SERIALIZE_OPT(confirmations, 0)` stores nothing for 0. The first
+/// regtest run on the real wallet (CI run 34727439185) failed its scanner tick on this entry.
+fn real_pool_entry() -> Value {
+    json!({
+        "address": epee::SUBADDRESS,
+        "amount": 8,
+        "amounts": [8],
+        "double_spend_seen": false,
+        "fee": 30_660_000u64,
+        "height": 0,
+        "locked": true,
+        "note": "",
+        "payment_id": "0000000000000000",
+        "subaddr_index": {"major": 0, "minor": 3},
+        "subaddr_indices": [{"major": 0, "minor": 3}],
+        "suggested_confirmations_threshold": 1,
+        "timestamp": 1_789_237_444u64,
+        "txid": txid(4),
+        "type": "pool",
+        "unlock_time": 0
+    })
+}
+
+/// Regression (CI run 34727439185): wallet-rpc leaves `confirmations` out when it is 0, in every
+/// pool entry and in a mined entry at or above the wallet's height; the rail reads it as 0, in
+/// `transfers`, `transfer_by_txid` and an operator's view dump. A present value stays strictly
+/// typed, and a pool entry still has 0.
+#[test]
+fn entries_without_confirmations_decode_as_wallet_rpc_writes_them() {
+    let answer = Arc::new(Mutex::new(json!({})));
+    let a = Arc::clone(&answer);
+    let wallet = emulator(Options::default(), move |c| {
+        matches!(c.method.as_str(), "get_transfers" | "get_transfer_by_txid")
+            .then(|| Reply::Result(a.lock().unwrap().clone()))
+    });
+    let daemon = emulator(Options::default(), |_| None);
+    let r = rail(&wallet, &daemon);
+    let set = |v: Value| *answer.lock().unwrap() = v;
+
+    let pool = real_pool_entry();
+    assert!(pool.get("confirmations").is_none());
+    // A mined entry at the wallet's height: `set_confirmations` gives it 0 as well.
+    let mut tip = real_pool_entry();
+    tip["type"] = json!("in");
+    tip["height"] = json!(110);
+    tip["txid"] = json!(txid(5));
+    let expected_pool = IncomingEntry {
+        minor: 3,
+        amount_atomic: 8,
+        height: None,
+        confirmations: 0,
+        unlock_time: 0,
+        double_spend_seen: false,
+        txid: [4; 32],
+        timestamp: 1_789_237_444,
+    };
+    let expected_tip = IncomingEntry {
+        height: Some(110),
+        txid: [5; 32],
+        ..expected_pool
+    };
+
+    set(json!({"in": [tip.clone()], "pool": [pool.clone()]}));
+    assert_eq!(r.transfers(100, 110), Ok(vec![expected_tip, expected_pool]));
+    set(json!({"transfer": pool.clone(), "transfers": [pool.clone()]}));
+    assert_eq!(r.transfer_by_txid(&[4; 32]), Ok(Some(expected_pool)));
+    let dump = json!({"id": "0", "jsonrpc": "2.0", "result": {"in": [tip], "pool": [pool]}});
+    assert_eq!(incoming_from_dump(dump), Ok(vec![expected_tip]));
+
+    for (what, value) in [
+        ("float", json!(0.0)),
+        ("text", json!("0")),
+        ("null", Value::Null),
+        ("negative", json!(-1)),
+        ("a pool entry with 1", json!(1)),
+    ] {
+        let mut p = real_pool_entry();
+        p["confirmations"] = value;
+        set(json!({ "pool": [p] }));
+        assert_eq!(r.transfers(100, 110), Err(RailError::Decode), "{what}");
+    }
+}
+
 #[test]
 fn addresses_decode_strictly() {
     let answer = Arc::new(Mutex::new(json!({})));
@@ -518,8 +609,9 @@ fn exact_row(kind: &str, height: u64, confirmations: u64) -> Value {
 
 /// RP §6.8, §13.3 step 18: the fields the decoder needs are exactly [`TRANSFER_FIELDS`]: an entry
 /// holding only them decodes (mined, pool, by txid), and one without any of them does not
-/// (review finding S5-MON-4). With `IncomingEntry` they are the `ChainPort` field set: minor from
-/// `subaddr_index`, `amount_atomic` from `amount`, `height` from `height` and `type`,
+/// (review finding S5-MON-4), but for [`TRANSFER_FIELDS_OMITTED_AT_ZERO`], which wallet-rpc leaves
+/// out at 0 and which then reads as 0. With `IncomingEntry` they are the `ChainPort` field set:
+/// minor from `subaddr_index`, `amount_atomic` from `amount`, `height` from `height` and `type`,
 /// `confirmations`, `unlock_time`, `double_spend_seen`, `txid`, and `timestamp` (T2 view only).
 #[test]
 fn the_decoder_reads_exactly_the_transfer_fields() {
@@ -548,6 +640,20 @@ fn the_decoder_reads_exactly_the_transfer_fields() {
             v.as_object_mut().unwrap().remove(f);
             v
         };
+        if TRANSFER_FIELDS_OMITTED_AT_ZERO.contains(&f) {
+            // Absent reads as 0: a pool entry as the wallet writes it, a mined one not credited.
+            set(json!({"in": [without("in", 100, 12)], "pool": [without("pool", 0, 0)]}));
+            let got = r.transfers(100, 110).unwrap();
+            assert_eq!((got[0].confirmations, got[1].confirmations), (0, 0), "{f}");
+            set(json!({ "transfers": [without("in", 100, 12)] }));
+            assert_eq!(
+                r.transfer_by_txid(&[1; 32])
+                    .map(|e| e.map(|e| e.confirmations)),
+                Ok(Some(0)),
+                "by txid: {f}"
+            );
+            continue;
+        }
         set(json!({ "in": [without("in", 100, 12)] }));
         assert_eq!(r.transfers(100, 110), Err(RailError::Decode), "in: {f}");
         set(json!({ "pool": [without("pool", 0, 0)] }));

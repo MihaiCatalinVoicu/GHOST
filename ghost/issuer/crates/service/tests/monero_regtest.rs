@@ -64,6 +64,7 @@ use ghost_issuer::pool::PoolError;
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{
     Endpoint, MoneroWalletRpc, RpcClient, Timeouts, WalletCheckError, TRANSFER_FIELDS,
+    TRANSFER_FIELDS_OMITTED_AT_ZERO,
 };
 use ghost_issuer::rail::{PaymentRail, RailError};
 use ghost_issuer::reconcile::{self, CounterId, Counters};
@@ -317,10 +318,6 @@ fn total(counters: &Counters, id: CounterId) -> u64 {
         .filter(|((c, _), _)| *c == id)
         .map(|(_, v)| *v)
         .sum()
-}
-
-fn hex32(text: &str) -> [u8; 32] {
-    hex::decode(text).unwrap().try_into().unwrap()
 }
 
 #[derive(Clone)]
@@ -637,11 +634,19 @@ impl Regtest {
     }
 
     fn pay(&self, address: &str, amount: u64) -> String {
-        self.pay_locked(address, amount, 0)
+        rpc(&self.payer.rpc, "refresh", json!({}));
+        rpc(
+            &self.payer.rpc,
+            "transfer",
+            Self::transfer_params(address, amount, 0),
+        )["tx_hash"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
-    fn pay_locked(&self, address: &str, amount: u64, unlock_time: u64) -> String {
-        rpc(&self.payer.rpc, "refresh", json!({}));
+    /// The payer's `transfer` of `amount` to `address`, with `unlock_time` when it is not 0.
+    fn transfer_params(address: &str, amount: u64, unlock_time: u64) -> Value {
         let mut params = json!({
             "destinations": [{"amount": amount, "address": address}],
             "account_index": 0,
@@ -652,10 +657,7 @@ impl Regtest {
         if unlock_time != 0 {
             params["unlock_time"] = json!(unlock_time);
         }
-        rpc(&self.payer.rpc, "transfer", params)["tx_hash"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        params
     }
 
     fn counters(&self) -> Counters {
@@ -791,7 +793,8 @@ fn regtest_scenario() {
     t.pay(&happy.subaddress, PRICE);
     t.tick();
     // RP §6.8 (with step 18): a pool entry of the real wallet carries every field the issuer
-    // reads (review finding S5-MON-4).
+    // reads (review finding S5-MON-4) but `confirmations`, which wallet-rpc leaves out at 0
+    // (`KV_SERIALIZE_OPT`) and the rail reads as 0 (CI run 34727439185).
     let pooled = rpc(
         &t.issuer_wallet.rpc,
         "get_transfers",
@@ -803,7 +806,11 @@ fn regtest_scenario() {
     assert!(!pooled.is_empty());
     for e in pooled {
         for f in TRANSFER_FIELDS {
-            assert!(e.get(f).is_some(), "{f} missing in the pool entry {e}");
+            if TRANSFER_FIELDS_OMITTED_AT_ZERO.contains(&f) {
+                assert!(e.get(f).is_none(), "{f} written at 0 in the pool entry {e}");
+            } else {
+                assert!(e.get(f).is_some(), "{f} missing in the pool entry {e}");
+            }
         }
     }
     let s = t.blind_sign(&happy);
@@ -856,26 +863,28 @@ fn regtest_scenario() {
     assert_eq!((s.state, s.credited_atomic), (SIGNED, PRICE + OVERPAID_BY));
     paid_minors.push(over.minor);
 
-    // Step 6: a payment with a lock time is neither credited nor seen.
+    // Step 6: a payment with a lock time. The pinned release cannot make one: wallet-rpc refuses
+    // a transfer with a non-zero unlock_time (−50, WALLET_RPC_ERROR_CODE_NONZERO_UNLOCK_TIME) and
+    // wallet2 refuses to sign one, so nothing reaches the invoice. Consensus still accepts one
+    // made by other software; the rule (neither credited nor seen, §7.4) is covered by the
+    // `ChainPort` world (`money_lock_time_and_double_spend_never_credit`; design §19.22 point 1).
     let locked = t.request("locked");
     let unlock = t.height() + 100;
-    let locked_tx = t.pay_locked(&locked.subaddress, PRICE, unlock);
+    assert_eq!(
+        t.payer.rpc.call(
+            "transfer",
+            Regtest::transfer_params(&locked.subaddress, PRICE, unlock)
+        ),
+        Err(RailError::Rpc { code: -50 }),
+        "wallet-rpc v0.18.5.1 refuses a lock time"
+    );
     t.mine(CONFIRMATIONS);
     t.tick();
-    let entry = rail
-        .transfer_by_txid(&hex32(&locked_tx))
-        .unwrap()
-        .expect("the issuer's wallet sees the locked transfer");
-    assert_eq!(
-        entry.unlock_time, unlock,
-        "wallet-rpc made a locked transfer"
-    );
     let s = t.blind_sign(&locked);
     assert_eq!(
         (s.state, s.credited_atomic, s.seen_atomic),
         (AWAITING_PAYMENT, 0, 0)
     );
-    paid_minors.push(locked.minor);
 
     // Step 7: a payment mined above grace_height: the invoice expires (from a synced view), the
     // funds are unattributed revenue, and step 18's purge removes the mapping.
@@ -1055,15 +1064,25 @@ fn regtest_scenario() {
     );
     assert_eq!(submitted["tx_hash_list"], signed["tx_hash_list"]);
     let payout_tx = signed["tx_hash_list"][0].as_str().unwrap().to_string();
-    t.mine(1);
-    rpc(&t.payer.rpc, "refresh", json!({}));
-    let received = rpc(
-        &t.payer.rpc,
-        "get_transfer_by_txid",
-        json!({"txid": payout_tx}),
-    )["transfer"]
-        .clone();
-    assert_eq!(received["type"], "in");
+    // monerod enters a wallet's transaction as `local` and puts it in a block only once its
+    // Dandelion++ relay, run asynchronously after `submit_transfer` answered, has fluffed it
+    // (`fill_block_template` skips `local` and `stem` transactions): mine until the payee has it.
+    let mut received = Value::Null;
+    for _ in 0..20 {
+        t.mine(1);
+        rpc(&t.payer.rpc, "refresh", json!({}));
+        received = rpc(
+            &t.payer.rpc,
+            "get_transfer_by_txid",
+            json!({"txid": payout_tx}),
+        )["transfer"]
+            .clone();
+        if received["type"] == "in" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(received["type"], "in", "the payout is mined");
     assert_eq!(received["amount"], json!(PAYOUT));
     rpc(ws, "close_wallet", json!({}));
     rpc(

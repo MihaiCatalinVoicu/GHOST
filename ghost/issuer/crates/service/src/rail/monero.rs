@@ -5,9 +5,10 @@
 //! - **Transport.** Plain HTTP/1.1 on one kept-alive connection per server, through hyper's
 //!   connection API over `hyper-util`'s tokio adapter, bodies through `http-body-util`: no
 //!   connection pool, no name resolution, no TLS, and [`Endpoint`] refuses every address but a
-//!   loopback one. [`PaymentRail`] is synchronous: every [`RpcClient`] owns a current-thread tokio
-//!   runtime and blocks on it, so the rail is called from blocking threads (the periodic jobs run
-//!   on `spawn_blocking`), never from an async task.
+//!   loopback one. [`PaymentRail`] is synchronous: every [`RpcClient`] owns a tokio runtime with
+//!   one worker, which drives its connection between calls too, and blocks on it, so the rail is
+//!   called from blocking threads (the periodic jobs run on `spawn_blocking`), never from an async
+//!   task.
 //! - **Authentication.** RFC 2617 digest, `qop=auth`, MD5 ([`super::digest`]), kept per connection
 //!   as the epee server keeps it. A 401 answering credentials computed from a challenge that
 //!   arrived on the same connection in the same call means wrong credentials ([`RailError::Auth`]).
@@ -21,11 +22,19 @@
 //! - **Strict decoding.** The JSON-RPC envelope must be version 2.0, echo the request id and carry
 //!   exactly one of `result` (an object) and `error`. Every field the issuer reads must be present
 //!   with its JSON type: amounts, heights and times are unsigned integers (serde refuses a float,
-//!   a negative number or a string for `u64`; the module denies float arithmetic), txids are 64
-//!   lowercase hex digits, `subaddr_index.major` is 0 (account 0 was asked for), a pool entry has
-//!   height and confirmations 0 and type `pool`, a mined entry a positive height and type `in`
-//!   (`block` for a coinbase, whose unlock time never lets it count). Bodies are bounded. Fields
-//!   the issuer does not read are ignored: [`TRANSFER_FIELDS`] lists the ones it reads, the
+//!   a negative number, `null` or a string for `u64`; the module denies float arithmetic), txids
+//!   are 64 lowercase hex digits, `subaddr_index.major` is 0 (account 0 was asked for), a pool
+//!   entry has height and confirmations 0 and type `pool`, a mined entry a positive height and
+//!   type `in` (`block` for a coinbase, whose unlock time never lets it count). The one exception
+//!   is the wire format's own: epee's `KV_SERIALIZE_OPT` stores nothing for a default value and
+//!   wallet-rpc v0.18.5.1 declares `KV_SERIALIZE_OPT(confirmations, 0)`, so `confirmations` is
+//!   absent when it is 0 (every pool entry; a mined entry at or above the wallet's height) and is
+//!   then read as 0, which never credits ([`TRANSFER_FIELDS_OMITTED_AT_ZERO`]; the first regtest
+//!   run on the real wallet failed on it). The other answers the rail reads (`refresh`,
+//!   `get_height`, `get_address`, `create_address`, `get_info`) write every field it reads.
+//!   Bodies are bounded. Fields the issuer does not read are ignored, deliberately: nothing is
+//!   decided on them, and a wallet version that adds or drops one must not stop the scanner, while
+//!   every field read stays strictly typed. [`TRANSFER_FIELDS`] lists the ones it reads, the
 //!   `ChainPort` field set plus `type` (RP §6.8; regtest step 18).
 //! - **Subaddress count.** Probed one index at a time (`get_address` with `address_index`, −15
 //!   beyond the count), galloping from the last count then bisecting: never the whole list, which
@@ -93,6 +102,11 @@ pub const TRANSFER_FIELDS: [&str; 9] = [
     "type",
     "unlock_time",
 ];
+
+/// The fields of [`TRANSFER_FIELDS`] wallet-rpc leaves out when they are 0, read as 0 then:
+/// `transfer_entry` declares `KV_SERIALIZE_OPT(confirmations, 0)` and epee stores nothing for the
+/// default value, so a pool entry (always 0 confirmations) never has `confirmations`.
+pub const TRANSFER_FIELDS_OMITTED_AT_ZERO: [&str; 1] = ["confirmations"];
 
 /// Why an RPC address was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -204,7 +218,13 @@ impl RpcClient {
         credentials: Credentials,
         timeouts: Timeouts,
     ) -> Result<Self, RailError> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        // One worker drives the kept-alive connection between calls too, so a connection the
+        // server closed while idle is known closed before the next request (the resending rule);
+        // a runtime driven only inside calls learns it from a request written into the closed
+        // socket, which may not be sent again (CI run 34744508158, a restarted wallet-rpc).
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ghost-rail-rpc")
             .enable_io()
             .enable_time()
             .build()
@@ -565,6 +585,8 @@ struct TransfersByTxid {
 #[derive(Deserialize)]
 struct TransferRow {
     amount: u64,
+    /// Absent when 0 ([`TRANSFER_FIELDS_OMITTED_AT_ZERO`]); present, a `u64` like every other.
+    #[serde(default)]
     confirmations: u64,
     double_spend_seen: bool,
     height: u64,
