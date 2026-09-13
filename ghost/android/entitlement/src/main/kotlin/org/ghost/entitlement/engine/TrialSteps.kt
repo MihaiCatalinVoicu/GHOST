@@ -27,7 +27,15 @@ import org.ghost.sync.store.Time
  */
 internal class TrialSteps(private val c: EngineContext) {
 
-    private class TrialCall(val onboarding: Boolean, val token: ByteArray, val seed: ByteArray, val base: Long, val digest: ByteArray, val positions: Int)
+    private class TrialCall(
+        val onboarding: Boolean,
+        val attempt: Int,
+        val token: ByteArray,
+        val seed: ByteArray,
+        val base: Long,
+        val digest: ByteArray,
+        val positions: Int,
+    )
 
     private sealed class Outcome {
         class Ok(val tokens: List<TorIssuerTransport.IssuedToken>) : Outcome()
@@ -120,7 +128,7 @@ internal class TrialSteps(private val c: EngineContext) {
         if (!trusted) return@flight
         val row = c.tx { tx -> c.purchases.get(tx, id) } ?: return@flight
         if (row.kind != PurchaseStore.TRIAL || row.state != PurchaseStore.PREPARED) return@flight
-        if (row.attempt >= RetryPolicy.FLOW_ATTEMPTS) {
+        if (row.attempt >= cap(row.nextDueMinute == null)) {
             fail(id, row.nextDueMinute == null, now)
             return@flight
         }
@@ -160,10 +168,17 @@ internal class TrialSteps(private val c: EngineContext) {
                 digest = layout.digest()
             }
         }
-        c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, p.nextDueMinute)
+        // An onboarding trial keeps no due time (that is how it is told apart); a revocation's retry
+        // time is drawn with its first send.
+        val onboarding = p.nextDueMinute == null
+        val nextDue = if (onboarding) null else RetryPolicy.nextDueAfterSend(p.attempt, p.nextDueMinute, now, c.random::uniform)
+        c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, nextDue)
         val positions = c.crypto.layout(EntitlementCrypto.PRODUCT_TRIAL, base).positions
-        return TrialCall(p.nextDueMinute == null, p.inputToken(), p.seed(), base, digest, positions)
+        return TrialCall(onboarding, p.attempt + 1, p.inputToken(), p.seed(), base, digest, positions)
     }
+
+    /** An onboarding trial retries at each foreground, the user present (§8.3); a revocation retries once (§19.11, §19.14). */
+    private fun cap(onboarding: Boolean): Int = if (onboarding) RetryPolicy.ONBOARDING_ATTEMPTS else RetryPolicy.CALL_ATTEMPTS
 
     private fun apply(id: ByteArray, call: TrialCall, outcome: Outcome, now: Long) {
         when (outcome) {
@@ -190,7 +205,7 @@ internal class TrialSteps(private val c: EngineContext) {
                 val p = c.purchases.get(tx, id)
                 if (p != null && p.state == PurchaseStore.PREPARED) c.purchaseSteps.rePrepare(tx, p, now)
             }
-            Outcome.Transient -> Unit
+            Outcome.Transient -> if (call.attempt >= cap(call.onboarding)) fail(id, call.onboarding, now)
             Outcome.Malformed -> malformed(id, call.onboarding, now)
         }
     }

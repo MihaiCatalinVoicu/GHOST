@@ -256,12 +256,24 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
 
     override fun paymentScreenShown(id: PurchaseId) {
         deps.userCalls.paymentScreenShown()
+        memory.paymentScreenOpen.set(true)
         rememberPaymentScreen()
     }
 
     override fun paymentScreenHidden(id: PurchaseId) {
         deps.userCalls.paymentScreenHidden()
+        memory.paymentScreenOpen.set(false)
         rememberPaymentScreen()
+    }
+
+    /**
+     * The app went to the background. The sync runtime hides an open payment screen with it (the hold
+     * starts then), so the moment kept for the next process moves to now: a process killed in the
+     * background, while the user pays from a wallet app, restores the hold from when the screen was
+     * last visible, not from when it was opened (§19.11, E15).
+     */
+    fun onBackground() {
+        if (memory.paymentScreenOpen.getAndSet(false)) rememberPaymentScreen()
     }
 
     /** The minute the payment screen was last visible, rounded up, survives the process (§19.11, E15). */

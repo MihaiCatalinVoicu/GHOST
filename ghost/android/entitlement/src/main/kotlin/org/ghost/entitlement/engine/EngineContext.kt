@@ -57,6 +57,9 @@ internal object Counters {
 internal class EngineMemory {
     val clock = ClockEstimate()
     val trialCall = AtomicBoolean()
+
+    /** A payment screen is visible: shown and neither hidden nor hidden with the app since (§19.11). */
+    val paymentScreenOpen = AtomicBoolean()
     private val malformed: MutableSet<List<Byte>> = ConcurrentHashMap.newKeySet()
     private val inFlight: MutableSet<List<Byte>> = ConcurrentHashMap.newKeySet()
     private val retryAfter = ConcurrentHashMap<List<Byte>, Long>()

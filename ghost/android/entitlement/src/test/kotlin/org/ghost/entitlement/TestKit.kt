@@ -118,6 +118,11 @@ internal class TestCrypto : TokenCryptoPort {
     var slots: List<EntitlementCrypto.Slot> = onions.mapIndexed { i, o -> EntitlementCrypto.Slot(i, 0, 0, o) }
     var price = PRICE
     val priceOverrides = HashMap<Long, Long>()
+    val droppedPrices = HashSet<Long>()
+
+    /** Weeks whose keys (and the prices they reach) are listed; the horizon by default. */
+    var keyFirstWeek: Long? = null
+    var keyLastWeek: Long? = null
     val keyOverrides = HashMap<Pair<Int, Long>, ByteArray>()
     var revoked: List<EntitlementCrypto.Revoked> = emptyList()
     var failSummary: String? = null
@@ -130,12 +135,14 @@ internal class TestCrypto : TokenCryptoPort {
     fun keyId(kind: Int, epoch: Long): ByteArray = keyOverrides[kind to epoch] ?: TestBytes.sha256("key:$kind:$epoch".toByteArray())
 
     private fun keys(): List<EntitlementCrypto.KeyId> {
+        val first = keyFirstWeek ?: firstWeek
+        val last = keyLastWeek ?: lastWeek
         val out = ArrayList<EntitlementCrypto.KeyId>()
-        for (w in firstWeek..lastWeek) out += EntitlementCrypto.KeyId(EntitlementCrypto.KIND_ACCESS, w, keyId(EntitlementCrypto.KIND_ACCESS, w))
-        for (e in Grid.inviteEpoch(firstWeek)..Grid.inviteEpoch(lastWeek)) out += EntitlementCrypto.KeyId(EntitlementCrypto.KIND_INVITE, e, keyId(EntitlementCrypto.KIND_INVITE, e))
+        for (w in first..last) out += EntitlementCrypto.KeyId(EntitlementCrypto.KIND_ACCESS, w, keyId(EntitlementCrypto.KIND_ACCESS, w))
+        for (e in Grid.inviteEpoch(first)..Grid.inviteEpoch(last)) out += EntitlementCrypto.KeyId(EntitlementCrypto.KIND_INVITE, e, keyId(EntitlementCrypto.KIND_INVITE, e))
         // Credits stay acceptable for their epoch and the four following (§19.8), so a schedule lists
         // the CREDIT keys and prices of the four epochs before its first week too.
-        for (e in Grid.creditEpoch(firstWeek) - CREDIT_EPOCHS_BACK..Grid.creditEpoch(lastWeek)) {
+        for (e in Grid.creditEpoch(first) - CREDIT_EPOCHS_BACK..Grid.creditEpoch(last)) {
             out += EntitlementCrypto.KeyId(EntitlementCrypto.KIND_CREDIT, e, keyId(EntitlementCrypto.KIND_CREDIT, e))
         }
         return out
@@ -143,7 +150,9 @@ internal class TestCrypto : TokenCryptoPort {
 
     override fun scheduleSummary(): EntitlementCrypto.ScheduleSummary {
         failSummary?.let { throw NetworkException(it) }
-        val prices = (Grid.priceEpoch(firstWeek) - CREDIT_EPOCHS_BACK..Grid.priceEpoch(lastWeek + 4)).map { EntitlementCrypto.Price(it, priceOverrides[it] ?: price) }
+        val prices = (Grid.priceEpoch(keyFirstWeek ?: firstWeek) - CREDIT_EPOCHS_BACK..Grid.priceEpoch((keyLastWeek ?: lastWeek) + 4))
+            .filter { it !in droppedPrices }
+            .map { EntitlementCrypto.Price(it, priceOverrides[it] ?: price) }
         val keys = keys()
         val md = MessageDigest.getInstance("SHA-256")
         md.update("es:$seq:$network:$firstWeek:$lastWeek".toByteArray())
@@ -323,13 +332,20 @@ internal class FakeIssuer(private val crypto: TestCrypto, private val clock: Man
         if (refreshResult != TorIssuerTransport.REFRESH_OK) return TorIssuerTransport.RefreshAnswer(refreshResult, null)
         val fresh = issued(seed, 1, "refresh").single()
         val epoch = crypto.verifyToken(receivedCredit, EntitlementCrypto.KIND_CREDIT)?.epoch ?: Grid.creditEpoch(WEEK0)
+        // The issuer refreshes only credits of c_now and c_now − 1 (`refresh_credit_at`, step 4).
+        val cNow = Grid.creditEpoch(Grid.week(clock.now))
+        if (epoch != cNow && epoch + 1 != cNow) throw NetworkException("unauthorized")
         crypto.register(fresh.token(), EntitlementCrypto.KIND_CREDIT, epoch)
         return TorIssuerTransport.RefreshAnswer(TorIssuerTransport.REFRESH_OK, fresh)
     }
 }
 
-/** Relays as the redeem lane sees them: every redemption recorded; answers set by the test. */
-internal class FakeRedeem(private val clock: ManualClock) : RedeemPort {
+/**
+ * Relays as the redeem lane sees them: every redemption recorded; answers set by the test. Like the
+ * real relay (`capability_expiry(p)`), a capability expires one hour after the end of the redeemed
+ * token's week, whatever the relay's own week.
+ */
+internal class FakeRedeem(private val clock: ManualClock, private val crypto: TestCrypto) : RedeemPort {
     class Call(val relay: OnionAddress, val namespace: NamespaceId, token: ByteArray, requestId: ByteArray) {
         val token: List<Byte> = token.toList()
         val requestId: List<Byte> = requestId.toList()
@@ -341,6 +357,9 @@ internal class FakeRedeem(private val clock: ManualClock) : RedeemPort {
     var failOnce: String? = null
     var relayPeriod: Long? = null
 
+    /** The relays' clock minus the device clock (a relay set that lies about the time shifts it). */
+    var skewSeconds = 0L
+
     override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray): TorRelayTransport.RedeemAnswer {
         calls += Call(relay, namespace, token, requestId)
         failOnce?.let {
@@ -348,10 +367,12 @@ internal class FakeRedeem(private val clock: ManualClock) : RedeemPort {
             throw NetworkException(it)
         }
         fail?.let { throw NetworkException(it) }
-        val period = relayPeriod ?: Grid.week(clock.now)
-        val minute = clock.now / 60
+        val relayNow = clock.now + skewSeconds
+        val period = relayPeriod ?: Grid.week(relayNow)
+        val minute = Math.floorDiv(relayNow, 60L)
         return if (result == TorRelayTransport.REDEEM_OK) {
-            TorRelayTransport.RedeemAnswer(result, period, minute, Grid.start(period + 1) + 3600, TestBytes.of(98, 800_000 + calls.size))
+            val week = crypto.verifyToken(token, EntitlementCrypto.KIND_ACCESS)?.epoch ?: period
+            TorRelayTransport.RedeemAnswer(result, period, minute, Grid.start(week + 1) + 3600, TestBytes.of(98, 800_000 + calls.size))
         } else {
             TorRelayTransport.RedeemAnswer(result, period, minute, 0, null)
         }
@@ -435,7 +456,7 @@ internal class World(configure: (TestCrypto) -> Unit = {}) : AutoCloseable {
     val stores = SyncStores(SyncDatabase(sql), clock, KeyedRandomSources(ByteArray(32) { 7 }), { mode })
     val crypto = TestCrypto().also(configure)
     val issuer = FakeIssuer(crypto, clock)
-    val redeem = FakeRedeem(clock)
+    val redeem = FakeRedeem(clock, crypto)
     val random = TestRandom()
     val identity = FakeIdentity()
     val seal = TestSeal(identity)

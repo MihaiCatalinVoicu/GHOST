@@ -48,6 +48,7 @@ class GhostApp : Application(), SyncHost {
             // runtime keeps using for the process.
             paymentShownAt = { database.open(DatabaseOpener.Purpose.FOREGROUND)?.let(EntitlementWiring::paymentShownEpochSeconds) },
             visible = { entitlementWiring.onVisible() },
+            hidden = { entitlementWiring.onHidden() },
         )
     }
 

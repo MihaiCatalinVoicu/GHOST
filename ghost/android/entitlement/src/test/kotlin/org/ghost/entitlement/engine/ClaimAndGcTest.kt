@@ -95,6 +95,38 @@ class ClaimAndGcTest {
     }
 
     @Test
+    fun gcKeepsAccessTokensWhoseWindowTheRelaysStillHaveOpen(): Unit = World().use { w ->
+        w.addAccess(WEEK0, 0, 3)
+        // The device clock is two hours into the next week; two relays report a time 26 h behind it.
+        val wall = Grid.start(WEEK0 + 1) + 2 * Grid.HOUR
+        val minute = Math.floorDiv(wall, 60L)
+        for (relay in listOf(w.relayIds[0], w.relayIds[1])) w.ctx().memory.clock.record(relay, minute - 26 * 60, WEEK0, wall, false)
+        w.ctx().gc.run(wall)
+        assertEquals("the relays' week is still open", 3, w.tokenRows("access").count { it.epoch == WEEK0 })
+        // Closed by both clocks: collected.
+        w.ctx().gc.run(Grid.start(WEEK0 + 1) + 2 * Grid.DAY)
+        assertTrue(w.tokenRows("access").isEmpty())
+    }
+
+    @Test
+    fun aStallingIssuerGetsAtMostTwoIdenticalClaims(): Unit = World().use { w ->
+        w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+        val id = checkNotNull(w.engine.claimPayout(address)).toByteArray()
+        w.issuer.fail = "timeout"
+        repeat(100) {
+            w.quiet()
+            w.clock.now += 2 * Grid.HOUR
+        }
+        val calls = w.issuer.named("claimPayout")
+        assertEquals("one planned attempt and one identical retry at a pre-drawn time", 2, calls.size)
+        assertEquals(1, calls.map { it.args }.toSet().size)
+        val gap = calls[1].at - calls[0].at
+        assertTrue(gap >= 20 * Grid.HOUR && gap < 30 * Grid.HOUR + 60)
+        assertEquals(ClaimStore.FAILED, checkNotNull(w.tx { w.ctx().claims.get(it, id) }).state)
+        assertEquals(10, w.tokenRows("credit").count { it.state == TokenStore.FRESH })
+    }
+
+    @Test
     fun gcClosesInvitesAtTheirListeningEndAndForgetsThePaymentScreenAfterAnHour(): Unit = World().use { w ->
         w.identity.exists = true
         w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)

@@ -28,7 +28,8 @@ import org.ghost.sync.store.Time
  * Inviter: `createInvite` reserves and spends one fresh INVITE token, takes the next invite index,
  * draws 3 drop slots spanning at least two operators and registers the drop namespace as listening;
  * `receive` opens drop blobs, and a valid credit of an accepted epoch becomes a `refresh` flow due at
- * a random time 1–14 days later (never presented before its refresh, §19.8).
+ * a random time 1–14 days later, clipped to the issuer's refresh window (never presented before its
+ * refresh, §19.8).
  *
  * Invitee: at the pre-drawn `t_drop` (never tied to a purchase, NI-1d) exactly one blob is sealed and
  * enqueued: a fresh own credit if one exists, else a dummy sealed identically. Credits are fungible
@@ -154,7 +155,7 @@ internal class DropSteps(private val c: EngineContext) {
         }
         val id = c.random.bytes(EngineContext.ID_BYTES)
         val seed = c.random.bytes(EngineContext.SECRET_BYTES)
-        val due = Time.ceilMinute(now + REFRESH_MIN + (c.random.uniform() * (REFRESH_MAX - REFRESH_MIN)).toLong())
+        val due = refreshDue(verified.epoch, now)
         c.tx { tx ->
             val current = c.invites.get(tx, invite.index)
             if (c.sync.inbox.markConsumed(tx, blob.namespace, blob.hash) && current != null && current.state == InviteStore.CREATED) {
@@ -163,6 +164,18 @@ internal class DropSteps(private val c: EngineContext) {
                 c.retireNamespace(tx, blob.namespace)
             }
         }
+    }
+
+    /**
+     * The refresh time of a received credit of [epoch] (§19.8): U[1 d, 14 d] after receipt, but no later
+     * than two days before credit epoch `epoch + 2` starts, from when the issuer refuses to refresh it
+     * (it refreshes only `c_now` and `c_now − 1`); the two days leave room for the attempt and its
+     * pre-drawn retry. Within two days of that start the refresh is due at once.
+     */
+    private fun refreshDue(epoch: Long, now: Long): Long {
+        val drawn = now + REFRESH_MIN + (c.random.uniform() * (REFRESH_MAX - REFRESH_MIN)).toLong()
+        val latest = Grid.start(Grid.creditEpochFirstWeek(epoch + 2)) - REFRESH_DEADLINE_MARGIN
+        return Time.ceilMinute(maxOf(now, minOf(drawn, latest)))
     }
 
     private fun consume(blob: InboundBlob) {
@@ -225,6 +238,7 @@ internal class DropSteps(private val c: EngineContext) {
         const val CLAIM_LIMIT = 16
         const val REFRESH_MIN: Long = Grid.DAY
         const val REFRESH_MAX: Long = 14 * Grid.DAY
+        const val REFRESH_DEADLINE_MARGIN: Long = 2 * Grid.DAY
         const val INVITER_LISTEN_DAYS = 56L
         const val DRAWS = 32
         const val MIN_OPERATORS = 2

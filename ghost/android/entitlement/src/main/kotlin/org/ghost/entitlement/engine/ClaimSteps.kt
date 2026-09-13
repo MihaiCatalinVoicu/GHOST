@@ -18,7 +18,8 @@ import javax.crypto.spec.SecretKeySpec
  * Payout claims (design §9.4, §19.22 point 2): the address is validated locally (Rust) and must not
  * have been used before (salted hash in `ent_payout_used`); claim id, address and the reserved own
  * credits are written ahead; the `ClaimPayout` runs alone in a quiet run at a random time, at most one
- * claim per week, and retries by the same claim id with identical bytes.
+ * claim per week, and retries once by the same claim id with identical bytes at a time drawn before the
+ * first send (§19.11 applied to claims: an issuer that stalls gets two linked samples at most).
  */
 internal class ClaimSteps(private val c: EngineContext) {
 
@@ -67,11 +68,11 @@ internal class ClaimSteps(private val c: EngineContext) {
     private fun prepare(tx: SyncTransaction, id: ByteArray, now: Long): ClaimCall? {
         val claim = c.claims.get(tx, id) ?: return null
         if (claim.state != ClaimStore.PREPARED) return null
-        if (claim.attempt >= RetryPolicy.CLAIM_ATTEMPTS) {
+        if (claim.attempt >= RetryPolicy.CALL_ATTEMPTS) {
             fail(tx, claim, now)
             return null
         }
-        c.claims.countAttempt(tx, id, claim.attempt, checkNotNull(claim.nextDueMinute))
+        c.claims.countAttempt(tx, id, claim.attempt, checkNotNull(RetryPolicy.nextDueAfterSend(claim.attempt, claim.nextDueMinute, now, c.random::uniform)))
         val credits = c.tokens.reservedCredits(tx, TokenStore.FOR_CLAIM, id).map { it.token() }
         return ClaimCall(credits, checkNotNull(claim.payoutAddress))
     }
@@ -108,7 +109,7 @@ internal class ClaimSteps(private val c: EngineContext) {
         val claim = c.claims.get(tx, id) ?: return
         if (claim.state != ClaimStore.PREPARED) return
         when (failure) {
-            Failure.TRANSIENT -> if (claim.attempt >= RetryPolicy.CLAIM_ATTEMPTS) fail(tx, claim, now)
+            Failure.TRANSIENT -> if (claim.attempt >= RetryPolicy.CALL_ATTEMPTS) fail(tx, claim, now)
             Failure.UNAUTHORIZED, Failure.REJECTED -> fail(tx, claim, now)
             Failure.MALFORMED -> malformed(tx, claim, now)
         }

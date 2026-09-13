@@ -19,6 +19,9 @@ import org.ghost.sync.store.Time
  * id (or take the reservation that is already pending for that relay, namespace and week); **call**
  * the redemption; **tx2** apply the answer, installing the capability and deleting the token in one
  * transaction. A reserved token is only ever retried, identically, at its own relay and namespace (R8).
+ * A write capability serves reads (§10.7), so one step makes at most one redemption per (relay,
+ * namespace, week), and tx1 takes no fresh token for a pair whose usable write capability already
+ * reaches the end of the week (installed earlier in the same step, say).
  */
 internal class RedeemLane(private val c: EngineContext) {
     private val planner = RedeemPlanner(c.random)
@@ -27,6 +30,9 @@ internal class RedeemLane(private val c: EngineContext) {
         class Held(val token: TokenRow) : Reservation()
         object NoToken : Reservation()
         object Wait : Reservation()
+
+        /** The pair's write capability already covers the week: no token is needed. */
+        object Covered : Reservation()
     }
 
     /** Runs until the session closes; [tick] is the engine's other relay-session work (drops, GC). */
@@ -74,8 +80,10 @@ internal class RedeemLane(private val c: EngineContext) {
                 else -> Unit
             }
         }
+        // One redemption per (relay, namespace, week): a pair's READ and WRITE needs share it (§10.7).
+        val single = plans.groupBy { Triple(it.relay.id, it.need.namespace, it.week) }.values.map { same -> same.minBy { it.dueSeconds } }
         var unmet = false
-        for (plan in plans.sortedBy { it.dueSeconds }) {
+        for (plan in single.sortedBy { it.dueSeconds }) {
             if (session.closed) break
             if (plan.dueSeconds > nowEst) continue
             if (!execute(redeem, plan, now)) unmet = true
@@ -89,7 +97,7 @@ internal class RedeemLane(private val c: EngineContext) {
         val held = when (val r = c.tx { tx -> reserve(tx, plan, now) }) {
             is Reservation.Held -> r.token
             Reservation.NoToken -> return false
-            Reservation.Wait -> return true
+            Reservation.Wait, Reservation.Covered -> return true
         }
         val requestId = held.requestId()
         val answer = try {
@@ -120,6 +128,8 @@ internal class RedeemLane(private val c: EngineContext) {
             return if (after != null && nowEst < after) Reservation.Wait else Reservation.Held(held)
         }
         if (windowOver(plan.week, nowEst)) return Reservation.Wait
+        val expiry = SyncTables.usableWriteExpiry(tx, plan.relay.id, plan.need.namespace)
+        if (expiry != null && expiry >= Grid.start(plan.week + 1)) return Reservation.Covered
         val minute = Time.floorMinute(now)
         val fresh = c.tokens.freshEligibleAccess(tx, plan.week, plan.slots, minute) ?: return Reservation.NoToken
         c.tokens.reserveForRelay(tx, fresh.nullifier(), plan.relay.id.value, ns, c.random.bytes(REQUEST_ID_BYTES), minute)

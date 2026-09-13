@@ -145,6 +145,52 @@ class DropStepsTest {
         assertEquals(listOf(Grid.creditEpoch(WEEK0)), w.tokenRows("credit").map { it.epoch })
     }
 
+    /** An inviter whose invite 0 was created at T0 receives [credit], a credit of [epoch], at the current clock. */
+    private fun World.receive(credit: ByteArray, epoch: Long) {
+        identity.exists = true
+        addTokens("invite", Grid.inviteEpoch(WEEK0), 1)
+        val at = clock.now
+        clock.now = T0
+        val text = checkNotNull(engine.createInvite((Grid.day(T0) + 14).toInt()))
+        clock.now = at
+        val invite = Invite.parseAndVerify(text, T0, InviteTokenCheck(crypto), Invite.InMemoryNonceStore())
+        crypto.register(credit, EntitlementCrypto.KIND_CREDIT, epoch)
+        fetched(invite.dropNamespace, DropSeal.sealCredit(credit, invite.dropKey, invite.dropNamespace))
+        ctx().dropSteps.receive(clock.now)
+    }
+
+    @Test
+    fun aCreditReceivedNearTheEndOfItsRefreshWindowIsRefreshedInsideIt(): Unit = World().use { w ->
+        // Two days before credit epoch c_now + 1 starts, a credit of epoch c_now − 1 arrives: the
+        // issuer refreshes it only until that start.
+        val next = Grid.start((Grid.creditEpoch(WEEK0) + 1) * 13)
+        w.clock.now = next - 2 * Grid.DAY
+        w.receive(TestBytes.token(1001), Grid.creditEpoch(WEEK0) - 1)
+        val refresh = w.purchases().single()
+        val due = checkNotNull(refresh.nextDueMinute)
+        assertTrue("due inside the issuer's refresh window", due < next)
+        w.clock.now = maxOf(w.clock.now, due)
+        w.quiet()
+        assertEquals(PurchaseStore.FINALIZED, checkNotNull(w.purchase(refresh.id())).state)
+        assertEquals(listOf(Grid.creditEpoch(WEEK0) - 1), w.tokenRows("credit").map { it.epoch })
+    }
+
+    @Test
+    fun aStallingIssuerGetsAtMostTwoIdenticalRefreshes(): Unit = World().use { w ->
+        w.receive(TestBytes.token(1002), Grid.creditEpoch(WEEK0))
+        val refresh = w.purchases().single()
+        w.issuer.fail = "timeout"
+        w.clock.now = checkNotNull(refresh.nextDueMinute)
+        repeat(60) {
+            w.quiet()
+            w.clock.now += 2 * Grid.HOUR
+        }
+        val calls = w.issuer.named("refreshCredit")
+        assertEquals("one planned attempt and one identical retry (E17)", 2, calls.size)
+        assertEquals(1, calls.map { it.args }.toSet().size)
+        assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(refresh.id())).state)
+    }
+
     @Test
     fun aDummyOrAStaleCreditIsConsumedAndDropped(): Unit = World().use { w ->
         w.identity.exists = true

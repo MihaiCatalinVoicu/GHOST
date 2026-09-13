@@ -109,7 +109,10 @@ internal class PurchaseStore {
         listOf(nextDueMinute, id, state),
     )
 
-    /** The validated `RequestInvoice` answer (§11.4 prepared → invoiced); the attempt count restarts for `BlindSign`. */
+    /**
+     * The validated `RequestInvoice` answer (§11.4 prepared → invoiced); the attempt count restarts for
+     * `BlindSign` at [firstAttempt] (1 when the invoice came on the `RequestInvoice` retry, E5).
+     */
     fun invoiced(
         tx: SyncTransaction,
         id: ByteArray,
@@ -118,12 +121,13 @@ internal class PurchaseStore {
         amountAtomic: Long,
         receiptMinute: Long,
         prevState: Int,
+        firstAttempt: Int,
         nextDueMinute: Long,
     ) = tx.sql.updateExactly(
         1,
         "UPDATE ent_purchase SET state = 'invoiced', invoice_id = ?1, subaddress = ?2, amount_atomic = ?3, receipt_minute = ?4, " +
-            "outstanding_atomic = ?3, prev_state = ?5, attempt = 0, next_due_minute = ?6 WHERE purchase_id = ?7 AND state = 'prepared' AND sent = 1",
-        listOf(invoiceId, subaddress, amountAtomic, receiptMinute, prevState, nextDueMinute, id),
+            "outstanding_atomic = ?3, prev_state = ?5, attempt = ?6, next_due_minute = ?7 WHERE purchase_id = ?8 AND state = 'prepared' AND sent = 1",
+        listOf(invoiceId, subaddress, amountAtomic, receiptMinute, prevState, firstAttempt, nextDueMinute, id),
     )
 
     /** The latest invoice state and outstanding amount (§19.11). */

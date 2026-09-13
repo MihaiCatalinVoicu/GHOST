@@ -8,6 +8,7 @@ import org.ghost.entitlement.api.EntitlementFlag
 import org.ghost.entitlement.store.TokenStore
 import org.ghost.network.TorRelayTransport
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilityNeed
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
@@ -157,18 +158,114 @@ class RedeemLaneTest {
         assertEquals(1, w.redeem.calls.size)
     }
 
+    /** A write-only namespace on relay 0 holding a usable write capability that expires at [expiry]. */
+    private fun World.expiringPair(expiry: Long) = tx { t ->
+        stores.namespaces.register(t, ns, Consumer.DM, setOf(relayIds[0]), listen = false)
+        stores.capabilities.put(t, relayIds[0], ns, CapabilityKind.WRITE, TestBytes.of(98, 3), expiry)
+    }
+
+    /** The relay-facing clock learns that relays 1 and 2 run [offsetMinutes] off the device clock. */
+    private fun World.relaysOff(offsetMinutes: Long) {
+        val minute = Math.floorDiv(clock.now, 60L)
+        for (relay in listOf(relayIds[1], relayIds[2])) ctx().memory.clock.record(relay, minute + offsetMinutes, WEEK0, clock.now, false)
+    }
+
+    private fun World.steps(n: Int) = repeat(n) {
+        laneStep()
+        clock.now += 60
+    }
+
     @Test
-    fun anExpiringCapabilityIsRenewedWithANextWeekTokenInsideItsWindow(): Unit = World().use { w ->
-        w.tx { t ->
-            w.stores.namespaces.register(t, ns, Consumer.DM, setOf(w.relayIds[0]), listen = false)
-            w.stores.capabilities.put(t, w.relayIds[0], ns, CapabilityKind.WRITE, TestBytes.of(98, 3), Grid.start(WEEK0 + 1) + 3600)
-        }
-        val next = w.addAccess(WEEK0 + 1, 0, 1).single().toList()
-        w.addAccess(WEEK0, 0, 1)
+    fun anExpiringCapabilityIsRenewedOncePerPairAndWeek(): Unit = World().use { w ->
+        w.expiringPair(Grid.start(WEEK0 + 1) + 3600)
+        val next = w.addAccess(WEEK0 + 1, 0, 2).map { it.toList() }
+        w.addAccess(WEEK0, 0, 3)
         w.random.prfValue = 0.0
         w.clock.now = Grid.start(WEEK0 + 1) - 20 * 3600
+        w.steps(5)
+        assertEquals("one next-week token renews the pair", 1, w.redeem.calls.size)
+        assertTrue(w.redeem.calls.single().token in next)
+        assertTrue("the renewed capability reaches past the next week", w.stores.capabilities.needed().isEmpty())
+        assertEquals(3, w.tokenRows("access").count { it.epoch == WEEK0 })
+    }
+
+    @Test
+    fun aRelayClockBehindTheDeviceBurnsNoTokenOnAnExpiringPair(): Unit = World().use { w ->
+        w.expiringPair(Grid.start(WEEK0 + 1) + 3600)
+        w.addAccess(WEEK0, 0, 6)
+        val next = w.addAccess(WEEK0 + 1, 0, 1).single().toList()
+        w.random.prfValue = 0.0
+        // The device clock already raises EXPIRING; the relays run an hour behind it (δ = −60 min).
+        w.clock.now = Grid.start(WEEK0 + 1) - 22 * 3600 - 1800
+        w.relaysOff(-60)
+        w.steps(5)
+        assertTrue("a current-week token cannot extend a week-aligned capability", w.redeem.calls.isEmpty())
+        assertEquals(6, w.tokenRows("access").count { it.epoch == WEEK0 })
+        assertEquals(listOf(CapabilityNeed.Reason.EXPIRING), w.stores.capabilities.needed().map { it.reason })
+        // Once the relay-facing clock is inside the renewal window, one next-week token renews it.
+        w.clock.now = Grid.start(WEEK0 + 1) - 22 * 3600 + 60
+        w.steps(5)
+        assertEquals(listOf(next), w.redeem.calls.map { it.token })
+        assertTrue(w.stores.capabilities.needed().isEmpty())
+        assertEquals(6, w.tokenRows("access").count { it.epoch == WEEK0 })
+    }
+
+    @Test
+    fun aListeningPairWithOutboxWorkSpendsOneTokenPerRelay(): Unit = World().use { w ->
+        w.tx { t ->
+            w.stores.namespaces.register(t, ns, Consumer.DM, setOf(w.relayIds[0], w.relayIds[1]), listen = true)
+            w.stores.outbox.enqueue(t, OutboundBlob(OperationId(TestBytes.of(16, 1)), ns, TestBytes.of(1024, 2), TtlBucket.DAYS_7))
+        }
+        w.addAccess(WEEK0, 0, 3)
+        w.addAccess(WEEK0, 1, 3)
+        w.random.prfValue = 0.0
+        assertEquals(setOf(CapabilityKind.READ, CapabilityKind.WRITE), w.stores.capabilities.needed().map { it.kind }.toSet())
         w.laneStep()
-        assertEquals(next, w.redeem.calls.single().token)
+        assertEquals("write grants read: one token per relay", 2, w.redeem.calls.size)
+        assertEquals(setOf(w.crypto.onions[0], w.crypto.onions[1]), w.redeem.calls.map { it.relay }.toSet())
+        assertTrue(w.stores.capabilities.needed().isEmpty())
+        assertEquals(4, w.tokenRows("access").size)
+    }
+
+    @Test
+    fun relaysShiftingTheirClockSpendNoFutureWeekAndTriggerNoIssuerCall(): Unit = World().use { w ->
+        w.writeNeed(setOf(w.relayIds[0], w.relayIds[1]))
+        w.addAccess(WEEK0, 0, 1)
+        w.addAccess(WEEK0, 1, 1)
+        val future = (w.addAccess(WEEK0 + 4, 0, 1) + w.addAccess(WEEK0 + 4, 1, 1)).map { it.toList() }
+        w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+        w.engine.setAutoRenewWithCredits(true)
+        w.quiet()
+        assertTrue("coverage ends four weeks ahead: no renewal", w.issuer.calls.isEmpty())
+        // Every relay (AD-1 holds them all) answers four weeks ahead of true time and accepts any token.
+        w.redeem.skewSeconds = 4 * Grid.WEEK
+        w.laneStep()
+        assertEquals(2, w.redeem.calls.size)
+        val other = NamespaceId(TestBytes.of(32, 4343))
+        w.tx { t ->
+            w.stores.namespaces.register(t, other, Consumer.DM, setOf(w.relayIds[0], w.relayIds[1]), listen = false)
+            w.stores.outbox.enqueue(t, OutboundBlob(OperationId(TestBytes.of(16, 3)), other, TestBytes.of(1024, 4), TtlBucket.DAYS_7))
+        }
+        w.steps(5)
+        assertTrue("no token of a week four weeks ahead is spent", w.redeem.calls.none { it.token in future })
+        assertEquals(2, w.tokenRows("access").count { it.epoch == WEEK0 + 4 })
+        w.quiet()
+        assertTrue("the coverage end, and the renewal it drives, stay out of the relays' hands", w.issuer.calls.isEmpty())
+    }
+
+    @Test
+    fun anAdoptedRelayPeriodStaysWithinADayOfTheDeviceClock(): Unit = World().use { w ->
+        w.writeNeed(setOf(w.relayIds[0], w.relayIds[1]))
+        w.addAccess(WEEK0, 0, 2)
+        val future = w.addAccess(WEEK0 + 4, 0, 1).single().toList()
+        // A relay refuses a week-W token as late, claiming week W + 4.
+        w.redeem.result = TorRelayTransport.REDEEM_WRONG_PERIOD
+        w.redeem.relayPeriod = WEEK0 + 4
+        w.laneStep()
+        w.redeem.result = TorRelayTransport.REDEEM_OK
+        w.steps(3)
+        assertTrue(w.redeem.calls.none { it.token == future })
+        assertEquals(1, w.tokenRows("access").count { it.epoch == WEEK0 + 4 })
     }
 
     @Test

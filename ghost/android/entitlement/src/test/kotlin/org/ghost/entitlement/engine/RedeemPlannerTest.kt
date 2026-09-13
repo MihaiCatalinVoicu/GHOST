@@ -102,6 +102,23 @@ class RedeemPlannerTest {
     }
 
     @Test
+    fun anyNeedIsSkippedWhileAUsableWriteCapabilityReachesTheEndOfTheTargetWeek() {
+        random.prfValue = 0.0
+        val aligned = Grid.start(WEEK0 + 1) + 3600
+        // Earlier than the renewal window, a week-aligned write capability cannot be extended by a
+        // current-week token (the relay dates it to the token's week): nothing is redeemed.
+        for (kind in CapabilityKind.entries) {
+            assertSame(RedeemPlanner.Decision.Skip, plan(need(kind, CapabilityNeed.Reason.EXPIRING), writeExpiry = aligned))
+        }
+        // Inside the window the target is the next week, which the capability does not reach.
+        val renewal = plan(need(CapabilityKind.WRITE, CapabilityNeed.Reason.EXPIRING), now = Grid.start(WEEK0 + 1) - 20 * 3600, writeExpiry = aligned)
+        assertEquals(WEEK0 + 1, (renewal as RedeemPlanner.Decision.Redeem).week)
+        // A capability that ends before the week does is renewed with a current-week token at once.
+        val early = plan(need(CapabilityKind.WRITE, CapabilityNeed.Reason.EXPIRING), writeExpiry = T0 + 3600) as RedeemPlanner.Decision.Redeem
+        assertEquals(WEEK0, early.week)
+    }
+
+    @Test
     fun aRelayIsBoundByItsExactOnionFirstThenByItsSingleServiceKeySlot() {
         val base = TestOnions.of(5)
         val other = OnionAddress.parse(base.host + ":8443")

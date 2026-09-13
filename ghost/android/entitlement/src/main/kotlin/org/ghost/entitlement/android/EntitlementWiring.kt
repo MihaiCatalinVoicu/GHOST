@@ -22,7 +22,8 @@ import org.ghost.sync.store.SyncStores
  * The app's entitlement engine (design §11.1, D16): the native token crypto, the platform clocks, a
  * per-process PRF key, the identity and drop sealing over [IdentityManager], and the sync controller's
  * user calls and payment-screen hold. The app installs [participant] as the sync runtime's one
- * `SessionParticipant` at wiring, gives [entitlement] to Phase 13 and forwards visibility to [onVisible].
+ * `SessionParticipant` at wiring, gives [entitlement] to Phase 13 and forwards visibility to [onVisible]
+ * and [onHidden].
  */
 class EntitlementWiring(
     controller: SyncController,
@@ -47,6 +48,14 @@ class EntitlementWiring(
      */
     fun onVisible() {
         Thread({ engine.onForeground() }, "ghost-entitlement-visible").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * The app went to the background: an open payment screen's moment is kept as of now (§19.11).
+     * Called on the main thread; the database write runs on a thread of its own.
+     */
+    fun onHidden() {
+        Thread({ engine.onBackground() }, "ghost-entitlement-hidden").apply { isDaemon = true }.start()
     }
 
     override fun toString(): String = "EntitlementWiring"

@@ -140,7 +140,7 @@ class GridPolicyTest {
     }
 
     @Test
-    fun theRelayClockNeedsTwoRelaysAndAdoptsAWrongPeriod() {
+    fun theRelayClockNeedsTwoRelaysAndAdoptsAWrongPeriodWithinADay() {
         val clock = ClockEstimate()
         val a = RelayId(1)
         val b = RelayId(2)
@@ -151,10 +151,27 @@ class GridPolicyTest {
         assertEquals(T0 + 15 * 60, clock.now(T0))
         clock.record(c, T0 / 60 - 100, WEEK0, T0, wrongPeriod = false)
         assertEquals(T0 + 10 * 60, clock.now(T0))
-        clock.record(a, T0 / 60 + 10, WEEK0 + 1, T0, wrongPeriod = true)
-        assertEquals(WEEK0 + 1, clock.week(a, T0))
-        assertEquals(WEEK0, clock.week(b, T0))
-        clock.record(a, T0 / 60 + 10, WEEK0, T0, wrongPeriod = false)
-        assertEquals(WEEK0, clock.week(a, T0))
+        // Twelve hours before the next week a relay answers WRONG_PERIOD in it: adopted for that relay.
+        val late = Grid.start(WEEK0 + 1) - 12 * Grid.HOUR
+        clock.record(a, late / 60 + 10, WEEK0 + 1, late, wrongPeriod = true)
+        assertEquals(WEEK0 + 1, clock.week(a, late))
+        assertEquals(WEEK0, clock.week(b, late))
+        assertEquals("three and a half days before it starts, no honest relay is in it", WEEK0, clock.week(a, T0))
+        clock.record(a, late / 60 + 10, WEEK0, late, wrongPeriod = false)
+        assertEquals(WEEK0, clock.week(a, late))
+    }
+
+    @Test
+    fun theRelayClockStaysWithinADayOfTheDeviceClock() {
+        val clock = ClockEstimate()
+        val fourWeeksMinutes = 4 * Grid.WEEK / 60
+        clock.record(RelayId(1), T0 / 60 + fourWeeksMinutes, WEEK0 + 4, T0, wrongPeriod = false)
+        clock.record(RelayId(2), T0 / 60 + fourWeeksMinutes, WEEK0 + 4, T0, wrongPeriod = false)
+        assertEquals("relays four weeks ahead move the estimate by a day at most", T0 + Grid.DAY, clock.now(T0))
+        clock.record(RelayId(1), Long.MIN_VALUE, WEEK0, T0, wrongPeriod = false)
+        clock.record(RelayId(2), -1, WEEK0, T0, wrongPeriod = false)
+        assertEquals(T0 - Grid.DAY, clock.now(T0))
+        clock.record(RelayId(3), Long.MAX_VALUE, WEEK0 + 4, T0, wrongPeriod = true)
+        assertEquals("a period four weeks ahead is not adopted", WEEK0, clock.week(RelayId(3), T0))
     }
 }

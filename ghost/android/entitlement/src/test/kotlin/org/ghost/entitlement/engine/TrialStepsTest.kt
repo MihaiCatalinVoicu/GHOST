@@ -142,6 +142,24 @@ class TrialStepsTest {
     }
 
     @Test
+    fun aStallingIssuerGetsAtMostTwoIdenticalRevocations(): Unit = World().use { w ->
+        w.identity.exists = true
+        w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)
+        assertTrue(w.engine.createInvite((Grid.day(T0) + 14).toInt()) != null)
+        assertTrue(w.engine.revokeInvite(0))
+        w.issuer.fail = "timeout"
+        repeat(100) {
+            w.quiet()
+            w.clock.now += 2 * Grid.HOUR
+        }
+        val calls = w.issuer.named("redeemInvite")
+        assertEquals("one planned attempt and one identical retry at a pre-drawn time", 2, calls.size)
+        assertEquals(1, calls.map { it.args }.toSet().size)
+        assertEquals(PurchaseStore.FAILED, w.purchases().single().state)
+        assertEquals("a revocation never touches the identity", ActivationState.ACTIVE, w.engine.activationState())
+    }
+
+    @Test
     fun aRevocationIsQuietRunWorkAndKeepsTheTokensAsSpares(): Unit = World().use { w ->
         w.identity.exists = true
         w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)

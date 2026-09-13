@@ -103,6 +103,29 @@ class ScheduleAcceptanceTest {
         it.priceOverrides[Grid.priceEpoch(WEEK0)] = TestCrypto.PRICE + 10
     }
 
+    // Rule 5 is checked over what is remembered, not over what the new schedule lists (as the Rust
+    // `Schedule::check_memory` of the issuer and relays): a remembered fact left out is a change.
+
+    @Test
+    fun aDroppedKeyConflicts() = conflicts {
+        it.seq = 2
+        it.firstWeek += 1
+    }
+
+    @Test
+    fun aDroppedPriceConflicts() = conflicts {
+        it.seq = 2
+        it.droppedPrices += Grid.priceEpoch(it.lastWeek + 4)
+    }
+
+    @Test
+    fun aShrunkHorizonThatChangesTheSlotSetOfARememberedWeekConflicts() = conflicts {
+        it.seq = 2
+        it.keyLastWeek = it.lastWeek
+        it.lastWeek = WEEK0 + 10
+        it.slots = it.slots.mapIndexed { i, s -> if (i == 2) s.copy(validUntilWeek = WEEK0 + 11) else s }
+    }
+
     @Test
     fun aRollbackOrAnotherScheduleUnderTheSameSeqConflicts() {
         conflicts { it.lastWeek += 1 }

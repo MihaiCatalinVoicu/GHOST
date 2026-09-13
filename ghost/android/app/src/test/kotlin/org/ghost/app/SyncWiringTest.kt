@@ -90,6 +90,7 @@ class SyncWiringTest {
             moment
         },
         visible = { events.log += "entitlement-visible" },
+        hidden = { events.log += "entitlement-hidden" },
     )
 
     @Test
@@ -128,7 +129,11 @@ class SyncWiringTest {
         w.onVisible()
         w.onHidden()
         w.onVisible()
-        assertEquals(listOf("foreground", "entitlement-visible", "background", "foreground", "entitlement-visible"), events.log)
+        // Hiding the app also tells the engine, which keeps the moment an open payment screen was last visible (§19.11).
+        assertEquals(
+            listOf("foreground", "entitlement-visible", "background", "entitlement-hidden", "foreground", "entitlement-visible"),
+            events.log,
+        )
     }
 
     @Test

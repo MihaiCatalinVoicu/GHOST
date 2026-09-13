@@ -29,7 +29,10 @@ interface Entitlement {
     /** Optional "check now": `InvoiceStatus` as a user call (STANDARD mode only); never signs. */
     fun checkNow(id: PurchaseId)
 
-    /** Only while no payment instructions were ever shown. */
+    /**
+     * An XMR pack only while no payment instructions were ever shown; a credits pack only before its
+     * `RequestInvoice` first left the device (that request spends the credits at the issuer).
+     */
     fun cancel(id: PurchaseId): Boolean
 
     /** Onboarding (§8.3): verifies the invite, records the trial, creates the identity and starts `RedeemInvite`. */
@@ -48,7 +51,10 @@ interface Entitlement {
 
     fun setAutoRenewWithCredits(enabled: Boolean)
 
-    /** The payment screen of [id] is shown (§19.11): relay sessions are closed and held off. */
+    /**
+     * The payment screen of [id] is shown (§19.11): relay sessions are closed and held off. Hiding the
+     * app hides it too (the hold starts then); call this again when the screen is visible again.
+     */
     fun paymentScreenShown(id: PurchaseId)
 
     /** The payment screen of [id] was hidden: relay sessions stay held for U[20 min, 60 min]. */

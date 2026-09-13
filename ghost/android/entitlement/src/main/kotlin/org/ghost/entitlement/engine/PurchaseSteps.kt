@@ -110,11 +110,11 @@ internal class PurchaseSteps(private val c: EngineContext) {
                 set.forEach { c.tokens.reserveCredit(tx, it.nullifier(), TokenStore.FOR_PURCHASE, id) }
             }
         }
-        if (p.attempt >= RetryPolicy.REQUEST_ATTEMPTS) {
+        if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) {
             failPrepared(tx, p, now)
             return null
         }
-        c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, p.nextDueMinute)
+        c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, RetryPolicy.nextDueAfterSend(p.attempt, p.nextDueMinute, now, c.random::uniform))
         val credits = if (xmr) emptyList() else c.tokens.reservedCredits(tx, TokenStore.FOR_PURCHASE, id).map { it.token() }
         return RequestCall(sha256(CLAIM_LABEL, p.claimKey()), credits, base, xmr)
     }
@@ -131,10 +131,12 @@ internal class PurchaseSteps(private val c: EngineContext) {
                     return
                 }
                 val receipt = Time.floorMinute(now)
+                // An invoice that came on the RequestInvoice retry spent the first BlindSign window (E5).
+                val first = (p.attempt - 1).coerceIn(0, RetryPolicy.BLIND_SIGN_ATTEMPTS - 1)
                 c.purchases.invoiced(
                     tx, id, answer.invoiceId(), answer.subaddress, answer.amountAtomic, receipt,
                     if (call.xmr) TorIssuerTransport.STATE_AWAITING_PAYMENT else 0,
-                    RetryPolicy.blindSignDueMinute(p.seed(), receipt, 0),
+                    first, RetryPolicy.blindSignDueMinute(p.seed(), receipt, first),
                 )
                 c.memory.clearMalformed(id)
             }
@@ -158,7 +160,7 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val p = c.purchases.get(tx, id) ?: return
         if (p.state != PurchaseStore.PREPARED) return
         when (failure) {
-            Failure.TRANSIENT -> if (p.attempt >= RetryPolicy.REQUEST_ATTEMPTS) failPrepared(tx, p, now)
+            Failure.TRANSIENT -> if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) failPrepared(tx, p, now)
             Failure.UNAUTHORIZED, Failure.REJECTED -> failPrepared(tx, p, now)
             Failure.MALFORMED -> malformed(tx, p, now)
         }
@@ -306,11 +308,11 @@ internal class PurchaseSteps(private val c: EngineContext) {
     private fun prepareRefresh(tx: SyncTransaction, id: ByteArray, now: Long): RefreshCall? {
         val p = c.purchases.get(tx, id) ?: return null
         if (p.kind != PurchaseStore.REFRESH || p.state != PurchaseStore.PREPARED) return null
-        if (p.attempt >= RetryPolicy.FLOW_ATTEMPTS) {
+        if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) {
             failPrepared(tx, p, now)
             return null
         }
-        c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, p.nextDueMinute)
+        c.purchases.countAttempt(tx, id, PurchaseStore.PREPARED, p.attempt, RetryPolicy.nextDueAfterSend(p.attempt, p.nextDueMinute, now, c.random::uniform))
         return RefreshCall(p.inputToken(), p.seed(), p.layoutDigest())
     }
 
@@ -347,7 +349,7 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val p = c.purchases.get(tx, id) ?: return
         if (p.state != PurchaseStore.PREPARED) return
         when (failure) {
-            Failure.TRANSIENT -> if (p.attempt >= RetryPolicy.FLOW_ATTEMPTS) failPrepared(tx, p, now)
+            Failure.TRANSIENT -> if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) failPrepared(tx, p, now)
             Failure.UNAUTHORIZED, Failure.REJECTED -> failPrepared(tx, p, now)
             Failure.MALFORMED -> malformed(tx, p, now)
         }
@@ -363,7 +365,12 @@ internal class PurchaseSteps(private val c: EngineContext) {
         }
     }
 
-    /** A prepared flow closes as failed; credits reserved for it return to fresh (the one release path, §11.3). */
+    /**
+     * A prepared flow closes as failed; credits reserved for it return to fresh (the one release path,
+     * §11.3). A credits flow whose sends were all ambiguous also ends here once its retry is spent: a
+     * release loses those credits only if the issuer did record the invoice (they come back
+     * `CREDITS_SPENT` when next presented), a deletion would lose them in every case.
+     */
     fun failPrepared(tx: SyncTransaction, p: PurchaseRow, now: Long) {
         c.purchases.terminal(tx, p.id(), PurchaseStore.PREPARED, PurchaseStore.FAILED, Grid.day(now))
         if (p.payWith == PurchaseStore.CREDITS) c.tokens.releaseCredits(tx, TokenStore.FOR_PURCHASE, p.id())
@@ -418,19 +425,25 @@ internal class PurchaseSteps(private val c: EngineContext) {
             when {
                 p.kind == PurchaseStore.PACK && p.state == PurchaseStore.INVOICED && p.attempt >= RetryPolicy.BLIND_SIGN_ATTEMPTS ->
                     endInvoiced(tx, p, lostOrExpired(p), now)
-                p.kind == PurchaseStore.PACK && p.state == PurchaseStore.PREPARED && p.attempt >= RetryPolicy.REQUEST_ATTEMPTS ->
+                p.kind == PurchaseStore.PACK && p.state == PurchaseStore.PREPARED && p.attempt >= RetryPolicy.CALL_ATTEMPTS ->
                     failPrepared(tx, p, now)
-                p.kind == PurchaseStore.REFRESH && p.state == PurchaseStore.PREPARED && p.attempt >= RetryPolicy.FLOW_ATTEMPTS ->
+                p.kind == PurchaseStore.REFRESH && p.state == PurchaseStore.PREPARED && p.attempt >= RetryPolicy.CALL_ATTEMPTS ->
                     failPrepared(tx, p, now)
             }
         }
     }
 
-    /** `cancel`: only a pack whose payment instructions were never shown (§11.2, §11.4). */
+    /**
+     * `cancel` (§11.2, §11.4): an XMR pack whose payment instructions were never shown; a credits pack
+     * only before its first send. A credits pack's `RequestInvoice` is its payment: once it left the
+     * device the issuer may hold a confirmed invoice for those credits, which only the identical retry
+     * recovers, and an invoiced credits pack is paid (it never gets payment instructions).
+     */
     fun cancel(id: ByteArray, now: Long): Boolean = c.tx { tx ->
         val p = c.purchases.get(tx, id)
         when {
             p == null || p.kind != PurchaseStore.PACK || !p.live || p.shown || c.memory.inFlight(id) -> false
+            p.payWith == PurchaseStore.CREDITS && p.sent -> false
             p.state == PurchaseStore.PREPARED -> {
                 failPrepared(tx, p, now)
                 true

@@ -9,10 +9,13 @@ import java.nio.ByteBuffer
 
 /**
  * ES rule 5 on the device (design §3.1, §19.2, §19.20 point 2, §19.21 point 4). The schedule built
- * into the native library is accepted when, against the remembered facts:
+ * into the native library is accepted when, against the remembered facts (checked over the memory,
+ * as the issuer's and the relays' `Schedule::check_memory`, so a fact left out is a change too):
  *  - its seq does not go backwards, and a remembered seq comes with the remembered digest;
- *  - every remembered (kind, epoch) keeps its key id, and no key id reappears under another (kind, epoch);
- *  - every covered week keeps its slot-number set and every covered price epoch its price;
+ *  - every remembered (kind, epoch) is listed with its key id, and no key id reappears under another
+ *    (kind, epoch);
+ *  - every remembered week keeps its slot-number set, inside the new horizon or not, and every
+ *    remembered price epoch is listed with its price;
  *  - every remembered revocation is still listed.
  * Then its new keys and facts are inserted (plain INSERT after a read) and `ent_state` records its seq
  * and digest (created with a fresh payout salt at the first acceptance). Otherwise nothing is written
@@ -65,23 +68,21 @@ internal class ScheduleAcceptance(private val keys: KeyStore, private val state:
         s: ScheduleSummary,
     ): Boolean {
         if (seq != null && (s.seq < seq || (s.seq == seq && !s.digest().contentEquals(digest)))) return true
+        val listed = s.keys.associateBy { it.kind to it.epoch }
+        for ((at, id) in rememberedKeys) {
+            if (listed[at]?.keyId()?.contentEquals(id) != true) return true
+        }
         for (k in s.keys) {
             val id = k.keyId()
-            val remembered = rememberedKeys[k.kind to k.epoch]
-            if (remembered != null && !remembered.contentEquals(id)) return true
             if (rememberedKeys.any { (at, other) -> at != (k.kind to k.epoch) && other.contentEquals(id) }) return true
         }
-        for (w in s.firstWeek..s.lastWeek) {
-            val f = facts[KeyStore.FACT_SLOTS to w]
-            if (f != null && !f.contentEquals(slotDigest(s.slotsInWeek(w)))) return true
-        }
-        for (p in s.prices) {
-            val f = facts[KeyStore.FACT_PRICE to p.priceEpoch]
-            if (f != null && !f.contentEquals(priceDigest(p.packPriceAtomic))) return true
-        }
-        for ((at, _) in facts) {
-            val kind = REVOKED_KINDS[at.first] ?: continue
-            if (s.revoked.none { it.kind == kind && it.epoch == at.second }) return true
+        for ((at, remembered) in facts) {
+            val changed = when (at.first) {
+                KeyStore.FACT_SLOTS -> !remembered.contentEquals(slotDigest(s.slotsInWeek(at.second)))
+                KeyStore.FACT_PRICE -> Pricing.price(s, at.second)?.let { !remembered.contentEquals(priceDigest(it)) } ?: true
+                else -> REVOKED_KINDS[at.first]?.let { kind -> s.revoked.none { it.kind == kind && it.epoch == at.second } } ?: false
+            }
+            if (changed) return true
         }
         // A revocation must name a key the device knows (an ES revokes only keys it lists): fail closed.
         return s.revoked.any { keyIdOf(s, rememberedKeys, it.kind, it.epoch) == null }

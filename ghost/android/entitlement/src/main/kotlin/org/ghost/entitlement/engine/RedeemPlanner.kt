@@ -15,15 +15,20 @@ import java.nio.ByteBuffer
  * | need | token week | when |
  * |---|---|---|
  * | EXPIRING (write or read), within the last 23 h of week p | p + 1 | `PRF(pair, p)` in `[start(p+1) − 23 h, start(p+1) − 1 h]` |
- * | EXPIRING of a capability that is not week-aligned | p | at once |
+ * | EXPIRING earlier in week p (a capability that ends before `start(p+1)`) | p | at once |
  * | WRITE MISSING, EXHAUSTED, REJECTED | p | at once (as soon as an eligible token exists) |
  * | READ MISSING | p | `PRF(pair, p)` in `[first seen, first seen + 6 h]` |
  * | any, within ±1 h of a week boundary or without a trusted clock | — | deferred |
  * | any, on a relay listed in no ES slot for the week | — | never (`NO_SLOT`) |
+ * | any, whose pair holds a usable write capability reaching `start(target + 1)` | — | skipped |
  *
- * The PRF is keyed per process and never persisted (`relay_id ‖ namespace ‖ kind ‖ week`). A READ
- * need is met by a write capability (interim, §10.7), so one whose pair already holds a usable write
- * capability reaching past the target week is skipped.
+ * The PRF is keyed per process and never persisted (`relay_id ‖ namespace ‖ kind ‖ week`). Every
+ * redemption yields a write capability expiring at the end of its token's week plus 1 h (§10.3), and
+ * a write capability serves reads too (interim, §10.7), so a need whose pair already holds a usable
+ * write capability reaching the end of the target week is skipped: a token of that week could not
+ * extend it. This also covers the second row: the device clock (which raises EXPIRING 24 h ahead) may
+ * run ahead of the relay-facing clock, and a week-aligned capability whose need arrives before the
+ * renewal window then waits for it instead of spending current-week tokens that renew nothing.
  */
 internal class RedeemPlanner(private val random: EntitlementRandom) {
 
@@ -72,7 +77,7 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
                 due = nowEst
             }
         }
-        if (need.kind == CapabilityKind.READ && writeExpiryHour != null && writeExpiryHour >= Grid.start(target + 1)) return Decision.Skip
+        if (writeExpiryHour != null && writeExpiryHour >= Grid.start(target + 1)) return Decision.Skip
         val slots = slotsFor(summary, relay.address, target)
         if (slots.isEmpty()) return Decision.NoSlot
         return Decision.Redeem(need, relay, target, slots, due)

@@ -105,6 +105,28 @@ class FacadeTest {
     }
 
     @Test
+    fun hidingTheAppWithThePaymentScreenOpenKeepsTheMomentItWasLastVisible(): Unit = World().use { w ->
+        val id = checkNotNull(w.engine.startPurchase(PayWith.XMR))
+        w.engine.paymentScreenShown(id)
+        // Thirty minutes later the user switches to a wallet app: the screen was visible until then,
+        // so a process killed in the background restores the hold from that moment (§19.11, E15).
+        w.clock.now = T0 + 30 * 60
+        w.engine.onBackground()
+        assertEquals(Time.ceilMinute(T0 + 30 * 60), EntitlementWiring.paymentShownEpochSeconds(w.sql))
+        // Hiding the app hid the screen too: a later background changes nothing.
+        w.clock.now = T0 + 50 * 60
+        w.engine.onBackground()
+        assertEquals(Time.ceilMinute(T0 + 30 * 60), EntitlementWiring.paymentShownEpochSeconds(w.sql))
+        // Nor does one after the screen was hidden in the app.
+        w.engine.paymentScreenShown(id)
+        w.clock.now = T0 + 60 * 60
+        w.engine.paymentScreenHidden(id)
+        w.clock.now = T0 + 70 * 60
+        w.engine.onBackground()
+        assertEquals(Time.ceilMinute(T0 + 60 * 60), EntitlementWiring.paymentShownEpochSeconds(w.sql))
+    }
+
+    @Test
     fun nothingPrintedCarriesASecret(): Unit = World().use { w ->
         w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
         val pack = checkNotNull(w.engine.startPurchase(PayWith.XMR))

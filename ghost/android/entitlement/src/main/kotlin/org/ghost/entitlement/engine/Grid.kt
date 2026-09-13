@@ -25,6 +25,9 @@ internal object Grid {
 
     fun creditEpoch(week: Long): Long = Math.floorDiv(week, WEEKS_PER_CREDIT_EPOCH)
 
+    /** The first week of credit (and price) epoch [epoch]. */
+    fun creditEpochFirstWeek(epoch: Long): Long = epoch * WEEKS_PER_CREDIT_EPOCH
+
     fun priceEpoch(week: Long): Long = creditEpoch(week)
 
     /** UTC day (days since 1970-01-01). */

@@ -9,6 +9,12 @@ import org.ghost.sync.api.RelayId
  * `relay_period_id` is adopted for that relay at once. In memory only, and never an input to an
  * issuer-facing decision (base week, issuer due times), which use the device wall clock under
  * `clockTrusted()` only.
+ *
+ * Both are bounded by the early window of a week (24 h): each offset is clipped to ±24 h and a
+ * period is adopted only when it is the week of a moment within 24 h of the wall clock. Relays that
+ * lie about the time then move the redeem lane's week by at most one, so a token of a week after
+ * `week(wall) + 1` is never spent: they cannot empty future weeks and so move the coverage end, which
+ * drives the auto-renewal's `RequestInvoice` (a relay → issuer channel, §19.4).
  */
 internal class ClockEstimate {
     private val offsetMinutes = HashMap<RelayId, Long>()
@@ -16,7 +22,12 @@ internal class ClockEstimate {
 
     @Synchronized
     fun record(relay: RelayId, relayMinute: Long, relayPeriod: Long, localSeconds: Long, wrongPeriod: Boolean) {
-        offsetMinutes[relay] = relayMinute - Math.floorDiv(localSeconds, Grid.MINUTE)
+        val local = Math.floorDiv(localSeconds, Grid.MINUTE)
+        offsetMinutes[relay] = when {
+            relayMinute >= local + MAX_SKEW_MINUTES -> MAX_SKEW_MINUTES
+            relayMinute <= local - MAX_SKEW_MINUTES -> -MAX_SKEW_MINUTES
+            else -> relayMinute - local
+        }
         if (wrongPeriod) adoptedPeriods[relay] = relayPeriod else adoptedPeriods.remove(relay)
     }
 
@@ -29,13 +40,20 @@ internal class ClockEstimate {
         return wall + median * Grid.MINUTE
     }
 
-    /** The week of [relay]'s decisions: its adopted period, else the week of the estimate. */
+    /** The week of [relay]'s decisions: its adopted period if within a day of [wall], else the week of the estimate. */
     @Synchronized
-    fun week(relay: RelayId, wall: Long): Long = adoptedPeriods[relay] ?: Grid.week(now(wall))
+    fun week(relay: RelayId, wall: Long): Long {
+        val adopted = adoptedPeriods[relay]
+        return if (adopted != null && adopted in Grid.week(wall - MAX_SKEW)..Grid.week(wall + MAX_SKEW)) adopted else Grid.week(now(wall))
+    }
 
     override fun toString(): String = "ClockEstimate"
 
     private companion object {
         const val MIN_RELAYS = 2
+
+        /** The early window (design §3.4): an honest relay accepts a week's tokens from 24 h before it starts. */
+        const val MAX_SKEW: Long = 24 * Grid.HOUR
+        const val MAX_SKEW_MINUTES: Long = MAX_SKEW / Grid.MINUTE
     }
 }

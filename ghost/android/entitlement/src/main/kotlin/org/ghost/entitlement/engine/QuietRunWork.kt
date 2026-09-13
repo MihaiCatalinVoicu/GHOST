@@ -12,6 +12,9 @@ import org.ghost.sync.api.SyncTransaction
  * enabled, coverage ends within 2 weeks and own fresh credits cover the price), a due claim, a due
  * `RefreshCredit` and an invite revocation. Which runs are quiet is not decided here: the sync
  * runtime's `QuietRunScheduler` draws it from client randomness alone, with no entitlement input.
+ * The renewal trigger reads the last week held against the device clock; relays cannot move it, since
+ * the redeem lane never spends a token of a week after `week(wall) + 1` (the bounded relay-facing
+ * clock, [ClockEstimate]) and renewal is due anyway once coverage ends by then.
  */
 internal class QuietRunWork(private val c: EngineContext) {
 

@@ -15,7 +15,9 @@ import org.ghost.sync.api.SyncController
  *    timer is not reset;
  *  - right after the key is first created, the job is ensured and the database announced;
  *  - visibility starts and stops the foreground session and lets a pending onboarding trial retry
- *    ([visible]); it never schedules anything: no request and no wake-up is caused by user activity.
+ *    ([visible]); hiding the app, which hides an open payment screen, lets the engine keep that
+ *    moment for the next process ([hidden]); it never schedules anything: no request and no wake-up
+ *    is caused by user activity.
  */
 internal class SyncWiring(
     private val keyExists: () -> Boolean,
@@ -25,6 +27,7 @@ internal class SyncWiring(
     private val participant: SessionParticipant,
     private val paymentShownAt: () -> Long?,
     private val visible: () -> Unit,
+    private val hidden: () -> Unit,
 ) {
     fun onProcessStart() {
         controller.setParticipant(participant)
@@ -43,7 +46,10 @@ internal class SyncWiring(
         visible()
     }
 
-    fun onHidden() = controller.onAppBackground()
+    fun onHidden() {
+        controller.onAppBackground()
+        hidden()
+    }
 
     override fun toString(): String = "SyncWiring"
 }

@@ -29,11 +29,17 @@ import org.junit.Test
 class PurchaseStepsTest {
     private val label = "ghost/v1/issuer-claim".toByteArray(Charsets.US_ASCII)
 
-    /** Moves the clock to the pack's next due time and runs a quiet run. */
+    /** Moves the clock to the pack's next due time (if it has one) and runs a quiet run. */
     private fun World.nextAttempt(id: ByteArray) {
         val p = checkNotNull(purchase(id))
-        clock.now = maxOf(clock.now, checkNotNull(p.nextDueMinute))
+        clock.now = maxOf(clock.now, p.nextDueMinute ?: clock.now)
         quiet()
+    }
+
+    /** Quiet runs every 2 h for [runs] runs, whatever is due. */
+    private fun World.quietRuns(runs: Int) = repeat(runs) {
+        quiet()
+        clock.now += 2 * Grid.HOUR
     }
 
     @Test
@@ -121,7 +127,12 @@ class PurchaseStepsTest {
         assertEquals(PurchaseStore.PREPARED, afterFailure.state)
         assertTrue(afterFailure.sent)
         assertEquals(1, afterFailure.attempt)
+        // The retry's time was drawn when the first attempt left, 20–28 h later; no answer moves it.
+        val retry = checkNotNull(afterFailure.nextDueMinute)
+        assertTrue(retry >= T0 + 20 * Grid.HOUR && retry <= T0 + 28 * Grid.HOUR + 60)
         w.quiet()
+        assertEquals("not due yet", 1, w.issuer.calls.size)
+        w.nextAttempt(id)
         val requests = w.issuer.named("requestInvoice")
         assertEquals(2, requests.size)
         assertEquals(requests[0].args, requests[1].args)
@@ -264,7 +275,7 @@ class PurchaseStepsTest {
         w.quiet()
         assertEquals(PurchaseStore.PREPARED, checkNotNull(w.purchase(id)).state)
         assertFalse(EntitlementFlag.ISSUER_MISMATCH in w.engine.status().flags)
-        w.quiet()
+        w.nextAttempt(id)
         assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(id)).state)
         assertTrue(EntitlementFlag.ISSUER_MISMATCH in w.engine.status().flags)
         val requests = w.issuer.named("requestInvoice")
@@ -329,16 +340,71 @@ class PurchaseStepsTest {
     }
 
     @Test
-    fun cancelEndsAnUnshownPackAndReleasesItsCredits(): Unit = World().use { w ->
-        w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
-        val id = checkNotNull(w.engine.startPurchase(PayWith.CREDITS))
+    fun aCreditsPackCanBeCancelledOnlyBeforeItsFirstSend(): Unit {
+        World().use { w ->
+            w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+            val id = checkNotNull(w.engine.startPurchase(PayWith.CREDITS))
+            assertTrue("nothing left the device", w.engine.cancel(id))
+            assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(id.toByteArray())).state)
+            assertEquals(10, w.tokenRows("credit").count { it.state == TokenStore.FRESH })
+            assertFalse(w.engine.cancel(id))
+        }
+        World().use { w ->
+            w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+            val id = checkNotNull(w.engine.startPurchase(PayWith.CREDITS))
+            w.issuer.failOnce = "timeout"
+            w.quiet()
+            assertFalse("sent: the issuer may already hold an invoice for these credits", w.engine.cancel(id))
+            assertEquals(PurchaseStore.PREPARED, checkNotNull(w.purchase(id.toByteArray())).state)
+            assertTrue(w.tokenRows("credit").all { it.state == TokenStore.RESERVED })
+            w.nextAttempt(id.toByteArray())
+            val invoiced = checkNotNull(w.purchase(id.toByteArray()))
+            assertEquals(PurchaseStore.INVOICED, invoiced.state)
+            assertFalse("never shown, but paid: an invoiced credits pack is never cancelled", invoiced.shown)
+            assertFalse(w.engine.cancel(id))
+            w.nextAttempt(id.toByteArray())
+            assertEquals(PurchaseStore.FINALIZED, checkNotNull(w.purchase(id.toByteArray())).state)
+            assertEquals(60, w.tokenRows("access").size)
+        }
+    }
+
+    @Test
+    fun aStallingIssuerGetsAtMostTwoIdenticalRequestInvoicesAtPreDrawnTimes(): Unit = World().use { w ->
+        w.issuer.fail = "timeout"
+        val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
+        w.quietRuns(100)
+        val requests = w.issuer.named("requestInvoice")
+        assertEquals("one planned attempt and one identical retry (J9)", 2, requests.size)
+        assertEquals(1, requests.map { it.args }.toSet().size)
+        val gap = requests[1].at - requests[0].at
+        assertTrue("the retry waits for its pre-drawn time", gap >= 20 * Grid.HOUR && gap < 30 * Grid.HOUR + 60)
+        assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(id)).state)
+    }
+
+    @Test
+    fun noPurchaseGetsMoreThanSixIssuerCallsWhateverTheIssuerAnswers(): Unit = World().use { w ->
         w.issuer.failOnce = "timeout"
-        w.quiet()
-        assertTrue(w.tokenRows("credit").all { it.state == TokenStore.RESERVED })
-        assertTrue(w.engine.cancel(id))
-        assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(id.toByteArray())).state)
-        assertTrue(w.tokenRows("credit").all { it.state == TokenStore.FRESH })
-        assertFalse(w.engine.cancel(id))
+        w.issuer.signState = TorIssuerTransport.STATE_AWAITING_CONFIRMATIONS
+        val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
+        w.quietRuns(400)
+        val requests = w.issuer.named("requestInvoice")
+        assertEquals(2, requests.size)
+        val signs = w.issuer.named("blindSign")
+        assertEquals("the retry took the first BlindSign slot: at most 6 linked calls (E5, J9)", 4, signs.size)
+        assertEquals(1, signs.map { it.args }.toSet().size)
+        assertTrue("the plan goes on at its second window", signs[0].at - requests[1].at >= 44 * Grid.HOUR)
+        assertEquals(PurchaseStore.LOST, checkNotNull(w.purchase(id)).state)
+    }
+
+    @Test
+    fun aCreditsPackWhoseIssuerStallsGetsItsCreditsBackAfterTheRetry(): Unit = World().use { w ->
+        w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+        val id = checkNotNull(w.engine.startPurchase(PayWith.CREDITS)).toByteArray()
+        w.issuer.fail = "timeout"
+        w.quietRuns(100)
+        assertEquals(2, w.issuer.named("requestInvoice").size)
+        assertEquals(PurchaseStore.FAILED, checkNotNull(w.purchase(id)).state)
+        assertEquals(10, w.tokenRows("credit").count { it.state == TokenStore.FRESH })
     }
 
     @Test
