@@ -1064,15 +1064,25 @@ fn regtest_scenario() {
     );
     assert_eq!(submitted["tx_hash_list"], signed["tx_hash_list"]);
     let payout_tx = signed["tx_hash_list"][0].as_str().unwrap().to_string();
-    t.mine(1);
-    rpc(&t.payer.rpc, "refresh", json!({}));
-    let received = rpc(
-        &t.payer.rpc,
-        "get_transfer_by_txid",
-        json!({"txid": payout_tx}),
-    )["transfer"]
-        .clone();
-    assert_eq!(received["type"], "in");
+    // monerod enters a wallet's transaction as `local` and puts it in a block only once its
+    // Dandelion++ relay, run asynchronously after `submit_transfer` answered, has fluffed it
+    // (`fill_block_template` skips `local` and `stem` transactions): mine until the payee has it.
+    let mut received = Value::Null;
+    for _ in 0..20 {
+        t.mine(1);
+        rpc(&t.payer.rpc, "refresh", json!({}));
+        received = rpc(
+            &t.payer.rpc,
+            "get_transfer_by_txid",
+            json!({"txid": payout_tx}),
+        )["transfer"]
+            .clone();
+        if received["type"] == "in" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert_eq!(received["type"], "in", "the payout is mined");
     assert_eq!(received["amount"], json!(PAYOUT));
     rpc(ws, "close_wallet", json!({}));
     rpc(
