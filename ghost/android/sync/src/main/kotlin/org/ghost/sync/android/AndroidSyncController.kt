@@ -2,7 +2,9 @@ package org.ghost.sync.android
 
 import android.content.Context
 import android.os.SystemClock
+import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
+import org.ghost.sync.api.SessionParticipant
 import org.ghost.sync.api.SyncController
 import org.ghost.sync.api.SyncStatus
 import org.ghost.sync.engine.KeyedRandomSources
@@ -35,6 +37,9 @@ class AndroidSyncController internal constructor(
         runtime.privacyMode = mode
     }
 
+    /** The global privacy mode (read by the entitlement engine; opens no transaction, unlike [status]). */
+    val privacyMode: PrivacyMode get() = runtime.privacyMode
+
     override fun status(): SyncStatus = runtime.status()
 
     /** Cancels the periodic job at once, then stops every session and drops the engine (§11.2 #17). */
@@ -42,6 +47,16 @@ class AndroidSyncController internal constructor(
         wake.cancel()
         runtime.wipe()
     }
+
+    override fun setParticipant(p: SessionParticipant?) = runtime.setParticipant(p)
+
+    override fun runUserIssuerCall(block: (ParticipantSession) -> Unit) = runtime.runUserIssuerCall(block)
+
+    override fun onPaymentScreenShown() = runtime.paymentScreenShown()
+
+    override fun onPaymentScreenHidden() = runtime.paymentScreenHidden()
+
+    override fun restorePaymentHold(lastShownEpochSeconds: Long) = runtime.restorePaymentHold(lastShownEpochSeconds)
 
     /**
      * Schedules the periodic job unless the pending one already has the wanted fields. Runs on the
@@ -73,13 +88,14 @@ class AndroidSyncController internal constructor(
     companion object {
         /**
          * The process's controller: the Tor transport holder (Arti state in the no-backup
-         * directory), a fresh schedule key from SecureRandom (never persisted), the default traffic
-         * policy and the JobScheduler wake-up. Call once, from the `Application`.
+         * directory; it also leases the transport to the session participant), a fresh schedule
+         * key from SecureRandom (never persisted), the default traffic policy and the JobScheduler
+         * wake-up. Call once, from the `Application`.
          */
         fun create(context: Context, opener: DatabaseOpener): AndroidSyncController {
             val threads = SyncThreads()
             val holder = TorTransportHolder.forApp(context, AndroidSyncClock, threads)
-            val runtime = SyncRuntime(opener, holder, AndroidSyncClock, KeyedRandomSources(), TrafficPolicy.DEFAULT, threads)
+            val runtime = SyncRuntime(opener, holder, AndroidSyncClock, KeyedRandomSources(), TrafficPolicy.DEFAULT, threads, leases = holder)
             return AndroidSyncController(runtime, JobSchedulerWake(context), opener)
         }
     }

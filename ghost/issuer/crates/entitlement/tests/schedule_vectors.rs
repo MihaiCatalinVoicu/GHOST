@@ -7,6 +7,7 @@ use common::fixture::{self, FIRST_WEEK, FIXTURE, WEEKS};
 use ghost_blind_rsa::{i2osp, BigUint, PublicKey, PROOF_BLOCK_LEN};
 use ghost_entitlement::grid::{credit_epoch, invite_epoch, price_epoch, Kind};
 use ghost_entitlement::monero::MoneroNetwork;
+use ghost_entitlement::onion;
 use ghost_entitlement::schedule::{KeyContent, ScheduleContent, ScheduleMemory, SlotEntry};
 use ghost_entitlement::{Schedule, ScheduleError};
 use sha2::{Digest, Sha256};
@@ -67,6 +68,13 @@ fn corrupt_onion(onion: &str) -> String {
     let mut chars: Vec<char> = onion.chars().collect();
     chars[10] = if chars[10] == 'a' { 'b' } else { 'a' };
     chars.into_iter().collect()
+}
+
+/// An Ed25519 service key no fixture onion uses.
+fn fresh_service_key() -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+        .verifying_key()
+        .to_bytes()
 }
 
 /// The body offset of the kind byte of key entry 0.
@@ -299,6 +307,44 @@ fn run(case: &str) -> Result<(), ScheduleError> {
         "slot-onion-checksum" => check(edited(|c| {
             c.slots[1].onion = corrupt_onion(&c.slots[1].onion)
         })),
+        "slot-onion-under-two-slots" => check(edited(|c| {
+            // Slots 0 and 1 at one exact onion:port in every week (Q27).
+            c.slots[0].onion = c.slots[1].onion.clone();
+        })),
+        "slot-onion-two-slots-later-week" => check(edited(|c| {
+            // Slot 1 is served from week FIRST_WEEK + 12 at slot 0's address (Q27 in one week only).
+            c.slots[1].valid_until_week = FIRST_WEEK + 12;
+            let onion = c.slots[0].onion.clone();
+            c.slots.push(SlotEntry {
+                slot: 1,
+                onion,
+                valid_from_week: FIRST_WEEK + 12,
+                valid_until_week: 0,
+            });
+        })),
+        "slot-onion-other-slot-disjoint-weeks" => check(edited(|c| {
+            // The relay that served slot 2 until week FIRST_WEEK + 10 serves slot 1 from then on.
+            let slot2 = c
+                .slots
+                .iter()
+                .find(|s| s.slot == 2 && s.valid_from_week == FIRST_WEEK)
+                .unwrap();
+            assert_eq!(slot2.valid_until_week, FIRST_WEEK + 10);
+            let onion = slot2.onion.clone();
+            c.slots[1].valid_until_week = FIRST_WEEK + 10;
+            c.slots.push(SlotEntry {
+                slot: 1,
+                onion,
+                valid_from_week: FIRST_WEEK + 10,
+                valid_until_week: 0,
+            });
+        })),
+        "slot-service-key-two-slots-two-ports" => check(edited(|c| {
+            // One onion service under slots 0 and 1 at two ports (§19.22 point 3).
+            let (host, port) = c.slots[1].onion.rsplit_once(':').unwrap();
+            let other = port.parse::<u16>().unwrap() + 1;
+            c.slots[0].onion = format!("{host}:{other}");
+        })),
         "price-not-divisible-by-10" => check(edited(|c| c.prices[0].pack_price_atomic += 5)),
         "price-zero" => check(edited(|c| c.prices[0].pack_price_atomic = 0)),
         "price-duplicate" => check(edited(|c| {
@@ -316,8 +362,9 @@ fn run(case: &str) -> Result<(), ScheduleError> {
         "memory-onion-moved" => memory_case(
             FIXTURE,
             &edited(|c| {
+                // An emergency move of slot 0 to a new onion service (E18).
                 c.seq = 2;
-                c.slots[0].onion = c.slots[1].onion.clone();
+                c.slots[0].onion = format!("{}:443", onion::hostname(&fresh_service_key()));
             }),
         ),
         "memory-rollback" => memory_case(&edited(|c| c.seq = 2), FIXTURE),

@@ -23,10 +23,15 @@ internal class ExhaustiveReport(
     /** (k1, k2) event pairs those runs cover. */
     val pairsCovered: Long,
     val millis: Long,
+    /** Every n-th first-crash class had its double crashes run (1: all). */
+    val doubleStride: Int = 1,
+    /** The part of the double crashes this run covered (index/count), or null for all. */
+    val shard: Pair<Int, Int>? = null,
 ) {
     fun line(): String =
         "$scenario ${journal.name}: K=$k classes=$classes singles=$singles timeouts=$timeouts " +
-            "R=[$rMin..$rMax] R_total=$rTotal doubles=$doubles pairs=$pairsCovered time=${millis}ms"
+            "R=[$rMin..$rMax] R_total=$rTotal doubles=$doubles pairs=$pairsCovered time=${millis}ms" +
+            (if (doubleStride != 1 && doubles > 0) " stride=$doubleStride" else "") + (shard?.let { " shard=${it.first}/${it.second}" } ?: "")
 }
 
 /**
@@ -44,7 +49,23 @@ internal class ExhaustiveReport(
  */
 internal object Exhaustive {
 
-    fun run(name: String, factory: () -> Scenario, journal: JournalMode, doubles: Boolean): ExhaustiveReport {
+    /**
+     * [doubleStride] runs the double crashes of every n-th first-crash class only (a budget for the
+     * default build of the Phase 8 entitlement harness, whose exit gate runs them all). [shard]
+     * (index, count) runs one part of the enumeration, for a job matrix: the single crashes of every
+     * crash class whose number is the index modulo count (a class stays whole, so its digests are
+     * compared), the same part of the "timeout after apply" runs and of the double crashes. The
+     * defaults are the full enumeration.
+     */
+    fun run(
+        name: String,
+        factory: () -> Scenario,
+        journal: JournalMode,
+        doubles: Boolean,
+        doubleStride: Int = 1,
+        shard: Pair<Int, Int>? = null,
+    ): ExhaustiveReport {
+        require(doubleStride >= 1 && (shard == null || shard.first in 0 until shard.second)) { "enumeration budget out of range" }
         val started = System.nanoTime()
         val ff = Runner(factory(), journal).run(RunSpec(classify = true))
         check(ff.crashes == 0) { "fault-free run crashed" }
@@ -52,9 +73,12 @@ internal object Exhaustive {
         check(ff.keys.size.toLong() == k && k > 0) { "no events recorded" }
         val firstOf = HashMap<CrashKey, Long>()
         ff.keys.forEachIndexed { i, key -> firstOf.putIfAbsent(key, i + 1L) }
+        val classNumber = HashMap<CrashKey, Int>()
+        ff.keys.forEach { key -> classNumber.putIfAbsent(key, classNumber.size) }
+        fun inShard(i: Int): Boolean = shard == null || i % shard.second == shard.first
 
-        // 2. Single crashes at every event.
-        val singles = Harness.parallel((1..k).map { index ->
+        // 2. Single crashes at every event (of this shard's classes).
+        val singleRuns = Harness.parallel((1..k).filter { inShard(classNumber.getValue(ff.keys[(it - 1).toInt()])) }.map { index ->
             val key = ff.keys[(index - 1).toInt()]
             val representative = firstOf.getValue(key) == index
             Pair("$name ${journal.name} crash at k=$index") {
@@ -64,7 +88,7 @@ internal object Exhaustive {
             }
         })
         val digestOf = HashMap<CrashKey, String>()
-        for ((index, key, digest) in singles.sortedBy { it.first }) {
+        for ((index, key, digest) in singleRuns.sortedBy { it.first }) {
             val known = digestOf.putIfAbsent(key, digest)
             if (known != null && known != digest) {
                 throw AssertionError("$name ${journal.name}: crash at k=$index leaves another world than its class representative ${firstOf[key]}")
@@ -72,7 +96,7 @@ internal object Exhaustive {
         }
 
         // 3. Timeout after apply at every relay call.
-        val applies = ff.kinds.withIndex().filter { it.value == EventKind.RELAY_AFTER_APPLY }.map { it.index + 1L }
+        val applies = ff.kinds.withIndex().filter { it.value == EventKind.RELAY_AFTER_APPLY }.map { it.index + 1L }.filterIndexed { j, _ -> inShard(j) }
         Harness.parallel(applies.map { e ->
             Pair("$name ${journal.name} timeout after apply at event $e") {
                 Runner(factory(), journal).run(RunSpec(networkFaultAt = e, networkCategory = "timeout"))
@@ -87,6 +111,8 @@ internal object Exhaustive {
         var pairs = 0L
         if (doubles) {
             val reps = firstOf.values.sorted()
+                .filterIndexed { i, _ -> i % doubleStride == 0 }
+                .filterIndexed { j, _ -> shard == null || j % shard.second == shard.first }
             val recoveries = Harness.parallel(reps.map { k1 ->
                 Pair("$name ${journal.name} classify recovery after k1=$k1") {
                     val r = Runner(factory(), journal).run(RunSpec(crashAt = k1, classify = true))
@@ -113,8 +139,8 @@ internal object Exhaustive {
             Harness.parallel(tasks)
         }
         val report = ExhaustiveReport(
-            name, journal, k, firstOf.size, singles.size, applies.size, rMin, rMax, rTotal, doubleRuns, pairs,
-            (System.nanoTime() - started) / 1_000_000,
+            name, journal, k, firstOf.size, singleRuns.size, applies.size, rMin, rMax, rTotal, doubleRuns, pairs,
+            (System.nanoTime() - started) / 1_000_000, doubleStride, shard,
         )
         HarnessReport.add(report.line())
         return report

@@ -1,0 +1,22 @@
+# Tor of the GHOST issuer (Phase 8 design §6.7, §7.1; ADR-01). The tor container of
+# docker-compose.stagenet.yml owns the network namespace the issuer, monero-wallet-rpc and monerod
+# join: the issuer is reachable only as the onion service below, and monerod reaches its peers only
+# through the SOCKS port. No port is published.
+DataDirectory /var/lib/tor/state
+# monerod's peer-to-peer traffic and transaction relay (--proxy, --tx-proxy); loopback only.
+SocksPort 127.0.0.1:9050
+SocksPolicy accept 127.0.0.1
+SocksPolicy reject *
+Log notice stderr
+# No request logging beyond service health (FR-5.4, ADR-26).
+SafeLogging 1
+
+# The key set is mounted from the issuer host (ghost-issuer-ops onion-keygen): the Entitlement
+# Schedule names this onion as issuer_onion, port 443.
+HiddenServiceDir /var/lib/tor/ghost-issuer
+HiddenServiceVersion 3
+# gRPC issuer on loopback (config.stagenet.toml: listen).
+HiddenServicePort 443 127.0.0.1:7444
+# Proof-of-work DoS defence for the onion service (the note of infra/relay/torrc applies: GHOST
+# clients do not solve PoW yet, so under an introduction flood they stay in the effort-0 queue).
+HiddenServicePoWDefensesEnabled 1

@@ -1066,7 +1066,10 @@ fn startup_refuses_a_rolled_back_or_changed_schedule() {
     w.schedule = v2.clone();
     let reslotted = resigned(&w, |c| {
         c.seq = 3;
-        let onion = c.slots[0].onion.clone();
+        // Slot 3 behind slot 0's onion service at another port: the exact onion:port of another
+        // slot in the same week is refused by rule 4 (Q27), not by the memory check tested here.
+        let (host, port) = c.slots[0].onion.rsplit_once(':').unwrap();
+        let onion = format!("{host}:{}", port.parse::<u16>().unwrap() + 1);
         c.slots.push(SlotEntry {
             slot: 3,
             onion,

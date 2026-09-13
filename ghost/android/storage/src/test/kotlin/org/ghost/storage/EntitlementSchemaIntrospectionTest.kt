@@ -30,9 +30,12 @@ class EntitlementSchemaIntrospectionTest {
      */
     private val gridIndexExemptions = setOf("ent_key.epoch", "ent_schedule_fact.epoch", "ent_token.epoch")
 
-    /** Every persisted time of the entitlement tables (design §11.3). */
+    /**
+     * Every persisted time of the entitlement tables (design §11.3), plus `ent_state.payment_shown_minute`
+     * (S9b: the payment-screen hold of §19.11 survives a process start).
+     */
     private val expectedTimeColumns = setOf(
-        "ent_state.restore_scan_until_day",
+        "ent_state.restore_scan_until_day", "ent_state.payment_shown_minute",
         "ent_purchase.created_hour", "ent_purchase.receipt_minute", "ent_purchase.next_due_minute", "ent_purchase.terminal_day",
         "ent_token.eligible_minute",
         "ent_invite.listen_until_day",

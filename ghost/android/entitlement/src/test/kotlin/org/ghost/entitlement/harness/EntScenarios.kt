@@ -1,0 +1,452 @@
+package org.ghost.entitlement.harness
+
+import org.ghost.entitlement.api.ActivationState
+import org.ghost.entitlement.api.PayWith
+import org.ghost.entitlement.engine.Grid
+import org.ghost.identity.DropSeal
+import org.ghost.identity.Invite
+import org.ghost.identity.RootEntropy
+import org.ghost.network.EntitlementCrypto
+import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.NamespaceId
+import org.ghost.sync.api.PrivacyMode
+import org.ghost.sync.api.TtlBucket
+import org.ghost.sync.harness.CallKind
+import org.ghost.sync.harness.EventKind
+import org.ghost.sync.harness.Scenario
+import org.ghost.sync.harness.World
+import org.ghost.sync.harness.World.Companion.DAY
+import org.ghost.sync.harness.World.Companion.HOUR
+import org.ghost.sync.harness.World.Companion.MINUTE
+import org.ghost.sync.harness.foreground
+import org.ghost.sync.store.Time
+import java.security.SecureRandom
+import org.ghost.sync.engine.SessionKind as SyncKind
+
+/**
+ * A scenario of the `:entitlement` harness (Phase 8 design §13.2): a Phase 7 scenario whose subject
+ * carries the real entitlement engine. The quiescence tail does not play Phase 8 any more (§19.17
+ * point 5): the engine's redeem lane fulfils the capability needs, and the tail's periodic jobs draw
+ * their quiet runs from the production scheduler. Quiescence adds the engine's own conditions; the
+ * end adds MS-6, the token accounting and the T3 canaries. The world starts on Friday of access week
+ * 2975 at 08:00 UTC (invite epoch 743, credit and price epoch 228).
+ */
+internal abstract class EntScenario(name: String) : Scenario(name) {
+    override val renewCapabilitiesInTail: Boolean get() = false
+
+    /** A purchase recovering from a lost `BlindSign` waits for its next planned attempt (up to 22 days). */
+    override val maxTailRounds: Int get() = 3_000
+
+    lateinit var ent: EntWorld
+    lateinit var alice: EntClient
+
+    /** A mutant (design §13.5, test sources only): its SQL rewrites and its substitutions of [EntConfig]. */
+    var mutant: EntMutant? = null
+        set(value) {
+            field = value
+            mutation = value?.mutation
+        }
+
+    open fun config(): EntConfig = configured(EntConfig())
+
+    /** [base] with this scenario's [mutant] applied; [namespaces] is the subject's namespace count (mutant M8). */
+    protected fun configured(base: EntConfig, namespaces: Int = 0): EntConfig = mutant?.configure?.invoke(base, namespaces) ?: base
+
+    /**
+     * Relays A (operator 1, ES slot 0), B (operator 2, slot 1), C (operator 1, slot 2) and the armed
+     * subject with its engine; the schedule is accepted before the armed phase.
+     */
+    protected fun standard(w: World, mode: PrivacyMode = PrivacyMode.STANDARD, genesis: Boolean = true): EntClient {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val c = w.relay("C", 1)
+        ent = EntWorld(w, listOf(a, b, c), config())
+        val client = subject(w, "alice", mode = mode)
+        client.directory(a, b, c)
+        alice = ent.attach(client, genesis)
+        alice.e().status()
+        return alice
+    }
+
+    /** A scripted quiet run at [at] (a session start of the subject for the reboot logic). */
+    protected fun World.quietRunAt(at: Long) =
+        driver.scheduleSession(at, alice.c, "quiet:${alice.c.name}") { if (alice.c.session == null) alice.quietRun() }
+
+    /** A scripted background session at [at]. */
+    protected fun World.backgroundAt(at: Long) =
+        driver.scheduleSession(at, alice.c, "job:${alice.c.name}") { if (alice.c.session == null) alice.c.startSession(SyncKind.BACKGROUND) }
+
+    /** The user starts a purchase at [at] and, if none exists (a crash ended the first attempt), again at each of [retries]. */
+    protected fun World.purchase(at: Long, payWith: PayWith, retries: List<Long>) {
+        at(at, "startPurchase") { alice.e().startPurchase(payWith) }
+        for (t in retries) at(t, "the user retries a purchase that never started") { if (alice.purchaseStates().none { it.first == "pack" }) alice.e().startPurchase(payWith) }
+    }
+
+    /** The user pays what the payment instructions show, at each of [times] (nothing when nothing is due). */
+    protected fun World.payAt(times: List<Long>, fraction: Double = 1.0) {
+        for (t in times) at(t, "pay") { alice.payInvoiced(fraction = fraction) }
+    }
+
+    /**
+     * From [from] on, every 2 hours for 30 days, the user pays the rest of an invoice the app shows
+     * that their wallet has not paid in full: a crash inside a payment loses that payment, and a flow
+     * that recovers later than the script (its invoice on the `RequestInvoice` retry, a day on) is
+     * paid all the same while its payment window is open. A check with nothing due asks nothing of
+     * the engine.
+     */
+    protected fun World.keepPaying(from: Long) {
+        var t = from
+        while (t <= from + KEEP_PAYING_DAYS * DAY) {
+            at(t, "the user pays what is due") { if (alice.unpaidInvoice()) alice.payInvoiced() }
+            t += KEEP_PAYING_EVERY
+        }
+    }
+
+    /**
+     * From [from] on, every 6 hours for 30 days, the user buys a pack when the app shows them
+     * uncovered ([EntClient.uncovered]): a purchase that crashes left `failed` with its capped
+     * attempts spent (J9), trial tokens that became eligible only after their weeks (HIGH mode), are
+     * followed by a new purchase, as the app's `ENTITLEMENT_NEEDED` asks. Credits first when
+     * [payWith] is CREDITS, and XMR when they no longer cover the price.
+     */
+    protected fun World.keepBuying(from: Long, payWith: PayWith) {
+        var t = from
+        while (t <= from + KEEP_PAYING_DAYS * DAY) {
+            at(t, "the user buys again when uncovered") {
+                if (alice.uncovered()) {
+                    val started = alice.e().startPurchase(payWith)
+                    if (started == null && payWith != PayWith.XMR) alice.e().startPurchase(PayWith.XMR)
+                }
+            }
+            t += KEEP_BUYING_EVERY
+        }
+    }
+
+    /** Setup: tokens of the current week for every slot, eligible an hour ago. */
+    protected fun accessTokens(week: Long, perSlot: Int) {
+        val eligible = Time.floorMinute(alice.w.clock.epochSeconds()) - 3_600
+        for (slot in 0..2) alice.addTokens("access", week, slot, perSlot, eligible)
+    }
+
+    /** A test's checks of this scenario's outcome, run at the end while the world is still open. */
+    var outcome: ((EntScenario) -> Unit)? = null
+
+    override fun extraQuiescence(w: World): List<String> = ent.quiescenceProblems()
+
+    override fun finalChecks(w: World) {
+        ent.finalChecks()
+        outcome?.invoke(this)
+    }
+
+    protected companion object {
+        const val WEEK0 = 2975L
+        const val KEEP_PAYING_DAYS = 30L
+        const val KEEP_PAYING_EVERY = 2 * HOUR
+        const val KEEP_BUYING_EVERY = 6 * HOUR
+
+        /** E-G's scripted days: a received credit's refresh is due within 14 days, its retry a day later. */
+        const val REFRESH_DAYS = 17L
+
+        /** A deterministic random stream (sealed blobs and invite nonces of a scenario's setup). */
+        fun seeded(label: String): SecureRandom = SecureRandom.getInstance("SHA1PRNG").apply { setSeed(Bytes.sha256(Bytes.ascii(label))) }
+    }
+}
+
+/**
+ * E-A pack paid in XMR, the happy path (design §13.2): startPurchase, `RequestInvoice` in a quiet
+ * run, payment and 10 confirmations, `BlindSign` at its first planned attempt, finalization; the
+ * tokens become eligible at the next activation slot, the user then writes in the app and the redeem
+ * lane fulfils the write needs at A and B.
+ */
+internal open class ScenarioEA(private val writes: Boolean = true) : EntScenario(if (writes) "E-A" else "E-A/no-writes") {
+    override fun build(w: World) {
+        val e = standard(w)
+        val ns = e.c.namespace("dm", listOf(w.relays[0], w.relays[1]), listen = false)
+        w.purchase(0, PayWith.XMR, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
+        w.quietRunAt(MINUTE)
+        w.quietRunAt(45 * MINUTE)
+        w.keepPaying(20 * MINUTE)
+        w.keepBuying(HOUR, PayWith.XMR)
+        w.quietRunAt(5 * HOUR + 30 * MINUTE)
+        if (writes) {
+            // The user writes in the app once the tokens are eligible (Saturday morning).
+            w.foreground(e.c, 22 * HOUR + 30 * MINUTE, 22 * HOUR + 45 * MINUTE)
+            w.at(22 * HOUR + 31 * MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        }
+        w.endMillis = 23 * HOUR
+    }
+}
+
+/**
+ * E-B underpay, top-up, confirm: half of the amount first, so the first planned `BlindSign` answers
+ * UNDERPAID (non-final, the outstanding amount is stored); the rest later; the second planned attempt
+ * signs; the tokens (weeks 2975…2979) are used on Monday after the week boundary.
+ */
+internal open class ScenarioEB : EntScenario("E-B") {
+    override fun build(w: World) {
+        val e = standard(w)
+        val ns = e.c.namespace("dm", listOf(w.relays[0], w.relays[1]), listen = false)
+        w.purchase(0, PayWith.XMR, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
+        w.quietRunAt(MINUTE)
+        w.quietRunAt(45 * MINUTE)
+        w.payAt(listOf(20 * MINUTE), fraction = 0.5)
+        w.quietRunAt(5 * HOUR + 30 * MINUTE)
+        w.payAt(listOf(6 * HOUR))
+        w.keepPaying(8 * HOUR)
+        w.quietRunAt(52 * HOUR + 30 * MINUTE)
+        w.foreground(e.c, 71 * HOUR, 71 * HOUR + 15 * MINUTE)
+        w.at(71 * HOUR + MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        w.endMillis = 72 * HOUR
+    }
+}
+
+/**
+ * E-C expiry: never paid, the wallet synced; the third planned attempt (after the grace window) finds
+ * the invoice EXPIRED, and the purchase is `expired` with its secrets wiped.
+ */
+internal class ScenarioECExpired : EntScenario("E-C/expired") {
+    override fun build(w: World) {
+        standard(w)
+        w.purchase(0, PayWith.XMR, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
+        w.quietRunAt(MINUTE)
+        w.quietRunAt(45 * MINUTE)
+        w.quietRunAt(5 * HOUR + 30 * MINUTE)
+        w.quietRunAt(52 * HOUR + 30 * MINUTE)
+        w.at(60 * HOUR, "the grace window passes") { ent.mine(2_891) }
+        w.quietRunAt(112 * HOUR + 30 * MINUTE)
+        w.endMillis = 113 * HOUR
+    }
+}
+
+/**
+ * E-C lost: never paid and the issuer's wallet stops being synced, so no answer is ever final; after
+ * the fifth attempt of the fixed plan (the last at receipt + 20–22 days) the purchase is `lost` (the
+ * J9 cap of 5 `BlindSign` per invoice, whatever the issuer answers).
+ */
+internal class ScenarioECLost : EntScenario("E-C/lost") {
+    override fun build(w: World) {
+        standard(w)
+        w.purchase(0, PayWith.XMR, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
+        w.quietRunAt(MINUTE)
+        w.quietRunAt(45 * MINUTE)
+        w.at(50 * MINUTE, "the issuer's wallet falls behind") { ent.issuer.synced = false }
+        w.quietRunAt(5 * HOUR + 30 * MINUTE)
+        w.quietRunAt(52 * HOUR + 30 * MINUTE)
+        w.quietRunAt(112 * HOUR + 30 * MINUTE)
+        w.quietRunAt(8 * DAY + HOUR)
+        w.quietRunAt(22 * DAY + HOUR)
+        w.endMillis = 22 * DAY + 2 * HOUR
+    }
+}
+
+/**
+ * E-D pack paid with credits: ten own credits of epoch 228 (the smallest covering set) are reserved
+ * with the first `RequestInvoice`, the invoice (amount 0) is CONFIRMED at once, the first planned
+ * `BlindSign` signs and the finalizing transaction deletes the credits.
+ */
+internal open class ScenarioED : EntScenario("E-D") {
+    override fun build(w: World) {
+        val e = standard(w)
+        e.addTokens("credit", Grid.creditEpoch(WEEK0), null, 10, Time.floorMinute(w.clock.epochSeconds()) - 3_600)
+        val ns = e.c.namespace("dm", listOf(w.relays[0], w.relays[1]), listen = false)
+        w.purchase(0, PayWith.CREDITS, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
+        // Credits spent by an invoice the client never learned of are bought again, in XMR if need be.
+        w.keepBuying(HOUR, PayWith.CREDITS)
+        w.keepPaying(HOUR)
+        w.quietRunAt(MINUTE)
+        w.quietRunAt(45 * MINUTE)
+        w.quietRunAt(5 * HOUR + 30 * MINUTE)
+        w.foreground(e.c, 22 * HOUR + 30 * MINUTE, 22 * HOUR + 45 * MINUTE)
+        w.at(22 * HOUR + 31 * MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        w.endMillis = 23 * HOUR
+    }
+}
+
+/** An invite of another identity (INVITER) whose token is an INVITE token of epoch 743, deterministic. */
+internal fun inviteText(ent: EntWorld, label: String): Pair<String, ByteArray> {
+    val token = ent.mint(EntitlementCrypto.KIND_INVITE, Grid.inviteEpoch(2975))
+    val inviter = RootEntropy.fromRaw(Bytes.sha256(Bytes.ascii("inviter|$label")))
+    val today = Grid.day(ent.w.clock.epochSeconds())
+    val invite = Invite.create(token, Grid.inviteEpoch(2975), today + 14, listOf(0, 1, 2), inviter.inviteKeys(0), SecureRandom.getInstance("SHA1PRNG").apply { setSeed(Bytes.sha256(Bytes.ascii("invite|$label"))) })
+    return invite.encode() to token
+}
+
+/**
+ * E-E trial with activation: a new identity activates an invite in the foreground (the trial and the
+ * drop target in one transaction, the identity created, `RedeemInvite` as a user call); the trial's
+ * tokens are eligible at once in STANDARD and fund the identity's first writes. A crash anywhere
+ * resumes the pending trial at the next foreground; an activation that never started is retried.
+ */
+internal class ScenarioETrial : EntScenario("E-E/trial") {
+    override fun build(w: World) {
+        val e = standard(w, genesis = false)
+        val (text, _) = inviteText(ent, "trial|${w.seed}")
+        val ns = e.c.namespace("dm", listOf(w.relays[0], w.relays[1]), listen = false)
+        w.foreground(e.c, 0, 20 * MINUTE)
+        w.at(MINUTE, "activate") { e.e().activate(text) }
+        w.at(3 * MINUTE, "enqueue op1") { if (e.identity.exists) e.c.enqueue("op1", ns) }
+        for (t in listOf(30 * MINUTE, 90 * MINUTE)) {
+            w.foreground(e.c, t - 5 * MINUTE, t + 15 * MINUTE)
+            w.at(t, "the user activates again if nothing started") { if (e.e().activationState() == ActivationState.NONE) e.e().activate(text) }
+            w.at(t + MINUTE, "enqueue op1") { if (e.identity.exists && "op1" !in w.ops) e.c.enqueue("op1", ns) }
+        }
+        w.endMillis = 2 * HOUR
+    }
+}
+
+/**
+ * E-E trial refused: the invite token was already redeemed with another request, so `RedeemInvite`
+ * answers REPLAYED; the identity is wiped before the failure is recorded ("revoked invite fails
+ * closed", design §8.3), and nothing is left but a failed trial row.
+ */
+internal class ScenarioEWipe : EntScenario("E-E/wipe") {
+    override fun build(w: World) {
+        val e = standard(w, genesis = false)
+        val (text, token) = inviteText(ent, "wipe|${w.seed}")
+        val base = Grid.week(w.clock.epochSeconds())
+        val positions = checkNotNull(ent.schedule.positions(EntitlementCrypto.PRODUCT_TRIAL, base))
+        ent.issuer.redeemInvite(token, base, Batch.blind(ent.schedule, Bytes.sha256(Bytes.ascii("another device")), positions), ent.issuerNow())
+        w.foreground(e.c, 0, 20 * MINUTE)
+        w.at(MINUTE, "activate") { e.e().activate(text) }
+        w.foreground(e.c, 25 * MINUTE, 45 * MINUTE)
+        w.at(30 * MINUTE, "the user activates again if nothing started") {
+            if (e.e().activationState() == ActivationState.NONE && e.purchaseStates().isEmpty()) e.e().activate(text)
+        }
+        w.endMillis = HOUR
+    }
+}
+
+/**
+ * E-F redeem needs across a week boundary with EXHAUSTED and REJECTED: tokens of weeks 2975 and 2976;
+ * a listened namespace on A and B; on Sunday the first writes redeem, relay A answers `quota` and B
+ * `unauthorized` to a store (the capabilities become exhausted and rejected, and new tokens are
+ * redeemed), the week's capabilities are renewed with next week's tokens before the boundary, and on
+ * Monday the writes use them.
+ */
+internal class ScenarioEF : EntScenario("E-F") {
+    override fun build(w: World) {
+        val e = standard(w)
+        accessTokens(WEEK0, 3)
+        accessTokens(WEEK0 + 1, 3)
+        val (a, b) = w.relays[0] to w.relays[1]
+        val ns = e.c.namespace("ch", listOf(a, b), listen = true)
+        var quota = false
+        var refused = false
+        w.relayHook = { client, kind, info ->
+            when {
+                client !== e.c || kind != EventKind.RELAY_BEFORE_SEND || info.kind != CallKind.STORE -> null
+                !quota && info.relay == "A" -> {
+                    quota = true
+                    w.scriptState++
+                    "quota"
+                }
+                !refused && info.relay == "B" -> {
+                    refused = true
+                    w.scriptState++
+                    "unauthorized"
+                }
+                else -> null
+            }
+        }
+        w.foreground(e.c, 48 * HOUR, 48 * HOUR + 10 * MINUTE)
+        w.at(48 * HOUR + MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        w.at(48 * HOUR + 2 * MINUTE, "enqueue op2") { e.c.enqueue("op2", ns) }
+        w.backgroundAt(60 * HOUR)
+        w.foreground(e.c, 65 * HOUR + 30 * MINUTE, 65 * HOUR + 40 * MINUTE)
+        w.at(65 * HOUR + 31 * MINUTE, "enqueue op3") { e.c.enqueue("op3", ns) }
+        w.endMillis = 66 * HOUR
+    }
+}
+
+/**
+ * E-G drop send and receive: as an invitee the subject writes its credit to its inviter's drop at the
+ * pre-drawn drop minute (the namespace registered on the three drop relays, the blob sealed and
+ * enqueued in one transaction, the namespace retired once the outcome is released); as an inviter
+ * it lists the drop of an invite it created, opens the credit an invitee sealed to it, and refreshes
+ * it with `RefreshCredit` in a quiet run days later (one scripted quiet run a day until day 17; the
+ * received credit is never spent itself).
+ */
+internal class ScenarioEG : EntScenario("E-G") {
+    override fun build(w: World) {
+        val e = standard(w)
+        val now = w.clock.epochSeconds()
+        val minute = Time.floorMinute(now)
+        val week = Grid.week(now)
+        accessTokens(week, 4)
+        e.addTokens("credit", Grid.creditEpoch(week), null, 1, minute - 3_600)
+        val ctx = checkNotNull(e.e().context())
+        val inviterKeys = RootEntropy.fromRaw(Bytes.sha256(Bytes.ascii("inviter|drop|${w.seed}"))).inviteKeys(0)
+        val mine = e.identity.root.inviteKeys(0)
+        val inviteToken = ent.mint(EntitlementCrypto.KIND_INVITE, Grid.inviteEpoch(week))
+        val invite = Invite.create(inviteToken, Grid.inviteEpoch(week), Grid.day(now) + 14, listOf(0, 1, 2), mine, seeded("my invite|${w.seed}"))
+        val relays = w.relays.take(3)
+        e.c.tx { tx ->
+            ctx.invites.insertDropTarget(tx, inviterKeys.dropNamespace, inviterKeys.drop.publicKey, listOf(0, 1, 2), minute + 3_600, Grid.day(now) + 60)
+            ctx.invites.insert(tx, 0, invite.bytes(), mine.dropNamespace, Grid.day(now) + 14 + 56)
+            ctx.state.takeInviteIndex(tx, 0)
+            e.c.stores.namespaces.register(tx, NamespaceId(mine.dropNamespace), Consumer.IDENTITY, relays.map { e.c.id(it) }.toSet(), true)
+        }
+        w.at(3 * HOUR, "an invitee writes its drop") {
+            val credit = ent.mint(EntitlementCrypto.KIND_CREDIT, Grid.creditEpoch(week))
+            val blob = DropSeal.sealCredit(credit, mine.drop.publicKey, mine.dropNamespace, seeded("drop blob|${w.seed}"))
+            for (r in relays.take(2)) r.model.inject(NamespaceId(mine.dropNamespace), blob, TtlBucket.DAYS_30.seconds.toLong(), w.relayNow(r))
+        }
+        w.foreground(e.c, 2 * HOUR, 2 * HOUR + 15 * MINUTE)
+        w.foreground(e.c, 9 * HOUR, 9 * HOUR + 15 * MINUTE)
+        w.foreground(e.c, 26 * HOUR, 26 * HOUR + 15 * MINUTE)
+        // The received credit is refreshed U[1 d, 14 d] after it arrived (§19.8): a quiet run each day
+        // until then, so the refresh (and the identical retry a crash may make it take a day later)
+        // falls inside the script instead of an 11-day quiescence tail of background sessions.
+        for (day in 2..REFRESH_DAYS) w.quietRunAt(day * DAY + 10 * MINUTE)
+        w.endMillis = REFRESH_DAYS * DAY + HOUR
+    }
+}
+
+/**
+ * E-H payout claim: ten own credits; the claim (address checked, credits reserved, due at a random
+ * time within a day) runs alone in a quiet run and is QUEUED; the credits are deleted and the address
+ * is remembered as used.
+ */
+internal open class ScenarioEH : EntScenario("E-H") {
+    override fun build(w: World) {
+        val e = standard(w)
+        e.addTokens("credit", Grid.creditEpoch(WEEK0), null, 10, Time.floorMinute(w.clock.epochSeconds()) - 3_600)
+        val address = HarnessAddresses.standard("payout|${w.seed}")
+        w.at(MINUTE, "claimPayout") { e.e().claimPayout(address) }
+        w.at(30 * MINUTE, "the user claims again if nothing started") { if (count(e, "SELECT count(*) FROM ent_claim") == 0L) e.e().claimPayout(address) }
+        for (t in listOf(12 * HOUR, 25 * HOUR, 26 * HOUR, 50 * HOUR)) w.quietRunAt(t)
+        w.endMillis = 51 * HOUR
+    }
+
+    private fun count(e: EntClient, sql: String): Long {
+        var n = 0L
+        e.c.jdbc.query(sql) { n = it.long(0) }
+        return n
+    }
+}
+
+/**
+ * E-I `WRONG_PERIOD` re-prepare: on Sunday evening the device clock runs 7 hours ahead (Monday), so the
+ * base week of the first `RequestInvoice` is outside the issuer's ±4 h tolerance; the issuer records
+ * nothing, the engine closes the flow as failed and prepares a new one in the same transaction (its
+ * creation hour on the device clock of that moment, so it is due only from then); the clock is
+ * corrected, and the new flow sends its unsent base week, is invoiced, paid and signed.
+ */
+internal open class ScenarioEI : EntScenario("E-I") {
+    override fun build(w: World) {
+        val e = standard(w)
+        val ns = e.c.namespace("dm", listOf(w.relays[0], w.relays[1]), listen = false)
+        w.at(58 * HOUR, "the device clock runs 7 hours ahead") { w.clock.deviceOffsetSeconds = 7 * 3_600 }
+        w.purchase(58 * HOUR + MINUTE, PayWith.XMR, listOf(58 * HOUR + 10 * MINUTE))
+        w.quietRunAt(58 * HOUR + 5 * MINUTE)
+        w.at(58 * HOUR + 30 * MINUTE, "the device clock is corrected") { w.clock.deviceOffsetSeconds = 0 }
+        w.quietRunAt(59 * HOUR)
+        w.quietRunAt(65 * HOUR + 30 * MINUTE)
+        w.quietRunAt(66 * HOUR + 30 * MINUTE)
+        w.keepPaying(67 * HOUR)
+        w.quietRunAt(71 * HOUR + 30 * MINUTE)
+        w.foreground(e.c, 95 * HOUR, 95 * HOUR + 15 * MINUTE)
+        w.at(95 * HOUR + MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        w.endMillis = 96 * HOUR
+    }
+}

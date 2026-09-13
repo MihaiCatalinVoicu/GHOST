@@ -1,5 +1,6 @@
 //! Issuer storage (Phase 8 design §6.1, §6.2): `issuer.redb`, `SCHEMA_VERSION = 1` (any other
-//! version is refused), `Durability::Immediate` on every write transaction.
+//! version is refused), `Durability::Immediate` on every write transaction. A snapshot (runbooks
+//! B1, R2) is read through a recovered private copy ([`RedbSnapshot`]).
 //!
 //! State goes through the [`Store`] trait (redb in production, [`RedbStore`]); the typed rows of
 //! §6.1 are encoded here with fixed lengths and big-endian integers, so every table is a byte-slice
@@ -234,18 +235,62 @@ impl RedbStore {
     }
 }
 
-/// A read-only view of a copy of `issuer.redb` (runbook R2: `ghost-issuer-ops reconcile-check`
-/// reads a snapshot, never the live database, which the issuer holds open). Another schema version
-/// is refused.
+/// A read-only view of a snapshot of `issuer.redb` (runbooks B1 and R2: `ghost-issuer-ops
+/// reconcile-check` and `counters-export` read a snapshot, never the live database, which the
+/// issuer holds open). Another schema version is refused.
+///
+/// The snapshot file itself is never opened. B1 copies the file of an issuer ended by a signal,
+/// and redb marks a database as needing recovery from its first writable open until a clean close,
+/// so its read-only open refuses every such file (`RepairAborted`; review finding INFRA-1). The
+/// snapshot is therefore copied to a new file, private to its owner, in a scratch directory (the
+/// ops container's tmpfs `/tmp`) and opened there with `Database::open`, which recovers it as the
+/// issuer's own restart after a crash does. The copy is removed with the view; the snapshot keeps
+/// its bytes.
 pub struct RedbSnapshot {
-    db: redb::ReadOnlyDatabase,
+    // Declared before the copy: the database closes before its file is removed.
+    db: Database,
+    _copy: PrivateCopy,
+}
+
+/// A private copy of a snapshot, removed when dropped.
+struct PrivateCopy(std::path::PathBuf);
+
+impl Drop for PrivateCopy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Copies `path` to a new file with a random name in `dir`, readable and writable by its owner
+/// only (on Unix); a failed copy leaves nothing behind.
+fn private_copy(path: &Path, dir: &Path) -> Result<PrivateCopy, StoreError> {
+    let mut id = [0u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut id)
+        .map_err(|_| StoreError::Db)?;
+    let name: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    let target = dir.join(format!("ghost-issuer-snapshot-{name}.redb"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut out = options.open(&target).map_err(|_| StoreError::Db)?;
+    let copy = PrivateCopy(target);
+    let mut snapshot = std::fs::File::open(path).map_err(|_| StoreError::Db)?;
+    std::io::copy(&mut snapshot, &mut out).map_err(|_| StoreError::Db)?;
+    Ok(copy)
 }
 
 impl RedbSnapshot {
+    /// [`Self::open_in`] the operating system's temporary directory.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let snapshot = Self {
-            db: redb::ReadOnlyDatabase::open(path)?,
-        };
+        Self::open_in(path, &std::env::temp_dir())
+    }
+
+    /// Opens the snapshot `path` through a private copy in `scratch_dir`.
+    pub fn open_in(path: &Path, scratch_dir: &Path) -> Result<Self, StoreError> {
+        let copy = private_copy(path, scratch_dir)?;
+        let db = Database::open(&copy.0)?;
+        let snapshot = Self { db, _copy: copy };
         if meta(&*snapshot.read()?, MetaKey::SchemaVersion)? != Some(SCHEMA_VERSION) {
             return Err(StoreError::Schema);
         }

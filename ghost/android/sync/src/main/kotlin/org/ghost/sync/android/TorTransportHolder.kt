@@ -3,11 +3,15 @@ package org.ghost.sync.android
 import android.content.Context
 import org.ghost.network.NetworkException
 import org.ghost.network.RelayTransport
+import org.ghost.network.TorIssuerTransport
 import org.ghost.network.TorRelayTransport
 import org.ghost.sync.engine.ErrorClass
 import org.ghost.sync.engine.ErrorPolicy
+import org.ghost.sync.port.EntitlementCalls
+import org.ghost.sync.port.LeasePort
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.SyncClock
+import org.ghost.sync.port.TransportLease
 import org.ghost.sync.port.TransportPort
 import org.ghost.sync.port.TransportState
 import java.io.File
@@ -39,17 +43,27 @@ internal fun interface RelayTransportFactory {
  *    relay call). If that takes past the deadline, the answer is UNAVAILABLE and nothing is created.
  *  - [abort] (any thread: onStopJob, a session's end, a transport fault) closes the current
  *    transport; in-flight calls end with `closed`, and the next session gets new circuits.
+ *  - [LeasePort] (Phase 8 design §11.6): the session participant's redemption and issuer calls run
+ *    on the same transport under a lease. A lease reaches only the current transport once it has
+ *    answered READY, never one closed or not yet bootstrapped; the lease check and the transport's
+ *    use count are taken under one lock, so after [TransportLease.close] no call of that lease can
+ *    land on any transport, in particular not on one created for a later session. A lease never
+ *    creates or bootstraps a transport.
  */
 internal class TorTransportHolder(
     private val factory: RelayTransportFactory,
     private val clock: SyncClock,
     private val threads: ThreadFactory,
-) : TransportPort {
+    private val entitlement: EntitlementCallsFactory = EntitlementCallsFactory.TOR,
+) : TransportPort, LeasePort {
 
-    /** One native transport and the native calls running on it (bootstrap and relay calls). */
-    private class Slot(val transport: RelayTransport) {
+    /** One native transport and the native calls running on it (bootstrap, relay and participant calls). */
+    private class Slot(val transport: RelayTransport, val calls: EntitlementCalls) {
         var busy = 0
         var closed = false
+
+        /** The transport answered READY (a bootstrap succeeded while it was current). */
+        var ready = false
     }
 
     /** Result of one bootstrap attempt on its helper thread. */
@@ -65,6 +79,7 @@ internal class TorTransportHolder(
 
     private val lock = ReentrantLock()
     private val released = lock.newCondition()
+    private val readyChanged = lock.newCondition()
     private val ensuring = ReentrantLock()
     private var current: Slot? = null
     private var generation = 0L
@@ -107,6 +122,8 @@ internal class TorTransportHolder(
         if (slot != null) retire(slot)
     }
 
+    override fun openLease(): TransportLease = Lease()
+
     private fun createAndBootstrap(deadline: Long): TransportState {
         if (!awaitRetired(deadline)) return TransportState.UNAVAILABLE
         val startedAt = lock.withLock { generation }
@@ -115,7 +132,7 @@ internal class TorTransportHolder(
         } catch (e: NetworkException) {
             return stateAfterFailure(e.category)
         }
-        val slot = Slot(transport)
+        val slot = Slot(transport, entitlement.of(transport))
         // An abort while the transport was being created wins: it is closed unused.
         val installed = lock.withLock { (generation == startedAt).also { if (it) current = slot } }
         if (!installed) {
@@ -158,7 +175,15 @@ internal class TorTransportHolder(
             return TransportState.UNAVAILABLE
         }
         if (attempt.succeeded) {
-            return lock.withLock { if (current === slot && !slot.closed) TransportState.READY else TransportState.UNAVAILABLE }
+            return lock.withLock {
+                if (current === slot && !slot.closed) {
+                    slot.ready = true
+                    readyChanged.signalAll()
+                    TransportState.READY
+                } else {
+                    TransportState.UNAVAILABLE
+                }
+            }
         }
         retire(slot)
         // No category: a JVM error ended the helper thread, which ends the process.
@@ -195,6 +220,55 @@ internal class TorTransportHolder(
     private fun release(slot: Slot) = lock.withLock {
         slot.busy--
         if (slot.busy == 0 && retired.remove(slot)) released.signalAll()
+    }
+
+    /** The current transport if it answered READY and is not closed (call with [lock] held). */
+    private fun readySlot(): Slot? = current?.takeIf { it.ready && !it.closed }
+
+    /** One lease; its state is guarded by the holder's [lock], like the slots it reaches. */
+    private inner class Lease : TransportLease {
+        private var open = true
+
+        override val closed: Boolean get() = lock.withLock { !open }
+
+        override fun close() = lock.withLock {
+            open = false
+            readyChanged.signalAll()
+        }
+
+        override fun awaitReady(deadlineMonotonicMillis: Long): Boolean = lock.withLock {
+            while (open && readySlot() == null) {
+                val left = deadlineMonotonicMillis - clock.monotonicMillis()
+                if (left <= 0) return@withLock false
+                readyChanged.await(left, TimeUnit.MILLISECONDS)
+            }
+            open
+        }
+
+        override fun <T> use(block: (EntitlementCalls) -> T): T {
+            val slot = enter() ?: throw NetworkException(CLOSED)
+            try {
+                return block(slot.calls)
+            } finally {
+                release(slot)
+            }
+        }
+
+        override fun newFlow(): ByteArray = TorIssuerTransport.newFlow()
+
+        override fun endFlow(flow: ByteArray) {
+            val slot = enter() ?: return
+            try {
+                slot.calls.endFlow(flow)
+            } finally {
+                release(slot)
+            }
+        }
+
+        /** The READY transport with its use count taken, or null when the lease is closed or none is READY. */
+        private fun enter(): Slot? = lock.withLock { if (open) readySlot()?.also { it.busy++ } else null }
+
+        override fun toString(): String = "TransportLease"
     }
 
     override fun toString(): String = "TorTransportHolder"

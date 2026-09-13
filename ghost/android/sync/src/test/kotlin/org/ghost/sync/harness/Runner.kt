@@ -98,6 +98,9 @@ internal abstract class Scenario(val name: String) {
     /** Scenario-specific checks at the end. */
     open fun finalChecks(w: World) {}
 
+    /** Unmet quiescence conditions beyond design §8.4 (an extension's own, e.g. the `:entitlement` harness). */
+    open fun extraQuiescence(w: World): List<String> = emptyList()
+
     /** A mutant substitution for the armed client (design §8.8), or null for the real engine. */
     var mutation: Mutation? = null
 
@@ -296,14 +299,15 @@ internal class Runner(private val scenario: Scenario, private val journal: Journ
     private fun tail(w: World) {
         while (true) {
             w.clients.forEach { Invariants.structural(it, "tail round $tailRound", heavy = false) }
-            val problems = w.clients.flatMap { c -> Invariants.quiescenceProblems(c) { op -> scenario.allowed(op, w) }.map { "${c.name}: $it" } }
+            val problems = w.clients.flatMap { c -> Invariants.quiescenceProblems(c) { op -> scenario.allowed(op, w) }.map { "${c.name}: $it" } } +
+                scenario.extraQuiescence(w)
             if (problems.isEmpty() && !w.driver.busy) return
             if (tailRound >= scenario.maxTailRounds) throw InvariantViolation("no quiescence after $tailRound tail rounds: $problems")
             val slot = w.endMillis + tailRound * Harness.JOB_PERIOD
             tailRound++
             if (scenario.renewCapabilitiesInTail) w.at(slot, "phase8") { w.clients.forEach { renewNeeded(it) } }
             for (c in w.clients) {
-                w.driver.scheduleSession(slot, c, "tail-job:${c.name}") { if (c.session == null) c.startSession(SessionKind.BACKGROUND) }
+                w.driver.scheduleSession(slot, c, "tail-job:${c.name}") { w.runJob(c) }
                 w.driver.scheduleProcess(slot + Harness.JOB_PERIOD - 1, c, "tail-drain:${c.name}") { c.oracle.drain() }
             }
             w.driver.runUntil(slot + Harness.JOB_PERIOD - 1)
@@ -323,7 +327,7 @@ internal class Runner(private val scenario: Scenario, private val journal: Journ
 internal fun World.jobs(c: Client, from: Long, to: Long, every: Long = Harness.JOB_PERIOD) {
     var t = from
     while (t <= to) {
-        driver.scheduleSession(t, c, "job:${c.name}") { if (c.session == null) c.startSession(SessionKind.BACKGROUND) }
+        driver.scheduleSession(t, c, "job:${c.name}") { runJob(c) }
         t += every
     }
 }

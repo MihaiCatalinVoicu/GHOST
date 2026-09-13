@@ -17,10 +17,27 @@ expect_fail() {
 for g in anti-placeholder no-logging manifest-lint dependency-allowlist; do
   expect_fail "$g" "$HARNESS/negative"
 done
-# Phase 7 crash fidelity: every catch-all form in the fixture is reported, one line each.
+# Phase 7 crash fidelity: every catch-all form in the fixture is reported, one line each. Phase 8
+# (design §11.1): the fixture's entitlement module adds 3 lines, each reported by its file name, and
+# a tree without android/entitlement/src/main fails for that reason alone.
 expect_fail sync-no-catch-all "$HARNESS/negative-sync"
-sync_hits="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"
-if [ "$sync_hits" = "9" ]; then echo "self-test ok: sync-no-catch-all reports all 9 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 9 fixture lines" >&2; rc=1; fi
+sync_out="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh" 2>&1 || true)"
+sync_hits="$(printf '%s\n' "$sync_out" | grep -c '^GATE-FAIL' || true)"
+if [ "$sync_hits" = "12" ]; then echo "self-test ok: sync-no-catch-all reports all 12 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 12 fixture lines" >&2; rc=1; fi
+for want in CatchAllParticipant.kt:6: CatchAllParticipant.kt:10: CatchAllParticipant.kt:13:; do
+  if printf '%s\n' "$sync_out" | grep -qF "android/entitlement/src/main/kotlin/org/ghost/entitlement/bad/$want"; then
+    echo "self-test ok: sync-no-catch-all reports entitlement $want"
+  else
+    echo "SELF-TEST FAIL: sync-no-catch-all does not report entitlement $want" >&2; rc=1
+  fi
+done
+expect_fail sync-no-catch-all "$HARNESS/negative-sync-no-entitlement"
+out="$(GHOST_ROOT="$HARNESS/negative-sync-no-entitlement" bash "$DIR/sync-no-catch-all.sh" 2>&1 || true)"
+if [ "$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)" = "1" ] && printf '%s\n' "$out" | grep -qF "android/entitlement/src/main: missing"; then
+  echo "self-test ok: sync-no-catch-all reports a missing entitlement module"
+else
+  echo "SELF-TEST FAIL: sync-no-catch-all does not report exactly a missing entitlement module" >&2; rc=1
+fi
 # Phase 7 T6 (Kotlin side): every clearnet primitive in the fixture is reported, one line each.
 expect_fail kotlin-clearnet "$HARNESS/negative-clearnet"
 clearnet_hits="$(GHOST_ROOT="$HARNESS/negative-clearnet" bash "$DIR/kotlin-clearnet.sh" 2>&1 | grep -c '^GATE-FAIL' || true)"

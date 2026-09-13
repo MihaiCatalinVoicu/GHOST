@@ -41,6 +41,10 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
 
     override fun selection(): Double = unit(DOMAIN_SELECTION, 0, 0, EMPTY, selectionCounter.getAndIncrement())
 
+    override fun quietRun(index: Long): Double = unit(DOMAIN_QUIET_RUN, 0, 0, EMPTY, index)
+
+    override fun paymentHold(index: Long): Double = unit(DOMAIN_PAYMENT_HOLD, 0, 0, EMPTY, index)
+
     private fun unit(domain: Byte, purpose: Byte, relay: Long, namespace: ByteArray, index: Long): Double {
         val input = ByteBuffer.allocate(1 + 1 + 8 + 1 + namespace.size + 8)
             .put(domain).put(purpose).putLong(relay).put(namespace.size.toByte()).put(namespace).putLong(index)
@@ -62,6 +66,8 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
         private const val DOMAIN_READ_BREAKER: Byte = 2
         private const val DOMAIN_SEND_DELAY: Byte = 3
         private const val DOMAIN_SELECTION: Byte = 4
+        private const val DOMAIN_QUIET_RUN: Byte = 5
+        private const val DOMAIN_PAYMENT_HOLD: Byte = 6
 
         private fun purposeCode(purpose: SchedulePurpose): Byte = when (purpose) {
             SchedulePurpose.FOREGROUND_START -> 1

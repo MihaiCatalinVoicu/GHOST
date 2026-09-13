@@ -31,6 +31,13 @@ internal class FaultySqlExecutor(val delegate: JdbcSqlExecutor, private val bus:
      */
     val onCommit = ArrayList<() -> Unit>()
 
+    /**
+     * Observers of every transaction's end: true once it committed (before the post-commit event, so a
+     * crash there still finds it committed), false when it rolled back. An extension keeps what became
+     * durable through it (the `:entitlement` harness's records of write-aheads and terminal states).
+     */
+    val onTransactionEnd = ArrayList<(Boolean) -> Unit>()
+
     /** Optional statement rewriting (mutants M2, M6, M8, M10, M11 are SQL-level, design §8.8). */
     var rewrite: ((String, List<Any?>) -> Pair<String, List<Any?>>)? = null
 
@@ -74,13 +81,19 @@ internal class FaultySqlExecutor(val delegate: JdbcSqlExecutor, private val bus:
 
     override fun <T> transaction(block: () -> T): T {
         if (delegate.inTransaction) violation("nested transaction on the sync executor")
-        val result = delegate.transaction {
-            dirty = false
-            truthTouched = false
-            val r = block()
-            bus.event(EventKind.PRE_COMMIT)
-            r
+        var committed = false
+        val result = try {
+            delegate.transaction {
+                dirty = false
+                truthTouched = false
+                val r = block()
+                bus.event(EventKind.PRE_COMMIT)
+                r
+            }.also { committed = true }
+        } finally {
+            if (!committed) onTransactionEnd.forEach { it(false) }
         }
+        onTransactionEnd.forEach { it(true) }
         val check = truthTouched
         if (dirty) dirtyCommits++
         dirty = false

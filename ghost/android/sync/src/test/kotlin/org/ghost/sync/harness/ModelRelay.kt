@@ -88,11 +88,14 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
     private fun mac(body: ByteArray): ByteArray =
         Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(macKey, "HmacSHA256")) }.doFinal(body)
 
+    /** The relay's current MAC key (the `:entitlement` harness mints redeemed v2 capabilities with it). */
+    fun key(): ByteArray = macKey.copyOf()
+
     /** Verifies [token] for [required] on [namespace]; null = refused (`unauthorized`). */
     private fun verify(token: ByteArray, required: Int, namespace: NamespaceId, now: Long): Header? {
-        if (token.size != TOKEN_BYTES || token[0] != VERSION) return null
-        val body = token.copyOfRange(0, BODY_BYTES)
-        if (!MessageDigest.isEqual(mac(body), token.copyOfRange(BODY_BYTES, TOKEN_BYTES))) return null
+        val bodyBytes = bodyBytes(token) ?: return null
+        val body = token.copyOfRange(0, bodyBytes)
+        if (!MessageDigest.isEqual(mac(body), token.copyOfRange(bodyBytes, token.size))) return null
         val cap = header(token) ?: return null
         if (cap.expiry <= now) return null
         val scope = cap.namespace == namespace && (cap.kind == required || (cap.kind == KIND_WRITE && required == KIND_READ))
@@ -257,6 +260,22 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
         const val VERSION: Byte = 1
         const val BODY_BYTES = 1 + 1 + 32 + 8 + 8
         const val TOKEN_BYTES = BODY_BYTES + 32
+
+        /**
+         * Capability v2 (Phase 8 design §10.3, X9): the v1 header plus a 16-byte serial, so a
+         * redeemed capability is 98 bytes and its MAC covers bytes 0..66. The header fields sit
+         * where v1 has them (`ghost_relay_api::capability_header` parses both).
+         */
+        const val VERSION_2: Byte = 2
+        const val BODY_V2_BYTES = BODY_BYTES + 16
+        const val TOKEN_V2_BYTES = BODY_V2_BYTES + 32
+
+        /** The MAC-covered body length of a v1 or v2 capability, or null for anything else. */
+        fun bodyBytes(token: ByteArray): Int? = when {
+            token.size == TOKEN_BYTES && token[0] == VERSION -> BODY_BYTES
+            token.size == TOKEN_V2_BYTES && token[0] == VERSION_2 -> BODY_V2_BYTES
+            else -> null
+        }
         const val MAX_BATCH = 256
         const val MAX_LIST_SCAN = 1024
         const val HOUR = 3_600L
@@ -272,9 +291,9 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
 
         fun sha256(bytes: ByteArray): BlobHash = BlobHash(MessageDigest.getInstance("SHA-256").digest(bytes))
 
-        /** The public v1 header of a token (ghost_relay_api::capability_header), or null. */
+        /** The public header of a v1 or v2 token (ghost_relay_api::capability_header), or null. */
         fun header(token: ByteArray): Header? {
-            if (token.size != TOKEN_BYTES || token[0] != VERSION) return null
+            if (bodyBytes(token) == null) return null
             val kind = token[1].toInt()
             if (kind != KIND_READ && kind != KIND_WRITE) return null
             val b = ByteBuffer.wrap(token)
