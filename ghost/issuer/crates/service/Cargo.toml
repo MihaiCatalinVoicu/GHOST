@@ -55,3 +55,7 @@ curve25519-dalek = { workspace = true }
 ghost-relay-node = { path = "../../../relay/crates/node" }
 ghost-relay-api = { path = "../../../relay/crates/api" }
 ghost-relay-capability = { path = "../../../relay/crates/capability" }
+# The T2 world (design §13.4): the production client calls (`issuer_flow`, `redeem_with`) over the
+# loopback transport, and the analyzer. Test graph only.
+ghost-client-net = { path = "../../../client-core/net", default-features = false }
+ghost-t2-join = { path = "../../../test-harness/privacy/t2-join" }

@@ -1,0 +1,29 @@
+T2 variant t2-pr-0: N = 300 packs, 21 days, seeds 0x1/0x2, mutant None
+J1: PASS fixture
+J2: PASS fixture
+J3: PASS fixture
+J4: PASS fixture
+J5: PASS fixture
+J6: PASS fixture
+J7: PASS fixture
+J8: PASS fixture
+J9: PASS fixture
+J10: PASS fixture
+T2b: PASS fixture
+T2c: PASS fixture
+completeness: PASS fixture
+S1: PASS fixture
+S2: PASS fixture
+S3a: PASS fixture
+S3b: PASS fixture
+S3d: PASS fixture
+S4: PASS fixture
+S4 lying issuer: PASS fixture
+J9 lying issuer: PASS fixture
+NI-1: PASS fixture
+NI-1 across cells: PASS fixture
+NI-2: PASS fixture
+NI-3: PASS fixture
+NI-1d: PASS fixture
+S3c (reported, declared L5): fixture
+T2 RESULT: PASS

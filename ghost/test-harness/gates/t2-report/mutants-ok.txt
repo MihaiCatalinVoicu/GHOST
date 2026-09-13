@@ -1,0 +1,25 @@
+test m1_nonce_from_invoice ... ok
+test m2_per_invoice_key ... ok
+test m2b_server_key_id ... ok
+test m3_immediate_eligible ... ok
+test m4_shared_issuer_scope ... ok
+test m5a_no_blinding ... ok
+test m5b_square_blinding ... ok
+test m6_cross_relay_retry ... ok
+test m7_issuer_base_week ... ok
+test m8_variable_counts ... ok
+test m9_session_issuer_calls ... ok
+test m10_referral_id_at_issuer ... ok
+test m11_device_clock_period ... ok
+test m12_claim_in_purchase_run ... ok
+test m13_paid_onboarding ... ok
+test m14_non_permutation_key ... ok
+test m15_seed_reuse_across_flows ... ok
+test m16_issuer_forces_retries ... ok
+test m17_relay_clock_drives_base_week ... ok
+test m18_drop_at_eligible_minute ... ok
+test m19_pay_inside_session ... ok
+test m20_quiet_when_work_due ... ok
+test m21_spend_received_credit ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s

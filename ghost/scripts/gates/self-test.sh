@@ -52,6 +52,21 @@ if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifes
 else
   echo "SELF-TEST FAIL: merged-manifest-lint rejects the Phase 7 merged release manifest" >&2; rc=1
 fi
+# Phase 8 T2 (design §13.4, §13.6): the report check accepts only a complete PASS report of the
+# right scale, and all 23 privacy mutants detected.
+T2R="$HARNESS/t2-report"
+t2r_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
+  if bash "$DIR/t2-report-check.sh" "$T2R/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ]; then echo "self-test ok: t2-report-check $4"; else echo "SELF-TEST FAIL: t2-report-check $4 ($got)" >&2; rc=1; fi
+}
+t2r_case pass pass-gate.txt gate "accepts a complete gate report"
+t2r_case pass pass-pr.txt pr "accepts a complete PR-variant report"
+t2r_case fail missing-check.txt gate "rejects a report without a check (NI-1d)"
+t2r_case fail failed-check.txt gate "rejects a report with a failed check"
+t2r_case fail wrong-scale.txt gate "rejects a PR-scale report as the gate's"
+t2r_case fail no-such-report.txt gate "rejects a missing report"
+t2r_case pass mutants-ok.txt mutants "accepts 23 detected mutants"
+t2r_case fail mutants-short.txt mutants "rejects 22 detected mutants"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"
