@@ -683,21 +683,55 @@ class SessionParticipantTest {
         }
     }
 
+    /**
+     * Every stop the hold's contract names ends it at once (`RedeemHold`, `SyncRuntime`): a foreground
+     * wanted, the payment screen, onStopJob and a wipe. After onStopJob the runtime is idle and the
+     * job's end is never reported (JobScheduler already dropped it); after a wipe the wipe flow's
+     * `awaitIdle` returns, with the engine dropped, and the job's end is reported.
+     */
     @Test
-    fun aForegroundOrThePaymentScreenEndsAHoldAtOnce() {
-        for (how in listOf("foreground", "payment screen")) World(Draws({ false }, hold = 0.5)).use { w ->
+    fun aForegroundThePaymentScreenOnStopJobOrAWipeEndsAHoldAtOnce() {
+        for (how in listOf("foreground", "payment screen", "onStopJob", "wipe")) World(Draws({ false }, hold = 0.5)).use { w ->
             w.writeNeed()
-            val p = ScriptedParticipant(onRelay = { s -> if (s.kind == ParticipantKind.BACKGROUND) w.gate.await(60, TimeUnit.SECONDS) })
+            // The background participant never returns (its lane never steps); a foreground one returns at once.
+            val backgroundReturned = AtomicInteger()
+            val p = ScriptedParticipant(onRelay = { s ->
+                if (s.kind == ParticipantKind.BACKGROUND) {
+                    w.gate.await(60, TimeUnit.SECONDS)
+                    backgroundReturned.incrementAndGet()
+                }
+            })
             w.controller.setParticipant(p)
-            val done = w.job()
+            val done = CountDownLatch(1)
+            val ticket = w.controller.startBackgroundJob { done.countDown() }
             assertTrue(waitFor(10_000) { w.runtime.redeemHeld && p.relaySessions.size == 1 })
-            if (how == "foreground") w.controller.onAppForeground() else w.controller.onPaymentScreenShown()
-            assertTrue("$how ends the hold", done.await(10, TimeUnit.SECONDS))
-            assertTrue(p.relaySessions.first().closed)
-            if (how == "foreground") {
-                assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.FOREGROUND })
-            } else {
-                assertTrue(waitFor(10_000) { w.runtime.activeKind == null })
+            when (how) {
+                "foreground" -> w.controller.onAppForeground()
+                "payment screen" -> w.controller.onPaymentScreenShown()
+                "onStopJob" -> w.controller.stopBackgroundJob(ticket)
+                "wipe" -> w.controller.onWipe()
+            }
+            assertTrue("$how ends the hold", waitFor(10_000) { !w.runtime.redeemHeld && w.runtime.activeKind != SessionKind.BACKGROUND })
+            assertTrue("$how closes the lease", p.relaySessions.first().closed)
+            assertEquals("$how: the background participant is still inside its callback", 0, backgroundReturned.get())
+            when (how) {
+                "foreground" -> {
+                    assertTrue(done.await(10, TimeUnit.SECONDS))
+                    assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.FOREGROUND })
+                }
+                "payment screen" -> {
+                    assertTrue(done.await(10, TimeUnit.SECONDS))
+                    assertTrue(w.runtime.awaitIdle(5_000))
+                }
+                "onStopJob" -> {
+                    assertTrue(w.runtime.awaitIdle(5_000))
+                    assertFalse("no end is reported after onStopJob", done.await(300, TimeUnit.MILLISECONDS))
+                }
+                "wipe" -> {
+                    assertTrue("the wipe flow's awaitIdle returns", w.controller.awaitIdle(5_000))
+                    assertNull(w.controller.stores)
+                    assertTrue(done.await(10, TimeUnit.SECONDS))
+                }
             }
         }
     }
