@@ -3435,12 +3435,14 @@ impl Client {
 }
 
 /// The tables of the relay's two databases: (file tag, table, exported name, key and value types:
-/// `B` bytes → bytes, `U` bytes → (), `N` bytes → u64, `S` str → u64).
+/// `B` bytes → bytes, `U` bytes → (), `N` bytes → u64, `S` str → u64, `W` u64 → u64).
 const RELAY_TABLES: &[(&str, &str, &str, char)] = &[
     ("nullifiers", "nullifiers", "nullifiers", 'B'),
     ("nullifiers", "es_keys", "es_keys", 'B'),
     ("nullifiers", "es_revoked", "es_revoked", 'U'),
     ("nullifiers", "meta", "nullifiers_meta", 'S'),
+    // Per closed week, the rows its sweep deleted (the R2 export, design §19.25 point 4).
+    ("nullifiers", "redemption_counts", "redemption_counts", 'W'),
     ("blobs", "content", "content", 'B'),
     ("blobs", "members", "members", 'B'),
     ("blobs", "namespace_index", "namespace_index", 'B'),
@@ -3502,6 +3504,17 @@ fn read_relay_rows(dir: &Path, scratch: &Path) -> Vec<(&'static str, Vec<u8>, Ve
                             out.push((
                                 exported,
                                 k.value().to_vec(),
+                                v.value().to_be_bytes().to_vec(),
+                            ));
+                        }
+                    }
+                    'W' => {
+                        let def: TableDefinition<u64, u64> = TableDefinition::new(&name);
+                        for item in tx.open_table(def).unwrap().iter().unwrap() {
+                            let (k, v) = item.unwrap();
+                            out.push((
+                                exported,
+                                k.value().to_be_bytes().to_vec(),
                                 v.value().to_be_bytes().to_vec(),
                             ));
                         }
