@@ -46,8 +46,10 @@ pub struct Received {
 pub struct HeldInvite {
     pub token: Token,
     pub epoch: u64,
-    /// The pack flow that produced it.
+    /// The pack flow that produced it, and its position among that pack's invites: the invite's
+    /// identity in every world (neither token randomness nor the order packs finalize in).
     pub source: u64,
+    pub ordinal: u8,
     /// Device minute from which the user can hand it out (its batch's activation slot: creating
     /// an invite starts the relay-visible drop listening, a relay-visible first, R4).
     pub eligible: i64,

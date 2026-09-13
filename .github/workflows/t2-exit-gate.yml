@@ -46,7 +46,10 @@ jobs:
   gate:
     name: T2 exit gate (seed pair ${{ matrix.seed }}, N = 2000, release)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # Measured locally: 4 233 s for one seed pair on 24 cores (two phases of about 2 150 s: the two
+    # gate-scale worlds, then the three gate-scale twins, each world single-threaded); on a 4-vCPU
+    # runner about two hours with the build. Three gate-scale worlds at once need several GB each.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:

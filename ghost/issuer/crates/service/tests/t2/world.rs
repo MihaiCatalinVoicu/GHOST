@@ -1023,11 +1023,21 @@ impl World {
             self.cfg.seeds.user,
             &[b"invite-choice", &self.clients[c].id.to_be_bytes()],
         );
-        // Keyed on the invite itself (its token bytes), never on its index in the inviter's list,
-        // which moves when the inviter's packs finalize in another order.
+        // Keyed on the invite's identity (inviter, pack flow, position in the pack): never on its
+        // index in the inviter's list, which moves when the inviter's packs finalize in another
+        // order (NI-1 across cells), nor on its bytes, which token randomness sets (NI-2).
         let h = |n: usize| {
             let (i, k) = self.invite_pool[n];
-            prf_unit(&key, self.clients[i].invites[k].token.as_bytes())
+            let inv = &self.clients[i].invites[k];
+            prf_unit(
+                &key,
+                &[
+                    &(i as u64).to_be_bytes()[..],
+                    &inv.source.to_be_bytes(),
+                    &[inv.ordinal],
+                ]
+                .concat(),
+            )
         };
         let pick = *candidates
             .iter()
@@ -2158,7 +2168,14 @@ impl World {
                 }),
                 Kind::Invite => {
                     let k = self.clients[c].invites.len();
-                    let key = source.wrapping_mul(8).wrapping_add(k as u64);
+                    // Draws keyed on the invite's identity (pack flow, position in the pack), never
+                    // on its index in the list, which moves when packs finalize in another order.
+                    let ordinal = self.clients[c]
+                        .invites
+                        .iter()
+                        .filter(|h| h.source == source)
+                        .count() as u8;
+                    let key = source.wrapping_mul(8).wrapping_add(u64::from(ordinal));
                     let revoke = if self.draw(c, b"revoke", key) < 0.05 {
                         let w = policy::week_start(pos.epoch as i64 * 4 + 1)
                             + (self.draw(c, b"revoke-at", key) * (10 * DAY) as f64) as i64;
@@ -2173,6 +2190,7 @@ impl World {
                         epoch: pos.epoch,
                         eligible,
                         source,
+                        ordinal,
                         given: false,
                         revoke,
                     });
