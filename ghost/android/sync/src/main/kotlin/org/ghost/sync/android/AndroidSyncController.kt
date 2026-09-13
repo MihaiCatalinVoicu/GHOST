@@ -53,6 +53,8 @@ class AndroidSyncController internal constructor(
 
     override fun onPaymentScreenHidden() = runtime.paymentScreenHidden()
 
+    override fun restorePaymentHold(lastShownEpochSeconds: Long) = runtime.restorePaymentHold(lastShownEpochSeconds)
+
     /**
      * Schedules the periodic job unless the pending one already has the wanted fields. Runs on the
      * runtime thread (binder calls stay off the main thread). The app calls it at process start

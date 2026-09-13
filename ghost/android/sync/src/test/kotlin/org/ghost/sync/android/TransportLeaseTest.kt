@@ -3,6 +3,7 @@ package org.ghost.sync.android
 import org.ghost.network.NetworkException
 import org.ghost.network.OnionAddress
 import org.ghost.network.RelayTransport
+import org.ghost.sync.engine.ErrorPolicy
 import org.ghost.sync.engine.RecordingCalls
 import org.ghost.sync.engine.category
 import org.ghost.sync.port.SyncClock
@@ -238,6 +239,30 @@ class TransportLeaseTest {
         assertNull("the call in flight completed", outcome.get())
         assertEquals(TransportState.READY, state.get())
         assertEquals(2, f.made.size)
+        assertEquals(0, f.overlaps.get())
+    }
+
+    @Test
+    fun aFailingLeaseCallLeavesTheTransportAsItWas() {
+        // T19 by construction: a participant's call that fails, whatever its category (transport-level
+        // ones included), closes nothing and changes nothing the session's next ensure or call sees.
+        val f = Factory()
+        val c = Calls()
+        val h = TorTransportHolder(f, RealClock, Daemons, c.factory)
+        assertEquals(TransportState.READY, h.ensureReady(deadline(5_000)))
+        val lease = h.openLease()
+        val categories = ErrorPolicy.CATEGORIES.keys.toList()
+        var n = 0
+        val calls = c.byTransport.getValue(f.made[0])
+        calls.failure = { categories[n++] }
+        assertEquals(categories, categories.map { category { redeem(lease) } })
+        assertFalse(f.made[0].closed)
+        assertTrue(lease.awaitReady(deadline(50)))
+        assertEquals(TransportState.READY, h.ensureReady(deadline(5_000)))
+        assertEquals("no new transport", 1, f.made.size)
+        calls.failure = { null }
+        redeem(lease)
+        assertEquals("every call reached the one transport", categories.size + 1, c.on(f.made[0]))
         assertEquals(0, f.overlaps.get())
     }
 

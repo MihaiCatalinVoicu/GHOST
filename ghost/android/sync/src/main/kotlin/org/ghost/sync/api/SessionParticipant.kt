@@ -45,8 +45,10 @@ enum class SessionKind { FOREGROUND, BACKGROUND, QUIET, USER_ISSUER_CALL }
  * A participant's lease on the one transport for one session, quiet run or user issuer call.
  *
  *  - [relayRedeem] exists in FOREGROUND and BACKGROUND sessions only, [issuer] in QUIET and
- *    USER_ISSUER_CALL sessions only: no issuer call can happen during a relay session, and no relay
- *    is touched in a quiet run (P-7).
+ *    USER_ISSUER_CALL sessions only: no automatic issuer call can happen during a relay session,
+ *    and no relay is touched in a quiet run (P-7). A USER_ISSUER_CALL session is open only while
+ *    the app is visible, so it may overlap the foreground session (a declared L3 sample) and never
+ *    a background session or a quiet run (T23; see [SyncController.runUserIssuerCall]).
  *  - [issuer] makes at most one call per session: the first call attempt uses it up and every later
  *    one fails `closed` (J9). The call runs on a fresh issuer flow, ended after the call.
  *  - Once [closed], every call fails `closed` (retryable); a call never outlives

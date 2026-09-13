@@ -68,18 +68,27 @@ import org.ghost.sync.api.SessionKind as ParticipantKind
  * The session participant (Phase 8 design §11.6, §12.2, §19.11, §19.14; ADR-23; G-10).
  *
  *  - T19 with a participant: in the deterministic engine world of `T19BasicTest` (8 read pairs, a
- *    fixed list-latency trace), a participant that fails every call (every category of the error
- *    table, transport-level ones included) or one that keeps calling until its deadline, with its
- *    database reads and transactions between lane items, leaves the read schedule identical: the
- *    first pages (STANDARD), the whole list sequence (HIGH), and a background job's list sequence
- *    and end time. On the real runtime, such participants and one that never returns change neither
- *    a job's calls nor its end.
+ *    fixed list-latency trace), a participant that keeps calling until its deadline (every call
+ *    failing with a category of the error table, or none failing), with its clock checks, database
+ *    reads and transactions between lane items, leaves the read schedule identical: the first pages
+ *    (STANDARD), the whole list sequence (HIGH), and a background job's list sequence and end time.
+ *    Its lease is not the engine's transport, as in production, where a failed lease call changes no
+ *    state of the one transport (`TransportLeaseTest.aFailingLeaseCallLeavesTheTransportAsItWas`):
+ *    its call failures cannot reach the session's breakers, budgets or transport faults by
+ *    construction, so what this world checks is its database work and clock checks.
+ *  - On the real runtime, such participants and one that never returns leave a job's calls
+ *    unchanged (lists, ensures, aborts), and the job ends while the latter is still inside its
+ *    callback. There the session's lists wait until the participant runs, so only counts are
+ *    compared; times are compared in the deterministic world above.
  *  - A quiet run makes no `RelayPort` call and at most one issuer call; a relay session exposes no
  *    issuer access; foreground sessions are never quiet; a foreground wanted during a quiet run ends
  *    it at once; no automatic issuer call runs while a relay session runs.
  *  - The quiet-run pattern follows the client's key only: twin runtimes whose issuer answers, work
  *    and failures differ run the same jobs quiet, exactly those [QuietRunScheduler.quiet] names.
- *  - User issuer calls and the payment-screen hold of relay sessions.
+ *  - User issuer calls run only while the app is visible, never during a background session or a
+ *    quiet run (P-7, T23), and nothing relay-visible waits for one (R1): hiding the app closes them,
+ *    and so does a foreground session that may start.
+ *  - The payment-screen hold of relay sessions, also across a process start (§19.11, E15).
  */
 class SessionParticipantTest {
 
@@ -363,6 +372,13 @@ class SessionParticipantTest {
         /** Issuer calls made while a relay session ran (automatic ones never may). */
         val issuerCallsDuringRelaySessions = AtomicInteger()
 
+        /** Issuer calls made while a BACKGROUND session ran (none ever may, user calls included: P-7, T23). */
+        val issuerCallsDuringBackground = AtomicInteger()
+
+        /** While set, every issuer call waits inside the call for it (an issuer that has not answered yet). */
+        @Volatile
+        var issuerHold: CountDownLatch? = null
+
         /** Held until the test ends (participants that never return). */
         val gate = CountDownLatch(1)
 
@@ -376,13 +392,21 @@ class SessionParticipantTest {
             }
             db.transaction { tx -> stores.namespaces.register(tx, ns, Consumer.DM, ids.values.toSet(), listen = true) }
             db.transaction { tx -> ids.values.forEach { stores.capabilities.put(tx, it, ns, CapabilityKind.WRITE, TestBytes.of(82, it.value.toInt()), null) } }
-            transport.calls.during = { name -> if (name != "redeem" && runtime.activeKind != null) issuerCallsDuringRelaySessions.incrementAndGet() }
+            transport.calls.during = { name ->
+                if (name != "redeem") {
+                    val kind = runtime.activeKind
+                    if (kind != null) issuerCallsDuringRelaySessions.incrementAndGet()
+                    if (kind == SessionKind.BACKGROUND) issuerCallsDuringBackground.incrementAndGet()
+                    issuerHold?.await(20, TimeUnit.SECONDS)
+                }
+            }
         }
 
         fun job(): CountDownLatch = CountDownLatch(1).also { done -> controller.startBackgroundJob { done.countDown() } }
 
         override fun close() {
             gate.countDown()
+            issuerHold?.countDown()
             transport.relays.listHold?.countDown()
             transport.bootstrapHold?.countDown()
             controller.onAppBackground()
@@ -500,7 +524,7 @@ class SessionParticipantTest {
     }
 
     @Test
-    fun aParticipantThatFailsEveryCallOrNeverReturnsNeitherDelaysNorSuppressesAJob() {
+    fun aParticipantThatFailsEveryCallOrNeverReturnsLeavesAJobsCallsUnchanged() {
         val base = backgroundJob(null)
         assertEquals(Triple(3, 1, 1), base.network)
         val failing = backgroundJob({ _, released ->
@@ -662,7 +686,11 @@ class SessionParticipantTest {
     }
 
     @Test
-    fun aUserIssuerCallWithNoSessionMakesTheTransportReadyAndClosesIt(): Unit = World().use { w ->
+    fun aUserIssuerCallWithNoSessionMakesTheTransportReadyAndClosesIt(): Unit = World(Draws({ false }, hold = 0.5)).use { w ->
+        // A visible app with no relay session: the payment screen holds relay sessions off.
+        w.controller.onPaymentScreenShown()
+        w.controller.onAppForeground()
+        assertTrue(w.runtime.awaitCommands(5_000))
         val seen = CompletableFuture<Pair<String?, Boolean>>()
         w.controller.runUserIssuerCall { s -> seen.complete(Pair(category { invoiceStatus(s) }, s.clockTrusted())) }
         assertEquals(Pair<String?, Boolean>(null, true), seen.get(10, TimeUnit.SECONDS))
@@ -671,33 +699,150 @@ class SessionParticipantTest {
         assertEquals(1, w.transport.aborts.get())
         assertEquals(0, w.transport.relays.calls.get())
         assertNull(w.runtime.activeKind)
-        // Afterwards a job runs an ordinary relay session.
+        // Afterwards, past the payment hold (drawn when the hiding runs), a job runs an ordinary relay session.
+        w.controller.onAppBackground()
+        assertTrue(w.runtime.awaitCommands(5_000))
+        w.clock.offsetMillis += 61 * MINUTE
         assertTrue(w.job().await(30, TimeUnit.SECONDS))
         assertEquals(3, w.transport.relays.lists.get())
     }
 
     @Test
-    fun aUserIssuerCallWaitsForAQuietRunToEnd(): Unit = World(Draws({ it == 0L })).use { w ->
+    fun aUserIssuerCallWhileTheAppIsHiddenFailsClosedAtOnce(): Unit = World(Draws({ it == 0L })).use { w ->
+        // No activity: nothing is made READY for it.
+        val idle = CompletableFuture<Pair<Boolean, String?>>()
+        w.controller.runUserIssuerCall { s -> idle.complete(Pair(s.closed, category { invoiceStatus(s) })) }
+        assertEquals(Pair<Boolean, String?>(true, "closed"), idle.get(10, TimeUnit.SECONDS))
+        assertEquals(0, w.transport.ensures.get())
+        // During a quiet run: it neither waits for the run's end nor uses the run's transport.
         val release = CountDownLatch(1)
-        val p = ScriptedParticipant(onQuiet = { s ->
+        w.controller.setParticipant(ScriptedParticipant(onQuiet = { s ->
             category { invoiceStatus(s) }
             release.await(20, TimeUnit.SECONDS)
-        })
-        w.controller.setParticipant(p)
+        }))
         val done = w.job()
         assertTrue(waitFor(10_000) { w.transport.calls.calls.size == 1 })
-        val quietAtCall = CompletableFuture<Boolean>()
-        w.controller.runUserIssuerCall { s ->
-            quietAtCall.complete(w.runtime.quietRunning)
-            category { invoiceStatus(s) }
-        }
-        Thread.sleep(200)
-        assertFalse("the user call waits", quietAtCall.isDone)
+        val quiet = CompletableFuture<Triple<Boolean, Boolean, String?>>()
+        w.controller.runUserIssuerCall { s -> quiet.complete(Triple(w.runtime.quietRunning, s.closed, category { invoiceStatus(s) })) }
+        assertEquals(Triple<Boolean, Boolean, String?>(true, true, "closed"), quiet.get(10, TimeUnit.SECONDS))
         release.countDown()
         assertTrue(done.await(10, TimeUnit.SECONDS))
-        assertEquals(false, quietAtCall.get(10, TimeUnit.SECONDS))
-        assertTrue(waitFor(10_000) { w.transport.calls.calls.size == 2 })
         assertTrue(w.runtime.awaitIdle(10_000))
+        assertEquals("the quiet run's one call only", listOf("invoiceStatus"), w.transport.calls.calls.map { it.name })
+    }
+
+    @Test
+    fun aUserIssuerCallWhileABackgroundSessionRunsFailsClosedWithoutTheIssuer(): Unit = World().use { w ->
+        val lists = CountDownLatch(1)
+        w.transport.relays.listHold = lists
+        val done = w.job()
+        assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.BACKGROUND && w.transport.relays.lists.get() >= 1 })
+        val seen = CompletableFuture<Pair<Boolean, String?>>()
+        w.controller.runUserIssuerCall { s -> seen.complete(Pair(s.closed, category { invoiceStatus(s) })) }
+        assertEquals(Pair<Boolean, String?>(true, "closed"), seen.get(10, TimeUnit.SECONDS))
+        assertEquals(SessionKind.BACKGROUND, w.runtime.activeKind)
+        lists.countDown()
+        assertTrue(done.await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals(0, w.transport.calls.calls.size)
+        assertEquals(0, w.issuerCallsDuringBackground.get())
+        assertEquals("the job's session is unchanged", Triple(3, 1, 1), Triple(w.transport.relays.lists.get(), w.transport.ensures.get(), w.transport.aborts.get()))
+    }
+
+    @Test
+    fun aParticipantCannotReachTheIssuerFromABackgroundRelaySession(): Unit = World().use { w ->
+        val lists = CountDownLatch(1)
+        w.transport.relays.listHold = lists
+        val outcome = CompletableFuture<String?>()
+        w.controller.setParticipant(ScriptedParticipant(onRelay = { s ->
+            if (s.kind == ParticipantKind.BACKGROUND) {
+                w.controller.runUserIssuerCall { u ->
+                    outcome.complete(category { checkNotNull(u.issuer).blindSign(ByteArray(16), ByteArray(32), ByteArray(32), 1, 2960, ByteArray(32), 16) })
+                }
+                waitFor(10_000) { outcome.isDone }
+            }
+            lists.countDown()
+        }))
+        val done = w.job()
+        assertEquals("closed", outcome.get(10, TimeUnit.SECONDS))
+        assertTrue(done.await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals(0, w.transport.calls.calls.size)
+        assertEquals(0, w.issuerCallsDuringBackground.get())
+    }
+
+    @Test
+    fun aUserIssuerCallDuringAHandoverRunsOnTheForegroundSession(): Unit = World().use { w ->
+        val lists = CountDownLatch(1)
+        w.transport.relays.listHold = lists
+        val done = w.job()
+        assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.BACKGROUND && w.transport.relays.lists.get() >= 1 })
+        // The app becomes visible: the background session stops taking items and finishes its lists first.
+        w.controller.onAppForeground()
+        val seen = CompletableFuture<Pair<SessionKind?, String?>>()
+        w.controller.runUserIssuerCall { s ->
+            val outcome = category { invoiceStatus(s) }
+            seen.complete(Pair(w.runtime.activeKind, outcome))
+        }
+        Thread.sleep(200)
+        assertFalse("the call waits for the stopping background session", seen.isDone)
+        lists.countDown()
+        assertTrue(done.await(30, TimeUnit.SECONDS))
+        assertEquals(Pair<SessionKind?, String?>(SessionKind.FOREGROUND, null), seen.get(10, TimeUnit.SECONDS))
+        assertEquals(listOf("invoiceStatus"), w.transport.calls.calls.map { it.name })
+        assertEquals(0, w.issuerCallsDuringBackground.get())
+    }
+
+    @Test
+    fun hidingTheAppClosesAUserIssuerCallThatWaitsForTheIssuer(): Unit = World(Draws({ false }, hold = 0.5)).use { w ->
+        val answer = CountDownLatch(1)
+        w.issuerHold = answer
+        // A visible app during a payment hold: the user call makes the transport READY itself.
+        w.controller.onPaymentScreenShown()
+        w.controller.onAppForeground()
+        val session = CompletableFuture<ParticipantSession>()
+        val outcome = CompletableFuture<String?>()
+        w.controller.runUserIssuerCall { s ->
+            session.complete(s)
+            outcome.complete(category { invoiceStatus(s) })
+        }
+        val s = session.get(10, TimeUnit.SECONDS)
+        assertTrue("inside the issuer call", waitFor(10_000) { w.transport.calls.calls.size == 1 })
+        w.controller.onAppBackground()
+        assertTrue("hiding the app closes the user call", waitFor(5_000) { s.closed })
+        assertTrue(w.runtime.awaitIdle(5_000))
+        // Past the hold, a job runs its relay session whatever the issuer does meanwhile.
+        w.clock.offsetMillis += 61 * MINUTE
+        assertTrue(w.job().await(30, TimeUnit.SECONDS))
+        assertEquals(3, w.transport.relays.lists.get())
+        assertFalse("the issuer has still not answered", outcome.isDone)
+        answer.countDown()
+        assertTrue(waitFor(10_000) { outcome.isDone })
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals(0, w.issuerCallsDuringBackground.get())
+    }
+
+    @Test
+    fun theForegroundSessionAfterAPaymentHoldDoesNotWaitForAUserIssuerCall(): Unit = World(Draws({ false }, hold = 0.5)).use { w ->
+        val answer = CountDownLatch(1)
+        w.issuerHold = answer
+        w.controller.onAppForeground()
+        w.controller.onPaymentScreenShown()
+        w.controller.onPaymentScreenHidden()
+        assertTrue(waitFor(5_000) { w.runtime.activeKind == null })
+        val session = CompletableFuture<ParticipantSession>()
+        w.controller.runUserIssuerCall { s ->
+            session.complete(s)
+            category { invoiceStatus(s) }
+        }
+        val s = session.get(10, TimeUnit.SECONDS)
+        assertTrue("inside the issuer call", waitFor(10_000) { w.transport.calls.calls.size == 1 })
+        // The 40-minute hold ends (the runtime also wakes by itself then; a visibility event re-evaluates now).
+        w.clock.offsetMillis += 41 * MINUTE
+        w.controller.onAppForeground()
+        assertTrue("the visible app's session starts at the hold's end", waitFor(5_000) { w.runtime.activeKind == SessionKind.FOREGROUND })
+        assertTrue("the user call it would have waited for is closed", s.closed)
+        answer.countDown()
     }
 
     @Test
@@ -746,11 +891,61 @@ class SessionParticipantTest {
         assertTrue(w.job().await(20, TimeUnit.SECONDS))
         assertEquals(1, p.quietSessions.size)
         assertTrue(w.runtime.awaitIdle(5_000))
+        // User calls are foreground actions: the app is visible, the screen still shown.
+        w.controller.onAppForeground()
         val user = CompletableFuture<String?>()
         w.controller.runUserIssuerCall { s -> user.complete(category { invoiceStatus(s) }) }
         assertNull(user.get(10, TimeUnit.SECONDS))
         assertEquals(listOf("invoiceStatus", "invoiceStatus"), w.transport.calls.calls.map { it.name })
         assertEquals(0, w.transport.relays.calls.get())
+    }
+
+    @Test
+    fun aNewProcessKeepsThePaymentHoldItIsGiven() {
+        // Process 1: the payment screen is shown, then the user leaves GHOST for the wallet app. The
+        // entitlement engine persists the moment the screen was last visible, rounded up to its minute.
+        val lastShown = World(Draws({ false }, hold = 0.5)).use { w ->
+            w.controller.onAppForeground()
+            w.controller.onPaymentScreenShown()
+            w.controller.onAppBackground()
+            assertTrue(w.runtime.awaitIdle(10_000))
+            Math.floorDiv(w.clock.epochSeconds() + 59, 60) * 60
+        }
+        // Process 2: Android ended process 1; its next periodic job starts a new runtime 10 minutes later.
+        World(Draws({ false }, hold = 0.5)).use { w ->
+            w.clock.offsetMillis += 10 * MINUTE
+            w.controller.restorePaymentHold(lastShown)
+            assertTrue(w.job().await(10, TimeUnit.SECONDS))
+            assertTrue(w.runtime.awaitIdle(5_000))
+            w.clock.offsetMillis += 29 * MINUTE
+            assertTrue(w.job().await(10, TimeUnit.SECONDS))
+            assertTrue(w.runtime.awaitIdle(5_000))
+            assertEquals("no relay session 10 and 39 minutes after the screen", 0, w.transport.ensures.get())
+            // The hold is a fresh U[20, 60] min after that moment (40 here): 42 minutes after it, the job syncs.
+            w.clock.offsetMillis += 3 * MINUTE
+            assertTrue(w.job().await(30, TimeUnit.SECONDS))
+            assertEquals(3, w.transport.relays.lists.get())
+        }
+    }
+
+    @Test
+    fun aRestoredHoldNeverOutlastsTheLongestHoldFromNow(): Unit = World(Draws({ false }, hold = 0.99)).use { w ->
+        // A moment long past holds nothing.
+        w.controller.restorePaymentHold(w.clock.epochSeconds() - 2 * 3_600)
+        assertTrue(w.job().await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals(1, w.transport.ensures.get())
+        // A moment in the future (the wall clock was set back since) holds one draw from now (59.6 min here).
+        w.controller.restorePaymentHold(w.clock.epochSeconds() + 86_400)
+        assertTrue(w.runtime.awaitCommands(5_000))
+        w.clock.offsetMillis += 59 * MINUTE
+        assertTrue(w.job().await(10, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals("held 59 minutes later", 1, w.transport.ensures.get())
+        w.clock.offsetMillis += 2 * MINUTE
+        assertTrue(w.job().await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals("never held past the longest hold", 2, w.transport.ensures.get())
     }
 
     private companion object {

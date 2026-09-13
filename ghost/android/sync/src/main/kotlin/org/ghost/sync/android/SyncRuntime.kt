@@ -111,14 +111,21 @@ internal object ClosedLeases : LeasePort {
  *  - Relay sessions: once the session's transport is READY the participant gets
  *    [SessionParticipant.onRelaySession] on its own thread, with a lease that closes when the
  *    session stops. Neither callback thread is a lane thread: the session never waits for it.
- *  - User issuer calls ([runUserIssuerCall]): on the running relay session's transport, or, when
- *    no session runs, on a transport made READY for them (no job or session starts meanwhile).
- *    Calls posted during a quiet run or a stopping session wait for its end.
+ *  - User issuer calls ([runUserIssuerCall]) are foreground actions (§8.3, §12.2: declared L3
+ *    samples) and run only while the app is visible: on the foreground session's transport, or,
+ *    when no relay session may run (the payment hold), on a transport made READY for them. A call
+ *    posted while a session stops waits for its end. While the app is hidden a call gets a closed
+ *    session, so no issuer call happens during a background session or a quiet run (P-7, T23).
+ *  - Nothing relay-visible waits for a user call (R1: the issuer's answer time would set it):
+ *    hiding the app closes the calls that made the transport READY for themselves, and so does a
+ *    foreground session that may start (the payment hold ended); those calls fail `closed`.
  *  - The payment screen ([paymentScreenShown]) closes a running relay session at once; none starts
  *    while it is shown and for [QuietRunScheduler.paymentHoldMillis] after it was hidden (hiding
- *    the app hides it). Quiet runs and user issuer calls are not relay sessions and are unaffected.
+ *    the app hides it). A new process gets the hold back from [restorePaymentHold]. Quiet runs and
+ *    user issuer calls are not relay sessions and are unaffected.
  *
- * Nothing here is persisted (T20). A throwable from a lane item or a participant callback is not
+ * Nothing here is persisted (T20); the moment the payment screen was last visible is persisted by
+ * the entitlement engine, which owns it. A throwable from a lane item or a participant callback is not
  * caught: it reaches the thread's uncaught-exception handler, which on Android ends the process
  * (design §11.2 #11).
  */
@@ -309,6 +316,24 @@ internal class SyncRuntime(
         reconcile()
     }
 
+    /**
+     * An earlier process last showed the payment screen at [lastShownEpochSeconds] (wall clock):
+     * relay sessions are held as if it had been hidden then, for a fresh draw of the hold, so never
+     * longer than the longest hold from now; a running relay session is closed at once.
+     */
+    fun restorePaymentHold(lastShownEpochSeconds: Long) {
+        require(lastShownEpochSeconds >= 0) { "moment out of range" }
+        post {
+            val elapsedMillis = maxOf(0L, clock.epochSeconds() - lastShownEpochSeconds) * 1_000L
+            val left = schedule.paymentHoldMillis(holds++) - elapsedMillis
+            if (left > 0) {
+                holdUntil = maxOf(holdUntil, clock.monotonicMillis() + left)
+                wakeAt = holdUntil
+            }
+            reconcile()
+        }
+    }
+
     /** Waits until every command posted before this call has run; false at the timeout. */
     fun awaitCommands(timeoutMillis: Long): Boolean {
         val drained = CountDownLatch(1)
@@ -388,7 +413,11 @@ internal class SyncRuntime(
             if (!wantForeground) return
             closeQuiet(q)
         }
-        if (userRun != null || !wantForeground || wiped || halted || relayHeld()) return
+        val due = wantForeground && !wiped && !halted && !relayHeld()
+        // User calls on a transport of their own are foreground actions, and no session start waits
+        // for an issuer's answer (R1): hiding the app closes them, and so does a foreground session due now.
+        userRun?.let { if (!wantForeground || due) closeUserRun(it) }
+        if (!due) return
         val e = engineFor(DatabaseOpener.Purpose.FOREGROUND) ?: return
         if (e.disabled) return
         start(e, SessionKind.FOREGROUND, null)
@@ -560,9 +589,10 @@ internal class SyncRuntime(
     private fun startUserCall(call: UserCall) {
         val run = running
         when {
-            wiped || halted -> runUserCall(call, null, ClosedLeases.openLease(), ensure = false) {}
-            quiet != null || run?.stopping == true -> pendingUserCalls += call
-            run != null -> {
+            // A foreground action: while the app is hidden none runs, so none meets a background
+            // session or a quiet run (P-7, T23).
+            wiped || halted || !wantForeground -> runUserCall(call, null, ClosedLeases.openLease(), ensure = false) {}
+            run != null && run.kind == SessionKind.FOREGROUND && !run.stopping -> {
                 val lease = leases.openLease()
                 run.userLeases += lease
                 runUserCall(call, run.session.engine, lease, ensure = false) {
@@ -570,6 +600,8 @@ internal class SyncRuntime(
                     run.userLeases.remove(lease)
                 }
             }
+            // A stopping session (handed over to the foreground, or closed by the payment screen) ends first.
+            run != null || quiet != null -> pendingUserCalls += call
             else -> {
                 val e = userRun?.engine ?: engineFor(DatabaseOpener.Purpose.FOREGROUND)
                 if (e == null || e.disabled) {
@@ -584,9 +616,9 @@ internal class SyncRuntime(
         }
     }
 
-    /** Pending user calls go out once no quiet run and no stopping session is in the way. */
+    /** Pending user calls are decided again at every change: a hidden app closes them, a foreground session takes them. */
     private fun dispatchUserCalls() {
-        if (pendingUserCalls.isEmpty() || quiet != null || running?.stopping == true) return
+        if (pendingUserCalls.isEmpty()) return
         val calls = pendingUserCalls.toList()
         pendingUserCalls.clear()
         calls.forEach(::startUserCall)

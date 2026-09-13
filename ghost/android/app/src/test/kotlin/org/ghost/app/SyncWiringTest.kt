@@ -62,6 +62,10 @@ class SyncWiringTest {
         override fun onPaymentScreenHidden() {
             events.log += "payment-hidden"
         }
+
+        override fun restorePaymentHold(lastShownEpochSeconds: Long) {
+            events.log += "payment-hold"
+        }
     }
 
     private fun wiring(events: Events, key: Boolean) = SyncWiring(
