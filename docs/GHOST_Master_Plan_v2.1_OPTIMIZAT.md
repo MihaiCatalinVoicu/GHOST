@@ -270,6 +270,8 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | FR-7.11 (nou) | Interzis GMS/FCM/Firebase și orice SDK de analytics/crash; allowlist dependențe în CI | P0 |
 | FR-7.12 (nou) | IME incognito flag; fără link previews; notificări fără conținut când e blocat | P0 |
 | FR-7.13 (nou) | Auto-lock + PIN de aplicație; duress wipe | P0 / P2 |
+| FR-7.14 (nou) | Protecția ecranului și a textului: FLAG_SECURE pe toate ferestrele, fără opțiune de dezactivare; mesajele nu se pot selecta, copia sau partaja; câmpuri sensibile marcate pentru accesibilitate (API 34+); clipboard sensibil cu ștergere automată (ADR-27) | P0 |
+| FR-7.15 (nou) | Mesaje efemere: timer în conținutul criptat, per conversație și per canal, implicit 7 zile în DM; ștergere locală completă; TTL pe relee ≤ timer, cu treaptă nouă de 1 h; media „vezi o singură dată” P1 (ADR-27) | P0 |
 | FR-8.9 (nou) | Client, relay și issuer open-source; build reproductibil verificat de două medii independente înainte de semnare | P0 |
 | FR-8.10 (nou) | Distribuție prin onion mirror + repo F-Droid/Accrescent; IPFS gateway eliminat ca sursă primară | P0 |
 | FR-8.11 (nou) | Crash reporting fără SDK: local, criptat, trimis manual după scrubbing, prin Tor | P0 |
@@ -305,11 +307,11 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | 6 | Client Tor (Arti) + modul `network`: fail-closed, isolation per canal, padding, capability client | Android + Rust | 2–4 s | 5 | zero clearnet/DNS la Tor oprit; latență măsurată pe 2 dispozitive |
 | 7 | Sync engine: outbox/inbox idempotent, WorkManager, cursors opace, jitter, retry | Android | 3–4 s | 4, 6 | offline/reconnect/process-death fără pierderi sau duplicate |
 | 8 | Entitlement issuer (Rust): blind signatures, `monero-wallet-rpc` view-only, invite tokens, referral ledger, payout în loturi; client `entitlement` | Rust + Android | 3–5 s | 1 (paralel cu 5–7) | teste negative: reuse, expirat, forjat, perioadă greșită; **test de unlinkability** (jurnalul issuer-ului nu se poate uni cu nullifier-ele relay-urilor) |
-| 9 | DM cu libsignal: publicare prekeys prin relay, sesiuni, safety number, PQ mode, disappearing messages | Android | 5–7 s | 3, 7 | 2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochează |
-| 10 | Forum cu OpenMLS: bridge Rust→Android, canale, epoch, history policy, pseudonime, reveal opt-in | Android + Rust | 6–9 s | 3, 7 (suprapunere cu 9 după definirea envelope-ului) | 20 clienți add/remove/resync; membru scos nu decriptează epoch-uri noi |
-| 11 | Media: AEAD per chunk 256 KiB, fragmentare 64 KiB, strip metadata, Media3 fără cache plaintext | Android | 3–4 s | 7 (paralel cu 10) | corruption/resume; EXIF-zero; no-plaintext-cache |
+| 9 | DM cu libsignal: publicare prekeys prin relay, sesiuni, safety number, PQ mode, mesaje efemere implicit 7 zile (timer în conținutul criptat, ștergere locală completă, TTL pe relee ≤ timer cu treaptă nouă de 1 h; ADR-27) | Android | 5–7 s | 3, 7 | 2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochează; T25 verde |
+| 10 | Forum cu OpenMLS: bridge Rust→Android, canale, epoch, history policy, pseudonime, reveal opt-in, mesaje efemere per canal (politica canalului; ADR-27) | Android + Rust | 6–9 s | 3, 7 (suprapunere cu 9 după definirea envelope-ului) | 20 clienți add/remove/resync; membru scos nu decriptează epoch-uri noi; T25 și în canale |
+| 11 | Media: AEAD per chunk 256 KiB, fragmentare 64 KiB, strip metadata, Media3 fără cache plaintext, media efemeră și „vezi o singură dată” (P1; ADR-27) | Android | 3–4 s | 7 (paralel cu 10) | corruption/resume; EXIF-zero; no-plaintext-cache |
 | 12 | Hardening metadate: tuning jitter/batch, bridges (P1), review independent al capturii de metadate | toți | 2–3 s | 6, 7, 10 | review semnat; capture ⊆ set permis |
-| 13 | UX de producție: Compose, high-privacy mode, disclosures aliniate la §4, accesibilitate, stări offline/eroare | Android | 4–6 s | 9, 10, 11 | usability pe călătoriile P0 (invite → identitate → plată → DM/canal/media → update) |
+| 13 | UX de producție: Compose, high-privacy mode, disclosures aliniate la §4, accesibilitate, stări offline/eroare, protecția ecranului și a textului (FLAG_SECURE permanent, mesaje fără selecție sau copiere, câmpuri sensibile pentru accesibilitate, clipboard sensibil cu ștergere automată; ADR-27) | Android | 4–6 s | 9, 10, 11 | usability pe călătoriile P0 (invite → identitate → plată → DM/canal/media → update); T10 și T24 verzi |
 | 14 | Distribuție: semnare offline/HSM, manifest, anti-rollback, onion mirror, repo F-Droid/Accrescent, build reproductibil din două medii | infra | 3–4 s | 1 (paralel) | tamper/downgrade/rotation drill; hash identic din două medii |
 | 15 | Hardening + audit extern + retest: mobil, libsignal/MLS integration, relay, issuer/blind sig, supply chain | extern | 6–8 s | 9–14 | 0 Critical/High deschise |
 | 16 | Private alpha (20–50 testeri, relay-uri staging, plăți testnet/stagenet Monero) | toți | 3–4 s | 15 | 2 săptămâni stabile; recovery verificat |
@@ -371,7 +373,7 @@ CP-10 și FR-8.7 interzic afirmațiile care depășesc matricea de garanții. Si
 
 - **Dispozitivul compromis** (malware, root ostil, tastatură terță, captură de ecran): în afara scopului (§1.2). Mitigări: Keystore, FLAG_SECURE, IME flag, avertismente.
 - **Adversar global pasiv** și atacuri de corelare pe Tor la nivel statal: Tor oferă rezistență, nu imunitate; padding-ul și jitter-ul reduc, nu elimină.
-- **Membrii de grup rău-intenționați**: pot copia conținut și pot vedea pseudonimul din acel canal. Pseudonimele per canal limitează pagubele la un canal.
+- **Membrii de grup rău-intenționați**: pot copia conținut și pot vedea pseudonimul din acel canal. Pseudonimele per canal limitează pagubele la un canal. Blocarea screenshot-urilor și a copierii, plus mesajele efemere (ADR-27), elimină scurgerile accidentale și istoricul vechi, dar nu fotografia ecranului cu alt dispozitiv sau un client modificat.
 - **Metadate reziduale la relay**: activitatea pe un namespace, bucket-uri de dimensiune, timp granular. Sunt exact cele din matricea de garanții și sunt testate automat.
 - **Plata**: issuer-ul vede că *o* plată a sosit (sumă, moment). Nu o poate lega de identitate sau de trafic. Dacă utilizatorul plătește direct de la un exchange cu KYC, exchange-ul știe că a plătit GHOST — se avertizează în UI.
 - **Referral**: creditarea unui commitment corelată temporal cu o plată este inerentă modelului; loturile și întârzierile aleatoare o atenuează. Invitația în sine este o legătură socială cunoscută celor doi participanți (inerent).

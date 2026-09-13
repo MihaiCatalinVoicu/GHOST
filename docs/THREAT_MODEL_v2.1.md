@@ -124,7 +124,7 @@ Obține: abonamente gratuite; datele issuer-ului (facturi, sume, înălțimi, nu
 Obține: cenzură selectivă pe namespace; nu poate forja. Mitigări: clientul scrie pe ≥2 relay-uri și compară inventarul (ADR-11); hash + AEAD detectează modificarea; cursor semnat la nivel de aplicație (MLS transcript) detectează lipsuri. **Rezidual:** întârziere; disponibilitate. **Test:** failover (Faza 5), T1.
 
 ### S4. Membru rău-intenționat scurge conținutul
-Obține: tot ce a văzut. Mitigări: istoric „none” pentru noi (FR-3.8), probațiune, efemere per canal, pseudonime, flag → carantină → `Remove` (ADR-13), strike pe sponsor, filigran per destinatar pentru media sensibilă (P2). **Rezidual:** ce a copiat rămâne copiat. **Test:** Remove → nu decriptează epoch nou (Faza 10); T14.
+Obține: tot ce a văzut. Mitigări: istoric „none” pentru noi (FR-3.8), probațiune, efemere per canal, fără screenshot și fără copierea mesajelor (ADR-27), pseudonime, flag → carantină → `Remove` (ADR-13), strike pe sponsor, filigran per destinatar pentru media sensibilă (P2). **Rezidual:** ce a copiat rămâne copiat (fotografia ecranului cu alt dispozitiv, client modificat). **Test:** Remove → nu decriptează epoch nou (Faza 10); T14; T24; T25.
 
 ### S5. Brigading cu conturi Sybil pentru a scoate un membru
 Obține: fără mitigări, 3 conturi ajung. Mitigări: ponderare vechime, diversitate sponsori, carantină cu drept la răspuns, moderatori (ADR-13). **Rezidual:** o majoritate reală poate scoate o minoritate: decizie de produs, transparentă în politica canalului. **Test:** simulare guvernanță (Faza 10).
@@ -167,7 +167,7 @@ Obține (exchange-ul): „clientul X a plătit o subadresă asociată GHOST” d
 
 ## 9. Legătura cu harness-ul de invarianți
 
-Fiecare invariant T1–T23 are o definiție executabilă în `ghost/test-harness/privacy/` (T22 și T23 din Faza 8). Faza 2 livrează: schema observabilelor permise pentru relay (`allowed-observables.json`), validatorul `capture-check` (Rust) care respinge orice captură ce conține câmpuri sau valori neadmise, și fixture-uri pozitive/negative. Din Faza 5 relay-ul emite capturi în acest format în modul test, iar validatorul rulează pe fiecare PR.
+Fiecare invariant T1–T25 are o definiție executabilă în `ghost/test-harness/privacy/` (T22 și T23 din Faza 8, T24 și T25 din ADR-27). Faza 2 livrează: schema observabilelor permise pentru relay (`allowed-observables.json`), validatorul `capture-check` (Rust) care respinge orice captură ce conține câmpuri sau valori neadmise, și fixture-uri pozitive/negative. Din Faza 5 relay-ul emite capturi în acest format în modul test, iar validatorul rulează pe fiecare PR.
 
 ## 10. Gate de ieșire
 

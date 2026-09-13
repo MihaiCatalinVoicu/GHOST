@@ -12,5 +12,5 @@
 - Fără link previews.
 - Read receipts, delivery status, typing: opționale, off în high-privacy mode.
 - Timestamps de autor rotunjite la minut (T13).
-- Auto-lock + PIN de aplicație (P0); duress wipe (P2); FLAG_SECURE și clipboard auto-clear (FR-7.8).
+- Auto-lock + PIN de aplicație (P0); duress wipe (P2); FLAG_SECURE și clipboard auto-clear (FR-7.8), detaliate normativ în ADR-27 (FLAG_SECURE permanent, mesaje fără selecție sau copiere, câmpuri sensibile pentru accesibilitate, clipboard sensibil, mesaje efemere).
 - Fără locale/model/OS în mesajele de protocol; doar `protocol_version`.

@@ -29,9 +29,9 @@ Plus un strat **non-tehnic**: norme, stimulente economice, disclosure onest. Reg
 | Strat | Mitigare | Prio | Evidență |
 |---|---|---|---|
 | Prevenire | Cheile de identitate și cheia DB în **Android Keystore hardware-backed (StrongBox când există)**, neexportabile, cu autentificare biometrică/PIN per deblocare. Un atacator cu root citește DB-ul deschis, dar **nu poate exporta cheile** ca să impersoneze utilizatorul de pe alt dispozitiv | P0 (FR-1.7) | test: cheia are `isInsideSecureHardware`; export eșuează |
-| Prevenire | **Auto-lock** agresiv (implicit 1 min fundal) + PIN de aplicație; FLAG_SECURE; IME incognito; avertisment tastatură terță; fără link previews | P0 (ADR-08) | T10, UI tests |
+| Prevenire | **Auto-lock** agresiv (implicit 1 min fundal) + PIN de aplicație; FLAG_SECURE permanent; mesaje fără selecție sau copiere; câmpuri sensibile marcate pentru accesibilitate; clipboard sensibil cu ștergere automată; IME incognito; avertisment tastatură terță; fără link previews | P0 (ADR-08, ADR-27) | T10, T24, UI tests |
 | Prevenire | Recomandare în onboarding: GrapheneOS / dispozitiv dedicat pentru profiluri de risc ridicat; explicat de ce | P0, non-tehnic | review UX |
-| Limitare | **Mesaje efemere implicit** (7 zile în DM, configurabil per canal): un dispozitiv compromis azi expune doar ultimele 7 zile, nu istoricul | P0 (FR-4.4 devine default-on) | test expirare |
+| Limitare | **Mesaje efemere implicit** (7 zile în DM, configurabil per canal): un dispozitiv compromis azi expune doar ultimele 7 zile, nu istoricul | P0 (FR-4.4 devine default-on; ADR-27) | T25 |
 | Limitare | **Pseudonime per canal** (ADR-04): compromiterea nu leagă automat toate canalele de o persoană, dacă nu a făcut „reveal” | P0 | T14 |
 | Limitare | **Post-compromise security** din libsignal și MLS: după ce atacatorul pierde accesul, ratchet-ul se vindecă singur; documentăm că PCS nu ajută cât timp accesul persistă | P0 (biblioteci) | vectori bibliotecă |
 | Detectare | **Atestare hardware a cheii de identitate** (Android Key Attestation): lanțul de atestare se publică în prekey bundle; contactul vede în safety view „cheie în hardware: da/nu”. Nu detectează malware, dar exclude clasa „cheie copiată pe alt telefon” | P1 | ADR-14 |
@@ -126,7 +126,7 @@ Ideea e bună și **implementabilă** în forma corectă: pragul nu „invalidea
 | Prevenire | Canale mici, invite-only; **politica de istoric „fără istoric pentru membri noi”** implicită | P0 (FR-3.8) |
 | Prevenire | **Probațiune** (read-only + rate limit) pentru membri noi | P1 |
 | Prevenire | „Reveal” (legarea pseudonimului de identitatea de bază) e **opt-in, per persoană, cu avertisment**: un membru rău nu poate forța pe nimeni la deanonimizare | P0 (ADR-04) |
-| Limitare | **Mesaje efemere per canal** + fără media descărcabilă implicit (view-once pentru media sensibilă, cu avertismentul onest că screenshot-ul rămâne posibil) | P1 |
+| Limitare | **Mesaje efemere per canal** (P0, Faza 10) + fără screenshot, selecție sau copiere în aplicație (P0, Faza 13) + media „vezi o singură dată” (P1, Faza 11); fotografia ecranului cu alt dispozitiv și un client modificat rămân posibile (ADR-27) | P0 / P1 |
 | Limitare | Pseudonime per canal: leak-ul dintr-un canal nu deanonimizează participarea în altele | P0 |
 | Detectare | **Traitor tracing pentru media** (P2, cercetare): pentru fișiere marcate „sensibile”, expeditorul criptează **o variantă cu filigran invizibil per destinatar** (cost N× pentru grupuri mici); un leak identifică pseudonimul sursă. Pentru text nu există echivalent robust la screenshot; se documentează ca limită | P2 |
 | Detectare | Flag-uri + carantină (3.1) | P1 |
