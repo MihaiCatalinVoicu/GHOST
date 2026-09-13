@@ -587,7 +587,7 @@ impl Regtest {
                 .map(|inv| json!({"amount": price, "address": inv.subaddress}))
                 .collect();
             rpc(&self.payer.rpc, "refresh", json!({}));
-            rpc(
+            let sent = rpc(
                 &self.payer.rpc,
                 "transfer",
                 json!({
@@ -598,6 +598,7 @@ impl Regtest {
                     "get_tx_key": false,
                 }),
             );
+            self.await_mineable(sent["tx_hash"].as_str().unwrap());
             self.mine(CONFIRMATIONS + 1);
         }
         self.tick();
@@ -633,16 +634,54 @@ impl Regtest {
         self.finalize(&inv, false, &s.blind_signatures)
     }
 
+    /// The payer's transfer of `amount` to `address`; returns once the next block mined takes it
+    /// ([`Regtest::await_mineable`]).
     fn pay(&self, address: &str, amount: u64) -> String {
         rpc(&self.payer.rpc, "refresh", json!({}));
-        rpc(
+        let txid = rpc(
             &self.payer.rpc,
             "transfer",
             Self::transfer_params(address, amount, 0),
         )["tx_hash"]
             .as_str()
             .unwrap()
-            .to_string()
+            .to_string();
+        self.await_mineable(&txid);
+        txid
+    }
+
+    /// Waits until the daemon's pool holds `txid` as relayed by fluff, the state in which
+    /// `fill_block_template` takes it. monerod enters a wallet's transaction (`send_raw_tx`) in the
+    /// pool as `local` before `transfer` or `submit_transfer` answers; the Dandelion++ relay that
+    /// marks it `stem` and then, with no peer under `--offline`, `fluff` runs asynchronously
+    /// afterwards, and a block template skips `local` and `stem` transactions. A block mined
+    /// before the relay misses the payment (CI run 34754313443, step 4), so every payment is
+    /// awaited here before any mining. The pool reports `last_relayed_time` as 0 while the
+    /// transaction is `stem` and `relayed` false while it is `local`.
+    fn await_mineable(&self, txid: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let pool = self
+                .daemon
+                .post("/get_transaction_pool", &json!({}))
+                .unwrap_or_else(|e| panic!("get_transaction_pool: {e}"));
+            assert_eq!(pool["status"], "OK", "get_transaction_pool");
+            let entry = pool["transactions"]
+                .as_array()
+                .and_then(|txs| txs.iter().find(|tx| tx["id_hash"] == txid))
+                .map(|tx| (tx["relayed"].clone(), tx["last_relayed_time"].clone()));
+            if let Some((relayed, last_relayed_time)) = &entry {
+                if *relayed == true && last_relayed_time.as_u64().is_some_and(|t| t > 0) {
+                    return;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{txid} was never relayed by fluff in the daemon's pool within 60 s \
+                 ((relayed, last_relayed_time) = {entry:?}; None: not in the pool)"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// The payer's `transfer` of `amount` to `address`, with `unlock_time` when it is not 0.
@@ -1064,24 +1103,16 @@ fn regtest_scenario() {
     );
     assert_eq!(submitted["tx_hash_list"], signed["tx_hash_list"]);
     let payout_tx = signed["tx_hash_list"][0].as_str().unwrap().to_string();
-    // monerod enters a wallet's transaction as `local` and puts it in a block only once its
-    // Dandelion++ relay, run asynchronously after `submit_transfer` answered, has fluffed it
-    // (`fill_block_template` skips `local` and `stem` transactions): mine until the payee has it.
-    let mut received = Value::Null;
-    for _ in 0..20 {
-        t.mine(1);
-        rpc(&t.payer.rpc, "refresh", json!({}));
-        received = rpc(
-            &t.payer.rpc,
-            "get_transfer_by_txid",
-            json!({"txid": payout_tx}),
-        )["transfer"]
-            .clone();
-        if received["type"] == "in" {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
+    // The next block takes the payout once the daemon has relayed it by fluff.
+    t.await_mineable(&payout_tx);
+    t.mine(1);
+    rpc(&t.payer.rpc, "refresh", json!({}));
+    let received = rpc(
+        &t.payer.rpc,
+        "get_transfer_by_txid",
+        json!({"txid": payout_tx}),
+    )["transfer"]
+        .clone();
     assert_eq!(received["type"], "in", "the payout is mined");
     assert_eq!(received["amount"], json!(PAYOUT));
     rpc(ws, "close_wallet", json!({}));
@@ -1526,6 +1557,8 @@ fn regtest_credits_and_payouts() {
             json!({"tx_data_hex": signed["signed_txset"]}),
         );
         assert_eq!(submitted["tx_hash_list"], json!([txid]));
+        // Mined below with the others: each is relayed by fluff first.
+        t.await_mineable(&txid);
         let (status, line) = entry(k, "submitted", &[]);
         assert!(status == 0 && line.contains("state=submitted"), "{line}");
         txids.push(txid);

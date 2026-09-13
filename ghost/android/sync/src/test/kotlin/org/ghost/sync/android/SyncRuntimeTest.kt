@@ -221,11 +221,16 @@ class SyncRuntimeTest {
         assertTrue("a list call is in flight", waitFor(5_000) { w.relays.inFlight.get() >= 1 })
         assertEquals(SessionKind.FOREGROUND, w.runtime.activeKind)
         w.controller.onAppBackground()
-        Thread.sleep(300)
+        // The hide command has run (no guessed delay): the session stops taking items, and its
+        // held calls keep the transport open.
+        assertTrue(w.runtime.awaitCommands(5_000))
         assertEquals("no abort while calls are in flight", 0, w.transport.aborts.get())
         assertEquals(SessionKind.FOREGROUND, w.runtime.activeKind)
         w.relays.release()
         assertTrue(w.runtime.awaitIdle(10_000))
+        // awaitIdle returns as soon as the session's end has cleared the activity; the rest of that
+        // end (the transport status OFF) runs in the same runtime command, so wait for the command.
+        assertTrue(w.runtime.awaitCommands(5_000))
         assertEquals(1, w.transport.aborts.get())
         assertEquals(0, w.transport.abortsDuringCalls.get())
         assertNull(w.runtime.activeKind)
