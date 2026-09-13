@@ -31,3 +31,4 @@ Un ADR nou primește următorul număr, status „Propus”, și se leagă de ce
 | [ADR-18](ADR-18-redb-relay-storage.md) | Stocare relay pe redb în loc de RocksDB (aprobat) |
 | [ADR-19](ADR-19-rust-client-core.md) | Nucleu de client în Rust expus prin JNI (aprobat) |
 | [ADR-20](ADR-20-sync-jobscheduler.md) | Sincronizare: JobScheduler în loc de WorkManager, program per (relay, namespace), reziduuri declarate (aprobat 2026-09-12, cu valorile implicite Q1–Q7) |
+| [ADR-27](ADR-27-screen-text-ephemeral.md) | Protecția ecranului și a textului; mesaje efemere (aprobat 2026-09-13; de implementat în Fazele 9, 10, 11 și 13) |

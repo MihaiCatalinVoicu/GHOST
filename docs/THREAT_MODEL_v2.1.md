@@ -117,7 +117,7 @@ Obține: abonamente gratuite; jurnal de facturi și sume. Nu obține: identită�
 Obține: cenzură selectivă pe namespace; nu poate forja. Mitigări: clientul scrie pe ≥2 relay-uri și compară inventarul (ADR-11); hash + AEAD detectează modificarea; cursor semnat la nivel de aplicație (MLS transcript) detectează lipsuri. **Rezidual:** întârziere; disponibilitate. **Test:** failover (Faza 5), T1.
 
 ### S4. Membru rău-intenționat scurge conținutul
-Obține: tot ce a văzut. Mitigări: istoric „none” pentru noi (FR-3.8), probațiune, efemere per canal, pseudonime, flag → carantină → `Remove` (ADR-13), strike pe sponsor, filigran per destinatar pentru media sensibilă (P2). **Rezidual:** ce a copiat rămâne copiat. **Test:** Remove → nu decriptează epoch nou (Faza 10); T14.
+Obține: tot ce a văzut. Mitigări: istoric „none” pentru noi (FR-3.8), probațiune, efemere per canal, fără screenshot și fără copierea mesajelor (ADR-27), pseudonime, flag → carantină → `Remove` (ADR-13), strike pe sponsor, filigran per destinatar pentru media sensibilă (P2). **Rezidual:** ce a copiat rămâne copiat (fotografia ecranului cu alt dispozitiv, client modificat). **Test:** Remove → nu decriptează epoch nou (Faza 10); T14; T24; T25.
 
 ### S5. Brigading cu conturi Sybil pentru a scoate un membru
 Obține: fără mitigări, 3 conturi ajung. Mitigări: ponderare vechime, diversitate sponsori, carantină cu drept la răspuns, moderatori (ADR-13). **Rezidual:** o majoritate reală poate scoate o minoritate: decizie de produs, transparentă în politica canalului. **Test:** simulare guvernanță (Faza 10).

@@ -5,7 +5,7 @@
 | Element | Stare (2026-09-11) |
 |---|---|
 | Specificație | v2.0 FINAL (`output/pdf/GHOST_Technical_Specification_v2_FINAL.pdf`) + delta v2.1 (`docs/GHOST_Master_Plan_v2.1_OPTIMIZAT.md`) |
-| ADR-uri | ADR-01 … ADR-20 **aprobate** (ADR-01 … ADR-18 pe 2026-09-10, ADR-19 pe 2026-09-11, ADR-20 și valorile implicite Q1–Q7 ale Fazei 7 pe 2026-09-12) (`docs/adr/`) |
+| ADR-uri | ADR-01 … ADR-20 **aprobate** (ADR-01 … ADR-18 pe 2026-09-10, ADR-19 pe 2026-09-11, ADR-20 și valorile implicite Q1–Q7 ale Fazei 7 pe 2026-09-12); ADR-27 (protecția ecranului și a textului, mesaje efemere) **aprobat** 2026-09-13, de implementat în Fazele 9, 10, 11 și 13 (`docs/adr/`) |
 | Faza 0 (baseline, carantină, git) | **închisă** — legacy în `legacy/`, repo git, STATUS, ADR-uri |
 | Faza 1 (monorepo `ghost/`, CI, gates) | **închisă** — build Android + Rust verde local; gates statice verzi și dovedite pe fixture-uri negative; schema proto validată; build reproductibil verificat local; CI în `.github/workflows/ci.yml` |
 | Faza 2 (threat model v2.1, harness privacy) | **livrabile complete**: `docs/THREAT_MODEL_v2.1.md`, `ghost/test-harness/privacy/` (schema observabile, validator `capture-check`, T1 în CI); **gate deschis**: review independent al threat model-ului |
