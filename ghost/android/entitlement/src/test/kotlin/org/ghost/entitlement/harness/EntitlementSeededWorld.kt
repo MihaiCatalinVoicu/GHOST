@@ -83,16 +83,15 @@ internal class EntitlementSeededWorld(val seed: Long) : EntScenario("ent-seed $s
                 w.at(t + MINUTE, "the user activates again if nothing started") { if (e.e().activationState() == ActivationState.NONE) e.e().activate(text) }
             }
             end = (6 + rnd.nextInt(24)) * HOUR
+            // An invitee whose trial is unusable (its HIGH-mode tokens eligible only after their
+            // weeks) buys a pack in XMR when the app shows it uncovered.
+            w.keepBuying(6 * HOUR, PayWith.XMR)
+            w.keepPaying(6 * HOUR)
             // HIGH-mode trial tokens wait for an activation slot and its Geometric(1/2) extra days.
             if (mode == PrivacyMode.HIGH) disturbed = true
         } else {
             w.purchase(0, PayWith.XMR, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
-            for (t in listOf(30 * HOUR, 56 * HOUR)) {
-                w.at(t, "the user buys again if the purchase failed") {
-                    val states = e.purchaseStates()
-                    if (states.none { it.second == "finalized" || it.second == "prepared" || it.second == "invoiced" }) e.e().startPurchase(PayWith.XMR)
-                }
-            }
+            w.keepBuying(4 * HOUR, PayWith.XMR)
             if (rnd.nextInt(10) == 0) w.payAt(listOf(2 * HOUR), fraction = 0.5)
             w.keepPaying(3 * HOUR)
             end = (30 + rnd.nextInt(42)) * HOUR

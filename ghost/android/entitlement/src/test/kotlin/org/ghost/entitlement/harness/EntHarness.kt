@@ -112,6 +112,9 @@ internal class EntRecords {
     /** Every distinct `eligible_minute` the client stored a token with (NI-1: worlds whose tokens activate alike). */
     val eligible = java.util.TreeSet<Long>()
 
+    /** Invoice ids (hex) the client recorded (prepared → invoiced): the invoices MS-6 holds it to. */
+    val invoicedAtClient = HashSet<String>()
+
     fun present(nullifier: String, pair: String) {
         val pairs = presented.getOrPut(nullifier) { LinkedHashSet() }
         if (pairs.add(pair)) version++
@@ -282,9 +285,13 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
      */
     fun finalChecks() {
         structural("end")
-        // MS-6: a paid invoice ends issued (the client kept retrying within its plan).
-        issuer.history.values.firstOrNull { it.state == ModelIssuer.State.CONFIRMED }?.let {
-            violation("MS-6: a paid invoice was never issued (its purchase ended ${alicePurchases()})")
+        // MS-6: a paid invoice ends issued when retries are allowed (design §13.2): every invoice the
+        // client recorded. An invoice it never learned of, every `RequestInvoice` answer lost and its
+        // two capped attempts spent (J9), is a credits invoice whose credits are lost by design
+        // (§11.4, `failPrepared`): a note, not a failure.
+        for (inv in issuer.history.values.filter { it.state == ModelIssuer.State.CONFIRMED }) {
+            if (Bytes.hex(inv.id) in records.invoicedAtClient) violation("MS-6: a paid invoice was never issued (its purchase ended ${alicePurchases()})")
+            w.notes += "a credits invoice the issuer confirmed never reached the client (both capped RequestInvoice answers lost): its credits are lost (§11.4)"
         }
         val now = w.clock.trueEpochSeconds()
         for ((c, ec) in clients) {
@@ -351,6 +358,9 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
         c.sql.onUpdate += { sql, args, changed ->
             if (changed == 1 && sql.startsWith("INSERT INTO outbox_op(")) registerEngineOp(args)
             if (changed == 1 && sql.startsWith("INSERT INTO ent_token(")) ent.records.eligible += (args[6 - 1] as Number).toLong()
+            if (changed == 1 && sql.startsWith("UPDATE ent_purchase SET state = 'invoiced', invoice_id = ?1")) {
+                ent.records.invoicedAtClient += Bytes.hex(args[0] as ByteArray)
+            }
         }
         if (boot > 1) ent.structural("reboot")
     }
@@ -429,6 +439,23 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
             val inv = ent.issuer.bySubaddress(s)
             inv != null && (inv.state == ModelIssuer.State.CREATED || (inv.state == ModelIssuer.State.SEEN && inv.credited + inv.seen < inv.amount))
         }
+    }
+
+    /**
+     * What the app shows as uncovered (read without the engine, so asking costs no event): an
+     * identity with an op still waiting, no pack in progress, and no ACCESS token of this week or a
+     * later one held.
+     */
+    fun uncovered(): Boolean {
+        if (!identity.exists || engine == null) return false
+        fun count(sql: String, args: List<Any?> = emptyList()): Long {
+            var n = 0L
+            c.jdbc.query(sql, args) { n = it.long(0) }
+            return n
+        }
+        if (count("SELECT count(*) FROM outbox_op WHERE released = 0") == 0L) return false
+        if (count("SELECT count(*) FROM ent_purchase WHERE kind = 'pack' AND state IN ('prepared', 'invoiced')") > 0) return false
+        return count("SELECT count(*) FROM ent_token WHERE kind = 'access' AND epoch >= ?1", listOf(org.ghost.entitlement.engine.Grid.week(w.clock.epochSeconds()))) == 0L
     }
 
     fun newFlow(): ByteArray {

@@ -102,6 +102,26 @@ internal abstract class EntScenario(name: String) : Scenario(name) {
         }
     }
 
+    /**
+     * From [from] on, every 6 hours for 30 days, the user buys a pack when the app shows them
+     * uncovered ([EntClient.uncovered]): a purchase that crashes left `failed` with its capped
+     * attempts spent (J9), trial tokens that became eligible only after their weeks (HIGH mode), are
+     * followed by a new purchase, as the app's `ENTITLEMENT_NEEDED` asks. Credits first when
+     * [payWith] is CREDITS, and XMR when they no longer cover the price.
+     */
+    protected fun World.keepBuying(from: Long, payWith: PayWith) {
+        var t = from
+        while (t <= from + KEEP_PAYING_DAYS * DAY) {
+            at(t, "the user buys again when uncovered") {
+                if (alice.uncovered()) {
+                    val started = alice.e().startPurchase(payWith)
+                    if (started == null && payWith != PayWith.XMR) alice.e().startPurchase(PayWith.XMR)
+                }
+            }
+            t += KEEP_BUYING_EVERY
+        }
+    }
+
     /** Setup: tokens of the current week for every slot, eligible an hour ago. */
     protected fun accessTokens(week: Long, perSlot: Int) {
         val eligible = Time.floorMinute(alice.w.clock.epochSeconds()) - 3_600
@@ -122,6 +142,7 @@ internal abstract class EntScenario(name: String) : Scenario(name) {
         const val WEEK0 = 2975L
         const val KEEP_PAYING_DAYS = 30L
         const val KEEP_PAYING_EVERY = 2 * HOUR
+        const val KEEP_BUYING_EVERY = 6 * HOUR
 
         /** E-G's scripted days: a received credit's refresh is due within 14 days, its retry a day later. */
         const val REFRESH_DAYS = 17L
@@ -145,6 +166,7 @@ internal open class ScenarioEA(private val writes: Boolean = true) : EntScenario
         w.quietRunAt(MINUTE)
         w.quietRunAt(45 * MINUTE)
         w.keepPaying(20 * MINUTE)
+        w.keepBuying(HOUR, PayWith.XMR)
         w.quietRunAt(5 * HOUR + 30 * MINUTE)
         if (writes) {
             // The user writes in the app once the tokens are eligible (Saturday morning).
@@ -228,6 +250,9 @@ internal class ScenarioED : EntScenario("E-D") {
         e.addTokens("credit", Grid.creditEpoch(WEEK0), null, 10, Time.floorMinute(w.clock.epochSeconds()) - 3_600)
         val ns = e.c.namespace("dm", listOf(w.relays[0], w.relays[1]), listen = false)
         w.purchase(0, PayWith.CREDITS, listOf(10 * MINUTE, 40 * MINUTE, 3 * HOUR))
+        // Credits spent by an invoice the client never learned of are bought again, in XMR if need be.
+        w.keepBuying(HOUR, PayWith.CREDITS)
+        w.keepPaying(HOUR)
         w.quietRunAt(MINUTE)
         w.quietRunAt(45 * MINUTE)
         w.quietRunAt(5 * HOUR + 30 * MINUTE)

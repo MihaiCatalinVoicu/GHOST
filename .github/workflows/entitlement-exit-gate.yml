@@ -6,13 +6,13 @@ name: entitlement-exit-gate
 # Phase 7 sync harness, the model issuer and the model redeem relays; plus NI-K, the client mutants
 # and the conformance replays, which every shard runs. A workflow file of its own, like
 # monero-regtest.yml: ci.yml has no schedule.
-# Budget (measured in S9 on a 16-thread workstation): the default build's enumeration 524 s and
-# 1 000 seeds 62 s; the full gate about 52 min there (835 thread-minutes: single crashes 450 s,
-# every double crash 1 400 s, 20 000 seeds 1 240 s). That exceeds the design's 40-minute bound for
-# one job, so the gate runs as a matrix of 8 shards (-Dghost.entitlement.shard=i/8): each runs the
-# single crashes of every 8th crash class (a class stays whole, so its digests are compared), an
-# 8th of the double crashes and of the seeds, about 105 thread-minutes, about 45 minutes on a 4-vCPU
-# runner at 1.5 times the per-thread time; the timeout leaves room for a 2-vCPU runner.
+# Budget (measured in S9 on a 16-thread workstation, the full gate run as two halves of 39 min
+# each): the whole enumeration 3 300 s and 20 000 seeds 1 320 s there, about 1 230 thread-minutes.
+# That exceeds the design's 40-minute bound for one job, so the gate runs as a matrix of 12 shards
+# (-Dghost.entitlement.shard=i/12): each runs the single crashes of every 12th crash class (a class
+# stays whole, so its digests are compared), a 12th of the double crashes and of the seeds, and the
+# other suites, about 130 thread-minutes: about 50 minutes on a 4-vCPU runner at 1.5 times the
+# per-thread time; the timeout leaves room for a 2-vCPU runner (about 100 minutes).
 # Release-like settings: the full enumeration and seed count a release is gated on; the Android
 # plugin builds unit tests for the debug build type only, the one JVM variant there is (as in
 # sync-exit-gate). World databases go to /dev/shm (the crash model is process death, not power loss).
@@ -33,17 +33,17 @@ defaults:
 
 env:
   ANDROID_PACKAGES: "platform-tools platforms;android-37.0 platforms;android-37.2 build-tools;37.0.0 build-tools;36.0.0"
-  SHARDS: "8"
+  SHARDS: "12"
 
 jobs:
   entitlement-exit-gate:
-    name: entitlement exit gate (shard ${{ matrix.shard }}/8, full crash enumeration, 20000 seeded worlds)
+    name: entitlement exit gate (shard ${{ matrix.shard }}/12, full crash enumeration, 20000 seeded worlds)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     defaults:
       run:
         shell: bash
