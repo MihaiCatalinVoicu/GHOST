@@ -61,6 +61,12 @@ case|slot-32|slot-table
 case|slot-overlap|slot-table
 case|slot-until-before-from|slot-table
 case|slot-onion-checksum|onion
+# Q27 (§19.22): one exact onion:port under two slots in a common week is refused; the same address
+# under two slots in disjoint weeks, and one service key under two slots at two ports, are not.
+case|slot-onion-under-two-slots|slot-table
+case|slot-onion-two-slots-later-week|slot-table
+case|slot-onion-other-slot-disjoint-weeks|ok
+case|slot-service-key-two-slots-two-ports|ok
 case|price-not-divisible-by-10|price-table
 case|price-zero|price-table
 case|price-duplicate|price-table

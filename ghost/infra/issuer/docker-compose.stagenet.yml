@@ -1,0 +1,155 @@
+# The stagenet issuer (Phase 8 design §6.7, §7.1; runbooks in RUNBOOK.md, Romanian): four
+# containers of one image (Dockerfile). tor owns the network namespace; monerod, wallet-rpc and
+# issuer join it (network_mode: service:tor), so they reach each other on loopback only, and a
+# restart of the issuer (a refused start, runbooks B1, K3, R5) never takes the namespace down.
+# No port is published: the only way in is the issuer's onion service (torrc).
+#
+# Everything outside the repository comes from one directory on the issuer host, on an encrypted
+# disk, named by GHOST_ISSUER_HOST_DIR (RUNBOOK.md, "Directorul de pe host"). None of it is ever
+# committed:
+#   config/issuer.toml          config.stagenet.toml with treasury_address and restore_height
+#   secrets/wallet-rpc.login    user:password of monero-wallet-rpc (digest auth)
+#   secrets/daemon-rpc.login    user:password of monerod's RPC (digest auth)
+#   secrets/wallet.password     the password of the view-only wallet file
+#   secrets/ops.key             the 32-byte seed of the ops key (payout batch files, runbook P1)
+#   secrets/key-load.ghkl       the runbook K3 load file (k_seal values)
+#   sealed-keys/                the sealed per-epoch key files (mounted read-only)
+#   tor/ghost-issuer/           the issuer onion's HiddenServiceDir (ghost-issuer-ops onion-keygen)
+#   tor/state/                  Tor's state
+#   wallet/                     the view-only wallet (issuer-view, issuer-view.keys)
+#   monerod/                    the stagenet blockchain (pruned)
+#   data/                       issuer.redb, journal/, status.json
+#   export/                     payout batch and acknowledgement files
+#   snapshots/                  the database snapshots of runbook B1 (read by the ops service)
+#   transfer/                   relay counts in, the counters file out (runbook R2; ops service)
+#
+# Run from the repository root on the issuer host:
+#   GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer docker compose -f ghost/infra/issuer/docker-compose.stagenet.yml up -d --build
+# GHOST_ISSUER_FLAGS (--restore, --restore-wallet) is for one start of the issuer only (B1, R5).
+name: ghost-issuer-stagenet
+
+x-issuer-image: &issuer-image
+  build:
+    context: ../..
+    dockerfile: infra/issuer/Dockerfile
+  image: ghost-issuer-stagenet:local
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  # The entrypoint needs these as root to copy secrets and set owners; setpriv then drops all.
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - DAC_OVERRIDE
+    - FOWNER
+    - SETGID
+    - SETUID
+  logging:
+    driver: local
+    options:
+      max-size: "1m"
+      max-file: "1"
+
+services:
+  tor:
+    <<: *issuer-image
+    command: ["tor"]
+    volumes:
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/tor/state:/var/lib/tor/state
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/tor/ghost-issuer:/var/lib/tor/ghost-issuer
+
+  monerod:
+    <<: *issuer-image
+    command: ["monerod"]
+    network_mode: service:tor
+    depends_on:
+      tor:
+        condition: service_started
+        restart: true
+    secrets:
+      - daemon_rpc_login
+    volumes:
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/monerod:/var/lib/monerod
+    tmpfs:
+      - /var/log/monero:mode=0700,size=64m
+
+  wallet-rpc:
+    <<: *issuer-image
+    command: ["wallet-rpc"]
+    network_mode: service:tor
+    depends_on:
+      tor:
+        condition: service_started
+        restart: true
+      monerod:
+        condition: service_started
+    secrets:
+      - wallet_rpc_login
+      - daemon_rpc_login
+      - wallet_password
+    volumes:
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/wallet:/var/lib/monero-wallet
+    tmpfs:
+      - /run/ghost:mode=0700,size=1m
+      - /var/log/monero:mode=0700,size=64m
+
+  issuer:
+    <<: *issuer-image
+    command: ["issuer"]
+    network_mode: service:tor
+    depends_on:
+      tor:
+        condition: service_started
+        restart: true
+      wallet-rpc:
+        condition: service_started
+    environment:
+      GHOST_ISSUER_FLAGS: ${GHOST_ISSUER_FLAGS:-}
+    secrets:
+      - wallet_rpc_login
+      - daemon_rpc_login
+      - ops_key
+      - key_load
+    volumes:
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/config/issuer.toml:/etc/ghost-issuer/issuer.toml:ro
+      - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/sealed-keys:/var/lib/ghost-issuer/sealed-keys:ro
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/data:/var/lib/ghost-issuer/data
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/export:/var/lib/ghost-issuer/export
+    tmpfs:
+      - /run/ghost:mode=0700,size=16m
+
+  # The operator tools on the issuer host (runbooks B1 and R2: reconcile-check and counters-export
+  # on a database snapshot, which never leaves the host). Never started by `up`; run with
+  #   docker compose -f ghost/infra/issuer/docker-compose.stagenet.yml run --rm ops <command> ...
+  ops:
+    build:
+      context: ../..
+      dockerfile: infra/issuer/Dockerfile
+      target: ops
+    image: ghost-issuer-ops:local
+    profiles:
+      - ops
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/snapshots:/snapshots:ro
+      - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/transfer:/transfer
+
+secrets:
+  wallet_rpc_login:
+    file: ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/secrets/wallet-rpc.login
+  daemon_rpc_login:
+    file: ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/secrets/daemon-rpc.login
+  wallet_password:
+    file: ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/secrets/wallet.password
+  ops_key:
+    file: ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/secrets/ops.key
+  key_load:
+    file: ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/secrets/key-load.ghkl

@@ -24,7 +24,8 @@
 //! distinct, every SPKI canonical, 2048-bit, e = 65537, no prime factor <= 65 537, permutation
 //! proof valid; (3) access keys cover >= 26 consecutive weeks, invite and credit keys and prices
 //! cover the epochs those weeks touch; (4) per slot number non-overlapping week ranges, onions
-//! valid, every covered week has a slot; (5) append-only against local memory
+//! valid, no exact onion:port under two slots in one week (Q27), every covered week has a slot;
+//! (5) append-only against local memory
 //! ([`ScheduleMemory`]: keys, slot sets, prices and revocations); (6) the production client
 //! refuses regtest ([`Schedule::refuse_regtest`]).
 
@@ -91,7 +92,8 @@ pub enum ScheduleError {
     Onion,
     /// A protocol constant is out of range.
     Constants,
-    /// A slot entry is malformed or overlaps another entry of the same slot (rule 4).
+    /// A slot entry is malformed, overlaps another entry of the same slot, or names the exact
+    /// onion:port of another slot in a common week (rule 4, Q27).
     SlotTable,
     /// A price entry is duplicated, zero or not divisible by 10.
     PriceTable,
@@ -715,8 +717,12 @@ fn check_slots(slots: &[SlotEntry]) -> Result<(), ScheduleError> {
         }
         canonical_onion(&s.onion)?;
         // Same slot number: the week ranges must not overlap (a relay changes at a week boundary).
+        // Another slot number: never the same exact onion:port in a common week (Q27, §19.22): one
+        // address serves one slot, so the other slot's tokens could never be redeemed there. The
+        // strings are canonical, so string equality is address equality; one service key under two
+        // slots at different ports stays allowed (§19.22 point 3).
         for t in &slots[..i] {
-            if t.slot == s.slot && ranges_overlap(s, t) {
+            if ranges_overlap(s, t) && (t.slot == s.slot || t.onion == s.onion) {
                 return Err(ScheduleError::SlotTable);
             }
         }
