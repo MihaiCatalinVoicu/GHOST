@@ -76,8 +76,11 @@ run_as() {
 case "${1:-}" in
   tor)
     # The schedule names the issuer's onion: without its key set Tor would create another onion.
-    { [ -s "$HS_DIR/hs_ed25519_secret_key" ] && [ -s "$HS_DIR/hostname" ]; } \
+    [ -s "$HS_DIR/hs_ed25519_secret_key" ] \
       || die "$HS_DIR holds no onion service key set (RUNBOOK.md, Instalare)"
+    # Tor writes hostname from the secret key it loads; a hostname that came with the key set could
+    # name another onion. The install checks the file Tor wrote against the ES (RUNBOOK.md).
+    rm -f "$HS_DIR/hostname"
     own debian-tor /var/lib/tor/state "$HS_DIR"
     chmod 0600 "$HS_DIR/hs_ed25519_secret_key"
     run_as debian-tor tor -f /etc/tor/torrc

@@ -97,6 +97,12 @@ services:
   issuer:
     <<: *issuer-image
     command: ["issuer"]
+    # docker-init is PID 1 and passes SIGTERM on: ghost-issuer installs no signal handler, and as PID
+    # 1 it ignored SIGTERM until `docker compose stop` killed it 10 s later (runbook B1 stops it every
+    # hour). Ended by the signal it leaves issuer.redb as a crash does: its next start recovers the
+    # file, and the ops tools read a snapshot through a recovered private copy (RedbSnapshot in
+    # issuer/crates/service/src/store.rs).
+    init: true
     network_mode: service:tor
     depends_on:
       tor:
@@ -141,6 +147,11 @@ services:
       - ../../protocol/entitlement/schedule.ghes:/etc/ghost/schedule.ghes:ro
       - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/snapshots:/snapshots:ro
       - ${GHOST_ISSUER_HOST_DIR:?name the issuer host directory}/transfer:/transfer
+    # reconcile-check and counters-export read a snapshot through a private copy here: the snapshot
+    # of an issuer ended by a signal needs redb's recovery, which writes. The copy is removed after
+    # the check and never outlives the container.
+    tmpfs:
+      - /tmp:mode=0700,size=512m
 
 secrets:
   wallet_rpc_login:

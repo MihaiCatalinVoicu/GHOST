@@ -6,8 +6,8 @@ use ghost_issuer::journal::{
     BatchEntry, ClaimEntry, Entry, FileJournal, InvoiceEntry, Journal, JournalError, SEGMENT_PREFIX,
 };
 use ghost_issuer::store::{
-    self, ClaimRow, ClaimState, CreditUse, InvoiceRow, InvoiceState, MetaKey, PayWith, RedbStore,
-    Store, StoreError, Table,
+    self, ClaimRow, ClaimState, CreditUse, InvoiceRow, InvoiceState, MetaKey, PayWith,
+    RedbSnapshot, RedbStore, Store, StoreError, Table,
 };
 
 fn entries() -> Vec<Entry> {
@@ -281,6 +281,53 @@ fn store_refuses_another_schema_version() {
     tx.commit().unwrap();
     drop(s);
     assert_eq!(RedbStore::open(&path).err(), Some(StoreError::Schema));
+    let scratch = tempfile::tempdir().unwrap();
+    assert_eq!(
+        RedbSnapshot::open_in(&path, scratch.path()).err(),
+        Some(StoreError::Schema)
+    );
+    assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+}
+
+/// Runbooks B1 and R2 (review finding INFRA-1): a snapshot is read through a private copy in the
+/// scratch directory, removed with the view; the snapshot keeps its bytes, and a file that is not
+/// a database leaves no copy behind.
+#[test]
+fn a_snapshot_is_read_through_a_private_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("issuer-2026092812.redb");
+    {
+        let s = RedbStore::open(&path).unwrap();
+        let mut tx = s.write().unwrap();
+        store::set_meta(&mut *tx, MetaKey::HighestMinor, 41).unwrap();
+        tx.commit().unwrap();
+    }
+    let before = std::fs::read(&path).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let snapshot = RedbSnapshot::open_in(&path, scratch.path()).unwrap();
+    let copies: Vec<std::path::PathBuf> = std::fs::read_dir(scratch.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(copies.len(), 1);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&copies[0]).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    let tx = snapshot.read().unwrap();
+    assert_eq!(store::meta(&*tx, MetaKey::HighestMinor).unwrap(), Some(41));
+    drop(tx);
+    drop(snapshot);
+    assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    let not_db = dir.path().join("not.redb");
+    std::fs::write(&not_db, b"not a database").unwrap();
+    assert!(RedbSnapshot::open_in(&not_db, scratch.path()).is_err());
+    assert!(RedbSnapshot::open_in(&dir.path().join("missing.redb"), scratch.path()).is_err());
+    assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
 }
 
 #[test]

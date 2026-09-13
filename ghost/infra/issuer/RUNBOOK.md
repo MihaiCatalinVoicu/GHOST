@@ -42,6 +42,17 @@ Fișierele din acest director:
   (în exemple, `ghost-issuer-ops` este acel binar). `M` este directorul mediului amovibil montat.
 - Uneltele de operator pe host-ul issuer-ului rulează în containerul `ops`, fără rețea:
   `$C --profile ops build ops`, apoi `$C run --rm ops <comandă> …`.
+- **Fereastra de mentenanță.** O procedură care oprește, pornește sau recreează un container al
+  issuer-ului (K2, K3, restaurarea B1, M2, R5, I1) începe cu
+
+  ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
+  ```
+  Așteptat: comanda se întoarce fără ieșire, cel mult după durata unui snapshot în curs (câteva
+  secunde). De acum snapshot-ul orar B1 (secțiunea 6) nu mai atinge containerele. Procedura se
+  încheie, după ultimul ei rezultat așteptat, cu `rm "$H/maintenance"`. Așteptat: fără ieșire; la
+  ora următoare apare un snapshot nou (`ls -t "$H/snapshots" | head -1`). Cât timp fișierul există
+  nu se face niciun snapshot: o procedură întreruptă se duce la capăt sau se închide explicit.
 - Issuer-ul nu scrie niciun log (ADR-26). Starea se citește din `$H/data/status.json`; un refuz la
   pornire este codul de ieșire al containerului (secțiunea 3). monerod și monero-wallet-rpc scriu
   la `--log-level 0` într-un tmpfs, pierdut la oprire (§6.5).
@@ -78,6 +89,8 @@ Un singur director, pe un disc criptat (LUKS), proprietar root, mod 0700; fișie
 | `export/` | `issuer` | `batch-<id>.ghpb` (ieșire), `ack-<id>.ghpa` (intrare) |
 | `snapshots/` | `ops` (ro) | snapshot-urile B1 |
 | `transfer/` | `ops` | numărătorile relay-urilor (intrare), fișierul de contoare (ieșire), R2 |
+| `maintenance` | — | există doar într-o fereastră de mentenanță (secțiunea 0) |
+| `snapshot.lock` | — | lacătul (`flock`) snapshot-ului B1 |
 
 Entrypoint-ul copiază secretele și fișierele montate read-only în tmpfs-ul `/run/ghost` al
 containerului, citibile doar de utilizatorul procesului; nimic secret nu ajunge pe disc în
@@ -117,13 +130,15 @@ containerul lui.
   mediu.
 - [ ] Setul de chei al onion-ului issuer-ului generat în S2b (cele trei fișiere
   `hs_ed25519_secret_key`, `hs_ed25519_public_key`, `hostname`) se copiază în
-  `$H/tor/ghost-issuer/`. ES-ul numește acest onion (`issuer_onion`, port 443):
+  `$H/tor/ghost-issuer/`. Fără cheia secretă containerul `tor` refuză să pornească (altfel Tor ar
+  crea un onion nou). `hostname`-ul copiat nu contează: rolul `tor` îl șterge la fiecare pornire și
+  Tor îl rescrie din cheia secretă pe care o încarcă, deci onion-ul se verifică față de ES abia după
+  pornirea lui Tor (mai jos).
 
   ```sh
-  grep -a -c -F "$(cat "$H/tor/ghost-issuer/hostname"):443" ghost/protocol/entitlement/schedule.ghes
+  ls "$H/tor/ghost-issuer"
   ```
-  Așteptat: `1`. Cu `0` se oprește instalarea: clienții ar suna alt onion decât cel din ES.
-  Fără set de chei containerul `tor` refuză să pornească (altfel Tor ar crea un onion nou).
+  Așteptat: `hostname  hs_ed25519_public_key  hs_ed25519_secret_key`.
 - [ ] Fișierele sigilate ale orizontului ES (generate în S2b) se copiază în `$H/sealed-keys/`, apoi
   se face o încărcare K3 (secțiunea 5.3) care produce `$H/secrets/key-load.ghkl`.
 - [ ] Wallet-ul view-only din adresa primară a trezoreriei și cheia secretă de vizualizare (fără
@@ -149,10 +164,23 @@ containerul lui.
   install -m 0600 ghost/infra/issuer/config.stagenet.toml "$H/config/issuer.toml"
   printf 'treasury_address = "%s"\nrestore_height = %s\n' "$TREASURY" "$RESTORE_HEIGHT" >> "$H/config/issuer.toml"
   ```
-- [ ] Tor și monerod, apoi sincronizarea (prin Tor durează ore):
+- [ ] Tor și monerod:
 
   ```sh
   $C up -d tor monerod
+  ```
+  Așteptat: ambele containere `running` în `$C ps`.
+- [ ] Onion-ul issuer-ului, pe fișierul `hostname` scris de Tor din cheia secretă (după câteva
+  secunde; dacă lipsește, `$C logs tor`). ES-ul numește acest onion (`issuer_onion`, port 443):
+
+  ```sh
+  grep -a -c -F "$(cat "$H/tor/ghost-issuer/hostname"):443" ghost/protocol/entitlement/schedule.ghes
+  ```
+  Așteptat: `1`. Cu `0` se oprește instalarea (`$C down`): Tor servește alt onion decât cel din ES,
+  iar clienții nu l-ar găsi; se verifică setul de chei.
+- [ ] Sincronizarea lui monerod (prin Tor durează ore):
+
+  ```sh
   $C exec monerod sh -c 'monerod --stagenet --rpc-bind-port 38081 --rpc-login "$(cat /run/secrets/daemon_rpc_login)" status'
   ```
   Așteptat, la final: `Height: N/N (100.0%) on stagenet, not mining, net hash …, v16, K(out)+0(in)
@@ -288,14 +316,22 @@ epocile de invitație 748…753, epocile de credit și de preț 230…231.
 
 - [ ] ES-ul nou ajunge într-o versiune a aplicației și la fiecare operator de relay cu cel puțin 8
   săptămâni înainte de prima săptămână de care e nevoie (secțiunea 4; relay-urile: O1).
-- [ ] Pe host-ul issuer-ului, după merge:
+- [ ] Pe host-ul issuer-ului, după merge, fereastra de mentenanță (secțiunea 0):
+
+  ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
+  ```
+  Așteptat: fără ieșire.
+- [ ] Noul ES:
 
   ```sh
   git pull --ff-only && $C up -d --force-recreate issuer
   sha256sum ghost/protocol/entitlement/schedule.ghes
   ```
   Așteptat: `issuer` `running`, `ES_HORIZON_WEEKS` crescut; hash-ul este `sha256` din `ES_SIGNED`.
-  Cod de ieșire 3: ES-ul încalcă regula 5 față de memoria bazei; se revine la ES-ul anterior.
+  Cod de ieșire 3: ES-ul încalcă regula 5 față de memoria bazei; se revine la ES-ul anterior (în
+  aceeași fereastră).
+- [ ] Închiderea ferestrei: `rm "$H/maintenance"` (așteptat ca în secțiunea 0).
 
 ### 5.3 K3: încărcarea cheilor (la 2 săptămâni)
 
@@ -310,15 +346,19 @@ epocile de invitație 748…753, epocile de credit și de preț 230…231.
   Așteptat: câte o linie `SEAL_KEY_READY kind=<tip> epoch=<e> key_id=<64 hex>` (fiecare fișier
   sigilat deschis în cheia intrării lui din ES), apoi `SEAL_LOAD_WRITTEN entries=<n>`. `KEY_MISSING`
   sau `SEAL_REFUSED`: un fișier sigilat lipsește sau nu corespunde ES-ului.
-- [ ] Pe host (fișierul nou are alt inode: containerul se recreează ca secretul să fie remontat):
+- [ ] Pe host, într-o fereastră de mentenanță (secțiunea 0; fișierul nou are alt inode: containerul
+  se recreează ca secretul să fie remontat):
 
   ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
   install -m 0600 /media/transfer/key-load.ghkl "$H/secrets/key-load.ghkl"
   shred -u /media/transfer/key-load.ghkl
   $C up -d --force-recreate issuer
   ```
-  Așteptat: `running`; în `status.json` `KEYS_READY_UNTIL_WEEK` = w + 6 și `KEYS_MISSING` 0. Cod 4:
-  fișierul de încărcare sau un fișier sigilat.
+  Așteptat: prima comandă fără ieșire; `running`; în `status.json` `KEYS_READY_UNTIL_WEEK` = w + 6
+  și `KEYS_MISSING` 0. Cod 4: fișierul de încărcare sau un fișier sigilat (fereastra rămâne deschisă
+  până la o pornire reușită).
+- [ ] Închiderea ferestrei: `rm "$H/maintenance"` (așteptat ca în secțiunea 0).
 
 ### 5.4 K4: distrugerea
 
@@ -339,18 +379,33 @@ epocile de invitație 748…753, epocile de credit și de preț 230…231.
 ## 6. B1: snapshot-uri și restaurare
 
 Snapshot-ul este o copie a lui `issuer.redb` cu issuer-ul oprit câteva secunde (o copie în timpul
-unei scrieri poate fi ruptă). Tor rămâne pornit, deci wallet-ul și monerod nu sunt atinse; clienții
-primesc `UNAVAILABLE` și reîncearcă la termenul lor.
+unei scrieri poate fi ruptă), făcută de `ghost/infra/issuer/snapshot.sh`. Tor rămâne pornit, deci
+wallet-ul și monerod nu sunt atinse; clienții primesc `UNAVAILABLE` și reîncearcă la termenul lor.
+Issuer-ul se termină la SIGTERM (compose: `init: true`) fără să-și închidă baza, ca la o cădere.
+`reconcile-check` și `counters-export` nu deschid snapshot-ul însuși: îl copiază într-un fișier
+privat din tmpfs-ul `/tmp` al containerului `ops` și îl deschid acolo cu reparația pe care o face
+și issuer-ul când repornește după o cădere; copia se șterge după verificare, iar snapshot-ul
+rămâne neschimbat.
 
-- [ ] Cron pe host (root), la fiecare oră:
+Scriptul repornește doar un issuer pe care l-a oprit el. Într-o fereastră de mentenanță
+(`$H/maintenance`, secțiunea 0) nu atinge nimic și nu scrie nimic. Un issuer care nu rulează (oprit
+de operator sau în repornire după un refuz de pornire) rămâne oprit, cu mesajul `snapshot: skipped,
+the issuer is not running …` în mail-ul cron-ului. Dacă copia eșuează, issuer-ul este repornit și
+mesajul este `snapshot: failed, …`.
+
+- [ ] Cron pe host, în `/etc/cron.d/ghost-issuer` (root; `snapshot.sh` este executabil în checkout):
 
   ```cron
-  7 * * * * root cd /srv/ghost-src && GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer docker compose -f ghost/infra/issuer/docker-compose.stagenet.yml stop issuer && install -m 0600 /srv/ghost-issuer/data/issuer.redb /srv/ghost-issuer/snapshots/issuer-$(date -u +\%Y\%m\%d\%H).redb; GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer docker compose -f ghost/infra/issuer/docker-compose.stagenet.yml start issuer
-  17 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*.redb' ! -name 'issuer-*00.redb' -mmin +2880 -delete
-  27 3 * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*00.redb' -mtime +7 -delete
+  7 * * * * root GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer /srv/ghost-src/ghost/infra/issuer/snapshot.sh
+  17 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*.redb' ! -name 'issuer-*00.redb' -mmin +2819 -delete
+  27 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*00.redb' -mmin +10019 -delete
   ```
-  Retenția (§19.15): orare 48 h, una zilnică (ora 00) 7 zile. Snapshot-urile stau pe discul criptat;
-  o copie în afara host-ului se criptează înainte (`gpg --symmetric`) și respectă aceeași retenție.
+  Retenția (§19.15) este un maxim: `find -mmin +n` potrivește fișierele de cel puțin n + 1 minute și
+  ștergerea rulează orar, deci un snapshot orar trăiește cel mult 47 h + 1 h = 48 h, iar cel zilnic
+  (ora 00 UTC) cel mult 167 h + 1 h = 7 zile. Ștergerea rulează și într-o fereastră de mentenanță.
+  Snapshot-urile stau pe discul criptat; o copie în afara host-ului se criptează înainte
+  (`gpg --symmetric`) și respectă aceeași retenție. Așteptat, după ora următoare:
+  `ls -t "$H/snapshots" | head -1` dă `issuer-<AAAALLZZHH>.redb` al orei curente (UTC).
 - [ ] Zilnic, verificarea ultimului snapshot:
 
   ```sh
@@ -359,9 +414,12 @@ primesc `UNAVAILABLE` și reîncearcă la termenul lor.
   ```
   Așteptat: `RECONCILIATION_OK weeks=<n> relays=0` (copia se deschide cu schema 1 și invarianții
   țin). Altfel snapshot-ul nu este „verificat” și nu se folosește la restaurare.
-- [ ] Restaurare, când `issuer.redb` este corupt sau pierdut și `data/journal/` este intact:
+- [ ] Restaurare, când `issuer.redb` este corupt sau pierdut și `data/journal/` este intact, într-o
+  fereastră de mentenanță (secțiunea 0; altfel snapshot-ul orar ar putea porni issuer-ul între `mv`
+  și `install`, pe un director fără bază):
 
   ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
   $C stop issuer
   mv "$H/data/issuer.redb" "$H/data/issuer.redb.broken"
   install -m 0600 "$H/snapshots/issuer-<cel mai nou verificat>.redb" "$H/data/issuer.redb"
@@ -373,7 +431,14 @@ primesc `UNAVAILABLE` și reîncearcă la termenul lor.
   reumplere, `"POOL_SIZE":"POOL_OK"`. Cod 6: jurnalul are o gaură sau snapshot-ul nu este al
   acestui issuer.
 - [ ] Imediat după: `$C up -d --force-recreate issuer` fără variabilă (pornirile următoare sunt
-  normale), apoi un snapshot nou și verificarea lui; `issuer.redb.broken` se șterge
+  normale). Așteptat: `running`, `"HALTED":false`. Apoi închiderea ferestrei și un snapshot nou,
+  verificat ca mai sus:
+
+  ```sh
+  rm "$H/maintenance"
+  GHOST_ISSUER_HOST_DIR="$H" ghost/infra/issuer/snapshot.sh && ls -t "$H/snapshots" | head -1
+  ```
+  Așteptat: niciun mesaj de la script, apoi numele snapshot-ului nou. `issuer.redb.broken` se șterge
   (`shred -u`).
 - [ ] Pierderea bazei **și** a jurnalului pierde facturile plătite dar neemise de după snapshot
   (R13, declarat); se restaurează la fel, cu jurnalul care există.
@@ -389,6 +454,14 @@ primesc `UNAVAILABLE` și reîncearcă la termenul lor.
   restaurarea. Dacă eșuează, nu se face upgrade (vezi mentenanța, mai jos).
 - [ ] Înainte de înălțimea fork-ului: loturile de plată în curs se termină (P1, până la
   `"PAYOUT_BATCHES_OPEN":0`).
+- [ ] Fereastra de mentenanță (secțiunea 0), deschisă până la ultimul pas: în mentenanță (mai jos)
+  issuer-ul nu poate reporni fără wallet (cod 5), deci nici snapshot-ul orar nu trebuie să-l
+  oprească.
+
+  ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
+  ```
+  Așteptat: fără ieșire.
 - [ ] Upgrade:
 
   ```sh
@@ -401,7 +474,10 @@ primesc `UNAVAILABLE` și reîncearcă la termenul lor.
   `$C stop wallet-rpc`. Facturile XMR noi primesc `UNAVAILABLE` (niciun tick sincronizat),
   `BlindSign` pentru facturile deja confirmate, pachetele plătite cu credite și invitațiile continuă;
   tokenurile și relay-urile nu sunt afectate. Starea așteptată: `"SCANNER":"WALLET_UNREACHABLE"`.
-  Issuer-ul nu se repornește în mentenanță (la pornire cere wallet-ul: cod 5).
+  Issuer-ul nu se repornește în mentenanță (la pornire cere wallet-ul: cod 5). Mentenanța se
+  încheie cu upgrade-ul de mai sus, pe o versiune pe care `monero-regtest` trece.
+- [ ] Închiderea ferestrei, după `"SCANNER":"SCANNER_OK"`: `rm "$H/maintenance"` (așteptat ca în
+  secțiunea 0).
 
 ## 8. O1: operatorii de relay (la fiecare ES)
 
@@ -413,38 +489,67 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
 - [ ] ES-ul nou instalat cu cel puțin 8 săptămâni înainte: aceiași octeți ca în versiunea aplicației
   (`sha256sum ghost/protocol/entitlement/schedule.ghes` = `sha256` din `ES_SIGNED`).
 - [ ] Relay-ul pornește cu `--schedule /etc/ghost/schedule.ghes --slot <n> --onion-hostname-file
-  /run/ghost-relay/onion-hostname` (compose-ul de staging le dă; entrypoint-ul copiază fișierul
-  `hostname` al lui Tor acolo, pentru relay-ul neprivilegiat). O actualizare a ES-ului este o
-  repornire; nulifierii persistați rămân:
+  /run/ghost-relay/onion-hostname` (compose-ul de staging le dă). Entrypoint-ul șterge `hostname`-ul
+  venit cu setul de chei, îl lasă pe Tor să-l scrie din cheia secretă pe care o încarcă și abia apoi
+  îl copiază acolo, pentru relay-ul neprivilegiat: relay-ul compară cu ES-ul onion-ul pe care Tor îl
+  servește. O actualizare a ES-ului este o repornire; nulifierii persistați rămân:
 
   ```sh
   export GHOST_STAGING_KEYS=/srv/ghost-staging-keys
   R="docker compose -f ghost/infra/relay/docker-compose.staging.yml"
   git pull --ff-only && $R up -d --force-recreate relay-a relay-b relay-c
-  $R logs relay-a | tail -3
+  $R logs relay-a relay-b relay-c | grep -e 'onion address:' -e 'ghost-relay listening on'
   ```
-  Așteptat: `onion address: <56>.onion`, același onion ca rândul slotului în
-  `ghost/protocol/entitlement/relay-directory.txt`, și containerul `running`. Relay-ul refuză să
-  pornească (mesaj constant, apoi repornire) dacă: ES-ul nu se verifică; încalcă regula 5 față de
-  `nullifiers.redb`; onion-ul lui nu este listat pentru slot în săptămâna curentă; lipsește
-  `nullifiers.redb` lângă un `relay.key` existent. Fără setul de chei onion entrypoint-ul refuză:
-  `error: --schedule needs the onion service key set …`.
+  Așteptat, după cel mult un minut: pentru fiecare relay câte o linie `onion address: <56>.onion`,
+  același onion ca rândul slotului lui în `ghost/protocol/entitlement/relay-directory.txt`, și câte
+  o linie `ghost-relay listening on 127.0.0.1:7443 (protocol v1)`; cele trei containere `running`.
+  Relay-ul refuză să pornească (mesaj constant, apoi repornire) dacă: ES-ul nu se verifică; încalcă
+  regula 5 față de `nullifiers.redb`; onion-ul lui nu este listat pentru slot în săptămâna curentă;
+  lipsește `nullifiers.redb` lângă un `relay.key` existent. Entrypoint-ul refuză fără setul de chei
+  onion (`error: --schedule needs the onion service key set …`) și când Tor nu scrie `hostname` în
+  60 s (`error: tor wrote no onion hostname …`).
 - [ ] `nullifiers.redb` stă pe discul criptat și **nu se restaurează niciodată dintr-un backup
   vechi**: un set vechi redeschide reutilizarea tokenurilor.
 - [ ] Upgrade-ul Faza 8 al unui relay care nu a răscumpărat niciodată (`relay.key` există,
-  `nullifiers.redb` nu), o singură dată:
+  `nullifiers.redb` nu), o singură pornire cu `--nullifiers-init`:
 
   ```sh
   GHOST_RELAY_A_NULLIFIERS=--nullifiers-init $R up -d --force-recreate relay-a
-  $R up -d --force-recreate relay-a
+  $R logs relay-a | grep -c 'ghost-relay listening on'
+  $R exec relay-a ls /var/lib/ghost
   ```
-  `--nullifiers-init` este refuzat într-un director care a avut un store (`redemption.marker`).
+  Așteptat, după cel mult un minut (Tor scrie `hostname`, apoi relay-ul creează store-ul și
+  pornește; ultimele două comenzi se repetă până atunci): `1`, apoi o listă cu `nullifiers.redb`,
+  `redemption.marker` și `relay.key`. Abia apoi pornirea normală:
+
+  ```sh
+  $R up -d --force-recreate relay-a
+  $R logs relay-a | grep -c 'ghost-relay listening on'
+  ```
+  Așteptat: `1` și containerul `running`. O pornire normală venită înainte de store este refuzată
+  (`nullifier store is missing …`, apoi repornire în buclă): se reia pasul cu `--nullifiers-init`,
+  permis cât timp `redemption.marker` lipsește. `--nullifiers-init` este refuzat într-un director
+  care a avut un store (`redemption.marker`).
 - [ ] După pierderea lui `nullifiers.redb`, sau a întregului director de date cu cheile onion
   păstrate (Q25: relay-ul nu se poate deosebi de unul nou; reziduu declarat în ADR-25), o singură
-  pornire cu `--nullifiers-reset` (`GHOST_RELAY_A_NULLIFIERS=--nullifiers-reset …`, apoi fără).
-  Relay-ul refuză singur răscumpărările (`UNAVAILABLE`) pentru fiecare perioadă a cărei fereastră
-  era deschisă la reset: până la `start(week(now) + 2) + 1 h` dacă resetul cade în ultimele 24 h
-  ale unei săptămâni, altfel până la `start(week(now) + 1) + 1 h` (§19.10).
+  pornire cu `--nullifiers-reset`:
+
+  ```sh
+  GHOST_RELAY_A_NULLIFIERS=--nullifiers-reset $R up -d --force-recreate relay-a
+  $R logs relay-a | grep -c 'ghost-relay listening on'
+  $R exec relay-a ls /var/lib/ghost
+  ```
+  Așteptat, ca la `--nullifiers-init`: `1`, apoi `nullifiers.redb`, `redemption.marker` și
+  `relay.key`. Abia apoi pornirea normală:
+
+  ```sh
+  $R up -d --force-recreate relay-a
+  $R logs relay-a | grep -c 'ghost-relay listening on'
+  ```
+  Așteptat: `1` și containerul `running`. Relay-ul refuză singur răscumpărările (`UNAVAILABLE`)
+  pentru fiecare perioadă a cărei fereastră era deschisă la reset: până la
+  `start(week(now) + 2) + 1 h` dacă resetul cade în ultimele 24 h ale unei săptămâni, altfel până
+  la `start(week(now) + 1) + 1 h` (§19.10).
 - [ ] Săptămânal, pentru R2: numărul de răscumpărări pe săptămână al slotului, în fișierul
   `week <w> slot <s> redemptions <n>` (secțiunea 13: nu există încă o comandă care să-l scoată).
 
@@ -527,7 +632,14 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
 Pașii 2–3 din §7.5 (subadresele până la `highest_minor`, apoi `rescan_blockchain`) îi face doar
 issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu rescanează de mână.
 
-- [ ] Oprire: `$C stop issuer wallet-rpc`.
+- [ ] Oprire, într-o fereastră de mentenanță (secțiunea 0: rescanarea durează ore și snapshot-ul
+  orar nu trebuie să o întrerupă):
+
+  ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
+  $C stop issuer wallet-rpc
+  ```
+  Așteptat: prima comandă fără ieșire; `$C ps` nu mai arată `issuer` și `wallet-rpc`.
 - [ ] Fișierele wallet-ului deteriorat se mută deoparte (`$H/wallet/issuer-view*`) și se șterg după
   restaurare.
 - [ ] Pasul 1: wallet-ul view-only regenerat din adresa trezoreriei și cheia de vizualizare cu
@@ -547,12 +659,21 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
   în acest timp `status.json` nu se rescrie și onion-ul nu răspunde. Așteptat, la final:
   `status.json` rescris (ora fișierului se schimbă) cu `"SCANNER":"SCANNER_OK"` (nu
   `WALLET_INCOMPLETE`) și `"POOL_SIZE":"POOL_OK"`. Cod 5: reluarea sau rescanarea a eșuat.
-- [ ] Imediat după: `$C up -d --force-recreate issuer` fără variabilă.
+- [ ] Imediat după: `$C up -d --force-recreate issuer` fără variabilă. Așteptat: `running`,
+  `"SCANNER":"SCANNER_OK"`. Apoi închiderea ferestrei: `rm "$H/maintenance"` (așteptat ca în
+  secțiunea 0).
 
 ## 12. I1: compromiterea issuer-ului (suspectată)
 
-- [ ] Oprire imediată: `$C stop issuer`. Relay-urile continuă (verificare offline); tokenurile
-  existente rămân valabile.
+- [ ] Oprire imediată, cu snapshot-ul orar oprit (fereastra de mentenanță, secțiunea 0, rămâne
+  deschisă până la repornirea cu noul ES):
+
+  ```sh
+  touch "$H/maintenance" && flock "$H/snapshot.lock" true
+  $C stop issuer
+  ```
+  Așteptat: prima comandă fără ieșire (cel mult câteva secunde); `$C ps` nu mai arată `issuer`.
+  Relay-urile continuă (verificare offline); tokenurile existente rămân valabile.
 - [ ] Probele (snapshot, jurnal, `status.json`) se copiază pe discul criptat; nimic în clar în afara
   host-ului.
 - [ ] Fereastra de expunere: cheile din memorie = săptămânile de acces până la curenta + 6 (ultima
@@ -568,10 +689,16 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
   (decizia proprietarului; clienții vechi sună onion-ul vechi până la actualizare).
 - [ ] Publicare urgentă: versiune a aplicației și toți operatorii de relay (O1); relay-urile aplică
   revocările de acces din configurația lor.
-- [ ] Repornirea issuer-ului cu noul ES: refuză imediat invitațiile și creditele epocilor revocate
-  (este singurul lor verificator); până la epoca următoare semnează în continuare pozițiile acelor
-  epoci cu cheia expusă, deci layout-urile și clienții rămân neschimbați, iar acele invitații și
-  credite nu valorează nimic.
+- [ ] Repornirea issuer-ului cu noul ES, după merge:
+
+  ```sh
+  git pull --ff-only && $C up -d --force-recreate issuer
+  ```
+  Așteptat: `running`, `status.json` cu `"HALTED":false`. Issuer-ul refuză imediat invitațiile și
+  creditele epocilor revocate (este singurul lor verificator); până la epoca următoare semnează în
+  continuare pozițiile acelor epoci cu cheia expusă, deci layout-urile și clienții rămân
+  neschimbați, iar acele invitații și credite nu valorează nimic. Apoi închiderea ferestrei:
+  `rm "$H/maintenance"` (așteptat ca în secțiunea 0).
 - [ ] R2 pe fereastra de expunere (credite răscumpărate > credite semnate = falsuri).
 - [ ] Anunț: tokenurile, invitațiile și creditele necheltuite ale epocilor revocate se pierd (E12).
 
@@ -581,6 +708,12 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
   vechi de 7 zile și un snapshot verificat mai nou există) nu are încă apelant: `FileJournal::prune`
   există, dar nici `ghost-issuer`, nici `ghost-issuer-ops` nu îl rulează. Până atunci `data/journal/`
   crește și retenția de 7–14 zile a jurnalului nu este aplicată.
+- Cât timp o fereastră de mentenanță este deschisă (M2 lung, R5, I1) nu se fac snapshot-uri B1;
+  o restaurare folosește ultimul snapshot și jurnalul de după el.
+- Verificarea onion-ului issuer-ului la instalare caută `<onion>:443` în octeții ES-ului: arată că
+  ES-ul listează onion-ul pe care îl servește Tor, nu că îl listează ca `issuer_onion` (onion-ul
+  unui relay, listat tot cu portul 443, ar trece la fel). Nicio comandă `ghost-issuer-ops` nu
+  afișează încă `issuer_onion`.
 - Numărătorile săptămânale ale relay-urilor pentru R2 nu au o comandă: `nullifiers.redb` le conține
   (rândurile pe perioadă), dar `ghost-relay` nu le exportă.
 - Rularea manuală `live-tor` (CI, `workflow_dispatch`) dovedește circuitele distincte ale fluxurilor

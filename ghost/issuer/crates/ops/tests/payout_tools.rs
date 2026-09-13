@@ -580,7 +580,12 @@ fn payout_ack_writes_the_acknowledgement_once_every_entry_is_confirmed() {
 /// schedule (3 slots a week, 16 access positions per slot, 2 invites, 1 credit).
 fn snapshot(d: &Path, extra: &[(CounterId, u64, u64)]) -> PathBuf {
     let path = d.join("issuer.redb");
-    let store = RedbStore::open(&path).unwrap();
+    fill(&RedbStore::open(&path).unwrap(), extra);
+    path
+}
+
+/// Commits the counters of a small issuer (plus `extra`) in one write transaction.
+fn fill(store: &RedbStore, extra: &[(CounterId, u64, u64)]) {
     let mut tx = store.write().unwrap();
     let mut counts = vec![
         (CounterId::PacksXmr, 2960, 1),
@@ -594,7 +599,59 @@ fn snapshot(d: &Path, extra: &[(CounterId, u64, u64)]) -> PathBuf {
         reconcile::add(&mut *tx, id, index, delta).unwrap();
     }
     tx.commit().unwrap();
-    path
+}
+
+/// Set in the child process of `reconcile_check_reads_the_database_of_a_killed_issuer`: the
+/// database it writes.
+const KILLED_WRITER_DB: &str = "GHOST_TEST_KILLED_WRITER_DB";
+
+/// Runbook B1 (review finding INFRA-1): the hourly snapshot copies the `issuer.redb` of an issuer
+/// ended by a signal, never one that closed its database (redb writes the allocator state a
+/// read-only open needs when the `Database` is dropped, and a killed process drops nothing). The
+/// child process commits as the issuer does and exits without running a destructor, as under
+/// SIGKILL; the copy of its file must still be read by `reconcile-check` and `counters-export`.
+#[test]
+fn reconcile_check_reads_the_database_of_a_killed_issuer() {
+    if let Some(path) = std::env::var_os(KILLED_WRITER_DB) {
+        let store = RedbStore::open(Path::new(&path)).unwrap();
+        fill(&store, &[]);
+        std::process::exit(0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let live = d.join("issuer.redb");
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "reconcile_check_reads_the_database_of_a_killed_issuer",
+            "--exact",
+            "--test-threads",
+            "1",
+        ])
+        .env(KILLED_WRITER_DB, &live)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(child.success(), "the writer process failed: {child}");
+    // The B1 copy (`install -m 0600`), taken once the writer is gone.
+    let copy = d.join("issuer-2026092812.redb");
+    std::fs::copy(&live, &copy).unwrap();
+    let before = std::fs::read(&copy).unwrap();
+    let line = ok(&reconcile(&copy, &[]), Code::ReconciliationOk);
+    assert_eq!(num(&line, Field::Relays), Some(0));
+    // The snapshot is recovered in a private copy, never in place (B1 mounts it read-only).
+    assert_eq!(std::fs::read(&copy).unwrap(), before);
+    let counters = d.join("counters.txt");
+    let (status, lines) = run(&[
+        "counters-export",
+        "--database",
+        &arg(&copy),
+        "--out",
+        &arg(&counters),
+    ]);
+    let rendered: Vec<String> = lines.iter().map(Line::render).collect();
+    assert_eq!(status, Status::Ok, "{rendered:?}");
+    assert_eq!(rendered, vec!["COUNTERS_WRITTEN counters=10".to_string()]);
 }
 
 fn reconcile(database: &Path, extra: &[&str]) -> (Status, Vec<Line>) {
