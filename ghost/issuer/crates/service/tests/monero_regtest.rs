@@ -320,10 +320,6 @@ fn total(counters: &Counters, id: CounterId) -> u64 {
         .sum()
 }
 
-fn hex32(text: &str) -> [u8; 32] {
-    hex::decode(text).unwrap().try_into().unwrap()
-}
-
 #[derive(Clone)]
 struct Invoice {
     label: String,
@@ -638,11 +634,19 @@ impl Regtest {
     }
 
     fn pay(&self, address: &str, amount: u64) -> String {
-        self.pay_locked(address, amount, 0)
+        rpc(&self.payer.rpc, "refresh", json!({}));
+        rpc(
+            &self.payer.rpc,
+            "transfer",
+            Self::transfer_params(address, amount, 0),
+        )["tx_hash"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
-    fn pay_locked(&self, address: &str, amount: u64, unlock_time: u64) -> String {
-        rpc(&self.payer.rpc, "refresh", json!({}));
+    /// The payer's `transfer` of `amount` to `address`, with `unlock_time` when it is not 0.
+    fn transfer_params(address: &str, amount: u64, unlock_time: u64) -> Value {
         let mut params = json!({
             "destinations": [{"amount": amount, "address": address}],
             "account_index": 0,
@@ -653,10 +657,7 @@ impl Regtest {
         if unlock_time != 0 {
             params["unlock_time"] = json!(unlock_time);
         }
-        rpc(&self.payer.rpc, "transfer", params)["tx_hash"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        params
     }
 
     fn counters(&self) -> Counters {
@@ -862,26 +863,28 @@ fn regtest_scenario() {
     assert_eq!((s.state, s.credited_atomic), (SIGNED, PRICE + OVERPAID_BY));
     paid_minors.push(over.minor);
 
-    // Step 6: a payment with a lock time is neither credited nor seen.
+    // Step 6: a payment with a lock time. The pinned release cannot make one: wallet-rpc refuses
+    // a transfer with a non-zero unlock_time (−50, WALLET_RPC_ERROR_CODE_NONZERO_UNLOCK_TIME) and
+    // wallet2 refuses to sign one, so nothing reaches the invoice. Consensus still accepts one
+    // made by other software; the rule (neither credited nor seen, §7.4) is covered by the
+    // `ChainPort` world (`money_lock_time_and_double_spend_never_credit`; design §19.22 point 1).
     let locked = t.request("locked");
     let unlock = t.height() + 100;
-    let locked_tx = t.pay_locked(&locked.subaddress, PRICE, unlock);
+    assert_eq!(
+        t.payer.rpc.call(
+            "transfer",
+            Regtest::transfer_params(&locked.subaddress, PRICE, unlock)
+        ),
+        Err(RailError::Rpc { code: -50 }),
+        "wallet-rpc v0.18.5.1 refuses a lock time"
+    );
     t.mine(CONFIRMATIONS);
     t.tick();
-    let entry = rail
-        .transfer_by_txid(&hex32(&locked_tx))
-        .unwrap()
-        .expect("the issuer's wallet sees the locked transfer");
-    assert_eq!(
-        entry.unlock_time, unlock,
-        "wallet-rpc made a locked transfer"
-    );
     let s = t.blind_sign(&locked);
     assert_eq!(
         (s.state, s.credited_atomic, s.seen_atomic),
         (AWAITING_PAYMENT, 0, 0)
     );
-    paid_minors.push(locked.minor);
 
     // Step 7: a payment mined above grace_height: the invoice expires (from a synced view), the
     // funds are unattributed revenue, and step 18's purge removes the mapping.
