@@ -63,24 +63,30 @@ internal class RedeemLane(private val c: EngineContext) {
         return false
     }
 
+    /** The answer of one execution: the plan's relay refused the token's period ([WRONG_PERIOD]), or not. */
+    private enum class Outcome { DONE, NO_TOKEN, WRONG_PERIOD }
+
     /** One pass over the current needs. */
     fun step(session: SessionPort, redeem: RedeemPort) {
+        val now = c.now()
+        // A device clock set since the last step makes the relay-facing offsets stale (§19.24 point 1).
+        c.memory.clock.observe(now, c.clock.monotonicMillis())
         val needs = c.sync.capabilities.needed()
         c.memory.forgetNeeds(needs)
         if (needs.isEmpty()) {
             c.memory.needMet()
             return
         }
-        val now = c.now()
         val trusted = session.clockTrusted()
-        val nowEst = c.memory.clock.now(now)
         val relays = c.tx { tx -> SyncTables.relays(tx).filter { it.active }.associateBy { it.id } }
         val writeExpiry = c.tx { tx -> needs.associateWith { SyncTables.usableWriteExpiry(tx, it.relay, it.namespace) } }
         val plans = ArrayList<RedeemPlanner.Decision.Redeem>()
         for (need in needs) {
             val relay = relays[need.relay]
-            val week = if (relay != null) c.memory.clock.week(relay.id, now) else Grid.week(nowEst)
-            when (val d = planner.plan(need, relay, c.summary, nowEst, week, trusted, c.memory.firstSeen(need, now), writeExpiry[need])) {
+            // Each relay's decisions run on its own clock once it answered (§12.5, §19.24 point 1).
+            val relayNow = if (relay != null) c.memory.clock.relayNow(relay.id, now) else c.memory.clock.now(now)
+            val week = if (relay != null) c.memory.clock.week(relay.id, now) else Grid.week(relayNow)
+            when (val d = planner.plan(need, relay, c.summary, relayNow, week, trusted, c.memory.firstSeen(need, now), writeExpiry[need])) {
                 is RedeemPlanner.Decision.Redeem -> plans += d
                 RedeemPlanner.Decision.NoSlot -> c.memory.count(Counters.NO_SLOT)
                 else -> Unit
@@ -89,57 +95,67 @@ internal class RedeemLane(private val c: EngineContext) {
         // One redemption per (relay, namespace, week): a pair's READ and WRITE needs share it (§10.7).
         val single = plans.groupBy { Triple(it.relay.id, it.need.namespace, it.week) }.values.map { same -> same.minBy { it.dueSeconds } }
         var unmet = false
+        // A relay that refused a period in this step is planned again at the next step, on the period
+        // and the clock its answer set: never a second refused redemption from the stale plan.
+        val refused = HashSet<RelayId>()
         for (plan in single.sortedBy { it.dueSeconds }) {
             if (session.closed) break
-            if (plan.dueSeconds > nowEst) continue
-            if (!execute(redeem, plan, now)) unmet = true
+            if (plan.relay.id in refused) continue
+            if (plan.dueSeconds > c.memory.clock.relayNow(plan.relay.id, now)) continue
+            when (execute(redeem, plan, now)) {
+                Outcome.NO_TOKEN -> unmet = true
+                Outcome.WRONG_PERIOD -> refused += plan.relay.id
+                Outcome.DONE -> Unit
+            }
         }
         // A due need with no eligible token raises ENTITLEMENT_NEEDED (counts only, §12.4, §19.13).
         if (unmet) c.memory.needUnmet(now) else c.memory.needMet()
     }
 
-    /** False when no eligible token exists for the plan. */
-    private fun execute(redeem: RedeemPort, plan: RedeemPlanner.Decision.Redeem, now: Long): Boolean {
+    private fun execute(redeem: RedeemPort, plan: RedeemPlanner.Decision.Redeem, now: Long): Outcome {
         val held = when (val r = c.tx { tx -> reserve(tx, plan, now) }) {
             is Reservation.Held -> r.token
-            Reservation.NoToken -> return false
-            Reservation.Wait, Reservation.Covered -> return true
+            Reservation.NoToken -> return Outcome.NO_TOKEN
+            Reservation.Wait, Reservation.Covered -> return Outcome.DONE
         }
         val requestId = held.requestId()
         val answer = try {
             redeem.redeem(plan.relay.address, plan.need.namespace, held.token(), requestId)
         } catch (e: NetworkException) {
             failed(held, requestId, RetryPolicy.classify(e.category))
-            return true
+            return Outcome.DONE
         } catch (e: IllegalArgumentException) {
             failed(held, requestId, Failure.REJECTED)
-            return true
+            return Outcome.DONE
         }
         val wrongPeriod = answer.result == TorRelayTransport.REDEEM_WRONG_PERIOD
         c.memory.clock.record(plan.relay.id, answer.relayMinute, answer.relayPeriodId, now, wrongPeriod)
         c.tx { tx -> apply(tx, plan, held, requestId, answer) }
-        return true
+        return if (wrongPeriod) Outcome.WRONG_PERIOD else Outcome.DONE
     }
 
     private fun reserve(tx: SyncTransaction, plan: RedeemPlanner.Decision.Redeem, now: Long): Reservation {
-        val nowEst = c.memory.clock.now(now)
+        val relayNow = c.memory.clock.relayNow(plan.relay.id, now)
         val ns = plan.need.namespace.toByteArray()
         val held = c.tokens.relayReservation(tx, plan.relay.id.value, ns, plan.week)
-        if (held != null) {
-            if (windowOver(held.epoch, nowEst)) {
-                c.tokens.deleteRelayReservation(tx, held.nullifier(), held.requestId())
-                return Reservation.Wait
-            }
-            val after = c.memory.retryAfter(held.nullifier())
-            return if (after != null && nowEst < after) Reservation.Wait else Reservation.Held(held)
-        }
-        if (windowOver(plan.week, nowEst)) return Reservation.Wait
         val expiry = SyncTables.usableWriteExpiry(tx, plan.relay.id, plan.need.namespace)
-        if (expiry != null && expiry >= Grid.start(plan.week + 1)) return Reservation.Covered
-        val minute = Time.floorMinute(now)
-        val fresh = c.tokens.freshEligibleAccess(tx, plan.week, plan.slots, minute) ?: return Reservation.NoToken
-        c.tokens.reserveForRelay(tx, fresh.nullifier(), plan.relay.id.value, ns, c.random.bytes(REQUEST_ID_BYTES), minute)
-        return Reservation.Held(checkNotNull(c.tokens.get(tx, fresh.nullifier())))
+        return when (reserveStep(held != null, held?.let { c.memory.retryAfter(it.nullifier()) }, plan.week, relayNow, expiry)) {
+            ReserveStep.RETRY -> Reservation.Held(checkNotNull(held))
+            ReserveStep.DROP -> {
+                val h = checkNotNull(held)
+                c.tokens.deleteRelayReservation(tx, h.nullifier(), h.requestId())
+                clear(h.nullifier())
+                Reservation.Wait
+            }
+            ReserveStep.WAIT -> Reservation.Wait
+            ReserveStep.COVERED -> Reservation.Covered
+            ReserveStep.FRESH -> {
+                val minute = Time.floorMinute(now)
+                val fresh = c.tokens.freshEligibleAccess(tx, plan.week, plan.slots, minute) ?: return Reservation.NoToken
+                c.tokens.reserveForRelay(tx, fresh.nullifier(), plan.relay.id.value, ns, c.random.bytes(REQUEST_ID_BYTES), minute)
+                Reservation.Held(checkNotNull(c.tokens.get(tx, fresh.nullifier())))
+            }
+        }
     }
 
     private fun apply(tx: SyncTransaction, plan: RedeemPlanner.Decision.Redeem, token: TokenRow, requestId: ByteArray, answer: TorRelayTransport.RedeemAnswer) {
@@ -161,9 +177,11 @@ internal class RedeemLane(private val c: EngineContext) {
                 clear(nullifier)
             }
             TorRelayTransport.REDEEM_WRONG_PERIOD -> {
-                if (token.epoch > answer.relayPeriodId) {
-                    // Too early at this relay: keep the reservation, retry from start(week) − 23 h.
-                    c.memory.setRetryAfter(nullifier, Grid.start(token.epoch) - EARLY_RETRY_LEAD)
+                val after = wrongPeriodRetryAfter(token.epoch, answer.relayPeriodId)
+                if (after != null) {
+                    // Too early at this relay: keep the reservation, retry from start(week) − 23 h on
+                    // the relay's clock (the plan of that week comes due no earlier).
+                    c.memory.setRetryAfter(nullifier, after)
                 } else {
                     c.tokens.deleteRelayReservation(tx, nullifier, requestId)
                     clear(nullifier)
@@ -205,10 +223,25 @@ internal class RedeemLane(private val c: EngineContext) {
         c.memory.clearRetryAfter(nullifier)
     }
 
-    /** A week's tokens are refused from `start(week + 1) + 1 h` (design §3.4). */
-    private fun windowOver(week: Long, nowEst: Long): Boolean = nowEst >= Grid.start(week + 1) + Grid.HOUR
-
     override fun toString(): String = "RedeemLane"
+
+    /** What tx1 does with a plan (pinned by `entitlement_policy.txt`, `reserve`). */
+    enum class ReserveStep {
+        /** Retry the pending reservation of the pair and week identically (R8). */
+        RETRY,
+
+        /** Nothing now (a kept reservation waits for its retry time, or the week's window is over). */
+        WAIT,
+
+        /** The pending reservation's week is over: delete it (never retried after its week), then wait. */
+        DROP,
+
+        /** The pair's write capability already reaches past the week. */
+        COVERED,
+
+        /** Reserve a fresh eligible token of the week with a new request id. */
+        FRESH,
+    }
 
     companion object {
         const val FIRST_STEP_MILLIS = 30_000L
@@ -216,5 +249,29 @@ internal class RedeemLane(private val c: EngineContext) {
         private const val SLICE_MILLIS = 1_000L
         private const val REQUEST_ID_BYTES = 16
         private const val EARLY_RETRY_LEAD: Long = 23 * Grid.HOUR
+
+        /** A week's tokens are refused from `start(week + 1) + 1 h` (design §3.4). */
+        fun windowOver(week: Long, relayNow: Long): Boolean = relayNow >= Grid.start(week + 1) + Grid.HOUR
+
+        /**
+         * tx1 for a plan of [week] at [relayNow] (the plan's relay's clock): the pair's pending
+         * reservation of that week ([held], with its [retryAfter] if a `WRONG_PERIOD` set one) is
+         * retried identically unless its week is over; otherwise a fresh token, unless the week is
+         * over or the pair's write capability ([writeExpiry]) reaches past it.
+         */
+        fun reserveStep(held: Boolean, retryAfter: Long?, week: Long, relayNow: Long, writeExpiry: Long?): ReserveStep = when {
+            held && windowOver(week, relayNow) -> ReserveStep.DROP
+            held -> if (retryAfter != null && relayNow < retryAfter) ReserveStep.WAIT else ReserveStep.RETRY
+            windowOver(week, relayNow) -> ReserveStep.WAIT
+            writeExpiry != null && writeExpiry >= Grid.start(week + 1) -> ReserveStep.COVERED
+            else -> ReserveStep.FRESH
+        }
+
+        /**
+         * A `WRONG_PERIOD` answer: a token of a week after the relay's period is kept and retried from
+         * `start(week) − 23 h` (returned); one of the relay's period or before is deleted (null).
+         */
+        fun wrongPeriodRetryAfter(tokenWeek: Long, relayPeriod: Long): Long? =
+            if (tokenWeek > relayPeriod) Grid.start(tokenWeek) - EARLY_RETRY_LEAD else null
     }
 }

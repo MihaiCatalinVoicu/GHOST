@@ -248,6 +248,19 @@ impl QuotaLedger {
     pub fn is_empty(&self) -> bool {
         self.used.is_empty()
     }
+
+    /// Every entry, `(scope hash, used bytes, expiry)` in scope-hash order, and the prune
+    /// high-water: the ledger's whole state (read-only; the T2 exit gate exports it with the
+    /// relay's databases, design §13.4).
+    pub fn snapshot(&self) -> (Vec<([u8; 32], u64, u64)>, u64) {
+        let mut entries: Vec<([u8; 32], u64, u64)> = self
+            .used
+            .iter()
+            .map(|(k, &(used, expiry))| (*k, used, expiry))
+            .collect();
+        entries.sort_unstable();
+        (entries, self.pruned_through)
+    }
 }
 
 #[cfg(test)]

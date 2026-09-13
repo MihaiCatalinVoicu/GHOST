@@ -22,6 +22,9 @@ pub struct HeldToken {
     pub source: u64,
     /// Reserved for an ambiguous redemption: relay, namespace, request id (R8).
     pub reserved: Option<(u8, [u8; 32], [u8; 16])>,
+    /// A kept reservation refused as too early waits until this relay-facing time
+    /// (`RedeemLane.wrongPeriodRetryAfter`).
+    pub retry_after: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -228,6 +231,8 @@ pub struct Client {
     pub hold_until: u64,
     pub needed_since: Option<i64>,
     pub need_surface: Option<i64>,
+    /// A need buyer's one extra pack of the window was started.
+    pub need_bought: bool,
     pub pay_queue: Vec<(u64, usize)>,
     pub crash_pending: bool,
     pub redeems: u64,
@@ -293,6 +298,7 @@ impl Client {
             hold_until: 0,
             needed_since: None,
             need_surface: None,
+            need_bought: false,
             pay_queue: Vec::new(),
             crash_pending: false,
             redeems: 0,

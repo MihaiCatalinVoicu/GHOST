@@ -222,53 +222,46 @@ pub fn j7(acc: &Accumulator) -> Vec<Hit> {
     hits
 }
 
-/// J8: every accepted redemption lies in its window; no redemption of a relay-corrected client
-/// process whose device is within 4 h of true time lies within ±1 h of a true week boundary; for a
-/// device within 24 h of true time (the relay-facing clock corrects any such offset: offsets are
-/// clipped to ±24 h, §12.5, §19.23 point 2), a process sends at most one redemption per relay that
-/// the relay refuses for its period before two relays answered (a `WRONG_PERIOD` answer's period
-/// is adopted for that relay at once, E14). After that, one more per relay only where the adopted
-/// period went stale: the relay's previous answer was `WRONG_PERIOD` (an adoption no accepted
-/// answer has cleared; the estimate lives for the process, across device clock changes) and a week
-/// boundary passed, which `ClockEstimate.week` keeps for 24 h; never two in a row. The estimate's
-/// offsets are taken against the device wall clock, so a device clock set right mid-process starts
-/// a new uncorrected count (that key holds the device offset). Devices further off are corrected
-/// only to within the clip: their `WRONG_PERIOD` answers are counted by [`j8_far_skew`] and
-/// reported. An identical retry of an ambiguous redemption (R8, from the ground truth: its first
-/// attempt may never have reached the relay) that lands after its week is refused for its period
-/// whatever the clock says; those are counted by [`j8_late_retries`] and reported, and their
-/// answers' periods are adopted like any other.
+/// The relay-facing clock's resolution: relay answers carry whole minutes (§10.1), so a client
+/// corrected by them knows true time to within a minute.
+pub const MINUTE_RESOLUTION: u64 = 60;
+
+/// The relay-facing clock's clip (§12.5, §19.23 point 2): offsets beyond a day are corrected only to
+/// within a day.
+pub const CLIP_SECS: i64 = 24 * 3_600;
+
+/// J8 (§13.4, as §19.24 point 2 reads it for a clock corrected per relay):
+/// - every accepted redemption lies in its window;
+/// - no redemption of a relay-corrected client (two relays answered since the device clock was last
+///   set) whose device is within the clip of true time lies within ±1 h of a true week boundary, to
+///   the relay minute's resolution (±(1 h − 60 s));
+/// - such a client is never refused a period;
+/// - an uncorrected client meets each relay at most once per process start with a refused period
+///   (E14): that answer's period and minute are the relay's clock for every later decision about it
+///   (`ClockEstimate.relayNow`). Identical retries (R8) count like any other redemption.
+///
+/// Devices further off than the clip are corrected only to within a day: their refused periods are
+/// counted by [`j8_far_skew`] and reported.
 pub fn j8(acc: &Accumulator) -> Vec<Hit> {
+    j8_of(&acc.redemptions)
+}
+
+/// [`j8`] over a list of redemptions (in time order).
+pub fn j8_of(redemptions: &[crate::accumulate::Redemption]) -> Vec<Hit> {
     let mut hits = Vec::new();
-    let mut uncorrected: HashMap<(u64, u8, i64), Vec<String>> = HashMap::new();
-    // Per (process, relay): the relay's latest answer (time, device offset, WRONG_PERIOD, and
-    // whether that WRONG_PERIOD was itself the one stale adoption allowed after correction).
-    let mut last: HashMap<(u64, u8), (u64, i64, bool, bool)> = HashMap::new();
-    for r in &acc.redemptions {
-        let key = (r.process, r.relay, r.skew);
-        let relay_key = (r.process, r.relay);
-        if r.retry && r.result == Redeemed::WrongPeriod {
-            // The client adopts its answer's period all the same.
-            last.insert(relay_key, (r.t, r.skew, true, false));
-            continue;
-        }
-        let previous = last.get(&relay_key).copied();
+    let mut refused: BTreeMap<(u64, u8), Vec<String>> = BTreeMap::new();
+    let guard = 3_600 - MINUTE_RESOLUTION;
+    for r in redemptions {
         let what = || {
-            let before = match previous {
-                None => "none".to_string(),
-                Some((t, skew, wrong, _)) => format!(
-                    "{} at {t}, device offset {skew} s",
-                    if wrong { "WRONG_PERIOD" } else { "accepted" }
-                ),
-            };
             format!(
-                "redemption at {} by client {} at relay {} (device offset {} s, token week {:?}, week {}; the relay's previous answer: {before})",
+                "redemption at {} by client {} at relay {} (device offset {} s, token week {:?}, week {}{})",
                 r.t,
                 r.client,
                 r.relay,
                 r.skew,
                 r.week,
-                week(r.t)
+                week(r.t),
+                if r.retry { ", an identical retry" } else { "" }
             )
         };
         if r.result == Redeemed::Ok {
@@ -281,43 +274,35 @@ pub fn j8(acc: &Accumulator) -> Vec<Hit> {
                 )),
             }
         }
+        if r.skew.abs() > CLIP_SECS {
+            continue;
+        }
         let p = week(r.t);
-        let near = r.t - week_start(p) < 3_600 || week_start(p + 1) - r.t < 3_600;
-        if r.corrected && near && r.skew.abs() <= 4 * 3_600 {
+        let near = r.t - week_start(p) < guard || week_start(p + 1) - r.t < guard;
+        if r.corrected && near {
             hits.push(hit("J8", what(), "within 1 h of a week boundary".into()));
         }
-        let mut stale = false;
-        if r.result == Redeemed::WrongPeriod && r.skew.abs() <= 24 * 3_600 {
-            if !r.corrected {
-                uncorrected.entry(key).or_default().push(what());
-            } else if matches!(previous, Some((_, _, true, false))) {
-                stale = true;
-            } else {
+        if r.result == Redeemed::WrongPeriod {
+            if r.corrected {
                 hits.push(hit(
                     "J8",
                     what(),
                     "WRONG_PERIOD after the relay-facing clock was corrected".into(),
                 ));
             }
-        }
-        // Every answer carries the relay's period: a WRONG_PERIOD adopts it, any other clears it.
-        if matches!(
-            r.result,
-            Redeemed::Ok | Redeemed::Replayed | Redeemed::WrongPeriod
-        ) {
-            last.insert(
-                relay_key,
-                (r.t, r.skew, r.result == Redeemed::WrongPeriod, stale),
-            );
+            refused
+                .entry((r.process, r.relay))
+                .or_default()
+                .push(what());
         }
     }
-    for ((process, relay, _), shown) in uncorrected {
+    for ((process, relay), shown) in refused {
         if shown.len() > 1 {
             hits.push(hit(
                 "J8",
                 format!("process {process:x} at relay {relay}"),
                 format!(
-                    "{} uncorrected WRONG_PERIOD redemptions: {}",
+                    "{} WRONG_PERIOD redemptions in one process at one relay: {}",
                     shown.len(),
                     shown.join("; ")
                 ),
@@ -327,7 +312,7 @@ pub fn j8(acc: &Accumulator) -> Vec<Hit> {
     hits
 }
 
-/// Identical retries (R8) answered `WRONG_PERIOD` (reported with J8).
+/// Identical retries (R8) answered `WRONG_PERIOD` (reported with J8; counted by it too).
 pub fn j8_late_retries(acc: &Accumulator) -> usize {
     acc.redemptions
         .iter()
@@ -339,35 +324,36 @@ pub fn j8_late_retries(acc: &Accumulator) -> usize {
 pub fn j8_far_skew(acc: &Accumulator) -> usize {
     acc.redemptions
         .iter()
-        .filter(|r| r.result == Redeemed::WrongPeriod && r.skew.abs() > 24 * 3_600)
+        .filter(|r| r.result == Redeemed::WrongPeriod && r.skew.abs() > CLIP_SECS)
         .count()
 }
 
+/// The quiet-run probability of every periodic-job run (§12.2).
+pub const QUIET_Q: f64 = 1.0 / 8.0;
+
+/// The level of the statistical conditions of the deterministic checks (§13.4: α = 0.001).
+pub const CHECK_ALPHA: f64 = 0.001;
+
 /// J9: the contact schedule, per flow (G-4): one `RequestInvoice` byte string per purchase; every
-/// automatic issuer call in a quiet run (a run with zero relay calls) and at most one per quiet
-/// run; at most 5 `BlindSign` per invoice, each at or after its due minute; the user-initiated calls
-/// are the scripted user actions; `ClaimPayout` at most weekly per client and never in a run with
-/// another issuer call; the onboarding `RedeemInvite` before the identity's first relay call.
+/// automatic issuer call in a quiet run (a run of the client in which the relay views hold no call
+/// of it) and at most one per quiet run; quiet runs drawn independently of the work that is due
+/// ([`j9_quiet`], P-7); at most 5 `BlindSign` per invoice, each at or after its due minute; every
+/// user-initiated call at a foreground session the user script drew before it happened;
+/// `ClaimPayout` at most weekly per client and never in a run with another issuer call; the
+/// onboarding `RedeemInvite` before the identity's first relay call.
 pub fn j9(
     acc: &Accumulator,
     truth: &Truth,
-    due: impl Fn(&[u8; 32], u64, usize) -> u64,
+    due: impl Fn(&[u8; 32], u64, usize) -> u64 + Copy,
 ) -> Vec<Hit> {
     let mut hits = Vec::new();
-    // Runs by (client, run id).
-    let mut runs: HashMap<(u32, u64), (bool, u32)> = HashMap::new();
+    // Runs by (client, run id): quiet, start, end.
+    let mut runs: HashMap<(u32, u64), (bool, u64, u64)> = HashMap::new();
+    // (Whether a quiet run is independent of the work that is due, P-7, is read from the job runs'
+    // times and the issuer view by `j9_quiet`, never from the world's own draw.)
     for (c, ct) in truth.clients.iter().enumerate() {
         for r in &ct.runs {
-            runs.insert((c as u32, r.id), (r.quiet, r.relay_calls));
-            // The pattern of quiet runs is independent of issuer state (P-7): every quiet run is
-            // one the process's draw selected, never one forced by work that is due.
-            if r.quiet && !r.drawn {
-                hits.push(hit(
-                    "J9",
-                    format!("quiet run {} of client {c} at {}", r.id, r.start),
-                    "not drawn by the process (forced)".into(),
-                ));
-            }
+            runs.insert((c as u32, r.id), (r.quiet, r.start, r.end));
         }
     }
     let mut per_run: HashMap<(u32, u64), u32> = HashMap::new();
@@ -381,12 +367,17 @@ pub fn j9(
         let key = (c, r.truth.run);
         *per_run.entry(key).or_default() += 1;
         if r.truth.automatic {
+            // The run's relay calls come from the relay views (each call's run), never from the
+            // world's count of the run.
+            let relay_calls = acc.relay_runs.contains(&key);
             match runs.get(&key) {
-                Some(&(true, 0)) => {}
-                Some(&(quiet, n)) => hits.push(hit(
+                Some(&(true, _, _)) if !relay_calls => {}
+                Some(&(quiet, _, _)) => hits.push(hit(
                     "J9",
                     format!("{} of client {c} at {}", r.op.name(), r.t),
-                    format!("automatic call in a run that is not quiet (quiet {quiet}, {n} relay calls)"),
+                    format!(
+                        "automatic call in a run that is not quiet (quiet {quiet}, relay calls in the run: {relay_calls})"
+                    ),
                 )),
                 None => hits.push(hit("J9", format!("{} of client {c} at {}", r.op.name(), r.t), "automatic call in no run".into())),
             }
@@ -426,7 +417,7 @@ pub fn j9(
         }
     }
     for ((c, run), n) in &per_run {
-        if runs.get(&(*c, *run)).is_some_and(|&(q, _)| q) && *n > 1 {
+        if runs.get(&(*c, *run)).is_some_and(|&(q, _, _)| q) && *n > 1 {
             hits.push(hit(
                 "J9",
                 format!("quiet run {run} of client {c}"),
@@ -503,14 +494,13 @@ pub fn j9(
             }
         }
     }
+    // A user action happens at a foreground session the user script drew before it (within the
+    // session's first minute); an issuer call at any other moment is not the user's.
     for (c, times) in &user_calls {
-        let scripted: BTreeSet<u64> = truth.clients[*c as usize]
-            .user_calls
-            .iter()
-            .map(|u| u.0)
-            .collect();
-        for t in times {
-            if !scripted.contains(t) {
+        let scripted: &[u64] = &truth.clients[*c as usize].scripted;
+        for &t in times {
+            let i = scripted.partition_point(|&s| s + USER_ACTION_SECS < t);
+            if !scripted.get(i).is_some_and(|&s| s <= t) {
                 hits.push(hit(
                     "J9",
                     format!("client {c} at {t}"),
@@ -519,7 +509,130 @@ pub fn j9(
             }
         }
     }
+    let q = j9_quiet(acc, truth, due);
+    if q.p < CHECK_ALPHA {
+        hits.push(hit(
+            "J9",
+            format!("{} of {} automatic BlindSign calls", q.first, q.n),
+            format!(
+                "quiet runs follow due work: served by the first job run at or after their due minute (q = 1/8, p = {:.1e})",
+                q.p
+            ),
+        ));
+    }
     hits
+}
+
+/// How long after the start of its foreground session a user action's issuer call may come.
+pub const USER_ACTION_SECS: u64 = 60;
+
+/// The automatic `BlindSign` calls served by the first periodic-job run of their client at or after
+/// their due minute, of all those at or after it, and the one-sided binomial p-value against q.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QuietIndependence {
+    pub first: usize,
+    pub n: usize,
+    pub p: f64,
+}
+
+/// P-7 (§12.2, §19.23 point 1): every job run draws quiet with q = 1/8 whatever work is due, so the
+/// first job run at or after an attempt's due minute serves it with probability at most q (less
+/// where other due work competes for the one call of a quiet run); a quiet pattern that follows
+/// the due work (M20) serves nearly all attempts there. Read from the job runs the world scheduled
+/// (their times) and the issuer view's call times; neither the runs' quiet labels nor the world's
+/// draws are used.
+pub fn j9_quiet(
+    acc: &Accumulator,
+    truth: &Truth,
+    due: impl Fn(&[u8; 32], u64, usize) -> u64,
+) -> QuietIndependence {
+    j9_quiet_of(&acc.issuer, truth, due)
+}
+
+/// [`j9_quiet`] over a list of issuer records.
+pub fn j9_quiet_of(
+    issuer: &[IssuerRecord],
+    truth: &Truth,
+    due: impl Fn(&[u8; 32], u64, usize) -> u64,
+) -> QuietIndependence {
+    let invoice_truth: HashMap<&[u8], &crate::model::InvoiceTruth> = truth
+        .invoices
+        .iter()
+        .map(|i| (&i.invoice_id[..], i))
+        .collect();
+    let mut signs: BTreeMap<Vec<u8>, Vec<(u64, u32, u64)>> = BTreeMap::new();
+    for r in issuer
+        .iter()
+        .filter(|r| r.op == IssuerOp::BlindSign && r.truth.automatic)
+    {
+        if let Some(id) = r.req("invoice_id") {
+            signs
+                .entry(id.to_vec())
+                .or_default()
+                .push((r.t, r.truth.client, r.truth.run));
+        }
+    }
+    let jobs: Vec<Vec<u64>> = truth
+        .clients
+        .iter()
+        .map(|ct| {
+            let mut v: Vec<u64> = ct.runs.iter().filter(|r| r.job).map(|r| r.start).collect();
+            v.sort_unstable();
+            v
+        })
+        .collect();
+    let starts: HashMap<(u32, u64), u64> = truth
+        .clients
+        .iter()
+        .enumerate()
+        .flat_map(|(c, ct)| ct.runs.iter().map(move |r| ((c as u32, r.id), r.start)))
+        .collect();
+    let (mut first, mut n) = (0usize, 0usize);
+    for (id, mut calls) in signs {
+        let Some(it) = invoice_truth.get(&id[..]) else {
+            continue;
+        };
+        calls.sort_unstable();
+        for (k, &(t, c, run)) in calls.iter().enumerate().take(5) {
+            let Some(&serving) = starts.get(&(c, run)) else {
+                continue;
+            };
+            let skew = truth.clients[c as usize]
+                .skew
+                .iter()
+                .find(|&&(from, until, _)| from <= t && t < until)
+                .map_or(0, |s| s.2);
+            // A job run a minute before the due minute may already serve it (its call comes a few
+            // seconds after the run starts): counted as able to, which only lowers the share.
+            let d = due(&it.seed, it.receipt_minute, k) as i64 - skew - 60;
+            if (serving as i64) < d {
+                continue;
+            }
+            let js = &jobs[c as usize];
+            let lo = js.partition_point(|&s| (s as i64) < d);
+            let hi = js.partition_point(|&s| s < serving);
+            n += 1;
+            if hi <= lo {
+                first += 1;
+            }
+        }
+    }
+    QuietIndependence {
+        first,
+        n,
+        p: crate::stats::binom_tail_p(first as u64, n as u64, QUIET_Q),
+    }
+}
+
+/// Completeness (§13.4): the ground-truth nullifiers (every token a client handed to a relay) that
+/// appear in no relay view.
+pub fn nullifiers_missing(acc: &Accumulator, truth: &Truth) -> usize {
+    let seen: HashSet<[u8; 32]> = acc.redemptions.iter().map(|r| r.nullifier).collect();
+    truth
+        .presented
+        .iter()
+        .filter(|n| !seen.contains(*n))
+        .count()
 }
 
 /// T2c: two flow instances (invoices, trials, refreshes, revocations, claims) of one client share
@@ -662,4 +775,282 @@ pub fn j10_keys(
         }
     }
     hits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::accumulate::Redemption;
+    use crate::model::{ClientKind, ClientTruth, IssuerTruth, Run};
+
+    const P: u64 = 2_990;
+
+    #[allow(clippy::too_many_arguments)]
+    fn red(
+        t: u64,
+        token_week: u64,
+        relay: u8,
+        process: u64,
+        skew: i64,
+        corrected: bool,
+        result: Redeemed,
+        retry: bool,
+    ) -> Redemption {
+        Redemption {
+            t,
+            relay,
+            client: 7,
+            week: Some(token_week),
+            key_id: [0; 32],
+            nullifier: [t as u8; 32],
+            result,
+            jacobi_em: 1,
+            corrected,
+            skewed: skew.abs() > 4 * 3_600,
+            skew,
+            process,
+            source: 0,
+            retry,
+        }
+    }
+
+    /// An identical retry refused for its period counts like any other redemption.
+    #[test]
+    fn j8_counts_identical_retries() {
+        let t = week_start(P + 1) - 36 * 3_600;
+        let hits = j8_of(&[
+            red(
+                t,
+                P + 1,
+                0,
+                1,
+                17 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false,
+            ),
+            red(
+                t + 600,
+                P + 1,
+                0,
+                1,
+                17 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                true,
+            ),
+        ]);
+        assert!(
+            hits.iter()
+                .any(|h| h.b.contains("in one process at one relay")),
+            "{hits:?}"
+        );
+    }
+
+    /// The ±1 h guard binds a corrected client up to the clip, to the relay minute's resolution.
+    #[test]
+    fn j8_guards_corrected_clients_up_to_the_clip() {
+        let near = week_start(P) + 1_800;
+        let hits = j8_of(&[red(near, P, 1, 2, 10 * 3_600, true, Redeemed::Ok, false)]);
+        assert!(
+            hits.iter()
+                .any(|h| h.b.contains("within 1 h of a week boundary")),
+            "{hits:?}"
+        );
+        let edge = week_start(P) + 3_550;
+        assert!(j8_of(&[red(edge, P, 1, 2, 10 * 3_600, true, Redeemed::Ok, false)]).is_empty());
+        // Beyond the clip the client is corrected only to within a day: reported, not a hit.
+        assert!(j8_of(&[red(near, P, 1, 3, 30 * 3_600, true, Redeemed::Ok, false)]).is_empty());
+        assert!(j8_of(&[
+            red(
+                near,
+                P + 1,
+                1,
+                3,
+                30 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false
+            ),
+            red(
+                near + 60,
+                P + 1,
+                1,
+                3,
+                30 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false
+            ),
+        ])
+        .is_empty());
+    }
+
+    /// At most one refused period per process start and relay, whatever the device clock did.
+    #[test]
+    fn j8_counts_per_process_start_and_relay() {
+        let t = week_start(P + 1) - 36 * 3_600;
+        let hits = j8_of(&[
+            red(
+                t,
+                P + 1,
+                0,
+                4,
+                17 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false,
+            ),
+            // The user sets the device clock right; the process goes on.
+            red(
+                t + 7_200,
+                P + 1,
+                0,
+                4,
+                0,
+                false,
+                Redeemed::WrongPeriod,
+                false,
+            ),
+        ]);
+        assert!(
+            hits.iter()
+                .any(|h| h.b.contains("in one process at one relay")),
+            "{hits:?}"
+        );
+        // Once at each relay: every relay corrects the decisions about itself.
+        assert!(j8_of(&[
+            red(
+                t,
+                P + 1,
+                0,
+                5,
+                17 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false
+            ),
+            red(
+                t + 1,
+                P + 1,
+                1,
+                5,
+                17 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false
+            ),
+            red(
+                t + 2,
+                P + 1,
+                2,
+                5,
+                17 * 3_600,
+                false,
+                Redeemed::WrongPeriod,
+                false
+            ),
+        ])
+        .is_empty());
+        // A corrected client is never refused a period.
+        let hits = j8_of(&[red(
+            t,
+            P + 1,
+            0,
+            6,
+            17 * 3_600,
+            true,
+            Redeemed::WrongPeriod,
+            false,
+        )]);
+        assert!(hits
+            .iter()
+            .any(|h| h.b.contains("after the relay-facing clock was corrected")));
+    }
+
+    /// A client whose job runs come every 15 minutes and whose automatic `BlindSign` calls are each
+    /// served `after` job runs past their due minute (due = receipt + 3 h).
+    fn quiet_world(after: u64) -> (Vec<IssuerRecord>, Truth) {
+        let t0 = week_start(P);
+        let runs: Vec<Run> = (0..20_000u64)
+            .map(|j| Run {
+                id: j,
+                start: t0 + 900 * j,
+                end: t0 + 900 * j + 60,
+                job: true,
+                quiet: false,
+                drawn: false,
+                relay_calls: 0,
+                issuer_calls: 0,
+            })
+            .collect();
+        let mut invoices = Vec::new();
+        let mut issuer = Vec::new();
+        for k in 0..200u64 {
+            let receipt = t0 + 86_400 + 3 * 3_600 * k;
+            let first_job = (receipt + 3 * 3_600 - t0).div_ceil(900);
+            let run = first_job + after;
+            let mut id = [0u8; 16];
+            id[..8].copy_from_slice(&k.to_be_bytes());
+            invoices.push(crate::model::InvoiceTruth {
+                invoice_id: id,
+                client: 0,
+                instance: k,
+                xmr: true,
+                base_week: P,
+                need_triggered: false,
+                scored: true,
+                payments: Vec::new(),
+                seed: [0; 32],
+                receipt_minute: receipt,
+                finalized: None,
+            });
+            issuer.push(IssuerRecord {
+                t: t0 + 900 * run + 5,
+                t_resp: t0 + 900 * run + 7,
+                label: [0; 32],
+                op: IssuerOp::BlindSign,
+                request: vec![("invoice_id", id.to_vec())],
+                response: Vec::new(),
+                ints: Vec::new(),
+                status: 0,
+                truth: IssuerTruth {
+                    client: 0,
+                    flow: k,
+                    instance: k,
+                    kind: FlowKind::PackXmr,
+                    automatic: true,
+                    run,
+                },
+            });
+        }
+        let truth = Truth {
+            clients: vec![ClientTruth {
+                kind: ClientKind::Existing,
+                namespaces: 1,
+                user_calls: Vec::new(),
+                scripted: Vec::new(),
+                runs,
+                skew: Vec::new(),
+                processes: Vec::new(),
+            }],
+            invoices,
+            ..Truth::default()
+        };
+        (issuer, truth)
+    }
+
+    /// M20's signature: quiet runs that follow the due work serve every attempt at its first job run.
+    #[test]
+    fn j9_sees_quiet_runs_that_follow_due_work() {
+        let due = |_: &[u8; 32], receipt: u64, _: usize| receipt + 3 * 3_600;
+        let (issuer, truth) = quiet_world(0);
+        let q = j9_quiet_of(&issuer, &truth, due);
+        assert_eq!((q.first, q.n), (200, 200));
+        assert!(q.p < CHECK_ALPHA);
+        let (issuer, truth) = quiet_world(8);
+        let q = j9_quiet_of(&issuer, &truth, due);
+        assert_eq!((q.first, q.n), (0, 200));
+        assert!(q.p > 0.5);
+    }
 }

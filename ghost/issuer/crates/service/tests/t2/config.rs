@@ -14,6 +14,8 @@ use super::rng::Seeds;
 pub enum Mutant {
     None,
     M1NonceFromInvoice,
+    /// M1 with a GHOST label and the position as HKDF info (J3's label-counter family).
+    M1bNonceFromInvoiceLabel,
     M2PerInvoiceKey,
     M2bServerKeyId,
     M3ImmediateEligible,
@@ -70,7 +72,10 @@ pub struct Config {
     pub analyze: bool,
     /// Keep per-client relay call hashes (NI-1 per-client comparison).
     pub per_client: bool,
+    /// The complete views as NDJSON, plus `public.json` and `ground_truth.json` (`GHOST_T2_EXPORT`).
     pub export: Option<PathBuf>,
+    /// `public.json` and `ground_truth.json` only (`GHOST_T2_TRUTH`).
+    pub export_truth: Option<PathBuf>,
     /// A lying issuer layer answers the first `liar` `BlindSign` calls of every invoice
     /// `AWAITING_CONFIRMATIONS` (0: honest).
     pub liar: u32,
@@ -78,6 +83,9 @@ pub struct Config {
     pub pool_target: u32,
     /// NI-1: response latencies up to 30 s (kept inside the minute the client records).
     pub latency_jitter: bool,
+    /// NI-1: up to 30 s more on every signing `BlindSign` answer, across minute boundaries, so the
+    /// finalization time of a pack moves inside its activation-slot cell.
+    pub sign_jitter: bool,
     /// NI-1: payments mined up to two blocks later (kept on the same side of the payer's next
     /// `BlindSign` attempt).
     pub chain_jitter: bool,
@@ -105,9 +113,11 @@ impl Config {
             analyze: false,
             per_client: false,
             export: None,
+            export_truth: None,
             liar: 0,
             pool_target: 32,
             latency_jitter: false,
+            sign_jitter: false,
             chain_jitter: false,
             fail_sign: Arc::new(HashSet::new()),
             fail_request: Arc::new(HashSet::new()),

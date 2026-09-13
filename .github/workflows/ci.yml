@@ -48,6 +48,9 @@ jobs:
   rust:
     name: rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)
     runs-on: ubuntu-24.04
+    # The workspace build and tests, the release crash suite and the T2 PR variant (about 20 min
+    # on a 4-vCPU runner, from a local measurement; see the step): twice the expected total.
+    timeout-minutes: 150
     defaults:
       run:
         shell: bash

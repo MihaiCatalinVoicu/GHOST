@@ -17,7 +17,8 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashSet};
-use std::path::Path;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -55,7 +56,9 @@ use super::client::{
 };
 use super::config::{Config, Mutant};
 use super::es;
-use super::policy::{self, Decision, NeedKind, NeedReason, SlotRow, WorkKind, DAY, HOUR};
+use super::policy::{
+    self, Decision, NeedKind, NeedReason, ReserveStep, SlotRow, WorkKind, DAY, HOUR,
+};
 use super::population::{self, ClientSpec, Spend, Timeline};
 use super::rng::{derive32, prf_unit, Rng};
 use super::transport::{self, IssuerFault, IssuerLink, Liar, RelayLink, RelayNode};
@@ -87,6 +90,12 @@ pub struct Log {
     pub counts: BTreeMap<&'static str, u64>,
     /// Wall-clock seconds spent per event kind (the budget measurement).
     pub timings: BTreeMap<&'static str, f64>,
+    /// Requests the issuer's endpoint received, counted at the entry of each handler call (never
+    /// by the recorder): the completeness check compares the issuer view with it.
+    pub issuer_received: u64,
+    /// Capture events the three relays wrote (one per handler call), counted in their capture
+    /// files at the end: the completeness check compares the relay views with it.
+    pub capture_lines: u64,
 }
 
 impl Log {
@@ -183,6 +192,20 @@ pub struct World {
     /// Pending "pay during the next session" payments per client.
     session_pay: Vec<Vec<usize>>,
     processes: u64,
+    /// Requests the issuer's endpoint received (the links count them at each handler's entry).
+    issuer_received: u64,
+    /// Every credit a world client finalized (a pack's credit or a refresh): the credits a
+    /// scripted spend may present (§19.16 point 1).
+    minted: HashSet<Vec<u8>>,
+}
+
+/// The credits of a scripted spend that no issuer of the world minted (design §19.16 point 1: every
+/// scripted spend uses protocol-issued credits, a harness assertion).
+pub fn unminted<'a>(
+    minted: &HashSet<Vec<u8>>,
+    credits: impl IntoIterator<Item = &'a [u8]>,
+) -> usize {
+    credits.into_iter().filter(|c| !minted.contains(*c)).count()
 }
 
 fn onion_pubkey(text: &str) -> [u8; 32] {
@@ -240,6 +263,7 @@ impl World {
                     kind: c.spec.kind,
                     namespaces: 0,
                     user_calls: Vec::new(),
+                    scripted: Vec::new(),
                     runs: Vec::new(),
                     skew: c
                         .spec
@@ -290,6 +314,8 @@ impl World {
             drop_blobs: BTreeMap::new(),
             session_pay: vec![Vec::new(); n],
             processes: 0,
+            issuer_received: 0,
+            minted: HashSet::new(),
         };
         w.chain.set_now(w.now);
         w.open_issuer(OpenMode::Normal);
@@ -489,6 +515,144 @@ impl World {
         for c in 0..self.clients.len() {
             self.truth.clients[c].namespaces = self.clients[c].namespaces.len();
         }
+        // Completeness: the relays' own count of the calls they handled (one capture event each).
+        for node in &self.relays {
+            let bytes = std::fs::read(&node.capture_path).unwrap_or_default();
+            self.log.capture_lines += bytes.iter().filter(|&&b| b == b'\n').count() as u64;
+        }
+        self.log.issuer_received = self.issuer_received;
+        self.export_truth();
+    }
+
+    /// `public.json` (Z: the ES, the grid, every value of the public context) and
+    /// `ground_truth.json` (clients with their namespaces, clocks, processes and drops; invoices
+    /// with their plan seeds, receipts, finalizations and payments; every presented nullifier; the
+    /// attacker's tokens) into `GHOST_T2_EXPORT` and `GHOST_T2_TRUTH` (design §13.4).
+    fn export_truth(&self) {
+        let dirs: Vec<PathBuf> = [self.cfg.export.clone(), self.cfg.export_truth.clone()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if dirs.is_empty() {
+            return;
+        }
+        let public =
+            ghost_t2_join::public::public_context(self.schedule, &[es::schedule_bytes().to_vec()]);
+        let mut p = String::new();
+        let _ = write!(
+            p,
+            "{{\"schedule\":\"{}\",\"window\":[{},{}],\"scale\":{{\"packs\":{},\"window_days\":{},\"warmup_weeks\":{}}},\"grid\":{{\"week_origin\":{},\"week_seconds\":{}}},\"z\":[",
+            hex::encode(es::schedule_bytes()),
+            self.tl.tw,
+            self.tl.te,
+            self.cfg.scale.packs,
+            self.cfg.scale.window_days,
+            self.cfg.scale.warmup_weeks,
+            policy::WEEK_ORIGIN,
+            policy::WEEK
+        );
+        let z: Vec<String> = public
+            .values
+            .iter()
+            .map(|v| format!("\"{}\"", hex::encode(v)))
+            .collect();
+        p.push_str(&z.join(","));
+        p.push_str("]}\n");
+        let mut g = String::from("{\"clients\":[");
+        for (c, cl) in self.clients.iter().enumerate() {
+            let ct = &self.truth.clients[c];
+            if c > 0 {
+                g.push(',');
+            }
+            let skew: Vec<String> = ct
+                .skew
+                .iter()
+                .map(|s| format!("[{},{},{}]", s.0, s.1, s.2))
+                .collect();
+            let ns: Vec<String> = cl
+                .namespaces
+                .iter()
+                .map(|n| format!("\"{}\"", hex::encode(n)))
+                .collect();
+            let drops: Vec<String> = cl
+                .drops
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{{\"ns\":\"{}\",\"invitee\":{}}}",
+                        hex::encode(d.ns),
+                        d.invitee
+                    )
+                })
+                .collect();
+            let processes: Vec<String> = ct.processes.iter().map(u64::to_string).collect();
+            let _ = write!(
+                g,
+                "{{\"id\":{c},\"kind\":\"{:?}\",\"join\":{},\"skew\":[{}],\"processes\":[{}],\"namespaces\":[{}],\"drops\":[{}]}}",
+                ct.kind,
+                cl.spec.join,
+                skew.join(","),
+                processes.join(","),
+                ns.join(","),
+                drops.join(",")
+            );
+        }
+        g.push_str("],\"invoices\":[");
+        for (n, it) in self.truth.invoices.iter().enumerate() {
+            if n > 0 {
+                g.push(',');
+            }
+            let payments: Vec<String> = it
+                .payments
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{{\"txid\":\"{}\",\"first_seen\":{},\"mode\":\"{:?}\"}}",
+                        hex::encode(p.0),
+                        p.1,
+                        p.2
+                    )
+                })
+                .collect();
+            let _ = write!(
+                g,
+                "{{\"invoice_id\":\"{}\",\"client\":{},\"instance\":{},\"xmr\":{},\"base_week\":{},\"need_triggered\":{},\"scored\":{},\"plan_seed\":\"{}\",\"receipt_minute\":{},\"finalized\":{},\"payments\":[{}]}}",
+                hex::encode(it.invoice_id),
+                it.client,
+                it.instance,
+                it.xmr,
+                it.base_week,
+                it.need_triggered,
+                it.scored,
+                hex::encode(it.seed),
+                it.receipt_minute,
+                it.finalized.map_or("null".to_string(), |f| f.to_string()),
+                payments.join(",")
+            );
+        }
+        let presented: Vec<String> = self
+            .truth
+            .presented
+            .iter()
+            .map(|n| format!("\"{}\"", hex::encode(n)))
+            .collect();
+        let attacker: Vec<String> = self
+            .truth
+            .attacker_tokens
+            .iter()
+            .map(|t| format!("\"{}\"", hex::encode(t)))
+            .collect();
+        let _ = writeln!(
+            g,
+            "],\"presented\":[{}],\"attacker_tokens\":[{}]}}",
+            presented.join(","),
+            attacker.join(",")
+        );
+        for d in dirs {
+            std::fs::create_dir_all(&d).expect("export directory");
+            std::fs::write(d.join("public.json"), &p).expect("public.json");
+            std::fs::write(d.join("ground_truth.json"), &g).expect("ground_truth.json");
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -613,7 +777,19 @@ impl World {
         let w = week(t);
         for k in 0..self.relays.len() {
             let dir = self.relays[k].dir.clone();
-            let rows = self.stop_relay_then(k as u8, |scratch| read_relay_rows(&dir, scratch));
+            // The in-memory quota ledger (§13.4 relay_<k>_db), read before the relay stops.
+            let (quota, pruned) = self.relays[k].relay.quota_snapshot();
+            let mut rows = self.stop_relay_then(k as u8, |scratch| read_relay_rows(&dir, scratch));
+            for (scope, used, expiry) in quota {
+                let mut v = used.to_be_bytes().to_vec();
+                v.extend_from_slice(&expiry.to_be_bytes());
+                rows.push(("quota", scope.to_vec(), v));
+            }
+            rows.push((
+                "quota_meta",
+                b"pruned_through".to_vec(),
+                pruned.to_be_bytes().to_vec(),
+            ));
             self.rec.relay_rows(w, k as u8, &rows);
         }
         if t < self.tl.te {
@@ -712,6 +888,9 @@ impl World {
         for (s, d) in starts {
             if s >= t && s > last_end + 120 {
                 self.push(s, Event::Foreground(c, s + d));
+                // The user script, drawn before any of the day's sessions happen: the only moments
+                // a user action (a user-initiated issuer call) can come (J9).
+                self.truth.clients[c].scripted.push(s);
                 last_end = s + d;
             }
         }
@@ -788,6 +967,7 @@ impl World {
                 id: run,
                 start: t,
                 end: t + 60,
+                job: true,
                 quiet: true,
                 drawn,
                 relay_calls: 0,
@@ -816,6 +996,7 @@ impl World {
                 id: run,
                 start: t,
                 end: t + 120,
+                job: true,
                 quiet: false,
                 drawn: false,
                 relay_calls,
@@ -872,6 +1053,7 @@ impl World {
             id: run,
             start: s,
             end,
+            job: false,
             quiet: false,
             drawn: false,
             relay_calls,
@@ -891,6 +1073,7 @@ impl World {
             id: run,
             start: t,
             end: t + 30,
+            job: false,
             quiet: false,
             drawn: false,
             relay_calls: n,
@@ -1197,8 +1380,9 @@ impl World {
                 self.log.first_packs.push((c as u32, inst));
             }
         }
-        // Renewal, lapse and resume.
-        let threshold = if self.clients[c].spec.kind == ClientKind::Spender {
+        // Renewal, lapse and resume. A future credit spender renews with two weeks left during the
+        // warm-up (it exists to mint credits, §19.16 point 1), at the common cadence in the window.
+        let threshold = if self.clients[c].spec.kind == ClientKind::Spender && !in_window {
             2
         } else {
             1
@@ -1255,13 +1439,16 @@ impl World {
                 if w >= surf {
                     self.clients[c].needed_since = None;
                     self.clients[c].need_surface = None;
-                    let buy = self.draw(c, b"need-buy", s) < 0.3;
+                    // A need buyer (5 % of N, population::NEED_SHARE) buys one extra pack when its
+                    // first need of the window surfaces (§13.4 "Other activity", §19.13).
+                    let buy = self.clients[c].spec.need_buyer && !self.clients[c].need_bought;
                     let eligible_buyer = !self.clients[c].pack_in_flight()
                         && !invitee_waiting
                         && !trial_only
                         && self.clients[c].resume_at.is_none()
                         && in_window;
                     if buy && eligible_buyer {
+                        self.clients[c].need_bought = true;
                         let delay = (self.draw(c, b"need-delay", s) * DAY as f64) as i64;
                         let nb = w + delay;
                         self.log.need_starts.push((c as u32, s, nb));
@@ -1598,6 +1785,13 @@ impl World {
             let room = 59 - w.rem_euclid(60) as u64;
             latency += (self.issuer_rng.uniform() * room.min(30) as f64) as u64;
         }
+        // NI-1: a signing answer up to 30 s later, across minute boundaries (the pack's finalization
+        // moves inside its activation-slot cell).
+        let sign_extra = if self.cfg.sign_jitter {
+            (self.issuer_rng.uniform() * 30.0) as u64
+        } else {
+            0
+        };
         let truth = IssuerTruth {
             client: c as u32,
             flow: u64::from_be_bytes(logical[..8].try_into().unwrap()),
@@ -1611,6 +1805,7 @@ impl World {
             rec,
             liar,
             cfg,
+            issuer_received,
             ..
         } = self;
         let mut link = IssuerLink {
@@ -1625,6 +1820,8 @@ impl World {
             extra_req,
             extra_resp: Vec::new(),
             answered: None,
+            received: issuer_received,
+            sign_extra,
         };
         let tick = std::time::Instant::now();
         let r = f(&mut link);
@@ -1780,6 +1977,11 @@ impl World {
             let p = &self.clients[c].purchases[idx];
             (p.claim_key, p.credits.clone(), p.xmr, p.hint)
         };
+        let foreign = unminted(&self.minted, credits.iter().map(|t| &t.as_bytes()[..]));
+        assert_eq!(
+            foreign, 0,
+            "a credits-paid pack presents {foreign} credits no issuer of the world minted (§19.16 point 1)"
+        );
         let mut extra_req = Vec::new();
         if let Some(h) = hint {
             extra_req.push(("base_week_hint", h.to_be_bytes().to_vec()));
@@ -1955,6 +2157,7 @@ impl World {
         let custom = matches!(
             mutant,
             Mutant::M1NonceFromInvoice
+                | Mutant::M1bNonceFromInvoiceLabel
                 | Mutant::M2PerInvoiceKey
                 | Mutant::M2bServerKeyId
                 | Mutant::M5aNoBlinding
@@ -2165,6 +2368,7 @@ impl World {
                     eligible,
                     source,
                     reserved: None,
+                    retry_after: None,
                 }),
                 Kind::Invite => {
                     let k = self.clients[c].invites.len();
@@ -2199,6 +2403,7 @@ impl World {
                     }
                 }
                 Kind::Credit => {
+                    self.minted.insert(tk.as_bytes().to_vec());
                     if self.clients[c].spec.kind == ClientKind::Sybil {
                         self.truth.attacker_tokens.push(tk.as_bytes().to_vec());
                     }
@@ -2260,6 +2465,7 @@ impl World {
             Ok(a) => {
                 self.clients[c].received.remove(idx);
                 if let Some(fresh) = a.token {
+                    self.minted.insert(fresh.as_bytes().to_vec());
                     self.clients[c].credits.push(HeldCredit {
                         token: fresh,
                         epoch,
@@ -2359,6 +2565,11 @@ impl World {
                 cf.address.clone(),
             )
         };
+        let foreign = unminted(&self.minted, credits.iter().map(|t| &t.as_bytes()[..]));
+        assert_eq!(
+            foreign, 0,
+            "a claim presents {foreign} credits no issuer of the world minted (§19.16 point 1)"
+        );
         let schedule = self.schedule;
         let fault = self.issuer_fault(c, instance, attempt, b"claim");
         // M12: the claim rides on the purchase's flow scope (the same instance's label).
@@ -2493,11 +2704,13 @@ impl World {
         order.sort_by_key(|&(h, _, _, tag, _)| (tag == 0, h));
         let mut tc = t;
         let mut calls = 0u32;
+        // The relays that refused a period in this session (one lane step, `RedeemLane.step`).
+        let mut refused = [false; 3];
         for (_, ns, write_drop, tag, k) in order {
             if tc + 3 >= cutoff {
                 break;
             }
-            let n = self.pair_step(c, k, ns, tc, run, write_drop, tag == 1);
+            let n = self.pair_step(c, k, ns, tc, run, write_drop, tag == 1, &mut refused);
             calls += n;
             // A pair with nothing to do takes no time: the client's invisible state (a drop listen
             // without a capability, a deferred redemption) must not move its visible calls.
@@ -2544,11 +2757,10 @@ impl World {
             client: c as u32,
             run,
             process: cl.process,
-            // Whether the client's relay-facing decisions run on the relay-corrected clock (M11
-            // decides on the raw device clock whatever the relays answered).
-            corrected: cl.answered.len() >= 2
-                && cl.answered_epoch == cl.clock_epoch(t)
-                && self.cfg.mutant != Mutant::M11DeviceClockPeriod,
+            // The client's state: two relays answered it since the device clock was last set, so
+            // its relay-facing clock is corrected (M11 has the answers too and ignores them, which
+            // is what J8 must see).
+            corrected: cl.answered.len() >= 2 && cl.answered_epoch == cl.clock_epoch(t),
             source,
             skewed: cl.skewed(t),
             skew: cl.wall(t) - t as i64,
@@ -2567,6 +2779,7 @@ impl World {
         run: u64,
         drop_write: bool,
         listen: bool,
+        refused: &mut [bool; 3],
     ) -> u32 {
         let mut calls = 0;
         let label = transport::label(
@@ -2575,18 +2788,17 @@ impl World {
         );
         let w = self.clients[c].wall(t);
         let m11 = self.cfg.mutant == Mutant::M11DeviceClockPeriod;
+        // A device clock set since the last observation makes the relay-facing offsets stale
+        // (`ClockEstimate.observe`; the world's monotonic clock is true time).
+        self.clients[c].clock.observe(w, t as i64 * 1_000);
+        // This relay's decisions run on its own clock once it answered (§12.5, §19.24 point 1);
+        // M11 decides on the raw device clock whatever the relays answered.
+        let relay_now = if m11 {
+            w
+        } else {
+            self.clients[c].clock.relay_now(u64::from(k), w)
+        };
         let now_est = if m11 { w } else { self.clients[c].clock.now(w) };
-        // An ambiguous redemption of this pair is retried first, identically (R8).
-        let reserved = self.clients[c]
-            .tokens
-            .iter()
-            .position(|tk| tk.reserved.is_some_and(|(rk, rns, _)| rk == k && rns == ns));
-        if let Some(i) = reserved {
-            // The retry is a redemption too: never within ±1 h of a week boundary (R9).
-            if !policy::near_boundary(now_est) {
-                calls += self.redeem(c, k, ns, i, t, run, label);
-            }
-        }
         let cap_ok = |cl: &Client| {
             cl.caps
                 .get(&(k, ns))
@@ -2597,15 +2809,18 @@ impl World {
                 .outbox
                 .iter()
                 .any(|(n, _, _, wr)| *n == ns && !wr[usize::from(k)]);
-        if reserved.is_none() {
-            let cap = self.clients[c].caps.get(&(k, ns)).cloned();
-            let reason = match &cap {
-                None => Some(NeedReason::Missing),
-                Some(cp) if (cp.expiry as i64) <= now_est => Some(NeedReason::Missing),
-                Some(cp) if (cp.expiry as i64) - now_est <= 24 * HOUR => Some(NeedReason::Expiring),
-                _ => None,
-            };
-            if let Some(reason) = reason {
+        let cap = self.clients[c].caps.get(&(k, ns)).cloned();
+        // The need (`CapabilityStore.needed`, on the device wall clock): MISSING without a
+        // capability, EXPIRING once it ends within 24 h (an expired one included).
+        let reason = match &cap {
+            None => Some(NeedReason::Missing),
+            Some(cp) if (cp.expiry as i64) <= w + 24 * HOUR => Some(NeedReason::Expiring),
+            _ => None,
+        };
+        // A relay that refused a period in this session is planned again at the next one, on the
+        // period and the clock its answer set (`RedeemLane.step`).
+        if let Some(reason) = reason.filter(|_| !refused[usize::from(k)]) {
+            {
                 let kind = if needs_write {
                     NeedKind::Write
                 } else {
@@ -2617,15 +2832,14 @@ impl World {
                     self.clients[c].clock.week(u64::from(k), w)
                 };
                 let key = (k, ns, kind == NeedKind::Write, rw_);
-                let first = *self.clients[c].first_seen.entry(key).or_insert(now_est);
+                // `EngineMemory.firstSeen(need, now)`: the device wall clock.
+                let first = *self.clients[c].first_seen.entry(key).or_insert(w);
                 let prf = prf_unit(
                     &self.clients[c].prf_key,
                     &[&[k][..], &ns, &[kind as u8], &rw_.to_be_bytes()].concat(),
                 );
-                let write_expiry = cap
-                    .as_ref()
-                    .map(|cp| cp.expiry as i64)
-                    .filter(|&e| e > now_est);
+                // `SyncTables.usableWriteExpiry`: the pair's write capability, whatever its time.
+                let write_expiry = cap.as_ref().map(|cp| cp.expiry as i64);
                 let relay_onion = {
                     let o = Onion::parse(&self.relays[usize::from(k)].onion).unwrap();
                     policy::Onion {
@@ -2638,7 +2852,7 @@ impl World {
                     reason,
                     relay_onion,
                     &self.slots,
-                    now_est,
+                    relay_now,
                     rw_,
                     true,
                     first,
@@ -2651,17 +2865,45 @@ impl World {
                     due,
                 } = d
                 {
-                    if due <= now_est {
+                    if due <= relay_now {
+                        // tx1 (`RedeemLane.reserve`): the pair's pending reservation of the week is
+                        // retried identically (R8), never after its week.
+                        let held = self.clients[c].tokens.iter().position(|tk| {
+                            tk.week as i64 == target
+                                && tk.reserved.is_some_and(|(rk, rns, _)| rk == k && rns == ns)
+                        });
+                        let retry_after = held.and_then(|i| self.clients[c].tokens[i].retry_after);
+                        let step = policy::reserve_step(
+                            held.is_some(),
+                            retry_after,
+                            target,
+                            relay_now,
+                            write_expiry,
+                        );
+                        let fresh = match (step, held) {
+                            (ReserveStep::Retry, Some(i)) => {
+                                calls += self.redeem(c, k, ns, i, t, run, label, refused);
+                                false
+                            }
+                            (ReserveStep::Drop, Some(i)) => {
+                                self.clients[c].tokens.remove(i);
+                                self.log.count("reservations dropped after their week");
+                                false
+                            }
+                            (ReserveStep::Fresh, _) => true,
+                            _ => false,
+                        };
+                        let minute = policy::floor_minute(w);
                         let usable = |tk: &HeldToken| {
                             tk.reserved.is_none()
                                 && tk.week as i64 == target
                                 && slots.contains(&tk.slot)
-                                && tk.eligible <= w
+                                && tk.eligible <= minute
                         };
                         // The client's own namespaces leave one token per pending drop pair (the
                         // drop write and the listening on invite drops) of this relay and week.
                         let drop_pair = drop_write || listen;
-                        let reserve = if drop_pair {
+                        let reserve = if drop_pair || !fresh {
                             0
                         } else {
                             self.drop_reserve(c, k, target, now_est)
@@ -2671,14 +2913,32 @@ impl World {
                             .iter()
                             .filter(|tk| usable(tk))
                             .count();
+                        // `TokenStore.freshEligibleAccess`: the eligible token of the smallest
+                        // nullifier (an order the issuer cannot know: the tokens are blind).
                         let pick = if free > reserve {
-                            self.clients[c].tokens.iter().position(usable)
+                            self.clients[c]
+                                .tokens
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, tk)| usable(tk))
+                                .min_by_key(|(_, tk)| tk.token.nullifier())
+                                .map(|(i, _)| i)
                         } else {
                             None
                         };
                         match pick {
+                            _ if !fresh => {}
                             Some(i) => {
-                                calls += self.redeem(c, k, ns, i, t + u64::from(calls), run, label)
+                                calls += self.redeem(
+                                    c,
+                                    k,
+                                    ns,
+                                    i,
+                                    t + u64::from(calls),
+                                    run,
+                                    label,
+                                    refused,
+                                )
                             }
                             None => {
                                 let delay = (self.draw(c, b"need-surface", w as u64)
@@ -2915,9 +3175,10 @@ impl World {
         t: u64,
         run: u64,
         label: [u8; 32],
+        refused: &mut [bool; 3],
     ) -> u32 {
         let tick = std::time::Instant::now();
-        let n = self.redeem_inner(c, k, ns, i, t, run, label);
+        let n = self.redeem_inner(c, k, ns, i, t, run, label, refused);
         *self.log.timings.entry("  redeems").or_insert(0.0) += tick.elapsed().as_secs_f64();
         n
     }
@@ -2932,11 +3193,15 @@ impl World {
         t: u64,
         run: u64,
         label: [u8; 32],
+        refused: &mut [bool; 3],
     ) -> u32 {
         let (token, reserved, source) = {
             let tk = &self.clients[c].tokens[i];
             (tk.token.clone(), tk.reserved, tk.source)
         };
+        // Ground truth for the completeness check: every presented token's nullifier must appear
+        // in some relay view.
+        self.truth.presented.push(token.nullifier());
         let request_id: [u8; 16] = match reserved {
             Some((_, _, rid)) => rid,
             None => {
@@ -3059,7 +3324,22 @@ impl World {
                         self.log.count("redemptions replayed");
                     }
                     _ => {
-                        self.clients[c].tokens[i].reserved = None;
+                        // `RedeemLane.apply`: a token of a week after the relay's period keeps its
+                        // reservation and is retried identically from start(week) − 23 h on the
+                        // relay's clock; any other is deleted (R8: never shown elsewhere).
+                        let token_week = self.clients[c].tokens[i].week as i64;
+                        match policy::wrong_period_retry_after(token_week, o.relay_period_id as i64)
+                        {
+                            Some(after) => {
+                                let tk = &mut self.clients[c].tokens[i];
+                                tk.reserved = Some((k, ns, request_id));
+                                tk.retry_after = Some(after);
+                            }
+                            None => {
+                                self.clients[c].tokens.remove(i);
+                            }
+                        }
+                        refused[usize::from(k)] = true;
                         self.log.count("redemptions wrong_period");
                     }
                 }
@@ -3096,8 +3376,24 @@ impl World {
                     return 2;
                 }
             }
-            Err(_) => {
-                self.clients[c].tokens[i].reserved = None;
+            Err(e) => {
+                // `RetryPolicy.classify`: a transient failure keeps the reservation for the
+                // identical retry; any other deletes the token (R8: never shown elsewhere).
+                let transient = match &e {
+                    RelayError::Transport(_) => true,
+                    RelayError::Rpc(s) => matches!(
+                        s.code(),
+                        tonic::Code::Unavailable
+                            | tonic::Code::DeadlineExceeded
+                            | tonic::Code::ResourceExhausted
+                    ),
+                    _ => false,
+                };
+                if transient {
+                    self.clients[c].tokens[i].reserved = Some((k, ns, request_id));
+                } else {
+                    self.clients[c].tokens.remove(i);
+                }
                 self.log.count("redemptions failed");
             }
         }
@@ -3131,19 +3427,31 @@ impl Client {
     }
 }
 
-/// Every row of relay `dir`'s databases, read through private copies.
+/// The tables of the relay's two databases: (file tag, table, exported name, key and value types:
+/// `B` bytes → bytes, `U` bytes → (), `N` bytes → u64, `S` str → u64).
+const RELAY_TABLES: &[(&str, &str, &str, char)] = &[
+    ("nullifiers", "nullifiers", "nullifiers", 'B'),
+    ("nullifiers", "es_keys", "es_keys", 'B'),
+    ("nullifiers", "es_revoked", "es_revoked", 'U'),
+    ("nullifiers", "meta", "nullifiers_meta", 'S'),
+    ("blobs", "content", "content", 'B'),
+    ("blobs", "members", "members", 'B'),
+    ("blobs", "namespace_index", "namespace_index", 'B'),
+    ("blobs", "expiry_index_v2", "expiry_index_v2", 'U'),
+    ("blobs", "namespace_seq", "namespace_seq", 'N'),
+    ("blobs", "meta", "blobs_meta", 'S'),
+    // Schema-1 tables a migration leaves behind.
+    ("blobs", "blobs", "blobs_v1", 'B'),
+    ("blobs", "expiry_index", "expiry_index_v1", 'U'),
+];
+
+/// Every row of every table of relay `dir`'s databases (`nullifiers.redb`, `blobs.redb`; design
+/// §13.4 `relay_<k>_db`), read through private copies. A table [`RELAY_TABLES`] does not know fails
+/// the world instead of going unexported.
 fn read_relay_rows(dir: &Path, scratch: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
-    use redb::{ReadableDatabase, ReadableTable, TableDefinition};
+    use redb::{ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
     let mut out = Vec::new();
-    let tables: [(&str, &'static str, &[&'static str]); 2] = [
-        ("nullifiers.redb", "nullifiers", &["nullifiers", "es_keys"]),
-        (
-            "blobs.redb",
-            "blobs",
-            &["content", "members", "namespace_index"],
-        ),
-    ];
-    for (file, tag, names) in tables {
+    for (file, tag) in [("nullifiers.redb", "nullifiers"), ("blobs.redb", "blobs")] {
         let src = dir.join(file);
         if !src.exists() {
             continue;
@@ -3153,21 +3461,55 @@ fn read_relay_rows(dir: &Path, scratch: &Path) -> Vec<(&'static str, Vec<u8>, Ve
         {
             let db = redb::Database::open(&copy).expect("a relay database copy opens");
             let tx = db.begin_read().unwrap();
+            let names: Vec<String> = tx
+                .list_tables()
+                .unwrap()
+                .map(|h| h.name().to_string())
+                .collect();
             for name in names {
-                let def: TableDefinition<&[u8], &[u8]> = TableDefinition::new(name);
-                let Ok(table) = tx.open_table(def) else {
-                    continue;
-                };
-                let static_name: &'static str = match *name {
-                    "nullifiers" => "nullifiers",
-                    "es_keys" => "es_keys",
-                    "content" => "content",
-                    "members" => "members",
-                    _ => "namespace_index",
-                };
-                for item in table.iter().unwrap() {
-                    let (k, v) = item.unwrap();
-                    out.push((static_name, k.value().to_vec(), v.value().to_vec()));
+                let &(_, _, exported, kind) = RELAY_TABLES
+                    .iter()
+                    .find(|t| t.0 == tag && t.1 == name)
+                    .unwrap_or_else(|| {
+                        panic!("relay table {name} of {file} is not exported (design §13.4)")
+                    });
+                match kind {
+                    'B' => {
+                        let def: TableDefinition<&[u8], &[u8]> = TableDefinition::new(&name);
+                        for item in tx.open_table(def).unwrap().iter().unwrap() {
+                            let (k, v) = item.unwrap();
+                            out.push((exported, k.value().to_vec(), v.value().to_vec()));
+                        }
+                    }
+                    'U' => {
+                        let def: TableDefinition<&[u8], ()> = TableDefinition::new(&name);
+                        for item in tx.open_table(def).unwrap().iter().unwrap() {
+                            let (k, _) = item.unwrap();
+                            out.push((exported, k.value().to_vec(), Vec::new()));
+                        }
+                    }
+                    'N' => {
+                        let def: TableDefinition<&[u8], u64> = TableDefinition::new(&name);
+                        for item in tx.open_table(def).unwrap().iter().unwrap() {
+                            let (k, v) = item.unwrap();
+                            out.push((
+                                exported,
+                                k.value().to_vec(),
+                                v.value().to_be_bytes().to_vec(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        let def: TableDefinition<&str, u64> = TableDefinition::new(&name);
+                        for item in tx.open_table(def).unwrap().iter().unwrap() {
+                            let (k, v) = item.unwrap();
+                            out.push((
+                                exported,
+                                k.value().as_bytes().to_vec(),
+                                v.value().to_be_bytes().to_vec(),
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -3202,6 +3544,20 @@ fn nonce_from_invoice(invoice_id: &[u8; 16], j: usize) -> [u8; 32] {
     exp.finalize().into_bytes().into()
 }
 
+/// HKDF-SHA256(ikm = v, salt = none, info = "ghost/v1/blind-batch" ‖ u8(j)), 32 bytes (mutant M1b:
+/// a GHOST label and the position as info).
+fn nonce_from_invoice_label(invoice_id: &[u8; 16], j: usize) -> [u8; 32] {
+    use hmac::digest::KeyInit;
+    use hmac::{Hmac, Mac};
+    let mut ext = <Hmac<Sha256> as KeyInit>::new_from_slice(&[]).unwrap();
+    ext.update(invoice_id);
+    let prk = ext.finalize().into_bytes();
+    let mut exp = <Hmac<Sha256> as KeyInit>::new_from_slice(&prk).unwrap();
+    exp.update(b"ghost/v1/blind-batch");
+    exp.update(&[j as u8, 1]);
+    exp.finalize().into_bytes().into()
+}
+
 /// The blinded request of a mutant client (M1, M2, M2b, M5a, M5b); every other derivation is the
 /// production one (`batch::derive`).
 pub fn mutant_blind(
@@ -3222,10 +3578,10 @@ pub fn mutant_blind(
             Mutant::M2bServerKeyId => server_key_id(invoice_id),
             _ => key.key_id,
         };
-        let nonce = if mutant == Mutant::M1NonceFromInvoice {
-            nonce_from_invoice(invoice_id, j)
-        } else {
-            d.nonce
+        let nonce = match mutant {
+            Mutant::M1NonceFromInvoice => nonce_from_invoice(invoice_id, j),
+            Mutant::M1bNonceFromInvoiceLabel => nonce_from_invoice_label(invoice_id, j),
+            _ => d.nonce,
         };
         let digest = schedule
             .challenge_digest(d.position.kind, d.position.epoch, d.position.slot)
@@ -3310,6 +3666,7 @@ fn record_mutant_sign(
         status: 0,
         truth: link.truth,
     };
+    *link.received += 1;
     link.rec.issuer_call(&call, &[("state", resp.state as u64)]);
     link.answered = Some(link.t + link.latency);
 }

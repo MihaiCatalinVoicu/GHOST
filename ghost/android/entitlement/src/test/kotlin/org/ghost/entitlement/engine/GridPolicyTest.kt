@@ -162,6 +162,39 @@ class GridPolicyTest {
     }
 
     @Test
+    fun eachRelaysDecisionsRunOnItsOwnClockOnceItAnswered() {
+        val clock = ClockEstimate()
+        val a = RelayId(1)
+        val b = RelayId(2)
+        clock.record(a, T0 / 60 - 17 * 60, WEEK0, T0, wrongPeriod = true)
+        assertEquals("the answering relay: its own clock", T0 - 17 * Grid.HOUR, clock.relayNow(a, T0))
+        assertEquals("a relay that has not answered: the estimate (one relay: the wall clock)", T0, clock.relayNow(b, T0))
+        assertEquals(WEEK0, clock.week(a, T0))
+        clock.record(b, T0 / 60 + 60, WEEK0, T0, wrongPeriod = false)
+        assertEquals(T0 + Grid.HOUR, clock.relayNow(b, T0))
+        assertEquals("two relays: the median for the others", T0 - 8 * Grid.HOUR, clock.relayNow(RelayId(3), T0))
+        // An adoption never holds a relay behind its own clock: a day on, the relay is in the next week.
+        val sunday = Grid.start(WEEK0 + 1) - 3000
+        clock.record(a, Math.floorDiv(sunday, 60L), WEEK0, sunday, wrongPeriod = true)
+        assertEquals(WEEK0 + 1, clock.week(a, Grid.start(WEEK0 + 1) + 7200))
+    }
+
+    @Test
+    fun aDeviceClockChangeForgetsTheEstimate() {
+        val clock = ClockEstimate()
+        clock.record(RelayId(1), T0 / 60 + 10, WEEK0, T0, wrongPeriod = false)
+        clock.record(RelayId(2), T0 / 60 + 10, WEEK0 + 1, T0, wrongPeriod = true)
+        clock.observe(T0, 5_000_000)
+        assertEquals(T0 + 600, clock.now(T0))
+        clock.observe(T0 + 60, 5_060_500)
+        assertEquals("time passing on both clocks keeps it", T0 + 660, clock.now(T0 + 60))
+        clock.observe(T0 - 3540, 5_061_000)
+        assertEquals("the device clock set back an hour forgets it", T0 - 3540, clock.now(T0 - 3540))
+        assertEquals(T0 - 3540, clock.relayNow(RelayId(1), T0 - 3540))
+        assertEquals(Grid.week(T0 - 3540), clock.week(RelayId(2), T0 - 3540))
+    }
+
+    @Test
     fun theRelayClockStaysWithinADayOfTheDeviceClock() {
         val clock = ClockEstimate()
         val fourWeeksMinutes = 4 * Grid.WEEK / 60

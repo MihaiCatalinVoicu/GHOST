@@ -1,4 +1,5 @@
 T2 variant t2-gate-0: N = 2000 packs, 84 days, seeds 0x1/0x2, mutant None
+population: PASS fixture
 J1: PASS fixture
 J2: PASS fixture
 J3: PASS fixture

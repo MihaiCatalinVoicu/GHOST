@@ -210,14 +210,47 @@ pub fn plan(
 const MIN_RELAYS: usize = 2;
 const MAX_SKEW: i64 = 24 * HOUR;
 const MAX_SKEW_MINUTES: i64 = MAX_SKEW / MINUTE;
+/// A move of `wall − monotonic` this large is a device clock change (`ClockEstimate.CLOCK_JUMP_MILLIS`).
+pub const CLOCK_JUMP_MILLIS: i64 = 120_000;
 
+/// The relay-facing clock (`ClockEstimate.kt`, §12.5, §19.24 point 1): the median of the relays'
+/// offsets, each relay's own offset for the decisions about it once it answered, adopted periods,
+/// and a device clock change forgetting it all.
 #[derive(Debug, Clone, Default)]
 pub struct ClockEstimate {
     offset_minutes: BTreeMap<u64, i64>,
     adopted: BTreeMap<u64, i64>,
+    basis_millis: Option<i64>,
 }
 
 impl ClockEstimate {
+    /// Forgets the estimate when `wall − monotonic` moved by [`CLOCK_JUMP_MILLIS`] or more since the
+    /// last observation (the device clock was set).
+    pub fn observe(&mut self, wall: i64, monotonic_millis: i64) {
+        let basis = wall * 1000 - monotonic_millis;
+        if self
+            .basis_millis
+            .is_some_and(|last| (basis - last).abs() >= CLOCK_JUMP_MILLIS)
+        {
+            self.offset_minutes.clear();
+            self.adopted.clear();
+        }
+        self.basis_millis = Some(basis);
+    }
+
+    /// The time of `relay`'s decisions: its own clock once it answered, else [`Self::now`].
+    pub fn relay_now(&self, relay: u64, wall: i64) -> i64 {
+        match self.offset_minutes.get(&relay) {
+            Some(&own) => wall + own * MINUTE,
+            None => self.now(wall),
+        }
+    }
+
+    /// Whether `relay` answered in this process (since the last device clock change).
+    pub fn answered(&self, relay: u64) -> bool {
+        self.offset_minutes.contains_key(&relay)
+    }
+
     pub fn record(
         &mut self,
         relay: u64,
@@ -257,12 +290,70 @@ impl ClockEstimate {
         wall + median * MINUTE
     }
 
+    /// The week of `relay`'s decisions: its adopted period while that is within a day of `wall`
+    /// (never behind the relay's own clock), else the week of [`Self::relay_now`].
     pub fn week(&self, relay: u64, wall: i64) -> i64 {
+        let own = week(self.relay_now(relay, wall));
         match self.adopted.get(&relay) {
-            Some(&a) if (week(wall - MAX_SKEW)..=week(wall + MAX_SKEW)).contains(&a) => a,
-            _ => week(self.now(wall)),
+            Some(&a) if (week(wall - MAX_SKEW)..=week(wall + MAX_SKEW)).contains(&a) => a.max(own),
+            _ => own,
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The redeem lane's reservations (§11.6, R8, `RedeemLane.reserveStep`, `wrongPeriodRetryAfter`).
+// ---------------------------------------------------------------------------------------------
+
+const EARLY_RETRY_LEAD: i64 = 23 * HOUR;
+
+/// What tx1 does with a plan (`RedeemLane.ReserveStep`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReserveStep {
+    Retry,
+    Wait,
+    Drop,
+    Covered,
+    Fresh,
+}
+
+/// A week's tokens are refused from `start(week + 1) + 1 h` (design §3.4).
+pub fn window_over(week: i64, relay_now: i64) -> bool {
+    relay_now >= week_start(week + 1) + HOUR
+}
+
+/// tx1 for a plan of `week` at `relay_now` (the plan's relay's clock): the pair's pending
+/// reservation of that week (`held`, with its `retry_after`) is retried identically unless its week
+/// is over (dropped); otherwise a fresh token, unless the week is over or the pair's write
+/// capability reaches past it.
+pub fn reserve_step(
+    held: bool,
+    retry_after: Option<i64>,
+    week: i64,
+    relay_now: i64,
+    write_expiry: Option<i64>,
+) -> ReserveStep {
+    if held && window_over(week, relay_now) {
+        ReserveStep::Drop
+    } else if held {
+        if retry_after.is_some_and(|a| relay_now < a) {
+            ReserveStep::Wait
+        } else {
+            ReserveStep::Retry
+        }
+    } else if window_over(week, relay_now) {
+        ReserveStep::Wait
+    } else if write_expiry.is_some_and(|e| e >= week_start(week + 1)) {
+        ReserveStep::Covered
+    } else {
+        ReserveStep::Fresh
+    }
+}
+
+/// A `WRONG_PERIOD` answer: a token of a week after the relay's period is kept and retried from
+/// `start(week) − 23 h` (returned); one of the relay's period or before is deleted (`None`).
+pub fn wrong_period_retry_after(token_week: i64, relay_period: i64) -> Option<i64> {
+    (token_week > relay_period).then(|| week_start(token_week) - EARLY_RETRY_LEAD)
 }
 
 // ---------------------------------------------------------------------------------------------

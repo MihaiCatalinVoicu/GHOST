@@ -37,7 +37,7 @@ pub const DAY: u64 = 86_400;
 pub const B: usize = 999;
 
 /// What the issuer view says about one invoice (plus the truth used for scoring).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct InvoiceFacts {
     pub id: Vec<u8>,
     pub client: u32,
@@ -54,8 +54,14 @@ pub struct InvoiceFacts {
     pub payments: Vec<(u64, PayMode)>,
     /// Fraction of +1 Jacobi symbols of the signed request's blocks of weeks base+1..base+3.
     pub jac_b: Option<f64>,
+    /// The same symbols as (+1 count, nonzero count).
+    pub jac_b_counts: (usize, usize),
     pub id_byte: u8,
     pub sub_byte: u8,
+    /// The first wallet call that showed a payment of the invoice with 10 confirmations.
+    pub t_conf: Option<u64>,
+    /// The flow's `RequestInvoice` was answered `WRONG_PERIOD` (a device more than 4 h off, E14).
+    pub wrong_period: bool,
 }
 
 /// What the relays' views say about one cluster.
@@ -73,6 +79,10 @@ pub struct ClusterFacts {
     /// Onsets: first redemption after at least a week without one.
     pub onsets: Vec<u64>,
     pub last_week: u64,
+    /// Redemptions refused for their period (the relay-visible offset of the device clock).
+    pub wrong_periods: usize,
+    /// The first redeemed access week.
+    pub first_week: Option<u64>,
 }
 
 impl ClusterFacts {
@@ -133,10 +143,14 @@ pub fn cluster_facts(acc: &Accumulator, clients: usize) -> Vec<ClusterFacts> {
             continue;
         };
         c.redemption_times.push(r.t);
+        if r.result == Redeemed::WrongPeriod {
+            c.wrong_periods += 1;
+        }
         if r.result == Redeemed::Ok {
             if let Some(w) = r.week {
                 c.redemptions.push((r.t, w, r.jacobi_em, r.nullifier[0]));
                 c.last_week = c.last_week.max(w);
+                c.first_week = Some(c.first_week.map_or(w, |f| f.min(w)));
             }
         }
     }
@@ -157,6 +171,40 @@ pub fn cluster_facts(acc: &Accumulator, clients: usize) -> Vec<ClusterFacts> {
 fn jac_fraction(signs: &[i8]) -> Option<f64> {
     let n = signs.iter().filter(|&&s| s != 0).count();
     (n > 0).then(|| signs.iter().filter(|&&s| s == 1).count() as f64 / n as f64)
+}
+
+/// A sign list as (+1 count, nonzero count).
+fn jac_counts(signs: &[i8]) -> (usize, usize) {
+    (
+        signs.iter().filter(|&&s| s == 1).count(),
+        signs.iter().filter(|&&s| s != 0).count(),
+    )
+}
+
+/// A count of +1 symbols among n as its z-score against Binomial(n, 1/2), in seven bins of about
+/// equal mass (7: no symbol). Jacobi symbols of honest blinded blocks are fair coins independent of
+/// the unblinded messages', so the z-scores of a pack's blocks and of its tokens at the relays are
+/// independent; a blinding factor that is a square (M5b) makes them equal token by token.
+fn z_bin((plus, n): (usize, usize)) -> u32 {
+    if n == 0 {
+        return 7;
+    }
+    let z = (plus as f64 - n as f64 / 2.0) / (n as f64 / 4.0).sqrt();
+    [-1.1, -0.55, -0.18, 0.18, 0.55, 1.1]
+        .iter()
+        .take_while(|&&edge| z >= edge)
+        .count() as u32
+}
+
+/// The Jacobi counts of the cluster's accepted redemptions of weeks base+1..base+3.
+fn jac_em_counts(c: &ClusterFacts, base: u64) -> (usize, usize) {
+    let signs: Vec<i8> = c
+        .redemptions
+        .iter()
+        .filter(|r| r.1 > base && r.1 <= base + 3)
+        .map(|r| r.2)
+        .collect();
+    jac_counts(&signs)
 }
 
 pub fn invoice_facts(acc: &Accumulator, truth: &Truth) -> Vec<InvoiceFacts> {
@@ -204,8 +252,15 @@ pub fn invoice_facts(acc: &Accumulator, truth: &Truth) -> Vec<InvoiceFacts> {
                                 })
                                 .collect(),
                             jac_b: None,
+                            jac_b_counts: (0, 0),
                             id_byte: id[0],
                             sub_byte: 0,
+                            t_conf: it
+                                .payments
+                                .iter()
+                                .filter_map(|p| acc.confirmed.get(&p.0).copied())
+                                .min(),
+                            wrong_period: false,
                         };
                         for r in recs {
                             if r.truth.automatic {
@@ -215,6 +270,8 @@ pub fn invoice_facts(acc: &Accumulator, truth: &Truth) -> Vec<InvoiceFacts> {
                             }
                             match r.op {
                                 IssuerOp::RequestInvoice => {
+                                    // RequestInvoiceResult::WrongPeriod.
+                                    f.wrong_period |= r.int("result") == Some(2);
                                     f.t_req = f.t_req.min(r.t);
                                     if let Some(s) = r.resp("subaddress").filter(|s| !s.is_empty())
                                     {
@@ -250,6 +307,7 @@ pub fn invoice_facts(acc: &Accumulator, truth: &Truth) -> Vec<InvoiceFacts> {
                                                 }
                                             }
                                             f.jac_b = jac_fraction(&signs);
+                                            f.jac_b_counts = jac_counts(&signs);
                                         }
                                     }
                                 }
@@ -333,7 +391,17 @@ pub fn declared(i: &InvoiceFacts, c: &ClusterFacts) -> Vec<u32> {
     } else {
         0
     };
-    vec![l1, l2, l3, l5, l5_gap, l6, l7]
+    // The relays' own view of the cluster, which the adversary holds whatever the issuer leaks: its
+    // namespace count and its redemptions in the pack's first covered week (L2 gives the base week).
+    let ns = (c.namespaces as u32).min(8);
+    let in_week = (c.redemptions.iter().filter(|r| r.1 == i.base + 1).count() as u32).min(12);
+    // L1 at the relays' resolution: hours from the activation-slot boundary to the cluster's next
+    // redemption.
+    let boundary = d_act * DAY;
+    let l1_hours = c
+        .next_redemption(boundary)
+        .map_or(48, |t| ((t - boundary) / 3_600).min(47) as u32);
+    vec![l1, l2, l3, l5, l5_gap, l6, l7, ns, in_week, l1_hours]
 }
 
 /// A quiet-gap coincidence: `t` falls in no session of the cluster and more than 450 s from its
@@ -358,9 +426,6 @@ pub fn full(i: &InvoiceFacts, c: &ClusterFacts) -> Vec<u32> {
         .min()
         .unwrap_or(u64::MAX);
     f.push(log2_bin((edge != u64::MAX).then_some(edge), 12));
-    f.push((c.namespaces as u32).min(8));
-    let in_week = c.redemptions.iter().filter(|r| r.1 == i.base + 1).count();
-    f.push((in_week as u32).min(12));
     f.push(match (i.jac_b, jac_em(c, i.base)) {
         (Some(a), Some(b)) => ((a - b).abs() * 10.0) as u32,
         _ => 11,
@@ -378,6 +443,20 @@ pub fn full(i: &InvoiceFacts, c: &ClusterFacts) -> Vec<u32> {
     f.push(match c.next_redemption(t_sig) {
         Some(t) => ((t - t_sig) / 3_600).min(47) as u32,
         None => 48,
+    });
+    // Δ(first use, confirmation height): the cluster's next redemption after the payment was seen
+    // with 10 confirmations.
+    f.push(log2_bin(
+        i.t_conf.and_then(|t| c.next_redemption(t).map(|x| x - t)),
+        14,
+    ));
+    // The clock offset: the flow met WRONG_PERIOD at the issuer (E14), and the cluster's refused
+    // periods at the relays.
+    f.push(u32::from(i.wrong_period) * 3 + c.wrong_periods.min(2) as u32);
+    // The cluster's first redeemed week relative to the base week.
+    f.push(match c.first_week {
+        Some(w) => (w as i64 - i.base as i64 + 2).clamp(0, 8) as u32,
+        None => 9,
     });
     f
 }
@@ -530,10 +609,18 @@ pub fn hungarian(cost: &[Vec<f64>]) -> Vec<usize> {
 
 /// P(X ≥ k) for X ~ Binomial(n, 1/2), exactly (in log space).
 pub fn binom_tail(k: u64, n: u64) -> f64 {
+    binom_tail_p(k, n, 0.5)
+}
+
+/// P(X ≥ k) for X ~ Binomial(n, p), 0 < p < 1, exactly (in log space).
+pub fn binom_tail_p(k: u64, n: u64, p: f64) -> f64 {
     if k == 0 {
         return 1.0;
     }
-    let ln_half_n = -(n as f64) * std::f64::consts::LN_2;
+    if k > n {
+        return 0.0;
+    }
+    let (lp, lq) = (p.ln(), (1.0 - p).ln());
     let mut ln_c = 0.0f64; // ln C(n, 0)
     let mut terms = Vec::new();
     for x in 0..=n {
@@ -541,7 +628,7 @@ pub fn binom_tail(k: u64, n: u64) -> f64 {
             ln_c += ((n - x + 1) as f64).ln() - (x as f64).ln();
         }
         if x >= k {
-            terms.push(ln_c + ln_half_n);
+            terms.push(ln_c + x as f64 * lp + (n - x) as f64 * lq);
         }
     }
     let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -708,14 +795,15 @@ pub fn s4(test: &[InvoiceFacts], clusters: &[ClusterFacts], a: &Attackers) -> (f
 // S2: max-T mutual information.
 // -------------------------------------------------------------------------------------------------
 
+/// Mutual information of two discrete samples (summed in a fixed order: a pure function).
 fn mi(x: &[u32], y: &[u32]) -> f64 {
     let n = x.len() as f64;
     if n == 0.0 {
         return 0.0;
     }
-    let mut joint: HashMap<(u32, u32), f64> = HashMap::new();
-    let mut px: HashMap<u32, f64> = HashMap::new();
-    let mut py: HashMap<u32, f64> = HashMap::new();
+    let mut joint: BTreeMap<(u32, u32), f64> = BTreeMap::new();
+    let mut px: BTreeMap<u32, f64> = BTreeMap::new();
+    let mut py: BTreeMap<u32, f64> = BTreeMap::new();
     for (&a, &b) in x.iter().zip(y) {
         *joint.entry((a, b)).or_insert(0.0) += 1.0;
         *px.entry(a).or_insert(0.0) += 1.0;
@@ -741,9 +829,8 @@ pub fn s2(test: &[InvoiceFacts], clusters: &[ClusterFacts], seed: u64) -> S2 {
         .iter()
         .filter(|i| i.scored && i.xmr && i.t_sig.is_some())
         .collect();
-    let bin8 = |v: Option<f64>| v.map_or(8, |f| ((f * 8.0) as u32).min(7));
     let xs: Vec<Vec<u32>> = vec![
-        sel.iter().map(|i| bin8(i.jac_b)).collect(),
+        sel.iter().map(|i| z_bin(i.jac_b_counts)).collect(),
         sel.iter().map(|i| u32::from(i.id_byte & 7)).collect(),
         sel.iter().map(|i| u32::from(i.sub_byte & 7)).collect(),
         sel.iter().map(|i| i.attempts.min(5) as u32).collect(),
@@ -761,7 +848,9 @@ pub fn s2(test: &[InvoiceFacts], clusters: &[ClusterFacts], seed: u64) -> S2 {
     let ys: Vec<Vec<u32>> = {
         let c = |i: &InvoiceFacts| &clusters[i.client as usize];
         vec![
-            sel.iter().map(|i| bin8(jac_em(c(i), i.base))).collect(),
+            sel.iter()
+                .map(|i| z_bin(jac_em_counts(c(i), i.base)))
+                .collect(),
             sel.iter()
                 .map(|i| {
                     let t = i.t_sig.unwrap();
@@ -800,20 +889,13 @@ pub fn s2(test: &[InvoiceFacts], clusters: &[ClusterFacts], seed: u64) -> S2 {
         "namespaces",
         "redemption seconds",
     ];
-    // Strata: the declared cells (base week, need trigger, a screen payment).
-    let strata: Vec<(u64, bool, bool)> = sel
-        .iter()
-        .map(|i| {
-            (
-                i.base,
-                i.need,
-                i.payments.iter().any(|p| p.1 == PayMode::Session),
-            )
-        })
-        .collect();
-    let mut groups: HashMap<(u64, bool, bool), Vec<usize>> = HashMap::new();
-    for (k, s) in strata.iter().enumerate() {
-        groups.entry(*s).or_default().push(k);
+    // Strata: the declared cells the issuer side holds, the coverage-end week (L2: the base week)
+    // and the activation-slot day (L1: the first UTC-day boundary at or after t_sig + 4 h). A
+    // BTreeMap: the strata are shuffled in a fixed order, so a pinned seed reproduces the verdict.
+    let mut groups: BTreeMap<(u64, u64), Vec<usize>> = BTreeMap::new();
+    for (k, i) in sel.iter().enumerate() {
+        let d_act = (i.t_sig.unwrap() + 4 * 3_600).div_ceil(DAY);
+        groups.entry((i.base, d_act)).or_default().push(k);
     }
     let pairs: Vec<(usize, usize)> = (0..xs.len())
         .flat_map(|a| (0..ys.len()).map(move |b| (a, b)))
@@ -1059,6 +1141,114 @@ mod tests {
         assert_eq!(total, 5.0);
         let rect = vec![vec![9.0, 1.0, 9.0, 9.0], vec![9.0, 9.0, 9.0, 1.0]];
         assert_eq!(hungarian(&rect), vec![1, 3]);
+    }
+
+    /// A synthetic scored world: `n` invoices over several strata, each with its true cluster.
+    fn synthetic(n: usize) -> (Vec<InvoiceFacts>, Vec<ClusterFacts>) {
+        let mut r = SplitMix::new(0x5332);
+        let mut inv = Vec::new();
+        let mut clu = Vec::new();
+        for k in 0..n {
+            let base = 2_960 + (k % 6) as u64;
+            let t_sig = week_start(base) + 86_400 + r.below(5 * 86_400);
+            inv.push(InvoiceFacts {
+                id: (k as u64).to_be_bytes().to_vec(),
+                client: k as u32,
+                xmr: true,
+                base,
+                scored: true,
+                need: k % 3 == 0,
+                t_req: t_sig - 7_200,
+                t_sig: Some(t_sig),
+                attempts: 1 + r.below(4) as usize,
+                jac_b: Some(r.below(37) as f64 / 36.0),
+                id_byte: r.below(256) as u8,
+                sub_byte: r.below(256) as u8,
+                ..InvoiceFacts::default()
+            });
+            let mut c = ClusterFacts {
+                namespaces: 1 + r.below(8) as usize,
+                ..ClusterFacts::default()
+            };
+            for j in 0..20u64 {
+                let t = t_sig + 3_600 * (1 + j) + r.below(600);
+                c.redemptions.push((
+                    t,
+                    base + 1 + j % 3,
+                    if r.below(2) == 0 { 1 } else { -1 },
+                    r.below(256) as u8,
+                ));
+                c.redemption_times.push(t);
+            }
+            clu.push(c);
+        }
+        (inv, clu)
+    }
+
+    /// S2 is a pure function of its inputs and seed (a pinned seed reproduces the verdict).
+    #[test]
+    fn s2_is_deterministic() {
+        let (inv, clu) = synthetic(240);
+        let a = s2(&inv, &clu, 7);
+        for _ in 0..4 {
+            let b = s2(&inv, &clu, 7);
+            assert_eq!(
+                (a.exceeded, a.t_max.to_bits(), &a.strongest),
+                (b.exceeded, b.t_max.to_bits(), &b.strongest)
+            );
+        }
+    }
+
+    /// A synthetic pair set whose Jacobi counts of the blocks and of the cluster's tokens are
+    /// independent (honest blinding) or come from the same symbols (a square blinding factor, M5b:
+    /// J(B) = J(em) token by token; the cluster redeems 27 of the pack's 36 tokens).
+    fn jacobi_world(square: bool) -> (Vec<InvoiceFacts>, Vec<ClusterFacts>) {
+        let (mut inv, mut clu) = synthetic(300);
+        let mut r = SplitMix::new(0x4d35);
+        for (i, c) in inv.iter_mut().zip(clu.iter_mut()) {
+            let b: Vec<i8> = (0..36)
+                .map(|_| if r.below(2) == 0 { 1 } else { -1 })
+                .collect();
+            i.jac_b_counts = jac_counts(&b);
+            c.redemptions.clear();
+            for k in 0..27u64 {
+                let sign = if square {
+                    b[k as usize]
+                } else if r.below(2) == 0 {
+                    1
+                } else {
+                    -1
+                };
+                let t = i.t_sig.unwrap() + 3_600 * (1 + k);
+                c.redemptions
+                    .push((t, i.base + 1 + k % 3, sign, r.below(256) as u8));
+            }
+        }
+        (inv, clu)
+    }
+
+    /// S2's Jacobi pair detects a square blinding factor with margin, and stays quiet otherwise.
+    #[test]
+    fn s2_detects_square_blinding() {
+        let (inv, clu) = jacobi_world(true);
+        let s = s2(&inv, &clu, 11);
+        assert_eq!(s.exceeded, 0, "{s:?}");
+        assert!(
+            s.t_max > 10.0 && s.strongest == "jacobi(B) x jacobi(em)",
+            "{s:?}"
+        );
+        let (inv, clu) = jacobi_world(false);
+        let s = s2(&inv, &clu, 11);
+        assert!(s.exceeded > 0, "{s:?}");
+    }
+
+    #[test]
+    fn binomial_tail_of_any_p_is_exact() {
+        // P(X ≥ 2) for Binomial(3, 1/8) = 3 (1/8)^2 (7/8) + (1/8)^3 = 22/512.
+        assert!((binom_tail_p(2, 3, 0.125) - 22.0 / 512.0).abs() < 1e-12);
+        assert_eq!(binom_tail_p(4, 3, 0.125), 0.0);
+        assert_eq!(binom_tail_p(0, 3, 0.125), 1.0);
+        assert!((binom_tail_p(6, 10, 0.5) - binom_tail(6, 10)).abs() < 1e-15);
     }
 
     #[test]

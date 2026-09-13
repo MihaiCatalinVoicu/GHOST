@@ -121,6 +121,12 @@ impl Relay {
         self.redeem.as_ref().map(|r| r.store())
     }
 
+    /// The in-memory quota ledger's state (read-only, [`QuotaLedger::snapshot`]): the T2 exit gate
+    /// exports it with the relay's databases (design §13.4).
+    pub fn quota_snapshot(&self) -> (Vec<([u8; 32], u64, u64)>, u64) {
+        self.ledger.lock().unwrap().snapshot()
+    }
+
     /// The relay's current time (its configured [`Clock`]).
     pub fn now(&self) -> u64 {
         (self.config.clock)()

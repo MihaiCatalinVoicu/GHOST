@@ -172,8 +172,12 @@ pub enum ClientKind {
 pub struct ClientTruth {
     pub kind: ClientKind,
     pub namespaces: usize,
-    /// Scripted user-initiated issuer calls: (time, op).
+    /// User-initiated issuer calls as the world made them: (time, op) (for the report).
     pub user_calls: Vec<(u64, IssuerOp)>,
+    /// The foreground sessions the user script drew for this client, at the start of each day and
+    /// before any of them happened: the only moments a user action (and so a user-initiated issuer
+    /// call) can happen (J9).
+    pub scripted: Vec<u64>,
     /// The client's runs: (start, end, quiet, relay calls, issuer calls).
     pub runs: Vec<Run>,
     /// Device clock offset intervals: (from, until, offset seconds).
@@ -187,9 +191,12 @@ pub struct Run {
     pub id: u64,
     pub start: u64,
     pub end: u64,
+    /// A periodic-job run (quiet or a background relay session); false for a foreground session.
+    pub job: bool,
     pub quiet: bool,
     /// Quiet because the process's PRF drew it (q = 1/8 per job, whatever work is due: P-7).
     pub drawn: bool,
+    /// The relay calls the world counted in the run (for the report; J9 reads the relay views).
     pub relay_calls: u32,
     pub issuer_calls: u32,
 }
@@ -228,6 +235,9 @@ pub struct Truth {
     pub invoices: Vec<InvoiceTruth>,
     /// Tokens the attacker knows because its Sybil clients finalized them.
     pub attacker_tokens: Vec<Vec<u8>>,
+    /// The nullifier of every token a client handed to a relay (the completeness check: each must
+    /// appear in some relay view).
+    pub presented: Vec<[u8; 32]>,
     /// Scored window [start, end).
     pub window: (u64, u64),
 }

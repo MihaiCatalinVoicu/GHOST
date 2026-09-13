@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use ghost_entitlement::grid::week_start;
 use ghost_t2_join::checks;
 use ghost_t2_join::model::Truth;
 use ghost_t2_join::stats::{self, Attackers};
@@ -49,6 +50,18 @@ pub const SEEDS: [(u64, u64); 10] = [
 pub const ALPHA: f64 = 0.001;
 /// Q21: the declared-leak attacker's top-1 accuracy bound.
 pub const S4_BOUND: f64 = 0.25;
+
+/// The smallest samples a statistical check may pass on (a check with no data tests nothing).
+pub const FLOOR_S12: usize = 100;
+pub const FLOOR_S3: usize = 100;
+pub const FLOOR_S3D: usize = 50;
+pub const FLOOR_S4: usize = 50;
+/// The fewest moved flows the twins NI-1 (inside the cell) and NI-1 across cells may pass on.
+pub const FLOOR_MOVED: usize = 10;
+/// The fewest drop writes NI-1d may pass on.
+pub const FLOOR_DROPS: usize = 3;
+/// The achieved population must be within this share of the design's (§13.4 "World").
+pub const POPULATION_TOLERANCE: f64 = 0.3;
 
 #[derive(Default)]
 pub struct Findings {
@@ -132,14 +145,25 @@ pub fn joins(f: &mut Findings, test: &Outcome) {
         "J8",
         j8.is_empty(),
         format!(
-            "{} ({} WRONG_PERIOD redemptions of devices more than 24 h off, which the clipped relay-facing clock corrects only to within 24 h, §19.23 point 2; {} identical retries of ambiguous redemptions landing after their week, R8)",
+            "{} ({} WRONG_PERIOD redemptions of devices more than 24 h off, which the clipped relay-facing clock corrects only to within a day, §19.23 point 2: reported; identical retries refused a period, counted: {})",
             hits_line(&j8),
             checks::j8_far_skew(acc),
             checks::j8_late_retries(acc)
         ),
     );
     let j9 = checks::j9(acc, truth, due);
-    f.check("J9", j9.is_empty(), hits_line(&j9));
+    let q = checks::j9_quiet(acc, truth, due);
+    f.check(
+        "J9",
+        j9.is_empty(),
+        format!(
+            "{} (quiet runs independent of due work: {} of {} automatic BlindSign calls served by the first job run at or after their due minute, q = 1/8, p = {:.2})",
+            hits_line(&j9),
+            q.first,
+            q.n,
+            q.p
+        ),
+    );
     let proofs: Vec<_> = acc
         .schedule
         .content()
@@ -160,26 +184,26 @@ pub fn joins(f: &mut Findings, test: &Outcome) {
         t2c.is_empty(),
         format!("{} ({released} credits re-presented after an unanswered credits-pack flow, §19.23 point 2)", hits_line(&t2c)),
     );
-    // Completeness: every call a handler received is in a view.
-    let redeems = test
-        .log
-        .counts
-        .iter()
-        .filter(|(k, _)| k.starts_with("redemptions "))
-        .map(|(_, v)| *v)
-        .sum::<u64>();
+    // Completeness (§13.4): every request a handler received is in a view, counted independently
+    // of the recorder (the issuer links count at each handler's entry, the relays write one
+    // capture event per call), and every ground-truth nullifier is in some relay view.
+    let presented = truth.presented.len() as u64;
+    let missing = checks::nullifiers_missing(acc, truth);
     f.check(
         "completeness",
-        acc.issuer.len() as u64 == test.rec.digests.issuer_calls
-            && acc.relay_calls == test.rec.digests.relay_calls.iter().sum::<u64>()
-            && acc.redemptions.len() as u64 >= redeems,
+        acc.issuer.len() as u64 == test.log.issuer_received
+            && acc.relay_calls == test.log.capture_lines
+            && acc.redemptions.len() as u64 == presented
+            && missing == 0
+            && test.log.issuer_received > 0,
         format!(
-            "issuer calls {} in view {}, relay calls {} in views {}, redemptions {} (client-side {redeems})",
-            test.rec.digests.issuer_calls,
+            "issuer view {} of {} requests received (counted at the handlers' entry), relay views {} of {} capture events, redemptions {} of {} tokens presented, {missing} ground-truth nullifiers in no relay view",
             acc.issuer.len(),
-            test.rec.digests.relay_calls.iter().sum::<u64>(),
+            test.log.issuer_received,
             acc.relay_calls,
-            acc.redemptions.len()
+            test.log.capture_lines,
+            acc.redemptions.len(),
+            presented
         ),
     );
     f.note(format!(
@@ -210,10 +234,10 @@ pub fn statistics(f: &mut Findings, a: &Attackers, test: &Outcome, seed: u64) ->
     let inv = stats::invoice_facts(acc, &test.truth);
     let clu = stats::cluster_facts(acc, test.truth.clients.len());
     let s1 = stats::s1(&inv, &clu, a);
-    // The two assignments are one family: each is tested at α/2.
+    // α = 0.001 per test (§13.4): each assignment is a test.
     f.check(
         "S1",
-        s1.p >= ALPHA / 2.0 && s1.h_p >= ALPHA / 2.0,
+        s1.p >= ALPHA && s1.h_p >= ALPHA && s1.n >= FLOOR_S12,
         format!(
             "n={} argmax full {:.3} declared {:.3} lift {:+.3} (n10={}, n01={}, p={:.2e}); Hungarian full {:.3} declared {:.3} (p={:.2e}); {:.0} candidates per invoice",
             s1.n,
@@ -232,7 +256,7 @@ pub fn statistics(f: &mut Findings, a: &Attackers, test: &Outcome, seed: u64) ->
     let s2 = stats::s2(&inv, &clu, seed);
     f.check(
         "S2",
-        s2.exceeded > 0,
+        s2.exceeded > 0 && s2.n >= FLOOR_S12,
         format!(
             "n={} max-T {:.2} ({}), permuted maxima at or above it {} of {} (p={:.3})",
             s2.n,
@@ -244,10 +268,12 @@ pub fn statistics(f: &mut Findings, a: &Attackers, test: &Outcome, seed: u64) ->
         ),
     );
     let s3 = stats::s3(acc, &inv, &clu, seed ^ 0x53);
-    let ok = |p: &stats::Presence| !(p.observed > p.max_permuted && p.p <= ALPHA);
+    let ok = |p: &stats::Presence, floor: usize| {
+        !(p.observed > p.max_permuted && p.p <= ALPHA) && p.n >= floor
+    };
     f.check(
         "S3a",
-        ok(&s3.a),
+        ok(&s3.a, FLOOR_S3),
         format!(
             "co-presence at automatic issuer calls: n={} true {:.4} max permuted {:.4} p={:.3}",
             s3.a.n, s3.a.observed, s3.a.max_permuted, s3.a.p
@@ -255,7 +281,7 @@ pub fn statistics(f: &mut Findings, a: &Attackers, test: &Outcome, seed: u64) ->
     );
     f.check(
         "S3b",
-        ok(&s3.b),
+        ok(&s3.b, FLOOR_S3),
         format!(
             "session start/end within [-120 s, +30 s]: n={} true {:.4} max permuted {:.4} p={:.3}",
             s3.b.n, s3.b.observed, s3.b.max_permuted, s3.b.p
@@ -267,15 +293,43 @@ pub fn statistics(f: &mut Findings, a: &Attackers, test: &Outcome, seed: u64) ->
     ));
     f.check(
         "S3d",
-        ok(&s3.d),
+        ok(&s3.d, FLOOR_S3D),
         format!(
             "payment co-presence (screen payments): n={} true {:.4} max permuted {:.4} p={:.3}",
             s3.d.n, s3.d.observed, s3.d.max_permuted, s3.d.p
         ),
     );
     let (acc4, n4) = stats::s4(&inv, &clu, a);
-    f.check("S4", acc4 <= S4_BOUND, format!("declared-leak top-1 accuracy {acc4:.3} over {n4} XMR packs of non-genesis clients (bound {S4_BOUND})"));
+    f.check("S4", acc4 <= S4_BOUND && n4 >= FLOOR_S4, format!("declared-leak top-1 accuracy {acc4:.3} over {n4} XMR packs of non-genesis clients (bound {S4_BOUND})"));
     acc4
+}
+
+/// The achieved population of a scored world against the design's (§13.4 "World", §19.16): the
+/// window's signed packs within ±30 % of N and the need-triggered extra packs about 5 % of N; the
+/// rest is reported.
+pub fn population_check(f: &mut Findings, o: &Outcome, scale: Scale) {
+    let g = |k: &str| o.log.counts.get(k).copied().unwrap_or(0);
+    let n = scale.packs as f64;
+    let packs = g("window packs signed") as f64;
+    let need = o.log.need_starts.len() as f64;
+    let want_need = population::NEED_SHARE * n;
+    let ok = (packs - n).abs() <= POPULATION_TOLERANCE * n
+        && (need - want_need).abs() <= (0.6 * want_need).max(3.0);
+    f.check(
+        "population",
+        ok,
+        format!(
+            "window packs signed {packs} (N = {n}, ±{:.0} %), need-triggered starts {need} ({:.0} % of N: {want_need:.0}), renewals started {}, invitee first packs {}, resumes {}, trials {}, credits packs {}, claims {}",
+            POPULATION_TOLERANCE * 100.0,
+            population::NEED_SHARE * 100.0,
+            g("window renewals started"),
+            o.log.first_packs.len(),
+            g("resumes started"),
+            g("trials"),
+            g("credits packs started"),
+            g("claims answered")
+        ),
+    );
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -411,36 +465,60 @@ fn true_at_wall(skew: &[(u64, u64, i64)], w: u64) -> u64 {
         .unwrap_or(w)
 }
 
-/// NI-1 (same cell): every relay view and relay database snapshot byte-identical.
+/// NI-1 (same cell): every relay view and relay database snapshot byte-identical. The twin moves
+/// packs' finalization times inside their activation-slot cells (signing answers up to 30 s later,
+/// across minute boundaries), which a correct client cannot show a relay; a finalization pushed
+/// across a cell boundary (within 30 s of one) is an L1 change, so that client is compared before
+/// the earlier cell and the database snapshots before the earliest one.
 pub fn ni1(f: &mut Findings, a: &Outcome, b: &Outcome) {
     let da = &a.rec.digests;
     let db = &b.rec.digests;
+    let (h, _, in_cell) = cell_horizons(a, b, true);
     let same_views =
         (0..3).all(|k| da.relay[k].clone().finalize() == db.relay[k].clone().finalize());
-    let same_db = da.relay_db_weeks == db.relay_db_weeks;
-    let detail = if same_views && same_db {
+    let first_cross = h.values().min().copied();
+    let same_db = match first_cross {
+        None => da.relay_db_weeks == db.relay_db_weeks,
+        Some(m) => da
+            .relay_db_weeks
+            .iter()
+            .filter(|((w, _), _)| week_start(*w) < m)
+            .all(|(k, v)| db.relay_db_weeks.get(k) == Some(v)),
+    };
+    let diff = if same_views {
+        None
+    } else {
+        Some(
+            per_client_diff_text(
+                &da.relay_by_client,
+                &db.relay_by_client,
+                &h,
+                &da.relay_text_by_client,
+                &db.relay_text_by_client,
+                (&a.truth, &b.truth),
+                (&da.notes_by_client, &db.notes_by_client),
+            )
+            .unwrap_or_default(),
+        )
+    };
+    let views_ok = diff.as_ref().is_none_or(|d| d.is_empty());
+    let ok = views_ok && same_db && in_cell >= FLOOR_MOVED;
+    let detail = if views_ok && same_db {
         format!(
-            "3 relay views ({} calls) and {} relay database snapshots identical",
+            "3 relay views ({} calls) and {} relay database snapshots identical; {in_cell} finalizations moved inside their activation-slot cell, {} clients with one pushed across a cell boundary compared before it",
             da.relay_calls.iter().sum::<u64>(),
-            da.relay_db_weeks.len()
+            da.relay_db_weeks.len(),
+            h.len()
         )
     } else {
-        let where_ = per_client_diff_text(
-            &da.relay_by_client,
-            &db.relay_by_client,
-            &HashMap::new(),
-            &da.relay_text_by_client,
-            &db.relay_text_by_client,
-            (&a.truth, &b.truth),
-            (&da.notes_by_client, &db.notes_by_client),
-        )
-        .unwrap_or_else(|| "databases only".into());
         format!(
-            "relay views differ ({where_}); databases {}",
+            "relay views differ ({}); databases {}; {in_cell} finalizations moved inside their cell",
+            diff.filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "none before a cell boundary".into()),
             if same_db { "identical" } else { "differ" }
         )
     };
-    f.check("NI-1", same_views && same_db, detail);
+    f.check("NI-1", ok, detail);
 }
 
 /// The earlier activation-slot cell of each flow whose finalization differs between the worlds
@@ -449,9 +527,21 @@ pub fn ni1(f: &mut Findings, a: &Outcome, b: &Outcome) {
 /// moved just as well. A cell is the first UTC-day boundary at or after `t_f + 4 h` in either world.
 /// The pack rule runs on the device clock (§12.3 takes the finalization's device time), so the cell
 /// starts when the client's device clock reaches that boundary: earlier than on true time for a
-/// clock running ahead. Revocations count too: their spares activate at once (R4). Also returns,
-/// per client, its differing flows (for the report).
-fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usize, String>) {
+/// clock running ahead. Revocations count too: their spares activate at once (R4). A client whose
+/// process started at other times in the two worlds (a crash after an extra `BlindSign` attempt
+/// that only one world made, the 5 % fault: the new process draws a fresh quiet pattern) is
+/// compared before the first differing start. Also returns, per client, its differing flows (for
+/// the report), and the number of flows finalized at other times inside the same cell.
+///
+/// `exact` (NI-1, same cell): a flow finalized at another time inside its cell sets no horizon (a
+/// correct client shows the relays nothing of it), and only the consequences of flows pushed across
+/// a cell boundary do (the invites of such a pack, the revocations of such a client); process
+/// starts must not differ at all.
+fn cell_horizons(
+    a: &Outcome,
+    b: &Outcome,
+    exact: bool,
+) -> (HashMap<usize, u64>, HashMap<usize, String>, usize) {
     let fin = |o: &Outcome| -> HashMap<(u32, u64), Option<u64>> {
         o.truth
             .invoices
@@ -464,6 +554,8 @@ fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usiz
         fa.keys().chain(fb.keys()).copied().collect();
     let mut h: HashMap<usize, u64> = HashMap::new();
     let mut notes: HashMap<usize, String> = HashMap::new();
+    let mut in_cell = 0usize;
+    let mut crossed: HashSet<(u32, u64)> = HashSet::new();
     for key in keys {
         let (x, y) = (
             fa.get(&key).copied().flatten(),
@@ -483,6 +575,11 @@ fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usiz
                 true_at_wall(skew, (w + 4 * 3_600).div_ceil(86_400) * 86_400)
             })
         };
+        if exact && cell(x) == cell(y) {
+            in_cell += 1;
+            continue;
+        }
+        crossed.insert(key);
         let d = cell(x).min(cell(y));
         let e = h.entry(key.0 as usize).or_insert(u64::MAX);
         *e = (*e).min(d);
@@ -506,9 +603,10 @@ fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usiz
     let (ra, rb) = (rev(a), rev(b));
     let rkeys: std::collections::BTreeSet<(u32, u64)> =
         ra.keys().chain(rb.keys()).copied().collect();
+    let crossed_clients: HashSet<u32> = crossed.iter().map(|k| k.0).collect();
     for key in rkeys {
         let (x, y) = (ra.get(&key).copied(), rb.get(&key).copied());
-        if x == y {
+        if x == y || (exact && !crossed_clients.contains(&key.0)) {
             continue;
         }
         let skew = a
@@ -553,6 +651,9 @@ fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usiz
             continue;
         };
         for &(inviter, src, t) in la.iter().skip(j).chain(lb.iter().skip(j)) {
+            if exact && !crossed.contains(&(inviter, src)) {
+                continue;
+            }
             for who in [invitee, inviter] {
                 let e = h.entry(who as usize).or_insert(u64::MAX);
                 *e = (*e).min(t);
@@ -561,6 +662,31 @@ fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usiz
                 notes.entry(inviter as usize).or_default(),
                 " invite of pack {src:x} handed to {invitee} at {t} in one world only;"
             );
+        }
+    }
+    // Process starts: a crash after an extra attempt of one world restarts the process there.
+    if !exact {
+        for (c, (pa, pb)) in a
+            .truth
+            .clients
+            .iter()
+            .zip(b.truth.clients.iter())
+            .map(|(x, y)| (&x.processes, &y.processes))
+            .enumerate()
+        {
+            if let Some(j) = (0..pa.len().max(pb.len())).find(|&j| pa.get(j) != pb.get(j)) {
+                let t = pa
+                    .get(j)
+                    .copied()
+                    .unwrap_or(u64::MAX)
+                    .min(pb.get(j).copied().unwrap_or(u64::MAX));
+                let e = h.entry(c).or_insert(u64::MAX);
+                *e = (*e).min(t);
+                let _ = write!(
+                    notes.entry(c).or_default(),
+                    " a process started at {t} in one world only;"
+                );
+            }
         }
     }
     // A drop namespace is shared by an inviter and its invitee: each one's relay answers there
@@ -596,11 +722,11 @@ fn cell_horizons(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, HashMap<usiz
             break;
         }
     }
-    (h, notes)
+    (h, notes, in_cell)
 }
 
 pub fn ni1_cells(f: &mut Findings, a: &Outcome, b: &Outcome, moved: &HashSet<(u32, u64)>) {
-    let (h, notes) = cell_horizons(a, b);
+    let (h, notes, _) = cell_horizons(a, b, false);
     let (da, db) = (&a.rec.digests, &b.rec.digests);
     let d = per_client_diff_text(
         &da.relay_by_client,
@@ -614,7 +740,7 @@ pub fn ni1_cells(f: &mut Findings, a: &Outcome, b: &Outcome, moved: &HashSet<(u3
     let differing: usize = notes.values().map(|n| n.matches("finalized").count()).sum();
     f.check(
         "NI-1 across cells",
-        d.is_none(),
+        d.is_none() && moved.len() >= FLOOR_MOVED,
         match d {
             None => format!(
                 "{} flows moved ({differing} finalized differently, the others displaced by their extra attempts); every client's relay calls identical before the earlier activation cell",
@@ -637,7 +763,7 @@ pub fn ni2(f: &mut Findings, a: &Outcome, b: &Outcome) {
     let same = da.issuer_masked.clone().finalize() == db.issuer_masked.clone().finalize()
         && da.wallet.clone().finalize() == db.wallet.clone().finalize();
     let detail = if same {
-        format!("issuer view ({} calls) identical modulo blinded and signature bytes; wallet view identical", da.issuer_calls)
+        format!("issuer view ({} calls) identical modulo blinded and signature bytes; wallet view identical (the base world's drop-read times of received credits replayed, Q31)", da.issuer_calls)
     } else {
         per_client_diff_text(
             &da.issuer_masked_by_client,
@@ -661,7 +787,7 @@ pub fn ni3(f: &mut Findings, a: &Outcome, b: &Outcome) {
         && da.wallet.clone().finalize() == db.wallet.clone().finalize();
     let detail = if same {
         format!(
-            "issuer view ({} calls) and wallet view identical",
+            "issuer view ({} calls) and wallet view identical (the base world's drop-read times of received credits replayed, Q31)",
             da.issuer_calls
         )
     } else {
@@ -685,7 +811,7 @@ pub fn ni1d(f: &mut Findings, a: &Outcome, b: &Outcome) {
     let (da, db) = (&a.rec.digests.drops, &b.rec.digests.drops);
     f.check(
         "NI-1d",
-        da == db,
+        da == db && da.len() >= FLOOR_DROPS,
         if da == db {
             format!("{} drop writes identical (time, relay, length)", da.len())
         } else {
@@ -729,6 +855,7 @@ pub fn ni1_twin(base: &Config, a: &Outcome) -> Config {
     b.seeds.chain ^= 0x4E49_2D31;
     b.pool_target = 7;
     b.latency_jitter = true;
+    b.sign_jitter = true;
     b.chain_jitter = true;
     // One extra UNAVAILABLE per purchase, on a BlindSign attempt its world answered AWAITING.
     let mut per: BTreeMap<(u32, u64), usize> = BTreeMap::new();
@@ -786,11 +913,13 @@ pub fn ni3_twin(base: &Config, a: &Outcome) -> Config {
     b
 }
 
+/// NI-1d: every invitee buys its first pack two days and five hours later (across activation-slot
+/// cells), so every drop write comes from a moved invitee.
 pub fn ni1d_twin(base: &Config) -> Config {
     let mut b = base.clone();
     b.name = format!("{}-ni1d", base.name);
     b.analyze = false;
-    b.first_pack_shift = Some((0.34, 2 * 86_400 + 5 * 3_600));
+    b.first_pack_shift = Some((1.0, 2 * 86_400 + 5 * 3_600));
     b
 }
 
@@ -831,6 +960,9 @@ pub fn variant(
     test_cfg.per_client = true;
     test_cfg.mutant = mutant;
     test_cfg.export = std::env::var("GHOST_T2_EXPORT")
+        .ok()
+        .map(|d| std::path::PathBuf::from(d).join(name));
+    test_cfg.export_truth = std::env::var("GHOST_T2_TRUTH")
         .ok()
         .map(|d| std::path::PathBuf::from(d).join(name));
     let mut small_cfg = Config::new(&format!("{name}-small"), small, seeds.1 ^ 0x5341);
@@ -906,6 +1038,7 @@ pub fn variant(
             o.rec.digests.relay_calls.iter().sum::<u64>()
         ));
     }
+    population_check(&mut f, &w_test, scale);
     joins(&mut f, &w_test);
     let (attackers, _, _) = train(&w_train, seeds.0);
     let s4 = statistics(&mut f, &attackers, &w_test, seeds.1);

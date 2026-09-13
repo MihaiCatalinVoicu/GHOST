@@ -360,6 +360,15 @@ internal class FakeRedeem(private val clock: ManualClock, private val crypto: Te
     /** The relays' clock minus the device clock (a relay set that lies about the time shifts it). */
     var skewSeconds = 0L
 
+    /**
+     * Answer as the real relay's period check does (`access_accepts`): a token of week w only from
+     * `start(w) − 24 h` to `start(w + 1) + 1 h` of the relays' clock, `WRONG_PERIOD` otherwise.
+     */
+    var periods = false
+
+    /** The answers given, in call order. */
+    val answers = ArrayList<Int>()
+
     override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray): TorRelayTransport.RedeemAnswer {
         calls += Call(relay, namespace, token, requestId)
         failOnce?.let {
@@ -370,11 +379,15 @@ internal class FakeRedeem(private val clock: ManualClock, private val crypto: Te
         val relayNow = clock.now + skewSeconds
         val period = relayPeriod ?: Grid.week(relayNow)
         val minute = Math.floorDiv(relayNow, 60L)
-        return if (result == TorRelayTransport.REDEEM_OK) {
+        val tokenWeek = crypto.verifyToken(token, EntitlementCrypto.KIND_ACCESS)?.epoch
+        val inWindow = tokenWeek == null || relayNow in (Grid.start(tokenWeek) - Grid.DAY) until (Grid.start(tokenWeek + 1) + Grid.HOUR)
+        val answer = if (periods && !inWindow) TorRelayTransport.REDEEM_WRONG_PERIOD else result
+        answers += answer
+        return if (answer == TorRelayTransport.REDEEM_OK) {
             val week = crypto.verifyToken(token, EntitlementCrypto.KIND_ACCESS)?.epoch ?: period
             TorRelayTransport.RedeemAnswer(result, period, minute, Grid.start(week + 1) + 3600, TestBytes.of(98, 800_000 + calls.size))
         } else {
-            TorRelayTransport.RedeemAnswer(result, period, minute, 0, null)
+            TorRelayTransport.RedeemAnswer(answer, period, minute, 0, null)
         }
     }
 }

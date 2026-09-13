@@ -96,13 +96,50 @@ impl Replay {
                     a["wrong"] == "yes",
                 ),
                 "now" => assert_eq!(time(e.unwrap()), self.estimate.now(time(a["wall"]))),
+                "relaynow" => assert_eq!(
+                    time(e.unwrap()),
+                    self.estimate
+                        .relay_now(a["relay"].parse().unwrap(), time(a["wall"]))
+                ),
                 "week" => assert_eq!(
                     e.unwrap().parse::<i64>().unwrap(),
                     self.estimate
                         .week(a["relay"].parse().unwrap(), time(a["wall"]))
                 ),
+                "observe" => self
+                    .estimate
+                    .observe(time(a["wall"]), a["mono"].parse().unwrap()),
                 other => panic!("unknown estimate {other}"),
             },
+            "reserve" => {
+                let got = match policy::reserve_step(
+                    a["held"] == "yes",
+                    optional_time(a["retry_after"]),
+                    a["week"].parse().unwrap(),
+                    time(a["now"]),
+                    optional_time(a["write_expiry"]),
+                ) {
+                    policy::ReserveStep::Retry => "retry",
+                    policy::ReserveStep::Wait => "wait",
+                    policy::ReserveStep::Drop => "drop",
+                    policy::ReserveStep::Covered => "covered",
+                    policy::ReserveStep::Fresh => "fresh",
+                };
+                assert_eq!(e.unwrap(), got);
+            }
+            "wrongperiod" => {
+                let after = policy::wrong_period_retry_after(
+                    a["token"].parse().unwrap(),
+                    a["relay_period"].parse().unwrap(),
+                );
+                let x = expect.unwrap();
+                if x[0] == "keep" {
+                    let (_, t) = x[1].split_once('=').unwrap();
+                    assert_eq!(Some(time(t)), after);
+                } else {
+                    assert_eq!((x.join(" "), None), ("delete".to_string(), after));
+                }
+            }
             "eligible" => {
                 let mut queue: Vec<f64> = if a["uniforms"] == "none" {
                     Vec::new()
@@ -264,6 +301,17 @@ impl Replay {
     }
 }
 
+/// Design §19.16 point 1: the harness assertion that every scripted spend uses protocol-issued
+/// credits counts the credits no issuer of the world minted.
+#[test]
+fn a_spend_of_a_credit_the_world_did_not_mint_is_counted() {
+    let minted: std::collections::HashSet<Vec<u8>> =
+        [vec![1u8; 354], vec![2u8; 354]].into_iter().collect();
+    let (a, b, forged) = ([1u8; 354], [2u8; 354], [3u8; 354]);
+    assert_eq!(t2::world::unminted(&minted, [&a[..], &b[..]]), 0);
+    assert_eq!(t2::world::unminted(&minted, [&a[..], &forged[..]]), 1);
+}
+
 #[test]
 fn the_reference_policy_matches_the_shared_policy_vectors() {
     let mut replay = Replay::default();
@@ -301,8 +349,19 @@ fn the_reference_policy_matches_the_shared_policy_vectors() {
         }
     }
     let all: std::collections::BTreeSet<String> = [
-        "slot", "boundary", "slotsfor", "plan", "estimate", "eligible", "attempt", "retry",
-        "classify", "work", "cover",
+        "slot",
+        "boundary",
+        "slotsfor",
+        "plan",
+        "estimate",
+        "reserve",
+        "wrongperiod",
+        "eligible",
+        "attempt",
+        "retry",
+        "classify",
+        "work",
+        "cover",
     ]
     .iter()
     .map(|s| s.to_string())

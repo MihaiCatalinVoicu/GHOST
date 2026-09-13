@@ -96,6 +96,12 @@ pub struct IssuerLink<'a> {
     pub extra_resp: Vec<(&'static str, Vec<u8>)>,
     /// The time the answer reached the client.
     pub answered: Option<u64>,
+    /// Every request the issuer's endpoint received, counted at the entry of each handler call
+    /// (the completeness check compares it with the issuer view, which the recorder fills).
+    pub received: &'a mut u64,
+    /// NI-1: seconds added to the latency of a signing `BlindSign` answer (finalization moves inside
+    /// its activation-slot cell).
+    pub sign_extra: u64,
 }
 
 fn code(s: &Status) -> i32 {
@@ -162,6 +168,7 @@ impl IssuerRpc for IssuerLink<'_> {
         &mut self,
         req: wire::RequestInvoiceRequest,
     ) -> impl Future<Output = Result<wire::RequestInvoiceResponse, IssuerError>> + Send {
+        *self.received += 1;
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
         } else {
@@ -202,6 +209,7 @@ impl IssuerRpc for IssuerLink<'_> {
         &mut self,
         req: wire::BlindSignRequest,
     ) -> impl Future<Output = Result<wire::BlindSignResponse, IssuerError>> + Send {
+        *self.received += 1;
         let lie = match self.liar.as_deref_mut() {
             Some(l) => {
                 let n = l.counts.entry(req.invoice_id.clone()).or_insert(0);
@@ -222,6 +230,9 @@ impl IssuerRpc for IssuerLink<'_> {
         } else {
             self.issuer.blind_sign_at(req.clone(), self.t)
         };
+        if matches!(&r, Ok(resp) if resp.state == wire::InvoiceState::Signed as i32) {
+            self.latency += self.sign_extra;
+        }
         let mut request = vec![
             f("invoice_id", &req.invoice_id),
             f("claim_key", &req.claim_key),
@@ -246,6 +257,7 @@ impl IssuerRpc for IssuerLink<'_> {
         &mut self,
         req: wire::InvoiceStatusRequest,
     ) -> impl Future<Output = Result<wire::InvoiceStatusResponse, IssuerError>> + Send {
+        *self.received += 1;
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
         } else {
@@ -273,6 +285,7 @@ impl IssuerRpc for IssuerLink<'_> {
         &mut self,
         req: wire::RedeemInviteRequest,
     ) -> impl Future<Output = Result<wire::RedeemInviteResponse, IssuerError>> + Send {
+        *self.received += 1;
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
         } else {
@@ -296,6 +309,7 @@ impl IssuerRpc for IssuerLink<'_> {
         &mut self,
         req: wire::ClaimPayoutRequest,
     ) -> impl Future<Output = Result<wire::ClaimPayoutResponse, IssuerError>> + Send {
+        *self.received += 1;
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
         } else {
@@ -322,6 +336,7 @@ impl IssuerRpc for IssuerLink<'_> {
         &mut self,
         req: wire::RefreshCreditRequest,
     ) -> impl Future<Output = Result<wire::RefreshCreditResponse, IssuerError>> + Send {
+        *self.received += 1;
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
         } else {

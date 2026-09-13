@@ -87,6 +87,9 @@ pub struct ClientSpec {
     /// Lets its coverage lapse once in the window and resumes after this many seconds.
     pub resume_gap: Option<u64>,
     pub spend: Spend,
+    /// Buys one extra pack in the window when `ENTITLEMENT_NEEDED` surfaces (about 5 % of N,
+    /// design §13.4 "Other activity", §19.13).
+    pub need_buyer: bool,
     /// Background job cadence while the user is awake: probability that a 15-minute slot runs.
     pub run_probability: f64,
     /// Foreground sessions per day.
@@ -109,6 +112,13 @@ fn round(x: f64) -> u64 {
     x.round().max(0.0) as u64
 }
 
+/// The renewal cadence of the world (`World::user_actions`): a pack covers its week and the four
+/// after it and is renewed with one week left, so a subscriber renews every three weeks.
+pub const RENEWAL_DAYS: f64 = 21.0;
+
+/// The share of N that are extra packs triggered by `ENTITLEMENT_NEEDED` (design §13.4, §19.13).
+pub const NEED_SHARE: f64 = 0.05;
+
 pub fn counts(scale: Scale) -> Counts {
     let n = scale.packs as f64;
     let d = scale.window_days as f64;
@@ -117,16 +127,19 @@ pub fn counts(scale: Scale) -> Counts {
     let credits_packs = round(0.05 * n).max(5);
     let claims = round(0.015 * n).max(3);
     let spenders = credits_packs + claims + round(0.01 * n).max(2);
-    let per = d / 28.0;
+    let per = d / RENEWAL_DAYS;
     // Renewals expected from spenders and invitees; existing subscribers make up the rest of
-    // 0.65 N.
+    // 0.65 N. Spenders renew at the common cadence in the window (their credits come from the
+    // warm-up), a credits-paid pack replacing one renewal.
     let spender_ren = (spenders as f64 * per - credits_packs as f64).max(0.0);
     let span = (d - 10.0).max(1.0);
     let mut invitee_ren = 0.0;
     for k in 1..8 {
-        invitee_ren += ((span - (5.0 + 28.0 * k as f64)) / span).max(0.0);
+        // An invitee joins in [tw, te − 10 d), buys its first pack 2–9 days later and renews every
+        // three weeks: the share of invitees whose k-th renewal falls in the window.
+        invitee_ren += ((span - (5.5 + RENEWAL_DAYS * k as f64)) / span).max(0.0);
     }
-    invitee_ren *= invitee_first as f64 / 2.0;
+    invitee_ren *= invitee_first as f64;
     let existing = round((0.65 * n - spender_ren - invitee_ren) / per.max(0.25)).max(10);
     Counts {
         existing,
@@ -171,6 +184,7 @@ pub fn population(scale: Scale, user_seed: u64) -> Vec<ClientSpec> {
             first_pack_delay: None,
             resume_gap: None,
             spend,
+            need_buyer: false,
             run_probability,
             foregrounds,
         }
@@ -227,6 +241,25 @@ pub fn population(scale: Scale, user_seed: u64) -> Vec<ClientSpec> {
         let join = r.range(tl.tw, latest_genesis);
         let s = push(&mut r, ClientKind::Genesis, join, Spend::None);
         out.push(s);
+    }
+    // The need buyers: 5 % of N among the clients that pay for packs in the window (existing
+    // subscribers, invitees that buy, genesis identities), each buying once when its need surfaces.
+    let mut buyers: Vec<usize> = (0..out.len())
+        .filter(|&i| match out[i].kind {
+            ClientKind::Existing | ClientKind::Genesis => true,
+            ClientKind::Invitee => out[i].first_pack_delay.is_some(),
+            _ => false,
+        })
+        .collect();
+    for i in (1..buyers.len()).rev() {
+        let j = r.below(i as u64 + 1) as usize;
+        buyers.swap(i, j);
+    }
+    for &i in buyers
+        .iter()
+        .take(round(NEED_SHARE * scale.packs as f64) as usize)
+    {
+        out[i].need_buyer = true;
     }
     out
 }

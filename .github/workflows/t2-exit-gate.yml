@@ -34,6 +34,11 @@ on:
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
+    inputs:
+      export_views:
+        description: "Also export and upload the complete NDJSON views (several GB at the gate scale)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,6 +76,8 @@ jobs:
           bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       # World databases go to /dev/shm (the worlds' stores are scratch state; fsync is not measured).
+      # public.json and ground_truth.json of the scored world (design §13.4 "Exported views") go
+      # with the report; the complete NDJSON views only on request (workflow_dispatch).
       - name: T2 gate (worlds, joins, twins, statistics)
         env:
           GHOST_T2_SCALE: gate
@@ -79,6 +86,10 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/t2"
           export GHOST_T2_REPORT="$RUNNER_TEMP/t2/t2-gate-${{ matrix.seed }}.txt"
+          export GHOST_T2_TRUTH="$RUNNER_TEMP/t2/truth"
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.export_views }}" = true ]; then
+            export GHOST_T2_EXPORT="$RUNNER_TEMP/t2-views"
+          fi
           cargo test -p ghost-issuer --release --locked --test t2_unlinkability t2_exit_gate -- --ignored --exact --nocapture
       - name: job summary and report check
         if: always()
@@ -98,6 +109,17 @@ jobs:
         with:
           name: t2-exit-gate-${{ matrix.seed }}
           path: ${{ runner.temp }}/t2
+          if-no-files-found: error
+      - name: pack the complete views
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.export_views
+        run: tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/t2-views.tar.gz" t2-views
+      - name: upload the complete views
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.export_views
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: t2-views-${{ matrix.seed }}
+          path: ${{ runner.temp }}/t2-views.tar.gz
+          retention-days: 7
           if-no-files-found: error
 
   mutants:

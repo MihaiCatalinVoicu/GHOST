@@ -162,6 +162,9 @@ pub struct Accumulator {
     pub issuer: Vec<IssuerRecord>,
     /// Wallet transfers: txid → (first seen, minor, amount, mined height).
     pub transfers: BTreeMap<[u8; 32], (u64, u32, u64, Option<u64>)>,
+    /// Wallet transfers: txid → the first wallet call that showed it with 10 confirmations (the
+    /// confirmation the issuer acts on, §7.3).
+    pub confirmed: BTreeMap<[u8; 32], u64>,
     /// Relay circuit label → (first namespace, another namespace seen on it).
     pub relay_labels: HashMap<Label, ([u8; 32], bool)>,
     /// Key ids of every token a relay saw, and of every token the issuer saw.
@@ -171,6 +174,9 @@ pub struct Accumulator {
     pub j10: Vec<String>,
     pub redemptions: Vec<Redemption>,
     pub clients: Vec<ClientRelay>,
+    /// The (client, run) of every relay call in the views: J9 reads whether a quiet run made a
+    /// relay call here, never from the world's count of the run.
+    pub relay_runs: std::collections::HashSet<(u32, u64)>,
     pub relay_calls: u64,
     pub issuer_rows: u64,
     pub relay_rows: u64,
@@ -214,12 +220,14 @@ impl Accumulator {
             values: Values::default(),
             issuer: Vec::new(),
             transfers: BTreeMap::new(),
+            confirmed: BTreeMap::new(),
             relay_labels: HashMap::new(),
             relay_key_ids: BTreeSet::new(),
             issuer_key_ids: BTreeSet::new(),
             j10: Vec::new(),
             redemptions: Vec::new(),
             clients: Vec::new(),
+            relay_runs: std::collections::HashSet::new(),
             relay_calls: 0,
             issuer_rows: 0,
             relay_rows: 0,
@@ -311,6 +319,7 @@ impl Accumulator {
 
     pub fn relay_call(&mut self, c: &RelayCall<'_>) {
         self.relay_calls += 1;
+        self.relay_runs.insert((c.truth.client, c.truth.run));
         let side = relay_bit(c.relay);
         let op = c.op.name();
         let req = format!("relay.{op}.req");
@@ -441,6 +450,9 @@ impl Accumulator {
             if entry.3.is_none() {
                 entry.3 = e.height;
             }
+            if e.confirmations >= 10 {
+                self.confirmed.entry(e.txid).or_insert(c.t);
+            }
         }
     }
 
@@ -473,6 +485,12 @@ impl Accumulator {
             return;
         }
         let id = self.values.fields.id(&format!("relay.db.{table}"));
+        // A meta row is keyed by a constant name of the storage schema (Z); its value is the
+        // relay's state (high-water marks, the key check, the ES sequence, the quota prune time).
+        if table.ends_with("meta") {
+            self.values.add(relay_bit(relay), id, value, true);
+            return;
+        }
         // Blob content rows are the replicated data (T2b exclusion); nullifier rows are not.
         let excluded = table != "nullifiers";
         self.values.add(relay_bit(relay), id, key, excluded);

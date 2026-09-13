@@ -7,12 +7,15 @@
 //!   HMAC-SHA256(v, L), HKDF-SHA256(ikm = v, salt = L), HKDF-SHA256(ikm = v, info = L),
 //!   SHA-256(L ‖ v), SHA-256(v ‖ L);
 //! - counters (issuer → relay direction, on the issuer fields of 8–64 bytes): SHA-256(v ‖ c) and
-//!   SHA-256(c ‖ v) for c in 0..=255 as u8, u32 BE, u32 LE and u64 BE, and
-//!   HKDF-SHA256(ikm = v, info = w ‖ u8(c)) for the generic info words w;
+//!   SHA-256(c ‖ v) for c in 0..=255 as u8, u32 BE, u32 LE and u64 BE; the counter suffixes of
+//!   labels, HKDF-SHA256(ikm = v, info = L ‖ u8(c)) for every label L and every position c of a pack
+//!   or trial layout (0..64); and, beyond the design's family (a heuristic extension, §19.24 point
+//!   3), HKDF-SHA256(ikm = v, info = w ‖ u8(c)) for a few generic info words w;
 //! - byte reversal; hex, base32, z-base-32 and base64 text.
 //!
 //! Every image is probed with its first and last 8 bytes against a Bloom filter of every 8-byte
-//! window of the target side's values, so an image found whole, or truncated to 8 or 16 bytes (a
+//! window of every value of the target side, whatever its length (blob data, addresses, database
+//! rows and journal segments included), so an image found whole, or truncated to 8 or 16 bytes (a
 //! prefix or a suffix), or embedded in a larger target value, is a candidate; candidates are
 //! verified exactly. HKDF outputs are 32 bytes: the 16-byte output of the same HKDF is their prefix.
 
@@ -64,8 +67,12 @@ pub const LABELS: &[&str] = &[
     "",
 ];
 
-/// The generic info words of the counter HKDF family.
+/// The generic info words of the counter HKDF family (a heuristic extension of the design's J3
+/// family, which names HKDF keyed or salted with the GHOST labels and counter suffixes of labels).
 pub const INFO_WORDS: &[&str] = &["nonce", "salt", "seed", "key", "id", "r", "n", ""];
+
+/// The label counters of `hkdf(info=label||u8)`: every position of a pack (N = 63) or a trial.
+pub const LABEL_COUNTERS: u8 = 64;
 
 // -------------------------------------------------------------------------------------------------
 // BLAKE2b (RFC 7693), unkeyed.
@@ -314,6 +321,14 @@ pub fn images(v: &[u8], keys: &Keys, counters: bool, probe: &mut dyn FnMut(&[u8]
                 );
             }
         }
+        for (label, _) in &keys.labels {
+            for c in 0..LABEL_COUNTERS {
+                probe(
+                    &hmac(&prk0_key, &[label.as_bytes(), &[c], &[1u8]]),
+                    "hkdf(info=label||u8)",
+                );
+            }
+        }
     }
 }
 
@@ -331,16 +346,20 @@ fn direction(
             sides & !ISSUER != 0
         }
     };
-    // Targets: the other side's values of at most 64 bytes (the atoms a derivation would land in;
-    // RSA values and blob ciphertext cannot carry one), and their windows.
+    // Targets: every value of the other side of at least 8 bytes, whatever its length (a derivation
+    // placed in a blob header, a ciphertext prefix, an address or a database row is found too), and
+    // every one of their windows.
     let targets: Vec<&[u8]> = values
         .map
         .iter()
-        .filter(|(v, p)| !on_source(p.sides) && p.sides != 0 && v.len() <= 64 && v.len() >= 8)
+        .filter(|(v, p)| !on_source(p.sides) && p.sides != 0 && v.len() >= 8)
         .map(|(v, _)| &v[..])
         .collect();
     let count: usize = targets.iter().map(|v| v.len() - 7).sum();
-    let mut bloom = Bloom::with_capacity(count, 16);
+    // 16 bits per window (7 probes: about 7·10⁻⁴ false positives per probe); a very large target
+    // side gets 12, which keeps the filter under 1 GiB and the candidates few.
+    let bits = if count > 150_000_000 { 12 } else { 16 };
+    let mut bloom = Bloom::with_capacity(count, bits);
     for v in &targets {
         for i in 0..v.len() - 7 {
             bloom.insert(window(v, i));
@@ -407,7 +426,7 @@ fn direction(
     let mut hits = Vec::new();
     let mut seen = HashSet::new();
     for (v, p) in &values.map {
-        if on_source(p.sides) || v.len() > 64 || v.len() < 8 {
+        if on_source(p.sides) || p.sides == 0 || v.len() < 8 {
             continue;
         }
         for i in 0..v.len() - 7 {
@@ -463,6 +482,7 @@ fn transform_name(t: &str) -> &'static str {
         "sha256(v||ctr)",
         "sha256(ctr||v)",
         "hkdf(info=word||u8)",
+        "hkdf(info=label||u8)",
     ];
     NAMES.iter().find(|n| **n == t).copied().unwrap_or("?")
 }

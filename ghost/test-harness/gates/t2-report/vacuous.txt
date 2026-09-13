@@ -13,11 +13,11 @@ J10: PASS fixture
 T2b: PASS fixture
 T2c: PASS fixture
 completeness: PASS fixture
-S1: FAIL fixture
+S1: PASS fixture
 S2: PASS fixture
 S3a: PASS fixture
 S3b: PASS fixture
-S3d: PASS fixture
+S3d: PASS payment co-presence (screen payments): n=0 true 0.0000 max permuted 0.0000 p=1.000
 S4: PASS fixture
 S4 lying issuer: PASS fixture
 J9 lying issuer: PASS fixture
@@ -27,4 +27,4 @@ NI-2: PASS fixture
 NI-3: PASS fixture
 NI-1d: PASS fixture
 S3c (reported, declared L5): fixture
-T2 RESULT: FAIL (S1)
+T2 RESULT: PASS
