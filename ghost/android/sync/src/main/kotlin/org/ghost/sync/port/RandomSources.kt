@@ -23,6 +23,16 @@ interface RandomSources {
 
     /** Backoff jitter, candidate choice. Never used by the read lane. */
     fun selection(): Double
+
+    /**
+     * Uniform in [0,1) for the [index]-th periodic job run of the process: the quiet-run draw (Phase 8
+     * design §12.2, §19.14). A pure function of the key and [index], so the pattern of quiet runs
+     * depends on nothing else (no entitlement state, no issuer answer, no sync activity).
+     */
+    fun quietRun(index: Long): Double
+
+    /** Uniform in [0,1) for the [index]-th payment-screen hold of relay sessions (Phase 8 design §19.11). */
+    fun paymentHold(index: Long): Double
 }
 
 enum class SchedulePurpose {

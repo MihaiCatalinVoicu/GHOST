@@ -1,7 +1,9 @@
 package org.ghost.app
 
 import org.ghost.sync.android.DatabaseOpener
+import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
+import org.ghost.sync.api.SessionParticipant
 import org.ghost.sync.api.SyncController
 import org.ghost.sync.api.SyncCounts
 import org.ghost.sync.api.SyncStatus
@@ -43,6 +45,22 @@ class SyncWiringTest {
 
         override fun onWipe() {
             events.log += "wipe"
+        }
+
+        override fun setParticipant(p: SessionParticipant?) {
+            events.log += "participant"
+        }
+
+        override fun runUserIssuerCall(block: (ParticipantSession) -> Unit) {
+            events.log += "user-issuer-call"
+        }
+
+        override fun onPaymentScreenShown() {
+            events.log += "payment-shown"
+        }
+
+        override fun onPaymentScreenHidden() {
+            events.log += "payment-hidden"
         }
     }
 

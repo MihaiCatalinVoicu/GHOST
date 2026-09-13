@@ -52,6 +52,10 @@ class FixedRandom(var sendDelayValue: Double = 0.5, var selectionValue: Double =
     }
 
     override fun selection(): Double = selectionValue
+
+    override fun quietRun(index: Long): Double = 0.5
+
+    override fun paymentHold(index: Long): Double = 0.5
 }
 
 object TestBytes {
