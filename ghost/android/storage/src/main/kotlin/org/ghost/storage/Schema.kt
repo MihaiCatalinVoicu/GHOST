@@ -16,7 +16,11 @@ package org.ghost.storage
  *    drop target and payout claims, and their state machines and write-once rules are enforced by
  *    triggers. §19.20 point 1 makes this code, not the §11.3 listing, the reference for the v3 SQL
  *    (NULL-safe trigger comparisons, integer-typed times and grid indices); §19.20 point 2 adds
- *    the remembered revocations of `ent_schedule_fact`.
+ *    the remembered revocations of `ent_schedule_fact`;
+ *  - REPLACE guards (§19.21 point 4): SQLite runs no DELETE trigger for a row that REPLACE conflict
+ *    resolution deletes (`recursive_triggers` is off), so every v3 table with write-once, frozen or
+ *    state rules, and the v2 `outbox_op`, refuses an insert that conflicts on any of its keys
+ *    (`<table>_no_replace`, created by migration 3).
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
@@ -555,13 +559,15 @@ object Schema {
                        OR (OLD.state = 'invoiced' AND NEW.state IN ('finalized', 'expired', 'failed', 'lost')))
                 BEGIN SELECT RAISE(ABORT, 'illegal purchase transition'); END""",
                 // Seed, claim key, layout and base week may change only while nothing has been sent
-                // (prepared, sent = 0); sent never goes back; kind and pay_with never change. Wiping at
-                // a terminal state is allowed. `sent` is compared NULL-safely (§19.20 point 1): under
+                // (prepared, sent = 0); sent never goes back; the id, kind and pay_with never change (the
+                // id also because an UPDATE OR REPLACE onto another purchase's id would delete that row
+                // past ent_purchase_delete_terminal_only, §19.21 point 4). Wiping at a terminal state is
+                // allowed. `sent` is compared NULL-safely (§19.20 point 1): under
                 // UPDATE OR REPLACE a NULL becomes the column DEFAULT (0) after this trigger ran, and
                 // `NULL < 1` would make the whole WHEN NULL, so SQLite would skip the trigger and
                 // unfreeze a sent request.
                 """CREATE TRIGGER ent_purchase_frozen BEFORE UPDATE ON ent_purchase
-                WHEN NEW.kind IS NOT OLD.kind OR NEW.pay_with IS NOT OLD.pay_with
+                WHEN NEW.purchase_id IS NOT OLD.purchase_id OR NEW.kind IS NOT OLD.kind OR NEW.pay_with IS NOT OLD.pay_with
                   OR (NEW.state NOT IN ('finalized', 'expired', 'failed', 'lost')
                       AND (NEW.sent IS NULL OR NEW.sent < OLD.sent
                            OR ((OLD.sent = 1 OR OLD.state <> 'prepared')
@@ -616,6 +622,58 @@ object Schema {
                 WHEN NOT ((OLD.state = NEW.state AND NEW.operation_id IS OLD.operation_id)
                        OR (OLD.state = 'waiting' AND NEW.state = 'enqueued'))
                 BEGIN SELECT RAISE(ABORT, 'illegal drop target transition'); END""",
+                // (9) REPLACE guards (§19.21 point 4). With recursive_triggers off (SQLite's default), a
+                // row that INSERT OR REPLACE or UPDATE OR REPLACE deletes to resolve a key conflict fires
+                // no DELETE trigger, and the row written in its place passes no UPDATE trigger. A BEFORE
+                // INSERT trigger runs before the conflict is resolved, so every table with write-once,
+                // frozen or state rules refuses an insert that conflicts on any of its keys (primary key,
+                // unique index, hidden rowid): REPLACE neither deletes nor overwrites one of its rows.
+                // INSERT OR IGNORE and UPSERT are refused alike (a trigger cannot tell them apart), so
+                // these tables take plain INSERTs. A table whose DELETE is restricted also never changes
+                // a key in an UPDATE: ent_key and ent_schedule_fact refuse every UPDATE,
+                // ent_purchase_frozen keeps purchase_id, outbox_op_immutable and outbox_op_rowid keep the
+                // keys of outbox_op. Elsewhere a DELETE is legal, so an UPDATE OR REPLACE that deletes a
+                // row there does nothing a DELETE followed by the UPDATE could not.
+                """CREATE TRIGGER ent_key_no_replace BEFORE INSERT ON ent_key
+                WHEN EXISTS (SELECT 1 FROM ent_key WHERE kind = NEW.kind AND epoch = NEW.epoch)
+                BEGIN SELECT RAISE(ABORT, 'ent_key is append-only'); END""",
+                """CREATE TRIGGER ent_schedule_fact_no_replace BEFORE INSERT ON ent_schedule_fact
+                WHEN EXISTS (SELECT 1 FROM ent_schedule_fact WHERE fact = NEW.fact AND epoch = NEW.epoch)
+                BEGIN SELECT RAISE(ABORT, 'ent_schedule_fact is append-only'); END""",
+                """CREATE TRIGGER ent_purchase_no_replace BEFORE INSERT ON ent_purchase
+                WHEN EXISTS (SELECT 1 FROM ent_purchase WHERE purchase_id = NEW.purchase_id)
+                BEGIN SELECT RAISE(ABORT, 'ent_purchase rows are never replaced'); END""",
+                // Also the one-reservation index: REPLACE would delete the token holding it.
+                """CREATE TRIGGER ent_token_no_replace BEFORE INSERT ON ent_token
+                WHEN EXISTS (SELECT 1 FROM ent_token WHERE nullifier = NEW.nullifier
+                             OR (NEW.reserved_for = 'relay' AND reserved_for = 'relay' AND reserved_relay = NEW.reserved_relay
+                                 AND reserved_namespace = NEW.reserved_namespace AND epoch = NEW.epoch))
+                BEGIN SELECT RAISE(ABORT, 'ent_token rows are never replaced'); END""",
+                """CREATE TRIGGER ent_invite_no_replace BEFORE INSERT ON ent_invite
+                WHEN EXISTS (SELECT 1 FROM ent_invite WHERE invite_index = NEW.invite_index)
+                BEGIN SELECT RAISE(ABORT, 'ent_invite rows are never replaced'); END""",
+                """CREATE TRIGGER ent_drop_target_no_replace BEFORE INSERT ON ent_drop_target
+                WHEN EXISTS (SELECT 1 FROM ent_drop_target WHERE id = NEW.id)
+                BEGIN SELECT RAISE(ABORT, 'ent_drop_target rows are never replaced'); END""",
+                // Also the one-open index: REPLACE would delete the open claim.
+                """CREATE TRIGGER ent_claim_no_replace BEFORE INSERT ON ent_claim
+                WHEN EXISTS (SELECT 1 FROM ent_claim WHERE claim_id = NEW.claim_id OR (NEW.state = 'prepared' AND state = 'prepared'))
+                BEGIN SELECT RAISE(ABORT, 'ent_claim rows are never replaced'); END""",
+                // outbox_op is a v2 table, released in Phase 7, whose DELETE rule REPLACE could skip; v2
+                // stays unchanged, so its guards are created here. Enqueue deletes a released, wiped op
+                // before the same bytes enter again (Phase 7 design §9), so it never meets the guard. An
+                // insert that names no rowid has a NEW.rowid that names no existing row. outbox_delivery
+                // and inbox_blob (v2) get none: they restrict transitions, not deletion, so a REPLACE
+                // there does what a DELETE followed by an INSERT (whose trigger still runs) may do, and
+                // the Phase 7 design writes them with INSERT OR IGNORE (§3.9) and UPSERTs (§3.1, §4.1),
+                // which a guard would refuse.
+                """CREATE TRIGGER outbox_op_no_replace BEFORE INSERT ON outbox_op
+                WHEN EXISTS (SELECT 1 FROM outbox_op WHERE operation_id = NEW.operation_id
+                             OR (namespace_id = NEW.namespace_id AND blob_hash = NEW.blob_hash) OR rowid = NEW.rowid)
+                BEGIN SELECT RAISE(ABORT, 'outbox_op rows are never replaced'); END""",
+                """CREATE TRIGGER outbox_op_rowid BEFORE UPDATE ON outbox_op
+                WHEN NEW.rowid IS NOT OLD.rowid
+                BEGIN SELECT RAISE(ABORT, 'outbox_op identity is immutable'); END""",
             ),
         ),
     )
@@ -633,7 +691,7 @@ object Schema {
         "ent_drop_target", "ent_claim", "ent_payout_used",
     )
 
-    /** State-machine triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
+    /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
     val expectedTriggers: Set<String> = setOf(
         "outbox_op_immutable", "outbox_op_payload", "outbox_op_outcome", "outbox_op_release", "outbox_op_delete",
         "outbox_delivery_insert", "outbox_delivery_state", "outbox_delivery_copy",
@@ -642,6 +700,10 @@ object Schema {
         "ent_key_append_only", "ent_key_no_delete", "ent_schedule_fact_append_only", "ent_schedule_fact_no_delete",
         "ent_purchase_transitions", "ent_purchase_frozen", "ent_purchase_invoice_frozen", "ent_purchase_delete_terminal_only",
         "ent_token_state", "ent_token_binding", "ent_invite_transitions", "ent_claim_guard", "ent_drop_target_transitions",
+        // v3 REPLACE guards (§19.21 point 4), including those of the v2 table outbox_op
+        "ent_key_no_replace", "ent_schedule_fact_no_replace", "ent_purchase_no_replace", "ent_token_no_replace",
+        "ent_invite_no_replace", "ent_claim_no_replace", "ent_drop_target_no_replace",
+        "outbox_op_no_replace", "outbox_op_rowid",
     )
 
     /**

@@ -15,7 +15,10 @@ class SchemaAndMigrationTest {
     private val v2 = Schema.migrations.single { it.version == 2 }
     private val v3 = Schema.migrations.single { it.version == 3 }
 
-    /** The nine tables and 13 triggers of v3 (Phase 8 design §11.3, §19.19; SQL as corrected by §19.20). */
+    /**
+     * The nine tables of v3 and their triggers: the 13 of Phase 8 design §11.3 and §19.19 (SQL as
+     * corrected by §19.20) and the seven REPLACE guards of §19.21 point 4.
+     */
     private val v3Tables = setOf(
         "ent_key", "ent_schedule_fact", "ent_state", "ent_purchase", "ent_token", "ent_invite", "ent_drop_target",
         "ent_claim", "ent_payout_used",
@@ -24,7 +27,12 @@ class SchemaAndMigrationTest {
         "ent_key_append_only", "ent_key_no_delete", "ent_schedule_fact_append_only", "ent_schedule_fact_no_delete",
         "ent_purchase_transitions", "ent_purchase_frozen", "ent_purchase_invoice_frozen", "ent_purchase_delete_terminal_only",
         "ent_token_state", "ent_token_binding", "ent_invite_transitions", "ent_claim_guard", "ent_drop_target_transitions",
+        "ent_key_no_replace", "ent_schedule_fact_no_replace", "ent_purchase_no_replace", "ent_token_no_replace",
+        "ent_invite_no_replace", "ent_claim_no_replace", "ent_drop_target_no_replace",
     )
+
+    /** The REPLACE guards migration 3 adds to the released v2 table outbox_op (§19.21 point 4); v2 is unchanged. */
+    private val v3GuardsOfV2Tables = setOf("outbox_op_no_replace", "outbox_op_rowid")
 
     /** A database at v1 exactly as Phase 4 shipped it. */
     private fun atV1(): JdbcSqlExecutor = fresh().also {
@@ -131,11 +139,12 @@ class SchemaAndMigrationTest {
             MigrationRunner(db).verifyIntegrity()
             assertEquals(Schema.expectedTables, db.names("table"))
             assertEquals(Schema.expectedTriggers, db.names("trigger"))
-            assertEquals(25, Schema.expectedTriggers.size)
+            assertEquals(34, Schema.expectedTriggers.size)
             assertTrue(Schema.expectedTables.containsAll(v3Tables))
             assertEquals(v3Triggers, Schema.expectedTriggers.filter { it.startsWith("ent_") }.toSet())
+            assertTrue(Schema.expectedTriggers.containsAll(v3GuardsOfV2Tables))
             assertEquals(9, v3Tables.size)
-            assertEquals(13, v3Triggers.size)
+            assertEquals(13 + 7, v3Triggers.size)
             assertEquals(setOf("idx_ent_token_one_reservation", "idx_ent_claim_one_open"), db.names("index").filter { it.startsWith("idx_ent_") }.toSet())
         }
     }
@@ -162,6 +171,24 @@ class SchemaAndMigrationTest {
             db.rejects(CHECK_FAILED, "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked', 727, ?)", hash(1))
             db.rejects("ent_schedule_fact is append-only", "DELETE FROM ent_schedule_fact WHERE fact = 'revoked_access'")
             assertEquals(from, 3L, db.count("ent_schedule_fact"))
+        }
+    }
+
+    @Test
+    fun v2StaysAsReleasedAndV3AddsTheGuardsOfItsOutboxTable() {
+        // v2 shipped in Phase 7: its 12 triggers are unchanged, and the REPLACE guards of outbox_op come
+        // with migration 3 (§19.21 point 4), so a v2 upgrade and a fresh install both get them.
+        val v2Triggers = fresh().use { db ->
+            MigrationRunner(db, upToV2).migrate()
+            db.names("trigger")
+        }
+        assertEquals(12, v2Triggers.size)
+        assertEquals(Schema.expectedTriggers - v3Triggers - v3GuardsOfV2Tables, v2Triggers)
+        assertTrue(v2.statements.none { s -> (v3Triggers + v3GuardsOfV2Tables).any { s.contains("CREATE TRIGGER $it ") } })
+        for (name in v3GuardsOfV2Tables) assertTrue(name, v3.statements.any { it.contains("CREATE TRIGGER $name ") })
+        atV2WithData().use { db ->
+            MigrationRunner(db).migrate()
+            assertTrue(db.names("trigger").containsAll(v3GuardsOfV2Tables))
         }
     }
 
@@ -502,7 +529,7 @@ class SchemaAndMigrationTest {
             val e = assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
             assertTrue(e.message!!, e.message!!.contains("outbox_delivery_state"))
         }
-        for (trigger in v3Triggers) {
+        for (trigger in v3Triggers + v3GuardsOfV2Tables) {
             fresh().use { db ->
                 MigrationRunner(db).migrate()
                 db.exec("DROP TRIGGER $trigger")

@@ -7,7 +7,8 @@ import org.junit.Test
  * The 13 state-machine and write-once triggers of migration v3 (Phase 8 design §11.3 as corrected by
  * §19.20, §11.4; G-12):
  * each legal transition is accepted, each illegal one is refused with the trigger's message, and the
- * client flows of §11.4 run through them without a refusal.
+ * client flows of §11.4 run through them without a refusal. The REPLACE guards of these tables
+ * (§19.21 point 4) are tested in [ReplaceGuardsTest]; they also answer a plain duplicate insert.
  */
 class EntitlementSchemaTriggersTest {
     private val terminal = listOf("finalized", "expired", "failed", "lost")
@@ -29,9 +30,10 @@ class EntitlementSchemaTriggersTest {
         db.rejects("ent_key is append-only", "DELETE FROM ent_key")
         db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET digest = ?", hash(9))
         db.rejects("ent_schedule_fact is append-only", "DELETE FROM ent_schedule_fact WHERE fact = 'slots'")
-        // A remembered (kind, epoch) or fact is never written a second time.
-        db.rejects(UNIQUE_FAILED, "INSERT INTO ent_key(kind, epoch, key_id) VALUES ('access', ?, ?)", WEEK0, hash(3))
-        db.rejects(UNIQUE_FAILED, "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('slots', ?, ?)", WEEK0, hash(3))
+        // A remembered (kind, epoch) or fact is never written a second time (the REPLACE guard answers
+        // before the primary key does).
+        db.rejects("ent_key is append-only", "INSERT INTO ent_key(kind, epoch, key_id) VALUES ('access', ?, ?)", WEEK0, hash(3))
+        db.rejects("ent_schedule_fact is append-only", "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('slots', ?, ?)", WEEK0, hash(3))
         // Appending is allowed.
         db.exec("INSERT INTO ent_key(kind, epoch, key_id) VALUES ('access', ?, ?)", listOf(WEEK0 + 1, hash(4)))
         db.exec("INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('price', 223, ?)", listOf(hash(5)))
@@ -58,7 +60,7 @@ class EntitlementSchemaTriggersTest {
         db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET fact = 'revoked_invite' WHERE fact = 'revoked_access'")
         db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET epoch = 727 WHERE fact = 'revoked_access'")
         db.rejects("ent_schedule_fact is append-only", "UPDATE ent_schedule_fact SET digest = ? WHERE fact = 'revoked_access'", hash(9))
-        db.rejects(UNIQUE_FAILED, "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked_access', 726, ?)", hash(0x10))
+        db.rejects("ent_schedule_fact is append-only", "INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked_access', 726, ?)", hash(0x10))
         // A later schedule may add revocations.
         db.exec("INSERT INTO ent_key(kind, epoch, key_id) VALUES ('access', 727, ?)", listOf(hash(0x20)))
         db.exec("INSERT INTO ent_schedule_fact(fact, epoch, digest) VALUES ('revoked_access', 727, ?)", listOf(hash(0x20)))
@@ -391,9 +393,9 @@ class EntitlementSchemaTriggersTest {
         assertEquals(1, f.db.changes("UPDATE ent_claim SET sent = 1, attempt = 1, next_due_minute = ? WHERE claim_id = ?", T0 + 3600, claimId(1)))
         f.db.rejects(msg, "UPDATE ent_claim SET sent = 0 WHERE claim_id = ?", claimId(1))
         f.db.rejects(msg, "UPDATE ent_claim SET payout_address = ? WHERE claim_id = ?", subaddress(9), claimId(1))
-        // One open claim at a time.
+        // One open claim at a time (the REPLACE guard answers before idx_ent_claim_one_open does).
         f.db.rejects(
-            UNIQUE_FAILED,
+            "ent_claim rows are never replaced",
             "INSERT INTO ent_claim(claim_id, state, payout_address, next_due_minute) VALUES (?, 'prepared', ?, ?)",
             claimId(2), subaddress(2), T0,
         )
