@@ -1,32 +1,46 @@
-//! Issuer crash safety (Phase 8 design §13.2, §5.8, §19.5; G-10): scenarios I-A … I-H on the real
+//! Issuer crash safety (Phase 8 design §13.2, §5.8, §19.5; G-10): scenarios I-A … I-M on the real
 //! issuer, redb store and journal. Every fault site of a scenario (FaultyStore: before a write
 //! transaction, pre-commit, post-commit; FaultyJournal: entry lost, torn, durable before the
-//! commit; FaultyRail: before the call, effect without answer) is crashed once; I-A, I-D and I-H
-//! are also crashed twice (a crash during recovery or the first retry). A crash drops every
+//! commit; FaultyRail: before the call, effect without answer) is crashed once; I-A, I-D, I-H and
+//! I-K are also crashed twice (a crash during recovery or the first retry). A crash drops every
 //! in-memory object and reopens the same files; the client then retries identically. After every
-//! run `World::check` asserts MS-1, MS-2, MS-3, index and pool consistency and the reconciliation
-//! invariants; each scenario asserts MS-6 (the paid invoice ends with its tokens).
+//! run `World::check` asserts MS-1, MS-2, MS-3, index and pool consistency, the payout invariants
+//! and the reconciliation invariants; each scenario asserts MS-6 (the paid invoice ends with its
+//! tokens).
 //!
-//! Scope of S4: the payout export and acknowledgement of I-G are slice S6 (this suite covers the
-//! claim itself). The depth of the double-crash enumeration can be raised with
-//! `GHOST_ISSUER_CRASH_DEPTH` (default 2 sites after the first crash).
+//! I-G covers the claim, the weekly payout export (a signed batch file, rewritten byte for byte)
+//! and the workstation's acknowledgement; "I-F refresh" a received credit exchanged by
+//! `RefreshCredit` (§19.8). I-K (two concurrent requests, then a restart or a restore) and I-L (a
+//! clock step back across a swept epoch) are shared with the mutant detections
+//! (`common/scenarios.rs`); I-M is a lost `create_address` answer without a crash (§19.6 rule 4).
+//! The depth of the double-crash enumeration can be raised with `GHOST_ISSUER_CRASH_DEPTH`
+//! (default 2 sites after the first crash).
 //!
 //! Mutant MM3 `NoJournal` (§13.5) is implemented here, in `tests/` only: the ISSUE or the INVITE
 //! entries decided after the snapshot are removed from the journal before the restore, and I-H
-//! must fail on each.
+//! must fail on each. The other issuer mutants are in `tests/mutants.rs`.
+//!
+//! The suite runs in the release profile (§19.17 point 2; CI job `rust`):
+//! `cargo test -p ghost-issuer --release --test crash`. A debug build lists its tests as ignored,
+//! which keeps the debug workspace run fast (the suite takes minutes there).
 
 mod common;
 
 use std::panic::AssertUnwindSafe;
 
 use common::chain_port;
-use common::world::{enumerate, seed, Template, World, BASE_WEEK, PRICE};
-use ghost_entitlement::batch;
+use common::scenarios::{
+    clock_back_credit_world, clock_back_invite_world, i_l_credit, i_l_invite, other_blinded,
+    race_retry, race_world, with_credits, RaceKind,
+};
+use common::world::{claim_id, enumerate, Template, World, BASE_WEEK, PRICE};
 use ghost_entitlement::grid::invite_epoch;
 use ghost_entitlement::{Kind, Token};
-use ghost_issuer::journal::{Entry, FileJournal, Journal};
+use ghost_issuer::journal::Entry;
+use ghost_issuer::pool::PoolError;
+use ghost_issuer::rail::RailError;
 use ghost_issuer::reconcile::{self, CounterId};
-use ghost_issuer::store::{self, MetaKey};
+use ghost_issuer::store::{self, ClaimState};
 use ghost_issuer_api::proto as wire;
 
 const SIGNED: i32 = wire::InvoiceState::Signed as i32;
@@ -37,27 +51,14 @@ const EXPIRED: i32 = wire::InvoiceState::Expired as i32;
 const OTHER: i32 = wire::InvoiceState::OtherRequestIssued as i32;
 const OK: i32 = wire::RequestInvoiceResult::Ok as i32;
 const CREDITS_SPENT: i32 = wire::RequestInvoiceResult::CreditsSpent as i32;
+const REFRESH_OK: i32 = wire::RefreshCreditResult::Ok as i32;
+const REFRESH_REPLAYED: i32 = wire::RefreshCreditResult::Replayed as i32;
 
-/// Double-crash depth of I-A, I-D and I-H.
+/// Double-crash depth of I-A, I-D, I-H and I-K.
 const DEPTH: usize = 2;
 
 fn fresh() -> Template {
     World::new(true).template()
-}
-
-/// A world whose client holds ten credits minted by ten XMR packs through the issuer.
-fn with_credits(prefix: &str) -> World {
-    let mut w = World::new(true);
-    for i in 0..10 {
-        w.buy_pack(&format!("{prefix}-warm-{i}"));
-    }
-    assert_eq!(w.wallet.credits.len(), 10);
-    w
-}
-
-fn other_blinded(w: &World, label: &str) -> Vec<u8> {
-    let p = w.purchase(label);
-    batch::blind(&w.schedule, &seed(&format!("{label}/other")), &w.layout(&p)).unwrap()
 }
 
 fn counter(w: &World, id: CounterId) -> u64 {
@@ -102,6 +103,10 @@ fn i_a(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_a_request_pay_confirm_sign_reserve() {
     report("I-A", enumerate(&fresh(), i_a, DEPTH));
 }
@@ -126,6 +131,10 @@ fn i_b(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_b_underpay_and_top_up() {
     report("I-B", enumerate(&fresh(), i_b, 0));
 }
@@ -161,6 +170,10 @@ fn i_c(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_c_expiry_from_a_synced_view_only() {
     report("I-C", enumerate(&fresh(), i_c, 0));
 }
@@ -185,6 +198,10 @@ fn i_c_underpaid(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_c_underpaid_invoice_expires_into_unattributed_revenue() {
     report("I-C underpaid", enumerate(&fresh(), i_c_underpaid, 0));
 }
@@ -209,6 +226,10 @@ fn i_d(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_d_reorg_before_and_after_issuance() {
     report("I-D", enumerate(&fresh(), i_d, DEPTH));
 }
@@ -245,6 +266,10 @@ fn i_d_timely(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_d_credited_txid_re_mined_after_grace_stays_timely() {
     report("I-D timely re-mine", enumerate(&fresh(), i_d_timely, 0));
 }
@@ -279,6 +304,10 @@ fn i_e(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_e_invite_redeem_and_revoke() {
     report("I-E", enumerate(&fresh(), i_e, 0));
 }
@@ -311,6 +340,10 @@ fn i_f(w: &mut World) {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_f_credits_pack() {
     report("I-F", enumerate(&with_credits("f").template(), i_f, 0));
 }
@@ -343,9 +376,55 @@ fn i_g(w: &mut World) {
     assert_eq!((request.result, request.spent_mask), (CREDITS_SPENT, 0x3FF));
     let now = w.now;
     assert!(w.issuer().status_at(now).unwrap().payout_batch_ready);
+
+    // §9.5 step 1: the weekly export assigns the claim to a batch and writes the batch file,
+    // signed by the ops key; a second export rewrites the same bytes (World::check).
+    w.export();
+    let files = w.batch_files();
+    assert_eq!(files.len(), 1);
+    let file = files[0].clone();
+    assert_eq!(file.entries.len(), 1);
+    assert_eq!(
+        (
+            file.entries[0].claim_id,
+            file.entries[0].amount,
+            file.total,
+            file.entries[0].address_text()
+        ),
+        (claim_id("g"), PRICE, PRICE, address.as_str())
+    );
+    w.export();
+    assert!(!w.issuer().status_at(now).unwrap().payout_batch_ready);
+
+    // §9.5 step 4: the workstation's acknowledgement marks the batch paid; its files go, the
+    // claim keeps no payout address, and an identical claim retry still answers QUEUED.
+    w.write_ack(&file);
+    w.export();
+    assert!(
+        w.batch_files().is_empty(),
+        "the paid batch's file is deleted"
+    );
+    assert!(
+        std::fs::read_dir(w.export_dir()).unwrap().next().is_none(),
+        "the acknowledgement is consumed"
+    );
+    {
+        let tx = w.issuer().store().read().unwrap();
+        let row = store::claim(&*tx, &claim_id("g")).unwrap().unwrap();
+        assert_eq!(row.state, ClaimState::Paid);
+    }
+    assert_eq!(counter(w, CounterId::PayoutPaidAtomic), PRICE);
+    assert_eq!(
+        w.claim("g", &credits, &address).unwrap().queued_atomic,
+        PRICE
+    );
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_g_claim() {
     report("I-G", enumerate(&with_credits("g").template(), i_g, 0));
 }
@@ -444,42 +523,23 @@ fn i_h_world() -> World {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn i_h_restore_from_snapshot_with_journal_replay() {
     report("I-H", enumerate(&i_h_world().template(), i_h, DEPTH));
 }
 
-/// Rewrites the (closed) journal without the entries after sequence number `after` that `lost`
-/// selects: the decided outcomes a `NoJournal` issuer would not have recorded. Returns how many
-/// entries were removed.
-fn lose_journal_entries(w: &World, after: u64, lost: fn(&Entry) -> bool) -> usize {
-    let dir = w.dir.path().join("journal");
-    let all = FileJournal::open(&dir).unwrap().entries().unwrap();
-    let kept: Vec<Entry> = all
-        .iter()
-        .filter(|(seq, e)| *seq <= after || !lost(e))
-        .map(|(_, e)| e.clone())
-        .collect();
-    std::fs::remove_dir_all(&dir).unwrap();
-    let journal = FileJournal::open(&dir).unwrap();
-    for e in &kept {
-        journal.append(w.week(), e).unwrap();
-    }
-    all.len() - kept.len()
-}
-
-/// Runs I-H with the entries `lost` selects missing from the journal at the restore: how many were
-/// removed, and how I-H after the restore (with `World::check`) ended (the panic message).
+/// Runs I-H with the entries `lost` selects missing from the journal at the restore (the decided
+/// outcomes a `NoJournal` issuer would not have recorded): how many were removed, and how I-H after
+/// the restore (with `World::check`) ended (the panic message).
 fn i_h_with_lost_entries(lost: fn(&Entry) -> bool) -> (usize, Result<(), String>) {
     let mut w = i_h_world();
-    let applied = {
-        let tx = w.issuer().store().read().unwrap();
-        store::meta(&*tx, MetaKey::JournalApplied)
-            .unwrap()
-            .unwrap_or(0)
-    };
+    let applied = w.journal_applied();
     let held = i_h_before(&mut w);
     w.crash();
-    let removed = lose_journal_entries(&w, applied, lost);
+    let removed = w.lose_journal_entries(applied, lost);
     w.restore();
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         i_h_after(&mut w, &held);
@@ -495,6 +555,10 @@ fn i_h_with_lost_entries(lost: fn(&Entry) -> bool) -> (usize, Result<(), String>
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn mm3_control_a_rewritten_journal_passes_i_h() {
     let (removed, outcome) = i_h_with_lost_entries(|_| false);
     assert_eq!(removed, 0);
@@ -502,6 +566,10 @@ fn mm3_control_a_rewritten_journal_passes_i_h() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn mm3_lost_issue_entries_are_caught_by_i_h() {
     let (removed, outcome) = i_h_with_lost_entries(|e| matches!(e, Entry::Issue { .. }));
     assert!(removed > 0);
@@ -513,6 +581,10 @@ fn mm3_lost_issue_entries_are_caught_by_i_h() {
 }
 
 #[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
 fn mm3_lost_invite_entries_are_caught_by_i_h() {
     let (removed, outcome) = i_h_with_lost_entries(|e| matches!(e, Entry::Invite { .. }));
     assert!(removed > 0);
@@ -521,4 +593,229 @@ fn mm3_lost_invite_entries_are_caught_by_i_h() {
         message.contains("MS-3"),
         "caught for another reason: {message}"
     );
+}
+
+// ------------------------------------------------------------------------------------------------
+// RefreshCredit (§19.8).
+// ------------------------------------------------------------------------------------------------
+
+/// I-F refresh: a credit standing for one received through a drop is exchanged for a fresh one
+/// of the same epoch; the identical retry is re-served, another blinded value is REPLAYED; the
+/// received credit is spent, and the fresh one pays for a pack with nine others.
+fn i_f_refresh(w: &mut World) {
+    let received = w.wallet.credits[0].clone();
+    let blinded = w.refresh_blinded("r", 227);
+    let r = w.refresh(&received, blinded.clone()).unwrap();
+    assert_eq!(r.result, REFRESH_OK);
+    assert_eq!(r.blind_signature.len(), 256);
+    let fresh = w.finalize_refresh("r", 227, &r.blind_signature);
+    assert_ne!(fresh.nullifier(), received.nullifier());
+    assert_eq!(
+        w.refresh(&received, blinded).unwrap().blind_signature,
+        r.blind_signature
+    );
+    let other = w.refresh_blinded("r-other", 227);
+    assert_eq!(
+        w.refresh(&received, other).unwrap().result,
+        REFRESH_REPLAYED
+    );
+    let mut stale = w.wallet.credits[1..10].to_vec();
+    stale.push(received);
+    let spent = w.request("rf-stale", BASE_WEEK, &stale).unwrap();
+    assert_eq!((spent.result, spent.spent_mask), (CREDITS_SPENT, 1 << 9));
+    let mut set = w.wallet.credits[1..10].to_vec();
+    set.push(fresh);
+    assert_eq!(w.request("rf", BASE_WEEK, &set).unwrap().result, OK);
+    let s = w.sign("rf").unwrap();
+    assert_eq!(s.state, SIGNED);
+    assert_eq!(w.finalize("rf", &s.blind_signatures).len(), 17);
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
+fn i_f_refresh_a_received_credit() {
+    report(
+        "I-F refresh",
+        enumerate(&with_credits("r").template(), i_f_refresh, 0),
+    );
+}
+
+// ------------------------------------------------------------------------------------------------
+// I-K: races then restart, races then restore (§19.5).
+// ------------------------------------------------------------------------------------------------
+
+fn i_k_blind_sign(w: &mut World) {
+    w.reopen();
+    race_retry(RaceKind::BlindSign, w);
+}
+
+fn i_k_redeem_invite(w: &mut World) {
+    w.reopen();
+    race_retry(RaceKind::RedeemInvite, w);
+}
+
+fn i_k_claim(w: &mut World) {
+    w.reopen();
+    race_retry(RaceKind::ClaimPayout, w);
+}
+
+fn i_k_credits_pack(w: &mut World) {
+    w.reopen();
+    race_retry(RaceKind::CreditsPack, w);
+}
+
+fn i_k_blind_sign_restore(w: &mut World) {
+    w.restore();
+    race_retry(RaceKind::BlindSign, w);
+}
+
+fn i_k_redeem_invite_restore(w: &mut World) {
+    w.restore();
+    race_retry(RaceKind::RedeemInvite, w);
+}
+
+fn i_k_claim_restore(w: &mut World) {
+    w.restore();
+    race_retry(RaceKind::ClaimPayout, w);
+}
+
+fn i_k_credits_pack_restore(w: &mut World) {
+    w.restore();
+    race_retry(RaceKind::CreditsPack, w);
+}
+
+/// The template of a race: its world after the race (a restore variant snapshots before it).
+fn race_template(kind: RaceKind, restore: bool) -> Template {
+    race_world(kind, restore).template()
+}
+
+/// One I-K case: its name, the kind of race and the body enumerated after it.
+type RaceCase = (&'static str, RaceKind, fn(&mut World));
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
+fn i_k_races_then_restart() {
+    let cases: [RaceCase; 4] = [
+        ("I-K BlindSign", RaceKind::BlindSign, i_k_blind_sign),
+        (
+            "I-K RedeemInvite",
+            RaceKind::RedeemInvite,
+            i_k_redeem_invite,
+        ),
+        ("I-K ClaimPayout", RaceKind::ClaimPayout, i_k_claim),
+        (
+            "I-K credits RequestInvoice",
+            RaceKind::CreditsPack,
+            i_k_credits_pack,
+        ),
+    ];
+    for (name, kind, body) in cases {
+        report(name, enumerate(&race_template(kind, false), body, DEPTH));
+    }
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
+fn i_k_races_then_restore() {
+    let cases: [RaceCase; 4] = [
+        (
+            "I-K BlindSign, restore",
+            RaceKind::BlindSign,
+            i_k_blind_sign_restore,
+        ),
+        (
+            "I-K RedeemInvite, restore",
+            RaceKind::RedeemInvite,
+            i_k_redeem_invite_restore,
+        ),
+        (
+            "I-K ClaimPayout, restore",
+            RaceKind::ClaimPayout,
+            i_k_claim_restore,
+        ),
+        (
+            "I-K credits RequestInvoice, restore",
+            RaceKind::CreditsPack,
+            i_k_credits_pack_restore,
+        ),
+    ];
+    for (name, kind, body) in cases {
+        report(name, enumerate(&race_template(kind, true), body, DEPTH));
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// I-L: a clock step back across a swept epoch boundary (§19.10).
+// ------------------------------------------------------------------------------------------------
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
+fn i_l_clock_step_back_across_a_swept_epoch() {
+    report(
+        "I-L invites",
+        enumerate(&clock_back_invite_world().template(), i_l_invite, 0),
+    );
+    report(
+        "I-L credits",
+        enumerate(&clock_back_credit_world().template(), i_l_credit, 0),
+    );
+}
+
+// ------------------------------------------------------------------------------------------------
+// I-M: a lost create_address answer without a crash (§19.6 rule 4).
+// ------------------------------------------------------------------------------------------------
+
+/// I-M: the pool is drained, then a refill's `create_address` takes effect in the wallet but its
+/// answer is lost. That run stops; the next one reconciles `highest_minor` with the wallet in the
+/// process (`POOL_RECONCILED`) and refills above the lost minor, which is never handed out.
+fn i_m(w: &mut World) {
+    for i in 0..4 {
+        assert_eq!(
+            w.request(&format!("m-{i}"), BASE_WEEK, &[]).unwrap().result,
+            OK
+        );
+    }
+    let lost = w.chain.subaddress_count();
+    w.chain.lose_next_address_answer();
+    let first = w.run(|i, now| i.pool_refill_at(now));
+    if w.crashes == 0 {
+        assert_eq!(first.unwrap_err(), PoolError::Rail(RailError::Transport));
+    }
+    w.refill();
+    if w.crashes == 0 {
+        assert!(
+            counter(w, CounterId::PoolReconciled) >= 1,
+            "POOL_RECONCILED"
+        );
+    }
+    for i in 4..8 {
+        assert_eq!(
+            w.request(&format!("m-{i}"), BASE_WEEK, &[]).unwrap().result,
+            OK
+        );
+        assert_ne!(w.purchase(&format!("m-{i}")).minor, lost, "the lost minor");
+    }
+    let tx = w.issuer().store().read().unwrap();
+    assert!(store::pool(&*tx).unwrap().iter().all(|(m, _)| *m != lost));
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
+fn i_m_lost_create_address_answer_without_a_crash() {
+    report("I-M", enumerate(&fresh(), i_m, 0));
 }

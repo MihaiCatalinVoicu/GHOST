@@ -9,6 +9,7 @@
 
 pub mod batch;
 pub mod challenge;
+pub mod credit;
 pub mod grid;
 pub mod monero;
 pub mod onion;

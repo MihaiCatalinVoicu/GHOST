@@ -3,7 +3,7 @@
 
 use ghost_entitlement::grid::week_start;
 use ghost_issuer::journal::{
-    ClaimEntry, Entry, FileJournal, InvoiceEntry, Journal, JournalError, SEGMENT_PREFIX,
+    BatchEntry, ClaimEntry, Entry, FileJournal, InvoiceEntry, Journal, JournalError, SEGMENT_PREFIX,
 };
 use ghost_issuer::store::{
     self, ClaimRow, ClaimState, CreditUse, InvoiceRow, InvoiceState, MetaKey, PayWith, RedbStore,
@@ -342,21 +342,94 @@ fn rows_round_trip() {
     for u in [
         CreditUse::Discount,
         CreditUse::Payout,
-        CreditUse::Refresh([3; 16]),
+        CreditUse::Refresh([3; 32]),
     ] {
         assert_eq!(CreditUse::decode(&u.encode()).unwrap(), u);
     }
-    // Only a refresh keeps a reference (§6.1): a discount or payout row carrying one is refused.
+    // Only a refresh keeps a reference (§6.1), its whole digest: a discount or payout row carrying
+    // one is refused, and so is a row of the former 17 bytes (a 16-byte prefix).
     assert_eq!(
         CreditUse::Discount.encode(),
-        [[1u8].as_slice(), &[0; 16]].concat()[..]
+        [[1u8].as_slice(), &[0; 32]].concat()[..]
     );
-    assert_eq!(CreditUse::Payout.encode()[1..], [0; 16]);
+    assert_eq!(CreditUse::Payout.encode()[1..], [0; 32]);
     for code in [1u8, 2] {
-        let mut row = [0u8; 17];
+        let mut row = [0u8; 33];
         row[0] = code;
-        row[16] = 1;
+        row[32] = 1;
         assert_eq!(CreditUse::decode(&row), Err(StoreError::Corrupt));
     }
-    assert_eq!(CreditUse::decode(&[4; 17]), Err(StoreError::Corrupt));
+    assert_eq!(CreditUse::decode(&[4; 33]), Err(StoreError::Corrupt));
+    assert_eq!(CreditUse::decode(&[3; 17]), Err(StoreError::Corrupt));
+    for state in [
+        ClaimState::Queued,
+        ClaimState::Batched,
+        ClaimState::Paid,
+        ClaimState::Refused,
+    ] {
+        let row = ClaimRow {
+            state,
+            ..claim.clone()
+        };
+        assert_eq!(ClaimRow::decode(&row.encode()).unwrap(), row);
+    }
+}
+
+#[test]
+fn batch_entries_round_trip_and_refused_lists_are_canonical() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    let written = vec![
+        Entry::Batch(BatchEntry {
+            batch_id: [1; 16],
+            week: 2960,
+            cumulative_credited: 5,
+            claims: vec![[2; 16], [3; 16]],
+        }),
+        Entry::BatchPaid {
+            batch_id: [1; 16],
+            week: 2961,
+            refused: vec![[2; 16]],
+        },
+        Entry::BatchPaid {
+            batch_id: [4; 16],
+            week: 2961,
+            refused: Vec::new(),
+        },
+    ];
+    for e in &written {
+        j.append(2960, e).unwrap();
+    }
+    drop(j);
+    let read: Vec<Entry> = FileJournal::open(dir.path())
+        .unwrap()
+        .entries()
+        .unwrap()
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect();
+    assert_eq!(read, written);
+    let id = |i: u16| {
+        let mut id = [0u8; 16];
+        id[14..].copy_from_slice(&i.to_be_bytes());
+        id
+    };
+    for refused in [
+        vec![id(3), id(2)],
+        vec![id(2), id(2)],
+        (0..=200).map(id).collect(),
+    ] {
+        let entry = Entry::BatchPaid {
+            batch_id: [1; 16],
+            week: 2961,
+            refused,
+        };
+        assert!(entry.encode(1).is_err());
+    }
+    let most = Entry::BatchPaid {
+        batch_id: [1; 16],
+        week: 2961,
+        refused: (0..200).map(id).collect(),
+    };
+    assert!(most.encode(1).is_ok());
 }

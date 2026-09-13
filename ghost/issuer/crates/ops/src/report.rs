@@ -5,6 +5,7 @@
 
 use ghost_entitlement::monero::MoneroNetwork;
 use ghost_entitlement::{Kind, ScheduleError};
+use ghost_issuer::reconcile::Mismatch;
 
 /// The first word of a report line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,10 +29,18 @@ pub enum Code {
     DirectoryOk,
     DirectoryRefused,
     OnionKeyCreated,
+    OpsKeyCreated,
+    PayoutAccepted,
+    PayoutRefused,
+    EntryState,
+    AckWritten,
+    ReconciliationOk,
+    ReconciliationMismatch,
+    CountersWritten,
 }
 
 impl Code {
-    pub const ALL: [Code; 19] = [
+    pub const ALL: [Code; 27] = [
         Code::Usage,
         Code::IoError,
         Code::InputRefused,
@@ -51,6 +60,14 @@ impl Code {
         Code::DirectoryOk,
         Code::DirectoryRefused,
         Code::OnionKeyCreated,
+        Code::OpsKeyCreated,
+        Code::PayoutAccepted,
+        Code::PayoutRefused,
+        Code::EntryState,
+        Code::AckWritten,
+        Code::ReconciliationOk,
+        Code::ReconciliationMismatch,
+        Code::CountersWritten,
     ];
 
     pub fn name(self) -> &'static str {
@@ -74,6 +91,14 @@ impl Code {
             Code::DirectoryOk => "DIRECTORY_OK",
             Code::DirectoryRefused => "DIRECTORY_REFUSED",
             Code::OnionKeyCreated => "ONION_KEY_CREATED",
+            Code::OpsKeyCreated => "OPS_KEY_CREATED",
+            Code::PayoutAccepted => "PAYOUT_ACCEPTED",
+            Code::PayoutRefused => "PAYOUT_REFUSED",
+            Code::EntryState => "ENTRY_STATE",
+            Code::AckWritten => "ACK_WRITTEN",
+            Code::ReconciliationOk => "RECONCILIATION_OK",
+            Code::ReconciliationMismatch => "RECONCILIATION_MISMATCH",
+            Code::CountersWritten => "COUNTERS_WRITTEN",
         }
     }
 
@@ -90,6 +115,8 @@ impl Code {
                 | Code::SealRefused
                 | Code::EsRefused
                 | Code::DirectoryRefused
+                | Code::PayoutRefused
+                | Code::ReconciliationMismatch
         )
     }
 }
@@ -120,10 +147,21 @@ pub enum Field {
     Week,
     Slot,
     History,
+    Batch,
+    Entry,
+    State,
+    Total,
+    PaidSoFar,
+    Incoming,
+    Txid,
+    Images,
+    Relays,
+    Refused,
+    Counters,
 }
 
 impl Field {
-    pub const ALL: [Field; 23] = [
+    pub const ALL: [Field; 34] = [
         Field::Reason,
         Field::Flag,
         Field::File,
@@ -147,6 +185,17 @@ impl Field {
         Field::Week,
         Field::Slot,
         Field::History,
+        Field::Batch,
+        Field::Entry,
+        Field::State,
+        Field::Total,
+        Field::PaidSoFar,
+        Field::Incoming,
+        Field::Txid,
+        Field::Images,
+        Field::Relays,
+        Field::Refused,
+        Field::Counters,
     ];
 
     pub fn name(self) -> &'static str {
@@ -174,6 +223,17 @@ impl Field {
             Field::Week => "week",
             Field::Slot => "slot",
             Field::History => "history",
+            Field::Batch => "batch",
+            Field::Entry => "entry",
+            Field::State => "state",
+            Field::Total => "total",
+            Field::PaidSoFar => "paid_so_far",
+            Field::Incoming => "incoming",
+            Field::Txid => "txid",
+            Field::Images => "images",
+            Field::Relays => "relays",
+            Field::Refused => "refused",
+            Field::Counters => "counters",
         }
     }
 }
@@ -265,6 +325,35 @@ pub fn network_name(network: MoneroNetwork) -> &'static str {
         MoneroNetwork::Mainnet => "mainnet",
         MoneroNetwork::Stagenet => "stagenet",
         MoneroNetwork::Regtest => "regtest",
+    }
+}
+
+/// A reconciliation mismatch as a line: its kebab-case word and the week or epoch it names.
+pub fn mismatch_line(m: &Mismatch) -> Line {
+    let line = Line::new(Code::ReconciliationMismatch);
+    match *m {
+        Mismatch::SignedAccess { week } => line
+            .word(Field::Reason, "signed-access")
+            .num(Field::Week, week),
+        Mismatch::SignedInvite { epoch } => line
+            .word(Field::Reason, "signed-invite")
+            .num(Field::Epoch, epoch),
+        Mismatch::SignedCredit { epoch } => line
+            .word(Field::Reason, "signed-credit")
+            .num(Field::Epoch, epoch),
+        Mismatch::CreditsExceedSigned { epoch } => line
+            .word(Field::Reason, "credits-exceed-signed")
+            .num(Field::Epoch, epoch),
+        Mismatch::XmrCredited { base_week } => line
+            .word(Field::Reason, "xmr-credited")
+            .num(Field::Week, base_week),
+        Mismatch::DiscountValue => line.word(Field::Reason, "discount-value"),
+        Mismatch::PayoutValue => line.word(Field::Reason, "payout-value"),
+        Mismatch::RelayRedemptions { week } => line
+            .word(Field::Reason, "relay-redemptions")
+            .num(Field::Week, week),
+        Mismatch::ViewBelowCredited => line.word(Field::Reason, "view-below-credited"),
+        Mismatch::PayoutCap => line.word(Field::Reason, "payout-cap"),
     }
 }
 

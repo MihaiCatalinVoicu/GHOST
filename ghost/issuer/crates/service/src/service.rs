@@ -250,6 +250,9 @@ pub enum TickOutcome {
     Synced,
     /// The rail answered, but the view was not synced.
     Unsynced,
+    /// The wallet holds fewer subaddresses than the issuer handed out (restored without runbook
+    /// R5's replay): nothing was decided (review finding S5-MON-1).
+    WalletIncomplete,
     Failed(RailError),
 }
 
@@ -274,6 +277,8 @@ pub(crate) struct Volatile {
     pub(crate) keys_missing: u64,
     /// Alarm `SIGN_FAULT`: signatures withheld by the fault check.
     pub(crate) sign_faults: u64,
+    /// Alarm `PAYOUT_ACKS_REFUSED`: acknowledgement files the last payout run refused.
+    pub(crate) payout_acks_refused: u64,
 }
 
 /// Why a batch of positions could not be signed.
@@ -619,7 +624,41 @@ impl Issuer {
                 base_week,
             } => self.apply_invite(tx, *epoch, nullifier, digest, *base_week),
             Entry::Claim(e) => self.apply_claim(tx, e, now),
+            Entry::Refresh {
+                epoch,
+                nullifier,
+                digest,
+            } => self.apply_refresh(tx, *epoch, nullifier, digest),
+            Entry::Batch(e) => self.apply_batch(tx, e),
+            Entry::BatchPaid {
+                batch_id,
+                week,
+                refused,
+            } => self.apply_batch_paid(tx, batch_id, *week, refused),
         }
+    }
+
+    fn apply_refresh(
+        &self,
+        tx: &mut dyn WriteTx,
+        epoch: u64,
+        nullifier: &[u8; 32],
+        digest: &[u8; 32],
+    ) -> Result<(), ApplyError> {
+        let used = CreditUse::Refresh(*digest);
+        match store::credit_nullifier(tx, epoch, nullifier)? {
+            Some(stored) if stored == used => return Ok(()),
+            Some(_) => return Err(ApplyError::Inconsistent),
+            None => {}
+        }
+        tx.put(
+            Table::CreditNullifier,
+            &store::nullifier_key(epoch, nullifier),
+            &used.encode(),
+        )?;
+        reconcile::add(tx, CounterId::CreditsRefreshed, epoch, 1)?;
+        reconcile::add(tx, CounterId::SignedCredit, epoch, 1)?;
+        Ok(())
     }
 
     fn apply_invoice(&self, tx: &mut dyn WriteTx, e: &InvoiceEntry) -> Result<(), ApplyError> {
@@ -1248,7 +1287,9 @@ impl Issuer {
     /// high-water marks (a new redemption of a closed epoch is refused whatever the clock says
     /// later), deletes in the same transaction the credit nullifiers of the closed epochs and the
     /// invite nullifiers of epochs whose trials are all past their re-serve window
-    /// ([`TRIAL_RESERVE_HOLD_SECS`]), deletes counters past retention, and destroys keys (K4).
+    /// ([`TRIAL_RESERVE_HOLD_SECS`]), deletes counters past retention and paid payout batches
+    /// past theirs ([`crate::payout::CLAIMS_KEEP_WEEKS`], [`crate::payout::BATCH_KEEP_WEEKS`]),
+    /// and destroys keys (K4).
     pub fn sweep_at(&self, now: u64) -> Result<SweepReport, StoreError> {
         if self.is_halted() {
             return Err(StoreError::Db);
@@ -1276,6 +1317,7 @@ impl Issuer {
             )?;
         }
         reconcile::sweep(&mut *tx, now)?;
+        report.payout_rows = crate::payout::sweep_paid(&mut *tx, w)?;
         tx.commit()?;
         report.keys_destroyed = self.destroy_keys(now)?;
         Ok(report)
@@ -1287,6 +1329,8 @@ impl Issuer {
 pub struct SweepReport {
     pub invite_nullifiers: usize,
     pub credit_nullifiers: usize,
+    /// Claims and batch rows of paid payout batches past their retention.
+    pub payout_rows: usize,
     pub keys_destroyed: Vec<(Kind, u64)>,
 }
 

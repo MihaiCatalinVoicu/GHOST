@@ -10,16 +10,19 @@
 #![forbid(unsafe_code)]
 
 pub mod claim;
+pub mod config;
 pub mod credit;
 pub mod custody;
 pub mod invite;
 pub mod invoice;
 pub mod journal;
+pub mod payout;
 pub mod pool;
 pub mod quantum;
 pub mod rail;
 pub mod reconcile;
 pub mod scanner;
+pub mod server;
 pub mod service;
 pub mod signer;
 pub mod status;
@@ -27,8 +30,9 @@ pub mod store;
 
 pub use service::{Issuer, IssuerParams, OpenMode, OsRandom, Ports, Random, StartupError};
 
-/// Wire protocol version implemented by this issuer.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Wire protocol version implemented by this issuer. Defined once, in `ghost-issuer-api`, which the
+/// client also links (the issuer crates are issuer-only, ADR-22).
+pub use ghost_issuer_api::PROTOCOL_VERSION;
 
 /// Referral share in basis points: every XMR-paid pack yields one blind credit token worth 10 %
 /// of the pack price (design D13, §9.2).

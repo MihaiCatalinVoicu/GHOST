@@ -67,6 +67,7 @@
 #   payout <Q> credits=... address=...
 #       -> queued amount=<n> | credits_spent mask=<hex> | claim_conflict | address_rejected
 #          | <category>
+#       address_rejected: an invalid address, or the address of a queued or batched claim.
 #
 # CATEGORIES are the client categories of client-core/README.md for the issuer's gRPC status
 # (design §5.7, for_issuer): rejected (InvalidArgument), unauthorized (PermissionDenied),
@@ -186,4 +187,5 @@ payout s credits=m address=checksum -> address_rejected
 payout s credits=m address=stagenet -> address_rejected
 payout s credits=m/0/9 address=valid -> unauthorized     # below min_claim_credits
 request c week=0 credits=k -> credits_spent mask=3ff
-payout s credits=m address=valid -> queued amount=200000000000
+payout s credits=m address=valid -> address_rejected     # the address of queued claim q
+payout s credits=m address=other -> queued amount=200000000000

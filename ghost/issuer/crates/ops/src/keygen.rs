@@ -1,6 +1,7 @@
-//! `keygen` (runbook K1, design §3.3): the custody secret, the Ed25519 schedule key, or RSA-2048
-//! token keys for consecutive epochs of one kind, each with its permutation proof, its public entry
-//! and its sealed private key.
+//! `keygen` (runbook K1, design §3.3): the custody secret, the Ed25519 schedule key, the Ed25519
+//! ops key that signs payout batch files (runbook P1, §9.5), or RSA-2048 token keys for
+//! consecutive epochs of one kind, each with its permutation proof, its public entry and its
+//! sealed private key.
 
 use std::path::Path;
 
@@ -20,9 +21,10 @@ use crate::{output, public_entry, Failure};
 /// At most this many token keys per run (two years of access weeks).
 pub const MAX_COUNT: u64 = 104;
 
-const FLAGS: [&str; 8] = [
+const FLAGS: [&str; 9] = [
     "new-custody-secret",
     "new-schedule-key",
+    "new-ops-key",
     "kind",
     "from-epoch",
     "count",
@@ -59,6 +61,18 @@ pub fn run(argv: &[String], sink: &mut dyn Sink) -> Result<(), Failure> {
         seed.fill(0);
         written?;
         sink.emit(Line::new(Code::ScheduleKeyCreated).hex(Field::Public, &public));
+        return Ok(());
+    }
+    if flags.has("new-ops-key") {
+        flags.only(&["new-ops-key"])?;
+        let mut seed = [0u8; 32];
+        rng.fill(&mut seed)
+            .map_err(|_| Failure::refused(input_refused("new-ops-key", "random")))?;
+        let public = ghost_issuer::payout::OpsKey::from_seed(&seed).public();
+        let written = output::write_ops_key(&flags.path("new-ops-key")?, &seed, "new-ops-key");
+        seed.fill(0);
+        written?;
+        sink.emit(Line::new(Code::OpsKeyCreated).hex(Field::Public, &public));
         return Ok(());
     }
     token_keys(&flags, &rng, sink)

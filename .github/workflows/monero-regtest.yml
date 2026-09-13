@@ -1,0 +1,104 @@
+name: monero-regtest
+
+# The live Monero job (Phase 8 design §13.3, §13.6, §14.2, §19.17 point 7; ADR-26): the pinned
+# monerod and monero-wallet-rpc on regtest, driven by the issuer's production rail and handlers
+# (ghost/issuer/crates/service/tests/monero_regtest.rs). A workflow file of its own: GitHub Actions
+# has no job-level path filter and ci.yml has no schedule. Required for merge on the issuer, infra
+# and protocol paths and on the workspace manifests: the rail's HTTP, digest and JSON behaviour
+# comes from the locked hyper, hyper-util, http-body-util, md-5, serde_json and tokio versions, so a
+# lockfile-only bump runs the live job before it merges (review finding S5-SEC-4; the gate checks
+# the pull-request paths).
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag);
+# Rust builds use --locked. The Monero archive's name, URL and SHA-256 come only from
+# ghost/infra/issuer/monero-release.pin (scripts/gates/monero-pin.sh); the archive is checked with
+# sha256sum -c after the download and before the extraction on every run, a cache hit included,
+# and the cache key is the pinned hash.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ghost/issuer/**"
+      - "ghost/infra/issuer/**"
+      - "ghost/protocol/**"
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
+      - ".github/workflows/monero-regtest.yml"
+  pull_request:
+    paths:
+      - "ghost/issuer/**"
+      - "ghost/infra/issuer/**"
+      - "ghost/protocol/**"
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
+      - ".github/workflows/monero-regtest.yml"
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  monero-regtest:
+    name: monero regtest (pinned binaries, digest auth, issuer rail scenario)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    env:
+      PIN: infra/issuer/monero-release.pin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+          key: monero-regtest
+      - name: install pinned protoc (tonic-prost-build compiles protocol/issuer/v1)
+        run: |
+          bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+      - name: read the Monero pin (linux-x64)
+        id: pin
+        run: |
+          read -r _ platform file sha dir < <(awk '$1 == "archive" && $2 == "linux-x64"' "$PIN")
+          url="$(awk '$1 == "url" {print $2}' "$PIN")"
+          [ "$platform" = linux-x64 ] && [ -n "$file" ] && [ -n "$sha" ] && [ -n "$dir" ] && [ -n "$url" ]
+          {
+            echo "file=$file"
+            echo "sha=$sha"
+            echo "dir=$dir"
+            echo "url=$url"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/monero-archive
+          key: monero-${{ steps.pin.outputs.sha }}
+      - name: download if not cached, check against the pin, extract
+        env:
+          FILE: ${{ steps.pin.outputs.file }}
+          SHA: ${{ steps.pin.outputs.sha }}
+          DIR: ${{ steps.pin.outputs.dir }}
+          URL: ${{ steps.pin.outputs.url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/monero-archive" "$RUNNER_TEMP/monero-bin"
+          cd "$RUNNER_TEMP/monero-archive"
+          [ -f "$FILE" ] || curl -fsSL --retry 3 -o "$FILE" "$URL$FILE"
+          echo "$SHA  $FILE" | sha256sum -c -
+          tar -xjf "$FILE" -C "$RUNNER_TEMP/monero-bin" --strip-components=1 "$DIR/monerod" "$DIR/monero-wallet-rpc"
+          "$RUNNER_TEMP/monero-bin/monerod" --version
+      - name: build the operator tools (the payout workstation's commands of steps 16 and 16b)
+        run: cargo build -p ghost-issuer-ops --release --locked
+      - name: regtest scenario on the production rail (release profile)
+        env:
+          GHOST_MONERO_BIN: ${{ runner.temp }}/monero-bin
+          GHOST_ISSUER_OPS: ${{ github.workspace }}/ghost/target/release/ghost-issuer-ops
+        run: cargo test -p ghost-issuer --release --locked --test monero_regtest -- --ignored --test-threads=1

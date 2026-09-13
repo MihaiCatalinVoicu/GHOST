@@ -1,12 +1,17 @@
 //! Issuer API crate: wire types and gRPC service generated from `protocol/issuer/v1/issuer.proto`
 //! (Phase 8 design §5.2), plus the wire sizes every client and the issuer check. The protocol
-//! version itself has one definition, `ghost_issuer::PROTOCOL_VERSION`.
+//! version has one definition, [`PROTOCOL_VERSION`] here: the issuer re-exports it
+//! (`ghost_issuer::PROTOCOL_VERSION`) and the client (`client-core`), which never links the issuer
+//! crates, sends it.
 #![forbid(unsafe_code)]
 
 /// Generated protobuf messages and gRPC service (`ghost.issuer.v1`).
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/ghost.issuer.v1.rs"));
 }
+
+/// Wire protocol version of `issuer.proto` (§5.2: it stays 1). Every `*Request` carries it.
+pub const PROTOCOL_VERSION: u32 = 1;
 
 /// `invoice_id`: 16 random bytes.
 pub const INVOICE_ID_BYTES: usize = 16;

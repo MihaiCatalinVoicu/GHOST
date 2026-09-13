@@ -12,6 +12,22 @@
 //! ghost-issuer-ops schedule-verify --schedule <es> [--schedule-public-key <hex>] [--previous <es>]...
 //!                                  [--relay-directory <file> --now <unix seconds>]
 //! ghost-issuer-ops onion-keygen --hs-dir <dir>
+//! ghost-issuer-ops keygen --new-ops-key <file>
+//! ghost-issuer-ops payout-check --batch <file> --ops-public-key <hex> --network <name>
+//!                               --view-dump <json> --restore-height <h> --ledger <file>
+//! ghost-issuer-ops payout-entry --ledger <file> --batch-id <hex> --entry <k>
+//!                               --to <built|signed|submitted|confirmed|abandoned>
+//!                               [--raw-tx <hex file> --txid <hex>] [--transfer <json>]
+//!                               [--spent-status <json>]
+//! ghost-issuer-ops payout-ack --ledger <file> --batch <file> --ops-public-key <hex> --out <file>
+//! ghost-issuer-ops counters-export --database <issuer.redb copy> --out <file>
+//! ghost-issuer-ops reconcile-check --database <issuer.redb copy> --schedule <es>
+//!                                  [--schedule-public-key <hex>] --now <unix seconds>
+//!                                  [--relay-counts <file>]...
+//! ghost-issuer-ops reconcile-check --counters <file> --schedule <es>
+//!                                  [--schedule-public-key <hex>] --now <unix seconds>
+//!                                  [--relay-counts <file>]... [--view-dump <json>
+//!                                  --restore-height <h> [--ledger <file>]]
 //! ```
 //!
 //! - `keygen` (runbook K1): a custody secret, an Ed25519 schedule key, or RSA-2048 token keys for
@@ -34,6 +50,15 @@
 //!   `hs_ed25519_public_key`, `hostname`) in a new `HiddenServiceDir`, so a schedule can name a
 //!   relay's or the issuer's onion before the service first starts. The report carries the public
 //!   key only.
+//! - `keygen --new-ops-key` (runbook P1): the Ed25519 ops key whose seed the issuer's
+//!   `ops_key_file` holds; the workstation checks batch files under its public key.
+//! - `payout-check`, `payout-entry`, `payout-ack` (§9.5 steps 2–4, §19.7): the payout
+//!   workstation's checks and ledger ([`workstation`], [`ledger`]).
+//! - `counters-export`, `reconcile-check` (§6.9, runbook R2): the reconciliation invariants of
+//!   the issuer's counters with the relay aggregates, read from an `issuer.redb` snapshot on the
+//!   issuer host, or from the counters file `counters-export` writes there, which is the only
+//!   issuer input the workstation checks together with its own view and ledger
+//!   ([`reconcile_check`]).
 //!
 //! Output: fixed-vocabulary lines through [`report`] only (exit 0 ok, 1 refused, 2 usage). Files
 //! are written only by [`output`].
@@ -45,13 +70,17 @@ mod hexfmt;
 mod input;
 mod keygen;
 mod keys_seal;
+pub mod ledger;
 pub mod onion_keygen;
 pub mod output;
 pub mod public_entry;
+pub mod rawtx;
+pub mod reconcile_check;
 pub mod report;
 mod schedule_sign;
 mod schedule_verify;
 pub mod source;
+pub mod workstation;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -117,6 +146,11 @@ pub fn execute(argv: &[String], sink: &mut dyn Sink) -> Status {
         "schedule-sign" => schedule_sign::run(rest, sink),
         "schedule-verify" => schedule_verify::run(rest, sink),
         "onion-keygen" => onion_keygen::run(rest, sink),
+        "payout-check" => workstation::check(rest, sink),
+        "payout-entry" => workstation::entry(rest, sink),
+        "payout-ack" => workstation::ack(rest, sink),
+        "reconcile-check" => reconcile_check::run(rest, sink),
+        "counters-export" => reconcile_check::export(rest, sink),
         _ => Err(Failure::usage("unknown-command", None)),
     };
     match result {

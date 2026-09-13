@@ -22,8 +22,12 @@ ed25519-dalek = { workspace = true }
 # Operating-system randomness for the custody secret, the schedule key, onion service seeds and
 # seal nonces.
 ring = { workspace = true }
-# SHA-512 of an onion service seed: the expanded Ed25519 secret key Tor stores (onion-keygen).
+# SHA-512 of an onion service seed: the expanded Ed25519 secret key Tor stores (onion-keygen);
+# SHA-256 of the payout ledger's salted hashes.
 sha2 = { workspace = true }
+# The payout workstation's saved wallet and daemon answers (view dump, transfer, key-image status),
+# already in the graph through ghost-issuer's rail.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

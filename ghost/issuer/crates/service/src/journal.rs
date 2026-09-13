@@ -12,8 +12,12 @@
 //! INVITE     tag 3: invite epoch u64 || N_inv 32 || D_t 32 || base_week u64
 //! CLAIM      tag 4: claim_id 16 || digest 32 || amount u64 || address 95 || count u8 (1..64)
 //!                   || count x (credit epoch u64 || nullifier 32)
-//! (tags 5 REFRESH, 6 BATCH, 7 BATCH_PAID are reserved for slice S6; an unknown tag refuses the
-//! start, it is never skipped)
+//! REFRESH    tag 5: credit epoch u64 || N 32 || refresh digest 32
+//! BATCH      tag 6: batch_id 16 || week u64 || cumulative_credited u64 || count u16 (1..200)
+//!                   || count x claim_id 16
+//! BATCH_PAID tag 7: batch_id 16 || week u64 || count u16 (0..200)
+//!                   || count x claim_id 16 (the refused entries, strictly ascending)
+//! (an unknown tag refuses the start, it is never skipped)
 //! ```
 //! Big-endian fixed fields; the checksum is SHA-256 from `sha2` (no CRC crate, §19.5).
 //!
@@ -29,7 +33,13 @@
 //! Recorded deviations from the §6.3 entry list, each needed to replay "exactly as the handler
 //! would": INVOICE carries the subaddress (the idempotent re-serve returns it) and the epoch of each
 //! credit nullifier (the nullifier table key and the per-epoch counters need it); INVITE carries
-//! the trial's base week (the trial counters need it).
+//! the trial's base week (the trial counters need it); BATCH carries the issuer's cumulative
+//! credited revenue at the batch's creation (a field of the signed batch file, so the file of an
+//! unacknowledged batch is re-exported byte for byte after a restore, §9.5 step 1); BATCH_PAID
+//! carries the week of the acknowledgement (the `payout_paid_atomic` counter and the retention of
+//! the paid batch's claims are per week, and a replay must not date them by the restart) and the
+//! ids of the claims whose entries the workstation refused (a payout address it had seen before,
+//! §9.5 step 2: those claims close unpaid, so one address cannot stall its whole batch).
 //!
 //! **Files.** Weekly segments `issued.journal.<week>` in one directory; a segment is never renamed.
 //! Entries are numbered from 1 without gaps across segments. At open, a torn tail of the last
@@ -58,6 +68,9 @@ pub const SEGMENT_PREFIX: &str = "issued.journal.";
 pub const MAX_FRAME_LEN: usize = 4_096;
 /// Most credits one entry carries (a claim of up to `max_claim_credits`, capped at 64).
 pub const MAX_ENTRY_CREDITS: usize = 64;
+/// Most claims one payout batch carries (its BATCH entry stays within [`MAX_FRAME_LEN`]); more
+/// queued claims go to further batches of the same export.
+pub const MAX_BATCH_CLAIMS: usize = 200;
 /// Segments are kept while any entry may still be needed for a re-serve (7 days, §6.3).
 pub const RESERVE_WINDOW_SECS: u64 = 7 * 86_400;
 
@@ -65,6 +78,9 @@ const TAG_INVOICE: u8 = 1;
 const TAG_ISSUE: u8 = 2;
 const TAG_INVITE: u8 = 3;
 const TAG_CLAIM: u8 = 4;
+const TAG_REFRESH: u8 = 5;
+const TAG_BATCH: u8 = 6;
+const TAG_BATCH_PAID: u8 = 7;
 const CHECKSUM_LEN: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -119,6 +135,18 @@ pub struct ClaimEntry {
     pub credits: Vec<CreditRef>,
 }
 
+/// Queued claims assigned to a new payout batch (§9.5 step 1, §19.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchEntry {
+    pub batch_id: [u8; 16],
+    /// The week the batch was created in.
+    pub week: u64,
+    /// The `xmr_credited_total` counter when the batch was created.
+    pub cumulative_credited: u64,
+    /// 1 ..= [`MAX_BATCH_CLAIMS`] distinct claim ids.
+    pub claims: Vec<[u8; 16]>,
+}
+
 /// A decided transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {
@@ -134,6 +162,25 @@ pub enum Entry {
         base_week: u64,
     },
     Claim(ClaimEntry),
+    /// A received credit exchanged for a fresh one of the same epoch (`RefreshCredit`, §19.8).
+    Refresh {
+        epoch: u64,
+        nullifier: [u8; 32],
+        digest: [u8; 32],
+    },
+    Batch(BatchEntry),
+    /// Every entry of the batch was acknowledged by the workstation (§9.5 step 4): paid, or
+    /// refused (`refused`, strictly ascending claim ids).
+    BatchPaid {
+        batch_id: [u8; 16],
+        week: u64,
+        refused: Vec<[u8; 16]>,
+    },
+}
+
+/// A list of claim ids: 0 ..= [`MAX_BATCH_CLAIMS`] of them, strictly ascending (distinct).
+fn canonical_ids(ids: &[[u8; 16]]) -> bool {
+    ids.len() <= MAX_BATCH_CLAIMS && ids.windows(2).all(|w| w[0] < w[1])
 }
 
 impl Entry {
@@ -143,6 +190,9 @@ impl Entry {
             Entry::Issue { .. } => TAG_ISSUE,
             Entry::Invite { .. } => TAG_INVITE,
             Entry::Claim(_) => TAG_CLAIM,
+            Entry::Refresh { .. } => TAG_REFRESH,
+            Entry::Batch(_) => TAG_BATCH,
+            Entry::BatchPaid { .. } => TAG_BATCH_PAID,
         }
     }
 
@@ -182,6 +232,42 @@ impl Entry {
                 w.extend_from_slice(&e.amount.to_be_bytes());
                 w.extend_from_slice(&e.address);
                 put_credits(&mut w, &e.credits)?;
+            }
+            Entry::Refresh {
+                epoch,
+                nullifier,
+                digest,
+            } => {
+                w.extend_from_slice(&epoch.to_be_bytes());
+                w.extend_from_slice(nullifier);
+                w.extend_from_slice(digest);
+            }
+            Entry::Batch(e) => {
+                if e.claims.is_empty() || e.claims.len() > MAX_BATCH_CLAIMS {
+                    return Err(JournalError::Format);
+                }
+                w.extend_from_slice(&e.batch_id);
+                w.extend_from_slice(&e.week.to_be_bytes());
+                w.extend_from_slice(&e.cumulative_credited.to_be_bytes());
+                w.extend_from_slice(&(e.claims.len() as u16).to_be_bytes());
+                for c in &e.claims {
+                    w.extend_from_slice(c);
+                }
+            }
+            Entry::BatchPaid {
+                batch_id,
+                week,
+                refused,
+            } => {
+                if !canonical_ids(refused) {
+                    return Err(JournalError::Format);
+                }
+                w.extend_from_slice(batch_id);
+                w.extend_from_slice(&week.to_be_bytes());
+                w.extend_from_slice(&(refused.len() as u16).to_be_bytes());
+                for c in refused {
+                    w.extend_from_slice(c);
+                }
             }
         }
         Ok(w)
@@ -234,6 +320,48 @@ impl Entry {
                 address: r.array()?,
                 credits: r.credits()?,
             }),
+            TAG_REFRESH => Entry::Refresh {
+                epoch: r.u64()?,
+                nullifier: r.array()?,
+                digest: r.array()?,
+            },
+            TAG_BATCH => {
+                let batch_id = r.array()?;
+                let week = r.u64()?;
+                let cumulative_credited = r.u64()?;
+                let count = usize::from(u16::from_be_bytes(r.array()?));
+                if count == 0 || count > MAX_BATCH_CLAIMS {
+                    return Err(JournalError::Format);
+                }
+                let claims = (0..count)
+                    .map(|_| r.array())
+                    .collect::<Result<Vec<[u8; 16]>, _>>()?;
+                Entry::Batch(BatchEntry {
+                    batch_id,
+                    week,
+                    cumulative_credited,
+                    claims,
+                })
+            }
+            TAG_BATCH_PAID => {
+                let batch_id = r.array()?;
+                let week = r.u64()?;
+                let count = usize::from(u16::from_be_bytes(r.array()?));
+                if count > MAX_BATCH_CLAIMS {
+                    return Err(JournalError::Format);
+                }
+                let refused = (0..count)
+                    .map(|_| r.array())
+                    .collect::<Result<Vec<[u8; 16]>, _>>()?;
+                if !canonical_ids(&refused) {
+                    return Err(JournalError::Format);
+                }
+                Entry::BatchPaid {
+                    batch_id,
+                    week,
+                    refused,
+                }
+            }
             _ => return Err(JournalError::Format),
         };
         if !r.0.is_empty() {

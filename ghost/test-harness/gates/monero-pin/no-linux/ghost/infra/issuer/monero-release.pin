@@ -1,0 +1,4 @@
+# Fixture pin (synthetic hashes).
+version v0.18.5.1
+url https://downloads.getmonero.org/cli/
+archive win-x64 monero-win-x64-v0.18.5.1.zip 2222222222222222222222222222222222222222222222222222222222222222 monero-x86_64-w64-mingw32-v0.18.5.1

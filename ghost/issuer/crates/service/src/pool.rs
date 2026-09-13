@@ -1,15 +1,20 @@
 //! The subaddress pool (Phase 8 design §7.2, §19.5 rule 3, §19.6 rule 4): `RequestInvoice` takes
 //! the lowest-minor entry inside its transaction and never waits on the wallet.
 //!
-//! - **Reconciliation** before the first refill of a process (and after a restore, whose pool was
-//!   emptied at startup): `highest_minor := max(highest_minor, wallet subaddress count − 1)`, so
-//!   the pool is always refilled above every minor the wallet ever created.
+//! - **Reconciliation** at every refill run, before anything is created: the wallet's subaddress
+//!   count against `highest_minor`. A wallet holding more (minors burned before a crash, or the
+//!   lost answer of an earlier run) raises `highest_minor := count − 1`, so the pool is always
+//!   refilled above every minor the wallet ever created (after a restore, whose pool was emptied at
+//!   startup, too); after the first run of a process such a raise counts `POOL_RECONCILED`. A
+//!   wallet holding fewer (restored without runbook R5's replay, review finding S5-MON-1) refuses
+//!   the refill: nothing is created, because subaddresses created here would satisfy the scanner's
+//!   completeness check without the rescan that finds their payments.
 //! - **Refill**: `create_address` → `(m, address)`, validated locally (subaddress of the ES
 //!   network, Keccak-256 checksum, both keys decompress); `m = highest_minor + 1` is required.
-//!   On a mismatch (the lost response of an earlier call) the reconciliation runs in the process
-//!   (counter `POOL_RECONCILED`) and refilling continues; `m` itself is kept only if it is the
-//!   newest minor and above every earlier one. A crash between the call and the commit only burns
-//!   an index.
+//!   On `m > highest_minor + 1` (the lost response of an earlier call) the reconciliation runs in
+//!   the process (counter `POOL_RECONCILED`) and refilling continues; `m` itself is kept only if it
+//!   is the newest minor. `m ≤ highest_minor` means the wallet lost subaddresses: the refill stops.
+//!   A crash between the call and the commit only burns an index.
 
 use ghost_entitlement::grid::week;
 use ghost_entitlement::monero::{AddressPurpose, MoneroAddress};
@@ -35,6 +40,9 @@ pub enum PoolError {
     Store(StoreError),
     /// The wallet returned an address that does not validate for invoices (§7.7).
     AddressRejected,
+    /// The wallet holds fewer subaddresses than `highest_minor + 1` (a restore without runbook
+    /// R5's replay): nothing was created.
+    WalletIncomplete,
     Halted,
 }
 
@@ -57,12 +65,20 @@ impl Issuer {
             return Err(PoolError::Halted);
         }
         let mut report = PoolReport::default();
-        if !self.volatile().reconciled {
-            let count = self.rail.address_count()?;
-            self.raise_highest(u64::from(count).saturating_sub(1), false, now)?;
-            self.volatile().reconciled = true;
+        let count = u64::from(self.rail.address_count()?);
+        let known = {
+            let tx = self.store.read()?;
+            store::meta(&*tx, MetaKey::HighestMinor)?.unwrap_or(0)
+        };
+        if count <= known {
+            return Err(PoolError::WalletIncomplete);
+        }
+        let first_run = !self.volatile().reconciled;
+        if count - 1 > known {
+            self.raise_highest(count - 1, !first_run, now)?;
             report.reconciled = true;
         }
+        self.volatile().reconciled = true;
         // At most two wallet calls per pool slot in one run: a wallet that keeps answering stale
         // minors cannot hold the refill job (the next run continues).
         let mut attempts = self.params.pool_target.saturating_mul(2).max(1);
@@ -88,13 +104,17 @@ impl Issuer {
             }
             let accept = if m == highest.saturating_add(1) {
                 true
+            } else if m <= highest {
+                // A minor the issuer already handed out or pooled: the wallet lost subaddresses
+                // since the check above (a restore without the replay).
+                return Err(PoolError::WalletIncomplete);
             } else {
                 // A lost response of an earlier call: reconcile in the process (§19.6 rule 4).
                 let count = u64::from(self.rail.address_count()?);
                 let reconciled = highest.max(count.saturating_sub(1));
                 self.raise_highest(reconciled, true, now)?;
                 report.reconciled = true;
-                m > highest && m == reconciled
+                m == reconciled
             };
             let mut tx = self.store.write()?;
             let current = store::meta(&*tx, MetaKey::HighestMinor)?.unwrap_or(0);
