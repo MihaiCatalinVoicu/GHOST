@@ -8,9 +8,41 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use ghost_entitlement::onion::Onion;
 use ghost_entitlement::schedule::ScheduleContent;
 use ghost_entitlement::{Kind, Schedule};
+use ghost_issuer::reconcile::{self, CounterId};
+use ghost_issuer::store::{RedbStore, Store};
 use ghost_issuer_ops::report::{Code, Field, Line, Value};
 use ghost_issuer_ops::{execute, Status};
 use sha2::{Digest, Sha256};
+
+/// Price of the test schedule's price epoch 227.
+pub const PACK_PRICE: u64 = 200_000_000_000;
+/// Monday 2026-09-28 12:00 UTC, access week 2960: the reconciliation fixtures' `--now`.
+pub const RECONCILE_NOW: &str = "1790596800";
+
+/// An `issuer.redb` snapshot with the counters of one XMR pack of base week 2960 under the test
+/// schedule (3 slots a week, 16 access positions per slot, 2 invites, 1 credit), plus `extra`.
+pub fn snapshot(d: &Path, extra: &[(CounterId, u64, u64)]) -> PathBuf {
+    let path = d.join("issuer.redb");
+    fill(&RedbStore::open(&path).unwrap(), extra);
+    path
+}
+
+/// Commits the counters of a small issuer (plus `extra`) in one write transaction.
+pub fn fill(store: &RedbStore, extra: &[(CounterId, u64, u64)]) {
+    let mut tx = store.write().unwrap();
+    let mut counts = vec![
+        (CounterId::PacksXmr, 2960, 1),
+        (CounterId::XmrCreditedAtomic, 2960, PACK_PRICE),
+        (CounterId::SignedInvite, 740, 2),
+        (CounterId::SignedCredit, 227, 1),
+    ];
+    counts.extend((2960..2965).map(|w| (CounterId::SignedAccess, w, 48)));
+    counts.extend_from_slice(extra);
+    for (id, index, delta) in counts {
+        reconcile::add(&mut *tx, id, index, delta).unwrap();
+    }
+    tx.commit().unwrap();
+}
 
 /// Access weeks of the test schedule.
 pub const FIRST_WEEK: u64 = 2957;

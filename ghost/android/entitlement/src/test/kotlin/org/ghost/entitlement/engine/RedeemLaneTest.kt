@@ -1,11 +1,14 @@
 package org.ghost.entitlement.engine
 
+import org.ghost.entitlement.FakeSession
 import org.ghost.entitlement.T0
 import org.ghost.entitlement.TestBytes
 import org.ghost.entitlement.WEEK0
 import org.ghost.entitlement.World
 import org.ghost.entitlement.api.EntitlementFlag
+import org.ghost.entitlement.port.RedeemPort
 import org.ghost.entitlement.store.TokenStore
+import org.ghost.network.OnionAddress
 import org.ghost.network.TorRelayTransport
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
@@ -14,6 +17,7 @@ import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.RelayId
+import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.TtlBucket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -59,6 +63,37 @@ class RedeemLaneTest {
         assertTrue(w.stores.capabilities.needed().isEmpty())
         w.laneStep()
         assertEquals("no need, no call", 2, w.redeem.calls.size)
+    }
+
+    @Test
+    fun everyStepIsReportedAndAnInertEngineReportsItsEmptyStepAtOnce(): Unit = World().use { w ->
+        w.writeNeed(setOf(w.relayIds[0], w.relayIds[1]))
+        w.addAccess(WEEK0, 0, 1)
+        w.addAccess(WEEK0, 1, 1)
+        // A driven pass (the harness): the step's redemptions, then the report (Q29).
+        w.engine.relayPass(FakeSession(SessionKind.BACKGROUND, redeem = w.redeem))
+        assertEquals(2, w.redeem.calls.size)
+        assertEquals(1, w.redeem.steps)
+        // The engine's own loop reports after its first step, at READY + U[0, 30 s], and not before.
+        lateinit var session: FakeSession
+        val closing = object : RedeemPort {
+            override fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray) = w.redeem.redeem(relay, namespace, token, requestId)
+
+            override fun stepDone() {
+                w.redeem.stepDone()
+                session.closed = true
+            }
+        }
+        session = FakeSession(SessionKind.BACKGROUND, redeem = closing)
+        val before = w.clock.monotonic
+        w.engine.onRelaySession(session)
+        assertEquals(2, w.redeem.steps)
+        assertTrue(w.clock.monotonic - before <= RedeemLane.FIRST_STEP_MILLIS)
+        // An inert engine (no database open) runs no lane: it reports its empty step at once.
+        w.storesOpen = false
+        w.engine.onRelaySession(FakeSession(SessionKind.BACKGROUND, redeem = w.redeem))
+        assertEquals(3, w.redeem.steps)
+        assertEquals(2, w.redeem.calls.size)
     }
 
     @Test
@@ -172,8 +207,11 @@ class RedeemLaneTest {
 
     private fun World.steps(n: Int) = repeat(n) {
         laneStep()
-        clock.now += 60
+        clock.sleep(60_000)
     }
+
+    /** Moves the device clock and the monotonic clock together (time passes; the clock is not set). */
+    private fun World.advanceTo(t: Long) = clock.sleep((t - clock.now) * 1000)
 
     @Test
     fun anExpiringCapabilityIsRenewedOncePerPairAndWeek(): Unit = World().use { w ->
@@ -203,11 +241,79 @@ class RedeemLaneTest {
         assertEquals(6, w.tokenRows("access").count { it.epoch == WEEK0 })
         assertEquals(listOf(CapabilityNeed.Reason.EXPIRING), w.stores.capabilities.needed().map { it.reason })
         // Once the relay-facing clock is inside the renewal window, one next-week token renews it.
-        w.clock.now = Grid.start(WEEK0 + 1) - 22 * 3600 + 60
+        w.advanceTo(Grid.start(WEEK0 + 1) - 22 * 3600 + 60)
         w.steps(5)
         assertEquals(listOf(next), w.redeem.calls.map { it.token })
         assertTrue(w.stores.capabilities.needed().isEmpty())
         assertEquals(6, w.tokenRows("access").count { it.epoch == WEEK0 })
+    }
+
+    /**
+     * T2 J8 (design §13.4, §12.5, §19.24 point 1): a device 17 h ahead of the relays, with a pair whose
+     * capability ends with the week, renews it in the device's last 20 hours of the week; the relay
+     * refuses the next-week token (it accepts it only from 24 h before the week on its own clock).
+     * The refusal's period and minute are the relay's clock from then on: the kept reservation waits
+     * until the relay's renewal window and is then retried identically, and accepted. Exactly one
+     * refused redemption at that relay (the reference policy of T2 used to resend the next-week
+     * token at every step, on the uncorrected device clock).
+     */
+    @Test
+    fun aDeviceAheadMeetsTheRelayOnceWithARefusedPeriod(): Unit = World().use { w ->
+        w.expiringPair(Grid.start(WEEK0 + 1) + 3600)
+        val next = w.addAccess(WEEK0 + 1, 0, 2).map { it.toList() }
+        w.random.prfValue = 0.0
+        w.redeem.periods = true
+        w.redeem.skewSeconds = -17 * 3600
+        w.clock.now = Grid.start(WEEK0 + 1) - 20 * 3600
+        w.steps(30)
+        assertEquals("one refused redemption, then nothing until the relay's own renewal window", 1, w.redeem.calls.size)
+        assertEquals(listOf(TorRelayTransport.REDEEM_WRONG_PERIOD), w.redeem.answers)
+        // Fourteen hours later the relay is 23 h before the week: the kept reservation, identically.
+        w.advanceTo(Grid.start(WEEK0 + 1) - 6 * 3600)
+        w.steps(3)
+        assertEquals(listOf(TorRelayTransport.REDEEM_WRONG_PERIOD, TorRelayTransport.REDEEM_OK), w.redeem.answers)
+        assertEquals(w.redeem.calls[0].token, w.redeem.calls[1].token)
+        assertEquals(w.redeem.calls[0].requestId, w.redeem.calls[1].requestId)
+        assertTrue(w.redeem.calls[0].token in next)
+        assertTrue("the renewed capability reaches past the next week", w.stores.capabilities.needed().isEmpty())
+    }
+
+    /** Two pairs of one relay due in one step: after the first is refused its period, the second waits for the next step. */
+    @Test
+    fun aRelayThatRefusedAPeriodGetsNoSecondRedemptionInTheStep(): Unit = World().use { w ->
+        val other = NamespaceId(TestBytes.of(32, 4343))
+        w.tx { t ->
+            for (n in listOf(ns, other)) {
+                w.stores.namespaces.register(t, n, Consumer.DM, setOf(w.relayIds[0]), listen = false)
+                w.stores.capabilities.put(t, w.relayIds[0], n, CapabilityKind.WRITE, TestBytes.of(98, 3), Grid.start(WEEK0 + 1) + 3600)
+            }
+        }
+        w.addAccess(WEEK0 + 1, 0, 3)
+        w.random.prfValue = 0.0
+        w.redeem.periods = true
+        w.redeem.skewSeconds = -17 * 3600
+        w.clock.now = Grid.start(WEEK0 + 1) - 20 * 3600
+        w.laneStep()
+        assertEquals(listOf(TorRelayTransport.REDEEM_WRONG_PERIOD), w.redeem.answers)
+        w.steps(10)
+        assertEquals("the second pair is planned on the relay's clock: no second refusal", 1, w.redeem.calls.size)
+    }
+
+    /** A device clock set right while the process runs: the relay-facing clock learnt before is forgotten. */
+    @Test
+    fun aDeviceClockChangeForgetsTheRelayClock(): Unit = World().use { w ->
+        w.expiringPair(Grid.start(WEEK0 + 1) + 3600)
+        w.addAccess(WEEK0 + 1, 0, 1)
+        w.random.prfValue = 0.0
+        w.clock.now = Grid.start(WEEK0 + 1) - 40 * 3600
+        // The relays run 20 h ahead of this (slow) device clock: the next-week token is due.
+        w.relaysOff(20 * 60)
+        w.laneStep()
+        assertEquals(Grid.start(WEEK0 + 1) - 20 * 3600, w.ctx().memory.clock.now(w.clock.now))
+        // The user sets the device clock right (wall moves, monotonic does not): the estimate starts over.
+        w.clock.now += 20 * 3600
+        w.laneStep()
+        assertEquals(w.clock.now, w.ctx().memory.clock.now(w.clock.now))
     }
 
     @Test

@@ -191,6 +191,8 @@ Derivat din ADR-02. Ramura `wallet` din ierarhia de chei rămâne **rezervată**
 - Deep link: exclusiv schema `ghost://invite/<payload>`; niciun host web. QR în persoană este calea recomandată în UI; UI avertizează că trimiterea link-ului printr-un alt mesager îl expune acelui mesager.
 - Rămân din v2.0: parser strict (checksum, versiune, lungime), respingerea invitațiilor expirate/rejucate/revocate, mod „genesis” configurat explicit.
 
+*Notă (Faza 8, 2026-09-13):* Spec v2.0 FR-1.x („inviter public key, referral commitment”) diferă de ADR-05, iar ADR-24 (propus 2026-09-12, aplicat în Faza 8) schimbă mai departe payload-ul: fără `referral_commitment`; un drop per invitație (namespace, 3 sloturi, cheie X25519) pentru creditul de referral; cheia de semnare derivată per invitație, cu index. ADR-23 precizează ce acordă răscumpărarea invitației: un trial de token-uri de acces blind. Fluxul din Anexa A se citește cu aceste abateri.
+
 ### ADR-06 — Zero SDK-uri terțe; fără GMS/FCM/Firebase; allowlist de dependențe în CI
 
 **Decizie.** Interzise în client: Google Play Services, Firebase, orice SDK de analytics, crash reporting, atribuire sau A/B. Sincronizarea se face prin WorkManager (+ un foreground service opțional „mod prompt”, ales de utilizator) **prin Tor**. Notificările sunt locale și **fără conținut** (titlu generic) cât dispozitivul e blocat, cu opțiune de a ascunde și numărul de mesaje. Crash logs: stocate local criptat, afișate utilizatorului, trimise **numai manual**, după scrubbing, prin Tor, către un endpoint al operatorului — fără SDK. Gradle **dependency verification** + allowlist explicită de grupuri (Anexa D); build-ul eșuează la orice dependență din afara listei.
@@ -252,7 +254,7 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | FR-2.5 | Padding pe bucket-uri: P1 → **P0** | P0 |
 | FR-2.7 | Rescris: „Production traffic MUST traverse Tor to .onion relays; clearnet and DNS MUST fail closed; circuits MUST be isolated per channel/purpose” | P0 |
 | FR-2.9 (nou) | Bridges / pluggable transports configurabile | P1 |
-| FR-1.5 | Invite payload: `invite_token` blind + `referral_commitment` + cheie de invitație efemeră; fără cheia publică a inviter-ului în afara contact card-ului criptat; deep link doar `ghost://` | P0 |
+| FR-1.5 | Invite payload: `invite_token` blind + `referral_commitment` + cheie de invitație efemeră; fără cheia publică a inviter-ului în afara contact card-ului criptat; deep link doar `ghost://`. Spec v2.0 FR-1.x listează „inviter public key, referral commitment”: ADR-05 se abate deja (cheie efemeră derivată în locul cheii inviter-ului), iar ADR-24 (propus 2026-09-12, aplicat în Faza 8) se abate mai departe: Invitația v2 nu mai are `referral_commitment`, ci un drop (namespace, 3 sloturi, cheie X25519) și o cheie de semnare derivată per invitație; nicio adresă de plată în link (design Faza 8 §8.2, §18 F4) | P0 |
 | FR-1.6 | Eligibilitatea inviter-ului = token valid verificat offline; nicio interogare pe identitate | P0 |
 | FR-3.9 (nou) | Pseudonim per canal derivat HKDF; reveal opt-in prin MLS | P0 pentru schemă și derivare, P1 pentru UI complet |
 | FR-3.4 | Timestamp rotunjit la minut | P0 |
@@ -260,7 +262,7 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | FR-5.4 | Devine structural (onion-only) și rămâne și ca politică | P0 |
 | FR-5.6 | ≥ 3 **operatori** independenți, inbound onion-only | P0 |
 | FR-6.1, FR-6.4 | IdentityAnchor, ContentNotary: **eliminate** | — |
-| FR-6.2, FR-6.3, FR-6.5, FR-6.9, FR-6.10 | Înlocuite cu FR-6′.1…6′.6: emitere blind (RFC 9474/9578), metadate publice de perioadă, nullifier per perioadă la relay, referral commitment în cerere, plafon 10% prin construcție, payout în loturi | P0 |
+| FR-6.2, FR-6.3, FR-6.5, FR-6.9, FR-6.10 | Înlocuite cu FR-6′.1…6′.6: emitere blind (RFC 9474/9578), metadate publice de perioadă, nullifier per perioadă la relay, referral commitment în cerere, plafon 10% prin construcție, payout în loturi. Faza 8 (propuse 2026-09-12, aplicate): perioada de acces = săptămâna ISO, nullifier-e persistate la relay (ADR-22, ADR-25); referral prin token-uri blind de credit în locul commitment-ului în cerere, plafonul de 10 % păstrat prin construcție (ADR-24) | P0 |
 | FR-6.6 | Rail P0 = Monero; Lightning P1 (aceeași emitere); USDC/Base P2 opțional | P0 |
 | FR-6.8 | Disclosure înainte de plată include avertismentul „nu plăti direct de la un exchange cu KYC” | P0 |
 | FR-7.6 | Portofel integrat: **eliminat** din P0 | — |
@@ -419,6 +421,8 @@ sequenceDiagram
 ```
 
 Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice_id, sumă, timp, blinded messages) și jurnalul relay-urilor (nullifier-e, momente) **nu au nicio cheie de join**; token-ul deblindat nu apare nicăieri la issuer.
+
+*Notă (Faza 8, 2026-09-13):* fluxul aplicat e cel din ADR-22 … ADR-26 (propuse 2026-09-12, aplicate): fără `Poll` și fără `IssuerKeys` (cheile, prețurile și constantele vin doar din Programul de Entitlement semnat, inclus în aplicație); URI-ul `monero:` e construit de client; `BlindSign` are o structură fixă și servește și ca interogare a plății; apelurile către issuer au loc în rulări liniștite; token-urile devin folosibile de la un slot de activare; perioada = săptămâna ISO; creditul de referral e un token blind (fără `referral_commitment`); T2 are enunțul precis din `ghost/test-harness/privacy/INVARIANTS.md`.
 
 ## Anexa B — Model de capabilități la relay (schiță pentru §9.1)
 

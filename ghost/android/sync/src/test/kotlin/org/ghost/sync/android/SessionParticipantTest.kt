@@ -9,10 +9,14 @@ import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
+import org.ghost.sync.api.OperationId
+import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.RelayEntry
+import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.SessionParticipant
+import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.api.TransportStatus
 import org.ghost.sync.engine.EngineWorld
@@ -130,8 +134,8 @@ class SessionParticipantTest {
             val foreground = kind == SessionKind.FOREGROUND
             val deadline = if (foreground) Long.MAX_VALUE else session.startedAt + w.policy.backgroundSessionMillis
             val ps = QuietRunScheduler(w.random, w.clock).session(
-                if (foreground) ParticipantKind.FOREGROUND else ParticipantKind.BACKGROUND, lease, deadline, w.engine::clockTrusted,
-            ) { w.db.inTransaction }
+                if (foreground) ParticipantKind.FOREGROUND else ParticipantKind.BACKGROUND, lease, deadline, w.engine::clockTrusted, { w.db.inTransaction },
+            )
             assertNull(ps.issuer)
             // The participant's thread, interleaved between lane items: calls, clock checks, reads, transactions.
             driver.beforeItem = {
@@ -382,6 +386,8 @@ class SessionParticipantTest {
         /** Held until the test ends (participants that never return). */
         val gate = CountDownLatch(1)
 
+        private val relayIds: Set<RelayId>
+
         init {
             // Three relays of three operators, one listening namespace, a write token on each: three read pairs.
             val db = SyncDatabase(sql)
@@ -390,7 +396,8 @@ class SessionParticipantTest {
             val ids = db.transaction { tx ->
                 stores.relayDirectory.upsert(tx, (1..3).map { RelayEntry(TestBytes.onion(it), TestBytes.of(16, 500 + it), RelayEntry.Source.CONFIG) })
             }
-            db.transaction { tx -> stores.namespaces.register(tx, ns, Consumer.DM, ids.values.toSet(), listen = true) }
+            relayIds = ids.values.toSet()
+            db.transaction { tx -> stores.namespaces.register(tx, ns, Consumer.DM, relayIds, listen = true) }
             db.transaction { tx -> ids.values.forEach { stores.capabilities.put(tx, it, ns, CapabilityKind.WRITE, TestBytes.of(82, it.value.toInt()), null) } }
             transport.calls.during = { name ->
                 if (name != "redeem") {
@@ -403,6 +410,33 @@ class SessionParticipantTest {
         }
 
         fun job(): CountDownLatch = CountDownLatch(1).also { done -> controller.startBackgroundJob { done.countDown() } }
+
+        /** Stores over the database for setup before any job (the runtime has no engine yet). */
+        fun setupStores(): SyncStores = SyncStores(SyncDatabase(sql), clock, KeyedRandomSources()) { PrivacyMode.STANDARD }
+
+        /** The runtime's own stores (a participant's database work, serialized with the lanes). */
+        fun liveStores(): SyncStores = checkNotNull(runtime.stores) { "no engine yet" }
+
+        /** Namespace 2, write-only on the three relays, no capability, one op queued: WRITE MISSING at each. */
+        fun writeNeed(stores: SyncStores = setupStores()) {
+            val ns = TestBytes.namespace(2)
+            stores.database.transaction { tx -> stores.namespaces.register(tx, ns, Consumer.DM, relayIds, listen = false) }
+            stores.database.transaction { tx -> stores.outbox.enqueue(tx, OutboundBlob(OperationId(TestBytes.of(16, 902)), ns, TestBytes.of(1024, 7), TtlBucket.DAYS_7)) }
+        }
+
+        /** Write tokens for namespace 2 on the three relays: its write needs are met. */
+        fun meetWriteNeed(stores: SyncStores) {
+            val ns = TestBytes.namespace(2)
+            stores.database.transaction { tx -> relayIds.forEach { stores.capabilities.put(tx, it, ns, CapabilityKind.WRITE, TestBytes.of(82, 700 + it.value.toInt()), null) } }
+        }
+
+        /** Namespace 3, listened on the three relays with no capability: READ MISSING at each, no write need. */
+        fun readNeed() {
+            val stores = setupStores()
+            stores.database.transaction { tx -> stores.namespaces.register(tx, TestBytes.namespace(3), Consumer.DM, relayIds, listen = true) }
+        }
+
+        val network: Triple<Int, Int, Int> get() = Triple(transport.relays.lists.get(), transport.ensures.get(), transport.aborts.get())
 
         override fun close() {
             gate.countDown()
@@ -547,6 +581,159 @@ class SessionParticipantTest {
         })
         assertEquals(base.network, stuck.network)
         assertTrue("the job ended while the participant was still inside its callback", stuck.stillInside)
+    }
+
+    // ------------------------------------------------------------------ the redeem hold (Q29, §19.23 point 5)
+
+    @Test
+    fun aBackgroundSessionWithAPendingWriteNeedIsHeldUntilTheRedeemLanesFirstStep(): Unit = World().use { w ->
+        w.writeNeed()
+        val step = CountDownLatch(1)
+        val inHold = CompletableFuture<String?>()
+        val p = ScriptedParticipant(onRelay = { s ->
+            step.await(20, TimeUnit.SECONDS)
+            // The lease is still open: a redemption during the hold reaches the relay.
+            inHold.complete(category { redeem(s) })
+            checkNotNull(s.relayRedeem).stepDone()
+            checkNotNull(s.relayRedeem).stepDone()
+        })
+        w.controller.setParticipant(p)
+        val done = w.job()
+        assertTrue("the lanes ended and the run is held", waitFor(10_000) { w.runtime.redeemHeld })
+        assertEquals(3, w.transport.relays.lists.get())
+        assertFalse(done.await(300, TimeUnit.MILLISECONDS))
+        assertEquals(SessionKind.BACKGROUND, w.runtime.activeKind)
+        step.countDown()
+        assertNull(inHold.get(10, TimeUnit.SECONDS))
+        assertTrue("the first step ends the hold", done.await(10, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertTrue(p.relaySessions.single().closed)
+        assertEquals(listOf("redeem"), w.transport.calls.calls.map { it.name })
+        // T19: the read lane's calls, the ensure and the closing abort are those of a job without a hold.
+        assertEquals(Triple(3, 1, 1), w.network)
+        assertEquals(TransportStatus.OFF, w.controller.status().transport)
+    }
+
+    @Test
+    fun aHeldSessionEndsAtItsDeadlineWhenTheLaneNeverSteps(): Unit = World().use { w ->
+        w.writeNeed()
+        val p = ScriptedParticipant(onRelay = { w.gate.await(60, TimeUnit.SECONDS) })
+        w.controller.setParticipant(p)
+        val done = w.job()
+        assertTrue(waitFor(10_000) { w.runtime.redeemHeld && p.relaySessions.size == 1 })
+        val s = p.relaySessions.single()
+        assertTrue("the hold's deadline is the job's", s.deadlineMonotonicMillis - w.clock.monotonicMillis() <= w.policy.backgroundSessionMillis)
+        assertFalse(done.await(200, TimeUnit.MILLISECONDS))
+        // Past the deadline (a clock jump: the watchdog reads the sync clock, not a timer), the run ends.
+        w.clock.offsetMillis += w.policy.backgroundSessionMillis + MINUTE
+        assertTrue(done.await(10, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertTrue(s.closed)
+        assertEquals(0, p.returned.get())
+        assertEquals(Triple(3, 1, 1), w.network)
+    }
+
+    @Test
+    fun theHoldIsDecidedByThePendingWriteNeedsAtTheSessionsStartOnly() {
+        // A need that appears during the session holds nothing: the job ends with the participant inside.
+        World().use { w ->
+            val released = CountDownLatch(1)
+            w.transport.relays.listHold = released
+            val p = ScriptedParticipant(onRelay = { _ ->
+                w.writeNeed(w.liveStores())
+                released.countDown()
+                w.gate.await(60, TimeUnit.SECONDS)
+            })
+            w.controller.setParticipant(p)
+            assertTrue(w.job().await(30, TimeUnit.SECONDS))
+            assertTrue(w.runtime.awaitIdle(5_000))
+            assertEquals(0, p.returned.get())
+            assertFalse(w.runtime.redeemHeld)
+        }
+        // Read needs only (a listened namespace with no capability) hold nothing either.
+        World().use { w ->
+            w.readNeed()
+            val p = ScriptedParticipant(onRelay = { w.gate.await(60, TimeUnit.SECONDS) })
+            w.controller.setParticipant(p)
+            assertTrue(w.job().await(30, TimeUnit.SECONDS))
+            assertEquals(0, p.returned.get())
+        }
+        // No participant installed: no hold.
+        World().use { w ->
+            w.writeNeed()
+            assertTrue(w.job().await(30, TimeUnit.SECONDS))
+            assertEquals(Triple(3, 1, 1), w.network)
+        }
+        // A need met during the session still holds, until the step.
+        World().use { w ->
+            w.writeNeed()
+            val step = CountDownLatch(1)
+            val p = ScriptedParticipant(onRelay = { s ->
+                w.meetWriteNeed(w.liveStores())
+                step.await(20, TimeUnit.SECONDS)
+                checkNotNull(s.relayRedeem).stepDone()
+            })
+            w.controller.setParticipant(p)
+            val done = w.job()
+            assertTrue(waitFor(10_000) { w.runtime.redeemHeld })
+            assertFalse(done.await(200, TimeUnit.MILLISECONDS))
+            step.countDown()
+            assertTrue(done.await(10, TimeUnit.SECONDS))
+            assertTrue(w.runtime.awaitIdle(5_000))
+        }
+    }
+
+    /**
+     * Every stop the hold's contract names ends it at once (`RedeemHold`, `SyncRuntime`): a foreground
+     * wanted, the payment screen, onStopJob and a wipe. After onStopJob the runtime is idle and the
+     * job's end is never reported (JobScheduler already dropped it); after a wipe the wipe flow's
+     * `awaitIdle` returns, with the engine dropped, and the job's end is reported.
+     */
+    @Test
+    fun aForegroundThePaymentScreenOnStopJobOrAWipeEndsAHoldAtOnce() {
+        for (how in listOf("foreground", "payment screen", "onStopJob", "wipe")) World(Draws({ false }, hold = 0.5)).use { w ->
+            w.writeNeed()
+            // The background participant never returns (its lane never steps); a foreground one returns at once.
+            val backgroundReturned = AtomicInteger()
+            val p = ScriptedParticipant(onRelay = { s ->
+                if (s.kind == ParticipantKind.BACKGROUND) {
+                    w.gate.await(60, TimeUnit.SECONDS)
+                    backgroundReturned.incrementAndGet()
+                }
+            })
+            w.controller.setParticipant(p)
+            val done = CountDownLatch(1)
+            val ticket = w.controller.startBackgroundJob { done.countDown() }
+            assertTrue(waitFor(10_000) { w.runtime.redeemHeld && p.relaySessions.size == 1 })
+            when (how) {
+                "foreground" -> w.controller.onAppForeground()
+                "payment screen" -> w.controller.onPaymentScreenShown()
+                "onStopJob" -> w.controller.stopBackgroundJob(ticket)
+                "wipe" -> w.controller.onWipe()
+            }
+            assertTrue("$how ends the hold", waitFor(10_000) { !w.runtime.redeemHeld && w.runtime.activeKind != SessionKind.BACKGROUND })
+            assertTrue("$how closes the lease", p.relaySessions.first().closed)
+            assertEquals("$how: the background participant is still inside its callback", 0, backgroundReturned.get())
+            when (how) {
+                "foreground" -> {
+                    assertTrue(done.await(10, TimeUnit.SECONDS))
+                    assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.FOREGROUND })
+                }
+                "payment screen" -> {
+                    assertTrue(done.await(10, TimeUnit.SECONDS))
+                    assertTrue(w.runtime.awaitIdle(5_000))
+                }
+                "onStopJob" -> {
+                    assertTrue(w.runtime.awaitIdle(5_000))
+                    assertFalse("no end is reported after onStopJob", done.await(300, TimeUnit.MILLISECONDS))
+                }
+                "wipe" -> {
+                    assertTrue("the wipe flow's awaitIdle returns", w.controller.awaitIdle(5_000))
+                    assertNull(w.controller.stores)
+                    assertTrue(done.await(10, TimeUnit.SECONDS))
+                }
+            }
+        }
     }
 
     @Test

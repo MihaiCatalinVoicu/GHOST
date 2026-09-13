@@ -13,4 +13,10 @@ import org.ghost.sync.api.NamespaceId
  */
 interface RedeemPort {
     fun redeem(relay: OnionAddress, namespace: NamespaceId, token: ByteArray, requestId: ByteArray): TorRelayTransport.RedeemAnswer
+
+    /**
+     * The redeem lane has run one step: a background session held open for the pending write needs it
+     * started with may end (design §17 Q29, §19.23 point 5).
+     */
+    fun stepDone()
 }

@@ -1,0 +1,171 @@
+name: t2-exit-gate
+
+# The T2 unlinkability exit gate (Phase 8 design §1.3, §13.4, §13.6, §19.16, §19.17 point 7): the
+# full Rust system (the real issuer handlers on the real redb store and journal, three real relays
+# with the real redeem path and capture, reference clients on the production client-core calls and
+# crypto, scheduled by the reference policy that replays entitlement_policy.txt) at the gate scale
+# (N = 2 000 packs, 84 days, a 40-week warm-up of the credit spenders), exported as the complete
+# issuer and relay views and analysed by ghost-t2-join: the join search J1–J10, T2b and T2c; the twin
+# worlds NI-1 (same cell, and across activation-slot cells), NI-1d, NI-2 and NI-3; S1–S3 at
+# α = 0.001 and the absolute bound S4 (Q21: ≤ 0.25, also against an issuer that lies
+# AWAITING_CONFIRMATIONS); and the privacy mutants M1–M21, each detected by its named check.
+# Release profile (design §19.17 point 2). Seeds are pinned (issuer/crates/service/tests/t2/gate.rs
+# SEEDS; a failure on a correct implementation is investigated, never re-seeded): a push to main or
+# a pull request runs seed pair 0, the nightly schedule sweeps all ten pairs as a matrix.
+# Budget (measured locally in S10, see the timeout comments): the runner is slower than the
+# workstation, so each timeout leaves about twice the measured time.
+# Evidence: every job writes its report, prints it to the step summary and uploads it whatever the
+# outcome; the report check fails the job unless the report holds a PASS line for every check and
+# the final "T2 RESULT: PASS" (cargo never caches test results, and the tests run by exact name).
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "ghost/issuer/**"
+      - "ghost/relay/**"
+      - "ghost/client-core/**"
+      - "ghost/test-harness/privacy/**"
+      - "ghost/protocol/**"
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
+      - ".github/workflows/t2-exit-gate.yml"
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      export_views:
+        description: "Also export and upload the complete NDJSON views (several GB at the gate scale)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  gate:
+    name: T2 exit gate (seed pair ${{ matrix.seed }}, N = 2000, release)
+    runs-on: ubuntu-24.04
+    # Measured locally: 4 233 s for one seed pair on 24 cores (two phases of about 2 150 s: the two
+    # gate-scale worlds, then the three gate-scale twins, each world single-threaded); on a 4-vCPU
+    # runner about two hours with the build. Three gate-scale worlds at once need several GB each.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ${{ fromJSON(github.event_name == 'schedule' && '[0,1,2,3,4,5,6,7,8,9]' || '[0]') }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+      - name: install pinned protoc (tonic-prost-build compiles protocol/relay/v1)
+        run: |
+          bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+      # World databases go to /dev/shm (the worlds' stores are scratch state; fsync is not measured).
+      # public.json and ground_truth.json of the scored world (design §13.4 "Exported views") go
+      # with the report; the complete NDJSON views only on request (workflow_dispatch).
+      - name: T2 gate (worlds, joins, twins, statistics)
+        env:
+          GHOST_T2_SCALE: gate
+          GHOST_T2_SEEDS: ${{ matrix.seed }}
+          GHOST_T2_TMP: /dev/shm
+        run: |
+          mkdir -p "$RUNNER_TEMP/t2"
+          export GHOST_T2_REPORT="$RUNNER_TEMP/t2/t2-gate-${{ matrix.seed }}.txt"
+          export GHOST_T2_TRUTH="$RUNNER_TEMP/t2/truth"
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.export_views }}" = true ]; then
+            export GHOST_T2_EXPORT="$RUNNER_TEMP/t2-views"
+          fi
+          cargo test -p ghost-issuer --release --locked --test t2_unlinkability t2_exit_gate -- --ignored --exact --nocapture
+      - name: job summary and report check
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/t2/t2-gate-${{ matrix.seed }}.txt"
+          {
+            echo "## T2 exit gate, seed pair ${{ matrix.seed }}"
+            echo
+            echo '```'
+            cat "$report" 2>/dev/null || echo "no T2 report was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/gates/t2-report-check.sh "$report" gate
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: t2-exit-gate-${{ matrix.seed }}
+          path: ${{ runner.temp }}/t2
+          if-no-files-found: error
+      - name: pack the complete views
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.export_views
+        run: tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/t2-views.tar.gz" t2-views
+      - name: upload the complete views
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.export_views
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: t2-views-${{ matrix.seed }}
+          path: ${{ runner.temp }}/t2-views.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  mutants:
+    name: T2 privacy mutants M1–M21 (release)
+    runs-on: ubuntu-24.04
+    # Measured locally: 742 s on 24 cores (23 tests in parallel, the longest two PR-scale worlds);
+    # about two CPU-hours in all, so about 55 minutes on a 4-vCPU runner with the build.
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+      - name: install pinned protoc
+        run: |
+          bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+      - name: every mutant detected by its named check
+        env:
+          GHOST_T2_TMP: /dev/shm
+        run: |
+          mkdir -p "$RUNNER_TEMP/t2"
+          cargo test -p ghost-issuer --release --locked --test t2_mutants -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/t2/t2-mutants.txt"
+      - name: job summary and report check
+        if: always()
+        run: |
+          report="$RUNNER_TEMP/t2/t2-mutants.txt"
+          {
+            echo "## T2 privacy mutants"
+            echo
+            echo '```'
+            grep -E '^test |^test result' "$report" 2>/dev/null || echo "no mutant report was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/gates/t2-report-check.sh "$report" mutants
+      - name: upload the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: t2-mutants
+          path: ${{ runner.temp }}/t2
+          if-no-files-found: error

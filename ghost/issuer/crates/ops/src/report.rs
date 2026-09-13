@@ -1,9 +1,12 @@
 //! The only module of the operator tools that writes to the console (design §14.1, §19.17;
 //! ADR-26 point 7). A line is a fixed code followed by `field=value` pairs; codes and field names
-//! are closed enums, and a value is a number, lowercase hex, or a word from a static table (kind,
-//! network, reason, flag name). No path, message or other runtime string can reach the console.
+//! are closed enums, and a value is a number, lowercase hex, a v3 onion host name rendered from its
+//! 32-byte service key (`<56 base32>.onion`, what Tor writes to `HiddenServiceDir/hostname`), or a
+//! word from a static table (kind, network, reason, flag name). No path, message or other runtime
+//! string can reach the console.
 
 use ghost_entitlement::monero::MoneroNetwork;
+use ghost_entitlement::onion::hostname;
 use ghost_entitlement::{Kind, ScheduleError};
 use ghost_issuer::reconcile::Mismatch;
 
@@ -37,10 +40,15 @@ pub enum Code {
     ReconciliationOk,
     ReconciliationMismatch,
     CountersWritten,
+    SegmentPruned,
+    JournalPruned,
+    PruneRefused,
+    IssuerOnion,
+    SlotOnion,
 }
 
 impl Code {
-    pub const ALL: [Code; 27] = [
+    pub const ALL: [Code; 32] = [
         Code::Usage,
         Code::IoError,
         Code::InputRefused,
@@ -68,6 +76,11 @@ impl Code {
         Code::ReconciliationOk,
         Code::ReconciliationMismatch,
         Code::CountersWritten,
+        Code::SegmentPruned,
+        Code::JournalPruned,
+        Code::PruneRefused,
+        Code::IssuerOnion,
+        Code::SlotOnion,
     ];
 
     pub fn name(self) -> &'static str {
@@ -99,6 +112,11 @@ impl Code {
             Code::ReconciliationOk => "RECONCILIATION_OK",
             Code::ReconciliationMismatch => "RECONCILIATION_MISMATCH",
             Code::CountersWritten => "COUNTERS_WRITTEN",
+            Code::SegmentPruned => "SEGMENT_PRUNED",
+            Code::JournalPruned => "JOURNAL_PRUNED",
+            Code::PruneRefused => "PRUNE_REFUSED",
+            Code::IssuerOnion => "ISSUER_ONION",
+            Code::SlotOnion => "SLOT_ONION",
         }
     }
 
@@ -117,6 +135,7 @@ impl Code {
                 | Code::DirectoryRefused
                 | Code::PayoutRefused
                 | Code::ReconciliationMismatch
+                | Code::PruneRefused
         )
     }
 }
@@ -158,10 +177,17 @@ pub enum Field {
     Relays,
     Refused,
     Counters,
+    Removed,
+    Kept,
+    FirstSeq,
+    LastSeq,
+    Applied,
+    Onion,
+    Port,
 }
 
 impl Field {
-    pub const ALL: [Field; 34] = [
+    pub const ALL: [Field; 41] = [
         Field::Reason,
         Field::Flag,
         Field::File,
@@ -196,6 +222,13 @@ impl Field {
         Field::Relays,
         Field::Refused,
         Field::Counters,
+        Field::Removed,
+        Field::Kept,
+        Field::FirstSeq,
+        Field::LastSeq,
+        Field::Applied,
+        Field::Onion,
+        Field::Port,
     ];
 
     pub fn name(self) -> &'static str {
@@ -234,6 +267,13 @@ impl Field {
             Field::Relays => "relays",
             Field::Refused => "refused",
             Field::Counters => "counters",
+            Field::Removed => "removed",
+            Field::Kept => "kept",
+            Field::FirstSeq => "first_seq",
+            Field::LastSeq => "last_seq",
+            Field::Applied => "applied",
+            Field::Onion => "onion",
+            Field::Port => "port",
         }
     }
 }
@@ -243,6 +283,8 @@ pub enum Value {
     Num(u64),
     Hex(Vec<u8>),
     Word(&'static str),
+    /// A v3 onion service key, rendered as its host name `<56 base32>.onion`.
+    Onion([u8; 32]),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,6 +316,12 @@ impl Line {
         self
     }
 
+    /// The onion service with service key `key`, as its host name.
+    pub fn onion(mut self, field: Field, key: &[u8; 32]) -> Self {
+        self.fields.push((field, Value::Onion(*key)));
+        self
+    }
+
     pub fn kind_epoch(self, kind: Kind, epoch: u64) -> Self {
         self.word(Field::Kind, ghost_issuer::custody::kind_name(kind))
             .num(Field::Epoch, epoch)
@@ -290,6 +338,7 @@ impl Line {
                 Value::Num(n) => out.push_str(&n.to_string()),
                 Value::Hex(bytes) => out.push_str(&crate::hexfmt::encode(bytes)),
                 Value::Word(w) => out.push_str(w),
+                Value::Onion(key) => out.push_str(&hostname(key)),
             }
         }
         out

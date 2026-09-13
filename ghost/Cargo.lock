@@ -1695,11 +1695,13 @@ dependencies = [
  "curve25519-dalek",
  "ed25519-dalek",
  "ghost-blind-rsa",
+ "ghost-client-net",
  "ghost-entitlement",
  "ghost-issuer-api",
  "ghost-relay-api",
  "ghost-relay-capability",
  "ghost-relay-node",
+ "ghost-t2-join",
  "hex",
  "hmac 0.13.0",
  "http-body-util",
@@ -1823,6 +1825,19 @@ name = "ghost-relay-transport"
 version = "0.1.0"
 dependencies = [
  "ghost-relay-api",
+]
+
+[[package]]
+name = "ghost-t2-join"
+version = "0.1.0"
+dependencies = [
+ "ghost-blind-rsa",
+ "ghost-entitlement",
+ "hex",
+ "hmac 0.13.0",
+ "num-bigint-dig",
+ "sha2 0.11.0",
+ "sha3 0.10.9",
 ]
 
 [[package]]

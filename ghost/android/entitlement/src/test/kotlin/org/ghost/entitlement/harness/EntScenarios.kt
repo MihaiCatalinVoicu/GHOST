@@ -19,6 +19,7 @@ import org.ghost.sync.harness.World.Companion.DAY
 import org.ghost.sync.harness.World.Companion.HOUR
 import org.ghost.sync.harness.World.Companion.MINUTE
 import org.ghost.sync.harness.foreground
+import org.ghost.sync.harness.jobs
 import org.ghost.sync.store.Time
 import java.security.SecureRandom
 import org.ghost.sync.engine.SessionKind as SyncKind
@@ -105,8 +106,8 @@ internal abstract class EntScenario(name: String) : Scenario(name) {
     /**
      * From [from] on, every 6 hours for 30 days, the user buys a pack when the app shows them
      * uncovered ([EntClient.uncovered]): a purchase that crashes left `failed` with its capped
-     * attempts spent (J9), trial tokens that became eligible only after their weeks (HIGH mode), are
-     * followed by a new purchase, as the app's `ENTITLEMENT_NEEDED` asks. Credits first when
+     * attempts spent (J9), a trial that is spent or over, are followed by a new purchase, as the
+     * app's `ENTITLEMENT_NEEDED` asks. Credits first when
      * [payWith] is CREDITS, and XMR when they no longer cover the price.
      */
     protected fun World.keepBuying(from: Long, payWith: PayWith) {
@@ -422,6 +423,32 @@ internal open class ScenarioEH : EntScenario("E-H") {
         var n = 0L
         e.c.jdbc.query(sql) { n = it.long(0) }
         return n
+    }
+}
+
+/**
+ * Q29 (design §17, §19.23 point 5) lapsed capabilities, background only: the subject's listened
+ * namespace on A and B holds only write capabilities that expired three days ago, an op waits, and
+ * eligible tokens of the week are held; nothing but periodic jobs runs (no foreground at all). A
+ * background session then has no read pair and no write pair, and ends right after its first pass;
+ * because it started with a pending write need it stays open until the redeem lane has run one step,
+ * which redeems at A and B, and a later background session stores the op.
+ */
+internal class ScenarioLapsed : EntScenario("Q29/lapsed") {
+    /** Without the hold no background session ever redeems: a short tail makes that a quick failure. */
+    override val maxTailRounds: Int get() = 4
+
+    override fun config(): EntConfig = configured(EntConfig(dailyForegroundJobs = 0))
+
+    override fun build(w: World) {
+        val e = standard(w)
+        accessTokens(WEEK0, 2)
+        val (a, b) = w.relays[0] to w.relays[1]
+        val ns = e.c.namespace("dm", listOf(a, b), listen = true)
+        for (node in listOf(a, b)) e.c.capability(node, ns, validSeconds = -3 * DAY / 1_000)
+        w.at(MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        w.jobs(e.c, 2 * MINUTE, 3 * HOUR)
+        w.endMillis = 3 * HOUR
     }
 }
 

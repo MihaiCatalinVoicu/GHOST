@@ -12,6 +12,8 @@ members = [
     "issuer/crates/*",
     "client-core/net",
     "test-harness/privacy/capture-check",
+    # The T2 analyzer (Phase 8 design §13.4): test tooling, linked only by the issuer's T2 tests.
+    "test-harness/privacy/t2-join",
 ]
 
 [workspace.package]

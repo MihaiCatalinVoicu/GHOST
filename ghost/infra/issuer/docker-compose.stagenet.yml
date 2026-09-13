@@ -127,8 +127,11 @@ services:
       - /run/ghost:mode=0700,size=16m
 
   # The operator tools on the issuer host (runbooks B1 and R2: reconcile-check and counters-export
-  # on a database snapshot, which never leaves the host). Never started by `up`; run with
+  # on a database snapshot, which never leaves the host; the install check: schedule-onions). Never
+  # started by `up`; run with
   #   docker compose -f ghost/infra/issuer/docker-compose.stagenet.yml run --rm ops <command> ...
+  # journal-prune.sh (B1, hourly) adds data/journal at /journal and DAC_OVERRIDE for its own run
+  # only: the journal's files belong to the issuer's user.
   ops:
     build:
       context: ../..

@@ -15,6 +15,8 @@ Fișierele din acest director:
 | `torrc` | serviciul onion al issuer-ului (`HiddenServicePort 443 127.0.0.1:7444`) și portul SOCKS al lui monerod |
 | `config.stagenet.toml` | șablonul configurației issuer-ului, fără secrete și fără valori ale operatorului |
 | `monero-release.pin` | singurul loc cu versiunea, URL-ul și SHA-256 al arhivei Monero (runbook M1/M2) |
+| `snapshot.sh` | snapshot-ul orar al lui `issuer.redb` (B1, cron) |
+| `journal-prune.sh` | tăierea orară a lui `issued.journal` după cel mai nou snapshot verificat (B1, cron) |
 
 ## 0. Convenții
 
@@ -48,8 +50,9 @@ Fișierele din acest director:
   ```sh
   touch "$H/maintenance" && flock "$H/snapshot.lock" true
   ```
-  Așteptat: comanda se întoarce fără ieșire, cel mult după durata unui snapshot în curs (câteva
-  secunde). De acum snapshot-ul orar B1 (secțiunea 6) nu mai atinge containerele. Procedura se
+  Așteptat: comanda se întoarce fără ieșire, cel mult după durata unui snapshot sau a unei tăieri a
+  jurnalului în curs (câteva secunde). De acum snapshot-ul orar și tăierea jurnalului B1 (secțiunea
+  6) nu mai ating containerele și jurnalul. Procedura se
   încheie, după ultimul ei rezultat așteptat, cu `rm "$H/maintenance"`. Așteptat: fără ieșire; la
   ora următoare apare un snapshot nou (`ls -t "$H/snapshots" | head -1`). Cât timp fișierul există
   nu se face niciun snapshot: o procedură întreruptă se duce la capăt sau se închide explicit.
@@ -85,7 +88,7 @@ Un singur director, pe un disc criptat (LUKS), proprietar root, mod 0700; fișie
 | `tor/state/` | `tor`: `DataDirectory` | starea lui Tor (gărzile de intrare) |
 | `wallet/` | `wallet-rpc` | `issuer-view`, `issuer-view.keys` (view-only) |
 | `monerod/` | `monerod` | blockchain-ul stagenet (pruned) |
-| `data/` | `issuer` | `issuer.redb`, `journal/`, `status.json` |
+| `data/` | `issuer`; `data/journal/` și în `ops` la `/journal`, doar pentru rularea din `journal-prune.sh` | `issuer.redb`, `journal/`, `status.json` |
 | `export/` | `issuer` | `batch-<id>.ghpb` (ieșire), `ack-<id>.ghpa` (intrare) |
 | `snapshots/` | `ops` (ro) | snapshot-urile B1 |
 | `transfer/` | `ops` | numărătorile relay-urilor (intrare), fișierul de contoare (ieșire), R2 |
@@ -171,13 +174,20 @@ containerul lui.
   ```
   Așteptat: ambele containere `running` în `$C ps`.
 - [ ] Onion-ul issuer-ului, pe fișierul `hostname` scris de Tor din cheia secretă (după câteva
-  secunde; dacă lipsește, `$C logs tor`). ES-ul numește acest onion (`issuer_onion`, port 443):
+  secunde; dacă lipsește, `$C logs tor`), comparat cu `issuer_onion` din ES (port 443), pe care
+  `ghost-issuer-ops schedule-onions` îl afișează în vocabularul rapoartelor:
 
   ```sh
-  grep -a -c -F "$(cat "$H/tor/ghost-issuer/hostname"):443" ghost/protocol/entitlement/schedule.ghes
+  $C --profile ops build ops
+  $C run --rm ops schedule-onions --schedule /etc/ghost/schedule.ghes \
+    | grep -c -x -F "ISSUER_ONION onion=$(cat "$H/tor/ghost-issuer/hostname") port=443"
   ```
-  Așteptat: `1`. Cu `0` se oprește instalarea (`$C down`): Tor servește alt onion decât cel din ES,
-  iar clienții nu l-ar găsi; se verifică setul de chei.
+  Așteptat: `1`. Cu `0` se oprește instalarea (`$C down`): Tor servește alt onion decât
+  `issuer_onion` din ES, iar clienții nu l-ar găsi; se verifică setul de chei. Onion-ul unui relay
+  nu trece verificarea (el apare doar în liniile `SLOT_ONION`). Fără filtru, comanda dă o singură
+  linie, `ISSUER_ONION onion=<56>.onion port=443`; cu `--now "$(date +%s)"` adaugă câte o linie
+  `SLOT_ONION week=<w> slot=<s> onion=<56>.onion port=<p>` pentru fiecare slot al săptămânii curente
+  și al celei următoare. `ES_REFUSED …` (cod 1): ES-ul nu se verifică sub cheia fixată.
 - [ ] Sincronizarea lui monerod (prin Tor durează ore):
 
   ```sh
@@ -393,12 +403,14 @@ de operator sau în repornire după un refuz de pornire) rămâne oprit, cu mesa
 the issuer is not running …` în mail-ul cron-ului. Dacă copia eșuează, issuer-ul este repornit și
 mesajul este `snapshot: failed, …`.
 
-- [ ] Cron pe host, în `/etc/cron.d/ghost-issuer` (root; `snapshot.sh` este executabil în checkout):
+- [ ] Cron pe host, în `/etc/cron.d/ghost-issuer` (root; `snapshot.sh` și `journal-prune.sh` sunt
+  executabile în checkout):
 
   ```cron
   7 * * * * root GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer /srv/ghost-src/ghost/infra/issuer/snapshot.sh
   17 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*.redb' ! -name 'issuer-*00.redb' -mmin +2819 -delete
   27 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*00.redb' -mmin +10019 -delete
+  37 * * * * root GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer /srv/ghost-src/ghost/infra/issuer/journal-prune.sh
   ```
   Retenția (§19.15) este un maxim: `find -mmin +n` potrivește fișierele de cel puțin n + 1 minute și
   ștergerea rulează orar, deci un snapshot orar trăiește cel mult 47 h + 1 h = 48 h, iar cel zilnic
@@ -414,6 +426,35 @@ mesajul este `snapshot: failed, …`.
   ```
   Așteptat: `RECONCILIATION_OK weeks=<n> relays=0` (copia se deschide cu schema 1 și invarianții
   țin). Altfel snapshot-ul nu este „verificat” și nu se folosește la restaurare.
+- [ ] Tăierea jurnalului (§6.3, §6.4; automată, linia de la minutul 37 din cron): `journal-prune.sh`
+  ia cel mai nou snapshot din `$H/snapshots/`, îl verifică la fel ca pasul de mai sus (se deschide cu
+  schema 1, invarianții reconcilierii țin) și abia apoi șterge, cel mai vechi întâi, segmentele
+  `issued.journal.<săptămână>` ale căror intrări sunt toate mai vechi de 7 zile și aplicate în
+  snapshot (marcajul lui `journal_applied`, citit prin copia privată); segmentul care ține ultima
+  intrare rămâne, cu toate cele de după el (deci și cel mai nou, în care scrie issuer-ul, chiar gol
+  sau cu un cadru rupt): repornirea și restaurarea continuă numerotarea de la acea intrare (§19.25).
+  Un snapshot neverificat sau care nu se potrivește jurnalului (a aplicat intrări pe care jurnalul
+  nu le are, sau jurnalul nu mai are intrarea de după el) nu șterge nimic.
+  Rulează în containerul `ops`, cu `data/journal/` montat la `/journal` și capabilitatea
+  `DAC_OVERRIDE` doar pentru această rulare (fișierele jurnalului sunt ale utilizatorului
+  issuer-ului); issuer-ul poate rula între timp (nu se deschide niciun segment pentru scriere). Ține
+  `$H/snapshot.lock` cât rulează și nu face nimic într-o fereastră de mentenanță. Retenția: segmentul
+  săptămânii w pleacă la prima rulare după `start(w + 2)` în care un segment mai nou ține o intrare,
+  deci, cât timp issuer-ul face tranziții, o intrare trăiește cel mult 14 zile și o oră (§6.4: 7–14
+  zile); segmentul ultimei intrări rămâne până la tranziția următoare, oricât de vechi (un issuer
+  fără tranziții depășește retenția, secțiunea 13). Orice snapshot păstrat (cel mult 7 zile) rămâne
+  restaurabil cu jurnalul rămas. Așteptat: nicio ieșire; un refuz (`PRUNE_REFUSED reason=<…>`, cu
+  `RECONCILIATION_MISMATCH …` înainte pentru `snapshot-unverified`, sau `INPUT_REFUSED …`,
+  `ES_REFUSED …`) ajunge în mail-ul cron-ului și se investighează înainte de orice restaurare.
+  Verificare manuală:
+
+  ```sh
+  GHOST_ISSUER_HOST_DIR="$H" ghost/infra/issuer/journal-prune.sh && ls "$H/data/journal"
+  ```
+  Așteptat: niciun mesaj de la script, apoi doar segmente `issued.journal.<w>` cu w cel puțin
+  săptămâna curentă − 1 (și săptămâna curentă − 2 în prima oră a unei săptămâni), plus, dacă
+  issuer-ul nu a mai făcut nicio tranziție de atunci, segmentul ultimei intrări și cele de după el,
+  oricât de vechi (secțiunea 13).
 - [ ] Restaurare, când `issuer.redb` este corupt sau pierdut și `data/journal/` este intact, într-o
   fereastră de mentenanță (secțiunea 0; altfel snapshot-ul orar ar putea porni issuer-ul între `mv`
   și `install`, pe un director fără bază):
@@ -426,7 +467,8 @@ mesajul este `snapshot: failed, …`.
   GHOST_ISSUER_FLAGS=--restore $C up -d --force-recreate issuer
   ```
   Issuer-ul reia jurnalul de după snapshot, golește pool-ul de subadrese și îl reumple peste
-  numărul de subadrese al wallet-ului (niciun minor nu se dă de două ori, §19.5). Așteptat:
+  numărul de subadrese al wallet-ului (niciun minor nu se dă de două ori, §19.5). Jurnalul tăiat
+  păstrează intrările de după orice snapshot care nu a fost încă șters (cel mult 7 zile). Așteptat:
   `running`; `status.json` cu `"HALTED":false`, `"RECONCILIATION":"RECONCILIATION_OK"` și, după
   reumplere, `"POOL_SIZE":"POOL_OK"`. Cod 6: jurnalul are o gaură sau snapshot-ul nu este al
   acestui issuer.
@@ -489,7 +531,8 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
 - [ ] ES-ul nou instalat cu cel puțin 8 săptămâni înainte: aceiași octeți ca în versiunea aplicației
   (`sha256sum ghost/protocol/entitlement/schedule.ghes` = `sha256` din `ES_SIGNED`).
 - [ ] Relay-ul pornește cu `--schedule /etc/ghost/schedule.ghes --slot <n> --onion-hostname-file
-  /run/ghost-relay/onion-hostname` (compose-ul de staging le dă). Entrypoint-ul șterge `hostname`-ul
+  /run/ghost-relay/onion-hostname --redemption-counts /var/lib/ghost/redemption-counts.txt`
+  (compose-ul de staging le dă). Entrypoint-ul șterge `hostname`-ul
   venit cu setul de chei, îl lasă pe Tor să-l scrie din cheia secretă pe care o încarcă și abia apoi
   îl copiază acolo, pentru relay-ul neprivilegiat: relay-ul compară cu ES-ul onion-ul pe care Tor îl
   servește. O actualizare a ES-ului este o repornire; nulifierii persistați rămân:
@@ -550,8 +593,23 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
   pentru fiecare perioadă a cărei fereastră era deschisă la reset: până la
   `start(week(now) + 2) + 1 h` dacă resetul cade în ultimele 24 h ale unei săptămâni, altfel până
   la `start(week(now) + 1) + 1 h` (§19.10).
-- [ ] Săptămânal, pentru R2: numărul de răscumpărări pe săptămână al slotului, în fișierul
-  `week <w> slot <s> redemptions <n>` (secțiunea 13: nu există încă o comandă care să-l scoată).
+- [ ] Săptămânal, pentru R2 (§6.9 verificarea 2): fișierul de numărători al fiecărui relay. Relay-ul
+  pornit cu `--redemption-counts` îl rescrie la pornire și după fiecare sweep care închide o
+  săptămână, din `nullifiers.redb` (store-ul este ținut deschis de relay, deci nu se citește direct):
+
+  ```sh
+  for r in a b c; do $R exec -T relay-$r cat /var/lib/ghost/redemption-counts.txt > relay-$r.txt; done
+  cat relay-a.txt
+  ```
+  Așteptat: prima linie `# ghost-relay redemption counts, closed weeks only (runbook R2)`, apoi câte
+  o linie `week <w> slot <s> redemptions <n>` pentru fiecare săptămână închisă (fereastra ei s-a
+  încheiat la `start(w + 1) + 1 h`) cu cel puțin o răscumpărare, cel mult ultimele 13, cu slotul
+  relay-ului (0, 1, 2 pentru `relay-a`, `relay-b`, `relay-c`). Numărul unei săptămâni închise nu se
+  mai schimbă; săptămânile deschise nu apar. Fișierul are doar agregate: nicio valoare de token,
+  nulifier, tag sau namespace și niciun moment mai fin decât săptămâna. Cele trei fișiere ajung pe
+  mediu amovibil în `$H/transfer/` (`relay-a.txt`, `relay-b.txt`, `relay-c.txt`) și la stația de
+  plăți (R2). După un `--nullifiers-reset`, numărătorile săptămânilor de dinaintea resetului s-au
+  pierdut cu store-ul.
 
 ## 9. P1: plățile (săptămânal)
 
@@ -599,7 +657,9 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
 
 ## 10. R2: reconcilierea (săptămânal)
 
-- [ ] Pe host, pe ultimul snapshot verificat (B1), cu numărătorile relay-urilor în `$H/transfer/`:
+- [ ] Pe host, pe ultimul snapshot verificat (B1), cu numărătorile relay-urilor în `$H/transfer/`
+  (fișierele de numărători din O1; o săptămână intră în verificare după ce s-a închis la toate
+  relay-urile):
 
   ```sh
   $C run --rm ops reconcile-check --database /snapshots/issuer-<AAAALLZZHH>.redb \
@@ -704,18 +764,22 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
 
 ## 13. Limite cunoscute
 
-- Tăierea segmentelor jurnalului (§6.3: un segment se șterge când toate intrările lui sunt mai
-  vechi de 7 zile și un snapshot verificat mai nou există) nu are încă apelant: `FileJournal::prune`
-  există, dar nici `ghost-issuer`, nici `ghost-issuer-ops` nu îl rulează. Până atunci `data/journal/`
-  crește și retenția de 7–14 zile a jurnalului nu este aplicată.
-- Cât timp o fereastră de mentenanță este deschisă (M2 lung, R5, I1) nu se fac snapshot-uri B1;
-  o restaurare folosește ultimul snapshot și jurnalul de după el.
-- Verificarea onion-ului issuer-ului la instalare caută `<onion>:443` în octeții ES-ului: arată că
-  ES-ul listează onion-ul pe care îl servește Tor, nu că îl listează ca `issuer_onion` (onion-ul
-  unui relay, listat tot cu portul 443, ar trece la fel). Nicio comandă `ghost-issuer-ops` nu
-  afișează încă `issuer_onion`.
-- Numărătorile săptămânale ale relay-urilor pentru R2 nu au o comandă: `nullifiers.redb` le conține
-  (rândurile pe perioadă), dar `ghost-relay` nu le exportă.
+- Cât timp o fereastră de mentenanță este deschisă (M2 lung, R5, I1) nu se fac snapshot-uri B1 și
+  jurnalul nu se taie; o restaurare folosește ultimul snapshot și jurnalul de după el.
+- Jurnalul se taie doar după un snapshot verificat: cât timp snapshot-urile lipsesc (issuer oprit,
+  mentenanță lungă) sau cel mai nou nu se verifică, segmentele rămân și retenția de 7–14 zile a
+  jurnalului se depășește (siguranța restaurării are prioritate); refuzul apare în mail-ul
+  cron-ului la fiecare oră.
+- Un issuer care nu mai face nicio tranziție (factură, emitere, invitație, credit, reîmprospătare,
+  cerere de plată, lot) păstrează segmentul ultimei intrări, cu hash-urile de claim, nullifier-ii și
+  adresele de plată din el, până la tranziția următoare, oricât de vechi: tăierea nu șterge niciodată
+  segmentul care ține ultima intrare, fiindcă repornirea și restaurarea continuă numerotarea de la ea
+  (§19.25). Retenția de 7–14 zile a jurnalului ține deci doar cât timp issuer-ul face tranziții.
+  Remediul propus (Q32: la schimbarea săptămânii issuer-ul scrie o intrare-ancoră fără date într-un
+  segment nou) nu este încă implementat.
+- Numărătorile relay-urilor sunt doar ale săptămânilor închise, cele ale ultimelor 13, păstrate în
+  `nullifiers.redb` (tabela `redemption_counts`, un număr pe săptămână); un store pierdut
+  (`--nullifiers-reset`) le pierde, iar o săptămână fără răscumpărări nu apare (valoarea ei este 0).
 - Rularea manuală `live-tor` (CI, `workflow_dispatch`) dovedește circuitele distincte ale fluxurilor
   `IssuerFlow`; un apel real la onion-ul issuer-ului de staging și o răscumpărare prin Tor rămân de
   înregistrat după prima pornire a acestei instalări.

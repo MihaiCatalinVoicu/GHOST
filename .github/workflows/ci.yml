@@ -48,6 +48,9 @@ jobs:
   rust:
     name: rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)
     runs-on: ubuntu-24.04
+    # The workspace build and tests, the release crash suite and the T2 PR variant (about 20 min
+    # on a 4-vCPU runner, from a local measurement; see the step): twice the expected total.
+    timeout-minutes: 150
     defaults:
       run:
         shell: bash
@@ -75,6 +78,23 @@ jobs:
       # release profile; a debug build lists its tests as ignored.
       - name: issuer crash suite (release profile)
         run: cargo test -p ghost-issuer --release --locked --test crash
+      # Design §13.4, §13.6: the T2 PR variant (N = 300 packs, 21 days, release profile): the join
+      # search, the twin worlds, S1–S4; its report must be complete (t2-exit-gate.yml runs the
+      # gate scale, the nightly seed sweep and the mutants). World databases go to /dev/shm.
+      # Budget: measured locally at 506–590 s on 24 cores (ten worlds in two parallel phases, the
+      # longest about 290 s); on a 4-vCPU runner about 20 minutes after the build.
+      - name: T2 PR variant (release profile)
+        env:
+          GHOST_T2_TMP: /dev/shm
+        run: |
+          mkdir -p "$RUNNER_TEMP/t2"
+          export GHOST_T2_REPORT="$RUNNER_TEMP/t2/t2-pr.txt"
+          cargo test -p ghost-issuer --release --locked --test t2_unlinkability t2_pr_variant -- --exact --nocapture
+      - name: T2 PR variant report check
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/t2/t2-pr.txt" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          bash scripts/gates/t2-report-check.sh "$RUNNER_TEMP/t2/t2-pr.txt" pr
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           manifest-path: ghost/Cargo.toml

@@ -1,0 +1,21 @@
+[package]
+publish = false
+name = "ghost-t2-join"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Privacy invariant T2: the join search (J1-J10, T2b, T2c) and the statistical tests (S1-S4) over the complete issuer and relay views of the T2 world (Phase 8 design §13.4)"
+
+[dependencies]
+# Public-key work on the relay-seen tokens (em = s^e mod n, Jacobi symbols, ring verification) and
+# the ES they are checked against: the same workspace crates the client and relays link.
+ghost-blind-rsa = { path = "../../../issuer/crates/blind-rsa" }
+ghost-entitlement = { path = "../../../issuer/crates/entitlement" }
+num-bigint-dig = { workspace = true }
+# The J3 transform set (SHA-2, SHA3-256, HMAC and HKDF over HMAC-SHA256); BLAKE2b-256 is
+# implemented in `transforms.rs` (no BLAKE2 crate is in the lock file).
+sha2 = { workspace = true }
+sha3 = { workspace = true }
+hmac = { workspace = true }
+hex = { workspace = true }

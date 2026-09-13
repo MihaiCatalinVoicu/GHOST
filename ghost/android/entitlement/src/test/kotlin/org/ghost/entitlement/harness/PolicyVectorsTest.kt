@@ -4,6 +4,7 @@ import org.ghost.entitlement.engine.ClockEstimate
 import org.ghost.entitlement.engine.Grid
 import org.ghost.entitlement.engine.Pricing
 import org.ghost.entitlement.engine.QuietRunWork
+import org.ghost.entitlement.engine.RedeemLane
 import org.ghost.entitlement.engine.RedeemPlanner
 import org.ghost.entitlement.engine.RetryPolicy
 import org.ghost.entitlement.engine.Slots
@@ -93,15 +94,34 @@ class PolicyVectorsTest {
                     a.getValue("wrong") == "yes",
                 )
                 "now" -> sameTime(checkNotNull(e), estimate.now(time(a.getValue("wall"))))
+                "relaynow" -> sameTime(checkNotNull(e), estimate.relayNow(RelayId(a.getValue("relay").toLong()), time(a.getValue("wall"))))
                 "week" -> assertEquals(checkNotNull(e).toLong(), estimate.week(RelayId(a.getValue("relay").toLong()), time(a.getValue("wall"))))
+                "observe" -> estimate.observe(time(a.getValue("wall")), a.getValue("mono").toLong())
                 else -> error("unknown estimate ${words[1]}")
+            }
+            "reserve" -> {
+                val step = RedeemLane.reserveStep(
+                    a.getValue("held") == "yes", optionalTime(a.getValue("retry_after")), a.getValue("week").toLong(), time(a.getValue("now")),
+                    optionalTime(a.getValue("write_expiry")),
+                )
+                assertEquals(e, step.name.lowercase())
+            }
+            "wrongperiod" -> {
+                val after = RedeemLane.wrongPeriodRetryAfter(a.getValue("token").toLong(), a.getValue("relay_period").toLong())
+                val got = after?.let { "keep retry_after=${showTime(it)}" } ?: "delete"
+                if (e == "keep") assertEquals(time(checkNotNull(expect)[1].substringAfter('=')), after) else assertEquals(expect?.joinToString(" "), got)
             }
             "eligible" -> {
                 val uniforms = a.getValue("uniforms").let { if (it == "none") emptyList() else it.split(',').map(String::toDouble) }
                 val draws = Draws(0.0, uniforms)
                 val mode = if (a.getValue("mode") == "high") PrivacyMode.HIGH else PrivacyMode.STANDARD
                 val t = time(a.getValue("finalized"))
-                val got = if (a.getValue("batch") == "pack") Slots.packEligibleMinute(t, draws, mode) else Slots.trialEligibleMinute(t, draws, mode)
+                val got = if (a.getValue("batch") == "pack") {
+                    assertTrue("a pack line names no base week", "base" !in a)
+                    Slots.packEligibleMinute(t, draws, mode)
+                } else {
+                    Slots.trialEligibleMinute(t, a.getValue("base").toLong(), draws, mode)
+                }
                 sameTime(checkNotNull(e), got)
                 assertTrue("every listed uniform is consumed", draws.queue.isEmpty())
             }
@@ -199,7 +219,10 @@ class PolicyVectorsTest {
             }
             if (expect != null) outcomes++
         }
-        assertEquals(sortedSetOf("slot", "boundary", "slotsfor", "plan", "estimate", "eligible", "attempt", "retry", "classify", "work", "cover"), seen)
+        assertEquals(
+            sortedSetOf("slot", "boundary", "slotsfor", "plan", "estimate", "reserve", "wrongperiod", "eligible", "attempt", "retry", "classify", "work", "cover"),
+            seen,
+        )
         assertTrue("only $outcomes outcomes", outcomes >= 70)
     }
 

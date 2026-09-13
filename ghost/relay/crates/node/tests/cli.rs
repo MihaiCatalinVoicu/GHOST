@@ -429,3 +429,41 @@ fn the_relay_key_is_never_replaced_under_a_kept_store() {
     starts(&data, &with_reset);
     starts(&data, &flags);
 }
+
+/// Runbook R2: `--redemption-counts` needs redemption, writes the counts file before the relay
+/// listens, and a file it cannot write is a refusal to start.
+#[test]
+fn the_redemption_counts_file_is_written_at_start() {
+    let f = Files::new();
+    let (slot, host) = listed_slot();
+    let slot = slot.to_string();
+    let hostname_file = f.write("hostname", format!("{host}\n").as_bytes());
+    let counts = f.data("redemption-counts.txt");
+    let counts_arg = counts.to_string_lossy().into_owned();
+    let data = f.data("data");
+    refused(&data, &["--redemption-counts", &counts_arg], "usage:");
+    assert!(!counts.exists());
+    let flags = [
+        "--schedule",
+        STAGENET_ES,
+        "--slot",
+        &slot,
+        "--onion-hostname-file",
+        &hostname_file,
+        "--redemption-counts",
+        &counts_arg,
+    ];
+    starts(&data, &flags);
+    assert_eq!(
+        std::fs::read_to_string(&counts).unwrap(),
+        ghost_relay_node::redeem::COUNTS_HEADER
+    );
+    // A directory where the file should be cannot be replaced: refused before listening.
+    let blocked = f.data("blocked");
+    std::fs::create_dir(&blocked).unwrap();
+    let blocked_arg = blocked.to_string_lossy().into_owned();
+    let mut blocked_flags = flags;
+    blocked_flags[7] = &blocked_arg;
+    refused(&data, &blocked_flags, "redemption counts file:");
+    starts(&data, &flags);
+}

@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use common::*;
 use ghost_entitlement::monero::MoneroNetwork;
 use ghost_issuer::payout::{AckFile, BatchFile, BatchLine, EntryOutcome, OpsKey};
-use ghost_issuer::reconcile::{self, CounterId};
-use ghost_issuer::store::{RedbStore, Store};
+use ghost_issuer::reconcile::CounterId;
+use ghost_issuer::store::RedbStore;
 use ghost_issuer_ops::ledger::{Ledger, HEADER};
 use ghost_issuer_ops::report::{Code, Field, Line, Value};
 use ghost_issuer_ops::Status;
@@ -574,31 +574,6 @@ fn payout_ack_writes_the_acknowledgement_once_every_entry_is_confirmed() {
         &arg(&d.join("other.ghpa")),
     ]);
     assert_refused(&r, Code::PayoutRefused, "unknown-batch");
-}
-
-/// An `issuer.redb` snapshot with the counters of one XMR pack of base week 2960 under the test
-/// schedule (3 slots a week, 16 access positions per slot, 2 invites, 1 credit).
-fn snapshot(d: &Path, extra: &[(CounterId, u64, u64)]) -> PathBuf {
-    let path = d.join("issuer.redb");
-    fill(&RedbStore::open(&path).unwrap(), extra);
-    path
-}
-
-/// Commits the counters of a small issuer (plus `extra`) in one write transaction.
-fn fill(store: &RedbStore, extra: &[(CounterId, u64, u64)]) {
-    let mut tx = store.write().unwrap();
-    let mut counts = vec![
-        (CounterId::PacksXmr, 2960, 1),
-        (CounterId::XmrCreditedAtomic, 2960, PRICE),
-        (CounterId::SignedInvite, 740, 2),
-        (CounterId::SignedCredit, 227, 1),
-    ];
-    counts.extend((2960..2965).map(|w| (CounterId::SignedAccess, w, 48)));
-    counts.extend_from_slice(extra);
-    for (id, index, delta) in counts {
-        reconcile::add(&mut *tx, id, index, delta).unwrap();
-    }
-    tx.commit().unwrap();
 }
 
 /// Set in the child process of `reconcile_check_reads_the_database_of_a_killed_issuer`: the

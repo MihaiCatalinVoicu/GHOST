@@ -3,7 +3,8 @@
 
 use ghost_entitlement::grid::week_start;
 use ghost_issuer::journal::{
-    BatchEntry, ClaimEntry, Entry, FileJournal, InvoiceEntry, Journal, JournalError, SEGMENT_PREFIX,
+    self, BatchEntry, ClaimEntry, Entry, FileJournal, InvoiceEntry, Journal, JournalError,
+    PruneError, Pruned, SEGMENT_PREFIX,
 };
 use ghost_issuer::store::{
     self, ClaimRow, ClaimState, CreditUse, InvoiceRow, InvoiceState, MetaKey, PayWith,
@@ -269,6 +270,175 @@ fn pruning_needs_age_and_a_newer_snapshot() {
     let seqs: Vec<u64> = j.entries().unwrap().into_iter().map(|(s, _)| s).collect();
     assert_eq!(seqs, vec![4]);
     assert_eq!(j.append(2962, &entries()[2]).unwrap(), 5);
+}
+
+/// Runbook B1 (`ghost-issuer-ops journal-prune`): `prune_dir` removes nothing for a snapshot the
+/// journal does not fit, never writes a segment (the issuer may be writing a torn tail into the
+/// latest one) and reports what it left.
+#[test]
+fn prune_dir_needs_a_fitting_snapshot_and_never_writes_a_segment() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2960, &entries()[2]).unwrap();
+    j.append(2961, &entries()[3]).unwrap();
+    j.append(2962, &entries()[4]).unwrap();
+    drop(j);
+    // Every segment but the latest is past the 7-day window.
+    let late = week_start(2964) + 604_800;
+    assert_eq!(
+        journal::prune_dir(dir.path(), late, 5).err(),
+        Some(PruneError::SnapshotAhead)
+    );
+    // The issuer is appending: the latest segment ends in part of a frame.
+    let mut torn = std::fs::read(segment(dir.path(), 2962)).unwrap();
+    torn.extend_from_slice(&entries()[2].encode(5).unwrap()[..20]);
+    std::fs::write(segment(dir.path(), 2962), &torn).unwrap();
+    assert_eq!(
+        journal::prune_dir(dir.path(), late, 4).unwrap(),
+        Pruned {
+            removed: vec![2960, 2961],
+            kept: 1,
+            first_seq: 4,
+            last_seq: 4,
+        }
+    );
+    assert_eq!(std::fs::read(segment(dir.path(), 2962)).unwrap(), torn);
+    // The journal now starts at 4: a snapshot that applied 2 could no longer be restored with it,
+    // one that applied 3 still can.
+    assert_eq!(
+        journal::prune_dir(dir.path(), late, 2).err(),
+        Some(PruneError::SnapshotBehind)
+    );
+    assert!(journal::prune_dir(dir.path(), late, 3)
+        .unwrap()
+        .removed
+        .is_empty());
+    // The issuer's own open discards the torn tail and continues the sequence.
+    let j = FileJournal::open(dir.path()).unwrap();
+    assert_eq!(j.append(2962, &entries()[2]).unwrap(), 5);
+}
+
+/// Review finding OPS-PRUNE-1: a newest segment that holds no entry (created by an append that
+/// died before its first frame was durable: empty, or a torn frame) leaves the segment of the last
+/// entry in place, so the journal still opens where it was and continues the sequence.
+#[test]
+fn prune_dir_keeps_the_segment_of_the_last_entry() {
+    for torn in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let j = FileJournal::open(dir.path()).unwrap();
+        j.append(2960, &entries()[0]).unwrap();
+        j.append(2961, &entries()[2]).unwrap();
+        j.append(2961, &entries()[3]).unwrap();
+        drop(j);
+        let bytes = if torn {
+            entries()[4].encode(4).unwrap()[..20].to_vec()
+        } else {
+            Vec::new()
+        };
+        std::fs::write(segment(dir.path(), 2963), &bytes).unwrap();
+        assert_eq!(
+            journal::prune_dir(dir.path(), u64::MAX, 3).unwrap(),
+            Pruned {
+                removed: vec![2960],
+                kept: 2,
+                first_seq: 2,
+                last_seq: 3,
+            },
+            "torn {torn}"
+        );
+        let j = FileJournal::open(dir.path()).unwrap();
+        let seqs: Vec<u64> = j.entries().unwrap().into_iter().map(|(s, _)| s).collect();
+        assert_eq!(seqs, vec![2, 3]);
+        assert_eq!(j.append(2963, &entries()[4]).unwrap(), 4);
+        drop(j);
+        // Once a later segment holds an entry, 2961 goes too.
+        assert_eq!(
+            journal::prune_dir(dir.path(), u64::MAX, 4).unwrap().removed,
+            vec![2961]
+        );
+    }
+}
+
+#[test]
+fn prune_dir_on_an_empty_missing_or_damaged_journal_removes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        journal::prune_dir(dir.path(), u64::MAX, 0).unwrap(),
+        Pruned {
+            removed: Vec::new(),
+            kept: 0,
+            first_seq: 0,
+            last_seq: 0,
+        }
+    );
+    assert_eq!(
+        journal::prune_dir(dir.path(), u64::MAX, 1).err(),
+        Some(PruneError::SnapshotAhead)
+    );
+    assert_eq!(
+        journal::prune_dir(&dir.path().join("missing"), u64::MAX, 0).err(),
+        Some(PruneError::Journal(JournalError::Io))
+    );
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2961, &entries()[2]).unwrap();
+    j.append(2962, &entries()[3]).unwrap();
+    drop(j);
+    // Damage in a segment that is not the latest.
+    let mut bytes = std::fs::read(segment(dir.path(), 2961)).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(segment(dir.path(), 2961), &bytes).unwrap();
+    assert_eq!(
+        journal::prune_dir(dir.path(), u64::MAX, 3).err(),
+        Some(PruneError::Journal(JournalError::Corrupt))
+    );
+    assert!(segment(dir.path(), 2960).exists());
+}
+
+/// A segment listed but gone before it is read (removed by a prune that runs while an issuer
+/// starts) ends a removed prefix: the journal opens after it, without the segments read before it
+/// (the prune removes in ascending order), and a segment missing from the listing is still a
+/// sequence gap.
+#[cfg(unix)]
+#[test]
+fn a_segment_removed_while_the_journal_is_read_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    j.append(2961, &entries()[2]).unwrap();
+    j.append(2962, &entries()[3]).unwrap();
+    drop(j);
+    // A dangling link is listed by the directory read and gone at the file read.
+    let gone = |week: u64| {
+        std::fs::remove_file(segment(dir.path(), week)).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("vanished"), segment(dir.path(), week)).unwrap();
+    };
+    gone(2960);
+    let seqs: Vec<u64> = FileJournal::open(dir.path())
+        .unwrap()
+        .entries()
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    assert_eq!(seqs, vec![2, 3]);
+    std::fs::remove_file(segment(dir.path(), 2960)).unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2963, &entries()[4]).unwrap();
+    drop(j);
+    gone(2962);
+    let seqs: Vec<u64> = FileJournal::open(dir.path())
+        .unwrap()
+        .entries()
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    assert_eq!(seqs, vec![4]);
+    std::fs::remove_file(segment(dir.path(), 2962)).unwrap();
+    assert_eq!(FileJournal::open(dir.path()).err(), Some(JournalError::Gap));
 }
 
 #[test]

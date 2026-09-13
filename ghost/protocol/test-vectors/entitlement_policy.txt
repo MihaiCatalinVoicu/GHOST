@@ -42,15 +42,33 @@
 #       Due times truncate the PRF's fraction of the window to whole seconds.
 #   estimate reset | estimate record relay=<id> relay_minute=<m> local=<time> period=<w> wrong=yes|no
 #   estimate now wall=<time> -> <time> | estimate week relay=<id> wall=<time> -> <w>
-#       the relay-facing clock (§12.5, §19.4): each relay's latest offset relay_minute − local minute,
-#       clipped to ±24 h; with ≥ 2 relays the median (the lower-rounded mean of the two middle ones
-#       for an even count), else none; a WRONG_PERIOD answer's period is adopted for that relay while
-#       it names a week within 24 h of the wall clock, and any other answer drops the adoption.
-#   eligible batch=pack|trial mode=standard|high finalized=<time> uniforms=<u>,…|none -> <time>
+#   estimate relaynow relay=<id> wall=<time> -> <time> | estimate observe wall=<time> mono=<ms>
+#       the relay-facing clock (§12.5, §19.4, §19.24 point 1): each relay's latest offset
+#       relay_minute − local minute, clipped to ±24 h; with ≥ 2 relays the median (the lower-rounded
+#       mean of the two middle ones for an even count), else none (`now`); the decisions about one
+#       relay run on its own offset once it answered, on `now` before (`relaynow`); a WRONG_PERIOD
+#       answer's period is adopted for that relay while it names a week within 24 h of the wall
+#       clock, never behind the week of the relay's own clock, and any other answer drops the
+#       adoption (`week`); `observe` forgets every offset and adoption when wall − mono (in ms) moved
+#       by 120 000 or more since the previous observation (the device clock was set).
+#   reserve held=yes|no retry_after=<time>|none week=<w> now=<time> write_expiry=<time>|none
+#       -> retry | wait | drop | covered | fresh
+#       the redeem lane's tx1 for a plan of week w at `now` (the plan's relay's clock, §11.6, R8): the
+#       pair's pending reservation of that week is retried identically unless the week's window is
+#       over (then deleted: drop) or its WRONG_PERIOD retry time is still ahead (wait); without one, a
+#       fresh token unless the window is over (wait) or the write capability reaches start(w + 1)
+#       (covered). A week's window is over from start(w + 1) + 1 h.
+#   wrongperiod token=<w> relay_period=<w> -> keep retry_after=<time> | delete
+#       a WRONG_PERIOD answer to a reserved token of week `token`: kept and retried from
+#       start(token) − 23 h when the relay's period is before its week, deleted otherwise.
+#   eligible batch=pack|trial mode=standard|high finalized=<time> [base=<week>] uniforms=<u>,…|none -> <time>
 #       activation slots (§12.3): a pack's tokens at floor_minute(first UTC-day boundary ≥ t + 4 h
 #       + U[0, 6 h)), plus Geometric(1/2) whole days in HIGH (a draw < 0.5 adds a day, at most 16;
 #       the draws come first, then the offset's); a trial's at floor_minute(t) in STANDARD and by the
-#       pack rule in HIGH.
+#       pack rule in HIGH, with its extra days capped (Q30, §19.23 point 5) so that they reach at
+#       most the last day of the trial's last week (the day starting start(base + 2) − 24 h), and
+#       never fewer than 0: the draws are the pack rule's, the cap applies after them. `base` is the
+#       trial's base week (required for trials, absent for packs).
 #   attempt seed=<hex32> receipt=<time> k=<0..4> -> <time>
 #       the due minute of BlindSign attempt k (§19.11): receipt + window_k low + u × window width,
 #       rounded up to a minute, u the top 53 bits of HKDF-SHA256(ikm = seed, salt = none,
@@ -139,13 +157,68 @@ estimate week relay=2 wall=2976-3600 -> 2975                         # another a
 estimate reset
 estimate now wall=2975+100020 -> 2975+100020
 
+# ---- Each relay's decisions on its own clock (§19.24 point 1; the T2 J8 case) ---------------------
+estimate reset
+estimate record relay=1 relay_minute=29995417 local=2975+100020 period=2975 wrong=no
+estimate relaynow relay=1 wall=2975+100020 -> 2975+99420             # relay 1 answered: its own clock, 10 min behind
+estimate relaynow relay=2 wall=2975+100020 -> 2975+100020            # relay 2 has not: the estimate (one relay: the wall clock)
+estimate now wall=2975+100020 -> 2975+100020
+# A device 17 h ahead renews an expiring pair in its last 20 h of week 2975; relay 1 (37 h before
+# week 2976 on its clock) refuses the week-2976 token and answers its period and minute.
+estimate reset
+estimate record relay=1 relay_minute=30001620 local=2976-72000 period=2975 wrong=yes
+estimate relaynow relay=1 wall=2976-72000 -> 2976-133200
+estimate week relay=1 wall=2976-72000 -> 2975
+plan kind=write reason=expiring relay=ghost/test/relay-a:443 now=2976-133200 week=2975 trusted=yes first=2976-133200 write_expiry=2976+3600 prf=0 -> skip   # no second refused redemption
+estimate relaynow relay=2 wall=2976-72000 -> 2976-72000              # relay 2's first redemption still runs on the wall clock
+# Fourteen hours later relay 1 is 23 h before the week: the kept reservation comes due on its clock.
+estimate relaynow relay=1 wall=2976-21600 -> 2976-82800
+estimate week relay=1 wall=2976-21600 -> 2975
+plan kind=write reason=expiring relay=ghost/test/relay-a:443 now=2976-82800 week=2975 trusted=yes first=2976-133200 write_expiry=2976+3600 prf=0 -> redeem week=2976 slots=0 due=2976-82800
+# An adoption never holds a relay behind its own clock (relay 1 on time, refused on Sunday 23:10).
+estimate reset
+estimate record relay=1 relay_minute=30003790 local=2976-3000 period=2975 wrong=yes
+estimate week relay=1 wall=2976-3000 -> 2975
+estimate week relay=1 wall=2976+7200 -> 2976
+# A device clock set since the previous observation forgets the estimate.
+estimate reset
+estimate record relay=1 relay_minute=29995437 local=2975+100020 period=2975 wrong=no
+estimate record relay=2 relay_minute=29995437 local=2975+100020 period=2976 wrong=yes
+estimate observe wall=2975+100020 mono=5000000
+estimate now wall=2975+100020 -> 2975+100620
+estimate observe wall=2975+100080 mono=5060500                        # a minute later on both clocks: kept
+estimate now wall=2975+100080 -> 2975+100680
+estimate observe wall=2975+96480 mono=5061000                         # the device clock set back an hour
+estimate now wall=2975+96480 -> 2975+96480
+estimate relaynow relay=1 wall=2975+96480 -> 2975+96480
+estimate week relay=2 wall=2976-3600 -> 2975
+estimate reset
+
+# ---- The redeem lane's reservations (§11.6, R8) ----------------------------------------------------
+reserve held=no retry_after=none week=2975 now=2975+100000 write_expiry=none -> fresh
+reserve held=no retry_after=none week=2975 now=2976+3600 write_expiry=none -> wait              # the week's window is over
+reserve held=no retry_after=none week=2976 now=2976-43200 write_expiry=2977+3600 -> covered
+reserve held=yes retry_after=none week=2975 now=2975+100000 write_expiry=none -> retry
+reserve held=yes retry_after=2976-82800 week=2976 now=2976-133200 write_expiry=2976+3600 -> wait
+reserve held=yes retry_after=2976-82800 week=2976 now=2976-82800 write_expiry=2976+3600 -> retry
+reserve held=yes retry_after=none week=2975 now=2976+3599 write_expiry=none -> retry
+reserve held=yes retry_after=none week=2975 now=2976+3600 write_expiry=none -> drop              # never retried after its week
+wrongperiod token=2976 relay_period=2975 -> keep retry_after=2976-82800                          # too early: kept
+wrongperiod token=2975 relay_period=2976 -> delete                                               # too late: deleted
+wrongperiod token=2975 relay_period=2975 -> delete
+
 # ---- Activation slots ------------------------------------------------------------------------------
 eligible batch=pack mode=standard finalized=2975+43200 uniforms=0.5 -> 2975+97200
 eligible batch=pack mode=standard finalized=2975+72000 uniforms=0 -> 2975+86400
 eligible batch=pack mode=standard finalized=2975+72001 uniforms=0.9999 -> 2975+194340
 eligible batch=pack mode=high finalized=2975+43200 uniforms=0.4,0.3,0.7,0.5 -> 2975+270000
-eligible batch=trial mode=standard finalized=2975+43237 uniforms=none -> 2975+43200
-eligible batch=trial mode=high finalized=2975+43200 uniforms=0.6,0.25 -> 2975+91800
+eligible batch=trial mode=standard finalized=2975+43237 base=2975 uniforms=none -> 2975+43200
+eligible batch=trial mode=high finalized=2975+43200 base=2975 uniforms=0.6,0.25 -> 2975+91800
+eligible batch=trial mode=high finalized=2975+43200 base=2975 uniforms=0.4,0.3,0.7,0.5 -> 2975+270000   # 2 days: under the cap, as the pack
+eligible batch=trial mode=high finalized=2975+43200 base=2975 uniforms=0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.5 -> 2977-75600   # 16 drawn, 12 kept: Sunday of 2976
+eligible batch=pack mode=high finalized=2975+43200 uniforms=0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.5 -> 2977+270000    # a pack keeps all 16
+eligible batch=trial mode=high finalized=2976+400000 base=2975 uniforms=0.1,0.1,0.1,0.9,0.5 -> 2977-75600   # finalized in the last week: 3 drawn, 1 kept
+eligible batch=trial mode=high finalized=2977-10800 base=2975 uniforms=0.1,0.9,0.25 -> 2977+91800   # the slot is past the trial: 0 days, never earlier
 
 # ---- BlindSign attempt plan ------------------------------------------------------------------------
 attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=0 -> 2975+46920

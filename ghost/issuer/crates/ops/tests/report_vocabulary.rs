@@ -44,6 +44,11 @@ fn code_index(c: Code) -> usize {
         Code::ReconciliationOk => 24,
         Code::ReconciliationMismatch => 25,
         Code::CountersWritten => 26,
+        Code::SegmentPruned => 27,
+        Code::JournalPruned => 28,
+        Code::PruneRefused => 29,
+        Code::IssuerOnion => 30,
+        Code::SlotOnion => 31,
     }
 }
 
@@ -83,6 +88,13 @@ fn field_index(f: Field) -> usize {
         Field::Relays => 31,
         Field::Refused => 32,
         Field::Counters => 33,
+        Field::Removed => 34,
+        Field::Kept => 35,
+        Field::FirstSeq => 36,
+        Field::LastSeq => 37,
+        Field::Applied => 38,
+        Field::Onion => 39,
+        Field::Port => 40,
     }
 }
 
@@ -104,7 +116,18 @@ fn is_value(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// `CODE field=value ...` with a listed code, listed fields and vocabulary values.
+/// A v3 onion host name as Tor writes it: 56 lowercase base32 characters and `.onion`.
+fn is_onion_host(s: &str) -> bool {
+    s.strip_suffix(".onion").is_some_and(|label| {
+        label.len() == 56
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b))
+    })
+}
+
+/// `CODE field=value ...` with a listed code, listed fields and vocabulary values (an onion host
+/// name in the `onion` field only).
 fn well_formed(text: &str) -> bool {
     let mut tokens = text.split(' ');
     let code_ok = tokens
@@ -113,7 +136,8 @@ fn well_formed(text: &str) -> bool {
     code_ok
         && tokens.all(|t| {
             t.split_once('=').is_some_and(|(name, value)| {
-                Field::ALL.iter().any(|f| f.name() == name) && is_value(value)
+                Field::ALL.iter().any(|f| f.name() == name)
+                    && (is_value(value) || (name == "onion" && is_onion_host(value)))
             })
         })
 }
@@ -220,7 +244,46 @@ fn lines_of_real_runs_are_well_formed() {
     let hs = arg(&dir.path().join("hs"));
     let ops_key = arg(&dir.path().join("ops.key"));
     let missing = arg(&dir.path().join("missing"));
+    let db = arg(&snapshot(dir.path(), &[]));
+    let journal = dir.path().join("journal");
+    std::fs::create_dir(&journal).unwrap();
+    let journal = arg(&journal);
     let runs: Vec<Vec<&str>> = vec![
+        vec![
+            "journal-prune",
+            "--database",
+            &db,
+            "--journal",
+            &journal,
+            "--schedule",
+            &es,
+            "--schedule-public-key",
+            &key,
+            "--now",
+            RECONCILE_NOW,
+        ],
+        vec![
+            "journal-prune",
+            "--database",
+            &db,
+            "--journal",
+            &missing,
+            "--schedule",
+            &es,
+            "--schedule-public-key",
+            &key,
+            "--now",
+            RECONCILE_NOW,
+        ],
+        vec![
+            "schedule-onions",
+            "--schedule",
+            &es,
+            "--schedule-public-key",
+            &key,
+            "--now",
+            "1790557200",
+        ],
         vec!["keygen", "--new-ops-key", &ops_key],
         vec!["payout-check", "--batch", &missing],
         vec!["payout-entry", "--ledger", &missing, "--to", "sideways"],
@@ -336,6 +399,10 @@ fn lines_of_real_runs_are_well_formed() {
         "ONION_KEY_CREATED",
         "OPS_KEY_CREATED",
         "INPUT_REFUSED",
+        "JOURNAL_PRUNED",
+        "PRUNE_REFUSED",
+        "ISSUER_ONION",
+        "SLOT_ONION",
     ] {
         assert!(codes.contains(expected), "{expected} not exercised");
     }

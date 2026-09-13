@@ -83,6 +83,14 @@ interface RelayRedeemAccess {
         requestId: ByteArray,
         deadlineMillis: Int = RelayTransport.MAX_DEADLINE_MILLIS,
     ): TorRelayTransport.RedeemAnswer
+
+    /**
+     * The participant's redeem lane has run one step (read the needs, planned them, made the
+     * redemptions that were due). A background session that started with a pending write need is
+     * held open after its sync work until the first such call or its deadline (Phase 8 design §17
+     * Q29, §19.23 point 5; `org.ghost.sync.engine.RedeemHold`); later calls change nothing.
+     */
+    fun stepDone()
 }
 
 /**
