@@ -17,6 +17,14 @@ class IdentityManager(
     sealed class Activation {
         data class ViaInvite(val invite: Invite) : Activation()
         data class Genesis(val policyAcknowledged: Boolean) : Activation()
+
+        /**
+         * The invite path, resumed (Phase 8 design §8.3 step 5): a verified invite's trial and nonce
+         * were recorded by an earlier process, which ended before the identity was created. Not a
+         * third path: the invite was verified there, and its trial still has to succeed or the
+         * identity is wiped.
+         */
+        data object ResumedInvite : Activation()
     }
 
     class Created(val root: RootEntropy, val activation: Activation) {

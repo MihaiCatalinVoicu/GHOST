@@ -10,18 +10,22 @@ import org.ghost.sync.api.SyncStatus
 import org.ghost.sync.api.TransportStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The app's sync decisions (design §5.4, §5.6, §11.1 Q6, §11.2 #17, #18): the periodic job is ensured
- * at process start only when the key envelope exists and right after the key is created, never
- * because of visibility; a background session never opens an auth-bound database.
+ * The app's sync decisions (design §5.4, §5.6, §11.1 Q6, §11.2 #17, #18; Phase 8 design §11.6,
+ * §19.11): the entitlement participant is installed at every process start before anything else;
+ * the payment-screen hold is restored before the periodic job is ensured, and only with a key; the
+ * periodic job is ensured at process start only when the key envelope exists and right after the key
+ * is created, never because of visibility; a background session never opens an auth-bound database.
  */
 class SyncWiringTest {
 
     private class Events {
         val log = ArrayList<String>()
+        var installed: SessionParticipant? = null
     }
 
     private class RecordingController(private val events: Events) : SyncController {
@@ -48,6 +52,7 @@ class SyncWiringTest {
         }
 
         override fun setParticipant(p: SessionParticipant?) {
+            events.installed = p
             events.log += "participant"
         }
 
@@ -64,29 +69,49 @@ class SyncWiringTest {
         }
 
         override fun restorePaymentHold(lastShownEpochSeconds: Long) {
-            events.log += "payment-hold"
+            events.log += "payment-hold:$lastShownEpochSeconds"
         }
     }
 
-    private fun wiring(events: Events, key: Boolean) = SyncWiring(
+    private val participant = object : SessionParticipant {
+        override fun onRelaySession(session: ParticipantSession) = Unit
+
+        override fun onQuietRun(session: ParticipantSession) = Unit
+    }
+
+    private fun wiring(events: Events, key: Boolean, moment: Long? = null) = SyncWiring(
         keyExists = { key },
         controller = RecordingController(events),
         ensurePeriodic = { events.log += "ensurePeriodic" },
         databaseAvailable = { events.log += "available" },
+        participant = participant,
+        paymentShownAt = {
+            events.log += "moment"
+            moment
+        },
+        visible = { events.log += "entitlement-visible" },
     )
 
     @Test
-    fun aProcessStartWithAKeyEnsuresThePeriodicJobOnce() {
+    fun aProcessStartWithAKeyInstallsTheParticipantRestoresTheHoldThenEnsuresTheJob() {
         val events = Events()
-        wiring(events, key = true).onProcessStart()
-        assertEquals(listOf("ensurePeriodic"), events.log)
+        wiring(events, key = true, moment = 1_789_560_060L).onProcessStart()
+        assertEquals(listOf("participant", "moment", "payment-hold:1789560060", "ensurePeriodic"), events.log)
+        assertSame(participant, events.installed)
     }
 
     @Test
-    fun aProcessStartWithoutAKeySchedulesNothing() {
+    fun aProcessStartWithoutARememberedMomentRestoresNothing() {
         val events = Events()
-        wiring(events, key = false).onProcessStart()
-        assertEquals(emptyList<String>(), events.log)
+        wiring(events, key = true).onProcessStart()
+        assertEquals(listOf("participant", "moment", "ensurePeriodic"), events.log)
+    }
+
+    @Test
+    fun aProcessStartWithoutAKeyOnlyInstallsTheParticipant() {
+        val events = Events()
+        wiring(events, key = false, moment = 60L).onProcessStart()
+        assertEquals("no database is opened and nothing is scheduled", listOf("participant"), events.log)
     }
 
     @Test
@@ -97,13 +122,13 @@ class SyncWiringTest {
     }
 
     @Test
-    fun visibilityDrivesTheForegroundSessionAndNeverSchedules() {
+    fun visibilityDrivesTheForegroundSessionAndThePendingTrialAndNeverSchedules() {
         val events = Events()
         val w = wiring(events, key = true)
         w.onVisible()
         w.onHidden()
         w.onVisible()
-        assertEquals(listOf("foreground", "background", "foreground"), events.log)
+        assertEquals(listOf("foreground", "entitlement-visible", "background", "foreground", "entitlement-visible"), events.log)
     }
 
     @Test

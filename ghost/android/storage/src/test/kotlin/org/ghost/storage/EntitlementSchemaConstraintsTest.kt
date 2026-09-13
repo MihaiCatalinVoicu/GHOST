@@ -48,6 +48,7 @@ class EntitlementSchemaConstraintsTest {
                 mapOf("id" to 2), mapOf("schedule_seq" to 0), mapOf("schedule_digest" to bytes(31, 1)), mapOf("next_invite_index" to 65536),
                 mapOf("next_invite_index" to -1), mapOf("payout_salt" to bytes(16, 1)), mapOf("restore_scan_until_day" to -1),
                 mapOf("auto_renew_credits" to 2), mapOf("alarm_flags" to 8), mapOf("alarm_flags" to -1),
+                mapOf("payment_shown_minute" to T0 + 1),
             ),
         )
     }
@@ -213,6 +214,7 @@ class EntitlementSchemaConstraintsTest {
             Triple("ent_schedule_fact", "epoch", mapOf("fact" to "slots", "epoch" to WEEK0, "digest" to hash(1))),
             Triple("ent_schedule_fact", "epoch", mapOf("fact" to "revoked_access", "epoch" to WEEK0, "digest" to hash(1))),
             Triple("ent_state", "restore_scan_until_day", state),
+            Triple("ent_state", "payment_shown_minute", state + mapOf("payment_shown_minute" to T0)),
             Triple("ent_purchase", "base_week", livePack),
             Triple("ent_purchase", "created_hour", livePack),
             Triple("ent_purchase", "receipt_minute", scheduledPack),

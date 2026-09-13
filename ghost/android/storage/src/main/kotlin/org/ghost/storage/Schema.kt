@@ -414,6 +414,10 @@ object Schema {
                 ) WITHOUT ROWID""",
                 // (2) Singleton. payout_salt is created with the row (SecureRandom) and never leaves the
                 // device. alarm_flags = SCHEDULE_CONFLICT | ISSUER_MISMATCH | REFUSED_BY_RELAY.
+                // payment_shown_minute = the minute the payment screen was last visible, rounded up
+                // (S9b): a new process restores the relay-session hold of §19.11 from it
+                // (SyncController.restorePaymentHold); the engine nulls it once the longest hold
+                // (60 min) has passed.
                 """CREATE TABLE ent_state (
                     id                     INTEGER PRIMARY KEY CHECK (id = 1),
                     schedule_seq           INTEGER NOT NULL CHECK (schedule_seq >= 1),
@@ -422,7 +426,8 @@ object Schema {
                     payout_salt            BLOB    NOT NULL CHECK (length(payout_salt) = 32),
                     restore_scan_until_day INTEGER CHECK (restore_scan_until_day IS NULL OR (typeof(restore_scan_until_day) = 'integer' AND restore_scan_until_day >= 0)),
                     auto_renew_credits     INTEGER NOT NULL DEFAULT 0 CHECK (auto_renew_credits IN (0, 1)),
-                    alarm_flags            INTEGER NOT NULL DEFAULT 0 CHECK (alarm_flags BETWEEN 0 AND 7)
+                    alarm_flags            INTEGER NOT NULL DEFAULT 0 CHECK (alarm_flags BETWEEN 0 AND 7),
+                    payment_shown_minute   INTEGER CHECK (payment_shown_minute IS NULL OR (typeof(payment_shown_minute) = 'integer' AND payment_shown_minute % 60 = 0))
                 )""",
                 // (3) Issuance flows (packs, the trial, and refreshes of received credits, §19.8). Live
                 // rows carry their secrets; terminal rows carry none and are deleted by GC at

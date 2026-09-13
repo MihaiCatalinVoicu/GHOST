@@ -37,6 +37,9 @@ class AndroidSyncController internal constructor(
         runtime.privacyMode = mode
     }
 
+    /** The global privacy mode (read by the entitlement engine; opens no transaction, unlike [status]). */
+    val privacyMode: PrivacyMode get() = runtime.privacyMode
+
     override fun status(): SyncStatus = runtime.status()
 
     /** Cancels the periodic job at once, then stops every session and drops the engine (§11.2 #17). */
