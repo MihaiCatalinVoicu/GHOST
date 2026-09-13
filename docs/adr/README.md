@@ -35,7 +35,7 @@ Un ADR nou primește următorul număr, status „Propus”, și se leagă de ce
 
 ## Propuse (aplicate, în așteptarea deciziei proprietarului)
 
-Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`, cu corecțiile normative §19), ca ADR-17 … ADR-20 înaintea aprobării lor. Decizia proprietarului (Q1) și valorile implicite Q2–Q30 ale designului (§17) se înregistrează aici și în fiecare ADR. ADR-21 e rezervat sarcinii paralele despre classpath-ul rezolvat.
+Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`, cu corecțiile normative §19), ca ADR-17 … ADR-20 înaintea aprobării lor. Decizia proprietarului (Q1) și valorile implicite Q2–Q35 ale designului (§17; Q31 nu are valoare implicită, decide proprietarul) se înregistrează aici și în fiecare ADR. ADR-21 e rezervat sarcinii paralele despre classpath-ul rezolvat.
 
 | ADR | Titlu |
 |---|---|
