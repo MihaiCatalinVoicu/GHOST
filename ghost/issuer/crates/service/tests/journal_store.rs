@@ -319,6 +319,47 @@ fn prune_dir_needs_a_fitting_snapshot_and_never_writes_a_segment() {
     assert_eq!(j.append(2962, &entries()[2]).unwrap(), 5);
 }
 
+/// Review finding OPS-PRUNE-1: a newest segment that holds no entry (created by an append that
+/// died before its first frame was durable: empty, or a torn frame) leaves the segment of the last
+/// entry in place, so the journal still opens where it was and continues the sequence.
+#[test]
+fn prune_dir_keeps_the_segment_of_the_last_entry() {
+    for torn in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let j = FileJournal::open(dir.path()).unwrap();
+        j.append(2960, &entries()[0]).unwrap();
+        j.append(2961, &entries()[2]).unwrap();
+        j.append(2961, &entries()[3]).unwrap();
+        drop(j);
+        let bytes = if torn {
+            entries()[4].encode(4).unwrap()[..20].to_vec()
+        } else {
+            Vec::new()
+        };
+        std::fs::write(segment(dir.path(), 2963), &bytes).unwrap();
+        assert_eq!(
+            journal::prune_dir(dir.path(), u64::MAX, 3).unwrap(),
+            Pruned {
+                removed: vec![2960],
+                kept: 2,
+                first_seq: 2,
+                last_seq: 3,
+            },
+            "torn {torn}"
+        );
+        let j = FileJournal::open(dir.path()).unwrap();
+        let seqs: Vec<u64> = j.entries().unwrap().into_iter().map(|(s, _)| s).collect();
+        assert_eq!(seqs, vec![2, 3]);
+        assert_eq!(j.append(2963, &entries()[4]).unwrap(), 4);
+        drop(j);
+        // Once a later segment holds an entry, 2961 goes too.
+        assert_eq!(
+            journal::prune_dir(dir.path(), u64::MAX, 4).unwrap().removed,
+            vec![2961]
+        );
+    }
+}
+
 #[test]
 fn prune_dir_on_an_empty_missing_or_damaged_journal_removes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -357,8 +398,9 @@ fn prune_dir_on_an_empty_missing_or_damaged_journal_removes_nothing() {
 }
 
 /// A segment listed but gone before it is read (removed by a prune that runs while an issuer
-/// starts) is skipped: a removed prefix leaves a journal that opens, and a removed middle segment
-/// is still a sequence gap.
+/// starts) ends a removed prefix: the journal opens after it, without the segments read before it
+/// (the prune removes in ascending order), and a segment missing from the listing is still a
+/// sequence gap.
 #[cfg(unix)]
 #[test]
 fn a_segment_removed_while_the_journal_is_read_is_skipped() {
@@ -387,6 +429,15 @@ fn a_segment_removed_while_the_journal_is_read_is_skipped() {
     j.append(2963, &entries()[4]).unwrap();
     drop(j);
     gone(2962);
+    let seqs: Vec<u64> = FileJournal::open(dir.path())
+        .unwrap()
+        .entries()
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    assert_eq!(seqs, vec![4]);
+    std::fs::remove_file(segment(dir.path(), 2962)).unwrap();
     assert_eq!(FileJournal::open(dir.path()).err(), Some(JournalError::Gap));
 }
 

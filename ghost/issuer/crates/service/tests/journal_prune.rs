@@ -14,7 +14,7 @@ use common::faults::FaultPlan;
 use common::scenarios::other_blinded;
 use common::world::World;
 use ghost_entitlement::grid::WEEK_SECS;
-use ghost_issuer::journal::{self, PruneError, SEGMENT_PREFIX};
+use ghost_issuer::journal::{self, Entry, PruneError, SEGMENT_PREFIX};
 use ghost_issuer::service::OpenMode;
 use ghost_issuer::store::{self, MetaKey, RedbSnapshot};
 use ghost_issuer_api::proto as wire;
@@ -157,6 +157,64 @@ fn a_prune_never_touches_the_segment_the_issuer_writes() {
     retries(&mut w, &held);
     w.check();
     assert!(std::fs::read(&latest).unwrap().len() < bytes.len());
+}
+
+/// Review finding OPS-PRUNE-1: the newest segment holds no entry. The issuer died between creating
+/// the segment of a new week and its first frame (empty), or in the middle of that frame (torn,
+/// the bytes a halted issuer keeps until its restart). Packs in weeks 2960 and 2961, an idle week,
+/// the hourly snapshot of every entry, then the empty or torn segment of week 2963: the prune
+/// removes 2960 but keeps 2961, which holds the last entry, so the issuer restarts and a restore
+/// from the snapshot replays.
+#[test]
+fn a_prune_keeps_the_segment_of_the_last_entry_when_the_newest_holds_none() {
+    for torn in [false, true] {
+        let mut w = World::new(true);
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let label = format!("idle-{}", w.week());
+            w.buy_pack(&label);
+            held.push((label.clone(), w.sign(&label).unwrap().blind_signatures));
+            w.advance(WEEK_SECS);
+            w.tick();
+        }
+        w.advance(WEEK_SECS);
+        w.tick();
+        w.snapshot();
+        assert_eq!(segments(&w), vec![2960, 2961]);
+        let applied = snapshot_applied(&w);
+        w.crash();
+        let dir = w.dir.path().join("journal");
+        let bytes = if torn {
+            let frame = Entry::Issue {
+                invoice_id: [7; 16],
+                digest: [7; 32],
+            }
+            .encode(applied + 1)
+            .unwrap();
+            frame[..frame.len() / 2].to_vec()
+        } else {
+            Vec::new()
+        };
+        std::fs::write(dir.join(format!("{SEGMENT_PREFIX}2963")), &bytes).unwrap();
+        let pruned = journal::prune_dir(&dir, w.now, applied).unwrap();
+        assert_eq!(pruned.removed, vec![2960], "torn {torn}");
+        assert_eq!(segments(&w), vec![2961, 2963]);
+        assert_eq!(pruned.last_seq, applied);
+        assert!(0 < pruned.first_seq && pruned.first_seq <= applied);
+        // A later run removes nothing more: 2961 holds the last entry.
+        assert!(journal::prune_dir(&dir, u64::MAX, applied)
+            .unwrap()
+            .removed
+            .is_empty());
+        w.open(OpenMode::Normal);
+        w.refill();
+        w.tick();
+        retries(&mut w, &held);
+        w.check();
+        w.restore();
+        retries(&mut w, &held);
+        w.check();
+    }
 }
 
 /// A snapshot that does not fit the journal removes nothing: one newer than the journal (another

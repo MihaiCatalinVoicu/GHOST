@@ -430,16 +430,20 @@ mesajul este `snapshot: failed, …`.
   ia cel mai nou snapshot din `$H/snapshots/`, îl verifică la fel ca pasul de mai sus (se deschide cu
   schema 1, invarianții reconcilierii țin) și abia apoi șterge, cel mai vechi întâi, segmentele
   `issued.journal.<săptămână>` ale căror intrări sunt toate mai vechi de 7 zile și aplicate în
-  snapshot (marcajul lui `journal_applied`, citit prin copia privată); segmentul cel mai nou, în care
-  scrie issuer-ul, rămâne. Un snapshot neverificat sau care nu se potrivește jurnalului (a aplicat
-  intrări pe care jurnalul nu le are, sau jurnalul nu mai are intrarea de după el) nu șterge nimic.
+  snapshot (marcajul lui `journal_applied`, citit prin copia privată); segmentul care ține ultima
+  intrare rămâne, cu toate cele de după el (deci și cel mai nou, în care scrie issuer-ul, chiar gol
+  sau cu un cadru rupt): repornirea și restaurarea continuă numerotarea de la acea intrare (§19.24).
+  Un snapshot neverificat sau care nu se potrivește jurnalului (a aplicat intrări pe care jurnalul
+  nu le are, sau jurnalul nu mai are intrarea de după el) nu șterge nimic.
   Rulează în containerul `ops`, cu `data/journal/` montat la `/journal` și capabilitatea
   `DAC_OVERRIDE` doar pentru această rulare (fișierele jurnalului sunt ale utilizatorului
   issuer-ului); issuer-ul poate rula între timp (nu se deschide niciun segment pentru scriere). Ține
   `$H/snapshot.lock` cât rulează și nu face nimic într-o fereastră de mentenanță. Retenția: segmentul
-  săptămânii w pleacă la prima rulare după `start(w + 2)`, deci o intrare trăiește cel mult 14 zile
-  și o oră (§6.4: 7–14 zile), iar orice snapshot păstrat (cel mult 7 zile) rămâne restaurabil cu
-  jurnalul rămas. Așteptat: nicio ieșire; un refuz (`PRUNE_REFUSED reason=<…>`, cu
+  săptămânii w pleacă la prima rulare după `start(w + 2)` în care un segment mai nou ține o intrare,
+  deci, cât timp issuer-ul face tranziții, o intrare trăiește cel mult 14 zile și o oră (§6.4: 7–14
+  zile); segmentul ultimei intrări rămâne până la tranziția următoare, oricât de vechi (un issuer
+  fără tranziții depășește retenția, secțiunea 13). Orice snapshot păstrat (cel mult 7 zile) rămâne
+  restaurabil cu jurnalul rămas. Așteptat: nicio ieșire; un refuz (`PRUNE_REFUSED reason=<…>`, cu
   `RECONCILIATION_MISMATCH …` înainte pentru `snapshot-unverified`, sau `INPUT_REFUSED …`,
   `ES_REFUSED …`) ajunge în mail-ul cron-ului și se investighează înainte de orice restaurare.
   Verificare manuală:
@@ -448,7 +452,9 @@ mesajul este `snapshot: failed, …`.
   GHOST_ISSUER_HOST_DIR="$H" ghost/infra/issuer/journal-prune.sh && ls "$H/data/journal"
   ```
   Așteptat: niciun mesaj de la script, apoi doar segmente `issued.journal.<w>` cu w cel puțin
-  săptămâna curentă − 1 (și săptămâna curentă − 2 în prima oră a unei săptămâni).
+  săptămâna curentă − 1 (și săptămâna curentă − 2 în prima oră a unei săptămâni), plus, dacă
+  issuer-ul nu a mai făcut nicio tranziție de atunci, segmentul ultimei intrări și cele de după el,
+  oricât de vechi (secțiunea 13).
 - [ ] Restaurare, când `issuer.redb` este corupt sau pierdut și `data/journal/` este intact, într-o
   fereastră de mentenanță (secțiunea 0; altfel snapshot-ul orar ar putea porni issuer-ul între `mv`
   și `install`, pe un director fără bază):
@@ -764,6 +770,13 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
   mentenanță lungă) sau cel mai nou nu se verifică, segmentele rămân și retenția de 7–14 zile a
   jurnalului se depășește (siguranța restaurării are prioritate); refuzul apare în mail-ul
   cron-ului la fiecare oră.
+- Un issuer care nu mai face nicio tranziție (factură, emitere, invitație, credit, reîmprospătare,
+  cerere de plată, lot) păstrează segmentul ultimei intrări, cu hash-urile de claim, nullifier-ii și
+  adresele de plată din el, până la tranziția următoare, oricât de vechi: tăierea nu șterge niciodată
+  segmentul care ține ultima intrare, fiindcă repornirea și restaurarea continuă numerotarea de la ea
+  (§19.24). Retenția de 7–14 zile a jurnalului ține deci doar cât timp issuer-ul face tranziții.
+  Remediul propus (Q31: la schimbarea săptămânii issuer-ul scrie o intrare-ancoră fără date într-un
+  segment nou) nu este încă implementat.
 - Numărătorile relay-urilor sunt doar ale săptămânilor închise, cele ale ultimelor 13, păstrate în
   `nullifiers.redb` (tabela `redemption_counts`, un număr pe săptămână); un store pierdut
   (`--nullifiers-reset`) le pierde, iar o săptămână fără răscumpărări nu apare (valoarea ei este 0).

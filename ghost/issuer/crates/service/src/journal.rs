@@ -50,16 +50,20 @@
 //! Anything else that does not decode (damage followed by a valid frame, damage in an earlier
 //! segment, a verified frame of an unknown format) refuses the start.
 //!
-//! **Pruning** (§6.3, §6.4; runbook B1). Segments are removed only by [`prune_dir`] (and
+//! **Pruning** (§6.3, §6.4, §19.24; runbook B1). Segments are removed only by [`prune_dir`] (and
 //! [`FileJournal::prune`] over it), which `ghost-issuer-ops journal-prune` runs hourly from the
 //! host after verifying the newest snapshot. A segment goes when every entry in it is older than
-//! the 7-day re-serve window and covered by that snapshot's `journal_applied`; the latest segment
-//! is never removed. Segments go in ascending order, so a crash between two removals leaves a
-//! contiguous suffix whose first entry is at most `journal_applied + 1` of the snapshot and of the
-//! live database: the issuer restarts, and a restore from any snapshot B1 keeps (at most 7 days
-//! old) replays. [`prune_dir`] never truncates or writes a segment, so it may run while the issuer
-//! appends; a segment it removes between the listing and the read of an issuer that starts at that
-//! moment is skipped, and the sequence checks refuse anything but a removed prefix.
+//! the 7-day re-serve window and covered by that snapshot's `journal_applied`; the segment that
+//! holds the last entry is never removed, nor any later one (the newest, which the issuer writes,
+//! may be empty or end in a torn frame), because the issuer's restart and a restore continue the
+//! sequence from that entry. An issuer that makes no transition therefore keeps the segment of its
+//! last entry beyond the 7–14-day retention (declared, runbook §13). Segments go in ascending
+//! order, so a crash between two removals leaves a contiguous suffix whose first entry is at most
+//! `journal_applied + 1` of the snapshot and of the live database: the issuer restarts, and a
+//! restore from any snapshot B1 keeps (at most 7 days old) replays. [`prune_dir`] never truncates
+//! or writes a segment, so it may run while the issuer appends. A reader that finds a listed
+//! segment gone at its read (a prune ran meanwhile) drops it and every segment it read before it,
+//! the prefix that prune is removing; the sequence checks refuse anything else.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -624,11 +628,14 @@ pub struct Pruned {
     pub last_seq: u64,
 }
 
-/// Runbook B1 (§6.3, §6.4): removes, in ascending order, every segment of the journal in `dir`
-/// except the latest whose entries are all older than the 7-day re-serve window (the segment's
-/// week ended at least [`RESERVE_WINDOW_SECS`] before `now`) and covered by a verified snapshot
-/// (`snapshot_journal_applied`, the snapshot's `journal_applied`, is at least the segment's last
-/// sequence number); it stops at the first segment that is not both. Nothing is removed unless the
+/// Runbook B1 (§6.3, §6.4, §19.24): removes, in ascending order, the segments of the journal in
+/// `dir` before the one that holds the last entry whose entries are all older than the 7-day
+/// re-serve window (the segment's week ended at least [`RESERVE_WINDOW_SECS`] before `now`) and
+/// covered by a verified snapshot (`snapshot_journal_applied`, the snapshot's `journal_applied`, is
+/// at least the segment's last sequence number); it stops at the first segment that is not both.
+/// The segment of the last entry and every later one stay (the newest, which the issuer writes, may
+/// be empty or end in a torn frame): the issuer's restart and a restore continue the sequence from
+/// that entry. Nothing is removed unless the
 /// journal holds every entry after the snapshot: `first ≤ snapshot_journal_applied + 1` and
 /// `snapshot_journal_applied ≤ last`, the conditions of the issuer's own replay (an empty journal
 /// fits only a snapshot that applied nothing). No segment is opened for writing, so a torn tail
@@ -655,15 +662,18 @@ pub fn prune_dir(
     if first_seq > snapshot_journal_applied.saturating_add(1) {
         return Err(PruneError::SnapshotBehind);
     }
-    let latest = segments.last().map(|s| s.week);
+    let last_entry_segment = segments
+        .iter()
+        .rposition(|s| !s.entries.is_empty())
+        .unwrap_or(0);
     let mut removed = Vec::new();
-    for s in &segments {
+    for s in &segments[..last_entry_segment] {
         let ended = week_start(s.week.saturating_add(1)).saturating_add(RESERVE_WINDOW_SECS);
         let covered = s
             .entries
             .last()
             .is_none_or(|(seq, _)| *seq <= snapshot_journal_applied);
-        if Some(s.week) == latest || ended > now || !covered {
+        if ended > now || !covered {
             break;
         }
         std::fs::remove_file(&s.path).map_err(|_| PruneError::Journal(JournalError::Io))?;
@@ -710,10 +720,20 @@ fn sync_dir(dir: &Path) -> Result<(), JournalError> {
     Ok(())
 }
 
-/// Reads and validates every segment, ascending by week. A segment listed but gone before it is
-/// read was removed by a concurrent [`prune_dir`], which removes a prefix only: it is skipped, and
-/// the sequence checks here and at the replay refuse any other missing entries.
+/// Reads and validates every segment, ascending by week. A segment listed but gone at its read was
+/// removed by a concurrent [`prune_dir`], which removes a prefix in ascending order: every segment
+/// read before it is being removed too, so only the segments after it are kept. A segment missing
+/// from the listing is a sequence gap, and the replay refuses a journal that no longer continues
+/// the database.
 fn read_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
+    read_segments_with(dir, |path| std::fs::read(path))
+}
+
+/// [`read_segments`], reading each listed segment with `read`.
+fn read_segments_with(
+    dir: &Path,
+    mut read: impl FnMut(&Path) -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<Segment>, JournalError> {
     let mut weeks = Vec::new();
     for item in std::fs::read_dir(dir).map_err(|_| JournalError::Io)? {
         let item = item.map_err(|_| JournalError::Io)?;
@@ -732,9 +752,9 @@ fn read_segments(dir: &Path) -> Result<Vec<Segment>, JournalError> {
     weeks.sort_unstable();
     let mut files = Vec::with_capacity(weeks.len());
     for week in weeks {
-        match std::fs::read(segment_path(dir, week)) {
+        match read(&segment_path(dir, week)) {
             Ok(bytes) => files.push((week, bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => files.clear(),
             Err(_) => return Err(JournalError::Io),
         }
     }
@@ -798,4 +818,43 @@ fn frame_at(bytes: &[u8], pos: usize) -> Option<(u64, u8, &[u8], usize)> {
     }
     let seq = u64::from_be_bytes(frame[4..12].try_into().ok()?);
     Some((seq, frame[12], &frame[13..], pos + need))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review finding OPS-PRUNE-3: a reader lists segments 2960, 2961 and 2962 and reads 2960;
+    /// a concurrent prune then removes 2960 and 2961 (two unlinks, ascending) before the reader
+    /// reaches 2961. What the reader got is a removed prefix, not a sequence gap.
+    #[test]
+    fn a_prune_between_two_segment_reads_leaves_a_removed_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = FileJournal::open(dir.path()).unwrap();
+        for (i, week) in [2960u64, 2961, 2962].into_iter().enumerate() {
+            let entry = Entry::Issue {
+                invoice_id: [i as u8; 16],
+                digest: [i as u8; 32],
+            };
+            assert_eq!(j.append(week, &entry).unwrap(), i as u64 + 1);
+        }
+        drop(j);
+        let segments = read_segments_with(dir.path(), |path| {
+            if path == segment_path(dir.path(), 2961) {
+                for week in [2960, 2961] {
+                    std::fs::remove_file(segment_path(dir.path(), week)).unwrap();
+                }
+            }
+            std::fs::read(path)
+        })
+        .unwrap();
+        let read: Vec<(u64, Vec<u64>)> = segments
+            .iter()
+            .map(|s| (s.week, s.entries.iter().map(|(seq, _)| *seq).collect()))
+            .collect();
+        assert_eq!(read, vec![(2962, vec![3])]);
+        // The issuer that reads next opens where the journal was and continues it.
+        let j = FileJournal::open(dir.path()).unwrap();
+        assert_eq!(j.next_seq(), Ok(4));
+    }
 }

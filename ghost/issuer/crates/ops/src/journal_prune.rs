@@ -5,8 +5,9 @@
 //! reads it; the snapshot keeps its bytes) and is verified as runbook B1 defines it: it opens as
 //! an issuer database of schema 1 and the reconciliation invariants of its counters hold at
 //! `--now`. Only then does its `journal_applied` mark bound what goes:
-//! `ghost_issuer::journal::prune_dir` removes, in ascending order, every segment but the latest
-//! whose entries are all older than the 7-day re-serve window and applied in the snapshot, and
+//! `ghost_issuer::journal::prune_dir` removes, in ascending order, the segments before the one that
+//! holds the journal's last entry whose entries are all older than the 7-day re-serve window and
+//! applied in the snapshot (design §19.24), and
 //! removes nothing when the snapshot does not fit the journal (it applied entries the journal does
 //! not hold, or the journal no longer holds the entry after its last applied one, so a restore
 //! from it would refuse the start). The journal's files are removed by the journal module, which

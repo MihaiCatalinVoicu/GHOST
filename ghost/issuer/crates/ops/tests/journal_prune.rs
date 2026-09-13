@@ -1,9 +1,9 @@
 //! `journal-prune` (design §6.3, §6.4, §19.15; runbook B1), run in process: the snapshot is
 //! verified as B1 defines it (an issuer database of schema 1 whose reconciliation invariants hold)
 //! before anything goes; its `journal_applied` mark, read through the private-copy reader, bounds
-//! what goes; the 7-day window and the latest segment stay; a snapshot that does not fit the
-//! journal, or a journal that does not read, removes nothing. The crash-safety of a removal on the
-//! real issuer is in `issuer/crates/service/tests/journal_prune.rs`.
+//! what goes; the 7-day window and the segment of the last entry stay; a snapshot that does not
+//! fit the journal, or a journal that does not read, removes nothing. The crash-safety of a
+//! removal on the real issuer is in `issuer/crates/service/tests/journal_prune.rs`.
 
 mod common;
 
