@@ -64,6 +64,7 @@ use ghost_issuer::pool::PoolError;
 use ghost_issuer::rail::digest::Credentials;
 use ghost_issuer::rail::monero::{
     Endpoint, MoneroWalletRpc, RpcClient, Timeouts, WalletCheckError, TRANSFER_FIELDS,
+    TRANSFER_FIELDS_OMITTED_AT_ZERO,
 };
 use ghost_issuer::rail::{PaymentRail, RailError};
 use ghost_issuer::reconcile::{self, CounterId, Counters};
@@ -791,7 +792,8 @@ fn regtest_scenario() {
     t.pay(&happy.subaddress, PRICE);
     t.tick();
     // RP §6.8 (with step 18): a pool entry of the real wallet carries every field the issuer
-    // reads (review finding S5-MON-4).
+    // reads (review finding S5-MON-4) but `confirmations`, which wallet-rpc leaves out at 0
+    // (`KV_SERIALIZE_OPT`) and the rail reads as 0 (CI run 34727439185).
     let pooled = rpc(
         &t.issuer_wallet.rpc,
         "get_transfers",
@@ -803,7 +805,11 @@ fn regtest_scenario() {
     assert!(!pooled.is_empty());
     for e in pooled {
         for f in TRANSFER_FIELDS {
-            assert!(e.get(f).is_some(), "{f} missing in the pool entry {e}");
+            if TRANSFER_FIELDS_OMITTED_AT_ZERO.contains(&f) {
+                assert!(e.get(f).is_none(), "{f} written at 0 in the pool entry {e}");
+            } else {
+                assert!(e.get(f).is_some(), "{f} missing in the pool entry {e}");
+            }
         }
     }
     let s = t.blind_sign(&happy);

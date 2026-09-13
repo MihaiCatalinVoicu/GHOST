@@ -55,6 +55,47 @@ pub fn get_address_reply(call: &Call, count: u64) -> Reply {
     )
 }
 
+/// An incoming `transfer_entry` of `get_transfers` and `get_transfer_by_txid` (`kind` `in`,
+/// `block` or `pool`) as wallet-rpc v0.18.5.1 writes it (`wallet_rpc_server_commands_defs.h`;
+/// `fill_transfer_entry` and `set_confirmations` in `wallet_rpc_server.cpp`): every `KV_SERIALIZE`
+/// field, `confirmations` only when it is not 0 (`KV_SERIALIZE_OPT(confirmations, 0)`: epee's
+/// `KV_SERIALIZE_OPT_N` stores nothing for the default value, so a pool entry, whose
+/// confirmations are always 0, never has the key), and `destinations`, empty for an incoming
+/// transfer, left out (epee stores nothing for an empty list). A pool entry has height 0 and is
+/// locked; a coinbase (`block`) unlocks 60 blocks after its height.
+pub fn transfer_entry(
+    kind: &str,
+    minor: u32,
+    amount: u64,
+    height: u64,
+    confirmations: u64,
+    txid: &str,
+) -> Value {
+    let unlock_time = if kind == "block" { height + 60 } else { 0 };
+    let mut v = json!({
+        "address": SUBADDRESS,
+        "amount": amount,
+        "amounts": [amount],
+        "double_spend_seen": false,
+        "fee": 30_660_000u64,
+        "height": height,
+        "locked": kind == "pool" || confirmations < 10,
+        "note": "",
+        "payment_id": "0000000000000000",
+        "subaddr_index": {"major": 0, "minor": minor},
+        "subaddr_indices": [{"major": 0, "minor": minor}],
+        "suggested_confirmations_threshold": 1,
+        "timestamp": 1_789_237_444u64,
+        "txid": txid,
+        "type": kind,
+        "unlock_time": unlock_time
+    });
+    if confirmations != 0 {
+        v["confirmations"] = json!(confirmations);
+    }
+    v
+}
+
 /// One authenticated request as the script sees it.
 #[derive(Debug, Clone)]
 pub struct Call {
