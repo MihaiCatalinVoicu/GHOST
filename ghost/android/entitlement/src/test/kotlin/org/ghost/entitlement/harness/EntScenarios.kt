@@ -417,9 +417,11 @@ internal class ScenarioEG : EntScenario("E-G") {
  * an invitee of invite 2, created before the restore, wrote its credit into that drop at relay A; the
  * redeem lane spends 8 of the device's tokens per slot on read capabilities of the 8 drops at A, B and
  * C (every need is met, so no lane step retries a reservation without a token), the read lane fetches
- * the blob, the engine turns the credit into a refresh flow, which runs in a quiet run days later (one
- * scripted a day until day 17), and a quiet run after the fifth week ends the scan (GC closes the drops
- * and forgets it). A crash inside the restore ends with the scan owed (a later trusted relay session
+ * the blob, the engine turns the credit into a refresh flow due at the scanned drop's refresh time,
+ * 1–14 days after the scan ends (`RefreshPlan.scanned`, §19.26), a quiet run after the fifth week ends
+ * the scan (GC closes the drops and forgets it), the refresh runs in one of the quiet runs scripted
+ * each day until day 50 (a crash may make it take its identical retry a day later), and a quiet run on
+ * day 58 lets GC delete its terminal row. A crash inside the restore ends with the scan owed (a later trusted relay session
  * installs it) or with no identity (the user restores again). In every run, crash runs included, the
  * harness requires the credit refreshed ([EntWorld.dropCredit]) and holds quiescence until the owed
  * scan is installed and, past its end, forgotten ([EntWorld.quiescenceProblems]).
@@ -448,9 +450,11 @@ internal class ScenarioEJ : EntScenario("E-J") {
         // the session at 26 h consumes a blob a crash left fetched.
         w.foreground(e.c, 7 * HOUR, 7 * HOUR + 5 * MINUTE)
         w.foreground(e.c, 26 * HOUR, 26 * HOUR + 5 * MINUTE)
-        for (day in 2..REFRESH_DAYS) w.quietRunAt(day * DAY + 10 * MINUTE)
-        w.quietRunAt((RestoreScan.SCAN_DAYS + 1) * DAY + 10 * MINUTE)
-        w.endMillis = (RestoreScan.SCAN_DAYS + 1) * DAY + HOUR
+        // The first quiet run after the scan's end closes the drops; the refresh is due 1–14 days after
+        // that end (a scanned drop's refresh time, §19.26), so one quiet run a day covers it and a retry.
+        for (day in RestoreScan.SCAN_DAYS + 1..RestoreScan.SCAN_DAYS + 15) w.quietRunAt(day * DAY + 10 * MINUTE)
+        w.quietRunAt((RestoreScan.SCAN_DAYS + 23) * DAY + 10 * MINUTE)
+        w.endMillis = (RestoreScan.SCAN_DAYS + 23) * DAY + HOUR
     }
 }
 

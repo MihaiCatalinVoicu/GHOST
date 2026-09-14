@@ -17,6 +17,7 @@ import org.ghost.identity.RootEntropy
 import org.ghost.network.EntitlementCrypto
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.RelayEntry
+import org.ghost.sync.store.Time
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -124,6 +125,49 @@ class RestoreScanTest {
         assertEquals(InviteStore.CREDITED, checkNotNull(w.tx { w.ctx().invites.get(it, 5) }).state)
         assertFalse("the credited drop stops being listened", w.listening(5))
         assertTrue("the other drops are still listened", (0..7).filter { it != 5 }.all { w.listening(it) })
+    }
+
+    /**
+     * Q31 with the restore scan (§19.26): a scanned drop's invite expiry is unknown, so both its refresh
+     * times are one draw 1–14 days after the scan's end; a credit read at the install and one read on
+     * the scan's last day are due at that same time, and a later restore that extends the scan draws the
+     * times of the drops still without a credit anew.
+     */
+    @Test
+    fun aScannedDropIsRefreshedAfterTheScanEndsWhateverTheRead(): Unit = World().use { w ->
+        w.random.uniformValue = 0.25
+        w.engine.restore(w.mnemonic())
+        w.trustedPass()
+        val at = Time.ceilMinute(until * Grid.DAY + Grid.DAY + (0.25 * 13 * Grid.DAY).toLong())
+        for (row in w.tx { w.ctx().invites.all(it) }) {
+            assertEquals(at, row.refreshMinute)
+            assertEquals(at, row.lateRefreshMinute)
+        }
+        val epoch = Grid.creditEpoch(WEEK0)
+        for ((index, readAt) in listOf(5 to w.clock.now, 6 to until * Grid.DAY - Grid.HOUR)) {
+            w.clock.now = readAt
+            val keys = w.identity.root.inviteKeys(index)
+            val credit = TestBytes.token(4300 + index)
+            w.crypto.register(credit, EntitlementCrypto.KIND_CREDIT, epoch)
+            w.fetched(keys.dropNamespace, DropSeal.sealCredit(credit, keys.drop.publicKey, keys.dropNamespace))
+            w.ctx().dropSteps.receive(readAt)
+        }
+        assertEquals("the read picks no time", listOf(at, at), w.purchases().map { it.nextDueMinute })
+        // The identity wiped, the same seed restored on the scan's last day: the scan is extended.
+        w.identity.exists = false
+        w.random.uniformValue = 0.75
+        assertEquals(RestoreResult.RESTORED, w.engine.restore(w.mnemonic()))
+        w.trustedPass()
+        val extended = until + 34
+        assertEquals(extended, w.scanDay())
+        val again = Time.ceilMinute(extended * Grid.DAY + Grid.DAY + (0.75 * 13 * Grid.DAY).toLong())
+        for (row in w.tx { w.ctx().invites.all(it) }) {
+            val credited = row.index == 5 || row.index == 6
+            assertEquals(if (credited) InviteStore.CREDITED else InviteStore.CREATED, row.state)
+            assertEquals(if (credited) until else extended, row.listenUntilDay)
+            assertEquals(if (credited) at else again, row.refreshMinute)
+            assertEquals(row.refreshMinute, row.lateRefreshMinute)
+        }
     }
 
     @Test
@@ -288,7 +332,7 @@ class RestoreScanTest {
         // An invite of an earlier identity of this database, at index 0.
         val other = World.INVITER.inviteKeys(0)
         w.tx { t ->
-            w.ctx().invites.insert(t, 0, ByteArray(Invite.PAYLOAD_BYTES) { 1 }, other.dropNamespace, Grid.day(T0) + 60)
+            w.ctx().invites.insert(t, 0, ByteArray(Invite.PAYLOAD_BYTES) { 1 }, other.dropNamespace, Grid.day(T0) + 60, T0 + 20 * Grid.DAY, T0 + 61 * Grid.DAY)
             w.stores.namespaces.register(t, org.ghost.sync.api.NamespaceId(other.dropNamespace), Consumer.IDENTITY, w.relayIds.toSet(), true)
         }
         w.engine.restore(w.mnemonic())

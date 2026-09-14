@@ -42,6 +42,17 @@ internal object RefreshPlan {
         return Times(first, second)
     }
 
+    /**
+     * The refresh times of a drop a restore scans (§8.4), listened until UTC day [listenUntilDay]: its
+     * invite's expiry is unknown, so it has only the second time, 1–14 days after the scan ends, and
+     * [Times.first] is that time too. Every read precedes it, so the read decides nothing, not even the
+     * bit E17 declares for an invite this device created.
+     */
+    fun scanned(listenUntilDay: Long, random: EntitlementRandom): Times {
+        val at = draw(listenUntilDay * Grid.DAY, random.uniform())
+        return Times(at, at)
+    }
+
     private fun draw(from: Long, u: Double): Long = Time.ceilMinute(from + DELAY_MIN + (u * (DELAY_MAX - DELAY_MIN)).toLong())
 
     /**
