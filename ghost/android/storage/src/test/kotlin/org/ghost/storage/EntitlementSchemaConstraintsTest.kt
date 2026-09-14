@@ -48,7 +48,7 @@ class EntitlementSchemaConstraintsTest {
                 mapOf("id" to 2), mapOf("schedule_seq" to 0), mapOf("schedule_digest" to bytes(31, 1)), mapOf("next_invite_index" to 65536),
                 mapOf("next_invite_index" to -1), mapOf("payout_salt" to bytes(16, 1)),
                 mapOf("restore_scan_root" to hash(3), "restore_scan_until_day" to -1), mapOf("restore_scan_root" to bytes(31, 1)),
-                // A restore scan's end belongs to the root it is owed for (design §19.26 point 7).
+                // A restore scan's end belongs to the root it is owed for (design §19.26 point 15).
                 mapOf("restore_scan_until_day" to DAY0),
                 mapOf("auto_renew_credits" to 2), mapOf("alarm_flags" to 8), mapOf("alarm_flags" to -1),
                 mapOf("payment_shown_minute" to T0 + 1),

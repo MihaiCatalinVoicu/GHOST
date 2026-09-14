@@ -14,7 +14,7 @@ name: entitlement-exit-gate
 # other suites, about 130 thread-minutes: about 50 minutes on a 4-vCPU runner at 1.5 times the
 # per-thread time; the timeout leaves room for a 2-vCPU runner (about 100 minutes).
 # The restore-scan scenario E-J (design §19.26) took 669 s of the 1 198 s of the default enumeration on a
-# 16-thread workstation (K = 13 510 against 2 743 for E-G, with the review corrections of §19.26 point 7);
+# 16-thread workstation (K = 13 510 against 2 743 for E-G, with the review corrections of §19.26 point 15);
 # not yet measured on the runner class (Q35).
 # Release-like settings: the full enumeration and seed count a release is gated on; the Android
 # plugin builds unit tests for the debug build type only, the one JVM variant there is (as in

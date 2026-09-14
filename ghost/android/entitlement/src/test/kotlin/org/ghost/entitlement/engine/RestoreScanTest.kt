@@ -31,7 +31,7 @@ import org.junit.Test
  * of them becomes a refresh flow like any received credit, new invites continue at index 8, a crash
  * anywhere in the restore ends with the scan owed or with nothing, and GC ends the scan. The scan is
  * owed for the restored root only, installed by a relay session with a trusted clock, which fixes its
- * end, and listened on the slot relays of one drop-blob lifetime before the install (§19.26 point 7,
+ * end, and listened on the slot relays of one drop-blob lifetime before the install (§19.26 point 15,
  * review RS-1 … RS-3).
  */
 class RestoreScanTest {

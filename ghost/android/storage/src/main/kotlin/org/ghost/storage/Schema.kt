@@ -420,7 +420,7 @@ object Schema {
                 // (60 min) has passed. restore_scan_root = SHA-256 commitment to the restored root
                 // (by its invite-0 drop namespace): a restore's drop scan is owed for that root
                 // only; restore_scan_until_day = the scan's end, fixed at its install under a
-                // trusted clock (NULL while owed and not installed; design §19.26 point 7).
+                // trusted clock (NULL while owed and not installed; design §19.26 point 15).
                 """CREATE TABLE ent_state (
                     id                     INTEGER PRIMARY KEY CHECK (id = 1),
                     schedule_seq           INTEGER NOT NULL CHECK (schedule_seq >= 1),

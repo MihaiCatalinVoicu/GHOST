@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * its invitee wrote to at `t_drop` (§19.12) for every blob still stored at the install, and for every
  * blob written until the scan's end.
  *
- * The scan belongs to the restored root and to a trusted clock (§19.26 point 7). [restore] records it
+ * The scan belongs to the restored root and to a trusted clock (§19.26 point 15). [restore] records it
  * as owed with a commitment to the restored root (`restore_scan_root`) and no end, reserves invite
  * indices 0..7, and only then stores the identity. The install runs from a relay session's tick, which
  * runs only while the sync engine trusts the device clock ([resume]), once per process: when the stored

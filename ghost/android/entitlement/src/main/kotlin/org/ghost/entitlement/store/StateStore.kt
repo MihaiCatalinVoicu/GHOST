@@ -77,7 +77,7 @@ internal class StateStore {
         tx.sql.execUpdate("UPDATE ent_state SET next_invite_index = ?1 WHERE id = 1 AND next_invite_index < ?1", listOf(next))
 
     /**
-     * A restore's drop scan is owed for the root [root] commits to (§8.4, §19.26 point 7), recorded before
+     * A restore's drop scan is owed for the root [root] commits to (§8.4, §19.26 point 15), recorded before
      * the restored identity is stored; its end is fixed at the install, under a trusted clock.
      */
     fun oweRestoreScan(tx: SyncTransaction, root: ByteArray): Int {

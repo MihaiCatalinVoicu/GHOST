@@ -85,7 +85,7 @@ internal class TrialSteps(private val c: EngineContext) {
         val invite = Invite.parseAndVerify(text, now, InviteTokenCheck(c.crypto), TransactionNonceStore(tx, Grid.day(now) * Grid.DAY))
         // A target left by an earlier activation that failed has no identity behind it any more.
         c.invites.deleteDropTarget(tx)
-        // So has a restore a crash left owed: the identity created next is the invitee's (§19.26 point 7).
+        // So has a restore a crash left owed: the identity created next is the invitee's (§19.26 point 15).
         c.state.dropRestoreScan(tx)
         c.purchases.insert(
             tx, id, PurchaseStore.TRIAL, PurchaseStore.INVITE, seed, null, invite.inviteToken, base, c.summary.seq, digest, Time.floorHour(now), null,

@@ -121,7 +121,7 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
 
     /**
      * Relay-session work besides the lane: GC, the install of a restore's owed drop scan (its end is
-     * fixed on this clock, §19.26 point 7), drop sending and receiving. GC windows, the scan's end and
+     * fixed on this clock, §19.26 point 15), drop sending and receiving. GC windows, the scan's end and
      * the drop time are read on the device wall clock, so this runs only while the session trusts it.
      */
     private fun tick(c: EngineContext, session: SessionPort) {
