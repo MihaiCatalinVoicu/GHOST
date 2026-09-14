@@ -186,6 +186,9 @@ impl Journal for TearingJournal {
     fn next_seq(&self) -> Result<u64, JournalError> {
         self.inner.next_seq()
     }
+    fn last_entry_week(&self) -> Option<u64> {
+        self.inner.last_entry_week()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

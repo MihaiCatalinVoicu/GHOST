@@ -23,7 +23,7 @@ use ghost_entitlement::grid::week;
 use ghost_entitlement::{Kind, Schedule, Token};
 use ghost_issuer::credit::refresh_digest;
 use ghost_issuer::custody::KeyWindow;
-use ghost_issuer::journal::{Entry, FileJournal, Journal};
+use ghost_issuer::journal::{Entry, FileJournal, Journal, SEGMENT_PREFIX};
 use ghost_issuer::payout::{self, AckFile, BatchFile, EntryOutcome, OpsKey, PayoutReport};
 use ghost_issuer::reconcile::{self, CounterId, Counters, Mismatch};
 use ghost_issuer::scanner::TickReport;
@@ -467,6 +467,69 @@ impl World {
         store::meta(&*tx, MetaKey::JournalApplied)
             .unwrap()
             .unwrap_or(0)
+    }
+
+    /// Every journal segment with its entries, ascending by week. Each segment is read from a copy
+    /// (a torn tail is dropped from the copy only), so this may run while the issuer is open.
+    pub fn journal_segments(&self) -> Vec<(u64, Vec<(u64, Entry)>)> {
+        let dir = self.dir.path().join("journal");
+        let mut weeks: Vec<u64> = match std::fs::read_dir(&dir) {
+            Ok(items) => items
+                .filter_map(|e| {
+                    let name = e.unwrap().file_name().into_string().unwrap();
+                    name.strip_prefix(SEGMENT_PREFIX)
+                        .map(|s| s.parse().unwrap())
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        weeks.sort_unstable();
+        weeks
+            .into_iter()
+            .map(|week| {
+                let copy = tempfile::tempdir().unwrap();
+                let name = format!("{SEGMENT_PREFIX}{week}");
+                std::fs::copy(dir.join(&name), copy.path().join(&name)).unwrap();
+                let entries = FileJournal::open(copy.path()).unwrap().entries().unwrap();
+                (week, entries)
+            })
+            .collect()
+    }
+
+    /// The ANCHOR entries of the journal (Q32) as (segment week, sequence number), ascending.
+    pub fn anchors(&self) -> Vec<(u64, u64)> {
+        self.journal_segments()
+            .into_iter()
+            .flat_map(|(week, entries)| {
+                entries
+                    .into_iter()
+                    .filter(|(_, e)| *e == Entry::Anchor)
+                    .map(move |(seq, _)| (week, seq))
+            })
+            .collect()
+    }
+
+    /// Q32 (§19.25): the journal's last entry is the one ANCHOR of `week`, in that week's
+    /// segment, and the database has applied it.
+    pub fn assert_anchor_last(&self, week: u64) {
+        let of_week: Vec<u64> = self
+            .anchors()
+            .into_iter()
+            .filter(|(w, _)| *w == week)
+            .map(|(_, seq)| seq)
+            .collect();
+        assert_eq!(of_week.len(), 1, "one anchor in week {week}: {of_week:?}");
+        let last = self
+            .journal_segments()
+            .into_iter()
+            .rev()
+            .find_map(|(w, entries)| entries.last().map(|(seq, e)| (w, *seq, e.clone())));
+        assert_eq!(
+            last,
+            Some((week, of_week[0], Entry::Anchor)),
+            "the anchor is the last entry"
+        );
+        assert_eq!(self.journal_applied(), of_week[0], "the anchor is applied");
     }
 
     pub fn tick(&mut self) -> Option<TickReport> {

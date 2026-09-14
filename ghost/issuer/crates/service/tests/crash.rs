@@ -1,8 +1,8 @@
-//! Issuer crash safety (Phase 8 design §13.2, §5.8, §19.5; G-10): scenarios I-A … I-M on the real
+//! Issuer crash safety (Phase 8 design §13.2, §5.8, §19.5; G-10): scenarios I-A … I-N on the real
 //! issuer, redb store and journal. Every fault site of a scenario (FaultyStore: before a write
 //! transaction, pre-commit, post-commit; FaultyJournal: entry lost, torn, durable before the
-//! commit; FaultyRail: before the call, effect without answer) is crashed once; I-A, I-D, I-H and
-//! I-K are also crashed twice (a crash during recovery or the first retry). A crash drops every
+//! commit; FaultyRail: before the call, effect without answer) is crashed once; I-A, I-D, I-H, I-K
+//! and I-N are also crashed twice (a crash during recovery or the first retry). A crash drops every
 //! in-memory object and reopens the same files; the client then retries identically. After every
 //! run `World::check` asserts MS-1, MS-2, MS-3, index and pool consistency, the payout invariants
 //! and the reconciliation invariants; each scenario asserts MS-6 (the paid invoice ends with its
@@ -12,7 +12,9 @@
 //! and the workstation's acknowledgement; "I-F refresh" a received credit exchanged by
 //! `RefreshCredit` (§19.8). I-K (two concurrent requests, then a restart or a restore) and I-L (a
 //! clock step back across a swept epoch) are shared with the mutant detections
-//! (`common/scenarios.rs`); I-M is a lost `create_address` answer without a crash (§19.6 rule 4).
+//! (`common/scenarios.rs`); I-M is a lost `create_address` answer without a crash (§19.6 rule 4);
+//! I-N the weekly ANCHOR journal entry of an idle issuer (Q32, §19.25; single crashes at each of
+//! its sites, with their exact states before the restart, also in `tests/journal_anchor.rs`).
 //! The depth of the double-crash enumeration can be raised with `GHOST_ISSUER_CRASH_DEPTH`
 //! (default 2 sites after the first crash).
 //!
@@ -34,7 +36,7 @@ use common::scenarios::{
     race_retry, race_world, with_credits, RaceKind,
 };
 use common::world::{claim_id, enumerate, Template, World, BASE_WEEK, PRICE};
-use ghost_entitlement::grid::invite_epoch;
+use ghost_entitlement::grid::{invite_epoch, WEEK_SECS};
 use ghost_entitlement::{Kind, Token};
 use ghost_issuer::journal::Entry;
 use ghost_issuer::pool::PoolError;
@@ -818,4 +820,44 @@ fn i_m(w: &mut World) {
 )]
 fn i_m_lost_create_address_answer_without_a_crash() {
     report("I-M", enumerate(&fresh(), i_m, 0));
+}
+
+// ------------------------------------------------------------------------------------------------
+// I-N: the weekly ANCHOR journal entry (Q32, §19.25).
+// ------------------------------------------------------------------------------------------------
+
+/// I-N: the first tick of an idle week decides the data-free ANCHOR entry. Its fault sites are the
+/// anchor's transaction (before it begins), its append (the entry lost, torn, or durable before
+/// the commit), its commit (failed or done), then the tick's rail calls and transaction. The week
+/// ends with one anchor, the journal's last entry, applied; a restart and a restore of the snapshot
+/// taken before the week replay it and add none; the pack bought before stays re-served byte for
+/// byte and refuses another request (MS-1).
+fn i_n(w: &mut World) {
+    w.advance(WEEK_SECS);
+    w.tick();
+    w.assert_anchor_last(BASE_WEEK + 1);
+    w.reopen();
+    w.assert_anchor_last(BASE_WEEK + 1);
+    w.restore();
+    w.assert_anchor_last(BASE_WEEK + 1);
+    let other = other_blinded(w, "n");
+    assert_eq!(w.sign_with("n", other).unwrap().state, OTHER);
+    assert_eq!(w.sign("n").unwrap().state, SIGNED);
+}
+
+/// A pack in week 2960 and the hourly snapshot after it.
+fn anchor_template() -> Template {
+    let mut w = World::new(true);
+    w.buy_pack("n");
+    w.snapshot();
+    w.template()
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "crash suite: release profile only (design §19.17 point 2)"
+)]
+fn i_n_anchor_at_a_week_change() {
+    report("I-N", enumerate(&anchor_template(), i_n, DEPTH));
 }

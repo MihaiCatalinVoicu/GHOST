@@ -6,6 +6,8 @@
 //!
 //! ```text
 //! scan_tick_at(now):
+//!   anchor: the journal's last entry lies in a segment before week(now)  ANCHOR (Q32), decided
+//!                                                       like any transition, before the rail
 //!   h = rail.height()                                   any error: no progress, no state change
 //!   from = min(created_height over open XMR invoices) − 20, and scan_final_height + 1
 //!   xs = rail.transfers(from, h.wallet)                 one call per tick for the whole account
@@ -26,12 +28,24 @@
 //! state change, no EXPIRED, no unattributed revenue), and the missing synced tick makes new XMR
 //! invoices `UNAVAILABLE`; `status.json` reports `WALLET_INCOMPLETE` until the replay
 //! (`ghost-issuer --restore-wallet`).
+//!
+//! **Weekly anchor** (Q32, §19.25 points 2 and 5). Before it asks the rail anything, a tick whose
+//! week is after the week of the journal's last entry decides the data-free ANCHOR entry
+//! ([`crate::journal`]) through the decide-then-journal path of every transition: inside the write
+//! transaction the condition is checked again (every append happens inside one, and redb has one
+//! writer, so no transition interleaves), the entry is appended and synced, `journal_applied`
+//! advances and the transaction commits; any failure from the append on halts the issuer. So the
+//! first tick of a week anchors it unless a transition already wrote into its segment, every later
+//! tick finds the week anchored, and a wallet or daemon that is down does not stop the anchor. A
+//! crash before the append leaves the condition true for the next tick; a durable entry whose
+//! commit never happened is replayed at the restart, which leaves the condition false.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ghost_entitlement::grid::week;
 
 use crate::invoice::{self, REORG_MARGIN_BLOCKS};
+use crate::journal::Entry;
 use crate::rail::{IncomingEntry, RailError, RailHeight};
 use crate::reconcile::{self, CounterId};
 use crate::service::{Issuer, TickOutcome};
@@ -47,6 +61,8 @@ pub struct TickReport {
     pub purged: usize,
     pub reorg_after_issue: u64,
     pub unattributed_atomic: u64,
+    /// This tick decided the week's ANCHOR journal entry (Q32).
+    pub anchored: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,6 +85,7 @@ impl Issuer {
         if self.is_halted() {
             return Err(TickError::Store(StoreError::Db));
         }
+        let anchored = self.anchor_at(now)?;
         let h = match self.rail.height() {
             Ok(h) => h,
             Err(e) => {
@@ -117,7 +134,27 @@ impl Issuer {
             TickOutcome::Unsynced
         };
         self.record_tick(now, outcome, Some(h));
-        Ok(report)
+        Ok(TickReport { anchored, ..report })
+    }
+
+    /// The weekly ANCHOR (Q32, §19.25; module docs): true if this call decided it. Nothing is due
+    /// in an empty journal, nor while the last entry's segment is the current week's or a later
+    /// one's (a clock step back keeps appending to the latest segment).
+    fn anchor_at(&self, now: u64) -> Result<bool, StoreError> {
+        let w = week(now);
+        let due = || self.journal.last_entry_week().is_some_and(|last| last < w);
+        if !due() {
+            return Ok(false);
+        }
+        let tx = self.store.write()?;
+        // Re-checked with the one write transaction held: a handler may have appended to the
+        // week's segment since the check above.
+        if !due() {
+            return Ok(false);
+        }
+        self.decide(tx, &Entry::Anchor, now, 0)
+            .map_err(|_| StoreError::Db)?;
+        Ok(true)
     }
 
     fn apply_tick(

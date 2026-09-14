@@ -635,6 +635,8 @@ impl Issuer {
                 week,
                 refused,
             } => self.apply_batch_paid(tx, batch_id, *week, refused),
+            // Q32 (§19.25): a data-free entry; only `journal_applied` advances.
+            Entry::Anchor => Ok(()),
         }
     }
 
