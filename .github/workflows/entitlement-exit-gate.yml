@@ -13,8 +13,9 @@ name: entitlement-exit-gate
 # stays whole, so its digests are compared), a 12th of the double crashes and of the seeds, and the
 # other suites, about 130 thread-minutes: about 50 minutes on a 4-vCPU runner at 1.5 times the
 # per-thread time; the timeout leaves room for a 2-vCPU runner (about 100 minutes).
-# The restore-scan scenario E-J (design §19.26) took 833 s of the 1 642 s of the default enumeration on a
-# 16-thread workstation (K = 13 554 against 2 743 for E-G); not yet measured on the runner class (Q35).
+# The restore-scan scenario E-J (design §19.26) took 669 s of the 1 198 s of the default enumeration on a
+# 16-thread workstation (K = 13 510 against 2 743 for E-G, with the review corrections of §19.26 point 7);
+# not yet measured on the runner class (Q35).
 # Release-like settings: the full enumeration and seed count a release is gated on; the Android
 # plugin builds unit tests for the debug build type only, the one JVM variant there is (as in
 # sync-exit-gate). World databases go to /dev/shm (the crash model is process death, not power loss).
@@ -100,8 +101,8 @@ jobs:
           crashes="$(sed -n 's/^entitlement crashes injected=\([0-9]*\) caught=\([0-9]*\)$/\1 \2/p' "$report" 2>/dev/null || true)"
           if [ -z "$crashes" ] || [ "${crashes% *}" != "${crashes#* }" ]; then echo "::error::harness report: no crash line, or injected and caught crashes differ"; fail=1; fi
           count '^E-[A-J][^ ]* (DELETE|WAL): K=[1-9]' 24 "enumeration lines (E-A ... E-J in both journal modes)"
-          need '^entitlement mutants: 16 run ' "mutant line (16 run)"
-          count ' DETECTED: ' 16 "detected mutants"
+          need '^entitlement mutants: 17 run ' "mutant line (17 run)"
+          count ' DETECTED: ' 17 "detected mutants"
           count '^NI-K ' 3 "NI-K lines"
           exit "$fail"
       - name: upload the harness report and the test results

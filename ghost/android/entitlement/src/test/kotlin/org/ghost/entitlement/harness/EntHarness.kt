@@ -137,6 +137,12 @@ internal class EntRecords {
     /** INVITE tokens (nullifier hex) the client embedded in an invite of its own. */
     val embedded = HashSet<String>()
 
+    /**
+     * CREDIT tokens (nullifier hex → epoch) a scenario sealed into a drop its subject listens to
+     * ([EntWorld.dropCredit]): each must end refreshed at the issuer, in every run (restore-scan review RS-4).
+     */
+    val dropCredits = LinkedHashMap<String, Long>()
+
     /** Token (nullifier hex) → the `eligible_minute` the client stored it with (activation slots, Q30). */
     val eligibleOf = HashMap<String, Long>()
 
@@ -219,6 +225,14 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
     /** A token minted directly with the test key (setup of a scenario; never through the issuer). */
     fun mint(kind: Int, epoch: Long, slot: Int? = null): ByteArray = schedule.mint(kind, epoch, "harness-mint/${w.seed}/${minted++}", slot)
 
+    /**
+     * A CREDIT token an invitee seals into a drop of a client (a scenario's injection, never through
+     * the issuer); [finalChecks] requires it refreshed at the issuer, in every run.
+     */
+    fun dropCredit(epoch: Long): ByteArray = mint(EntitlementCrypto.KIND_CREDIT, epoch).also {
+        records.dropCredits[Bytes.hex(TestSchedule.nullifier(it))] = epoch
+    }
+
     /** True when some redeem relay holds [nullifier] (the token is spent there). */
     fun bound(nullifier: String, epoch: Long): Boolean {
         val row = Bytes.hex(Bytes.u64(epoch)) + nullifier
@@ -278,17 +292,24 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
     }
 
     /**
-     * Unmet quiescence conditions of the entitlement engine: no purchase, claim or trial still live,
-     * and the liveness premise (design §11.9): a WRITE or READ need is never left waiting while an
-     * eligible fresh token of its relay's slot and week exists.
+     * Unmet quiescence conditions of the entitlement engine: no purchase, claim or trial still live;
+     * a restore's drop scan owed while an identity exists is installed, and one past its end is
+     * forgotten (design §19.26: a crash run's tail waits for the trusted relay session and the GC pass
+     * that do it); and the liveness premise (design §11.9): a WRITE or READ need is never left waiting
+     * while an eligible fresh token of its relay's slot and week exists.
      */
     fun quiescenceProblems(): List<String> {
         val out = ArrayList<String>()
-        for ((c, _) in clients) {
+        for ((c, ec) in clients) {
             val live = count(c, "SELECT count(*) FROM ent_purchase WHERE state IN ('prepared', 'invoiced')")
             if (live > 0) out += "${c.name}: $live live purchase(s)"
             val claims = count(c, "SELECT count(*) FROM ent_claim WHERE state = 'prepared'")
             if (claims > 0) out += "${c.name}: $claims open claim(s)"
+            c.jdbc.query("SELECT restore_scan_root IS NOT NULL, restore_scan_until_day FROM ent_state WHERE id = 1") { row ->
+                val end = if (row.isNull(1)) null else row.long(1)
+                if (row.long(0) == 1L && end == null && ec.identity.exists) out += "${c.name}: a restore scan owed with an identity is not installed"
+                if (end != null && end <= Grid.day(w.clock.epochSeconds())) out += "${c.name}: a restore scan past its end is still recorded"
+            }
             val now = w.clock.epochSeconds()
             if (RedeemPlanner.nearBoundary(now)) continue
             val week = Grid.week(now)
@@ -330,10 +351,18 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
      * states stay exempt by design: an ACCESS token a relay recorded may stay reserved for its identical
      * retry until GC, and a credit a failed flow released is held again although the issuer may have
      * spent it (§11.4).
+     *
+     * Drop credits: every credit a scenario sealed into a drop its subject listens to
+     * ([dropCredit]) ends refreshed at the issuer (§9.3, §19.8), so a crash class that consumes the
+     * blob unread, leaves it unread or drops the credit fails its run, whatever outcome check the
+     * scenario's fault-free run adds (restore-scan review RS-4).
      */
     fun finalChecks() {
         structural("end")
         ms6()
+        for ((n, epoch) in records.dropCredits) {
+            if (!issuer.creditUsed(epoch, n)) violation("drop credit: a credit sealed into a drop the client listens to was never refreshed at the issuer (lost)")
+        }
         val now = w.clock.trueEpochSeconds()
         val week = Grid.week(now)
         for ((c, ec) in clients) {

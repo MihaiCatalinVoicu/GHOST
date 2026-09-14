@@ -52,8 +52,9 @@ enum class ActivationResult {
 }
 
 /**
- * What [Entitlement.restore] did (design §8.4): the identity was restored and its drop scan started
- * ([RESTORED]), or why nothing was recorded.
+ * What [Entitlement.restore] did (design §8.4, §19.26): the identity was restored and its drop scan is
+ * owed, installed by the next relay session with a trusted clock ([RESTORED]), or why nothing was
+ * recorded.
  */
 enum class RestoreResult {
     RESTORED,

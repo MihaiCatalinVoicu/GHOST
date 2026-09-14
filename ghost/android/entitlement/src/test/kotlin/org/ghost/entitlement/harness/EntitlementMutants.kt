@@ -28,10 +28,11 @@ internal class EntMutant(
 }
 
 /**
- * The client mutants EM1–EM9 of design §13.5, the NI-K-caught privacy mutants M3, M8 and M20, and four
+ * The client mutants EM1–EM9 of design §13.5, the NI-K-caught privacy mutants M3, M8 and M20, four
  * fixtures of the S9c review that pin what the harness checks beyond them (MS-6 for issued and
  * never-delivered invoices, the accounting of every finalized kind, every redemption byte in NI-1),
- * each detected by `EntitlementMutantDetectionTest` in the world named there.
+ * and one of the restore-scan review (every credit sealed into a listened drop ends refreshed), each
+ * detected by `EntitlementMutantDetectionTest` in the world named there.
  */
 internal object EntMutants {
     private const val PURCHASE_ATTEMPT = "UPDATE ent_purchase SET sent = 1, attempt = ?1, next_due_minute = ?2 WHERE"
@@ -178,6 +179,18 @@ internal object EntMutants {
             null
         }
     })
+
+    /**
+     * LoseReceivedDropCredit (restore-scan review RS-4): the blob of a listened drop is taken for a blob
+     * of a closed one, so the credit an invitee sealed to it is consumed unread. The harness accounts
+     * every credit a scenario seals into a drop of its subject, in each crash run as well, not only
+     * in a scenario's fault-free outcome check.
+     */
+    val LOSE_RECEIVED_DROP_CREDIT = EntMutant("LoseReceivedDropCredit", rewrite { _, sql, args ->
+        if (sql == INVITE_BY_NAMESPACE) Pair("$sql AND 0", args) else null
+    })
+
+    private const val INVITE_BY_NAMESPACE = "SELECT invite_index, state, payload, drop_namespace, listen_until_day FROM ent_invite WHERE drop_namespace = ?1"
 
     private fun blindSignDue(ec: EntClient): Boolean {
         var n = 0L

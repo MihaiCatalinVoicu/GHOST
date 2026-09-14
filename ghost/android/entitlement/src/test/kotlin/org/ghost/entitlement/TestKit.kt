@@ -400,7 +400,8 @@ internal class FakeRedeem(private val clock: ManualClock, private val crypto: Te
 }
 
 internal class FakeIdentity : IdentityPort {
-    val root: RootEntropy = RootEntropy.fromRaw(ByteArray(32) { (it * 7 + 3).toByte() })
+    /** The root of the stored identity; a test models an identity of another root (genesis) by replacing it. */
+    var root: RootEntropy = RootEntropy.fromRaw(ByteArray(32) { (it * 7 + 3).toByte() })
     var exists = false
     val log = ArrayList<String>()
 

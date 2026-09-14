@@ -46,7 +46,10 @@ class EntitlementSchemaConstraintsTest {
             "ent_state", mapOf("id" to 1, "schedule_seq" to 1, "schedule_digest" to hash(1), "payout_salt" to hash(2)),
             listOf(
                 mapOf("id" to 2), mapOf("schedule_seq" to 0), mapOf("schedule_digest" to bytes(31, 1)), mapOf("next_invite_index" to 65536),
-                mapOf("next_invite_index" to -1), mapOf("payout_salt" to bytes(16, 1)), mapOf("restore_scan_until_day" to -1),
+                mapOf("next_invite_index" to -1), mapOf("payout_salt" to bytes(16, 1)),
+                mapOf("restore_scan_root" to hash(3), "restore_scan_until_day" to -1), mapOf("restore_scan_root" to bytes(31, 1)),
+                // A restore scan's end belongs to the root it is owed for (design §19.26 point 7).
+                mapOf("restore_scan_until_day" to DAY0),
                 mapOf("auto_renew_credits" to 2), mapOf("alarm_flags" to 8), mapOf("alarm_flags" to -1),
                 mapOf("payment_shown_minute" to T0 + 1),
             ),
@@ -203,7 +206,9 @@ class EntitlementSchemaConstraintsTest {
             "base_week" to WEEK0, "schedule_seq" to 1, "layout_digest" to hash(3),
         )
         val scheduledPack = livePack + mapOf("receipt_minute" to T0, "next_due_minute" to T0)
-        val state = mapOf("id" to 1, "schedule_seq" to 1, "schedule_digest" to hash(1), "payout_salt" to hash(2), "restore_scan_until_day" to DAY0)
+        val state = mapOf(
+            "id" to 1, "schedule_seq" to 1, "schedule_digest" to hash(1), "payout_salt" to hash(2), "restore_scan_root" to hash(3), "restore_scan_until_day" to DAY0,
+        )
         val invite = mapOf("invite_index" to 0, "state" to "created", "payload" to bytes(538, 1), "drop_namespace" to hash(1), "listen_until_day" to DAY0)
         val drop = mapOf(
             "id" to 1, "drop_namespace" to hash(1), "drop_key" to hash(2), "drop_slots" to byteArrayOf(5, 0, 17), "state" to "waiting",

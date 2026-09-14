@@ -417,17 +417,22 @@ object Schema {
                 // payment_shown_minute = the minute the payment screen was last visible, rounded up
                 // (S9b): a new process restores the relay-session hold of §19.11 from it
                 // (SyncController.restorePaymentHold); the engine nulls it once the longest hold
-                // (60 min) has passed.
+                // (60 min) has passed. restore_scan_root = SHA-256 commitment to the restored root
+                // (by its invite-0 drop namespace): a restore's drop scan is owed for that root
+                // only; restore_scan_until_day = the scan's end, fixed at its install under a
+                // trusted clock (NULL while owed and not installed; design §19.26 point 7).
                 """CREATE TABLE ent_state (
                     id                     INTEGER PRIMARY KEY CHECK (id = 1),
                     schedule_seq           INTEGER NOT NULL CHECK (schedule_seq >= 1),
                     schedule_digest        BLOB    NOT NULL CHECK (length(schedule_digest) = 32),
                     next_invite_index      INTEGER NOT NULL DEFAULT 0 CHECK (next_invite_index BETWEEN 0 AND 65535),
                     payout_salt            BLOB    NOT NULL CHECK (length(payout_salt) = 32),
+                    restore_scan_root      BLOB    CHECK (restore_scan_root IS NULL OR length(restore_scan_root) = 32),
                     restore_scan_until_day INTEGER CHECK (restore_scan_until_day IS NULL OR (typeof(restore_scan_until_day) = 'integer' AND restore_scan_until_day >= 0)),
                     auto_renew_credits     INTEGER NOT NULL DEFAULT 0 CHECK (auto_renew_credits IN (0, 1)),
                     alarm_flags            INTEGER NOT NULL DEFAULT 0 CHECK (alarm_flags BETWEEN 0 AND 7),
-                    payment_shown_minute   INTEGER CHECK (payment_shown_minute IS NULL OR (typeof(payment_shown_minute) = 'integer' AND payment_shown_minute % 60 = 0))
+                    payment_shown_minute   INTEGER CHECK (payment_shown_minute IS NULL OR (typeof(payment_shown_minute) = 'integer' AND payment_shown_minute % 60 = 0)),
+                    CHECK (restore_scan_until_day IS NULL OR restore_scan_root IS NOT NULL)
                 )""",
                 // (3) Issuance flows (packs, the trial, and refreshes of received credits, §19.8). Live
                 // rows carry their secrets; terminal rows carry none and are deleted by GC at
