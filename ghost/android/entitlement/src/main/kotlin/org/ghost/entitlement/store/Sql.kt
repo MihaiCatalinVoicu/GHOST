@@ -84,6 +84,13 @@ internal object SyncTables {
     fun namespaceRegistered(tx: SyncTransaction, ns: NamespaceId): Boolean =
         tx.sql.single("SELECT 1 FROM sync_namespace WHERE namespace_id = ?1", listOf(ns.toByteArray())) { 1 } != null
 
+    /** The relay set of a listened namespace, or null when it is unknown or not listened. */
+    fun listenedRelays(tx: SyncTransaction, ns: NamespaceId): Set<RelayId>? {
+        val listening = tx.sql.single("SELECT listening FROM sync_namespace WHERE namespace_id = ?1", listOf(ns.toByteArray())) { it.long(0) == 1L }
+        if (listening != true) return null
+        return tx.sql.rows("SELECT relay_id FROM namespace_relay WHERE namespace_id = ?1", listOf(ns.toByteArray())) { RelayId(it.long(0)) }.toSet()
+    }
+
     /** The expiry hour of the pair's usable write capability, or null (none, or no known expiry). */
     fun usableWriteExpiry(tx: SyncTransaction, relay: RelayId, ns: NamespaceId): Long? =
         tx.sql.single(

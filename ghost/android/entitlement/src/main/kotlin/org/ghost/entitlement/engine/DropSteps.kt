@@ -80,7 +80,7 @@ internal class DropSteps(private val c: EngineContext) {
             c.seal.sealDummy(t.dropKey(), t.dropNamespace())
         }
         val op = c.random.bytes(EngineContext.ID_BYTES)
-        c.sync.outbox.enqueue(tx, OutboundBlob(OperationId(op), ns, blob, TtlBucket.DAYS_30))
+        c.sync.outbox.enqueue(tx, OutboundBlob(OperationId(op), ns, blob, BLOB_TTL))
         c.invites.markEnqueued(tx, op)
         return Send.DONE
     }
@@ -231,10 +231,13 @@ internal class DropSteps(private val c: EngineContext) {
 
     override fun toString(): String = "DropSteps"
 
-    private companion object {
-        const val CLAIM_LIMIT = 16
-        const val INVITER_LISTEN_DAYS = 56L
-        const val DRAWS = 32
-        const val MIN_OPERATORS = 2
+    companion object {
+        /** A drop blob's TTL: its relays store it this long after the write (the restore scan's relay window, §19.26). */
+        val BLOB_TTL: TtlBucket = TtlBucket.DAYS_30
+
+        private const val CLAIM_LIMIT = 16
+        private const val INVITER_LISTEN_DAYS = 56L
+        private const val DRAWS = 32
+        private const val MIN_OPERATORS = 2
     }
 }

@@ -3,6 +3,7 @@ package org.ghost.entitlement.harness
 import org.ghost.entitlement.api.ActivationState
 import org.ghost.entitlement.api.PayWith
 import org.ghost.entitlement.engine.Grid
+import org.ghost.entitlement.engine.RestoreScan
 import org.ghost.identity.DropSeal
 import org.ghost.identity.Invite
 import org.ghost.identity.RootEntropy
@@ -393,7 +394,7 @@ internal class ScenarioEG : EntScenario("E-G") {
             e.c.stores.namespaces.register(tx, NamespaceId(mine.dropNamespace), Consumer.IDENTITY, relays.map { e.c.id(it) }.toSet(), true)
         }
         w.at(3 * HOUR, "an invitee writes its drop") {
-            val credit = ent.mint(EntitlementCrypto.KIND_CREDIT, Grid.creditEpoch(week))
+            val credit = ent.dropCredit(Grid.creditEpoch(week))
             val blob = DropSeal.sealCredit(credit, mine.drop.publicKey, mine.dropNamespace, seeded("drop blob|${w.seed}"))
             for (r in relays.take(2)) r.model.inject(NamespaceId(mine.dropNamespace), blob, TtlBucket.DAYS_30.seconds.toLong(), w.relayNow(r))
         }
@@ -405,6 +406,51 @@ internal class ScenarioEG : EntScenario("E-G") {
         // a day later) falls inside the script instead of a quiescence tail of background sessions.
         for (day in 2..REFRESH_DAYS) w.quietRunAt(day * DAY + 10 * MINUTE)
         w.endMillis = REFRESH_DAYS * DAY + HOUR
+    }
+}
+
+/**
+ * E-J restore scan (design §8.4, §19.26): the device restores its identity from the backup in the
+ * foreground (the scan recorded as owed for the restored root, indices 0..7 reserved, the identity
+ * stored), and the foreground session's next pass, under its trusted clock, fixes the scan's end and
+ * records the drops of invites 0..7, registered as listened on the ES slot relays, in one transaction;
+ * an invitee of invite 2, created before the restore, wrote its credit into that drop at relay A; the
+ * redeem lane spends 8 of the device's tokens per slot on read capabilities of the 8 drops at A, B and
+ * C (every need is met, so no lane step retries a reservation without a token), the read lane fetches
+ * the blob, the engine turns the credit into a refresh flow, which runs in a quiet run days later (one
+ * scripted a day until day 17), and a quiet run after the fifth week ends the scan (GC closes the drops
+ * and forgets it). A crash inside the restore ends with the scan owed (a later trusted relay session
+ * installs it) or with no identity (the user restores again). In every run, crash runs included, the
+ * harness requires the credit refreshed ([EntWorld.dropCredit]) and holds quiescence until the owed
+ * scan is installed and, past its end, forgotten ([EntWorld.quiescenceProblems]).
+ */
+internal class ScenarioEJ : EntScenario("E-J") {
+    override fun build(w: World) {
+        val e = standard(w, genesis = false)
+        val now = w.clock.epochSeconds()
+        val week = Grid.week(now)
+        // Tokens are not restored (E11): the device bought again, 8 per slot for this week.
+        accessTokens(week, 8)
+        val mnemonic = e.identity.root.toMnemonic()
+        val keys = e.identity.root.inviteKeys(2)
+        // Short foregrounds: the read lane lists every one of the 24 listened pairs about every 35 s.
+        w.foreground(e.c, 0, 4 * MINUTE)
+        w.at(MINUTE, "restore") { e.e().restore(mnemonic) }
+        w.foreground(e.c, 29 * MINUTE, 33 * MINUTE)
+        w.at(30 * MINUTE, "the user restores again if no identity") { if (!e.identity.exists) e.e().restore(mnemonic) }
+        w.at(HOUR, "an invitee of a pre-restore invite writes its drop") {
+            val credit = ent.dropCredit(Grid.creditEpoch(week))
+            val blob = DropSeal.sealCredit(credit, keys.drop.publicKey, keys.dropNamespace, seeded("restore drop|${w.seed}"))
+            val a = w.relays[0]
+            a.model.inject(NamespaceId(keys.dropNamespace), blob, TtlBucket.DAYS_30.seconds.toLong(), w.relayNow(a))
+        }
+        // The read needs are due within 6 h of their first sighting (§12.4): redeemed, listed and fetched at 7 h;
+        // the session at 26 h consumes a blob a crash left fetched.
+        w.foreground(e.c, 7 * HOUR, 7 * HOUR + 5 * MINUTE)
+        w.foreground(e.c, 26 * HOUR, 26 * HOUR + 5 * MINUTE)
+        for (day in 2..REFRESH_DAYS) w.quietRunAt(day * DAY + 10 * MINUTE)
+        w.quietRunAt((RestoreScan.SCAN_DAYS + 1) * DAY + 10 * MINUTE)
+        w.endMillis = (RestoreScan.SCAN_DAYS + 1) * DAY + HOUR
     }
 }
 

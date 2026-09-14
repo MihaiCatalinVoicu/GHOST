@@ -85,6 +85,8 @@ internal class TrialSteps(private val c: EngineContext) {
         val invite = Invite.parseAndVerify(text, now, InviteTokenCheck(c.crypto), TransactionNonceStore(tx, Grid.day(now) * Grid.DAY))
         // A target left by an earlier activation that failed has no identity behind it any more.
         c.invites.deleteDropTarget(tx)
+        // So has a restore a crash left owed: the identity created next is the invitee's (§19.26 point 7).
+        c.state.dropRestoreScan(tx)
         c.purchases.insert(
             tx, id, PurchaseStore.TRIAL, PurchaseStore.INVITE, seed, null, invite.inviteToken, base, c.summary.seq, digest, Time.floorHour(now), null,
         )
@@ -271,6 +273,9 @@ internal class TrialSteps(private val c: EngineContext) {
             }
         }
     }
+
+    /** An onboarding trial is pending (`activationState()` is PENDING): no identity is restored meanwhile. */
+    fun onboardingPending(): Boolean = c.tx { tx -> pendingOnboarding(tx) } != null
 
     private fun pendingOnboarding(tx: SyncTransaction): PurchaseRow? =
         c.purchases.live(tx).firstOrNull { it.kind == PurchaseStore.TRIAL && it.state == PurchaseStore.PREPARED && it.nextDueMinute == null }

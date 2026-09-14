@@ -40,6 +40,16 @@ interface Entitlement {
 
     fun activationState(): ActivationState
 
+    /**
+     * Restores the identity from its 24-word backup (FR-1.4) and starts the drop scan of design §8.4:
+     * the drops of invite indices 0..7, which this identity may have created invites for before, are
+     * listened to for 5 weeks from the next relay session with a trusted device clock, so credits sent
+     * to them are not lost, and new invites continue at index 8. Local only. Phase 13 restores through
+     * this method, never through `IdentityManager.restore` directly: the scan is recorded for the
+     * restored root before the identity is stored, which makes a crash safe (§19.26).
+     */
+    fun restore(mnemonic: List<String>): RestoreResult
+
     /** A signed `ghost://invite/…` link, or null without a fresh invite token or usable drop relays. */
     fun createInvite(expiryDay: Int): String?
 

@@ -15,8 +15,9 @@ import org.junit.Test
  * the harness must report the expected kind of failure (a trigger, a commit check, RED-2, MS-6, the
  * amount check); M3, M8 and M20 run the NI-K comparisons. The S9c review added four fixtures for what
  * the harness checks beyond them (MS-6 of issued and never-delivered invoices, the accounting of CREDIT
- * and INVITE tokens, the `request_id` in NI-1). The same world with the real engine passes first (EM8's
- * in hostile-issuer mode).
+ * and INVITE tokens, the `request_id` in NI-1), and the restore-scan review one more (a credit sealed
+ * into a listened drop is accounted in every run, not only by E-J's fault-free outcome check). The same
+ * world with the real engine passes first (EM8's in hostile-issuer mode).
  */
 class EntitlementMutantDetectionTest {
 
@@ -134,6 +135,12 @@ class EntitlementMutantDetectionTest {
     }
 
     @Test
+    fun loseReceivedDropCredit() {
+        run(ScenarioEJ())
+        expect(detected(EntMutants.LOSE_RECEIVED_DROP_CREDIT) { run(ScenarioEJ().with(EntMutants.LOSE_RECEIVED_DROP_CREDIT)) }, "drop credit")
+    }
+
+    @Test
     fun requestIdFromIssuerState() {
         NiK.ni1(1, NiK.PROMPT, NiK.PROMPT_VARIED)
         expect(
@@ -147,8 +154,8 @@ class EntitlementMutantDetectionTest {
         @AfterClass
         fun report() {
             HarnessReport.add(
-                "entitlement mutants: 16 run (EM1-EM9, M3, M8, M20; review fixtures GiveUpAfterLostSign, NoRequestInvoiceRetry, " +
-                    "LoseCreditAndInviteTokens, RequestIdFromIssuerState)",
+                "entitlement mutants: 17 run (EM1-EM9, M3, M8, M20; review fixtures GiveUpAfterLostSign, NoRequestInvoiceRetry, " +
+                    "LoseCreditAndInviteTokens, RequestIdFromIssuerState, LoseReceivedDropCredit)",
             )
         }
     }
