@@ -75,10 +75,37 @@ pub enum IssuerFault {
 
 /// A lying issuer layer (mutant M16 and the S4 world of §19.16): it answers the first `lies`
 /// `BlindSign` calls of every invoice `AWAITING_CONFIRMATIONS` without asking the handler.
+///
+/// With `wrong_period > 0` it also answers that fraction of `RequestInvoice` and `RedeemInvite`
+/// calls `WRONG_PERIOD` (the issuer recorded nothing), chosen by a PRF of the request's bytes, so
+/// an identical retry gets the same answer and a re-prepared flow a fresh draw (mutant M23 and its
+/// control, §19.27).
 #[derive(Debug, Default)]
 pub struct Liar {
     pub lies: u32,
     pub counts: HashMap<Vec<u8>, u32>,
+    pub wrong_period: f64,
+    pub key: [u8; 32],
+}
+
+impl Liar {
+    /// True when the call whose request carries `parts` is answered `WRONG_PERIOD`.
+    fn lies_wrong_period(&self, parts: &[&[u8]]) -> bool {
+        if self.wrong_period <= 0.0 {
+            return false;
+        }
+        let mut h = Sha256::new();
+        h.update(b"ghost/t2/liar-wrong-period");
+        h.update(self.key);
+        for p in parts {
+            h.update((p.len() as u64).to_be_bytes());
+            h.update(p);
+        }
+        let d = h.finalize();
+        let u =
+            u64::from_be_bytes(d[..8].try_into().unwrap()) as f64 / 18_446_744_073_709_551_616.0;
+        u < self.wrong_period
+    }
 }
 
 /// One issuer call over the loopback: everything the call needs and records.
@@ -169,8 +196,21 @@ impl IssuerRpc for IssuerLink<'_> {
         req: wire::RequestInvoiceRequest,
     ) -> impl Future<Output = Result<wire::RequestInvoiceResponse, IssuerError>> + Send {
         *self.received += 1;
+        let mut parts: Vec<&[u8]> = vec![&req.claim_hash];
+        parts.extend(req.credits.iter().map(Vec::as_slice));
+        let week = req.base_week.to_be_bytes();
+        parts.push(&week);
+        let lie = self
+            .liar
+            .as_deref()
+            .is_some_and(|l| l.lies_wrong_period(&parts));
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
+        } else if lie {
+            Ok(wire::RequestInvoiceResponse {
+                result: wire::RequestInvoiceResult::WrongPeriod as i32,
+                ..Default::default()
+            })
         } else {
             self.issuer.request_invoice_at(req.clone(), self.t)
         };
@@ -286,8 +326,18 @@ impl IssuerRpc for IssuerLink<'_> {
         req: wire::RedeemInviteRequest,
     ) -> impl Future<Output = Result<wire::RedeemInviteResponse, IssuerError>> + Send {
         *self.received += 1;
+        let week = req.base_week.to_be_bytes();
+        let lie = self
+            .liar
+            .as_deref()
+            .is_some_and(|l| l.lies_wrong_period(&[&req.invite_token, &req.blinded, &week]));
         let r = if self.unavailable() {
             Err(Status::unavailable("unavailable"))
+        } else if lie {
+            Ok(wire::RedeemInviteResponse {
+                result: wire::RedeemInviteResult::WrongPeriod as i32,
+                ..Default::default()
+            })
         } else {
             self.issuer.redeem_invite_at(req.clone(), self.t)
         };
@@ -506,6 +556,10 @@ impl RedeemRpc for RelayLink<'_> {
                     .as_ref()
                     .map(|c| vec![f("capability", &c.token)])
                     .unwrap_or_default();
+                // The relay answered; whether the client hears it is ground truth (J8 counts only
+                // the refusals a client received, S12 review P8-J8-1).
+                let mut truth = self.truth;
+                truth.answer_lost = self.lose_answer;
                 record_relay(
                     self.rec,
                     self.node,
@@ -516,7 +570,7 @@ impl RedeemRpc for RelayLink<'_> {
                     response,
                     &ints,
                     0,
-                    self.truth,
+                    truth,
                     false,
                 );
             }

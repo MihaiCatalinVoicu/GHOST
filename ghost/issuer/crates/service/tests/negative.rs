@@ -999,7 +999,9 @@ fn retention_spent_credits_keep_no_invoice_or_claim_reference() {
     );
     let claimed = mint_many(&w, Kind::Credit, 227, 10, "q");
     assert_eq!(w.claim("q", &claimed, &address()).unwrap().result, QUEUED);
-    w.mine(5_040);
+    // An issued invoice goes at max(issued + 5 040, confirmed + 21 600) (§19.27 point 4); a
+    // credits-paid one is confirmed at its creation.
+    w.mine(21_600);
     let tx = w.issuer().store().read().unwrap();
     assert_eq!(
         store::invoice(&*tx, &w.purchase("d").id).unwrap(),

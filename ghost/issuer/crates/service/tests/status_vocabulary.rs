@@ -91,6 +91,7 @@ fn every_reachable_status_uses_the_fixed_vocabulary() {
                             payout_batches_open: n,
                             payout_oldest_batch_weeks: n,
                             payout_acks_refused: n,
+                            refresh_refused: n,
                             halted: !flag,
                         });
                         count += 1;

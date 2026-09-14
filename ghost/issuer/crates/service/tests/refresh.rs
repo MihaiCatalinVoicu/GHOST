@@ -7,13 +7,14 @@ mod common;
 
 use common::fixture;
 use common::scenarios::{claim_address, with_credits, NOON, OK, QUEUED};
-use common::world::{World, BASE_WEEK};
+use common::world::{harness_params, World, BASE_WEEK};
 use ghost_blind_rsa::BigUint;
 use ghost_entitlement::grid::{invite_epoch, week_start, DAY_SECS};
 use ghost_entitlement::{Expect, Kind, Schedule, Token};
 use ghost_issuer::credit::refresh_digest;
 use ghost_issuer::custody::destroy_after;
 use ghost_issuer::reconcile::{self, CounterId};
+use ghost_issuer::service::IssuerParams;
 use ghost_issuer::store::{self, Table};
 use ghost_issuer_api::proto as wire;
 use tonic::Code;
@@ -65,9 +66,57 @@ fn a_received_credit_becomes_a_fresh_credit_of_the_same_epoch() {
         1,
         "a re-serve counts nothing"
     );
-    // A refreshed credit is a credit like any other: it can be refreshed again (net zero).
+    // A refreshed credit is a credit like any other: it can be refreshed again (net zero), within
+    // the epoch's refresh budget (a_refresh_chain_stops_at_the_epoch_budget, §19.27).
     let blinded = w.refresh_blinded("r2", 227);
     assert_eq!(w.refresh(&fresh, blinded).unwrap().result, REFRESHED);
+    w.check();
+}
+
+/// S12 review CR-RF-1 (§19.27): a refreshed credit is a credit like any other, so one credit could
+/// be refreshed in a chain for free, each call journaling, syncing and keeping a nullifier row for
+/// 52–65 weeks and signing under the CREDIT key. New refreshes of an epoch stop at its budget, the
+/// honest maximum plus a floor (`refresh_floor` + the XMR packs of the credit epochs e − 1, e and
+/// e + 1: every honest refresh consumes one drop credit, and a drop carries one invitee's first
+/// XMR pack's credit); beyond it `RESOURCE_EXHAUSTED`, counted in `REFRESH_REFUSED`. A recorded
+/// refresh is still re-served, and a paid pack of the epoch raises the budget.
+#[test]
+fn a_refresh_chain_stops_at_the_epoch_budget() {
+    let mut w = World::with_params(
+        true,
+        IssuerParams {
+            refresh_floor: 2,
+            ..harness_params()
+        },
+    );
+    let mut credit = w.mint(Kind::Credit, 227, "chain");
+    let mut first = None;
+    for i in 0..2 {
+        let label = format!("chain-{i}");
+        let blinded = w.refresh_blinded(&label, 227);
+        let r = w.refresh(&credit, blinded.clone()).unwrap();
+        assert_eq!(r.result, REFRESHED);
+        first.get_or_insert((credit.clone(), blinded, r.blind_signature.clone()));
+        credit = w.finalize_refresh(&label, 227, &r.blind_signature);
+    }
+    let blinded = w.refresh_blinded("chain-2", 227);
+    assert_eq!(
+        code(w.refresh(&credit, blinded.clone())),
+        Code::ResourceExhausted,
+        "the third link of one credit's chain"
+    );
+    assert_eq!(w.issuer().status_at(w.now).unwrap().refresh_refused, 1);
+    assert_eq!(counter(&w, CounterId::CreditsRefreshed, 227), 2);
+    // A recorded refresh is re-served whatever the budget.
+    let (c0, b0, s0) = first.unwrap();
+    let again = w.refresh(&c0, b0).unwrap();
+    assert_eq!((again.result, again.blind_signature), (REFRESHED, s0));
+    // An XMR pack of the epoch raises the budget by one.
+    w.buy_pack("paid");
+    assert_eq!(w.refresh(&credit, blinded).unwrap().result, REFRESHED);
+    let blinded = w.refresh_blinded("chain-3", 227);
+    let fresh = w.mint(Kind::Credit, 227, "other");
+    assert_eq!(code(w.refresh(&fresh, blinded)), Code::ResourceExhausted);
     w.check();
 }
 

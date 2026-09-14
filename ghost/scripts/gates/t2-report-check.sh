@@ -4,8 +4,8 @@
 #                                          for every check of §13.4 and §19.16, the variant's scale,
 #                                          the reported S3c and E30 lines (E30 with a held session,
 #                                          §19.26), and the final "T2 RESULT: PASS";
-#   t2-report-check.sh <report> mutants    the output of tests/t2_mutants.rs: all 24 privacy mutants
-#                                          (M1–M22 with M2b, M5a and M5b) detected.
+#   t2-report-check.sh <report> mutants    the output of tests/t2_mutants.rs: all 25 privacy mutants
+#                                          (M1–M23 with M2b, M5a and M5b) detected.
 # A missing report, a missing line or a FAIL fails the check (exit 1); usage errors exit 2.
 set -euo pipefail
 report="${1:-}"
@@ -44,8 +44,8 @@ case "$kind" in
     ;;
   mutants)
     n="$(grep -cE '^test m[0-9]+[a-z]?_[a-z0-9_]+ \.\.\. ok$' "$report" || true)"
-    [ "$n" = 24 ] || bad "$n of 24 mutants detected"
-    grep -qE '^test result: ok\. 24 passed; 0 failed' "$report" || bad "no 'test result: ok. 24 passed; 0 failed'"
+    [ "$n" = 25 ] || bad "$n of 25 mutants detected"
+    grep -qE '^test result: ok\. 25 passed; 0 failed' "$report" || bad "no 'test result: ok. 25 passed; 0 failed'"
     ;;
   *) echo "unknown report kind: $kind" >&2; exit 2 ;;
 esac

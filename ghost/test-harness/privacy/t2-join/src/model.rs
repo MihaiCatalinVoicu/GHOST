@@ -80,6 +80,10 @@ pub struct IssuerTruth {
     pub flow: u64,
     /// The purchase, trial, revocation, refresh or claim the call belongs to.
     pub instance: u64,
+    /// The first instance of its lineage: a `WRONG_PERIOD` re-prepare continues a purchase, trial
+    /// or revocation in a new instance (new claim key and seed) that keeps the old one's lineage
+    /// and attempt count (§19.27); every other instance is its own lineage.
+    pub lineage: u64,
     pub kind: FlowKind,
     /// Made by the automatic schedule in a quiet run (false: a scripted user action).
     pub automatic: bool,
@@ -117,6 +121,10 @@ pub struct RelayTruth {
     /// Redeem only: an identical retry of an ambiguous redemption (R8: the same token, relay,
     /// namespace and `request_id`); its first attempt may never have reached the relay.
     pub retry: bool,
+    /// Redeem only: the relay answered and the answer never reached the client (the world's
+    /// lost-answer fault; an AD-1 relay can withhold one too), so the client learned nothing from
+    /// it: no period, no minute, no refusal (S12 review P8-J8-1).
+    pub answer_lost: bool,
 }
 
 pub struct RelayCall<'a> {

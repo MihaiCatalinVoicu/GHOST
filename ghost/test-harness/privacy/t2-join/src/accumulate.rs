@@ -113,6 +113,8 @@ pub struct Redemption {
     pub process: u64,
     pub source: u64,
     pub retry: bool,
+    /// The relay's answer never reached the client (`RelayTruth::answer_lost`).
+    pub answer_lost: bool,
 }
 
 #[derive(Default)]
@@ -428,6 +430,7 @@ impl Accumulator {
             process: c.truth.process,
             source: c.truth.source,
             retry: c.truth.retry,
+            answer_lost: c.truth.answer_lost,
         });
     }
 

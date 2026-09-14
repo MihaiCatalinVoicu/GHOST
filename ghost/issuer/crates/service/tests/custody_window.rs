@@ -154,10 +154,54 @@ fn i_i_confirmed_invoice_signed_weeks_later() {
     let s = w.sign("p").unwrap();
     assert_eq!(s.state, SIGNED);
     w.finalize("p", &s.blind_signatures);
-    // Issued, then purged 5 040 blocks later: the key goes at the next sweep.
+    // Issued right after its confirmation: kept (and its keys) until confirmation + 21 600 blocks,
+    // the CONFIRMED-unissued window, not only issuance + 5 040 (§19.27, S12 review
+    // MONEY-RESERVE-1); the key goes at the next sweep after the purge.
     w.mine(5_040);
     w.sweep();
+    assert!(w.issuer().keys_held().contains(&(Kind::Access, BASE_WEEK)));
+    w.mine(21_600 - 5_040);
+    w.sweep();
     assert!(!w.issuer().keys_held().contains(&(Kind::Access, BASE_WEEK)));
+    w.check();
+}
+
+/// S12 review MONEY-RESERVE-1 (MS-6, §19.27): the client's fifth and last `BlindSign` attempt
+/// comes 20–22 days after receipt. A paid invoice first signed at the attempt of days 7–8 (the
+/// issuer's wallet lagged, or the earlier attempts failed transiently) whose answer was lost is
+/// re-served byte for byte at that last attempt: an ISSUED invoice is kept until
+/// max(issued + 5 040, confirmed + 21 600) blocks, and purged then.
+#[test]
+fn an_invoice_signed_a_week_after_confirmation_is_reserved_at_the_last_attempt() {
+    let mut w = World::new(true);
+    assert_eq!(
+        w.request("p", BASE_WEEK, &[]).unwrap().result,
+        wire::RequestInvoiceResult::Ok as i32
+    );
+    w.pay("p", PRICE);
+    w.mine(10);
+    // Attempt 4 at receipt + 7–8 d signs; its answer is lost.
+    w.mine(7 * 720);
+    w.advance(7 * DAY_SECS);
+    let s = w.sign("p").unwrap();
+    assert_eq!(s.state, SIGNED);
+    // Attempt 5 at receipt + 20–22 d, after issuance + 5 040 blocks.
+    w.mine(5_040);
+    w.advance(7 * DAY_SECS);
+    w.sweep();
+    let again = w.sign("p").unwrap();
+    assert_eq!(
+        (again.state, again.blind_signatures),
+        (SIGNED, s.blind_signatures),
+        "re-served byte for byte"
+    );
+    // Purged at confirmation + 21 600 blocks (≈ 30 d): the identical request is then unknown.
+    w.mine(21_600 - 7 * 720 - 5_040);
+    w.sweep();
+    assert_eq!(
+        w.sign("p").unwrap_err().code(),
+        tonic::Code::PermissionDenied
+    );
     w.check();
 }
 

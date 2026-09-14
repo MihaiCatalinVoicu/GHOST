@@ -147,10 +147,11 @@ pub fn joins(f: &mut Findings, test: &Outcome) {
         "J8",
         j8.is_empty(),
         format!(
-            "{} ({} WRONG_PERIOD redemptions of devices more than 24 h off, which the clipped relay-facing clock corrects only to within a day, §19.23 point 2: reported; identical retries refused a period, counted: {})",
+            "{} ({} WRONG_PERIOD redemptions of devices more than 24 h off, which the clipped relay-facing clock corrects only to within a day, §19.23 point 2: reported; identical retries refused a period, counted: {}; refusals whose answer never reached the client, reported and not counted, §19.27: {})",
             hits_line(&j8),
             checks::j8_far_skew(acc),
-            checks::j8_late_retries(acc)
+            checks::j8_late_retries(acc),
+            checks::j8_lost_refusals(&acc.redemptions)
         ),
     );
     let j9 = checks::j9(acc, truth, due);
@@ -180,11 +181,16 @@ pub fn joins(f: &mut Findings, test: &Outcome) {
     f.check("J10", j10.is_empty(), hits_line(&j10));
     let t2b = values::t2b(&acc.values, &acc.public);
     f.check("T2b", t2b.is_empty(), hits_line(&t2b));
-    let (t2c, released) = checks::t2c_counted(acc, truth);
+    let t2c = checks::t2c_counted(acc, truth);
     f.check(
         "T2c",
-        t2c.is_empty(),
-        format!("{} ({released} credits re-presented after an unanswered credits-pack flow, §19.23 point 2)", hits_line(&t2c)),
+        t2c.hits.is_empty(),
+        format!(
+            "{} ({} credits re-presented after a credits-pack flow that recorded no invoice, unanswered or WRONG_PERIOD, §19.23 point 2, §19.27; {} credits or invite tokens re-presented by a WRONG_PERIOD re-prepare of the same purchase, trial or revocation within its cap, §19.27)",
+            hits_line(&t2c.hits),
+            t2c.released,
+            t2c.re_prepared
+        ),
     );
     // Completeness (§13.4): every request a handler received is in a view, counted independently
     // of the recorder (the issuer links count at each handler's entry, the relays write one

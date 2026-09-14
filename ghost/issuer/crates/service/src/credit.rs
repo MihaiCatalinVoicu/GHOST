@@ -16,11 +16,26 @@
 //! `signed[CREDIT]` of the epoch (net zero for the cap).
 //! A re-serve after the epoch's key was destroyed (`end(c + 1) + 8 d`, §19.1) answers `REPLAYED`,
 //! as a trial re-serve does (§19.1 rule 2).
+//!
+//! **Refresh budget** (§19.27, S12 review CR-RF-1). A refreshed credit is an ordinary credit of
+//! the same epoch, so a credit holder could refresh one credit in a chain for free: every link
+//! journals and syncs an entry, keeps a nullifier row for 52–65 weeks and signs under the CREDIT
+//! key (a non-adaptive signing oracle outside the payment gate of §2.8 point 1). New refreshes of
+//! epoch e stop at [`refresh_budget`]: `refresh_floor` plus the XMR packs whose base week lies in
+//! credit epoch e − 1, e or e + 1. That is the honest maximum plus the floor: every honest refresh
+//! consumes one received drop credit, a drop is written once per invitee and carries a credit only
+//! when that invitee paid its first XMR pack before its drop time (§9.3), and that pack's epoch is
+//! within one of e (a refresh of e happens while `c_now ∈ {e, e + 1}`, after its drop, which comes
+//! at most 8 weeks after the invitee's base week). Beyond it the answer is `RESOURCE_EXHAUSTED`
+//! (the client's `quota`, a transient retry), counted in the status key `REFRESH_REFUSED`; the
+//! check runs before signing and again inside the decided transaction. Recorded refreshes are
+//! re-served whatever the budget. Declared residue (§19.27): a credit holder who spends an epoch's
+//! budget denies the honest refreshes of that epoch until more XMR packs raise it.
 
 use std::collections::BTreeSet;
 
 use ghost_entitlement::batch::Layout;
-use ghost_entitlement::grid::{credit_epoch, week};
+use ghost_entitlement::grid::{credit_epoch, week, WEEKS_PER_CREDIT_EPOCH};
 use ghost_entitlement::token::TOKEN_LEN;
 use ghost_entitlement::{Expect, Kind, Schedule, Token};
 use ghost_issuer_api::proto as wire;
@@ -30,7 +45,8 @@ use tonic::Status;
 
 use crate::invite::verify_issuer_token;
 use crate::journal::Entry;
-use crate::service::{rejected, unauthorized, unavailable, Issuer, SignFailure};
+use crate::reconcile::{self, CounterId};
+use crate::service::{exhausted, rejected, unauthorized, unavailable, Issuer, SignFailure};
 use crate::store::{self, CreditUse, MetaKey, ReadTx, StoreError};
 use crate::PROTOCOL_VERSION;
 
@@ -97,6 +113,29 @@ pub fn spent_mask(tx: &dyn ReadTx, credits: &[PresentedCredit]) -> Result<u64, S
     Ok(mask)
 }
 
+/// The refresh budget of credit epoch `epoch` (§19.27): `floor` plus the XMR packs whose base
+/// week lies in credit epoch `epoch − 1`, `epoch` or `epoch + 1` (their counters are kept 58 weeks,
+/// longer than any epoch stays refreshable).
+pub fn refresh_budget(tx: &dyn ReadTx, epoch: u64, floor: u64) -> Result<u64, StoreError> {
+    let first = epoch
+        .saturating_sub(1)
+        .saturating_mul(WEEKS_PER_CREDIT_EPOCH);
+    let end = epoch
+        .saturating_add(2)
+        .saturating_mul(WEEKS_PER_CREDIT_EPOCH);
+    let mut budget = floor;
+    for b in first..end {
+        budget = budget.saturating_add(reconcile::get(tx, CounterId::PacksXmr, b)?);
+    }
+    Ok(budget)
+}
+
+/// True while epoch `epoch` has refresh budget left: fewer refreshes recorded than
+/// [`refresh_budget`].
+fn refresh_budget_left(tx: &dyn ReadTx, epoch: u64, floor: u64) -> Result<bool, StoreError> {
+    Ok(reconcile::get(tx, CounterId::CreditsRefreshed, epoch)? < refresh_budget(tx, epoch, floor)?)
+}
+
 /// `SHA-256("ghost/v1/refresh-credit" || N || blinded)`: the idempotency digest of a refresh, kept
 /// whole in the nullifier row.
 pub fn refresh_digest(nullifier: &[u8; 32], blinded: &[u8]) -> [u8; 32] {
@@ -150,6 +189,11 @@ impl Issuer {
         }
         let layout = Layout::refresh(&self.schedule, epoch).map_err(|_| unavailable())?;
         self.check_blocks(&layout, &req.blinded)?;
+        // The epoch's refresh budget (§19.27): checked before signing and again below.
+        let floor = self.params.refresh_floor;
+        if !refresh_budget_left(&*self.store.read()?, epoch, floor)? {
+            return Err(self.refresh_refused());
+        }
         // 5. Sign, then one decided transaction; a loser of the re-check continues at step 3.
         let sig = self
             .sign_all(&layout, &req.blinded)
@@ -164,6 +208,12 @@ impl Issuer {
         if store::meta(&*tx, MetaKey::ClosedThroughCreditEpoch)?.is_some_and(|c| epoch <= c) {
             return Err(unauthorized());
         }
+        // A concurrent refresh that took the epoch's last budget since the check above.
+        if !refresh_budget_left(&*tx, epoch, floor)? {
+            drop(tx);
+            drop(sig);
+            return Err(self.refresh_refused());
+        }
         self.decide(
             tx,
             &Entry::Refresh {
@@ -175,6 +225,13 @@ impl Issuer {
             0,
         )?;
         Ok(refreshed(wire::RefreshCreditResult::Ok, sig))
+    }
+
+    /// A new refresh refused for its epoch's budget: counted (`REFRESH_REFUSED`), then
+    /// `RESOURCE_EXHAUSTED`.
+    fn refresh_refused(&self) -> Status {
+        self.volatile().refresh_refused += 1;
+        exhausted()
     }
 
     /// Step 3: a refresh with the same digest is re-signed while the epoch's key is held; any
