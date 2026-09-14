@@ -73,15 +73,38 @@ pub struct DropOut {
     /// The sealed blob, the same bytes at every drop relay (replication, ADR-11).
     pub blob: Vec<u8>,
     pub done: bool,
+    /// The blob is in the outbox and its namespace registered on the drop relays: done by the tick
+    /// of the first redeem-lane step at or after its time (`DropSteps.sendDue`).
+    pub enqueued: bool,
+}
+
+impl DropOut {
+    /// The tick of a redeem-lane step at device time `w` (`EntitlementEngine.tick` runs
+    /// `DropSteps.sendDue` before each step): the blob is enqueued once its time `due` has come.
+    pub fn tick(&mut self, due: i64, w: i64) {
+        if !self.done && due <= w {
+            self.enqueued = true;
+        }
+    }
+
+    /// Whether relay `k` of the drop still waits for the blob: a WRITE need of the drop pair, which
+    /// `CapabilityStore.needed` lists only once the blob is enqueued (so a session starting before
+    /// the tick is never armed by it, `RedeemHold.pendingWriteNeeds`).
+    pub fn pending_write(&self, k: u8) -> bool {
+        self.enqueued && !self.done && !self.written[usize::from(k)]
+    }
 }
 
 /// An inviter's listening on one drop namespace until the invite's expiry + 56 days.
 pub struct DropListen {
     pub ns: [u8; 32],
     pub until: u64,
+    /// The two refresh times of a credit read from this drop (device times), drawn when the
+    /// listening starts, never at a read (Q31, §19.26, `policy::refresh_times`).
+    pub refresh: (i64, i64),
     /// Blob hashes already fetched, per relay.
     pub seen: BTreeSet<Vec<u8>>,
-    /// The client that took the invite (world bookkeeping: the receipt a twin replays).
+    /// The client that took the invite (world bookkeeping: which credit a read delivers).
     pub invitee: usize,
 }
 
@@ -338,5 +361,46 @@ impl Client {
         self.purchases
             .iter()
             .any(|p| matches!(p.state, PState::Prepared | PState::Invoiced))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DropOut;
+
+    fn drop_out(due: i64) -> DropOut {
+        DropOut {
+            inviter: 0,
+            ns: [7; 32],
+            due,
+            written: [false; 3],
+            credit: None,
+            blob: vec![0; 8],
+            done: false,
+            enqueued: false,
+        }
+    }
+
+    /// T2GAPS-4: a drop whose time has come is no write need until a redeem step's tick enqueued
+    /// it, so a session starting before that tick is not armed by it; from the tick it is, on every
+    /// relay the blob has not reached.
+    #[test]
+    fn a_drop_is_a_write_need_only_from_the_tick_that_enqueues_it() {
+        let mut d = drop_out(1_000);
+        assert!(
+            !d.pending_write(0),
+            "a due drop not yet enqueued armed a session"
+        );
+        d.tick(1_000, 999);
+        assert!(
+            !d.enqueued && !d.pending_write(0),
+            "enqueued before its time"
+        );
+        d.tick(1_000, 1_000);
+        assert!(d.enqueued && d.pending_write(0) && d.pending_write(2));
+        d.written[0] = true;
+        assert!(!d.pending_write(0) && d.pending_write(1));
+        d.done = true;
+        assert!(!d.pending_write(1));
     }
 }

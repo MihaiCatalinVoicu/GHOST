@@ -11,7 +11,8 @@ import org.ghost.sync.api.NamespaceId
  * with (§19.4 point 3), so neither a device clock ahead of the relays nor relays claiming a later time
  * delete a token the other side still accepts; INVITE epochs before `e_now − 1`, CREDIT epochs before `c_now − 4`); used
  * payout-address hashes at `until_day`; invites at `listen_until_day` (their drop namespace retired,
- * then the closed row deleted); a drop target never written by `until_day`; the payment-screen moment
+ * then the closed row deleted), the drops a restore scans included, and the restore scan itself at its
+ * end, in the same pass (§8.4); a drop target never written by `until_day`; the payment-screen moment
  * once the longest hold (60 min) is over.
  */
 internal class Gc(private val c: EngineContext) {
@@ -43,6 +44,7 @@ internal class Gc(private val c: EngineContext) {
                 c.retireNamespace(tx, NamespaceId(target.dropNamespace()))
                 c.invites.deleteDropTarget(tx)
             }
+            c.state.clearRestoreScanUpTo(tx, today)
             c.state.clearPaymentShownUpTo(tx, now - PAYMENT_HOLD_MAX_SECONDS)
         }
     }

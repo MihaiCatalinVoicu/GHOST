@@ -19,6 +19,8 @@ internal class ManagerIdentity(private val manager: IdentityManager) : IdentityP
         manager.create(activation).root.zeroize()
     }
 
+    override fun restore(mnemonic: List<String>) = manager.restore(mnemonic).zeroize()
+
     override fun wipe() = manager.wipe()
 
     override fun inviteKeys(index: Int): InviteKeys {

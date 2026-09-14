@@ -23,8 +23,9 @@ S4 lying issuer: PASS fixture
 J9 lying issuer: PASS fixture
 NI-1: PASS fixture
 NI-1 across cells: PASS fixture
-NI-2: PASS fixture
+NI-2: PASS issuer view (5000 calls) identical modulo blinded and signature bytes; wallet view identical; 12 received credits read in both worlds, 3 of them at another time (0 by an hour or more, 0 across their first refresh time), each refreshed at a time its invite drew; 0 inviters with a credit read on the other side of its first refresh time, compared before its refresh
 NI-3: PASS fixture
+NI-1d: PASS fixture
 S3c (reported, declared L5): fixture
 E30 (reported, declared residue, Q29 redeem hold): 1200 background sessions, 400 armed by a pending write need, 90 held past their lanes (hold median 12 s, p90 25 s, max 31 s; 20 held steps redeemed nothing, 75 redemptions in held steps); 300 unarmed sessions ended before their lane step
 T2 RESULT: PASS

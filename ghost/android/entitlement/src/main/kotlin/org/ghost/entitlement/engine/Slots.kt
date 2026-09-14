@@ -34,6 +34,15 @@ internal object Slots {
             slot(finalizedAt, random, mode, lastDay = Grid.start(baseWeek + Layouts.TRIAL_WEEKS) - Grid.DAY)
         }
 
+    /**
+     * A revocation's spare tokens (design §8.6): the pack rule, uncapped, in both modes (§19.24
+     * point 13, §19.26). They come from a quiet-run call, so its answer never makes them eligible at
+     * once, as the foreground onboarding trial's STANDARD rule does; in HIGH mode they can become
+     * eligible after their weeks and be lost (declared).
+     */
+    fun revocationEligibleMinute(finalizedAt: Long, random: EntitlementRandom, mode: PrivacyMode): Long =
+        slot(finalizedAt, random, mode, lastDay = null)
+
     /** The pack rule; with [lastDay] the extra days reach at most the day starting then. */
     private fun slot(finalizedAt: Long, random: EntitlementRandom, mode: PrivacyMode, lastDay: Long?): Long {
         val shifted = finalizedAt + SLOT_DELAY

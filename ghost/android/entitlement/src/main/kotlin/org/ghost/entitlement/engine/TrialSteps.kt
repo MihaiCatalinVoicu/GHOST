@@ -85,6 +85,8 @@ internal class TrialSteps(private val c: EngineContext) {
         val invite = Invite.parseAndVerify(text, now, InviteTokenCheck(c.crypto), TransactionNonceStore(tx, Grid.day(now) * Grid.DAY))
         // A target left by an earlier activation that failed has no identity behind it any more.
         c.invites.deleteDropTarget(tx)
+        // So has a restore a crash left owed: the identity created next is the invitee's (§19.26 point 15).
+        c.state.dropRestoreScan(tx)
         c.purchases.insert(
             tx, id, PurchaseStore.TRIAL, PurchaseStore.INVITE, seed, null, invite.inviteToken, base, c.summary.seq, digest, Time.floorHour(now), null,
         )
@@ -192,11 +194,12 @@ internal class TrialSteps(private val c: EngineContext) {
                     val p = c.purchases.get(tx, id)
                     if (p != null && p.state == PurchaseStore.PREPARED) {
                         // Onboarding: eligible at once in STANDARD, at an activation slot in HIGH whose extra
-                        // days stop at the trial's last week (§12.3, Q30); a revocation's spares follow the pack rule.
+                        // days stop at the trial's last week (§12.3, Q30); a revocation's spares follow the
+                        // pack rule (§19.24 point 13, §19.26).
                         val eligible = if (call.onboarding) {
                             Slots.trialEligibleMinute(now, call.base, c.random, c.mode())
                         } else {
-                            Slots.packEligibleMinute(now, c.random, c.mode())
+                            Slots.revocationEligibleMinute(now, c.random, c.mode())
                         }
                         c.purchaseSteps.storeTokens(tx, order, outcome.tokens, eligible)
                         c.purchases.terminal(tx, id, PurchaseStore.PREPARED, PurchaseStore.FINALIZED, Grid.day(now))
@@ -271,16 +274,22 @@ internal class TrialSteps(private val c: EngineContext) {
         }
     }
 
+    /** An onboarding trial is pending (`activationState()` is PENDING): no identity is restored meanwhile. */
+    fun onboardingPending(): Boolean = c.tx { tx -> pendingOnboarding(tx) } != null
+
     private fun pendingOnboarding(tx: SyncTransaction): PurchaseRow? =
         c.purchases.live(tx).firstOrNull { it.kind == PurchaseStore.TRIAL && it.state == PurchaseStore.PREPARED && it.nextDueMinute == null }
 
     override fun toString(): String = "TrialSteps"
 
-    private companion object {
-        const val DROP_FIRST_WEEK = 3L
-        const val DROP_SPAN: Long = 5 * Grid.WEEK
+    internal companion object {
+        private const val DROP_FIRST_WEEK = 3L
+        private const val DROP_SPAN: Long = 5 * Grid.WEEK
+
+        /** `t_drop` < start(base + [DROP_END_WEEK]): the end of the drop window (§19.12; [RefreshPlan]). */
+        const val DROP_END_WEEK: Long = DROP_FIRST_WEEK + DROP_SPAN / Grid.WEEK
 
         /** The inviter listens until `expiry_day + 56` (§8.5). */
-        const val INVITER_LISTEN_DAYS = 56L
+        private const val INVITER_LISTEN_DAYS = 56L
     }
 }

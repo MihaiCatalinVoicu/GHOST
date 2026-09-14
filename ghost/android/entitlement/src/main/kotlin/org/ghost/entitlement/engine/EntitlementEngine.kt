@@ -10,6 +10,7 @@ import org.ghost.entitlement.api.EntitlementStatus
 import org.ghost.entitlement.api.PayWith
 import org.ghost.entitlement.api.PaymentInstructions
 import org.ghost.entitlement.api.PurchaseId
+import org.ghost.entitlement.api.RestoreResult
 import org.ghost.entitlement.port.EntitlementRandom
 import org.ghost.entitlement.port.SessionPort
 import org.ghost.entitlement.store.Kinds
@@ -119,13 +120,15 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
     }
 
     /**
-     * Relay-session work besides the lane: GC, drop sending and receiving. GC windows and the drop time
-     * are read on the device wall clock, so this runs only while the session trusts it.
+     * Relay-session work besides the lane: GC, the install of a restore's owed drop scan (its end is
+     * fixed on this clock, §19.26 point 15), drop sending and receiving. GC windows, the scan's end and
+     * the drop time are read on the device wall clock, so this runs only while the session trusts it.
      */
     private fun tick(c: EngineContext, session: SessionPort) {
         if (!session.clockTrusted()) return
         val now = c.now()
         c.gc.runIfDue(now)
+        c.restoreScan.resume(now)
         c.dropSteps.sendDue(now)
         c.dropSteps.settleSent()
         c.dropSteps.receive(now)
@@ -255,6 +258,11 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
     override fun activationState(): ActivationState {
         val c = context() ?: return if (deps.identity.hasIdentity()) ActivationState.ACTIVE else ActivationState.NONE
         return c.trialSteps.activationState()
+    }
+
+    override fun restore(mnemonic: List<String>): RestoreResult {
+        val c = ready() ?: return RestoreResult.UNAVAILABLE
+        return c.restoreScan.restore(mnemonic)
     }
 
     override fun createInvite(expiryDay: Int): String? {

@@ -12,7 +12,9 @@
 //! real Kotlin engine, `EntitlementMutantDetectionTest`; NI-2 cannot see a forced quiet run in this
 //! world: its job times do not follow relay activity). M1 runs twice: with the generic info word
 //! "nonce" and, as M1b, with a GHOST label and the position as the HKDF info (J3's label-counter
-//! family), so J3's detection does not rest on the mutant's own string.
+//! family), so J3's detection does not rest on the mutant's own string. M22 (a received credit's
+//! refresh timed by its drop read, the rule Q31 replaced) is asserted by NI-2, whose relays hold
+//! the drop blobs back by hours to days (§19.26 point 7).
 //!
 //! M4 (`SharedIssuerScope`) is also caught by the `client-core` unit test of the `IssuerFlow` map
 //! (`isolation.rs`, §19.17 point 6); here the reference client's shared scope is caught by J6 a and
@@ -368,6 +370,11 @@ mutant_test!(m3_immediate_eligible, {
         &["relay calls differ before the activation cell"],
         m,
     );
+    // S1 at the PR scale is asserted again (§19.26 point 7, restoring §19.24 point 4): with the
+    // background lanes lasting until their pairs' events, as the engine runs them, a session whose
+    // capabilities are usable steps its redeem lane, so an immediately eligible pack's first use
+    // follows its finalization again (p = 5.6e-5 argmax, 1.3e-5 Hungarian on seed pair 0).
+    // §19.26 point 6 had reported it only, because the world ended the lanes too early.
     detected(
         &statistics(m, population::PR),
         &pr().stats,
@@ -461,11 +468,23 @@ mutant_test!(m10_referral_id_at_issuer, {
 
 mutant_test!(m11_device_clock_period, {
     // The mutant decides on the raw device clock although two relays answered it: a corrected
-    // client redeeming near a true week boundary, or refused a period (§12.5, J8).
+    // client redeeming near a true week boundary, or refused a period (§12.5, J8). At the PR scale
+    // (§19.26 point 6, re-checked by point 7 with the engine's lane timing): the small world holds
+    // no corrected skewed client's redemption near a week boundary, so its mutant world passes J8.
     let m = Mutant::M11DeviceClockPeriod;
+    let (_, out) = world(
+        "M11DeviceClockPeriod-pr",
+        population::PR,
+        SEEDS.1,
+        m,
+        true,
+        0,
+    );
+    let mut f = Findings::default();
+    gate::joins(&mut f, &out);
     detected_any(
-        &joins(m),
-        &small().joins,
+        &f,
+        &pr().joins,
         "J8",
         &[
             "WRONG_PERIOD after the relay-facing clock was corrected",
@@ -621,6 +640,25 @@ mutant_test!(m21_spend_received_credit, {
         &pr().joins,
         "T2c",
         &["presents a credit the attacker's Sybil client finalized"],
+        m,
+    );
+});
+
+mutant_test!(m22_refresh_at_read, {
+    // The rule Q31 replaced (§19.26, review T2GAPS-1): a received credit's refresh due 1–14 days
+    // after its drop read. NI-2's relays hold every drop blob back by hours to days, so the
+    // mutant's due times follow the reads, which no declared bit explains; the control's due times
+    // differ only where a read crossed the invite's first refresh time.
+    let m = Mutant::M22RefreshAtRead;
+    let (cfg, a) = world("m22-a", population::SMALL, SEEDS.1, m, false, 0);
+    let b = run(gate::ni2_twin(&cfg, &a));
+    let mut f = Findings::default();
+    gate::ni2(&mut f, &a, &b);
+    detected(
+        &f,
+        &small().ni2,
+        "NI-2",
+        &["refresh due time follows the read"],
         m,
     );
 });

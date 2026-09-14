@@ -3,8 +3,16 @@ package org.ghost.entitlement.store
 import org.ghost.identity.Invite
 import org.ghost.sync.api.SyncTransaction
 
-/** One `ent_invite` row (inviter side). */
-internal class InviteRow(val index: Int, val state: String, payload: ByteArray?, dropNamespace: ByteArray, val listenUntilDay: Long) {
+/** One `ent_invite` row (inviter side), with the two refresh times drawn at its creation (§19.26). */
+internal class InviteRow(
+    val index: Int,
+    val state: String,
+    payload: ByteArray?,
+    dropNamespace: ByteArray,
+    val listenUntilDay: Long,
+    val refreshMinute: Long,
+    val lateRefreshMinute: Long,
+) {
     private val payloadBytes = payload?.copyOf()
     private val namespaceBytes = dropNamespace.copyOf()
 
@@ -36,20 +44,49 @@ internal class DropTargetRow(
 }
 
 /**
- * `ent_invite` (invites this identity created, design §8.5) and `ent_drop_target` (the drop this
- * identity owes its first XMR-pack credit to, §9.3, §19.12). Guarded transitions; plain INSERT after a
- * read (§19.22 point 4). The payload is dropped when an invite leaves `created`.
+ * `ent_invite` (invites this identity created, design §8.5, with the two refresh times of a credit
+ * sent to the drop, §19.26) and `ent_drop_target` (the drop this identity owes its first XMR-pack
+ * credit to, §9.3, §19.12). Guarded transitions; plain INSERT after a read (§19.22 point 4). The
+ * payload is dropped when an invite leaves `created`; a `created` row without a payload is a drop a
+ * restore scans (§8.4).
  */
 internal class InviteStore {
 
-    fun insert(tx: SyncTransaction, index: Int, payload: ByteArray, dropNamespace: ByteArray, listenUntilDay: Long) {
+    /** A new invite; [refreshMinute] and [lateRefreshMinute] are the refresh times of a credit sent to its drop (§19.26). */
+    fun insert(tx: SyncTransaction, index: Int, payload: ByteArray, dropNamespace: ByteArray, listenUntilDay: Long, refreshMinute: Long, lateRefreshMinute: Long) {
         check(get(tx, index) == null) { "invite index already used" }
         tx.sql.updateExactly(
             1,
-            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day) VALUES (?1, 'created', ?2, ?3, ?4)",
-            listOf(index, payload, dropNamespace, listenUntilDay),
+            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute) " +
+                "VALUES (?1, 'created', ?2, ?3, ?4, ?5, ?6)",
+            listOf(index, payload, dropNamespace, listenUntilDay, refreshMinute, lateRefreshMinute),
         )
     }
+
+    /**
+     * The drop of invite [index], which this identity may have created before a restore (§8.4): its
+     * payload is unknown, its namespace re-derived from the root entropy, listened until [listenUntilDay],
+     * with the refresh times of a scanned drop (`RefreshPlan.scanned`, §19.26).
+     */
+    fun insertScanned(tx: SyncTransaction, index: Int, dropNamespace: ByteArray, listenUntilDay: Long, refreshMinute: Long, lateRefreshMinute: Long) {
+        check(get(tx, index) == null) { "invite index already used" }
+        tx.sql.updateExactly(
+            1,
+            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute) " +
+                "VALUES (?1, 'created', NULL, ?2, ?3, ?4, ?5)",
+            listOf(index, dropNamespace, listenUntilDay, refreshMinute, lateRefreshMinute),
+        )
+    }
+
+    /**
+     * A later restore listens to a scanned drop until its own scan ends, with refresh times drawn after
+     * that end; the drop holds no received credit (it is still `created`), so none was due at the old ones.
+     */
+    fun extendScanned(tx: SyncTransaction, index: Int, listenUntilDay: Long, refreshMinute: Long, lateRefreshMinute: Long): Int = tx.sql.execUpdate(
+        "UPDATE ent_invite SET listen_until_day = ?2, refresh_minute = ?3, late_refresh_minute = ?4 " +
+            "WHERE invite_index = ?1 AND state = 'created' AND payload IS NULL AND listen_until_day < ?2",
+        listOf(index, listenUntilDay, refreshMinute, lateRefreshMinute),
+    )
 
     fun get(tx: SyncTransaction, index: Int): InviteRow? =
         tx.sql.single("SELECT $COLUMNS FROM ent_invite WHERE invite_index = ?1", listOf(index), ::row)
@@ -102,7 +139,8 @@ internal class InviteStore {
 
     fun deleteDropTarget(tx: SyncTransaction): Int = tx.sql.execUpdate("DELETE FROM ent_drop_target WHERE id = 1")
 
-    private fun row(it: org.ghost.storage.SqlExecutor.Row) = InviteRow(it.long(0).toInt(), it.string(1), it.blobOrNull(2), it.blob(3), it.long(4))
+    private fun row(it: org.ghost.storage.SqlExecutor.Row) =
+        InviteRow(it.long(0).toInt(), it.string(1), it.blobOrNull(2), it.blob(3), it.long(4), it.long(5), it.long(6))
 
     companion object {
         const val CREATED = "created"
@@ -111,7 +149,7 @@ internal class InviteStore {
         const val WAITING = "waiting"
         const val ENQUEUED = "enqueued"
 
-        private const val COLUMNS = "invite_index, state, payload, drop_namespace, listen_until_day"
+        private const val COLUMNS = "invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute"
     }
 }
 
