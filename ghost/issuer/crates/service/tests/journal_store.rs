@@ -222,6 +222,86 @@ fn an_unknown_tag_refuses() {
     );
 }
 
+/// Q32 (§19.25): the ANCHOR frame is a bare header (len 9, seq, tag 8) and its checksum; it carries
+/// no body, so no identifier and no time but the week its segment is named after. A verified frame
+/// of tag 8 with any body is not an entry of this version and refuses the start.
+#[test]
+fn an_anchor_frame_carries_nothing() {
+    let frame = Entry::Anchor.encode(7).unwrap();
+    assert_eq!(frame.len(), 4 + 9 + 32);
+    assert_eq!(frame[..4], 9u32.to_be_bytes());
+    assert_eq!(frame[4..12], 7u64.to_be_bytes());
+    assert_eq!(frame[12], 8);
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    j.append(2960, &entries()[0]).unwrap();
+    assert_eq!(j.append(2961, &Entry::Anchor).unwrap(), 2);
+    drop(j);
+    assert_eq!(
+        std::fs::read(segment(dir.path(), 2961)).unwrap(),
+        Entry::Anchor.encode(2).unwrap()
+    );
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap().entries().unwrap(),
+        vec![(1, entries()[0].clone()), (2, Entry::Anchor)]
+    );
+    for body in [vec![0u8], 2961u64.to_be_bytes().to_vec()] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&(9 + body.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&1u64.to_be_bytes());
+        frame.push(8);
+        frame.extend_from_slice(&body);
+        let checksum = <sha2::Sha256 as sha2::Digest>::digest(&frame);
+        frame.extend_from_slice(&checksum);
+        std::fs::write(segment(dir.path(), 2960), &frame).unwrap();
+        assert_eq!(
+            FileJournal::open(dir.path()).err(),
+            Some(JournalError::Format),
+            "body {body:?}"
+        );
+    }
+}
+
+/// `last_entry_week` (the weekly anchor's condition, Q32) is the week of the segment holding the
+/// last durable entry: a clock step back keeps it, and an empty or torn newest segment (an append
+/// that died before its frame was durable) does not count until an entry lands in it.
+#[test]
+fn the_last_entry_week_is_that_of_the_last_durable_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = FileJournal::open(dir.path()).unwrap();
+    assert_eq!(j.last_entry_week(), None);
+    j.append(2960, &entries()[0]).unwrap();
+    assert_eq!(j.last_entry_week(), Some(2960));
+    j.append(2961, &entries()[2]).unwrap();
+    j.append(2960, &entries()[3]).unwrap();
+    assert_eq!(j.last_entry_week(), Some(2961));
+    drop(j);
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap().last_entry_week(),
+        Some(2961)
+    );
+    for tail in [Vec::new(), entries()[4].encode(4).unwrap()[..20].to_vec()] {
+        std::fs::write(segment(dir.path(), 2963), &tail).unwrap();
+        let j = FileJournal::open(dir.path()).unwrap();
+        assert_eq!(j.last_entry_week(), Some(2961), "tail {}", tail.len());
+    }
+    let j = FileJournal::open(dir.path()).unwrap();
+    assert_eq!(j.append(2962, &Entry::Anchor).unwrap(), 4);
+    assert_eq!(j.last_entry_week(), Some(2963));
+    // A journal whose only segment lost its one torn frame holds no entry.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        segment(dir.path(), 2960),
+        &entries()[0].encode(1).unwrap()[..30],
+    )
+    .unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap().last_entry_week(),
+        None
+    );
+}
+
 #[test]
 fn segments_roll_weekly_and_a_gap_refuses() {
     let dir = tempfile::tempdir().unwrap();

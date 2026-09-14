@@ -161,28 +161,32 @@ fn a_prune_never_touches_the_segment_the_issuer_writes() {
 
 /// Review finding OPS-PRUNE-1: the newest segment holds no entry. The issuer died between creating
 /// the segment of a new week and its first frame (empty), or in the middle of that frame (torn,
-/// the bytes a halted issuer keeps until its restart). Packs in weeks 2960 and 2961, an idle week,
-/// the hourly snapshot of every entry, then the empty or torn segment of week 2963: the prune
-/// removes 2960 but keeps 2961, which holds the last entry, so the issuer restarts and a restore
-/// from the snapshot replays.
+/// the bytes a halted issuer keeps until its restart). Packs in weeks 2960 and 2961 (the first
+/// tick of 2961 only starts the anchor's settle window, so the pack starts that segment, Q32), the
+/// hourly snapshot of every entry, the issuer down, then two weeks later the empty or torn segment
+/// of week 2963 (an anchor or a handler's entry that died): the prune removes 2960 but keeps 2961,
+/// which holds the last entry, so the issuer restarts and a restore from the snapshot replays. The
+/// restarted issuer's first settled tick anchors week 2963 in that segment, after which 2961 goes
+/// too.
 #[test]
 fn a_prune_keeps_the_segment_of_the_last_entry_when_the_newest_holds_none() {
     for torn in [false, true] {
         let mut w = World::new(true);
         let mut held = Vec::new();
-        for _ in 0..2 {
+        for i in 0..2 {
+            if i == 1 {
+                w.advance(WEEK_SECS);
+                w.tick();
+            }
             let label = format!("idle-{}", w.week());
             w.buy_pack(&label);
             held.push((label.clone(), w.sign(&label).unwrap().blind_signatures));
-            w.advance(WEEK_SECS);
-            w.tick();
         }
-        w.advance(WEEK_SECS);
-        w.tick();
         w.snapshot();
         assert_eq!(segments(&w), vec![2960, 2961]);
         let applied = snapshot_applied(&w);
         w.crash();
+        w.advance(2 * WEEK_SECS);
         let dir = w.dir.path().join("journal");
         let bytes = if torn {
             let frame = Entry::Issue {
@@ -208,12 +212,19 @@ fn a_prune_keeps_the_segment_of_the_last_entry_when_the_newest_holds_none() {
             .is_empty());
         w.open(OpenMode::Normal);
         w.refill();
-        w.tick();
+        assert!(w.settle(), "torn {torn}");
+        w.assert_anchor_last(2963);
         retries(&mut w, &held);
         w.check();
         w.restore();
+        w.assert_anchor_last(2963);
         retries(&mut w, &held);
         w.check();
+        // Once a verified snapshot holds the anchor, 2961 no longer holds the last entry.
+        w.snapshot();
+        let pruned = journal::prune_dir(&dir, w.now, snapshot_applied(&w)).unwrap();
+        assert_eq!(pruned.removed, vec![2961], "torn {torn}");
+        assert_eq!(segments(&w), vec![2963]);
     }
 }
 

@@ -17,6 +17,7 @@
 //!                   || count x claim_id 16
 //! BATCH_PAID tag 7: batch_id 16 || week u64 || count u16 (0..200)
 //!                   || count x claim_id 16 (the refused entries, strictly ascending)
+//! ANCHOR     tag 8: empty body (len = 9)
 //! (an unknown tag refuses the start, it is never skipped)
 //! ```
 //! Big-endian fixed fields; the checksum is SHA-256 from `sha2` (no CRC crate, §19.5).
@@ -41,6 +42,22 @@
 //! ids of the claims whose entries the workstation refused (a payout address it had seen before,
 //! §9.5 step 2: those claims close unpaid, so one address cannot stall its whole batch).
 //!
+//! **ANCHOR** (Q32, §19.25 points 2 and 5). At the first scanner tick of a week whose segment holds
+//! no entry yet, once the process's ticks have agreed on that week for
+//! [`crate::scanner::ANCHOR_SETTLE_SECS`] (a clock stepped forward for less decides none, review
+//! finding Q32-CLOCK-1), while the journal holds an entry of an earlier week, the issuer decides an
+//! ANCHOR entry into the new week's segment ([`Journal::last_entry_week`] tells the scanner; the
+//! decision re-checks it inside the write transaction and goes through the same decide-then-journal
+//! path as every transition). It carries nothing: no identifier, no amount, no height, and no time
+//! but the week, which is the segment's name; the sequence number and the checksum are those of
+//! every frame. Applying it, live or on replay, changes nothing but `journal_applied`. Its only
+//! effect is that the segment of the last active week no longer holds the journal's last entry, so
+//! [`prune_dir`] removes it at `start(w + 2)` as it removes any other, and an idle issuer keeps no
+//! identifier in the journal past the 7–14-day retention (residue E31 closed while the scanner
+//! runs; an issuer that is stopped or halted, also one that a wallet or daemon outage keeps from
+//! restarting, writes no anchor until its restart, and a longer forward clock step is §19.25 point
+//! 5 (d)). An empty journal gets no anchor: it has nothing to retain.
+//!
 //! **Files.** Weekly segments `issued.journal.<week>` in one directory; a segment is never renamed.
 //! Entries are numbered from 1 without gaps across segments. At open, a torn tail of the last
 //! segment is discarded and the file truncated: its commit cannot have happened. A torn tail is
@@ -56,14 +73,18 @@
 //! the 7-day re-serve window and covered by that snapshot's `journal_applied`; the segment that
 //! holds the last entry is never removed, nor any later one (the newest, which the issuer writes,
 //! may be empty or end in a torn frame), because the issuer's restart and a restore continue the
-//! sequence from that entry. An issuer that makes no transition therefore keeps the segment of its
-//! last entry beyond the 7–14-day retention (declared, runbook §13). Segments go in ascending
-//! order, so a crash between two removals leaves a contiguous suffix whose first entry is at most
-//! `journal_applied + 1` of the snapshot and of the live database: the issuer restarts, and a
-//! restore from any snapshot B1 keeps (at most 7 days old) replays. [`prune_dir`] never truncates
-//! or writes a segment, so it may run while the issuer appends. A reader that finds a listed
-//! segment gone at its read (a prune ran meanwhile) drops it and every segment it read before it,
-//! the prefix that prune is removing; the sequence checks refuse anything else.
+//! sequence from that entry. The weekly ANCHOR gives an idle issuer's journal a later segment
+//! holding an entry, so the segment of its last transition still goes at `start(w + 2)`; only an
+//! issuer whose scanner does not run (stopped, halted, or kept from restarting by a wallet or
+//! daemon outage) keeps it longer (runbook §13), and entries decided after a forward clock step
+//! that outlasted the anchor's settle window sit in the stepped week's segment (§19.25 point 5
+//! (d)). Segments go in ascending order, so a crash between two removals leaves a contiguous
+//! suffix whose first entry is at most `journal_applied + 1` of the snapshot and of the live
+//! database: the issuer restarts, and a restore from any snapshot B1 keeps (at most 7 days old)
+//! replays. [`prune_dir`] never truncates or writes a segment, so it may run while the issuer
+//! appends. A reader that finds a listed segment gone at its read (a prune ran meanwhile) drops it
+//! and every segment it read before it, the prefix that prune is removing; the sequence checks
+//! refuse anything else.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -95,6 +116,7 @@ const TAG_CLAIM: u8 = 4;
 const TAG_REFRESH: u8 = 5;
 const TAG_BATCH: u8 = 6;
 const TAG_BATCH_PAID: u8 = 7;
+const TAG_ANCHOR: u8 = 8;
 const CHECKSUM_LEN: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -190,6 +212,9 @@ pub enum Entry {
         week: u64,
         refused: Vec<[u8; 16]>,
     },
+    /// The first settled scanner tick of a week found the journal's last entry in an earlier
+    /// segment (Q32, §19.25): a data-free entry that starts the week's segment and changes no state.
+    Anchor,
 }
 
 /// A list of claim ids: 0 ..= [`MAX_BATCH_CLAIMS`] of them, strictly ascending (distinct).
@@ -207,6 +232,7 @@ impl Entry {
             Entry::Refresh { .. } => TAG_REFRESH,
             Entry::Batch(_) => TAG_BATCH,
             Entry::BatchPaid { .. } => TAG_BATCH_PAID,
+            Entry::Anchor => TAG_ANCHOR,
         }
     }
 
@@ -283,6 +309,7 @@ impl Entry {
                     w.extend_from_slice(c);
                 }
             }
+            Entry::Anchor => {}
         }
         Ok(w)
     }
@@ -376,6 +403,8 @@ impl Entry {
                     refused,
                 }
             }
+            // The body must be empty (checked below with every other tag).
+            TAG_ANCHOR => Entry::Anchor,
             _ => return Err(JournalError::Format),
         };
         if !r.0.is_empty() {
@@ -441,12 +470,18 @@ pub trait Journal: Send + Sync {
     fn append(&self, week: u64, entry: &Entry) -> Result<u64, JournalError>;
     /// The sequence number the next append gets; an error while appends are refused.
     fn next_seq(&self) -> Result<u64, JournalError>;
+    /// The week of the segment that holds the last durable entry, `None` while the journal holds
+    /// none. A later segment may exist without an entry (an append that died before its first frame
+    /// was durable); the weekly ANCHOR (Q32) is due while this week is before the current one.
+    fn last_entry_week(&self) -> Option<u64>;
 }
 
 struct Active {
     next_seq: u64,
     /// Week and handle of the segment the next entry goes to (the latest existing one).
     segment: Option<(u64, File)>,
+    /// Week of the segment holding the last entry ([`Journal::last_entry_week`]).
+    last_entry_week: Option<u64>,
     /// A write or sync failed: the segment may end in part of a frame, so nothing is appended
     /// after it until the journal is reopened (which truncates the torn tail).
     poisoned: bool,
@@ -491,6 +526,11 @@ impl FileJournal {
         if let Some((seq, _)) = segments.iter().flat_map(|s| s.entries.last()).last() {
             next_seq = seq + 1;
         }
+        let last_entry_week = segments
+            .iter()
+            .rev()
+            .find(|s| !s.entries.is_empty())
+            .map(|s| s.week);
         let segment = match last_week {
             Some(week) => Some((week, open_append(&segment_path(dir, week))?)),
             None => None,
@@ -500,6 +540,7 @@ impl FileJournal {
             active: Mutex::new(Active {
                 next_seq,
                 segment,
+                last_entry_week,
                 poisoned: false,
             }),
         })
@@ -576,6 +617,7 @@ impl Journal for FileJournal {
             return Err(JournalError::Io);
         }
         active.next_seq = seq + 1;
+        active.last_entry_week = Some(target);
         Ok(seq)
     }
 
@@ -586,6 +628,10 @@ impl Journal for FileJournal {
         } else {
             Ok(active.next_seq)
         }
+    }
+
+    fn last_entry_week(&self) -> Option<u64> {
+        self.lock().last_entry_week
     }
 }
 

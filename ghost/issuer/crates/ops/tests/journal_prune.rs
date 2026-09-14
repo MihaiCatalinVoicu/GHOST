@@ -124,6 +124,42 @@ fn a_verified_snapshot_prunes_the_old_segments_it_covers() {
     );
 }
 
+/// Q32 (design §19.25): an idle issuer's journal is the segment of its last transitions followed by
+/// one ANCHOR entry per week. A verified snapshot of every entry prunes the transitions' segment
+/// (2957) and the first anchor's (2958); what stays holds anchors only.
+#[test]
+fn an_idle_issuer_journal_prunes_down_to_anchors() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let db = snapshot(d, &[]);
+    set_applied(&db, 5);
+    let journal = d.join("journal");
+    let j = FileJournal::open(&journal).unwrap();
+    for i in 0..2u8 {
+        let entry = Entry::Issue {
+            invoice_id: [i; 16],
+            digest: [0xd0 + i; 32],
+        };
+        j.append(2957, &entry).unwrap();
+    }
+    for week in [2958u64, 2959, 2960] {
+        j.append(week, &Entry::Anchor).unwrap();
+    }
+    drop(j);
+    let (status, lines) = prune(&db, &journal);
+    assert_eq!(status, Status::Ok, "{:?}", rendered(&lines));
+    assert_eq!(
+        rendered(&lines),
+        vec![
+            "SEGMENT_PRUNED week=2957",
+            "SEGMENT_PRUNED week=2958",
+            "JOURNAL_PRUNED removed=2 kept=2 first_seq=4 last_seq=5 applied=5",
+        ]
+    );
+    let left = FileJournal::open(&journal).unwrap().entries().unwrap();
+    assert_eq!(left, vec![(4, Entry::Anchor), (5, Entry::Anchor)]);
+}
+
 /// Segment 2959 is covered by a snapshot of every entry but ends less than 7 days before `--now`;
 /// the latest segment stays whatever the snapshot covers. A snapshot covering fewer entries stops
 /// the prune at the first segment it does not cover.
