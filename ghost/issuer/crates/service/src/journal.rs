@@ -43,8 +43,10 @@
 //! §9.5 step 2: those claims close unpaid, so one address cannot stall its whole batch).
 //!
 //! **ANCHOR** (Q32, §19.25 points 2 and 5). At the first scanner tick of a week whose segment holds
-//! no entry yet, while the journal holds an entry of an earlier week, the issuer decides an ANCHOR
-//! entry into the new week's segment ([`Journal::last_entry_week`] tells the scanner; the
+//! no entry yet, once the process's ticks have agreed on that week for
+//! [`crate::scanner::ANCHOR_SETTLE_SECS`] (a clock stepped forward for less decides none, review
+//! finding Q32-CLOCK-1), while the journal holds an entry of an earlier week, the issuer decides an
+//! ANCHOR entry into the new week's segment ([`Journal::last_entry_week`] tells the scanner; the
 //! decision re-checks it inside the write transaction and goes through the same decide-then-journal
 //! path as every transition). It carries nothing: no identifier, no amount, no height, and no time
 //! but the week, which is the segment's name; the sequence number and the checksum are those of
@@ -52,8 +54,9 @@
 //! effect is that the segment of the last active week no longer holds the journal's last entry, so
 //! [`prune_dir`] removes it at `start(w + 2)` as it removes any other, and an idle issuer keeps no
 //! identifier in the journal past the 7–14-day retention (residue E31 closed while the scanner
-//! runs; an issuer that is stopped or halted writes no anchor until its restart). An empty journal
-//! gets no anchor: it has nothing to retain.
+//! runs; an issuer that is stopped or halted, also one that a wallet or daemon outage keeps from
+//! restarting, writes no anchor until its restart, and a longer forward clock step is §19.25 point
+//! 5 (d)). An empty journal gets no anchor: it has nothing to retain.
 //!
 //! **Files.** Weekly segments `issued.journal.<week>` in one directory; a segment is never renamed.
 //! Entries are numbered from 1 without gaps across segments. At open, a torn tail of the last
@@ -72,13 +75,16 @@
 //! may be empty or end in a torn frame), because the issuer's restart and a restore continue the
 //! sequence from that entry. The weekly ANCHOR gives an idle issuer's journal a later segment
 //! holding an entry, so the segment of its last transition still goes at `start(w + 2)`; only an
-//! issuer whose scanner does not run (stopped, halted) keeps it longer (runbook §13). Segments go
-//! in ascending order, so a crash between two removals leaves a contiguous suffix whose first
-//! entry is at most `journal_applied + 1` of the snapshot and of the live database: the issuer
-//! restarts, and a restore from any snapshot B1 keeps (at most 7 days old) replays. [`prune_dir`]
-//! never truncates or writes a segment, so it may run while the issuer appends. A reader that
-//! finds a listed segment gone at its read (a prune ran meanwhile) drops it and every segment it
-//! read before it, the prefix that prune is removing; the sequence checks refuse anything else.
+//! issuer whose scanner does not run (stopped, halted, or kept from restarting by a wallet or
+//! daemon outage) keeps it longer (runbook §13), and entries decided after a forward clock step
+//! that outlasted the anchor's settle window sit in the stepped week's segment (§19.25 point 5
+//! (d)). Segments go in ascending order, so a crash between two removals leaves a contiguous
+//! suffix whose first entry is at most `journal_applied + 1` of the snapshot and of the live
+//! database: the issuer restarts, and a restore from any snapshot B1 keeps (at most 7 days old)
+//! replays. [`prune_dir`] never truncates or writes a segment, so it may run while the issuer
+//! appends. A reader that finds a listed segment gone at its read (a prune ran meanwhile) drops it
+//! and every segment it read before it, the prefix that prune is removing; the sequence checks
+//! refuse anything else.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -206,8 +212,8 @@ pub enum Entry {
         week: u64,
         refused: Vec<[u8; 16]>,
     },
-    /// The first scanner tick of a week found the journal's last entry in an earlier segment
-    /// (Q32, §19.25): a data-free entry that starts the week's segment and changes no state.
+    /// The first settled scanner tick of a week found the journal's last entry in an earlier
+    /// segment (Q32, §19.25): a data-free entry that starts the week's segment and changes no state.
     Anchor,
 }
 

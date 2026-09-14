@@ -442,12 +442,14 @@ mesajul este `snapshot: failed, …`.
   săptămânii w pleacă la prima rulare după `start(w + 2)` în care un segment mai nou ține o intrare.
   Un astfel de segment apare în fiecare săptămână și la un issuer fără tranziții: primul pas al
   scannerului dintr-o săptămână al cărei segment nu ține încă nicio intrare (dacă jurnalul are
-  intrări mai vechi) decide intrarea `ANCHOR`, fără date (niciun identificator, nicio sumă, nicio
-  oră; săptămâna e doar numele segmentului; Q32, §19.25 punctul 5). Deci, cât timp scannerul
-  rulează, o intrare trăiește cel mult 14 zile și o oră (§6.4: 7–14 zile); doar un issuer oprit sau
-  `HALTED` (fără pași de scanner) păstrează segmentul ultimei intrări până la primul pas de după
-  repornire (secțiunea 13). Orice snapshot păstrat (cel mult 7 zile) rămâne restaurabil cu jurnalul
-  rămas. Așteptat: nicio ieșire; un refuz (`PRUNE_REFUSED reason=<…>`, cu
+  intrări mai vechi), după ce pașii procesului au văzut săptămâna fără întrerupere 10 minute,
+  decide intrarea `ANCHOR`, fără date (niciun identificator, nicio sumă, nicio oră; săptămâna e
+  doar numele segmentului; Q32, §19.25 punctul 5). Deci, cât timp scannerul rulează, o intrare
+  trăiește cel mult 14 zile și o oră (§6.4: 7–14 zile); un issuer oprit, `HALTED` sau care nu
+  poate porni (fără wallet sau daemon, codul 5) păstrează segmentul ultimei intrări până la primul
+  pas de după repornire, iar un pas înainte al ceasului mai lung de 10 minute prelungește retenția
+  cu durata pasului (secțiunea 13). Orice snapshot păstrat (cel mult 7 zile) rămâne restaurabil cu
+  jurnalul rămas. Așteptat: nicio ieșire; un refuz (`PRUNE_REFUSED reason=<…>`, cu
   `RECONCILIATION_MISMATCH …` înainte pentru `snapshot-unverified`, sau `INPUT_REFUSED …`,
   `ES_REFUSED …`) ajunge în mail-ul cron-ului și se investighează înainte de orice restaurare.
   Verificare manuală:
@@ -458,8 +460,9 @@ mesajul este `snapshot: failed, …`.
   Așteptat: niciun mesaj de la script, apoi doar segmente `issued.journal.<w>` cu w cel puțin
   săptămâna curentă − 1 (și săptămâna curentă − 2 în prima oră a unei săptămâni); ale unui issuer
   fără tranziții țin doar intrări `ANCHOR`. Un segment mai vechi rămâne doar dacă după săptămâna lui
-  issuer-ul nu a făcut niciun pas de scanner (oprit sau `HALTED`, secțiunea 13) sau dacă lipsește un
-  snapshot verificat (refuzul apare în mail-ul cron-ului).
+  issuer-ul nu a făcut niciun pas de scanner (oprit, `HALTED` sau fără wallet ori daemon), dacă
+  ceasul issuer-ului a fost dat înainte peste granița unei săptămâni mai mult de 10 minute
+  (secțiunea 13) sau dacă lipsește un snapshot verificat (refuzul apare în mail-ul cron-ului).
 - [ ] Restaurare, când `issuer.redb` este corupt sau pierdut și `data/journal/` este intact, într-o
   fereastră de mentenanță (secțiunea 0; altfel snapshot-ul orar ar putea porni issuer-ul între `mv`
   și `install`, pe un director fără bază):
@@ -779,10 +782,24 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
   continuă numerotarea de la ea (§19.25). Ca un issuer fără tranziții (factură, emitere, invitație,
   credit, reîmprospătare, cerere de plată, lot) să nu păstreze segmentul ultimei tranziții, cu
   hash-urile de claim, nullifier-ii și adresele de plată din el, primul pas al scannerului din
-  fiecare săptămână scrie intrarea `ANCHOR`, fără date (Q32, §19.25 punctul 5). Un issuer oprit sau
-  `HALTED` nu face pași de scanner, deci nu scrie ancora: segmentul ultimei intrări rămâne până la
-  primul pas de după repornire, iar retenția de 7–14 zile a jurnalului se depășește cu durata
-  opririi.
+  fiecare săptămână, după ce pașii procesului au văzut săptămâna fără întrerupere 10 minute, scrie
+  intrarea `ANCHOR`, fără date (Q32, §19.25 punctul 5). Un issuer oprit sau `HALTED` nu face pași
+  de scanner, deci nu scrie ancora: segmentul ultimei intrări rămâne până la primul pas de după
+  repornire, iar retenția de 7–14 zile a jurnalului se depășește cu durata opririi.
+- O pană de `wallet-rpc` sau `monerod` oprește și ea ancora în afara unei ferestre de mentenanță
+  (§19.25 punctul 5 (c)): issuer-ul care rulează scrie ancora și fără ele, dar snapshot-ul orar (B1)
+  îl oprește și îl pornește, iar fără wallet și daemon pornirea este refuzată (cod 5, secțiunea 3),
+  deci containerul repornește fără pași de scanner până răspund amândouă. Retenția jurnalului se
+  depășește cu durata penei. Doar într-o fereastră de mentenanță, unde snapshot-ul nu repornește
+  issuer-ul (și jurnalul nu se taie), procesul pornit continuă să scrie ancora.
+- Un pas înainte al ceasului issuer-ului peste granița unei săptămâni (un ceas setat greșit, apoi
+  corectat) lasă intrările decise după corectare în segmentul săptămânii sărite (o intrare nu se
+  scrie niciodată într-un segment mai vechi decât cel mai nou), deci ele trăiesc cel mult 14 zile, o
+  oră și durata pasului (§19.25 punctul 5 (d)). Ancora nu provoacă asta: o decide doar un proces ai
+  cărui pași au văzut săptămâna fără întrerupere 10 minute, deci un pas mai scurt nu decide nicio
+  ancoră. Rămân pașii mai lungi și tranzițiile decise în timpul pasului (un apel al unui client,
+  jobul de plăți). Ceasul host-ului se ține sincronizat (NTP) și nu se schimbă de mână cât rulează
+  issuer-ul.
 - Numărătorile relay-urilor sunt doar ale săptămânilor închise, cele ale ultimelor 13, păstrate în
   `nullifiers.redb` (tabela `redemption_counts`, un număr pe săptămână); un store pierdut
   (`--nullifiers-reset`) le pierde, iar o săptămână fără răscumpărări nu apare (valoarea ei este 0).

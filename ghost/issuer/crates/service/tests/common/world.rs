@@ -26,7 +26,7 @@ use ghost_issuer::custody::KeyWindow;
 use ghost_issuer::journal::{Entry, FileJournal, Journal, SEGMENT_PREFIX};
 use ghost_issuer::payout::{self, AckFile, BatchFile, EntryOutcome, OpsKey, PayoutReport};
 use ghost_issuer::reconcile::{self, CounterId, Counters, Mismatch};
-use ghost_issuer::scanner::TickReport;
+use ghost_issuer::scanner::{TickReport, ANCHOR_SETTLE_SECS};
 use ghost_issuer::service::{
     Issuer, IssuerParams, OpenMode, Ports, Random, RandomError, StartupError,
 };
@@ -542,6 +542,19 @@ impl World {
             return r.ok();
         }
         panic!("no progress after 64 crashes");
+    }
+
+    /// Scanner ticks until this process's ticks have agreed on the week for `ANCHOR_SETTLE_SECS`
+    /// (the ANCHOR's settle window, review finding Q32-CLOCK-1): one tick now, then three that far
+    /// apart, so the window can start again after each crash of a double crash. True if one of
+    /// them decided the week's ANCHOR.
+    pub fn settle(&mut self) -> bool {
+        let mut anchored = self.tick().is_some_and(|r| r.anchored);
+        for _ in 0..3 {
+            self.advance(ANCHOR_SETTLE_SECS);
+            anchored |= self.tick().is_some_and(|r| r.anchored);
+        }
+        anchored
     }
 
     pub fn refill(&mut self) {

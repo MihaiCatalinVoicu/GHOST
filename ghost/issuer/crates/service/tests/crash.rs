@@ -826,15 +826,17 @@ fn i_m_lost_create_address_answer_without_a_crash() {
 // I-N: the weekly ANCHOR journal entry (Q32, §19.25).
 // ------------------------------------------------------------------------------------------------
 
-/// I-N: the first tick of an idle week decides the data-free ANCHOR entry. Its fault sites are the
-/// anchor's transaction (before it begins), its append (the entry lost, torn, or durable before
-/// the commit), its commit (failed or done), then the tick's rail calls and transaction. The week
-/// ends with one anchor, the journal's last entry, applied; a restart and a restore of the snapshot
-/// taken before the week replay it and add none; the pack bought before stays re-served byte for
-/// byte and refuses another request (MS-1).
+/// I-N: the first settled tick of an idle week (its first tick, then ticks `ANCHOR_SETTLE_SECS`
+/// apart, review finding Q32-CLOCK-1) decides the data-free ANCHOR entry. Its fault sites are the
+/// earlier ticks' rail calls and transactions, the anchor's transaction (before it begins), its
+/// append (the entry lost, torn, or durable before the commit), its commit (failed or done), then
+/// the tick's rail calls and transaction; a crash restarts the settle window, which the ticks of
+/// `World::settle` outlast. The week ends with one anchor, the journal's last entry, applied; a
+/// restart and a restore of the snapshot taken before the week replay it and add none; the pack
+/// bought before stays re-served byte for byte and refuses another request (MS-1).
 fn i_n(w: &mut World) {
     w.advance(WEEK_SECS);
-    w.tick();
+    w.settle();
     w.assert_anchor_last(BASE_WEEK + 1);
     w.reopen();
     w.assert_anchor_last(BASE_WEEK + 1);

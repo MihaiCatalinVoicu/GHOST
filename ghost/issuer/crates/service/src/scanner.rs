@@ -6,8 +6,9 @@
 //!
 //! ```text
 //! scan_tick_at(now):
-//!   anchor: the journal's last entry lies in a segment before week(now)  ANCHOR (Q32), decided
-//!                                                       like any transition, before the rail
+//!   anchor: the journal's last entry lies in a segment before week(now), and this process's ticks
+//!   have agreed on week(now) for ANCHOR_SETTLE_SECS     ANCHOR (Q32), decided like any
+//!                                                       transition, before the rail
 //!   h = rail.height()                                   any error: no progress, no state change
 //!   from = min(created_height over open XMR invoices) − 20, and scan_final_height + 1
 //!   xs = rail.transfers(from, h.wallet)                 one call per tick for the whole account
@@ -30,15 +31,33 @@
 //! (`ghost-issuer --restore-wallet`).
 //!
 //! **Weekly anchor** (Q32, §19.25 points 2 and 5). Before it asks the rail anything, a tick whose
-//! week is after the week of the journal's last entry decides the data-free ANCHOR entry
-//! ([`crate::journal`]) through the decide-then-journal path of every transition: inside the write
-//! transaction the condition is checked again (every append happens inside one, and redb has one
-//! writer, so no transition interleaves), the entry is appended and synced, `journal_applied`
-//! advances and the transaction commits; any failure from the append on halts the issuer. So the
-//! first tick of a week anchors it unless a transition already wrote into its segment, every later
-//! tick finds the week anchored, and a wallet or daemon that is down does not stop the anchor. A
-//! crash before the append leaves the condition true for the next tick; a durable entry whose
-//! commit never happened is replayed at the restart, which leaves the condition false.
+//! week is after the week of the journal's last entry, once this process's ticks have agreed on
+//! that week for [`ANCHOR_SETTLE_SECS`], decides the data-free ANCHOR entry ([`crate::journal`])
+//! through the decide-then-journal path of every transition: inside the write transaction the
+//! condition is checked again (every append happens inside one, and redb has one writer, so no
+//! transition interleaves), the entry is appended and synced, `journal_applied` advances and the
+//! transaction commits; any failure from the append on halts the issuer. So the first settled tick
+//! of a week anchors it unless a transition already wrote into its segment, and every later tick
+//! finds the week anchored. A wallet or daemon that is down does not stop the anchor while the
+//! process runs; the issuer does not start without them (§6.6, exit status 5), though, and outside a
+//! maintenance window runbook B1's hourly snapshot restarts it, so an outage that lasts past the
+//! next restart stops the anchors until the wallet and the daemon answer again. A crash before the
+//! append leaves the condition true for the next tick; a durable entry whose commit never happened
+//! is replayed at the restart, which leaves the condition false.
+//!
+//! **Clock steps** (review finding Q32-CLOCK-1). An append goes to the latest segment when that is
+//! later than `week(now)` ([`crate::journal`]), so an anchor decided while the clock is stepped
+//! forward across a week boundary would send every entry decided after the correction into the
+//! stepped week's segment, kept until `start(stepped week + 2)`. A tick therefore anchors only once
+//! this process's ticks have seen `week(now)` without a break for [`ANCHOR_SETTLE_SECS`]: a tick of
+//! another week, or one earlier than the first of the run (the clock went back), starts a new run,
+//! and a restart forgets it; a step shorter than that decides no anchor. The anchor then comes at
+//! most that long plus one scan interval after the week starts or the process restarts, which
+//! changes no retention: the segment of an earlier transition goes at `start(w + 2)` whenever the
+//! anchor of week w + 1 exists by then. What stays (§19.25 point 5 (d)): a step that lasts longer,
+//! or a transition decided during a step (a client call, the payout job), puts the entries decided
+//! after the correction into the stepped week's segment, kept up to the step's length past the
+//! 7–14 days.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,6 +69,11 @@ use crate::rail::{IncomingEntry, RailError, RailHeight};
 use crate::reconcile::{self, CounterId};
 use crate::service::{Issuer, TickOutcome};
 use crate::store::{self, InvoiceRow, InvoiceState, MetaKey, PayWith, StoreError, Table, WriteTx};
+
+/// How long this process's scanner ticks must have agreed on the current week before one decides
+/// its ANCHOR (review finding Q32-CLOCK-1; module docs): 10 minutes, about 20 scan intervals, well
+/// inside the hour between two snapshot restarts (runbook B1).
+pub const ANCHOR_SETTLE_SECS: u64 = 600;
 
 /// What one tick did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,10 +163,15 @@ impl Issuer {
 
     /// The weekly ANCHOR (Q32, §19.25; module docs): true if this call decided it. Nothing is due
     /// in an empty journal, nor while the last entry's segment is the current week's or a later
-    /// one's (a clock step back keeps appending to the latest segment).
+    /// one's (a clock step back keeps appending to the latest segment), nor before this process's
+    /// ticks have agreed on the week for [`ANCHOR_SETTLE_SECS`].
     fn anchor_at(&self, now: u64) -> Result<bool, StoreError> {
         let w = week(now);
-        let due = || self.journal.last_entry_week().is_some_and(|last| last < w);
+        let since = self.tick_week_since(w, now);
+        let due = || {
+            now - since >= ANCHOR_SETTLE_SECS
+                && self.journal.last_entry_week().is_some_and(|last| last < w)
+        };
         if !due() {
             return Ok(false);
         }
@@ -155,6 +184,19 @@ impl Issuer {
         self.decide(tx, &Entry::Anchor, now, 0)
             .map_err(|_| StoreError::Db)?;
         Ok(true)
+    }
+
+    /// The first tick, at most `now`, of the unbroken run of this process's ticks in week `w`. This
+    /// tick joins the run, or starts a new one when the last tick saw another week or the clock
+    /// went back past the run's first tick.
+    fn tick_week_since(&self, w: u64, now: u64) -> u64 {
+        let mut v = self.volatile();
+        let since = match v.tick_week {
+            Some((seen, since)) if seen == w && since <= now => since,
+            _ => now,
+        };
+        v.tick_week = Some((w, since));
+        since
     }
 
     fn apply_tick(

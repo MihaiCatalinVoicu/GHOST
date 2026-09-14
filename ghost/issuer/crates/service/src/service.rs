@@ -269,6 +269,9 @@ pub(crate) struct Volatile {
     pub(crate) last_tick: Option<LastTick>,
     /// Wallet height of the last tick that reached the rail.
     pub(crate) last_wallet_height: Option<u64>,
+    /// The week the scanner's last tick saw and the first tick of their unbroken run in it (the
+    /// ANCHOR's settle window, review finding Q32-CLOCK-1).
+    pub(crate) tick_week: Option<(u64, u64)>,
     /// `highest_minor` was reconciled with the wallet in this process (§7.2, §19.5).
     pub(crate) reconciled: bool,
     bucket_tokens: u64,
