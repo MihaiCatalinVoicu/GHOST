@@ -90,8 +90,8 @@ internal class EntitlementFixture : AutoCloseable {
     fun tokenState(n: Int): String? = db.queryString("SELECT state FROM ent_token WHERE nullifier = ?", listOf(hash(n)))
 
     fun invite(i: Int) = db.exec(
-        "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day) VALUES (?, 'created', ?, ?, ?)",
-        listOf(i, bytes(538, i), bytes(32, i), DAY0 + 90),
+        "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute) VALUES (?, 'created', ?, ?, ?, ?, ?)",
+        listOf(i, bytes(538, i), bytes(32, i), DAY0 + 90, T0 + 70 * 86_400L, T0 + 100 * 86_400L),
     )
 
     fun dropTarget() = db.exec(

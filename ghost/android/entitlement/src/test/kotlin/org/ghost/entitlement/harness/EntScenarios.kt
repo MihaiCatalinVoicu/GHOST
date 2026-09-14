@@ -145,7 +145,7 @@ internal abstract class EntScenario(name: String) : Scenario(name) {
         const val KEEP_PAYING_EVERY = 2 * HOUR
         const val KEEP_BUYING_EVERY = 6 * HOUR
 
-        /** E-G's scripted days: a received credit's refresh is due within 14 days, its retry a day later. */
+        /** E-G's scripted days: a received credit's refresh is due on day 12, its retry a day later. */
         const val REFRESH_DAYS = 17L
 
         /** A deterministic random stream (sealed blobs and invite nonces of a scenario's setup). */
@@ -381,9 +381,14 @@ internal class ScenarioEG : EntScenario("E-G") {
         val inviteToken = ent.mint(EntitlementCrypto.KIND_INVITE, Grid.inviteEpoch(week))
         val invite = Invite.create(inviteToken, Grid.inviteEpoch(week), Grid.day(now) + 14, listOf(0, 1, 2), mine, seeded("my invite|${w.seed}"))
         val relays = w.relays.take(3)
+        // The invite row as `createInvite` leaves it, with its refresh times set inside the script
+        // (the first on day 12, the second after the listening): the rule that draws them
+        // (`RefreshPlan.times`, weeks after the invite) is pinned by the policy vectors and DropStepsTest.
+        // Day 12 leaves a day for the retry and keeps the finalized row inside its 7 GC days at the end.
+        val listenUntil = Grid.day(now) + 14 + 56
         e.c.tx { tx ->
             ctx.invites.insertDropTarget(tx, inviterKeys.dropNamespace, inviterKeys.drop.publicKey, listOf(0, 1, 2), minute + 3_600, Grid.day(now) + 60)
-            ctx.invites.insert(tx, 0, invite.bytes(), mine.dropNamespace, Grid.day(now) + 14 + 56)
+            ctx.invites.insert(tx, 0, invite.bytes(), mine.dropNamespace, listenUntil, minute + 12 * Grid.DAY, (listenUntil + 1) * Grid.DAY)
             ctx.state.takeInviteIndex(tx, 0)
             e.c.stores.namespaces.register(tx, NamespaceId(mine.dropNamespace), Consumer.IDENTITY, relays.map { e.c.id(it) }.toSet(), true)
         }
@@ -395,9 +400,9 @@ internal class ScenarioEG : EntScenario("E-G") {
         w.foreground(e.c, 2 * HOUR, 2 * HOUR + 15 * MINUTE)
         w.foreground(e.c, 9 * HOUR, 9 * HOUR + 15 * MINUTE)
         w.foreground(e.c, 26 * HOUR, 26 * HOUR + 15 * MINUTE)
-        // The received credit is refreshed U[1 d, 14 d] after it arrived (§19.8): a quiet run each day
-        // until then, so the refresh (and the identical retry a crash may make it take a day later)
-        // falls inside the script instead of an 11-day quiescence tail of background sessions.
+        // The received credit is refreshed at its invite's first refresh time, day 12 (§19.26): a quiet
+        // run each day until day 17, so the refresh (and the identical retry a crash may make it take
+        // a day later) falls inside the script instead of a quiescence tail of background sessions.
         for (day in 2..REFRESH_DAYS) w.quietRunAt(day * DAY + 10 * MINUTE)
         w.endMillis = REFRESH_DAYS * DAY + HOUR
     }

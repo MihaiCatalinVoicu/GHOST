@@ -32,13 +32,14 @@ class EntitlementSchemaIntrospectionTest {
 
     /**
      * Every persisted time of the entitlement tables (design §11.3), plus `ent_state.payment_shown_minute`
-     * (S9b: the payment-screen hold of §19.11 survives a process start).
+     * (S9b: the payment-screen hold of §19.11 survives a process start) and the two refresh times an
+     * invite draws at its creation (§19.26, Q31).
      */
     private val expectedTimeColumns = setOf(
         "ent_state.restore_scan_until_day", "ent_state.payment_shown_minute",
         "ent_purchase.created_hour", "ent_purchase.receipt_minute", "ent_purchase.next_due_minute", "ent_purchase.terminal_day",
         "ent_token.eligible_minute",
-        "ent_invite.listen_until_day",
+        "ent_invite.listen_until_day", "ent_invite.refresh_minute", "ent_invite.late_refresh_minute",
         "ent_drop_target.drop_minute", "ent_drop_target.until_day",
         "ent_claim.next_due_minute", "ent_claim.terminal_day",
         "ent_payout_used.until_day",

@@ -31,6 +31,12 @@ fn optional_time(spec: &str) -> Option<i64> {
     (spec != "none").then(|| time(spec))
 }
 
+/// The UTC day a day-start time names.
+fn day(t: i64) -> i64 {
+    assert_eq!(t.rem_euclid(policy::DAY), 0, "the start of a UTC day");
+    t.div_euclid(policy::DAY)
+}
+
 fn onion(spec: &str) -> Onion {
     let (label, port) = spec.rsplit_once(':').unwrap();
     Onion {
@@ -156,6 +162,12 @@ impl Replay {
                 let got = if a["batch"] == "pack" {
                     assert!(!a.contains_key("base"), "a pack line names no base week");
                     policy::pack_eligible_minute(t, &mut draw, high)
+                } else if a["batch"] == "revocation" {
+                    assert!(
+                        !a.contains_key("base"),
+                        "a revocation line names no base week"
+                    );
+                    policy::revocation_eligible_minute(t, &mut draw, high)
                 } else {
                     let base: i64 = a
                         .get("base")
@@ -198,6 +210,39 @@ impl Replay {
             }
             "work" => self.work(&a, e.unwrap()),
             "cover" => self.cover(&a, e.unwrap()),
+            "refresh" => {
+                let mut queue: Vec<f64> = a["uniforms"]
+                    .split(',')
+                    .map(|u| u.parse().unwrap())
+                    .collect();
+                queue.reverse();
+                let mut draw = || queue.pop().expect("a uniform too many");
+                let (first, second) = policy::refresh_times(
+                    day(time(a["expiry"])),
+                    day(time(a["listen_until"])),
+                    &mut draw,
+                );
+                let f: BTreeMap<&str, &str> = expect
+                    .unwrap()
+                    .iter()
+                    .map(|w| w.split_once('=').unwrap())
+                    .collect();
+                assert_eq!(time(f["first"]), first, "first");
+                assert_eq!(time(f["second"]), second, "second");
+                assert!(queue.is_empty(), "every listed uniform is consumed");
+            }
+            "refreshdue" => {
+                let got = policy::refresh_due(
+                    time(a["first"]),
+                    time(a["second"]),
+                    a["epoch"].parse().unwrap(),
+                    time(a["read"]),
+                );
+                match e.unwrap() {
+                    "drop" => assert_eq!(None, got),
+                    t => assert_eq!(Some(time(t)), got),
+                }
+            }
             other => panic!("unknown operation {other}"),
         }
         op
@@ -368,6 +413,8 @@ fn the_reference_policy_matches_the_shared_policy_vectors() {
         "classify",
         "work",
         "cover",
+        "refresh",
+        "refreshdue",
     ]
     .iter()
     .map(|s| s.to_string())

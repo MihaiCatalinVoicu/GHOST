@@ -1,7 +1,7 @@
 //! The Rust reference client policy of T2 (Phase 8 design §13.4 "reference policy", §12.3–§12.5,
-//! §19.4, §19.8, §19.11, §19.14): a line-for-line mirror of the pure decisions of the Kotlin
-//! `:entitlement` engine (`Slots`, `RedeemPlanner`, `ClockEstimate`, `RetryPolicy`,
-//! `QuietRunWork.pick`, `Pricing.coveringSet`). Both replay
+//! §19.4, §19.8, §19.11, §19.14, §19.26): a line-for-line mirror of the pure decisions of the
+//! Kotlin `:entitlement` engine (`Slots`, `RedeemPlanner`, `ClockEstimate`, `RetryPolicy`,
+//! `QuietRunWork.pick`, `Pricing.coveringSet`, `RefreshPlan`). Both replay
 //! `protocol/test-vectors/entitlement_policy.txt` (`t2_policy_vectors.rs` here,
 //! `PolicyVectorsTest.kt` there), so the reference cannot drift from the engine on anything the file
 //! pins; the T2 world schedules its clients with these functions only.
@@ -72,6 +72,17 @@ pub fn trial_eligible_minute(
     } else {
         floor_minute(finalized)
     }
+}
+
+/// A revocation's spare tokens (§8.6): the pack rule, uncapped, in both modes (§19.24 point 13,
+/// §19.26; `Slots.revocationEligibleMinute`). The answer of a quiet-run call never makes them
+/// eligible at once, as the foreground onboarding trial's STANDARD rule would.
+pub fn revocation_eligible_minute(
+    finalized: i64,
+    uniform: &mut dyn FnMut() -> f64,
+    high: bool,
+) -> i64 {
+    slot(finalized, uniform, high, None)
 }
 
 /// The pack rule; with `last_day` the extra days reach at most the day starting then.
@@ -474,6 +485,48 @@ pub fn pick(items: &[(WorkKind, i64)], now: i64) -> Option<usize> {
         }
     }
     best.map(|(i, _)| i)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The refresh time of a received credit (Q31, §19.8, §19.26, `RefreshPlan.kt`).
+// ---------------------------------------------------------------------------------------------
+
+/// The end of the latest drop window, in weeks after the invitee's base week (`t_drop` is drawn in
+/// `[start(base + 3), start(base + 8))`, §19.12).
+const DROP_END_WEEK: i64 = 8;
+const REFRESH_MIN: i64 = DAY;
+const REFRESH_MAX: i64 = 14 * DAY;
+const REFRESH_CUT_MARGIN: i64 = 2 * DAY;
+const CREDIT_EPOCH_WEEKS: i64 = 13;
+
+/// The two refresh times of a credit an invitee of the invite expiring on UTC day `expiry_day`
+/// sends to its drop, listened until UTC day `listen_until_day`: drawn when the inviter creates the
+/// invite, from client randomness only (the first draw, then the second). The first lies 1–14 days
+/// after the latest drop window an invitee of this invite can draw (it activates before the expiry
+/// day); the second 1–14 days after the listening ends, so after every read.
+pub fn refresh_times(
+    expiry_day: i64,
+    listen_until_day: i64,
+    uniform: &mut dyn FnMut() -> f64,
+) -> (i64, i64) {
+    let last_drop_end = week_start(week(expiry_day * DAY - 1) + DROP_END_WEEK);
+    let first = refresh_draw(last_drop_end, uniform());
+    let second = refresh_draw(listen_until_day * DAY, uniform());
+    (first, second)
+}
+
+fn refresh_draw(from: i64, u: f64) -> i64 {
+    ceil_minute(from + REFRESH_MIN + (u * (REFRESH_MAX - REFRESH_MIN) as f64) as i64)
+}
+
+/// The due time of a received credit of credit epoch `epoch` read from the drop at `read`: the
+/// first refresh time when read at or before it, else the second, cut at two days before credit
+/// epoch `epoch + 2` starts (from then the issuer refuses the refresh, §19.8). `None`: the due time
+/// would lie before the read, and the credit is dropped (never refreshed at the read).
+pub fn refresh_due(first: i64, second: i64, epoch: i64, read: i64) -> Option<i64> {
+    let cut = week_start((epoch + 2) * CREDIT_EPOCH_WEEKS) - REFRESH_CUT_MARGIN;
+    let due = if read <= first { first } else { second }.min(cut);
+    (due >= read).then_some(due)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -41,22 +41,14 @@ pub enum Mutant {
 
 /// User actions a twin world replays from its base world, so that the declared cells they
 /// belong to (L7, the time a user starts a purchase after `ENTITLEMENT_NEEDED`) stay identical
-/// while relay activity differs (NI-2, NI-3).
+/// while relay activity differs (NI-2, NI-3). The drop reads of received credits are relay activity
+/// and are not replayed: each twin reads at its own times, and a credit's refresh is due at a time
+/// drawn with its invite (Q31, §19.26).
 #[derive(Debug, Clone, Default)]
 pub struct UserScript {
     /// (client, the foreground session the user started it in, device time before which its
     /// `RequestInvoice` waits).
     pub need_starts: Vec<(u32, u64, i64)>,
-    /// The `RefreshCredit` due time of the k-th received credit of a client: (client, k, device
-    /// time). A received credit's refresh is due 1–14 days after the inviter's client read the
-    /// drop, a time its relay activity sets; the twins that vary relay activity (NI-2, NI-3) keep
-    /// this declared cell (E17) fixed, as they keep the purchase starts of L7.
-    ///
-    /// Keyed by the drop (inviter, invitee), never by arrival order: (inviter, invitee, true time
-    /// the inviter's client read the credit, refresh due device time). A twin delivers each credit
-    /// at its base world's read time, from the invitee's own record, whatever its relays do: the
-    /// read time is relay activity, which NI-2 and NI-3 vary, and the refresh it sets is E17.
-    pub receipts: Vec<(u32, u32, u64, i64)>,
     /// The attempt-plan seed of each purchase: (client, instance, seed). The plan is scheduling
     /// randomness (§19.11), which NI-2 keeps while the blinding seeds vary.
     pub plan_seeds: Vec<(u32, u64, [u8; 32])>,

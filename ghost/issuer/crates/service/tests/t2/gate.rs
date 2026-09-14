@@ -7,8 +7,9 @@
 //! `UNAVAILABLE` on a non-final `BlindSign` per purchase, an extra issuer restore), NI-1 across
 //! cells (an extra `UNAVAILABLE` on the signing `BlindSign` of a fifth of the purchases, compared
 //! per client before the earlier activation-slot cell) and NI-2 (other token-level randomness and
-//! namespaces, the declared user actions replayed); at the small scale NI-3 (relays shift a fifth of
-//! the clients' clock) and NI-1d (a third of the invitees buy their first pack two days later);
+//! namespaces, the declared user actions replayed, the drop reads of received credits at the twin's
+//! own times, §19.26); at the small scale NI-3 (relays shift a fifth of the clients' clock) and
+//! NI-1d (every invitee buys its first pack two days later);
 //! and a lying issuer (every invoice answered `AWAITING_CONFIRMATIONS` until the client's last
 //! attempt) for the second S4 bound.
 //!
@@ -527,7 +528,7 @@ pub fn ni1(f: &mut Findings, a: &Outcome, b: &Outcome) {
 /// moved just as well. A cell is the first UTC-day boundary at or after `t_f + 4 h` in either world.
 /// The pack rule runs on the device clock (§12.3 takes the finalization's device time), so the cell
 /// starts when the client's device clock reaches that boundary: earlier than on true time for a
-/// clock running ahead. Revocations count too: their spares activate at once (R4). A client whose
+/// clock running ahead. Revocations count too: their spares activate at their slot (R4). A client whose
 /// process started at other times in the two worlds (a crash after an extra `BlindSign` attempt
 /// that only one world made, the 5 % fault: the new process draws a fresh quiet pattern) is
 /// compared before the first differing start. Also returns, per client, its differing flows (for
@@ -589,10 +590,10 @@ fn cell_horizons(
             key.1
         );
     }
-    // A revocation's spare tokens are trial tokens, eligible at once (STANDARD) or at a slot (HIGH,
-    // R4): a revocation whose quiet run a moved flow's consequences took (a refresh of a credit the
-    // moved pack funded, an extra attempt) moves them, and its eligible moment starts the client's
-    // cell as a pack's activation does.
+    // A revocation's spare tokens become eligible at an activation slot by the pack rule (R4,
+    // §19.24 point 13, §19.26): a revocation whose quiet run a moved flow's consequences took (a
+    // refresh of a credit the moved pack funded, an extra attempt) moves them, and its eligible
+    // moment starts the client's cell as a pack's activation does.
     let rev = |o: &Outcome| -> HashMap<(u32, u64), (u64, i64)> {
         o.log
             .revocations
@@ -758,53 +759,152 @@ pub fn ni1_cells(f: &mut Findings, a: &Outcome, b: &Outcome, moved: &HashSet<(u3
     );
 }
 
-pub fn ni2(f: &mut Findings, a: &Outcome, b: &Outcome) {
+/// The drop reads of received credits in two worlds (§19.26, Q31): the twins read each credit at
+/// their own times (relay activity), and a credit's refresh is due at one of two times its invite
+/// drew, the read picking only which (the first if read before it, else the second; a credit read
+/// after its refresh cut is dropped). Returns, per inviter with a credit whose refresh the worlds took
+/// from different pre-drawn times (or refreshed in one world only), the true time of the earlier
+/// due time: that inviter's issuer calls are compared before it (the declared bit of E17). Also
+/// the number of credits read in both worlds and of those read at another time.
+fn refresh_crossings(a: &Outcome, b: &Outcome) -> (HashMap<usize, u64>, usize, usize) {
+    let reads = |o: &Outcome| -> HashMap<(u32, u32), (u64, i64)> {
+        o.log
+            .receipts
+            .iter()
+            .map(|&(inviter, invitee, t, due)| ((inviter, invitee), (t, due)))
+            .collect()
+    };
+    let (ra, rb) = (reads(a), reads(b));
+    let keys: std::collections::BTreeSet<(u32, u32)> =
+        ra.keys().chain(rb.keys()).copied().collect();
+    let (mut both, mut moved) = (0, 0);
+    let mut h: HashMap<usize, u64> = HashMap::new();
+    for key in keys {
+        let due = match (ra.get(&key), rb.get(&key)) {
+            (Some(x), Some(y)) => {
+                both += 1;
+                if x.0 != y.0 {
+                    moved += 1;
+                }
+                if x.1 == y.1 {
+                    continue;
+                }
+                x.1.min(y.1)
+            }
+            (Some(x), None) | (None, Some(x)) => x.1,
+            (None, None) => continue,
+        };
+        let skew = a
+            .truth
+            .clients
+            .get(key.0 as usize)
+            .map_or(&[][..], |cl| &cl.skew[..]);
+        let at = true_at_wall(skew, due.max(0) as u64);
+        let e = h.entry(key.0 as usize).or_insert(u64::MAX);
+        *e = (*e).min(at);
+    }
+    (h, both, moved)
+}
+
+/// NI-2 and NI-3: the issuer view (masked or in full) and the wallet view identical, the drop reads
+/// of received credits at each world's own times; an inviter whose credit's refresh came from the
+/// other pre-drawn time (a read on the other side of it) is compared before that refresh.
+fn issuer_twin(f: &mut Findings, name: &str, a: &Outcome, b: &Outcome, masked: bool) {
     let (da, db) = (&a.rec.digests, &b.rec.digests);
-    let same = da.issuer_masked.clone().finalize() == db.issuer_masked.clone().finalize()
-        && da.wallet.clone().finalize() == db.wallet.clone().finalize();
-    let detail = if same {
-        format!("issuer view ({} calls) identical modulo blinded and signature bytes; wallet view identical (the base world's drop-read times of received credits replayed, Q31)", da.issuer_calls)
-    } else {
-        per_client_diff_text(
+    let (digest_a, digest_b, by_a, by_b) = if masked {
+        (
+            &da.issuer_masked,
+            &db.issuer_masked,
             &da.issuer_masked_by_client,
             &db.issuer_masked_by_client,
-            &HashMap::new(),
+        )
+    } else {
+        (
+            &da.issuer,
+            &db.issuer,
+            &da.issuer_by_client,
+            &db.issuer_by_client,
+        )
+    };
+    let (crossed, both, moved) = refresh_crossings(a, b);
+    let wallet = da.wallet.clone().finalize() == db.wallet.clone().finalize();
+    let exact = digest_a.clone().finalize() == digest_b.clone().finalize();
+    let diff = if exact {
+        None
+    } else {
+        per_client_diff_text(
+            by_a,
+            by_b,
+            &crossed,
             &da.issuer_text_by_client,
             &db.issuer_text_by_client,
             (&a.truth, &b.truth),
             (&da.notes_by_client, &db.notes_by_client),
         )
-        .map_or("wallet view differs".to_string(), |w| {
-            format!("issuer view differs: {w}")
-        })
     };
-    f.check("NI-2", same, detail);
+    // Without a crossing the views must be identical as a whole; with one, every client's calls
+    // before its horizon (the crossing inviters') and all of the others'.
+    let ok = wallet && (exact || (!crossed.is_empty() && diff.is_none()));
+    let reads = format!(
+        "{both} received credits read in both worlds, {moved} of them at another time, each refreshed at a time its invite drew"
+    );
+    let detail = if ok {
+        let what = if masked {
+            "identical modulo blinded and signature bytes"
+        } else {
+            "identical"
+        };
+        format!(
+            "issuer view ({} calls) {what}{}; wallet view identical; {reads}; {} inviters with a credit read on the other side of its first refresh time, compared before its refresh",
+            da.issuer_calls,
+            if exact { "" } else { " before the refreshes the reads moved" },
+            crossed.len()
+        )
+    } else if !wallet {
+        format!("wallet view differs; {reads}")
+    } else {
+        format!(
+            "issuer view differs: {}; {reads}",
+            diff.unwrap_or_else(|| "in the order of calls".to_string())
+        )
+    };
+    f.check(name, ok, detail);
+}
+
+pub fn ni2(f: &mut Findings, a: &Outcome, b: &Outcome) {
+    issuer_twin(f, "NI-2", a, b, true);
 }
 
 pub fn ni3(f: &mut Findings, a: &Outcome, b: &Outcome) {
-    let (da, db) = (&a.rec.digests, &b.rec.digests);
-    let same = da.issuer.clone().finalize() == db.issuer.clone().finalize()
-        && da.wallet.clone().finalize() == db.wallet.clone().finalize();
-    let detail = if same {
-        format!(
-            "issuer view ({} calls) and wallet view identical (the base world's drop-read times of received credits replayed, Q31)",
-            da.issuer_calls
-        )
-    } else {
-        per_client_diff_text(
-            &da.issuer_by_client,
-            &db.issuer_by_client,
-            &HashMap::new(),
-            &da.issuer_text_by_client,
-            &db.issuer_text_by_client,
-            (&a.truth, &b.truth),
-            (&da.notes_by_client, &db.notes_by_client),
-        )
-        .map_or("wallet view differs".to_string(), |w| {
-            format!("issuer view differs: {w}")
-        })
+    issuer_twin(f, "NI-3", a, b, false);
+}
+
+/// E30, the redeem-hold length (Q29, design §12.6, §19.26), reported: the background sessions of
+/// a world, those the pending write needs at their start armed, those the hold kept open past their
+/// lanes with the extra time (what the Tor guard, the local network and a relay with an open
+/// circuit see), and the unarmed sessions whose lanes ended before the redeem lane's first step.
+pub fn e30(f: &mut Findings, o: &Outcome) {
+    let g = |k: &str| o.log.counts.get(k).copied().unwrap_or(0);
+    let mut holds: Vec<u64> = o.log.holds.iter().map(|h| h.2 - h.1).collect();
+    holds.sort_unstable();
+    let q = |p: f64| {
+        holds
+            .get(((holds.len().max(1) - 1) as f64 * p).round() as usize)
+            .copied()
+            .unwrap_or(0)
     };
-    f.check("NI-3", same, detail);
+    let empty = o.log.holds.iter().filter(|h| h.3 == 0).count();
+    let redeemed: u64 = o.log.holds.iter().map(|h| u64::from(h.3)).sum();
+    f.note(format!(
+        "E30 (reported, declared residue, Q29 redeem hold): {} background sessions, {} armed by a pending write need, {} held past their lanes (hold median {} s, p90 {} s, max {} s; {empty} held steps redeemed nothing, {redeemed} redemptions in held steps); {} unarmed sessions ended before their lane step",
+        g("background sessions"),
+        g("background sessions armed"),
+        holds.len(),
+        q(0.5),
+        q(0.9),
+        holds.last().copied().unwrap_or(0),
+        g("background lane steps missed")
+    ));
 }
 
 pub fn ni1d(f: &mut Findings, a: &Outcome, b: &Outcome) {
@@ -836,7 +936,6 @@ pub fn ni1d(f: &mut Findings, a: &Outcome, b: &Outcome) {
 pub fn script_of(o: &Outcome) -> Arc<UserScript> {
     Arc::new(UserScript {
         need_starts: o.log.need_starts.clone(),
-        receipts: o.log.receipts.clone(),
         plan_seeds: o
             .truth
             .invoices
@@ -1020,7 +1119,7 @@ pub fn variant(
         let c = &o.log.counts;
         let g = |k: &str| c.get(k).copied().unwrap_or(0);
         f.note(format!(
-            "world {}: {:.0} s; window packs signed {} (invoices {}, renewals started {}, resumes {}, credits packs {}, claims {}), trials {}, warm-up packs {}, need-triggered starts {}, drops {}, credits refreshed {}, issuer calls {}, relay calls {}",
+            "world {}: {:.0} s; window packs signed {} (invoices {}, renewals started {}, resumes {}, credits packs {}, claims {}), trials {}, warm-up packs {}, need-triggered starts {}, drops {}, credits received {} (refreshes due at the first time {}, at the second {}, at their cut {}; dropped after their cut {}), credits refreshed {}, issuer calls {}, relay calls {}",
             o.name,
             o.seconds,
             g("window packs signed"),
@@ -1033,12 +1132,18 @@ pub fn variant(
             g("warm-up packs signed"),
             o.log.need_starts.len(),
             g("drops written"),
+            g("credits received"),
+            g("refreshes due at the first time"),
+            g("refreshes due at the second time"),
+            g("refreshes due at their cut"),
+            g("received credits dropped after their refresh cut"),
             g("credits refreshed"),
             o.rec.digests.issuer_calls,
             o.rec.digests.relay_calls.iter().sum::<u64>()
         ));
     }
     population_check(&mut f, &w_test, scale);
+    e30(&mut f, &w_test);
     joins(&mut f, &w_test);
     let (attackers, _, _) = train(&w_train, seeds.0);
     let s4 = statistics(&mut f, &attackers, &w_test, seeds.1);

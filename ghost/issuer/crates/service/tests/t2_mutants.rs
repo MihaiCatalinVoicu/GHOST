@@ -368,12 +368,15 @@ mutant_test!(m3_immediate_eligible, {
         &["relay calls differ before the activation cell"],
         m,
     );
-    detected(
-        &statistics(m, population::PR),
-        &pr().stats,
-        "S1",
-        &["lift"],
-        m,
+    // S1 at the PR scale is reported, not asserted (§19.26 point 6): with the Q29 hold modelled, a
+    // client whose capabilities lapsed and that has nothing to write redeems only at a foreground
+    // or in an armed session, so an immediately eligible pack's first use follows the user, not its
+    // finalization, and the PR world's few such packs give S1 no power. NI-1 across cells (above)
+    // and NI-K on the real Kotlin engine (`EntitlementMutantDetectionTest`) assert M3.
+    println!(
+        "{m:?} S1 (reported):\n{}control:\n{}",
+        statistics(m, population::PR).text(),
+        pr().stats.text()
     );
 });
 
@@ -461,11 +464,24 @@ mutant_test!(m10_referral_id_at_issuer, {
 
 mutant_test!(m11_device_clock_period, {
     // The mutant decides on the raw device clock although two relays answered it: a corrected
-    // client redeeming near a true week boundary, or refused a period (§12.5, J8).
+    // client redeeming near a true week boundary, or refused a period (§12.5, J8). At the PR scale
+    // (§19.26 point 6): with the Q29 hold modelled, a background session redeems only in its
+    // redeem lane's step, so fewer clients hear two relays in one process than before, and the
+    // small world no longer holds a corrected skewed client's redemption near a week boundary.
     let m = Mutant::M11DeviceClockPeriod;
+    let (_, out) = world(
+        "M11DeviceClockPeriod-pr",
+        population::PR,
+        SEEDS.1,
+        m,
+        true,
+        0,
+    );
+    let mut f = Findings::default();
+    gate::joins(&mut f, &out);
     detected_any(
-        &joins(m),
-        &small().joins,
+        &f,
+        &pr().joins,
         "J8",
         &[
             "WRONG_PERIOD after the relay-facing clock was corrected",

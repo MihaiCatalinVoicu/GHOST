@@ -79,9 +79,12 @@ pub struct DropOut {
 pub struct DropListen {
     pub ns: [u8; 32],
     pub until: u64,
+    /// The two refresh times of a credit read from this drop (device times), drawn when the
+    /// listening starts, never at a read (Q31, §19.26, `policy::refresh_times`).
+    pub refresh: (i64, i64),
     /// Blob hashes already fetched, per relay.
     pub seen: BTreeSet<Vec<u8>>,
-    /// The client that took the invite (world bookkeeping: the receipt a twin replays).
+    /// The client that took the invite (world bookkeeping: which credit a read delivers).
     pub invitee: usize,
 }
 

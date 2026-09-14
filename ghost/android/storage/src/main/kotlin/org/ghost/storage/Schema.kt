@@ -506,13 +506,16 @@ object Schema {
                 ) WITHOUT ROWID""",
                 """CREATE UNIQUE INDEX idx_ent_token_one_reservation
                     ON ent_token(reserved_relay, reserved_namespace, epoch) WHERE reserved_for = 'relay'""",
-                // (5) Invites this identity created (inviter side).
+                // (5) Invites this identity created (inviter side), with the two refresh times of a
+                // credit sent to the drop, drawn at creation, never at a read (§19.26, Q31).
                 """CREATE TABLE ent_invite (
-                    invite_index     INTEGER NOT NULL PRIMARY KEY CHECK (invite_index BETWEEN 0 AND 65535),
-                    state            TEXT    NOT NULL CHECK (state IN ('created', 'credited', 'closed')),
-                    payload          BLOB    CHECK (payload IS NULL OR length(payload) = 538),
-                    drop_namespace   BLOB    NOT NULL CHECK (length(drop_namespace) = 32),
-                    listen_until_day INTEGER NOT NULL CHECK (typeof(listen_until_day) = 'integer' AND listen_until_day >= 0),
+                    invite_index        INTEGER NOT NULL PRIMARY KEY CHECK (invite_index BETWEEN 0 AND 65535),
+                    state               TEXT    NOT NULL CHECK (state IN ('created', 'credited', 'closed')),
+                    payload             BLOB    CHECK (payload IS NULL OR length(payload) = 538),
+                    drop_namespace      BLOB    NOT NULL CHECK (length(drop_namespace) = 32),
+                    listen_until_day    INTEGER NOT NULL CHECK (typeof(listen_until_day) = 'integer' AND listen_until_day >= 0),
+                    refresh_minute      INTEGER NOT NULL CHECK (typeof(refresh_minute) = 'integer' AND refresh_minute % 60 = 0),
+                    late_refresh_minute INTEGER NOT NULL CHECK (typeof(late_refresh_minute) = 'integer' AND late_refresh_minute % 60 = 0),
                     CHECK (state = 'created' OR payload IS NULL)
                 ) WITHOUT ROWID""",
                 // (6) The inviter's drop this identity owes its first XMR-pack credit to (invited

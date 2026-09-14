@@ -26,10 +26,12 @@ import org.ghost.sync.store.Time
  * Invites and their drops (design §8.5, §9.3, §19.12).
  *
  * Inviter: `createInvite` reserves and spends one fresh INVITE token, takes the next invite index,
- * draws 3 drop slots spanning at least two operators and registers the drop namespace as listening;
- * `receive` opens drop blobs, and a valid credit of an accepted epoch becomes a `refresh` flow due at
- * a random time 1–14 days later, clipped to the issuer's refresh window (never presented before its
- * refresh, §19.8).
+ * draws 3 drop slots spanning at least two operators and the two refresh times of a credit sent to
+ * the drop ([RefreshPlan], Q31, §19.26), and registers the drop namespace as listening; `receive`
+ * opens drop blobs taken while the drop is listened, and a valid credit of an accepted epoch becomes
+ * a `refresh` flow due at the first of those times if read before it, else at the second, cut to the
+ * issuer's refresh window; the read moment, which the relays see, never sets the due time. A received
+ * credit is never presented before its refresh (§19.8).
  *
  * Invitee: at the pre-drawn `t_drop` (never tied to a purchase, NI-1d) exactly one blob is sealed and
  * enqueued: a fresh own credit if one exists, else a dummy sealed identically. Credits are fungible
@@ -118,7 +120,9 @@ internal class DropSteps(private val c: EngineContext) {
 
     private fun take(blob: InboundBlob, now: Long) {
         val invite = c.tx { tx -> c.invites.byNamespace(tx, blob.namespace.toByteArray()) }
-        if (invite == null || invite.state == InviteStore.CLOSED) {
+        // Nothing is taken once the listening ended (§9.3), also before GC closed the invite: every
+        // read precedes the second refresh time (§19.26).
+        if (invite == null || invite.state == InviteStore.CLOSED || invite.listenUntilDay <= Grid.day(now)) {
             consume(blob)
             return
         }
@@ -143,7 +147,10 @@ internal class DropSteps(private val c: EngineContext) {
             return
         }
         val current = Grid.creditEpoch(week)
-        if (verified == null || verified.epoch !in (current - 1)..current || invite.state != InviteStore.CREATED) {
+        // Due at a refresh time drawn with the invite (Q31, §19.26): this read only picks which one,
+        // and a credit whose due time would precede the read is dropped, never refreshed at the read.
+        val due = verified?.let { RefreshPlan.due(invite.refreshMinute, invite.lateRefreshMinute, it.epoch, now) }
+        if (verified == null || due == null || verified.epoch !in (current - 1)..current || invite.state != InviteStore.CREATED) {
             c.memory.count(Counters.CREDIT_DROPPED)
             consume(blob)
             return
@@ -155,7 +162,6 @@ internal class DropSteps(private val c: EngineContext) {
         }
         val id = c.random.bytes(EngineContext.ID_BYTES)
         val seed = c.random.bytes(EngineContext.SECRET_BYTES)
-        val due = refreshDue(verified.epoch, now)
         c.tx { tx ->
             val current = c.invites.get(tx, invite.index)
             if (c.sync.inbox.markConsumed(tx, blob.namespace, blob.hash) && current != null && current.state == InviteStore.CREATED) {
@@ -164,18 +170,6 @@ internal class DropSteps(private val c: EngineContext) {
                 c.retireNamespace(tx, blob.namespace)
             }
         }
-    }
-
-    /**
-     * The refresh time of a received credit of [epoch] (§19.8): U[1 d, 14 d] after receipt, but no later
-     * than two days before credit epoch `epoch + 2` starts, from when the issuer refuses to refresh it
-     * (it refreshes only `c_now` and `c_now − 1`); the two days leave room for the attempt and its
-     * pre-drawn retry. Within two days of that start the refresh is due at once.
-     */
-    private fun refreshDue(epoch: Long, now: Long): Long {
-        val drawn = now + REFRESH_MIN + (c.random.uniform() * (REFRESH_MAX - REFRESH_MIN)).toLong()
-        val latest = Grid.start(Grid.creditEpochFirstWeek(epoch + 2)) - REFRESH_DEADLINE_MARGIN
-        return Time.ceilMinute(maxOf(now, minOf(drawn, latest)))
     }
 
     private fun consume(blob: InboundBlob) {
@@ -200,9 +194,12 @@ internal class DropSteps(private val c: EngineContext) {
         if (expiryDay <= Grid.day(now) || expiryDay > Invite.maxExpiryDay(token.epoch)) return null
         val listenUntil = expiryDay + INVITER_LISTEN_DAYS
         val drop = chooseDropSlots(tx, now, listenUntil) ?: return null
+        // The refresh times of a credit an invitee sends to this drop: drawn now, as the listening
+        // starts, never at a read (Q31, §19.26).
+        val refresh = RefreshPlan.times(expiryDay, listenUntil, c.random)
         val invite = Invite.create(token.token(), token.epoch, expiryDay, drop.map { it.first }, keys)
         c.sync.namespaces.register(tx, NamespaceId(keys.dropNamespace), Consumer.IDENTITY, drop.map { it.second }.toSet(), listen = true)
-        c.invites.insert(tx, index, invite.bytes(), keys.dropNamespace, listenUntil)
+        c.invites.insert(tx, index, invite.bytes(), keys.dropNamespace, listenUntil, refresh.first, refresh.second)
         c.state.takeInviteIndex(tx, index)
         c.tokens.delete(tx, token.nullifier())
         return invite.encode()
@@ -236,9 +233,6 @@ internal class DropSteps(private val c: EngineContext) {
 
     private companion object {
         const val CLAIM_LIMIT = 16
-        const val REFRESH_MIN: Long = Grid.DAY
-        const val REFRESH_MAX: Long = 14 * Grid.DAY
-        const val REFRESH_DEADLINE_MARGIN: Long = 2 * Grid.DAY
         const val INVITER_LISTEN_DAYS = 56L
         const val DRAWS = 32
         const val MIN_OPERATORS = 2

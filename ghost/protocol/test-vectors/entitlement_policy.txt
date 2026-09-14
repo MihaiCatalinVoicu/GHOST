@@ -1,6 +1,7 @@
 # Entitlement client policy vectors (Phase 8 design §11.9, §13.4 "reference policy", §12.3–§12.5,
-# §19.4, §19.8, §19.11, §19.14). The pure decisions of the client's schedule: redemption planning,
-# slot eligibility (activation slots), quiet-run work selection and retries. One file, two replayers:
+# §19.4, §19.8, §19.11, §19.14, §19.26). The pure decisions of the client's schedule: redemption
+# planning, slot eligibility (activation slots), quiet-run work selection, retries and the refresh
+# time of a received credit. One file, two replayers:
 #   - ghost/android/entitlement/src/test/kotlin/org/ghost/entitlement/harness/PolicyVectorsTest.kt
 #     replays it against the real Kotlin engine (RedeemPlanner, ClockEstimate, Slots, RetryPolicy,
 #     QuietRunWork, Pricing);
@@ -61,14 +62,29 @@
 #   wrongperiod token=<w> relay_period=<w> -> keep retry_after=<time> | delete
 #       a WRONG_PERIOD answer to a reserved token of week `token`: kept and retried from
 #       start(token) − 23 h when the relay's period is before its week, deleted otherwise.
-#   eligible batch=pack|trial mode=standard|high finalized=<time> [base=<week>] uniforms=<u>,…|none -> <time>
+#   eligible batch=pack|trial|revocation mode=standard|high finalized=<time> [base=<week>] uniforms=<u>,…|none -> <time>
 #       activation slots (§12.3): a pack's tokens at floor_minute(first UTC-day boundary ≥ t + 4 h
 #       + U[0, 6 h)), plus Geometric(1/2) whole days in HIGH (a draw < 0.5 adds a day, at most 16;
 #       the draws come first, then the offset's); a trial's at floor_minute(t) in STANDARD and by the
 #       pack rule in HIGH, with its extra days capped (Q30, §19.23 point 5) so that they reach at
 #       most the last day of the trial's last week (the day starting start(base + 2) − 24 h), and
-#       never fewer than 0: the draws are the pack rule's, the cap applies after them. `base` is the
-#       trial's base week (required for trials, absent for packs).
+#       never fewer than 0: the draws are the pack rule's, the cap applies after them. A revocation's
+#       spare tokens (§8.6) by the pack rule, uncapped, in both modes (§19.24 point 13, §19.26): the
+#       answer of a quiet-run call never makes them eligible at once. `base` is the trial's base week
+#       (required for trials, absent for packs and revocations).
+#   refresh expiry=<time> listen_until=<time> uniforms=<u>,<u> -> first=<time> second=<time>
+#       the two refresh times of a received credit, drawn when the inviter creates the invite and
+#       starts listening on its drop (Q31, §19.26), never at the read: first =
+#       ceil_minute(start(week(expiry − 1 s) + 8) + 1 d + u1 × 13 d), 1–14 days after the end of
+#       the latest drop window an invitee of this invite can draw (it activates before the expiry
+#       day, and t_drop < start(base + 8), §19.12); second = ceil_minute(listen_until + 1 d +
+#       u2 × 13 d), after every read (the listening ends at listen_until). expiry and listen_until
+#       are the starts of UTC days. Whole seconds are truncated before the rounding up.
+#   refreshdue first=<time> second=<time> epoch=<c> read=<time> -> <time>|drop
+#       the due time of a received credit of epoch c read from the drop at `read` (§19.26): the first
+#       time if read ≤ first, else the second, cut at start(first week of credit epoch c + 2) − 2 d
+#       (the issuer refreshes c_now and c_now − 1 only, §19.8); a credit whose due time would lie
+#       before its read is dropped, never refreshed at the read.
 #   attempt seed=<hex32> receipt=<time> k=<0..4> -> <time>
 #       the due minute of BlindSign attempt k (§19.11): receipt + window_k low + u × window width,
 #       rounded up to a minute, u the top 53 bits of HKDF-SHA256(ikm = seed, salt = none,
@@ -219,6 +235,8 @@ eligible batch=trial mode=high finalized=2975+43200 base=2975 uniforms=0.1,0.1,0
 eligible batch=pack mode=high finalized=2975+43200 uniforms=0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.1,0.5 -> 2977+270000    # a pack keeps all 16
 eligible batch=trial mode=high finalized=2976+400000 base=2975 uniforms=0.1,0.1,0.1,0.9,0.5 -> 2977-75600   # finalized in the last week: 3 drawn, 1 kept
 eligible batch=trial mode=high finalized=2977-10800 base=2975 uniforms=0.1,0.9,0.25 -> 2977+91800   # the slot is past the trial: 0 days, never earlier
+eligible batch=revocation mode=standard finalized=2975+43237 uniforms=0.5 -> 2975+97200   # spares by the pack rule, never at once (a trial: 2975+43200)
+eligible batch=revocation mode=high finalized=2976+400000 uniforms=0.1,0.1,0.1,0.9,0.5 -> 2977+97200   # all 3 days kept (a trial of base 2975 keeps 1)
 
 # ---- BlindSign attempt plan ------------------------------------------------------------------------
 attempt seed=9024e385193925a9e7ad85278da8fdea8db505625afb740e470ec28e2233e8bc receipt=2975+36000 k=0 -> 2975+46920
@@ -268,3 +286,15 @@ cover prices=227:200,228:250 credits=227,227,227,227,227,227,227,227,227,227,227
 cover prices=227:200,228:250 credits=227,227,227,227,227,227,227,227,227,227,227,227,227 base=2975 now=2975 -> 0,1,2,3,4,5,6,7,8,9,10,11,12
 cover prices=227:200,228:300 credits=227,228,228,227,228,228,228,228,228,228,228,227 base=2975 now=2975 -> 1,2,4,5,6,7,8,9,10,0,3
 cover prices=223:200,228:200 credits=223,228,228,228,228,228,228,228,228,228,228 base=2975 now=2975 -> 1,2,3,4,5,6,7,8,9,10
+
+# ---- The refresh times of a received credit (Q31, §19.26) -----------------------------------------
+refresh expiry=2977+172800 listen_until=2985+172800 uniforms=0.5,0.25 -> first=2986+43200 second=2986-64800
+refresh expiry=2977+0 listen_until=2985+0 uniforms=0,0.999999 -> first=2984+86400 second=2987+0   # usable until Sunday of 2976; 14 d rounded up
+refreshdue first=2986+43200 second=2987+0 epoch=229 read=2980+0 -> 2986+43200           # read before the first time: it waits for it
+refreshdue first=2986+43200 second=2987+0 epoch=229 read=2983+300000 -> 2986+43200      # another read before it: the same time
+refreshdue first=2986+43200 second=2987+0 epoch=229 read=2986+43200 -> 2986+43200       # read at it
+refreshdue first=2986+43200 second=2987+0 epoch=229 read=2986+43260 -> 2987+0           # read after it: the second time
+refreshdue first=2990+0 second=2991+0 epoch=228 read=2985+0 -> 2990-172800              # cut two days before credit epoch 230
+refreshdue first=2986+0 second=2990+86400 epoch=228 read=2987+0 -> 2990-172800          # the second time cut
+refreshdue first=2986+0 second=2991+0 epoch=228 read=2990-172800 -> 2990-172800        # read at the cut time
+refreshdue first=2990+0 second=2991+0 epoch=228 read=2990-100000 -> drop                # read after the cut time: never refreshed at the read

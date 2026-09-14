@@ -5,6 +5,7 @@ import org.ghost.entitlement.TestBytes
 import org.ghost.entitlement.WEEK0
 import org.ghost.entitlement.World
 import org.ghost.entitlement.port.InviteTokenCheck
+import org.ghost.entitlement.store.InviteRow
 import org.ghost.entitlement.store.InviteStore
 import org.ghost.entitlement.store.PurchaseStore
 import org.ghost.identity.DropSeal
@@ -21,10 +22,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Drops (design §8.5, §9.3, §19.8, §19.12): an invitee writes exactly one sealed blob at its
+ * Drops (design §8.5, §9.3, §19.8, §19.12, §19.26): an invitee writes exactly one sealed blob at its
  * pre-drawn time (a credit or a dummy), none without coverage; an inviter turns a received credit
- * into a refresh flow and stops listening; invite creation spends one invite token and draws drop
- * slots over two operators.
+ * into a refresh flow due at a time drawn with the invite, never at the read (Q31), and stops
+ * listening; invite creation spends one invite token and draws drop slots over two operators.
  */
 class DropStepsTest {
 
@@ -123,7 +124,14 @@ class DropStepsTest {
     fun aReceivedCreditBecomesARefreshFlowAndIsExchangedInItsOwnQuietRun(): Unit = World().use { w ->
         w.identity.exists = true
         w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)
-        val invite = Invite.parseAndVerify(checkNotNull(w.engine.createInvite((Grid.day(T0) + 14).toInt())), T0, InviteTokenCheck(w.crypto), Invite.InMemoryNonceStore())
+        val expiry = Grid.day(T0) + 14
+        val invite = Invite.parseAndVerify(checkNotNull(w.engine.createInvite(expiry.toInt())), T0, InviteTokenCheck(w.crypto), Invite.InMemoryNonceStore())
+        // The two refresh times are drawn with the invite (Q31, §19.26): 1–14 days after the latest
+        // drop window of an invitee of this invite, and 1–14 days after its listening ends.
+        val row = checkNotNull(w.tx { w.ctx().invites.get(it, 0) })
+        val lastDropEnd = Grid.start(Grid.week(expiry * Grid.DAY - 1) + 8)
+        assertTrue(row.refreshMinute in lastDropEnd + Grid.DAY..lastDropEnd + 14 * Grid.DAY)
+        assertTrue(row.lateRefreshMinute in (row.listenUntilDay + 1) * Grid.DAY..(row.listenUntilDay + 14) * Grid.DAY)
         val credit = TestBytes.token(999)
         w.crypto.register(credit, EntitlementCrypto.KIND_CREDIT, Grid.creditEpoch(WEEK0))
         w.fetched(invite.dropNamespace, DropSeal.sealCredit(credit, invite.dropKey, invite.dropNamespace))
@@ -132,7 +140,7 @@ class DropStepsTest {
         assertEquals(PurchaseStore.REFRESH, refresh.kind)
         assertArrayEquals(credit, refresh.inputToken())
         val due = checkNotNull(refresh.nextDueMinute)
-        assertTrue(due >= T0 + Grid.DAY && due <= T0 + 14 * Grid.DAY + 60)
+        assertEquals("read before the first refresh time: it waits for it", row.refreshMinute, due)
         assertEquals(InviteStore.CREDITED, checkNotNull(w.tx { w.ctx().invites.get(it, 0) }).state)
         assertEquals(0L, w.count("SELECT count(*) FROM sync_namespace WHERE namespace_id = ?1 AND listening = 1", listOf(invite.dropNamespace)))
         assertTrue("a received credit is never spendable before its refresh", w.tokenRows("credit").isEmpty())
@@ -159,20 +167,71 @@ class DropStepsTest {
         ctx().dropSteps.receive(clock.now)
     }
 
+    /**
+     * The refresh due time of a credit of the current credit epoch read at [readAt], and the invite
+     * row, for an invite whose refresh draws are [first] and [second] (the three draws before them
+     * choose the drop slots, `DropSteps.create`).
+     */
+    private fun dueAfterReadAt(readAt: Long, first: Double = 0.0, second: Double = 0.5): Pair<Long?, InviteRow> = World().use { w ->
+        w.random.uniforms.addAll(listOf(0.5, 0.5, 0.5, first, second))
+        w.clock.now = readAt
+        w.receive(TestBytes.token(1003), Grid.creditEpoch(WEEK0))
+        val row = checkNotNull(w.tx { w.ctx().invites.get(it, 0) })
+        Pair(w.purchases().singleOrNull()?.nextDueMinute, row)
+    }
+
+    @Test
+    fun theRefreshTimeIsDrawnWithTheInviteNeverAtTheRead() {
+        // Q31 (§19.26): the read is a relay-visible moment; the refresh time does not follow it.
+        val (early, row) = dueAfterReadAt(T0 + Grid.DAY)
+        val (later, _) = dueAfterReadAt(T0 + 30 * Grid.DAY + 17 * Grid.MINUTE)
+        assertEquals("two reads before the first refresh time: the same due time", early, later)
+        assertEquals(row.refreshMinute, early)
+        // With the first draw 0 the first time lies before the listening ends, so a read can follow it.
+        assertTrue(row.refreshMinute + Grid.MINUTE < row.listenUntilDay * Grid.DAY)
+        val (afterFirst, _) = dueAfterReadAt(row.refreshMinute + Grid.MINUTE)
+        assertEquals("a read after the first time: the second, drawn with the invite too", row.lateRefreshMinute, afterFirst)
+        val (lateDraw, lateRow) = dueAfterReadAt(T0 + Grid.DAY, first = 0.9)
+        assertTrue("a first time after the listening ends", lateRow.refreshMinute > lateRow.listenUntilDay * Grid.DAY)
+        assertEquals(lateRow.refreshMinute, lateDraw)
+    }
+
     @Test
     fun aCreditReceivedNearTheEndOfItsRefreshWindowIsRefreshedInsideIt(): Unit = World().use { w ->
         // Two days before credit epoch c_now + 1 starts, a credit of epoch c_now − 1 arrives: the
-        // issuer refreshes it only until that start.
+        // issuer refreshes it only until that start, so its refresh is due at the cut time (a
+        // function of its epoch, never of the read).
         val next = Grid.start((Grid.creditEpoch(WEEK0) + 1) * 13)
         w.clock.now = next - 2 * Grid.DAY
         w.receive(TestBytes.token(1001), Grid.creditEpoch(WEEK0) - 1)
         val refresh = w.purchases().single()
         val due = checkNotNull(refresh.nextDueMinute)
-        assertTrue("due inside the issuer's refresh window", due < next)
+        assertEquals("due at the cut time, inside the issuer's refresh window", next - 2 * Grid.DAY, due)
         w.clock.now = maxOf(w.clock.now, due)
         w.quiet()
         assertEquals(PurchaseStore.FINALIZED, checkNotNull(w.purchase(refresh.id())).state)
         assertEquals(listOf(Grid.creditEpoch(WEEK0) - 1), w.tokenRows("credit").map { it.epoch })
+    }
+
+    @Test
+    fun aCreditReadAfterItsCutTimeIsDroppedNeverRefreshedAtTheRead(): Unit = World().use { w ->
+        val next = Grid.start((Grid.creditEpoch(WEEK0) + 1) * 13)
+        w.clock.now = next - Grid.DAY
+        w.receive(TestBytes.token(1004), Grid.creditEpoch(WEEK0) - 1)
+        assertTrue(w.purchases().isEmpty())
+        assertEquals(1L, w.engine.counter(Counters.CREDIT_DROPPED))
+        assertEquals(0L, w.count("SELECT count(*) FROM inbox_blob WHERE state = 'fetched'"))
+        assertEquals(InviteStore.CREATED, checkNotNull(w.tx { w.ctx().invites.get(it, 0) }).state)
+    }
+
+    @Test
+    fun aBlobReadAfterTheListeningEndedIsNotTaken(): Unit = World().use { w ->
+        // The second refresh time lies after every read because nothing is taken once the listening
+        // ended (§9.3), even before GC closed the invite.
+        w.clock.now = (Grid.day(T0) + 14 + 56) * Grid.DAY + Grid.MINUTE
+        w.receive(TestBytes.token(1005), Grid.creditEpoch(WEEK0))
+        assertTrue(w.purchases().isEmpty())
+        assertEquals(0L, w.count("SELECT count(*) FROM inbox_blob WHERE state = 'fetched'"))
     }
 
     @Test

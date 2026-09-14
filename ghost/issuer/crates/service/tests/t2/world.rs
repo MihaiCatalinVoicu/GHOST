@@ -7,13 +7,17 @@
 //! client's probability while its user is awake, about every 3 hours while asleep); each run
 //! independently draws **quiet** with q = 1/8 from a per-process PRF of the job index (§12.2,
 //! §19.23 point 1), whether or not entitlement work is due. A quiet run touches no relay and makes
-//! at most one issuer call (the most overdue item, `policy::pick`); a normal run is a relay
-//! session: the redeem lane (`policy::plan`, §12.4) and the sync of every active pair, on the pair's
-//! own circuit. Foreground sessions are drawn per user and day; onboarding, purchases, payments
-//! (70 % from the payment screen, which closes the relay session and holds sessions off for
-//! U[20, 60] min; 30 % during a relay session, §19.11), claims and writes are user actions there.
-//! Issuer-facing decisions use the device wall clock only; relay-facing ones the relay-corrected
-//! estimate (§19.4).
+//! at most one issuer call (the most overdue item, `policy::pick`); a normal run is a background
+//! relay session: its lanes sync every pair with a usable capability, on the pair's own circuit,
+//! and the redeem lane's first step (`policy::plan`, §12.4) comes at READY + U[0, 30 s]; the step
+//! runs if the lanes still run then or if the Q29 redeem hold, armed by the pending write needs at
+//! the session's start, keeps the session open for it (E30, measured and reported). Foreground
+//! sessions are drawn per user and day and redeem as each pair comes; onboarding, purchases,
+//! payments (70 % from the payment screen, which closes the relay session and holds sessions off
+//! for U[20, 60] min; 30 % during a relay session, §19.11), claims and writes are user actions
+//! there. Issuer-facing decisions use the device wall clock only; relay-facing ones the
+//! relay-corrected estimate (§19.4). A credit read from a drop is refreshed at one of the two times
+//! its invite drew when the inviter started listening, never at a time the read sets (Q31, §19.26).
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashSet};
@@ -81,6 +85,9 @@ pub struct Log {
     /// Invite revocations answered with spare tokens: (client, flow, true answer time, device time
     /// the spares become eligible).
     pub revocations: Vec<(u32, u64, u64, i64)>,
+    /// Background sessions the redeem hold kept open past their lanes (Q29, E30): (client, end of
+    /// the lanes, end of the redeem lane's first step, redemptions in that step).
+    pub holds: Vec<(u32, u64, u64, u32)>,
     /// Invites handed over: (inviter, the pack flow that produced the invite, invitee, time).
     pub takes: Vec<(u32, u64, u32, u64)>,
     /// Invites handed out: (inviter, the pack flow that produced the invite).
@@ -116,8 +123,6 @@ pub struct Outcome {
 enum Event {
     Join(usize),
     Day(usize),
-    /// A twin's replay of a base-world receipt of a drop credit: (inviter, invitee).
-    Receive(usize, usize),
     Job(usize),
     Foreground(usize, u64),
     ForegroundSync(usize),
@@ -337,12 +342,6 @@ impl World {
             let join = self.clients[c].spec.join;
             self.push(join, Event::Join(c));
         }
-        // A twin replays its base world's receipts of drop credits (E17, `UserScript::receipts`).
-        if let Some(script) = self.cfg.script.clone() {
-            for &(inviter, invitee, t_read, _) in &script.receipts {
-                self.push(t_read, Event::Receive(inviter as usize, invitee as usize));
-            }
-        }
         let day = DAY as u64;
         let first_day = (self.tl.t0 / day + 1) * day;
         self.push(first_day, Event::IssuerDaily);
@@ -454,7 +453,6 @@ impl World {
                 Event::RelayDaily => "relay daily",
                 Event::RelayWeekly => "relay weekly",
                 Event::RelayRestart(_) => "relay restart",
-                Event::Receive(..) => "receive",
                 Event::Snapshot | Event::Restore => "issuer snapshot and restore",
             };
             let e_ = e;
@@ -474,7 +472,6 @@ impl World {
                 Event::RelayRestart(k) => self.relay_restart(k),
                 Event::Snapshot => self.snapshot(),
                 Event::Restore => self.restore(),
-                Event::Receive(a, b) => self.receive(a, b),
             }
             *self.log.timings.entry(kind).or_insert(0.0) += tick.elapsed().as_secs_f64();
         }
@@ -979,7 +976,7 @@ impl World {
                     (0, 0)
                 } else {
                     let tick = std::time::Instant::now();
-                    let r = self.relay_session(c, t + 3, run, u64::MAX);
+                    let r = self.relay_session(c, t + 3, run, u64::MAX, true);
                     *self
                         .log
                         .timings
@@ -1041,7 +1038,7 @@ impl World {
             if self.clients[c].process == 0 {
                 self.new_process(c, s);
             }
-            relay_calls = self.relay_session(c, s + 1, run, cutoff);
+            relay_calls = self.relay_session(c, s + 1, run, cutoff, false);
         }
         if self.clients[c].onboarded {
             issuer_calls += self.user_actions(c, s, end, run);
@@ -1068,7 +1065,7 @@ impl World {
             return;
         }
         let run = self.next_run(c);
-        let n = self.relay_session(c, t, run, u64::MAX);
+        let n = self.relay_session(c, t, run, u64::MAX, false);
         self.truth.clients[c].runs.push(Run {
             id: run,
             start: t,
@@ -1129,11 +1126,31 @@ impl World {
                 self.clients[inviter].ns_seed,
                 &[b"drop-ns", invite.as_bytes()],
             );
-            let epoch = self.clients[inviter].invites[idx].epoch;
-            let until = week_start((epoch + 2) * 4) + 56 * DAY as u64;
+            let (epoch, source, ordinal) = {
+                let inv = &self.clients[inviter].invites[idx];
+                (inv.epoch, inv.source, inv.ordinal)
+            };
+            // The invite is usable on the days before the start of invite epoch + 2 (the latest
+            // expiry, §8.2) and listened until 56 days later (§8.5).
+            let expiry = week_start((epoch + 2) * 4);
+            let until = expiry + 56 * DAY as u64;
+            // The refresh times of a credit read from this drop, drawn as the listening starts
+            // (Q31, §19.26): scheduling randomness keyed on the invite's identity, never on a read.
+            let mut r = Rng::new(
+                self.cfg.seeds.sched,
+                &[
+                    b"refresh-at",
+                    &self.clients[inviter].id.to_be_bytes(),
+                    &source.to_be_bytes(),
+                    &[ordinal],
+                ],
+            );
+            let refresh =
+                policy::refresh_times(expiry as i64 / DAY, until as i64 / DAY, &mut || r.uniform());
             self.clients[inviter].drops.push(DropListen {
                 ns: drop_ns,
                 until,
+                refresh,
                 seen: Default::default(),
                 invitee: c,
             });
@@ -2330,8 +2347,22 @@ impl World {
         policy::pack_eligible_minute(w, &mut || r.uniform(), self.clients[c].spec.high)
     }
 
-    /// The slot of a trial of base week `base` finalized at `w` (Q30 caps its HIGH-mode extra days
-    /// at the trial's last week).
+    /// The slot of a revocation's spare tokens answered at `w`: the pack rule, uncapped, in both
+    /// modes (§19.24 point 13, §19.26; `TrialSteps` through `Slots.revocationEligibleMinute`).
+    fn revocation_eligible(&mut self, c: usize, instance: u64, w: i64) -> i64 {
+        let mut r = Rng::new(
+            self.cfg.seeds.sched,
+            &[
+                b"activate",
+                &self.clients[c].id.to_be_bytes(),
+                &instance.to_be_bytes(),
+            ],
+        );
+        policy::revocation_eligible_minute(w, &mut || r.uniform(), self.clients[c].spec.high)
+    }
+
+    /// The slot of an onboarding trial of base week `base` finalized at `w` (Q30 caps its
+    /// HIGH-mode extra days at the trial's last week).
     fn trial_eligible(&mut self, c: usize, instance: u64, base: u64, w: i64) -> i64 {
         let mut r = Rng::new(
             self.cfg.seeds.sched,
@@ -2534,7 +2565,7 @@ impl World {
                 self.clients[c].invites[idx].revoke = None;
                 if a.result == wire::RedeemInviteResult::Ok {
                     let w_resp = self.clients[c].wall(t_resp);
-                    let eligible = self.trial_eligible(c, instance, base, w_resp);
+                    let eligible = self.revocation_eligible(c, instance, w_resp);
                     self.store_tokens(
                         c,
                         a.tokens,
@@ -2662,9 +2693,19 @@ impl World {
             .collect()
     }
 
-    /// A relay session starting at `t`; no call is made at or after `cutoff` (the payment screen
-    /// closes the session, §19.11).
-    fn relay_session(&mut self, c: usize, t: u64, run: u64, cutoff: u64) -> u32 {
+    /// The wait from READY to the redeem lane's first step of a session, U[0, 30 s]
+    /// (`RedeemLane.firstWait`): client randomness of the run.
+    fn lane_first_wait(&self, c: usize, run: u64) -> u64 {
+        let key = derive32(
+            self.cfg.seeds.sched,
+            &[b"lane-step", &self.clients[c].id.to_be_bytes()],
+        );
+        (prf_unit(&key, &run.to_be_bytes()) * 30.0) as u64
+    }
+
+    /// A relay session starting at `t` (READY), a background job's (`background`) or a foreground
+    /// one; no call is made at or after `cutoff` (the payment screen closes the session, §19.11).
+    fn relay_session(&mut self, c: usize, t: u64, run: u64, cutoff: u64, background: bool) -> u32 {
         if !self.clients[c].onboarded {
             return 0;
         }
@@ -2709,19 +2750,102 @@ impl World {
         // the client's own namespaces, so their times follow the session times only), then a
         // client-random order.
         order.sort_by_key(|&(h, _, _, tag, _)| (tag == 0, h));
-        let mut tc = t;
         let mut calls = 0u32;
         // The relays that refused a period in this session (one lane step, `RedeemLane.step`).
         let mut refused = [false; 3];
-        for (_, ns, write_drop, tag, k) in order {
-            if tc + 3 >= cutoff {
-                break;
+        if !background {
+            // A foreground session: every pair redeems as it comes (the lane steps every minute
+            // while the user is there) and syncs.
+            let mut tc = t;
+            for &(_, ns, write_drop, tag, k) in &order {
+                if tc + 3 >= cutoff {
+                    break;
+                }
+                let n = self.pair_step(
+                    c,
+                    k,
+                    ns,
+                    tc,
+                    run,
+                    write_drop,
+                    tag == 1,
+                    &mut refused,
+                    Pass::Both,
+                );
+                calls += n;
+                // A pair with nothing to do takes no time: the client's invisible state (a drop
+                // listen without a capability, a deferred redemption) must not move its visible calls.
+                tc += u64::from(n);
             }
-            let n = self.pair_step(c, k, ns, tc, run, write_drop, tag == 1, &mut refused);
-            calls += n;
-            // A pair with nothing to do takes no time: the client's invisible state (a drop listen
-            // without a capability, a deferred redemption) must not move its visible calls.
-            tc += u64::from(n);
+        } else {
+            // A background session (§11.6, Q29, §19.23 point 5): the lanes sync every pair with a
+            // usable capability from READY; the redeem lane's first step comes at READY + U[0, 30 s]
+            // (`RedeemLane.firstWait`). It runs if the lanes still run then, or if the redeem hold
+            // (`RedeemHold`) keeps the session open for it: armed by the pending WRITE needs at the
+            // session's start, read before the lanes, and nothing else. A capability the step
+            // installs is used from the next session.
+            let w0 = self.clients[c].wall(t);
+            let armed = order.iter().any(|&(_, ns, write_drop, _, k)| {
+                let cl = &self.clients[c];
+                let needs_write = write_drop
+                    || cl
+                        .outbox
+                        .iter()
+                        .any(|(n, _, _, wr)| *n == ns && !wr[usize::from(k)]);
+                need_of(cl.caps.get(&(k, ns)), needs_write, w0)
+                    .is_some_and(|(kind, _)| kind == NeedKind::Write)
+            });
+            let mut tc = t;
+            for &(_, ns, write_drop, tag, k) in &order {
+                let n = self.pair_step(
+                    c,
+                    k,
+                    ns,
+                    tc,
+                    run,
+                    write_drop,
+                    tag == 1,
+                    &mut refused,
+                    Pass::Lanes,
+                );
+                calls += n;
+                tc += u64::from(n);
+            }
+            let lanes_end = tc;
+            let step_at = t + self.lane_first_wait(c, run);
+            self.log.count("background sessions");
+            if armed {
+                self.log.count("background sessions armed");
+            }
+            if step_at < lanes_end || armed {
+                // Held past its lanes when the step comes after them (E30); a step during the lanes
+                // is placed after their calls (the world's calls of one session are sequential).
+                let held = step_at >= lanes_end;
+                let mut ts = step_at.max(lanes_end);
+                let before = calls;
+                for &(_, ns, write_drop, tag, k) in &order {
+                    let n = self.pair_step(
+                        c,
+                        k,
+                        ns,
+                        ts,
+                        run,
+                        write_drop,
+                        tag == 1,
+                        &mut refused,
+                        Pass::Step,
+                    );
+                    calls += n;
+                    ts += u64::from(n);
+                }
+                if held {
+                    self.log
+                        .holds
+                        .push((c as u32, lanes_end, ts, calls - before));
+                }
+            } else {
+                self.log.count("background lane steps missed");
+            }
         }
         if drop_due {
             let d = self.clients[c].drop_out.as_mut().unwrap();
@@ -2775,7 +2899,7 @@ impl World {
         }
     }
 
-    /// One pair of a session: the redeem lane step, then the sync.
+    /// One pair of a session: the redeem lane's part, then the sync (`pass` selects them).
     #[allow(clippy::too_many_arguments)]
     fn pair_step(
         &mut self,
@@ -2787,6 +2911,7 @@ impl World {
         drop_write: bool,
         listen: bool,
         refused: &mut [bool; 3],
+        pass: Pass,
     ) -> u32 {
         let mut calls = 0;
         let label = transport::label(
@@ -2817,22 +2942,14 @@ impl World {
                 .iter()
                 .any(|(n, _, _, wr)| *n == ns && !wr[usize::from(k)]);
         let cap = self.clients[c].caps.get(&(k, ns)).cloned();
-        // The need (`CapabilityStore.needed`, on the device wall clock): MISSING without a
-        // capability, EXPIRING once it ends within 24 h (an expired one included).
-        let reason = match &cap {
-            None => Some(NeedReason::Missing),
-            Some(cp) if (cp.expiry as i64) <= w + 24 * HOUR => Some(NeedReason::Expiring),
-            _ => None,
-        };
+        let need = need_of(cap.as_ref(), needs_write, w);
         // A relay that refused a period in this session is planned again at the next one, on the
-        // period and the clock its answer set (`RedeemLane.step`).
-        if let Some(reason) = reason.filter(|_| !refused[usize::from(k)]) {
+        // period and the clock its answer set (`RedeemLane.step`). A background session's lanes
+        // redeem nothing: its redeem lane's step does (`Pass::Step`).
+        if let Some((kind, reason)) =
+            need.filter(|_| pass != Pass::Lanes && !refused[usize::from(k)])
+        {
             {
-                let kind = if needs_write {
-                    NeedKind::Write
-                } else {
-                    NeedKind::Read
-                };
                 let rw_ = if m11 {
                     policy::week(w)
                 } else {
@@ -2971,6 +3088,9 @@ impl World {
                 }
             }
         }
+        if pass == Pass::Step {
+            return calls;
+        }
         let t2 = t + u64::from(calls);
         if !cap_ok(&self.clients[c]) {
             return calls;
@@ -3103,13 +3223,14 @@ impl World {
                     tw_ += 1;
                     if got.is_ok() {
                         // The drop's plaintext: the credit of the invitee's first XMR pack, or a
-                        // dummy. Every replica carries the same blob; the first read delivers it.
-                        // A twin replays its base world's receipts instead (`receive`).
+                        // dummy. Every replica carries the same blob; the first read delivers it,
+                        // in every world at that world's own read time (relay activity).
                         if let Some(Some(credit)) = self.drop_blobs.remove(&(ns, h.clone())) {
-                            if self.cfg.script.is_none() {
-                                let invitee = self.clients[c].drops[di].invitee;
-                                self.deliver_credit(c, credit, w, invitee, tw_ - 1);
-                            }
+                            let (invitee, refresh) = {
+                                let d = &self.clients[c].drops[di];
+                                (d.invitee, d.refresh)
+                            };
+                            self.deliver_credit(c, credit, w, invitee, tw_ - 1, refresh);
                         }
                     }
                 }
@@ -3118,20 +3239,18 @@ impl World {
         calls
     }
 
-    /// A twin's replay of a base-world receipt (E17): the inviter's client gets the credit of the
-    /// invitee's first XMR pack at the base world's read time, whatever its own relays did.
-    fn receive(&mut self, inviter: usize, invitee: usize) {
-        let credit = self.clients[invitee]
-            .drop_out
-            .as_ref()
-            .and_then(|d| d.credit.clone());
-        if let Some(credit) = credit {
-            let w = self.clients[inviter].wall(self.now);
-            self.deliver_credit(inviter, credit, w, invitee, self.now);
-        }
-    }
-
-    fn deliver_credit(&mut self, c: usize, credit: Token, w: i64, invitee: usize, t_read: u64) {
+    /// The inviter's client `c` read `credit` from the drop of `invitee` at device time `w` (true
+    /// time `t_read`): it becomes a refresh due at one of the drop's two pre-drawn times `refresh`
+    /// (`DropSteps.credit`, `RefreshPlan.due`, Q31, §19.26), never at a time the read sets.
+    fn deliver_credit(
+        &mut self,
+        c: usize,
+        credit: Token,
+        w: i64,
+        invitee: usize,
+        t_read: u64,
+        refresh: (i64, i64),
+    ) {
         // A credit whose key id is not an ES key (mutant M2b) is not kept.
         let Some(epoch) = self.schedule.key_by_id(credit.key_id()).map(|k| k.epoch) else {
             return;
@@ -3145,21 +3264,23 @@ impl World {
             self.log.count("received credits kept without refresh");
             return;
         }
+        // The read picks only which pre-drawn time applies; a credit whose due time would precede
+        // its read (after the issuer's refresh cut) is dropped, never refreshed at the read.
+        let Some(due) = policy::refresh_due(refresh.0, refresh.1, epoch as i64, w) else {
+            self.log
+                .count("received credits dropped after their refresh cut");
+            return;
+        };
+        let drawn = if w <= refresh.0 { refresh.0 } else { refresh.1 };
+        self.log.count(if due < drawn {
+            "refreshes due at their cut"
+        } else if w <= refresh.0 {
+            "refreshes due at the first time"
+        } else {
+            "refreshes due at the second time"
+        });
         let instance = self.clients[c].next_flow(super::client::FlowSeq::Refresh);
-        let lo = w + DAY;
-        let span = 13 * DAY;
-        let mut due = lo + (self.draw(c, b"receipt", instance) * span as f64) as i64;
-        // At the latest two days before credit epoch c + 2 starts (the issuer's refresh cut-off).
-        let cutoff = policy::week_start((epoch as i64 + 2) * 13) - 2 * DAY;
-        if due > cutoff {
-            due = cutoff.max(w);
-        }
         let key = (c as u32, invitee as u32);
-        if let Some(script) = &self.cfg.script {
-            if let Some(&(_, _, _, d)) = script.receipts.iter().find(|r| (r.0, r.1) == key) {
-                due = d;
-            }
-        }
         self.log.receipts.push((key.0, key.1, t_read, due));
         self.clients[c].received.push(Received {
             token: credit,
@@ -3424,6 +3545,32 @@ impl World {
         } else {
             -m
         }
+    }
+}
+
+/// Which part of a pair a session runs: both, the redemption as the pair comes and then the sync (a
+/// foreground session); the sync only (a background session's lanes); the redemption only (a
+/// background session's redeem-lane step).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Both,
+    Lanes,
+    Step,
+}
+
+/// The need of a (relay, namespace) pair as `CapabilityStore.needed` computes it at device time
+/// `w`: a capability is deleted a day after its expiry (`CapabilityStore.collect`); a pair holding
+/// one that ends within 24 h (an expired one included) needs a WRITE EXPIRING (every redemption
+/// installs a write capability, §10.7); one without a capability needs a WRITE MISSING when it has
+/// something to write, else a READ MISSING (the world lists every pair it holds).
+fn need_of(cap: Option<&Cap>, needs_write: bool, w: i64) -> Option<(NeedKind, NeedReason)> {
+    match cap.filter(|cp| cp.expiry as i64 + DAY > w) {
+        Some(cp) if (cp.expiry as i64) <= w + 24 * HOUR => {
+            Some((NeedKind::Write, NeedReason::Expiring))
+        }
+        Some(_) => None,
+        None if needs_write => Some((NeedKind::Write, NeedReason::Missing)),
+        None => Some((NeedKind::Read, NeedReason::Missing)),
     }
 }
 

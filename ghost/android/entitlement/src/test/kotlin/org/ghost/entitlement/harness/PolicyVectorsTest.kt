@@ -6,6 +6,7 @@ import org.ghost.entitlement.engine.Pricing
 import org.ghost.entitlement.engine.QuietRunWork
 import org.ghost.entitlement.engine.RedeemLane
 import org.ghost.entitlement.engine.RedeemPlanner
+import org.ghost.entitlement.engine.RefreshPlan
 import org.ghost.entitlement.engine.RetryPolicy
 import org.ghost.entitlement.engine.Slots
 import org.ghost.entitlement.port.EntitlementRandom
@@ -25,8 +26,9 @@ import java.io.File
 /**
  * Replays `protocol/test-vectors/entitlement_policy.txt` against the real Kotlin engine (Phase 8
  * design §11.9, §13.4): redemption planning (the ±1 h guard, the slots a relay serves, the plan of a
- * need, the relay-facing clock), activation slots, the `BlindSign` attempt plan and the one retry of
- * capped calls, failure categories, quiet-run work selection and the credits of a credits-paid pack.
+ * need, the relay-facing clock), activation slots (a revocation's spares included), the `BlindSign`
+ * attempt plan and the one retry of capped calls, failure categories, quiet-run work selection, the
+ * credits of a credits-paid pack and the refresh time of a received credit (Q31, §19.26).
  * The Rust T2 reference policy (S10) replays the same file, so the reference cannot drift from the
  * engine on anything pinned here. Every line must pass and every operation must occur.
  */
@@ -57,6 +59,12 @@ class PolicyVectorsTest {
     }
 
     private fun optionalTime(spec: String): Long? = if (spec == "none") null else time(spec)
+
+    /** The UTC day a day-start time names. */
+    private fun day(t: Long): Long {
+        assertEquals("the start of a UTC day", 0L, Math.floorMod(t, Grid.DAY))
+        return Math.floorDiv(t, Grid.DAY)
+    }
 
     private fun onion(spec: String) = TestSchedule.onion(spec.substringBeforeLast(':'), spec.substringAfterLast(':').toInt())
 
@@ -119,6 +127,9 @@ class PolicyVectorsTest {
                 val got = if (a.getValue("batch") == "pack") {
                     assertTrue("a pack line names no base week", "base" !in a)
                     Slots.packEligibleMinute(t, draws, mode)
+                } else if (a.getValue("batch") == "revocation") {
+                    assertTrue("a revocation line names no base week", "base" !in a)
+                    Slots.revocationEligibleMinute(t, draws, mode)
                 } else {
                     Slots.trialEligibleMinute(t, a.getValue("base").toLong(), draws, mode)
                 }
@@ -133,6 +144,18 @@ class PolicyVectorsTest {
             "classify" -> assertEquals(e, RetryPolicy.classify(words[1]).name.lowercase())
             "work" -> work(a, checkNotNull(e))
             "cover" -> cover(a, checkNotNull(e))
+            "refresh" -> {
+                val draws = Draws(0.0, a.getValue("uniforms").split(',').map(String::toDouble))
+                val times = RefreshPlan.times(day(time(a.getValue("expiry"))), day(time(a.getValue("listen_until"))), draws)
+                val f = checkNotNull(expect).associate { it.substringBefore('=') to it.substringAfter('=') }
+                assertEquals("first", time(f.getValue("first")), times.first)
+                assertEquals("second", time(f.getValue("second")), times.second)
+                assertTrue("every listed uniform is consumed", draws.queue.isEmpty())
+            }
+            "refreshdue" -> {
+                val due = RefreshPlan.due(time(a.getValue("first")), time(a.getValue("second")), a.getValue("epoch").toLong(), time(a.getValue("read")))
+                if (e == "drop") assertEquals(null, due) else sameTime(checkNotNull(e), due)
+            }
             else -> error("unknown operation $op")
         }
         return op
@@ -220,7 +243,10 @@ class PolicyVectorsTest {
             if (expect != null) outcomes++
         }
         assertEquals(
-            sortedSetOf("slot", "boundary", "slotsfor", "plan", "estimate", "reserve", "wrongperiod", "eligible", "attempt", "retry", "classify", "work", "cover"),
+            sortedSetOf(
+                "slot", "boundary", "slotsfor", "plan", "estimate", "reserve", "wrongperiod", "eligible", "attempt", "retry", "classify", "work", "cover",
+                "refresh", "refreshdue",
+            ),
             seen,
         )
         assertTrue("only $outcomes outcomes", outcomes >= 70)
