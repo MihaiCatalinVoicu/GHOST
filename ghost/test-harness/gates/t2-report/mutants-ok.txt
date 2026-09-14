@@ -21,5 +21,6 @@ test m18_drop_at_eligible_minute ... ok
 test m19_pay_inside_session ... ok
 test m20_quiet_when_work_due ... ok
 test m21_spend_received_credit ... ok
+test m22_refresh_at_read ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s

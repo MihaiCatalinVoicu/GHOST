@@ -8,10 +8,12 @@
 //! independently draws **quiet** with q = 1/8 from a per-process PRF of the job index (§12.2,
 //! §19.23 point 1), whether or not entitlement work is due. A quiet run touches no relay and makes
 //! at most one issuer call (the most overdue item, `policy::pick`); a normal run is a background
-//! relay session: its lanes sync every pair with a usable capability, on the pair's own circuit,
-//! and the redeem lane's first step (`policy::plan`, §12.4) comes at READY + U[0, 30 s]; the step
-//! runs if the lanes still run then or if the Q29 redeem hold, armed by the pending write needs at
-//! the session's start, keeps the session open for it (E30, measured and reported). Foreground
+//! relay session: each pair holding a usable capability gets one lane event at READY + 90 s·u, on
+//! the pair's own circuit, and the lanes end after the last; the redeem lane (`policy::plan`,
+//! §12.4) steps at READY + U[0, 30 s] and every 60 s ± 50 % while they run, and a session whose
+//! lanes ended first runs its first step only if the Q29 redeem hold, armed by the pending write
+//! needs at the session's start, keeps it open (E30, measured and reported). An invitee's drop
+//! blob is enqueued by the tick of the first redeem step at or after its time. Foreground
 //! sessions are drawn per user and day and redeem as each pair comes; onboarding, purchases,
 //! payments (70 % from the payment screen, which closes the relay session and holds sessions off
 //! for U[20, 60] min; 30 % during a relay session, §19.11), claims and writes are user actions
@@ -69,6 +71,9 @@ use super::transport::{self, IssuerFault, IssuerLink, Liar, RelayLink, RelayNode
 use super::views::Recorder;
 
 const Q: f64 = 1.0 / 8.0;
+/// W: a background session gives each pair holding a usable capability one lane event at
+/// READY + W·u (`TrafficPolicy.backgroundWindowMillis`, `PairSchedule.backgroundTime`), in seconds.
+const BACKGROUND_WINDOW: u64 = 90;
 const SLOT_SECS: u64 = 900;
 const BLOB: usize = 1_024;
 const LATENCY: u64 = 2;
@@ -80,8 +85,8 @@ pub struct Log {
     pub sign_outcomes: Vec<(u32, u64, usize, i32)>,
     /// Need-triggered purchase starts (client, foreground start, device not-before).
     pub need_starts: Vec<(u32, u64, i64)>,
-    /// Received credits: (inviter, invitee, true read time, refresh due device time).
-    pub receipts: Vec<(u32, u32, u64, i64)>,
+    /// Received credits, refreshed or dropped after their cut (Q31, §19.26).
+    pub receipts: Vec<Receipt>,
     /// Invite revocations answered with spare tokens: (client, flow, true answer time, device time
     /// the spares become eligible).
     pub revocations: Vec<(u32, u64, u64, i64)>,
@@ -103,6 +108,40 @@ pub struct Log {
     /// Capture events the three relays wrote (one per handler call), counted in their capture
     /// files at the end: the completeness check compares the relay views with it.
     pub capture_lines: u64,
+}
+
+/// One drop read of a received credit (Q31, §19.26): the invite's two pre-drawn refresh times and
+/// the issuer's cut, the read, and the due time the read gave (`None`: dropped after its cut).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receipt {
+    pub inviter: u32,
+    pub invitee: u32,
+    /// True and device time of the read.
+    pub t: u64,
+    pub w: i64,
+    /// True time the invitee's write reached the relays (the blob lives 30 days from then).
+    pub written: u64,
+    /// True time the listening on the drop ends.
+    pub until: u64,
+    /// The invite's two refresh times and the cut of the credit's epoch (device times).
+    pub first: i64,
+    pub second: i64,
+    pub cut: i64,
+    pub due: Option<i64>,
+}
+
+/// A drop blob in flight: the credit it carries (a dummy carries none) and its first write's true
+/// time.
+type DropBlob = (Option<Token>, u64);
+
+/// A drop read as the reader's client makes it: true and device time, the blob's first write and
+/// the end of the listening.
+#[derive(Debug, Clone, Copy)]
+struct Read {
+    t: u64,
+    w: i64,
+    written: u64,
+    until: u64,
 }
 
 impl Log {
@@ -192,8 +231,9 @@ pub struct World {
     rogue: Vec<(ReferenceSigner, ghost_blind_rsa::PublicKey)>,
     issuer_rng: Rng,
     chain_rng: Rng,
-    /// Drop blobs in flight: (drop namespace, blob hash) → the credit it carries.
-    drop_blobs: BTreeMap<([u8; 32], Vec<u8>), Option<Token>>,
+    /// Drop blobs in flight: (drop namespace, blob hash) → the credit it carries, and the true time
+    /// of its first write.
+    drop_blobs: BTreeMap<([u8; 32], Vec<u8>), DropBlob>,
     /// Pending "pay during the next session" payments per client.
     session_pay: Vec<Vec<usize>>,
     processes: u64,
@@ -1346,6 +1386,7 @@ impl World {
                     credit: None,
                     blob,
                     done: false,
+                    enqueued: false,
                 });
                 if let Some(delay) = self.clients[c].spec.first_pack_delay {
                     let mut at = s + delay;
@@ -2703,6 +2744,56 @@ impl World {
         (prf_unit(&key, &run.to_be_bytes()) * 30.0) as u64
     }
 
+    /// The wait after redeem step `step` of a session, 60 s ± 50 % (`RedeemLane.nextWait`): client
+    /// randomness of the run and step.
+    fn lane_next_wait(&self, c: usize, run: u64, step: u32) -> u64 {
+        let key = derive32(
+            self.cfg.seeds.sched,
+            &[b"lane-step", &self.clients[c].id.to_be_bytes()],
+        );
+        let u = prf_unit(
+            &key,
+            &[&run.to_be_bytes()[..], &step.to_be_bytes()].concat(),
+        );
+        (60.0 * (0.5 + u)) as u64
+    }
+
+    /// The lane event of pair (`ns`, relay `k`) in background session `run` of client `c`,
+    /// READY + 90 s·u (`PairSchedule.backgroundTime`): client randomness keyed on the pair, never
+    /// on another pair or on activity (T19).
+    fn background_offset(&self, c: usize, run: u64, ns: &[u8; 32], k: u8) -> u64 {
+        let u = prf_unit(
+            &self.clients[c].circuit_key,
+            &[&b"background-offset"[..], &run.to_be_bytes(), ns, &[k]].concat(),
+        );
+        (u * BACKGROUND_WINDOW as f64) as u64
+    }
+
+    /// The device time the invitee's drop blob is due (M18: its first pack's eligible minute).
+    fn drop_time(&self, c: usize) -> Option<i64> {
+        let d = self.clients[c].drop_out.as_ref()?;
+        Some(if self.cfg.mutant == Mutant::M18DropAtEligibleMinute {
+            self.clients[c].first_pack_eligible.unwrap_or(i64::MAX)
+        } else {
+            d.due
+        })
+    }
+
+    /// The tick of a redeem-lane step at device time `w` (`EntitlementEngine.tick`,
+    /// `DropSteps.sendDue`): the invitee's drop blob is enqueued once its time has come.
+    fn drop_tick(&mut self, c: usize, w: i64) {
+        if let Some(due) = self.drop_time(c) {
+            self.clients[c].drop_out.as_mut().unwrap().tick(due, w);
+        }
+    }
+
+    fn drop_enqueued(&self, c: usize) -> bool {
+        self.clients[c]
+            .drop_out
+            .as_ref()
+            .is_some_and(|d| d.enqueued)
+    }
+
     /// A relay session starting at `t` (READY), a background job's (`background`) or a foreground
     /// one; no call is made at or after `cutoff` (the payment screen closes the session, §19.11).
     fn relay_session(&mut self, c: usize, t: u64, run: u64, cutoff: u64, background: bool) -> u32 {
@@ -2723,17 +2814,15 @@ impl World {
             pairs.push((ns, false, 1));
         }
         let w = self.clients[c].wall(t);
-        let drop_due = self.clients[c].drop_out.as_ref().is_some_and(|d| {
-            let due = if self.cfg.mutant == Mutant::M18DropAtEligibleMinute {
-                self.clients[c].first_pack_eligible.unwrap_or(i64::MAX)
-            } else {
-                d.due
-            };
-            !d.done && due <= w
-        });
-        if drop_due {
-            let ns = self.clients[c].drop_out.as_ref().unwrap().ns;
-            pairs.push((ns, true, 2));
+        // The invitee's drop blob is enqueued by the tick of the first redeem-lane step at or after
+        // its time (`DropSteps.sendDue`, run before each step): in a background session at its
+        // steps, in a foreground one at its start (the world's foreground redeems as each pair
+        // comes). Before that tick the drop is no namespace, no pair and no need (review T2GAPS-4).
+        if !background {
+            self.drop_tick(c, w);
+        }
+        if let Some(d) = self.clients[c].drop_out.as_ref().filter(|d| !d.done) {
+            pairs.push((d.ns, true, 2));
         }
         // A client-random order of pairs (circuit key, run).
         let key = self.clients[c].circuit_key;
@@ -2761,6 +2850,9 @@ impl World {
                 if tc + 3 >= cutoff {
                     break;
                 }
+                if write_drop && !self.drop_enqueued(c) {
+                    continue;
+                }
                 let n = self.pair_step(
                     c,
                     k,
@@ -2778,81 +2870,123 @@ impl World {
                 tc += u64::from(n);
             }
         } else {
-            // A background session (§11.6, Q29, §19.23 point 5): the lanes sync every pair with a
-            // usable capability from READY; the redeem lane's first step comes at READY + U[0, 30 s]
-            // (`RedeemLane.firstWait`). It runs if the lanes still run then, or if the redeem hold
-            // (`RedeemHold`) keeps the session open for it: armed by the pending WRITE needs at the
-            // session's start, read before the lanes, and nothing else. A capability the step
-            // installs is used from the next session.
-            let w0 = self.clients[c].wall(t);
+            // A background session as `SyncRuntime` runs it (§11.6, Q29, §19.23 point 5, review
+            // T2GAPS-3): every pair holding a usable capability at READY gets one lane event at
+            // READY + 90 s·u (`PairSchedule.backgroundTime`), and the lanes end after the last one
+            // (`Session.maybeFinish`); the redeem lane steps at READY + U[0, 30 s] and then every
+            // 60 s ± 50 % (`RedeemLane.run`) while the lanes run, each step after the tick that
+            // enqueues a due drop. A session whose lanes ended first runs its first step only if the
+            // redeem hold (`RedeemHold`) keeps it open: armed by the pending WRITE needs at the
+            // session's start (`CapabilityStore.needed`, where an unsent drop is no need yet), and
+            // nothing else. A capability a step installs is used from the next session.
+            let est = if self.cfg.mutant == Mutant::M11DeviceClockPeriod {
+                w
+            } else {
+                self.clients[c].clock.now(w)
+            };
+            let enqueued = self.drop_enqueued(c);
             let armed = order.iter().any(|&(_, ns, write_drop, _, k)| {
                 let cl = &self.clients[c];
-                let needs_write = write_drop
+                if write_drop && !enqueued {
+                    return false;
+                }
+                let needs_write = (write_drop
+                    && cl.drop_out.as_ref().is_some_and(|d| d.pending_write(k)))
                     || cl
                         .outbox
                         .iter()
                         .any(|(n, _, _, wr)| *n == ns && !wr[usize::from(k)]);
-                need_of(cl.caps.get(&(k, ns)), needs_write, w0)
+                need_of(cl.caps.get(&(k, ns)), needs_write, w)
                     .is_some_and(|(kind, _)| kind == NeedKind::Write)
             });
-            let mut tc = t;
-            for &(_, ns, write_drop, tag, k) in &order {
-                let n = self.pair_step(
-                    c,
-                    k,
-                    ns,
-                    tc,
-                    run,
-                    write_drop,
-                    tag == 1,
-                    &mut refused,
-                    Pass::Lanes,
-                );
-                calls += n;
-                tc += u64::from(n);
-            }
-            let lanes_end = tc;
-            let step_at = t + self.lane_first_wait(c, run);
+            let events: Vec<(u64, usize)> = order
+                .iter()
+                .enumerate()
+                .filter(|&(_, &(_, ns, write_drop, _, k))| {
+                    (!write_drop || enqueued)
+                        && self.clients[c]
+                            .caps
+                            .get(&(k, ns))
+                            .is_some_and(|cp| cp.expiry as i64 > est)
+                })
+                .map(|(i, &(_, ns, _, _, k))| (t + self.background_offset(c, run, &ns, k), i))
+                .collect();
+            let mut session = Background::new(t, events, self.lane_first_wait(c, run), armed);
             self.log.count("background sessions");
             if armed {
                 self.log.count("background sessions armed");
             }
-            if step_at < lanes_end || armed {
-                // Held past its lanes when the step comes after them (E30); a step during the lanes
-                // is placed after their calls (the world's calls of one session are sequential).
-                let held = step_at >= lanes_end;
-                let mut ts = step_at.max(lanes_end);
-                let before = calls;
-                for &(_, ns, write_drop, tag, k) in &order {
-                    let n = self.pair_step(
-                        c,
-                        k,
-                        ns,
-                        ts,
-                        run,
-                        write_drop,
-                        tag == 1,
-                        &mut refused,
-                        Pass::Step,
-                    );
-                    calls += n;
-                    ts += u64::from(n);
+            loop {
+                match session.next() {
+                    Next::Lane(i, at) => {
+                        let (_, ns, write_drop, tag, k) = order[i];
+                        let n = self.pair_step(
+                            c,
+                            k,
+                            ns,
+                            at,
+                            run,
+                            write_drop,
+                            tag == 1,
+                            &mut refused,
+                            Pass::Lanes,
+                        );
+                        calls += n;
+                        session.lane_done(n);
+                    }
+                    Next::Step(at, held) => {
+                        let wall = self.clients[c].wall(at);
+                        self.drop_tick(c, wall);
+                        // A relay that refused a period in this step is planned again at the next.
+                        let mut step_refused = [false; 3];
+                        let before = calls;
+                        let mut ts = at;
+                        for &(_, ns, write_drop, tag, k) in &order {
+                            if write_drop && !self.drop_enqueued(c) {
+                                continue;
+                            }
+                            let n = self.pair_step(
+                                c,
+                                k,
+                                ns,
+                                ts,
+                                run,
+                                write_drop,
+                                tag == 1,
+                                &mut step_refused,
+                                Pass::Step,
+                            );
+                            calls += n;
+                            ts += u64::from(n);
+                        }
+                        self.log.count("background redeem steps");
+                        if held {
+                            // Held past its lanes (E30): until the end of this step.
+                            self.log
+                                .holds
+                                .push((c as u32, session.lane_at, ts, calls - before));
+                        } else if session.steps == 0 {
+                            self.log
+                                .count("background sessions stepped while their lanes ran");
+                        }
+                        let wait = self.lane_next_wait(c, run, session.steps);
+                        session.step_done(calls - before, wait);
+                    }
+                    Next::End { stepped, .. } => {
+                        if !stepped {
+                            self.log.count("background lane steps missed");
+                        }
+                        break;
+                    }
                 }
-                if held {
-                    self.log
-                        .holds
-                        .push((c as u32, lanes_end, ts, calls - before));
-                }
-            } else {
-                self.log.count("background lane steps missed");
             }
         }
-        if drop_due {
-            let d = self.clients[c].drop_out.as_mut().unwrap();
-            if d.written.iter().all(|&x| x) {
+        let due_now = self.drop_time(c).is_some_and(|due| due <= w);
+        if let Some(d) = self.clients[c].drop_out.as_mut().filter(|d| !d.done) {
+            if due_now && d.enqueued && d.written.iter().all(|&x| x) {
                 d.done = true;
                 self.log.count("drops written");
-            } else if w > d.due + 7 * DAY {
+            } else if due_now && w > d.due + 7 * DAY {
                 d.done = true;
                 self.log.count("drops not written");
             }
@@ -3166,7 +3300,9 @@ impl World {
             );
             if r.is_ok() {
                 self.clients[c].drop_out.as_mut().unwrap().written[usize::from(k)] = true;
-                self.drop_blobs.insert((ns, hash), credit.clone());
+                self.drop_blobs
+                    .entry((ns, hash))
+                    .or_insert((credit.clone(), tw_));
                 let _ = inviter;
             }
             calls += 1;
@@ -3195,12 +3331,18 @@ impl World {
         calls += 1;
         tw_ += 1;
         if let Ok(resp) = listed {
-            if !resp.next_cursor.is_empty() {
+            // A twin's relays may hold a drop blob back from its reader until a release time
+            // (NI-2, NI-3: relay activity moving the read, §19.26): the reader gets an empty page
+            // that keeps its cursor, and lists the blob at its first session after the release.
+            let withheld = listen && !resp.blob_hashes.is_empty() && self.withheld(c, ns, tw_);
+            if withheld {
+                self.log.count("drop lists held back by the relays");
+            } else if !resp.next_cursor.is_empty() {
                 self.clients[c]
                     .cursors
                     .insert((k, ns), resp.next_cursor.clone());
             }
-            if listen {
+            if listen && !withheld {
                 for h in resp.blob_hashes {
                     let di = self.clients[c].drops.iter().position(|d| d.ns == ns);
                     let Some(di) = di else { continue };
@@ -3225,12 +3367,20 @@ impl World {
                         // The drop's plaintext: the credit of the invitee's first XMR pack, or a
                         // dummy. Every replica carries the same blob; the first read delivers it,
                         // in every world at that world's own read time (relay activity).
-                        if let Some(Some(credit)) = self.drop_blobs.remove(&(ns, h.clone())) {
-                            let (invitee, refresh) = {
+                        if let Some((Some(credit), written)) =
+                            self.drop_blobs.remove(&(ns, h.clone()))
+                        {
+                            let (invitee, refresh, until) = {
                                 let d = &self.clients[c].drops[di];
-                                (d.invitee, d.refresh)
+                                (d.invitee, d.refresh, d.until)
                             };
-                            self.deliver_credit(c, credit, w, invitee, tw_ - 1, refresh);
+                            let read = Read {
+                                t: tw_ - 1,
+                                w,
+                                written,
+                                until,
+                            };
+                            self.deliver_credit(c, credit, invitee, read, refresh);
                         }
                     }
                 }
@@ -3239,18 +3389,29 @@ impl World {
         calls
     }
 
-    /// The inviter's client `c` read `credit` from the drop of `invitee` at device time `w` (true
-    /// time `t_read`): it becomes a refresh due at one of the drop's two pre-drawn times `refresh`
-    /// (`DropSteps.credit`, `RefreshPlan.due`, Q31, §19.26), never at a time the read sets.
+    /// Whether the twin's relays still hold the blob of drop `ns` back from its reader `c` at `t`
+    /// (`Config::drop_holds`).
+    fn withheld(&self, c: usize, ns: [u8; 32], t: u64) -> bool {
+        self.clients[c]
+            .drops
+            .iter()
+            .find(|d| d.ns == ns)
+            .and_then(|d| self.cfg.drop_holds.get(&(c as u32, d.invitee as u32)))
+            .is_some_and(|&release| t < release)
+    }
+
+    /// The inviter's client `c` read `credit` from the drop of `invitee` (`read`): it becomes a
+    /// refresh due at one of the drop's two pre-drawn times `refresh` (`DropSteps.credit`,
+    /// `RefreshPlan.due`, Q31, §19.26), never at a time the read sets.
     fn deliver_credit(
         &mut self,
         c: usize,
         credit: Token,
-        w: i64,
         invitee: usize,
-        t_read: u64,
+        read: Read,
         refresh: (i64, i64),
     ) {
+        let w = read.w;
         // A credit whose key id is not an ES key (mutant M2b) is not kept.
         let Some(epoch) = self.schedule.key_by_id(credit.key_id()).map(|k| k.epoch) else {
             return;
@@ -3266,7 +3427,34 @@ impl World {
         }
         // The read picks only which pre-drawn time applies; a credit whose due time would precede
         // its read (after the issuer's refresh cut) is dropped, never refreshed at the read.
-        let Some(due) = policy::refresh_due(refresh.0, refresh.1, epoch as i64, w) else {
+        let due = if self.cfg.mutant == Mutant::M22RefreshAtRead {
+            // The mutant: due 1–14 days after the read, drawn per invite (client randomness).
+            let key = derive32(
+                self.cfg.seeds.sched,
+                &[
+                    b"m22",
+                    &self.clients[c].id.to_be_bytes(),
+                    &(invitee as u64).to_be_bytes(),
+                ],
+            );
+            policy::refresh_due_at_read(epoch as i64, w, prf_unit(&key, b"due"))
+        } else {
+            policy::refresh_due(refresh.0, refresh.1, epoch as i64, w)
+        };
+        let receipt = Receipt {
+            inviter: c as u32,
+            invitee: invitee as u32,
+            t: read.t,
+            w,
+            written: read.written,
+            until: read.until,
+            first: refresh.0,
+            second: refresh.1,
+            cut: policy::refresh_cut(epoch as i64),
+            due,
+        };
+        self.log.receipts.push(receipt);
+        let Some(due) = due else {
             self.log
                 .count("received credits dropped after their refresh cut");
             return;
@@ -3280,8 +3468,6 @@ impl World {
             "refreshes due at the second time"
         });
         let instance = self.clients[c].next_flow(super::client::FlowSeq::Refresh);
-        let key = (c as u32, invitee as u32);
-        self.log.receipts.push((key.0, key.1, t_read, due));
         self.clients[c].received.push(Received {
             token: credit,
             epoch,
@@ -3556,6 +3742,82 @@ enum Pass {
     Both,
     Lanes,
     Step,
+}
+
+/// What a background session does next ([`Background::next`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    /// The lane event of pair `i` (an index into the session's pairs) at time `t`.
+    Lane(usize, u64),
+    /// A redeem-lane step at `t`; `held`: the session stays open only for it (Q29).
+    Step(u64, bool),
+    /// The session ends; its lanes ended at `lanes_end`, and `stepped` tells whether a step ran.
+    End { lanes_end: u64, stepped: bool },
+}
+
+/// The timeline of a background relay session (§11.6, Q29, T19; review T2GAPS-3).
+struct Background {
+    events: Vec<(u64, usize)>,
+    next: usize,
+    /// End of the lanes' latest call (READY while none ran).
+    lane_at: u64,
+    step_at: u64,
+    steps: u32,
+    armed: bool,
+}
+
+impl Background {
+    /// A session READY at `ready` whose pairs holding a usable capability have their lane events
+    /// at `events` (time, pair), whose redeem lane first steps `first_wait` after READY, and whose
+    /// hold is `armed` (a pending write need at its start).
+    fn new(ready: u64, mut events: Vec<(u64, usize)>, first_wait: u64, armed: bool) -> Self {
+        events.sort_unstable();
+        Background {
+            events,
+            next: 0,
+            lane_at: ready,
+            step_at: ready + first_wait,
+            steps: 0,
+            armed,
+        }
+    }
+
+    /// Lane events and redeem steps in time order (the world makes one session's calls one after
+    /// the other). The session is open at a step while a lane event is still to come or a lane call
+    /// still runs (`Session.maybeFinish` waits for `ReadLane.allConsumed` and an idle work lane);
+    /// once the lanes have ended, only the hold keeps it open, for the first step alone.
+    fn next(&self) -> Next {
+        let lane = self
+            .events
+            .get(self.next)
+            .map(|&(at, i)| (at.max(self.lane_at), i));
+        if let Some((at, i)) = lane.filter(|&(at, _)| at <= self.step_at) {
+            return Next::Lane(i, at);
+        }
+        if lane.is_some() || self.lane_at > self.step_at {
+            return Next::Step(self.step_at, false);
+        }
+        if self.steps == 0 && self.armed {
+            return Next::Step(self.step_at, true);
+        }
+        Next::End {
+            lanes_end: self.lane_at,
+            stepped: self.steps > 0,
+        }
+    }
+
+    /// The lane event [`Next::Lane`] named made `calls` calls, one second each.
+    fn lane_done(&mut self, calls: u32) {
+        let at = self.events[self.next].0.max(self.lane_at);
+        self.lane_at = at + u64::from(calls);
+        self.next += 1;
+    }
+
+    /// The step [`Next::Step`] named made `calls` calls; the lane waits `wait` before the next.
+    fn step_done(&mut self, calls: u32, wait: u64) {
+        self.steps += 1;
+        self.step_at += u64::from(calls) + wait;
+    }
 }
 
 /// The need of a (relay, namespace) pair as `CapabilityStore.needed` computes it at device time
@@ -3853,4 +4115,78 @@ pub fn non_final_attempts(log: &Log) -> HashSet<(u32, u64, usize)> {
 
 pub fn spec_of(w: &World, c: usize) -> &ClientSpec {
     &w.clients[c].spec
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Background, Next};
+
+    /// T2GAPS-3: the lanes keep a background session open until their last pair event (READY +
+    /// 90 s·u per pair, `PairSchedule.backgroundTime`), and the redeem lane steps at READY +
+    /// U[0, 30 s] and then every 60 s ± 50 % while they run (`RedeemLane.run`), whatever the
+    /// steps do (the lanes' calls are never moved by them, T19).
+    #[test]
+    fn a_background_session_steps_while_its_lane_events_run() {
+        let mut s = Background::new(1_000, vec![(1_080, 0), (1_010, 1)], 20, false);
+        assert_eq!(s.next(), Next::Lane(1, 1_010));
+        s.lane_done(1);
+        assert_eq!(s.next(), Next::Step(1_020, false));
+        s.step_done(2, 45);
+        assert_eq!(
+            s.next(),
+            Next::Step(1_067, false),
+            "a second step while an event waits"
+        );
+        s.step_done(0, 70);
+        assert_eq!(s.next(), Next::Lane(0, 1_080));
+        s.lane_done(1);
+        assert_eq!(
+            s.next(),
+            Next::End {
+                lanes_end: 1_081,
+                stepped: true
+            }
+        );
+    }
+
+    /// A lane call still running keeps the session open for a step due during it.
+    #[test]
+    fn a_running_lane_call_keeps_the_session_open() {
+        let mut s = Background::new(1_000, vec![(1_005, 0)], 20, false);
+        assert_eq!(s.next(), Next::Lane(0, 1_005));
+        s.lane_done(30);
+        assert_eq!(s.next(), Next::Step(1_020, false));
+        s.step_done(1, 60);
+        assert_eq!(
+            s.next(),
+            Next::End {
+                lanes_end: 1_035,
+                stepped: true
+            }
+        );
+    }
+
+    /// Without a pair holding a usable capability the lanes end at READY: the step runs only in a
+    /// session the hold armed, held for it, and the hold ends at that step (Q29).
+    #[test]
+    fn a_session_without_lane_events_steps_only_when_armed() {
+        let s = Background::new(1_000, Vec::new(), 20, false);
+        assert_eq!(
+            s.next(),
+            Next::End {
+                lanes_end: 1_000,
+                stepped: false
+            }
+        );
+        let mut s = Background::new(1_000, Vec::new(), 20, true);
+        assert_eq!(s.next(), Next::Step(1_020, true));
+        s.step_done(1, 60);
+        assert_eq!(
+            s.next(),
+            Next::End {
+                lanes_end: 1_000,
+                stepped: true
+            }
+        );
+    }
 }

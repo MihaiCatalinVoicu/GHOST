@@ -1,7 +1,7 @@
 //! What one T2 world is: its scale, its seven seeds, the mutant it runs (if any) and the twin-world
 //! perturbations it applies (Phase 8 design §13.4 "Non-interference", §19.16).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -37,6 +37,8 @@ pub enum Mutant {
     M19PayInsideSession,
     M20QuietWhenWorkDue,
     M21SpendReceivedCredit,
+    /// A received credit's refresh due 1–14 days after its drop read (the rule Q31 replaced, §19.26).
+    M22RefreshAtRead,
 }
 
 /// User actions a twin world replays from its base world, so that the declared cells they
@@ -93,6 +95,9 @@ pub struct Config {
     pub shift_fraction: f64,
     /// NI-1d: shift the first-purchase start of this fraction of invitees by this many seconds.
     pub first_pack_shift: Option<(f64, u64)>,
+    /// NI-2, NI-3: the relays hold the drop blob of (inviter, invitee) back from its reader until
+    /// this true time (relay activity moving the drop read by hours to days, §19.26).
+    pub drop_holds: Arc<BTreeMap<(u32, u32), u64>>,
 }
 
 impl Config {
@@ -117,6 +122,7 @@ impl Config {
             script: None,
             shift_fraction: 0.0,
             first_pack_shift: None,
+            drop_holds: Arc::new(BTreeMap::new()),
         }
     }
 }

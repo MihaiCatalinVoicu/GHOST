@@ -524,8 +524,19 @@ fn refresh_draw(from: i64, u: f64) -> i64 {
 /// epoch `epoch + 2` starts (from then the issuer refuses the refresh, §19.8). `None`: the due time
 /// would lie before the read, and the credit is dropped (never refreshed at the read).
 pub fn refresh_due(first: i64, second: i64, epoch: i64, read: i64) -> Option<i64> {
-    let cut = week_start((epoch + 2) * CREDIT_EPOCH_WEEKS) - REFRESH_CUT_MARGIN;
-    let due = if read <= first { first } else { second }.min(cut);
+    let due = if read <= first { first } else { second }.min(refresh_cut(epoch));
+    (due >= read).then_some(due)
+}
+
+/// The refresh cut of credit epoch `epoch`: two days before credit epoch `epoch + 2` starts.
+pub fn refresh_cut(epoch: i64) -> i64 {
+    week_start((epoch + 2) * CREDIT_EPOCH_WEEKS) - REFRESH_CUT_MARGIN
+}
+
+/// Mutant M22 (`RefreshAtRead`): the pre-Q31 rule, due 1–14 days after the read (a client-random
+/// draw keyed on the invite, never on the read), cut as [`refresh_due`] cuts.
+pub fn refresh_due_at_read(epoch: i64, read: i64, u: f64) -> Option<i64> {
+    let due = refresh_draw(read, u).min(refresh_cut(epoch));
     (due >= read).then_some(due)
 }
 
