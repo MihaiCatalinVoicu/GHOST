@@ -165,6 +165,9 @@ pub struct Purchase {
     /// Base-week hint of mutant M7.
     pub hint: Option<u64>,
     pub paid: bool,
+    /// The device day a prepared flow that had sent its `RequestInvoice` failed (the engine's
+    /// `terminal_day` of a `failed` row with `sent`), for the renewal back-off of §19.28 point 1.
+    pub failed_day: Option<i64>,
 }
 
 /// A payout claim flow.

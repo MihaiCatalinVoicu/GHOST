@@ -1760,6 +1760,7 @@ impl World {
         let (xmr, need, attempts, retry_due, old, credits) = {
             let p = &mut self.clients[c].purchases[idx];
             p.state = PState::Failed;
+            p.failed_day = Some(w.div_euclid(policy::DAY));
             (
                 p.xmr,
                 p.need,
@@ -1883,6 +1884,7 @@ impl World {
                 rogue: None,
                 hint: None,
                 paid: false,
+                failed_day: None,
             });
         }
         self.clients[c].purchases.len() - 1
@@ -2051,8 +2053,20 @@ impl World {
             }
         }
         let wk = policy::week(w);
+        // Not while a credits pack that sent its `RequestInvoice` and failed is still kept
+        // (`terminal_day` + 7, the engine's `QuietRunWork.renewalDue`, §19.28 point 1): the next
+        // renewal would present the same credits, so a stalling or `WRONG_PERIOD` issuer gets one
+        // capped renewal per week.
+        let today = w.div_euclid(policy::DAY);
+        let backing_off = self.clients[c].purchases.iter().any(|p| {
+            !p.xmr
+                && p.state == PState::Failed
+                && p.failed_day
+                    .is_some_and(|d| today < d + TERMINAL_RETENTION_DAYS)
+        });
         let renewal = self.clients[c].auto_renew_credits
             && !self.clients[c].pack_in_flight()
+            && !backing_off
             && self.clients[c].coverage_end - wk < 2
             && self.covering(c, wk).is_some();
         if renewal {
@@ -2254,12 +2268,14 @@ impl World {
             }
             Ok(_) => {
                 self.clients[c].purchases[idx].state = PState::Failed;
+                self.clients[c].purchases[idx].failed_day = Some(w.div_euclid(policy::DAY));
                 self.log.count("request_invoice refused");
             }
             Err(_) => {
                 if self.clients[c].purchases[idx].req_attempt >= policy::CALL_ATTEMPTS {
                     let credits = std::mem::take(&mut self.clients[c].purchases[idx].credits);
                     self.clients[c].purchases[idx].state = PState::Failed;
+                    self.clients[c].purchases[idx].failed_day = Some(w.div_euclid(policy::DAY));
                     for tk in credits {
                         // A credit whose key id is not an ES key (mutant M2b) is not kept.
                         let Some(e) = self.schedule.key_by_id(tk.key_id()).map(|k| k.epoch) else {
@@ -3967,6 +3983,9 @@ fn need_of(cap: Option<&Cap>, needs_write: bool, w: i64) -> Option<(NeedKind, Ne
         None => Some((NeedKind::Read, NeedReason::Missing)),
     }
 }
+
+/// Days a terminal purchase row is kept (`PurchaseStore.TERMINAL_RETENTION_DAYS`, §11.3).
+const TERMINAL_RETENTION_DAYS: i64 = 7;
 
 impl Client {
     /// ENTITLEMENT_NEEDED is raised once the identity has paid or trial coverage.
