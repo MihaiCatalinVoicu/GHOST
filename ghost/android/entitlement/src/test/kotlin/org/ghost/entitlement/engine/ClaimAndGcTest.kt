@@ -127,6 +127,27 @@ class ClaimAndGcTest {
     }
 
     @Test
+    fun anAddressStaysUsedOnceAClaimCarryingItWasSentWhateverTheAnswers(): Unit = World().use { w ->
+        // Both answers are lost (the issuer may have queued the claim and will pay it): the claim fails
+        // here and its credits come back, but its address is never claimed to again (§9.4, RP V11).
+        w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+        val id = checkNotNull(w.engine.claimPayout(address)).toByteArray()
+        w.issuer.fail = "timeout"
+        repeat(30) {
+            w.quiet()
+            w.clock.now += 2 * Grid.HOUR
+        }
+        assertEquals(2, w.issuer.named("claimPayout").size)
+        assertEquals(ClaimStore.FAILED, checkNotNull(w.tx { w.ctx().claims.get(it, id) }).state)
+        assertEquals(10, w.tokenRows("credit").count { it.state == TokenStore.FRESH })
+        assertEquals(1L, w.count("SELECT count(*) FROM ent_payout_used"))
+        w.issuer.fail = null
+        w.clock.now += 8 * Grid.DAY
+        assertNull("the address of a sent claim is refused", w.engine.claimPayout(address))
+        assertNotNull(w.engine.claimPayout("7" + "c".repeat(94)))
+    }
+
+    @Test
     fun gcClosesInvitesAtTheirListeningEndAndForgetsThePaymentScreenAfterAnHour(): Unit = World().use { w ->
         w.identity.exists = true
         w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)

@@ -19,7 +19,9 @@ import javax.crypto.spec.SecretKeySpec
  * have been used before (salted hash in `ent_payout_used`); claim id, address and the reserved own
  * credits are written ahead; the `ClaimPayout` runs alone in a quiet run at a random time, at most one
  * claim per week, and retries once by the same claim id with identical bytes at a time drawn before the
- * first send (§19.11 applied to claims: an issuer that stalls gets two linked samples at most).
+ * first send (§19.11 applied to claims: an issuer that stalls gets two linked samples at most). The
+ * address counts as used from the write-ahead of its first send, whatever the answers: a claim whose
+ * answers were all lost may still be queued and paid, and the workstation refuses a repeated address.
  */
 internal class ClaimSteps(private val c: EngineContext) {
 
@@ -73,8 +75,18 @@ internal class ClaimSteps(private val c: EngineContext) {
             return null
         }
         c.claims.countAttempt(tx, id, claim.attempt, checkNotNull(RetryPolicy.nextDueAfterSend(claim.attempt, claim.nextDueMinute, now, c.random::uniform)))
+        val address = checkNotNull(claim.payoutAddress)
+        // Written ahead with the send: once a ClaimPayout may have left the device, the issuer may queue
+        // and pay it even if every answer is lost, so the address is used whatever the answers (§9.4).
+        markUsed(tx, address, Grid.day(now))
         val credits = c.tokens.reservedCredits(tx, TokenStore.FOR_CLAIM, id).map { it.token() }
-        return ClaimCall(credits, checkNotNull(claim.payoutAddress))
+        return ClaimCall(credits, address)
+    }
+
+    /** The salted hash of [address] joins `ent_payout_used` for [ClaimStore.PAYOUT_USED_DAYS] (a no-op when present). */
+    private fun markUsed(tx: SyncTransaction, address: String, today: Long) {
+        val salt = checkNotNull(c.state.read(tx)).payoutSalt()
+        c.claims.insertPayoutUsed(tx, addressHash(salt, address), today + ClaimStore.PAYOUT_USED_DAYS)
     }
 
     private fun apply(tx: SyncTransaction, id: ByteArray, call: ClaimCall, answer: TorIssuerTransport.ClaimAnswer, now: Long) {
@@ -83,9 +95,8 @@ internal class ClaimSteps(private val c: EngineContext) {
         val today = Grid.day(now)
         when (answer.result) {
             TorIssuerTransport.CLAIM_QUEUED -> {
-                val salt = checkNotNull(c.state.read(tx)).payoutSalt()
                 c.claims.queued(tx, id, answer.queuedAtomic, today)
-                c.claims.insertPayoutUsed(tx, addressHash(salt, call.address), today + ClaimStore.PAYOUT_USED_DAYS)
+                markUsed(tx, call.address, today)
                 c.tokens.deleteReservedCredits(tx, TokenStore.FOR_CLAIM, id)
                 c.memory.clearMalformed(id)
             }

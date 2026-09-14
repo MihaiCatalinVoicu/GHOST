@@ -37,7 +37,7 @@ import org.ghost.sync.store.Time
  * enqueued: a fresh own credit if one exists, else a dummy sealed identically. Credits are fungible
  * bearer tokens with no purchase link at rest (`ent_token`), so the credit sent is any fresh own
  * credit of an accepted epoch; one minted after `t_drop` stays with the payer. Without coverage (no
- * access token of the week) nothing is written.
+ * access token of the week or later and no write capability through the week) nothing is written.
  */
 internal class DropSteps(private val c: EngineContext) {
 
@@ -65,7 +65,7 @@ internal class DropSteps(private val c: EngineContext) {
         val t = c.invites.dropTarget(tx) ?: return Send.DONE
         if (t.state != InviteStore.WAITING || now < t.dropMinute) return Send.DONE
         val week = Grid.week(now)
-        if (Grid.day(now) >= t.untilDay || !c.tokens.hasAccessInWeek(tx, week)) {
+        if (Grid.day(now) >= t.untilDay || !covered(tx, week)) {
             c.invites.deleteDropTarget(tx)
             return Send.DONE
         }
@@ -84,6 +84,15 @@ internal class DropSteps(private val c: EngineContext) {
         c.invites.markEnqueued(tx, op)
         return Send.DONE
     }
+
+    /**
+     * Coverage at `t_drop` (§9.3, §19.12): an ACCESS token of [week] or later, fresh or reserved, or a
+     * write capability (usable or exhausted) reaching the end of [week]. A token leaves `ent_token`
+     * when redeemed (§11.4), so an identity that spent every token of the week holds its capabilities
+     * instead: it is active, not silent, and writes its one blob.
+     */
+    private fun covered(tx: SyncTransaction, week: Long): Boolean =
+        c.tokens.hasAccessFrom(tx, week) || SyncTables.writeCapabilityReaching(tx, Grid.start(week + 1))
 
     /** The active directory relays serving the three drop slots in [week], or null if any is missing. */
     private fun dropRelays(tx: SyncTransaction, slots: List<Int>, week: Long): Set<RelayId>? {

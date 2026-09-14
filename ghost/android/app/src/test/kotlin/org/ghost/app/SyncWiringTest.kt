@@ -79,7 +79,8 @@ class SyncWiringTest {
         override fun onQuietRun(session: ParticipantSession) = Unit
     }
 
-    private fun wiring(events: Events, key: Boolean, moment: Long? = null) = SyncWiring(
+    /** [posted] receives the moment readers handed to the runtime thread (the runtime runs them in order). */
+    private fun wiring(events: Events, key: Boolean, moment: Long? = null, posted: MutableList<() -> Long?> = ArrayList()) = SyncWiring(
         keyExists = { key },
         controller = RecordingController(events),
         ensurePeriodic = { events.log += "ensurePeriodic" },
@@ -89,30 +90,43 @@ class SyncWiringTest {
             events.log += "moment"
             moment
         },
+        restorePaymentHold = { read ->
+            events.log += "hold-posted"
+            posted += read
+        },
         visible = { events.log += "entitlement-visible" },
         hidden = { events.log += "entitlement-hidden" },
     )
 
     @Test
-    fun aProcessStartWithAKeyInstallsTheParticipantRestoresTheHoldThenEnsuresTheJob() {
+    fun aProcessStartWithAKeyInstallsTheParticipantPostsTheHoldRestoreThenEnsuresTheJob() {
         val events = Events()
-        wiring(events, key = true, moment = 1_789_560_060L).onProcessStart()
-        assertEquals(listOf("participant", "moment", "payment-hold:1789560060", "ensurePeriodic"), events.log)
+        val posted = ArrayList<() -> Long?>()
+        wiring(events, key = true, moment = 1_789_560_060L, posted = posted).onProcessStart()
+        // Reading the moment opens the database (Keystore, key derivation, migration): never on the
+        // calling (main) thread. The runtime thread reads it, before any job or foreground command.
+        assertEquals(listOf("participant", "hold-posted", "ensurePeriodic"), events.log)
         assertSame(participant, events.installed)
+        assertEquals(1_789_560_060L, posted.single().invoke())
+        assertEquals("moment", events.log.last())
     }
 
     @Test
     fun aProcessStartWithoutARememberedMomentRestoresNothing() {
         val events = Events()
-        wiring(events, key = true).onProcessStart()
-        assertEquals(listOf("participant", "moment", "ensurePeriodic"), events.log)
+        val posted = ArrayList<() -> Long?>()
+        wiring(events, key = true, posted = posted).onProcessStart()
+        assertEquals(listOf("participant", "hold-posted", "ensurePeriodic"), events.log)
+        assertEquals(null, posted.single().invoke())
     }
 
     @Test
     fun aProcessStartWithoutAKeyOnlyInstallsTheParticipant() {
         val events = Events()
-        wiring(events, key = false, moment = 60L).onProcessStart()
+        val posted = ArrayList<() -> Long?>()
+        wiring(events, key = false, moment = 60L, posted = posted).onProcessStart()
         assertEquals("no database is opened and nothing is scheduled", listOf("participant"), events.log)
+        assertTrue(posted.isEmpty())
     }
 
     @Test

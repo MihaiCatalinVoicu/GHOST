@@ -11,8 +11,11 @@ import org.ghost.entitlement.store.PurchaseStore
 import org.ghost.identity.DropSeal
 import org.ghost.identity.Invite
 import org.ghost.network.EntitlementCrypto
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
+import org.ghost.sync.api.OutboundBlob
+import org.ghost.sync.api.TtlBucket
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -76,6 +79,30 @@ class DropStepsTest {
         w.ctx().dropSteps.sendDue(w.clock.now)
         assertNull(w.tx { w.ctx().invites.dropTarget(it) })
         assertEquals(0L, w.count("SELECT count(*) FROM outbox_op"))
+    }
+
+    @Test
+    fun anIdentityThatRedeemedEveryTokenOfTheWeekIsCoveredAndWritesItsDrop(): Unit = World().use { w ->
+        w.engine.activate(w.inviteText())
+        val t = checkNotNull(w.tx { w.ctx().invites.dropTarget(it) })
+        val week = Grid.week(t.dropMinute)
+        // Two hours before t_drop the identity writes to a DM namespace and redeems its last tokens of
+        // the week: it holds the week's capabilities and no token of the week any more (§11.4).
+        w.clock.now = t.dropMinute - 2 * Grid.HOUR
+        val ns = NamespaceId(TestBytes.of(32, 4242))
+        w.tx { tx ->
+            w.stores.namespaces.register(tx, ns, Consumer.DM, w.relayIds.toSet(), listen = false)
+            w.stores.outbox.enqueue(tx, OutboundBlob(OperationId(TestBytes.of(16, 42)), ns, TestBytes.of(1024, 43), TtlBucket.DAYS_7))
+        }
+        for (slot in 0..2) w.addAccess(week, slot, 1)
+        w.laneStep()
+        assertEquals(3, w.redeem.calls.size)
+        assertTrue("every token of the week is spent", w.tokenRows("access").none { it.epoch >= week })
+        w.clock.now = t.dropMinute
+        w.ctx().dropSteps.sendDue(w.clock.now)
+        val target = w.tx { w.ctx().invites.dropTarget(it) }
+        assertEquals("covered by the week's capabilities: exactly one blob (§19.12)", InviteStore.ENQUEUED, target?.state)
+        assertSame(DropSeal.Opened.Dummy, w.opened())
     }
 
     @Test

@@ -59,6 +59,21 @@ class AndroidSyncController internal constructor(
     override fun restorePaymentHold(lastShownEpochSeconds: Long) = runtime.restorePaymentHold(lastShownEpochSeconds)
 
     /**
+     * [restorePaymentHold] with the moment read by [lastShown] on the runtime thread (reading it opens
+     * the database: a Keystore unwrap and the key derivation stay off the main thread), before every
+     * command posted after this call (Phase 8 design §19.11, §19.23 point 1). The app calls it at
+     * process start, before a job or the foreground can start a relay session.
+     */
+    fun restorePaymentHoldFrom(lastShown: () -> Long?) = runtime.restorePaymentHoldFrom(lastShown)
+
+    /**
+     * Runs [block] on its own thread once the runtime has opened the database for the foreground and
+     * [stores] is set, after the commands posted before it (the entitlement engine's foreground work,
+     * Phase 8 design §8.3); starts no session, runs nothing after a wipe.
+     */
+    fun runWhenStoresOpen(block: () -> Unit) = runtime.runWhenStoresOpen(block)
+
+    /**
      * Schedules the periodic job unless the pending one already has the wanted fields. Runs on the
      * runtime thread (binder calls stay off the main thread). The app calls it at process start
      * only when the database key envelope exists, and right after the key is first created (design
@@ -72,7 +87,10 @@ class AndroidSyncController internal constructor(
     /** The public sync API (outbox, inbox, namespaces, capabilities, directory) once the database is open. */
     val stores: SyncStores? get() = runtime.stores
 
-    /** Waits until no session runs (the wipe flow calls it before closing the database). */
+    /**
+     * Waits until no session, quiet run or user call runs and no participant or user-call thread is
+     * still running (the wipe flow calls it before closing the database); false at the timeout.
+     */
     fun awaitIdle(timeoutMillis: Long): Boolean = runtime.awaitIdle(timeoutMillis)
 
     internal fun databaseKeyExists(): Boolean = opener.keyExists()

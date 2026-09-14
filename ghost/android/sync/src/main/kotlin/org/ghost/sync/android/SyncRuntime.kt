@@ -132,6 +132,9 @@ internal object ClosedLeases : LeasePort {
  *    the app hides it). A new process gets the hold back from [restorePaymentHold]. Quiet runs and
  *    user issuer calls are not relay sessions and are unaffected.
  *
+ * No activity waits for a participant's callback or a user call to return; [awaitIdle], where the wipe
+ * flow waits before closing the database, does (they use the database after their session closed).
+ *
  * Nothing here is persisted (T20); the moment the payment screen was last visible is persisted by
  * the entitlement engine, which owns it. A throwable from a lane item or a participant callback is not
  * caught: it reaches the thread's uncaught-exception handler, which on Android ends the process
@@ -207,6 +210,9 @@ internal class SyncRuntime(
 
     private val idleLock = ReentrantLock()
     private val idleChanged = idleLock.newCondition()
+
+    /** Participant and user-call threads still running (guarded by [idleLock]); they use the database. */
+    private var callbackThreads = 0
 
     @Volatile
     private var running: Run? = null
@@ -341,15 +347,17 @@ internal class SyncRuntime(
      */
     fun restorePaymentHold(lastShownEpochSeconds: Long) {
         require(lastShownEpochSeconds >= 0) { "moment out of range" }
-        post {
-            val elapsedMillis = maxOf(0L, clock.epochSeconds() - lastShownEpochSeconds) * 1_000L
-            val left = schedule.paymentHoldMillis(holds++) - elapsedMillis
-            if (left > 0) {
-                holdUntil = maxOf(holdUntil, clock.monotonicMillis() + left)
-                wakeAt = holdUntil
-            }
-            reconcile()
+        post { applyPaymentHold(lastShownEpochSeconds) }
+    }
+
+    private fun applyPaymentHold(lastShownEpochSeconds: Long) {
+        val elapsedMillis = maxOf(0L, clock.epochSeconds() - lastShownEpochSeconds) * 1_000L
+        val left = schedule.paymentHoldMillis(holds++) - elapsedMillis
+        if (left > 0) {
+            holdUntil = maxOf(holdUntil, clock.monotonicMillis() + left)
+            wakeAt = holdUntil
         }
+        reconcile()
     }
 
     /** Waits until every command posted before this call has run; false at the timeout. */
@@ -360,15 +368,50 @@ internal class SyncRuntime(
     }
 
     /**
-     * Waits until the commands posted before this call have run and no activity runs (the wipe
-     * flow waits here before closing the database); false at the timeout, e.g. while the app is
-     * visible and its foreground session keeps running.
+     * [restorePaymentHold] with the moment read by [lastShown] on the runtime thread, in this command's
+     * turn: reading it may open the database (a Keystore unwrap, the key derivation, a migration), which
+     * stays off the caller's (main) thread, and the hold is in place for every command posted after this
+     * call, as with [restorePaymentHold]. Null, or a moment before the epoch, holds nothing.
      */
-    fun awaitIdle(timeoutMillis: Long): Boolean {
+    fun restorePaymentHoldFrom(lastShown: () -> Long?) = post {
+        lastShown()?.takeIf { it >= 0 }?.let(::applyPaymentHold)
+    }
+
+    /**
+     * Runs [block] once, on its own thread, after every command posted before this call, with the
+     * database open for the foreground ([stores] set) as a user call opens it: the entitlement engine's
+     * foreground work (a pending onboarding trial retries at the foreground, Phase 8 design §8.3) needs
+     * the stores, which at a cold start no session has opened yet, and none opens while the payment hold
+     * keeps relay sessions off. It starts no session. Nothing runs after a [wipe], or when no database can
+     * be opened. [awaitIdle] waits for the thread.
+     */
+    fun runWhenStoresOpen(block: () -> Unit) = post {
+        if (wiped || halted) return@post
+        val e = engineFor(DatabaseOpener.Purpose.FOREGROUND) ?: return@post
+        if (e.disabled) return@post
+        startCallbackThread(block)
+    }
+
+    /**
+     * Waits until the commands posted before this call have run, no activity runs and no participant
+     * or user-call thread is still running (the wipe flow waits here before closing the database:
+     * those threads use it after their session closed, an engine transaction after a call failed
+     * `closed`, say); false at the timeout, e.g. while the app is visible and its foreground session
+     * keeps running, or while a participant has not returned from its callback.
+     */
+    fun awaitIdle(timeoutMillis: Long): Boolean = await(timeoutMillis) { busy() || callbackThreads > 0 }
+
+    /**
+     * Waits until the commands posted before this call have run and no activity runs; participant and
+     * user-call threads may still run (no activity waits for them). False at the timeout.
+     */
+    fun awaitNoActivity(timeoutMillis: Long): Boolean = await(timeoutMillis) { busy() }
+
+    private fun await(timeoutMillis: Long, waiting: () -> Boolean): Boolean {
         val end = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
         if (!awaitCommands(timeoutMillis)) return false
         return idleLock.withLock {
-            while (busy()) {
+            while (waiting()) {
                 val left = end - System.nanoTime()
                 if (left <= 0) return@withLock false
                 idleChanged.awaitNanos(left)
@@ -380,6 +423,28 @@ internal class SyncRuntime(
     // ------------------------------------------------------------------ runtime thread
 
     private fun busy(): Boolean = running != null || quiet != null || userRun != null
+
+    /**
+     * Starts [body] on a thread of its own that [awaitIdle] waits for: a participant's callback or a
+     * user call, which may use the database after its activity has ended (no activity waits for it).
+     * Counted before the start, so an [awaitIdle] posted after this command sees it; a thread that
+     * cannot start throws on the runtime thread, which ends the process (design §11.2 #11).
+     */
+    private fun startCallbackThread(body: () -> Unit) {
+        idleLock.withLock { callbackThreads++ }
+        threads.newThread {
+            try {
+                body()
+            } finally {
+                callbackEnded()
+            }
+        }.start()
+    }
+
+    private fun callbackEnded() = idleLock.withLock {
+        callbackThreads--
+        idleChanged.signalAll()
+    }
 
     private fun runJob(ticket: JobTicket) {
         // Every job draws, whatever becomes of it: the n-th job of the process gets the n-th draw.
@@ -516,7 +581,7 @@ internal class SyncRuntime(
             // The lane's first step ends a hold (Q29); later steps change nothing.
             if (run.hold.stepDone() && run.hold.armed) post { if (running === run && run.holding) ended(run) }
         }
-        threads.newThread { if (run.lease.awaitReady(deadline)) p.onRelaySession(session) }.start()
+        startCallbackThread { if (run.lease.awaitReady(deadline)) p.onRelaySession(session) }
     }
 
     /**
@@ -578,7 +643,7 @@ internal class SyncRuntime(
         val q = Quiet(e, ticket, leases.openLease(), startedAt + policy.backgroundSessionMillis)
         setActivity { quiet = q }
         val session = schedule.session(ParticipantKind.QUIET, q.lease, q.deadline, e::clockTrusted, { e.stores.database.inTransaction })
-        threads.newThread {
+        startCallbackThread {
             try {
                 if (!q.lease.closed) {
                     e.setTransportStatus(TransportStatus.STARTING)
@@ -592,7 +657,7 @@ internal class SyncRuntime(
                 q.done.countDown()
                 post { quietEnded(q) }
             }
-        }.start()
+        }
         // At the deadline the run ends whether or not the participant has returned. The deadline is
         // on the sync clock (elapsed realtime, which runs on in deep sleep): re-read it every second.
         threads.newThread {
@@ -694,7 +759,7 @@ internal class SyncRuntime(
             ParticipantKind.USER_ISSUER_CALL, lease, call.deadline,
             { e?.clockTrusted() == true }, { e?.stores?.database?.inTransaction == true },
         )
-        threads.newThread {
+        startCallbackThread {
             try {
                 if (e != null && !lease.closed) {
                     val readyBy = minOf(call.deadline, clock.monotonicMillis() + policy.bootstrapMillis)
@@ -708,7 +773,7 @@ internal class SyncRuntime(
             } finally {
                 post(onEnd)
             }
-        }.start()
+        }
     }
 
     private fun userCallEnded(u: UserRun, lease: TransportLease) {

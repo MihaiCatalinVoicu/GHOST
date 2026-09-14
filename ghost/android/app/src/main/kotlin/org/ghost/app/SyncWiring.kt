@@ -10,9 +10,10 @@ import org.ghost.sync.api.SyncController
  *    participant, before anything can start a session (quiet runs happen only while one is installed,
  *    so it never follows entitlement state);
  *  - when the database key envelope exists, the payment-screen hold of the previous process is
- *    restored from the moment the engine remembered ([paymentShownAt]), then the periodic job is
- *    ensured; ensuring reschedules only when the pending job is missing or differs, so the period
- *    timer is not reset;
+ *    restored from the moment the engine remembered ([paymentShownAt]), which [restorePaymentHold]
+ *    reads on the sync runtime thread (reading it opens the database: never on the main thread),
+ *    then the periodic job is ensured; ensuring reschedules only when the pending job is missing or
+ *    differs, so the period timer is not reset;
  *  - right after the key is first created, the job is ensured and the database announced;
  *  - visibility starts and stops the foreground session and lets a pending onboarding trial retry
  *    ([visible]); hiding the app, which hides an open payment screen, lets the engine keep that
@@ -26,13 +27,15 @@ internal class SyncWiring(
     private val databaseAvailable: () -> Unit,
     private val participant: SessionParticipant,
     private val paymentShownAt: () -> Long?,
+    private val restorePaymentHold: (() -> Long?) -> Unit,
     private val visible: () -> Unit,
     private val hidden: () -> Unit,
 ) {
     fun onProcessStart() {
         controller.setParticipant(participant)
         if (!keyExists()) return
-        paymentShownAt()?.let(controller::restorePaymentHold)
+        // Read by the runtime thread (it opens the database), before any job or foreground command.
+        restorePaymentHold(paymentShownAt)
         ensurePeriodic()
     }
 
