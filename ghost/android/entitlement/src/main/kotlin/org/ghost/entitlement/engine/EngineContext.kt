@@ -167,6 +167,7 @@ internal class EngineContext(val sync: SyncStores, val summary: ScheduleSummary,
     val trialSteps: TrialSteps by lazy { TrialSteps(this) }
     val claimSteps: ClaimSteps by lazy { ClaimSteps(this) }
     val dropSteps: DropSteps by lazy { DropSteps(this) }
+    val restoreScan: RestoreScan by lazy { RestoreScan(this) }
     val redeemLane: RedeemLane by lazy { RedeemLane(this) }
     val quietRunWork: QuietRunWork by lazy { QuietRunWork(this) }
     val gc: Gc by lazy { Gc(this) }

@@ -10,6 +10,7 @@ import org.ghost.entitlement.api.EntitlementStatus
 import org.ghost.entitlement.api.PayWith
 import org.ghost.entitlement.api.PaymentInstructions
 import org.ghost.entitlement.api.PurchaseId
+import org.ghost.entitlement.api.RestoreResult
 import org.ghost.entitlement.port.EntitlementRandom
 import org.ghost.entitlement.port.SessionPort
 import org.ghost.entitlement.store.Kinds
@@ -31,7 +32,8 @@ import java.util.EnumSet
  * three entry points the sync runtime drives through its one participant slot:
  *  - [onRelaySession]: the redeem lane (§11.6, §12.4), drop sending and receiving, GC; no issuer call;
  *  - [onQuietRun]: at most one issuer call (§12.2, J9), only under a trusted clock (§19.4);
- *  - [onForeground]: a pending onboarding trial resumes as a user issuer call (§8.3).
+ *  - [onForeground]: a pending onboarding trial resumes as a user issuer call (§8.3), and a restore's
+ *    drop scan that a crash left owed is installed (§8.4).
  * [stores] gives the sync stores of the open database (null while none is open). The built-in
  * schedule is accepted against the remembered one once per database (ES rule 5); on a conflict the
  * engine stays inert and `SCHEDULE_CONFLICT` is raised.
@@ -112,20 +114,26 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         c.quietRunWork.run(issuer, now)
     }
 
-    /** The app became visible: a pending onboarding trial retries (the user is present, §8.3 step 4). */
+    /**
+     * The app became visible: a pending onboarding trial retries (the user is present, §8.3 step 4),
+     * and a restore scan a crash left owed is installed (§8.4).
+     */
     fun onForeground() {
         val c = ready() ?: return
         c.trialSteps.resume(c.now())
+        c.restoreScan.resume(c.now())
     }
 
     /**
-     * Relay-session work besides the lane: GC, drop sending and receiving. GC windows and the drop time
-     * are read on the device wall clock, so this runs only while the session trusts it.
+     * Relay-session work besides the lane: GC, a restore scan a crash left owed, drop sending and
+     * receiving. GC windows and the drop time are read on the device wall clock, so this runs only
+     * while the session trusts it.
      */
     private fun tick(c: EngineContext, session: SessionPort) {
         if (!session.clockTrusted()) return
         val now = c.now()
         c.gc.runIfDue(now)
+        c.restoreScan.resume(now)
         c.dropSteps.sendDue(now)
         c.dropSteps.settleSent()
         c.dropSteps.receive(now)
@@ -257,8 +265,15 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
         return c.trialSteps.activationState()
     }
 
+    override fun restore(mnemonic: List<String>): RestoreResult {
+        val c = ready() ?: return RestoreResult.UNAVAILABLE
+        return c.restoreScan.restore(mnemonic, c.now())
+    }
+
     override fun createInvite(expiryDay: Int): String? {
         val c = ready() ?: return null
+        // A restore scan a crash left owed takes indices 0..7 first (§8.4), whichever runs first in a process.
+        c.restoreScan.resume(c.now())
         return try {
             c.dropSteps.createInvite(expiryDay.toLong(), c.now())
         } catch (e: NetworkException) {

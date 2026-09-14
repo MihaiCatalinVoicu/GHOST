@@ -116,6 +116,20 @@ class EntitlementScenarioTest {
     }
 
     @Test
+    fun eJ_aRestoredIdentityGetsTheCreditOfAPreRestoreInviteAndTheScanEnds() = faultFree(ScenarioEJ()) { s ->
+        assertEquals(listOf("restore"), s.alice.identity.log)
+        assertEquals(1, s.calls("refreshCredit"))
+        assertEquals("the refresh flow finalized", listOf("finalized"), s.ent.records.ended.values.toList())
+        assertTrue("GC deleted its terminal row a week later", s.alice.purchaseStates().isEmpty())
+        assertEquals("the refreshed credit", 1L, s.count("SELECT count(*) FROM ent_token WHERE kind = 'credit'"))
+        assertEquals("read capabilities of the 8 drops at the 3 slot relays", 24, s.ent.records.minted.size)
+        assertEquals("the scan ended", 1L, s.count("SELECT count(*) FROM ent_state WHERE restore_scan_until_day IS NULL"))
+        assertEquals(0L, s.count("SELECT count(*) FROM ent_invite WHERE state <> 'closed'"))
+        assertEquals(0L, s.count("SELECT count(*) FROM sync_namespace WHERE consumer = 'identity' AND listening = 1"))
+        assertEquals("new invites start after the scanned indices", 8L, s.count("SELECT next_invite_index FROM ent_state"))
+    }
+
+    @Test
     fun q29_aClientWhoseCapabilitiesAllLapsedRecoversInTheBackground() = faultFree(ScenarioLapsed()) { s ->
         assertEquals("no foreground ever ran", Long.MIN_VALUE, s.alice.c.foregroundUntil)
         assertEquals("A and B redeemed once each, in background sessions", 2, s.ent.records.minted.size)

@@ -4,11 +4,15 @@ import org.ghost.identity.Invite
 import org.ghost.identity.InviteKeys
 
 /**
- * The identity lifecycle as the activation sequence needs it (Phase 8 design §8.3) and the per-invite
- * keys an inviter needs (§8.4, §8.5). Production: `android.ManagerIdentity` over `IdentityManager`.
+ * The identity lifecycle as the activation sequence and the restore need it (Phase 8 design §8.3,
+ * §8.4) and the per-invite keys an inviter needs (§8.4, §8.5). Production: `android.ManagerIdentity`
+ * over `IdentityManager`.
  */
 interface IdentityPort {
     fun hasIdentity(): Boolean
+
+    /** Restores and stores the identity of a 24-word backup (FR-1.4); the words are not kept. */
+    fun restore(mnemonic: List<String>)
 
     /**
      * Creates the identity of an invite activation (§8.3 step 3): [invite] is the verified invite, or

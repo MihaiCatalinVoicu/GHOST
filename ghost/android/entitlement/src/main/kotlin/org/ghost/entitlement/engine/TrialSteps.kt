@@ -271,6 +271,9 @@ internal class TrialSteps(private val c: EngineContext) {
         }
     }
 
+    /** An onboarding trial is pending (`activationState()` is PENDING): no identity is restored meanwhile. */
+    fun onboardingPending(): Boolean = c.tx { tx -> pendingOnboarding(tx) } != null
+
     private fun pendingOnboarding(tx: SyncTransaction): PurchaseRow? =
         c.purchases.live(tx).firstOrNull { it.kind == PurchaseStore.TRIAL && it.state == PurchaseStore.PREPARED && it.nextDueMinute == null }
 

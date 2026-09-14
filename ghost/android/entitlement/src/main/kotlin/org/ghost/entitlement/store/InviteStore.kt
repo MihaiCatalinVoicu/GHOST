@@ -38,7 +38,8 @@ internal class DropTargetRow(
 /**
  * `ent_invite` (invites this identity created, design §8.5) and `ent_drop_target` (the drop this
  * identity owes its first XMR-pack credit to, §9.3, §19.12). Guarded transitions; plain INSERT after a
- * read (§19.22 point 4). The payload is dropped when an invite leaves `created`.
+ * read (§19.22 point 4). The payload is dropped when an invite leaves `created`; a `created` row
+ * without a payload is a drop a restore scans (§8.4).
  */
 internal class InviteStore {
 
@@ -50,6 +51,25 @@ internal class InviteStore {
             listOf(index, payload, dropNamespace, listenUntilDay),
         )
     }
+
+    /**
+     * The drop of invite [index], which this identity may have created before a restore (§8.4): its
+     * payload is unknown, its namespace re-derived from the root entropy, listened until [listenUntilDay].
+     */
+    fun insertScanned(tx: SyncTransaction, index: Int, dropNamespace: ByteArray, listenUntilDay: Long) {
+        check(get(tx, index) == null) { "invite index already used" }
+        tx.sql.updateExactly(
+            1,
+            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day) VALUES (?1, 'created', NULL, ?2, ?3)",
+            listOf(index, dropNamespace, listenUntilDay),
+        )
+    }
+
+    /** A later restore listens to a scanned drop until its own scan ends. */
+    fun extendScanned(tx: SyncTransaction, index: Int, listenUntilDay: Long): Int = tx.sql.execUpdate(
+        "UPDATE ent_invite SET listen_until_day = ?2 WHERE invite_index = ?1 AND state = 'created' AND payload IS NULL AND listen_until_day < ?2",
+        listOf(index, listenUntilDay),
+    )
 
     fun get(tx: SyncTransaction, index: Int): InviteRow? =
         tx.sql.single("SELECT $COLUMNS FROM ent_invite WHERE invite_index = ?1", listOf(index), ::row)

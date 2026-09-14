@@ -37,6 +37,17 @@ class IdentityAdaptersTest {
     }
 
     @Test
+    fun aRestoreStoresTheIdentityOfTheBackupAndItsDropsComeBack() {
+        val first = IdentityManager(XorWrapper(), InMemoryWrappedSecretStore())
+        val words = first.create(IdentityManager.Activation.Genesis(policyAcknowledged = true)).mnemonic
+        val manager = IdentityManager(XorWrapper(), InMemoryWrappedSecretStore())
+        val identity = ManagerIdentity(manager)
+        identity.restore(words)
+        assertTrue(identity.hasIdentity())
+        assertArrayEquals("the drop of invite 5 is re-derived on the new device", first.unlock().inviteDropNamespace(5), identity.inviteKeys(5).dropNamespace)
+    }
+
+    @Test
     fun inviteKeysAndDropsComeFromTheRootOfTheIdentity() {
         val manager = IdentityManager(XorWrapper(), InMemoryWrappedSecretStore())
         val identity = ManagerIdentity(manager)

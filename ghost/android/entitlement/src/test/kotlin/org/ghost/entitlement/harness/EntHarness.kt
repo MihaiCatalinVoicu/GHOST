@@ -430,7 +430,7 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
  */
 internal class EntClient(val ent: EntWorld, val c: Client) {
     val w: World get() = ent.w
-    val identity = HarnessIdentity(RootEntropy.fromRaw(Bytes.sha256(Bytes.ascii("root|${ent.w.seed}|${c.name}"))))
+    val identity = HarnessIdentity(RootEntropy.fromRaw(Bytes.sha256(Bytes.ascii("root|${ent.w.seed}|${c.name}")))) { ent.records.bump() }
     val calls = HarnessCalls(this)
     private val userCalls = HarnessUserCalls(this)
 
@@ -515,8 +515,9 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
                 val eligible = (args[5] as Number).toLong()
                 uncommitted += { r.eligibleOf[nullifier] = eligible }
             }
-            sql.startsWith("INSERT INTO ent_invite(") -> {
-                val nullifier = Bytes.hex(TestSchedule.nullifier((args[1] as ByteArray).copyOfRange(1, 1 + Invite.TOKEN_BYTES)))
+            // An invite of this client embeds its token; a drop a restore scans has no payload (§8.4).
+            sql.startsWith("INSERT INTO ent_invite(") -> (args[1] as? ByteArray)?.takeIf { it.size == Invite.PAYLOAD_BYTES }?.let { payload ->
+                val nullifier = Bytes.hex(TestSchedule.nullifier(payload.copyOfRange(1, 1 + Invite.TOKEN_BYTES)))
                 uncommitted += { r.embedded += nullifier }
             }
         }
@@ -825,12 +826,23 @@ internal class HarnessLease(private val owner: EntClient, private val ended: () 
     override fun toString(): String = "HarnessLease"
 }
 
-/** The identity lifecycle; it lives outside the database and survives crashes. */
-internal class HarnessIdentity(val root: RootEntropy) : IdentityPort {
+/**
+ * The identity lifecycle; it lives outside the database and survives crashes. A restore calls
+ * [restored], so a crash after it classifies apart from one before it (design §8.4 crash cases).
+ */
+internal class HarnessIdentity(val root: RootEntropy, private val restored: () -> Unit = {}) : IdentityPort {
     var exists = false
     val log = ArrayList<String>()
 
     override fun hasIdentity(): Boolean = exists
+
+    override fun restore(mnemonic: List<String>) {
+        check(!exists) { "identity exists" }
+        check(RootEntropy.fromMnemonic(mnemonic).toMnemonic() == root.toMnemonic()) { "the backup of another identity" }
+        exists = true
+        log += "restore"
+        restored()
+    }
 
     override fun create(invite: Invite?) {
         check(!exists) { "identity exists" }

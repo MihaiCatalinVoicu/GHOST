@@ -50,3 +50,20 @@ enum class ActivationResult {
     /** No accepted schedule or no database yet: nothing was recorded. */
     UNAVAILABLE,
 }
+
+/**
+ * What [Entitlement.restore] did (design §8.4): the identity was restored and its drop scan started
+ * ([RESTORED]), or why nothing was recorded.
+ */
+enum class RestoreResult {
+    RESTORED,
+
+    /** An identity exists, or an invite activation is pending ([Entitlement.activationState] is PENDING). */
+    ALREADY_ACTIVE,
+
+    /** Not a 24-word GHOST backup (a word outside the list, a wrong checksum or length). */
+    REFUSED_MNEMONIC,
+
+    /** No accepted schedule or no database yet. */
+    UNAVAILABLE,
+}

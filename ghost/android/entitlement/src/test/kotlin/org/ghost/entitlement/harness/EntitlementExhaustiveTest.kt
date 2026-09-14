@@ -10,7 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The client crash enumeration of the entitlement exit gate (Phase 8 design §13.2): E-A … E-I, each
+ * The client crash enumeration of the entitlement exit gate (Phase 8 design §13.2, §19.26): E-A … E-J, each
  * in journal modes DELETE and WAL, with a crash at every event of the armed client (every SQL
  * statement, pre-commit and post-commit point, transport ensure, and the three events of every
  * redeem and issuer call: fail before, succeed but lose the response, succeed), a "timeout after
@@ -72,6 +72,9 @@ class EntitlementExhaustiveTest {
 
     @Test
     fun eI_wrongPeriodRePrepare() = both("E-I", doubles = false) { ScenarioEI() }
+
+    @Test
+    fun eJ_restoreScan() = both("E-J", doubles = false) { ScenarioEJ() }
 
     companion object {
         private val started = System.nanoTime()

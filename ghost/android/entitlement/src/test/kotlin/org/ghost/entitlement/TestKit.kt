@@ -404,7 +404,21 @@ internal class FakeIdentity : IdentityPort {
     var exists = false
     val log = ArrayList<String>()
 
+    /** The process ends inside the restore, before the identity is stored. */
+    var failRestore = false
+
+    /** The process ends inside a derivation of invite keys. */
+    var failInviteKeys = false
+
     override fun hasIdentity(): Boolean = exists
+
+    override fun restore(mnemonic: List<String>) {
+        check(!exists) { "identity exists" }
+        check(RootEntropy.fromMnemonic(mnemonic).toMnemonic() == root.toMnemonic()) { "the backup of another identity" }
+        check(!failRestore) { "the process ended before the identity was stored" }
+        exists = true
+        log += "restore"
+    }
 
     override fun create(invite: Invite?) {
         check(!exists) { "identity exists" }
@@ -417,7 +431,10 @@ internal class FakeIdentity : IdentityPort {
         log += "wipe"
     }
 
-    override fun inviteKeys(index: Int): InviteKeys = root.inviteKeys(index)
+    override fun inviteKeys(index: Int): InviteKeys {
+        check(!failInviteKeys) { "the process ended inside a derivation" }
+        return root.inviteKeys(index)
+    }
 }
 
 /** Real drop sealing; drop keys from the fake identity's root entropy. */
@@ -500,6 +517,9 @@ internal class World(configure: (TestCrypto) -> Unit = {}) : AutoCloseable {
     fun operator(i: Int): ByteArray = ByteArray(16) { (i + 1).toByte() }
 
     fun ctx(): EngineContext = checkNotNull(engine.context())
+
+    /** The engine of a new process over the same database and ports (in-process memory starts empty). */
+    fun newProcess(): EntitlementEngine = EntitlementEngine(deps) { if (storesOpen) stores else null }
 
     fun <T> tx(block: (SyncTransaction) -> T): T = stores.database.transaction(block)
 
