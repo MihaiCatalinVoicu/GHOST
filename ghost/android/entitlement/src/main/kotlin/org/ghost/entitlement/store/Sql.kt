@@ -91,6 +91,15 @@ internal object SyncTables {
         return tx.sql.rows("SELECT relay_id FROM namespace_relay WHERE namespace_id = ?1", listOf(ns.toByteArray())) { RelayId(it.long(0)) }.toSet()
     }
 
+    /**
+     * A write capability, usable or exhausted, of any pair expires at or after [at] (entitlement
+     * redemptions always carry an expiry; one with none is not counted).
+     */
+    fun writeCapabilityReaching(tx: SyncTransaction, at: Long): Boolean = tx.sql.single(
+        "SELECT 1 FROM relay_capability WHERE kind = 'write' AND state IN ('usable', 'exhausted') AND expires_hour >= ?1 LIMIT 1",
+        listOf(at),
+    ) { 1 } != null
+
     /** The expiry hour of the pair's usable write capability, or null (none, or no known expiry). */
     fun usableWriteExpiry(tx: SyncTransaction, relay: RelayId, ns: NamespaceId): Long? =
         tx.sql.single(

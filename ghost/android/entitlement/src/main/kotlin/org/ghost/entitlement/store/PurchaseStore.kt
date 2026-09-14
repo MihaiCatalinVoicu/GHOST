@@ -68,13 +68,14 @@ internal class PurchaseStore {
         layoutDigest: ByteArray,
         createdHour: Long,
         nextDueMinute: Long?,
+        attempt: Int = 0,
     ) {
         check(get(tx, id) == null) { "purchase id already used" }
         tx.sql.updateExactly(
             1,
             "INSERT INTO ent_purchase(purchase_id, kind, pay_with, state, seed, claim_key, input_token, base_week, schedule_seq, " +
-                "layout_digest, created_hour, next_due_minute) VALUES (?1, ?2, ?3, 'prepared', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            listOf(id, kind, payWith, seed, claimKey, inputToken, baseWeek, scheduleSeq, layoutDigest, createdHour, nextDueMinute),
+                "layout_digest, created_hour, next_due_minute, attempt) VALUES (?1, ?2, ?3, 'prepared', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            listOf(id, kind, payWith, seed, claimKey, inputToken, baseWeek, scheduleSeq, layoutDigest, createdHour, nextDueMinute, attempt),
         )
     }
 

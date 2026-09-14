@@ -124,8 +124,9 @@ internal class TokenStore {
         map = ::row,
     ).firstOrNull()
 
-    fun hasAccessInWeek(tx: SyncTransaction, week: Long): Boolean =
-        tx.sql.single("SELECT 1 FROM ent_token WHERE kind = 'access' AND epoch = ?1 LIMIT 1", listOf(week)) { 1 } != null
+    /** An ACCESS token of [week] or a later week is held, fresh or reserved. */
+    fun hasAccessFrom(tx: SyncTransaction, week: Long): Boolean =
+        tx.sql.single("SELECT 1 FROM ent_token WHERE kind = 'access' AND epoch >= ?1 LIMIT 1", listOf(week)) { 1 } != null
 
     /** Fresh ACCESS tokens per week. */
     fun freshAccessPerWeek(tx: SyncTransaction): Map<Long, Int> = tx.sql.rows(

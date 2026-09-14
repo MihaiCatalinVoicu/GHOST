@@ -30,6 +30,7 @@ class EntitlementWiring(
     stores: () -> SyncStores?,
     identity: IdentityManager,
     privacyMode: () -> PrivacyMode,
+    private val whenStoresOpen: (block: () -> Unit) -> Unit,
     crypto: TokenCryptoPort = NativeTokenCrypto(),
     random: EntitlementRandom = SecureEntitlementRandom(),
 ) {
@@ -44,11 +45,12 @@ class EntitlementWiring(
 
     /**
      * The app became visible: a pending onboarding trial retries as a user call (design §8.3). Called
-     * on the main thread; the engine's database and identity work runs on a thread of its own.
+     * on the main thread. The engine needs the sync runtime's stores, which at a cold start no session
+     * has opened yet (and none opens while the payment hold lasts), so [whenStoresOpen] (the sync
+     * runtime's `runWhenStoresOpen`) runs the engine's database and identity work on a thread of its own
+     * once the runtime has opened the database.
      */
-    fun onVisible() {
-        Thread({ engine.onForeground() }, "ghost-entitlement-visible").apply { isDaemon = true }.start()
-    }
+    fun onVisible() = whenStoresOpen { engine.onForeground() }
 
     /**
      * The app went to the background: an open payment screen's moment is kept as of now (§19.11).

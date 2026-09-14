@@ -66,13 +66,26 @@ internal class QuietRunWork(private val c: EngineContext) {
         return items
     }
 
+    /**
+     * An automatic renewal is due when enabled, no pack is live, coverage ends within 2 weeks and own
+     * fresh credits cover the price. Not while a credits pack that presented its credits and failed is
+     * still kept (`terminal_day` + 7, §11.3): the next renewal would present the same credits, so an
+     * issuer that stalls or answers `WRONG_PERIOD` gets at most the capped two linked calls of one
+     * renewal per week, not two per failed renewal (§19.23 point 2).
+     */
     private fun renewalDue(tx: SyncTransaction, now: Long, live: List<PurchaseRow>): Boolean {
         val st = c.state.read(tx) ?: return false
         if (!st.autoRenewCredits || live.any { it.kind == PurchaseStore.PACK } || !c.purchasable(now)) return false
+        if (recentlyFailedCreditsPack(tx, Grid.day(now))) return false
         val week = Grid.week(now)
         val last = c.tokens.lastAccessWeek(tx)
         if (last != null && last - week >= RENEW_WITHIN_WEEKS) return false
         return Pricing.coveringSet(c.summary, c.tokens.freshCredits(tx), week, week) != null
+    }
+
+    private fun recentlyFailedCreditsPack(tx: SyncTransaction, today: Long): Boolean = c.purchases.all(tx).any {
+        it.kind == PurchaseStore.PACK && it.payWith == PurchaseStore.CREDITS && it.state == PurchaseStore.FAILED && it.sent &&
+            today < (it.terminalDay ?: today) + PurchaseStore.TERMINAL_RETENTION_DAYS
     }
 
     override fun toString(): String = "QuietRunWork"

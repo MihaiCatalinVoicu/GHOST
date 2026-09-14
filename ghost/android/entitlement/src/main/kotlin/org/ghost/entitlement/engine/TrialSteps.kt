@@ -208,9 +208,16 @@ internal class TrialSteps(private val c: EngineContext) {
                 }
             }
             Outcome.Refused -> fail(id, call.onboarding, now)
-            Outcome.WrongPeriod -> c.tx { tx ->
-                val p = c.purchases.get(tx, id)
-                if (p != null && p.state == PurchaseStore.PREPARED) c.purchaseSteps.rePrepare(tx, p, now)
+            // The re-prepared trial keeps the invite token, so it is this one's retry: it inherits the
+            // attempt count (and a revocation its pre-drawn retry time), and once the cap is spent the
+            // trial fails as after a transient answer (§19.23 point 2).
+            Outcome.WrongPeriod -> if (call.attempt >= cap(call.onboarding)) {
+                fail(id, call.onboarding, now)
+            } else {
+                c.tx { tx ->
+                    val p = c.purchases.get(tx, id)
+                    if (p != null && p.state == PurchaseStore.PREPARED) c.purchaseSteps.rePrepare(tx, p, now)
+                }
             }
             Outcome.Transient -> if (call.attempt >= cap(call.onboarding)) fail(id, call.onboarding, now)
             Outcome.Malformed -> malformed(id, call.onboarding, now)

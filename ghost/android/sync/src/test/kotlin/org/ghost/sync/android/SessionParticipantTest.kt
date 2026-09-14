@@ -550,7 +550,7 @@ class SessionParticipantTest {
         }
         val done = w.job()
         assertTrue(done.await(30, TimeUnit.SECONDS))
-        assertTrue(w.runtime.awaitIdle(5_000))
+        assertTrue(w.runtime.awaitNoActivity(5_000))
         JobShape(
             w.transport.relays.lists.get(), w.transport.ensures.get(), w.transport.aborts.get(), w.transport.calls.calls.size,
             p != null && p.returned.get() == 0,
@@ -627,7 +627,7 @@ class SessionParticipantTest {
         // Past the deadline (a clock jump: the watchdog reads the sync clock, not a timer), the run ends.
         w.clock.offsetMillis += w.policy.backgroundSessionMillis + MINUTE
         assertTrue(done.await(10, TimeUnit.SECONDS))
-        assertTrue(w.runtime.awaitIdle(5_000))
+        assertTrue(w.runtime.awaitNoActivity(5_000))
         assertTrue(s.closed)
         assertEquals(0, p.returned.get())
         assertEquals(Triple(3, 1, 1), w.network)
@@ -646,7 +646,7 @@ class SessionParticipantTest {
             })
             w.controller.setParticipant(p)
             assertTrue(w.job().await(30, TimeUnit.SECONDS))
-            assertTrue(w.runtime.awaitIdle(5_000))
+            assertTrue(w.runtime.awaitNoActivity(5_000))
             assertEquals(0, p.returned.get())
             assertFalse(w.runtime.redeemHeld)
         }
@@ -685,9 +685,10 @@ class SessionParticipantTest {
 
     /**
      * Every stop the hold's contract names ends it at once (`RedeemHold`, `SyncRuntime`): a foreground
-     * wanted, the payment screen, onStopJob and a wipe. After onStopJob the runtime is idle and the
-     * job's end is never reported (JobScheduler already dropped it); after a wipe the wipe flow's
-     * `awaitIdle` returns, with the engine dropped, and the job's end is reported.
+     * wanted, the payment screen, onStopJob and a wipe. After onStopJob no activity runs and the job's
+     * end is never reported (JobScheduler already dropped it); after a wipe the engine is dropped, the
+     * job's end is reported, and the wipe flow's `awaitIdle` returns only once the participant, still
+     * inside its callback and so still using the database, has returned.
      */
     @Test
     fun aForegroundThePaymentScreenOnStopJobOrAWipeEndsAHoldAtOnce() {
@@ -721,16 +722,20 @@ class SessionParticipantTest {
                 }
                 "payment screen" -> {
                     assertTrue(done.await(10, TimeUnit.SECONDS))
-                    assertTrue(w.runtime.awaitIdle(5_000))
+                    assertTrue(w.runtime.awaitNoActivity(5_000))
                 }
                 "onStopJob" -> {
-                    assertTrue(w.runtime.awaitIdle(5_000))
+                    assertTrue(w.runtime.awaitNoActivity(5_000))
                     assertFalse("no end is reported after onStopJob", done.await(300, TimeUnit.MILLISECONDS))
                 }
                 "wipe" -> {
-                    assertTrue("the wipe flow's awaitIdle returns", w.controller.awaitIdle(5_000))
+                    assertTrue(w.runtime.awaitNoActivity(5_000))
                     assertNull(w.controller.stores)
                     assertTrue(done.await(10, TimeUnit.SECONDS))
+                    assertFalse("the wipe flow's awaitIdle waits for the participant's thread", w.controller.awaitIdle(300))
+                    w.gate.countDown()
+                    assertTrue("the wipe flow's awaitIdle returns once it has returned", w.controller.awaitIdle(5_000))
+                    assertEquals(1, backgroundReturned.get())
                 }
             }
         }
@@ -749,10 +754,107 @@ class SessionParticipantTest {
         w.controller.onAppForeground()
         assertTrue(entered.await(10, TimeUnit.SECONDS))
         w.controller.onAppBackground()
-        assertTrue(w.runtime.awaitIdle(10_000))
+        assertTrue(w.runtime.awaitNoActivity(10_000))
         assertEquals(0, p.returned.get())
         assertTrue(p.relaySessions.single().closed)
         assertEquals("closed", category { redeem(p.relaySessions.single()) })
+    }
+
+    /**
+     * `awaitIdle` is where the wipe flow waits before closing the database: it returns only once no
+     * activity runs and no participant or user-call thread still runs, since those use the database
+     * after their session closed (an engine transaction after a call failed `closed`). The activity
+     * itself never waits for them ([SyncRuntime.awaitNoActivity]).
+     */
+    @Test
+    fun awaitIdleWaitsForEveryParticipantAndUserCallThread() {
+        // A quiet run's participant, still inside its callback after onStopJob ended the run.
+        World(Draws({ true })).use { w ->
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            w.controller.setParticipant(ScriptedParticipant(onQuiet = {
+                entered.countDown()
+                release.await(20, TimeUnit.SECONDS)
+            }))
+            val ticket = w.controller.startBackgroundJob {}
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            w.controller.stopBackgroundJob(ticket)
+            assertTrue(w.runtime.awaitNoActivity(5_000))
+            assertFalse(w.runtime.quietRunning)
+            assertFalse("a quiet run's participant", w.controller.awaitIdle(300))
+            release.countDown()
+            assertTrue(w.controller.awaitIdle(5_000))
+        }
+        // A user issuer call that hiding the app closed while its block still runs.
+        World(Draws({ false }, hold = 0.5)).use { w ->
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            w.controller.onPaymentScreenShown()
+            w.controller.onAppForeground()
+            w.controller.runUserIssuerCall {
+                entered.countDown()
+                release.await(20, TimeUnit.SECONDS)
+            }
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            w.controller.onAppBackground()
+            assertTrue(w.runtime.awaitNoActivity(5_000))
+            assertFalse("a user call's block", w.controller.awaitIdle(300))
+            release.countDown()
+            assertTrue(w.controller.awaitIdle(5_000))
+        }
+    }
+
+    /**
+     * The entitlement engine's foreground work (a pending onboarding trial retries at the foreground,
+     * §8.3) needs the runtime's stores. At a cold start under a restored payment hold no session opens
+     * them, so work handed to `runWhenStoresOpen` opens them first, on the runtime thread and after the
+     * commands before it, without starting a relay session; after a wipe it does not run.
+     */
+    @Test
+    fun foregroundWorkRunsWithTheStoresOpenAlsoUnderAPaymentHold(): Unit = World(Draws({ false }, hold = 0.5)).use { w ->
+        w.controller.restorePaymentHold(w.clock.epochSeconds())
+        w.controller.onAppForeground()
+        assertTrue(w.runtime.awaitCommands(5_000))
+        assertNull("no session opened the stores: a thread started now would find none", w.controller.stores)
+        val seen = CompletableFuture<SyncStores?>()
+        w.controller.runWhenStoresOpen { seen.complete(w.controller.stores) }
+        assertNotNull(seen.get(5, TimeUnit.SECONDS))
+        assertTrue(w.controller.awaitIdle(5_000))
+        assertEquals("no relay session while the hold lasts", 0, w.transport.ensures.get())
+        w.controller.onWipe()
+        val after = CompletableFuture<Boolean>()
+        w.controller.runWhenStoresOpen { after.complete(true) }
+        assertTrue(w.controller.awaitIdle(5_000))
+        assertFalse("nothing runs after a wipe", after.isDone)
+    }
+
+    /**
+     * The moment of an earlier process's payment screen is read on the runtime thread, in the turn of
+     * its command (reading it may open the database: a Keystore unwrap, the key derivation and a
+     * migration stay off the main thread), and the hold it restores is in place for the foreground
+     * posted right after it; no moment holds nothing.
+     */
+    @Test
+    fun aRestoredHoldIsReadOnTheRuntimeThreadBeforeTheForegroundAfterIt() {
+        World(Draws({ false }, hold = 0.5)).use { w ->
+            val caller = Thread.currentThread()
+            val readOn = CompletableFuture<Thread>()
+            w.controller.restorePaymentHoldFrom {
+                readOn.complete(Thread.currentThread())
+                w.clock.epochSeconds() - 60
+            }
+            assertFalse("not read on the caller's thread", readOn.isDone && readOn.get() === caller)
+            w.controller.onAppForeground()
+            assertTrue(w.runtime.awaitCommands(5_000))
+            assertTrue(readOn.get(5, TimeUnit.SECONDS) !== caller)
+            assertNull("held: no foreground session", w.runtime.activeKind)
+            assertEquals(0, w.transport.ensures.get())
+        }
+        World().use { w ->
+            w.controller.restorePaymentHoldFrom { null }
+            w.controller.onAppForeground()
+            assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.FOREGROUND })
+        }
     }
 
     @Test
@@ -848,7 +950,7 @@ class SessionParticipantTest {
         assertTrue(s.closed)
         assertEquals("closed", category { invoiceStatus(s) })
         assertTrue(done.await(10, TimeUnit.SECONDS))
-        assertTrue(w.runtime.awaitIdle(5_000))
+        assertTrue(w.runtime.awaitNoActivity(5_000))
         assertFalse(w.runtime.quietRunning)
         assertEquals(0, p.returned.get())
         assertEquals(0, w.transport.calls.calls.size)
@@ -997,7 +1099,7 @@ class SessionParticipantTest {
         assertTrue("inside the issuer call", waitFor(10_000) { w.transport.calls.calls.size == 1 })
         w.controller.onAppBackground()
         assertTrue("hiding the app closes the user call", waitFor(5_000) { s.closed })
-        assertTrue(w.runtime.awaitIdle(5_000))
+        assertTrue(w.runtime.awaitNoActivity(5_000))
         // Past the hold, a job runs its relay session whatever the issuer does meanwhile.
         w.clock.offsetMillis += 61 * MINUTE
         assertTrue(w.job().await(30, TimeUnit.SECONDS))
