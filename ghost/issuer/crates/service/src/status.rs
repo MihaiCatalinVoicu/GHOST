@@ -7,7 +7,9 @@
 //! Recorded additions to the §6.5 list (S6 review): `PAYOUT_BATCHES_OPEN` and
 //! `PAYOUT_OLDEST_BATCH_WEEKS` (a batch the workstation never acknowledges keeps its claims and
 //! payout addresses, so its age is the alarm) and `PAYOUT_ACKS_REFUSED` (acknowledgement files the
-//! last payout run refused).
+//! last payout run refused). S12 review (CR-RF-1, §19.27): `REFRESH_REFUSED`, new `RefreshCredit`s
+//! refused since the process started because their credit epoch's budget was spent (an honest
+//! population never spends it: a refresh chain of a credit holder does).
 //!
 //! This module, `store.rs`, `journal.rs` and `payout.rs` are the only service modules that write
 //! files (`issuer-output.sh`).
@@ -33,7 +35,7 @@ pub const POOL_LOW_BELOW: usize = 16;
 pub const OPEN_INVOICES_BUCKET: u64 = 100;
 
 /// Every key of the status object, in output order.
-pub const KEYS: [&str; 16] = [
+pub const KEYS: [&str; 17] = [
     "SCANNER",
     "KEYS_READY_UNTIL_WEEK",
     "ES_HORIZON_WEEKS",
@@ -49,6 +51,7 @@ pub const KEYS: [&str; 16] = [
     "PAYOUT_BATCHES_OPEN",
     "PAYOUT_OLDEST_BATCH_WEEKS",
     "PAYOUT_ACKS_REFUSED",
+    "REFRESH_REFUSED",
     "HALTED",
 ];
 
@@ -170,6 +173,9 @@ pub struct StatusReport {
     /// Acknowledgement files the last payout run refused (they do not match an exported batch or
     /// cannot be read).
     pub payout_acks_refused: u64,
+    /// Since the process started: new `RefreshCredit`s refused because their credit epoch's
+    /// budget was spent (§19.27).
+    pub refresh_refused: u64,
     /// A failure between a journal append and its commit halted the issuer (restart required).
     pub halted: bool,
 }
@@ -194,6 +200,7 @@ impl StatusReport {
             self.payout_batches_open.to_string(),
             self.payout_oldest_batch_weeks.to_string(),
             self.payout_acks_refused.to_string(),
+            self.refresh_refused.to_string(),
             self.halted.to_string(),
         ];
         let fields: Vec<String> = KEYS
@@ -223,7 +230,7 @@ impl Issuer {
     /// The status at `now` (§6.5).
     pub fn status_at(&self, now: u64) -> Result<StatusReport, StoreError> {
         let w = week(now);
-        let (scanner, sign_fault, keys_missing, payout_acks_refused) = {
+        let (scanner, sign_fault, keys_missing, payout_acks_refused, refresh_refused) = {
             let v = self.volatile();
             let scanner = match v.last_tick {
                 None => ScannerCode::Stalled,
@@ -241,6 +248,7 @@ impl Issuer {
                 v.sign_faults,
                 v.keys_missing,
                 v.payout_acks_refused,
+                v.refresh_refused,
             )
         };
         let tx = self.store.read()?;
@@ -290,6 +298,7 @@ impl Issuer {
                 .min()
                 .map_or(0, |&oldest| w.saturating_sub(oldest)),
             payout_acks_refused,
+            refresh_refused,
             halted: self.is_halted(),
         })
     }

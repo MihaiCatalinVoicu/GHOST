@@ -22,7 +22,7 @@
 //! its invite drew when the inviter started listening, never at a time the read sets (Q31, §19.26).
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -228,6 +228,9 @@ pub struct World {
     last_tick: u64,
     invite_pool: Vec<(usize, usize)>,
     liar: Liar,
+    /// (client, flow instance) of a `WRONG_PERIOD` re-prepare → the first instance of its lineage
+    /// (§19.27); an instance not listed is its own lineage.
+    lineages: HashMap<(usize, u64), u64>,
     rogue: Vec<(ReferenceSigner, ghost_blind_rsa::PublicKey)>,
     issuer_rng: Rng,
     chain_rng: Rng,
@@ -329,8 +332,11 @@ impl World {
             chain_rng: Rng::new(cfg.seeds.chain, &[b"mining"]),
             liar: Liar {
                 lies: cfg.liar,
+                wrong_period: cfg.liar_wrong_period,
+                key: derive32(cfg.seeds.issuer, &[b"liar-wrong-period"]),
                 ..Liar::default()
             },
+            lineages: HashMap::new(),
             rogue: if cfg.mutant == Mutant::M2PerInvoiceKey {
                 rogue_signers()
             } else {
@@ -1404,9 +1410,30 @@ impl World {
                 self.log.count("trials");
             }
             Ok(a) if a.result == wire::RedeemInviteResult::WrongPeriod => {
-                // A device more than 4 h off (E14): nothing recorded; the next foreground retries
-                // with the base week of its (possibly corrected) clock.
-                self.clients[c].trial.as_mut().unwrap().base = None;
+                // A device more than 4 h off (E14), or a lying issuer: nothing recorded. The engine
+                // re-prepares (`PurchaseSteps.rePrepare`, §19.27): a new instance and seed, the same
+                // invite token, lineage and attempt count (the onboarding cap of 40 holds for the
+                // trial, not per flow); the next foreground retries with the base week of its
+                // (possibly corrected) clock. M23 starts the count again.
+                let lineage = self.lineage(c, instance);
+                let next = self.clients[c].next_flow(super::client::FlowSeq::Trial);
+                let seed = derive32(
+                    self.cfg.seeds.token,
+                    &[
+                        b"trial",
+                        &self.clients[c].id.to_be_bytes(),
+                        &next.to_be_bytes(),
+                    ],
+                );
+                self.lineages.insert((c, next), lineage);
+                let unbounded = self.cfg.mutant == Mutant::M23UnboundedRePrepare;
+                let trial = self.clients[c].trial.as_mut().unwrap();
+                trial.base = None;
+                trial.instance = next;
+                trial.seed = seed;
+                if unbounded {
+                    trial.attempts = 0;
+                }
                 self.log.count("trials wrong_period");
             }
             Ok(_) => {
@@ -1706,6 +1733,95 @@ impl World {
         let twice =
             self.cfg.mutant == Mutant::M8VariableCounts && self.clients[c].namespaces.len() >= 6;
         for _ in 0..if twice { 2 } else { 1 } {
+            self.new_purchase(c, w, xmr, need, not_before);
+        }
+        let _ = s;
+        0
+    }
+
+    /// The instance's lineage (§19.27): the first instance of the purchase, trial or revocation a
+    /// `WRONG_PERIOD` re-prepare continues; any other instance is its own.
+    fn lineage(&self, c: usize, instance: u64) -> u64 {
+        self.lineages
+            .get(&(c, instance))
+            .copied()
+            .unwrap_or(instance)
+    }
+
+    /// `WRONG_PERIOD` to a `RequestInvoice` (§5.3, §19.27, S12 review P8-PRIV-1/2): the issuer
+    /// recorded nothing, so the flow closes as failed and its credits return to fresh (the engine's
+    /// `failPrepared`); a new flow (a new instance, seed and claim key, the base week of its first
+    /// send, a covering set chosen again) continues the purchase in the same transaction. It keeps
+    /// the lineage, the write-ahead `RequestInvoice` count and the retry time drawn at the first
+    /// send, so a purchase makes at most `CALL_ATTEMPTS` `RequestInvoice` calls, at its plan's
+    /// times, whatever the answers; at the cap the purchase fails. M23 starts the new flow's count
+    /// at zero and due at once (the engine before the review).
+    fn re_prepare_purchase(&mut self, c: usize, idx: usize, w: i64) {
+        let (xmr, need, attempts, retry_due, old, credits) = {
+            let p = &mut self.clients[c].purchases[idx];
+            p.state = PState::Failed;
+            p.failed_day = Some(w.div_euclid(policy::DAY));
+            (
+                p.xmr,
+                p.need,
+                p.req_attempt,
+                p.retry_due,
+                p.instance,
+                std::mem::take(&mut p.credits),
+            )
+        };
+        for tk in credits {
+            let Some(e) = self.schedule.key_by_id(tk.key_id()).map(|k| k.epoch) else {
+                continue;
+            };
+            self.clients[c].credits.push(HeldCredit {
+                token: tk,
+                epoch: e,
+                source: old,
+            });
+        }
+        let attempts = if self.cfg.mutant == Mutant::M23UnboundedRePrepare {
+            0
+        } else {
+            attempts
+        };
+        if attempts >= policy::CALL_ATTEMPTS {
+            self.log.count("purchases failed: wrong_period at the cap");
+            return;
+        }
+        let chosen = if xmr {
+            Vec::new()
+        } else {
+            let Some(set) = self.covering(c, policy::week(w)) else {
+                self.log
+                    .count("purchases failed: no covering set after wrong_period");
+                return;
+            };
+            let mut chosen = Vec::new();
+            let mut positions = set.clone();
+            positions.sort_unstable();
+            for &p in &set {
+                chosen.push(self.clients[c].credits[p].token.clone());
+            }
+            for p in positions.into_iter().rev() {
+                self.clients[c].credits.remove(p);
+            }
+            chosen
+        };
+        let lineage = self.lineage(c, old);
+        let i = self.new_purchase(c, w, xmr, need, w);
+        let instance = self.clients[c].purchases[i].instance;
+        self.lineages.insert((c, instance), lineage);
+        let p = &mut self.clients[c].purchases[i];
+        p.credits = chosen;
+        p.req_attempt = attempts;
+        p.retry_due = if attempts == 0 { None } else { retry_due };
+        self.log.count("purchases re-prepared after wrong_period");
+    }
+
+    /// One new pack flow (a fresh instance, seed, attempt plan and claim key); its index.
+    fn new_purchase(&mut self, c: usize, w: i64, xmr: bool, need: bool, not_before: i64) -> usize {
+        {
             let instance = self.clients[c].next_flow(super::client::FlowSeq::Purchase);
             let idb = self.clients[c].id.to_be_bytes();
             let mut seed = derive32(
@@ -1768,10 +1884,10 @@ impl World {
                 rogue: None,
                 hint: None,
                 paid: false,
+                failed_day: None,
             });
         }
-        let _ = s;
-        0
+        self.clients[c].purchases.len() - 1
     }
 
     fn issuer_fault(
@@ -1854,6 +1970,7 @@ impl World {
             client: c as u32,
             flow: u64::from_be_bytes(logical[..8].try_into().unwrap()),
             instance,
+            lineage: self.lineage(c, instance),
             kind,
             automatic,
             run,
@@ -1874,7 +1991,7 @@ impl World {
             label,
             truth,
             fault,
-            liar: (cfg.liar > 0).then_some(liar),
+            liar: (cfg.liar > 0 || cfg.liar_wrong_period > 0.0).then_some(liar),
             extra_req,
             extra_resp: Vec::new(),
             answered: None,
@@ -1936,8 +2053,20 @@ impl World {
             }
         }
         let wk = policy::week(w);
+        // Not while a credits pack that sent its `RequestInvoice` and failed is still kept
+        // (`terminal_day` + 7, the engine's `QuietRunWork.renewalDue`, §19.28 point 1): the next
+        // renewal would present the same credits, so a stalling or `WRONG_PERIOD` issuer gets one
+        // capped renewal per week.
+        let today = w.div_euclid(policy::DAY);
+        let backing_off = self.clients[c].purchases.iter().any(|p| {
+            !p.xmr
+                && p.state == PState::Failed
+                && p.failed_day
+                    .is_some_and(|d| today < d + TERMINAL_RETENTION_DAYS)
+        });
         let renewal = self.clients[c].auto_renew_credits
             && !self.clients[c].pack_in_flight()
+            && !backing_off
             && self.clients[c].coverage_end - wk < 2
             && self.covering(c, wk).is_some();
         if renewal {
@@ -2134,20 +2263,19 @@ impl World {
                 });
             }
             Ok(a) if a.result == wire::RequestInvoiceResult::WrongPeriod => {
-                let p = &mut self.clients[c].purchases[idx];
-                p.base_week = None;
-                p.req_attempt = 0;
-                p.retry_due = Some(w + DAY);
                 self.log.count("request_invoice wrong_period");
+                self.re_prepare_purchase(c, idx, w);
             }
             Ok(_) => {
                 self.clients[c].purchases[idx].state = PState::Failed;
+                self.clients[c].purchases[idx].failed_day = Some(w.div_euclid(policy::DAY));
                 self.log.count("request_invoice refused");
             }
             Err(_) => {
                 if self.clients[c].purchases[idx].req_attempt >= policy::CALL_ATTEMPTS {
                     let credits = std::mem::take(&mut self.clients[c].purchases[idx].credits);
                     self.clients[c].purchases[idx].state = PState::Failed;
+                    self.clients[c].purchases[idx].failed_day = Some(w.div_euclid(policy::DAY));
                     for tk in credits {
                         // A credit whose key id is not an ES key (mutant M2b) is not kept.
                         let Some(e) = self.schedule.key_by_id(tk.key_id()).map(|k| k.epoch) else {
@@ -2602,6 +2730,25 @@ impl World {
             },
         );
         match r {
+            Ok(a) if a.result == wire::RedeemInviteResult::WrongPeriod => {
+                // §19.27: the engine re-prepares the revocation in a new flow (a new instance and
+                // seed, the same invite token) that keeps its lineage and attempt count, due at the
+                // retry time; at the cap the revocation ends. M23 starts the count again.
+                let next = if self.cfg.mutant == Mutant::M23UnboundedRePrepare {
+                    0
+                } else {
+                    attempt + 1
+                };
+                if next >= policy::CALL_ATTEMPTS {
+                    self.clients[c].invites[idx].revoke = None;
+                } else {
+                    let lineage = self.lineage(c, instance);
+                    let inst = self.clients[c].next_flow(super::client::FlowSeq::Revocation);
+                    self.lineages.insert((c, inst), lineage);
+                    self.clients[c].invites[idx].revoke = Some((w + DAY, inst, next));
+                }
+                self.log.count("revocations wrong_period");
+            }
             Ok(a) => {
                 self.clients[c].invites[idx].revoke = None;
                 if a.result == wire::RedeemInviteResult::Ok {
@@ -3030,6 +3177,7 @@ impl World {
             skewed: cl.skewed(t),
             skew: cl.wall(t) - t as i64,
             retry: false,
+            answer_lost: false,
         }
     }
 
@@ -3835,6 +3983,9 @@ fn need_of(cap: Option<&Cap>, needs_write: bool, w: i64) -> Option<(NeedKind, Ne
         None => Some((NeedKind::Read, NeedReason::Missing)),
     }
 }
+
+/// Days a terminal purchase row is kept (`PurchaseStore.TERMINAL_RETENTION_DAYS`, §11.3).
+const TERMINAL_RETENTION_DAYS: i64 = 7;
 
 impl Client {
     /// ENTITLEMENT_NEEDED is raised once the identity has paid or trial coverage.

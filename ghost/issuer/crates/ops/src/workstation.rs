@@ -4,9 +4,10 @@
 //! the revenue, and its ledger ([`crate::ledger`]) the record of every payout.
 //!
 //! - `payout-check`: the batch file's signature under the ops key; its network; every payout
-//!   address (§7.7); the ledger's rules (a batch id and a claim once, else the batch is refused;
-//!   an entry whose payout address was seen before is recorded refused and the rest of the batch
-//!   is taken, so a claimant's address cannot stall the batch); the **cumulative cap**
+//!   address (§7.7); the ledger's rules (a batch id once and a claim once per batch, else the
+//!   batch is refused; an entry whose claim id an earlier batch had, or whose payout address was
+//!   seen before, is recorded refused and the rest of the batch is taken, so neither a claimant's
+//!   address nor its claim id can stall the batch, §19.27); the **cumulative cap**
 //!   `paid_so_far + payable ≤ 10 % × Σ incoming to minors ≥ 1 since the treasury's restore
 //!   height` (payable: the batch total less its refused entries; qualifying transfers of the view
 //!   dump: at least 10 confirmations, `unlock_time` 0, not double-spent); and the issuer's

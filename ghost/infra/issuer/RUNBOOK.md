@@ -212,7 +212,7 @@ containerul lui.
 `$H/data/status.json`, rescris la fiecare 60 s, o linie, doar coduri fixe și numere agregate:
 
 ```json
-{"SCANNER":"SCANNER_OK","KEYS_READY_UNTIL_WEEK":2963,"ES_HORIZON_WEEKS":33,"POOL_SIZE":"POOL_OK","OPEN_INVOICES":0,"RECONCILIATION":"RECONCILIATION_OK","REORG_AFTER_ISSUE":0,"CONFIRMED_UNISSUED":0,"POOL_RECONCILED":0,"SIGN_FAULT":0,"KEYS_MISSING":0,"PAYOUT_BATCH_READY":false,"PAYOUT_BATCHES_OPEN":0,"PAYOUT_OLDEST_BATCH_WEEKS":0,"PAYOUT_ACKS_REFUSED":0,"HALTED":false}
+{"SCANNER":"SCANNER_OK","KEYS_READY_UNTIL_WEEK":2963,"ES_HORIZON_WEEKS":33,"POOL_SIZE":"POOL_OK","OPEN_INVOICES":0,"RECONCILIATION":"RECONCILIATION_OK","REORG_AFTER_ISSUE":0,"CONFIRMED_UNISSUED":0,"POOL_RECONCILED":0,"SIGN_FAULT":0,"KEYS_MISSING":0,"PAYOUT_BATCH_READY":false,"PAYOUT_BATCHES_OPEN":0,"PAYOUT_OLDEST_BATCH_WEEKS":0,"PAYOUT_ACKS_REFUSED":0,"REFRESH_REFUSED":0,"HALTED":false}
 ```
 
 | Câmp | Normal | Acțiune altfel |
@@ -225,6 +225,7 @@ containerul lui.
 | `SIGN_FAULT`, `REORG_AFTER_ISSUE` | 0 | investigare; I1 dacă nu are explicație |
 | `PAYOUT_BATCHES_OPEN`, `PAYOUT_OLDEST_BATCH_WEEKS` | 0 după P1 | P1 |
 | `PAYOUT_ACKS_REFUSED` | 0 | fișierul de confirmare nu corespunde unui lot exportat |
+| `REFRESH_REFUSED` | 0 | reîmprospătări noi refuzate de la pornirea procesului fiindcă bugetul epocii lor de credit s-a epuizat (design §19.27): o populație onestă nu îl atinge, un lanț de reîmprospătări al unui deținător de credite da; R2 (contorul `credits_refreshed[c]` al epocii față de pachetele XMR ale epocilor c − 1, c și c + 1) și anunț dacă reîmprospătările oneste ale epocii sunt refuzate |
 | `HALTED` | `false` | `true`: jurnalul sau baza au eșuat; `$C restart issuer` reia jurnalul |
 
 Codul de ieșire al unui issuer oprit:
@@ -408,13 +409,18 @@ mesajul este `snapshot: failed, …`.
 
   ```cron
   7 * * * * root GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer /srv/ghost-src/ghost/infra/issuer/snapshot.sh
-  17 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*.redb' ! -name 'issuer-*00.redb' -mmin +2819 -delete
-  27 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*00.redb' -mmin +10019 -delete
+  17 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*.redb' ! -name 'issuer-*00.redb' ! -name "$(cd /srv/ghost-issuer/snapshots && ls -t issuer-*.redb 2>/dev/null | head -n 1)" -mmin +2819 -delete
+  27 * * * * root find /srv/ghost-issuer/snapshots -name 'issuer-*00.redb' ! -name "$(cd /srv/ghost-issuer/snapshots && ls -t issuer-*.redb 2>/dev/null | head -n 1)" -mmin +10019 -delete
   37 * * * * root GHOST_ISSUER_HOST_DIR=/srv/ghost-issuer /srv/ghost-src/ghost/infra/issuer/journal-prune.sh
   ```
   Retenția (§19.15) este un maxim: `find -mmin +n` potrivește fișierele de cel puțin n + 1 minute și
   ștergerea rulează orar, deci un snapshot orar trăiește cel mult 47 h + 1 h = 48 h, iar cel zilnic
-  (ora 00 UTC) cel mult 167 h + 1 h = 7 zile. Ștergerea rulează și într-o fereastră de mentenanță.
+  (ora 00 UTC) cel mult 167 h + 1 h = 7 zile. Ștergerea rulează și într-o fereastră de mentenanță,
+  dar nu atinge niciodată cel mai nou snapshot (`! -name "$(… ls -t … | head -n 1)"`, design
+  §19.27): într-o fereastră mai lungă de 7 zile (M2, I1) `snapshot.sh` nu face niciunul, iar
+  jurnalul nu poate înlocui un snapshot (prefixul lui a fost tăiat după ultimul), deci ultimul
+  snapshot rămâne, peste retenție, până la primul snapshot de după fereastră (siguranța
+  restaurării are prioritate, ca la tăierea jurnalului; secțiunea 13).
   Snapshot-urile stau pe discul criptat; o copie în afara host-ului se criptează înainte
   (`gpg --symmetric`) și respectă aceeași retenție. Așteptat, după ora următoare:
   `ls -t "$H/snapshots" | head -1` dă `issuer-<AAAALLZZHH>.redb` al orei curente (UTC).
@@ -634,9 +640,11 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
     --network stagenet --view-dump view-dump.json --restore-height "$RESTORE_HEIGHT" --ledger payouts.ledger
   ```
   Așteptat: `PAYOUT_ACCEPTED … entries=<n> refused=<k>`. `PAYOUT_REFUSED reason=<…>` (semnătura,
-  rețeaua, un lot sau o cerere văzută deja, plafonul cumulativ de 10 % din venitul văzut de stație)
-  oprește lotul. O intrare refuzată (adresă invalidă sau refolosită) închide cererea neplătită și
-  creditele ei rămân cheltuite (Q26).
+  rețeaua, o adresă invalidă, un lot văzut deja, aceeași cerere de două ori în lot, plafonul
+  cumulativ de 10 % din venitul văzut de stație) oprește lotul. O intrare refuzată (o adresă
+  refolosită, sau o cerere al cărei id a fost deja într-un lot anterior: clientul alege id-ul, iar
+  issuer-ul îl uită la o săptămână după confirmare; design §19.27) închide cererea neplătită și
+  creditele ei rămân cheltuite (Q26); restul lotului se plătește.
 - [ ] Pentru fiecare intrare k, strict pe rând (k + 1 abia după ce k a fost trimisă, §19.7):
   1. `transfer` pe wallet-ul watch-only al stației → `unsigned_txset`;
      `ghost-issuer-ops payout-entry --ledger payouts.ledger --batch-id <id> --entry k --to built`.
@@ -773,7 +781,10 @@ issuer-ul, cu numărul luat din baza lui; nimeni nu creează subadrese și nu re
 ## 13. Limite cunoscute
 
 - Cât timp o fereastră de mentenanță este deschisă (M2 lung, R5, I1) nu se fac snapshot-uri B1 și
-  jurnalul nu se taie; o restaurare folosește ultimul snapshot și jurnalul de după el.
+  jurnalul nu se taie; o restaurare folosește ultimul snapshot și jurnalul de după el. Ștergerea
+  orară a snapshot-urilor păstrează mereu cel mai nou (design §19.27), deci într-o fereastră mai
+  lungă de 7 zile acel snapshot, cu datele lui (facturi, cereri de plată, adrese de plată,
+  nullifier-i), trăiește peste retenția de 7 zile, cât durează fereastra plus o oră (LIMITE E33).
 - Jurnalul se taie doar după un snapshot verificat: cât timp snapshot-urile lipsesc (issuer oprit,
   mentenanță lungă) sau cel mai nou nu se verifică, segmentele rămân și retenția de 7–14 zile a
   jurnalului se depășește (siguranța restaurării are prioritate); refuzul apare în mail-ul

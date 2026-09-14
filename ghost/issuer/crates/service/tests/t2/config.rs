@@ -39,6 +39,10 @@ pub enum Mutant {
     M21SpendReceivedCredit,
     /// A received credit's refresh due 1–14 days after its drop read (the rule Q31 replaced, §19.26).
     M22RefreshAtRead,
+    /// A `WRONG_PERIOD` re-prepare starts the new flow's attempt count at zero (the engine before
+    /// the S12 review, P8-PRIV-1): a purchase or revocation re-presents its credits or invite token
+    /// in new flows without bound (§19.27).
+    M23UnboundedRePrepare,
 }
 
 /// User actions a twin world replays from its base world, so that the declared cells they
@@ -73,6 +77,10 @@ pub struct Config {
     /// A lying issuer layer answers the first `liar` `BlindSign` calls of every invoice
     /// `AWAITING_CONFIRMATIONS` (0: honest).
     pub liar: u32,
+    /// A lying issuer layer answers this fraction of `RequestInvoice` and `RedeemInvite` calls
+    /// `WRONG_PERIOD` without asking the handler, chosen by a PRF of the request bytes (an identical
+    /// retry gets the same answer; 0: honest). The world of mutant M23 and of its control (§19.27).
+    pub liar_wrong_period: f64,
     /// Issuer address pool target (NI-1 varies it, so pool minors differ).
     pub pool_target: u32,
     /// NI-1: response latencies up to 30 s (kept inside the minute the client records).
@@ -112,6 +120,7 @@ impl Config {
             export: None,
             export_truth: None,
             liar: 0,
+            liar_wrong_period: 0.0,
             pool_target: 32,
             latency_jitter: false,
             sign_jitter: false,

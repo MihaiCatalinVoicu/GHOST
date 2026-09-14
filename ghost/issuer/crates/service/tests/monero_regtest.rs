@@ -1205,7 +1205,9 @@ fn regtest_scenario() {
     let c = t.schedule.constants();
     t.mine(u64::from(c.invoice_blocks) + u64::from(c.grace_blocks) + CONFIRMATIONS + 1);
     t.tick();
-    t.mine(5_041);
+    // An expired invoice goes 5 040 blocks after its expiry, an issued one at max(issued + 5 040,
+    // confirmed + 21 600) (design §19.27 point 4, S12 review MONEY-RESERVE-1).
+    t.mine(21_601);
     t.tick();
     assert!(
         store::invoices(&*t.issuer().store().read().unwrap())

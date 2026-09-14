@@ -237,8 +237,11 @@ pub const CLIP_SECS: i64 = 24 * 3_600;
 ///   the relay minute's resolution (±(1 h − 60 s));
 /// - such a client is never refused a period;
 /// - an uncorrected client meets each relay at most once per process start with a refused period
-///   (E14): that answer's period and minute are the relay's clock for every later decision about it
-///   (`ClockEstimate.relayNow`). Identical retries (R8) count like any other redemption.
+///   that it received (E14): that answer's period and minute are the relay's clock for every later
+///   decision about it (`ClockEstimate.relayNow`). Identical retries (R8) count like any other
+///   redemption; a refusal whose answer never reached the client (a lost answer, or a relay that
+///   withholds it) taught the client nothing and is reported by [`j8_lost_refusals`], not counted
+///   (S12 review P8-J8-1, design §19.27).
 ///
 /// Devices further off than the clip are corrected only to within a day: their refused periods are
 /// counted by [`j8_far_skew`] and reported.
@@ -290,10 +293,14 @@ pub fn j8_of(redemptions: &[crate::accumulate::Redemption]) -> Vec<Hit> {
                     "WRONG_PERIOD after the relay-facing clock was corrected".into(),
                 ));
             }
-            refused
-                .entry((r.process, r.relay))
-                .or_default()
-                .push(what());
+            // A refusal the client never received taught it nothing (S12 review P8-J8-1): it is
+            // reported by `j8_lost_refusals`, never counted toward the per-relay bound.
+            if !r.answer_lost {
+                refused
+                    .entry((r.process, r.relay))
+                    .or_default()
+                    .push(what());
+            }
         }
     }
     for ((process, relay), shown) in refused {
@@ -312,6 +319,16 @@ pub fn j8_of(redemptions: &[crate::accumulate::Redemption]) -> Vec<Hit> {
     hits
 }
 
+/// `WRONG_PERIOD` answers the client never received (reported with J8, not counted by its
+/// per-relay bound; S12 review P8-J8-1): the world's lost-answer fault, or an AD-1 relay that
+/// withholds its answer.
+pub fn j8_lost_refusals(redemptions: &[crate::accumulate::Redemption]) -> usize {
+    redemptions
+        .iter()
+        .filter(|r| r.answer_lost && r.result == Redeemed::WrongPeriod)
+        .count()
+}
+
 /// Identical retries (R8) answered `WRONG_PERIOD` (reported with J8; counted by it too).
 pub fn j8_late_retries(acc: &Accumulator) -> usize {
     acc.redemptions
@@ -328,13 +345,58 @@ pub fn j8_far_skew(acc: &Accumulator) -> usize {
         .count()
 }
 
+/// `RequestInvoice` calls per purchase and `RedeemInvite` calls per revocation (`CALL_ATTEMPTS`,
+/// §19.23 point 2), per lineage (§19.27).
+pub const CALL_CAP: usize = 2;
+
+/// `RedeemInvite` calls per onboarding trial (`ONBOARDING_ATTEMPTS`, §19.23 point 2).
+pub const ONBOARDING_CAP: usize = 40;
+
+/// J9's caps per lineage (§19.27, S12 review P8-PRIV-2): a `WRONG_PERIOD` re-prepare continues a
+/// purchase, trial or revocation in a new flow instance that keeps its attempt count, so the caps
+/// hold per lineage, not per instance (`RequestInvoice` 2 per purchase, `RedeemInvite` 2 per
+/// revocation and 40 per onboarding trial): a lying `WRONG_PERIOD` buys no more linked calls than
+/// a transient failure.
+pub fn j9_lineages(issuer: &[IssuerRecord]) -> Vec<Hit> {
+    let mut per_lineage: BTreeMap<(u32, u64, &'static str), (usize, usize)> = BTreeMap::new();
+    for r in issuer {
+        let (what, cap) = match (r.op, r.truth.kind) {
+            (IssuerOp::RequestInvoice, _) => ("RequestInvoice calls in one purchase", CALL_CAP),
+            (IssuerOp::RedeemInvite, FlowKind::Revocation) => {
+                ("RedeemInvite calls in one revocation", CALL_CAP)
+            }
+            (IssuerOp::RedeemInvite, FlowKind::Trial) => {
+                ("RedeemInvite calls in one onboarding trial", ONBOARDING_CAP)
+            }
+            _ => continue,
+        };
+        per_lineage
+            .entry((r.truth.client, r.truth.lineage, what))
+            .or_insert((0, cap))
+            .0 += 1;
+    }
+    per_lineage
+        .into_iter()
+        .filter(|(_, (n, cap))| n > cap)
+        .map(|((c, lineage, what), (n, cap))| {
+            hit(
+                "J9",
+                format!("lineage {lineage:x} of client {c}"),
+                format!("{n} {what} (cap {cap})"),
+            )
+        })
+        .collect()
+}
+
 /// The quiet-run probability of every periodic-job run (§12.2).
 pub const QUIET_Q: f64 = 1.0 / 8.0;
 
 /// The level of the statistical conditions of the deterministic checks (§13.4: α = 0.001).
 pub const CHECK_ALPHA: f64 = 0.001;
 
-/// J9: the contact schedule, per flow (G-4): one `RequestInvoice` byte string per purchase; every
+/// J9: the contact schedule, per flow (G-4): one `RequestInvoice` byte string per flow instance, and
+/// at most 2 `RequestInvoice` per purchase, 2 `RedeemInvite` per revocation and 40 per onboarding
+/// trial across the flows a `WRONG_PERIOD` re-prepare chains ([`j9_lineages`], §19.27); every
 /// automatic issuer call in a quiet run (a run of the client in which the relay views hold no call
 /// of it) and at most one per quiet run; quiet runs drawn independently of the work that is due
 /// ([`j9_quiet`], P-7); at most 5 `BlindSign` per invoice, each at or after its due minute; every
@@ -426,9 +488,9 @@ pub fn j9(
         }
     }
     for ((c, inst), set) in &request_bytes {
-        // A WRONG_PERIOD re-prepare changes the base week; every other retry is identical.
-        let bases: BTreeSet<&[u8]> = set.iter().map(|b| &b[b.len() - 8..]).collect();
-        if set.len() > bases.len() {
+        // Every retry of a flow instance is identical: a `WRONG_PERIOD` re-prepare (a new base
+        // week and claim key) is a new instance of the same lineage (§19.27).
+        if set.len() > 1 {
             hits.push(hit(
                 "J9",
                 format!("purchase {inst:x} of client {c}"),
@@ -436,6 +498,7 @@ pub fn j9(
             ));
         }
     }
+    hits.extend(j9_lineages(&acc.issuer));
     let invoice_truth: HashMap<&[u8], &crate::model::InvoiceTruth> = truth
         .invoices
         .iter()
@@ -640,48 +703,118 @@ pub fn nullifiers_missing(acc: &Accumulator, truth: &Truth) -> usize {
 /// addresses, circuits); and, in the Sybil world, no token the attacker's clients finalized is
 /// presented at the issuer other than in a `RefreshCredit` (§19.8).
 pub fn t2c(acc: &Accumulator, truth: &Truth) -> Vec<Hit> {
-    t2c_counted(acc, truth).0
+    t2c_counted(acc, truth).hits
 }
 
-/// T2c and the number of credits re-presented by a new flow after the flow that first presented
-/// them failed before the issuer answered it (§19.23 point 2, Q28: the client releases the
-/// credits of a credits pack whose capped `RequestInvoice` got no answer and presents them again
-/// in its next credits pack). That re-presentation links the two flows at the issuer; it is the
-/// one exemption, and it is counted and reported, never silent.
-pub fn t2c_counted(acc: &Accumulator, truth: &Truth) -> (Vec<Hit>, usize) {
+/// T2c with its two counted exemptions.
+#[derive(Debug, Default)]
+pub struct T2cCounts {
+    pub hits: Vec<Hit>,
+    /// Credits re-presented by a new flow after the flow that first presented them failed before
+    /// the issuer answered it (§19.23 point 2, Q28: the client releases the credits of a credits
+    /// pack whose capped `RequestInvoice` got no answer and presents them again in its next
+    /// credits pack).
+    pub released: usize,
+    /// Credits or invite tokens re-presented by a re-prepared flow of the same lineage after a
+    /// `WRONG_PERIOD` answer (§19.27): the purchase, trial or revocation continues in a new flow
+    /// that keeps its attempt count, so a lineage has at most as many flows as its cap of calls;
+    /// a re-presentation in a lineage with more flows than that is a hit.
+    pub re_prepared: usize,
+}
+
+/// Flows a lineage may have (its call cap, §19.27): `RequestInvoice` 2, a revocation's
+/// `RedeemInvite` 2, an onboarding trial's 40.
+fn lineage_cap(kind: FlowKind) -> usize {
+    match kind {
+        FlowKind::Trial => ONBOARDING_CAP,
+        _ => CALL_CAP,
+    }
+}
+
+/// T2c and its counted exemptions ([`T2cCounts`]). Each re-presentation links two flows at the
+/// issuer; the exemptions are counted and reported, never silent.
+pub fn t2c_counted(acc: &Accumulator, truth: &Truth) -> T2cCounts {
+    t2c_of(
+        &acc.issuer,
+        |v| acc.public.contains(v),
+        &truth.attacker_tokens,
+    )
+}
+
+/// [`t2c_counted`] over the issuer records, with W (`is_public`) and the Sybil attacker's tokens.
+pub fn t2c_of(
+    issuer: &[IssuerRecord],
+    is_public: impl Fn(&[u8]) -> bool,
+    attacker_tokens: &[Vec<u8>],
+) -> T2cCounts {
     let mut hits = Vec::new();
+    // The flow instances of each lineage that made a `RequestInvoice` or `RedeemInvite`.
+    let mut lineage_flows: HashMap<(u32, u64), (FlowKind, BTreeSet<u64>)> = HashMap::new();
+    for r in issuer
+        .iter()
+        .filter(|r| matches!(r.op, IssuerOp::RequestInvoice | IssuerOp::RedeemInvite))
+    {
+        lineage_flows
+            .entry((r.truth.client, r.truth.lineage))
+            .or_insert((r.truth.kind, BTreeSet::new()))
+            .1
+            .insert(r.truth.instance);
+    }
+    let mut re_prepared = 0usize;
+    let mut beyond: HashSet<(u32, u64)> = HashSet::new();
     // Flow instances that presented credits and never got an answer.
     let mut answered: HashMap<(u32, u64), bool> = HashMap::new();
-    for r in acc
-        .issuer
-        .iter()
-        .filter(|r| r.op == IssuerOp::RequestInvoice)
-    {
-        let ok = r.status == 0;
+    for r in issuer.iter().filter(|r| r.op == IssuerOp::RequestInvoice) {
+        // A `WRONG_PERIOD` answer records nothing either (§5.3): the flow ends without an invoice,
+        // and its released credits are presented again like those of an unanswered flow.
+        let ok = r.status == 0 && r.int("result") != Some(REQUEST_INVOICE_WRONG_PERIOD);
         let e = answered
             .entry((r.truth.client, r.truth.instance))
             .or_insert(false);
         *e |= ok;
     }
     let mut released = 0usize;
-    // value → (client, instance) of first sight.
-    let mut first: HashMap<Vec<u8>, (u32, u64, &'static str)> = HashMap::new();
+    // value → (client, instance, field, lineage) of first sight.
+    let mut first: HashMap<Vec<u8>, (u32, u64, &'static str, u64)> = HashMap::new();
     let mut reported: HashSet<(u32, u64, u64)> = HashSet::new();
     let label_field = "circuit";
-    for r in &acc.issuer {
+    for r in issuer {
         let c = r.truth.client;
         let inst = r.truth.instance;
+        let lineage = r.truth.lineage;
         let mut vals: Vec<(&'static str, &[u8])> = r
             .request
             .iter()
             .chain(r.response.iter())
-            .filter(|(_, v)| informative(v) && !acc.public.contains(v))
+            .filter(|(_, v)| informative(v) && !is_public(v))
             .map(|(n, v)| (*n, &v[..]))
             .collect();
         vals.push((label_field, &r.label[..]));
         for (n, v) in vals {
             match first.get(v) {
-                Some(&(c2, i2, n2))
+                Some(&(c2, i2, n2, l2))
+                    if c2 == c
+                        && i2 != inst
+                        && l2 == lineage
+                        && n == n2
+                        && matches!(n, "credits" | "invite_token") =>
+                {
+                    let (kind, flows) = &lineage_flows[&(c, lineage)];
+                    if flows.len() <= lineage_cap(*kind) {
+                        re_prepared += 1;
+                    } else if beyond.insert((c, lineage)) {
+                        hits.push(hit(
+                            "T2c",
+                            format!("client {c}: {n} of flow {inst:x}"),
+                            format!(
+                                "re-presented by {} flows of lineage {lineage:x}, beyond its cap of {}",
+                                flows.len(),
+                                lineage_cap(*kind)
+                            ),
+                        ));
+                    }
+                }
+                Some(&(c2, i2, n2, _))
                     if c2 == c
                         && i2 != inst
                         && n == "credits"
@@ -690,7 +823,7 @@ pub fn t2c_counted(acc: &Accumulator, truth: &Truth) -> (Vec<Hit>, usize) {
                 {
                     released += 1;
                 }
-                Some(&(c2, i2, n2)) if c2 == c && i2 != inst => {
+                Some(&(c2, i2, n2, _)) if c2 == c && i2 != inst => {
                     let key = (c, inst.min(i2), inst.max(i2));
                     if reported.insert(key) {
                         hits.push(hit(
@@ -702,13 +835,13 @@ pub fn t2c_counted(acc: &Accumulator, truth: &Truth) -> (Vec<Hit>, usize) {
                 }
                 Some(_) => {}
                 None => {
-                    first.insert(v.to_vec(), (c, inst, n));
+                    first.insert(v.to_vec(), (c, inst, n, lineage));
                 }
             }
         }
     }
-    let known: HashSet<&[u8]> = truth.attacker_tokens.iter().map(|t| &t[..]).collect();
-    for r in &acc.issuer {
+    let known: HashSet<&[u8]> = attacker_tokens.iter().map(|t| &t[..]).collect();
+    for r in issuer {
         if r.op == IssuerOp::RefreshCredit {
             continue;
         }
@@ -722,8 +855,15 @@ pub fn t2c_counted(acc: &Accumulator, truth: &Truth) -> (Vec<Hit>, usize) {
             }
         }
     }
-    (hits, released)
+    T2cCounts {
+        hits,
+        released,
+        re_prepared,
+    }
 }
+
+/// `REQUEST_INVOICE_RESULT_WRONG_PERIOD` (`issuer.proto`).
+const REQUEST_INVOICE_WRONG_PERIOD: u64 = 2;
 
 /// Everything an issuer record says about its invoice, for the statistics.
 pub fn by_invoice(acc: &Accumulator) -> HashMap<Vec<u8>, Vec<&IssuerRecord>> {
@@ -811,7 +951,42 @@ mod tests {
             process,
             source: 0,
             retry,
+            answer_lost: false,
         }
+    }
+
+    /// S12 review P8-J8-1 (CI run 34788951925, client 447 at relay 2): a `WRONG_PERIOD` answer lost
+    /// in transit taught the client nothing, so its next fresh token at that relay, on the same
+    /// uncorrected clock, is refused too. Only refusals the client received count toward "at most
+    /// once per process start and relay"; the lost ones are reported (an AD-1 relay can withhold
+    /// its answer on purpose), and two received refusals still fail.
+    #[test]
+    fn j8_counts_only_refusals_the_client_received() {
+        let t = week_start(P + 1) - 36 * 3_600;
+        let mut lost = red(t, P + 1, 2, 9, 60_429, false, Redeemed::WrongPeriod, false);
+        lost.answer_lost = true;
+        let received = red(
+            t + 2,
+            P + 1,
+            2,
+            9,
+            60_429,
+            false,
+            Redeemed::WrongPeriod,
+            false,
+        );
+        let hits = j8_of(&[lost.clone(), received.clone()]);
+        assert!(hits.is_empty(), "{hits:?}");
+        assert_eq!(j8_lost_refusals(&[lost.clone(), received.clone()]), 1);
+        let mut second = received.clone();
+        second.t += 600;
+        let hits = j8_of(&[lost, received, second]);
+        assert!(
+            hits.iter().any(|h| h
+                .b
+                .contains("2 WRONG_PERIOD redemptions in one process at one relay")),
+            "{hits:?}"
+        );
     }
 
     /// An identical retry refused for its period counts like any other redemption.
@@ -1018,6 +1193,7 @@ mod tests {
                     client: 0,
                     flow: k,
                     instance: k,
+                    lineage: k,
                     kind: FlowKind::PackXmr,
                     automatic: true,
                     run,
@@ -1052,5 +1228,145 @@ mod tests {
         let q = j9_quiet_of(&issuer, &truth, due);
         assert_eq!((q.first, q.n), (0, 200));
         assert!(q.p > 0.5);
+    }
+
+    /// One issuer call of flow `instance` in `lineage` presenting `values` (as `field`), answered
+    /// `result` (2: `WRONG_PERIOD`).
+    fn call(
+        op: IssuerOp,
+        kind: FlowKind,
+        instance: u64,
+        lineage: u64,
+        field: &'static str,
+        values: &[Vec<u8>],
+        result: u64,
+    ) -> IssuerRecord {
+        let own: Vec<u8> = (0..32u8)
+            .map(|b| b.wrapping_mul(7) ^ instance as u8)
+            .collect();
+        let mut request = vec![("claim_hash", own)];
+        request.extend(values.iter().map(|v| (field, v.clone())));
+        // One fresh circuit per call (R5).
+        let mut label = [0u8; 32];
+        for (i, b) in label.iter_mut().enumerate() {
+            *b = (i as u8 ^ instance as u8).wrapping_mul(5) | 1;
+        }
+        IssuerRecord {
+            t: 1_000 * instance,
+            t_resp: 1_000 * instance + 2,
+            label,
+            op,
+            request,
+            response: Vec::new(),
+            ints: vec![("base_week", P), ("result", result)],
+            status: 0,
+            truth: IssuerTruth {
+                client: 3,
+                flow: instance,
+                instance,
+                lineage,
+                kind,
+                automatic: true,
+                run: instance,
+            },
+        }
+    }
+
+    fn credit(n: u8) -> Vec<u8> {
+        (1..=64u8).map(|b| b.wrapping_add(n)).collect()
+    }
+
+    /// S12 review P8-PRIV-2 (§19.27): the caps hold per lineage, whatever the flow instances.
+    #[test]
+    fn j9_caps_calls_per_lineage() {
+        let pack = |i| {
+            call(
+                IssuerOp::RequestInvoice,
+                FlowKind::PackXmr,
+                i,
+                1,
+                "credits",
+                &[],
+                2,
+            )
+        };
+        assert!(j9_lineages(&[pack(1), pack(2)]).is_empty());
+        let hits = j9_lineages(&[pack(1), pack(2), pack(3)]);
+        assert!(
+            hits.iter()
+                .any(|h| h.b == "3 RequestInvoice calls in one purchase (cap 2)"),
+            "{hits:?}"
+        );
+        let revoke = |i| {
+            call(
+                IssuerOp::RedeemInvite,
+                FlowKind::Revocation,
+                i,
+                7,
+                "invite_token",
+                &[credit(9)],
+                2,
+            )
+        };
+        let hits = j9_lineages(&[revoke(7), revoke(8), revoke(9)]);
+        assert!(
+            hits.iter()
+                .any(|h| h.b == "3 RedeemInvite calls in one revocation (cap 2)"),
+            "{hits:?}"
+        );
+        let trial: Vec<IssuerRecord> = (0..41)
+            .map(|i| {
+                call(
+                    IssuerOp::RedeemInvite,
+                    FlowKind::Trial,
+                    100 + i,
+                    100,
+                    "invite_token",
+                    &[credit(5)],
+                    2,
+                )
+            })
+            .collect();
+        assert!(j9_lineages(&trial[..40]).is_empty());
+        assert!(j9_lineages(&trial).iter().any(|h| h.b.contains("(cap 40)")));
+    }
+
+    /// S12 review P8-PRIV-2 (§19.27): credits re-presented by a re-prepared flow of the same
+    /// purchase are counted within its cap and a hit beyond it; released credits of a purchase
+    /// that ended on `WRONG_PERIOD` at its cap are counted as released when the next purchase
+    /// presents them.
+    #[test]
+    fn t2c_counts_a_re_prepare_within_its_cap_and_refuses_one_beyond_it() {
+        let set = [credit(1), credit(2)];
+        let pack = |i, lineage| {
+            call(
+                IssuerOp::RequestInvoice,
+                FlowKind::PackCredits,
+                i,
+                lineage,
+                "credits",
+                &set,
+                2,
+            )
+        };
+        let t = t2c_of(&[pack(1, 1), pack(2, 1)], |_| false, &[]);
+        assert!(t.hits.is_empty(), "{:?}", t.hits);
+        assert_eq!((t.re_prepared, t.released), (2, 0));
+        // The purchase failed at its cap; the next purchase presents the released credits.
+        let t = t2c_of(&[pack(1, 1), pack(2, 1), pack(3, 3)], |_| false, &[]);
+        assert!(t.hits.is_empty(), "{:?}", t.hits);
+        assert_eq!((t.re_prepared, t.released), (2, 2));
+        // A third flow of one purchase: beyond the cap.
+        let t = t2c_of(&[pack(1, 1), pack(2, 1), pack(3, 1)], |_| false, &[]);
+        assert!(
+            t.hits.iter().any(|h| h.b.contains("beyond its cap of 2")),
+            "{:?}",
+            t.hits
+        );
+        // Another purchase after one that got an invoice (result 1) is still a hit.
+        let mut invoiced = pack(1, 1);
+        invoiced.ints = vec![("base_week", P), ("result", 1)];
+        let t = t2c_of(&[invoiced, pack(4, 4)], |_| false, &[]);
+        assert_eq!(t.hits.len(), 1, "{:?}", t.hits);
     }
 }

@@ -160,6 +160,39 @@ class TrialStepsTest {
     }
 
     @Test
+    fun anIssuerThatAlwaysAnswersWrongPeriodGetsAtMostTwoRevocationCalls(): Unit = World().use { w ->
+        w.identity.exists = true
+        w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)
+        assertTrue(w.engine.createInvite((Grid.day(T0) + 14).toInt()) != null)
+        assertTrue(w.engine.revokeInvite(0))
+        w.issuer.trialResult = TorIssuerTransport.TRIAL_WRONG_PERIOD
+        repeat(100) {
+            w.quiet()
+            w.clock.now += 2 * Grid.HOUR
+        }
+        val calls = w.issuer.named("redeemInvite")
+        assertEquals("the planned call and one retry whatever the issuer answers (§19.14, §19.23 point 2)", 2, calls.size)
+        assertEquals("the same invite token", 1, calls.map { it.args[0] }.toSet().size)
+        val gap = calls[1].at - calls[0].at
+        assertTrue("the retry waits for its time drawn with the first send", gap >= 20 * Grid.HOUR && gap < 30 * Grid.HOUR + 60)
+        assertTrue(w.purchases().all { it.state == PurchaseStore.FAILED })
+        assertEquals(ActivationState.ACTIVE, w.engine.activationState())
+    }
+
+    @Test
+    fun anOnboardingTrialKeepsItsFortyAttemptsAcrossWrongPeriodAnswers(): Unit = World().use { w ->
+        w.issuer.trialResult = TorIssuerTransport.TRIAL_WRONG_PERIOD
+        w.engine.activate(w.inviteText())
+        repeat(60) { w.engine.onForeground() }
+        val calls = w.issuer.named("redeemInvite")
+        assertEquals("40 foreground attempts in all, re-prepared or not (a declared L3 sample)", RetryPolicy.ONBOARDING_ATTEMPTS, calls.size)
+        assertEquals("the same invite token", 1, calls.map { it.args[0] }.toSet().size)
+        assertEquals(ActivationState.FAILED, w.engine.activationState())
+        assertFalse("it fails closed", w.identity.exists)
+        assertNull(w.tx { w.ctx().invites.dropTarget(it) })
+    }
+
+    @Test
     fun aRevocationIsQuietRunWorkAndKeepsTheTokensAsSpares(): Unit = World().use { w ->
         w.identity.exists = true
         w.addTokens("invite", Grid.inviteEpoch(WEEK0), 1)

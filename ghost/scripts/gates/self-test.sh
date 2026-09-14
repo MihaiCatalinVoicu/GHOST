@@ -69,8 +69,8 @@ t2r_case fail missing-e30.txt gate "rejects a report without the E30 redeem-hold
 t2r_case fail vacuous-e30.txt gate "rejects an E30 line that measured no held session"
 t2r_case fail vacuous-reads.txt gate "rejects an NI-2 line whose twin moved no drop read by an hour"
 t2r_case fail no-such-report.txt gate "rejects a missing report"
-t2r_case pass mutants-ok.txt mutants "accepts 24 detected mutants"
-t2r_case fail mutants-short.txt mutants "rejects 23 detected mutants"
+t2r_case pass mutants-ok.txt mutants "accepts 25 detected mutants"
+t2r_case fail mutants-short.txt mutants "rejects 24 detected mutants"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"
@@ -131,11 +131,21 @@ out="$(GHOST_ROOT="$HARNESS/negative-issuer-output" bash "$DIR/issuer-output.sh"
 for want in service/src/service.rs:4: service/src/service.rs:5: service/src/service.rs:6: \
   service/src/service.rs:7: service/src/service.rs:8: service/src/service.rs:9: \
   service/src/service.rs:10: service/src/status.rs:4: service/src/store.rs:4: service/src/payout.rs:4: \
-  ops/src/report.rs:4: ops/src/output.rs:4: ops/src/keygen.rs:3: api/src/lib.rs:3:; do
+  ops/src/report.rs:4: ops/src/output.rs:4: ops/src/keygen.rs:3: api/src/lib.rs:3: \
+  service/src/scanner.rs:3: service/src/scanner.rs:4: service/src/scanner.rs:5: \
+  service/src/scanner.rs:8: service/src/scanner.rs:9:; do
   if printf '%s\n' "$out" | grep -qF "issuer/crates/$want"; then
     echo "self-test ok: issuer-output reports $want"
   else
     echo "SELF-TEST FAIL: issuer-output does not report $want" >&2; rc=1
+  fi
+done
+# S12 review GATE-ISSUER-OUTPUT-BRACE: a read-only brace import is not a write.
+for allowed in service/src/scanner.rs:10: service/src/scanner.rs:11:; do
+  if printf '%s\n' "$out" | grep -qF "issuer/crates/$allowed"; then
+    echo "SELF-TEST FAIL: issuer-output reports the read-only import $allowed" >&2; rc=1
+  else
+    echo "self-test ok: issuer-output allows the read-only import $allowed"
   fi
 done
 for allowed in service/src/status.rs:3: service/src/store.rs:3: service/src/payout.rs:3: \

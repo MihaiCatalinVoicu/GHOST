@@ -19,12 +19,17 @@
 //! batch its total, so the cumulative payouts survive the deletion of batch files. The salt is
 //! drawn when the ledger is created.
 //!
-//! **Rules.** A batch id and a claim are accepted once (§19.7 point 2): an honest issuer never
-//! repeats them, so a repeat refuses the whole batch. A payout address is paid once, but a claimant
-//! chooses it, so a repeat refuses only its entry (S6 review): an entry whose address an earlier
-//! entry had, in any batch or earlier in its own, is recorded `refused`, is never built or paid,
-//! and every other entry of its batch is paid; on replay an entry is `refused` exactly when its
-//! address is repeated. The cumulative payouts are the batch totals less their refused entries.
+//! **Rules.** A batch id is accepted once (§19.7 point 2): an honest issuer never repeats it, so a
+//! repeat refuses the whole batch, and so does a claim id twice in one batch (the issuer's claim
+//! table is keyed by it). A claim id and a payout address are paid once, but a claimant chooses
+//! both (the client draws the claim id, and the issuer forgets it a week after the batch is
+//! acknowledged), so a repeat refuses only its entry (S6 review for the address; S12 review
+//! MONEY-CLAIMID-1, design §19.27, for the claim): an entry whose claim an entry of an earlier
+//! batch had, or whose address an earlier entry had (in any batch or earlier in its own, not
+//! counting entries refused for their claim, whose addresses were never paid), is recorded
+//! `refused`, is never built or paid, and every other entry of its batch is paid; on replay an
+//! entry is `refused` exactly when its claim or its address is repeated so. The cumulative payouts
+//! are the batch totals less their refused entries.
 //! The entries of a batch follow its batch record in order, and their amounts sum to its total.
 //! Per entry `accepted → built → signed → submitted → confirmed` (§19.7 point 1): an entry is
 //! built only while no entry of the ledger is built or signed and not yet submitted, so entry k + 1
@@ -114,6 +119,9 @@ pub struct LedgerEntry {
     pub state: EntryState,
     pub txid: Option<[u8; 32]>,
     pub images: Vec<[u8; 32]>,
+    /// Refused because an entry of an earlier batch had its claim (§19.27): its address was never
+    /// paid, so it does not count as seen.
+    pub repeated_claim: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,12 +411,25 @@ impl Ledger {
                 amount,
                 refused,
             } => {
-                if self.entries().any(|(_, _, e)| e.claim == *claim) {
+                // The same claim twice in one batch: only a faulty issuer writes that.
+                if self
+                    .batches
+                    .get(id)
+                    .ok_or("sequence")?
+                    .entries
+                    .iter()
+                    .any(|e| e.claim == *claim)
+                {
                     return Err("claim-seen");
                 }
-                let repeated = self.entries().any(|(_, _, e)| e.address == *address);
-                if repeated != *refused {
-                    return Err(if repeated {
+                let claim_repeated = self.entries().any(|(_, _, e)| e.claim == *claim);
+                let address_repeated = self
+                    .entries()
+                    .any(|(_, _, e)| !e.repeated_claim && e.address == *address);
+                if (claim_repeated || address_repeated) != *refused {
+                    return Err(if claim_repeated {
+                        "claim-repeated"
+                    } else if address_repeated {
                         "address-repeated"
                     } else {
                         "not-repeated"
@@ -429,6 +450,7 @@ impl Ledger {
                     },
                     txid: None,
                     images: Vec::new(),
+                    repeated_claim: claim_repeated,
                 });
                 if batch.complete() {
                     let sum = batch
@@ -553,10 +575,16 @@ impl Ledger {
         Ok(text)
     }
 
-    /// `payout-check`: the batch and its entries (§9.5 step 2), each entry whose payout address
-    /// the ledger or an earlier entry of the batch holds recorded refused.
+    /// `payout-check`: the batch and its entries (§9.5 step 2), each entry whose claim an earlier
+    /// batch holds, or whose payout address the ledger or an earlier entry of the batch holds
+    /// (entries refused for their claim not counted), recorded refused (§19.27).
     pub fn accept(&mut self, file: &BatchFile) -> Result<String, LedgerError> {
-        let mut seen: BTreeSet<[u8; 32]> = self.entries().map(|(_, _, e)| e.address).collect();
+        let mut seen: BTreeSet<[u8; 32]> = self
+            .entries()
+            .filter(|(_, _, e)| !e.repeated_claim)
+            .map(|(_, _, e)| e.address)
+            .collect();
+        let earlier: BTreeSet<[u8; 32]> = self.entries().map(|(_, _, e)| e.claim).collect();
         let mut records = vec![Record::Batch {
             id: file.batch_id,
             week: file.week,
@@ -565,13 +593,16 @@ impl Ledger {
         }];
         for (k, e) in file.entries.iter().enumerate() {
             let address = self.address_hash(e.address_text());
+            let claim = self.claim_hash(&e.claim_id);
+            // A claim of an earlier batch is refused before its address is counted.
+            let refused = earlier.contains(&claim) || !seen.insert(address);
             records.push(Record::Entry {
                 id: file.batch_id,
                 k,
-                claim: self.claim_hash(&e.claim_id),
+                claim,
                 address,
                 amount: e.amount,
-                refused: !seen.insert(address),
+                refused,
             });
         }
         self.commit(&records)
@@ -723,8 +754,11 @@ mod tests {
         let mut l = Ledger::new([9; 32]);
         l.accept(&file(1, 2, 0)).unwrap();
         assert_eq!(l.accept(&file(1, 1, 5)).unwrap_err().reason, "batch-seen");
-        assert_eq!(l.accept(&file(2, 1, 1)).unwrap_err().reason, "claim-seen");
         assert_eq!(l.paid_so_far(), 20, "a refused batch changes nothing");
+        // A claim of batch 1 again (with its address): its entry is refused, the batch taken.
+        l.accept(&file(2, 1, 1)).unwrap();
+        assert_eq!(l.batch(&[2; 16]).unwrap().refused(), 1);
+        assert_eq!(l.paid_so_far(), 20, "a refused entry changes nothing");
         // An address of batch 1, then a new one twice: the repeats are refused, the batch taken.
         let mut repeated = file(3, 3, 5);
         repeated.entries[0].address = [b'a'; 95];
@@ -751,6 +785,58 @@ mod tests {
                 "a refused entry never moves"
             );
         }
+    }
+
+    /// S12 review MONEY-CLAIMID-1 (§19.27): the claim id is claimant input (the client draws it)
+    /// and the issuer forgets it a week after the batch is acknowledged, so a claim id paid in an
+    /// earlier batch refuses its own entry, never the batch: every other entry is paid, the
+    /// refused one is never built nor counted, and its address does not count as seen. A claim
+    /// repeated inside one batch still refuses the batch (the issuer's claim table is keyed by it,
+    /// so only a faulty issuer writes that). The reason replays from the marker.
+    #[test]
+    fn a_claim_paid_in_an_earlier_batch_refuses_its_entry_and_the_batch_is_paid() {
+        let mut l = Ledger::new([9; 32]);
+        let mut text = l.accept(&file(1, 2, 0)).unwrap();
+        // Batch 2: the claim id of batch 1's first entry (a new address), then a new claim.
+        let mut again = file(2, 2, 5);
+        again.entries[0].claim_id = [0; 16];
+        text += &l.accept(&again).unwrap();
+        let b = l.batch(&[2; 16]).unwrap();
+        let states: Vec<EntryState> = b.entries.iter().map(|e| e.state).collect();
+        assert_eq!(states, [EntryState::Refused, EntryState::Accepted]);
+        assert_eq!((b.refused(), b.payable()), (1, 10));
+        assert_eq!(l.paid_so_far(), 30, "the refused claim is not a payout");
+        assert_eq!(
+            l.transition(&[2; 16], 0, Transition::Built, None, Vec::new())
+                .unwrap_err()
+                .reason,
+            "state"
+        );
+        // Its address was not paid, so a later claim to it is paid.
+        let mut to_address = file(3, 1, 12);
+        to_address.entries[0].address = again.entries[0].address;
+        text += &l.accept(&to_address).unwrap();
+        assert_eq!(
+            l.batch(&[3; 16]).unwrap().entries[0].state,
+            EntryState::Accepted
+        );
+        assert_eq!(replay(&l, &text), l);
+        let unmarked = text.replacen(" refused", "", 1);
+        assert_eq!(
+            Ledger::parse(&format!("{}{unmarked}", l.header()))
+                .unwrap_err()
+                .reason,
+            "claim-repeated"
+        );
+        // A batch whose only entry repeats an earlier claim is taken and acknowledged at once.
+        let mut only = file(4, 1, 20);
+        only.entries[0].claim_id = [1; 16];
+        l.accept(&only).unwrap();
+        l.ack(&[4; 16]).unwrap();
+        // The same claim twice in one batch: the batch is refused.
+        let mut twice = file(5, 2, 21);
+        twice.entries[1].claim_id = twice.entries[0].claim_id;
+        assert_eq!(l.accept(&twice).unwrap_err().reason, "claim-seen");
     }
 
     #[test]

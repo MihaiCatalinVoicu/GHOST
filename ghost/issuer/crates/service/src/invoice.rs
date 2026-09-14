@@ -6,8 +6,8 @@
 //!             scanner: seen > 0             scanner: credited >= amount        BlindSign committed
 //!   CREATED ─────────────────────► SEEN ─────────────────────────► CONFIRMED ─────────────────► ISSUED
 //!      │ (amount 0: created CONFIRMED)  ▲  reorg: credited < amount    │                            │
-//!      │                                └──────────────────────────────┘  unissued 30 d: purge      │ +7 d
-//!      │ synced ∧ wallet_height ≥ grace_height + C ∧ credited < amount (∧ no timely reorg pending)   ▼
+//!      │                                └──────────────────────────────┘  unissued 30 d: purge      │ max(+7 d,
+//!      │ synced ∧ wallet_height ≥ grace_height + C ∧ credited < amount (∧ no timely reorg pending)   ▼ confirmed + 30 d)
 //!      └──────────────────────────────► EXPIRED ──(+7 d)──► purged                               purged
 //! ```
 //!
@@ -147,10 +147,21 @@ pub fn recompute(
 
 /// True when the invoice is due for purge at wallet height `wallet` (§5.4 purge row). Heights of
 /// 0 are not stamped yet and never purge.
+///
+/// An ISSUED invoice is kept at least as long as a CONFIRMED-unissued one, until
+/// `max(issued + 5 040, confirmed + 21 600)` (§19.27, S12 review MONEY-RESERVE-1): the client's
+/// last `BlindSign` attempt comes 20–22 days after receipt, so a pack first signed at the attempt
+/// of days 7–8 whose answer was lost is still re-served then (MS-6). The key bound of §19.1 rule 1
+/// is unchanged: issuance precedes `confirmed + 21 600`, so the invoice still goes by
+/// `confirmed + 26 640`.
 pub fn purge_due(row: &InvoiceRow, wallet: u64) -> bool {
     match row.state {
         InvoiceState::Issued => {
-            row.issued_height > 0 && wallet >= row.issued_height.saturating_add(PURGE_AFTER_BLOCKS)
+            let kept = row
+                .issued_height
+                .saturating_add(PURGE_AFTER_BLOCKS)
+                .max(row.confirmed_height.saturating_add(UNISSUED_KEEP_BLOCKS));
+            row.issued_height > 0 && wallet >= kept
         }
         InvoiceState::Expired => wallet >= row.purge_height,
         InvoiceState::Confirmed => {
@@ -204,4 +215,49 @@ pub fn layout_keys(base_week: u64, pay_with: PayWith) -> Vec<(Kind, u64)> {
         keys.push((Kind::Credit, credit_epoch(base_week)));
     }
     keys
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn issued(confirmed_height: u64, issued_height: u64) -> InvoiceRow {
+        InvoiceRow {
+            state: InvoiceState::Issued,
+            pay_with: PayWith::Monero,
+            minor: 1,
+            amount: 1,
+            claim_hash: [1; 32],
+            request_digest: [2; 32],
+            base_week: 2960,
+            es_seq: 1,
+            created_height: 900,
+            seen_deadline: 900,
+            grace_height: 900,
+            confirmed_height,
+            credited: 1,
+            seen: 0,
+            issued_digest: Some([3; 32]),
+            issued_height,
+            purge_height: 0,
+            subaddress: [b'5'; crate::store::ADDRESS_LEN],
+        }
+    }
+
+    /// §19.27 (MONEY-RESERVE-1): an ISSUED invoice lives until max(issued + 5 040,
+    /// confirmed + 21 600).
+    #[test]
+    fn an_issued_invoice_is_kept_as_long_as_an_unissued_one() {
+        // Signed a week after confirmation: kept past issuance + 5 040, until confirmation + 21 600.
+        let row = issued(1_000, 1_000 + 5_040);
+        assert!(!purge_due(&row, 1_000 + 2 * 5_040));
+        assert!(!purge_due(&row, 1_000 + 21_599));
+        assert!(purge_due(&row, 1_000 + 21_600));
+        // Signed on the last day of the unissued window: issuance + 5 040 is the later bound.
+        let late = issued(1_000, 1_000 + 21_000);
+        assert!(!purge_due(&late, 1_000 + 21_600));
+        assert!(purge_due(&late, 1_000 + 21_000 + 5_040));
+        // Not stamped yet: never purged.
+        assert!(!purge_due(&issued(1_000, 0), u64::MAX));
+    }
 }

@@ -239,7 +239,9 @@ internal class ModelIssuer(
     }
 
     private fun purgeDue(inv: Invoice): Boolean = when (inv.state) {
-        State.ISSUED -> inv.issuedHeight > 0 && blocks >= inv.issuedHeight + PURGE_AFTER_BLOCKS
+        // Kept at least as long as a CONFIRMED-unissued invoice (design §19.27, MONEY-RESERVE-1).
+        State.ISSUED -> inv.issuedHeight > 0 &&
+            blocks >= maxOf(inv.issuedHeight + PURGE_AFTER_BLOCKS, inv.confirmedHeight + UNISSUED_KEEP_BLOCKS)
         State.EXPIRED -> blocks >= inv.purgeHeight
         State.CONFIRMED -> inv.confirmedHeight > 0 && blocks >= inv.confirmedHeight + UNISSUED_KEEP_BLOCKS
         else -> false

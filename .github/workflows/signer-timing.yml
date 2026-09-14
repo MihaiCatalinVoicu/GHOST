@@ -1,0 +1,62 @@
+name: signer-timing
+
+# Timing evidence for the issuer's blind signer (Phase 8 design §2.8 point 6, §13.7, §19.27; S12
+# review CR-CT-1): the dudect-style Welch t-test of ghost/issuer/crates/service/tests/signer_timing.rs
+# (10^5 samples of CheckedSigner<ReferenceSigner>::blind_sign, a fixed blinded value against random
+# ones; |t| > 4.5 fails), in the release profile on a fresh runner. Not a gate: nothing requires this
+# workflow, and a failure opens an issue (a noisy runner can fail it too, so the issue is where a
+# human reruns and reads the numbers). ADR-22 and the RUSTSEC-2023-0071 ignore reason in deny.toml
+# cite this evidence among the §2.8 mitigations.
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag);
+# Rust builds use --locked.
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  signer-timing:
+    name: signer timing (Welch t-test, fixed vs random blinded inputs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+          key: signer-timing
+      - name: install pinned protoc (tonic-prost-build compiles protocol/issuer/v1)
+        run: |
+          bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+      - name: build the timing test (release)
+        run: cargo test -p ghost-issuer --release --locked --test signer_timing --no-run
+      - name: Welch t-test (10^5 samples)
+        run: |
+          set -o pipefail
+          cargo test -p ghost-issuer --release --locked --test signer_timing -- --ignored --exact \
+            blind_sign_time_does_not_depend_on_the_blinded_value --nocapture 2>&1 | tee "$RUNNER_TEMP/signer-timing.txt"
+      - name: open an issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$(printf 'The nightly Welch t-test on the issuer blind signer failed (design section 2.8 point 6).\n\nRun: %s\n\n```\n%s\n```\n' \
+            "$RUN_URL" "$(grep -E 'Welch t|samples|above' "$RUNNER_TEMP/signer-timing.txt" 2>/dev/null | head -n 10)")"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "signer-timing: Welch t-test failed ($(date -u +%F))" --body "$body"

@@ -140,7 +140,8 @@ internal class PurchaseSteps(private val c: EngineContext) {
                 )
                 c.memory.clearMalformed(id)
             }
-            TorIssuerTransport.INVOICE_WRONG_PERIOD -> rePrepare(tx, p, now)
+            // The re-prepared flow is this one's retry: once the cap is spent the flow just fails.
+            TorIssuerTransport.INVOICE_WRONG_PERIOD -> if (p.attempt >= RetryPolicy.CALL_ATTEMPTS) failPrepared(tx, p, now) else rePrepare(tx, p, now)
             TorIssuerTransport.INVOICE_CREDITS_SPENT -> {
                 // Nothing consumed: the masked credits are spent elsewhere and deleted, the others released.
                 val sent = c.tokens.reservedCredits(tx, TokenStore.FOR_PURCHASE, id)
@@ -398,7 +399,14 @@ internal class PurchaseSteps(private val c: EngineContext) {
     /**
      * `WRONG_PERIOD` (§5.3): the issuer recorded nothing, so the flow closes as `failed` and, in the same
      * transaction, a new prepared flow starts with a new seed (and claim key) and the current week;
-     * reserved credits return to fresh. A trial keeps its invite token and its scheduling (§8.3).
+     * reserved credits return to fresh. A trial keeps its invite token (§8.3).
+     *
+     * The new flow carries what links it to this one (the invite token, or the covering set of credits,
+     * chosen again the same way), so it is this flow's retry, not a new flow: it inherits the attempt
+     * count and the due time written ahead with the first send (the one retry's pre-drawn time; none for
+     * an onboarding trial, which retries at the next foreground). No issuer answer adds an attempt or
+     * brings a call forward, so the caps of [RetryPolicy] hold whatever the issuer answers (§19.11, §19.23
+     * point 2, E5, E8). The caller checks the cap first: a flow whose attempts are spent only fails.
      */
     fun rePrepare(tx: SyncTransaction, p: PurchaseRow, now: Long) {
         failPrepared(tx, p, now)
@@ -406,11 +414,10 @@ internal class PurchaseSteps(private val c: EngineContext) {
         val pack = p.kind == PurchaseStore.PACK
         val product = if (pack) Layouts.packProduct(p.payWith == PurchaseStore.XMR) else EntitlementCrypto.PRODUCT_TRIAL
         val layout = c.crypto.layout(product, week)
-        val nextDue = if (!pack && p.nextDueMinute != null) Time.floorMinute(now) else null
         c.purchases.insert(
             tx, c.random.bytes(EngineContext.ID_BYTES), p.kind, p.payWith, c.random.bytes(EngineContext.SECRET_BYTES),
             if (pack) c.random.bytes(EngineContext.SECRET_BYTES) else null, if (pack) null else p.inputToken(), week, c.summary.seq,
-            layout.digest(), Time.floorHour(now), nextDue,
+            layout.digest(), Time.floorHour(now), p.nextDueMinute, p.attempt,
         )
     }
 

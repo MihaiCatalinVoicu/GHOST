@@ -663,6 +663,52 @@ mutant_test!(m22_refresh_at_read, {
     );
 });
 
+/// The join search on the small world of an issuer that answers half of the `RequestInvoice` and
+/// `RedeemInvite` calls `WRONG_PERIOD` (a PRF of the request bytes; M23's world, §19.27).
+fn wrong_period_joins(mutant: Mutant) -> Findings {
+    let mut cfg = Config::new(
+        &format!("{mutant:?}-wrong-period"),
+        population::SMALL,
+        SEEDS.1,
+    );
+    cfg.mutant = mutant;
+    cfg.analyze = true;
+    cfg.per_client = true;
+    cfg.liar_wrong_period = 0.5;
+    let out = run(cfg);
+    let mut f = Findings::default();
+    gate::joins(&mut f, &out);
+    f
+}
+
+/// The unmutated world of [`wrong_period_joins`]: every purchase, trial and revocation stays within
+/// its cap of calls while the issuer lies `WRONG_PERIOD`.
+fn wrong_period_control() -> &'static Findings {
+    static C: OnceLock<Findings> = OnceLock::new();
+    C.get_or_init(|| {
+        let f = wrong_period_joins(Mutant::None);
+        println!("control (WRONG_PERIOD liar):\n{}", f.text());
+        f
+    })
+}
+
+mutant_test!(m23_unbounded_re_prepare, {
+    // S12 review P8-PRIV-1/2 (§19.27): the engine before the review started a re-prepared flow's
+    // attempt count at zero, so an issuer answering WRONG_PERIOD made a purchase re-present its
+    // credits (a revocation its invite token) in new flows without bound. J9 caps the calls per
+    // lineage; T2c refuses a re-presentation in a lineage with more flows than its cap.
+    let m = Mutant::M23UnboundedRePrepare;
+    let f = wrong_period_joins(m);
+    detected(
+        &f,
+        wrong_period_control(),
+        "J9",
+        &["RequestInvoice calls in one purchase"],
+        m,
+    );
+    detected(&f, wrong_period_control(), "T2c", &["beyond its cap"], m);
+});
+
 // -------------------------------------------------------------------------------------------------
 // M14: a 2048-bit modulus n = p q with 65537 | p − 1, and its owner's best proof.
 // -------------------------------------------------------------------------------------------------

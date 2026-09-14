@@ -174,7 +174,7 @@ class PurchaseStepsTest {
     }
 
     @Test
-    fun wrongPeriodClosesTheFlowAndStartsAFreshOne(): Unit = World().use { w ->
+    fun wrongPeriodClosesTheFlowAndItsSuccessorIsTheFlowsOneRetry(): Unit = World().use { w ->
         val id = checkNotNull(w.engine.startPurchase(PayWith.XMR)).toByteArray()
         val first = checkNotNull(w.purchase(id)).claimKey()
         w.issuer.invoiceResult = TorIssuerTransport.INVOICE_WRONG_PERIOD
@@ -183,9 +183,35 @@ class PurchaseStepsTest {
         val fresh = w.purchases().single { it.state == PurchaseStore.PREPARED }
         assertFalse(fresh.sent)
         assertFalse(first.contentEquals(fresh.claimKey()))
+        // The successor keeps the attempt count and the retry time drawn with the first send (§19.11,
+        // §19.23 point 2): no issuer answer adds an attempt or brings a call forward.
+        assertEquals(1, fresh.attempt)
+        val retry = checkNotNull(fresh.nextDueMinute)
+        assertTrue(retry >= T0 + 20 * Grid.HOUR && retry <= T0 + 28 * Grid.HOUR + 60)
         w.issuer.invoiceResult = TorIssuerTransport.INVOICE_OK
         w.quiet()
-        assertEquals(PurchaseStore.INVOICED, checkNotNull(w.purchase(fresh.id())).state)
+        assertEquals("not due before its retry time", 1, w.issuer.named("requestInvoice").size)
+        w.nextAttempt(fresh.id())
+        val invoiced = checkNotNull(w.purchase(fresh.id()))
+        assertEquals(PurchaseStore.INVOICED, invoiced.state)
+        assertEquals("the invoice came on the second call: BlindSign starts at its second window (E5)", 1, invoiced.attempt)
+    }
+
+    @Test
+    fun anIssuerThatAlwaysAnswersWrongPeriodGetsAtMostTwoRequestInvoicesPerPack() {
+        for (payWith in listOf(PayWith.CREDITS, PayWith.XMR)) World().use { w ->
+            w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+            w.issuer.invoiceResult = TorIssuerTransport.INVOICE_WRONG_PERIOD
+            checkNotNull(w.engine.startPurchase(payWith))
+            w.quietRuns(100)
+            val requests = w.issuer.named("requestInvoice")
+            assertEquals("$payWith: the planned call and one retry whatever the issuer answers (§19.23 point 2)", 2, requests.size)
+            assertEquals("$payWith: the same credits both times", requests[0].args[1], requests[1].args[1])
+            val gap = requests[1].at - requests[0].at
+            assertTrue("$payWith: the retry waits for its time drawn with the first send", gap >= 20 * Grid.HOUR && gap < 30 * Grid.HOUR + 60)
+            assertTrue("$payWith: the flow failed", w.purchases().none { it.live })
+            assertEquals(10, w.tokenRows("credit").count { it.state == TokenStore.FRESH })
+        }
     }
 
     @Test
@@ -422,5 +448,28 @@ class PurchaseStepsTest {
         assertEquals(10, request.args[1].split(",").size)
         assertEquals(PayWith.CREDITS.name.lowercase(), w.purchases().single().payWith)
         assertNotEquals(0, EntitlementCrypto.PRODUCT_PACK_CREDITS)
+    }
+
+    @Test
+    fun aFailedAutoRenewalPresentsItsCreditsAgainOnlyAWeekLater(): Unit = World().use { w ->
+        w.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+        w.engine.setAutoRenewWithCredits(true)
+        w.issuer.invoiceResult = TorIssuerTransport.INVOICE_WRONG_PERIOD
+        w.quietRuns(7 * 12)
+        val requests = w.issuer.named("requestInvoice")
+        assertEquals("one renewal and its retry, then no automatic renewal while its failure is kept", 2, requests.size)
+        assertEquals(1, requests.map { it.args[1] }.toSet().size)
+        w.quietRuns(3 * 12)
+        val later = w.issuer.named("requestInvoice").drop(2)
+        assertTrue("the next renewal comes, a week after the failure at the earliest", later.isNotEmpty())
+        assertTrue(later.first().at >= (Grid.day(requests[1].at) + PurchaseStore.TERMINAL_RETENTION_DAYS) * Grid.DAY)
+        // A stalling issuer is capped the same way.
+        World().use { v ->
+            v.addTokens("credit", Grid.creditEpoch(WEEK0), 10)
+            v.engine.setAutoRenewWithCredits(true)
+            v.issuer.fail = "timeout"
+            v.quietRuns(7 * 12)
+            assertEquals(2, v.issuer.named("requestInvoice").size)
+        }
     }
 }

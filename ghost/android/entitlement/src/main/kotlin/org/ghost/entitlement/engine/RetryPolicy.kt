@@ -33,7 +33,11 @@ internal enum class Failure {
  *    attempt left, drawn and written ahead with it; then the flow fails. A pack whose invoice came on
  *    the retry starts its `BlindSign` plan at the second window, so a purchase makes at most 6 linked
  *    issuer calls whatever the issuer answers (E5).
- *  - An onboarding trial: retried at each foreground, the user present (§8.3, a declared L3 sample).
+ *  - An onboarding trial: retried at each foreground, the user present (§8.3, a declared L3 sample),
+ *    at most [ONBOARDING_ATTEMPTS] times.
+ * A `WRONG_PERIOD` re-prepare (§5.3, §8.3) is the flow's retry, not a new flow: the new row keeps the
+ * invite token or presents the same credits, so it inherits the attempt count and the pre-drawn retry
+ * time (`PurchaseSteps.rePrepare`), and a flow whose cap is spent fails instead.
  */
 internal object RetryPolicy {
     const val BLIND_SIGN_ATTEMPTS = 5

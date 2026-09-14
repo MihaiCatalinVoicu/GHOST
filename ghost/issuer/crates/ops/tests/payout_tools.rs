@@ -172,19 +172,21 @@ fn payout_check_keeps_the_cumulative_payouts_within_ten_percent_of_the_view() {
         "nothing recorded"
     );
 
-    // A batch id and a claim id are accepted once (an honest issuer never repeats them); a
-    // repeated address refuses its entry only (a_repeated_payout_address_refuses_its_entry_...).
+    // A batch id is accepted once (an honest issuer never repeats it); a repeated claim id or
+    // address refuses its entry only (a_claim_id_paid_in_an_earlier_batch_..., and
+    // a_repeated_payout_address_refuses_its_entry_...): the claimant chooses both.
     assert_refused(
         &check(&first, &view, &ledger, "regtest"),
         Code::PayoutRefused,
         "batch-seen",
     );
     let claim = write_batch(d, "b3.ghpb", &batch(3, &[(1, ADDRESSES[1])], 0));
-    assert_refused(
+    let line = ok(
         &check(&claim, &view, &ledger, "regtest"),
-        Code::PayoutRefused,
-        "claim-seen",
+        Code::PayoutAccepted,
     );
+    assert_eq!(num(&line, Field::Refused), Some(1));
+    assert_eq!(num(&line, Field::PaidSoFar), Some(PRICE));
 
     // More revenue measured by the view: the second batch now fits.
     let more = view_dump(d, "view2.json", &[(20 * PRICE, 1, 20, 100)]);
@@ -279,6 +281,76 @@ fn a_repeated_payout_address_refuses_its_entry_and_the_batch_is_paid() {
             ([10; 16], EntryOutcome::Refused),
             ([11; 16], EntryOutcome::Paid),
             ([12; 16], EntryOutcome::Refused)
+        ]
+    );
+}
+
+/// S12 review MONEY-CLAIMID-1 (§19.27): the client draws the claim id and the issuer forgets it a
+/// week after the acknowledgement, so a claim id paid in batch 1 can come back in batch 2 (with
+/// fresh credits). It refuses its own entry, never the batch: batch 2 is accepted, its other claim
+/// is paid, and the acknowledgement names the repeated claim refused, so the issuer closes it
+/// unpaid and the batch closes (before, the whole batch was refused, could not be acknowledged, and
+/// its other claims stayed batched with their credits spent).
+#[test]
+fn a_claim_id_paid_in_an_earlier_batch_refuses_its_entry_and_the_batch_is_paid() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let ledger = d.join("ledger.txt");
+    let view = view_dump(d, "view.json", &[(100 * PRICE, 1, 20, 100)]);
+    let first = write_batch(d, "b1.ghpb", &batch(1, &[(PRICE / 10, ADDRESSES[0])], 0));
+    ok(
+        &check(&first, &view, &ledger, "regtest"),
+        Code::PayoutAccepted,
+    );
+    // Claim ids 0 (batch 1's, at a new address) and 1.
+    let entries = [(PRICE / 10, ADDRESSES[1]), (PRICE / 10, ADDRESSES[2])];
+    let second = write_batch(d, "b2.ghpb", &batch(2, &entries, 0));
+    let line = ok(
+        &check(&second, &view, &ledger, "regtest"),
+        Code::PayoutAccepted,
+    );
+    assert_eq!(num(&line, Field::Refused), Some(1));
+    assert_eq!(num(&line, Field::PaidSoFar), Some(PRICE / 10));
+    assert_refused(
+        &entry_in(&ledger, 2, 0, "built", &[]),
+        Code::PayoutRefused,
+        "state",
+    );
+    let tx = arg(&raw_tx(d, "tx.hex", &[[7; 32]]));
+    let txid = hex(&[0xc2; 32]);
+    ok(&entry_in(&ledger, 2, 1, "built", &[]), Code::EntryState);
+    ok(
+        &entry_in(&ledger, 2, 1, "signed", &["--raw-tx", &tx, "--txid", &txid]),
+        Code::EntryState,
+    );
+    ok(&entry_in(&ledger, 2, 1, "submitted", &[]), Code::EntryState);
+    let t = arg(&transfer(d, "t.json", &[0xc2; 32], 10));
+    ok(
+        &entry_in(&ledger, 2, 1, "confirmed", &["--transfer", &t]),
+        Code::EntryState,
+    );
+    let out = d.join("ack.ghpa");
+    let line = ok(
+        &run(&[
+            "payout-ack",
+            "--ledger",
+            &arg(&ledger),
+            "--batch",
+            &arg(&second),
+            "--ops-public-key",
+            &hex(&ops().public()),
+            "--out",
+            &arg(&out),
+        ]),
+        Code::AckWritten,
+    );
+    assert_eq!(num(&line, Field::Entries), Some(2));
+    let ack = AckFile::parse(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(
+        ack.entries,
+        vec![
+            ([0; 16], EntryOutcome::Refused),
+            ([1; 16], EntryOutcome::Paid)
         ]
     );
 }

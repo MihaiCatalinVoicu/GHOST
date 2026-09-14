@@ -564,6 +564,33 @@ fn find_threshold_minutes(command: &str) -> u64 {
     panic!("no -mmin or -mtime: {command}")
 }
 
+/// S12 review OPS-B1-RETENTION-MAINT (§19.27): both deletion lines keep the newest snapshot. A
+/// maintenance window (M2, I1) makes `snapshot.sh` take none while the running issuer may keep
+/// deciding transitions; a window longer than the daily retention would otherwise leave B1 nothing
+/// to restore from, and the journal cannot stand in for a snapshot (its prefix was pruned after
+/// the last one, so an empty database refuses the start with a gap).
+#[test]
+fn snapshot_deletion_keeps_the_newest_snapshot() {
+    let lines = cron_lines(&section(&runbook(), "## 6. B1"));
+    let newest = r#"! -name "$(cd /srv/ghost-issuer/snapshots && ls -t issuer-*.redb 2>/dev/null | head -n 1)""#;
+    let deletions: Vec<&CronLine> = lines
+        .iter()
+        .filter(|l| l.command.contains("find ") && l.command.contains("-delete"))
+        .collect();
+    assert_eq!(
+        deletions.len(),
+        2,
+        "the hourly and the daily retention line"
+    );
+    for l in deletions {
+        assert!(
+            l.command.contains(newest),
+            "a deletion line that can remove the newest snapshot: {}",
+            l.command
+        );
+    }
+}
+
 #[test]
 fn no_snapshot_outlives_its_retention() {
     let lines = cron_lines(&section(&runbook(), "## 6. B1"));

@@ -510,9 +510,12 @@ internal class ScenarioLapsed : EntScenario("Q29/lapsed") {
 /**
  * E-I `WRONG_PERIOD` re-prepare: on Sunday evening the device clock runs 7 hours ahead (Monday), so the
  * base week of the first `RequestInvoice` is outside the issuer's ±4 h tolerance; the issuer records
- * nothing, the engine closes the flow as failed and prepares a new one in the same transaction (its
- * creation hour on the device clock of that moment, so it is due only from then); the clock is
- * corrected, and the new flow sends its unsent base week, is invoiced, paid and signed.
+ * nothing, the engine closes the flow as failed and prepares a new one in the same transaction. The new
+ * flow is the first one's retry (§19.23 point 2): it keeps the attempt count and the retry time drawn
+ * with the first send, 20–28 h later, so the quiet run half an hour on makes no call. The clock is
+ * corrected meanwhile; at its retry time the new flow sends its unsent base week, is invoiced (its
+ * `BlindSign` plan from the second window, E5), paid and signed; the user writes in the app once the
+ * tokens are eligible (the activation slot after the 139 h finalization lies in [160 h, 166 h)).
  */
 internal open class ScenarioEI : EntScenario("E-I") {
     override fun build(w: World) {
@@ -523,12 +526,16 @@ internal open class ScenarioEI : EntScenario("E-I") {
         w.quietRunAt(58 * HOUR + 5 * MINUTE)
         w.at(58 * HOUR + 30 * MINUTE, "the device clock is corrected") { w.clock.deviceOffsetSeconds = 0 }
         w.quietRunAt(59 * HOUR)
-        w.quietRunAt(65 * HOUR + 30 * MINUTE)
-        w.quietRunAt(66 * HOUR + 30 * MINUTE)
-        w.keepPaying(67 * HOUR)
-        w.quietRunAt(71 * HOUR + 30 * MINUTE)
-        w.foreground(e.c, 95 * HOUR, 95 * HOUR + 15 * MINUTE)
-        w.at(95 * HOUR + MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
-        w.endMillis = 96 * HOUR
+        // From the first moment an invoice can exist: a crash before the first send leaves the flow
+        // unsent, so the quiet run at 59 h sends it with the corrected clock and it is invoiced then.
+        w.keepPaying(59 * HOUR + 30 * MINUTE)
+        w.quietRunAt(86 * HOUR + 30 * MINUTE)
+        w.quietRunAt(139 * HOUR)
+        w.foreground(e.c, 166 * HOUR + 30 * MINUTE, 166 * HOUR + 45 * MINUTE)
+        w.at(166 * HOUR + 31 * MINUTE, "enqueue op1") { e.c.enqueue("op1", ns) }
+        // The WRONG_PERIOD spent the flow's first attempt, so a crash that loses the successor's answer
+        // ends the flow with its cap spent (J9, §19.23 point 2): the user then buys again, as in E-A.
+        w.keepBuying(166 * HOUR + 32 * MINUTE, PayWith.XMR)
+        w.endMillis = 167 * HOUR
     }
 }

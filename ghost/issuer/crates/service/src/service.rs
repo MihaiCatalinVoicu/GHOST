@@ -65,6 +65,9 @@ pub const POOL_TARGET: u32 = 32;
 /// Global `RequestInvoice` token bucket: 2 per second, burst 40 (§5.9).
 pub const RATE_PER_SEC: u64 = 2;
 pub const RATE_BURST: u64 = 40;
+/// New `RefreshCredit`s of a credit epoch beyond its honest maximum (the XMR packs of the epochs
+/// around it) that the issuer still accepts (§19.27, S12 review CR-RF-1).
+pub const REFRESH_BUDGET_FLOOR: u64 = 64;
 
 const REQUEST_INVOICE_DOMAIN: &[u8] = b"ghost/v1/request-invoice";
 const CLAIM_PAYOUT_DOMAIN: &[u8] = b"ghost/v1/claim-payout";
@@ -174,6 +177,8 @@ pub struct IssuerParams {
     pub pool_target: u32,
     pub rate_per_sec: u64,
     pub rate_burst: u64,
+    /// The floor of every credit epoch's refresh budget ([`REFRESH_BUDGET_FLOOR`], §19.27).
+    pub refresh_floor: u64,
 }
 
 impl Default for IssuerParams {
@@ -183,6 +188,7 @@ impl Default for IssuerParams {
             pool_target: POOL_TARGET,
             rate_per_sec: RATE_PER_SEC,
             rate_burst: RATE_BURST,
+            refresh_floor: REFRESH_BUDGET_FLOOR,
         }
     }
 }
@@ -282,6 +288,8 @@ pub(crate) struct Volatile {
     pub(crate) sign_faults: u64,
     /// Alarm `PAYOUT_ACKS_REFUSED`: acknowledgement files the last payout run refused.
     pub(crate) payout_acks_refused: u64,
+    /// Alarm `REFRESH_REFUSED`: new refreshes refused because their epoch's budget was spent.
+    pub(crate) refresh_refused: u64,
 }
 
 /// Why a batch of positions could not be signed.

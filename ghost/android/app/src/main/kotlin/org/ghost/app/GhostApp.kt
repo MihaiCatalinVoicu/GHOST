@@ -31,7 +31,10 @@ class GhostApp : Application(), SyncHost {
     private val identity: IdentityManager by lazy { IdentityManager(AndroidKeystoreWrapper(), NoBackupFileSecretStore(this)) }
 
     private val entitlementWiring: EntitlementWiring by lazy {
-        EntitlementWiring(syncController, { syncController.stores }, identity, privacyMode = { syncController.privacyMode })
+        EntitlementWiring(
+            syncController, { syncController.stores }, identity, privacyMode = { syncController.privacyMode },
+            whenStoresOpen = syncController::runWhenStoresOpen,
+        )
     }
 
     /** The entitlement facade for Phase 13 (design §11.2). */
@@ -44,9 +47,10 @@ class GhostApp : Application(), SyncHost {
             ensurePeriodic = { syncController.ensurePeriodic() },
             databaseAvailable = { syncController.onDatabaseAvailable() },
             participant = entitlementWiring.participant,
-            // Read before any session can start (§19.11): the database opened here is the one the
-            // runtime keeps using for the process.
+            // Read on the sync runtime thread before any session can start (§19.11): the database
+            // opened there is the one the runtime keeps using for the process.
             paymentShownAt = { database.open(DatabaseOpener.Purpose.FOREGROUND)?.let(EntitlementWiring::paymentShownEpochSeconds) },
+            restorePaymentHold = syncController::restorePaymentHoldFrom,
             visible = { entitlementWiring.onVisible() },
             hidden = { entitlementWiring.onHidden() },
         )
