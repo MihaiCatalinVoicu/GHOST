@@ -26,12 +26,12 @@ import org.ghost.sync.store.Time
  * Invites and their drops (design §8.5, §9.3, §19.12).
  *
  * Inviter: `createInvite` reserves and spends one fresh INVITE token, takes the next invite index,
- * draws 3 drop slots spanning at least two operators and the two refresh times of a credit sent to
- * the drop ([RefreshPlan], Q31, §19.26), and registers the drop namespace as listening; `receive`
- * opens drop blobs taken while the drop is listened, and a valid credit of an accepted epoch becomes
- * a `refresh` flow due at the first of those times if read before it, else at the second, cut to the
- * issuer's refresh window; the read moment, which the relays see, never sets the due time. A received
- * credit is never presented before its refresh (§19.8).
+ * draws 3 drop slots spanning at least two operators and the one refresh time of a credit sent to
+ * the drop, 1–14 days after the listening ends ([RefreshPlan], §19.29), and registers the drop
+ * namespace as listening; `receive` opens drop blobs taken while the drop is listened, and a valid
+ * credit becomes a `refresh` flow due at that time, placed inside the issuer's refresh window by the
+ * credit's epoch ([RefreshPlan.due]). Every read precedes that time, so the read moment, which the
+ * relays see, decides nothing. A received credit is never presented before its refresh (§19.8).
  *
  * Invitee: at the pre-drawn `t_drop` (never tied to a purchase, NI-1d) exactly one blob is sealed and
  * enqueued: a fresh own credit if one exists, else a dummy sealed identically. Credits are fungible
@@ -130,7 +130,7 @@ internal class DropSteps(private val c: EngineContext) {
     private fun take(blob: InboundBlob, now: Long) {
         val invite = c.tx { tx -> c.invites.byNamespace(tx, blob.namespace.toByteArray()) }
         // Nothing is taken once the listening ended (§9.3), also before GC closed the invite: every
-        // read precedes the second refresh time (§19.26).
+        // read precedes the refresh time (§19.29).
         if (invite == null || invite.state == InviteStore.CLOSED || invite.listenUntilDay <= Grid.day(now)) {
             consume(blob)
             return
@@ -155,11 +155,12 @@ internal class DropSteps(private val c: EngineContext) {
         } catch (e: NetworkException) {
             return
         }
-        val current = Grid.creditEpoch(week)
-        // Due at a refresh time drawn with the invite (Q31, §19.26): this read only picks which one,
-        // and a credit whose due time would precede the read is dropped, never refreshed at the read.
-        val due = verified?.let { RefreshPlan.due(invite.refreshMinute, invite.lateRefreshMinute, it.epoch, now) }
-        if (verified == null || due == null || verified.epoch !in (current - 1)..current || invite.state != InviteStore.CREATED) {
+        // Due at the invite's refresh time (§19.29): a function of the invite and the credit's epoch,
+        // never of this read; a credit whose refresh window closes before the listening ends is
+        // dropped whatever the read. The issuer refreshes epochs c_now − 1 and c_now only: the due
+        // time lies before c + 2 starts, and a credit of an epoch after the due time's is no credit.
+        val due = verified?.let { RefreshPlan.due(invite.refreshMinute, invite.listenUntilDay, it.epoch) }
+        if (verified == null || due == null || verified.epoch > Grid.creditEpoch(Grid.week(due)) || invite.state != InviteStore.CREATED) {
             c.memory.count(Counters.CREDIT_DROPPED)
             consume(blob)
             return
@@ -203,12 +204,12 @@ internal class DropSteps(private val c: EngineContext) {
         if (expiryDay <= Grid.day(now) || expiryDay > Invite.maxExpiryDay(token.epoch)) return null
         val listenUntil = expiryDay + INVITER_LISTEN_DAYS
         val drop = chooseDropSlots(tx, now, listenUntil) ?: return null
-        // The refresh times of a credit an invitee sends to this drop: drawn now, as the listening
-        // starts, never at a read (Q31, §19.26).
-        val refresh = RefreshPlan.times(expiryDay, listenUntil, c.random)
+        // The refresh time of a credit an invitee sends to this drop: drawn now, as the listening
+        // starts, 1–14 days after it ends, never at a read (§19.29).
+        val refresh = RefreshPlan.time(listenUntil, c.random)
         val invite = Invite.create(token.token(), token.epoch, expiryDay, drop.map { it.first }, keys)
         c.sync.namespaces.register(tx, NamespaceId(keys.dropNamespace), Consumer.IDENTITY, drop.map { it.second }.toSet(), listen = true)
-        c.invites.insert(tx, index, invite.bytes(), keys.dropNamespace, listenUntil, refresh.first, refresh.second)
+        c.invites.insert(tx, index, invite.bytes(), keys.dropNamespace, listenUntil, refresh)
         c.state.takeInviteIndex(tx, index)
         c.tokens.delete(tx, token.nullifier())
         return invite.encode()

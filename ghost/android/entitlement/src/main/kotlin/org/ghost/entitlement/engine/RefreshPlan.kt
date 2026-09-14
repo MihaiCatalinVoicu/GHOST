@@ -4,65 +4,46 @@ import org.ghost.entitlement.port.EntitlementRandom
 import org.ghost.sync.store.Time
 
 /**
- * The refresh time of a received credit (design §19.8, §19.26; Q31): drawn from client randomness
- * when the inviter creates the invite and starts listening on its drop, never from the moment a
- * credit is read from the drop, which the relays see.
+ * The refresh time of a received credit (design §19.8, §19.29; Q31 simplified 2026-09-14): one time,
+ * drawn from client randomness when the inviter registers a drop as listened (an invite it creates,
+ * or a drop a restore scans, §8.4), 1–14 days after the drop's listening ends. Nothing is taken from
+ * a drop from its `listen_until_day` on ([DropSteps]), so every read precedes that time, and the
+ * read, which the relays see, decides nothing: the due time is a function of the invite's draw, its
+ * listening end and the credit's epoch only.
  *
- *  - [Times.first]: 1–14 days after the end of the latest drop window an invitee of the invite can
- *    draw (it activates before the expiry day, and `t_drop < start(base + 8)`, §19.12), so an
- *    invitee's credit is normally read before it and waits for it;
- *  - [Times.second]: 1–14 days after the drop's listening ends, so after every read (nothing is
- *    taken from the drop once its listening ended).
- *
- * A credit read at or before the first time is refreshed then, one read after it at the second: the
- * read decides only which of the two pre-drawn times applies. Either is cut at two days before
- * credit epoch `epoch + 2` starts, from when the issuer refuses the refresh (it refreshes `c_now` and
- * `c_now − 1` only, §19.8), so a cut refresh is due at a time set by the credit's epoch alone; a
- * credit whose due time would lie before its read is dropped, never refreshed at the read. Pinned
- * by `entitlement_policy.txt` (`refresh`, `refreshdue`), which the T2 reference policy replays too.
+ * The issuer refreshes a credit of epoch c only until credit epoch c + 2 starts (§19.8); the client
+ * keeps two days of margin ([cut]). A time after the cut is replaced by the same draw placed inside
+ * [listening end, cut] (its fraction of the 1–14-day window). When the cut precedes the listening's
+ * end no time after every read exists, and the credit is dropped (counted), whatever the read: any
+ * earlier time could precede a later read of the same blob, and a refresh at the read is what Q31
+ * excluded. Pinned by `entitlement_policy.txt` (`refresh`, `refreshdue`), which the T2 reference
+ * policy replays too.
  */
 internal object RefreshPlan {
     private const val DELAY_MIN: Long = Grid.DAY
     private const val DELAY_MAX: Long = 14 * Grid.DAY
     private const val CUT_MARGIN: Long = 2 * Grid.DAY
 
-    /** The two refresh times of one invite (minutes, device time). */
-    class Times(val first: Long, val second: Long) {
-        override fun toString(): String = "RefreshPlan.Times"
-    }
+    /** The refresh time of a credit received through a drop listened until UTC day [listenUntilDay]: one draw. */
+    fun time(listenUntilDay: Long, random: EntitlementRandom): Long =
+        Time.ceilMinute(listenUntilDay * Grid.DAY + DELAY_MIN + (random.uniform() * (DELAY_MAX - DELAY_MIN)).toLong())
+
+    /** Two days before credit epoch [epoch] + 2 starts, from when the issuer refuses the refresh (§19.8). */
+    fun cut(epoch: Long): Long = Grid.start(Grid.creditEpochFirstWeek(epoch + 2)) - CUT_MARGIN
 
     /**
-     * The refresh times of an invite usable on the days before UTC day [expiryDay] and listened
-     * until UTC day [listenUntilDay]: the first draw sets [Times.first], the second [Times.second].
+     * The due time of a received credit of credit epoch [epoch] from a drop listened until UTC day
+     * [listenUntilDay] whose refresh time is [at]: [at] when it lies at or before the cut; otherwise the
+     * same draw placed inside [listening end, cut], rounded up to the minute; null when the cut precedes
+     * the listening's end (the credit is dropped). No read time enters.
      */
-    fun times(expiryDay: Long, listenUntilDay: Long, random: EntitlementRandom): Times {
-        val lastDropEnd = Grid.start(Grid.week(expiryDay * Grid.DAY - 1) + TrialSteps.DROP_END_WEEK)
-        val first = draw(lastDropEnd, random.uniform())
-        val second = draw(listenUntilDay * Grid.DAY, random.uniform())
-        return Times(first, second)
-    }
-
-    /**
-     * The refresh times of a drop a restore scans (§8.4), listened until UTC day [listenUntilDay]: its
-     * invite's expiry is unknown, so it has only the second time, 1–14 days after the scan ends, and
-     * [Times.first] is that time too. Every read precedes it, so the read decides nothing, not even the
-     * bit E17 declares for an invite this device created.
-     */
-    fun scanned(listenUntilDay: Long, random: EntitlementRandom): Times {
-        val at = draw(listenUntilDay * Grid.DAY, random.uniform())
-        return Times(at, at)
-    }
-
-    private fun draw(from: Long, u: Double): Long = Time.ceilMinute(from + DELAY_MIN + (u * (DELAY_MAX - DELAY_MIN)).toLong())
-
-    /**
-     * The due time of a received credit of credit epoch [epoch] read from the drop at [readAt]: the
-     * first time if read at or before it, else the second, cut at the issuer's refresh window; null
-     * when that lies before the read (the credit is dropped).
-     */
-    fun due(first: Long, second: Long, epoch: Long, readAt: Long): Long? {
-        val cut = Grid.start(Grid.creditEpochFirstWeek(epoch + 2)) - CUT_MARGIN
-        val due = minOf(if (readAt <= first) first else second, cut)
-        return if (due >= readAt) due else null
+    fun due(at: Long, listenUntilDay: Long, epoch: Long): Long? {
+        val end = listenUntilDay * Grid.DAY
+        val cut = cut(epoch)
+        if (cut < end) return null
+        if (at <= cut) return at
+        val span = DELAY_MAX - DELAY_MIN
+        val drawn = (at - end - DELAY_MIN).coerceIn(0L, span)
+        return Time.ceilMinute(end + Math.floorDiv(drawn * (cut - end), span))
     }
 }

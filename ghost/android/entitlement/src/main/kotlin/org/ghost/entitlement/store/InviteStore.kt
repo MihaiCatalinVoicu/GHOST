@@ -3,7 +3,7 @@ package org.ghost.entitlement.store
 import org.ghost.identity.Invite
 import org.ghost.sync.api.SyncTransaction
 
-/** One `ent_invite` row (inviter side), with the two refresh times drawn at its creation (§19.26). */
+/** One `ent_invite` row (inviter side), with the refresh time drawn at its creation (§19.29). */
 internal class InviteRow(
     val index: Int,
     val state: String,
@@ -11,7 +11,6 @@ internal class InviteRow(
     dropNamespace: ByteArray,
     val listenUntilDay: Long,
     val refreshMinute: Long,
-    val lateRefreshMinute: Long,
 ) {
     private val payloadBytes = payload?.copyOf()
     private val namespaceBytes = dropNamespace.copyOf()
@@ -44,48 +43,48 @@ internal class DropTargetRow(
 }
 
 /**
- * `ent_invite` (invites this identity created, design §8.5, with the two refresh times of a credit
- * sent to the drop, §19.26) and `ent_drop_target` (the drop this identity owes its first XMR-pack
+ * `ent_invite` (invites this identity created, design §8.5, with the refresh time of a credit sent
+ * to the drop, §19.29) and `ent_drop_target` (the drop this identity owes its first XMR-pack
  * credit to, §9.3, §19.12). Guarded transitions; plain INSERT after a read (§19.22 point 4). The
  * payload is dropped when an invite leaves `created`; a `created` row without a payload is a drop a
  * restore scans (§8.4).
  */
 internal class InviteStore {
 
-    /** A new invite; [refreshMinute] and [lateRefreshMinute] are the refresh times of a credit sent to its drop (§19.26). */
-    fun insert(tx: SyncTransaction, index: Int, payload: ByteArray, dropNamespace: ByteArray, listenUntilDay: Long, refreshMinute: Long, lateRefreshMinute: Long) {
+    /** A new invite; [refreshMinute] is the refresh time of a credit sent to its drop (§19.29). */
+    fun insert(tx: SyncTransaction, index: Int, payload: ByteArray, dropNamespace: ByteArray, listenUntilDay: Long, refreshMinute: Long) {
         check(get(tx, index) == null) { "invite index already used" }
         tx.sql.updateExactly(
             1,
-            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute) " +
-                "VALUES (?1, 'created', ?2, ?3, ?4, ?5, ?6)",
-            listOf(index, payload, dropNamespace, listenUntilDay, refreshMinute, lateRefreshMinute),
+            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute) " +
+                "VALUES (?1, 'created', ?2, ?3, ?4, ?5)",
+            listOf(index, payload, dropNamespace, listenUntilDay, refreshMinute),
         )
     }
 
     /**
      * The drop of invite [index], which this identity may have created before a restore (§8.4): its
      * payload is unknown, its namespace re-derived from the root entropy, listened until [listenUntilDay],
-     * with the refresh times of a scanned drop (`RefreshPlan.scanned`, §19.26).
+     * with the refresh time drawn as every drop's (`RefreshPlan.time`, §19.29).
      */
-    fun insertScanned(tx: SyncTransaction, index: Int, dropNamespace: ByteArray, listenUntilDay: Long, refreshMinute: Long, lateRefreshMinute: Long) {
+    fun insertScanned(tx: SyncTransaction, index: Int, dropNamespace: ByteArray, listenUntilDay: Long, refreshMinute: Long) {
         check(get(tx, index) == null) { "invite index already used" }
         tx.sql.updateExactly(
             1,
-            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute) " +
-                "VALUES (?1, 'created', NULL, ?2, ?3, ?4, ?5)",
-            listOf(index, dropNamespace, listenUntilDay, refreshMinute, lateRefreshMinute),
+            "INSERT INTO ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute) " +
+                "VALUES (?1, 'created', NULL, ?2, ?3, ?4)",
+            listOf(index, dropNamespace, listenUntilDay, refreshMinute),
         )
     }
 
     /**
-     * A later restore listens to a scanned drop until its own scan ends, with refresh times drawn after
-     * that end; the drop holds no received credit (it is still `created`), so none was due at the old ones.
+     * A later restore listens to a scanned drop until its own scan ends, with a refresh time drawn after
+     * that end; the drop holds no received credit (it is still `created`), so none was due at the old one.
      */
-    fun extendScanned(tx: SyncTransaction, index: Int, listenUntilDay: Long, refreshMinute: Long, lateRefreshMinute: Long): Int = tx.sql.execUpdate(
-        "UPDATE ent_invite SET listen_until_day = ?2, refresh_minute = ?3, late_refresh_minute = ?4 " +
+    fun extendScanned(tx: SyncTransaction, index: Int, listenUntilDay: Long, refreshMinute: Long): Int = tx.sql.execUpdate(
+        "UPDATE ent_invite SET listen_until_day = ?2, refresh_minute = ?3 " +
             "WHERE invite_index = ?1 AND state = 'created' AND payload IS NULL AND listen_until_day < ?2",
-        listOf(index, listenUntilDay, refreshMinute, lateRefreshMinute),
+        listOf(index, listenUntilDay, refreshMinute),
     )
 
     fun get(tx: SyncTransaction, index: Int): InviteRow? =
@@ -140,7 +139,7 @@ internal class InviteStore {
     fun deleteDropTarget(tx: SyncTransaction): Int = tx.sql.execUpdate("DELETE FROM ent_drop_target WHERE id = 1")
 
     private fun row(it: org.ghost.storage.SqlExecutor.Row) =
-        InviteRow(it.long(0).toInt(), it.string(1), it.blobOrNull(2), it.blob(3), it.long(4), it.long(5), it.long(6))
+        InviteRow(it.long(0).toInt(), it.string(1), it.blobOrNull(2), it.blob(3), it.long(4), it.long(5))
 
     companion object {
         const val CREATED = "created"
@@ -149,7 +148,7 @@ internal class InviteStore {
         const val WAITING = "waiting"
         const val ENQUEUED = "enqueued"
 
-        private const val COLUMNS = "invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute"
+        private const val COLUMNS = "invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute"
     }
 }
 

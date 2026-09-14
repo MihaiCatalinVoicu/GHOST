@@ -382,14 +382,15 @@ internal class ScenarioEG : EntScenario("E-G") {
         val inviteToken = ent.mint(EntitlementCrypto.KIND_INVITE, Grid.inviteEpoch(week))
         val invite = Invite.create(inviteToken, Grid.inviteEpoch(week), Grid.day(now) + 14, listOf(0, 1, 2), mine, seeded("my invite|${w.seed}"))
         val relays = w.relays.take(3)
-        // The invite row as `createInvite` leaves it, with its refresh times set inside the script
-        // (the first on day 12, the second after the listening): the rule that draws them
-        // (`RefreshPlan.times`, weeks after the invite) is pinned by the policy vectors and DropStepsTest.
-        // Day 12 leaves a day for the retry and keeps the finalized row inside its 7 GC days at the end.
+        // The invite row as `createInvite` leaves it, with its refresh time set inside the script (day
+        // 12): the rule that draws it (`RefreshPlan.time`, 1–14 days after the listening ends, §19.29)
+        // is pinned by the policy vectors and DropStepsTest. The credit's epoch is the current one, so
+        // its refresh window lasts months and the credit is due at that time. Day 12 leaves a day for
+        // the retry and keeps the finalized row inside its 7 GC days at the end.
         val listenUntil = Grid.day(now) + 14 + 56
         e.c.tx { tx ->
             ctx.invites.insertDropTarget(tx, inviterKeys.dropNamespace, inviterKeys.drop.publicKey, listOf(0, 1, 2), minute + 3_600, Grid.day(now) + 60)
-            ctx.invites.insert(tx, 0, invite.bytes(), mine.dropNamespace, listenUntil, minute + 12 * Grid.DAY, (listenUntil + 1) * Grid.DAY)
+            ctx.invites.insert(tx, 0, invite.bytes(), mine.dropNamespace, listenUntil, minute + 12 * Grid.DAY)
             ctx.state.takeInviteIndex(tx, 0)
             e.c.stores.namespaces.register(tx, NamespaceId(mine.dropNamespace), Consumer.IDENTITY, relays.map { e.c.id(it) }.toSet(), true)
         }
@@ -401,7 +402,7 @@ internal class ScenarioEG : EntScenario("E-G") {
         w.foreground(e.c, 2 * HOUR, 2 * HOUR + 15 * MINUTE)
         w.foreground(e.c, 9 * HOUR, 9 * HOUR + 15 * MINUTE)
         w.foreground(e.c, 26 * HOUR, 26 * HOUR + 15 * MINUTE)
-        // The received credit is refreshed at its invite's first refresh time, day 12 (§19.26): a quiet
+        // The received credit is refreshed at its invite's refresh time, day 12 (§19.29): a quiet
         // run each day until day 17, so the refresh (and the identical retry a crash may make it take
         // a day later) falls inside the script instead of a quiescence tail of background sessions.
         for (day in 2..REFRESH_DAYS) w.quietRunAt(day * DAY + 10 * MINUTE)
@@ -418,7 +419,7 @@ internal class ScenarioEG : EntScenario("E-G") {
  * redeem lane spends 8 of the device's tokens per slot on read capabilities of the 8 drops at A, B and
  * C (every need is met, so no lane step retries a reservation without a token), the read lane fetches
  * the blob, the engine turns the credit into a refresh flow due at the scanned drop's refresh time,
- * 1–14 days after the scan ends (`RefreshPlan.scanned`, §19.26), a quiet run after the fifth week ends
+ * 1–14 days after the scan ends (`RefreshPlan.time`, §19.29), a quiet run after the fifth week ends
  * the scan (GC closes the drops and forgets it), the refresh runs in one of the quiet runs scripted
  * each day until day 50 (a crash may make it take its identical retry a day later), and a quiet run on
  * day 58 lets GC delete its terminal row. A crash inside the restore ends with the scan owed (a later trusted relay session

@@ -8,9 +8,10 @@
 //! cells (an extra `UNAVAILABLE` on the signing `BlindSign` of a fifth of the purchases, compared
 //! per client before the earlier activation-slot cell) and NI-2 (other token-level randomness and
 //! namespaces, the declared user actions replayed, the relays holding every drop blob of a received
-//! credit back from its reader by hours to days, across the invite's first refresh time where they
-//! can, §19.26); at the small scale NI-3 (relays shift a fifth of the clients' clock and hold the
-//! drop blobs back as NI-2's do) and NI-1d (every invitee buys its first pack two days later);
+//! credit back from its reader by hours to days, §19.26, §19.29; the issuer and wallet views must be
+//! identical as a whole, with no exemption); at the small scale NI-3 (relays shift a fifth of the
+//! clients' clock and hold the drop blobs back as NI-2's do) and NI-1d (every invitee buys its first
+//! pack two days later);
 //! and a lying issuer (every invoice answered `AWAITING_CONFIRMATIONS` until the client's last
 //! attempt) for the second S4 bound.
 //!
@@ -766,51 +767,29 @@ pub fn ni1_cells(f: &mut Findings, a: &Outcome, b: &Outcome, moved: &HashSet<(u3
     );
 }
 
-/// What two worlds' drop reads of received credits show (§19.26, Q31; review T2GAPS-1, T2GAPS-2).
+/// What two worlds' drop reads of received credits show (§19.29; review T2GAPS-1, T2GAPS-2).
 #[derive(Default)]
 struct Reads {
-    /// Per inviter with a credit refreshed at the other pre-drawn time (the declared bit of E17:
-    /// read at or before the invite's first refresh time in one world, after it in the other), the
-    /// true time of the earlier due time: that inviter's issuer calls are compared before it.
-    horizons: HashMap<usize, u64>,
-    /// Credits read in both worlds, those read at another time, those moved by an hour or more,
-    /// and those whose read crossed the first refresh time and so took the other time.
+    /// Credits read in both worlds, those read at another time, and those moved by an hour or more.
     both: usize,
     moved: usize,
     far: usize,
-    crossed: usize,
-    /// Credits whose due times differ other than by the declared bit (a refresh time the read
-    /// set, other pre-drawn times, a read across the cut): the first, readable.
+    /// Credits read in both worlds whose due times differ (or refreshed in one world and dropped in
+    /// the other): a refresh the read decided. The first, readable.
     unexplained: Vec<String>,
 }
 
 /// The fewest drop reads a twin (NI-2, NI-3) must move by an hour or more: a twin whose reads
-/// stay put tests nothing of Q31 (review T2GAPS-2).
+/// stay put tests nothing of the refresh rule (review T2GAPS-2, §19.29).
 pub const FLOOR_READS_MOVED: usize = 1;
 
-/// Whether two reads of one credit differ only by the declared bit: the same invite's two refresh
-/// times and cut in both worlds, one read at or before the first time and due then (or at the cut),
-/// the other after it and due at the second time (or at the cut).
-fn declared_bit(x: &Receipt, y: &Receipt) -> bool {
-    if (x.first, x.second, x.cut) != (y.first, y.second, y.cut) {
-        return false;
-    }
-    let (early, late) = match (x.w <= x.first, y.w <= y.first) {
-        (true, false) => (x, y),
-        (false, true) => (y, x),
-        _ => return false,
-    };
-    early.due == Some(early.first.min(early.cut)) && late.due == Some(late.second.min(late.cut))
-}
-
-/// The drop reads of received credits in two worlds (§19.26, Q31): every twin reads each credit at
-/// its own times (relay activity; the NI-2 and NI-3 twins hold drop blobs back by hours to days),
-/// and a credit's refresh is due at one of two times its invite drew, the read picking only which
-/// (the first if read at or before it, else the second; both cut, and a credit whose due time would
-/// precede its read dropped). Due times that differ in any other way are a refresh time the read
-/// set, and fail the twin whether or not the refresh falls inside the world. A credit read in one
-/// world only gets no exemption: the views decide.
-fn refresh_crossings(a: &Outcome, b: &Outcome) -> Reads {
+/// The drop reads of received credits in two worlds (§19.29): every twin reads each credit at its
+/// own times (relay activity; the NI-2 and NI-3 twins hold drop blobs back by hours to days), and a
+/// credit's refresh is due at the one time its invite drew, placed by the credit's epoch alone. Due
+/// times that differ at all (a credit refreshed in one world and dropped in the other included) are
+/// a refresh the read decided, and fail the twin whether or not the refresh falls inside the world.
+/// A credit read in one world only gets no exemption: the views decide.
+fn refresh_reads(a: &Outcome, b: &Outcome) -> Reads {
     let by_key = |o: &Outcome| -> BTreeMap<(u32, u32), Receipt> {
         o.log
             .receipts
@@ -829,35 +808,37 @@ fn refresh_crossings(a: &Outcome, b: &Outcome) -> Reads {
         if x.t.abs_diff(y.t) >= 3_600 {
             out.far += 1;
         }
-        if x.due == y.due {
-            continue;
-        }
-        if !declared_bit(x, y) {
+        if x.due != y.due {
             out.unexplained.push(format!(
                 "inviter {} credit of invitee {}: read A {} (due {:?}), B {} (due {:?}), refresh times {} and {}, cut {}",
-                key.0, key.1, x.w, x.due, y.w, y.due, x.first, x.second, x.cut
+                key.0, key.1, x.w, x.due, y.w, y.due, x.at, y.at, x.cut
             ));
-            continue;
         }
-        out.crossed += 1;
-        let due = x.due.min(y.due).unwrap_or(0);
-        let skew = a
-            .truth
-            .clients
-            .get(key.0 as usize)
-            .map_or(&[][..], |cl| &cl.skew[..]);
-        let at = true_at_wall(skew, due.max(0) as u64);
-        let e = out.horizons.entry(key.0 as usize).or_insert(u64::MAX);
-        *e = (*e).min(at);
     }
     out
 }
 
-/// NI-2 and NI-3: the issuer view (masked or in full) and the wallet view identical, the drop reads
-/// of received credits at each world's own times (moved by the twin's relays, at least
-/// [`FLOOR_READS_MOVED`] by an hour or more); an inviter whose credit's refresh came from the other
-/// pre-drawn time (a read on the other side of the first) is compared before that refresh, and a
-/// due time that differs otherwise fails the twin.
+/// The first wallet call that differs between two worlds (`per_client` worlds keep the sequence).
+fn first_wallet_diff(a: &[(u64, [u8; 8])], b: &[(u64, [u8; 8])]) -> String {
+    match a.iter().zip(b).position(|(x, y)| x != y) {
+        Some(k) => format!("call {k}: A at {}, B at {}", a[k].0, b[k].0),
+        None if a.len() != b.len() => {
+            let k = a.len().min(b.len());
+            let at = a.get(k).or_else(|| b.get(k)).map_or(0, |x| x.0);
+            format!(
+                "A made {} calls, B {}, the first extra one at {at}",
+                a.len(),
+                b.len()
+            )
+        }
+        None => "the recorded sequences agree (a world without per_client)".to_string(),
+    }
+}
+
+/// NI-2 and NI-3 (§13.4, §19.29): the issuer view (masked or in full) and the wallet view identical
+/// as a whole, with no exemption; the drop reads of received credits at each world's own times
+/// (moved by the twin's relays, at least [`FLOOR_READS_MOVED`] by an hour or more), each credit due
+/// at the time its invite drew in both.
 fn issuer_twin(f: &mut Findings, name: &str, a: &Outcome, b: &Outcome, masked: bool) {
     let (da, db) = (&a.rec.digests, &b.rec.digests);
     let (digest_a, digest_b, by_a, by_b) = if masked {
@@ -875,58 +856,60 @@ fn issuer_twin(f: &mut Findings, name: &str, a: &Outcome, b: &Outcome, masked: b
             &db.issuer_by_client,
         )
     };
-    let r = refresh_crossings(a, b);
+    let r = refresh_reads(a, b);
     let wallet = da.wallet.clone().finalize() == db.wallet.clone().finalize();
     let exact = digest_a.clone().finalize() == digest_b.clone().finalize();
-    let diff = if exact {
-        None
-    } else {
-        per_client_diff_text(
-            by_a,
-            by_b,
-            &r.horizons,
-            &da.issuer_text_by_client,
-            &db.issuer_text_by_client,
-            (&a.truth, &b.truth),
-            (&da.notes_by_client, &db.notes_by_client),
-        )
-    };
     let enough = r.far >= FLOOR_READS_MOVED;
-    // Without a crossing the views must be identical as a whole; with one, every client's calls
-    // before its horizon (the crossing inviters') and all of the others'.
-    let views = exact || (!r.horizons.is_empty() && diff.is_none());
-    let ok = wallet && r.unexplained.is_empty() && enough && views;
+    let ok = exact && wallet && r.unexplained.is_empty() && enough;
     let reads = format!(
-        "{} received credits read in both worlds, {} of them at another time ({} by an hour or more, {} across their first refresh time)",
-        r.both, r.moved, r.far, r.crossed
+        "{} received credits read in both worlds, {} of them at another time ({} by an hour or more)",
+        r.both, r.moved, r.far
     );
+    let what = if masked {
+        "identical modulo blinded and signature bytes"
+    } else {
+        "identical"
+    };
     let detail = if ok {
-        let what = if masked {
-            "identical modulo blinded and signature bytes"
-        } else {
-            "identical"
-        };
         format!(
-            "issuer view ({} calls) {what}{}; wallet view identical; {reads}, each refreshed at a time its invite drew; {} inviters with a credit read on the other side of its first refresh time, compared before its refresh",
-            da.issuer_calls,
-            if exact { "" } else { " before the refreshes the reads moved" },
-            r.horizons.len()
+            "issuer view ({} calls) {what} and wallet view ({} calls) identical, no exemption; {reads}, each due at the time its invite drew",
+            da.issuer_calls, da.wallet_calls
         )
     } else if let Some(u) = r.unexplained.first() {
         format!(
             "refresh due time follows the read ({} credits): {u}; {reads}",
             r.unexplained.len()
         )
-    } else if !wallet {
-        format!("wallet view differs; {reads}")
-    } else if !views {
+    } else if !exact {
+        let diff = per_client_diff_text(
+            by_a,
+            by_b,
+            &HashMap::new(),
+            &da.issuer_text_by_client,
+            &db.issuer_text_by_client,
+            (&a.truth, &b.truth),
+            (&da.notes_by_client, &db.notes_by_client),
+        );
         format!(
-            "issuer view differs: {}; {reads}",
-            diff.unwrap_or_else(|| "in the order of calls".to_string())
+            "issuer view differs{}: {}; {reads}",
+            if wallet {
+                String::new()
+            } else {
+                format!(
+                    " (and the wallet view, {})",
+                    first_wallet_diff(&da.wallet_seq, &db.wallet_seq)
+                )
+            },
+            diff.unwrap_or_else(|| "in the order of calls, or in calls no client made".to_string())
+        )
+    } else if !wallet {
+        format!(
+            "wallet view differs ({}); {reads}",
+            first_wallet_diff(&da.wallet_seq, &db.wallet_seq)
         )
     } else {
         format!(
-            "{reads}: fewer than {FLOOR_READS_MOVED} reads moved by an hour or more, so the twin tested nothing of Q31"
+            "{reads}: fewer than {FLOOR_READS_MOVED} reads moved by an hour or more, so the twin tested nothing of the refresh rule"
         )
     };
     f.check(name, ok, detail);
@@ -1057,14 +1040,13 @@ pub fn ni1_cells_twin(base: &Config, a: &Outcome) -> (Config, HashSet<(u32, u64)
 }
 
 /// The drop holds of a twin (NI-2, NI-3; review T2GAPS-2): from world A's reads of received
-/// credits, the true time until which the twin's relays hold each drop blob back from its reader.
-/// Relays may hold a blob as long as they like (the adversary's power §19.26 point 1 names); the
-/// twin moves every read it can. A read at or before the invite's first refresh time is held until
-/// 1–12 h after it where that changes the due time (the declared bit, so NI-2 and NI-3 exercise the
-/// comparison before the refresh), every other read by 2 h to 3 days. A hold always ends six hours
-/// before the listening ends, the blob expires (30 days after its write), the credit's refresh cut
-/// or the world ends, so the held read still happens and still refreshes: withholding a blob past
-/// those moments suppresses the credit, which is no question of the refresh's timing.
+/// credits, the true time until which the twin's relays hold each drop blob back from its reader,
+/// 2 h to 3 days after A's read. Relays may hold a blob as long as they like; the refresh time does
+/// not depend on the read (§19.29), so the twins must stay identical however far the reads move. A
+/// hold always ends six hours before the listening ends on the reader's clock (from then the blob is
+/// not taken), the blob expires (30 days after its write) or the world ends, so the held read still
+/// happens and is still taken: withholding a blob past those moments suppresses the credit, which is
+/// no question of the refresh's timing.
 pub fn drop_holds(a: &Outcome, te: u64) -> BTreeMap<(u32, u32), u64> {
     const HOUR: u64 = 3_600;
     const DAY: u64 = 86_400;
@@ -1075,11 +1057,8 @@ pub fn drop_holds(a: &Outcome, te: u64) -> BTreeMap<(u32, u32), u64> {
             .clients
             .get(r.inviter as usize)
             .map_or(&[][..], |cl| &cl.skew[..]);
-        let wall = |w: i64| true_at_wall(skew, w.max(0) as u64);
-        let limit = r
-            .until
+        let limit = true_at_wall(skew, r.until)
             .min(r.written + 30 * DAY)
-            .min(wall(r.cut))
             .min(te)
             .saturating_sub(6 * HOUR);
         let mut rng = Rng::new(
@@ -1090,11 +1069,8 @@ pub fn drop_holds(a: &Outcome, te: u64) -> BTreeMap<(u32, u32), u64> {
                 &r.invitee.to_be_bytes(),
             ],
         );
-        let cross = (r.w <= r.first && r.first < r.cut)
-            .then(|| wall(r.first) + rng.range(HOUR, 12 * HOUR))
-            .filter(|&at| at > r.t && at < limit);
-        let at = cross.unwrap_or_else(|| (r.t + rng.range(2 * HOUR, 3 * DAY)).min(limit));
-        if cross.is_some() || at >= r.t + 2 * HOUR {
+        let at = (r.t + rng.range(2 * HOUR, 3 * DAY)).min(limit);
+        if at >= r.t + 2 * HOUR {
             out.insert((r.inviter, r.invitee), at);
         }
     }
@@ -1298,6 +1274,7 @@ pub fn scales() -> (&'static str, Scale, Scale) {
 #[cfg(test)]
 mod tests {
     use ghost_t2_join::model::{ClientKind, ClientTruth, Truth};
+    use sha2::Digest;
 
     use super::super::views::Recorder;
     use super::super::world::{Log, Outcome, Receipt};
@@ -1321,8 +1298,9 @@ mod tests {
         }
     }
 
-    /// A read of the credit invitee 1 sent inviter 0, at true (= device) time `t`.
-    fn read(t: u64, first: i64, due: Option<i64>) -> Receipt {
+    /// A read of the credit invitee 1 sent inviter 0, at true (= device) time `t`, from an invite
+    /// whose refresh time is `at`.
+    fn read(t: u64, at: i64, due: Option<i64>) -> Receipt {
         Receipt {
             inviter: 0,
             invitee: 1,
@@ -1330,8 +1308,7 @@ mod tests {
             w: t as i64,
             written: t - HOUR,
             until: 70 * DAY,
-            first,
-            second: SECOND,
+            at,
             cut: CUT,
             due,
         }
@@ -1388,9 +1365,11 @@ mod tests {
         }
     }
 
-    /// The declared bit (E17): read before the first time in one world, after it in the other.
+    /// §19.29: the refresh has one time and the read decides nothing, so a credit refreshed at
+    /// another time in the twin fails it, also in the shape the retired E17 bit exempted (read
+    /// before the invite's first time in one world, after it in the other).
     #[test]
-    fn a_read_across_the_first_time_is_the_declared_bit() {
+    fn the_retired_declared_bit_fails_the_twins() {
         let a = world(vec![read(
             (FIRST - 2 * HOUR as i64) as u64,
             FIRST,
@@ -1402,18 +1381,81 @@ mod tests {
             Some(SECOND),
         )]);
         let f = verdicts(&a, &b);
-        assert!(!f.failed("NI-2") && !f.failed("NI-3"), "{}", f.text());
-        assert!(
-            f.lines[0].contains("1 across their first refresh time")
-                && f.lines[0].contains("1 inviters with a credit read on the other side"),
-            "{}",
-            f.text()
-        );
+        for name in ["NI-2", "NI-3"] {
+            assert!(f.failed(name), "{name} exempted a read:\n{}", f.text());
+            let line = f.lines.iter().find(|l| l.starts_with(name)).unwrap();
+            assert!(
+                line.contains("refresh due time follows the read"),
+                "{name} failed for another reason: {line}"
+            );
+        }
     }
 
-    /// Two reads hours apart before the first time give the same due time.
+    /// §19.29: no inviter is compared before a horizon any more; the issuer view is compared as a
+    /// whole, so a difference after the retired horizon fails (it passed as the declared bit).
     #[test]
-    fn reads_hours_apart_before_the_first_time_pass() {
+    fn an_issuer_difference_after_the_retired_horizon_fails() {
+        let mut a = world(vec![read(
+            (FIRST - 2 * HOUR as i64) as u64,
+            FIRST,
+            Some(FIRST),
+        )]);
+        let mut b = world(vec![read(
+            (FIRST + 3 * HOUR as i64) as u64,
+            FIRST,
+            Some(SECOND),
+        )]);
+        let late = FIRST as u64 + DAY;
+        for (o, byte) in [(&mut a, 1u8), (&mut b, 2u8)] {
+            let d = &mut o.rec.digests;
+            d.issuer.update([byte]);
+            d.issuer_masked.update([byte]);
+            d.issuer_by_client = vec![vec![(late, [byte; 8])], Vec::new()];
+            d.issuer_masked_by_client = vec![vec![(late, [byte; 8])], Vec::new()];
+        }
+        let f = verdicts(&a, &b);
+        assert!(f.failed("NI-2") && f.failed("NI-3"), "{}", f.text());
+    }
+
+    /// NI-2 and NI-3 compare the wallet view too: a difference there fails the twins even when every
+    /// credit is due at the same time in both.
+    #[test]
+    fn a_wallet_difference_fails_the_twins() {
+        let t = 10 * DAY;
+        let a = world(vec![read(t, FIRST, Some(FIRST))]);
+        let mut b = world(vec![read(t + 5 * HOUR, FIRST, Some(FIRST))]);
+        b.rec.digests.wallet.update(b"one more get_transfers");
+        let f = verdicts(&a, &b);
+        for name in ["NI-2", "NI-3"] {
+            assert!(
+                f.failed(name),
+                "{name} passed a wallet difference:\n{}",
+                f.text()
+            );
+            let line = f.lines.iter().find(|l| l.starts_with(name)).unwrap();
+            assert!(line.contains("wallet view differs"), "{line}");
+        }
+    }
+
+    /// §19.29: a passing twin says that both views are identical with no exemption.
+    #[test]
+    fn a_passing_twin_names_no_exemption() {
+        let t = 10 * DAY;
+        let a = world(vec![read(t, FIRST, Some(FIRST))]);
+        let b = world(vec![read(t + 5 * HOUR, FIRST, Some(FIRST))]);
+        let f = verdicts(&a, &b);
+        for name in ["NI-2", "NI-3"] {
+            let line = f.lines.iter().find(|l| l.starts_with(name)).unwrap();
+            assert!(
+                !f.failed(name) && line.contains("wallet view") && line.contains("no exemption"),
+                "{line}"
+            );
+        }
+    }
+
+    /// Two reads hours apart give the same due time.
+    #[test]
+    fn reads_hours_apart_pass() {
         let t = 10 * DAY;
         let a = world(vec![read(t, FIRST, Some(FIRST))]);
         let b = world(vec![read(t + 5 * HOUR, FIRST, Some(FIRST))]);
@@ -1456,44 +1498,39 @@ mod tests {
         );
     }
 
-    /// T2GAPS-2: the twin's relays move every read they can by hours to days, and a read before
-    /// the first refresh time across it where that changes the due time, always releasing the blob
-    /// before the listening ends, the blob expires, the cut or the world ends.
+    /// T2GAPS-2: the twin's relays move every read by hours to days, always releasing the blob six
+    /// hours before the listening ends, the blob expires or the world ends.
     #[test]
     fn the_twin_holds_drop_blobs_back_by_hours_to_days() {
         let te = 100 * DAY;
         let t = 10 * DAY;
-        // Crossable: read before the first time, which precedes the cut and the listening's end.
-        let mut cross = read(t, 20 * DAY as i64, Some(20 * DAY as i64));
-        cross.invitee = 1;
-        // The first time lies after the listening: held by hours to days only.
-        let mut far = read(t, 60 * DAY as i64, Some(60 * DAY as i64));
-        far.invitee = 2;
-        far.until = 55 * DAY;
-        // Read too close to the world's end, and a credit dropped after its cut: not held.
+        let mut plain = read(t, FIRST, Some(FIRST));
+        plain.invitee = 1;
+        // The listening ends a day after the read: held at most until six hours before.
+        let mut near_end = read(t, FIRST, Some(FIRST));
+        near_end.invitee = 2;
+        near_end.until = t + DAY;
+        // Read too close to the world's end, and a dropped credit: not held.
         let mut late = read(te - HOUR, FIRST, Some(FIRST));
         late.invitee = 3;
         let mut dropped = read(t, FIRST, None);
         dropped.invitee = 4;
-        let a = world(vec![cross, far, late, dropped]);
+        let a = world(vec![plain, near_end, late, dropped]);
         let holds = super::drop_holds(&a, te);
         let at = |invitee: u32| holds.get(&(0, invitee)).copied();
-        let c = at(1).expect("a crossing hold");
-        assert!((20 * DAY + HOUR..20 * DAY + 12 * HOUR).contains(&c), "{c}");
-        let f = at(2).expect("a hold of hours to days");
-        assert!((t + 2 * HOUR..t + 3 * DAY).contains(&f), "{f}");
+        let p = at(1).expect("a hold of hours to days");
+        assert!((t + 2 * HOUR..t + 3 * DAY).contains(&p), "{p}");
+        let n = at(2).expect("a hold before the listening ends");
+        assert!((t + 2 * HOUR..=t + DAY - 6 * HOUR).contains(&n), "{n}");
         assert_eq!((at(3), at(4)), (None, None));
     }
 
-    /// A credit refreshed in one world and dropped after its cut in the other: the read decided
-    /// whether an issuer call happens, which is no declared bit.
+    /// A credit refreshed in one world and dropped in the other: the read decided whether an issuer
+    /// call happens.
     #[test]
-    fn a_read_across_the_cut_fails() {
-        let cut_first = CUT - 10 * DAY as i64;
-        let mut x = read((CUT - HOUR as i64) as u64, cut_first, Some(CUT));
-        let mut y = read((CUT + 5 * HOUR as i64) as u64, cut_first, None);
-        x.second = CUT + 20 * DAY as i64;
-        y.second = x.second;
+    fn a_credit_refreshed_in_one_twin_and_dropped_in_the_other_fails() {
+        let x = read((CUT - HOUR as i64) as u64, FIRST, Some(CUT));
+        let y = read((CUT + 5 * HOUR as i64) as u64, FIRST, None);
         let f = verdicts(&world(vec![x]), &world(vec![y]));
         assert!(f.failed("NI-2") && f.failed("NI-3"), "{}", f.text());
         assert!(

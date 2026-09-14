@@ -28,7 +28,7 @@ import java.io.File
  * design §11.9, §13.4): redemption planning (the ±1 h guard, the slots a relay serves, the plan of a
  * need, the relay-facing clock), activation slots (a revocation's spares included), the `BlindSign`
  * attempt plan and the one retry of capped calls, failure categories, quiet-run work selection, the
- * credits of a credits-paid pack and the refresh time of a received credit (Q31, §19.26).
+ * credits of a credits-paid pack and the refresh time of a received credit (§19.29).
  * The Rust T2 reference policy (S10) replays the same file, so the reference cannot drift from the
  * engine on anything pinned here. Every line must pass and every operation must occur.
  */
@@ -146,14 +146,12 @@ class PolicyVectorsTest {
             "cover" -> cover(a, checkNotNull(e))
             "refresh" -> {
                 val draws = Draws(0.0, a.getValue("uniforms").split(',').map(String::toDouble))
-                val times = RefreshPlan.times(day(time(a.getValue("expiry"))), day(time(a.getValue("listen_until"))), draws)
-                val f = checkNotNull(expect).associate { it.substringBefore('=') to it.substringAfter('=') }
-                assertEquals("first", time(f.getValue("first")), times.first)
-                assertEquals("second", time(f.getValue("second")), times.second)
+                sameTime(checkNotNull(e), RefreshPlan.time(day(time(a.getValue("listen_until"))), draws))
                 assertTrue("every listed uniform is consumed", draws.queue.isEmpty())
             }
             "refreshdue" -> {
-                val due = RefreshPlan.due(time(a.getValue("first")), time(a.getValue("second")), a.getValue("epoch").toLong(), time(a.getValue("read")))
+                // No read time: every read precedes the listening's end (§19.29).
+                val due = RefreshPlan.due(time(a.getValue("at")), day(time(a.getValue("listen_until"))), a.getValue("epoch").toLong())
                 if (e == "drop") assertEquals(null, due) else sameTime(checkNotNull(e), due)
             }
             else -> error("unknown operation $op")

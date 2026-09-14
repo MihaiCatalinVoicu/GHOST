@@ -68,6 +68,7 @@ t2r_case fail vacuous.txt gate "rejects a check that passed on an empty sample (
 t2r_case fail missing-e30.txt gate "rejects a report without the E30 redeem-hold line"
 t2r_case fail vacuous-e30.txt gate "rejects an E30 line that measured no held session"
 t2r_case fail vacuous-reads.txt gate "rejects an NI-2 line whose twin moved no drop read by an hour"
+t2r_case fail exempt-twin.txt gate "rejects an NI-2 line that compared an inviter only before a horizon (no exemption, §19.29)"
 t2r_case fail no-such-report.txt gate "rejects a missing report"
 t2r_case pass mutants-ok.txt mutants "accepts 25 detected mutants"
 t2r_case fail mutants-short.txt mutants "rejects 24 detected mutants"

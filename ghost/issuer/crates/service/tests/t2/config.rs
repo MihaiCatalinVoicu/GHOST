@@ -37,7 +37,8 @@ pub enum Mutant {
     M19PayInsideSession,
     M20QuietWhenWorkDue,
     M21SpendReceivedCredit,
-    /// A received credit's refresh due 1–14 days after its drop read (the rule Q31 replaced, §19.26).
+    /// A received credit's refresh due 1–14 days after its drop read (the rule Q31 replaced, §19.26;
+    /// still detected by NI-2 under §19.29).
     M22RefreshAtRead,
     /// A `WRONG_PERIOD` re-prepare starts the new flow's attempt count at zero (the engine before
     /// the S12 review, P8-PRIV-1): a purchase or revocation re-presents its credits or invite token
@@ -48,8 +49,8 @@ pub enum Mutant {
 /// User actions a twin world replays from its base world, so that the declared cells they
 /// belong to (L7, the time a user starts a purchase after `ENTITLEMENT_NEEDED`) stay identical
 /// while relay activity differs (NI-2, NI-3). The drop reads of received credits are relay activity
-/// and are not replayed: each twin reads at its own times, and a credit's refresh is due at a time
-/// drawn with its invite (Q31, §19.26).
+/// and are not replayed: each twin reads at its own times, and a credit's refresh is due at the one
+/// time drawn with its invite (§19.29).
 #[derive(Debug, Clone, Default)]
 pub struct UserScript {
     /// (client, the foreground session the user started it in, device time before which its
@@ -104,7 +105,7 @@ pub struct Config {
     /// NI-1d: shift the first-purchase start of this fraction of invitees by this many seconds.
     pub first_pack_shift: Option<(f64, u64)>,
     /// NI-2, NI-3: the relays hold the drop blob of (inviter, invitee) back from its reader until
-    /// this true time (relay activity moving the drop read by hours to days, §19.26).
+    /// this true time (relay activity moving the drop read by hours to days, §19.26, §19.29).
     pub drop_holds: Arc<BTreeMap<(u32, u32), u64>>,
 }
 

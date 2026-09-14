@@ -19,10 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * A scanned drop is an `ent_invite` row of an invite that may have been created before the restore:
  * state `created`, payload unknown (NULL), its drop namespace re-derived from the root entropy (the
- * drop key too, when a blob is opened; neither is stored), listened until the scan's end. Its invite's
- * expiry is unknown, so both its refresh times are one draw 1–14 days after the scan's end
- * ([RefreshPlan.scanned], Q31), re-drawn when a later restore extends the scan: every read precedes
- * it. The receive path, the refresh flow of a received credit and the invite GC then treat it as any
+ * drop key too, when a blob is opened; neither is stored), listened until the scan's end. Its refresh
+ * time is drawn as every drop's, 1–14 days after its listening (the scan) ends ([RefreshPlan.time],
+ * §19.29), and re-drawn when a later restore extends the scan: every read precedes it. The receive path, the refresh flow of a received credit and the invite GC then treat it as any
  * invite. Its drop
  * slots are unknown, so it is listened on the active directory relays of every ES slot valid in some
  * week from one drop-blob lifetime before now through the scan's end: a superset of the three relays
@@ -125,8 +124,7 @@ internal class RestoreScan(private val c: EngineContext) {
                 }
                 row.state == InviteStore.CREATED && row.payload() == null -> {
                     if (row.listenUntilDay < until) {
-                        val refresh = RefreshPlan.scanned(until, c.random)
-                        c.invites.extendScanned(tx, index, until, refresh.first, refresh.second)
+                        c.invites.extendScanned(tx, index, until, RefreshPlan.time(until, c.random))
                     }
                     listen(tx, ns, relays)
                 }
@@ -137,8 +135,7 @@ internal class RestoreScan(private val c: EngineContext) {
     }
 
     private fun add(tx: SyncTransaction, index: Int, ns: ByteArray, relays: Set<RelayId>, until: Long) {
-        val refresh = RefreshPlan.scanned(until, c.random)
-        c.invites.insertScanned(tx, index, ns, until, refresh.first, refresh.second)
+        c.invites.insertScanned(tx, index, ns, until, RefreshPlan.time(until, c.random))
         c.sync.namespaces.register(tx, NamespaceId(ns), Consumer.IDENTITY, relays, listen = true)
     }
 

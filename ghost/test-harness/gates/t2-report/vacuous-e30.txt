@@ -23,8 +23,8 @@ S4 lying issuer: PASS fixture
 J9 lying issuer: PASS fixture
 NI-1: PASS fixture
 NI-1 across cells: PASS fixture
-NI-2: PASS fixture
-NI-3: PASS fixture
+NI-2: PASS fixture, no exemption
+NI-3: PASS fixture, no exemption
 NI-1d: PASS fixture
 S3c (reported, declared L5): fixture
 E30 (reported, declared residue, Q29 redeem hold): 1200 background sessions, 400 armed by a pending write need, 0 held past their lanes (hold median 0 s, p90 0 s, max 0 s; 0 held steps redeemed nothing, 0 redemptions in held steps); 300 unarmed sessions ended before their lane step

@@ -488,44 +488,44 @@ pub fn pick(items: &[(WorkKind, i64)], now: i64) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The refresh time of a received credit (Q31, §19.8, §19.26, `RefreshPlan.kt`).
+// The refresh time of a received credit (Q31 simplified, §19.8, §19.29, `RefreshPlan.kt`).
 // ---------------------------------------------------------------------------------------------
 
-/// The end of the latest drop window, in weeks after the invitee's base week (`t_drop` is drawn in
-/// `[start(base + 3), start(base + 8))`, §19.12).
-const DROP_END_WEEK: i64 = 8;
 const REFRESH_MIN: i64 = DAY;
 const REFRESH_MAX: i64 = 14 * DAY;
 const REFRESH_CUT_MARGIN: i64 = 2 * DAY;
 const CREDIT_EPOCH_WEEKS: i64 = 13;
 
-/// The two refresh times of a credit an invitee of the invite expiring on UTC day `expiry_day`
-/// sends to its drop, listened until UTC day `listen_until_day`: drawn when the inviter creates the
-/// invite, from client randomness only (the first draw, then the second). The first lies 1–14 days
-/// after the latest drop window an invitee of this invite can draw (it activates before the expiry
-/// day); the second 1–14 days after the listening ends, so after every read.
-pub fn refresh_times(
-    expiry_day: i64,
-    listen_until_day: i64,
-    uniform: &mut dyn FnMut() -> f64,
-) -> (i64, i64) {
-    let last_drop_end = week_start(week(expiry_day * DAY - 1) + DROP_END_WEEK);
-    let first = refresh_draw(last_drop_end, uniform());
-    let second = refresh_draw(listen_until_day * DAY, uniform());
-    (first, second)
+/// The one refresh time of a credit received through a drop listened until UTC day
+/// `listen_until_day`: drawn when the inviter registers the drop, from client randomness only, 1–14
+/// days after the listening ends, so after every read (nothing is taken from the drop from that day
+/// on).
+pub fn refresh_time(listen_until_day: i64, uniform: &mut dyn FnMut() -> f64) -> i64 {
+    refresh_draw(listen_until_day * DAY, uniform())
 }
 
 fn refresh_draw(from: i64, u: f64) -> i64 {
     ceil_minute(from + REFRESH_MIN + (u * (REFRESH_MAX - REFRESH_MIN) as f64) as i64)
 }
 
-/// The due time of a received credit of credit epoch `epoch` read from the drop at `read`: the
-/// first refresh time when read at or before it, else the second, cut at two days before credit
-/// epoch `epoch + 2` starts (from then the issuer refuses the refresh, §19.8). `None`: the due time
-/// would lie before the read, and the credit is dropped (never refreshed at the read).
-pub fn refresh_due(first: i64, second: i64, epoch: i64, read: i64) -> Option<i64> {
-    let due = if read <= first { first } else { second }.min(refresh_cut(epoch));
-    (due >= read).then_some(due)
+/// The due time of a received credit of credit epoch `epoch` from a drop listened until UTC day
+/// `listen_until_day` whose refresh time is `at`: `at` when it lies at or before the refresh cut
+/// (two days before credit epoch `epoch + 2` starts, from when the issuer refuses the refresh,
+/// §19.8); otherwise the same draw placed inside [listening end, cut] (its fraction of the 1–14-day
+/// window, rounded up to the minute). `None` when the cut precedes the listening's end: no time after
+/// every read exists, and the credit is dropped whatever the read. No read time enters.
+pub fn refresh_due(at: i64, listen_until_day: i64, epoch: i64) -> Option<i64> {
+    let end = listen_until_day * DAY;
+    let cut = refresh_cut(epoch);
+    if cut < end {
+        return None;
+    }
+    if at <= cut {
+        return Some(at);
+    }
+    let span = REFRESH_MAX - REFRESH_MIN;
+    let drawn = (at - end - REFRESH_MIN).clamp(0, span);
+    Some(ceil_minute(end + (drawn * (cut - end)).div_euclid(span)))
 }
 
 /// The refresh cut of credit epoch `epoch`: two days before credit epoch `epoch + 2` starts.

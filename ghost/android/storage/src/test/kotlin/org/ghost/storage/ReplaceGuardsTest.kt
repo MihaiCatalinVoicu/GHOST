@@ -214,9 +214,9 @@ class ReplaceGuardsTest {
         f.invite(1)
         f.invite(2)
         assertEquals(1, db.changes("UPDATE ent_invite SET state = 'closed', payload = NULL WHERE invite_index = 2 AND state = 'created'"))
-        val insert = "ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute) " +
-            "VALUES (?, 'created', ?, ?, ?, ?, ?)"
-        for (i in 1..2) db.rejectsEveryInsert(msg, insert, i, bytes(538, 9), bytes(32, 9), DAY0 + 90, T0, T0 + 60)
+        val insert = "ent_invite(invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute) " +
+            "VALUES (?, 'created', ?, ?, ?, ?)"
+        for (i in 1..2) db.rejectsEveryInsert(msg, insert, i, bytes(538, 9), bytes(32, 9), DAY0 + 90, T0)
         // A closed invite never reopens; a created one keeps its payload and its drop.
         assertEquals("closed", db.queryString("SELECT state FROM ent_invite WHERE invite_index = 2"))
         assertArrayEquals(bytes(538, 1), db.queryBlob("SELECT payload FROM ent_invite WHERE invite_index = 1"))

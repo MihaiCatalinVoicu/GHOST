@@ -37,6 +37,10 @@ pub struct Digests {
     pub issuer: Sha256,
     pub issuer_masked: Sha256,
     pub wallet: Sha256,
+    /// Wallet calls recorded, and (with `per_client`) each call's (time, short hash), to locate a
+    /// twin difference of the wallet view (NI-2, NI-3).
+    pub wallet_calls: u64,
+    pub wallet_seq: Vec<(u64, [u8; 8])>,
     pub relay: [Sha256; 3],
     pub relay_db: Sha256,
     pub issuer_calls: u64,
@@ -387,6 +391,13 @@ impl Recorder {
             b.extend_from_slice(&e.timestamp.to_be_bytes());
         }
         self.digests.wallet.update(&b);
+        self.digests.wallet_calls += 1;
+        if self.per_client {
+            let h = Sha256::digest(&b);
+            let mut short = [0u8; 8];
+            short.copy_from_slice(&h[..8]);
+            self.digests.wallet_seq.push((c.t, short));
+        }
         if let Some(x) = &mut self.export {
             let entries: Vec<String> = c
                 .entries

@@ -217,26 +217,16 @@ impl Replay {
                     .collect();
                 queue.reverse();
                 let mut draw = || queue.pop().expect("a uniform too many");
-                let (first, second) = policy::refresh_times(
-                    day(time(a["expiry"])),
-                    day(time(a["listen_until"])),
-                    &mut draw,
-                );
-                let f: BTreeMap<&str, &str> = expect
-                    .unwrap()
-                    .iter()
-                    .map(|w| w.split_once('=').unwrap())
-                    .collect();
-                assert_eq!(time(f["first"]), first, "first");
-                assert_eq!(time(f["second"]), second, "second");
+                let got = policy::refresh_time(day(time(a["listen_until"])), &mut draw);
+                assert_eq!(time(e.unwrap()), got);
                 assert!(queue.is_empty(), "every listed uniform is consumed");
             }
             "refreshdue" => {
+                // No read time: every read precedes the listening's end (§19.29).
                 let got = policy::refresh_due(
-                    time(a["first"]),
-                    time(a["second"]),
+                    time(a["at"]),
+                    day(time(a["listen_until"])),
                     a["epoch"].parse().unwrap(),
-                    time(a["read"]),
                 );
                 match e.unwrap() {
                     "drop" => assert_eq!(None, got),

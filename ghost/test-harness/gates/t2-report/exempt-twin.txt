@@ -23,7 +23,7 @@ S4 lying issuer: PASS fixture
 J9 lying issuer: PASS fixture
 NI-1: PASS fixture
 NI-1 across cells: PASS fixture
-NI-2: PASS fixture, no exemption
+NI-2: PASS issuer view (5000 calls) identical modulo blinded and signature bytes before the refreshes the reads moved; wallet view identical; 12 received credits read in both worlds, 12 of them at another time (10 by an hour or more, 1 across their first refresh time), each refreshed at a time its invite drew; 1 inviters with a credit read on the other side of its first refresh time, compared before its refresh
 NI-3: PASS fixture, no exemption
 NI-1d: PASS fixture
 S3c (reported, declared L5): fixture
