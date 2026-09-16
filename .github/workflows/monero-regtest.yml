@@ -100,5 +100,10 @@ jobs:
       - name: regtest scenario on the production rail (release profile)
         env:
           GHOST_MONERO_BIN: ${{ runner.temp }}/monero-bin
+          # monerod hashes every generated block with RandomX; in its default light mode the self-hosted
+          # WSL2 runner makes about 10 blocks/s (the scenario mines over 22 000), a third of a hosted
+          # runner, and the job ran past its timeout. The 2 GB dataset (fast mode, about 85 blocks/s
+          # there) changes only the proof-of-work speed, nothing the issuer rail observes.
+          MONERO_RANDOMX_FULL_MEM: "1"
           GHOST_ISSUER_OPS: ${{ github.workspace }}/ghost/target/release/ghost-issuer-ops
         run: cargo test -p ghost-issuer --release --locked --test monero_regtest -- --ignored --test-threads=1
