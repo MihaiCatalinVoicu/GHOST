@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Privacy invariant T2: the join search (J1-J10, T2b, T2c) and the statistical tests (S1-S4) over the complete issuer and relay views of the T2 world (Phase 8 design §13.4)"
+description = "Privacy invariant T2: the join search (J1-J10, T2b, T2c), the statistical tests (S1-S4) and the amount uniformity (A1, FR-6'.7) over the complete issuer and relay views of the T2 world (Phase 8 design §13.4, §19.31)"
 
 [dependencies]
 # Public-key work on the relay-seen tokens (em = s^e mod n, Jacobi symbols, ring verification) and

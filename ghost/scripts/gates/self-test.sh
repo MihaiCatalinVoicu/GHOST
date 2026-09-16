@@ -52,8 +52,8 @@ if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifes
 else
   echo "SELF-TEST FAIL: merged-manifest-lint rejects the Phase 7 merged release manifest" >&2; rc=1
 fi
-# Phase 8 T2 (design §13.4, §13.6): the report check accepts only a complete PASS report of the
-# right scale, and all 24 privacy mutants detected.
+# Phase 8 T2 (design §13.4, §13.6, §19.31): the report check accepts only a complete PASS report of
+# the right scale (A1, the FR-6′.7 amount uniformity, included), and all 26 privacy mutants detected.
 T2R="$HARNESS/t2-report"
 t2r_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
   if bash "$DIR/t2-report-check.sh" "$T2R/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
@@ -70,8 +70,11 @@ t2r_case fail vacuous-e30.txt gate "rejects an E30 line that measured no held se
 t2r_case fail vacuous-reads.txt gate "rejects an NI-2 line whose twin moved no drop read by an hour"
 t2r_case fail exempt-twin.txt gate "rejects an NI-2 line that compared an inviter only before a horizon (no exemption, §19.29)"
 t2r_case fail no-such-report.txt gate "rejects a missing report"
-t2r_case pass mutants-ok.txt mutants "accepts 25 detected mutants"
-t2r_case fail mutants-short.txt mutants "rejects 24 detected mutants"
+t2r_case fail missing-a1.txt gate "rejects a report without the A1 amount-uniformity line (FR-6′.7, §19.31)"
+t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet transfer"
+t2r_case pass mutants-ok.txt mutants "accepts 26 detected mutants"
+t2r_case pass mutants-interleaved.txt mutants "accepts a detected mutant whose ok line another test's output ran into"
+t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"

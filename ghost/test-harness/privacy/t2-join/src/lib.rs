@@ -5,13 +5,16 @@
 //!
 //! - the deterministic join search J1–J10, T2b and T2c (any hit fails T2);
 //! - the statistical tests S1–S3 at α = 0.001 against the declared leak L1–L7, and the absolute
-//!   bound S4 (Q21: top-1 accuracy of the declared-leak attacker ≤ 0.25, always reported).
+//!   bound S4 (Q21: top-1 accuracy of the declared-leak attacker ≤ 0.25, always reported);
+//! - A1, the amount uniformity of FR-6′.7 (§19.31): every invoice amount the issuer quoted and every
+//!   wallet transfer to an invoice's subaddress is the ES pack price of the invoice's price epoch.
 //!
 //! Ground truth (which client made a call, which runs were quiet, the seeds of each flow) is used
-//! only for scoring and for the checks stated over it (J6, J8, J9, T2c); the searches J1–J5 and
-//! T2b see the adversary's views only.
+//! only for scoring and for the checks stated over it (J6, J8, J9, T2c) and for A1's documented
+//! user amounts; the searches J1–J5 and T2b see the adversary's views only.
 
 pub mod accumulate;
+pub mod amounts;
 pub mod checks;
 pub mod model;
 pub mod numbers;

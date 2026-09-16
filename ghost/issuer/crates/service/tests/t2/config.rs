@@ -44,6 +44,10 @@ pub enum Mutant {
     /// the S12 review, P8-PRIV-1): a purchase or revocation re-presents its credits or invite token
     /// in new flows without bound (§19.27).
     M23UnboundedRePrepare,
+    /// The issuer quotes every XMR invoice the ES pack price plus a per-invoice delta of up to 3 %
+    /// (a PRF of the invoice id, so an identical retry gets the same amount): a per-invoice amount
+    /// against FR-6′.7 (§19.31). A layer over the real handler, like the lying issuer of M16 and M23.
+    M24PerInvoiceAmount,
 }
 
 /// User actions a twin world replays from its base world, so that the declared cells they

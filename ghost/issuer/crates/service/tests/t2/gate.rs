@@ -63,6 +63,8 @@ pub const FLOOR_S4: usize = 50;
 pub const FLOOR_MOVED: usize = 10;
 /// The fewest drop writes NI-1d may pass on.
 pub const FLOOR_DROPS: usize = 3;
+/// The fewest XMR invoice answers and wallet transfers A1 may pass on (§19.31).
+pub const FLOOR_A1: usize = 10;
 /// The achieved population must be within this share of the design's (§13.4 "World").
 pub const POPULATION_TOLERANCE: f64 = 0.3;
 
@@ -113,7 +115,7 @@ fn due(seed: &[u8; 32], receipt: u64, k: usize) -> u64 {
     super::policy::blind_sign_due_minute(seed, receipt as i64, k) as u64
 }
 
-/// J1–J10, T2b and T2c on a world's views.
+/// J1–J10, T2b, T2c, completeness and A1 ([`amounts`]) on a world's views.
 pub fn joins(f: &mut Findings, test: &Outcome) {
     let acc = test.rec.acc.as_ref().expect("an analyzed world");
     let truth = &test.truth;
@@ -215,12 +217,49 @@ pub fn joins(f: &mut Findings, test: &Outcome) {
             presented
         ),
     );
+    amounts(f, test);
     f.note(format!(
         "join search: {} distinct values, {} relay calls, {:.1} s",
         acc.values.map.len(),
         acc.relay_calls,
         t.elapsed().as_secs_f64()
     ));
+}
+
+/// A1 (FR-6′.7, §19.31) on a world's issuer view: every amount the issuer quoted in a
+/// `RequestInvoice` answer is the ES pack price of the invoice's price epoch (0 for a credits-paid
+/// invoice and for an answer naming no invoice), and so is every wallet transfer to an invoice's
+/// subaddress, except the documented user under- and overpayments and top-ups (counted). The verdict
+/// is the issuer view's alone; the line also reports what the production client-core check did with
+/// the answers (the world's counts): the invoice answers it refused as `malformed_response` and the
+/// purchases that failed after them with ISSUER_MISMATCH.
+pub fn amounts(f: &mut Findings, o: &Outcome) {
+    let acc = o.rec.acc.as_ref().expect("an analyzed world");
+    let a = ghost_t2_join::amounts::a1(acc, &o.truth);
+    let g = |k: &str| o.log.counts.get(k).copied().unwrap_or(0);
+    let counts = format!(
+        "{} XMR invoice answers ({} invoices, {} of {} price epochs quoted one amount), {} credits-paid answers, {} answers naming no invoice; {} wallet transfers to invoice subaddresses ({} exempted as documented user under- or overpayments and top-ups; {} to no invoice's subaddress, crediting none); client-core refused {} invoice answers as malformed_response, {} purchases failed with ISSUER_MISMATCH",
+        a.xmr_answers,
+        a.xmr_invoices,
+        a.uniform_epochs(),
+        a.quoted.len(),
+        a.credit_answers,
+        a.other_answers,
+        a.transfers,
+        a.exempt,
+        a.unmatched,
+        g("request_invoice malformed"),
+        g("purchases failed ISSUER_MISMATCH")
+    );
+    let enough = a.xmr_answers >= FLOOR_A1 && a.transfers >= FLOOR_A1;
+    let detail = if !a.hits.is_empty() {
+        format!("{}; {counts}", hits_line(&a.hits))
+    } else if enough {
+        format!("{counts}: every amount the ES pack price of its invoice's price epoch")
+    } else {
+        format!("{counts}: fewer than {FLOOR_A1} XMR invoice answers or wallet transfers, so nothing was tested")
+    };
+    f.check("A1", a.hits.is_empty() && enough, detail);
 }
 
 pub fn train(
