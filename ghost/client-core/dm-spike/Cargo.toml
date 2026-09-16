@@ -1,0 +1,59 @@
+# S0′ measurement probe and spikes for the Phase 9 DM stack (design faza9-dm.md §17.1 row S0′,
+# §22.8, Appendix C V-1 … V-16). Evidence: docs/design/faza9-s0-evidence.md.
+#
+# Not a member of the ghost workspace and never linked into a shipped library: it has its own
+# workspace root and lock file, so the product lock, the client allowlist and the crypto pins are
+# untouched. It depends on vodozemac 0.11.0 AND 0.10.0 (renamed) to compare both pins. It is
+# deleted when S4b lands: ghost-client-dm re-implements the encoder check, golden sizes, the
+# failed-decrypt test and the session harness under review, with the pins of §2.3.
+[package]
+name = "ghost-dm-spike"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+license = "LicenseRef-GHOST-Proprietary"
+description = "Phase 9 S0′ measurement probe and spikes (not shipped)"
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+# V-5: JNI exports so the JVM can load the cdylib (the ghost-dm-host shape of §2.3).
+jni-host = ["dep:jni"]
+# V-3 margin only: vodozemac's experimental SessionConfig V2 (full MAC). Forbidden in every
+# shipped graph (G-R2); enabled here only to measure how much O_MAX margin a V2 move would use.
+v2-config = ["vz11/experimental-session-config"]
+
+[dependencies]
+vz11 = { package = "vodozemac", version = "=0.11.0", default-features = false }
+vz10 = { package = "vodozemac", version = "=0.10.0", default-features = false }
+libcrux-kem = { version = "=0.0.9", default-features = false }
+serde_json = "=1.0.151"
+chacha20poly1305 = "=0.11.0"
+hkdf = "=0.13.0"
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+x25519-dalek = { version = "=2.0.1", features = ["static_secrets"] }
+ed25519-dalek = "=2.2.0"
+rand = "=0.10.2"
+jni = { version = "=0.21.1", optional = true }
+
+[dev-dependencies]
+hex = "=0.4.3"
+x-wing = "=0.1.0"
+curve25519-dalek = "=4.1.3"
+sha2-10 = { package = "sha2", version = "=0.10.9" }
+# V-6: the X-Wing slice-trait path and the explicit ML-KEM key check.
+libcrux-traits = { version = "=0.0.8", default-features = false }
+libcrux-ml-kem = { version = "=0.0.10", default-features = false, features = ["mlkem768"] }
+# V-8 scanner (examples/g_r8_scan.rs).
+syn = { version = "=2.0.119", features = ["full", "visit-mut"] }
+proc-macro2 = { version = "=1.0.107", features = ["span-locations"] }
+quote = "=1.0.45"
+
+[profile.release]
+strip = "symbols"
