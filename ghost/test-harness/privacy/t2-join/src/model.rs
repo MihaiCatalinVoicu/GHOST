@@ -150,14 +150,21 @@ pub struct WalletEntry {
     pub amount: u64,
     pub height: Option<u64>,
     pub confirmations: u64,
-    /// The pool-first-seen time (L6), read only by the T2 view.
+    /// The pool-first-seen time (L6), read only by the T2 view: the moment the payer broadcast the
+    /// transaction, no later than any node of the Monero network first saw it.
     pub timestamp: u64,
+    /// The timestamp of the block that mined it (`None` while in the pool): public chain data, the
+    /// other half of what a passive Monero network observer sees of a payment (§19.31).
+    pub block_time: Option<u64>,
 }
 
 pub struct WalletCall<'a> {
     pub t: u64,
     pub method: &'static str,
     pub fields: Vec<Field<'a>>,
+    /// `create_address` only: the new subaddress's minor index, as the wallet answers it (A1 maps an
+    /// invoice's subaddress to the transfers it received).
+    pub minor: Option<u32>,
     pub entries: Vec<WalletEntry>,
 }
 
@@ -243,6 +250,10 @@ pub struct Truth {
     pub invoices: Vec<InvoiceTruth>,
     /// Tokens the attacker knows because its Sybil clients finalized them.
     pub attacker_tokens: Vec<Vec<u8>>,
+    /// Payments whose amount the user chose other than its invoice's (an underpayment, the top-up
+    /// that completes it, an overpayment; §7): the only wallet transfers A1 exempts from the ES
+    /// price (FR-6′.7, §19.31). The world's users always pay the quoted amount, so it is empty.
+    pub user_amounts: Vec<[u8; 32]>,
     /// The nullifier of every token a client handed to a relay (the completeness check: each must
     /// appear in some relay view).
     pub presented: Vec<[u8; 32]>,

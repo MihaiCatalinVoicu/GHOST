@@ -80,15 +80,35 @@ pub enum IssuerFault {
 /// calls `WRONG_PERIOD` (the issuer recorded nothing), chosen by a PRF of the request's bytes, so
 /// an identical retry gets the same answer and a re-prepared flow a fresh draw (mutant M23 and its
 /// control, §19.27).
+///
+/// With `amount_key` (mutant M24, §19.31) it quotes every XMR invoice the handler answered the ES
+/// price plus a delta in (0, 3 %] of it, a PRF of the invoice id under that key: a per-invoice
+/// amount (FR-6′.7). The view records the amount the client received.
 #[derive(Debug, Default)]
 pub struct Liar {
     pub lies: u32,
     pub counts: HashMap<Vec<u8>, u32>,
     pub wrong_period: f64,
     pub key: [u8; 32],
+    pub amount_key: Option<[u8; 32]>,
 }
 
 impl Liar {
+    /// The amount mutant M24's issuer quotes for invoice `invoice_id` whose ES price is `price`.
+    fn per_invoice_amount(&self, invoice_id: &[u8], price: u64) -> Option<u64> {
+        let key = self.amount_key?;
+        let span = price / 100 * 3;
+        if price == 0 || span == 0 {
+            return None;
+        }
+        let mut h = Sha256::new();
+        h.update(b"ghost/t2/per-invoice-amount");
+        h.update(key);
+        h.update(invoice_id);
+        let d = h.finalize();
+        Some(price + 1 + u64::from_be_bytes(d[..8].try_into().unwrap()) % span)
+    }
+
     /// True when the call whose request carries `parts` is answered `WRONG_PERIOD`.
     fn lies_wrong_period(&self, parts: &[&[u8]]) -> bool {
         if self.wrong_period <= 0.0 {
@@ -213,6 +233,18 @@ impl IssuerRpc for IssuerLink<'_> {
             })
         } else {
             self.issuer.request_invoice_at(req.clone(), self.t)
+        };
+        let r = match (r, self.liar.as_deref()) {
+            (Ok(mut resp), Some(l))
+                if resp.result == wire::RequestInvoiceResult::Ok as i32
+                    && req.credits.is_empty() =>
+            {
+                if let Some(amount) = l.per_invoice_amount(&resp.invoice_id, resp.amount_atomic) {
+                    resp.amount_atomic = amount;
+                }
+                Ok(resp)
+            }
+            (r, _) => r,
         };
         let mut request = vec![f("claim_hash", &req.claim_hash)];
         request.extend(req.credits.iter().map(|c| f("credits", c)));

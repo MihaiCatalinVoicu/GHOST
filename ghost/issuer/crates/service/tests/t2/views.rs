@@ -382,6 +382,9 @@ impl Recorder {
         for f in &c.fields {
             put(&mut b, f.bytes);
         }
+        if let Some(m) = c.minor {
+            b.extend_from_slice(&m.to_be_bytes());
+        }
         for e in &c.entries {
             b.extend_from_slice(&e.txid);
             b.extend_from_slice(&e.minor.to_be_bytes());
@@ -389,6 +392,7 @@ impl Recorder {
             b.extend_from_slice(&e.height.unwrap_or(u64::MAX).to_be_bytes());
             b.extend_from_slice(&e.confirmations.to_be_bytes());
             b.extend_from_slice(&e.timestamp.to_be_bytes());
+            b.extend_from_slice(&e.block_time.unwrap_or(u64::MAX).to_be_bytes());
         }
         self.digests.wallet.update(&b);
         self.digests.wallet_calls += 1;
@@ -404,23 +408,25 @@ impl Recorder {
                 .iter()
                 .map(|e| {
                     format!(
-                        "{{\"txid\":\"{}\",\"minor\":{},\"amount\":{},\"height\":{},\"confirmations\":{},\"timestamp\":{}}}",
+                        "{{\"txid\":\"{}\",\"minor\":{},\"amount\":{},\"height\":{},\"confirmations\":{},\"timestamp\":{},\"block_time\":{}}}",
                         hex::encode(e.txid),
                         e.minor,
                         e.amount,
                         e.height.map_or("null".to_string(), |h| h.to_string()),
                         e.confirmations,
-                        e.timestamp
+                        e.timestamp,
+                        e.block_time.map_or("null".to_string(), |b| b.to_string())
                     )
                 })
                 .collect();
             x.line(
                 "wallet_view.ndjson",
                 &format!(
-                    "{{\"t\":{},\"method\":\"{}\",\"fields\":{},\"entries\":[{}]}}",
+                    "{{\"t\":{},\"method\":\"{}\",\"fields\":{},\"minor\":{},\"entries\":[{}]}}",
                     c.t,
                     c.method,
                     json_fields(&c.fields),
+                    c.minor.map_or("null".to_string(), |m| m.to_string()),
                     entries.join(",")
                 ),
             );

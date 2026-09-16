@@ -3,7 +3,9 @@
 //! journal entry into an [`Accumulator`], which keeps what the checks need:
 //!
 //! - every distinct value with its sides and first field (J1–J4, T2b, T2c);
-//! - the issuer calls in full (they are few: J5 c, J6 a, J9, T2c, S1–S4);
+//! - the issuer calls in full (they are few: J5 c, J6 a, J9, T2c, S1–S4, A1);
+//! - every wallet transfer (first seen, minor, amount, block) and the minor of every created
+//!   subaddress (S1, S3d, A1);
 //! - per relay-seen token: its key id, nullifier, `em = s^e mod n` (added to the relay values, J5 a),
 //!   the Jacobi symbol of em (J5 b, S2) and the `ring` verification of the authenticator (J10);
 //! - per circuit label the namespaces it carried (J6 b) and per client the relay sessions (a session
@@ -34,6 +36,11 @@ pub const T2B_EXCLUDED: &[&str] = &[
     "blob_hashes",
     "capability.namespace",
 ];
+
+/// A wallet transfer as the view-only wallet showed it: (first seen, minor, amount, mined height,
+/// block time). The first seen time and the block (height and time) are all a passive Monero
+/// network observer sees of it (§19.31).
+pub type Transfer = (u64, u32, u64, Option<u64>, Option<u64>);
 
 /// Fields holding a Privacy Pass token (split into its parts as well).
 const TOKEN_FIELDS: &[&str] = &["token", "credits", "invite_token", "credit"];
@@ -162,8 +169,10 @@ pub struct Accumulator {
     pub public: Public,
     pub values: Values,
     pub issuer: Vec<IssuerRecord>,
-    /// Wallet transfers: txid → (first seen, minor, amount, mined height).
-    pub transfers: BTreeMap<[u8; 32], (u64, u32, u64, Option<u64>)>,
+    /// Wallet transfers: txid → (first seen, minor, amount, mined height, block time).
+    pub transfers: BTreeMap<[u8; 32], Transfer>,
+    /// The wallet's subaddresses: the address text of every `create_address` answer → its minor.
+    pub addresses: HashMap<Vec<u8>, u32>,
     /// Wallet transfers: txid → the first wallet call that showed it with 10 confirmations (the
     /// confirmation the issuer acts on, §7.3).
     pub confirmed: BTreeMap<[u8; 32], u64>,
@@ -222,6 +231,7 @@ impl Accumulator {
             values: Values::default(),
             issuer: Vec::new(),
             transfers: BTreeMap::new(),
+            addresses: HashMap::new(),
             confirmed: BTreeMap::new(),
             relay_labels: HashMap::new(),
             relay_key_ids: BTreeSet::new(),
@@ -442,16 +452,25 @@ impl Accumulator {
             .id(&format!("issuer.wallet.{}", c.method));
         for f in &c.fields {
             self.values.add(ISSUER, id, f.bytes, false);
+            if f.name == "address" {
+                if let Some(minor) = c.minor {
+                    self.addresses.insert(f.bytes.to_vec(), minor);
+                }
+            }
         }
         for e in &c.entries {
             self.values.add(ISSUER, id, &e.txid, false);
-            let entry =
-                self.transfers
-                    .entry(e.txid)
-                    .or_insert((e.timestamp, e.minor, e.amount, e.height));
+            let entry = self.transfers.entry(e.txid).or_insert((
+                e.timestamp,
+                e.minor,
+                e.amount,
+                e.height,
+                e.block_time,
+            ));
             entry.0 = entry.0.min(e.timestamp);
             if entry.3.is_none() {
                 entry.3 = e.height;
+                entry.4 = e.block_time;
             }
             if e.confirmations >= 10 {
                 self.confirmed.entry(e.txid).or_insert(c.t);

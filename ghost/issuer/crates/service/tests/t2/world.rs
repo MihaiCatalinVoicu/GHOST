@@ -343,6 +343,8 @@ impl World {
                 lies: cfg.liar,
                 wrong_period: cfg.liar_wrong_period,
                 key: derive32(cfg.seeds.issuer, &[b"liar-wrong-period"]),
+                amount_key: (cfg.mutant == Mutant::M24PerInvoiceAmount)
+                    .then(|| derive32(cfg.seeds.issuer, &[b"per-invoice-amount"])),
                 ..Liar::default()
             },
             lineages: HashMap::new(),
@@ -699,11 +701,18 @@ impl World {
             .iter()
             .map(|t| format!("\"{}\"", hex::encode(t)))
             .collect();
+        let user_amounts: Vec<String> = self
+            .truth
+            .user_amounts
+            .iter()
+            .map(|t| format!("\"{}\"", hex::encode(t)))
+            .collect();
         let _ = writeln!(
             g,
-            "],\"presented\":[{}],\"attacker_tokens\":[{}]}}",
+            "],\"presented\":[{}],\"attacker_tokens\":[{}],\"user_amounts\":[{}]}}",
             presented.join(","),
-            attacker.join(",")
+            attacker.join(","),
+            user_amounts.join(",")
         );
         for d in dirs {
             std::fs::create_dir_all(&d).expect("export directory");
@@ -725,13 +734,15 @@ impl World {
             let entries: Vec<WalletEntry> = l
                 .entries
                 .iter()
-                .map(|e| WalletEntry {
+                .zip(&l.block_times)
+                .map(|(e, &block_time)| WalletEntry {
                     txid: e.txid,
                     minor: e.minor,
                     amount: e.amount_atomic,
                     height: e.height,
                     confirmations: e.confirmations,
                     timestamp: e.timestamp,
+                    block_time,
                 })
                 .collect();
             let addr = l.address.clone().unwrap_or_default();
@@ -739,10 +750,16 @@ impl World {
             if !addr.is_empty() {
                 fields.push(ghost_t2_join::model::field("address", addr.as_bytes()));
             }
+            // The minor index the wallet answered `create_address` with (a function of the address
+            // text, so the twins' wallet views differ in it exactly when they differ in the text).
+            let minor = (l.method == "create_address")
+                .then(|| l.args.first().map(|&m| m as u32))
+                .flatten();
             let call = WalletCall {
                 t: l.t,
                 method: l.method,
                 fields,
+                minor,
                 entries,
             };
             self.rec.wallet(&call);
@@ -2036,7 +2053,8 @@ impl World {
             label,
             truth,
             fault,
-            liar: (cfg.liar > 0 || cfg.liar_wrong_period > 0.0).then_some(liar),
+            liar: (cfg.liar > 0 || cfg.liar_wrong_period > 0.0 || liar.amount_key.is_some())
+                .then_some(liar),
             extra_req,
             extra_resp: Vec::new(),
             answered: None,
@@ -2316,7 +2334,15 @@ impl World {
                 self.clients[c].purchases[idx].failed_day = Some(w.div_euclid(policy::DAY));
                 self.log.count("request_invoice refused");
             }
-            Err(_) => {
+            Err(e) => {
+                // client-core refused the answer (`malformed_response`: an amount other than the ES
+                // price, FR-6′.7, or another field that disagrees with the ES; design §5.7): the
+                // engine's one identical retry at its pre-drawn time, then `failed` with
+                // ISSUER_MISMATCH, as any capped call (`PurchaseSteps.malformed`).
+                let malformed = matches!(e, IssuerError::Malformed);
+                if malformed {
+                    self.log.count("request_invoice malformed");
+                }
                 if self.clients[c].purchases[idx].req_attempt >= policy::CALL_ATTEMPTS {
                     let credits = std::mem::take(&mut self.clients[c].purchases[idx].credits);
                     self.clients[c].purchases[idx].state = PState::Failed;
@@ -2332,7 +2358,11 @@ impl World {
                             source: instance,
                         });
                     }
-                    self.log.count("request_invoice lost");
+                    self.log.count(if malformed {
+                        "purchases failed ISSUER_MISMATCH"
+                    } else {
+                        "request_invoice lost"
+                    });
                 }
             }
         }

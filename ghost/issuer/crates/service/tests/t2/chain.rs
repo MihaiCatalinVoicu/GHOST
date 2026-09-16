@@ -1,7 +1,12 @@
 //! The T2 wallet (Phase 8 design §13.3 step 18, RP §6.8): a view-only Monero wallet over a block
 //! schedule on the world clock, exposing exactly the `get_transfers` fields the issuer reads plus
-//! the pool-first-seen `timestamp` (L6), which only the T2 wallet view uses. Every rail call and its
-//! answer is logged for `wallet_view`.
+//! the pool-first-seen `timestamp` (L6) and the mined block's time, which only the T2 wallet view
+//! uses. Every rail call and its answer is logged for `wallet_view`.
+//!
+//! **The passive Monero observer (§19.31).** A transfer is first seen at the instant its payer
+//! broadcasts it (`pay`), the earliest moment any node of the network can see it, and its block's
+//! height and time are the chain's: the exported wallet view carries, per payment, everything a
+//! passive observer of the mempool and the blocks sees (without amounts or destinations), and more.
 //!
 //! Blocks: block k (1-based after the start) is produced at `t0 + 120 k + jitter(k)`, jitter in
 //! [0, 60) s from the chain seed. A transfer first seen at `t_s` is mined in the first block
@@ -36,6 +41,9 @@ pub struct WalletLog {
     pub args: Vec<u64>,
     pub address: Option<String>,
     pub entries: Vec<IncomingEntry>,
+    /// The timestamp of the block that mined each entry (`None` in the pool): public chain data the
+    /// production wallet also has, exported with the entry (§19.31).
+    pub block_times: Vec<Option<u64>>,
     pub error: bool,
 }
 
@@ -125,6 +133,11 @@ impl ChainState {
         self.t0 + BLOCK_SECS * k + self.jitter[(k as usize) % self.jitter.len()]
     }
 
+    /// The timestamp of the block at `height` (the inverse of `entry`'s height numbering).
+    fn height_time(&self, height: u64) -> u64 {
+        self.block_time(height + 1 - START_BLOCKS)
+    }
+
     /// Blocks produced at or before `t` (after the start).
     fn produced(&self, t: u64) -> u64 {
         if t < self.t0 {
@@ -170,12 +183,17 @@ impl ChainState {
 
     fn record(&mut self, method: &'static str, args: Vec<u64>, entries: Vec<IncomingEntry>) {
         let t = self.now;
+        let block_times = entries
+            .iter()
+            .map(|e| e.height.map(|h| self.height_time(h)))
+            .collect();
         self.log.push(WalletLog {
             t,
             method,
             args,
             address: None,
             entries,
+            block_times,
             error: false,
         });
     }
@@ -200,6 +218,7 @@ impl PaymentRail for ChainHandle {
             args: vec![u64::from(minor)],
             address: Some(text.clone()),
             entries: Vec::new(),
+            block_times: Vec::new(),
             error: false,
         });
         Ok((minor, text))

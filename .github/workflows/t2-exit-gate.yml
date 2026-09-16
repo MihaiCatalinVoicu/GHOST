@@ -5,11 +5,11 @@ name: t2-exit-gate
 # with the real redeem path and capture, reference clients on the production client-core calls and
 # crypto, scheduled by the reference policy that replays entitlement_policy.txt) at the gate scale
 # (N = 2 000 packs, 84 days, a 40-week warm-up of the credit spenders), exported as the complete
-# issuer and relay views and analysed by ghost-t2-join: the join search J1–J10, T2b and T2c; the twin
-# worlds NI-1 (same cell, and across activation-slot cells), NI-1d, NI-2 and NI-3; S1–S3 at
-# α = 0.001 and the absolute bound S4 (Q21: ≤ 0.25, also against an issuer that lies
-# AWAITING_CONFIRMATIONS); and the privacy mutants M1–M23 (with M2b, M5a, M5b; design §19.27),
-# each detected by its named check.
+# issuer and relay views and analysed by ghost-t2-join: the join search J1–J10, T2b and T2c; the
+# FR-6′.7 amount uniformity A1 (design §19.31); the twin worlds NI-1 (same cell, and across
+# activation-slot cells), NI-1d, NI-2 and NI-3; S1–S3 at α = 0.001 and the absolute bound S4 (Q21:
+# ≤ 0.25, also against an issuer that lies AWAITING_CONFIRMATIONS); and the privacy mutants M1–M24
+# (with M2b, M5a, M5b; design §19.27, §19.31), each detected by its named check.
 # Release profile (design §19.17 point 2). Seeds are pinned (issuer/crates/service/tests/t2/gate.rs
 # SEEDS; a failure on a correct implementation is investigated, never re-seeded): a push to main or
 # a pull request runs seed pair 0, the nightly schedule sweeps all ten pairs as a matrix.
@@ -124,7 +124,7 @@ jobs:
           if-no-files-found: error
 
   mutants:
-    name: T2 privacy mutants M1–M23 (release)
+    name: T2 privacy mutants M1–M24 (release)
     runs-on: ubuntu-24.04
     # Measured locally: 742 s on 24 cores (23 tests in parallel, the longest two PR-scale worlds);
     # about two CPU-hours in all, so about 55 minutes on a 4-vCPU runner with the build.

@@ -15,7 +15,9 @@
 //! family), so J3's detection does not rest on the mutant's own string. M22 (a received credit's
 //! refresh timed by its drop read, the rule Q31 replaced) is asserted by NI-2, whose relays hold
 //! the drop blobs back by hours to days (§19.26 point 7); the control's due times never differ
-//! (one refresh time per invite, §19.29).
+//! (one refresh time per invite, §19.29). M24 (a per-invoice amount, FR-6′.7, §19.31) is asserted by
+//! A1 on the issuer view and by the production client-core refusal of every such invoice (no
+//! payment, the purchases failed with ISSUER_MISMATCH), each against the small control.
 //!
 //! M4 (`SharedIssuerScope`) is also caught by the `client-core` unit test of the `IssuerFlow` map
 //! (`isolation.rs`, §19.17 point 6); here the reference client's shared scope is caught by J6 a and
@@ -118,6 +120,12 @@ struct Control {
     ni3: Findings,
     ni1d: Findings,
     stats: Findings,
+    /// World A's counts: what the client did with the issuer's answers (M24).
+    counts: std::collections::BTreeMap<&'static str, u64>,
+}
+
+fn count(counts: &std::collections::BTreeMap<&'static str, u64>, key: &str) -> u64 {
+    counts.get(key).copied().unwrap_or(0)
 }
 
 /// The small-scale control: world A (seed 1), its twins, and the statistics against a trained
@@ -157,6 +165,7 @@ fn small() -> &'static Control {
             ni3: Findings::default(),
             ni1d: Findings::default(),
             stats: Findings::default(),
+            counts: a.log.counts.clone(),
         };
         gate::joins(&mut c.joins, &a);
         gate::ni1(&mut c.ni1, &a, &outs[0]);
@@ -206,6 +215,7 @@ fn pr() -> &'static Control {
             ni3: Findings::default(),
             ni1d: Findings::default(),
             stats: Findings::default(),
+            counts: a.log.counts.clone(),
         };
         gate::joins(&mut c.joins, &a);
         gate::ni1(&mut c.ni1, &a, &outs[0]);
@@ -708,6 +718,51 @@ mutant_test!(m23_unbounded_re_prepare, {
         m,
     );
     detected(&f, wrong_period_control(), "T2c", &["beyond its cap"], m);
+});
+
+mutant_test!(m24_per_invoice_amount, {
+    // FR-6′.7 (§19.31): the issuer quotes every XMR invoice the ES pack price plus a per-invoice
+    // delta of up to 3 %. Two detectors, for two reasons:
+    // - the production client-core check (`issuer_flow::request_invoice`) recomputes the price from
+    //   the ES and refuses the answer as `malformed_response`, so no XMR invoice is accepted, nothing
+    //   is paid, and each purchase fails after its one identical retry with ISSUER_MISMATCH (the
+    //   world's counts, reported on the A1 line): the amount never becomes a payment the payer's
+    //   wallet or exchange records could be joined on;
+    // - A1 fails on the issuer view: the quoted amounts are not the ES price, whatever the clients
+    //   did with them.
+    // The join search, NI-1 and NI-2 cannot see it: the amount never reaches a relay (the client
+    // derives nothing from it), and the delta is a PRF of the invoice id, so the NI-2 twin quotes the
+    // same amounts while the NI-1 twin's clients refuse theirs just as well.
+    let m = Mutant::M24PerInvoiceAmount;
+    let (_, out) = world("m24", population::SMALL, SEEDS.1, m, true, 0);
+    let mut f = Findings::default();
+    gate::joins(&mut f, &out);
+    detected(&f, &small().joins, "A1", &["not the ES pack price"], m);
+    let control = &small().counts;
+    let refused = count(&out.log.counts, "request_invoice malformed");
+    let failed = count(&out.log.counts, "purchases failed ISSUER_MISMATCH");
+    let paid = count(&out.log.counts, "payments");
+    println!(
+        "{m:?}: client-core refused {refused} invoice answers, {failed} purchases failed with ISSUER_MISMATCH, {paid} payments (control: {}, {}, {})",
+        count(control, "request_invoice malformed"),
+        count(control, "purchases failed ISSUER_MISMATCH"),
+        count(control, "payments")
+    );
+    assert!(
+        refused > 0 && failed > 0 && paid == 0,
+        "mutant {m:?}: client-core accepted a per-invoice amount ({refused} answers refused, {failed} purchases failed, {paid} payments)"
+    );
+    assert!(
+        count(control, "request_invoice malformed") == 0
+            && count(control, "purchases failed ISSUER_MISMATCH") == 0
+            && count(control, "payments") > 0,
+        "the control of {m:?} refused invoices or paid nothing, so the refusals are no detection"
+    );
+    let line = f.lines.iter().find(|l| l.starts_with("A1: ")).unwrap();
+    assert!(
+        line.contains(&format!("client-core refused {refused} invoice answers")),
+        "the A1 line does not report the refusals: {line}"
+    );
 });
 
 // -------------------------------------------------------------------------------------------------
