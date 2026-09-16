@@ -161,7 +161,7 @@ Fiecare ADR se aprobă sau se respinge individual. Formatul urmează practica di
 
 **Decizie.**
 - Un serviciu **Entitlement Issuer** (Rust, onion service, componentă de control plane conform §6.3) emite **token-uri de acces** prin **RSA Blind Signatures (RFC 9474)** sau **Privacy Pass (RFC 9576–9578)** cu metadate publice = perioada de valabilitate (zi/săptămână). Ambele sunt standarde IETF cu implementări existente → CP-09 respectat.
-- Rail P0 = **Monero (XMR)**: sume, expeditor și destinatar sunt ascunse pe lanț prin design (RingCT, stealth addresses). Operatorul deține pe issuer doar **view key**; spend key rămâne offline/multisig (§10.3 rămâne valabil).
+- Rail P0 = **Monero (XMR)**: sume, expeditor și destinatar sunt ascunse pe lanț prin design (RingCT, stealth addresses). Operatorul deține pe issuer doar **view key**; spend key rămâne offline/multisig (§10.3 rămâne valabil). Suma unei facturi este prețul public uniform al epocii (FR-6′.7): emiterea blind rămâne singurul mecanism de nelegabilitate, iar uniformitatea sumei e o proprietate suplimentară a facturii.
 - Flux (detaliat în Anexa A): clientul cere o factură prin Tor → issuer răspunde cu o **subadresă XMR unică** și un id → utilizatorul plătește din **orice wallet Monero extern** (URI `monero:` / QR) → după confirmare, clientul trimite cererea **blind** (token-uri de acces + token-uri de invitație, ADR-05) și **referral commitment**-ul din invitația proprie → issuer semnează → clientul deblindează local. Issuer-ul nu poate lega plata de token-urile prezentate ulterior relay-urilor: proprietate criptografică, nu politică.
 - Relay-urile verifică token-urile **offline** cu cheia publică a issuer-ului și păstrează **nullifier-e** doar pentru perioada curentă (memorie, TTL). Token-urile sunt de unică folosință și se schimbă pe capabilități de scriere de scurtă durată (Anexa B).
 - **Referral 10%**: la fiecare plată, issuer-ul creditează 10% pe referral commitment-ul primit. Referrer-ul revendică (Tor, sesiune nouă) demonstrând preimaginea și indicând o subadresă XMR proaspătă; plățile se fac în loturi, cu întârziere aleatoare (§10.3). Ieșirile de referral sunt plafonate la 10% din venit **prin construcție**, deci self-referral devine echivalent cu un discount de 10%, nu o breșă.
@@ -237,7 +237,7 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | Actor | Vede | Nu vede |
 |---|---|---|
 | **Relay** | hash-uri de blob, bucket de dimensiune, identificator opac de canal (namespace), capabilitate / nullifier, moment aproximativ, un circuit Tor | IP, identitate, conținut, apartenență la canale, graf social, orice despre plată |
-| **Entitlement issuer** | suma și momentul unei plăți (fără expeditor, Monero), numărul de token-uri emise, referral commitment-ul creditat, subadresa de payout a unui referrer | identitatea GHOST, care token este folosit unde/când, IP |
+| **Entitlement issuer** | suma (uniformă, prețul public al epocii, FR-6′.7) și momentul unei plăți (fără expeditor, Monero), numărul de token-uri emise, referral commitment-ul creditat, subadresa de payout a unui referrer | identitatea GHOST, care token este folosit unde/când, IP |
 | **Rețea / ISP** | trafic Tor (sau bridge) | destinație, conținut, dimensiuni reale, cine sunt corespondenții |
 | **Membrii unui canal** | pseudonimul per canal, conținutul, timestamps la minut | identitatea de bază (fără reveal), participarea în alte canale, IP |
 | **Corespondent DM** | identitatea de bază, conținutul, safety number | IP, canalele celuilalt (dacă nu au fost revelate) |
@@ -263,6 +263,7 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | FR-5.6 | ≥ 3 **operatori** independenți, inbound onion-only | P0 |
 | FR-6.1, FR-6.4 | IdentityAnchor, ContentNotary: **eliminate** | — |
 | FR-6.2, FR-6.3, FR-6.5, FR-6.9, FR-6.10 | Înlocuite cu FR-6′.1…6′.6: emitere blind (RFC 9474/9578), metadate publice de perioadă, nullifier per perioadă la relay, referral commitment în cerere, plafon 10% prin construcție, payout în loturi. Faza 8 (propuse 2026-09-12, aplicate): perioada de acces = săptămâna ISO, nullifier-e persistate la relay (ADR-22, ADR-25); referral prin token-uri blind de credit în locul commitment-ului în cerere, plafonul de 10 % păstrat prin construcție (ADR-24) | P0 |
+| FR-6′.7 (nou) | Suma facturii = exact prețul public al pachetului pentru epoca din Programul de Entitlement, identic pentru toți cumpărătorii; nicio componentă per factură. Clientul recalculează suma și refuză orice altă valoare; singurul element distinct al facturii e subadresa unică. Motiv: RingCT ascunde suma pe lanț, deci doar deținătorul view key o vede, iar o sumă unică per factură ar deveni cheie de join cu portofelul sau exchange-ul plătitorului (T2) | P0 |
 | FR-6.6 | Rail P0 = Monero; Lightning P1 (aceeași emitere); USDC/Base P2 opțional | P0 |
 | FR-6.8 | Disclosure înainte de plată include avertismentul „nu plăti direct de la un exchange cu KYC” | P0 |
 | FR-7.6 | Portofel integrat: **eliminat** din P0 | — |
@@ -306,7 +307,7 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | 5 | Relay v1 (Rust): store/get/check, capabilități, padding, TTL, gossip minimal, RocksDB; deploy ca onion services pe 3 operatori de staging; harness relay capture | Rust | 4–6 s | 1 | 2 noduri: fault + abuse suite; relay-capture verde; failover |
 | 6 | Client Tor (Arti) + modul `network`: fail-closed, isolation per canal, padding, capability client | Android + Rust | 2–4 s | 5 | zero clearnet/DNS la Tor oprit; latență măsurată pe 2 dispozitive |
 | 7 | Sync engine: outbox/inbox idempotent, WorkManager, cursors opace, jitter, retry | Android | 3–4 s | 4, 6 | offline/reconnect/process-death fără pierderi sau duplicate |
-| 8 | Entitlement issuer (Rust): blind signatures, `monero-wallet-rpc` view-only, invite tokens, referral ledger, payout în loturi; client `entitlement` | Rust + Android | 3–5 s | 1 (paralel cu 5–7) | teste negative: reuse, expirat, forjat, perioadă greșită; **test de unlinkability** (jurnalul issuer-ului nu se poate uni cu nullifier-ele relay-urilor) |
+| 8 | Entitlement issuer (Rust): blind signatures, `monero-wallet-rpc` view-only, invite tokens, referral ledger, payout în loturi; client `entitlement` | Rust + Android | 3–5 s | 1 (paralel cu 5–7) | teste negative: reuse, expirat, forjat, perioadă greșită; **test de unlinkability** (jurnalul issuer-ului nu se poate uni cu nullifier-ele relay-urilor); T2 verde, inclusiv adversarul issuer compromis + observator Monero și sume uniforme (FR-6′.7) |
 | 9 | DM cu libsignal: publicare prekeys prin relay, sesiuni, safety number, PQ mode, mesaje efemere implicit 7 zile (timer în conținutul criptat, ștergere locală completă, TTL pe relee ≤ timer cu treaptă nouă de 1 h; ADR-27) | Android | 5–7 s | 3, 7 | 2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochează; T25 verde |
 | 10 | Forum cu OpenMLS: bridge Rust→Android, canale, epoch, history policy, pseudonime, reveal opt-in, mesaje efemere per canal (politica canalului; ADR-27) | Android + Rust | 6–9 s | 3, 7 (suprapunere cu 9 după definirea envelope-ului) | 20 clienți add/remove/resync; membru scos nu decriptează epoch-uri noi; T25 și în canale |
 | 11 | Media: AEAD per chunk 256 KiB, fragmentare 64 KiB, strip metadata, Media3 fără cache plaintext, media efemeră și „vezi o singură dată” (P1; ADR-27) | Android | 3–4 s | 7 (paralel cu 10) | corruption/resume; EXIF-zero; no-plaintext-cache |
@@ -375,7 +376,7 @@ CP-10 și FR-8.7 interzic afirmațiile care depășesc matricea de garanții. Si
 - **Adversar global pasiv** și atacuri de corelare pe Tor la nivel statal: Tor oferă rezistență, nu imunitate; padding-ul și jitter-ul reduc, nu elimină.
 - **Membrii de grup rău-intenționați**: pot copia conținut și pot vedea pseudonimul din acel canal. Pseudonimele per canal limitează pagubele la un canal. Blocarea screenshot-urilor și a copierii, plus mesajele efemere (ADR-27), elimină scurgerile accidentale și istoricul vechi, dar nu fotografia ecranului cu alt dispozitiv sau un client modificat.
 - **Metadate reziduale la relay**: activitatea pe un namespace, bucket-uri de dimensiune, timp granular. Sunt exact cele din matricea de garanții și sunt testate automat.
-- **Plata**: issuer-ul vede că *o* plată a sosit (sumă, moment). Nu o poate lega de identitate sau de trafic. Dacă utilizatorul plătește direct de la un exchange cu KYC, exchange-ul știe că a plătit GHOST — se avertizează în UI.
+- **Plata**: issuer-ul vede că *o* plată a sosit (sumă uniformă, FR-6′.7; moment). Rețeaua Monero vede momentul difuzării tranzacției și amprenta portofelului plătitorului (taxă, număr de output-uri, nodul prin care difuzează); recomandat: portofel propriu prin Tor, plată la un moment aleator după factură. Nu o poate lega de identitate sau de trafic. Dacă utilizatorul plătește direct de la un exchange cu KYC, exchange-ul știe că a plătit GHOST — se avertizează în UI.
 - **Referral**: creditarea unui commitment corelată temporal cu o plată este inerentă modelului; loturile și întârzierile aleatoare o atenuează. Invitația în sine este o legătură socială cunoscută celor doi participanți (inerent).
 - **ISP-ul vede utilizarea Tor** (nu și destinația); bridges (P1) pentru rețele ostile.
 - **Disponibilitatea** depinde de Tor și de ≥ 3 operatori de relay; cenzura Tor într-o țară poate bloca serviciul acolo.
@@ -403,7 +404,7 @@ sequenceDiagram
     participant R as Relay (.onion)
 
     C->>I: RequestInvoice(period, referral_commitment?)
-    I-->>C: invoice_id, subadresă XMR unică, sumă, expirare
+    I-->>C: invoice_id, subadresă XMR unică, sumă = prețul public (FR-6′.7), expirare
     C->>U: afișează URI monero:/QR + disclosure rail
     U->>M: plătește din propriul wallet
     M-->>I: tranzacție (issuer: view key, vede doar sosirea sumei)
@@ -420,7 +421,7 @@ sequenceDiagram
     R-->>C: write_capability (cotă, expirare)
 ```
 
-Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice_id, sumă, timp, blinded messages) și jurnalul relay-urilor (nullifier-e, momente) **nu au nicio cheie de join**; token-ul deblindat nu apare nicăieri la issuer.
+Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice_id, sumă uniformă conform FR-6′.7, timp, blinded messages) și jurnalul relay-urilor (nullifier-e, momente) **nu au nicio cheie de join**; token-ul deblindat nu apare nicăieri la issuer.
 
 *Notă (Faza 8, 2026-09-13):* fluxul aplicat e cel din ADR-22 … ADR-26 (propuse 2026-09-12, aplicate): fără `Poll` și fără `IssuerKeys` (cheile, prețurile și constantele vin doar din Programul de Entitlement semnat, inclus în aplicație); URI-ul `monero:` e construit de client; `BlindSign` are o structură fixă și servește și ca interogare a plății; apelurile către issuer au loc în rulări liniștite; token-urile devin folosibile de la un slot de activare; perioada = săptămâna ISO; creditul de referral e un token blind (fără `referral_commitment`); T2 are enunțul precis din `ghost/test-harness/privacy/INVARIANTS.md`.
 
@@ -438,7 +439,7 @@ Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice
 | ID | Test | Eșuează dacă |
 |---|---|---|
 | T1 | Relay capture: relay instrumentat înregistrează tot ce poate observa | apare IP, identitate, plaintext, dimensiune nepadată, câmp de expeditor |
-| T2 | Unlinkability issuer ↔ relay: se încearcă join-ul jurnalelor | există orice cheie comună sau corelație peste pragul statistic |
+| T2 | Unlinkability issuer ↔ relay: se încearcă join-ul jurnalelor; adversarul deține simultan issuer-ul compromis (inclusiv fluxul Monero văzut prin view key: intrări, sume, momente) și o poziție pasivă pe rețeaua Monero (momente de mempool și de bloc) | există orice cheie comună sau corelație peste pragul statistic; sumele facturilor unei epoci nu sunt toate egale cu prețul public (FR-6′.7); evenimentul de plată XMR se poate lega de token-urile emise sau de traficul relay al unui client peste scurgerea declarată |
 | T3 | Log scrub: secrete-canar injectate (seed, chei, capabilități, ID-uri) | orice canar apare în log/telemetrie/crash report |
 | T4 | Backup/device transfer inspection | seed, cheie DB, stare libsignal/MLS sau cache decriptat în arhivă |
 | T5 | Strip metadata: imagine cu GPS și video cu locație | ieșirea decriptată conține EXIF/XMP/atomi de locație |
