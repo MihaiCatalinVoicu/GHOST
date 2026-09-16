@@ -35,7 +35,8 @@ ignore = [
 [licenses]
 version = 2
 # Unused pre-approvals are refused so a new dependency cannot slip in under a license nobody
-# reviewed for this project (ADR-07 client license still open).
+# reviewed for this project. GHOST itself is proprietary (owner decision 2026-09-16, root LICENSE);
+# no copyleft licence may enter a shipped graph.
 unused-allowed-license = "deny"
 allow = [
     "MIT",
@@ -51,6 +52,11 @@ allow = [
     "CC0-1.0",
 ]
 confidence-threshold = 0.9
+
+# GHOST workspace crates are unpublished (publish = false) and carry LicenseRef-GHOST-Proprietary;
+# their licence is the root LICENSE, not a dependency licence to vet.
+[licenses.private]
+ignore = true
 
 [bans]
 multiple-versions = "warn"
