@@ -14,7 +14,8 @@
 //! "nonce" and, as M1b, with a GHOST label and the position as the HKDF info (J3's label-counter
 //! family), so J3's detection does not rest on the mutant's own string. M22 (a received credit's
 //! refresh timed by its drop read, the rule Q31 replaced) is asserted by NI-2, whose relays hold
-//! the drop blobs back by hours to days (§19.26 point 7).
+//! the drop blobs back by hours to days (§19.26 point 7); the control's due times never differ
+//! (one refresh time per invite, §19.29).
 //!
 //! M4 (`SharedIssuerScope`) is also caught by the `client-core` unit test of the `IssuerFlow` map
 //! (`isolation.rs`, §19.17 point 6); here the reference client's shared scope is caught by J6 a and
@@ -647,8 +648,8 @@ mutant_test!(m21_spend_received_credit, {
 mutant_test!(m22_refresh_at_read, {
     // The rule Q31 replaced (§19.26, review T2GAPS-1): a received credit's refresh due 1–14 days
     // after its drop read. NI-2's relays hold every drop blob back by hours to days, so the
-    // mutant's due times follow the reads, which no declared bit explains; the control's due times
-    // differ only where a read crossed the invite's first refresh time.
+    // mutant's due times follow the reads; the control's never differ, since each invite has one
+    // refresh time the read does not decide (§19.29).
     let m = Mutant::M22RefreshAtRead;
     let (cfg, a) = world("m22-a", population::SMALL, SEEDS.1, m, false, 0);
     let b = run(gate::ni2_twin(&cfg, &a));

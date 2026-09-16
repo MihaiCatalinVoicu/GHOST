@@ -77,6 +77,13 @@ const BACKGROUND_WINDOW: u64 = 90;
 const SLOT_SECS: u64 = 900;
 const BLOB: usize = 1_024;
 const LATENCY: u64 = 2;
+/// The issuer's scanner ticks on its own timer, every 30 s ± 10 s (`server.rs`, the default
+/// `scan_interval_seconds` and `SCAN_JITTER`; design §7.3), never at a client's call. Its jitter is
+/// a world constant, like the block schedule (`chain.rs`): every twin world shares the tick times,
+/// so no twin moves a confirmation across a tick.
+const SCAN_INTERVAL: u64 = 30;
+const SCAN_JITTER: u64 = 10;
+const SCAN_TIMER_SEED: u64 = 0x5343_414e_5449_434b;
 
 /// What a world reports besides its views.
 #[derive(Default, Debug, Clone)]
@@ -85,7 +92,7 @@ pub struct Log {
     pub sign_outcomes: Vec<(u32, u64, usize, i32)>,
     /// Need-triggered purchase starts (client, foreground start, device not-before).
     pub need_starts: Vec<(u32, u64, i64)>,
-    /// Received credits, refreshed or dropped after their cut (Q31, §19.26).
+    /// Received credits, refreshed or dropped (§19.29).
     pub receipts: Vec<Receipt>,
     /// Invite revocations answered with spare tokens: (client, flow, true answer time, device time
     /// the spares become eligible).
@@ -110,8 +117,9 @@ pub struct Log {
     pub capture_lines: u64,
 }
 
-/// One drop read of a received credit (Q31, §19.26): the invite's two pre-drawn refresh times and
-/// the issuer's cut, the read, and the due time the read gave (`None`: dropped after its cut).
+/// One drop read of a received credit (§19.29): the invite's one pre-drawn refresh time and the
+/// issuer's cut, the read, and the due time (`None`: dropped, its refresh window closing before the
+/// listening ends). The read enters no due time; it is logged so that the twins can move it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Receipt {
     pub inviter: u32,
@@ -121,11 +129,10 @@ pub struct Receipt {
     pub w: i64,
     /// True time the invitee's write reached the relays (the blob lives 30 days from then).
     pub written: u64,
-    /// True time the listening on the drop ends.
+    /// The start of the day the listening on the drop ends (compared with device times).
     pub until: u64,
-    /// The invite's two refresh times and the cut of the credit's epoch (device times).
-    pub first: i64,
-    pub second: i64,
+    /// The invite's refresh time and the cut of the credit's epoch (device times).
+    pub at: i64,
     pub cut: i64,
     pub due: Option<i64>,
 }
@@ -225,7 +232,9 @@ pub struct World {
     queue: BinaryHeap<Reverse<(u64, u64, Event)>>,
     seq: u64,
     now: u64,
-    last_tick: u64,
+    /// The scanner's timer (§7.3, `server.rs`): the time of its next tick, and the jitter stream.
+    next_scan: u64,
+    scan_rng: Rng,
     invite_pool: Vec<(usize, usize)>,
     liar: Liar,
     /// (client, flow instance) of a `WRONG_PERIOD` re-prepare → the first instance of its lineage
@@ -360,7 +369,8 @@ impl World {
             queue: BinaryHeap::new(),
             seq: 0,
             now: tl.t0,
-            last_tick: 0,
+            next_scan: tl.t0,
+            scan_rng: Rng::new(SCAN_TIMER_SEED, &[b"scan-timer"]),
             invite_pool: Vec::new(),
             drop_blobs: BTreeMap::new(),
             session_pay: vec![Vec::new(); n],
@@ -430,7 +440,6 @@ impl World {
         )
         .expect("the T2 issuer opens");
         self.issuer = Some(issuer);
-        self.last_tick = 0;
     }
 
     fn open_relay(&mut self, k: u8, mode: NullifierMode) -> RelayNode {
@@ -503,6 +512,11 @@ impl World {
             };
             let e_ = e;
             let _ = e_;
+            // The scanner's timer runs independently of every client: its ticks up to this event.
+            let scan = std::time::Instant::now();
+            self.scan_until(self.now);
+            *self.log.timings.entry("issuer scanner").or_insert(0.0) +=
+                scan.elapsed().as_secs_f64();
             match e {
                 Event::End => break,
                 Event::Join(c) => self.join(c),
@@ -735,16 +749,47 @@ impl World {
         }
     }
 
-    /// The issuer's own jobs before a client call: pool refill and a scanner tick at most 60 s old.
+    /// The issuer's own jobs before a client call at `t`: every scanner tick of the timer due at or
+    /// before `t` (each at its own time, so the state a call sees never depends on another client's
+    /// calls), then the pool refill.
     fn prepare_issuer(&mut self, t: u64) {
+        self.scan_until(t);
         self.chain.set_now(t);
         // The refill job keeps the pool at its target before every call (its size, which the NI-1
         // twin varies, then never refuses an invoice).
         let _ = self.issuer().pool_refill_at(t);
-        if self.last_tick + 60 <= t {
-            let _ = self.issuer().scan_tick_at(t);
-            self.last_tick = t;
+        self.drain_wallet();
+    }
+
+    /// Runs every scanner tick of the timer due at or before `t`, in order, each at its own time
+    /// (`server.rs`: every `scan_interval_seconds` ± 10 s, design §7.3). The world runs them before
+    /// each event and before each issuer call, which is when the production timer would have run
+    /// them: nothing the issuer decides between two events can depend on a tick that has not yet run.
+    fn scan_until(&mut self, t: u64) {
+        while self.next_scan <= t {
+            let at = self.next_scan;
+            if self.issuer.is_some() {
+                self.chain.set_now(at);
+                let _ = self.issuer().scan_tick_at(at);
+                self.drain_wallet();
+                self.log.count("scanner ticks");
+            }
+            self.next_scan = at
+                + self
+                    .scan_rng
+                    .range(SCAN_INTERVAL - SCAN_JITTER, SCAN_INTERVAL + SCAN_JITTER + 1);
         }
+    }
+
+    /// A started issuer process refills its pool and ticks once before it serves (`server.rs`);
+    /// the timer keeps its phase (a world constant), so a restart in one twin moves no later tick.
+    fn issuer_started(&mut self) {
+        let t = self.now;
+        self.scan_until(t);
+        self.chain.set_now(t);
+        let _ = self.issuer().pool_refill_at(t);
+        let _ = self.issuer().scan_tick_at(t);
+        self.log.count("scanner ticks at a process start");
         self.drain_wallet();
     }
 
@@ -866,6 +911,7 @@ impl World {
         )
         .unwrap();
         self.open_issuer(OpenMode::Normal);
+        self.issuer_started();
     }
 
     fn restore(&mut self) {
@@ -876,8 +922,7 @@ impl World {
         )
         .unwrap();
         self.open_issuer(OpenMode::Restore);
-        let t = self.now;
-        self.prepare_issuer(t);
+        self.issuer_started();
         self.log.count("issuer restores");
     }
 
@@ -1180,8 +1225,9 @@ impl World {
             // expiry, §8.2) and listened until 56 days later (§8.5).
             let expiry = week_start((epoch + 2) * 4);
             let until = expiry + 56 * DAY as u64;
-            // The refresh times of a credit read from this drop, drawn as the listening starts
-            // (Q31, §19.26): scheduling randomness keyed on the invite's identity, never on a read.
+            // The refresh time of a credit read from this drop, drawn as the listening starts, 1–14
+            // days after it ends (§19.29): scheduling randomness keyed on the invite's identity,
+            // never on a read.
             let mut r = Rng::new(
                 self.cfg.seeds.sched,
                 &[
@@ -1191,8 +1237,7 @@ impl World {
                     &[ordinal],
                 ],
             );
-            let refresh =
-                policy::refresh_times(expiry as i64 / DAY, until as i64 / DAY, &mut || r.uniform());
+            let refresh = policy::refresh_time(until as i64 / DAY, &mut || r.uniform());
             self.clients[inviter].drops.push(DropListen {
                 ns: drop_ns,
                 until,
@@ -3528,7 +3573,7 @@ impl World {
                                 written,
                                 until,
                             };
-                            self.deliver_credit(c, credit, invitee, read, refresh);
+                            self.deliver_credit(c, di, credit, invitee, read, refresh);
                         }
                     }
                 }
@@ -3548,18 +3593,25 @@ impl World {
             .is_some_and(|&release| t < release)
     }
 
-    /// The inviter's client `c` read `credit` from the drop of `invitee` (`read`): it becomes a
-    /// refresh due at one of the drop's two pre-drawn times `refresh` (`DropSteps.credit`,
-    /// `RefreshPlan.due`, Q31, §19.26), never at a time the read sets.
+    /// The inviter's client `c` read `credit` from the drop of `invitee` (`read`, the client's drop
+    /// `di`): it becomes a refresh due at the drop's one pre-drawn time `at`, placed inside the
+    /// issuer's refresh window by the credit's epoch (`DropSteps.credit`, `RefreshPlan.due`, §19.29);
+    /// no read time enters. A blob read from the listening's last day on (device time) is not taken
+    /// (`DropSteps.take`), so every read precedes the refresh time.
     fn deliver_credit(
         &mut self,
         c: usize,
+        di: usize,
         credit: Token,
         invitee: usize,
         read: Read,
-        refresh: (i64, i64),
+        at: i64,
     ) {
         let w = read.w;
+        if w >= read.until as i64 {
+            self.log.count("drop blobs read after the listening ended");
+            return;
+        }
         // A credit whose key id is not an ES key (mutant M2b) is not kept.
         let Some(epoch) = self.schedule.key_by_id(credit.key_id()).map(|k| k.epoch) else {
             return;
@@ -3573,8 +3625,8 @@ impl World {
             self.log.count("received credits kept without refresh");
             return;
         }
-        // The read picks only which pre-drawn time applies; a credit whose due time would precede
-        // its read (after the issuer's refresh cut) is dropped, never refreshed at the read.
+        // The read picks nothing: a credit whose refresh window closes before the listening ends is
+        // dropped whatever the read (§19.29).
         let due = if self.cfg.mutant == Mutant::M22RefreshAtRead {
             // The mutant: due 1–14 days after the read, drawn per invite (client randomness).
             let key = derive32(
@@ -3587,7 +3639,7 @@ impl World {
             );
             policy::refresh_due_at_read(epoch as i64, w, prf_unit(&key, b"due"))
         } else {
-            policy::refresh_due(refresh.0, refresh.1, epoch as i64, w)
+            policy::refresh_due(at, read.until as i64 / DAY, epoch as i64)
         };
         let receipt = Receipt {
             inviter: c as u32,
@@ -3596,26 +3648,25 @@ impl World {
             w,
             written: read.written,
             until: read.until,
-            first: refresh.0,
-            second: refresh.1,
+            at,
             cut: policy::refresh_cut(epoch as i64),
             due,
         };
         self.log.receipts.push(receipt);
         let Some(due) = due else {
             self.log
-                .count("received credits dropped after their refresh cut");
+                .count("received credits dropped: refresh window closed before the listening end");
             return;
         };
-        let drawn = if w <= refresh.0 { refresh.0 } else { refresh.1 };
-        self.log.count(if due < drawn {
-            "refreshes due at their cut"
-        } else if w <= refresh.0 {
-            "refreshes due at the first time"
+        self.log.count(if due == at {
+            "refreshes due at their refresh time"
         } else {
-            "refreshes due at the second time"
+            "refreshes placed inside their refresh window"
         });
-        let instance = self.clients[c].next_flow(super::client::FlowSeq::Refresh);
+        // Numbered by its drop, never by the order of the reads (§19.29): the circuit label of a
+        // refresh derives from its instance.
+        let instance =
+            self.clients[c].flow_instance(super::client::FlowSeq::Refresh, di as u64 + 1);
         self.clients[c].received.push(Received {
             token: credit,
             epoch,

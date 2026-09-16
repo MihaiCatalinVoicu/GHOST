@@ -191,7 +191,7 @@ internal object EntMutants {
     })
 
     private const val INVITE_BY_NAMESPACE =
-        "SELECT invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute, late_refresh_minute FROM ent_invite WHERE drop_namespace = ?1"
+        "SELECT invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute FROM ent_invite WHERE drop_namespace = ?1"
 
     private fun blindSignDue(ec: EntClient): Boolean {
         var n = 0L

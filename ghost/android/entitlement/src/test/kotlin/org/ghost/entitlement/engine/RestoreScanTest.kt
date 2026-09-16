@@ -128,10 +128,10 @@ class RestoreScanTest {
     }
 
     /**
-     * Q31 with the restore scan (§19.26): a scanned drop's invite expiry is unknown, so both its refresh
-     * times are one draw 1–14 days after the scan's end; a credit read at the install and one read on
-     * the scan's last day are due at that same time, and a later restore that extends the scan draws the
-     * times of the drops still without a credit anew.
+     * A scanned drop's refresh time is drawn as every drop's (§19.29), 1–14 days after its listening
+     * (the scan) ends; a credit read at the install and one read on the scan's last day are due at that
+     * same time, and a later restore that extends the scan draws the time of the drops still without a
+     * credit anew.
      */
     @Test
     fun aScannedDropIsRefreshedAfterTheScanEndsWhateverTheRead(): Unit = World().use { w ->
@@ -141,7 +141,6 @@ class RestoreScanTest {
         val at = Time.ceilMinute(until * Grid.DAY + Grid.DAY + (0.25 * 13 * Grid.DAY).toLong())
         for (row in w.tx { w.ctx().invites.all(it) }) {
             assertEquals(at, row.refreshMinute)
-            assertEquals(at, row.lateRefreshMinute)
         }
         val epoch = Grid.creditEpoch(WEEK0)
         for ((index, readAt) in listOf(5 to w.clock.now, 6 to until * Grid.DAY - Grid.HOUR)) {
@@ -166,7 +165,6 @@ class RestoreScanTest {
             assertEquals(if (credited) InviteStore.CREDITED else InviteStore.CREATED, row.state)
             assertEquals(if (credited) until else extended, row.listenUntilDay)
             assertEquals(if (credited) at else again, row.refreshMinute)
-            assertEquals(row.refreshMinute, row.lateRefreshMinute)
         }
     }
 
@@ -332,7 +330,7 @@ class RestoreScanTest {
         // An invite of an earlier identity of this database, at index 0.
         val other = World.INVITER.inviteKeys(0)
         w.tx { t ->
-            w.ctx().invites.insert(t, 0, ByteArray(Invite.PAYLOAD_BYTES) { 1 }, other.dropNamespace, Grid.day(T0) + 60, T0 + 20 * Grid.DAY, T0 + 61 * Grid.DAY)
+            w.ctx().invites.insert(t, 0, ByteArray(Invite.PAYLOAD_BYTES) { 1 }, other.dropNamespace, Grid.day(T0) + 60, T0 + 61 * Grid.DAY)
             w.stores.namespaces.register(t, org.ghost.sync.api.NamespaceId(other.dropNamespace), Consumer.IDENTITY, w.relayIds.toSet(), true)
         }
         w.engine.restore(w.mnemonic())

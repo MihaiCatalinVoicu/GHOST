@@ -72,19 +72,19 @@
 #       spare tokens (§8.6) by the pack rule, uncapped, in both modes (§19.24 point 13, §19.26): the
 #       answer of a quiet-run call never makes them eligible at once. `base` is the trial's base week
 #       (required for trials, absent for packs and revocations).
-#   refresh expiry=<time> listen_until=<time> uniforms=<u>,<u> -> first=<time> second=<time>
-#       the two refresh times of a received credit, drawn when the inviter creates the invite and
-#       starts listening on its drop (Q31, §19.26), never at the read: first =
-#       ceil_minute(start(week(expiry − 1 s) + 8) + 1 d + u1 × 13 d), 1–14 days after the end of
-#       the latest drop window an invitee of this invite can draw (it activates before the expiry
-#       day, and t_drop < start(base + 8), §19.12); second = ceil_minute(listen_until + 1 d +
-#       u2 × 13 d), after every read (the listening ends at listen_until). expiry and listen_until
-#       are the starts of UTC days. Whole seconds are truncated before the rounding up.
-#   refreshdue first=<time> second=<time> epoch=<c> read=<time> -> <time>|drop
-#       the due time of a received credit of epoch c read from the drop at `read` (§19.26): the first
-#       time if read ≤ first, else the second, cut at start(first week of credit epoch c + 2) − 2 d
-#       (the issuer refreshes c_now and c_now − 1 only, §19.8); a credit whose due time would lie
-#       before its read is dropped, never refreshed at the read.
+#   refresh listen_until=<time> uniforms=<u> -> <time>
+#       the one refresh time of a received credit (Q31 simplified, §19.29), drawn when the inviter
+#       registers the drop as listened (an invite it creates, or a drop a restore scans), never at a
+#       read: ceil_minute(listen_until + 1 d + u × 13 d), 1–14 days after the listening ends, so after
+#       every read (nothing is taken from the drop from listen_until on). listen_until is the start of
+#       a UTC day. Whole seconds are truncated before the rounding up.
+#   refreshdue at=<time> listen_until=<time> epoch=<c> -> <time>|drop
+#       the due time of a received credit of epoch c from a drop listened until listen_until whose
+#       refresh time is `at` (§19.29); no read time enters. cut = start(first week of credit epoch
+#       c + 2) − 2 d (the issuer refreshes c_now and c_now − 1 only, §19.8). `at` if at ≤ cut; else,
+#       if cut ≥ listen_until, the same draw placed inside [listen_until, cut]:
+#       ceil_minute(listen_until + floor((at − listen_until − 1 d) × (cut − listen_until) / 13 d));
+#       else drop (the refresh window closes before the listening ends, whatever the read).
 #   attempt seed=<hex32> receipt=<time> k=<0..4> -> <time>
 #       the due minute of BlindSign attempt k (§19.11): receipt + window_k low + u × window width,
 #       rounded up to a minute, u the top 53 bits of HKDF-SHA256(ikm = seed, salt = none,
@@ -287,14 +287,16 @@ cover prices=227:200,228:250 credits=227,227,227,227,227,227,227,227,227,227,227
 cover prices=227:200,228:300 credits=227,228,228,227,228,228,228,228,228,228,228,227 base=2975 now=2975 -> 1,2,4,5,6,7,8,9,10,0,3
 cover prices=223:200,228:200 credits=223,228,228,228,228,228,228,228,228,228,228 base=2975 now=2975 -> 1,2,3,4,5,6,7,8,9,10
 
-# ---- The refresh times of a received credit (Q31, §19.26) -----------------------------------------
-refresh expiry=2977+172800 listen_until=2985+172800 uniforms=0.5,0.25 -> first=2986+43200 second=2986-64800
-refresh expiry=2977+0 listen_until=2985+0 uniforms=0,0.999999 -> first=2984+86400 second=2987+0   # usable until Sunday of 2976; 14 d rounded up
-refreshdue first=2986+43200 second=2987+0 epoch=229 read=2980+0 -> 2986+43200           # read before the first time: it waits for it
-refreshdue first=2986+43200 second=2987+0 epoch=229 read=2983+300000 -> 2986+43200      # another read before it: the same time
-refreshdue first=2986+43200 second=2987+0 epoch=229 read=2986+43200 -> 2986+43200       # read at it
-refreshdue first=2986+43200 second=2987+0 epoch=229 read=2986+43260 -> 2987+0           # read after it: the second time
-refreshdue first=2990+0 second=2991+0 epoch=228 read=2985+0 -> 2990-172800              # cut two days before credit epoch 230
-refreshdue first=2986+0 second=2990+86400 epoch=228 read=2987+0 -> 2990-172800          # the second time cut
-refreshdue first=2986+0 second=2991+0 epoch=228 read=2990-172800 -> 2990-172800        # read at the cut time
-refreshdue first=2990+0 second=2991+0 epoch=228 read=2990-100000 -> drop                # read after the cut time: never refreshed at the read
+# ---- The refresh time of a received credit (Q31 simplified, §19.29) ------------------------------
+refresh listen_until=2985+172800 uniforms=0.25 -> 2985+540000                  # 1 d + 0.25 × 13 d after the listening ends
+refresh listen_until=2985+0 uniforms=0.999999 -> 2987+0                        # 14 d, rounded up to the minute
+refresh listen_until=2985+86400 uniforms=0 -> 2985+172800                      # 1 d
+refresh listen_until=2980+0 uniforms=0.123456 -> 2980+225120                   # whole seconds truncated, then rounded up
+refreshdue at=2985+540000 listen_until=2985+172800 epoch=229 -> 2985+540000    # the whole draw window before the cut
+refreshdue at=2989+432000 listen_until=2988+0 epoch=228 -> 2989+432000         # the time at the cut (start(2990) − 2 d)
+refreshdue at=2989+518400 listen_until=2988+0 epoch=228 -> 2989+352260         # after the cut: the draw placed in [listening end, cut]
+refreshdue at=2990+0 listen_until=2988+0 epoch=228 -> 2989+432000              # the draw's top placed at the cut
+refreshdue at=2976+432060 listen_until=2976+345600 epoch=227 -> 2976+345660    # a one-day window: rounded up to the minute
+refreshdue at=2976+950400 listen_until=2976+432000 epoch=227 -> 2976+432000    # the cut at the listening's end
+refreshdue at=2977+86400 listen_until=2977+0 epoch=227 -> drop                 # the cut before the listening ends: dropped
+refreshdue at=2976+604800 listen_until=2976+518400 epoch=227 -> drop           # one day short: dropped

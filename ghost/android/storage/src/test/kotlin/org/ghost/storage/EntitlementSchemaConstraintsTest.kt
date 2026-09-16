@@ -161,12 +161,12 @@ class EntitlementSchemaConstraintsTest {
             "ent_invite",
             mapOf(
                 "invite_index" to 0, "state" to "created", "payload" to bytes(538, 1), "drop_namespace" to hash(1), "listen_until_day" to DAY0,
-                "refresh_minute" to T0, "late_refresh_minute" to T0 + 60,
+                "refresh_minute" to T0,
             ),
             listOf(
                 mapOf("invite_index" to -1), mapOf("invite_index" to 65536), mapOf("state" to "sent"), mapOf("payload" to bytes(537, 1)),
                 mapOf("state" to "credited"), mapOf("state" to "closed"), mapOf("drop_namespace" to bytes(31, 1)), mapOf("listen_until_day" to -1),
-                mapOf("refresh_minute" to T0 + 30), mapOf("late_refresh_minute" to T0 + 30),
+                mapOf("refresh_minute" to T0 + 30),
             ),
         )
         checks(
@@ -216,7 +216,7 @@ class EntitlementSchemaConstraintsTest {
         )
         val invite = mapOf(
             "invite_index" to 0, "state" to "created", "payload" to bytes(538, 1), "drop_namespace" to hash(1), "listen_until_day" to DAY0,
-            "refresh_minute" to T0, "late_refresh_minute" to T0 + 60,
+            "refresh_minute" to T0,
         )
         val drop = mapOf(
             "id" to 1, "drop_namespace" to hash(1), "drop_key" to hash(2), "drop_slots" to byteArrayOf(5, 0, 17), "state" to "waiting",
@@ -237,7 +237,6 @@ class EntitlementSchemaConstraintsTest {
             Triple("ent_token", "eligible_minute", freshAccess),
             Triple("ent_invite", "listen_until_day", invite),
             Triple("ent_invite", "refresh_minute", invite),
-            Triple("ent_invite", "late_refresh_minute", invite),
             Triple("ent_drop_target", "drop_minute", drop),
             Triple("ent_drop_target", "until_day", drop),
             Triple("ent_claim", "next_due_minute", mapOf("claim_id" to claimId(1), "state" to "prepared", "payout_address" to subaddress(1), "next_due_minute" to T0)),

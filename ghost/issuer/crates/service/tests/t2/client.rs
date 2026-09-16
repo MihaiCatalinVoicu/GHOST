@@ -99,9 +99,9 @@ impl DropOut {
 pub struct DropListen {
     pub ns: [u8; 32],
     pub until: u64,
-    /// The two refresh times of a credit read from this drop (device times), drawn when the
-    /// listening starts, never at a read (Q31, §19.26, `policy::refresh_times`).
-    pub refresh: (i64, i64),
+    /// The refresh time of a credit read from this drop (a device time), drawn when the listening
+    /// starts, 1–14 days after it ends, never at a read (§19.29, `policy::refresh_time`).
+    pub refresh: i64,
     /// Blob hashes already fetched, per relay.
     pub seen: BTreeSet<Vec<u8>>,
     /// The client that took the invite (world bookkeeping: which credit a read delivers).
@@ -355,9 +355,16 @@ impl Client {
     /// read) never renumbers the client's other flows, whose seeds and claim keys derive from their
     /// number (a real client draws them at random per flow).
     pub fn next_flow(&mut self, kind: FlowSeq) -> u64 {
-        let n = &mut self.flows[kind as usize];
-        *n += 1;
-        (u64::from(self.id) << 24) | ((kind as u64) << 20) | *n
+        self.flows[kind as usize] += 1;
+        let n = self.flows[kind as usize];
+        self.flow_instance(kind, n)
+    }
+
+    /// Flow instance `n` of `kind`, numbered by something other than the order flows start: a
+    /// refresh is numbered by its drop (the order the client's invites were taken), never by the
+    /// order its credits are read, which relays move (§19.29).
+    pub fn flow_instance(&self, kind: FlowSeq, n: u64) -> u64 {
+        (u64::from(self.id) << 24) | ((kind as u64) << 20) | n
     }
 
     pub fn pack_in_flight(&self) -> bool {

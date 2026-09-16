@@ -27,10 +27,17 @@ case "$kind" in
     if grep -qE '^(S1|S2): PASS n=0 |^S3[abd]: PASS .*n=0 |^S4( lying issuer)?: PASS .* over 0 |^NI-1d: PASS 0 drop|^NI-1 across cells: PASS 0 flows|^NI-1: PASS .*; 0 finalizations' "$report"; then
       bad "a check passed on an empty sample"
     fi
-    # NI-2 and NI-3 test Q31 only through drop reads their relays moved (design §19.26).
+    # NI-2 and NI-3 test the refresh rule only through drop reads their relays moved (design §19.26).
     if grep -qE '^NI-[23]: PASS .*\(0 by an hour or more' "$report"; then
       bad "NI-2 or NI-3 passed with no drop read moved by an hour or more"
     fi
+    # They compare the issuer and wallet views as a whole, with no exemption (design §19.29): a
+    # PASS line must say so.
+    for c in NI-2 NI-3; do
+      if grep -qE "^${c}: PASS( |$)" "$report" && ! grep -qE "^${c}: PASS .*no exemption" "$report"; then
+        bad "$c passed without identical views and no exemption"
+      fi
+    done
     if [ "$kind" = gate ]; then scale='N = 2000 packs, 84 days'; else scale='N = 300 packs, 21 days'; fi
     grep -qF "$scale" "$report" || bad "the report is not of the $kind scale ($scale)"
     grep -qE '^S3c \(reported' "$report" || bad "no S3c line (quiet-gap bits are always reported)"
