@@ -1,0 +1,2 @@
+# Fixture MPL-2.0 manifest (positive case).
+mpl-pkg 1.0.0 a86eff0d8c4003f6ae7e6106164fc53867c6a8e326d7d603be54b7ec8d1e8258

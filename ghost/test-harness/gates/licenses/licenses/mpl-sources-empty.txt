@@ -1,0 +1,1 @@
+# Fixture MPL-2.0 manifest without the MPL-2.0 package.

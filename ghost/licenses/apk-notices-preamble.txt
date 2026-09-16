@@ -1,0 +1,20 @@
+GHOST for Android: third-party notices
+======================================
+
+GHOST is proprietary software. Copyright (c) 2026 Mihai Voicu. All rights reserved.
+
+The app contains third-party software components, each used under its own licence. This file has
+two parts: the first lists the Java and Kotlin libraries packaged in the app, the second the Rust
+components linked into its native library, libghost_client_net.so. Each part names every component,
+the licence under which GHOST uses it, and then reproduces the licence texts and the notices the
+components ship. The second part ends with the source offer for the components used under the
+Mozilla Public License 2.0.
+
+SQLCipher
+---------
+
+This app uses SQLCipher for Android (net.zetetic:sqlcipher-android) by Zetetic LLC,
+https://www.zetetic.net/sqlcipher/, to encrypt its local database. SQLCipher is based on SQLite;
+its native library also contains LibTomCrypt. The SQLCipher licence is reproduced in the first part.
+
+

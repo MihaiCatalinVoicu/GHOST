@@ -1,0 +1,2 @@
+# Fixture MPL-2.0 manifest with a checksum that Cargo.lock does not record.
+mpl-pkg 1.0.0 0000000000000000000000000000000000000000000000000000000000000000

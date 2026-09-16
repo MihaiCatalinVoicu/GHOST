@@ -1,0 +1,2 @@
+# Fixture MPL-2.0 manifest of the patched package.
+mpl-patched 1.0.0 d2d186f07ff481a75e356cc6649d89fa6a73b6abd0b52ed9f459d4ee00fbe943

@@ -1,0 +1,3 @@
+# Fixture manifest of the mpl-sources.sh self-test: a [patch] of an MPL-2.0 package without a diff.
+[patch.crates-io]
+mpl-patched = { path = "packages/mpl-patched" }

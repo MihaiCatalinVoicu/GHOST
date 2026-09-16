@@ -1,0 +1,4 @@
+# Gradle components whose artifacts carry no text of their licence (ADR-37): the files named here are
+# captured from the repository at the release tag by scripts/license-upstream-snapshot.sh.
+#   <group:artifact> <version> <repository> <tag> <files, comma-separated>
+net.zetetic:sqlcipher-android 4.19.0 https://github.com/sqlcipher/sqlcipher-android v4.19.0 LICENSE

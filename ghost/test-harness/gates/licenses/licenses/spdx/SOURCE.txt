@@ -1,0 +1,2 @@
+# Fixture copy of three texts of ghost/licenses/spdx (no ISC text: the no-text case needs one missing).
+license-list-version 3.28.0

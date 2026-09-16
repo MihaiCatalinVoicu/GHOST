@@ -1,0 +1,7 @@
+# MPL-2.0 packages of the shipped Rust graphs (gate G-L4, scripts/gates/mpl-sources.sh; ADR-37 point 2,
+# Phase 9 design §2.10.2). Each is used unmodified; its published .crate archive, identified by the
+# SHA-256 that Cargo.lock records, goes into the source bundle of every release
+# (mpl-sources.sh --bundle <directory>) and the notices carry the source offer.
+#   <crate> <version> <sha256>
+option-ext 0.2.0 04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d
+priority-queue 2.7.0 93980406f12d9f8140ed5abe7155acb10bb1e69ea55c88960b9c2f117445ef96

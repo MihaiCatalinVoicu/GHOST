@@ -1,0 +1,14 @@
+# Fixture lock file of the licence gate self-tests.
+version = 4
+
+[[package]]
+name = "mpl-pkg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a86eff0d8c4003f6ae7e6106164fc53867c6a8e326d7d603be54b7ec8d1e8258"
+
+[[package]]
+name = "mpl-patched"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2d186f07ff481a75e356cc6649d89fa6a73b6abd0b52ed9f459d4ee00fbe943"

@@ -10,7 +10,7 @@ Toate ADR-urile de mai jos au fost aprobate de proprietarul proiectului pe 2026-
 | [ADR-04](ADR-04-per-channel-pseudonyms.md) | Pseudonim derivat per canal |
 | [ADR-05](ADR-05-blind-invite-tokens.md) | Invitații prin token-uri blind |
 | [ADR-06](ADR-06-no-third-party-sdks.md) | Zero SDK-uri terțe; allowlist dependențe |
-| [ADR-07](ADR-07-open-source-reproducible.md) | Open-source, build reproductibil, distribuție verificabilă |
+| [ADR-07](ADR-07-open-source-reproducible.md) | Open-source, build reproductibil, distribuție verificabilă (revizuit parțial de ADR-37 și ADR-38 la 2026-09-16: sursă închisă) |
 | [ADR-08](ADR-08-endpoint-hygiene.md) | Igienă de endpoint |
 | [ADR-09](ADR-09-traffic-metadata-p0.md) | Metadate de trafic ca P0 |
 | [ADR-10](ADR-10-legacy-quarantine-monorepo-gates.md) | Carantină legacy, monorepo, git, gates |
@@ -44,3 +44,27 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 | [ADR-24](ADR-24-referral-credit-tokens-invite-v2.md) | Referral prin token-uri blind de credit; Invitație v2 cu cheie per invitație și „drop” |
 | [ADR-25](ADR-25-relay-redemption.md) | Răscumpărarea la relay: `RedeemToken`, capabilitate v2, nullifier-e persistate, capabilități de citire partajate |
 | [ADR-26](ADR-26-issuer-operations.md) | Operarea issuer-ului: Monero view-only, jurnal de emitere, custodia cheilor, plăți cu semnare la rece, fără jurnalizare, job regtest automat |
+
+## Propuse (aplicate în Faza 9)
+
+Propuse 2026-09-16 și aplicate în Faza 9 (design `docs/design/faza9-dm.md`, cu corecturile normative §21, §22 și §22.8, care au prioritate), ca ADR-17 … ADR-26 înaintea aprobării lor. Revizia din 2026-09-16 urmează decizia proprietarului: fără libsignal (licența AGPL-3.0 e inacceptabilă) și distribuție cu sursă închisă. Valorile implicite ale întrebărilor proprietarului (§19; Q4 cere aprobarea acestor ADR-uri) se aplică dacă proprietarul nu obiectează; consemnarea lor este în `docs/design/faza9-s0-hygiene.md`. ADR-30′ … ADR-34′ sunt schițele rundei 9 modificate de revizie (marcate ′); ADR-32 a rămas neschimbat.
+
+| ADR | Titlu |
+|---|---|
+| [ADR-30′](ADR-30-dm-blind-addressing.md) | Adresare și autorizare DM oarbe pentru relee: card de contact, namespace-uri statice derivate din secrete, `RegisterKey`, chei de depunere și de citire, bundle-uri sigilate |
+| [ADR-31′](ADR-31-dm-envelope-sealed-sender.md) | Plicul DM: sealed sender fără server în patru moduri, padding în AEAD cu prag de 4 KiB, fără trafic reflex, implementare în Rust |
+| [ADR-32](ADR-32-dm-ephemeral-ttl-seconds.md) | Mesaje efemere în DM: trepte TTL în secunde, acceptare exactă, termene, numărătoare, ștergere (precizează ADR-27) |
+| [ADR-33′](ADR-33-dm-sessions-key-change.md) | Sesiuni DM: identitatea Olm derivată și legătura ei, selecția sesiunilor, schimbarea cheii, numărul de siguranță, revocarea v2, restaurarea, cererile, modelul local |
+| [ADR-34′](ADR-34-dm-sync-entitlement-schema-ci.md) | Extensiile `:sync` și `:entitlement`, schemele v4 și v5, coada de consum, joburi CI și modificările testului T2 pentru DM |
+| [ADR-35](ADR-35-dm-library-vodozemac.md) | Biblioteca DM: Olm din vodozemac în `client-core`, doar prin API public, cu stare criptată |
+| [ADR-36](ADR-36-dm-post-quantum.md) | Post-quantum pentru DM: X-Wing în plicul GHOST, transport doar PQ al cheilor de sigilare, reîmprospătare PQ rară a rădăcinilor |
+| [ADR-37](ADR-37-closed-source-licences.md) | Distribuție cu sursă închisă și conformitatea licențelor terților; revizuiește ADR-07 |
+| [ADR-38](ADR-38-verifiability-without-source.md) | Verificabilitate fără sursă publică |
+| [ADR-39](ADR-39-private-repository.md) | Depozitul devine privat; artefactele CI; istoricul deja public |
+
+## Retrase
+
+| ADR | Titlu | Stare |
+|---|---|---|
+| ADR-28 | Integrarea libsignal | **Retras** 2026-09-16, înainte de aprobare (numărul nu se refolosește); înlocuit de ADR-35 și ADR-36. Consemnarea retragerii: `docs/design/faza9-dm.md`, Anexa A |
+| ADR-29 | Licența clientului sub consecința AGPL | **Retras** 2026-09-16, înainte de aprobare (numărul nu se refolosește); înlocuit de ADR-37, ADR-38 și ADR-39. Consemnarea retragerii: `docs/design/faza9-dm.md`, Anexa A |

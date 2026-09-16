@@ -1,0 +1,19 @@
+name: ci
+on: [push]
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: gate
+        run: echo gate
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: app-release-unsigned
+          path: ghost/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 1
+      - name: upload the gate report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gate-report
+          path: ghost/build/report.txt
+          retention-days: 3

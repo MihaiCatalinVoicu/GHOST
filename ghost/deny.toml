@@ -35,8 +35,11 @@ ignore = [
 [licenses]
 version = 2
 # Unused pre-approvals are refused so a new dependency cannot slip in under a license nobody
-# reviewed for this project. GHOST itself is proprietary (owner decision 2026-09-16, root LICENSE);
-# no copyleft licence may enter a shipped graph.
+# reviewed for this project. GHOST itself is proprietary (owner decision 2026-09-16, root LICENSE;
+# ADR-37): no GPL, LGPL or AGPL component may enter a shipped graph. MPL-2.0 is allowed only for
+# components used unmodified, with their source offered (ADR-37 point 2; today option-ext and
+# priority-queue through Arti, gate G-L4 scripts/gates/mpl-sources.sh). The same list decides the
+# licence under which the notices generator uses each component (scripts/gates/licenses.pl).
 unused-allowed-license = "deny"
 allow = [
     "MIT",
@@ -78,6 +81,25 @@ deny = [
     { crate = "surf", reason = "ADR-01" },
     { crate = "attohttpc", reason = "ADR-01" },
     { crate = "curl", reason = "ADR-01" },
+    # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 1): libsignal and its family are AGPL-3.0 (or
+    # carry AGPL sources under another declared licence, wacore-libsignal); GHOST is closed source.
+    # cargo-deny takes package specs, not globs, so every name is spelled out; self-test.sh puts one
+    # of them into a scratch lock file and expects "bans FAILED". unknown-git = "deny" below stays
+    # the main defence against a git dependency under another name.
+    { crate = "libsignal-protocol", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "libsignal-core", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "libsignal-net", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "libsignal-service", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "libsignal-jni", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "libsignal-ffi", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "signal-crypto", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "zkgroup", reason = "ADR-37: AGPL-3.0 (libsignal)" },
+    { crate = "spqr", reason = "ADR-37: AGPL-3.0 (SparsePostQuantumRatchet)" },
+    { crate = "spqr-syft", reason = "ADR-37: AGPL-3.0 (SparsePostQuantumRatchet)" },
+    { crate = "pq-ratchet", reason = "ADR-37: AGPL-3.0" },
+    { crate = "libsignal-dezire", reason = "ADR-37: libsignal family" },
+    { crate = "wacore-libsignal", reason = "ADR-37: declared MIT, sources AGPL-3.0-only with Signal Messenger headers" },
+    { crate = "wa-rs-libsignal", reason = "ADR-37: libsignal family" },
 ]
 
 [sources]

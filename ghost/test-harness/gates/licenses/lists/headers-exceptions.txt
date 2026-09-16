@@ -1,0 +1,2 @@
+# Fixture G-R5 exceptions: excepted is used under MPL-2.0.
+excepted 1.0.0 src/lib.rs the fixture's LGPL alternative, used under MPL-2.0
