@@ -54,7 +54,7 @@ http-body-util = "0.1.5"
 tower = "0.5.3"
 http = "1.5.0"
 jni = "0.21.1"
-rustls = { version = "0.23.44", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 # Entitlement crypto (Phase 8 design §2.7, §14.3). Public-key work stays on crates the Android
 # library already links, with no feature beyond those it already enables (no `std`/`rand` on
 # num-bigint-dig: they would pull rand 0.8 with getrandom into the client graph).
