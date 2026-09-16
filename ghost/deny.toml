@@ -18,12 +18,16 @@ ignore = [
     #    signer. It is payment-gated, every blind signature is re-checked (s'^e == B) by GHOST code
     #    before release, and replies leave on a 2 s quantum. A blind signer returns B^d to whoever
     #    asks by design, so Marvin's decryption-oracle class adds nothing; the residual
-    #    exponent-timing key-recovery risk is mitigated as ADR-22 states.
+    #    exponent-timing key-recovery risk is mitigated as ADR-22 states. Base blinding carries the
+    #    timing claim: the nightly Welch t-test asserts that the private-key operation's time does
+    #    not depend on the blinded value, and it measures the crypto-bigint CRT exponentiation on an
+    #    unblinded base as dependent on it (design §19.30).
     # scripts/gates/rust-feature-policy.sh enforces both scopes per version (and keeps the issuer
     # crates out of the client and relay graphs); scripts/gates/rust-crypto-pins.sh pins the exact
     # versions per graph. Re-review this entry when rsa 0.10.0 is final or either scope changes.
-    # Reviewed 2026-09-11 (Phase 6 security review), 2026-09-12 (Phase 8 design review).
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10: verification only, inside Arti (client). rsa 0.10.0-rc.18: only through blind-rsa-signatures in ghost-issuer and ghost-issuer-ops (constant-time crypto-bigint path; BlindSign and RedeemInvite gated by a paid invoice or a valid invite, RefreshCredit not gated but bounded per credit epoch by its paid packs, design §19.27; independently fault-checked; 2 s reply quantum; nightly Welch t-test evidence, signer-timing.yml). A blind signer returns B^d by design, so the Marvin decryption-oracle class adds nothing; the residual exponent-timing risk is mitigated as stated in ADR-22. rust-feature-policy.sh and rust-crypto-pins.sh enforce both scopes. Re-review when rsa 0.10.0 is final." },
+    # Reviewed 2026-09-11 (Phase 6 security review), 2026-09-12 (Phase 8 design review),
+    # 2026-09-16 (signer timing, issue #1, design §19.30).
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10: verification only, inside Arti (client). rsa 0.10.0-rc.18: only through blind-rsa-signatures in ghost-issuer and ghost-issuer-ops (base-blinded crypto-bigint path, the private-key operation's time independent of the blinded value by the nightly Welch t-test, signer-timing.yml, design §19.30, while the unblinded CRT exponentiation is not constant-time in its base; BlindSign and RedeemInvite gated by a paid invoice or a valid invite, RefreshCredit not gated but bounded per credit epoch by its paid packs, design §19.27; independently fault-checked; 2 s reply quantum). A blind signer returns B^d by design, so the Marvin decryption-oracle class adds nothing; the residual exponent-timing risk is mitigated as stated in ADR-22. rust-feature-policy.sh and rust-crypto-pins.sh enforce both scopes. Re-review when rsa 0.10.0 is final." },
     # `paste` is a proc-macro used at build time only by arti's dependency tree; no runtime code.
     { id = "RUSTSEC-2024-0436", reason = "paste: build-time proc-macro, unmaintained but inert" },
 ]
