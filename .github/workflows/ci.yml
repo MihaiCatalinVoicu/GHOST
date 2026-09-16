@@ -6,6 +6,11 @@ name: ci
 # was resolved from); Rust builds use --locked; cargo-ndk is pinned in scripts/build-native.sh and
 # protoc (a build tool of the relay and of the native library) in scripts/install-protoc.sh.
 # Every run step uses bash with -eo pipefail, so a failure inside a pipeline fails the step.
+# Runners (docs/ci-self-hosted.md): every job runs on the owner's self-hosted runners (labels
+# self-hosted, linux, x64, ghost; four at a time, jobs beyond that queue), a persistent machine: each
+# job starts from actions/checkout's cleaned workspace and a runner temp directory the runner empties,
+# and keeps nothing it needs elsewhere. Self-hosted runners are allowed only while the repository is
+# private. Uploads: only what a later job consumes, or a gate's evidence, each kept 3 days.
 on:
   push:
     branches: [main]
@@ -33,7 +38,7 @@ env:
 jobs:
   static-gates:
     name: static gates (placeholder, logging, manifest, dependency allowlist, proto)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: install pinned protoc
@@ -47,7 +52,7 @@ jobs:
 
   rust:
     name: rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     # The workspace build and tests, the release crash suite and the T2 PR variant (about 20 min
     # on a 4-vCPU runner, from a local measurement; see the step): twice the expected total.
     timeout-minutes: 150
@@ -128,7 +133,7 @@ jobs:
 
   android-native:
     name: android native libs (two same-path builds, identical hashes, no build paths)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     defaults:
       run:
         shell: bash
@@ -165,10 +170,11 @@ jobs:
             ghost/android/network/src/main/jniLibs
             ghost/native-libs.sha256
           if-no-files-found: error
+          retention-days: 3
 
   android:
     name: android (build with the native Tor core, unit tests, lint, dependency verification)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     needs: android-native
     defaults:
       run:
@@ -196,16 +202,10 @@ jobs:
       # T15m (Phase 7 design §5.5, ADR-20): what ships is the merged manifest, not the source ones.
       - name: merged release manifest (permissions, exported components, sync job protection)
         run: bash ../scripts/gates/merged-manifest-lint.sh
-      - name: upload unsigned release apk
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: app-release-unsigned
-          path: ghost/android/app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: error
 
   sync-exit-gate:
     name: sync exit gate (JVM harness, 20000 seeded worlds, double crashes in both journal modes)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 150
     defaults:
       run:
@@ -257,10 +257,11 @@ jobs:
           name: sync-exit-gate-reports
           path: ghost/android/sync/build/reports/tests
           if-no-files-found: ignore
+          retention-days: 3
 
   reproducible:
     name: reproducible release build (two builds, identical hash, recorded native libs inside)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     needs: [android-native, android]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -280,7 +281,7 @@ jobs:
   live-tor:
     name: live Tor bootstrap, onion stream, circuit isolation (manual)
     if: github.event_name == 'workflow_dispatch' && inputs.live_tor
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 20
     defaults:
       run:
@@ -301,4 +302,7 @@ jobs:
       - name: bootstrap Arti, open onion streams, check isolation on real circuits
         env:
           GHOST_LIVE_LOG: info
+          # The test keeps Arti's state and cache under the temp directory: the job's own (emptied by
+          # the runner), not a /tmp that keeps a previous run's state on a persistent runner.
+          TMPDIR: ${{ runner.temp }}
         run: cargo test -p ghost-client-net --locked --test live_tor -- --ignored --nocapture

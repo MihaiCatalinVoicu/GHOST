@@ -27,7 +27,7 @@ defaults:
 jobs:
   signer-timing:
     name: signer timing (Welch t-test, fixed vs random blinded inputs)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 60
     defaults:
       run:

@@ -13,6 +13,11 @@ name: entitlement-exit-gate
 # stays whole, so its digests are compared), a 12th of the double crashes and of the seeds, and the
 # other suites, about 130 thread-minutes: about 50 minutes on a 4-vCPU runner at 1.5 times the
 # per-thread time; the timeout leaves room for a 2-vCPU runner (about 100 minutes).
+# Runners (docs/ci-self-hosted.md): four self-hosted runners share one 24-core machine, so at most four
+# shards run at once and the others wait in the queue (queue time does not count against
+# timeout-minutes, and a queued job waits up to 24 hours). A running shard shares the cores with up to
+# three other jobs, about six cores each, more than the 4-vCPU hosted runner the timeout was set for
+# (hosted shards took 15–28 minutes on 2026-09-16).
 # The restore-scan scenario E-J (design §19.26) took 669 s of the 1 198 s of the default enumeration on a
 # 16-thread workstation (K = 13 510 against 2 743 for E-G, with the review corrections of §19.26 point 15);
 # not yet measured on the runner class (Q35).
@@ -47,7 +52,7 @@ env:
 jobs:
   entitlement-exit-gate:
     name: entitlement exit gate (shard ${{ matrix.shard }}/12, full crash enumeration, 20000 seeded worlds)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -115,3 +120,4 @@ jobs:
             ghost/android/entitlement/build/test-results/testDebugUnitTest
             ghost/android/entitlement/build/reports/tests
           if-no-files-found: error
+          retention-days: 3
