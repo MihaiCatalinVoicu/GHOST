@@ -2636,6 +2636,8 @@ The first nightly run of `signer-timing.yml` (run 34949710391, on a7fb1ea) faile
    | CRT exponentiation without base blinding | | −0.14 / 3.73 | −1.00 / −7.46 | −1.09 / −10.48 | −1.28 / −2.34 (E) | 3.69 / 18.44 |
 
    Its sub-steps (run E): the reduction mod p 1.44 / 0.67, the conversion to Montgomery form −1.72 / −41.29 (about 2 ns in its upper tail), the exponentiation −0.97 / −4.31, the retrieval 0.48 / 0.01. A local run of the corrected test (10⁵ samples, unpinned) passed with the private-key operation at −0.16 / −1.00.
+
+   Two further CI runs of the corrected test on a3315a8 passed (runs 35075010550 and 35076095976, 10⁵ samples each): range checks −1.98 / −1.93 and 0.33 / −1.51; **private-key operation −1.15 / −0.67 and 0.79 / 1.49**; library re-encryption check −9.49 / −81.45 and 1.71 / 16.54; fault check −4.65 / −5.55 and 0.58 / 0.10; whole call −3.82 / −8.64 and 0.58 / −0.36; CRT exponentiation without base blinding −4.55 / −10.26 and −4.54 / −20.51. Across the three CI runs the asserted stage stays within ±1.5 while the public checks and the unblinded exponentiation exceed the limit, as point 2 and point 4 state.
 7. **Documents.** §2.8 points 5 and 6, §13.6 (the `signer-timing` row), §13.7 (the evidence row), §17 Q8 and §19.27 point 2 carry markers; `signer-timing.yml` (header), the RUSTSEC-2023-0071 reason in `deny.toml` and ADR-22 point 7 follow. Issue #1 stays open for the owner to close.
 
 ---
