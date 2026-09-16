@@ -68,7 +68,7 @@ wsl --terminate ghost-runner
 Enable-ScheduledTask -TaskName 'GHOST ghost-runner keepalive'; Start-ScheduledTask -TaskName 'GHOST ghost-runner keepalive'
 ```
 
-`wsl --terminate ghost-runner` sau `wsl --shutdown` în timpul unui job îl fac să eșueze (GitHub îl marchează după câteva minute fără semnal). Serviciile se opresc curat cu `systemctl stop` (runnerul termină jobul curent sau îl anulează după 5 minute, `TimeoutStopSec` din unitate).
+Oprirea unui serviciu, `wsl --terminate ghost-runner` sau `wsl --shutdown` întrerup jobul în curs, care eșuează. Pentru o oprire fără pierderi, așteptați ca runnerul să fie liber (`busy` = `false` în comanda de stare de mai sus); un `wsl --shutdown` oprește și Docker Desktop.
 
 **Laptopul:** runnerele lucrează doar cât utilizatorul e logat și sistemul e treaz. Sleep-ul sau hibernarea în timpul unui job îl pierd; pentru rulări lungi (T2 gate, cele 12 shard-uri entitlement), setați „Sleep: Never” când e în priză. Închiderea capacului, delogarea sau repornirea Windows opresc runnerele până la următoarea logare.
 
@@ -110,7 +110,7 @@ Actualizare manuală (de exemplu dacă cea automată eșuează): luați versiune
 wsl -d ghost-runner -u runner -- env RUNNER_VERSION=<versiune> RUNNER_SHA=<sha256> bash -c 'set -e; f=actions-runner-linux-x64-$RUNNER_VERSION.tar.gz; cd ~/downloads; curl -fsSLO https://github.com/actions/runner/releases/download/v$RUNNER_VERSION/$f; echo "$RUNNER_SHA  $f" | sha256sum -c -; for n in 1 2 3 4; do u=actions.runner.MihaiCatalinVoicu-GHOST.ghost-runner-$n.service; sudo systemctl stop $u; tar -xzf $f -C ~/actions-runner-$n; sudo systemctl start $u; done'
 ```
 
-Restul sistemului: `sudo apt-get update && sudo apt-get upgrade` în distribuție (actualizările de securitate se instalează oricum zilnic prin `unattended-upgrades`). Toolchain-ul Rust, pachetele SDK și NDK sunt fixate de workflow-uri; o schimbare a lor în workflow se preinstalează cu `03-runners.sh` (Rust; editați `RUST_TOOLCHAIN`) sau `02-android.sh` (SDK; editați `PACKAGES`), altfel acțiunile de setup le instalează la primul job (mai lent, dar funcționează).
+Restul sistemului: `sudo apt-get update && sudo apt-get upgrade` în distribuție (actualizările de securitate se instalează oricum zilnic prin `unattended-upgrades`). Imaginile Docker construite de `cargo-deny-action` (~1,2 GB fiecare, una per runner) se adună în timp: `wsl -d ghost-runner -- docker image prune -af` din când în când, cu runnerele libere (se reconstruiesc la următorul job `rust`). Toolchain-ul Rust, pachetele SDK și NDK sunt fixate de workflow-uri; o schimbare a lor în workflow se preinstalează cu `03-runners.sh` (Rust; editați `RUST_TOOLCHAIN`) sau `02-android.sh` (SDK; editați `PACKAGES`), altfel acțiunile de setup le instalează la primul job (mai lent, dar funcționează).
 
 ## 6. Ce s-a schimbat în workflow-uri
 
@@ -119,6 +119,8 @@ Restul sistemului: `sudo apt-get update && sudo apt-get upgrade` în distribuți
 - `live-tor`: `TMPDIR` = directorul temporar al jobului, ca starea Arti să nu rămână între rulări în `/tmp/ghost-live-tor-test`.
 - `monero-regtest`: `MONERO_RANDOMX_FULL_MEM=1` pe pasul scenariului. monerod calculează RandomX pentru fiecare bloc generat; în modul light (implicit) runnerul WSL2 face ~10 blocuri/s (măsurat: 300 de blocuri în 28,8 s; un runner hosted ~3× mai repede, probabil prin paginarea memoriei VM-ului), scenariul minează peste 22 000 de blocuri și jobul a depășit timeout-ul de 45 de minute. Cu dataset-ul de 2 GB: ~85 blocuri/s. Schimbă doar viteza proof-of-work, nimic din ce observă rail-ul issuer-ului.
 - `entitlement-exit-gate.yml`: cu patru runnere, cele 12 shard-uri rulează câte patru, restul așteaptă în coadă (timpul din coadă nu intră în `timeout-minutes`); comentariul de buget descrie clasa de runner.
+
+Validare pe ramura `ci/self-hosted` (commit `a072e35`, workflow-uri identice cu cele din acest commit), toate joburile verzi, fiecare pe un runner `ghost-runner-N`: `ci` 35113371144 (cu `live-tor`), `monero-regtest` 35113375077, `t2-exit-gate` 35113378927, `entitlement-exit-gate` 35113382897, `signer-timing` 35126444765.
 
 Presupunerea „mașină curată”: `actions/checkout` curăță spațiul de lucru (`git clean -ffdx`, deci și `target/`, `build/`, `.gradle/`), runnerul golește `$RUNNER_TEMP` la fiecare job și termină procesele rămase, bazele din `/dev/shm` au nume unice per lume și cele rămase se șterg după 12 ore, iar cache-urile care persistă (Cargo, Gradle, toolchain-uri) sunt per runner.
 
@@ -135,9 +137,10 @@ urmat de `wsl --shutdown`. Efect asupra Docker Desktop: are și el plafonul mai 
 
 ## 8. Impactul asupra host-ului
 
-- **CPU:** cele 4 joburi simultane împart cele 24 de nuclee (8 P + 16 E) ale Core Ultra 9 275HX; fiecare job vede toate 24 și își dimensionează paralelismul după ele (cargo, harness-urile JVM, lumile T2). La încărcare completă ventilatoarele merg la maxim și laptopul e lent pentru alt lucru.
-- **RAM:** VM-ul WSL2 crește până la plafonul de ~47 GB, comun cu Docker Desktop; `/dev/shm` (bazele lumilor) e tmpfs de 24 GB din aceeași memorie. Memoria eliberată revine încet la Windows.
-- **Disc:** `D:\WSL\ghost-runner\ext4.vhdx` crește dinamic (pornit de la ~1 GB; după instalare și primele rulări câteva zeci de GB: aplicația runner ~0,7 GB × 4, toolchain Rust ~0,9 GB × 4, SDK+NDK ~5 GB, Gradle și `target/` per runner). Un VHDX nu se micșorează singur: `wsl --manage ghost-runner --set-sparse true` sau `Optimize-VHD` cu distribuția oprită. Swap-ul VM-ului (implicit 25 % din memoria VM) e fișierul `swap.vhdx` din `%TEMP%` pe C:, ca pentru orice distribuție WSL2.
+- **CPU:** cele 4 joburi simultane împart cele 24 de nuclee (8 P + 16 E) ale Core Ultra 9 275HX; fiecare job vede toate 24 și își dimensionează paralelismul după ele (cargo, harness-urile JVM, lumile T2). Load average-ul VM-ului a urcat la ~73 în prima rulare completă. La încărcare completă ventilatoarele merg la maxim și laptopul e lent pentru alt lucru.
+- **RAM:** VM-ul WSL2 crește până la plafonul de ~47 GB, comun cu Docker Desktop; `/dev/shm` (bazele lumilor) e tmpfs de 24 GB din aceeași memorie. Măsurat în prima rulare completă: vârf ~31 GB folosiți, minim ~16 GB disponibili, `/dev/shm` sub 2,2 GB. Memoria eliberată revine încet la Windows.
+- **Disc:** `D:\WSL\ghost-runner\ext4.vhdx` crește dinamic: 0,9 GB la import, 40,6 GB după instalare și prima rulare completă (25 GB ocupați în distribuție: runnere cu spațiile de lucru 1,2–2 GB fiecare, cache-urile per runner 9,8 GB în total, SDK+NDK 3,2 GB, imaginile Docker 1,2 GB). Un VHDX nu se micșorează singur: `wsl --manage ghost-runner --set-sparse true` sau `Optimize-VHD` cu distribuția oprită. Swap-ul VM-ului (implicit 25 % din memoria VM) e fișierul `swap.vhdx` din `%TEMP%` pe C:, ca pentru orice distribuție WSL2.
+- **Durate** (prima rulare completă, 2026-09-16, commit `a072e35`, toate cele cinci workflow-uri pornite deodată pe 4 runnere): `ci` 1 h 55 min de la pornire la final (`rust` 52 min, `android` 56 min cu cache-ul Gradle gol, `sync-exit-gate` 17 min, `android-native` 10 min, `reproducible` 6 min, `live-tor` 4 min, `static-gates` 2 min); `entitlement-exit-gate` 1 h 52 min (shard-uri de 10–23 min); `t2-exit-gate` 2 h 49 min (gate 123 min, mutanți 52 min); `monero-regtest` 26 min (scenariul 19,5 min); `signer-timing` 9 min. Toate sub `timeout-minutes` (cel mai strâns: `monero-regtest`, 26 din 45 de minute sub încărcare maximă).
 - **Rețea:** descărcări de toolchain, dependențe Cargo/Gradle, cache-uri GitHub Actions și imagini Docker; conexiuni doar de ieșire (runnerul face long-poll la GitHub; nu se deschide niciun port).
 
 ## 9. Anulare completă
