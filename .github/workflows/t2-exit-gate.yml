@@ -51,7 +51,7 @@ defaults:
 jobs:
   gate:
     name: T2 exit gate (seed pair ${{ matrix.seed }}, N = 2000, release)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     # Measured locally: 4 233 s for one seed pair on 24 cores (two phases of about 2 150 s: the two
     # gate-scale worlds, then the three gate-scale twins, each world single-threaded); on a 4-vCPU
     # runner about two hours with the build. Three gate-scale worlds at once need several GB each.
@@ -111,6 +111,7 @@ jobs:
           name: t2-exit-gate-${{ matrix.seed }}
           path: ${{ runner.temp }}/t2
           if-no-files-found: error
+          retention-days: 3
       - name: pack the complete views
         if: always() && github.event_name == 'workflow_dispatch' && inputs.export_views
         run: tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/t2-views.tar.gz" t2-views
@@ -120,12 +121,12 @@ jobs:
         with:
           name: t2-views-${{ matrix.seed }}
           path: ${{ runner.temp }}/t2-views.tar.gz
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error
 
   mutants:
     name: T2 privacy mutants M1–M24 (release)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     # Measured locally: 742 s on 24 cores (23 tests in parallel, the longest two PR-scale worlds);
     # about two CPU-hours in all, so about 55 minutes on a 4-vCPU runner with the build.
     timeout-minutes: 120
@@ -170,3 +171,4 @@ jobs:
           name: t2-mutants
           path: ${{ runner.temp }}/t2
           if-no-files-found: error
+          retention-days: 3

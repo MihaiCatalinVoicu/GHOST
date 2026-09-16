@@ -47,7 +47,7 @@ env:
 jobs:
   entitlement-exit-gate:
     name: entitlement exit gate (shard ${{ matrix.shard }}/12, full crash enumeration, 20000 seeded worlds)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -115,3 +115,4 @@ jobs:
             ghost/android/entitlement/build/test-results/testDebugUnitTest
             ghost/android/entitlement/build/reports/tests
           if-no-files-found: error
+          retention-days: 3

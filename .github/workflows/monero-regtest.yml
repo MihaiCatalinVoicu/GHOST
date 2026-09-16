@@ -45,7 +45,7 @@ defaults:
 jobs:
   monero-regtest:
     name: monero regtest (pinned binaries, digest auth, issuer rail scenario)
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 45
     defaults:
       run:
