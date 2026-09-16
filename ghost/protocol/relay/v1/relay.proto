@@ -15,7 +15,11 @@ option java_multiple_files = true;
 
 message Capability {
   // Opaque, unforgeable authorization token scoped to one or more namespaces/blobs.
-  // Carries no user identity (FR-5.3, TB-2).
+  // Carries no user identity (FR-5.3, TB-2). Either a relay-minted capability (v1 or v2, MAC
+  // under the relay key) or a bearer credential v3 (67 bytes: version 3, kind, relay slot,
+  // namespace, secret) whose verifier the namespace's owner registered with RegisterKey (Phase 9
+  // design §4.3): a read credential lists, gets and checks, a deposit credential stores and checks,
+  // a fetch credential lists and gets.
   bytes token = 1;
 }
 
@@ -23,8 +27,10 @@ message StoreBlobRequest {
   uint32 version = 1;          // protocol version; MUST be 1
   bytes blob_hash = 2;         // SHA-256 of `data`, exactly 32 bytes
   bytes data = 3;              // ciphertext, <= 65,536 bytes
-  Capability capability = 4;   // write capability
-  uint32 ttl_seconds = 5;      // bounded by relay policy; default 90 days (FR-5.5)
+  Capability capability = 4;   // write capability, or a deposit credential v3
+  uint32 ttl_seconds = 5;      // exactly one bucket: 3600, 86400, 604800, 2592000 or 7776000
+                               // seconds (1 h, 1 d, 7 d, 30 d, 90 d; FR-5.5, ADR-27, ADR-32);
+                               // any other TTL is refused
   bytes request_id = 6;        // client-chosen idempotency key, 16 bytes
   bytes namespace_id = 7;      // opaque namespace (channel/inbox/prekeys), 32 bytes
 }
@@ -44,7 +50,10 @@ message GetBlobRequest {
 
 message GetBlobResponse {
   bytes data = 1;
-  uint64 uploaded_at_unix_seconds = 2;   // coarse granularity as configured by relay policy
+  // Coarse granularity as configured by relay policy: the minute for a relay-minted capability;
+  // the start of its ISO week for a read or fetch credential v3 (Phase 9 design §21.9, §22.8.7).
+  uint64 uploaded_at_unix_seconds = 2;
+  // The hour-rounded expiry; for a fetch credential v3 rounded up to the next ISO week boundary.
   uint64 expiry_unix_seconds = 3;
 }
 
@@ -109,6 +118,44 @@ message RedeemTokenResponse {
   uint64 relay_minute = 4;          // always: the relay's unix time / 60 (R9 clock source)
 }
 
+// Key registration (Phase 9 design §4.2–§4.6, ADR-30): the holder of a write capability for a
+// namespace registers the verifier of a bearer secret, so that everyone presenting that secret as
+// a credential v3 at this relay may read, deposit into or fetch from the namespace while the
+// registration lives (until start(period + 2) + 3600). Registrations accumulate and are never
+// replaced; one capability registers at most one verifier per (namespace, period, kind). The
+// verifier is SHA-256(label(kind) || slot || namespace || secret); the secret never reaches the
+// relay at registration. Forged, expired, foreign and conflicting registrations are one gRPC
+// status (PERMISSION_DENIED).
+enum KeyKind {
+  KEY_KIND_UNSPECIFIED = 0;
+  KEY_KIND_READ = 1;                // list, get, check
+  KEY_KIND_DEPOSIT = 3;             // store, check (2 is Write in capability headers; never used here)
+  KEY_KIND_FETCH = 4;               // list, get; get returns week-coarse uploaded_at and expiry
+}
+
+enum RegisterResult {
+  REGISTER_RESULT_UNSPECIFIED = 0;
+  REGISTER_RESULT_OK = 1;           // recorded, or an identical record already existed
+  REGISTER_RESULT_WRONG_PERIOD = 2; // period not in {cap_week, cap_week + 1}; nothing recorded
+}
+
+message RegisterKeyRequest {
+  uint32 version = 1;               // MUST be 1
+  bytes namespace_id = 2;           // 32 bytes
+  uint64 period_id = 3;             // ISO week of the key (Phase 8 period)
+  KeyKind kind = 4;
+  bytes verifier = 5;               // 32 bytes; the secret never reaches the relay at registration
+  Capability capability = 6;        // a usable WRITE capability (v1 or v2) for namespace_id
+  bytes request_id = 7;             // 16 random bytes, identical on an identical retry (T1 field)
+}
+
+message RegisterKeyResponse {
+  RegisterResult result = 1;
+  uint64 relay_period_id = 2;       // always (R9 relay-facing clock source, as RedeemToken)
+  uint64 relay_minute = 3;          // always
+  uint64 valid_until_unix = 4;      // OK only: when the relay forgets the record
+}
+
 service RelayService {
   rpc StoreBlob(StoreBlobRequest) returns (StoreBlobResponse);
   rpc GetBlob(GetBlobRequest) returns (GetBlobResponse);
@@ -116,4 +163,5 @@ service RelayService {
   rpc ListNamespace(ListNamespaceRequest) returns (ListNamespaceResponse);
   rpc GossipSync(stream GossipInventoryBatch) returns (stream GossipAck);
   rpc RedeemToken(RedeemTokenRequest) returns (RedeemTokenResponse);
+  rpc RegisterKey(RegisterKeyRequest) returns (RegisterKeyResponse);
 }

@@ -1,5 +1,6 @@
-//! Relay-local capabilities (FR-5.3, plan Annex B) and the relay-keyed values of redemption
-//! (Phase 8 design §10.2, §10.3, ADR-25).
+//! Relay-local capabilities (FR-5.3, plan Annex B), the relay-keyed values of redemption (Phase 8
+//! design §10.2, §10.3, ADR-25), the verifiers of bearer credentials v3 and the deposit ledger per
+//! key registration (Phase 9 design §4.3, §4.5, ADR-30).
 //!
 //! A capability is a MAC-authenticated statement, keyed with a secret only this relay holds, in
 //! one of two public layouts defined once in [`ghost_relay_api::capability_header`] (clients read
@@ -21,8 +22,8 @@
 //! Domain separation: a MAC input starts with a version byte (1 or 2); the labels start with 'g'.
 
 use ghost_relay_api::{
-    capability_format, capability_header, CapabilityHeader, CAPABILITY_MAC_BYTES,
-    CAPABILITY_SERIAL_BYTES, CAPABILITY_TOKEN_BYTES, CAPABILITY_V2_TOKEN_BYTES,
+    capability_format, capability_header, BearerCredential, CapabilityHeader, CAPABILITY_MAC_BYTES,
+    CAPABILITY_SERIAL_BYTES, CAPABILITY_TOKEN_BYTES, CAPABILITY_V2_TOKEN_BYTES, VERIFIER_BYTES,
 };
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
@@ -194,6 +195,113 @@ pub fn scope_hash(token: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&d);
     out
+}
+
+/// The verifier of a bearer credential v3 (Phase 9 design §4.3, §21.2): `SHA-256(label(kind) ||
+/// u8(slot) || namespace || secret)`. It binds the kind, the relay slot and the namespace, so a
+/// verifier registered for one of them authorizes no other; the week lives only in the
+/// registration's period.
+pub fn bearer_verifier(credential: &BearerCredential) -> [u8; VERIFIER_BYTES] {
+    Sha256::digest(credential.verifier_preimage()).into()
+}
+
+/// A deposit registration, the unit the [`DepositLedger`] charges: `(namespace, period,
+/// verifier)` of a `bearer_keys` record of kind DEPOSIT.
+pub type DepositRecord = ([u8; 32], u64, [u8; VERIFIER_BYTES]);
+
+/// A live registration a deposit may be charged to: its allowance (the quota credited by its
+/// registering capabilities) and its validity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowance {
+    pub record: DepositRecord,
+    pub quota_bytes: u64,
+    pub valid_until: u64,
+}
+
+/// Deposit accounting per registration (Phase 9 design §4.5, E-11): deposits made with a deposit
+/// credential are charged to the registration that authorized them, never to the write capability
+/// that registered it (that capability's quota entry expires a week before a registration of its
+/// next week does). Like [`QuotaLedger`] it stays in memory: a registration may be exceeded once
+/// per relay restart, bounded by its validity (ADR-25 E29, extended). Once pruned at time t, a
+/// registration valid until t or earlier is never charged again, whatever the clock says later.
+#[derive(Default)]
+pub struct DepositLedger {
+    used: HashMap<DepositRecord, (u64, u64)>, // record -> (used bytes, valid_until)
+    /// The highest time the ledger was pruned at (never lowered).
+    pruned_through: u64,
+}
+
+impl DepositLedger {
+    /// Charges `bytes` to the first of `candidates` whose allowance still covers them: the caller
+    /// passes the live registrations matching the credential, earliest `valid_until` first.
+    /// Returns the record charged; [`CapError::QuotaExceeded`] when no allowance covers the bytes
+    /// (nothing is charged), or [`CapError::Expired`] when every candidate is valid only until the
+    /// highest time the ledger was pruned at.
+    pub fn charge(
+        &mut self,
+        candidates: &[Allowance],
+        bytes: u64,
+    ) -> Result<DepositRecord, CapError> {
+        let mut expired = true;
+        for c in candidates {
+            if c.valid_until <= self.pruned_through {
+                continue;
+            }
+            expired = false;
+            let entry = self.used.entry(c.record).or_insert((0, c.valid_until));
+            if entry.0.saturating_add(bytes) <= c.quota_bytes {
+                entry.0 += bytes;
+                return Ok(c.record);
+            }
+        }
+        Err(if expired && !candidates.is_empty() {
+            CapError::Expired
+        } else {
+            CapError::QuotaExceeded
+        })
+    }
+
+    /// Returns `bytes` previously charged to `record`, for a write that did not commit.
+    pub fn refund(&mut self, record: &DepositRecord, bytes: u64) {
+        if let Some(entry) = self.used.get_mut(record) {
+            entry.0 = entry.0.saturating_sub(bytes);
+        }
+    }
+
+    /// Forgets the entries of registrations valid until `now` or earlier and raises the time below
+    /// which no registration is charged again.
+    pub fn prune(&mut self, now: u64) -> usize {
+        self.pruned_through = self.pruned_through.max(now);
+        let before = self.used.len();
+        self.used.retain(|_, (_, valid_until)| *valid_until > now);
+        before - self.used.len()
+    }
+
+    pub fn len(&self) -> usize {
+        self.used.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.used.is_empty()
+    }
+
+    /// The bytes charged to `record` so far (0 without an entry).
+    pub fn used(&self, record: &DepositRecord) -> u64 {
+        self.used.get(record).map_or(0, |e| e.0)
+    }
+
+    /// Every entry, `(record, used bytes, valid_until)` in record order, and the prune high-water:
+    /// the ledger's whole state (read-only; the T2 world exports it with the relay's databases,
+    /// Phase 9 design §4.9).
+    pub fn snapshot(&self) -> (Vec<(DepositRecord, u64, u64)>, u64) {
+        let mut entries: Vec<(DepositRecord, u64, u64)> = self
+            .used
+            .iter()
+            .map(|(k, &(used, valid_until))| (*k, used, valid_until))
+            .collect();
+        entries.sort_unstable();
+        (entries, self.pruned_through)
+    }
 }
 
 /// Write-quota accounting per capability (keyed by scope hash), bounded by the capability expiry.
@@ -471,6 +579,99 @@ mod tests {
         );
         let later = cap(151);
         assert!(ledger.charge(&key.mint(&later), &later, 10).is_ok());
+    }
+
+    #[test]
+    fn bearer_verifiers_bind_kind_slot_namespace_and_secret() {
+        use ghost_relay_api::BearerKind;
+        let base = BearerCredential {
+            kind: BearerKind::Deposit,
+            slot: 1,
+            namespace: ns(1),
+            secret: [9; 32],
+        };
+        let v = bearer_verifier(&base);
+        let mut m = Sha256::new();
+        m.update(b"ghost/v1/deposit-verifier");
+        m.update([1u8]);
+        m.update(ns(1));
+        m.update([9u8; 32]);
+        assert_eq!(v[..], m.finalize()[..]);
+        let variants = [
+            BearerCredential {
+                kind: BearerKind::Read,
+                ..base.clone()
+            },
+            BearerCredential {
+                kind: BearerKind::Fetch,
+                ..base.clone()
+            },
+            BearerCredential {
+                slot: 2,
+                ..base.clone()
+            },
+            BearerCredential {
+                namespace: ns(2),
+                ..base.clone()
+            },
+            BearerCredential {
+                secret: [8; 32],
+                ..base.clone()
+            },
+        ];
+        for other in variants {
+            assert_ne!(bearer_verifier(&other), v, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_deposit_ledger_charges_the_earliest_record_with_allowance_left() {
+        let early: DepositRecord = (ns(1), 2959, [7; 32]);
+        let late: DepositRecord = (ns(1), 2960, [7; 32]);
+        let allowances = |quota| {
+            [
+                Allowance {
+                    record: early,
+                    quota_bytes: quota,
+                    valid_until: 1_000,
+                },
+                Allowance {
+                    record: late,
+                    quota_bytes: quota,
+                    valid_until: 2_000,
+                },
+            ]
+        };
+        let mut ledger = DepositLedger::default();
+        assert_eq!(ledger.charge(&allowances(8_192), 4_096), Ok(early));
+        assert_eq!(ledger.charge(&allowances(8_192), 4_096), Ok(early));
+        // The early record is full: the next deposit goes to the late one, whole.
+        assert_eq!(ledger.charge(&allowances(8_192), 1_024), Ok(late));
+        assert_eq!((ledger.used(&early), ledger.used(&late)), (8_192, 1_024));
+        // An allowance credited by a second capability covers more.
+        assert_eq!(ledger.charge(&allowances(12_288), 4_096), Ok(early));
+        assert_eq!(
+            ledger.charge(&allowances(12_288), 65_536),
+            Err(CapError::QuotaExceeded)
+        );
+        ledger.refund(&early, 4_096);
+        assert_eq!(ledger.used(&early), 8_192);
+        ledger.refund(&(ns(3), 1, [0; 32]), 1); // no entry: no-op
+        assert_eq!(ledger.charge(&[], 1), Err(CapError::QuotaExceeded));
+        // Pruning forgets the early record; a clock stepped back never charges it again.
+        assert_eq!(ledger.prune(1_000), 1);
+        assert_eq!(
+            ledger.charge(&allowances(8_192)[..1], 1),
+            Err(CapError::Expired)
+        );
+        assert_eq!(ledger.charge(&allowances(8_192), 1), Ok(late));
+        let (entries, pruned) = ledger.snapshot();
+        assert_eq!(entries, vec![(late, 1_025, 2_000)]);
+        assert_eq!(pruned, 1_000);
+        assert_eq!(ledger.prune(500), 0);
+        assert_eq!(ledger.snapshot().1, 1_000);
+        assert_eq!(ledger.prune(2_000), 1);
+        assert!(ledger.is_empty());
     }
 
     #[test]

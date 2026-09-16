@@ -14,9 +14,11 @@ import javax.crypto.spec.SecretKeySpec
  * `protocol/test-vectors/relay_semantics.txt`, which [ModelRelayConformanceTest] replays against it
  * (the Rust relay replays the same file), so the model cannot drift from the relay.
  *
- * Rules: expiry = now + ttl rounded up to the hour; a store over a live membership whose expiry +
- * 1 h reaches the wanted expiry is a free no-op; a live but shorter membership is extended (charged,
- * same sequence); an expired one, pruned or not, is renewed (charged, new sequence); quota is
+ * Rules: a store names exactly one TTL bucket of [TTL_BUCKETS] no larger than the relay's maximum
+ * (`rejected` otherwise; Phase 9 design §10.2); expiry = now + ttl rounded up to the hour; a store
+ * over a live membership whose expiry + 1 h reaches the wanted expiry is a free no-op; a live but
+ * shorter membership is extended (charged, same sequence); an expired one, pruned or not, is
+ * renewed (charged, new sequence); quota is
  * charged per token before anything changes; get/check take the namespace from the capability;
  * write grants read; list walks index entries (live and expired-unpruned) after the cursor, at
  * most 1024 per call, returns the live ones, and its cursor is the last examined sequence or empty
@@ -110,7 +112,7 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
     // ------------------------------------------------------------------ operations
 
     fun store(namespace: NamespaceId, data: ByteArray, token: ByteArray, ttlSeconds: Long, now: Long): Reply<Receipt> {
-        if (ttlSeconds <= 0 || ttlSeconds > maxTtlSeconds) return Reply.Err("rejected")
+        if (ttlSeconds !in TTL_BUCKETS || ttlSeconds > maxTtlSeconds) return Reply.Err("rejected")
         if (data.size !in Buckets.SIZES) return Reply.Err("rejected")
         val cap = verify(token, KIND_WRITE, namespace, now) ?: return Reply.Err("unauthorized")
         val hash = sha256(data)
@@ -280,6 +282,9 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
         const val MAX_LIST_SCAN = 1024
         const val HOUR = 3_600L
         const val MAX_TTL = 7_776_000L
+
+        /** The only TTLs a relay stores, in seconds (`ghost_relay_api::TTL_BUCKETS_SECONDS`). */
+        val TTL_BUCKETS: Set<Long> = setOf(3_600L, 86_400L, 604_800L, 2_592_000L, 7_776_000L)
 
         fun ceilHour(t: Long): Long = -Math.floorDiv(-t, HOUR) * HOUR
 

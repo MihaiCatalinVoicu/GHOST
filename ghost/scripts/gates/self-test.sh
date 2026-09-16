@@ -204,8 +204,17 @@ if command -v protoc >/dev/null; then
     RedeemTokenRequest GetBlobRequest ListNamespaceRequest; do
     if printf '%s\n' "$out" | grep -qF "message $m lacks"; then echo "self-test ok: proto-check reports $m"; else echo "SELF-TEST FAIL: proto-check does not report $m" >&2; rc=1; fi
   done
-  for m in GoodRequest InlineGoodRequest GoodNextLineRequest StoreBlobRequest; do
+  for m in GoodRequest InlineGoodRequest GoodNextLineRequest StoreBlobRequest RegisterKeyRequest; do
     if printf '%s\n' "$out" | grep -qF "message $m "; then echo "SELF-TEST FAIL: proto-check reports the versioned $m" >&2; rc=1; else echo "self-test ok: proto-check accepts $m"; fi
+  done
+  # Phase 9 (design §4.2, §16.1): the key registration enums field for field and the request's
+  # presence (test-harness/gates/negative-proto-register/README.md): exactly three violations.
+  expect_fail proto-check "$HARNESS/negative-proto-register"
+  out="$(GHOST_ROOT="$HARNESS/negative-proto-register" bash "$DIR/proto-check.sh" 2>&1 || true)"
+  proto_hits="$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)"
+  if [ "$proto_hits" = "3" ]; then echo "self-test ok: proto-check reports the 3 key registration schema violations"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 3 key registration schema violations" >&2; rc=1; fi
+  for want in "enum KeyKind must be exactly" "enum RegisterResult must be exactly" "message RegisterKeyRequest is missing"; do
+    if printf '%s\n' "$out" | grep -qF "$want"; then echo "self-test ok: proto-check reports: $want"; else echo "SELF-TEST FAIL: proto-check does not report: $want" >&2; rc=1; fi
   done
 elif [ -n "${CI:-}" ]; then
   echo "SELF-TEST FAIL: protoc missing in CI; proto-check not proven" >&2; rc=1

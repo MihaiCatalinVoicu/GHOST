@@ -576,8 +576,8 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
   $R exec relay-a ls /var/lib/ghost
   ```
   Așteptat, după cel mult un minut (Tor scrie `hostname`, apoi relay-ul creează store-ul și
-  pornește; ultimele două comenzi se repetă până atunci): `1`, apoi o listă cu `nullifiers.redb`,
-  `redemption.marker` și `relay.key`. Abia apoi pornirea normală:
+  pornește; ultimele două comenzi se repetă până atunci): `1`, apoi o listă cu `keys.redb`,
+  `nullifiers.redb`, `redemption.marker` și `relay.key`. Abia apoi pornirea normală:
 
   ```sh
   $R up -d --force-recreate relay-a
@@ -596,8 +596,8 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
   $R logs relay-a | grep -c 'ghost-relay listening on'
   $R exec relay-a ls /var/lib/ghost
   ```
-  Așteptat, ca la `--nullifiers-init`: `1`, apoi `nullifiers.redb`, `redemption.marker` și
-  `relay.key`. Abia apoi pornirea normală:
+  Așteptat, ca la `--nullifiers-init`: `1`, apoi `keys.redb`, `nullifiers.redb`,
+  `redemption.marker` și `relay.key`. Abia apoi pornirea normală:
 
   ```sh
   $R up -d --force-recreate relay-a
@@ -607,6 +607,11 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
   pentru fiecare perioadă a cărei fereastră era deschisă la reset: până la
   `start(week(now) + 2) + 1 h` dacă resetul cade în ultimele 24 h ale unei săptămâni, altfel până
   la `start(week(now) + 1) + 1 h` (§19.10).
+- [ ] `keys.redb` (înregistrările de chei ale Fazei 9, design §4.6) este stare pe care proprietarii
+  namespace-urilor o refac: relay-ul îl creează gol la orice pornire la care lipsește, fără flag,
+  iar `--nullifiers-reset` nu îl atinge. După pierderea lui, depunerile și citirile cu credențiale
+  v3 sunt refuzate până când proprietarii înregistrează din nou; nu intră în reconcilierea R2. Un
+  `keys.redb` cu altă schemă oprește pornirea; se șterge și relay-ul pornește normal.
 - [ ] Săptămânal, pentru R2 (§6.9 verificarea 2): fișierul de numărători al fiecărui relay. Relay-ul
   pornit cu `--redemption-counts` îl rescrie la pornire și după fiecare sweep care închide o
   săptămână, din `nullifiers.redb` (store-ul este ținut deschis de relay, deci nu se citește direct):

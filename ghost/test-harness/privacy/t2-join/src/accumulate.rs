@@ -223,6 +223,46 @@ fn split_capability(v: &[u8]) -> Vec<(&'static str, &[u8])> {
     }
 }
 
+/// The parts of a key registration row of a relay database export (Phase 9 design §4.6, §4.9),
+/// each with whether T2b excludes it: `bearer_keys` (`namespace ‖ period ‖ kind ‖ verifier →
+/// valid_until ‖ quota ‖ n ‖ serial × n`), `serial_use` (`namespace ‖ period ‖ kind ‖ serial →
+/// verifier ‖ valid_until`) and `deposit_ledger` (`namespace ‖ period ‖ verifier → used ‖
+/// valid_until`). `None` for any other table or a row of another shape.
+fn split_key_row<'a>(
+    table: &str,
+    key: &'a [u8],
+    value: &'a [u8],
+) -> Option<Vec<(&'static str, &'a [u8], bool)>> {
+    match (table, key.len(), value.len()) {
+        ("bearer_keys", 73, v) if v >= 17 && (v - 17) % 16 == 0 => {
+            let mut parts = vec![
+                ("namespace", &key[..32], true),
+                ("period", &key[32..40], true),
+                ("verifier", &key[41..], false),
+                ("valid_until", &value[..8], true),
+                ("quota", &value[8..16], true),
+            ];
+            parts.extend(value[17..].chunks(16).map(|s| ("serial", s, false)));
+            Some(parts)
+        }
+        ("serial_use", 57, 40) => Some(vec![
+            ("namespace", &key[..32], true),
+            ("period", &key[32..40], true),
+            ("serial", &key[41..], false),
+            ("verifier", &value[..32], false),
+            ("valid_until", &value[32..], true),
+        ]),
+        ("deposit_ledger", 72, 16) => Some(vec![
+            ("namespace", &key[..32], true),
+            ("period", &key[32..40], true),
+            ("verifier", &key[40..], false),
+            ("used", &value[..8], true),
+            ("valid_until", &value[8..], true),
+        ]),
+        _ => None,
+    }
+}
+
 impl Accumulator {
     pub fn new(schedule: Schedule, public: Public) -> Self {
         Self {
@@ -506,6 +546,18 @@ impl Accumulator {
             self.values.add(side, tag, value, false);
             return;
         }
+        // Key registration rows (Phase 9 design §4.6) and deposit ledger entries (§4.9) are added as
+        // their parts, like a nullifier row: the namespace (replicated at every relay of its set by
+        // design) and the public week-aligned period and validity are excluded from T2b; the
+        // verifier (bound to the relay's slot) and the capability serials (relay-keyed) are not.
+        if let Some(parts) = split_key_row(table, key, value) {
+            let side = relay_bit(relay);
+            for (part, bytes, excluded) in parts {
+                let id = self.values.fields.id(&format!("relay.db.{table}.{part}"));
+                self.values.add(side, id, bytes, excluded);
+            }
+            return;
+        }
         let id = self.values.fields.id(&format!("relay.db.{table}"));
         // A meta row is keyed by a constant name of the storage schema (Z); its value is the
         // relay's state (high-water marks, the key check, the ES sequence, the quota prune time).
@@ -524,5 +576,54 @@ impl Accumulator {
         for c in &mut self.clients {
             c.close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_key_row;
+
+    #[test]
+    fn key_rows_split_into_their_parts() {
+        let mut key = vec![1u8; 32];
+        key.extend_from_slice(&7u64.to_be_bytes());
+        key.push(3);
+        key.extend_from_slice(&[9u8; 32]);
+        let mut value = 100u64.to_be_bytes().to_vec();
+        value.extend_from_slice(&4096u64.to_be_bytes());
+        value.push(2);
+        value.extend_from_slice(&[5u8; 16]);
+        value.extend_from_slice(&[6u8; 16]);
+        let parts = split_key_row("bearer_keys", &key, &value).unwrap();
+        let names: Vec<(&str, bool)> = parts.iter().map(|(n, _, e)| (*n, *e)).collect();
+        assert_eq!(
+            names,
+            [
+                ("namespace", true),
+                ("period", true),
+                ("verifier", false),
+                ("valid_until", true),
+                ("quota", true),
+                ("serial", false),
+                ("serial", false)
+            ]
+        );
+        assert_eq!(parts[2].1, &[9u8; 32]);
+        assert_eq!(parts[6].1, &[6u8; 16]);
+        let mut use_key = key[..41].to_vec();
+        use_key.extend_from_slice(&[5u8; 16]);
+        let mut use_value = vec![9u8; 32];
+        use_value.extend_from_slice(&100u64.to_be_bytes());
+        let parts = split_key_row("serial_use", &use_key, &use_value).unwrap();
+        assert_eq!(parts[2], ("serial", &[5u8; 16][..], false));
+        assert_eq!(parts[3], ("verifier", &[9u8; 32][..], false));
+        let mut ledger_key = key[..40].to_vec();
+        ledger_key.extend_from_slice(&[9u8; 32]);
+        let parts = split_key_row("deposit_ledger", &ledger_key, &value[..16]).unwrap();
+        assert_eq!(parts[2], ("verifier", &[9u8; 32][..], false));
+        // Other tables and malformed rows keep the generic path.
+        assert!(split_key_row("members", &key, &value).is_none());
+        assert!(split_key_row("bearer_keys", &key[..72], &value).is_none());
+        assert!(split_key_row("bearer_keys", &key, &value[..20]).is_none());
     }
 }

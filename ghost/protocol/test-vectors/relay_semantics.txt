@@ -1,8 +1,9 @@
-# Relay semantics conformance vectors (Phase 7 design §8.7). One script for two replayers:
+# Relay semantics conformance vectors (Phase 7 design §8.7; section 9, the TTL buckets, Phase 9
+# design §10.2). One script for two replayers:
 #   - relay/crates/node/tests/semantics_vectors.rs replays it against the real relay through
 #     Relay::{store,get,check,list}_at(request, now) and Relay::sweep(now);
-#   - the Kotlin ModelRelay of the sync harness (android/sync tests) will replay it against the
-#     model once that model exists (Phase 7 step S3).
+#   - the Kotlin ModelRelay of the sync harness replays it against the model
+#     (android/sync ModelRelayConformanceTest).
 # A behaviour that is not pinned here is not something the model may rely on.
 #
 # GRAMMAR
@@ -36,7 +37,8 @@
 #   token <C> from=<C0> xor=<i>
 #                            capability C0 with byte i XORed with 0x01.
 #
-# Operations (all TTLs are passed to the relay unchanged; every TTL used is a client bucket)
+# Operations (every TTL is passed to the relay unchanged; section 9 also passes TTLs that are no
+# bucket, which the relay rejects)
 #   store ns=<N> blob=<B> cap=<C> ttl=<s>  -> ok expiry=<t> | -> <category>
 #   get blob=<B> cap=<C>                   -> ok expiry=<t> | -> <category>
 #                            ok also requires that the returned bytes equal blob B.
@@ -60,6 +62,8 @@
 #   (T21, category invalid_argument), so a client never sends several of the tokens below.
 #
 # RELAY RULES these vectors pin (relay/crates/storage, relay/crates/node, relay/crates/capability)
+#   - a store's TTL is exactly one of 3600, 86400, 604800, 2592000, 7776000 and at most max_ttl;
+#     any other TTL is rejected before the capability is checked, and nothing is written;
 #   - expiry = BASE-relative (now + ttl) rounded up to a whole hour;
 #   - a store over a live membership whose expiry + 3600 >= the wanted expiry changes nothing and
 #     is not charged; a live but shorter membership is extended (charged, same sequence);
@@ -323,3 +327,70 @@ store ns=N blob=Q cap=W2 ttl=86400 -> ok expiry=259200    # renewal after prune:
 store ns=N blob=O cap=W2 ttl=86400 -> quota               # so this renewal was not free either
 list ns=N cap=R cursor=KQ limit=10 -> ok hashes=M,Q next=end             # new sequence, after M
 list ns=N cap=R cursor=start limit=10 -> ok hashes=L,M,Q next=end
+
+# ---------------------------------------------------------------------------------------------
+# 9. TTL buckets (Phase 9 design §10.2, ADR-32): a store names exactly 3600, 86400, 604800,
+#    2592000 or 7776000 seconds; any other TTL is rejected (capture rejected_ttl) and leaves
+#    nothing. A 1-hour membership expires at now + 3600 rounded up to the hour, so it lives 1-2 h;
+#    get, check and list stop at its expiry; a store after it is a charged renewal with a new
+#    sequence; a namespace emptied by 1-hour memberships restarts from an hour seed above every
+#    sequence it used, so an old cursor still sees its new entries.
+relay max_ttl=7776000
+at 1800
+cap W kind=write ns=H quota=1048576 expiry=31536000
+cap R kind=read ns=H quota=0 expiry=31536000
+cap WK kind=write ns=K quota=2048 expiry=31536000
+cap RK kind=read ns=K quota=0 expiry=31536000
+cap WE kind=write ns=E quota=1048576 expiry=31536000
+cap RE kind=read ns=E quota=0 expiry=31536000
+blob O1 size=1024
+blob O2 size=4096
+blob O3 size=1024
+blob O4 size=1024
+blob E1 size=1024
+blob E2 size=1024
+blob E3 size=1024
+store ns=H blob=O1 cap=W ttl=0 -> rejected
+store ns=H blob=O1 cap=W ttl=1 -> rejected
+store ns=H blob=O1 cap=W ttl=3599 -> rejected
+store ns=H blob=O1 cap=W ttl=3601 -> rejected
+store ns=H blob=O1 cap=W ttl=7200 -> rejected
+store ns=H blob=O1 cap=W ttl=172800 -> rejected
+store ns=H blob=O1 cap=W ttl=7776001 -> rejected
+get blob=O1 cap=R -> not_found                            # the refused stores left nothing
+list ns=H cap=R cursor=start limit=10 -> ok hashes=none next=end
+store ns=H blob=O1 cap=W ttl=3600 -> ok expiry=7200       # 1800 + 3600 = 5400, rounded up to the hour
+store ns=H blob=O2 cap=W ttl=86400 -> ok expiry=90000
+store ns=K blob=O3 cap=WK ttl=3600 -> ok expiry=7200      # charged 1024 (1024 of 2048 used)
+get blob=O1 cap=R -> ok expiry=7200
+list ns=H cap=R cursor=start limit=1 -> ok hashes=O1 next=K1
+at 5000
+store ns=H blob=O1 cap=W ttl=3600 -> ok expiry=7200       # wanted 10800 <= 7200 + 3600: a free no-op
+store ns=K blob=O3 cap=WK ttl=3600 -> ok expiry=7200      # the same, not charged
+at 7199
+get blob=O1 cap=R -> ok expiry=7200
+check cap=R blobs=O1,O2 -> ok available=O1,O2
+list ns=H cap=R cursor=start limit=10 -> ok hashes=O1,O2 next=end
+at 7200                                                   # the 1-hour memberships expired, not pruned
+get blob=O1 cap=R -> not_found
+check cap=R blobs=O1,O2 -> ok available=O2
+list ns=H cap=R cursor=start limit=10 -> ok hashes=O2 next=end
+list ns=K cap=RK cursor=start limit=10 -> ok hashes=none next=end
+store ns=H blob=O1 cap=W ttl=3600 -> ok expiry=10800      # renewal: a new sequence, after O2
+store ns=K blob=O3 cap=WK ttl=3600 -> ok expiry=10800     # the renewal is charged (2048 of 2048 used)
+store ns=K blob=O4 cap=WK ttl=3600 -> quota               # so the renewal was not free
+list ns=H cap=R cursor=start limit=10 -> ok hashes=O2,O1 next=end
+list ns=H cap=R cursor=K1 limit=10 -> ok hashes=O2,O1 next=end
+at 9000
+store ns=H blob=O1 cap=W ttl=86400 -> ok expiry=97200     # a longer bucket extends it (charged, same sequence)
+list ns=H cap=R cursor=start limit=10 -> ok hashes=O2,O1 next=end
+store ns=E blob=E1 cap=WE ttl=3600 -> ok expiry=14400     # 9000 + 3600 = 12600, rounded up
+store ns=E blob=E2 cap=WE ttl=3600 -> ok expiry=14400
+list ns=E cap=RE cursor=start limit=1 -> ok hashes=E1 next=KE
+at 14400                                                  # every 1-hour membership has expired
+list ns=E cap=RE cursor=start limit=10 -> ok hashes=none next=end
+prune -> ok removed=3                                     # E1, E2 and O3: E and K are now empty
+store ns=E blob=E3 cap=WE ttl=3600 -> ok expiry=18000
+list ns=E cap=RE cursor=KE limit=10 -> ok hashes=E3 next=end   # seeded above every sequence E used
+list ns=E cap=RE cursor=start limit=10 -> ok hashes=E3 next=end
+list ns=H cap=R cursor=start limit=10 -> ok hashes=O2,O1 next=end

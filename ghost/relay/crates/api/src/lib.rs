@@ -20,8 +20,10 @@ pub const PADDING_BUCKETS: [usize; 4] = [1_024, 4_096, 16_384, 65_536];
 /// Default relay retention, in seconds (FR-5.5: 90 days).
 pub const DEFAULT_TTL_SECONDS: u32 = 90 * 24 * 60 * 60;
 
-/// Retention buckets a relay is allowed to observe/record, in days (threat model §6).
-pub const TTL_BUCKETS_DAYS: [u32; 4] = [1, 7, 30, 90];
+/// The only TTLs a store may name, in seconds: 1 hour, 1, 7, 30 and 90 days (Phase 9 design
+/// §10.2, ADR-27, ADR-32). A relay refuses every other TTL and records the bucket it stored, so
+/// it observes nothing finer than these five values (threat model §6).
+pub const TTL_BUCKETS_SECONDS: [u32; 5] = [3_600, 86_400, 604_800, 2_592_000, 7_776_000];
 
 /// Largest batch accepted by CheckBlobs/ListNamespace (§11.2 bounded batches).
 pub const MAX_BATCH: usize = 256;
@@ -157,6 +159,137 @@ pub fn capability_header(token: &[u8]) -> Option<CapabilityHeader> {
     })
 }
 
+/// Version byte of the bearer credential v3 layout (Phase 9 design §4.3, §21.2, §22.8.7).
+pub const BEARER_CREDENTIAL_VERSION: u8 = 3;
+/// Length of the secret a bearer credential carries.
+pub const BEARER_SECRET_BYTES: usize = 32;
+/// Total length of a bearer credential v3: version, kind, slot, namespace, secret (67 bytes).
+pub const BEARER_CREDENTIAL_BYTES: usize = 1 + 1 + 1 + 32 + BEARER_SECRET_BYTES;
+/// Length of a registered verifier (SHA-256 of [`BearerCredential::verifier_preimage`]).
+pub const VERIFIER_BYTES: usize = 32;
+
+/// The kind of a bearer credential and of the key registration behind it. The byte values are
+/// those of `KeyKind` in `relay.proto`; 2 is Write in capability headers and is never a bearer
+/// kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BearerKind {
+    /// The owner's inbox read key: `list`, `get`, `check`.
+    Read = 1,
+    /// The inbox deposit key shared by the card holders: `store`, `check`.
+    Deposit = 3,
+    /// The bundle fetch key shared by the card holders: `list`, `get` (week-coarse times).
+    Fetch = 4,
+}
+
+impl BearerKind {
+    /// Every bearer kind, in byte order.
+    pub const ALL: [BearerKind; 3] = [BearerKind::Read, BearerKind::Deposit, BearerKind::Fetch];
+
+    /// The kind of a credential byte (or of a `KeyKind` wire value), if it is one.
+    pub fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            1 => Some(BearerKind::Read),
+            3 => Some(BearerKind::Deposit),
+            4 => Some(BearerKind::Fetch),
+            _ => None,
+        }
+    }
+
+    /// The kind of a `KeyKind` wire value (`KEY_KIND_UNSPECIFIED` and unknown values are none).
+    pub fn from_key_kind(value: i32) -> Option<Self> {
+        u8::try_from(value).ok().and_then(Self::from_byte)
+    }
+
+    pub fn byte(self) -> u8 {
+        self as u8
+    }
+
+    /// The domain label of the kind's verifier.
+    pub fn verifier_label(self) -> &'static [u8] {
+        match self {
+            BearerKind::Read => b"ghost/v1/read-verifier",
+            BearerKind::Deposit => b"ghost/v1/deposit-verifier",
+            BearerKind::Fetch => b"ghost/v1/fetch-verifier",
+        }
+    }
+
+    /// The capture name of the kind (`key_kind` of a register event).
+    pub fn name(self) -> &'static str {
+        match self {
+            BearerKind::Read => "read",
+            BearerKind::Deposit => "deposit",
+            BearerKind::Fetch => "fetch",
+        }
+    }
+}
+
+/// A bearer credential v3, the third public token layout beside the relay-minted capabilities of
+/// [`capability_header`]:
+///
+/// ```text
+/// v3 (67 bytes): version(1) = 3 || kind(1) ∈ {0x01 read, 0x03 deposit, 0x04 fetch} || slot(1) || namespace(32) || secret(32)
+/// verifier       = SHA-256(label(kind) || u8(slot) || namespace(32) || secret(32))
+/// ```
+///
+/// It carries no MAC: its authority is the verifier registered at the relay of `slot`. Every
+/// presenter of one secret at one relay sends identical bytes. Its `Debug` output never shows the
+/// secret.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BearerCredential {
+    pub kind: BearerKind,
+    pub slot: u8,
+    pub namespace: [u8; 32],
+    pub secret: [u8; BEARER_SECRET_BYTES],
+}
+
+impl std::fmt::Debug for BearerCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BearerCredential")
+            .field("kind", &self.kind)
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BearerCredential {
+    /// The 67 credential bytes.
+    pub fn encode(&self) -> [u8; BEARER_CREDENTIAL_BYTES] {
+        let mut out = [0u8; BEARER_CREDENTIAL_BYTES];
+        out[0] = BEARER_CREDENTIAL_VERSION;
+        out[1] = self.kind.byte();
+        out[2] = self.slot;
+        out[3..35].copy_from_slice(&self.namespace);
+        out[35..].copy_from_slice(&self.secret);
+        out
+    }
+
+    /// The bytes whose SHA-256 is the verifier: `label(kind) || u8(slot) || namespace || secret`.
+    pub fn verifier_preimage(&self) -> Vec<u8> {
+        let label = self.kind.verifier_label();
+        let mut out = Vec::with_capacity(label.len() + 1 + 32 + BEARER_SECRET_BYTES);
+        out.extend_from_slice(label);
+        out.push(self.slot);
+        out.extend_from_slice(&self.namespace);
+        out.extend_from_slice(&self.secret);
+        out
+    }
+}
+
+/// Parses a bearer credential v3: exactly 67 bytes, version 3 and a bearer kind. Any other token
+/// is `None` (a relay-minted capability is read by [`capability_header`], which in turn refuses
+/// every v3 credential).
+pub fn bearer_credential(token: &[u8]) -> Option<BearerCredential> {
+    if token.len() != BEARER_CREDENTIAL_BYTES || token[0] != BEARER_CREDENTIAL_VERSION {
+        return None;
+    }
+    Some(BearerCredential {
+        kind: BearerKind::from_byte(token[1])?,
+        slot: token[2],
+        namespace: token[3..35].try_into().ok()?,
+        secret: token[35..].try_into().ok()?,
+    })
+}
+
 /// Returns the padding bucket a payload of `len` bytes must be padded to, or `None` if it
 /// exceeds the largest bucket and must be fragmented by the caller.
 pub fn padding_bucket(len: usize) -> Option<usize> {
@@ -168,10 +301,12 @@ pub fn is_bucket_size(len: usize) -> bool {
     PADDING_BUCKETS.contains(&len)
 }
 
-/// Rounds a TTL in seconds up to the coarsest allowed bucket, in days; `None` if above the maximum.
-pub fn ttl_bucket_days(ttl_seconds: u32) -> Option<u32> {
-    let days = ttl_seconds.div_ceil(86_400).max(1);
-    TTL_BUCKETS_DAYS.iter().copied().find(|&d| days <= d)
+/// The TTL bucket a TTL names: `Some(ttl_seconds)` when it is exactly one of
+/// [`TTL_BUCKETS_SECONDS`], `None` otherwise (nothing is rounded).
+pub fn ttl_bucket_seconds(ttl_seconds: u32) -> Option<u32> {
+    TTL_BUCKETS_SECONDS
+        .contains(&ttl_seconds)
+        .then_some(ttl_seconds)
 }
 
 /// Unix seconds rounded down to the minute: the only time granularity a relay records.
@@ -201,12 +336,93 @@ mod tests {
     }
 
     #[test]
-    fn ttl_and_time_buckets() {
-        assert_eq!(ttl_bucket_days(1), Some(1));
-        assert_eq!(ttl_bucket_days(86_400 * 2), Some(7));
-        assert_eq!(ttl_bucket_days(DEFAULT_TTL_SECONDS), Some(90));
-        assert_eq!(ttl_bucket_days(DEFAULT_TTL_SECONDS + 1), None);
+    fn ttl_buckets_match_exactly_and_time_buckets_floor_to_the_minute() {
+        for bucket in TTL_BUCKETS_SECONDS {
+            assert_eq!(ttl_bucket_seconds(bucket), Some(bucket));
+        }
+        assert!(TTL_BUCKETS_SECONDS.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(*TTL_BUCKETS_SECONDS.last().unwrap(), DEFAULT_TTL_SECONDS);
+        for other in [
+            0,
+            1,
+            3_599,
+            3_601,
+            7_200,
+            86_399,
+            172_800,
+            7_776_001,
+            u32::MAX,
+        ] {
+            assert_eq!(ttl_bucket_seconds(other), None, "{other}");
+        }
         assert_eq!(time_bucket(1_757_491_261), 1_757_491_260);
+    }
+
+    #[test]
+    fn bearer_credentials_parse_the_v3_layout_only() {
+        let credential = BearerCredential {
+            kind: BearerKind::Deposit,
+            slot: 7,
+            namespace: [0x5A; 32],
+            secret: [0xC3; 32],
+        };
+        let bytes = credential.encode();
+        assert_eq!(bytes.len(), 67);
+        assert_eq!(&bytes[..3], &[3, 3, 7]);
+        assert_eq!(bearer_credential(&bytes), Some(credential.clone()));
+        // The capability parsers refuse it, and it refuses them.
+        assert_eq!(capability_format(&bytes), None);
+        assert_eq!(capability_header(&bytes), None);
+        let mut v1 = CapabilityHeader {
+            kind: CapabilityKind::Write,
+            namespace: [0x5A; 32],
+            quota_bytes: 1,
+            expiry_unix: 2,
+        }
+        .encode_body()
+        .to_vec();
+        v1.extend_from_slice(&[0; CAPABILITY_MAC_BYTES]);
+        assert_eq!(bearer_credential(&v1), None);
+        // Lengths 66 and 68, another version and kinds 0, 2 and 5 are no credential.
+        let mut longer = bytes.to_vec();
+        longer.push(0);
+        assert_eq!(bearer_credential(&bytes[..66]), None);
+        assert_eq!(bearer_credential(&longer), None);
+        for (index, value) in [(0usize, 2u8), (0, 4), (1, 0), (1, 2), (1, 5), (1, 0xFF)] {
+            let mut t = bytes;
+            t[index] = value;
+            assert_eq!(bearer_credential(&t), None, "byte {index} = {value}");
+        }
+        // Every kind round-trips through its byte and its KeyKind value.
+        for kind in BearerKind::ALL {
+            assert_eq!(BearerKind::from_byte(kind.byte()), Some(kind));
+            assert_eq!(
+                BearerKind::from_key_kind(i32::from(kind.byte())),
+                Some(kind)
+            );
+        }
+        for value in [0, 2, 5, -1, 259] {
+            assert_eq!(BearerKind::from_key_kind(value), None, "{value}");
+        }
+        // The preimage is label || slot || namespace || secret; Debug never shows the secret.
+        let pre = credential.verifier_preimage();
+        assert_eq!(&pre[..25], b"ghost/v1/deposit-verifier");
+        assert_eq!(pre[25], 7);
+        assert_eq!(&pre[26..58], &[0x5A; 32]);
+        assert_eq!(&pre[58..], &[0xC3; 32]);
+        let shown = format!("{credential:?}");
+        assert!(!shown.contains("195") && !shown.to_lowercase().contains("c3"));
+    }
+
+    #[test]
+    fn key_kind_values_are_the_bearer_kind_bytes() {
+        assert_eq!(proto::KeyKind::Read as i32, 1);
+        assert_eq!(proto::KeyKind::Deposit as i32, 3);
+        assert_eq!(proto::KeyKind::Fetch as i32, 4);
+        assert_eq!(
+            BearerKind::from_key_kind(proto::KeyKind::Unspecified as i32),
+            None
+        );
     }
 
     #[test]

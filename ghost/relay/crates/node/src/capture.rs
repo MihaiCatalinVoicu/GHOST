@@ -21,14 +21,20 @@ pub struct Event {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_bucket: Option<usize>,
     pub time_bucket: u64,
+    /// Store only: the exact TTL bucket, in seconds, when the request named one (a store with any
+    /// other TTL is refused with `rejected_ttl` and records none; Phase 9 design §10.2).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl_bucket_days: Option<u32>,
+    pub ttl_bucket_seconds: Option<u32>,
+    /// Register only: the kind of the key (`read`, `deposit`, `fetch`), once the request names one
+    /// (Phase 9 design §4.7). The verifier never appears.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_kind: Option<&'static str>,
     /// Redeem only: the token's nullifier (hex 64), once the nullifier store holds it: `ok` and
     /// `rejected_nullifier` events only (design §10.6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nullifier: Option<String>,
-    /// Redeem only: the access week of the token's key (8-byte `epoch_id`, hex 16), once the key id
-    /// names an ACCESS key of the Entitlement Schedule.
+    /// Redeem: the access week of the token's key (8-byte `epoch_id`, hex 16), once the key id names
+    /// an ACCESS key of the Entitlement Schedule. Register: the week the request names.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

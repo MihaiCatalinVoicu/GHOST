@@ -3,18 +3,25 @@
 //! provided by the onion service and the deployment (ADR-01, infra/relay); this crate assumes the
 //! peer is unknown and treats every request as untrusted input with bounded parsing.
 
+mod bearer;
 pub mod capture;
 pub mod redeem;
+pub mod register;
 
+use bearer::{week_ceil, week_floor, Op};
 use capture::{hex_or_none, Capture, Event};
 use ghost_relay_api::proto::relay_service_server::RelayService;
 use ghost_relay_api::proto::*;
 use ghost_relay_api::{
-    is_bucket_size, time_bucket, ttl_bucket_days, DEFAULT_TTL_SECONDS, HASH_BYTES, MAX_BATCH,
-    PROTOCOL_VERSION, REQUEST_ID_BYTES,
+    bearer_credential, is_bucket_size, time_bucket, ttl_bucket_seconds, BearerKind,
+    DEFAULT_TTL_SECONDS, HASH_BYTES, MAX_BATCH, PROTOCOL_VERSION, REQUEST_ID_BYTES,
 };
-use ghost_relay_capability::{scope_hash, CapError, Capability, Kind, QuotaLedger, RelayKey};
-use ghost_relay_prune::{NullifierPeriods, SweepReport};
+use ghost_relay_capability::{
+    scope_hash, Allowance, CapError, Capability, DepositLedger, DepositRecord, Kind, QuotaLedger,
+    RelayKey,
+};
+use ghost_relay_prune::{KeyRegistrations, NullifierPeriods, SweepReport};
+use ghost_relay_storage::keys::KeyStore;
 use ghost_relay_storage::nullifiers::NullifierStore;
 use ghost_relay_storage::{BlobStore, StoreError};
 pub use redeem::{EntitlementPolicy, NullifierMode, RedeemRate, StartError};
@@ -33,7 +40,8 @@ pub struct RelayConfig {
     pub gossip_enabled: bool,
     pub max_ttl_seconds: u32,
     /// Token redemption (Phase 8 design §10.5). `None`, the default, disables `RedeemToken`
-    /// (`UNIMPLEMENTED`) and opens no nullifier store.
+    /// (`UNIMPLEMENTED`) and opens no nullifier store. It also gives the relay its slot, without
+    /// which every bearer credential v3 is refused (Phase 9 design §21.2 point 3).
     pub entitlement: Option<EntitlementPolicy>,
     /// Time source of the gRPC service and of the start-up checks (default: the system clock).
     pub clock: Clock,
@@ -52,8 +60,10 @@ impl Default for RelayConfig {
 
 pub struct Relay {
     store: BlobStore,
+    keys: KeyStore,
     key: RelayKey,
     ledger: Mutex<QuotaLedger>,
+    deposits: Mutex<DepositLedger>,
     redeem: Option<redeem::Redeem>,
     capture: Option<Capture>,
     config: RelayConfig,
@@ -71,12 +81,24 @@ const REJECTED: &str = "rejected";
 const UNAUTHORIZED: &str = "unauthorized";
 const NOT_FOUND: &str = "not found";
 
+/// What authorized a store, get, check or list.
+enum Authorized {
+    /// A relay-minted capability (v1 or v2), verified under the relay key.
+    Capability(Capability),
+    /// A bearer credential v3 of this kind, backed by live registrations: their allowances, in
+    /// the order a deposit is charged to them.
+    Bearer(BearerKind, Vec<Allowance>),
+}
+
 impl Relay {
     /// Opens the relay's data directory. With `config.entitlement` set, the start-up checks of
     /// design §10.5 run first, at `config.clock`'s time, and any failure is a refusal to start
     /// ([`StartError`]): the relay's onion must be listed for its slot in the current week, the
     /// nullifier store must open as the policy's [`NullifierMode`] says and under `key`, and the
     /// schedule must be append-only against the relay's memory of earlier schedules (rule 5).
+    /// The key registration store `keys.redb` (Phase 9 design §4.6) is soft state: it is created
+    /// empty when missing, whatever the nullifier mode, and only a file of another schema is a
+    /// refusal to start.
     pub fn open(
         data_dir: &Path,
         key: RelayKey,
@@ -94,14 +116,17 @@ impl Relay {
             None => None,
         };
         let store = BlobStore::open(&data_dir.join("blobs.redb"))?;
+        let keys = KeyStore::open(&data_dir.join(register::KEYS_FILE))?;
         let capture = match capture_path {
             Some(p) => Some(Capture::open(p)?),
             None => None,
         };
         Ok(Arc::new(Relay {
             store,
+            keys,
             key,
             ledger: Mutex::new(QuotaLedger::default()),
+            deposits: Mutex::new(DepositLedger::default()),
             redeem,
             capture,
             config,
@@ -116,6 +141,17 @@ impl Relay {
         &self.store
     }
 
+    /// The key registration store (`keys.redb`).
+    pub fn key_store(&self) -> &KeyStore {
+        &self.keys
+    }
+
+    /// The relay's slot in the Entitlement Schedule, when redemption is enabled; bearer
+    /// credentials v3 are accepted only for it.
+    pub fn slot(&self) -> Option<u8> {
+        self.redeem.as_ref().map(|r| r.slot())
+    }
+
     /// The nullifier store, when redemption is enabled.
     pub fn nullifier_store(&self) -> Option<&NullifierStore> {
         self.redeem.as_ref().map(|r| r.store())
@@ -125,6 +161,12 @@ impl Relay {
     /// exports it with the relay's databases (design §13.4).
     pub fn quota_snapshot(&self) -> (Vec<([u8; 32], u64, u64)>, u64) {
         self.ledger.lock().unwrap().snapshot()
+    }
+
+    /// The in-memory deposit ledger's state (read-only, [`DepositLedger::snapshot`]): the T2 world
+    /// exports it with `keys.redb` (Phase 9 design §4.9).
+    pub fn deposit_ledger_snapshot(&self) -> (Vec<(DepositRecord, u64, u64)>, u64) {
+        self.deposits.lock().unwrap().snapshot()
     }
 
     /// The relay's current time (its configured [`Clock`]).
@@ -147,18 +189,24 @@ impl Relay {
         redeem::write_if_changed(path, &redeem::redemption_counts_text(r.slot(), &counts))
     }
 
-    /// One prune sweep at `now`: expired blobs and quota ledgers, and, with redemption enabled,
-    /// the nullifier rows of every access week whose acceptance window has closed (design §10.4:
-    /// the closed-period high-water is raised in the same transaction, and nothing runs while
-    /// `now` is below the persisted high-water minute). Called periodically by the binary and by
-    /// tests.
+    /// One prune sweep at `now`: expired blobs and quota ledgers; key registrations past their
+    /// validity and their deposit ledgers (Phase 9 design §4.5: nothing runs in `keys.redb` while
+    /// `now` is below its persisted high-water minute); and, with redemption enabled, the nullifier
+    /// rows of every access week whose acceptance window has closed (design §10.4: the
+    /// closed-period high-water is raised in the same transaction, and nothing runs while `now` is
+    /// below the persisted high-water minute). Called periodically by the binary and by tests.
     pub fn sweep(&self, now: u64) -> Result<SweepReport, StoreError> {
         let mut ledger = self.ledger.lock().unwrap();
+        let mut deposits = self.deposits.lock().unwrap();
         let nullifiers = self.redeem.as_ref().map(|r| NullifierPeriods {
             store: r.store(),
             closed_through: redeem::closed_through(now),
         });
-        ghost_relay_prune::sweep(&self.store, &mut ledger, nullifiers, now)
+        let keys = KeyRegistrations {
+            store: &self.keys,
+            deposits: &mut deposits,
+        };
+        ghost_relay_prune::sweep(&self.store, &mut ledger, keys, nullifiers, now)
     }
 
     fn record(&self, event: Event) {
@@ -178,6 +226,43 @@ impl Relay {
         match e {
             StoreError::Db(_) => Status::unavailable(REJECTED),
             _ => Status::invalid_argument(REJECTED),
+        }
+    }
+
+    /// Authorizes `token` for `op`: a bearer credential v3 through its registrations
+    /// ([`Relay::accept_bearer`]), anything else as a relay-minted capability that grants write
+    /// (store) or read (list) on `namespace`, or, for get and check, any right on its own
+    /// namespace. Returns the namespace the operation may reveal. Every refusal is recorded as
+    /// `rejected_capability`.
+    fn authorize(
+        &self,
+        token: &[u8],
+        op: Op,
+        namespace: Option<&[u8; 32]>,
+        now: u64,
+        event: &mut Event,
+    ) -> Result<([u8; 32], Authorized), Status> {
+        let refused = |event: &mut Event, status: Status| {
+            event.result = "rejected_capability";
+            status
+        };
+        if let Some(credential) = bearer_credential(token) {
+            return match self.accept_bearer(&credential, op, namespace, now) {
+                Ok(accepted) => Ok((
+                    credential.namespace,
+                    Authorized::Bearer(credential.kind, accepted.allowances(&credential)),
+                )),
+                Err(refusal) => Err(refused(event, refusal.status())),
+            };
+        }
+        let verified = match (op, namespace) {
+            (Op::Store, Some(ns)) => self.key.verify(token, Kind::Write, ns, now),
+            (Op::List, Some(ns)) => self.key.verify(token, Kind::Read, ns, now),
+            _ => self.key.verify_any(token, now),
+        };
+        match verified {
+            Ok(cap) => Ok((cap.namespace, Authorized::Capability(cap))),
+            Err(e) => Err(refused(event, Relay::cap_error(e))),
         }
     }
 }
@@ -200,10 +285,13 @@ impl std::ops::Deref for RelayServer {
 }
 
 /// Request handlers with an explicit clock. The gRPC service calls them with the wall clock;
-/// conformance tests (`tests/semantics_vectors.rs`) call them with a virtual one. Each records
-/// exactly one capture event, as the service did before the handlers were extracted.
+/// conformance tests (`tests/semantics_vectors.rs`, `tests/register_vectors.rs`) call them with a
+/// virtual one. Each records exactly one capture event, as the service did before the handlers
+/// were extracted.
 impl Relay {
-    /// StoreBlob at time `now` (unix seconds).
+    /// StoreBlob at time `now` (unix seconds). The TTL must be exactly one bucket (Phase 9 design
+    /// §10.2, `rejected_ttl` otherwise). A store with a deposit credential is charged to the
+    /// deposit ledger entry of its earliest live registration with allowance left (design §4.5).
     pub fn store_at(&self, req: StoreBlobRequest, now: u64) -> Result<StoreBlobResponse, Status> {
         let mut event = Event {
             op: "store",
@@ -212,16 +300,14 @@ impl Relay {
             blob_hash: hex_or_none(&req.blob_hash, HASH_BYTES),
             size_bucket: is_bucket_size(req.data.len()).then_some(req.data.len()),
             time_bucket: time_bucket(now),
-            ttl_bucket_days: ttl_bucket_days(req.ttl_seconds),
-            nullifier: None,
-            period_id: None,
+            ttl_bucket_seconds: ttl_bucket_seconds(req.ttl_seconds),
             capability_scope: req
                 .capability
                 .as_ref()
                 .map(|c| hex::encode(scope_hash(&c.token))),
             request_id: hex_or_none(&req.request_id, REQUEST_ID_BYTES),
-            batch_count: None,
             result: "ok",
+            ..Default::default()
         };
 
         let outcome: Result<StoreBlobResponse, Status> = (|| {
@@ -233,7 +319,7 @@ impl Relay {
                 event.result = "rejected_size";
                 return Err(Status::invalid_argument(REJECTED));
             };
-            if req.ttl_seconds == 0 || req.ttl_seconds > self.config.max_ttl_seconds {
+            if ttl_bucket_seconds(req.ttl_seconds).is_none_or(|t| t > self.config.max_ttl_seconds) {
                 event.result = "rejected_ttl";
                 return Err(Status::invalid_argument(REJECTED));
             }
@@ -246,43 +332,68 @@ impl Relay {
                 .as_ref()
                 .map(|c| c.token.as_slice())
                 .unwrap_or(&[]);
-            let cap: Capability = match self.key.verify(cap_token, Kind::Write, &namespace, now) {
-                Ok(c) => c,
-                Err(e) => {
-                    event.result = "rejected_capability";
-                    return Err(Relay::cap_error(e));
-                }
-            };
+            let (_, authorized) =
+                self.authorize(cap_token, Op::Store, Some(&namespace), now, &mut event)?;
             // The quota is charged inside the store's write transaction, before anything is
             // persisted: a store that exceeds the quota leaves no blob behind, and a retry is
             // charged again (it is not an "idempotent success").
             let bytes = req.data.len() as u64;
-            let mut ledger = self.ledger.lock().unwrap();
             let mut denied: Option<CapError> = None;
-            let mut charged = false;
-            let put = self.store.put(
-                &req.blob_hash,
-                &req.data,
-                &namespace,
-                req.ttl_seconds as u64,
-                now,
-                &mut || match ledger.charge(cap_token, &cap, bytes) {
-                    Ok(()) => {
-                        charged = true;
-                        true
+            let put = match authorized {
+                Authorized::Capability(cap) => {
+                    let mut ledger = self.ledger.lock().unwrap();
+                    let mut charged = false;
+                    let put = self.store.put(
+                        &req.blob_hash,
+                        &req.data,
+                        &namespace,
+                        u64::from(req.ttl_seconds),
+                        now,
+                        &mut || match ledger.charge(cap_token, &cap, bytes) {
+                            Ok(()) => {
+                                charged = true;
+                                true
+                            }
+                            Err(e) => {
+                                denied = Some(e);
+                                false
+                            }
+                        },
+                    );
+                    if put.is_err() && charged {
+                        ledger.refund(cap_token, bytes); // the write did not commit
                     }
-                    Err(e) => {
-                        denied = Some(e);
-                        false
+                    put
+                }
+                Authorized::Bearer(_, allowances) => {
+                    let mut deposits = self.deposits.lock().unwrap();
+                    let mut charged: Option<DepositRecord> = None;
+                    let put = self.store.put(
+                        &req.blob_hash,
+                        &req.data,
+                        &namespace,
+                        u64::from(req.ttl_seconds),
+                        now,
+                        &mut || match deposits.charge(&allowances, bytes) {
+                            Ok(record) => {
+                                charged = Some(record);
+                                true
+                            }
+                            Err(e) => {
+                                denied = Some(e);
+                                false
+                            }
+                        },
+                    );
+                    if let (Err(_), Some(record)) = (&put, charged) {
+                        deposits.refund(&record, bytes); // the write did not commit
                     }
-                },
-            );
+                    put
+                }
+            };
             let outcome = match put {
                 Ok(o) => o,
                 Err(e) => {
-                    if charged {
-                        ledger.refund(cap_token, bytes); // the write did not commit
-                    }
                     return Err(match e {
                         StoreError::HashMismatch => {
                             event.result = "rejected_hash";
@@ -299,12 +410,10 @@ impl Relay {
                     });
                 }
             };
-            drop(ledger);
-            let (hash, expiry) = (outcome.hash, outcome.expiry);
             Ok(StoreBlobResponse {
                 success: true,
-                stored_hash: hash.to_vec(),
-                expiry_unix_seconds: expiry,
+                stored_hash: outcome.hash.to_vec(),
+                expiry_unix_seconds: outcome.expiry,
             })
         })();
 
@@ -312,7 +421,11 @@ impl Relay {
         outcome
     }
 
-    /// GetBlob at time `now`. The namespace comes from the capability.
+    /// GetBlob at time `now`. The namespace comes from the capability or credential. A read or
+    /// fetch credential gets `uploaded_at` floored to the start of its ISO week, and a fetch
+    /// credential also gets the expiry rounded up to the next ISO week boundary (Phase 9 design
+    /// §21.9 point 4, §22.8.7 point 1); a relay-minted capability gets the upload minute and the
+    /// hour-rounded expiry.
     pub fn get_at(&self, req: GetBlobRequest, now: u64) -> Result<GetBlobResponse, Status> {
         let mut event = Event {
             op: "get",
@@ -340,22 +453,24 @@ impl Relay {
                 .as_ref()
                 .map(|c| c.token.as_slice())
                 .unwrap_or(&[]);
-            let cap = match self.key.verify_any(cap_token, now) {
-                Ok(c) => c,
-                Err(e) => {
-                    event.result = "rejected_capability";
-                    return Err(Relay::cap_error(e));
-                }
-            };
-            event.namespace_id = Some(hex::encode(cap.namespace));
+            let (namespace, authorized) =
+                self.authorize(cap_token, Op::Get, None, now, &mut event)?;
+            event.namespace_id = Some(hex::encode(namespace));
             // Existence outside the capability's namespace is indistinguishable from absence.
-            match self.store.get(&req.blob_hash, &cap.namespace, now) {
+            match self.store.get(&req.blob_hash, &namespace, now) {
                 Ok(Some(b)) => {
                     event.size_bucket = Some(b.data.len());
+                    let (uploaded, expiry) = match authorized {
+                        Authorized::Capability(_) => (b.uploaded_minute, b.expiry_unix),
+                        Authorized::Bearer(BearerKind::Fetch, _) => {
+                            (week_floor(b.uploaded_minute), week_ceil(b.expiry_unix))
+                        }
+                        Authorized::Bearer(_, _) => (week_floor(b.uploaded_minute), b.expiry_unix),
+                    };
                     Ok(GetBlobResponse {
                         data: b.data,
-                        uploaded_at_unix_seconds: b.uploaded_minute,
-                        expiry_unix_seconds: b.expiry_unix,
+                        uploaded_at_unix_seconds: uploaded,
+                        expiry_unix_seconds: expiry,
                     })
                 }
                 Ok(_) => {
@@ -372,7 +487,7 @@ impl Relay {
         outcome
     }
 
-    /// CheckBlobs at time `now`. The namespace comes from the capability.
+    /// CheckBlobs at time `now`. The namespace comes from the capability or credential.
     pub fn check_at(&self, req: CheckBlobsRequest, now: u64) -> Result<CheckBlobsResponse, Status> {
         let mut event = Event {
             op: "check",
@@ -396,15 +511,9 @@ impl Relay {
                 .as_ref()
                 .map(|c| c.token.as_slice())
                 .unwrap_or(&[]);
-            let cap = match self.key.verify_any(cap_token, now) {
-                Ok(c) => c,
-                Err(e) => {
-                    event.result = "rejected_capability";
-                    return Err(Relay::cap_error(e));
-                }
-            };
-            event.namespace_id = Some(hex::encode(cap.namespace));
-            match self.store.check(&req.blob_hashes, &cap.namespace, now) {
+            let (namespace, _) = self.authorize(cap_token, Op::Check, None, now, &mut event)?;
+            event.namespace_id = Some(hex::encode(namespace));
+            match self.store.check(&req.blob_hashes, &namespace, now) {
                 Ok(available) => Ok(CheckBlobsResponse {
                     available_hashes: available,
                 }),
@@ -451,10 +560,7 @@ impl Relay {
                 .as_ref()
                 .map(|c| c.token.as_slice())
                 .unwrap_or(&[]);
-            if let Err(e) = self.key.verify(cap_token, Kind::Read, &namespace, now) {
-                event.result = "rejected_capability";
-                return Err(Relay::cap_error(e));
-            }
+            self.authorize(cap_token, Op::List, Some(&namespace), now, &mut event)?;
             match self
                 .store
                 .list(&namespace, &req.cursor, req.limit as usize, now)
@@ -513,6 +619,14 @@ impl RelayService for RelayServer {
         request: Request<RedeemTokenRequest>,
     ) -> Result<Response<RedeemTokenResponse>, Status> {
         self.redeem_at(request.into_inner(), self.now())
+            .map(Response::new)
+    }
+
+    async fn register_key(
+        &self,
+        request: Request<RegisterKeyRequest>,
+    ) -> Result<Response<RegisterKeyResponse>, Status> {
+        self.register_key_at(request.into_inner(), self.now())
             .map(Response::new)
     }
 

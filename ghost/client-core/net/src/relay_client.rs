@@ -21,8 +21,7 @@ use arti_client::{DataStream, TorClient};
 use ghost_relay_api::proto::relay_service_client::RelayServiceClient;
 use ghost_relay_api::proto::*;
 use ghost_relay_api::{
-    is_bucket_size, ttl_bucket_days, HASH_BYTES, MAX_BATCH, PROTOCOL_VERSION, REQUEST_ID_BYTES,
-    TTL_BUCKETS_DAYS,
+    is_bucket_size, HASH_BYTES, MAX_BATCH, PROTOCOL_VERSION, REQUEST_ID_BYTES, TTL_BUCKETS_SECONDS,
 };
 use hyper_util::client::legacy::connect::{Connected, Connection};
 use hyper_util::client::legacy::Client as HyperClient;
@@ -257,14 +256,18 @@ pub(crate) fn transport_cause(status: &tonic::Status) -> Option<TransportError> 
     None
 }
 
-/// Snaps a TTL to the smallest allowed bucket at or above it (threat model §6: relays observe
-/// `ttl_bucket_days` only). Zero and anything above 90 days are rejected.
+/// Snaps a TTL to the smallest relay TTL bucket of at least one day at or above it (threat model
+/// §6: relays observe `ttl_bucket_seconds` only, and store exactly the bucket named). Zero and
+/// anything above 90 days are rejected.
 pub(crate) fn bucketed_ttl_seconds(ttl_seconds: u32) -> Result<u32, RelayError> {
     if ttl_seconds == 0 {
         return Err(RelayError::InvalidArgument);
     }
-    let days = ttl_bucket_days(ttl_seconds).ok_or(RelayError::InvalidArgument)?;
-    Ok(days * 86_400)
+    TTL_BUCKETS_SECONDS
+        .iter()
+        .copied()
+        .find(|&bucket| bucket >= 86_400 && ttl_seconds <= bucket)
+        .ok_or(RelayError::InvalidArgument)
 }
 
 /// Clock difference tolerated between device and relay when checking a store receipt. Arti
@@ -301,7 +304,7 @@ pub(crate) fn validate_store(
 /// Latest expiry a relay can truthfully declare at `now`: the maximum TTL bucket (90 days) plus
 /// [`CLOCK_SKEW_SECONDS`].
 fn latest_valid_expiry(now: u64) -> u64 {
-    let max_ttl = u64::from(*TTL_BUCKETS_DAYS.last().expect("buckets")) * 86_400;
+    let max_ttl = u64::from(*TTL_BUCKETS_SECONDS.last().expect("buckets"));
     now.saturating_add(max_ttl)
         .saturating_add(CLOCK_SKEW_SECONDS)
 }
@@ -957,6 +960,12 @@ mod tests {
             &self,
             _r: tonic::Request<RedeemTokenRequest>,
         ) -> Result<tonic::Response<RedeemTokenResponse>, tonic::Status> {
+            Err(tonic::Status::unimplemented("test"))
+        }
+        async fn register_key(
+            &self,
+            _r: tonic::Request<RegisterKeyRequest>,
+        ) -> Result<tonic::Response<RegisterKeyResponse>, tonic::Status> {
             Err(tonic::Status::unimplemented("test"))
         }
     }

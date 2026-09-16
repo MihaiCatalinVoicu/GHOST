@@ -55,4 +55,59 @@ for p in "$GHOST_ROOT"/protocol/*/v*/*.proto; do
   done < <(awk "$UNVERSIONED_AWK" "$p")
 done
 [ "$files" -gt 0 ] || fail "no .proto files found under $GHOST_ROOT/protocol"
+# Phase 9 (design §4.2, §16.1): relay.proto carries RegisterKeyRequest (versioned by the rule
+# above), and the enums KeyKind and RegisterResult hold exactly the design's values, field for
+# field (a KeyKind 2, the Write byte of capability headers, or a replacing RegisterResult fails).
+# The file is read statement by statement as above; each enum prints "<Name>: <NAME>=<n> ...".
+ENUMS_AWK='
+{
+  line = $0
+  sub(/\/\/.*/, "", line)
+  n = length(line)
+  for (i = 1; i <= n; i++) {
+    ch = substr(line, i, 1)
+    if (ch == "{") {
+      depth++
+      enumname[depth] = ""
+      if (stmt ~ /^[[:space:]]*enum[[:space:]]+[A-Za-z0-9_]+[[:space:]]*$/) {
+        name = stmt
+        sub(/^[[:space:]]*enum[[:space:]]+/, "", name)
+        sub(/[[:space:]]*$/, "", name)
+        enumname[depth] = name
+        order[++count] = name
+        values[name] = ""
+      }
+      stmt = ""
+    } else if (ch == "}") {
+      if (depth > 0) depth--
+      stmt = ""
+    } else if (ch == ";") {
+      if (depth > 0 && enumname[depth] != "") {
+        v = stmt
+        gsub(/[[:space:]]+/, "", v)
+        if (v != "") values[enumname[depth]] = values[enumname[depth]] (values[enumname[depth]] == "" ? "" : " ") v
+      }
+      stmt = ""
+    } else {
+      stmt = stmt ch
+    }
+  }
+  stmt = stmt " "
+}
+END { for (k = 1; k <= count; k++) printf "%s: %s\n", order[k], values[order[k]] }'
+RELAY_PROTO="$GHOST_ROOT/protocol/relay/v1/relay.proto"
+if [ -f "$RELAY_PROTO" ]; then
+  grep -qE '^[[:space:]]*message[[:space:]]+RegisterKeyRequest([[:space:]{]|$)' "$RELAY_PROTO" \
+    || fail "$RELAY_PROTO: message RegisterKeyRequest is missing (design §4.2)"
+  enums="$(awk "$ENUMS_AWK" "$RELAY_PROTO")"
+  for want in "KeyKind: KEY_KIND_UNSPECIFIED=0 KEY_KIND_READ=1 KEY_KIND_DEPOSIT=3 KEY_KIND_FETCH=4" \
+    "RegisterResult: REGISTER_RESULT_UNSPECIFIED=0 REGISTER_RESULT_OK=1 REGISTER_RESULT_WRONG_PERIOD=2"; do
+    name="${want%%:*}"
+    got="$(printf '%s\n' "$enums" | grep -E "^${name}: " || true)"
+    [ "$got" = "$want" ] \
+      || fail "$RELAY_PROTO: enum $name must be exactly {${want#*: }} (design §4.2), found {${got#*: }}"
+  done
+else
+  fail "$RELAY_PROTO: missing"
+fi
 finish proto-check

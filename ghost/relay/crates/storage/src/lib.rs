@@ -26,6 +26,7 @@
 //! What the store knows about a blob: its SHA-256, its bucket-sized ciphertext, the opaque
 //! namespaces holding it, an upload minute and an hour-rounded expiry per namespace.
 
+pub mod keys;
 pub mod nullifiers;
 
 use ghost_relay_api::{is_bucket_size, time_bucket, HASH_BYTES, MAX_BATCH};

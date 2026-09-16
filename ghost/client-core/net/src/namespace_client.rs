@@ -605,6 +605,13 @@ mod tests {
                 relay_minute: now / 60,
             }))
         }
+        async fn register_key(
+            &self,
+            _r: tonic::Request<RegisterKeyRequest>,
+        ) -> Result<tonic::Response<RegisterKeyResponse>, tonic::Status> {
+            self.count();
+            Err(tonic::Status::unimplemented("register"))
+        }
     }
 
     async fn counting_relay(blob: Vec<u8>) -> (CountingRelay, std::net::SocketAddr) {

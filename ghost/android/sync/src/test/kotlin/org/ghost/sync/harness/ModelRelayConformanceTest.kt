@@ -178,7 +178,7 @@ class ModelRelayConformanceTest {
             lines++
         }
         assertEquals(sortedSetOf("relay", "at", "blob", "cap", "token", "store", "get", "check", "list", "fill", "prune"), seen)
-        assertTrue("the vector file lost a section", sections >= 8)
+        assertTrue("the vector file lost a section", sections >= 9)
         assertTrue(lines > 150)
     }
 

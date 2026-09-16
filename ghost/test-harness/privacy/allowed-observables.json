@@ -1,21 +1,22 @@
 {
-  "version": 1,
-  "description": "Normative list of everything a GHOST relay is permitted to observe per event (threat model v2.1 section 6, ADR-09). Any field not listed here is a privacy violation. Values are opaque identifiers, buckets or coarse times; never IPs, identities, plaintext or free text.",
+  "version": 2,
+  "description": "Normative list of everything a GHOST relay is permitted to observe per event (threat model v2.1 section 6, ADR-09). Any field not listed here is a privacy violation. Values are opaque identifiers, buckets or coarse times; never IPs, identities, plaintext or free text. A field with `ops` may appear only on events whose `op` is one of them. Version 2 (Phase 9 design §4.7, §10.2; ADR-30, ADR-32): op `register`, field `key_kind`, `ttl_bucket_seconds` in place of `ttl_bucket_days`.",
   "allowed_fields": {
-    "op": { "type": "enum", "values": ["store", "get", "check", "list", "redeem", "gossip"] },
+    "op": { "type": "enum", "values": ["store", "get", "check", "list", "redeem", "gossip", "register"] },
     "protocol_version": { "type": "enum", "values": [1] },
     "namespace_id": { "type": "hex", "len": 64, "note": "opaque channel/inbox/prekey namespace, SHA-256 sized" },
     "blob_hash": { "type": "hex", "len": 64, "note": "SHA-256 of the exact ciphertext blob" },
     "size_bucket": { "type": "enum", "values": [1024, 4096, 16384, 65536], "note": "FR-2.5 padding buckets, bytes" },
     "time_bucket": { "type": "bucketed_int", "granularity": 60, "note": "unix seconds rounded down to the minute" },
-    "ttl_bucket_days": { "type": "enum", "values": [1, 7, 30, 90] },
+    "ttl_bucket_seconds": { "type": "enum", "values": [3600, 86400, 604800, 2592000, 7776000], "note": "exact TTL bucket of a store; the relay refuses any other TTL (ADR-32)" },
+    "key_kind": { "type": "enum", "values": ["read", "deposit", "fetch"], "ops": ["register"], "note": "register events only (ADR-30; fetch per design §22.8.7)" },
     "nullifier": { "type": "hex", "len": 64, "note": "one-time token nullifier (ADR-02)" },
-    "period_id": { "type": "hex", "len": 16, "note": "public token validity period" },
-    "capability_scope": { "type": "hex", "len": 64, "note": "hash of the capability scope, never the capability itself" },
+    "period_id": { "type": "hex", "len": 16, "note": "public token validity period; on register, the ISO week the registration names" },
+    "capability_scope": { "type": "hex", "len": 64, "note": "SHA-256 of the presented credential: a write capability, or a bearer read, deposit or fetch credential v3 (ADR-30; fetch per design §22.8.7); never the credential itself" },
     "request_id": { "type": "hex", "len": 32, "note": "client idempotency key, random per request" },
     "circuit_id": { "type": "hex", "len": 32, "note": "relay-local id of the onion circuit; never an IP" },
     "batch_count": { "type": "uint" },
-    "result": { "type": "enum", "values": ["ok", "rejected_hash", "rejected_capability", "rejected_size", "rejected_ttl", "rejected_nullifier", "not_found", "rejected_token", "rejected_period"], "note": "rejected_token: a redeemed token is malformed, forged, of another kind, slot or key, or revoked; rejected_period: outside its acceptance window or of a closed period (ADR-25, Phase 8 design §10.6)" }
+    "result": { "type": "enum", "values": ["ok", "rejected_hash", "rejected_capability", "rejected_size", "rejected_ttl", "rejected_nullifier", "not_found", "rejected_token", "rejected_period"], "note": "rejected_token: a redeemed token is malformed, forged, of another kind, slot or key, or revoked; rejected_period: a token outside its acceptance window or of a closed period (ADR-25, Phase 8 design §10.6), or a registration for a week other than its capability's week or the next (ADR-30); rejected_ttl: a store whose TTL is not exactly a bucket or exceeds the relay's maximum (ADR-32)" }
   },
   "forbidden_substrings": ["ghost1", "http://", "https://", ".onion", "monero:", "user", "@"]
 }

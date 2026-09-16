@@ -884,6 +884,7 @@ impl World {
             let dir = self.relays[k].dir.clone();
             // The in-memory quota ledger (§13.4 relay_<k>_db), read before the relay stops.
             let (quota, pruned) = self.relays[k].relay.quota_snapshot();
+            let (deposits, deposits_pruned) = self.relays[k].relay.deposit_ledger_snapshot();
             let mut rows = self.stop_relay_then(k as u8, |scratch| read_relay_rows(&dir, scratch));
             for (scope, used, expiry) in quota {
                 let mut v = used.to_be_bytes().to_vec();
@@ -894,6 +895,21 @@ impl World {
                 "quota_meta",
                 b"pruned_through".to_vec(),
                 pruned.to_be_bytes().to_vec(),
+            ));
+            // The in-memory deposit ledger (Phase 9 design §4.9 point 1): `namespace ‖ period ‖
+            // verifier → used ‖ valid_until`, and its prune high-water.
+            for ((namespace, period, verifier), used, valid_until) in deposits {
+                let mut key = namespace.to_vec();
+                key.extend_from_slice(&period.to_be_bytes());
+                key.extend_from_slice(&verifier);
+                let mut v = used.to_be_bytes().to_vec();
+                v.extend_from_slice(&valid_until.to_be_bytes());
+                rows.push(("deposit_ledger", key, v));
+            }
+            rows.push((
+                "deposit_ledger_meta",
+                b"pruned_through".to_vec(),
+                deposits_pruned.to_be_bytes().to_vec(),
             ));
             self.rec.relay_rows(w, k as u8, &rows);
         }
@@ -4075,9 +4091,23 @@ impl Client {
     }
 }
 
-/// The tables of the relay's two databases: (file tag, table, exported name, key and value types:
+/// The relay's databases: (file name in the data directory, file tag). A `*.redb` file of a relay
+/// data directory that is not listed here fails the world (Phase 9 design §21.13 point 6).
+const RELAY_DATABASES: &[(&str, &str)] = &[
+    ("nullifiers.redb", "nullifiers"),
+    ("blobs.redb", "blobs"),
+    // Key registrations (Phase 9 design §4.6, §4.9).
+    ("keys.redb", "keys"),
+];
+
+/// The tables of the relay's databases: (file tag, table, exported name, key and value types:
 /// `B` bytes → bytes, `U` bytes → (), `N` bytes → u64, `S` str → u64, `W` u64 → u64).
 const RELAY_TABLES: &[(&str, &str, &str, char)] = &[
+    // `namespace ‖ period ‖ kind ‖ verifier → valid_until ‖ quota ‖ n ‖ serials` and
+    // `namespace ‖ period ‖ kind ‖ serial → verifier ‖ valid_until` (Phase 9 design §4.6).
+    ("keys", "bearer_keys", "bearer_keys", 'B'),
+    ("keys", "serial_use", "serial_use", 'B'),
+    ("keys", "meta", "keys_meta", 'S'),
     ("nullifiers", "nullifiers", "nullifiers", 'B'),
     ("nullifiers", "es_keys", "es_keys", 'B'),
     ("nullifiers", "es_revoked", "es_revoked", 'U'),
@@ -4095,17 +4125,28 @@ const RELAY_TABLES: &[(&str, &str, &str, char)] = &[
     ("blobs", "expiry_index", "expiry_index_v1", 'U'),
 ];
 
-/// Every row of every table of relay `dir`'s databases (`nullifiers.redb`, `blobs.redb`; design
-/// §13.4 `relay_<k>_db`), read through private copies. A table [`RELAY_TABLES`] does not know fails
-/// the world instead of going unexported.
+/// Every row of every table of every database in relay `dir` (`nullifiers.redb`, `blobs.redb`,
+/// `keys.redb`; design §13.4 `relay_<k>_db`, Phase 9 design §4.9), read through private copies.
+/// Every `*.redb` file of the directory is enumerated: a file [`RELAY_DATABASES`] or a table
+/// [`RELAY_TABLES`] does not know fails the world instead of going unexported.
 fn read_relay_rows(dir: &Path, scratch: &Path) -> Vec<(&'static str, Vec<u8>, Vec<u8>)> {
     use redb::{ReadableDatabase, ReadableTable, TableDefinition, TableHandle};
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .expect("a relay data directory")
+        .map(|e| e.expect("a directory entry").file_name())
+        .filter_map(|name| name.to_str().map(str::to_string))
+        .filter(|name| name.ends_with(".redb"))
+        .collect();
+    files.sort();
     let mut out = Vec::new();
-    for (file, tag) in [("nullifiers.redb", "nullifiers"), ("blobs.redb", "blobs")] {
+    for file in &files {
+        let &(_, tag) = RELAY_DATABASES
+            .iter()
+            .find(|(known, _)| known == file)
+            .unwrap_or_else(|| {
+                panic!("relay database {file} is not exported (Phase 9 design §21.13 point 6)")
+            });
         let src = dir.join(file);
-        if !src.exists() {
-            continue;
-        }
         let copy = scratch.join(format!("t2-copy-{tag}.redb"));
         std::fs::copy(&src, &copy).unwrap();
         {

@@ -4,7 +4,8 @@
 //! could possibly know about that event. This crate checks that every captured object is a
 //! subset of the *allowed observables* declared in `allowed-observables.json`:
 //!
-//! * every key must be declared in the schema;
+//! * every key must be declared in the schema, and a key declared with `ops` may appear only on
+//!   events whose `op` is one of them;
 //! * every value must satisfy the declared shape (fixed-length hex, enum, bucketed integer);
 //! * no string value may look like an IP address, a GHOST identity, an e-mail address or free
 //!   text — those are the classic ways identity leaks into "harmless" logs.
@@ -14,6 +15,10 @@
 
 use serde_json::{Map, Value};
 use std::fmt;
+
+/// The schema version this validator reads (`allowed-observables.json` version 2, Phase 9 design
+/// §4.7): a schema of any other version is refused, never reinterpreted.
+pub const SCHEMA_VERSION: u64 = 2;
 
 /// One violation found in a capture. `line` is 1-based.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +54,7 @@ impl Schema {
             .get("version")
             .and_then(Value::as_u64)
             .ok_or("schema: missing integer `version`")?;
-        if version != 1 {
+        if version != SCHEMA_VERSION {
             return Err(format!("schema: unsupported version {version}"));
         }
         let fields = root
@@ -86,6 +91,16 @@ impl Schema {
                 }
                 "uint" => {}
                 other => return Err(format!("schema: field `{name}` has unknown type `{other}`")),
+            }
+            if let Some(ops) = spec.get("ops") {
+                let listed = ops
+                    .as_array()
+                    .filter(|a| !a.is_empty() && a.iter().all(Value::is_string));
+                if listed.is_none() {
+                    return Err(format!(
+                        "schema: field `{name}` has `ops` that is not a non-empty list of strings"
+                    ));
+                }
             }
         }
         let forbidden_substrings = root
@@ -131,6 +146,7 @@ impl Schema {
                 });
                 continue;
             };
+            let op = map.get("op").and_then(Value::as_str);
             for (key, value) in map {
                 match self.fields.get(key) {
                     None => out.push(Violation {
@@ -138,7 +154,23 @@ impl Schema {
                         field: key.clone(),
                         message: "field is not an allowed observable".into(),
                     }),
-                    Some(spec) => self.check_value(line, key, spec, value, &mut out),
+                    Some(spec) => {
+                        if let Some(ops) = spec.get("ops").and_then(Value::as_array) {
+                            if !op.is_some_and(|op| ops.iter().any(|o| o.as_str() == Some(op))) {
+                                let names: Vec<&str> =
+                                    ops.iter().filter_map(Value::as_str).collect();
+                                out.push(Violation {
+                                    line,
+                                    field: key.clone(),
+                                    message: format!(
+                                        "field is allowed only on op {}",
+                                        names.join("|")
+                                    ),
+                                });
+                            }
+                        }
+                        self.check_value(line, key, spec, value, &mut out)
+                    }
                 }
             }
         }
@@ -320,6 +352,51 @@ mod tests {
     fn unpadded_size_is_rejected() {
         let v = schema().check_capture(r#"{"op":"store","size_bucket":1337}"#);
         assert!(v.iter().any(|x| x.field == "size_bucket"));
+    }
+
+    #[test]
+    fn ttl_buckets_are_exact_seconds_and_the_day_field_is_gone() {
+        for ttl in [3600, 86400, 604800, 2592000, 7776000] {
+            let line = format!(r#"{{"op":"store","ttl_bucket_seconds":{ttl}}}"#);
+            assert!(schema().check_capture(&line).is_empty(), "{ttl}");
+        }
+        for ttl in [7200, 1, 90] {
+            let line = format!(r#"{{"op":"store","ttl_bucket_seconds":{ttl}}}"#);
+            let v = schema().check_capture(&line);
+            assert!(v.iter().any(|x| x.field == "ttl_bucket_seconds"), "{ttl}");
+        }
+        let v = schema().check_capture(r#"{"op":"store","ttl_bucket_days":7}"#);
+        assert!(v.iter().any(|x| x.field == "ttl_bucket_days"));
+    }
+
+    #[test]
+    fn key_kind_is_allowed_on_register_events_only() {
+        for kind in ["read", "deposit", "fetch"] {
+            let line = format!(r#"{{"op":"register","key_kind":"{kind}"}}"#);
+            assert!(schema().check_capture(&line).is_empty(), "{kind}");
+        }
+        for line in [
+            r#"{"op":"store","key_kind":"deposit"}"#,
+            r#"{"op":"redeem","key_kind":"read"}"#,
+            r#"{"key_kind":"read"}"#,
+            r#"{"op":"register","key_kind":"write"}"#,
+        ] {
+            let v = schema().check_capture(line);
+            assert!(v.iter().any(|x| x.field == "key_kind"), "{line}");
+        }
+    }
+
+    #[test]
+    fn schemas_of_another_version_or_with_bad_ops_are_refused() {
+        let v1 = SCHEMA.replacen("\"version\": 2", "\"version\": 1", 1);
+        assert!(Schema::parse(&v1)
+            .unwrap_err()
+            .contains("unsupported version 1"));
+        for ops in ["[]", "\"register\"", "[1]"] {
+            let bad = SCHEMA.replacen("\"ops\": [\"register\"]", &format!("\"ops\": {ops}"), 1);
+            assert_ne!(bad, SCHEMA);
+            assert!(Schema::parse(&bad).unwrap_err().contains("ops"), "{ops}");
+        }
     }
 
     #[test]
