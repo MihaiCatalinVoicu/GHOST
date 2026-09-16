@@ -1,9 +1,11 @@
 name: signer-timing
 
-# Timing evidence for the issuer's blind signer (Phase 8 design §2.8 point 6, §13.7, §19.27; S12
-# review CR-CT-1): the dudect-style Welch t-test of ghost/issuer/crates/service/tests/signer_timing.rs
-# (10^5 samples of CheckedSigner<ReferenceSigner>::blind_sign, a fixed blinded value against random
-# ones; |t| > 4.5 fails), in the release profile on a fresh runner. Not a gate: nothing requires this
+# Timing evidence for the issuer's blind signer (Phase 8 design §2.8 point 6, §13.7, §19.27, §19.30;
+# S12 review CR-CT-1): the dudect-style Welch t-test of
+# ghost/issuer/crates/service/tests/signer_timing.rs (10^5 samples, a fixed blinded value against
+# random ones; each stage of CheckedSigner<ReferenceSigner>::blind_sign timed separately; |t| > 4.5
+# on the private-key operation fails, the public stages on B and s' and the whole call are reported,
+# §19.30), in the release profile on a fresh runner. Not a gate: nothing requires this
 # workflow, and a failure opens an issue (a noisy runner can fail it too, so the issue is where a
 # human reruns and reads the numbers). ADR-22 and the RUSTSEC-2023-0071 ignore reason in deny.toml
 # cite this evidence among the §2.8 mitigations.
