@@ -280,6 +280,30 @@ fn v14_vectors_are_current() {
         ),
         Err(_) => std::fs::write(&path, &generated).expect("write vectors"),
     }
-    // Every `sign` line re-verifies strictly.
-    assert!(generated.lines().filter(|l| l.starts_with("sign ")).count() == 64);
+    // Every `sign` line re-verifies strictly in Rust, so a bump of ed25519-dalek that changes
+    // signing fails here and not only through the BouncyCastle comparison of the JVM half.
+    let mut signed = 0;
+    for line in generated.lines().filter(|l| l.starts_with("sign ")) {
+        let field: Vec<&str> = line.split(' ').collect();
+        assert_eq!(field.len(), 5, "sign line shape: {line}");
+        let message = if field[2] == "-" {
+            Vec::new()
+        } else {
+            hex::decode(field[2]).expect("message hex")
+        };
+        let public: [u8; 32] = hex::decode(field[3])
+            .expect("public key hex")
+            .try_into()
+            .expect("32-byte public key");
+        let signature: [u8; 64] = hex::decode(field[4])
+            .expect("signature hex")
+            .try_into()
+            .expect("64-byte signature");
+        VerifyingKey::from_bytes(&public)
+            .expect("public key on the curve")
+            .verify_strict(&message, &Signature::from_bytes(&signature))
+            .expect("the recorded signature verifies strictly");
+        signed += 1;
+    }
+    assert_eq!(signed, 64);
 }

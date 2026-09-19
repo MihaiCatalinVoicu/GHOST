@@ -75,7 +75,11 @@ pub struct Result_ {
     pub displayed: usize,
     pub lost: usize,
     pub predicted_lost: usize,
+    /// Blobs the hold left `fetched` at least once.
     pub held_blobs: usize,
+    /// Consumer passes that held a blob: the hold is re-applied while the gap persists, so this
+    /// exceeds `held_blobs` whenever a gap outlives one pass.
+    pub hold_events: usize,
     pub max_display_delay_ms: u64,
     /// Display time minus fetch time: the delay the consumer itself adds.
     pub max_local_delay_ms: u64,
@@ -329,7 +333,10 @@ pub fn run(world: &World, burst: &Burst) -> Result<Result_, Code> {
                 let gap_missing =
                     index > next && (next..index).any(|m| !peek.contains(&(m as usize)));
                 let first_seen = fetched_at[i].unwrap_or(now);
+                // The hold is time-bounded, not once per blob: the blob is left `fetched` again on
+                // every pass for which the gap still holds, and consumed once `HOLD_MAX` passes.
                 if gap_missing && now < first_seen + HOLD_MAX_MS {
+                    outcome.hold_events += 1;
                     if !held_once[i] {
                         held_once[i] = true;
                         outcome.held_blobs += 1;
@@ -360,6 +367,13 @@ pub fn run(world: &World, burst: &Burst) -> Result<Result_, Code> {
 
 /// The next chain index of the receiver chain of `ratchet_key` in a stored pickle (0 when the
 /// session holds no such chain yet: every new chain starts at index 0).
+///
+/// The paths are serde-derived names of private vodozemac members, not a public API (design §2.1
+/// and ADR-35 allow the public API only; the deviation is recorded in §7 of the evidence
+/// document). A bump that renames one of them must therefore be loud: a pickle whose chains carry
+/// no readable 32-byte `ratchet_key` is `STATE_CORRUPT`, never "new chain", because reading every
+/// chain as new would silently disable the gap hold and bring the measured offline-burst loss
+/// back with no result code.
 pub fn chain_next_index(pickle: &[u8], ratchet_key: &[u8; 32]) -> Result<u64, Code> {
     let value: serde_json::Value =
         serde_json::from_slice(pickle).map_err(|_| Code::StateCorrupt)?;
@@ -367,21 +381,29 @@ pub fn chain_next_index(pickle: &[u8], ratchet_key: &[u8; 32]) -> Result<u64, Co
         .pointer("/receiving_chains/inner")
         .and_then(serde_json::Value::as_array)
         .ok_or(Code::StateCorrupt)?;
+    let mut readable = 0usize;
     for chain in chains {
-        let key: Option<Vec<u8>> = chain
+        let key: Option<[u8; 32]> = chain
             .get("ratchet_key")
             .and_then(serde_json::Value::as_array)
-            .map(|a| {
-                a.iter()
+            .and_then(|a| {
+                let bytes: Vec<u8> = a
+                    .iter()
                     .filter_map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok()))
-                    .collect()
+                    .collect();
+                <[u8; 32]>::try_from(bytes).ok()
             });
-        if key.as_deref() == Some(ratchet_key.as_slice()) {
+        let Some(key) = key else { continue };
+        readable += 1;
+        if &key == ratchet_key {
             return chain
                 .pointer("/hkdf_ratchet/index")
                 .and_then(serde_json::Value::as_u64)
                 .ok_or(Code::StateCorrupt);
         }
+    }
+    if !chains.is_empty() && readable == 0 {
+        return Err(Code::StateCorrupt);
     }
     Ok(0)
 }

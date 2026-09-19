@@ -51,7 +51,25 @@ macro_rules! v15_checks {
                 (b_state, out)
             }
 
+            /// The sidecar is a projection of the stored pickle: after every call it holds exactly
+            /// the keys the pickle holds, each keeping its recorded day, new ones taking today.
+            /// Keys the library evicted on its own (the 40-key FIFO, the 5-chain limit) leave with
+            /// them, which is what bounds the sidecar at `prune::SIDECAR_MAX`.
             fn decrypt_tracking(
+                state: &[u8],
+                msg: &(Vec<u8>, bool),
+                today: u32,
+                days: &mut Days,
+            ) -> Result<Vec<u8>, Code> {
+                let done = olm::decrypt(state, &msg.0, msg.1)?;
+                *days = prune::reconcile(&done.pickle, days, today)?;
+                Ok(done.pickle)
+            }
+
+            /// Recording only the keys a call added leaves an entry behind for every key
+            /// vodozemac evicted itself, so the `1 + 5 × (33 + 40 × 12)` sidecar bound of §13
+            /// holds only for the reconciled projection.
+            fn decrypt_insert_only(
                 state: &[u8],
                 msg: &(Vec<u8>, bool),
                 today: u32,
@@ -140,6 +158,46 @@ macro_rules! v15_checks {
                 expected.extend(22..=48);
                 expected.extend(50..=58);
                 assert_eq!(last, expected);
+            }
+
+            /// The first-seen sidecar stays a projection of the pickle across an eviction-driving
+            /// run, which is what makes the §13 bound (`prune::SIDECAR_MAX`) hold by construction.
+            #[test]
+            fn sidecar_is_a_reconciled_projection() {
+                let (start, msgs) = chain(60);
+                let mut state = start.clone();
+                let mut days = Days::new();
+                let mut insert_only_state = start;
+                let mut insert_only = Days::new();
+                // Three jumps, each skipping a block, so the 40-key store overflows twice.
+                for (day, i) in [(10u32, 20usize), (40, 44), (70, 58)] {
+                    state = decrypt_tracking(&state, &msgs[i], day, &mut days).expect("decrypt");
+                    insert_only_state =
+                        decrypt_insert_only(&insert_only_state, &msgs[i], day, &mut insert_only)
+                            .expect("decrypt");
+                    let held: std::collections::BTreeSet<SkippedKey> = prune::skipped_keys(&state)
+                        .expect("keys")
+                        .into_iter()
+                        .collect();
+                    let recorded: std::collections::BTreeSet<SkippedKey> =
+                        days.keys().copied().collect();
+                    assert_eq!(recorded, held, "sidecar tracks the pickle on day {day}");
+                    assert!(prune::sidecar_len(&state).expect("len") <= prune::SIDECAR_MAX);
+                }
+                // The day a key was first seen is carried forward, not reset by later calls.
+                let first_block: Vec<u32> = days
+                    .iter()
+                    .filter(|(k, _)| (1..20).contains(&k.index))
+                    .map(|(_, &d)| d)
+                    .collect();
+                assert!(!first_block.is_empty() && first_block.iter().all(|&d| d == 10));
+                // Recording only the added keys keeps the entries vodozemac evicted: unbounded.
+                assert!(
+                    insert_only.len() > days.len(),
+                    "insert-only sidecar {} should outgrow the pickle's {} keys",
+                    insert_only.len(),
+                    days.len()
+                );
             }
         }
     };
