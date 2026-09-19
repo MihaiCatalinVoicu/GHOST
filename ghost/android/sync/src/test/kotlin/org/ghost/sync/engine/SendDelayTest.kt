@@ -1,5 +1,6 @@
 package org.ghost.sync.engine
 
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.PrivacyMode
@@ -22,7 +23,10 @@ class SendDelayTest {
 
     private fun EngineWorld.set(sendDelay: SendDelay, listen: Boolean = true): Pair<NamespaceId, List<RelayId>> {
         val relays = relays(1, 2, 3)
-        val ns = namespace(1, relays, listen = listen, sendDelay = sendDelay)
+        // A DM namespace may not turn the delay off (Phase 9 design §13.3 item 8), so the override
+        // case runs on a channel namespace.
+        val consumer = if (sendDelay == SendDelay.OFF) Consumer.CHANNEL else Consumer.DM
+        val ns = namespace(1, relays, listen = listen, sendDelay = sendDelay, consumer = consumer)
         relays.forEach { capability(it, ns) }
         return Pair(ns, relays)
     }

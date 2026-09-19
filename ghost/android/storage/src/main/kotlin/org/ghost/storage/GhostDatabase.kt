@@ -106,23 +106,31 @@ class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHel
  */
 class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
     override fun exec(sql: String, args: List<Any?>) {
-        if (args.isEmpty()) db.execSQL(sql) else db.execSQL(sql, args.onEach(::requireBindable).toTypedArray())
+        try {
+            if (args.isEmpty()) db.execSQL(sql) else db.execSQL(sql, args.onEach(::requireBindable).toTypedArray())
+        } catch (e: RuntimeException) {
+            throw StorageFull.wrap(e)
+        }
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int =
-        db.compileStatement(sql).use { statement ->
-            args.forEachIndexed { i, arg ->
-                val index = i + 1
-                when (arg) {
-                    null -> statement.bindNull(index)
-                    is ByteArray -> statement.bindBlob(index, arg)
-                    is Long -> statement.bindLong(index, arg)
-                    is Int -> statement.bindLong(index, arg.toLong())
-                    is String -> statement.bindString(index, arg)
-                    else -> requireBindable(arg)
+        try {
+            db.compileStatement(sql).use { statement ->
+                args.forEachIndexed { i, arg ->
+                    val index = i + 1
+                    when (arg) {
+                        null -> statement.bindNull(index)
+                        is ByteArray -> statement.bindBlob(index, arg)
+                        is Long -> statement.bindLong(index, arg)
+                        is Int -> statement.bindLong(index, arg.toLong())
+                        is String -> statement.bindString(index, arg)
+                        else -> requireBindable(arg)
+                    }
                 }
+                statement.executeUpdateDelete()
             }
-            statement.executeUpdateDelete()
+        } catch (e: RuntimeException) {
+            throw StorageFull.wrap(e)
         }
 
     /**
@@ -155,6 +163,9 @@ class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
             val result = block()
             db.setTransactionSuccessful()
             return result
+        } catch (e: RuntimeException) {
+            // A commit that runs out of space fails here, not in a statement (§21.12 point 1).
+            throw StorageFull.wrap(e)
         } finally {
             db.endTransaction()
         }

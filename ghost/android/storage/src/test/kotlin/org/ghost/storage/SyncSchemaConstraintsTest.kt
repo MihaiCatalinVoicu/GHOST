@@ -48,11 +48,31 @@ class SyncSchemaConstraintsTest {
         }
         // send_delay defaults to 'default' and accepts only the three override values (§11.2 #15).
         assertEquals("default", db.queryString("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", listOf(f.ns)))
+        val channel = bytes(32, 12)
         for (value in listOf("on", "off", "default")) {
+            assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = ? WHERE namespace_id = ?", value, channel))
+        }
+        for (value in listOf("on", "default")) {
             assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = ? WHERE namespace_id = ?", value, f.ns))
         }
+        // A DM namespace cannot turn the send delay off, at an update or at an insert (Phase 9 §13.6 step 3).
+        db.rejects("DM namespaces cannot turn the send delay off", "UPDATE sync_namespace SET send_delay = 'off' WHERE namespace_id = ?", f.ns)
+        db.rejects(
+            "DM namespaces cannot turn the send delay off",
+            "INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'dm', 1, 'off')",
+            bytes(32, 21),
+        )
+        assertEquals(
+            1,
+            db.changes("INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'channel', 1, 'off')", bytes(32, 22)),
+        )
         db.rejects(CHECK_FAILED, "UPDATE sync_namespace SET send_delay = 'high' WHERE namespace_id = ?", f.ns)
         db.rejects("NOT NULL constraint failed", "UPDATE sync_namespace SET send_delay = NULL WHERE namespace_id = ?", f.ns)
+        // capability_source defaults to 'redeem' and admits only the two values (Phase 9 §13.3 item 3).
+        assertEquals("redeem", db.queryString("SELECT capability_source FROM sync_namespace WHERE namespace_id = ?", listOf(f.ns)))
+        assertEquals(1, db.changes("UPDATE sync_namespace SET capability_source = 'local' WHERE namespace_id = ?", f.ns))
+        db.rejects(CHECK_FAILED, "UPDATE sync_namespace SET capability_source = 'free' WHERE namespace_id = ?", f.ns)
+        assertEquals(1, db.changes("UPDATE sync_namespace SET capability_source = 'redeem' WHERE namespace_id = ?", f.ns))
         db.rejects(CHECK_FAILED, insert, bytes(31, 20), "dm", 1)
         db.rejects(CHECK_FAILED, insert, bytes(33, 20), "dm", 1)
         db.rejects(CHECK_FAILED, insert, bytes(32, 20), "forum", 1)
@@ -123,9 +143,9 @@ class SyncSchemaConstraintsTest {
         fun bad(fragment: String, ciphertext: ByteArray? = bytes(1024, 0), id: ByteArray = opId(90), blobHash: ByteArray = hash(90), ns: ByteArray = f.ns, ttl: Int = 604800, notBefore: Long = 0, deadline: Long? = null, required: Int = 2, outcome: String = "pending", released: Int = 0) =
             db.rejects(fragment, insertOp, id, ns, blobHash, ciphertext, ttl, notBefore, deadline, required, outcome, released)
 
-        // Every bucket size, every TTL bucket, a wiped payload.
+        // Every bucket size, every TTL bucket (3600 arrived with v4, Phase 9 §13.6 step 1), a wiped payload.
         for ((i, size) in listOf(1024, 4096, 16384, 65536).withIndex()) ok(1 + i, bytes(size, i))
-        for ((i, ttl) in listOf(86400, 604800, 2592000, 7776000).withIndex()) ok(10 + i, bytes(1024, i), ttl = ttl)
+        for ((i, ttl) in listOf(3600, 86400, 604800, 2592000, 7776000).withIndex()) ok(10 + i, bytes(1024, i), ttl = ttl)
         ok(20, null)
         ok(21, bytes(1024, 1), notBefore = 60, deadline = 3600, required = 3)
         ok(22, null, outcome = "sent", released = 1)
@@ -136,7 +156,8 @@ class SyncSchemaConstraintsTest {
         bad(CHECK_FAILED, ciphertext = bytes(1000, 1))
         bad(CHECK_FAILED, ciphertext = bytes(65537, 1))
         bad(CHECK_FAILED, ciphertext = ByteArray(0))
-        bad(CHECK_FAILED, ttl = 3600)
+        bad(CHECK_FAILED, ttl = 7200)
+        bad(CHECK_FAILED, ttl = 1800)
         bad(CHECK_FAILED, notBefore = 61)
         bad(CHECK_FAILED, deadline = 3601)
         bad(CHECK_FAILED, notBefore = 3600, deadline = 3600)

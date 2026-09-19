@@ -17,9 +17,17 @@ internal class PassReport(val parked: Int, val closed: Int, val decided: Int) {
  */
 internal open class Maintenance {
 
-    /** M1: leases left in flight by a dead process or an aborted session count as ambiguous. */
+    /**
+     * M1: leases left in flight by a dead process or an aborted session count as ambiguous. A key
+     * registration's lease ends the same way (Phase 9 design §13.3 item 5) and its row is due again:
+     * a `RegisterKey` is idempotent at the relay, so repeating an attempt whose answer was lost
+     * records nothing new. Returns the deliveries normalized.
+     */
     open fun normalize(ctx: EngineContext): Int =
-        ctx.db.transaction { tx -> ctx.stores.outboxStore.normalizeLeases(tx, ctx.now()) }
+        ctx.db.transaction { tx ->
+            ctx.stores.registrationStore.normalizeLeases(tx, ctx.now())
+            ctx.stores.outboxStore.normalizeLeases(tx, ctx.now())
+        }
 
     /** M2, then M3 and M4 when [trustedClock]. */
     open fun pass(ctx: EngineContext, trustedClock: Boolean): PassReport =
@@ -47,11 +55,19 @@ internal open class Maintenance {
  */
 internal open class GcStep {
 
+    /**
+     * A checkpoint that stayed busy is owed to the next pass (Phase 9 design §10.7: `checkpoint_due`
+     * in memory). It is a hint only: the log is truncated at the latest by the next pass that
+     * deletes rows, and nothing persists it.
+     */
+    @Volatile
+    private var checkpointDue: Boolean = false
+
     /** Returns the pass report, or null when the session is offline or the clock is not trusted. */
     open fun run(ctx: WorkContext): GcReport? {
         if (!ctx.online || !ctx.engine.clockTrusted()) return null
         val report = ctx.db.transaction { tx -> ctx.stores.gc.pass(tx, ctx.now()) }
-        if (report.total > 0) ctx.stores.gc.checkpoint(ctx.db.sql)
+        if (report.total > 0 || checkpointDue) checkpointDue = !ctx.stores.gc.checkpoint(ctx.db.sql)
         return report
     }
 

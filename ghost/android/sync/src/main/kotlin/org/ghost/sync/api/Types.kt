@@ -43,15 +43,36 @@ value class RelayId(val value: Long) {
     override fun toString(): String = "RelayId(redacted)"
 }
 
-/** Relay TTL buckets; the relay rounds the expiry up to the hour. */
+/**
+ * Relay TTL buckets; the relay rounds the expiry up to the hour. [HOUR_1] is the Phase 9 bucket of
+ * short-lived direct messages (design §10.2, §13.3 item 1): the Phase 7 window rules hold for it
+ * with resolution never applying and no identical resend (§10.4).
+ */
 enum class TtlBucket(val seconds: Int) {
-    DAY_1(86_400), DAYS_7(604_800), DAYS_30(2_592_000), DAYS_90(7_776_000);
+    HOUR_1(3_600), DAY_1(86_400), DAYS_7(604_800), DAYS_30(2_592_000), DAYS_90(7_776_000);
 
+    /** Whole days of the bucket; 0 for [HOUR_1], which is shorter than a day. */
     val days: Long get() = seconds / 86_400L
 
     companion object {
         internal fun ofSeconds(seconds: Long): TtlBucket =
             entries.firstOrNull { it.seconds.toLong() == seconds } ?: throw IllegalStateException("unknown ttl bucket")
+    }
+}
+
+/**
+ * Who obtains write access to a namespace (Phase 9 design §13.3 item 3). REDEEM: the entitlement
+ * planner spends an access token at the relay. LOCAL: the consumer installs bearer credentials
+ * itself ([Capabilities.put]) and nothing is ever redeemed for it, so a contact's inbox or bundle
+ * costs no token (§4.8 token accounting). A LOCAL namespace without a usable credential parks its
+ * deliveries in the same way as a REDEEM one, and a new credential generation re-arms them.
+ */
+enum class CapabilitySource(internal val code: String) {
+    REDEEM("redeem"), LOCAL("local");
+
+    companion object {
+        internal fun ofCode(code: String): CapabilitySource =
+            entries.firstOrNull { it.code == code } ?: throw IllegalStateException("unknown capability source")
     }
 }
 

@@ -280,15 +280,22 @@ internal class Session(val engine: SyncEngine, val kind: SessionKind, val job: L
         return if (kind == SessionKind.BACKGROUND) minOf(bound, now + budget.remaining(now) - policy.deadlineReserveMillis) else bound
     }
 
-    /** Reads the read pairs and the write-only work pairs (with a token that can check) in one transaction. */
+    /**
+     * Reads the read pairs and the write-only work pairs in one transaction: outbox work with a
+     * token that can check, and pairs with a due key registration, which needs a usable write
+     * capability (Phase 9 design §13.3 item 5). Registration work gives a pair its own work-lane
+     * events in HIGH mode, where nothing else would schedule them; the read lane is untouched (T19).
+     */
     fun loadSnapshot(): PairSnapshot = engine.stores.database.transaction { tx ->
         val now = engine.clock.epochSeconds()
         val stores = engine.stores
         val readPairs = stores.directoryStore.readPairs(tx, now)
         val readKeys = readPairs.mapTo(HashSet()) { PairKey(it.relayId, it.namespace) }
-        val writePairs = stores.outboxStore.workPairs(tx, now)
+        val outboxPairs = stores.outboxStore.workPairs(tx, now)
             .map { PairKey(it.relayId, it.namespace) }
-            .filter { it !in readKeys && stores.capabilityStore.forChecking(tx, it.relayId, it.namespace, now) != null }
+            .filter { stores.capabilityStore.forChecking(tx, it.relayId, it.namespace, now) != null }
+        val registrationPairs = stores.registrationStore.workPairs(tx, now).map { PairKey(it.first, it.second) }
+        val writePairs = (outboxPairs + registrationPairs).distinct().filter { it !in readKeys }
         // Numbered inside the transaction: transactions are serialized, so numbers follow read order.
         PairSnapshot(snapshots.incrementAndGet(), readPairs, writePairs)
     }

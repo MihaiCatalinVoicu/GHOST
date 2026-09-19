@@ -6,8 +6,10 @@ import org.ghost.storage.JdbcSqlExecutor
 import org.ghost.storage.MigrationRunner
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.OutboundBlob
@@ -20,6 +22,8 @@ import org.ghost.sync.api.SyncTransaction
 import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.port.FetchedBlob
 import org.ghost.sync.port.ListPage
+import org.ghost.sync.port.RegisterAnswer
+import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.StoreReceipt
 import org.ghost.sync.port.SyncClock
@@ -61,7 +65,7 @@ class VirtualClock(private val startEpochSeconds: Long) : SyncClock {
  * after the relay applies them. Every call is recorded with its start time.
  */
 internal class TestRelays(private val clock: VirtualClock) : RelayPort {
-    enum class Kind { STORE, GET, LIST, CHECK }
+    enum class Kind { STORE, GET, LIST, CHECK, REGISTER }
 
     class Call(
         val kind: Kind,
@@ -212,7 +216,44 @@ internal class TestRelays(private val clock: VirtualClock) : RelayPort {
         return held
     }
 
+    /** Key registrations recorded here, by (relay, namespace, period, kind) (Phase 9 design §4.4). */
+    val registrations = LinkedHashMap<List<Any>, ByteArray>()
+
+    /** Request ids seen per registration key, so an idempotent retry is visible to a test. */
+    val registrationRequestIds = LinkedHashMap<List<Any>, MutableList<String>>()
+
+    /** Replaces a registration answer (a relay refusing the period); null records and answers OK. */
+    var registerOverride: (Call) -> RegisterAnswer? = { null }
+
+    override fun registerKey(
+        relay: OnionAddress,
+        ns: NamespaceId,
+        capability: ByteArray,
+        periodId: Long,
+        kind: KeyKind,
+        verifier: ByteArray,
+        requestId: ByteArray,
+        deadlineMillis: Int,
+    ): RegisterAnswer {
+        require(verifier.size == 32 && requestId.size == 16) { "verifier 32, request id 16 bytes" }
+        val call = Call(Kind.REGISTER, relay, ns, clock.millis, 0, ByteArray(0), emptyList(), deadlineMillis, capability, null)
+        begin(call)
+        val key = listOf<Any>(relay, ns, periodId, kind)
+        registrationRequestIds.getOrPut(key) { ArrayList() } += requestId.joinToString("") { "%02x".format(it) }
+        registerOverride(call)?.let {
+            end(call)
+            return it
+        }
+        // Accumulation (§4.4 point 4): a record already there with the same verifier is unchanged.
+        registrations.putIfAbsent(key, verifier.copyOf())
+        end(call)
+        return RegisterAnswer(RegisterResult.OK, registrationValidity(periodId))
+    }
+
     companion object {
+        /** `start(period + 2) + 1 h` on the grid the relay judges periods by (§4.4 point 4). */
+        fun registrationValidity(periodId: Long): Long = 345_600L + 604_800L * (periodId + 2) + 3_600L
+
         fun cursorOf(seq: Long): ByteArray = ByteBuffer.allocate(8).putLong(seq).array()
 
         fun seqOf(cursor: ByteArray): Long = if (cursor.isEmpty()) 0L else ByteBuffer.wrap(cursor).long
@@ -366,14 +407,25 @@ internal class EngineWorld(
 
     fun address(relay: RelayId): OnionAddress = addresses.getValue(relay.value)
 
-    fun namespace(seed: Int, relays: Collection<RelayId>, listen: Boolean = true, sendDelay: SendDelay = SendDelay.DEFAULT): NamespaceId {
+    fun namespace(
+        seed: Int,
+        relays: Collection<RelayId>,
+        listen: Boolean = true,
+        sendDelay: SendDelay = SendDelay.DEFAULT,
+        consumer: Consumer = Consumer.DM,
+        capabilitySource: CapabilitySource = CapabilitySource.REDEEM,
+    ): NamespaceId {
         val ns = TestBytes.namespace(seed)
-        tx { stores.namespaces.register(it, ns, Consumer.DM, relays.toSet(), listen, sendDelay) }
+        tx { stores.namespaces.register(it, ns, consumer, relays.toSet(), listen, sendDelay, capabilitySource) }
         return ns
     }
 
-    fun capability(relay: RelayId, ns: NamespaceId, kind: CapabilityKind = CapabilityKind.WRITE, seed: Int = 1) =
-        tx { stores.capabilities.put(it, relay, ns, kind, TestBytes.of(82, seed * 17 + relay.value.toInt()), null) }
+    /** Records that (relay, namespace, period, kind) must be registered (Phase 9 design §4.8). */
+    fun registration(relay: RelayId, ns: NamespaceId, period: Long, kind: KeyKind = KeyKind.DEPOSIT, verifier: ByteArray = TestBytes.of(32, 41)) =
+        tx { stores.registrations.request(it, relay, ns, period, kind, verifier) }
+
+    fun capability(relay: RelayId, ns: NamespaceId, kind: CapabilityKind = CapabilityKind.WRITE, seed: Int = 1, expiresAt: Long? = null) =
+        tx { stores.capabilities.put(it, relay, ns, kind, TestBytes.of(82, seed * 17 + relay.value.toInt()), expiresAt) }
 
     /** Three relays of operators 1, 2, 3, a namespace over them and write tokens on each. */
     fun standardSet(listen: Boolean = true, seed: Int = 1): Pair<NamespaceId, List<RelayId>> {

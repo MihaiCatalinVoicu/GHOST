@@ -45,14 +45,16 @@ class SyncCounts(
     val expiredUnconsumed: Int,
     /** Capability needs ([Capabilities.needed] size). */
     val capabilityNeeds: Int,
+    /** Key registrations still to be made ([Registrations.pendingCount], Phase 9 design §13.3 item 5). */
+    val pendingRegistrations: Int = 0,
 ) {
     override fun toString(): String =
         "SyncCounts(pending=$pendingOperations, waitingForCapability=$waitingForCapability, unreleased=$unreleasedOutcomes, " +
             "backlog=$listedBacklog, fetched=$fetchedUnconsumed, poisoned=$consumerPoisoned, expiredUnconsumed=$expiredUnconsumed, " +
-            "capabilityNeeds=$capabilityNeeds)"
+            "capabilityNeeds=$capabilityNeeds, pendingRegistrations=$pendingRegistrations)"
 
     companion object {
-        val EMPTY: SyncCounts = SyncCounts(0, 0, 0, 0, 0, 0, 0, 0)
+        val EMPTY: SyncCounts = SyncCounts(0, 0, 0, 0, 0, 0, 0, 0, 0)
     }
 }
 

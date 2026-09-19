@@ -2,6 +2,8 @@ package org.ghost.sync.store
 
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.store.SyncWorld.Companion.DAY
 import org.ghost.sync.store.SyncWorld.Companion.HOUR
@@ -193,6 +195,43 @@ class CapabilityTest {
         w.tx { w.stores.relayDirectory.retire(it, relays[2]) }
         assertFalse(w.stores.capabilities.needed().any { it.relay == relays[2] })
         assertEquals(2, w.stores.counts().capabilityNeeds)
+    }
+
+    /**
+     * The selection of Phase 9 design §13.3 item 7, which S3 verifies against the Phase 7 store:
+     * `list` and `get` prefer a usable READ credential and fall back to the write capability;
+     * `store` uses the write-kind credential, which for a LOCAL namespace is the deposit credential
+     * installed under `kind = 'write'`; `check` uses the write-kind credential when there is one and
+     * the READ credential otherwise. The engine treats every token as opaque.
+     */
+    @Test
+    fun thePhase9SelectionMatrixIsTheOneTheStoreAlreadyApplies(): Unit = SyncWorld().use { w ->
+        val relays = w.relays(1, 2)
+        // A contact's inbox: the consumer installs its own credentials and nothing is redeemed.
+        val contactInbox = w.namespace(1, relays, listen = false, capabilitySource = CapabilitySource.LOCAL)
+        val deposit = TestBytes.of(67, 31)
+        w.tx { w.stores.capabilities.put(it, relays[0], contactInbox, CapabilityKind.WRITE, deposit, w.now + 8 * DAY) }
+        val forStore = w.tx { w.caps.usable(it, relays[0], contactInbox, CapabilityKind.WRITE, w.now) }
+        assertArrayEquals("a store presents the write-kind credential", deposit, forStore!!.token)
+        assertEquals(CapabilityKind.WRITE, w.tx { w.caps.forChecking(it, relays[0], contactInbox, w.now) }!!.kind)
+
+        // A contact's bundle: the fetch credential is installed as the read kind (§5.5), so lists
+        // and gets use it and no write capability exists at all.
+        val contactBundle = w.namespace(2, relays, listen = true, consumer = Consumer.PREKEYS, capabilitySource = CapabilitySource.LOCAL)
+        val fetch = TestBytes.of(67, 32)
+        w.tx { w.stores.capabilities.put(it, relays[0], contactBundle, CapabilityKind.READ, fetch, w.now + 8 * DAY) }
+        assertArrayEquals(fetch, w.tx { w.caps.forReading(it, relays[0], contactBundle, w.now) }!!.token)
+        assertArrayEquals("with no write capability a check uses the read credential", fetch, w.tx { w.caps.forChecking(it, relays[0], contactBundle, w.now) }!!.token)
+        assertNull("nothing stores into a contact's bundle", w.tx { w.caps.usable(it, relays[0], contactBundle, CapabilityKind.WRITE, w.now) })
+
+        // The owner's inbox: its READ credential reads, its write capability stores and checks.
+        val ownInbox = w.namespace(3, relays, listen = true)
+        val read = TestBytes.of(67, 33)
+        w.capability(relays[0], ownInbox, CapabilityKind.WRITE)
+        w.tx { w.stores.capabilities.put(it, relays[0], ownInbox, CapabilityKind.READ, read, w.now + 8 * DAY) }
+        assertArrayEquals(read, w.tx { w.caps.forReading(it, relays[0], ownInbox, w.now) }!!.token)
+        assertEquals(CapabilityKind.WRITE, w.tx { w.caps.forChecking(it, relays[0], ownInbox, w.now) }!!.kind)
+        assertEquals(CapabilityKind.WRITE, w.tx { w.caps.usable(it, relays[0], ownInbox, CapabilityKind.WRITE, w.now) }!!.kind)
     }
 
     @Test

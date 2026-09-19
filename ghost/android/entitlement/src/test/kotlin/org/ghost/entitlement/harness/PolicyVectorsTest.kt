@@ -173,6 +173,7 @@ class PolicyVectorsTest {
             is RedeemPlanner.Decision.Redeem -> "redeem week=${d.week} slots=${show(d.slots)} due=${showTime(d.dueSeconds)}"
             RedeemPlanner.Decision.Deferred -> "deferred"
             RedeemPlanner.Decision.NoSlot -> "no_slot"
+            RedeemPlanner.Decision.LocalSkipped -> "local_skipped"
             RedeemPlanner.Decision.Skip -> "skip"
         }
         if (expect[0] == "redeem") {

@@ -82,8 +82,10 @@ class ReplaceGuardsTest {
         assertEquals(setOf("ent_key", "ent_schedule_fact", "ent_purchase", "outbox_op"), deleteRules)
         assertEquals(emptySet<String>(), deleteRules - guarded)
         // Every table with rules is guarded, except the two v2 tables whose rules are transitions only
-        // and whose writers use INSERT OR IGNORE and UPSERT.
-        assertEquals(setOf("outbox_delivery", "inbox_blob"), withRules - guarded)
+        // and whose writers use INSERT OR IGNORE and UPSERT, and the v4 rule on sync_namespace, whose
+        // writer upserts and whose rule runs on INSERT as well (sync_namespace_dm_delay_insert), so a
+        // REPLACE cannot skip it (Phase 9 design §13.6 step 3).
+        assertEquals(setOf("outbox_delivery", "inbox_blob", "sync_namespace"), withRules - guarded)
         assertEquals(emptySet<String>(), guarded - withRules)
         for (table in guarded) {
             val (name, sql) = triggers.getValue(table).single { it.first.endsWith("_no_replace") }

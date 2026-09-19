@@ -1,6 +1,79 @@
 package org.ghost.storage
 
 /**
+ * The index, trigger and guard texts of `outbox_op` and `outbox_delivery`, shared by the migrations
+ * that create them (Phase 9 design §13.6 step 1): migration 2 creates the v2 indexes and triggers,
+ * migration 3 the two v3 REPLACE guards, and migration 4 recreates all of them on the rebuilt tables
+ * that admit the 1-hour TTL. One text per object, so the rebuilt tables cannot drift from the v2
+ * ones (the migration test compares `sqlite_master` rows by (type, name, sql); §21.13 point 9).
+ */
+private object OutboxObjects {
+    const val IDX_OP_OPEN = "CREATE INDEX idx_outbox_op_open ON outbox_op(outcome, released)"
+    const val IDX_DELIVERY_DUE = "CREATE INDEX idx_outbox_delivery_due ON outbox_delivery(state, next_attempt_minute)"
+    const val IDX_DELIVERY_RELAY = "CREATE INDEX idx_outbox_delivery_relay ON outbox_delivery(relay_id, state)"
+
+    val INDEXES: List<String> = listOf(IDX_OP_OPEN, IDX_DELIVERY_DUE, IDX_DELIVERY_RELAY)
+
+    /** The eight v2 state-machine triggers (design faza7-sync-engine.md §2, D8). */
+    val V2_TRIGGERS: List<String> = listOf(
+        """CREATE TRIGGER outbox_op_immutable
+                BEFORE UPDATE OF operation_id, namespace_id, blob_hash, ttl_seconds, not_before_minute, deadline_hour,
+                                 required_operators ON outbox_op
+                BEGIN SELECT RAISE(ABORT, 'outbox_op identity is immutable'); END""",
+        """CREATE TRIGGER outbox_op_payload
+                BEFORE UPDATE OF ciphertext ON outbox_op
+                WHEN NEW.ciphertext IS NOT NULL
+                  OR EXISTS (SELECT 1 FROM outbox_delivery d WHERE d.operation_id = OLD.operation_id
+                             AND (d.state IN ('pending', 'wait_capability', 'acked') OR d.inflight = 1))
+                BEGIN SELECT RAISE(ABORT, 'outbox payload is frozen and wiped only after the last possible store'); END""",
+        """CREATE TRIGGER outbox_op_outcome
+                BEFORE UPDATE OF outcome ON outbox_op
+                WHEN OLD.outcome <> 'pending' OR NEW.outcome = 'pending'
+                BEGIN SELECT RAISE(ABORT, 'outbox outcome is decided once'); END""",
+        """CREATE TRIGGER outbox_op_release
+                BEFORE UPDATE OF released ON outbox_op
+                WHEN OLD.released = 1 OR NEW.released <> 1 OR OLD.outcome = 'pending'
+                BEGIN SELECT RAISE(ABORT, 'release happens once, after the outcome'); END""",
+        """CREATE TRIGGER outbox_op_delete
+                BEFORE DELETE ON outbox_op
+                WHEN OLD.released = 0 OR OLD.ciphertext IS NOT NULL
+                BEGIN SELECT RAISE(ABORT, 'only released ops without payload are deleted'); END""",
+        """CREATE TRIGGER outbox_delivery_insert
+                BEFORE INSERT ON outbox_delivery
+                WHEN NEW.state <> 'pending' OR NEW.inflight <> 0 OR NEW.copy_hour IS NOT NULL
+                  OR (SELECT ciphertext FROM outbox_op WHERE operation_id = NEW.operation_id) IS NULL
+                BEGIN SELECT RAISE(ABORT, 'a new delivery starts pending, idle, without copies, and needs the payload'); END""",
+        // Late inventory is truth: failed/closed may still become verified.
+        """CREATE TRIGGER outbox_delivery_state
+                BEFORE UPDATE OF state ON outbox_delivery
+                WHEN NOT ((OLD.state = 'pending'         AND NEW.state IN ('wait_capability', 'acked', 'verified', 'failed', 'closed'))
+                       OR (OLD.state = 'wait_capability' AND NEW.state IN ('pending', 'acked', 'verified', 'failed', 'closed'))
+                       OR (OLD.state = 'acked'           AND NEW.state IN ('pending', 'verified', 'failed', 'closed'))
+                       OR (OLD.state IN ('failed', 'closed') AND NEW.state = 'verified'))
+                  OR (NEW.state IN ('pending', 'wait_capability', 'acked')
+                      AND (SELECT ciphertext FROM outbox_op WHERE operation_id = OLD.operation_id) IS NULL)
+                BEGIN SELECT RAISE(ABORT, 'illegal delivery transition'); END""",
+        """CREATE TRIGGER outbox_delivery_copy
+                BEFORE UPDATE OF copy_hour ON outbox_delivery
+                WHEN (OLD.copy_hour IS NOT NULL AND NEW.copy_hour IS NOT NULL AND NEW.copy_hour <> OLD.copy_hour)
+                  OR (OLD.copy_hour IS NOT NULL AND NEW.copy_hour IS NULL
+                      AND (OLD.ack_minute IS NOT NULL OR OLD.state = 'verified'))
+                BEGIN SELECT RAISE(ABORT, 'a possible copy keeps its earliest hour and is forgotten only when proven absent'); END""",
+    )
+
+    /** The two v3 REPLACE guards of `outbox_op` (§19.21 point 4). */
+    val V3_GUARDS: List<String> = listOf(
+        """CREATE TRIGGER outbox_op_no_replace BEFORE INSERT ON outbox_op
+                WHEN EXISTS (SELECT 1 FROM outbox_op WHERE operation_id = NEW.operation_id
+                             OR (namespace_id = NEW.namespace_id AND blob_hash = NEW.blob_hash) OR rowid = NEW.rowid)
+                BEGIN SELECT RAISE(ABORT, 'outbox_op rows are never replaced'); END""",
+        """CREATE TRIGGER outbox_op_rowid BEFORE UPDATE ON outbox_op
+                WHEN NEW.rowid IS NOT OLD.rowid
+                BEGIN SELECT RAISE(ABORT, 'outbox_op identity is immutable'); END""",
+    )
+}
+
+/**
  * Versioned schema (spec v2.0 §8, amended by ADR-04 pseudonyms, ADR-05 invite nonces, ADR-14
  * revocations). Rules enforced here rather than in application code:
  *  - protocol state (libsignal, OpenMLS) lives in dedicated tables as opaque serialized records;
@@ -20,14 +93,22 @@ package org.ghost.storage
  *  - REPLACE guards (§19.21 point 4): SQLite runs no DELETE trigger for a row that REPLACE conflict
  *    resolution deletes (`recursive_triggers` is off), so every v3 table with write-once, frozen or
  *    state rules, and the v2 `outbox_op`, refuses an insert that conflicts on any of its keys
- *    (`<table>_no_replace`, created by migration 3).
+ *    (`<table>_no_replace`, created by migration 3);
+ *  - v4 (Phase 9 direct messages, docs/design/faza9-dm.md §13.6 steps 0–4, the sync and entitlement
+ *    half): the unused v1 DM tables are dropped behind a fail-closed guard; `outbox_op` and
+ *    `outbox_delivery` are rebuilt to admit the 1-hour TTL bucket (SQLite cannot alter a CHECK) with
+ *    every index, trigger and guard recreated from [OutboxObjects]; `inbox_blob` keeps the relay
+ *    expiry of a fetched blob; `sync_namespace` records who obtains its capabilities and refuses to
+ *    turn the send delay off for a DM namespace; `relay_key_registration` holds the bearer-key
+ *    registrations the owner keeps at its relays (§4.8). The `dm_*` and `olm_*` tables are migration
+ *    5 (§21.13 point 3), so every slice leaves a schema [MigrationRunner.verifyIntegrity] accepts.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
  * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2.
  */
 object Schema {
-    const val CURRENT_VERSION = 3
+    const val CURRENT_VERSION = 4
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -252,7 +333,7 @@ object Schema {
                     CHECK (released = 0 OR outcome <> 'pending'),
                     UNIQUE (namespace_id, blob_hash)
                 )""",
-                "CREATE INDEX idx_outbox_op_open ON outbox_op(outcome, released)",
+                OutboxObjects.IDX_OP_OPEN,
                 // inflight is the write-ahead lease marker. copy_hour is the earliest attempt that
                 // may have stored; ack_minute the latest receipt; strikes the absent-after-ack count.
                 """CREATE TABLE outbox_delivery (
@@ -271,8 +352,8 @@ object Schema {
                     CHECK (state <> 'acked' OR (ack_minute IS NOT NULL AND copy_hour IS NOT NULL)),
                     PRIMARY KEY (operation_id, relay_id)
                 ) WITHOUT ROWID""",
-                "CREATE INDEX idx_outbox_delivery_due ON outbox_delivery(state, next_attempt_minute)",
-                "CREATE INDEX idx_outbox_delivery_relay ON outbox_delivery(relay_id, state)",
+                OutboxObjects.IDX_DELIVERY_DUE,
+                OutboxObjects.IDX_DELIVERY_RELAY,
                 // Dedup key and tombstone. WITHOUT ROWID: rows are ordered by (namespace, hash), not
                 // by arrival. fetch_seq is the local hand-off order, only while fetched; offers is
                 // the write-ahead poison guard; a done tombstone carries nothing else.
@@ -309,49 +390,8 @@ object Schema {
                 "CREATE INDEX idx_inbox_source_relay ON inbox_source(relay_id, state)",
                 // State machines enforced by the schema (D8). Row triggers fire only on rows actually
                 // updated, and an UPDATE OF trigger fires whenever its column is in the SET list.
-                """CREATE TRIGGER outbox_op_immutable
-                BEFORE UPDATE OF operation_id, namespace_id, blob_hash, ttl_seconds, not_before_minute, deadline_hour,
-                                 required_operators ON outbox_op
-                BEGIN SELECT RAISE(ABORT, 'outbox_op identity is immutable'); END""",
-                """CREATE TRIGGER outbox_op_payload
-                BEFORE UPDATE OF ciphertext ON outbox_op
-                WHEN NEW.ciphertext IS NOT NULL
-                  OR EXISTS (SELECT 1 FROM outbox_delivery d WHERE d.operation_id = OLD.operation_id
-                             AND (d.state IN ('pending', 'wait_capability', 'acked') OR d.inflight = 1))
-                BEGIN SELECT RAISE(ABORT, 'outbox payload is frozen and wiped only after the last possible store'); END""",
-                """CREATE TRIGGER outbox_op_outcome
-                BEFORE UPDATE OF outcome ON outbox_op
-                WHEN OLD.outcome <> 'pending' OR NEW.outcome = 'pending'
-                BEGIN SELECT RAISE(ABORT, 'outbox outcome is decided once'); END""",
-                """CREATE TRIGGER outbox_op_release
-                BEFORE UPDATE OF released ON outbox_op
-                WHEN OLD.released = 1 OR NEW.released <> 1 OR OLD.outcome = 'pending'
-                BEGIN SELECT RAISE(ABORT, 'release happens once, after the outcome'); END""",
-                """CREATE TRIGGER outbox_op_delete
-                BEFORE DELETE ON outbox_op
-                WHEN OLD.released = 0 OR OLD.ciphertext IS NOT NULL
-                BEGIN SELECT RAISE(ABORT, 'only released ops without payload are deleted'); END""",
-                """CREATE TRIGGER outbox_delivery_insert
-                BEFORE INSERT ON outbox_delivery
-                WHEN NEW.state <> 'pending' OR NEW.inflight <> 0 OR NEW.copy_hour IS NOT NULL
-                  OR (SELECT ciphertext FROM outbox_op WHERE operation_id = NEW.operation_id) IS NULL
-                BEGIN SELECT RAISE(ABORT, 'a new delivery starts pending, idle, without copies, and needs the payload'); END""",
-                // Late inventory is truth: failed/closed may still become verified.
-                """CREATE TRIGGER outbox_delivery_state
-                BEFORE UPDATE OF state ON outbox_delivery
-                WHEN NOT ((OLD.state = 'pending'         AND NEW.state IN ('wait_capability', 'acked', 'verified', 'failed', 'closed'))
-                       OR (OLD.state = 'wait_capability' AND NEW.state IN ('pending', 'acked', 'verified', 'failed', 'closed'))
-                       OR (OLD.state = 'acked'           AND NEW.state IN ('pending', 'verified', 'failed', 'closed'))
-                       OR (OLD.state IN ('failed', 'closed') AND NEW.state = 'verified'))
-                  OR (NEW.state IN ('pending', 'wait_capability', 'acked')
-                      AND (SELECT ciphertext FROM outbox_op WHERE operation_id = OLD.operation_id) IS NULL)
-                BEGIN SELECT RAISE(ABORT, 'illegal delivery transition'); END""",
-                """CREATE TRIGGER outbox_delivery_copy
-                BEFORE UPDATE OF copy_hour ON outbox_delivery
-                WHEN (OLD.copy_hour IS NOT NULL AND NEW.copy_hour IS NOT NULL AND NEW.copy_hour <> OLD.copy_hour)
-                  OR (OLD.copy_hour IS NOT NULL AND NEW.copy_hour IS NULL
-                      AND (OLD.ack_minute IS NOT NULL OR OLD.state = 'verified'))
-                BEGIN SELECT RAISE(ABORT, 'a possible copy keeps its earliest hour and is forgotten only when proven absent'); END""",
+                // The outbox texts live in [OutboxObjects], which migration 4 recreates them from.
+                *OutboxObjects.V2_TRIGGERS.toTypedArray(),
                 """CREATE TRIGGER inbox_blob_insert
                 BEFORE INSERT ON inbox_blob
                 WHEN NEW.state NOT IN ('listed', 'done')
@@ -679,20 +719,160 @@ object Schema {
                 // there does what a DELETE followed by an INSERT (whose trigger still runs) may do, and
                 // the Phase 7 design writes them with INSERT OR IGNORE (§3.9) and UPSERTs (§3.1, §4.1),
                 // which a guard would refuse.
-                """CREATE TRIGGER outbox_op_no_replace BEFORE INSERT ON outbox_op
-                WHEN EXISTS (SELECT 1 FROM outbox_op WHERE operation_id = NEW.operation_id
-                             OR (namespace_id = NEW.namespace_id AND blob_hash = NEW.blob_hash) OR rowid = NEW.rowid)
-                BEGIN SELECT RAISE(ABORT, 'outbox_op rows are never replaced'); END""",
-                """CREATE TRIGGER outbox_op_rowid BEFORE UPDATE ON outbox_op
-                WHEN NEW.rowid IS NOT OLD.rowid
-                BEGIN SELECT RAISE(ABORT, 'outbox_op identity is immutable'); END""",
+                *OutboxObjects.V3_GUARDS.toTypedArray(),
             ),
         ),
+        Migration(
+            version = 4,
+            statements = migration4(),
+        ),
+    )
+
+    /**
+     * Steps 0–4 of Phase 9 design §13.6 (the sync and entitlement half of schema v4; the `dm_*` and
+     * `olm_*` tables are migration 5, §21.13 point 3). One transaction, append-only, fail-closed.
+     */
+    private fun migration4(): List<String> = listOf(
+        // (0a) `ALTER TABLE ... RENAME TO` must rewrite the references of the rebuilt outbox tables
+        // (step 1 point 6), which `legacy_alter_table` would turn off. The pragma function reports
+        // the setting of this connection; the guard is 0 only when it returns exactly one row
+        // holding 0, and a build without pragma functions fails the statement, so both fail closed.
+        "CREATE TABLE v4_alter_guard (legacy_alter_table INTEGER NOT NULL CHECK (legacy_alter_table = 0))",
+        "INSERT INTO v4_alter_guard(legacy_alter_table) " +
+            "SELECT (SELECT count(*) FROM pragma_legacy_alter_table WHERE legacy_alter_table <> 0) " +
+            "+ (SELECT 1 - count(*) FROM pragma_legacy_alter_table)",
+        "DROP TABLE v4_alter_guard",
+        // (0b) Fail-closed guard and drop of the unused v1 DM tables: Repositories writes only
+        // `identity`, `invite_nonces` and `revocations`, so these four never had a writer. A CHECK
+        // failure aborts the migration transaction and the database stays at v3.
+        "CREATE TABLE v4_migration_guard (row_count INTEGER NOT NULL CHECK (row_count = 0))",
+        "INSERT INTO v4_migration_guard(row_count) SELECT count(*) FROM messages",
+        "INSERT INTO v4_migration_guard(row_count) SELECT count(*) FROM conversations",
+        "INSERT INTO v4_migration_guard(row_count) SELECT count(*) FROM contacts",
+        "INSERT INTO v4_migration_guard(row_count) SELECT count(*) FROM signal_state",
+        "DROP TABLE v4_migration_guard",
+        "DROP INDEX idx_messages_conversation",
+        "DROP INDEX idx_messages_expiry",
+        "DROP TABLE messages",
+        "DROP TABLE conversations",
+        "DROP TABLE contacts",
+        "DROP TABLE signal_state",
+        // (1) Rebuild outbox_op and outbox_delivery to admit TTL 3600 (SQLite cannot alter a CHECK;
+        // the v2 CHECK is frozen). Everything else is the v2 definition verbatim.
+        """CREATE TABLE outbox_op_v4 (
+                    operation_id       BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
+                    namespace_id       BLOB NOT NULL REFERENCES sync_namespace(namespace_id),
+                    blob_hash          BLOB NOT NULL CHECK (length(blob_hash) = 32),
+                    ciphertext         BLOB CHECK (ciphertext IS NULL OR length(ciphertext) IN (1024, 4096, 16384, 65536)),
+                    ttl_seconds        INTEGER NOT NULL CHECK (ttl_seconds IN (3600, 86400, 604800, 2592000, 7776000)),
+                    not_before_minute  INTEGER NOT NULL CHECK (not_before_minute % 60 = 0),
+                    deadline_hour      INTEGER CHECK (deadline_hour IS NULL OR deadline_hour % 3600 = 0),
+                    required_operators INTEGER NOT NULL CHECK (required_operators >= 2),
+                    outcome            TEXT NOT NULL CHECK (outcome IN ('pending', 'sent', 'degraded', 'failed', 'indeterminate')),
+                    released           INTEGER NOT NULL DEFAULT 0 CHECK (released IN (0, 1)),
+                    CHECK (deadline_hour IS NULL OR deadline_hour > not_before_minute),
+                    CHECK (released = 0 OR outcome <> 'pending'),
+                    UNIQUE (namespace_id, blob_hash)
+                )""",
+        """CREATE TABLE outbox_delivery_v4 (
+                    operation_id        BLOB NOT NULL REFERENCES outbox_op_v4(operation_id) ON DELETE CASCADE,
+                    relay_id            INTEGER NOT NULL REFERENCES relay_directory(relay_id),
+                    state               TEXT NOT NULL
+                                        CHECK (state IN ('pending', 'wait_capability', 'acked', 'verified', 'failed', 'closed')),
+                    attempts            INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                    next_attempt_minute INTEGER NOT NULL CHECK (next_attempt_minute % 60 = 0),
+                    inflight            INTEGER NOT NULL DEFAULT 0 CHECK (inflight IN (0, 1)),
+                    lease_hour          INTEGER CHECK (lease_hour IS NULL OR lease_hour % 3600 = 0),
+                    copy_hour           INTEGER CHECK (copy_hour IS NULL OR copy_hour % 3600 = 0),
+                    ack_minute          INTEGER CHECK (ack_minute IS NULL OR ack_minute % 60 = 0),
+                    strikes             INTEGER NOT NULL DEFAULT 0 CHECK (strikes BETWEEN 0 AND 2),
+                    CHECK (inflight = 0 OR lease_hour IS NOT NULL),
+                    CHECK (state <> 'acked' OR (ack_minute IS NOT NULL AND copy_hour IS NOT NULL)),
+                    PRIMARY KEY (operation_id, relay_id)
+                ) WITHOUT ROWID""",
+        // Explicit column lists (E-5), rowids preserved (the v3 guard outbox_op_rowid protects them).
+        // The new tables have no triggers yet, so outbox_delivery_insert does not refuse a copied row.
+        """INSERT INTO outbox_op_v4(rowid, operation_id, namespace_id, blob_hash, ciphertext, ttl_seconds, not_before_minute,
+                                          deadline_hour, required_operators, outcome, released)
+                SELECT rowid, operation_id, namespace_id, blob_hash, ciphertext, ttl_seconds, not_before_minute,
+                       deadline_hour, required_operators, outcome, released
+                FROM outbox_op""",
+        """INSERT INTO outbox_delivery_v4(operation_id, relay_id, state, attempts, next_attempt_minute, inflight, lease_hour,
+                                                copy_hour, ack_minute, strikes)
+                SELECT operation_id, relay_id, state, attempts, next_attempt_minute, inflight, lease_hour, copy_hour, ack_minute, strikes
+                FROM outbox_delivery""",
+        // The child goes first: with foreign_keys = ON, dropping the parent first would cascade-delete
+        // the deliveries (an implicit DELETE runs foreign-key actions, but no triggers).
+        "DROP TABLE outbox_delivery",
+        // This removes the five v2 triggers of outbox_op and the two v3 guards with it.
+        "DROP TABLE outbox_op",
+        // With legacy_alter_table off (guarded above), SQLite rewrites the delivery table's
+        // foreign-key reference to the renamed parent.
+        "ALTER TABLE outbox_op_v4 RENAME TO outbox_op",
+        "ALTER TABLE outbox_delivery_v4 RENAME TO outbox_delivery",
+        *OutboxObjects.INDEXES.toTypedArray(),
+        *OutboxObjects.V2_TRIGGERS.toTypedArray(),
+        *OutboxObjects.V3_GUARDS.toTypedArray(),
+        // Step 1 point 8: the rebuild leaves no dangling reference, or the migration rolls back.
+        "CREATE TABLE v4_fk_guard (violations INTEGER NOT NULL CHECK (violations = 0))",
+        "INSERT INTO v4_fk_guard(violations) SELECT count(*) FROM pragma_foreign_key_check",
+        "DROP TABLE v4_fk_guard",
+        // (2) Relay expiry of fetched blobs (§10.3): kept only while the row is fetched, so a
+        // tombstone carries no relay time.
+        """ALTER TABLE inbox_blob ADD COLUMN relay_expiry_hour INTEGER
+                  CHECK (relay_expiry_hour IS NULL OR (typeof(relay_expiry_hour) = 'integer' AND relay_expiry_hour % 3600 = 0))""",
+        """CREATE TRIGGER inbox_blob_relay_expiry_insert BEFORE INSERT ON inbox_blob
+                WHEN NEW.relay_expiry_hour IS NOT NULL
+                BEGIN SELECT RAISE(ABORT, 'relay expiry is kept only while fetched'); END""",
+        """CREATE TRIGGER inbox_blob_relay_expiry_update BEFORE UPDATE OF state, relay_expiry_hour ON inbox_blob
+                WHEN NEW.relay_expiry_hour IS NOT NULL AND NEW.state <> 'fetched'
+                BEGIN SELECT RAISE(ABORT, 'relay expiry is kept only while fetched'); END""",
+        // (3) Capability source and the DM send-delay rule. LOCAL namespaces (a contact's inbox or
+        // bundle) install their credentials themselves and are never redeemed (§13.3 item 3).
+        """ALTER TABLE sync_namespace ADD COLUMN capability_source TEXT NOT NULL DEFAULT 'redeem'
+                  CHECK (capability_source IN ('redeem', 'local'))""",
+        """CREATE TRIGGER sync_namespace_dm_delay BEFORE UPDATE OF send_delay ON sync_namespace
+                WHEN NEW.consumer = 'dm' AND NEW.send_delay = 'off'
+                BEGIN SELECT RAISE(ABORT, 'DM namespaces cannot turn the send delay off'); END""",
+        """CREATE TRIGGER sync_namespace_dm_delay_insert BEFORE INSERT ON sync_namespace
+                WHEN NEW.consumer = 'dm' AND NEW.send_delay = 'off'
+                BEGIN SELECT RAISE(ABORT, 'DM namespaces cannot turn the send delay off'); END""",
+        // (4) Key registrations (§4.4, §4.8): what the owner keeps registered at each relay of its
+        // own namespaces. `kind` admits 'fetch' (the bundle namespace's shared secret, §22.8.7).
+        """CREATE TABLE relay_key_registration (
+                  relay_id            INTEGER NOT NULL REFERENCES relay_directory(relay_id) ON DELETE CASCADE,
+                  namespace_id        BLOB NOT NULL REFERENCES sync_namespace(namespace_id) ON DELETE CASCADE,
+                  period_id           INTEGER NOT NULL CHECK (typeof(period_id) = 'integer' AND period_id >= 0),
+                  kind                TEXT NOT NULL CHECK (kind IN ('read', 'deposit', 'fetch')),
+                  verifier            BLOB NOT NULL CHECK (length(verifier) = 32),
+                  request_id          BLOB NOT NULL CHECK (length(request_id) = 16),
+                  state               TEXT NOT NULL CHECK (state IN ('pending', 'done')),
+                  inflight            INTEGER NOT NULL DEFAULT 0 CHECK (inflight IN (0, 1)),
+                  lease_hour          INTEGER CHECK (lease_hour IS NULL OR (typeof(lease_hour) = 'integer' AND lease_hour % 3600 = 0)),
+                  attempts            INTEGER NOT NULL DEFAULT 0 CHECK (typeof(attempts) = 'integer' AND attempts >= 0),
+                  next_attempt_minute INTEGER NOT NULL CHECK (typeof(next_attempt_minute) = 'integer' AND next_attempt_minute % 60 = 0),
+                  valid_until_hour    INTEGER CHECK (valid_until_hour IS NULL OR (typeof(valid_until_hour) = 'integer' AND valid_until_hour % 3600 = 0)),
+                  CHECK ((state = 'done') = (valid_until_hour IS NOT NULL)),
+                  CHECK (inflight = 0 OR lease_hour IS NOT NULL),
+                  CHECK (state = 'pending' OR inflight = 0),
+                  PRIMARY KEY (relay_id, namespace_id, period_id, kind)
+                ) WITHOUT ROWID""",
+        """CREATE TRIGGER relay_key_registration_state BEFORE UPDATE ON relay_key_registration
+                WHEN NEW.relay_id IS NOT OLD.relay_id OR NEW.namespace_id IS NOT OLD.namespace_id
+                  OR NEW.period_id IS NOT OLD.period_id OR NEW.kind IS NOT OLD.kind OR NEW.verifier IS NOT OLD.verifier
+                  OR NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'pending' AND NEW.state = 'done')
+                       OR (OLD.state = 'done' AND NEW.state = 'pending'))
+                BEGIN SELECT RAISE(ABORT, 'a registration keeps its key and verifier and moves only between pending and done'); END""",
+        """CREATE TRIGGER relay_key_registration_no_replace BEFORE INSERT ON relay_key_registration
+                WHEN EXISTS (SELECT 1 FROM relay_key_registration WHERE relay_id = NEW.relay_id
+                             AND namespace_id = NEW.namespace_id AND period_id = NEW.period_id AND kind = NEW.kind)
+                BEGIN SELECT RAISE(ABORT, 'relay_key_registration rows are never replaced'); END""",
     )
 
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
-        "schema_meta", "identity", "devices", "contacts", "conversations", "signal_state", "messages",
+        "schema_meta", "identity", "devices",
         "channels", "channel_pseudonyms", "mls_state", "posts", "media", "media_blobs",
         "invite_nonces", "revocations",
         // v2 (sync)
@@ -701,6 +881,9 @@ object Schema {
         // v3 (entitlement; v1 entitlement and referral are dropped)
         "ent_key", "ent_schedule_fact", "ent_state", "ent_purchase", "ent_token", "ent_invite",
         "ent_drop_target", "ent_claim", "ent_payout_used",
+        // v4 (Phase 9 §13.6 steps 0-4; the v1 DM tables contacts, conversations, messages and
+        // signal_state are dropped, the `dm_*` and `olm_*` tables arrive with migration 5)
+        "relay_key_registration",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -716,6 +899,10 @@ object Schema {
         "ent_key_no_replace", "ent_schedule_fact_no_replace", "ent_purchase_no_replace", "ent_token_no_replace",
         "ent_invite_no_replace", "ent_claim_no_replace", "ent_drop_target_no_replace",
         "outbox_op_no_replace", "outbox_op_rowid",
+        // v4 (Phase 9 §13.6 steps 2-4)
+        "inbox_blob_relay_expiry_insert", "inbox_blob_relay_expiry_update",
+        "sync_namespace_dm_delay", "sync_namespace_dm_delay_insert",
+        "relay_key_registration_state", "relay_key_registration_no_replace",
     )
 
     /**

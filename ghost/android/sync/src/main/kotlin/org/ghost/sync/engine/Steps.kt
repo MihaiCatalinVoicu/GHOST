@@ -21,6 +21,7 @@ internal class Steps(
     val list: ListStep = ListStep(),
     val fetch: FetchStep = FetchStep(),
     val store: StoreStep = StoreStep(),
+    val registration: RegistrationStep = RegistrationStep(),
     val verify: VerifyStep = VerifyStep(),
     val resolve: ResolveStep = ResolveStep(),
     val maintenance: Maintenance = Maintenance(),

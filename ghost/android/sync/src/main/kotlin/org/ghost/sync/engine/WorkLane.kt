@@ -41,7 +41,8 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
 
     /**
      * Maintenance pass (M2, and M3/M4 with a trusted clock), a refresh of the pair snapshot and, in
-     * STANDARD mode, the due stores (at most [TrafficPolicy.storesPerPass]).
+     * STANDARD mode, the due stores (at most [TrafficPolicy.storesPerPass]) and the due key
+     * registrations (at most [TrafficPolicy.registrationsPerPass], Phase 9 design §13.3 item 5).
      */
     class Pass(session: Session) : WorkItem(session, networked = false) {
         var snapshot: PairSnapshot? = null
@@ -56,6 +57,9 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
             if (online) {
                 snapshot = session.loadSnapshot()
                 if (ctx.mode() == PrivacyMode.STANDARD) {
+                    // Registrations first: there are at most eight of them and they are what keeps
+                    // the owner reachable, so a large store backlog never starves them.
+                    ctx.steps.registration.round(ctx, null, ctx.policy.registrationsPerPass)
                     storesAtCap = ctx.steps.store.round(ctx, null, ctx.policy.storesPerPass) >= ctx.policy.storesPerPass
                 }
             }
@@ -67,7 +71,8 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
     /**
      * The work bundle of one pair event (design §6.1): fetches for a read pair (8 per event in the
      * foreground, 32 in a background job), one verification/resolution check, and in HIGH mode the
-     * pair's due stores (at most [TrafficPolicy.storesPerPairEvent]).
+     * pair's due stores (at most [TrafficPolicy.storesPerPairEvent]) and key registrations (Phase 9
+     * design §13.3 item 5).
      */
     class PairWork(session: Session, val pair: PairKey, val readPair: Boolean) : WorkItem(session, networked = true) {
         override fun run() {
@@ -77,7 +82,10 @@ internal sealed class WorkItem(protected val session: Session, val networked: Bo
                 ctx.steps.fetch.run(ctx, pair, limit)
             }
             CheckRound.run(ctx, pair)
-            if (ctx.mode() == PrivacyMode.HIGH) ctx.steps.store.round(ctx, pair, ctx.policy.storesPerPairEvent)
+            if (ctx.mode() == PrivacyMode.HIGH) {
+                ctx.steps.registration.round(ctx, pair, ctx.policy.registrationsPerPass)
+                ctx.steps.store.round(ctx, pair, ctx.policy.storesPerPairEvent)
+            }
         }
 
         override fun toString(): String = "PairWork(read=$readPair)"

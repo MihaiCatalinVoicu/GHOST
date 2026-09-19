@@ -1,6 +1,7 @@
 package org.ghost.app
 
 import org.ghost.sync.android.DatabaseOpener
+import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
@@ -26,6 +27,7 @@ class SyncWiringTest {
     private class Events {
         val log = ArrayList<String>()
         var installed: SessionParticipant? = null
+        var tail: ConsumerTail? = null
     }
 
     private class RecordingController(private val events: Events) : SyncController {
@@ -54,6 +56,11 @@ class SyncWiringTest {
         override fun setParticipant(p: SessionParticipant?) {
             events.installed = p
             events.log += "participant"
+        }
+
+        override fun setConsumerTail(tail: ConsumerTail?) {
+            events.tail = tail
+            events.log += "consumer-tail"
         }
 
         override fun runUserIssuerCall(block: (ParticipantSession) -> Unit) {

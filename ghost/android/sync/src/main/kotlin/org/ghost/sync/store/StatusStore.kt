@@ -4,7 +4,7 @@ import org.ghost.sync.api.SyncCounts
 import org.ghost.sync.api.SyncTransaction
 
 /** Durable counts for [org.ghost.sync.api.SyncStatus] (counts only, design §7.3, §11.2 #7). */
-internal class StatusStore(private val capabilities: CapabilityStore) {
+internal class StatusStore(private val capabilities: CapabilityStore, private val registrations: RegistrationStore) {
 
     fun counts(tx: SyncTransaction, now: Long): SyncCounts {
         val row = tx.sql.single(
@@ -26,6 +26,7 @@ internal class StatusStore(private val capabilities: CapabilityStore) {
             consumerPoisoned = row[5],
             expiredUnconsumed = row[6],
             capabilityNeeds = capabilities.needed(tx, now).size,
+            pendingRegistrations = registrations.pendingCount(tx),
         )
     }
 }

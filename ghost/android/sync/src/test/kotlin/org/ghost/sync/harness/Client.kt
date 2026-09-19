@@ -4,6 +4,7 @@ import org.ghost.storage.JdbcSqlExecutor
 import org.ghost.storage.MigrationRunner
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
 import org.ghost.sync.api.NamespaceId
@@ -31,6 +32,15 @@ import org.ghost.sync.store.SyncStores
 import java.io.File
 import java.security.MessageDigest
 
+/** How a consumer takes its blobs (Phase 9 design §13.3 item 10; V-11). */
+internal enum class ClaimStyle {
+    /** `Inbox.claim`, a batch at a time (the Phase 7 consumer). */
+    BATCH,
+
+    /** `Inbox.peek` to order the batch, then `Inbox.claimOne` for each row in turn (the DM actor). */
+    PEEK_ONE,
+}
+
 /** How the oracle consumer behaves (design §8.2). */
 internal class ConsumerPolicy(
     /** Consumers do nothing while this returns true (S-H: paused longer than a TTL). */
@@ -40,6 +50,8 @@ internal class ConsumerPolicy(
     val deferSeconds: Int = 60,
     /** Mutant M4: markConsumed commits in its own transaction, the consumer's effect in a second one. */
     val consumeOutsideTransaction: Boolean = false,
+    /** Which inbox calls the consumer uses to take its blobs. */
+    val claimStyle: ClaimStyle = ClaimStyle.BATCH,
 )
 
 internal class ClientSpec(
@@ -210,11 +222,18 @@ internal class Client(val world: World, val index: Int, val spec: ClientSpec) : 
 
     fun id(node: RelayNode): RelayId = relayIds[node.index] ?: error("relay not in ${name}'s directory")
 
-    fun namespace(label: String, nodes: List<RelayNode>, listen: Boolean, consumer: Consumer = Consumer.DM, sendDelay: SendDelay = SendDelay.DEFAULT): NamespaceId {
+    fun namespace(
+        label: String,
+        nodes: List<RelayNode>,
+        listen: Boolean,
+        consumer: Consumer = Consumer.DM,
+        sendDelay: SendDelay = SendDelay.DEFAULT,
+        capabilitySource: CapabilitySource = CapabilitySource.REDEEM,
+    ): NamespaceId {
         consumers += consumer
         val ns = namespaces.getOrPut(label) { NamespaceId(MessageDigest.getInstance("SHA-256").digest("ns|${world.seed}|$label".toByteArray())) }
         nodes.filter { it.index !in relayIds }.forEach { directory(it) }
-        tx { stores.namespaces.register(it, ns, consumer, nodes.map { n -> id(n) }.toSet(), listen, sendDelay) }
+        tx { stores.namespaces.register(it, ns, consumer, nodes.map { n -> id(n) }.toSet(), listen, sendDelay, capabilitySource) }
         if (listen) listening += ns else listening -= ns
         return ns
     }
@@ -359,7 +378,7 @@ internal class OracleConsumer(private val client: Client) {
             return true
         }
         for (consumer in client.consumers) {
-            val blobs = client.stores.inbox.claim(consumer, 8)
+            val blobs = take(consumer)
             if (blobs.isNotEmpty()) {
                 // IN-2: the consumer never sees its own blobs (S9 #4; mutant M14 NoOwnTombstone).
                 for (b in blobs) {
@@ -372,6 +391,19 @@ internal class OracleConsumer(private val client: Client) {
             }
         }
         return false
+    }
+
+    /**
+     * One batch of [consumer]'s blobs, through the calls its style names (Phase 9 design §13.3
+     * item 10): `claim`, or `peek` to order the batch and `claimOne` for each row it showed. A row
+     * `peek` showed that `claimOne` no longer takes (consumed or deferred meanwhile) is skipped.
+     */
+    private fun take(consumer: Consumer): List<org.ghost.sync.api.InboundBlob> {
+        if (client.spec.consumer.claimStyle == ClaimStyle.BATCH) return client.stores.inbox.claim(consumer, 8)
+        val peeked = client.stores.inbox.peek(consumer, 8)
+        // The DM actor orders the batch before claiming any of it (§7.7); the order here is the
+        // reverse of the hand-off order, so the claims are not simply the claim() batch again.
+        return peeked.reversed().mapNotNull { client.stores.inbox.claimOne(consumer, it.namespace, it.hash) }
     }
 
     private fun consume(b: org.ghost.sync.api.InboundBlob) {

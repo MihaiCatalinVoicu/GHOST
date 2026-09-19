@@ -27,6 +27,8 @@ class TrafficPolicy(
     val storesPerPairEvent: Int = 8,
     /** STANDARD: stores per maintenance pass. */
     val storesPerPass: Int = 32,
+    /** Key registrations per maintenance pass, and per pair event in HIGH mode (Phase 9 design §13.3 item 5). */
+    val registrationsPerPass: Int = 8,
     /**
      * Fetched, due, not suspect rows per namespace that stop further fetches (§11.2 #1). The
      * exit-gate harness scales it down so a backlog above the cap stays enumerable (S-H).
@@ -52,6 +54,10 @@ class TrafficPolicy(
     val verifyFallbackSeconds: Long = 600,
     /** Background session budget (under the ~10 min job limit). */
     val backgroundSessionMillis: Long = 8 * 60_000,
+    /** The JobScheduler budget of one periodic job; what the consumer tail's deadline is cut from. */
+    val jobBudgetMillis: Long = 10 * 60_000,
+    /** The consumer tail returns this long before the job's budget ends (Phase 9 design §13.3 item 6). */
+    val consumerTailReserveMillis: Long = 20_000,
     /** Background: work-lane call time per relay per session. */
     val backgroundRelayWorkMillis: Long = 90_000,
     /** A call's deadline leaves this much of the session budget unused. */
@@ -72,6 +78,7 @@ class TrafficPolicy(
         require(standardPagesPerEvent >= 1 && highPagesPerEvent >= 1) { "pages per event out of range" }
         require(foregroundFetchesPerEvent >= 1 && backgroundFetchesPerEvent >= 1) { "fetches per event out of range" }
         require(storesPerPairEvent >= 1 && storesPerPass >= 1) { "stores per event out of range" }
+        require(registrationsPerPass >= 1) { "registrations per pass out of range" }
         require(fetchedCap >= 1 && backlogCap >= 1) { "caps out of range" }
         require(checkBatch in 1..StoreLimits.CHECK_BATCH) { "check batch out of range" }
         require(lateToleranceMillis >= 0) { "late tolerance out of range" }
@@ -79,6 +86,7 @@ class TrafficPolicy(
         require(readWorkers >= 1 && maxReadPairs >= 1) { "read capacity out of range" }
         require(minCallMillis in 1..listDeadlineMillis) { "minimum call time out of range" }
         require(backgroundSessionMillis > deadlineReserveMillis && backgroundRelayWorkMillis > 0) { "budget out of range" }
+        require(jobBudgetMillis >= backgroundSessionMillis && consumerTailReserveMillis in 0 until jobBudgetMillis) { "job budget out of range" }
         require(passIntervalMillis > 0 && gcIntervalMillis > 0 && bootstrapMillis > 0) { "period out of range" }
     }
 

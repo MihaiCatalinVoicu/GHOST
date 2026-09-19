@@ -33,6 +33,13 @@ interface RandomSources {
 
     /** Uniform in [0,1) for the [index]-th payment-screen hold of relay sessions (Phase 8 design §19.11). */
     fun paymentHold(index: Long): Double
+
+    /**
+     * 16 bytes for the request id of one key registration (Phase 9 design §4.2): a fresh id per
+     * registration, stored in its row so every retry of that registration sends the same one. Its
+     * own stream, drawn on the work lane only (T19).
+     */
+    fun requestId(): ByteArray
 }
 
 enum class SchedulePurpose {

@@ -2,6 +2,7 @@ package org.ghost.sync.port
 
 import org.ghost.network.OnionAddress
 import org.ghost.sync.api.BlobHash
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 
 /**
@@ -29,6 +30,38 @@ interface RelayPort {
      * 64); the answer is a subset of the request.
      */
     fun check(relay: OnionAddress, ns: NamespaceId, capability: ByteArray, hashes: List<BlobHash>, deadlineMillis: Int): Set<BlobHash>
+
+    /**
+     * Registers [verifier] for one ISO period in [ns] at [relay] with a usable write [capability]
+     * (Phase 9 design §4.2, §4.4). The secret behind the verifier never crosses this boundary.
+     * [requestId] is 16 bytes, identical on every retry; an identical registration is idempotent at
+     * the relay. The relay judges [periodId] against the capability's week, never against its own
+     * clock, so a period it does not accept is a result, not a failure.
+     */
+    fun registerKey(
+        relay: OnionAddress,
+        ns: NamespaceId,
+        capability: ByteArray,
+        periodId: Long,
+        kind: KeyKind,
+        verifier: ByteArray,
+        requestId: ByteArray,
+        deadlineMillis: Int,
+    ): RegisterAnswer
+}
+
+/** The two results of a `RegisterKey` that reached the relay (design §4.2 `RegisterResult`). */
+enum class RegisterResult {
+    /** Recorded, or an identical record already existed. */
+    OK,
+
+    /** The period is neither the capability's week nor the next; nothing was recorded. */
+    WRONG_PERIOD,
+}
+
+/** A `RegisterKey` answer: [validUntilUnixSeconds] is when the relay forgets the record (OK only, else 0). */
+class RegisterAnswer(val result: RegisterResult, val validUntilUnixSeconds: Long) {
+    override fun toString(): String = "RegisterAnswer($result)"
 }
 
 /** A store receipt: the hash the relay stored and the expiry it holds (unix seconds). */

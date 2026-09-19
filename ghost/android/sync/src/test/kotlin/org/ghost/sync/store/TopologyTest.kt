@@ -1,6 +1,7 @@
 package org.ghost.sync.store
 
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.Outcome
 import org.ghost.sync.api.RelayEntry
@@ -185,9 +186,27 @@ class TopologyTest {
         }
         assertEquals("namespace is registered for another consumer", e.message)
         w.tx { w.stores.namespaces.setListening(it, ns, true) }
-        w.tx { w.stores.namespaces.setSendDelay(it, ns, SendDelay.OFF) }
         assertEquals(1L, w.long("SELECT listening FROM sync_namespace"))
-        assertEquals("off", w.string("SELECT send_delay FROM sync_namespace"))
+        // A DM namespace keeps its send delay (Phase 9 design §13.3 item 8); another consumer may
+        // turn it off, and the capability source is applied like the other arguments (item 3).
+        val dmOff = assertThrows(IllegalStateException::class.java) { w.tx { w.stores.namespaces.setSendDelay(it, ns, SendDelay.OFF) } }
+        assertEquals("DM namespaces cannot turn the send delay off", dmOff.message)
+        assertEquals("on", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", ns))
+        val chan = w.namespace(9, relays, consumer = Consumer.CHANNEL)
+        w.tx { w.stores.namespaces.setSendDelay(it, chan, SendDelay.OFF) }
+        assertEquals("off", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", chan))
+        val dmRegister = assertThrows(IllegalStateException::class.java) {
+            w.tx { w.stores.namespaces.register(it, ns, Consumer.DM, relays.toSet(), listen = true, sendDelay = SendDelay.OFF) }
+        }
+        assertEquals("DM namespaces cannot turn the send delay off", dmRegister.message)
+        assertEquals("redeem", w.string("SELECT capability_source FROM sync_namespace WHERE namespace_id = ?", ns))
+        w.tx {
+            w.stores.namespaces.register(
+                it, ns, Consumer.DM, relays.toSet(), listen = true, sendDelay = SendDelay.ON,
+                capabilitySource = CapabilitySource.LOCAL,
+            )
+        }
+        assertEquals("local", w.string("SELECT capability_source FROM sync_namespace WHERE namespace_id = ?", ns))
         val unknown = assertThrows(IllegalStateException::class.java) {
             w.tx { w.stores.namespaces.setListening(it, TestBytes.namespace(5), true) }
         }
