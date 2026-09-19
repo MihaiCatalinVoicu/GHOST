@@ -4,15 +4,15 @@
 |---|---|
 | Design | `docs/design/faza9-dm.md` (revision 2026-09-16 with §22.8), §17.1 row S0′, Appendix C checks V-1 … V-16 |
 | Scope of this document | V-1, V-2, V-3, V-4, V-5, V-6, V-7, V-8, V-9, V-10, V-12, V-14, V-15, V-16 (V-11, V-13 and V-17 belong to other slices) |
-| Date | 2026-09-16 |
+| Date | 2026-09-16; every check re-run and every number verified on 2026-09-19 (Appendix V) |
 | Branch | `p9-spikes` (worktree of `D:/Forum`), base `cc24c5c` |
 | Toolchain | Rust 1.98.1 (`rust-toolchain.toml`), cargo-ndk 4.1.2, Android NDK 30.0.16248370, JDK 17.0.20.1 (Microsoft build), cargo-deny 0.20.2 |
-| Host | Windows 11 Pro, Intel Core Ultra 9 275HX (24 cores), 100 GB RAM; the four self-hosted CI runners (WSL2) were busy during the whole session (host CPU load 99–100 % when sampled), so every timing below is an upper bound |
+| Host | Windows 11 Pro 10.0.26200, Intel Core Ultra 9 275HX (24 cores, 24 threads), 95.4 GiB RAM; the four self-hosted CI runners (WSL2) were busy during the whole first session (host CPU load 99–100 % when sampled), so every timing recorded there is an upper bound |
 | Pins measured | vodozemac 0.11.0 (`.crate` SHA-256 `ba935af0…2574`, tag commit `db1b3482…`) and 0.10.0 (`b98bf83c…ae5b`, `bb39ec65…`), `default-features = false`; libcrux-kem 0.0.9 with libcrux-ml-kem 0.0.10, libcrux-sha3 0.0.10, libcrux-curve25519 0.0.8, portable-only; RustCrypto x-wing 0.1.0 (test oracle); ed25519-dalek 2.2.0; BouncyCastle bcprov-jdk18on 1.85.2 |
 | Code | `ghost/client-core/dm-spike` (crate `ghost-dm-spike`) and the temporary probe patch `ghost/client-core/dm-spike/size-probe/size-probe.patch` |
 | Status | Evidence for the lead. **This document does not edit `faza9-dm.md`; each section ends with the exact normative correction to merge.** |
 
-**How to read.** One section per check: method, commands, numbers, conclusion, normative correction. §0 summarises the values to freeze and the corrections; §15 lists what this slice could not do on this host and why. Paths are relative to `D:/Forum`. `vz:` cites vodozemac 0.11.0 sources in the local cargo registry, `kem:` libcrux-kem 0.0.9 `src/kem.rs`.
+**How to read.** One section per check: method, commands, numbers, conclusion, normative correction. §0 summarises the values to freeze and the corrections; §15 lists what this slice could not do on this host and why; Appendix V records the verification re-run and the corrections it produced. Paths are relative to `D:/Forum`. `vz:` cites vodozemac 0.11.0 sources in the local cargo registry, `kem:` libcrux-kem 0.0.9 `src/kem.rs`.
 
 ---
 
@@ -163,8 +163,10 @@ bash scripts/v12-vendor-tests.sh 0.11.0      # V-12 (needs network, cmake, C++)
 
 | Pin | Driven shape | Driven JSON | Widened JSON (bound) | Formula | Margin to 65 536 |
 |---|---|---|---|---|---|
-| 0.11.0 | 5 chains × 40 skipped keys, active ratchet with a parent key | 29 880 B | **36 685 B** | 36 685 B | 28 851 B (44.0 %) |
-| 0.10.0 | same | 29 848 B | **36 685 B** | 36 685 B | 28 851 B (44.0 %) |
+| 0.11.0 | 5 chains × 40 skipped keys, active ratchet with a parent key | ≈ 29.8 kB (varies) | **36 685 B** | 36 685 B | 28 851 B (44.0 %) |
+| 0.10.0 | same | ≈ 29.8 kB (varies) | **36 685 B** | 36 685 B | 28 851 B (44.0 %) |
+
+The *driven* JSON length is not a constant: the pickle holds fresh random key bytes and serde writes each byte as a decimal number, so its length depends on how many of the 1 000-odd key bytes need one, two or three digits. Four runs of the probe gave 29 818, 29 835, 29 856 and 29 879 B for 0.11.0 and 29 719, 29 796, 29 804 and 29 831 B for 0.10.0; only the order of magnitude is meaningful, and the test asserts the shape, not the length. The **widened** length is deterministic (every byte 255, every counter `u64::MAX`) and is the bound: 36 685 B on both pins, equal to `analytic_bound` to the byte.
 
 A 0.10.0 pickle loads in 0.11.0 and re-serialises to identical bytes (the layouts are the same; `ratchet_count` and `parent_ratchet_key` exist in both).
 
@@ -217,7 +219,7 @@ A 0.10.0 pickle loads in 0.11.0 and re-serialises to identical bytes (the layout
 
 **Numbers.**
 - **Package names added to the shipped `ghost-client-net` graph** (not on `client-core/rust-dependency-allowlist.txt`), vodozemac 0.11.0 + libcrux-kem 0.0.9, both triples: `aead`, `block-padding`, `cbc`, `chacha20poly1305`, `hpke`, `matrix-pickle`, `matrix-pickle-derive`, `poly1305`, `serde_bytes`, `serdect`, `vodozemac`; `hax-lib`, `hax-lib-macros`, `libcrux-curve25519`, `libcrux-ecdh`, `libcrux-hacl-rs`, `libcrux-intrinsics`, `libcrux-kem`, `libcrux-macros`, `libcrux-ml-kem`, `libcrux-p256`, `libcrux-platform`, `libcrux-secrets`, `libcrux-sha2`, `libcrux-sha3`, `libcrux-traits`. This is exactly the G-R1 list of §16.1 (11 + 15 names). vodozemac 0.10.0 instead of 0.11.0 drops `hpke`, `serdect` and adds `opaque-debug`.
-- **New versions of existing names** (no allowlist change, pins change): `base64 0.23.1`, `base16ct 1.0.0`, `chacha20poly1305 0.11.0`, `curve25519-dalek 5.0.0`, `ed25519 3.0.0`, `ed25519-dalek 3.0.0`, `hkdf 0.13.0`, `hmac 0.13.0`, `signature 3.0.0`, `x25519-dalek 3.0.0`; x86_64 also `curve25519-dalek-derive 0.1.1`.
+- **New versions of existing names** (no allowlist change, pins change), the same nine on both triples: `base16ct 1.0.0`, `base64 0.23.1`, `curve25519-dalek 5.0.0`, `ed25519 3.0.0`, `ed25519-dalek 3.0.0`, `hkdf 0.13.0`, `hmac 0.13.0`, `signature 3.0.0`, `x25519-dalek 3.0.0`. `chacha20poly1305 0.11.0` is a **new name**, already counted in the list above, not a new version of an existing one (the unpatched graph holds no `chacha20poly1305`); `curve25519-dalek-derive 0.1.1` is already in the unpatched x86_64 graph (curve25519-dalek 4.1.3's SIMD backend) and is not added by the DM stack.
 - **Version sets in the shipped graph with the DM stack:** `rand {0.8.8, 0.10.2}`, `rand_core {0.6.4, 0.10.1}`, `getrandom {0.2.17, 0.4.3}`, `curve25519-dalek {4.1.3, 5.0.0}`, `x25519-dalek {2.0.1, 3.0.0}`, `ed25519-dalek {2.2.0, 3.0.0}`, `hpke 0.14.1`, `sha2 {0.10.9, 0.11.0}`, `hmac {0.12.1, 0.13.0}`, `hkdf {0.12.4, 0.13.0}`: no new `rand` major (§22.8.10 point 5 confirmed).
 - **No C code:** no `cc`, `cmake`, `bindgen`, `clang-sys`, `crabgrind` or `libloading` in the probe's normal and build graph for either Android triple (they are in the lock through libcrux-platform's optional valgrind path, not in the graph); no new `links` key.
 - **Licences of the added packages:** Apache-2.0 (vodozemac, matrix-pickle, every libcrux crate, hax-lib), `MIT OR Apache-2.0` / `Apache-2.0 OR MIT` (RustCrypto crates, serde_bytes, serdect), BSD-3-Clause (dalek 3/5), `MIT/Apache-2.0` (hpke, the legacy slash form, read by cargo-deny as OR). `cargo deny check`: **licenses ok, bans ok, sources ok; advisories FAILED** on `RUSTSEC-2026-0173` ("`proc-macro-error2` is unmaintained"), reached only as `proc-macro-error2 2.0.1 ← hax-lib-macros 0.3.7 (proc-macro) ← hax-lib 0.3.7 ← libcrux-intrinsics, libcrux-ml-kem, libcrux-secrets, …`: build-time code only, nothing of it is linked.
@@ -232,18 +234,20 @@ A 0.10.0 pickle loads in 0.11.0 and re-serialises to identical bytes (the layout
 
 **Method.** `host_timings` in `tests/v6_xwing.rs`, release, portable build (step 3 above), 20 batches of 100 calls each; the fastest batch is reported as the least disturbed by the CI load on the host, with the median batch beside it.
 
-| Operation | Best batch | Median batch |
+Timings are the only numbers in this document that depend on what else the host is doing, so each row carries two measurements: the first session, with the four CI runners holding the host at 99–100 % CPU, and the verification re-run of 2026-09-19 on an idle host. Neither is a device measurement; the loaded column is the upper bound the design is sized against.
+
+| Operation | Loaded host: best / median batch | Idle host: best / median batch |
 |---|---|---|
-| X-Wing key generation from the seed (SHAKE-256, ML-KEM-768 keygen, X25519 base point) | 110 µs | 148 µs |
-| X-Wing encapsulation with GHOST's whole-key validation (decode and ML-KEM key check, contributory trial, ML-KEM encaps, X25519 keygen and agreement, SHA3-256) | 303 µs | 405 µs |
-| X-Wing decapsulation from the seed (expansion, ML-KEM decaps, X25519, SHA3-256) | 144 µs | 193 µs |
-| component: ML-KEM-768 keygen / encaps / decaps (libcrux portable) | 27 / 31 / 39 µs | 33 / 35 / 44 µs |
-| component: X25519 agreement (libcrux-curve25519, HACL) | 37 µs | 52 µs |
-| component: contributory trial (x25519-dalek 2.0.1, fresh scalar) | 46 µs | 84 µs |
+| X-Wing key generation from the seed (SHAKE-256, ML-KEM-768 keygen, X25519 base point) | 110 / 148 µs | 57 / 71 µs |
+| X-Wing encapsulation with GHOST's whole-key validation (decode and ML-KEM key check, contributory trial, ML-KEM encaps, X25519 keygen and agreement, SHA3-256) | 303 / 405 µs | 135 / 167 µs |
+| X-Wing decapsulation from the seed (expansion, ML-KEM decaps, X25519, SHA3-256) | 144 / 193 µs | 121 / 150 µs |
+| component: ML-KEM-768 keygen / encaps / decaps (libcrux portable) | 27 / 31 / 39 µs (median 33 / 35 / 44) | 24 / 28 / 33 µs (median 25 / 31 / 33) |
+| component: X25519 agreement (libcrux-curve25519, HACL) | 37 / 52 µs | 32 / 42 µs |
+| component: contributory trial (x25519-dalek 2.0.1, fresh scalar) | 46 / 84 µs | 41 / 47 µs |
 
 The SIMD build of step 1 measured the same composite operations within noise (keygen 172 µs, encapsulation 437 µs, decapsulation 299 µs as unbatched means under the same load), so the portable rule costs nothing measurable here.
 
-**Low-end phone estimate (not a measurement).** A Cortex-A53-class phone is assumed 15–25 times slower single-threaded than this host's best batches (public single-core benchmark ratios for such SoCs against a 2025 laptop HX part; scalar 64-bit integer code). Estimate: keygen 1.7–2.8 ms, encapsulation 4.5–7.6 ms, decapsulation 2.2–3.6 ms. An intro open costs one decapsulation after a hint match, a first message one encapsulation, a bundle generation one keygen per week: far below the 1 s foreground budget of R-S5. The measurement on the reference low-end device stays in the device checklist (§15.10 step 9).
+**Low-end phone estimate (not a measurement).** A Cortex-A53-class phone is assumed 15–25 times slower single-threaded than this host's best batches (public single-core benchmark ratios for such SoCs against a 2025 laptop HX part; scalar 64-bit integer code). The estimate is anchored to the **loaded** column, so it stays an upper bound: keygen 1.7–2.8 ms, encapsulation 4.5–7.6 ms, decapsulation 2.2–3.6 ms. Anchored to the idle column it would be about half that, which is headroom, not a new claim. An intro open costs one decapsulation after a hint match, a first message one encapsulation, a bundle generation one keygen per week: far below the 1 s foreground budget of R-S5. The measurement on the reference low-end device stays in the device checklist (§15.10 step 9).
 
 ### 6.5 Conclusion and correction
 
@@ -410,7 +414,7 @@ The model predicted the loss count of every world exactly (72 × 200 worlds). Kn
 
 **Command.** `cargo test --release --test v15_age_bound` → 5 passed.
 
-**Results.** All as expected on both pins; the edited layout (`receiving_chains.inner[].skipped_message_keys.inner[]` with `key` and `index`) is the same in 0.10.0 and 0.11.0 (V-4). Size of the first-seen state, if kept as a compact sidecar: per chain `ratchet_key(32) ‖ u8(n) ‖ n × (u64_be index ‖ u32_be day)`, at most `1 + 5 × (33 + 40 × 12) = 2 566 B`; the worst pickle plus the sidecar (39 255 B) still fits `SESSION_STATE_MAX`.
+**Results.** All as expected on both pins; the edited layout (`receiving_chains.inner[].skipped_message_keys.inner[]` with `key` and `index`) is the same in 0.10.0 and 0.11.0 (V-4). Size of the first-seen state, if kept as a compact sidecar: per chain `ratchet_key(32) ‖ u8(n) ‖ n × (u64_be index ‖ u32_be day)`, at most `1 + 5 × (33 + 40 × 12) = 2 566 B`; the worst pickle plus the sidecar (36 685 + 2 566 = **39 251 B**) still fits `SESSION_STATE_MAX` with 26 285 B to spare.
 
 **Conclusion.** The golden-pickle and UpgradeTest drills can cover the prune: the edit uses only the serialised layout, identical on both pins, and pruned pickles load across the pins. Q67's condition is met, so its default ("prune") applies. The prune needs one more native call: sessions that are never used again still hold old keys, so SWEEP must prune them.
 
@@ -448,6 +452,46 @@ The spike cannot run it (no emulator or device on this host), so this is the pla
 | V-12 run | dev-dependencies of vodozemac not cached and `cmake` absent (`olm-sys`) | `vendor-tests` job on the runner image (S0-11) |
 | Low-end phone timings (V-6) | no device or emulator attached | §15.10 step 9 |
 | V-16 run | no emulator on this host | S12 (`dm-emulator.yml`) |
-| Timings without background load | the four CI runners kept the host at 99–100 % CPU during the session | the device checklist; the host numbers are upper bounds |
+| Timings without background load | the four CI runners kept the host at 99–100 % CPU during the first session; the 2026-09-19 re-run on an idle host is recorded beside them in §6.4 | the device checklist; the loaded host numbers are the upper bounds |
 | EM-1, KC3b, `WrapBindingTest`, PQ6 (V-17), the CI plan on private 2-CPU runners (§22.8.9 point 4) | not assigned to this slice | S4b, S0′ owner and CI work |
 | The G-R8 and G-R3 gates as `ghost/scripts/gates/*.sh` with negative fixtures and `self-test.sh` entries | the spike delivers the scanner, the detector, the baseline and the fixtures' content; turning them into gates changes the gate scripts and the product lock, which this slice leaves to S0′'s gate work | S0′ gate slice |
+
+---
+
+## Appendix V. Verification run, 2026-09-19
+
+(An appendix, not §16: inside this document "§16.1" always means `faza9-dm.md` §16.1.)
+
+The first session was interrupted before its results were checked, so every check above was re-run from scratch on the same host and each number in this document was compared with what the run produced. The host was idle this time (the CI runners were not building), which is the only reason any number moved.
+
+**What was run.** `cargo test --release --locked -- --nocapture` (44 tests over 9 integration targets, all passed); `cargo test --release --locked --features v2-config --test v3_v2_margin`; `cargo fmt --check`; `cargo clippy --locked --all-targets -- -D warnings` with no features, with `jni-host` and with `v2-config`; `scripts/v5-host-load.sh`; `scripts/v14-ed25519-jvm.sh`; `scripts/libcrux-portable-detector.sh` over the four-step sequence of §6.3 in a scratch crate; `scripts/v12-vendor-tests.sh 0.11.0`; and, with `size-probe/size-probe.patch` applied, `scripts/v8-g-r8-baseline.sh`, `cargo deny --offline check`, all eight `scripts/v9-size-build.sh` variants (seven patched plus the unpatched baseline, two ABIs each) and one extra unstripped arm64-v8a build for the symbol check of §9. The three gate suites (`scripts/gates/run-all.sh`, `GHOST_SELFTEST_OPS=1 scripts/gates/self-test.sh`, `scripts/gates/rust-gates.sh`) were green before and after, and the worktree was left with the probe patch reverted and `ghost/Cargo.lock` restored.
+
+**Reproduced exactly.**
+
+| Check | Evidence |
+|---|---|
+| V-1 | 9 tests; the JVM run of V-5 prints `OI = d80580ec…0603` for root entropy `000102…1f`, the value §3.1 is to pin |
+| V-2 | 8 tests, both pins |
+| V-3 | every cell of the §3 table (179/173, 73/67, 181/175, 74/68; intro 1 606, pair 128; capacities 2 220 / 14 508 / 63 660; slack 60/60/58; 3 120 outputs per pin) and the V2 margin (PreKey 205, normal 98, intro 1 630, margin 34) |
+| V-4 | widened bound 36 685 B = `analytic_bound`, margin 28 851 B (44.0 %), both pins; 0.10.0 pickle loads byte-identically in 0.11.0. The *driven* length is data-dependent, see §4 |
+| V-5 | `ghost_dm_spike.dll` 1 479 680 B with exactly 3 JNI exports; `olmRoundTrip` 0, `xwingRoundTrip` 0 with a 1 216-byte key and equal secrets, `panicProbe` 0xff with the JVM alive and the default hook printing `kem.rs:246` to stderr; JDK 17.0.20.1. On Android, both ABIs export `probeOlm`, `probeKem` and `probeDirect` **beside exactly 21 pre-existing `Java_org_ghost` exports**, with no libcrux SIMD symbol |
+| V-6 | 8 tests (3 draft-06 vectors, 256 differential pairs, 6 low-order u-coordinates, both panics, the slice-trait path); the §6.3 detector sequence FAIL → FAIL → portable → portable; the added package names are exactly the 11 + 15 of G-R1 on both triples; 0.10.0 drops `hpke`, `serdect`, adds `opaque-debug`; every version set of §6.2; no `cc`, `cmake`, `bindgen`, `clang-sys`, `crabgrind` or `libloading` in either triple's normal+build graph and no `links` key; `cargo deny --offline check` = **licenses ok, bans ok, sources ok, advisories FAILED** on `RUSTSEC-2026-0173` alone, through `hax-lib-macros`; no copyleft licence anywhere in the DM stack (every added package is Apache-2.0, `MIT OR Apache-2.0`, `Apache-2.0 OR MIT` or the legacy `MIT/Apache-2.0`, and the three new dalek majors are BSD-3-Clause — all on `ghost/deny.toml`'s allowlist) |
+| V-7 | all four rows of the §7 table, worst-of-three relay variant by relay variant: 2 303 (198) / 1 470 (187) / 0 / 0 / 0 and 2.1 min; 157 (46) / 75 (23) / 0 / **57 (20)** / 0 and 10.6 min; 2 238 (197) / 1 432 (184) / 0 / 0 / 0 and 2.3 min; 0 everywhere and 0.4 min. The model matched vodozemac in all 72 × 200 worlds |
+| V-8 | 39 sites (31 linked, 8 build-time), 137 `cargo:` lines in 17 build scripts, 100 packages / 74 linked / 10 proc-macros / 16 build-time, the two `include!` notes and no unparsed file; the committed `baseline/g-r8-baseline.txt` matches the fresh scan key for key (176 lines); 23 `log::` in `jni`, 2 in `memchr`, 4 in `serde_core`, 1 in `rand`, 1 in `libc`; **0 sites in vodozemac, hpke, matrix-pickle and every libcrux crate**; `log` reached only through `jni`, `tracing` not in the DM graph |
+| V-9 | **every byte of the §9 table**, all eight variants × two ABIs, including the baseline 17 151 936 / 18 508 584 and the headline 17 646 928 / 19 138 488 (+494 992 / +629 904), and with them every derived figure: +21 104 / +52 296 for 0.11.0 over 0.10.0, +414 592 / +513 920 for the enum API over the slice trait, +28 816 / +13 616 for `precomputed-tables`, −4 216 / −6 544 for the lock-and-features row. No stripped variant contains `HPKE-v1`, `HPKEXXYYZZ`, `psk_id_hash` or `MATRIX_QR_CODE_LOGIN`, while `OLM_KEYS` and `OLM_RATCHET` appear exactly in the variants that link vodozemac. An **unstripped** arm64-v8a build of the slice-trait variant (`--config profile.release.strip=false`, 55 013 defined symbols) confirms the linker claims directly: no `libcrux_p256`, `libcrux_ecdh`, `mlkem512` or `mlkem1024` symbol, `mlkem768` present, no symbol of the `hpke` crate or of `vodozemac::hpke` (the only match is `rustls::crypto::hpke::HpkeSealer`, already in the baseline), none of `vodozemac::megolm`, `::sas`, `::ecies` or `pk_encryption`, and no `simd128`/`simd256` symbol |
+| V-10 | 6 tests, both pins |
+| V-12 | both `.crate` checksums match the pinned values to the byte, 169 and 152 `#[test]` functions, no `tests/` directory, the two tag commits, `LICENSE` only for vodozemac and no licence file at all in the libcrux crates. The script itself exits 2 on this host (`cmake` absent), as §15 declares |
+| V-14 | 64 of 64 signatures identical; 53 verification cases, **20 identical to `verify_strict`, 33 different**, class by class: BouncyCastle accepts all 21 mixed-order keys where strict accepts 3, all 7 mixed-order nonces and all 8 small-order nonces, and legacy `verify` accepts 7 of the 10 small-order-key cases. `scripts/v14-ed25519-jvm.sh` exits 1 by design: its comparator treats any difference from `verify_strict` as a failure, and these 33 differences are the finding of V-14, not a defect of the run |
+| V-15 | 5 tests, both pins |
+| source citations | `vz:src/olm/session/mod.rs:55` (`MAX_RECEIVING_CHAINS = 5`), `receiver_chain.rs:31,50` (`MAX_MESSAGE_GAP = 2000`, `MAX_MESSAGE_KEYS = 40`), `double_ratchet.rs` `advance` (in-place activation), `account/mod.rs` (`#[doc(hidden)] from_decrypted_dehydrated_device`, "public for fuzzing"; the fallback key kept on inbound creation), `kem:246` and `kem:574` (the two slice-index panics), `libcrux-ml-kem-0.0.10/src/lib.rs` `impl_kem_trait` (`encaps` performs no `validate_public_key`). None of `SessionCreationError`, `DecryptionError`, `EncryptionError` is `#[non_exhaustive]` on either pin |
+
+**Corrected in this document by the verification run.**
+
+1. §4: the *driven* JSON lengths (previously "29 880 B" and "29 848 B") are not reproducible — the pickle holds random key bytes whose decimal spellings vary in length. Four runs spanned 29 818–29 879 B (0.11.0) and 29 719–29 831 B (0.10.0). The widened bound of 36 685 B, which is the number `SESSION_STATE_MAX` rests on, is deterministic and unchanged.
+2. §6.4: the timing table now carries both the loaded and the idle measurement. Nothing in §0.1, §9.2 or the S0-6 correction changes: those quote the loaded numbers, which remain the upper bounds.
+3. §6.2: `chacha20poly1305 0.11.0` was listed both as an added name and as a new version of an existing name. It is a new name; the unpatched graph holds no `chacha20poly1305`. The "new versions of existing names" list is nine entries, identical on both triples.
+4. §6.2: `curve25519-dalek-derive 0.1.1` was recorded as added on x86_64. It is already in the unpatched x86_64 graph (curve25519-dalek 4.1.3's SIMD backend); the DM stack adds it on neither triple.
+5. §13: the worst pickle plus the first-seen sidecar is 36 685 + 2 566 = **39 251 B**, not 39 255 B. The conclusion (it fits `SESSION_STATE_MAX`) is unchanged.
+6. Header: the host row now records the measured machine (95.4 GiB RAM, 24 threads, Windows build 10.0.26200) instead of a rounded figure.
+
+No spike test or script needed a fix to build or run: `cargo fmt --check` and all three `cargo clippy --all-targets -- -D warnings` configurations were already clean, and every test and script behaved as this document describes.
