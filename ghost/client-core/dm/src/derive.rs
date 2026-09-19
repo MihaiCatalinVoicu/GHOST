@@ -378,7 +378,14 @@ mod tests {
         let _: fn(&PairRoot, u64) -> PairWeekKey = derive_pair_base_week_key;
         let _: fn(&PairWeekKey) -> PairWeekKey = derive_pair_next_week_key;
         let _: fn(&ReplySeed, &[u8; 32], u8) -> [u8; 32] = derive_provisional_key;
+        // `derive_pq_root` (§9.4) takes two typed secrets as key material: the root half and the
+        // X-Wing shared secret. Its public-key arguments are salt inputs, never `ikm`.
+        let _: DerivePqRoot = derive_pq_root;
     }
+
+    /// The signature of `derive_pq_root`, named so the pin above stays one line.
+    type DerivePqRoot =
+        fn(&PairRoot, &KemSecret, &[u8; 32], &[u8; 32], u32, &[u8], &[u8]) -> PairRoot;
 
     #[test]
     fn no_label_is_a_prefix_of_another() {

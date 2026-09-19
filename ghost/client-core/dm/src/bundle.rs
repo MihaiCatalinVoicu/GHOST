@@ -157,8 +157,14 @@ pub fn parse(plain: &[u8]) -> DmResult<Bundle> {
     })
 }
 
-/// Seals a bundle plaintext into its 4 KiB blob under `KB_i`, in the namespace `P_i`.
-pub fn seal(
+/// Seals a bundle plaintext into its 4 KiB blob under `KB_i`, in the namespace `P_i`, with a fresh
+/// salt (R-S4).
+pub fn seal(bundle_key: &SealKey, bundle_namespace: &[u8; 32], plain: &[u8]) -> DmResult<Vec<u8>> {
+    seal_with(bundle_key, bundle_namespace, plain, &seal::random_salt())
+}
+
+/// Seals a bundle plaintext with a given salt: the vector and equivalence-fixture path.
+pub fn seal_with(
     bundle_key: &SealKey,
     bundle_namespace: &[u8; 32],
     plain: &[u8],
@@ -167,7 +173,7 @@ pub fn seal(
     if plain.len() != BUNDLE_PLAIN_BYTES {
         return Err(DmCode::NonCanonical);
     }
-    seal::seal_bundle(bundle_key, bundle_namespace, plain, salt)
+    seal::seal_bundle_with(bundle_key, bundle_namespace, plain, salt)
 }
 
 /// Opens a bundle blob and checks it against the card it is expected to belong to (§5.5).
@@ -241,7 +247,7 @@ mod tests {
         assert_eq!(parsed.bundle_rank, 0);
         assert_eq!(parsed.gen_id, 0x1234_5678);
         assert_eq!(parsed.xwing_public, xwing);
-        let blob = seal(&bundle_key(), &NAMESPACE, &plain, &[0xa7; SALT_BYTES]).expect("seal");
+        let blob = seal_with(&bundle_key(), &NAMESPACE, &plain, &[0xa7; SALT_BYTES]).expect("seal");
         assert_eq!(blob.len(), BUNDLE_BLOB_BYTES);
         let identity_pk = sign::public_key(&IDENTITY_SEED);
         assert_eq!(
@@ -253,7 +259,7 @@ mod tests {
     #[test]
     fn another_card_or_another_owner_is_refused() {
         let (plain, _) = fixture();
-        let blob = seal(&bundle_key(), &NAMESPACE, &plain, &[0xa7; SALT_BYTES]).expect("seal");
+        let blob = seal_with(&bundle_key(), &NAMESPACE, &plain, &[0xa7; SALT_BYTES]).expect("seal");
         let identity_pk = sign::public_key(&IDENTITY_SEED);
         assert_eq!(
             open(&bundle_key(), &NAMESPACE, &blob, &[0u8; 32], 0).err(),
@@ -319,6 +325,42 @@ mod tests {
             .err(),
             Some(DmCode::InvalidKey)
         );
+    }
+
+    /// §15.2's seeded property run for the bundle parser. As for the card, the `10^6` run feeds
+    /// length-varying inputs (the signature and whole-key validation are reached only by the rare
+    /// exact-length one) and a shorter run feeds exact-length mutants; the exhaustive single-byte
+    /// test above covers every signed byte of a valid bundle.
+    #[test]
+    fn the_bundle_parser_never_panics_on_seeded_inputs() {
+        let mut rng = crate::property::Seeded::new(0x369d_ea0f_31a5_3f85);
+        for _ in 0..crate::property::inputs() {
+            let bytes = rng.random_input(BUNDLE_PLAIN_BYTES / 8);
+            match parse(&bytes) {
+                Ok(bundle) => assert_eq!(bundle.xwing_public.len(), pq::PUBLIC_KEY_BYTES),
+                Err(code) => assert!(
+                    matches!(
+                        code,
+                        DmCode::NonCanonical | DmCode::BadSignature | DmCode::InvalidKey
+                    ),
+                    "{code:?}"
+                ),
+            }
+        }
+        let (template, _) = fixture();
+        for _ in 0..crate::property::signature_inputs() {
+            let bytes = rng.mutate(&template);
+            match parse(&bytes) {
+                Ok(bundle) => assert_eq!(bundle.identity_pk.len(), 32),
+                Err(code) => assert!(
+                    matches!(
+                        code,
+                        DmCode::NonCanonical | DmCode::BadSignature | DmCode::InvalidKey
+                    ),
+                    "{code:?}"
+                ),
+            }
+        }
     }
 
     #[test]

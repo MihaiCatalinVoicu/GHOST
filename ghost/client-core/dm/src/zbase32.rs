@@ -119,4 +119,42 @@ mod tests {
         assert_eq!(decode(&text, 7), Err(DmCode::NonCanonical));
         assert_eq!(decode(&text, 9), Err(DmCode::NonCanonical));
     }
+
+    /// §15.2 asks for a seeded property run over every parser. The decoder never panics, never
+    /// over-reads and never returns anything but `NON_CANONICAL`; what it accepts re-encodes to
+    /// the same characters, which is the "one spelling per byte string" rule.
+    #[test]
+    fn the_decoder_never_panics_on_seeded_inputs() {
+        let mut rng = crate::property::Seeded::new(0x5851_f42d_4c95_7f2d);
+        let card = encode(&[0x5a; 131]);
+        for _ in 0..crate::property::inputs() {
+            // A mutated card link payload, in the alphabet and out of it.
+            let mut bytes = card.clone().into_bytes();
+            for _ in 0..rng.below(4) + 1 {
+                let at = rng.below(bytes.len());
+                bytes[at] = match rng.below(4) {
+                    0 => rng.byte(),
+                    _ => ALPHABET[rng.below(ALPHABET.len())],
+                };
+            }
+            if rng.below(8) == 0 {
+                bytes.truncate(rng.below(bytes.len()));
+            }
+            if let Ok(text) = core::str::from_utf8(&bytes) {
+                match decode(text, 131) {
+                    Ok(decoded) => assert_eq!(encode(&decoded), text.to_ascii_lowercase()),
+                    Err(code) => assert_eq!(code, DmCode::NonCanonical),
+                }
+            }
+            // And a free-form input at a free-form expected length.
+            let mut raw = vec![0u8; rng.below(48)];
+            rng.fill(&mut raw);
+            let text: String = raw.iter().map(|b| char::from(*b)).collect();
+            let expected = rng.below(40);
+            match decode(&text, expected) {
+                Ok(decoded) => assert_eq!(decoded.len(), expected),
+                Err(code) => assert_eq!(code, DmCode::NonCanonical),
+            }
+        }
+    }
 }

@@ -15,7 +15,7 @@
 //! bit refuses the whole L0.
 
 use crate::result::{DmCode, DmResult};
-use crate::seal::{capacity, L0_FIXED_BYTES, MAX_BODY_BYTES, O_MAX};
+use crate::seal::{capacity, EXT_RESERVE, L0_FIXED_BYTES, MAX_BODY_BYTES, O_MAX};
 
 /// The only content version Phase 9 writes or accepts.
 pub const CONTENT_VERSION: u8 = 0x01;
@@ -101,12 +101,22 @@ pub const SEAL_ROOT_PQ_TLV_BYTES: usize = TLV_HEADER_BYTES + SEAL_ROOT_PQ_BYTES;
 pub const PQ_KEY_TLV_BYTES: usize = TLV_HEADER_BYTES + PQ_KEY_BYTES;
 
 /// One extension record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Tlv {
     /// The registry type; bit 15 marks it critical.
     pub tlv_type: u16,
     /// The value, whose length the registry fixes for the types Phase 9 defines.
     pub value: Vec<u8>,
+}
+
+impl core::fmt::Debug for Tlv {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // A `seal_root` or `seal_root_pq` value is key material: only the shape renders.
+        f.debug_struct("Tlv")
+            .field("tlv_type", &format_args!("{:#06x}", self.tlv_type))
+            .field("value_len", &self.value.len())
+            .finish()
+    }
 }
 
 impl Tlv {
@@ -143,7 +153,7 @@ const fn is_known(tlv_type: u16) -> bool {
 }
 
 /// An L0 content record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DmContent {
     /// What this message is.
     pub kind: Kind,
@@ -165,8 +175,40 @@ pub struct DmContent {
     pub ext: Vec<Tlv>,
 }
 
+impl core::fmt::Debug for DmContent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The body is the message the user wrote: only its length renders, so a panic payload or
+        // a caught assertion never carries plaintext.
+        f.debug_struct("DmContent")
+            .field("kind", &self.kind)
+            .field("author_minute", &self.author_minute)
+            .field("minute_index", &self.minute_index)
+            .field("timer_code", &self.timer_code)
+            .field("timer_version", &self.timer_version)
+            .field("has_quote", &self.quote_ref.is_some())
+            .field("body_len", &self.body.len())
+            .field("ext", &self.ext)
+            .finish_non_exhaustive()
+    }
+}
+
 fn encoded_ext_len(ext: &[Tlv]) -> usize {
     ext.iter()
+        .map(|tlv| TLV_HEADER_BYTES + tlv.value.len())
+        .sum()
+}
+
+/// True for the PQ-C extensions of §9.4, which ride under the slack rule R-C5 instead of inside
+/// the `EXT_RESERVE` the bucket already counts.
+pub const fn is_pq_tlv(tlv_type: u16) -> bool {
+    matches!(tlv_type, TLV_SEAL_ROOT_PQ | TLV_PQ_KEY)
+}
+
+/// The encoded length of the classical (non PQ-C) TLVs of a list: the figure §21.11 point 3 caps
+/// at [`EXT_RESERVE`] on the sending side, and the figure R-C5 subtracts from a bucket's slack.
+pub fn classical_ext_len(ext: &[Tlv]) -> usize {
+    ext.iter()
+        .filter(|tlv| !is_pq_tlv(tlv.tlv_type))
         .map(|tlv| TLV_HEADER_BYTES + tlv.value.len())
         .sum()
 }
@@ -229,12 +271,20 @@ fn check_ext(ext: &[Tlv]) -> DmResult<()> {
 impl DmContent {
     /// The canonical bytes of this content. A record that breaks a rule of §7.1 is
     /// [`DmCode::NonCanonical`] rather than an encoding no decoder would accept.
+    ///
+    /// The sender cap of §21.11 point 3 is checked here and nowhere else: classical TLVs beyond
+    /// `ext_len = EXT_RESERVE` are refused, because R-B1 chose the bucket with exactly that much
+    /// room reserved and a longer list would leave an L0 that its own bucket cannot carry. The
+    /// receiving cap stays [`MAX_EXT_BYTES`], which is what [`decode`] applies.
     pub fn encode(&self) -> DmResult<Vec<u8>> {
         if self.timer_code > MAX_TIMER_CODE {
             return Err(DmCode::NonCanonical);
         }
         check_body(self.kind, &self.body)?;
         check_ext(&self.ext)?;
+        if classical_ext_len(&self.ext) > EXT_RESERVE {
+            return Err(DmCode::NonCanonical);
+        }
         let ext_len = encoded_ext_len(&self.ext);
         let mut out = Vec::with_capacity(L0_FIXED_BYTES + self.body.len() + ext_len);
         out.push(CONTENT_VERSION);
@@ -387,7 +437,7 @@ pub fn pq_tlv_fits(
 }
 
 /// `seal_root`: the root the sender wants the recipient to use for recipient-to-sender envelopes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SealRoot {
     /// The 32-byte root, or `root_rand` in the PQ-C form.
     pub root: [u8; 32],
@@ -395,6 +445,16 @@ pub struct SealRoot {
     pub base_week: u64,
     /// The generation number, which only increases per contact.
     pub root_gen: u16,
+}
+
+impl core::fmt::Debug for SealRoot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The root keys every pair envelope of its direction: it never renders.
+        f.debug_struct("SealRoot")
+            .field("base_week", &self.base_week)
+            .field("root_gen", &self.root_gen)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SealRoot {
@@ -426,7 +486,7 @@ impl SealRoot {
 
 /// `seal_root_pq`: the PQ-C form, which adds the generation it was encapsulated to and the
 /// ciphertext (§9.4).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SealRootPq {
     /// The classical half of the root material.
     pub root_rand: [u8; 32],
@@ -438,6 +498,18 @@ pub struct SealRootPq {
     pub peer_gen_id: u32,
     /// The X-Wing ciphertext.
     pub xwing_ct: Vec<u8>,
+}
+
+impl core::fmt::Debug for SealRootPq {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // `root_rand` is half the root material; the ciphertext is public but adds nothing here.
+        f.debug_struct("SealRootPq")
+            .field("base_week", &self.base_week)
+            .field("root_gen", &self.root_gen)
+            .field("peer_gen_id", &self.peer_gen_id)
+            .field("xwing_ct_len", &self.xwing_ct.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl SealRootPq {
@@ -522,6 +594,7 @@ impl PqKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seal::{max_body, BUCKETS};
 
     fn text() -> DmContent {
         DmContent {
@@ -721,6 +794,81 @@ mod tests {
             value: vec![0u8; MAX_EXT_BYTES],
         }];
         assert_eq!(content.encode().err(), Some(DmCode::NonCanonical));
+        // The receiver cap is the larger one, and it is the decoder that applies it: an `ext_len`
+        // above MAX_EXT_BYTES is refused before the list is read.
+        let mut bytes = text().encode().expect("encode");
+        let at = bytes.len() - 2;
+        bytes[at..].copy_from_slice(&((MAX_EXT_BYTES + 1) as u16).to_be_bytes());
+        assert_eq!(decode(&bytes).err(), Some(DmCode::NonCanonical));
+    }
+
+    #[test]
+    fn a_sender_refuses_classical_tlvs_beyond_the_reserve() {
+        // §21.11 point 3: the bucket counts EXT_RESERVE = 160 B of classical TLVs, so a sender
+        // may not write more. The boundary is exact.
+        let mut content = text();
+        content.ext = vec![Tlv {
+            tlv_type: TLV_CARD_UPDATE,
+            value: vec![0u8; EXT_RESERVE - TLV_HEADER_BYTES],
+        }];
+        assert_eq!(classical_ext_len(&content.ext), EXT_RESERVE);
+        assert!(content.encode().is_ok());
+        content.ext[0].value.push(0);
+        assert_eq!(classical_ext_len(&content.ext), EXT_RESERVE + 1);
+        assert_eq!(content.encode().err(), Some(DmCode::NonCanonical));
+
+        // The PQ-C TLVs are not classical: they ride under R-C5 and are not counted here, so a
+        // full reserve plus a `seal_root_pq` still encodes.
+        let mut with_pq = text();
+        with_pq.ext = vec![
+            Tlv {
+                tlv_type: TLV_CARD_UPDATE,
+                value: vec![0u8; EXT_RESERVE - TLV_HEADER_BYTES],
+            },
+            Tlv {
+                tlv_type: TLV_SEAL_ROOT_PQ,
+                value: vec![0u8; SEAL_ROOT_PQ_BYTES],
+            },
+        ];
+        assert_eq!(classical_ext_len(&with_pq.ext), EXT_RESERVE);
+        assert!(with_pq.encode().is_ok());
+        assert!(!is_pq_tlv(TLV_CARD_UPDATE));
+        assert!(is_pq_tlv(TLV_PQ_KEY) && is_pq_tlv(TLV_SEAL_ROOT_PQ));
+    }
+
+    #[test]
+    fn an_oversized_classical_tlv_can_never_outgrow_its_bucket() {
+        // Without the sender cap, a longest body plus a 500-byte `card_update` chose bucket 4096
+        // and produced an L0 of 2 760 B, which capacity(4096) = 2 432 cannot carry: the seal would
+        // have answered NO_FIT, which R-B1 classes as a bug, instead of refusing the content.
+        let mut content = text();
+        content.body = vec![0x41; max_body(4096)];
+        content.ext = vec![Tlv {
+            tlv_type: TLV_CARD_UPDATE,
+            value: vec![0u8; 500],
+        }];
+        assert_eq!(content.bucket(), Ok(4096));
+        assert_eq!(content.encode().err(), Some(DmCode::NonCanonical));
+
+        // Every encodable content fits the bucket its body length chose, in every class.
+        for bucket in BUCKETS {
+            let mut biggest = text();
+            // The 64 KiB class is capped by the API bound, not by R-B1's class bound.
+            biggest.body = vec![0x41; max_body(bucket).min(MAX_BODY_BYTES)];
+            biggest.ext = vec![Tlv {
+                tlv_type: TLV_CARD_UPDATE,
+                value: vec![0u8; EXT_RESERVE - TLV_HEADER_BYTES],
+            }];
+            biggest.quote_ref = Some([9u8; 16]);
+            let encoded = biggest.encode().expect("encode");
+            assert_eq!(biggest.bucket(), Ok(bucket));
+            assert!(
+                encoded.len() <= capacity(bucket),
+                "bucket {bucket}: |L0| = {} > {}",
+                encoded.len(),
+                capacity(bucket)
+            );
+        }
     }
 
     #[test]
@@ -792,43 +940,170 @@ mod tests {
         );
     }
 
-    /// A seeded property run: the decoder never panics and never over-reads, whatever the input.
+    /// Secrets never render: a `Debug` of a root or of a message body would put it in a panic
+    /// payload, which is the reason every other secret-bearing type of the crate redacts.
+    #[test]
+    fn secret_bearing_types_do_not_render_their_bytes() {
+        let root = SealRoot {
+            root: [0xab; 32],
+            base_week: 1,
+            root_gen: 0,
+        };
+        let rendered = format!("{root:?}");
+        assert!(!rendered.contains("root: ["), "{rendered}");
+        assert!(!rendered.contains("171"), "{rendered}");
+        assert!(rendered.contains("base_week"), "{rendered}");
+
+        let pq = SealRootPq {
+            root_rand: [0xcd; 32],
+            base_week: 2,
+            root_gen: 1,
+            peer_gen_id: 3,
+            xwing_ct: vec![0xef; crate::pq::CIPHERTEXT_BYTES],
+        };
+        let rendered = format!("{pq:?}");
+        assert!(!rendered.contains("root_rand: ["), "{rendered}");
+        assert!(!rendered.contains("205"), "{rendered}");
+        assert!(rendered.contains("xwing_ct_len: 1120"), "{rendered}");
+
+        let mut content = text();
+        content.body = b"the message body".to_vec();
+        content.ext = vec![Tlv {
+            tlv_type: TLV_SEAL_ROOT,
+            value: root.encode(),
+        }];
+        let rendered = format!("{content:?}");
+        assert!(!rendered.contains("body: ["), "{rendered}");
+        assert!(!rendered.contains("value: ["), "{rendered}");
+        assert!(!rendered.contains("116"), "{rendered}"); // 't' of the body
+        assert!(rendered.contains("body_len: 16"), "{rendered}");
+        assert!(rendered.contains("value_len: 42"), "{rendered}");
+    }
+
+    /// The templates the decoder property run mutates: one of every kind, with and without a
+    /// quote, with classical and PQ-C TLVs.
+    fn templates() -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+
+        let mut quoted = text();
+        quoted.quote_ref = Some([3u8; 16]);
+        quoted.ext = vec![Tlv {
+            tlv_type: TLV_SEAL_ROOT,
+            value: vec![9u8; SEAL_ROOT_BYTES],
+        }];
+        out.push(quoted.encode().expect("encode"));
+
+        out.push(text().encode().expect("encode"));
+
+        let mut timer = text();
+        timer.kind = Kind::TimerSet;
+        timer.body.clear();
+        out.push(timer.encode().expect("encode"));
+
+        let mut reaction = text();
+        reaction.kind = Kind::Reaction;
+        reaction.body = {
+            let mut body = vec![0x56u8; 16];
+            body.extend_from_slice("👍".as_bytes());
+            body
+        };
+        out.push(reaction.encode().expect("encode"));
+
+        let mut control = text();
+        control.kind = Kind::Control;
+        control.body.clear();
+        control.ext = vec![
+            Tlv {
+                tlv_type: TLV_SEAL_ROOT,
+                value: vec![1u8; SEAL_ROOT_BYTES],
+            },
+            Tlv {
+                tlv_type: TLV_SESSION_RESET,
+                value: Vec::new(),
+            },
+            Tlv {
+                tlv_type: TLV_SEAL_ROOT_PQ,
+                value: vec![2u8; SEAL_ROOT_PQ_BYTES],
+            },
+        ];
+        out.push(control.encode().expect("encode"));
+
+        let mut with_pq_key = text();
+        with_pq_key.ext = vec![Tlv {
+            tlv_type: TLV_PQ_KEY,
+            value: vec![3u8; PQ_KEY_BYTES],
+        }];
+        out.push(with_pq_key.encode().expect("encode"));
+
+        out
+    }
+
+    /// R-C4 and §15.2: a seeded property run over the L0 decoder. It never panics, never
+    /// over-reads, and every refusal is one of the two codes §7.1 allows.
     #[test]
     fn the_decoder_never_panics_on_seeded_inputs() {
-        let mut state = 0x243f_6a88_85a3_08d3u64;
-        let mut next = move || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        let template = {
-            let mut content = text();
-            content.quote_ref = Some([3u8; 16]);
-            content.ext = vec![Tlv {
-                tlv_type: TLV_SEAL_ROOT,
-                value: vec![9u8; SEAL_ROOT_BYTES],
-            }];
-            content.encode().expect("encode")
-        };
-        for _ in 0..20_000 {
-            let mut bytes = template.clone();
-            let mutations = (next() % 4) + 1;
-            for _ in 0..mutations {
-                let at = (next() as usize) % bytes.len();
-                bytes[at] = (next() % 256) as u8;
+        let templates = templates();
+        let mut rng = crate::property::Seeded::new(0x243f_6a88_85a3_08d3);
+        for _ in 0..crate::property::inputs() {
+            let template = &templates[rng.below(templates.len())];
+            let bytes = rng.mutate(template);
+            match decode(&bytes) {
+                Ok(content) => {
+                    // What decodes re-encodes to the same bytes: one encoding per value. A record
+                    // whose classical TLVs exceed the sender reserve is receivable but not
+                    // sendable (§21.11 point 3), so it is the one shape that does not re-encode.
+                    if classical_ext_len(&content.ext) <= EXT_RESERVE {
+                        assert_eq!(content.encode().expect("re-encode"), bytes);
+                    } else {
+                        assert_eq!(content.encode().err(), Some(DmCode::NonCanonical));
+                    }
+                }
+                Err(code) => assert!(
+                    matches!(code, DmCode::NonCanonical | DmCode::Oversize),
+                    "{code:?}"
+                ),
             }
-            if next() % 4 == 0 {
-                bytes.truncate((next() as usize) % bytes.len().max(1));
-            }
-            let _ = decode(&bytes);
         }
-        for len in 0..64usize {
-            let mut bytes = vec![0u8; len];
-            for byte in bytes.iter_mut() {
-                *byte = (next() % 256) as u8;
+        // And free-form inputs, including the empty one and every short prefix length.
+        for _ in 0..crate::property::inputs() / 4 {
+            let bytes = rng.random_input(96);
+            if let Err(code) = decode(&bytes) {
+                assert!(
+                    matches!(code, DmCode::NonCanonical | DmCode::Oversize),
+                    "{code:?}"
+                );
             }
-            let _ = decode(&bytes);
+        }
+    }
+
+    /// The TLV value decoders are parsers of their own (§15.2 "every parser"): `seal_root`,
+    /// `seal_root_pq` and `pq_key` over free-form inputs.
+    #[test]
+    fn the_tlv_value_decoders_never_panic_on_seeded_inputs() {
+        let mut rng = crate::property::Seeded::new(0x9e37_79b9_7f4a_7c15);
+        let pq_key_template = PqKey {
+            gen_id: 1,
+            bundle_week: 2,
+            xwing_pk: crate::pq::public_key(&crate::derive::KemSecret::from_bytes([0x21; 32]))
+                .expect("keygen"),
+        }
+        .encode()
+        .expect("encode");
+        for _ in 0..crate::property::inputs() {
+            let bytes = rng.random_input(SEAL_ROOT_PQ_BYTES + 8);
+            let _ = SealRoot::decode(&bytes);
+            let _ = SealRootPq::decode(&bytes);
+        }
+        // `PqKey::decode` runs a whole-key validation, so it is fed near-valid inputs instead.
+        for _ in 0..crate::property::inputs() / 1_000 {
+            let bytes = rng.mutate(&pq_key_template);
+            match PqKey::decode(&bytes) {
+                Ok(key) => assert_eq!(key.xwing_pk.len(), crate::pq::PUBLIC_KEY_BYTES),
+                Err(code) => assert!(
+                    matches!(code, DmCode::NonCanonical | DmCode::InvalidKey),
+                    "{code:?}"
+                ),
+            }
         }
     }
 }

@@ -17,7 +17,7 @@ use crate::result::{DmCode, DmResult};
 use libcrux_kem::XWing;
 use libcrux_ml_kem::mlkem768::{validate_public_key as validate_ml_kem, MlKem768PublicKey};
 use libcrux_traits::kem::slice::Kem;
-
+use rand::TryRng;
 use zeroize::Zeroize;
 
 /// Length of an X-Wing decapsulation seed (the private key GHOST stores).
@@ -34,6 +34,8 @@ pub const ENCAPS_RANDOMNESS_BYTES: usize = 64;
 pub const SHARED_SECRET_BYTES: usize = 32;
 /// Length of the ML-KEM-768 half of an encapsulation key.
 pub const ML_KEM_PUBLIC_KEY_BYTES: usize = 1184;
+/// Length of the ML-KEM-768 half of a ciphertext; the last 32 bytes are `ct_X` (§22.8.2 rule 5 d).
+pub const ML_KEM_CIPHERTEXT_BYTES: usize = 1088;
 
 /// An X-Wing key pair: the encapsulation key that travels in a bundle, and the expanded
 /// decapsulation key the slice trait needs. Both are derived from the stored 32-byte seed.
@@ -139,36 +141,45 @@ pub fn decapsulate(seed: &KemSecret, ciphertext: &[u8]) -> DmResult<KemSecret> {
     Ok(secret)
 }
 
-/// Fills `out` from the CSPRNG (`rand::fill`, the idiom of the relay and issuer crates). Every
-/// salt, nonce, root and KEM randomness of this crate is drawn here and nowhere else, which is
-/// what makes the deterministic equivalence fixture of §15.9 item 7 possible: the paths that a
+/// Fills `out` from the **OS CSPRNG**, which is what §9.2 requires of the encapsulation randomness
+/// and what keeps §22.8.10 point 7 exact: `SysRng` is `getrandom`'s own reader, so the
+/// custom-backend routing of the `ghost-dm-host` world reaches every byte this crate draws. A
+/// user-space generator seeded from the OS (`rand::fill`, which is `ThreadRng`, a reseeding
+/// ChaCha12) would sit between the two and replay a different stream.
+///
+/// Every salt, nonce, root and KEM randomness of this crate is drawn here and nowhere else, which
+/// is what makes the deterministic equivalence fixture of §15.9 item 7 possible: the paths that a
 /// fixture replays take their randomness as an argument instead.
 pub(crate) fn fill_random(out: &mut [u8]) {
-    rand::fill(out);
+    rand::rngs::SysRng
+        .try_fill_bytes(out)
+        .expect("the OS CSPRNG is unavailable");
+}
+
+/// Every u-coordinate of the 8-torsion subgroup of Curve25519, plus the non-canonical encodings
+/// u = p and u = p + 1: the six distinct values of evidence V-6 §6.1 point 3. Test-only, and
+/// reachable from the seal tests, which need the same set for the `ct_X` cases of §22.8.2 rule 5.
+#[cfg(test)]
+pub(crate) fn low_order_points() -> Vec<[u8; 32]> {
+    let mut out: Vec<[u8; 32]> = curve25519_dalek::constants::EIGHT_TORSION
+        .iter()
+        .map(|point| point.to_montgomery().to_bytes())
+        .collect();
+    let mut p = [0xffu8; 32];
+    p[0] = 0xed;
+    p[31] = 0x7f;
+    out.push(p);
+    let mut p_plus_one = p;
+    p_plus_one[0] = 0xee;
+    out.push(p_plus_one);
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every u-coordinate of the 8-torsion subgroup of Curve25519, plus the non-canonical
-    /// encodings u = p and u = p + 1: the six distinct values of evidence V-6 §6.1 point 3.
-    pub(crate) fn low_order_points() -> Vec<[u8; 32]> {
-        let mut out: Vec<[u8; 32]> = curve25519_dalek::constants::EIGHT_TORSION
-            .iter()
-            .map(|point| point.to_montgomery().to_bytes())
-            .collect();
-        let mut p = [0xffu8; 32];
-        p[0] = 0xed;
-        p[31] = 0x7f;
-        out.push(p);
-        let mut p_plus_one = p;
-        p_plus_one[0] = 0xee;
-        out.push(p_plus_one);
-        out.sort_unstable();
-        out.dedup();
-        out
-    }
 
     fn seed(byte: u8) -> KemSecret {
         KemSecret::from_bytes([byte; 32])
@@ -249,6 +260,36 @@ mod tests {
         ciphertext[0] ^= 1;
         let opened = decapsulate(&secret, &ciphertext).expect("implicit rejection");
         assert_ne!(opened.as_bytes(), shared.as_bytes());
+    }
+
+    /// §22.8.2 rule 5 (d): a low-order X25519 half in the **ciphertext**, `ct_X`, on the intro
+    /// path. A sender can put one there, and the opening runs inside a peek, which commits no
+    /// offer counter, so the poison guard would not stop a crash loop: every such ciphertext must
+    /// be a typed `NOT_OPEN` and never a panic.
+    #[test]
+    fn a_low_order_x25519_half_in_the_ciphertext_is_not_open() {
+        let secret = seed(9);
+        let pair = keygen(&secret).expect("keygen");
+        let (ciphertext, _) = encapsulate(&pair.public).expect("encaps");
+        for point in low_order_points() {
+            let mut bad = ciphertext.clone();
+            bad[ML_KEM_CIPHERTEXT_BYTES..].copy_from_slice(&point);
+            assert_eq!(
+                decapsulate(&secret, &bad).err(),
+                Some(DmCode::NotOpen),
+                "ct_X = {}",
+                hex_of(&point)
+            );
+        }
+        // The all-zero half is the same refusal, and a valid half still opens.
+        let mut zeroed = ciphertext.clone();
+        zeroed[ML_KEM_CIPHERTEXT_BYTES..].copy_from_slice(&[0u8; 32]);
+        assert_eq!(decapsulate(&secret, &zeroed).err(), Some(DmCode::NotOpen));
+        assert!(decapsulate(&secret, &ciphertext).is_ok());
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]

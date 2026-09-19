@@ -17,6 +17,16 @@
 //! Appendix G.1–G.2 lists only an ASN.1 module, the SHAKE-256 output length written in bits,
 //! implementation lists and a PEM header fix), so the vectors below cover both wire formats and
 //! the outstanding item is a provenance check, not a behaviour check.
+//!
+//! **Also outstanding: the ML-KEM-768 known-answer tests of §9.2 and §15.2.** The FIPS 203 / ACVP
+//! vector files are not on this host and are not fetched here. What covers ML-KEM-768 meanwhile is
+//! recorded and checked below by `the_ml_kem_halves_are_pinned_by_the_x_wing_vectors`: the X-Wing
+//! vectors pin every ML-KEM-768 output byte for byte through the combiner (the encapsulation key's
+//! first 1 184 bytes, the ciphertext's first 1 088, and a shared secret that is a hash over the
+//! ML-KEM shared secret), and `ghost_and_rust_crypto_agree_on_valid_inputs` is a differential test
+//! against RustCrypto's independent ML-KEM-768. That is a strictly weaker check than a direct KAT
+//! on the ML-KEM decapsulation of an **invalid** ciphertext, which only implicit rejection
+//! exercises, so the item stays declared in `README.md` rather than treated as closed.
 
 use ghost_client_dm::derive::KemSecret;
 use ghost_client_dm::pq;
@@ -84,6 +94,44 @@ fn the_sizes_are_the_ones_the_design_freezes() {
     assert_eq!(field(vector, "eseed").len(), pq::ENCAPS_RANDOMNESS_BYTES);
     assert_eq!(pq::PUBLIC_KEY_BYTES, 1216);
     assert_eq!(pq::CIPHERTEXT_BYTES, 1120);
+}
+
+/// What the draft-06 vectors pin of ML-KEM-768 itself, in place of the FIPS 203 KATs §9.2 lists:
+/// the ML-KEM halves of the key and of the ciphertext are inside the vector bytes at fixed
+/// offsets, so a keygen or encapsulation regression in `libcrux-ml-kem` changes them and fails the
+/// replay above. The last 32 bytes of each are the X25519 halves and are excluded.
+#[test]
+fn the_ml_kem_halves_are_pinned_by_the_x_wing_vectors() {
+    for vector in &vectors() {
+        let seed = seed_of(&field(vector, "seed"));
+        let pair = pq::keygen(&seed).expect("keygen");
+        let expected_pk = field(vector, "pk");
+        assert_eq!(
+            &pair.public[..pq::ML_KEM_PUBLIC_KEY_BYTES],
+            &expected_pk[..pq::ML_KEM_PUBLIC_KEY_BYTES],
+            "the ML-KEM-768 encapsulation key of the vector"
+        );
+
+        let mut randomness = [0u8; pq::ENCAPS_RANDOMNESS_BYTES];
+        randomness.copy_from_slice(&field(vector, "eseed"));
+        let (ciphertext, _) = pq::encapsulate_with(&pair.public, &randomness).expect("encaps");
+        let expected_ct = field(vector, "ct");
+        assert_eq!(
+            &ciphertext[..pq::ML_KEM_CIPHERTEXT_BYTES],
+            &expected_ct[..pq::ML_KEM_CIPHERTEXT_BYTES],
+            "the ML-KEM-768 ciphertext of the vector"
+        );
+
+        // And the decapsulation reads that half: changing one of its bytes changes the secret,
+        // which is ML-KEM's implicit rejection and not an error.
+        let mut mutated = ciphertext.clone();
+        mutated[7] ^= 1;
+        let honest = pq::decapsulate(&seed, &ciphertext).expect("decaps");
+        let rejected = pq::decapsulate(&seed, &mutated).expect("implicit rejection");
+        assert_ne!(honest.as_bytes(), rejected.as_bytes());
+    }
+    assert_eq!(pq::ML_KEM_PUBLIC_KEY_BYTES, 1184);
+    assert_eq!(pq::ML_KEM_CIPHERTEXT_BYTES, 1088);
 }
 
 /// A differential test against RustCrypto's independent implementation, on valid inputs.

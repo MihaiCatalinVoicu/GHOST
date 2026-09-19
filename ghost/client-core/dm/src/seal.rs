@@ -19,7 +19,11 @@
 //! is not malleable.
 //! R-S3: `k` and AD bind the namespace and the bucket, so a relay that copies a blob into another
 //! namespace or truncates it produces something that does not open.
-//! R-S4: `k` is fresh per salt, so nonce 0 never repeats under one key.
+//! R-S4: `k` is fresh per salt, so nonce 0 never repeats under one key. The salt is drawn from the
+//! OS CSPRNG inside every production entry point ([`seal_pair`], [`seal_provisional`],
+//! [`seal_bundle`], [`seal_intro`]); the `*_with` variants that take a caller's salt exist only
+//! for the vectors and the deterministic equivalence fixture, as §2.6's `sealSym`, `sealIntro` and
+//! `bundleCreate` carry no salt input.
 //! R-S5: the recipient computes the hints of its candidate recognition keys and opens with at most
 //! one key. The candidate set and the matching live in Kotlin; [`recognition_key`] and [`hint`]
 //! are the primitives it uses.
@@ -38,6 +42,7 @@ use hkdf::Hkdf;
 use hmac::digest::KeyInit as HmacKeyInit;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// Length of the random salt of every blob.
 pub const SALT_BYTES: usize = 16;
@@ -227,13 +232,20 @@ pub fn random_salt() -> [u8; SALT_BYTES] {
     salt
 }
 
-fn seal_key_of(seal_key: &SealKey, namespace: &[u8; 32], salt: &[u8; SALT_BYTES]) -> [u8; 32] {
+/// The derived seal key `k`. It is wiped when it goes out of scope, as every transient secret of
+/// this crate is: §2.4 point 1 puts the seal in Rust precisely so that seal and KEM secrets can be
+/// zeroised, which the JVM heap cannot do.
+fn seal_key_of(
+    seal_key: &SealKey,
+    namespace: &[u8; 32],
+    salt: &[u8; SALT_BYTES],
+) -> Zeroizing<[u8; 32]> {
     let mut info = Vec::with_capacity(SEAL_LABEL.len() + 32);
     info.extend_from_slice(SEAL_LABEL);
     info.extend_from_slice(namespace);
-    let mut out = [0u8; 32];
+    let mut out = Zeroizing::new([0u8; 32]);
     Hkdf::<Sha256>::new(Some(salt), seal_key.as_bytes())
-        .expand(&info, &mut out)
+        .expand(&info, out.as_mut())
         .expect("HKDF-SHA256 with L = 32 is inside the 255 x 32 byte output limit");
     out
 }
@@ -264,7 +276,8 @@ fn seal_body(
     if body.len() + 1 > plaintext_len {
         return Err(DmCode::NoFit);
     }
-    let mut plaintext = vec![0u8; plaintext_len];
+    // The plaintext holds the inner layer or the Olm message: it is wiped after encryption.
+    let mut plaintext = Zeroizing::new(vec![0u8; plaintext_len]);
     plaintext[0] = mode.as_u8();
     plaintext[1..1 + body.len()].copy_from_slice(body);
     let derived = seal_key_of(key, namespace, salt);
@@ -289,14 +302,15 @@ fn seal_body(
     Ok(blob)
 }
 
-/// Opens a blob in `mode` and returns `body || zeros` (P without its mode byte).
+/// Opens a blob in `mode` and returns `body || zeros` (P without its mode byte), in a buffer that
+/// is wiped when the caller drops it.
 fn open_body(
     key: &SealKey,
     namespace: &[u8; 32],
     mode: SealMode,
     pair_ad: &[u8; 32],
     blob: &[u8],
-) -> DmResult<Vec<u8>> {
+) -> DmResult<Zeroizing<Vec<u8>>> {
     if !BUCKETS.contains(&blob.len()) {
         return Err(DmCode::NotOpen);
     }
@@ -305,20 +319,22 @@ fn open_body(
     salt.copy_from_slice(&blob[..SALT_BYTES]);
     let derived = seal_key_of(key, namespace, &salt);
     let ad = associated_data(namespace, bucket, mode, pair_ad);
-    let plaintext = aead(&derived)?
-        .decrypt(
-            &zero_nonce(),
-            Payload {
-                msg: &blob[HEADER_BYTES..],
-                aad: &ad,
-            },
-        )
-        .map_err(|_| DmCode::NotOpen)?;
+    let plaintext = Zeroizing::new(
+        aead(&derived)?
+            .decrypt(
+                &zero_nonce(),
+                Payload {
+                    msg: &blob[HEADER_BYTES..],
+                    aad: &ad,
+                },
+            )
+            .map_err(|_| DmCode::NotOpen)?,
+    );
     // R-S2: the mode byte the key class expects, and nothing else.
     if plaintext.first() != Some(&mode.as_u8()) {
         return Err(DmCode::NonCanonical);
     }
-    Ok(plaintext[1..].to_vec())
+    Ok(Zeroizing::new(plaintext[1..].to_vec()))
 }
 
 fn all_zero(bytes: &[u8]) -> bool {
@@ -356,8 +372,32 @@ fn parse_symmetric_body(body: &[u8]) -> DmResult<Vec<u8>> {
     Ok(body[SYMMETRIC_BODY_FIXED_BYTES..end].to_vec())
 }
 
-/// Pair mode (§6.3): an Olm normal message under the week key of `week(author_minute)`.
+/// Pair mode (§6.3): an Olm normal message under the week key of `week(author_minute)`, with a
+/// fresh salt. R-S4 ("`k` is fresh per salt, so nonce 0 never repeats under one key") rests on the
+/// salt being fresh, so the production entry point draws it here and never takes it from a caller;
+/// [`seal_pair_with`] is the vector and equivalence-fixture path, as `seal_intro_with` is for the
+/// KEM randomness.
 pub fn seal_pair(
+    week_key: &SealKey,
+    namespace: &[u8; 32],
+    bucket: usize,
+    oi_sender: &[u8; 32],
+    oi_recipient: &[u8; 32],
+    l1: &[u8],
+) -> DmResult<Vec<u8>> {
+    seal_pair_with(
+        week_key,
+        namespace,
+        bucket,
+        oi_sender,
+        oi_recipient,
+        l1,
+        &random_salt(),
+    )
+}
+
+/// Pair mode with a given salt: the vector and equivalence-fixture path (§15.9 item 7).
+pub fn seal_pair_with(
     week_key: &SealKey,
     namespace: &[u8; 32],
     bucket: usize,
@@ -377,8 +417,29 @@ pub fn seal_pair(
     )
 }
 
-/// Provisional mode (§6.7): an Olm normal message under `K_prov(dir)` before a pair root exists.
+/// Provisional mode (§6.7): an Olm normal message under `K_prov(dir)` before a pair root exists,
+/// with a fresh salt (R-S4).
 pub fn seal_provisional(
+    provisional_key: &SealKey,
+    namespace: &[u8; 32],
+    bucket: usize,
+    oi_sender: &[u8; 32],
+    oi_recipient: &[u8; 32],
+    l1: &[u8],
+) -> DmResult<Vec<u8>> {
+    seal_provisional_with(
+        provisional_key,
+        namespace,
+        bucket,
+        oi_sender,
+        oi_recipient,
+        l1,
+        &random_salt(),
+    )
+}
+
+/// Provisional mode with a given salt: the vector and equivalence-fixture path (§15.9 item 7).
+pub fn seal_provisional_with(
     provisional_key: &SealKey,
     namespace: &[u8; 32],
     bucket: usize,
@@ -420,8 +481,18 @@ pub fn open_symmetric(
     parse_symmetric_body(&body)
 }
 
-/// Bundle mode (§5.3): the 1 393-byte bundle plaintext in one 4 KiB blob under `KB_i`.
+/// Bundle mode (§5.3): the 1 393-byte bundle plaintext in one 4 KiB blob under `KB_i`, with a
+/// fresh salt (R-S4).
 pub fn seal_bundle(
+    bundle_key: &SealKey,
+    namespace: &[u8; 32],
+    bundle_plain: &[u8],
+) -> DmResult<Vec<u8>> {
+    seal_bundle_with(bundle_key, namespace, bundle_plain, &random_salt())
+}
+
+/// Bundle mode with a given salt: the vector and equivalence-fixture path (§15.9 item 7).
+pub fn seal_bundle_with(
     bundle_key: &SealKey,
     namespace: &[u8; 32],
     bundle_plain: &[u8],
@@ -502,7 +573,9 @@ pub struct IntroOuter {
 
 /// The inner layer of an intro envelope, once the KEM has opened it (§6.4).
 pub struct IntroPlain {
-    /// The sender's card v2, unparsed: Kotlin's R5 parses and checks it.
+    /// The sender's card v2. [`open_intro_inner`] parsed it to reach the `identity_pk` that binding
+    /// v3 verifies under; the bytes are returned as they arrived, and Kotlin's R5 parses them again
+    /// for the card, freshness and request-path checks (§6.5 step 4).
     pub sender_card: [u8; card::CARD_BYTES],
     /// The sealing minute binding v3 covers.
     pub binding_minute: u32,
@@ -550,10 +623,11 @@ pub fn intro_transcript(context: &IntroContext<'_>, ciphertext: &[u8]) -> [u8; 3
         .into()
 }
 
-fn intro_inner_key(shared: &KemSecret, transcript: &[u8; 32]) -> [u8; 32] {
-    let mut out = [0u8; 32];
+/// `k_in`, wiped when it goes out of scope (§2.4 point 1).
+fn intro_inner_key(shared: &KemSecret, transcript: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let mut out = Zeroizing::new([0u8; 32]);
     Hkdf::<Sha256>::new(Some(transcript), shared.as_bytes())
-        .expand(INTRO_INNER_LABEL, &mut out)
+        .expand(INTRO_INNER_LABEL, out.as_mut())
         .expect("HKDF-SHA256 with L = 32 is inside the 255 x 32 byte output limit");
     out
 }
@@ -605,7 +679,9 @@ pub fn seal_intro_with(
     if l1.len() + INTRO_INNER_FIXED_BYTES > inner_len {
         return Err(DmCode::NoFit);
     }
-    let mut inner_plain = vec![0u8; inner_len];
+    // The inner plaintext carries the sender's card (its `card_secret`) and the session's
+    // `reply_seed`: it is wiped as soon as the layer is sealed.
+    let mut inner_plain = Zeroizing::new(vec![0u8; inner_len]);
     inner_plain[0] = KIND_OLM_PREKEY;
     let mut at = 1;
     inner_plain[at..at + card::CARD_BYTES].copy_from_slice(sender.card);
@@ -646,17 +722,16 @@ pub fn seal_intro_with(
     )
 }
 
-/// Intro mode with CSPRNG encapsulation randomness.
+/// Intro mode with a fresh salt (R-S4) and CSPRNG encapsulation randomness.
 pub fn seal_intro(
     outer_key: &SealKey,
     context: &IntroContext<'_>,
     sender: &IntroSender<'_>,
     l1: &[u8],
-    salt: &[u8; SALT_BYTES],
 ) -> DmResult<Vec<u8>> {
-    let mut randomness = [0u8; pq::ENCAPS_RANDOMNESS_BYTES];
-    pq::fill_random(&mut randomness);
-    seal_intro_with(outer_key, context, sender, l1, salt, &randomness)
+    let mut randomness = Zeroizing::new([0u8; pq::ENCAPS_RANDOMNESS_BYTES]);
+    pq::fill_random(randomness.as_mut());
+    seal_intro_with(outer_key, context, sender, l1, &random_salt(), &randomness)
 }
 
 /// Opens the card-keyed outer layer of an intro envelope (§6.5 step 3). It reads `gen_id` and the
@@ -682,29 +757,10 @@ pub fn open_intro_outer(
     })
 }
 
-/// Opens the X-Wing-keyed inner layer, verifies binding v3 and enforces the three equalities of
-/// §6.5 step 4. Every decapsulation error is `NOT_OPEN`, never a crash (§22.8.2 rule 4).
-pub fn open_intro_inner(
-    gen_seed: &KemSecret,
-    context: &IntroContext<'_>,
-    outer: &IntroOuter,
-    prekey: &PreKeyFields<'_>,
-) -> DmResult<IntroPlain> {
-    if context.gen_id != outer.gen_id || context.bucket != outer.bucket {
-        return Err(DmCode::NotOpen);
-    }
-    let shared = pq::decapsulate(gen_seed, &outer.ciphertext)?;
-    let transcript = intro_transcript(context, &outer.ciphertext);
-    let inner_ad = intro_inner_ad(&transcript);
-    let plain = aead(&intro_inner_key(&shared, &transcript))?
-        .decrypt(
-            &zero_nonce(),
-            Payload {
-                msg: &outer.inner,
-                aad: &inner_ad,
-            },
-        )
-        .map_err(|_| DmCode::NotOpen)?;
+/// Parses `kind(1) || card(131) || binding_minute(4) || binding_sig(64) || reply_seed(32)
+/// || l1_len(4, BE) || L1 || zeros` (§6.4), with no cryptography: the pure parser the seeded
+/// property run of R-C4 exercises directly, without paying for a decapsulation per input.
+pub(crate) fn parse_intro_inner(plain: &[u8]) -> DmResult<IntroPlain> {
     if plain.len() < INTRO_INNER_FIXED_BYTES || plain[0] != KIND_OLM_PREKEY {
         return Err(DmCode::NonCanonical);
     }
@@ -718,7 +774,7 @@ pub fn open_intro_inner(
     let mut binding_sig = [0u8; sign::SIGNATURE_BYTES];
     binding_sig.copy_from_slice(&plain[at..at + sign::SIGNATURE_BYTES]);
     at += sign::SIGNATURE_BYTES;
-    let mut reply_seed = [0u8; SECRET_BYTES];
+    let mut reply_seed = Zeroizing::new([0u8; SECRET_BYTES]);
     reply_seed.copy_from_slice(&plain[at..at + SECRET_BYTES]);
     at += SECRET_BYTES;
     let l1_len =
@@ -728,9 +784,50 @@ pub fn open_intro_inner(
     if end > plain.len() || !all_zero(&plain[end..]) {
         return Err(DmCode::NonCanonical);
     }
-    let l1 = plain[at..end].to_vec();
+    Ok(IntroPlain {
+        sender_card,
+        binding_minute,
+        binding_sig,
+        reply_seed: ReplySeed::from_bytes(*reply_seed),
+        l1: plain[at..end].to_vec(),
+    })
+}
 
-    let sender = card::parse(&sender_card)?;
+/// Opens the X-Wing-keyed inner layer, verifies binding v3 and enforces all three equalities of
+/// §6.5 step 4 — `binding.OI_A = PreKey.identity_key` and `binding.base_key = PreKey.base_key`
+/// through the transcript the signature covers, and `PreKey.one_time_key = F_{gen_id}` against the
+/// `generation_fallback_key` argument, so the S4b facade cannot forget the third. Every
+/// decapsulation error is `NOT_OPEN`, never a crash (§22.8.2 rule 4).
+pub fn open_intro_inner(
+    gen_seed: &KemSecret,
+    context: &IntroContext<'_>,
+    outer: &IntroOuter,
+    prekey: &PreKeyFields<'_>,
+    generation_fallback_key: &[u8; 32],
+) -> DmResult<IntroPlain> {
+    if context.gen_id != outer.gen_id || context.bucket != outer.bucket {
+        return Err(DmCode::NotOpen);
+    }
+    let shared = pq::decapsulate(gen_seed, &outer.ciphertext)?;
+    let transcript = intro_transcript(context, &outer.ciphertext);
+    let inner_ad = intro_inner_ad(&transcript);
+    let plain = Zeroizing::new(
+        aead(&intro_inner_key(&shared, &transcript))?
+            .decrypt(
+                &zero_nonce(),
+                Payload {
+                    msg: &outer.inner,
+                    aad: &inner_ad,
+                },
+            )
+            .map_err(|_| DmCode::NotOpen)?,
+    );
+    let opened = parse_intro_inner(&plain)?;
+
+    // The card is parsed for the `identity_pk` binding v3 verifies under. A card that does not
+    // parse is `drop(non_canonical)` (§6.5 step 4, §2.6 function 12): `INVALID_CARD` belongs to
+    // `cardParse`, which is a different call.
+    let sender = card::parse(&opened.sender_card).map_err(|_| DmCode::NonCanonical)?;
     // The binding names the sender's Olm identity and base key; §6.5 step 4 requires the PreKey
     // header to carry the same, and the one-time key to be this generation's fallback key.
     binding::verify(
@@ -739,26 +836,22 @@ pub fn open_intro_inner(
             oi_a: prekey.identity_key,
             card_index_a: sender.card_index,
             recipient_namespace: context.namespace,
-            binding_minute,
+            binding_minute: opened.binding_minute,
             gen_id_b: context.gen_id,
             xwing_ct: &outer.ciphertext,
             base_key_a: prekey.base_key,
             oi_b: context.recipient_oi,
         },
-        &binding_sig,
+        &opened.binding_sig,
     )?;
+    check_generation_fallback_key(prekey, generation_fallback_key)?;
 
-    Ok(IntroPlain {
-        sender_card,
-        binding_minute,
-        binding_sig,
-        reply_seed: ReplySeed::from_bytes(reply_seed),
-        l1,
-    })
+    Ok(opened)
 }
 
-/// The generation's fallback key check of §6.5 step 4, kept next to the opener so the S4b facade
-/// cannot forget it: `PreKey.one_time_key = F_{gen_id}`.
+/// The generation's fallback key check of §6.5 step 4: `PreKey.one_time_key = F_{gen_id}`.
+/// [`open_intro_inner`] runs it; it stays public because the S4b facade parses the PreKey header
+/// and may reach the same check from its own path.
 pub fn check_generation_fallback_key(
     prekey: &PreKeyFields<'_>,
     generation_fallback_key: &[u8; 32],
@@ -822,7 +915,7 @@ mod tests {
         let key = pq_key(0x41);
         for bucket in BUCKETS {
             let l1 = vec![7u8; 64];
-            let blob = seal_pair(
+            let blob = seal_pair_with(
                 &key,
                 &NAMESPACE,
                 bucket,
@@ -843,7 +936,7 @@ mod tests {
             )
             .expect("open");
             assert_eq!(opened, l1);
-            let provisional = seal_provisional(
+            let provisional = seal_provisional_with(
                 &key,
                 &NAMESPACE,
                 bucket,
@@ -872,7 +965,7 @@ mod tests {
     #[test]
     fn the_associated_data_binds_namespace_bucket_mode_and_identities() {
         let key = pq_key(0x42);
-        let blob = seal_pair(
+        let blob = seal_pair_with(
             &key,
             &NAMESPACE,
             4096,
@@ -926,7 +1019,7 @@ mod tests {
     fn the_hint_recognises_without_opening() {
         let key = pq_key(0x43);
         let salt = [0x77u8; SALT_BYTES];
-        let blob = seal_pair(
+        let blob = seal_pair_with(
             &key,
             &NAMESPACE,
             4096,
@@ -946,7 +1039,7 @@ mod tests {
     #[test]
     fn a_fresh_salt_gives_fresh_bytes() {
         let key = pq_key(0x45);
-        let first = seal_pair(
+        let first = seal_pair_with(
             &key,
             &NAMESPACE,
             4096,
@@ -956,7 +1049,7 @@ mod tests {
             &[1u8; SALT_BYTES],
         )
         .expect("seal");
-        let second = seal_pair(
+        let second = seal_pair_with(
             &key,
             &NAMESPACE,
             4096,
@@ -967,6 +1060,35 @@ mod tests {
         )
         .expect("seal");
         assert_ne!(first[HEADER_BYTES..], second[HEADER_BYTES..]);
+    }
+
+    /// R-S4: `k` is fresh per salt, so nonce 0 never repeats under one key. The salt is drawn
+    /// inside Rust by every production entry point — §2.6's `sealIntro`, `sealSym` and
+    /// `bundleCreate` carry no salt input — and only the `*_with` variants the vectors and the
+    /// equivalence fixture use take one from a caller.
+    #[test]
+    fn the_production_entry_points_draw_their_own_salt() {
+        let key = pq_key(0x47);
+        let mut salts = Vec::new();
+        for _ in 0..16 {
+            let pair = seal_pair(&key, &NAMESPACE, 4096, &OI_SENDER, &OI_RECIPIENT, b"l1")
+                .expect("seal pair");
+            let provisional =
+                seal_provisional(&key, &NAMESPACE, 4096, &OI_SENDER, &OI_RECIPIENT, b"l1")
+                    .expect("seal provisional");
+            salts.push(pair[..SALT_BYTES].to_vec());
+            salts.push(provisional[..SALT_BYTES].to_vec());
+        }
+        let bundle_key = card_key(0x48);
+        for _ in 0..16 {
+            let blob = seal_bundle(&bundle_key, &NAMESPACE, &[0x5a; 1393]).expect("seal bundle");
+            salts.push(blob[..SALT_BYTES].to_vec());
+        }
+        let count = salts.len();
+        salts.sort_unstable();
+        salts.dedup();
+        assert_eq!(salts.len(), count, "a salt repeated");
+        assert!(!salts.contains(&vec![0u8; SALT_BYTES]));
     }
 
     #[test]
@@ -1066,14 +1188,7 @@ mod tests {
                 binding_minute: 29_000_000,
                 reply_seed: &fixture.reply_seed,
             };
-            let blob = seal_intro(
-                &fixture.outer_key,
-                &context,
-                &sender,
-                &l1,
-                &[0x55; SALT_BYTES],
-            )
-            .expect("seal");
+            let blob = seal_intro(&fixture.outer_key, &context, &sender, &l1).expect("seal");
             assert_eq!(blob.len(), bucket);
             let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
             assert_eq!(outer.gen_id, 0xdead_beef);
@@ -1083,8 +1198,8 @@ mod tests {
                 base_key: &base_key,
                 fallback_key: &fallback,
             };
-            let plain =
-                open_intro_inner(&fixture.gen_seed, &context, &outer, &prekey).expect("inner");
+            let plain = open_intro_inner(&fixture.gen_seed, &context, &outer, &prekey, &fallback)
+                .expect("inner");
             assert_eq!(plain.l1, l1);
             assert_eq!(plain.sender_card, fixture.card);
             assert_eq!(plain.binding_minute, 29_000_000);
@@ -1095,6 +1210,101 @@ mod tests {
                 Some(DmCode::NonCanonical)
             );
         }
+    }
+
+    /// §6.5 step 4's third equality, `PreKey.one_time_key = F_{gen_id}`, is enforced by the opener
+    /// itself: a PreKey header naming a fallback key that is not the generation's is refused even
+    /// when the envelope opens and the binding verifies.
+    #[test]
+    fn the_opener_enforces_the_generations_fallback_key() {
+        let fixture = intro_fixture();
+        let base_key = [0x71u8; 32];
+        let fallback = [0x72u8; 32];
+        let context = intro_context(&fixture, 4096);
+        let sender = IntroSender {
+            identity_seed: &IDENTITY_SEED,
+            card: &fixture.card,
+            oi: &OI_SENDER,
+            base_key: &base_key,
+            binding_minute: 29_000_000,
+            reply_seed: &fixture.reply_seed,
+        };
+        let blob = seal_intro(&fixture.outer_key, &context, &sender, b"l1").expect("seal");
+        let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
+        let prekey = PreKeyFields {
+            identity_key: &OI_SENDER,
+            base_key: &base_key,
+            fallback_key: &fallback,
+        };
+        assert!(open_intro_inner(&fixture.gen_seed, &context, &outer, &prekey, &fallback).is_ok());
+        for wrong in [[0u8; 32], [0x73u8; 32]] {
+            assert_eq!(
+                open_intro_inner(&fixture.gen_seed, &context, &outer, &prekey, &wrong).err(),
+                Some(DmCode::NonCanonical),
+                "a fallback key that is not the generation's must not open"
+            );
+        }
+    }
+
+    /// An inner card that does not parse is `drop(non_canonical)` (§6.5 step 4): `INVALID_CARD`
+    /// belongs to `cardParse`, and §2.6 function 12 does not list it for `openIntro`.
+    #[test]
+    fn an_unparsable_inner_card_is_non_canonical_not_invalid_card() {
+        let fixture = intro_fixture();
+        let context = intro_context(&fixture, 4096);
+        let blob = {
+            // Build an inner layer by hand so the card bytes can be corrupted after sealing.
+            let (ciphertext, shared) =
+                pq::encapsulate_with(&fixture.gen_public, &[0x11; pq::ENCAPS_RANDOMNESS_BYTES])
+                    .expect("encaps");
+            let transcript = intro_transcript(&context, &ciphertext);
+            let inner_len = context.bucket - INTRO_OUTER_FIXED_BYTES - HEADER_BYTES - TAG_BYTES;
+            let mut inner_plain = vec![0u8; inner_len];
+            inner_plain[0] = KIND_OLM_PREKEY;
+            let mut bad_card = fixture.card;
+            bad_card[0] = 0x01; // a card version Phase 9 never issued
+            inner_plain[1..1 + card::CARD_BYTES].copy_from_slice(&bad_card);
+            let inner = aead(&intro_inner_key(&shared, &transcript))
+                .expect("aead")
+                .encrypt(
+                    &zero_nonce(),
+                    Payload {
+                        msg: &inner_plain,
+                        aad: &intro_inner_ad(&transcript),
+                    },
+                )
+                .expect("encrypt");
+            let mut body = Vec::new();
+            body.extend_from_slice(&context.gen_id.to_be_bytes());
+            body.extend_from_slice(&ciphertext);
+            body.extend_from_slice(&inner);
+            seal_body(
+                &fixture.outer_key,
+                &NAMESPACE,
+                context.bucket,
+                SealMode::Intro,
+                &[0u8; 32],
+                &body,
+                &[0x55; SALT_BYTES],
+            )
+            .expect("seal")
+        };
+        let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
+        assert_eq!(
+            open_intro_inner(
+                &fixture.gen_seed,
+                &context,
+                &outer,
+                &PreKeyFields {
+                    identity_key: &OI_SENDER,
+                    base_key: &[0x71; 32],
+                    fallback_key: &[0x72; 32],
+                },
+                &[0x72; 32],
+            )
+            .err(),
+            Some(DmCode::NonCanonical)
+        );
     }
 
     #[test]
@@ -1110,14 +1320,7 @@ mod tests {
             binding_minute: 29_000_000,
             reply_seed: &fixture.reply_seed,
         };
-        let blob = seal_intro(
-            &fixture.outer_key,
-            &context,
-            &sender,
-            b"l1",
-            &[0x55; SALT_BYTES],
-        )
-        .expect("seal");
+        let blob = seal_intro(&fixture.outer_key, &context, &sender, b"l1").expect("seal");
         let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
         // Another base key, another Olm identity, another recipient namespace, another generation.
         let other = [0u8; 32];
@@ -1134,7 +1337,7 @@ mod tests {
             },
         ] {
             assert_eq!(
-                open_intro_inner(&fixture.gen_seed, &context, &outer, &prekey).err(),
+                open_intro_inner(&fixture.gen_seed, &context, &outer, &prekey, &other).err(),
                 Some(DmCode::BadSignature)
             );
         }
@@ -1152,7 +1355,8 @@ mod tests {
                     identity_key: &OI_SENDER,
                     base_key: &base_key,
                     fallback_key: &other,
-                }
+                },
+                &other,
             )
             .err(),
             Some(DmCode::NotOpen),
@@ -1173,14 +1377,7 @@ mod tests {
             binding_minute: 1,
             reply_seed: &fixture.reply_seed,
         };
-        let blob = seal_intro(
-            &fixture.outer_key,
-            &context,
-            &sender,
-            b"secret l1",
-            &[0x55; SALT_BYTES],
-        )
-        .expect("seal");
+        let blob = seal_intro(&fixture.outer_key, &context, &sender, b"secret l1").expect("seal");
         let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
         // Without the generation secret the inner layer stays closed.
         let wrong_seed = KemSecret::from_bytes([0u8; 32]);
@@ -1193,12 +1390,52 @@ mod tests {
                     identity_key: &OI_SENDER,
                     base_key: &base_key,
                     fallback_key: &[0u8; 32],
-                }
+                },
+                &[0u8; 32],
             )
             .err(),
             Some(DmCode::NotOpen)
         );
         assert!(!outer.inner.windows(9).any(|w| w == b"secret l1"));
+    }
+
+    /// §22.8.2 rule 5 (d), through the opener a peek reaches: a sender that replaces `ct_X` with a
+    /// low-order point makes libcrux error, and that error must be `NOT_OPEN` with no state change
+    /// and no panic.
+    #[test]
+    fn a_low_order_ciphertext_half_is_not_open_through_the_intro_opener() {
+        let fixture = intro_fixture();
+        let base_key = [0x71u8; 32];
+        let fallback = [0x72u8; 32];
+        let context = intro_context(&fixture, 4096);
+        let sender = IntroSender {
+            identity_seed: &IDENTITY_SEED,
+            card: &fixture.card,
+            oi: &OI_SENDER,
+            base_key: &base_key,
+            binding_minute: 29_000_000,
+            reply_seed: &fixture.reply_seed,
+        };
+        let blob = seal_intro(&fixture.outer_key, &context, &sender, b"l1").expect("seal");
+        let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
+        let prekey = PreKeyFields {
+            identity_key: &OI_SENDER,
+            base_key: &base_key,
+            fallback_key: &fallback,
+        };
+        for point in pq::low_order_points() {
+            let mut poisoned = IntroOuter {
+                gen_id: outer.gen_id,
+                ciphertext: outer.ciphertext.clone(),
+                inner: outer.inner.clone(),
+                bucket: outer.bucket,
+            };
+            poisoned.ciphertext[pq::ML_KEM_CIPHERTEXT_BYTES..].copy_from_slice(&point);
+            assert_eq!(
+                open_intro_inner(&fixture.gen_seed, &context, &poisoned, &prekey, &fallback).err(),
+                Some(DmCode::NotOpen)
+            );
+        }
     }
 
     #[test]
@@ -1214,23 +1451,11 @@ mod tests {
             binding_minute: 1,
             reply_seed: &fixture.reply_seed,
         };
-        let first = seal_intro(
-            &fixture.outer_key,
-            &context,
-            &sender,
-            b"l1",
-            &[1; SALT_BYTES],
-        )
-        .expect("a");
-        let second = seal_intro(
-            &fixture.outer_key,
-            &context,
-            &sender,
-            b"l1",
-            &[1; SALT_BYTES],
-        )
-        .expect("b");
+        let first = seal_intro(&fixture.outer_key, &context, &sender, b"l1").expect("a");
+        let second = seal_intro(&fixture.outer_key, &context, &sender, b"l1").expect("b");
         assert_ne!(first, second);
+        // The production entry point draws its own salt, so no two blobs share one (R-S4).
+        assert_ne!(first[..SALT_BYTES], second[..SALT_BYTES]);
         let a = open_intro_outer(&fixture.outer_key, &NAMESPACE, &first).expect("a");
         let b = open_intro_outer(&fixture.outer_key, &NAMESPACE, &second).expect("b");
         assert_ne!(a.ciphertext, b.ciphertext);
@@ -1246,7 +1471,7 @@ mod tests {
     fn pm_32_an_intro_inner_layer_without_the_kem_trips_t35() {
         // A pair envelope keyed from a card-derived secret: the PM-32/PM-33 shape.
         let bad = SealKey::new([1u8; 32], KeyProvenance::Card(CardSource::Link));
-        let _ = seal_pair(
+        let _ = seal_pair_with(
             &bad,
             &NAMESPACE,
             4096,
@@ -1260,14 +1485,67 @@ mod tests {
     #[test]
     #[should_panic(expected = "T35")]
     fn a_kem_key_may_not_seal_a_bundle() {
-        let _ = seal_bundle(&pq_key(1), &NAMESPACE, &[0u8; 1393], &[0u8; SALT_BYTES]);
+        let _ = seal_bundle_with(&pq_key(1), &NAMESPACE, &[0u8; 1393], &[0u8; SALT_BYTES]);
+    }
+
+    /// §15.2 asks for a seeded property run over every parser. The two parsers behind the AEADs —
+    /// the pair/provisional body and the intro inner layer — are exercised directly, so `10^6`
+    /// inputs per run are reachable: each runs on the plaintext an opener has already decrypted,
+    /// and neither may panic or over-read on any byte string.
+    #[test]
+    fn the_symmetric_body_parser_never_panics_on_seeded_inputs() {
+        let mut rng = crate::property::Seeded::new(0x1234_5678_9abc_def0);
+        let template = {
+            let mut body = symmetric_body(&[7u8; 64]);
+            body.resize(4096 - HEADER_BYTES - TAG_BYTES - 1, 0);
+            body
+        };
+        for _ in 0..crate::property::inputs() {
+            let bytes = if rng.below(4) == 0 {
+                rng.random_input(64)
+            } else {
+                rng.mutate(&template)
+            };
+            match parse_symmetric_body(&bytes) {
+                Ok(l1) => assert!(l1.len() + SYMMETRIC_BODY_FIXED_BYTES <= bytes.len()),
+                Err(code) => assert_eq!(code, DmCode::NonCanonical),
+            }
+        }
+    }
+
+    #[test]
+    fn the_intro_inner_parser_never_panics_on_seeded_inputs() {
+        let mut rng = crate::property::Seeded::new(0x0fed_cba9_8765_4321);
+        let fixture = intro_fixture();
+        let template = {
+            let inner_len = 4096 - INTRO_OUTER_FIXED_BYTES - HEADER_BYTES - TAG_BYTES;
+            let mut plain = vec![0u8; inner_len];
+            plain[0] = KIND_OLM_PREKEY;
+            plain[1..1 + card::CARD_BYTES].copy_from_slice(&fixture.card);
+            let at = 1 + card::CARD_BYTES + 4 + sign::SIGNATURE_BYTES + SECRET_BYTES;
+            plain[at..at + 4].copy_from_slice(&64u32.to_be_bytes());
+            plain
+        };
+        for _ in 0..crate::property::inputs() {
+            let bytes = if rng.below(4) == 0 {
+                rng.random_input(INTRO_INNER_FIXED_BYTES + 32)
+            } else {
+                rng.mutate(&template)
+            };
+            match parse_intro_inner(&bytes) {
+                Ok(plain) => {
+                    assert!(plain.l1.len() + INTRO_INNER_FIXED_BYTES <= bytes.len());
+                }
+                Err(code) => assert_eq!(code, DmCode::NonCanonical),
+            }
+        }
     }
 
     #[test]
     fn a_bundle_round_trips_in_four_kilobytes() {
         let key = card_key(0x51);
         let plain = vec![0x5au8; 1393];
-        let blob = seal_bundle(&key, &NAMESPACE, &plain, &[3u8; SALT_BYTES]).expect("seal");
+        let blob = seal_bundle_with(&key, &NAMESPACE, &plain, &[3u8; SALT_BYTES]).expect("seal");
         assert_eq!(blob.len(), 4096);
         assert_eq!(
             open_bundle(&key, &NAMESPACE, &blob, 1393).expect("open"),

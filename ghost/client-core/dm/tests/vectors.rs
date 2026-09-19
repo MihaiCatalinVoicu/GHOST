@@ -23,7 +23,7 @@ use ghost_client_dm::derive::{
 };
 use ghost_client_dm::provenance::{CardSource, KeyProvenance, SealKey};
 use ghost_client_dm::seal::{self, IntroContext, IntroSender, SealMode};
-use ghost_client_dm::{binding, bundle, card, pq, safety, sign, wrap};
+use ghost_client_dm::{binding, bundle, card, pq, safety, wrap};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -308,6 +308,28 @@ struct SealCase {
     bucket: usize,
 }
 
+/// `k = HKDF-SHA256(ikm = k_sel, salt = salt, info = "ghost/v1/dm-seal" || namespace, L = 32)`.
+/// The crate derives it internally and zeroises it; the vector file records it from the public
+/// inputs so a replayer can check the AEAD key and not only the blob (§15.2).
+fn seal_key(k_sel: &[u8; 32], namespace: &[u8; 32], salt: &[u8; seal::SALT_BYTES]) -> [u8; 32] {
+    let mut info = seal::SEAL_LABEL.to_vec();
+    info.extend_from_slice(namespace);
+    let mut out = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(salt), k_sel)
+        .expand(&info, &mut out)
+        .expect("expand");
+    out
+}
+
+/// `k_in = HKDF-SHA256(ikm = ss, salt = t_in, info = "ghost/v1/dm-intro-inner", L = 32)`.
+fn intro_inner_key(shared: &KemSecret, transcript: &[u8; 32]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(transcript), shared.as_bytes())
+        .expand(seal::INTRO_INNER_LABEL, &mut out)
+        .expect("expand");
+    out
+}
+
 #[test]
 fn dm_seal_vectors() {
     let mut out = Out::new(
@@ -329,14 +351,19 @@ fn dm_seal_vectors() {
 #   intro body                = gen_id(4) || xwing_ct(1120) || inner\n\
 #\n\
 # The intro inner layer (the KEM half) is replayed only by the Rust differential test: the JDK 17\n\
-# provider set has no ML-KEM. Its transcript and key are recorded anyway, so an implementation\n\
-# that does have X-Wing can check every step.\n\
+# provider set has no ML-KEM. Its shared secret, transcript, key and associated data are recorded\n\
+# in full below, so an implementation that does have X-Wing checks every step; the symmetric\n\
+# sections record the derived seal key `k` for the same reason.\n\
 #   t_in   = SHA-256(\"ghost/v1/dm-intro-kem\" || namespace(32) || u32_be(B) || u32_be(gen_id)\n\
 #                    || q_g(1216) || xwing_ct(1120) || oi_recipient(32) || identity_pk_recipient(32))\n\
+#   ss     = the X-Wing shared secret of Encaps(q_g, kem_randomness)\n\
 #   k_in   = HKDF-SHA256(ikm = ss, salt = t_in, info = \"ghost/v1/dm-intro-inner\", L = 32)\n\
 #   ad_in  = \"ghost/v1/dm-intro\" || 02 || t_in\n\
 #   q      = kind(1) = 02 || sender_card(131) || binding_minute(4) || binding_sig(64)\n\
 #            || reply_seed(32) || l1_len(4, BE) || l1 || zeros,   |q| = B - 1189\n\
+#\n\
+# The recipient also checks PreKey.one_time_key = gen_fallback_key (the generation's Olm fallback\n\
+# key, design S6.5 step 4); it is recorded in [intro_common] and is not inside the envelope.\n\
 #\n\
 # `blob` is written out in full for the 4 KiB cases; every case carries `blob_sha256`.\n",
     );
@@ -385,6 +412,11 @@ fn dm_seal_vectors() {
             bucket: 4096,
         },
         SealCase {
+            name: "provisional_16384",
+            mode: SealMode::Provisional,
+            bucket: 16384,
+        },
+        SealCase {
             name: "provisional_65536",
             mode: SealMode::Provisional,
             bucket: 65536,
@@ -396,7 +428,7 @@ fn dm_seal_vectors() {
             KeyProvenance::Kem.transported_under(),
         );
         let blob = match case.mode {
-            SealMode::Pair => seal::seal_pair(
+            SealMode::Pair => seal::seal_pair_with(
                 &key,
                 &namespace,
                 case.bucket,
@@ -405,7 +437,7 @@ fn dm_seal_vectors() {
                 &l1,
                 &salt,
             ),
-            _ => seal::seal_provisional(
+            _ => seal::seal_provisional_with(
                 &key,
                 &namespace,
                 case.bucket,
@@ -433,6 +465,7 @@ fn dm_seal_vectors() {
         out.num("bucket", case.bucket as u64);
         out.hex("k_sel", &symmetric_key_material);
         out.hex("recognition_key", &seal::recognition_key(&key));
+        out.hex("k", &seal_key(&symmetric_key_material, &namespace, &salt));
         out.hex("hint", &blob[seal::SALT_BYTES..seal::HEADER_BYTES]);
         out.hex(
             "ad",
@@ -457,12 +490,13 @@ fn dm_seal_vectors() {
     );
     let bundle_plain = bundle_fixture();
     let bundle_blob =
-        seal::seal_bundle(&bundle_key, &namespace, &bundle_plain, &salt).expect("seal");
+        seal::seal_bundle_with(&bundle_key, &namespace, &bundle_plain, &salt).expect("seal");
     out.section("bundle_4096");
     out.hex("mode", &[SealMode::Bundle.as_u8()]);
     out.num("bucket", 4096);
     out.hex("k_sel", &bundle_key_material);
     out.hex("recognition_key", &seal::recognition_key(&bundle_key));
+    out.hex("k", &seal_key(&bundle_key_material, &namespace, &salt));
     out.hex("hint", &bundle_blob[seal::SALT_BYTES..seal::HEADER_BYTES]);
     out.hex(
         "ad",
@@ -486,6 +520,7 @@ fn dm_seal_vectors() {
     let sender_base_key = [0x3bu8; 32];
     let recipient_identity_pk = [0x3cu8; 32];
     let kem_randomness = [0x3du8; pq::ENCAPS_RANDOMNESS_BYTES];
+    let gen_fallback_key = [0x3eu8; 32];
     let gen_id = 0x1234_5678u32;
     let binding_minute = 29_000_000u32;
 
@@ -494,6 +529,7 @@ fn dm_seal_vectors() {
     out.hex("gen_seed", gen_seed.as_bytes());
     out.sha("gen_public_sha256", &gen_public);
     out.num("gen_id", u64::from(gen_id));
+    out.hex("gen_fallback_key", &gen_fallback_key);
     out.hex("sender_card", &sender_card_bytes);
     out.hex("sender_oi", &oi_sender);
     out.hex("sender_base_key", &sender_base_key);
@@ -529,9 +565,10 @@ fn dm_seal_vectors() {
         let prekey = seal::PreKeyFields {
             identity_key: &oi_sender,
             base_key: &sender_base_key,
-            fallback_key: &[0u8; 32],
+            fallback_key: &gen_fallback_key,
         };
-        let plain = seal::open_intro_inner(&gen_seed, &context, &outer, &prekey).expect("inner");
+        let plain = seal::open_intro_inner(&gen_seed, &context, &outer, &prekey, &gen_fallback_key)
+            .expect("inner");
         assert_eq!(plain.l1, l1);
 
         let transcript = seal::intro_transcript(&context, &outer.ciphertext);
@@ -561,6 +598,15 @@ fn dm_seal_vectors() {
         );
         out.sha("xwing_ct_sha256", &outer.ciphertext);
         out.hex("t_in", &transcript);
+        let (_, shared) = pq::encapsulate_with(&gen_public, &kem_randomness).expect("encaps");
+        out.hex("ss", shared.as_bytes());
+        out.hex("k_in", &intro_inner_key(&shared, &transcript));
+        out.hex("ad_in", &{
+            let mut ad = seal::INTRO_AD_LABEL.to_vec();
+            ad.push(seal::SEAL_VERSION);
+            ad.extend_from_slice(&transcript);
+            ad
+        });
         out.hex("binding_sig", &binding_sig);
         out.sha(
             "binding_transcript_sha256",
@@ -659,7 +705,10 @@ fn dm_content_vectors() {
 #   flags bit 0 = a quote reference follows; every other bit must be 0.\n\
 #   Author time exists only as author_minute, a u32 count of minutes: seconds are zero by type.\n\
 #\n\
-# [refuse_*] sections carry an `input` that must be refused, with the result code it must give.\n",
+# [refuse_*] sections carry an `input` that must be refused, with the result code it must give.\n\
+# [class_*] sections carry the S21.11 point 3 class boundaries: the bucket is a function of the\n\
+# body length alone, so the same body gives the same bucket with and without a quote and with and\n\
+# without a pending classical TLV. They record lengths and the L0 digest, not the whole record.\n",
     );
 
     let cases: Vec<(&str, DmContent)> = vec![
@@ -752,6 +801,36 @@ fn dm_content_vectors() {
             },
         ),
         (
+            "control_seal_root_pq",
+            DmContent {
+                kind: Kind::Control,
+                message_id: [0x5b; 16],
+                author_minute: 29_000_006,
+                minute_index: 0,
+                timer_code: 0,
+                timer_version: 6,
+                quote_ref: None,
+                body: Vec::new(),
+                ext: vec![Tlv {
+                    tlv_type: codec::TLV_SEAL_ROOT_PQ,
+                    value: codec::SealRootPq {
+                        root_rand: [0x5c; 32],
+                        base_week: 2872,
+                        root_gen: 4,
+                        peer_gen_id: 0x0506_0708,
+                        xwing_ct: pq::encapsulate_with(
+                            &pq::public_key(&KemSecret::from_bytes([0x5d; 32])).expect("keygen"),
+                            &[0x5e; pq::ENCAPS_RANDOMNESS_BYTES],
+                        )
+                        .expect("encaps")
+                        .0,
+                    }
+                    .encode()
+                    .expect("encode"),
+                }],
+            },
+        ),
+        (
             "text_pq_key",
             DmContent {
                 kind: Kind::Text,
@@ -803,6 +882,17 @@ fn dm_content_vectors() {
         out.sha("l0_sha256", &bytes);
         out.hex("l0", &bytes);
     }
+
+    // The inputs of the `seal_root_pq` case's ciphertext, so a replayer with X-Wing reproduces it.
+    let pq_root_seed = KemSecret::from_bytes([0x5d; 32]);
+    out.section("seal_root_pq_inputs");
+    out.line("# The 0x0005 value of [control_seal_root_pq] carries this encapsulation.");
+    out.hex("peer_xwing_seed", pq_root_seed.as_bytes());
+    out.sha(
+        "peer_xwing_pk_sha256",
+        &pq::public_key(&pq_root_seed).expect("keygen"),
+    );
+    out.hex("kem_randomness", &[0x5e; pq::ENCAPS_RANDOMNESS_BYTES]);
 
     // Refusals: each input must be refused with the recorded code.
     let base = cases[0].1.encode().expect("encode");
@@ -879,6 +969,67 @@ fn dm_content_vectors() {
         );
     }
 
+    out.section("ext_reserve");
+    out.line(
+        "# S21.11 point 3: L_class = 52 + |body| + EXT_RESERVE and the bucket is the smallest",
+    );
+    out.line(
+        "# b with L_class <= b - o_max, computed from the body length alone. A sender refuses",
+    );
+    out.line("# classical TLVs beyond ext_reserve; receivers accept up to max_ext (2560).");
+    out.num("ext_reserve", seal::EXT_RESERVE as u64);
+    out.num("max_ext", codec::MAX_EXT_BYTES as u64);
+    out.num("l0_fixed_with_quote", seal::L0_FIXED_BYTES as u64);
+    out.num("classical_tlv_refused_at", (seal::EXT_RESERVE + 1) as u64);
+
+    // The class boundaries of S21.11 point 3, with and without a quote and a pending classical
+    // TLV: the bucket must be the same in all four shapes, because it depends on the body alone.
+    for (body_len, label) in [
+        (2220usize, "b4096_last"),
+        (2221, "b16384_first"),
+        (14508, "b16384_last"),
+        (14509, "b65536_first"),
+    ] {
+        for quoted in [false, true] {
+            for pending in [0usize, seal::EXT_RESERVE] {
+                let mut content = DmContent {
+                    kind: Kind::Text,
+                    message_id: [0x5f; 16],
+                    author_minute: 29_000_007,
+                    minute_index: 0,
+                    timer_code: 0,
+                    timer_version: 7,
+                    quote_ref: if quoted { Some([0x60; 16]) } else { None },
+                    body: vec![0x41; body_len],
+                    ext: Vec::new(),
+                };
+                if pending > 0 {
+                    content.ext = vec![Tlv {
+                        tlv_type: codec::TLV_CARD_UPDATE,
+                        value: vec![0x61; pending - codec::TLV_HEADER_BYTES],
+                    }];
+                }
+                let bytes = content.encode().expect("encode");
+                assert_eq!(&codec::decode(&bytes).expect("decode"), &content);
+                let name = format!(
+                    "class_{label}_{}_{}",
+                    if quoted { "quoted" } else { "plain" },
+                    if pending > 0 { "tlv" } else { "no_tlv" }
+                );
+                out.section(&name);
+                out.num("body_len", body_len as u64);
+                out.num("has_quote", u64::from(quoted));
+                out.num(
+                    "classical_ext_len",
+                    codec::classical_ext_len(&content.ext) as u64,
+                );
+                out.num("l0_len", bytes.len() as u64);
+                out.num("bucket", content.bucket().expect("bucket") as u64);
+                out.sha("l0_sha256", &bytes);
+            }
+        }
+    }
+
     check("dm_content.txt", &out.0);
 }
 
@@ -934,22 +1085,58 @@ fn dm_safety_number_vectors() {
 /// The Ed25519 signing vectors of S0′ V-14 are the Phase 3 artifacts' responsibility; here the
 /// crate's own X-21 signers are pinned instead, so a dalek bump that changed signing fails in Rust
 /// and not only through the JVM comparison.
+///
+/// The pin is a **constant**: signing and verifying with the same library in one run proves
+/// nothing about a bump, because a changed signer would still verify its own output. Each of the
+/// three X-21 artifacts this crate signs — card v2, bundle v2 and binding v3 — therefore carries
+/// its expected 64-byte signature here, computed from fixed inputs (Ed25519 is deterministic).
 #[test]
 fn the_x21_signatures_are_pinned() {
+    const CARD_SIGNATURE: &str = "cb7cbc8772ca207ad64093e915dd933f14736e86b6025726e60807ccfb67b4c207710fffba1304bb9ebbc9727a15d2d814ca09ea585d1a7f35dd5f78e57ef809";
+    const BUNDLE_SIGNATURE: &str = "154483dc88749812132bbc6b3d41d6eda07012e63cf76d42107e5cca8fea9514a373e70589f05499585da325a679bc3df3aee1dacd12031926e9a067d96aba07";
+    const BINDING_SIGNATURE: &str = "abfb2c5a7a934ca7ef789c1570d590bd62ed6daa8aa59a97f4feeb3f23c4a3d277d910316cbfa2b98031ba987068d5c830d6d83fddd3dbacc44fa6a18436700a";
+
     let card_secret = CardSecret::from_bytes([0x71; 32]);
     let card = card::build(&IDENTITY_SEED, 0, &card_secret);
-    assert_eq!(
-        sign::verify_strict(
-            &card.identity_pk,
-            &{
-                let mut message = card::CARD_SIGN_LABEL.to_vec();
-                message.extend_from_slice(&card.encode()[..67]);
-                message
-            },
-            &card.signature,
-        ),
-        Ok(())
+    assert_eq!(hex::encode(card.signature), CARD_SIGNATURE, "card v2");
+    assert!(
+        card::parse(&card.encode()).is_ok(),
+        "the parser accepts what the signer produced"
     );
-    // A card the Phase 9 parser accepts is a card whose signature the same code verifies.
-    assert!(card::parse(&card.encode()).is_ok());
+
+    let xwing = pq::public_key(&KemSecret::from_bytes([0x72; 32])).expect("keygen");
+    let bundle_plain = bundle::build(
+        &IDENTITY_SEED,
+        &bundle::BundleFields {
+            card_index: 0,
+            bundle_week: 2870,
+            bundle_rank: 0,
+            gen_id: 0x7374_7677,
+            olm_identity: &[0x78; 32],
+            fallback_key: &[0x79; 32],
+            xwing_public: &xwing,
+        },
+    )
+    .expect("build");
+    let bundle = bundle::parse(&bundle_plain).expect("parse");
+    assert_eq!(hex::encode(bundle.signature), BUNDLE_SIGNATURE, "bundle v2");
+
+    let binding_signature = binding::sign(
+        &IDENTITY_SEED,
+        &BindingV3 {
+            oi_a: &[0x7a; 32],
+            card_index_a: 0,
+            recipient_namespace: &[0x7b; 32],
+            binding_minute: 29_000_000,
+            gen_id_b: 0x7c7d_7e7f,
+            xwing_ct: &[0x80; pq::CIPHERTEXT_BYTES],
+            base_key_a: &[0x81; 32],
+            oi_b: &[0x82; 32],
+        },
+    );
+    assert_eq!(
+        hex::encode(binding_signature),
+        BINDING_SIGNATURE,
+        "binding v3"
+    );
 }

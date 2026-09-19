@@ -9,7 +9,8 @@
 //!
 //! The card carries no relay address, no expiry, no nonce, no one-time key and, since v2, no intro
 //! key: the first-contact key lives in the weekly bundle, so nothing seed-derived opens an intro
-//! inner layer (P-7). `ghost1` is derived from `identity_pk`, never carried.
+//! inner layer (P-7). The `ghost1…` public identity string is derived from `identity_pk`, never
+//! carried.
 //!
 //! It is a bearer secret for "may message me": whoever holds it can fetch the bundle, deposit into
 //! the inbox, and recognise intro envelopes to the owner (L7-D3, L7-D8, L7-D16).
@@ -32,6 +33,17 @@ pub const LINK_PREFIX: &str = "ghost://contact/";
 pub const LINK_CHARS: usize = LINK_PREFIX.len() + 210;
 /// Label of the card signature.
 pub const CARD_SIGN_LABEL: &[u8] = b"ghost/v1/contact-card";
+
+/// Prefix of a GHOST public identity string (FR-1.3).
+pub const IDENTITY_PREFIX: &str = "ghost1";
+/// The only identity-string version Phase 9 writes (FR-1.3).
+pub const IDENTITY_VERSION: u8 = 0x01;
+/// Length of the checksum inside an identity string.
+pub const IDENTITY_CHECKSUM_BYTES: usize = 4;
+/// `version(1) || SHA-256(identity_pk)(32) || checksum(4)`: what the z-base-32 part encodes.
+pub const IDENTITY_PAYLOAD_BYTES: usize = 1 + 32 + IDENTITY_CHECKSUM_BYTES;
+/// Length of a public identity string in characters: the prefix and 60 z-base-32 characters.
+pub const IDENTITY_CHARS: usize = IDENTITY_PREFIX.len() + 60;
 
 const OFFSET_INDEX: usize = 1;
 const OFFSET_IDENTITY: usize = 3;
@@ -80,16 +92,34 @@ impl Card {
         link
     }
 
-    /// `ghost1 = z32(SHA-256(identity_pk))`, derived and never carried (§3.3).
+    /// The owner's public identity string, derived and never carried (§3.3).
     pub fn ghost1(&self) -> String {
         ghost1(&self.identity_pk)
     }
 }
 
-/// `ghost1 = z32(SHA-256(identity_pk))`.
+/// The public identity string of an Ed25519 identity key (FR-1.3, design §3.3):
+///
+/// ```text
+/// ghost1 = "ghost1" || z-base-32(version(1) = 0x01 || SHA-256(identity_pk)(32) || checksum(4))
+/// checksum = SHA-256(version || SHA-256(identity_pk))[0..4]
+/// ```
+///
+/// §3.3 writes this as `z32(SHA-256(identity_pk))`, which names the hash the string carries, not
+/// the string: the encoding that `:identity`'s `GhostIdentity` (FR-1.3) parses is the one above,
+/// and it is the one this function produces, so a value this crate calls `ghost1` is a value the
+/// project's own parser accepts.
 pub fn ghost1(identity_pk: &[u8; 32]) -> String {
-    let digest: [u8; 32] = Sha256::digest(identity_pk).into();
-    zbase32::encode(&digest)
+    let hash: [u8; 32] = Sha256::digest(identity_pk).into();
+    let mut payload = Vec::with_capacity(IDENTITY_PAYLOAD_BYTES);
+    payload.push(IDENTITY_VERSION);
+    payload.extend_from_slice(&hash);
+    let checksum: [u8; 32] = Sha256::digest(&payload).into();
+    payload.extend_from_slice(&checksum[..IDENTITY_CHECKSUM_BYTES]);
+    let mut out = String::with_capacity(IDENTITY_CHARS);
+    out.push_str(IDENTITY_PREFIX);
+    out.push_str(&zbase32::encode(&payload));
+    out
 }
 
 /// The bytes the card signature covers.
@@ -276,6 +306,61 @@ mod tests {
         let mut link = card.link();
         link.replace_range(16..17, "l");
         assert_eq!(parse_link(&link).err(), Some(DmCode::InvalidCard));
+    }
+
+    /// The identity string this crate derives is the one `GhostIdentity.parse` accepts (FR-1.3):
+    /// 66 characters, the `ghost1` prefix, version 1, the SHA-256 of the key and the 4-byte
+    /// checksum. The rules are re-implemented here from FR-1.3 rather than called, because
+    /// `:identity` is Kotlin and this crate takes no dependency on it.
+    #[test]
+    fn the_identity_string_is_the_one_the_project_parser_accepts() {
+        let card = own_card();
+        let text = card.ghost1();
+        assert_eq!(text.len(), IDENTITY_CHARS);
+        assert_eq!(IDENTITY_CHARS, 66);
+        let payload = text
+            .strip_prefix(IDENTITY_PREFIX)
+            .expect("the ghost1 prefix");
+        let bytes = zbase32::decode(payload, IDENTITY_PAYLOAD_BYTES).expect("z-base-32");
+        assert_eq!(bytes[0], IDENTITY_VERSION);
+        let expected: [u8; 32] = Sha256::digest(card.identity_pk).into();
+        assert_eq!(&bytes[1..33], &expected);
+        let checksum: [u8; 32] = Sha256::digest(&bytes[..33]).into();
+        assert_eq!(&bytes[33..], &checksum[..IDENTITY_CHECKSUM_BYTES]);
+        // Another key gives another string, and the string is not the bare hash.
+        assert_ne!(ghost1(&[0u8; 32]), text);
+        assert_ne!(zbase32::encode(&expected), text);
+    }
+
+    /// §15.2's seeded property run for the card parsers. The card is a fixed-length record whose
+    /// cost is dominated by `verify_strict`, so the `10^6` run feeds length-varying inputs (the
+    /// signature path is reached only by the rare exact-length one) and a shorter run feeds
+    /// exact-length mutants. The exhaustive single-bit test above already covers every one-bit
+    /// mutant of a valid card, which sampling cannot match.
+    #[test]
+    fn the_card_parsers_never_panic_on_seeded_inputs() {
+        let mut rng = crate::property::Seeded::new(0x2545_f491_4f6c_dd1d);
+        for _ in 0..crate::property::inputs() {
+            let bytes = rng.random_input(CARD_BYTES + 16);
+            match parse(&bytes) {
+                Ok(card) => assert_eq!(card.encode().len(), CARD_BYTES),
+                Err(code) => assert_eq!(code, DmCode::InvalidCard),
+            }
+            // The link parser sits on top of the z-base-32 decoder and the same record.
+            let text: String = bytes.iter().map(|b| char::from(*b)).collect();
+            match parse_link(&text) {
+                Ok(card) => assert_eq!(card.encode().len(), CARD_BYTES),
+                Err(code) => assert_eq!(code, DmCode::InvalidCard),
+            }
+        }
+        let template = own_card().encode();
+        for _ in 0..crate::property::signature_inputs() {
+            let bytes = rng.mutate(&template);
+            match parse(&bytes) {
+                Ok(card) => assert_eq!(card.encode().as_slice(), bytes.as_slice()),
+                Err(code) => assert_eq!(code, DmCode::InvalidCard),
+            }
+        }
     }
 
     #[test]

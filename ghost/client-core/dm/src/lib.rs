@@ -17,8 +17,9 @@
 //! The crate has no network, no async runtime, no logging and **no clock**: every time value is an
 //! argument (`binding_minute`, `today`, `now_minute`), which is what makes the deterministic
 //! host/Android equivalence fixture of §15.9 item 7 possible and what keeps T13 and T33
-//! executable. Randomness is drawn in exactly one place, [`pq::fill_random`], and every operation
-//! a vector replays takes its salt, nonce or KEM randomness as an argument instead.
+//! executable. Randomness is drawn from the OS CSPRNG in exactly one place, `pq::fill_random`, and
+//! every operation a vector replays takes its salt, nonce or KEM randomness as an argument
+//! instead, through a `*_with` variant beside the production entry point.
 //!
 //! # Module map
 //!
@@ -47,6 +48,8 @@ pub mod card;
 pub mod codec;
 pub mod derive;
 pub mod pq;
+#[cfg(test)]
+pub(crate) mod property;
 pub mod provenance;
 pub mod result;
 pub mod safety;
