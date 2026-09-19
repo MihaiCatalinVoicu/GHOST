@@ -167,3 +167,23 @@ Removed or void: Q1 (removed), Q2, Q3, Q21 (void). Owner decisions already taken
 - Before the first distribution: the in-app licence screen (Phase 13), the per-release SBOM with the notices hash (ADR-37 point 8), the ADR-38 package.
 - S14: ADR-05, ADR-12, ADR-17 notes (B.1, B.6), `docs/STATUS.md` Phase 9 row, the other documents of §16.4.
 - Whenever a Rust package starts being used under Apache-2.0, or a Gradle component ships no licence text, `license-notices.sh` fails until `ghost/scripts/license-upstream-snapshot.sh` (network, `gh`) records it and the result is reviewed.
+
+## 10. Verification (2026-09-19)
+
+The WIP commit `30c7aa1` was saved unverified. Everything below ran on that tree plus the fixture fix of this section, on the Windows workstation (cargo 1.98.1, cargo-deny 0.20.2, JDK 17.0.20, perl 5.42; `zip` is absent there, so the self-test's jar and APK cases took the `jar` fallback).
+
+| What ran | Result |
+|---|---|
+| `run-all.sh` (10 static gates, G-L5 included) | green |
+| `no-public-binaries.sh` directly: the real tree; the 11 fixture roots | the tree passes; every negative root fails for the reason `test-harness/gates/no-public-binaries/README.md` names, the two positive roots pass, `event-mismatch` passes without its payload and fails with it |
+| `license-notices.sh rust`, `rust-license-headers.sh`, `mpl-sources.sh --bundle` on the real tree (after `cargo fetch --locked`) | green; the bundle holds `option-ext-0.2.0.crate` and `priority-queue-2.7.0.crate` with the Cargo.lock SHA-256s |
+| the licence fixtures directly: 7 `license-notices` lists, 2 `rust-license-headers` lists, 5 `mpl-sources` manifests | each passes or fails as `test-harness/gates/licenses/README.md` states; the headers list reports exactly 5 lines |
+| `./gradlew --no-daemon --offline :app:assembleRelease :app:releaseRuntimeComponents` | green; 66 release runtime components; no `org.signal` in the build log, the components, `verification-metadata.xml` or the tree (outside the gate fixtures and the three S14 comment sites: `DerivationLabels.kt:18`, `Schema.kt:6`, `android/sync/README.md`); the APK carries `assets/THIRD_PARTY_NOTICES.txt`, 503 175 B |
+| `license-notices.sh android` (G-L1, G-L2) and `apk-notices.sh` (G-L3) on those outputs | green |
+| staleness check independent of `licenses.pl` | the component lists of the committed notices equal `cargo tree -e normal` per shipped graph (421, 113, 136 packages) and the Gradle components file (66); `gradle-license-allowlist.txt` names exactly those 66 |
+| `self-test.sh` with `GHOST_SELFTEST_OPS=1 GHOST_SELFTEST_DENY=1` | first run: 219 cases ok and one failure (the fixture below); each of the 14 ADR-37 bans gives "bans FAILED", the control "bans ok"; second run after the fix: 220 cases ok, exit 0 |
+| `rust-gates.sh` (rustfmt, clippy, tests, the release crash suite, cargo-deny, allowlist, feature policy, pins, G-L1, G-R5, G-L4, Entitlement Schedule, clippy fixture) | green in a target directory of this worktree (97 test binaries, 0 failures); see the environment note |
+
+**Fixed.** `test-harness/gates/no-public-binaries/no-declaration/` had no `ghost/` directory in git (an empty directory is not tracked), so `no-public-binaries.sh` stopped at `cd` with a shell error instead of reporting `repository-visibility.txt missing`, and the self-test flagged the case. A README in `no-declaration/ghost/scripts/gates/` keeps the directory; the gate now reports the declared reason.
+
+**Environment note (no change to this branch).** The cargo target directory shared by the Phase 9 worktrees held build-script outputs of other worktrees: `relay/crates/api/build.rs` bakes `CARGO_MANIFEST_DIR` into the build script and cargo's metadata hash is workspace-relative, so an output generated from the `p9-relay` worktree's `relay.proto` (with `RegisterKey`) was reused here and `ghost-relay-node` failed to compile (`missing register_key`). This branch changes no Rust source; `rust-gates.sh` was re-run in a target directory of its own (still on the C: drive, as App Control requires). Not run locally: `reproducible-build.sh`, which needs the native libraries of both ABIs; its only change is the `apk-notices.sh` call, exercised above on the release APK.
