@@ -1,0 +1,5 @@
+apache-pkg	1.0.0	Apache-2.0	../packages/apache-pkg	fixture
+dual-pkg	1.0.0	MIT OR Apache-2.0	../packages/dual-pkg	fixture
+mit-pkg	1.0.0	MIT	../packages/mit-pkg	fixture
+vendored-pkg	1.0.0	MIT	../packages/vendored-pkg	fixture
+undecided-pkg	1.0.0	MIT	../packages/undecided-pkg	fixture

@@ -1,0 +1,7 @@
+agpl-header	1.0.0	MIT	../headers/agpl-header	fixture
+bad-expression	1.0.0	GPL-3.0-only	../headers/bad-expression	fixture
+clean	1.0.0	MIT OR Apache-2.0	../headers/clean	fixture
+excepted	1.0.0	LGPL-3.0-or-later OR MPL-2.0	../headers/excepted	fixture
+gpl-notice	1.0.0	MIT	../headers/gpl-notice	fixture
+gpl-text	1.0.0	MIT	../headers/gpl-text	fixture
+signal-copyright	1.0.0	MIT	../headers/signal-copyright	fixture

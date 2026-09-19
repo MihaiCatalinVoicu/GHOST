@@ -17,3 +17,6 @@ io.branch
 com.crashlytics
 org.web3j
 io.grpc.okhttp
+# ADR-37 (Phase 9 design §2.10.2, owner decision 2026-09-16): libsignal and every Signal artifact are
+# AGPL-3.0; nothing from Signal's group may enter the closed-source client.
+org.signal

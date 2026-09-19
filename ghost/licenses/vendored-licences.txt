@@ -1,0 +1,19 @@
+# Licence files of vendored third-party sources below a Rust package's root (ADR-37; gate G-L1,
+# scripts/gates/license-notices.sh). Every such file of a shipped package is decided here: `include`
+# puts it into the notices (the vendored code is compiled into the shipped binary), `exclude` leaves
+# it out, with the reason. A file the notices generator finds and this list does not decide fails
+# the gate, and so does a line that no longer matches a file.
+#   include|exclude <crate> <version> <path in the package> <reason>
+include liblzma-sys 0.4.8 xz/COPYING summary of the XZ Utils licences: liblzma, the only part build.rs compiles (xz/src/liblzma, two xz/src/common files), is 0BSD
+include liblzma-sys 0.4.8 xz/COPYING.0BSD the licence of liblzma, compiled into the library
+exclude liblzma-sys 0.4.8 xz/COPYING.GPLv2 the licence of the xz scripts (xzdiff, xzgrep, xzless, xzmore), which build.rs does not compile
+exclude liblzma-sys 0.4.8 xz/COPYING.GPLv3 the licence of build-system files and extras, which build.rs does not compile
+exclude liblzma-sys 0.4.8 xz/COPYING.LGPLv2.1 the licence of GNU getopt in xz/lib, which build.rs does not compile
+exclude libsqlite3-sys 0.37.0 sqlcipher/LICENSE ghost-client-net enables the bundled feature, which compiles sqlite3/ (public domain), not the vendored SQLCipher
+include regex-syntax 0.8.11 src/unicode_tables/LICENSE-UNICODE the Unicode data compiled into the Unicode tables
+include ring 0.17.14 src/polyfill/once_cell/LICENSE-MIT the once_cell polyfill compiled into ring, used under MIT
+exclude ring 0.17.14 src/polyfill/once_cell/LICENSE-APACHE the other alternative of the once_cell polyfill, used under MIT
+include ring 0.17.14 third_party/fiat/LICENSE the fiat-crypto code compiled into ring
+include tracing-core 0.1.36 src/spin/LICENSE the spin code vendored into tracing-core
+include zstd-sys 2.1.0+zstd.1.5.7 zstd/LICENSE the BSD licence of zstd, under which the vendored zstd is used
+exclude zstd-sys 2.1.0+zstd.1.5.7 zstd/COPYING the GPL-2.0 alternative of zstd, not used (zstd is BSD-3-Clause OR GPL-2.0-only)

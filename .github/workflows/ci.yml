@@ -10,7 +10,9 @@ name: ci
 # self-hosted, linux, x64, ghost; four at a time, jobs beyond that queue), a persistent machine: each
 # job starts from actions/checkout's cleaned workspace and a runner temp directory the runner empties,
 # and keeps nothing it needs elsewhere. Self-hosted runners are allowed only while the repository is
-# private. Uploads: only what a later job consumes, or a gate's evidence, each kept 3 days.
+# private. Uploads (gate G-L5, scripts/gates/no-public-binaries.sh; ADR-39): no binary is ever published;
+# the only binary upload is the internal native hand-off below, kept 1 day; a gate's evidence (text
+# reports) is kept 3 days.
 on:
   push:
     branches: [main]
@@ -107,7 +109,7 @@ jobs:
           command: check
       - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
         with:
-          tool: cargo-audit@0.22.2
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
       # Same accepted advisory and scopes as deny.toml (ADR-22): rsa 0.9.10 is verification-only
       # inside Arti (client); rsa 0.10.0-rc.18 is reached only through blind-rsa-signatures in the
       # issuer (payment-gated, fault-checked, 2 s reply quantum). The feature policy and the crypto
@@ -119,14 +121,25 @@ jobs:
         run: bash scripts/gates/rust-feature-policy.sh
       - name: Rust crypto version pins per graph (rsa, crypto-bigint, blind-rsa-signatures, num-bigint-dig, ring)
         run: bash scripts/gates/rust-crypto-pins.sh
+      # ADR-37 (Phase 9 design §2.10.2, §22.8.10 points 2, 3, 10): the licence gates that need the Rust
+      # toolchain and the published sources: the notices of every shipped Rust graph, compared with the
+      # committed ghost/licenses/THIRD_PARTY_NOTICES-*.txt (G-L1), the licence declarations of the shipped
+      # packages' sources (G-R5), the MPL-2.0 packages and the source bundle built from their .crate
+      # archives (G-L4).
+      - name: licence gates (G-L1 Rust notices, G-R5 source headers, G-L4 MPL-2.0 sources and bundle)
+        run: |
+          bash scripts/gates/license-notices.sh rust
+          bash scripts/gates/rust-license-headers.sh
+          bash scripts/gates/mpl-sources.sh --bundle "$RUNNER_TEMP/mpl-sources"
       - name: Entitlement Schedule (pinned key, rule 5 against its git predecessor, relay directory, one path, no test material in production)
         run: bash scripts/gates/entitlement-schedule.sh
       - name: clippy clearnet bans fire on the negative fixture (T6)
         run: bash scripts/gates/clippy-clearnet-fixture.sh
-      - name: Rust gate self-tests (feature policy, clippy fixture and Entitlement Schedule reject counter-examples)
+      - name: Rust gate self-tests (feature policy, clippy fixture, Entitlement Schedule and the cargo-deny bans reject counter-examples)
         env:
           GHOST_SELFTEST_CLIPPY: "1"
           GHOST_SELFTEST_OPS: "1"
+          GHOST_SELFTEST_DENY: "1"
         run: bash scripts/gates/self-test.sh
       - name: privacy invariant T1 (relay capture validator)
         run: bash scripts/gates/privacy-capture.sh
@@ -163,6 +176,10 @@ jobs:
           mkdir -p android/network/src/main/jniLibs
           cp -r "$RUNNER_TEMP/native-a/." android/network/src/main/jniLibs/
           cp "$RUNNER_TEMP/a.sha256" native-libs.sha256
+      # Internal hand-off (Phase 9 design §22.8.9 point 3, private repository only): the android and
+      # reproducible jobs of this run download it. One day is enough: they start when a runner is free
+      # (a full run took 1 h 55 min on the four self-hosted runners, docs/ci-self-hosted.md §8). A run
+      # left queued for longer fails at the download, closed; re-run all its jobs, which rebuilds it.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ghost-client-net-jniLibs
@@ -170,7 +187,7 @@ jobs:
             ghost/android/network/src/main/jniLibs
             ghost/native-libs.sha256
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
 
   android:
     name: android (build with the native Tor core, unit tests, lint, dependency verification)
@@ -199,6 +216,13 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - run: ./gradlew build --no-daemon
+      # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 10): the Gradle part of the third-party notices and
+      # the Gradle licence allowlist (G-L1, G-L2), then the notices asset of the release APK (G-L3).
+      - name: licence gates (G-L1 Gradle notices, G-L2 licence allowlist, G-L3 notices in the APK)
+        run: |
+          ./gradlew --no-daemon :app:releaseRuntimeComponents
+          bash ../scripts/gates/license-notices.sh android app/build/licenses/release-runtime-components.txt
+          bash ../scripts/gates/apk-notices.sh app/build/outputs/apk/release/app-release-unsigned.apk
       # T15m (Phase 7 design §5.5, ADR-20): what ships is the merged manifest, not the source ones.
       - name: merged release manifest (permissions, exported components, sync job protection)
         run: bash ../scripts/gates/merged-manifest-lint.sh

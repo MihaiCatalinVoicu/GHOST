@@ -1,0 +1,27 @@
+# Exceptions of gate G-R5 (scripts/gates/rust-license-headers.sh; ADR-37, Phase 9 design §22.8.10
+# point 2): source files of shipped Rust packages that declare a GNU licence (or carry another flagged
+# header) but do not govern the code GHOST ships. One line per reviewed file; `*` covers every flagged
+# file of that exact published version. A line that no longer matches a flagged file fails the gate.
+# (crabgrind 0.2.6, named by the design, joins when the DM crates bring it into a shipped graph.)
+#   <crate> <version> <file|*> <reason>
+priority-queue 2.7.0 * LGPL-3.0-or-later OR MPL-2.0: GHOST uses it unmodified under MPL-2.0 (design §22.8.10 point 2, ADR-37 point 2, source offer in the notices); the LGPL text and file headers are the other alternative
+zstd-sys 2.1.0+zstd.1.5.7 zstd/COPYING zstd is BSD-3-Clause OR GPL-2.0-only; zstd-sys declares BSD-3-Clause and GHOST uses the vendored zstd under zstd/LICENSE
+liblzma-sys 0.4.8 xz/COPYING.GPLv2 GPL-2.0 text for the xz scripts adapted from GNU gzip; build.rs compiles only xz/src/liblzma and two xz/src/common files (0BSD)
+liblzma-sys 0.4.8 xz/COPYING.GPLv3 GPL-3.0 text for xz build-system files; build.rs compiles only xz/src/liblzma and two xz/src/common files (0BSD)
+liblzma-sys 0.4.8 xz/COPYING.LGPLv2.1 LGPL-2.1 text for GNU getopt in xz/lib; build.rs compiles only xz/src/liblzma and two xz/src/common files (0BSD)
+liblzma-sys 0.4.8 xz/extra/scanlzma/scanlzma.c xz build-system or extra file; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/Makefile.am GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt-cdefs.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt-core.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt-ext.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt-pfx-core.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt-pfx-ext.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt.c GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt.in.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt1.c GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/lib/getopt_int.h GNU getopt for the xz command-line tools; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/m4/ax_pthread.m4 xz build-system or extra file; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/src/scripts/xzdiff.in xz shell script adapted from GNU gzip; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/src/scripts/xzgrep.in xz shell script adapted from GNU gzip; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/src/scripts/xzless.in xz shell script adapted from GNU gzip; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)
+liblzma-sys 0.4.8 xz/src/scripts/xzmore.in xz shell script adapted from GNU gzip; not compiled by build.rs (only xz/src/liblzma and two xz/src/common files, 0BSD)

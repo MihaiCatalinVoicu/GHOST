@@ -6,6 +6,7 @@
 # the Tor core, with different Tor-core bytes, or with an unlisted native library fails. In CI the
 # sums come from the same run's android-native job (two same-path builds that must agree); they
 # are not a separately reviewed reference.
+# The APK must also carry the third-party notices asset of the committed notices (G-L3, apk-notices.sh).
 # Usage: reproducible-build.sh [outdir] [native-libs.sha256]. Requires ANDROID_HOME and JAVA_HOME,
 # and the libraries in android/network/src/main/jniLibs (build them with scripts/build-native.sh).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -40,4 +41,5 @@ echo "build a: $A"; echo "build b: $B"
 [ "$A" = "$B" ] || fail "release APK is not reproducible"
 
 bash "$GATES_DIR/apk-native-libs.sh" "$OUT/app-release-unsigned-a.apk" "$NATIVE_SUMS" || fail "native libraries in the APK"
+bash "$GATES_DIR/apk-notices.sh" "$OUT/app-release-unsigned-a.apk" || fail "third-party notices in the APK (G-L3)"
 finish reproducible-build

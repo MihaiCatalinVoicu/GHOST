@@ -1,0 +1,2 @@
+# Fixture decisions on licence files of vendored sources.
+include vendored-pkg 1.0.0 third_party/zlib/LICENSE the fixture's vendored code, compiled in
