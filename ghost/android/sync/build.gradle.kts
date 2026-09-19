@@ -36,9 +36,9 @@ dependencies {
 }
 
 // ErrorPolicyTest parses the error-category table of client-core/README.md (design §3.6) and
-// ModelRelayConformanceTest replays protocol/test-vectors/relay_semantics.txt (design §8.7):
-// declare both as test inputs so a change to either file alone re-runs the tests (build caching
-// is on).
+// ModelRelayConformanceTest replays protocol/test-vectors/relay_semantics.txt (design §8.7) and
+// protocol/test-vectors/register.txt (Phase 9 design §4.7): declare all three as test inputs so a
+// change to one file alone re-runs the tests (build caching is on).
 //
 // Exit-gate harness settings (design §8.5, §8.10) reach the test JVM from `-D` or `-P`:
 // ghost.sync.seeds (seeded worlds, default 1000; 20000 in the sync-exit-gate CI job),
@@ -53,6 +53,9 @@ tasks.withType<Test>().configureEach {
         .withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.file(rootProject.file("../protocol/test-vectors/relay_semantics.txt"))
         .withPropertyName("relaySemanticsVectors")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(rootProject.file("../protocol/test-vectors/register.txt"))
+        .withPropertyName("registerVectors")
         .withPathSensitivity(PathSensitivity.RELATIVE)
     for ((name, value) in harnessProperties) {
         inputs.property(name, value.orElse(""))

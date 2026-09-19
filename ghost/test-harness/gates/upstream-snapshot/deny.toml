@@ -1,0 +1,10 @@
+# Fixture licence policy of the licence gate self-tests (not cargo-deny's configuration).
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "MPL-2.0",
+]
+
+[bans]

@@ -1,0 +1,3 @@
+# Fixture G-R5 exceptions with a line that matches nothing.
+excepted 1.0.0 src/lib.rs the fixture's LGPL alternative, used under MPL-2.0
+clean 1.0.0 src/lib.rs nothing is flagged here

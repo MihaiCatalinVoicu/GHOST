@@ -449,5 +449,5 @@ fn the_real_relay_matches_the_shared_semantics_vectors() {
     .into_iter()
     .collect();
     assert_eq!(seen, all);
-    assert!(sections >= 8, "the vector file lost a section");
+    assert!(sections >= 9, "the vector file lost a section");
 }

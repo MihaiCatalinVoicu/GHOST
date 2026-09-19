@@ -24,6 +24,11 @@
 //! `redemption.marker`), and the store refuses a relay key other than the one it was written under
 //! until `--nullifiers-reset`. An ES update is a restart; persisted nullifiers survive it.
 //!
+//! Key registrations (Phase 9 design §4.6) live in `<data-dir>/keys.redb`, created empty at every
+//! start that lacks it, whatever the redemption flags: it is soft state the namespaces' owners
+//! re-create, so its loss is no refusal to start and `--nullifiers-reset` leaves it untouched. Bearer
+//! credentials v3 are accepted only for `--slot`; without redemption the relay refuses them all.
+//!
 //! `--redemption-counts <file>` (runbook R2, design §6.9 check 2; redemption only) keeps `<file>`
 //! equal to the final redemption count of every closed week the nullifier store keeps, in the
 //! format `ghost-issuer-ops reconcile-check --relay-counts` reads: written at start (a failure is

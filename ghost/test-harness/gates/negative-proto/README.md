@@ -12,6 +12,8 @@ versioned ones:
   message, and a header whose `{` is on the next line.
 - `protocol/relay/v1/relay.proto`: `StoreBlobRequest` is versioned. Reported: `RedeemTokenRequest`
   (no version), `GetBlobRequest` (version only in a nested message) and `ListNamespaceRequest`
-  (version only in a comment).
+  (version only in a comment). Its key registration schema (`KeyKind`, `RegisterResult`, a
+  versioned `RegisterKeyRequest`, Phase 9 design §4.2) is correct, so the gate's enum rule reports
+  nothing here; `negative-proto-register` is that rule's fixture.
 
 Nothing here is compiled or shipped.

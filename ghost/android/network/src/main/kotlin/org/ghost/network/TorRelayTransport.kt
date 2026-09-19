@@ -42,10 +42,12 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
     override fun bootstrap() = call { nativeBootstrap(it) }
 
     /**
-     * Stores an encrypted, bucket-sized blob. `ttlSeconds` is rounded up natively to the next
-     * allowed bucket (1, 7, 30 or 90 days; relays only ever see the bucket); values above 90 days
-     * are rejected. The receipt's expiry is checked natively against the bucketed TTL (category
-     * `not_stored` if the relay would drop the blob early).
+     * Stores an encrypted, bucket-sized blob. `ttlSeconds` must be exactly one relay TTL bucket
+     * (1 h, 1, 7, 30 or 90 days; relays only ever see the bucket and store exactly it, Phase 9
+     * design §10.2): every other value is `invalid_argument`, natively and before any I/O, and
+     * nothing is rounded. The receipt's expiry is checked natively against that TTL (category
+     * `not_stored` if the relay would drop the blob early, `malformed_response` if it promises to
+     * keep it longer than asked).
      */
     override fun store(
         relay: OnionAddress,
@@ -122,6 +124,56 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
         override fun toString(): String = "RedeemAnswer(result=$result)"
     }
 
+    /**
+     * Registers the verifier of a bearer secret for one ISO week in [namespace] at [relay] (Phase 9
+     * design §4.4), with a usable write capability of that namespace: the credentials v3 of that
+     * secret may then use the namespace at that relay until the answered validity. The secret
+     * itself never crosses this boundary, only [verifier] (32 bytes).
+     *
+     * [periodId] is the week the registration is for; the relay judges it against the
+     * capability's week, never against a clock, and answers [REGISTER_WRONG_PERIOD] (a result, not
+     * an exception) when it is neither that week nor the next. [requestId] (16 bytes) is identical
+     * on every retry; an identical retry is idempotent at the relay.
+     */
+    fun registerKey(
+        relay: OnionAddress,
+        namespace: ByteArray,
+        capability: ByteArray,
+        periodId: Long,
+        kind: KeyKind,
+        verifier: ByteArray,
+        requestId: ByteArray,
+        deadlineMillis: Int = MAX_DEADLINE_MILLIS,
+    ): RegisterAnswer {
+        require(namespace.size == 32 && verifier.size == VERIFIER_BYTES && requestId.size == 16) {
+            "namespace 32, verifier 32, request id 16 bytes"
+        }
+        require(periodId >= 0) { "period must not be negative" }
+        requireDeadline(deadlineMillis)
+        val raw = call { nativeRegisterKey(it, relay.toString(), namespace, capability, periodId, kind.code, verifier, requestId, deadlineMillis) }
+        return decodeRegister(raw)
+    }
+
+    /**
+     * What a bearer credential v3 of a registered secret may do (design §4.3 "Rights", §22.8.7):
+     * [READ] lists, gets and checks; [DEPOSIT] stores and checks; [FETCH] lists and gets, with
+     * week-coarse times. The codes are `KeyKind` of `relay.proto` (2 is Write in capability
+     * headers and is never a key kind).
+     */
+    enum class KeyKind(val code: Int) {
+        READ(1), DEPOSIT(3), FETCH(4)
+    }
+
+    /**
+     * A `RegisterKey` answer: [result] one of the `REGISTER_*` values. [relayPeriodId] and
+     * [relayMinute] feed relay-facing decisions only (design §19.4). [validUntilUnixSeconds] is
+     * when the relay forgets the registration, `start(periodId + 2) + 1 h`, on OK only; the
+     * native side refuses any other validity as `malformed_response`.
+     */
+    class RegisterAnswer(val result: Int, val relayPeriodId: Long, val relayMinute: Long, val validUntilUnixSeconds: Long) {
+        override fun toString(): String = "RegisterAnswer(result=$result)"
+    }
+
     override fun rotateCircuits() = call { nativeRotateCircuits(it) }
 
     /** Runs one native call with this transport's id (the issuer calls share the handle, §11.7). */
@@ -172,8 +224,15 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
         const val REDEEM_REPLAYED = 2
         const val REDEEM_WRONG_PERIOD = 3
 
+        /** `RegisterResult` of `relay.proto` (Phase 9 design §4.2). */
+        const val REGISTER_OK = 1
+        const val REGISTER_WRONG_PERIOD = 2
+
         /** Length of a redeemed write capability (v2, design §10.3). */
         const val CAPABILITY_V2_BYTES = 98
+
+        /** Length of a registered verifier, `SHA-256(label ‖ slot ‖ namespace ‖ secret)` (§4.3). */
+        const val VERIFIER_BYTES = 32
 
         /**
          * Creates the Tor client without network access. State lives under `stateDir` (must be
@@ -305,6 +364,28 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
             return RedeemAnswer(result, period, minute, expiry, if (raw.size > 25) raw.copyOfRange(25, raw.size) else null)
         }
 
+        /**
+         * Wire format from the native side: `result(1) || relayPeriod(8) || relayMinute(8) ||
+         * validUntil(8)`, 25 bytes. Strict: a positive validity exactly on OK, 0 on WRONG_PERIOD,
+         * no negative value. The native side has already checked the validity against the period
+         * it asked for.
+         */
+        internal fun decodeRegister(raw: ByteArray): RegisterAnswer {
+            if (raw.size != 25) throw NetworkException(MALFORMED)
+            val result = raw[0].toInt() and 0xff
+            val period = readLong(raw, 1)
+            val minute = readLong(raw, 9)
+            val validUntil = readLong(raw, 17)
+            if (period < 0 || minute < 0 || validUntil < 0) throw NetworkException(MALFORMED)
+            val ok = when (result) {
+                REGISTER_OK -> validUntil > 0
+                REGISTER_WRONG_PERIOD -> validUntil == 0L
+                else -> false
+            }
+            if (!ok) throw NetworkException(MALFORMED)
+            return RegisterAnswer(result, period, minute, validUntil)
+        }
+
         @JvmStatic private external fun nativeCreate(stateDir: String, cacheDir: String, bridgeLines: String): Long
         @JvmStatic private external fun nativeBootstrap(id: Long)
         @JvmStatic private external fun nativeStop(id: Long)
@@ -323,6 +404,10 @@ class TorRelayTransport private constructor(id: Long) : RelayTransport {
         ): ByteArray
         @JvmStatic private external fun nativeRedeem(
             id: Long, relay: String, namespace: ByteArray, token: ByteArray, requestId: ByteArray, deadlineMs: Int,
+        ): ByteArray
+        @JvmStatic private external fun nativeRegisterKey(
+            id: Long, relay: String, namespace: ByteArray, capability: ByteArray, periodId: Long, kind: Int,
+            verifier: ByteArray, requestId: ByteArray, deadlineMs: Int,
         ): ByteArray
     }
 }

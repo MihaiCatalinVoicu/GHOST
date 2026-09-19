@@ -1,5 +1,6 @@
-//! Relay-local capabilities (FR-5.3, plan Annex B) and the relay-keyed values of redemption
-//! (Phase 8 design §10.2, §10.3, ADR-25).
+//! Relay-local capabilities (FR-5.3, plan Annex B), the relay-keyed values of redemption (Phase 8
+//! design §10.2, §10.3, ADR-25), the verifiers of bearer credentials v3 and the deposit ledger per
+//! key registration (Phase 9 design §4.3, §4.5, ADR-30).
 //!
 //! A capability is a MAC-authenticated statement, keyed with a secret only this relay holds, in
 //! one of two public layouts defined once in [`ghost_relay_api::capability_header`] (clients read
@@ -21,8 +22,8 @@
 //! Domain separation: a MAC input starts with a version byte (1 or 2); the labels start with 'g'.
 
 use ghost_relay_api::{
-    capability_format, capability_header, CapabilityHeader, CAPABILITY_MAC_BYTES,
-    CAPABILITY_SERIAL_BYTES, CAPABILITY_TOKEN_BYTES, CAPABILITY_V2_TOKEN_BYTES,
+    capability_format, capability_header, BearerCredential, CapabilityHeader, CAPABILITY_MAC_BYTES,
+    CAPABILITY_SERIAL_BYTES, CAPABILITY_TOKEN_BYTES, CAPABILITY_V2_TOKEN_BYTES, VERIFIER_BYTES,
 };
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
@@ -47,6 +48,12 @@ pub const CAP_SERIAL_LABEL: &[u8] = b"ghost/v1/cap-serial";
 pub const NULLIFIER_STORE_KEY_LABEL: &[u8] = b"ghost/v1/nullifier-store-key";
 /// Length of that key check value.
 pub const STORE_CHECK_BYTES: usize = 8;
+/// Label of the round function of the list cursor permutation ([`RelayKey::seal_list_cursor`]).
+pub const LIST_CURSOR_LABEL: &[u8] = b"ghost/v1/list-cursor";
+/// Length of a `ListNamespace` cursor on the wire.
+pub const LIST_CURSOR_BYTES: usize = 8;
+/// Rounds of the list cursor permutation.
+const LIST_CURSOR_ROUNDS: u8 = 6;
 
 /// Right granted by a capability (the API crate's [`ghost_relay_api::CapabilityKind`]).
 pub use ghost_relay_api::CapabilityKind as Kind;
@@ -172,6 +179,53 @@ impl RelayKey {
         truncate(&self.hmac(&[NULLIFIER_STORE_KEY_LABEL]))
     }
 
+    /// Seals a namespace's list sequence into the opaque cursor `ListNamespace` answers with;
+    /// [`RelayKey::open_list_cursor`] reads it back.
+    ///
+    /// The blob store seeds a namespace's sequence from the UTC hour of its first store and counts
+    /// up per store, so a caller that could read the sequence would learn that hour and the number
+    /// of stores since: for a bundle namespace, whose fetch secret every card holder has and which
+    /// costs no token, the activation or restore hour and the publication count, in one call
+    /// (Phase 9 design §1.2, §21.9 point 4, §22.8.7 point 1, LIMITE L7-D10 "fetch reads return
+    /// only week-coarse times"). A caller that could also choose a sequence would search for the
+    /// same hour by probing cursors.
+    ///
+    /// The relay is the only party that has to read a cursor, so it keeps one: a six-round Feistel
+    /// network over the sequence's two 32-bit halves whose round function is `HMAC-SHA256(relay
+    /// key, "ghost/v1/list-cursor" || round(1) || namespace(32) || u32_be(half))` — a permutation
+    /// of the 64-bit sequence space, keyed by the relay key and tweaked by the namespace. Paging is
+    /// unchanged, because the map is a bijection: one cursor per sequence, and the relay resumes
+    /// exactly where it left off. A cursor of one namespace names an unrelated sequence at another,
+    /// and a cursor is worthless at another relay, like every capability of the same key.
+    pub fn seal_list_cursor(&self, namespace: &[u8; 32], seq: u64) -> [u8; LIST_CURSOR_BYTES] {
+        let (mut left, mut right) = ((seq >> 32) as u32, seq as u32);
+        for round in 0..LIST_CURSOR_ROUNDS {
+            let next = left ^ self.cursor_round(namespace, round, right);
+            left = right;
+            right = next;
+        }
+        ((u64::from(left) << 32) | u64::from(right)).to_be_bytes()
+    }
+
+    /// The sequence a cursor of `namespace` names. Every 8-byte value is a cursor of some
+    /// sequence: a forged or foreign one names a sequence the caller did not choose, never an
+    /// error the caller could read.
+    pub fn open_list_cursor(&self, namespace: &[u8; 32], cursor: &[u8; LIST_CURSOR_BYTES]) -> u64 {
+        let sealed = u64::from_be_bytes(*cursor);
+        let (mut left, mut right) = ((sealed >> 32) as u32, sealed as u32);
+        for round in (0..LIST_CURSOR_ROUNDS).rev() {
+            let previous = right ^ self.cursor_round(namespace, round, left);
+            right = left;
+            left = previous;
+        }
+        (u64::from(left) << 32) | u64::from(right)
+    }
+
+    fn cursor_round(&self, namespace: &[u8; 32], round: u8, half: u32) -> u32 {
+        let mac = self.hmac(&[LIST_CURSOR_LABEL, &[round], namespace, &half.to_be_bytes()]);
+        u32::from_be_bytes(truncate(&mac))
+    }
+
     fn hmac(&self, parts: &[&[u8]]) -> [u8; 32] {
         let mut m = HmacSha256::new_from_slice(&self.0).expect("HMAC accepts any key length");
         for part in parts {
@@ -194,6 +248,113 @@ pub fn scope_hash(token: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&d);
     out
+}
+
+/// The verifier of a bearer credential v3 (Phase 9 design §4.3, §21.2): `SHA-256(label(kind) ||
+/// u8(slot) || namespace || secret)`. It binds the kind, the relay slot and the namespace, so a
+/// verifier registered for one of them authorizes no other; the week lives only in the
+/// registration's period.
+pub fn bearer_verifier(credential: &BearerCredential) -> [u8; VERIFIER_BYTES] {
+    Sha256::digest(credential.verifier_preimage()).into()
+}
+
+/// A deposit registration, the unit the [`DepositLedger`] charges: `(namespace, period,
+/// verifier)` of a `bearer_keys` record of kind DEPOSIT.
+pub type DepositRecord = ([u8; 32], u64, [u8; VERIFIER_BYTES]);
+
+/// A live registration a deposit may be charged to: its allowance (the quota credited by its
+/// registering capabilities) and its validity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Allowance {
+    pub record: DepositRecord,
+    pub quota_bytes: u64,
+    pub valid_until: u64,
+}
+
+/// Deposit accounting per registration (Phase 9 design §4.5, E-11): deposits made with a deposit
+/// credential are charged to the registration that authorized them, never to the write capability
+/// that registered it (that capability's quota entry expires a week before a registration of its
+/// next week does). Like [`QuotaLedger`] it stays in memory: a registration may be exceeded once
+/// per relay restart, bounded by its validity (ADR-25 E29, extended). Once pruned at time t, a
+/// registration valid until t or earlier is never charged again, whatever the clock says later.
+#[derive(Default)]
+pub struct DepositLedger {
+    used: HashMap<DepositRecord, (u64, u64)>, // record -> (used bytes, valid_until)
+    /// The highest time the ledger was pruned at (never lowered).
+    pruned_through: u64,
+}
+
+impl DepositLedger {
+    /// Charges `bytes` to the first of `candidates` whose allowance still covers them: the caller
+    /// passes the live registrations matching the credential, earliest `valid_until` first.
+    /// Returns the record charged; [`CapError::QuotaExceeded`] when no allowance covers the bytes
+    /// (nothing is charged), or [`CapError::Expired`] when every candidate is valid only until the
+    /// highest time the ledger was pruned at.
+    pub fn charge(
+        &mut self,
+        candidates: &[Allowance],
+        bytes: u64,
+    ) -> Result<DepositRecord, CapError> {
+        let mut expired = true;
+        for c in candidates {
+            if c.valid_until <= self.pruned_through {
+                continue;
+            }
+            expired = false;
+            let entry = self.used.entry(c.record).or_insert((0, c.valid_until));
+            if entry.0.saturating_add(bytes) <= c.quota_bytes {
+                entry.0 += bytes;
+                return Ok(c.record);
+            }
+        }
+        Err(if expired && !candidates.is_empty() {
+            CapError::Expired
+        } else {
+            CapError::QuotaExceeded
+        })
+    }
+
+    /// Returns `bytes` previously charged to `record`, for a write that did not commit.
+    pub fn refund(&mut self, record: &DepositRecord, bytes: u64) {
+        if let Some(entry) = self.used.get_mut(record) {
+            entry.0 = entry.0.saturating_sub(bytes);
+        }
+    }
+
+    /// Forgets the entries of registrations valid until `now` or earlier and raises the time below
+    /// which no registration is charged again.
+    pub fn prune(&mut self, now: u64) -> usize {
+        self.pruned_through = self.pruned_through.max(now);
+        let before = self.used.len();
+        self.used.retain(|_, (_, valid_until)| *valid_until > now);
+        before - self.used.len()
+    }
+
+    pub fn len(&self) -> usize {
+        self.used.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.used.is_empty()
+    }
+
+    /// The bytes charged to `record` so far (0 without an entry).
+    pub fn used(&self, record: &DepositRecord) -> u64 {
+        self.used.get(record).map_or(0, |e| e.0)
+    }
+
+    /// Every entry, `(record, used bytes, valid_until)` in record order, and the prune high-water:
+    /// the ledger's whole state (read-only; the T2 world exports it with the relay's databases,
+    /// Phase 9 design §4.9).
+    pub fn snapshot(&self) -> (Vec<(DepositRecord, u64, u64)>, u64) {
+        let mut entries: Vec<(DepositRecord, u64, u64)> = self
+            .used
+            .iter()
+            .map(|(k, &(used, valid_until))| (*k, used, valid_until))
+            .collect();
+        entries.sort_unstable();
+        (entries, self.pruned_through)
+    }
 }
 
 /// Write-quota accounting per capability (keyed by scope hash), bounded by the capability expiry.
@@ -471,6 +632,151 @@ mod tests {
         );
         let later = cap(151);
         assert!(ledger.charge(&key.mint(&later), &later, 10).is_ok());
+    }
+
+    #[test]
+    fn list_cursors_are_a_keyed_permutation_of_the_sequence() {
+        let key = RelayKey::from_bytes([3; 32]);
+        let other = RelayKey::from_bytes([4; 32]);
+        // The sequences a namespace really uses: an hour seed and the stores counted above it.
+        let sequences: Vec<u64> = (0..64).map(|i| (497_239u64 << 32) + i).collect();
+        let mut sealed = std::collections::BTreeSet::new();
+        for &seq in &sequences {
+            let cursor = key.seal_list_cursor(&ns(1), seq);
+            assert_eq!(
+                key.open_list_cursor(&ns(1), &cursor),
+                seq,
+                "the cursor reads back as its sequence"
+            );
+            assert_ne!(cursor, seq.to_be_bytes(), "the sequence never leaves");
+            assert_ne!(
+                key.seal_list_cursor(&ns(2), seq),
+                cursor,
+                "another namespace, another cursor"
+            );
+            assert_ne!(
+                other.seal_list_cursor(&ns(1), seq),
+                cursor,
+                "another relay key, another cursor"
+            );
+            assert!(
+                sealed.insert(cursor),
+                "distinct sequences, distinct cursors"
+            );
+        }
+        // Neither half of a cursor is a half of its sequence: nothing of the hour or of the store
+        // counter survives.
+        for &seq in &sequences {
+            let cursor = key.seal_list_cursor(&ns(1), seq);
+            assert_ne!(cursor[..4], seq.to_be_bytes()[..4]);
+            assert_ne!(cursor[4..], seq.to_be_bytes()[4..]);
+        }
+        // Every 8-byte value opens as some sequence: a forged cursor is never an error.
+        assert_eq!(
+            key.seal_list_cursor(&ns(1), key.open_list_cursor(&ns(1), &[0xab; 8])),
+            [0xab; 8]
+        );
+        assert_eq!(
+            key.open_list_cursor(&ns(1), &key.seal_list_cursor(&ns(1), 0)),
+            0
+        );
+        assert_eq!(
+            key.open_list_cursor(&ns(1), &key.seal_list_cursor(&ns(1), u64::MAX)),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn bearer_verifiers_bind_kind_slot_namespace_and_secret() {
+        use ghost_relay_api::BearerKind;
+        let base = BearerCredential {
+            kind: BearerKind::Deposit,
+            slot: 1,
+            namespace: ns(1),
+            secret: [9; 32],
+        };
+        let v = bearer_verifier(&base);
+        let mut m = Sha256::new();
+        m.update(b"ghost/v1/deposit-verifier");
+        m.update([1u8]);
+        m.update(ns(1));
+        m.update([9u8; 32]);
+        assert_eq!(v[..], m.finalize()[..]);
+        let variants = [
+            BearerCredential {
+                kind: BearerKind::Read,
+                ..base.clone()
+            },
+            BearerCredential {
+                kind: BearerKind::Fetch,
+                ..base.clone()
+            },
+            BearerCredential {
+                slot: 2,
+                ..base.clone()
+            },
+            BearerCredential {
+                namespace: ns(2),
+                ..base.clone()
+            },
+            BearerCredential {
+                secret: [8; 32],
+                ..base.clone()
+            },
+        ];
+        for other in variants {
+            assert_ne!(bearer_verifier(&other), v, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn the_deposit_ledger_charges_the_earliest_record_with_allowance_left() {
+        let early: DepositRecord = (ns(1), 2959, [7; 32]);
+        let late: DepositRecord = (ns(1), 2960, [7; 32]);
+        let allowances = |quota| {
+            [
+                Allowance {
+                    record: early,
+                    quota_bytes: quota,
+                    valid_until: 1_000,
+                },
+                Allowance {
+                    record: late,
+                    quota_bytes: quota,
+                    valid_until: 2_000,
+                },
+            ]
+        };
+        let mut ledger = DepositLedger::default();
+        assert_eq!(ledger.charge(&allowances(8_192), 4_096), Ok(early));
+        assert_eq!(ledger.charge(&allowances(8_192), 4_096), Ok(early));
+        // The early record is full: the next deposit goes to the late one, whole.
+        assert_eq!(ledger.charge(&allowances(8_192), 1_024), Ok(late));
+        assert_eq!((ledger.used(&early), ledger.used(&late)), (8_192, 1_024));
+        // An allowance credited by a second capability covers more.
+        assert_eq!(ledger.charge(&allowances(12_288), 4_096), Ok(early));
+        assert_eq!(
+            ledger.charge(&allowances(12_288), 65_536),
+            Err(CapError::QuotaExceeded)
+        );
+        ledger.refund(&early, 4_096);
+        assert_eq!(ledger.used(&early), 8_192);
+        ledger.refund(&(ns(3), 1, [0; 32]), 1); // no entry: no-op
+        assert_eq!(ledger.charge(&[], 1), Err(CapError::QuotaExceeded));
+        // Pruning forgets the early record; a clock stepped back never charges it again.
+        assert_eq!(ledger.prune(1_000), 1);
+        assert_eq!(
+            ledger.charge(&allowances(8_192)[..1], 1),
+            Err(CapError::Expired)
+        );
+        assert_eq!(ledger.charge(&allowances(8_192), 1), Ok(late));
+        let (entries, pruned) = ledger.snapshot();
+        assert_eq!(entries, vec![(late, 1_025, 2_000)]);
+        assert_eq!(pruned, 1_000);
+        assert_eq!(ledger.prune(500), 0);
+        assert_eq!(ledger.snapshot().1, 1_000);
+        assert_eq!(ledger.prune(2_000), 1);
+        assert!(ledger.is_empty());
     }
 
     #[test]

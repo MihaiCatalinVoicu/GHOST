@@ -7,7 +7,7 @@
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use ghost_client_net::issuer_client::{IssuerError, IssuerRpc};
-use ghost_client_net::namespace_client::RedeemRpc;
+use ghost_client_net::namespace_client::{RedeemRpc, RegisterRpc};
 use ghost_client_net::{OnionAddress, RelayError};
 use ghost_entitlement::batch::{self, Layout, Position};
 use ghost_entitlement::grid::{self, price_epoch};
@@ -15,7 +15,9 @@ use ghost_entitlement::monero::{AddressPurpose, MoneroAddress};
 use ghost_entitlement::schedule::{ScheduleContent, SIGNATURE_DOMAIN};
 use ghost_entitlement::{Expect, Kind, Schedule, Token};
 use ghost_issuer_api::proto::*;
-use ghost_relay_api::proto::{RedeemTokenRequest, RedeemTokenResponse};
+use ghost_relay_api::proto::{
+    RedeemTokenRequest, RedeemTokenResponse, RegisterKeyRequest, RegisterKeyResponse,
+};
 use ghost_relay_capability::RelayKey;
 use ghost_relay_node::{Clock, EntitlementPolicy, NullifierMode, Relay, RelayConfig};
 use num_bigint_dig::BigUint;
@@ -715,6 +717,7 @@ pub struct InProcessRelay {
     pub now: u64,
     pub calls: usize,
     pub tamper: Option<Hook<RedeemTokenResponse>>,
+    pub tamper_register: Option<Hook<RegisterKeyResponse>>,
 }
 
 impl InProcessRelay {
@@ -724,6 +727,7 @@ impl InProcessRelay {
             now,
             calls: 0,
             tamper: None,
+            tamper_register: None,
         }
     }
 }
@@ -740,6 +744,26 @@ impl RedeemRpc for InProcessRelay {
             .map_err(RelayError::Rpc)
             .map(|mut a| {
                 if let Some(h) = &self.tamper {
+                    h(&mut a);
+                }
+                a
+            });
+        ready(answer)
+    }
+}
+
+impl RegisterRpc for InProcessRelay {
+    fn register_key(
+        &mut self,
+        req: RegisterKeyRequest,
+    ) -> impl Future<Output = Result<RegisterKeyResponse, RelayError>> + Send {
+        self.calls += 1;
+        let answer = self
+            .relay
+            .register_key_at(req, self.now)
+            .map_err(RelayError::Rpc)
+            .map(|mut a| {
+                if let Some(h) = &self.tamper_register {
                     h(&mut a);
                 }
                 a

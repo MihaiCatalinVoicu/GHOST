@@ -1,0 +1,12 @@
+# Upstream licence snapshot (scripts/license-upstream-snapshot.sh; ADR-37, Phase 9 design §22.8.10 point 3).
+# Written 2026-09-16; reviewed with the commit that changes it.
+cargo amplify_derive 4.0.1 https://github.com/rust-amplify/amplify-derive bb36a490d68ccf7d574b5926bfc7f8b9509776f2 none
+cargo amplify_num 0.5.4 https://github.com/rust-amplify/amplify-num 872842c3d151296b18314dfa5bf86548c2ce4f29 none
+cargo amplify_syn 2.0.1 https://github.com/rust-amplify/amplify-derive 29ca86c56316ce683bf3827a9d245334db69ce1f none
+cargo imara-diff 0.2.0 https://github.com/pascalkuthe/imara-diff c0b655a86b5b4fc05324e08b9c684368e7413e1f none
+cargo prost 0.14.4 https://github.com/tokio-rs/prost 13646cde7eab75c81b3047767aa0a86e7dbecf12 none
+cargo prost-derive 0.14.4 https://github.com/tokio-rs/prost 13646cde7eab75c81b3047767aa0a86e7dbecf12 none
+cargo reseeding_rng 0.10.7 https://github.com/LiosK/reseeding_rng-rs 54cc0ac59eae11a446ed22c9900e829acc97e489 none
+cargo ring 0.17.14 https://github.com/briansmith/ring 2723abbca9e83347d82b056d5b239c6604f786df none
+cargo sync_wrapper 1.0.2 https://github.com/Actyx/sync_wrapper 55413956c36aeab47feb8c04d1b7a044d6df336a none
+maven net.zetetic:sqlcipher-android 4.19.0 https://github.com/sqlcipher/sqlcipher-android 9a5d685404489cbff14d4c46da81555de1a38787 captured LICENSE 09e4af560ce2e3c9c2aa6b564e35947b03db7d1ae345f22a32793ed46542cc14

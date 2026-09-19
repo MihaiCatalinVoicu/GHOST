@@ -1,0 +1,350 @@
+# Relay key registration conformance vectors (Phase 9 design §4.2–§4.7, §21.2, §22.8.7). One
+# script for two replayers:
+#   - relay/crates/node/tests/register_vectors.rs replays it against the real relay through
+#     Relay::{register_key,store,get,check,list}_at(request, now), Relay::sweep(now) and reopening
+#     the same data directory;
+#   - the Kotlin ModelRelay of the sync harness replays it in ModelRelayConformanceTest (slice S2).
+# relay_semantics.txt keeps the capability semantics and the TTL buckets. A behaviour that is not
+# pinned here is not something the model may rely on.
+#
+# GRAMMAR
+# - One operation per line. '#' starts a comment (to the end of the line). Blank lines are ignored.
+# - Words are separated by spaces. The first word is the operation. Arguments are key=value words
+#   (except the first argument of cap, credential, token and blob, which is a name).
+# - "-> <expectation>" ends a line that has an outcome.
+# - Names are symbols: [A-Za-z0-9_]+. Capabilities, credentials and tokens share one name space.
+#
+# Time
+#   <time> is <week>+<s> or <week>-<s>: start(week) + s or - s seconds, where
+#   start(p) = 345600 + 604800 p (Monday 00:00 UTC), as in redeem.txt. "at <time>" sets the clock;
+#   it MAY move back.
+#
+# Sections
+#   relay slot=<n>|slot=none start=<time>
+#     a relay with a fresh data directory, the clock at <time> and relay key 32 bytes 0x42. slot=n
+#     gives it slot n (the Rust replayer enables redemption for slot n of the committed test
+#     Entitlement Schedule of redeem.txt); slot=none gives it no slot. Symbols are forgotten.
+#   restart     reopens the same data directory with the same key and slot at the current clock:
+#               registrations are kept, the deposit ledger restarts empty.
+#   lose-keys   stops the relay, deletes <data-dir>/keys.redb and reopens as restart does: the
+#               relay starts with no registration.
+#
+# Values
+#   namespace <N>     SHA-256 of the ASCII name (no declaration).
+#   request <R>       the first 16 bytes of SHA-256("ghost/test/request/" || R) (no declaration).
+#   blob <B> size=<n> the ASCII name followed by zero bytes up to n bytes (a bucket size).
+#   cap <C> v2 ns=<N> week=<p> serial=<S> [quota=<bytes>]
+#       a write capability v2 minted with the relay key: 02 || 02 || N || quota(8, BE) (default
+#       268435456) || start(p + 1) + 3600 (8, BE) || serial || HMAC-SHA256(key, bytes 0..66),
+#       serial = the first 16 bytes of SHA-256("ghost/test/serial/" || S).
+#   cap <C> v1 kind=write|read ns=<N> quota=<bytes> expiry=<time>
+#       a v1 capability minted with the relay key (the operator CLI's layout).
+#   credential <K> kind=read|deposit|fetch slot=<n> ns=<N> secret=<S>
+#       a bearer credential v3: 03 || kind (01, 03, 04) || slot || N || SHA-256("ghost/test/secret/"
+#       || S). Its verifier is SHA-256(label || slot || N || secret), label "ghost/v1/read-verifier",
+#       "ghost/v1/deposit-verifier" or "ghost/v1/fetch-verifier".
+#   token <T> from=<C> xor=<i> [mask=<hh>]   C with byte i XORed with mask (default 01).
+#   token <T> from=<C> len=<n>               C cut to n bytes, or extended with zero bytes to n.
+#
+# Operations
+#   register ns=<N> period=<p> kind=read|deposit|fetch|none|<n> verifier=<K> cap=<C>|none req=<R>
+#            [version=<v>] [cut=namespace|verifier|request]
+#     RegisterKey with the verifier of credential K (kind=none is KEY_KIND_UNSPECIFIED, <n> a raw
+#     KeyKind value; cut= sends that field one byte short). Expectations, with the capture result:
+#       ok valid_until=<time>   OK with valid_until_unix = <time> [ok]
+#       wrong_period            OK with WRONG_PERIOD, valid_until_unix = 0 [rejected_period]
+#       rejected_capability     PERMISSION_DENIED [rejected_capability]
+#       rejected_size           INVALID_ARGUMENT [rejected_size]
+#     Every OK answer carries relay_period_id = week(now) and relay_minute = floor(now / 60).
+#   store ns=<N> blob=<B> cred=<C> ttl=<s>  -> ok expiry=<time>
+#   get blob=<B> cred=<C>                   -> ok uploaded=<time> expiry=<time>   (the bytes are B's)
+#   check cred=<C> blobs=<B>,...            -> ok available=<B>,...|available=none
+#   list ns=<N> cred=<C>                    -> ok hashes=<B>,...|hashes=none   (cursor start, limit 256)
+#     cred= names a capability, a credential or a token. Failure expectations, with the capture
+#     result: unauthorized (PERMISSION_DENIED) [rejected_capability], quota (RESOURCE_EXHAUSTED)
+#     [rejected_capability], not_found [not_found], rejected_ttl (INVALID_ARGUMENT) [rejected_ttl].
+#   record ns=<N> period=<p> kind=<kind> verifier=<K> -> quota=<bytes> serials=<n> valid_until=<time>
+#   record ns=<N> period=<p> kind=<kind> verifier=<K> -> none
+#     the relay's stored registration of (N, p, kind, verifier of K), live or not.
+#   deposits ns=<N> period=<p> verifier=<K> -> used=<bytes>
+#     the bytes the deposit ledger charged to that registration (0 without an entry).
+#   ledger -> <n>             the deposit ledger holds n entries.
+#   sweep -> ok removed=<n>   one relay sweep at the current clock removed n registrations.
+#   sweep -> skipped          the clock is below the key store's sweep high-water minute: nothing ran.
+#
+# RELAY RULES these vectors pin (relay/crates/node/src/register.rs, bearer.rs, relay/crates/storage
+# keys.rs, relay/crates/capability DepositLedger)
+#   - RegisterKey checks, in order: version 1, a 32-byte namespace and verifier, a 16-byte request
+#     id and a kind in {read, deposit, fetch}; a write capability of this relay (v1 or v2, MAC,
+#     kind write, the request's namespace, not expired); the period is the capability's week or the
+#     next (a v2 capability's week is week(expiry - 3601), a v1 capability's the week of now; the
+#     relay's clock never selects it); then it records, in one transaction:
+#   - records accumulate per (namespace, period, kind, verifier), valid until start(period + 2) +
+#     3600; a new capability credits its quota to an existing record, at most four capabilities per
+#     record; a capability registers at most one verifier per (namespace, period, kind), a second
+#     one is rejected_capability and records nothing;
+#   - a credential v3 authorizes read: list, get, check; deposit: store, check; fetch: list, get;
+#     only at a relay whose slot is the credential's, only for the credential's namespace, and only
+#     with a live record of its verifier for some period in [week(now) - 3, week(now) + 1];
+#   - a store with a deposit credential is charged to the earliest live record (by valid_until)
+#     whose allowance still covers it; none: quota, nothing written; the ledger lives in memory;
+#     a record that is live but valid only until the ledger's prune high-water is never charged
+#     again and answers unauthorized, not quota (DepositLedger::charge, CapError::Expired);
+#   - get with a read or fetch credential answers uploaded_at floored to the start of its ISO week;
+#     with a fetch credential also the expiry rounded up to the next ISO week boundary; a
+#     capability gets the upload minute and the hour-rounded expiry;
+#   - the sweep deletes records with valid_until <= now and never runs below its high-water minute.
+
+# ---------------------------------------------------------------------------------------------
+# 1. Registration: ok, identical retry, accumulation, the period rule, one verifier per
+#    capability, at most four credits, refusals; then the rights of each credential kind.
+relay slot=1 start=2959+86400
+cap A v2 ns=inbox week=2959 serial=a
+cap B v2 ns=inbox week=2959 serial=b
+cap C v2 ns=inbox week=2959 serial=c
+cap D v2 ns=inbox week=2959 serial=d
+cap E v2 ns=inbox week=2959 serial=e
+cap G v2 ns=inbox week=2959 serial=g
+cap X v2 ns=other week=2959 serial=x
+cap OLD v2 ns=inbox week=2958 serial=old                  # expired at start(2959) + 3600
+cap RD v1 kind=read ns=inbox quota=0 expiry=2961+0
+cap P v2 ns=bundle week=2959 serial=p
+token AMAC from=A xor=97                                  # the last MAC byte
+credential DEP kind=deposit slot=1 ns=inbox secret=deposit
+credential DEP2 kind=deposit slot=1 ns=inbox secret=deposit-two
+credential READ kind=read slot=1 ns=inbox secret=read
+credential FETCH kind=fetch slot=1 ns=bundle secret=fetch
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r1 -> ok valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r1 -> ok valid_until=2961+3600   # identical retry
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r2 -> ok valid_until=2961+3600   # the request id is not bound
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=268435456 serials=1 valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=B req=r3 -> ok valid_until=2961+3600   # a second capability credits the record
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=536870912 serials=2 valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=B req=r4 -> ok valid_until=2961+3600   # no second credit for the same capability
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=536870912 serials=2 valid_until=2961+3600
+register ns=inbox period=2960 kind=deposit verifier=DEP cap=A req=r5 -> ok valid_until=2962+3600   # cap_week + 1
+register ns=inbox period=2961 kind=deposit verifier=DEP cap=A req=r6 -> wrong_period               # cap_week + 2
+register ns=inbox period=2958 kind=deposit verifier=DEP cap=A req=r7 -> wrong_period               # cap_week - 1
+record ns=inbox period=2961 kind=deposit verifier=DEP -> none
+record ns=inbox period=2958 kind=deposit verifier=DEP -> none
+register ns=inbox period=2959 kind=read verifier=READ cap=A req=r8 -> ok valid_until=2961+3600     # one capability, another kind
+register ns=inbox period=2959 kind=deposit verifier=DEP2 cap=A req=r9 -> rejected_capability       # a second verifier from one capability
+record ns=inbox period=2959 kind=deposit verifier=DEP2 -> none
+register ns=inbox period=2959 kind=deposit verifier=DEP2 cap=C req=r10 -> ok valid_until=2961+3600 # another capability, another verifier: accumulated
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=536870912 serials=2 valid_until=2961+3600   # the first record is untouched
+record ns=inbox period=2959 kind=deposit verifier=DEP2 -> quota=268435456 serials=1 valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=D req=r11 -> ok valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=E req=r12 -> ok valid_until=2961+3600
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=1073741824 serials=4 valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=G req=r13 -> ok valid_until=2961+3600  # a fifth capability: bound, no fifth credit
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=1073741824 serials=4 valid_until=2961+3600
+# Every card holder derives the shared deposit secret, so a card holder can spend its own token to
+# credit the owner's record (§4.4 points 4 and 5). The four credits are then not the owner's, and
+# the owner's own registration is bound without a fifth credit. The record keeps four times the
+# allowance a redeemed capability carries -- all of them carry the Entitlement Schedule's
+# capability_quota_bytes -- so the owner loses its own credit, never allowance, and the record's
+# validity and verifier are the ones it registered. Reviewed 2026-09-19 (finding P9S1-02).
+cap OWN v2 ns=inbox week=2959 serial=own
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=OWN req=r13b -> ok valid_until=2961+3600
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=1073741824 serials=4 valid_until=2961+3600
+register ns=inbox period=2959 kind=deposit verifier=DEP2 cap=G req=r14 -> rejected_capability      # G is bound to DEP
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=none req=r15 -> rejected_capability
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=OLD req=r16 -> rejected_capability     # expired
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=X req=r17 -> rejected_capability       # a capability for another namespace
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=RD req=r18 -> rejected_capability      # a read capability
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=AMAC req=r19 -> rejected_capability    # forged
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=DEP req=r20 -> rejected_capability     # a credential is no write capability
+register ns=inbox period=2959 kind=none verifier=DEP cap=A req=r21 -> rejected_size                # KEY_KIND_UNSPECIFIED
+register ns=inbox period=2959 kind=2 verifier=DEP cap=A req=r22 -> rejected_size                   # 2 is Write, never a key kind
+register ns=inbox period=2959 kind=5 verifier=DEP cap=A req=r23 -> rejected_size
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r24 version=2 -> rejected_size
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r25 cut=namespace -> rejected_size
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r26 cut=verifier -> rejected_size
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=A req=r27 cut=request -> rejected_size
+register ns=bundle period=2959 kind=fetch verifier=FETCH cap=P req=f1 -> ok valid_until=2961+3600
+# The rights of each kind. Tuesday 01:00: a minute that is no week start.
+at 2959+90000
+blob I1 size=4096
+blob I2 size=4096
+blob B1 size=4096
+blob I3 size=1024
+store ns=inbox blob=I1 cred=DEP ttl=604800 -> ok expiry=2960+90000
+check cred=DEP blobs=I1,I2 -> ok available=I1                    # senders verify their own copies
+get blob=I1 cred=DEP -> unauthorized                             # a deposit credential never reads
+list ns=inbox cred=DEP -> unauthorized
+get blob=I1 cred=READ -> ok uploaded=2959+0 expiry=2960+90000    # the upload week, the exact expiry
+list ns=inbox cred=READ -> ok hashes=I1
+check cred=READ blobs=I1,I2 -> ok available=I1
+store ns=inbox blob=I2 cred=READ ttl=604800 -> unauthorized      # a read credential never stores
+get blob=I1 cred=A -> ok uploaded=2959+90000 expiry=2960+90000   # a capability: the minute and the hour
+get blob=I2 cred=READ -> not_found
+store ns=bundle blob=B1 cred=P ttl=2592000 -> ok expiry=2963+262800
+get blob=B1 cred=FETCH -> ok uploaded=2959+0 expiry=2964+0       # both times week-coarse
+list ns=bundle cred=FETCH -> ok hashes=B1
+check cred=FETCH blobs=B1 -> unauthorized                        # a fetch credential lists and gets only
+store ns=bundle blob=I2 cred=FETCH ttl=2592000 -> unauthorized
+get blob=B1 cred=P -> ok uploaded=2959+90000 expiry=2963+262800
+list ns=inbox cred=FETCH -> unauthorized                         # the credential names the bundle namespace
+credential FETCHIN kind=fetch slot=1 ns=inbox secret=fetch
+list ns=inbox cred=FETCHIN -> unauthorized                       # no fetch key is registered for the inbox
+get blob=I1 cred=FETCHIN -> unauthorized
+# Credentials the relay refuses: another slot, a wrong secret, another namespace, malformed.
+credential DEP0 kind=deposit slot=0 ns=inbox secret=deposit      # the same secret, named for slot 0
+credential WRONG kind=deposit slot=1 ns=inbox secret=guess
+credential DEPX kind=deposit slot=1 ns=other secret=deposit
+token D66 from=DEP len=66
+token D68 from=DEP len=68
+token DK2 from=DEP xor=1                                         # kind 0x03 -> 0x02
+token DV4 from=DEP xor=0 mask=07                                 # version 3 -> 4
+store ns=inbox blob=I2 cred=DEP0 ttl=604800 -> unauthorized
+check cred=DEP0 blobs=I1 -> unauthorized
+store ns=inbox blob=I2 cred=WRONG ttl=604800 -> unauthorized
+store ns=other blob=I2 cred=DEPX ttl=604800 -> unauthorized
+store ns=other blob=I2 cred=DEP ttl=604800 -> unauthorized       # the credential names the inbox
+store ns=inbox blob=I2 cred=D66 ttl=604800 -> unauthorized
+store ns=inbox blob=I2 cred=D68 ttl=604800 -> unauthorized
+store ns=inbox blob=I2 cred=DK2 ttl=604800 -> unauthorized
+store ns=inbox blob=I2 cred=DV4 ttl=604800 -> unauthorized
+store ns=inbox blob=I2 cred=DEP ttl=7200 -> rejected_ttl         # the TTL rule holds for deposits
+store ns=inbox blob=I2 cred=DEP ttl=3600 -> ok expiry=2959+93600
+check cred=DEP blobs=I1,I2 -> ok available=I1,I2
+store ns=inbox blob=I3 cred=DEP2 ttl=3600 -> ok expiry=2959+93600    # a second registered verifier also deposits
+check cred=DEP blobs=I3 -> ok available=I3
+
+# ---------------------------------------------------------------------------------------------
+# 2. The deposit ledger: records of periods p and p + 1 authorize one credential; deposits go to
+#    the earliest record with allowance left; exhaustion; a credit raises the allowance; a restart
+#    keeps the records and empties the ledger; validity, the sweep and a stepped-back clock.
+relay slot=1 start=2959+86400
+cap S1 v2 ns=small week=2959 serial=s1 quota=8192
+cap S2 v2 ns=small week=2959 serial=s2 quota=4096
+credential SD kind=deposit slot=1 ns=small secret=small
+blob Q1 size=4096
+blob Q2 size=4096
+blob Q3 size=4096
+blob Q4 size=4096
+blob Q5 size=1024
+blob Q6 size=4096
+blob Q7 size=4096
+blob Q8 size=4096
+blob Q9 size=4096
+blob Q10 size=4096
+store ns=small blob=Q1 cred=SD ttl=86400 -> unauthorized          # nothing registered yet
+register ns=small period=2959 kind=deposit verifier=SD cap=S1 req=q1 -> ok valid_until=2961+3600
+register ns=small period=2960 kind=deposit verifier=SD cap=S1 req=q2 -> ok valid_until=2962+3600
+store ns=small blob=Q1 cred=SD ttl=86400 -> ok expiry=2959+172800
+deposits ns=small period=2959 verifier=SD -> used=4096
+store ns=small blob=Q2 cred=SD ttl=86400 -> ok expiry=2959+172800
+store ns=small blob=Q3 cred=SD ttl=86400 -> ok expiry=2959+172800   # 2959's allowance is spent: charged to 2960's
+deposits ns=small period=2959 verifier=SD -> used=8192
+deposits ns=small period=2960 verifier=SD -> used=4096
+store ns=small blob=Q4 cred=SD ttl=86400 -> ok expiry=2959+172800
+store ns=small blob=Q5 cred=SD ttl=86400 -> quota                   # no allowance covers it
+check cred=SD blobs=Q4,Q5 -> ok available=Q4                        # the refused store wrote nothing
+ledger -> 2
+register ns=small period=2959 kind=deposit verifier=SD cap=S2 req=q3 -> ok valid_until=2961+3600
+record ns=small period=2959 kind=deposit verifier=SD -> quota=12288 serials=2 valid_until=2961+3600
+store ns=small blob=Q5 cred=SD ttl=86400 -> ok expiry=2959+172800   # the credit covers it
+deposits ns=small period=2959 verifier=SD -> used=9216
+store ns=small blob=Q1 cred=SD ttl=86400 -> ok expiry=2959+172800   # the same store again: a free no-op
+deposits ns=small period=2959 verifier=SD -> used=9216
+restart
+ledger -> 0
+record ns=small period=2959 kind=deposit verifier=SD -> quota=12288 serials=2 valid_until=2961+3600
+store ns=small blob=Q6 cred=SD ttl=86400 -> ok expiry=2959+172800   # the used bytes restarted empty (E29)
+deposits ns=small period=2959 verifier=SD -> used=4096
+at 2961+3599
+store ns=small blob=Q7 cred=SD ttl=86400 -> ok expiry=2961+90000    # 2959's record still lives
+deposits ns=small period=2959 verifier=SD -> used=8192
+sweep -> ok removed=0
+at 2961+3600                                                        # 2959's record lapsed
+store ns=small blob=Q8 cred=SD ttl=86400 -> ok expiry=2961+90000
+deposits ns=small period=2960 verifier=SD -> used=4096
+sweep -> ok removed=1
+record ns=small period=2959 kind=deposit verifier=SD -> none
+record ns=small period=2960 kind=deposit verifier=SD -> quota=8192 serials=1 valid_until=2962+3600
+ledger -> 1
+at 2962+3599
+store ns=small blob=Q9 cred=SD ttl=86400 -> ok expiry=2962+90000
+at 2962+3600                                                        # no record lives
+store ns=small blob=Q10 cred=SD ttl=86400 -> unauthorized
+sweep -> ok removed=1
+ledger -> 0
+at 2962+3000                                                        # the clock steps back
+sweep -> skipped
+store ns=small blob=Q10 cred=SD ttl=86400 -> unauthorized           # a swept record never comes back
+
+# ---------------------------------------------------------------------------------------------
+# 3. The period is judged by the capability, never by the relay's clock: a capability redeemed
+#    late in its week, and one redeemed early for the next week.
+relay slot=1 start=2960+1800
+cap L v2 ns=late week=2959 serial=l
+cap N v2 ns=late week=2961 serial=n
+credential LD kind=deposit slot=1 ns=late secret=late
+register ns=late period=2959 kind=deposit verifier=LD cap=L req=l1 -> ok valid_until=2961+3600   # the relay's week is 2960
+register ns=late period=2960 kind=deposit verifier=LD cap=L req=l2 -> ok valid_until=2962+3600
+register ns=late period=2961 kind=deposit verifier=LD cap=L req=l3 -> wrong_period
+at 2960+3600                                                        # L expired
+register ns=late period=2960 kind=deposit verifier=LD cap=L req=l4 -> rejected_capability
+register ns=late period=2961 kind=deposit verifier=LD cap=N req=l5 -> ok valid_until=2963+3600
+register ns=late period=2962 kind=deposit verifier=LD cap=N req=l6 -> ok valid_until=2964+3600
+register ns=late period=2960 kind=deposit verifier=LD cap=N req=l7 -> wrong_period               # the relay's own week is not N's
+record ns=late period=2962 kind=deposit verifier=LD -> quota=268435456 serials=1 valid_until=2964+3600
+
+# ---------------------------------------------------------------------------------------------
+# 4. A relay without a slot: operator-minted v1 capabilities register (their week is the week of
+#    the registration), but every credential v3 is refused; capabilities keep working.
+relay slot=none start=2959+86400
+cap V v1 kind=write ns=cli quota=65536 expiry=2970+0
+cap W v1 kind=write ns=cli quota=65536 expiry=2971+0
+credential VD kind=deposit slot=1 ns=cli secret=cli
+credential VR kind=read slot=1 ns=cli secret=cli-read
+blob W1 size=1024
+register ns=cli period=2959 kind=deposit verifier=VD cap=V req=v1 -> ok valid_until=2961+3600
+register ns=cli period=2960 kind=deposit verifier=VD cap=V req=v2 -> ok valid_until=2962+3600
+register ns=cli period=2961 kind=deposit verifier=VD cap=V req=v3 -> wrong_period
+register ns=cli period=2959 kind=deposit verifier=VD cap=W req=v4 -> ok valid_until=2961+3600
+record ns=cli period=2959 kind=deposit verifier=VD -> quota=131072 serials=2 valid_until=2961+3600
+register ns=cli period=2959 kind=read verifier=VR cap=V req=v5 -> ok valid_until=2961+3600
+store ns=cli blob=W1 cred=VD ttl=86400 -> unauthorized              # no slot: no credential v3
+list ns=cli cred=VR -> unauthorized
+store ns=cli blob=W1 cred=V ttl=86400 -> ok expiry=2959+172800
+list ns=cli cred=V -> ok hashes=W1
+at 2960+0                                                           # a week later, V is of week 2960
+register ns=cli period=2961 kind=deposit verifier=VD cap=V req=v6 -> ok valid_until=2963+3600
+register ns=cli period=2959 kind=deposit verifier=VD cap=V req=v7 -> wrong_period
+
+# ---------------------------------------------------------------------------------------------
+# 5. keys.redb lost: the relay starts with no registration; stores with the credential are refused
+#    until the owner registers again; blobs are untouched.
+relay slot=1 start=2959+86400
+cap K v2 ns=lost week=2959 serial=k
+credential KD kind=deposit slot=1 ns=lost secret=lost
+blob Z1 size=4096
+blob Z2 size=4096
+register ns=lost period=2959 kind=deposit verifier=KD cap=K req=z1 -> ok valid_until=2961+3600
+store ns=lost blob=Z1 cred=KD ttl=604800 -> ok expiry=2960+86400
+lose-keys
+record ns=lost period=2959 kind=deposit verifier=KD -> none
+store ns=lost blob=Z2 cred=KD ttl=604800 -> unauthorized
+get blob=Z1 cred=K -> ok uploaded=2959+86400 expiry=2960+86400
+register ns=lost period=2959 kind=deposit verifier=KD cap=K req=z2 -> ok valid_until=2961+3600   # the owner heals it
+store ns=lost blob=Z2 cred=KD ttl=604800 -> ok expiry=2960+86400
+
+# ---------------------------------------------------------------------------------------------
+# 6. The ledger's prune high-water against a live record: a record the sweep never saw, whose
+#    validity ends at or below the high-water, authorizes the credential (it is live at `now`) but
+#    is never charged again, so the store is refused as unauthorized (CapError::Expired), not as
+#    quota. It needs a clock stepped back by more than a registration's validity; pinned so that
+#    neither replayer may merge the relay's two deposit-charge refusals.
+relay slot=1 start=2965+3600
+credential HD kind=deposit slot=1 ns=hw secret=hw
+blob H1 size=1024
+sweep -> ok removed=0                                               # the high-water is now 2965+3600
+at 2959+86400                                                       # the clock steps back below it
+cap O v2 ns=hw week=2959 serial=o
+register ns=hw period=2959 kind=deposit verifier=HD cap=O req=h1 -> ok valid_until=2961+3600
+record ns=hw period=2959 kind=deposit verifier=HD -> quota=268435456 serials=1 valid_until=2961+3600
+store ns=hw blob=H1 cred=HD ttl=86400 -> unauthorized               # live for the credential, below the high-water for the ledger
+deposits ns=hw period=2959 verifier=HD -> used=0                    # nothing was charged
+ledger -> 0

@@ -1,0 +1,4 @@
+# Repository visibility (gate G-L5, scripts/gates/no-public-binaries.sh; ADR-39). The owner made the
+# repository private on 2026-09-16 (docs/design/faza9-s0-hygiene.md). Change this line in the same
+# commit as a visibility switch: in GitHub Actions the gate compares it with the event payload.
+private

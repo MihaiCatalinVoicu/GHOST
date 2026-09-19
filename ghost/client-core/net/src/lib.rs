@@ -38,7 +38,8 @@
 //! `ghost-relay-transport`).
 //!
 //! Relay calls go through [`NamespaceClient`], bound by type to one namespace: its circuits use
-//! that namespace's isolation token and every capability must name the same namespace (T21).
+//! that namespace's isolation token and every capability or bearer credential must name the same
+//! namespace and fit the operation (T21).
 //! The unbound client cannot be built outside the crate, whatever the scope:
 //! ```compile_fail,E0624
 //! fn unbound(t: &ghost_client_net::TorTransport, a: &ghost_client_net::OnionAddress) {

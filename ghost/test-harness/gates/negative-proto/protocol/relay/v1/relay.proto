@@ -33,3 +33,23 @@ message RedeemTokenRequest {
 message RedeemTokenResponse {
   uint32 result = 1;
 }
+
+// The key registration schema is correct here (it is proto-check's other rule, and the
+// negative-proto-register fixture's): RegisterKeyRequest is versioned and must not be reported.
+enum KeyKind {
+  KEY_KIND_UNSPECIFIED = 0;
+  KEY_KIND_READ = 1;
+  KEY_KIND_DEPOSIT = 3;
+  KEY_KIND_FETCH = 4;
+}
+
+enum RegisterResult {
+  REGISTER_RESULT_UNSPECIFIED = 0;
+  REGISTER_RESULT_OK = 1;
+  REGISTER_RESULT_WRONG_PERIOD = 2;
+}
+
+message RegisterKeyRequest {
+  uint32 version = 1;
+  KeyKind kind = 4;
+}

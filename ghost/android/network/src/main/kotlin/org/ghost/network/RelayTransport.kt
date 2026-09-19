@@ -8,9 +8,11 @@ package org.ghost.network
  * Failures are [NetworkException] with a constant category (`client-core/README.md`), or
  * [IllegalArgumentException] for arguments rejected before the native call. Every relay call takes
  * a deadline in milliseconds, 1..[MAX_DEADLINE_MILLIS]; the overloads without one use
- * [MAX_DEADLINE_MILLIS]. The capability must name `namespace` and fit the call (write for store;
- * read or write for get, list, check); otherwise the native side fails with `invalid_argument`
- * before any network I/O (T21).
+ * [MAX_DEADLINE_MILLIS]. The token must name `namespace` and fit the call; otherwise the native
+ * side fails with `invalid_argument` before any network I/O (T21). It is either a relay-minted
+ * capability (write for store, read or write for get, list and check) or a bearer credential v3,
+ * whose kind names its operations exactly (read: get, list, check; deposit: store, check; fetch:
+ * get, list; Phase 9 design §4.3, §22.8.7).
  */
 interface RelayTransport : AutoCloseable {
     /** Bootstraps Tor (bounded natively at 180 s). */

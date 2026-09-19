@@ -1,0 +1,31 @@
+// Negative fixture of scripts/gates/proto-check.sh (Phase 9 design §4.2, §16.1): a valid schema
+// whose every request message is versioned, but whose key registration schema is not the
+// design's. The gate must report exactly three violations: KeyKind with the Write byte 2 and
+// without FETCH, RegisterResult with a replacing result, and the missing RegisterKeyRequest (its
+// request is misnamed RegisterRequest).
+syntax = "proto3";
+
+package ghost.relay.v1;
+
+enum KeyKind {
+  KEY_KIND_UNSPECIFIED = 0;
+  KEY_KIND_READ = 1;   // list, get, check
+  KEY_KIND_WRITE = 2;
+  KEY_KIND_DEPOSIT = 3;
+}
+
+enum RegisterResult {
+  REGISTER_RESULT_UNSPECIFIED = 0;
+  REGISTER_RESULT_OK = 1;
+  REGISTER_RESULT_WRONG_PERIOD = 2;
+  REGISTER_RESULT_REPLACED = 3;
+}
+
+message RegisterRequest {
+  uint32 version = 1;
+  KeyKind kind = 4;
+}
+
+message RegisterResponse {
+  RegisterResult result = 1;
+}

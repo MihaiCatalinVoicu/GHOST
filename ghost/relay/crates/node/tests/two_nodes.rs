@@ -4,7 +4,9 @@
 //! against the normative allowed-observables schema (T1). Phase 8 (design §10.6, §14.1) adds token
 //! redemption over gRPC: ok, identical retry, replay to another namespace, wrong slot, wrong week
 //! and forged, with captures holding only the capability's scope hash, never the token, its
-//! authenticator or the minted capability.
+//! authenticator or the minted capability. Phase 9 (design §4.7, §10.2) adds key registrations,
+//! deposits, reads and fetches with bearer credentials v3, and exact TTL buckets, with their
+//! captures.
 
 mod common;
 
@@ -539,6 +541,261 @@ async fn redemptions_over_grpc_and_their_capture() {
         .filter(|l| l.contains("\"op\":\"redeem\""))
         .count();
     assert_eq!(redeem_events, 6);
+}
+
+/// Phase 9 (design §4.2–§4.7, §10.2, §22.8.7): key registrations, deposits, reads and fetches with
+/// bearer credentials v3 over gRPC, and their capture: a `register` event per registration with
+/// its `key_kind`, `ttl_bucket_seconds` of every store (3600 included), `rejected_ttl` for a TTL
+/// that is no bucket, one deposit scope for every sender of an inbox, week-coarse times on fetch,
+/// and never a secret, a credential or a verifier.
+#[tokio::test]
+async fn registrations_deposits_and_fetches_over_grpc_and_their_capture() {
+    use ghost_relay_api::{BearerCredential, BearerKind};
+    use ghost_relay_capability::bearer_verifier;
+
+    let clock = VirtualClock::new(at("2959+90000"));
+    let now = clock.get();
+    let a = start_node_with(
+        false,
+        Some(policy(test_schedule(), 1, RELAY_B, NullifierMode::Create)),
+        Some(&clock),
+    )
+    .await;
+    let mut owner = client(&a.addr).await;
+    let inbox = namespace("two-nodes-inbox");
+    let bundle = namespace("two-nodes-bundle");
+    // The owner's write capabilities for its inbox and bundle: redeemed tokens of week 2959.
+    let (inbox_cap, bundle_cap) = match (
+        outcome(
+            owner
+                .redeem_token(request(&token("a1"), &inbox, &request_id("i")))
+                .await
+                .map(tonic::Response::into_inner),
+            now,
+        ),
+        outcome(
+            owner
+                .redeem_token(request(&token("a2"), &bundle, &request_id("b")))
+                .await
+                .map(tonic::Response::into_inner),
+            now,
+        ),
+    ) {
+        (Outcome::Ok(i), Outcome::Ok(b)) => (i, b),
+        other => panic!("redemptions: {other:?}"),
+    };
+    let credential = |kind, namespace, secret| BearerCredential {
+        kind,
+        slot: 1,
+        namespace,
+        secret: [secret; 32],
+    };
+    let deposit = credential(BearerKind::Deposit, inbox, 0xD1);
+    let read = credential(BearerKind::Read, inbox, 0xD2);
+    let fetch = credential(BearerKind::Fetch, bundle, 0xD3);
+    let registrations = [
+        (&deposit, &inbox, &inbox_cap),
+        (&read, &inbox, &inbox_cap),
+        (&fetch, &bundle, &bundle_cap),
+    ];
+    for (i, (c, ns, cap)) in registrations.iter().enumerate() {
+        let r = owner
+            .register_key(RegisterKeyRequest {
+                version: PROTOCOL_VERSION,
+                namespace_id: ns.to_vec(),
+                period_id: 2959,
+                kind: c.kind.byte().into(),
+                verifier: bearer_verifier(c).to_vec(),
+                capability: Some(Capability {
+                    token: cap.to_vec(),
+                }),
+                request_id: request_id(&format!("register-{i}")),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(r.result, RegisterResult::Ok as i32);
+        assert_eq!(r.valid_until_unix, at("2961+3600"));
+    }
+    // A registration for a week its capability does not cover.
+    let wrong = owner
+        .register_key(RegisterKeyRequest {
+            version: PROTOCOL_VERSION,
+            namespace_id: inbox.to_vec(),
+            period_id: 2961,
+            kind: BearerKind::Deposit.byte().into(),
+            verifier: bearer_verifier(&deposit).to_vec(),
+            capability: Some(Capability {
+                token: inbox_cap.clone(),
+            }),
+            request_id: request_id("register-wrong"),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(wrong.result, RegisterResult::WrongPeriod as i32);
+
+    // Two senders deposit with the one inbox credential, on their own connections.
+    let as_cap = |c: &BearerCredential| {
+        Some(Capability {
+            token: c.encode().to_vec(),
+        })
+    };
+    let first = vec![0x31u8; 4096];
+    let second = vec![0x32u8; 4096];
+    for (data, ttl) in [(&first, 3_600), (&second, 604_800)] {
+        let mut sender = client(&a.addr).await;
+        let stored = sender
+            .store_blob(StoreBlobRequest {
+                ttl_seconds: ttl,
+                ..store_req(inbox, data, as_cap(&deposit))
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(stored.success);
+    }
+    let mut sender = client(&a.addr).await;
+    let not_a_bucket = sender
+        .store_blob(StoreBlobRequest {
+            ttl_seconds: 7_200,
+            ..store_req(inbox, &vec![0x33u8; 4096], as_cap(&deposit))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(not_a_bucket.code(), Code::InvalidArgument);
+    let get = |cap: Option<Capability>, data: &[u8]| GetBlobRequest {
+        version: 1,
+        blob_hash: sha256(data).to_vec(),
+        capability: cap,
+        request_id: vec![4; 16],
+    };
+    assert_eq!(
+        sender
+            .get_blob(get(as_cap(&deposit), &first))
+            .await
+            .unwrap_err()
+            .code(),
+        Code::PermissionDenied,
+        "a deposit credential never reads"
+    );
+
+    // The owner reads its inbox with its read credential: the upload week, the exact expiry.
+    let listed = owner
+        .list_namespace(ListNamespaceRequest {
+            version: 1,
+            namespace_id: inbox.to_vec(),
+            capability: as_cap(&read),
+            cursor: vec![],
+            limit: 16,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        listed.blob_hashes,
+        vec![sha256(&first).to_vec(), sha256(&second).to_vec()]
+    );
+    let got = owner
+        .get_blob(get(as_cap(&read), &first))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(got.uploaded_at_unix_seconds, at("2959+0"));
+    assert_eq!(got.expiry_unix_seconds, at("2959+93600"));
+
+    // A card holder fetches the bundle: both times week-coarse.
+    let bundle_blob = vec![0x44u8; 4096];
+    owner
+        .store_blob(StoreBlobRequest {
+            ttl_seconds: 2_592_000,
+            ..store_req(
+                bundle,
+                &bundle_blob,
+                Some(Capability {
+                    token: bundle_cap.clone(),
+                }),
+            )
+        })
+        .await
+        .unwrap();
+    let mut fetcher = client(&a.addr).await;
+    let fetched = fetcher
+        .get_blob(get(as_cap(&fetch), &bundle_blob))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(fetched.data, bundle_blob);
+    assert_eq!(fetched.uploaded_at_unix_seconds, at("2959+0"));
+    assert_eq!(fetched.expiry_unix_seconds, at("2964+0"));
+
+    // T1: only allowed observables; the register events and the stores as the design lists them.
+    let schema = ghost_capture_check::Schema::parse(include_str!(
+        "../../../../test-harness/privacy/allowed-observables.json"
+    ))
+    .unwrap();
+    let capture = std::fs::read_to_string(&a.capture_path).unwrap();
+    let violations = schema.check_capture(&capture);
+    assert!(violations.is_empty(), "capture violations: {violations:#?}");
+    for c in [&deposit, &read, &fetch] {
+        for secret in [
+            hex::encode(c.secret),
+            hex::encode(c.encode()),
+            hex::encode(bearer_verifier(c)),
+        ] {
+            assert!(!capture.contains(&secret), "a credential in the capture");
+        }
+    }
+    let events: Vec<serde_json::Value> = capture
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let registers: Vec<&serde_json::Value> =
+        events.iter().filter(|e| e["op"] == "register").collect();
+    assert_eq!(registers.len(), 4);
+    let kinds: Vec<&str> = registers
+        .iter()
+        .filter(|e| e["result"] == "ok")
+        .map(|e| e["key_kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["deposit", "read", "fetch"]);
+    assert_eq!(registers[3]["result"], "rejected_period");
+    for e in &registers {
+        assert_eq!(e["period_id"].as_str().unwrap().len(), 16);
+        assert!(e.get("capability_scope").is_some());
+    }
+    let deposit_scope = hex::encode(sha256(&deposit.encode()));
+    let inbox_stores: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["op"] == "store" && e["namespace_id"] == hex::encode(inbox))
+        .collect();
+    assert_eq!(inbox_stores.len(), 3);
+    assert!(
+        inbox_stores
+            .iter()
+            .all(|e| e["capability_scope"] == deposit_scope.as_str()),
+        "every sender of the inbox presents one scope"
+    );
+    let ttls: Vec<(&str, Option<u64>)> = inbox_stores
+        .iter()
+        .map(|e| {
+            (
+                e["result"].as_str().unwrap(),
+                e["ttl_bucket_seconds"].as_u64(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ttls,
+        [
+            ("ok", Some(3_600)),
+            ("ok", Some(604_800)),
+            ("rejected_ttl", None)
+        ]
+    );
+    assert!(events
+        .iter()
+        .all(|e| e.get("key_kind").is_none() || e["op"] == "register"));
 }
 
 #[tokio::test]

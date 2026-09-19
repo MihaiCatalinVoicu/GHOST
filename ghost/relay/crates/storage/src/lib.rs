@@ -17,7 +17,10 @@
 //! List cursors are per-namespace sequence numbers, so a reader learns nothing about writes to
 //! other namespaces. A namespace's sequence row is deleted together with its last index entry, so
 //! nothing about a namespace outlives its blobs; a namespace that comes back starts from an
-//! hour-based seed above any sequence it used before, so old cursors never skip new entries.
+//! hour-based seed above any sequence it used before, so old cursors never skip new entries. That
+//! seed is an upload hour and the sequence above it a store count, so the sequence stays inside
+//! the relay: the node seals it under the relay key before it answers with a cursor and opens it
+//! again on the way in (`RelayKey::seal_list_cursor`, Phase 9 design §22.8.7 point 1).
 //!
 //! Expiries are rounded up to [`EXPIRY_GRANULARITY`] (one hour): the stored and returned expiry
 //! never reveals the upload second (TTLs are bucketed, so `expiry - ttl` would), and a retry of
@@ -26,6 +29,7 @@
 //! What the store knows about a blob: its SHA-256, its bucket-sized ciphertext, the opaque
 //! namespaces holding it, an upload minute and an hour-rounded expiry per namespace.
 
+pub mod keys;
 pub mod nullifiers;
 
 use ghost_relay_api::{is_bucket_size, time_bucket, HASH_BYTES, MAX_BATCH};
@@ -477,8 +481,9 @@ impl BlobStore {
         Ok(out)
     }
 
-    /// Lists live blob hashes of a namespace in insertion order after `cursor` (an opaque 8-byte
-    /// per-namespace sequence; empty = from the beginning). Returns `(hashes, next_cursor)`.
+    /// Lists live blob hashes of a namespace in insertion order after `cursor` (an 8-byte
+    /// per-namespace sequence, which the node seals before it reaches a caller; empty = from the
+    /// beginning). Returns `(hashes, next_cursor)`.
     /// `next_cursor` is empty when the namespace is exhausted; a non-empty cursor may come with
     /// fewer than `limit` hashes when expired entries awaiting prune were skipped.
     pub fn list(
