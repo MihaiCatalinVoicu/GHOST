@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# GitHub CLI stub of the upstream snapshot fixture (README.md there): it answers the two content
+# listings of scripts/license-upstream-snapshot.sh and never reaches the network.
+# GHOST_FIXTURE_GH: empty | dir-error | root-error.
+set -u
+mode="${GHOST_FIXTURE_GH:-empty}"
+path=""
+for arg in "$@"; do
+  case "$arg" in repos/*) path="$arg"; break ;; esac
+done
+case "$path" in
+  */contents?ref=*) # the repository root
+    [ "$mode" = root-error ] && { echo "gh: fixture API error (root listing)" >&2; exit 1; }
+    exit 0 ;;
+  */contents/*) # the package's directory
+    [ "$mode" = dir-error ] && { echo "gh: fixture API error (directory listing)" >&2; exit 1; }
+    exit 0 ;;
+esac
+echo "gh: the fixture stub does not answer '$path'" >&2
+exit 2

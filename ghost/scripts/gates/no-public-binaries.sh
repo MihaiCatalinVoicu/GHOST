@@ -58,9 +58,8 @@ if [ ! -d "$WORKFLOWS" ]; then
   fail ".github/workflows missing"
   finish no-public-binaries
 fi
-while IFS= read -r line; do
-  [ -n "$line" ] && fail "$line"
-done < <(VISIBILITY="$visibility" HANDOFFS="$HANDOFFS" REPO_ROOT="$REPO_ROOT" perl -e '
+rc=0
+rules="$(VISIBILITY="$visibility" HANDOFFS="$HANDOFFS" REPO_ROOT="$REPO_ROOT" perl -e '
 use strict; use warnings;
 my $visibility = $ENV{VISIBILITY} // "";
 my %handoff = map { $_ => 1 } split " ", $ENV{HANDOFFS};
@@ -143,5 +142,11 @@ for my $file (sort glob("$ENV{REPO_ROOT}/.github/workflows/*.{yml,yaml}")) {
     print "$where: hand-off $label: no job of this workflow downloads it\n" unless $downloads{$u->{name}};
   }
 }
-')
+')" || rc=$?
+# The rule engine reports every violation on stdout and ends with status 0: any other status means it
+# could not run, and the gate fails closed rather than reporting a workflow set it never read.
+[ "$rc" = 0 ] || fail "no-public-binaries.sh rule engine stopped (exit $rc)"
+while IFS= read -r line; do
+  [ -n "$line" ] && fail "$line"
+done <<< "$rules"
 finish no-public-binaries

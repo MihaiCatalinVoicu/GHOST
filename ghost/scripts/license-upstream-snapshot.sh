@@ -37,8 +37,10 @@ fetch_raw() { # $1 owner/repo, $2 path, $3 ref, $4 output
   gh api -H "Accept: application/vnd.github.raw" "repos/$1/contents/$2?ref=$3" > "$4"
 }
 notice_names() { # $1 owner/repo, $2 directory ("" = root), $3 ref; fails when the listing cannot be read
+  # The caller tests this function's status, which turns `set -e` off inside it: the listing is
+  # checked here, or an API error would read as a repository that ships no NOTICE.
   local listing
-  listing="$(gh api "repos/$1/contents${2:+/$2}?ref=$3" --jq '.[] | select(.type == "file") | .path')"
+  listing="$(gh api "repos/$1/contents${2:+/$2}?ref=$3" --jq '.[] | select(.type == "file") | .path')" || return 1
   printf '%s\n' "$listing" | awk -F/ '{n = $NF} n ~ /^NOTICE/ {print}'
 }
 
@@ -59,8 +61,13 @@ while IFS=$'\t' read -r eco name version repo commit path; do
     echo "$name $version: repository '$repo' at '$commit' cannot be read here; review it by hand" >&2
     exit 1
   fi
-  names="$(notice_names "$slug" "" "$commit")"
-  if [ -n "$path" ]; then names="$(printf '%s\n%s\n' "$names" "$(notice_names "$slug" "$path" "$commit")" | awk NF | sort -u)"; fi
+  # Each listing is assigned on its own and its status checked: a listing that could not be read must
+  # never be recorded as `none`, which is what lets G-L1 accept a package with no NOTICE reproduced.
+  names="$(notice_names "$slug" "" "$commit")" || { echo "$name $version: cannot list $slug at $commit" >&2; exit 1; }
+  if [ -n "$path" ]; then
+    in_package="$(notice_names "$slug" "$path" "$commit")" || { echo "$name $version: cannot list $slug/$path at $commit" >&2; exit 1; }
+    names="$(printf '%s\n%s\n' "$names" "$in_package" | awk NF | sort -u)"
+  fi
   if [ -z "$names" ]; then
     echo "$eco $name $version $repo $commit none" >> "$index"
     continue

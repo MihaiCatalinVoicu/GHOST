@@ -20,3 +20,6 @@ a well-formed workflow, so each fails only for its own reason.
 | release-publish | fail | `publishes outside the repository (gh release upload)` |
 | event-mismatch | pass without the event; fail with it | `the event payload says the repository is public` |
 | no-declaration | fail | `repository-visibility.txt missing` |
+
+`self-test.sh` also runs the gate on `private-apk` with a `perl` that cannot start: the gate must
+report `rule engine stopped` and fail, never `OK` on a workflow set it did not read.

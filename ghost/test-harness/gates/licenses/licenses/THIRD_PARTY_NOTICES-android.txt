@@ -14,9 +14,9 @@ Components (1)
 
 org.example:lib:1.0.0
   licence: Apache-2.0 (POM: Apache-2.0); used under: Apache-2.0
-  texts: [1], [2]
+  texts: [1], [2], [3]
 
-Texts (2)
+Texts (3)
 ---------
 
 [1] META-INF/NOTICE.txt of org.example:lib:1.0.0
@@ -24,7 +24,11 @@ Texts (2)
 org.example lib
 Copyright 2026 The lib fixture authors
 
-[2] Apache-2.0, SPDX License List 3.28.0
+[2] META-INF/LICENSE.txt of org.example:lib:1.0.0
+
+The lib fixture licence, as the AAR carries it at its own root.
+
+[3] Apache-2.0, SPDX License List 3.28.0
 
 Apache License
 Version 2.0, January 2004

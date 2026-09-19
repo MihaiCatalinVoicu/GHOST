@@ -9,7 +9,9 @@
 #       G-L1 (Rust part): writes the notices of one shipped graph.
 #   licenses.pl android-notices <components> <output>
 #       G-L1 (Gradle part) and G-L2: writes the notices of the release runtime components listed by
-#       `./gradlew :app:releaseRuntimeComponents`, checking gradle-license-allowlist.txt and the POMs.
+#       `./gradlew :app:releaseRuntimeComponents`, reading each component's classes jar and the
+#       artifact as published next to its POM in the Gradle cache, and checking
+#       gradle-license-allowlist.txt and the POMs.
 #   licenses.pl headers
 #       G-R5: licence expressions and source headers of the shipped Rust packages.
 #   licenses.pl mpl [--bundle <directory>]
@@ -228,6 +230,27 @@ sub spdx_version {
   my $s = slurp($SPDX_VERSION_FILE) // "";
   my ($v) = $s =~ /^license-list-version\s+(\S+)/m;
   return $v // "unknown";
+}
+# The notices name the SPDX License List as the provenance of every text a component ships none of,
+# so the snapshot must still be the one SOURCE.txt records: every text has its recorded SHA-256, and
+# neither side has a file the other does not (ADR-37; Phase 9 design §22.8.10 point 3). Editing a
+# text and regenerating the notices moves both together; this check does not.
+my $SPDX_SNAPSHOT_CHECKED = 0;
+sub check_spdx_snapshot {
+  return if $SPDX_SNAPSHOT_CHECKED++;
+  my $source = slurp($SPDX_VERSION_FILE);
+  if (!defined $source) { fail "licenses/spdx/SOURCE.txt is missing (licenses.pl spdx-snapshot writes it)"; return }
+  my %recorded;
+  $recorded{$1} = $2 while $source =~ /^text\s+(\S+)\s+([0-9a-f]{64})\s*$/mg;
+  if (!%recorded) { fail "licenses/spdx/SOURCE.txt records no licence text (licenses.pl spdx-snapshot writes it)"; return }
+  for my $path (sort { $a cmp $b } bsd_glob("$LIC/spdx/*.txt")) {
+    my $id = basename($path, ".txt");
+    next if $id eq "SOURCE";
+    my $sha = delete $recorded{$id};
+    if (!defined $sha) { fail "licenses/spdx/$id.txt: SOURCE.txt records no SHA-256 for it"; next }
+    fail "licenses/spdx/$id.txt does not match the SHA-256 that SOURCE.txt records" if Digest::SHA::sha256_hex(slurp($path) // "") ne $sha;
+  }
+  fail "licenses/spdx/$_.txt is missing; SOURCE.txt records it" for sort keys %recorded;
 }
 
 # Chooses the licence alternative a component is used under: only allowed licences; the fewest
@@ -498,6 +521,7 @@ sub cmd_rust_notices {
   my ($graph, $output) = @_;
   my ($graphs) = graphs();
   die "unknown graph '$graph'\n" unless $graphs->{$graph};
+  check_spdx_snapshot();
   my $allowed = allowed_licences();
   my $pkgs = packages();
   my $sums = cargo_lock_checksums();
@@ -550,6 +574,22 @@ sub pom_path {
   my ($gradle_home, $group, $artifact, $version) = @_;
   return (sort { $a cmp $b } bsd_glob("$gradle_home/caches/modules-2/files-2.1/$group/$artifact/$version/*/$artifact-$version.pom"))[0];
 }
+# The component as published, next to its POM: the AAR (or the jar of a plain Java library), whose
+# root carries the licence and notice files that classes.jar does not. The file name is the one the
+# module metadata gives (androidx.compose.ui:ui-android publishes ui.aar), so every archive of the
+# version's cache directories counts, source and documentation jars apart.
+sub published_archives {
+  my ($gradle_home, $group, $artifact, $version) = @_;
+  my @found;
+  for my $path (bsd_glob("$gradle_home/caches/modules-2/files-2.1/$group/$artifact/$version/*/*")) {
+    next unless -f $path;
+    my $name = basename($path);
+    next unless $name =~ /\.(?:aar|jar)$/i;
+    next if $name =~ /-(?:sources|javadoc|tests)\.jar$/i;
+    push @found, $path;
+  }
+  return sort { $a cmp $b } @found;
+}
 sub pom_licences {
   my ($gradle_home, $group, $artifact, $version, $depth) = @_;
   my $path = pom_path($gradle_home, $group, $artifact, $version) or return (undef, "no POM for $group:$artifact:$version in the Gradle cache");
@@ -577,6 +617,7 @@ sub pom_licences {
 
 sub cmd_android_notices {
   my ($components_file, $output) = @_;
+  check_spdx_snapshot();
   my $allowed = allowed_licences();
   delete $allowed->{"MPL-2.0"}; # ADR-37 point 2: MPL only for the two Arti packages, never in the Gradle graph
   my $allowlist_file = $ENV{GHOST_GRADLE_ALLOWLIST} // "$ROOT/scripts/gates/gradle-license-allowlist.txt";
@@ -614,17 +655,25 @@ sub cmd_android_notices {
         fail "$where: its POM declares $id, gradle-license-allowlist.txt says '$expr'" unless grep { grep { $_ eq $id } @$_ } @$options;
       }
     }
-    my (@texts, %shipped);
-    if ($file && -f $file) {
-      my @entries = grep { m{^META-INF/(?:.*/)?(?:LICEN[CS]E|NOTICE|COPYING|COPYRIGHT)[^/]*$}i } split /\n/, scalar qx{unzip -Z1 "$file" 2>/dev/null};
+    # Both archives of the component: the classes jar AGP transforms out of it, and the artifact as
+    # published, next to the POM in the Gradle cache. An AAR keeps its licence and notice files at
+    # its own root, outside classes.jar, so reading only the classes jar drops texts the component
+    # ships (Apache-2.0 §4(d)).
+    my (@texts, %shipped, %scanned);
+    my @archives = grep { defined && $_ ne "" } ($file);
+    fail "$where: the components file names no classes jar" unless @archives;
+    my @published = published_archives($gradle_home, $group, $artifact, $version);
+    if (@published) { push @archives, @published } else { fail "$where: no aar or jar of the component in the Gradle cache" }
+    for my $archive (@archives) {
+      next if $scanned{$archive}++;
+      if (!-f $archive) { fail "$where: the archive $archive is missing"; next }
+      my @entries = grep { m{^META-INF/(?:.*/)?(?:LICEN[CS]E|NOTICE|COPYING|COPYRIGHT)[^/]*$}i } split /\n/, scalar qx{unzip -Z1 "$archive" 2>/dev/null};
       for my $e (sort @entries) {
-        my $data = qx{unzip -p "$file" "$e" 2>/dev/null};
+        my $data = qx{unzip -p "$archive" "$e" 2>/dev/null};
         next if $data !~ /\S/;
         $shipped{$_} = 1 for keys %{ classify_text($data) };
         push @texts, ["$e of $coord", $data];
       }
-    } else {
-      fail "$where: the classes jar $file is missing";
     }
     my $u = upstream()->{"maven $ga $version"};
     if ($u) {

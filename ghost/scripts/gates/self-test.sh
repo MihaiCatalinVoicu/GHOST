@@ -339,6 +339,19 @@ npb_case release-publish fail "publishes outside the repository (gh release uplo
 npb_case event-mismatch pass "[no-public-binaries] OK" ""
 npb_case event-mismatch fail "the event payload says the repository is public; scripts/gates/repository-visibility.txt declares it private" "$NPB/event-mismatch/event.json"
 npb_case no-declaration fail "scripts/gates/repository-visibility.txt missing" ""
+# The rule engine must fail closed like the other licence gates: G-L5 is the only gate that keeps a
+# closed binary out of a published workflow, so a helper that cannot run may not report OK.
+npb_stub="$(mktemp -d)"
+printf '#!/usr/bin/env bash\necho "stub perl: the rule engine cannot run" >&2\nexit 2\n' > "$npb_stub/perl"
+chmod +x "$npb_stub/perl"
+if npb_out="$(PATH="$npb_stub:$PATH" GHOST_VISIBILITY_EVENT="" GHOST_ROOT="$NPB/private-apk/ghost" bash "$DIR/no-public-binaries.sh" 2>&1)"; then npb_got=pass; else npb_got=fail; fi
+if [ "$npb_got" = fail ] && printf '%s\n' "$npb_out" | grep -qF "no-public-binaries.sh rule engine stopped"; then
+  echo "self-test ok: no-public-binaries fails closed when its rule engine cannot run"
+else
+  echo "SELF-TEST FAIL: no-public-binaries did not fail closed on a broken rule engine ($npb_got)" >&2
+  printf '%s\n' "$npb_out" | tail -5 >&2; rc=1
+fi
+rm -rf "$npb_stub"
 # G-L1 (license-notices.sh rust), G-R5 (rust-license-headers.sh) and G-L4 (mpl-sources.sh) on the
 # fixture root test-harness/gates/licenses (README.md there): package lists stand in for cargo.
 LIC_FIX="$HARNESS/licenses"
@@ -372,6 +385,28 @@ if grep -q "used under: Apache-2.0" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixtu
 else
   echo "SELF-TEST FAIL: the fixture notices miss the upstream NOTICE or the vendored licence, or carry the unused alternative" >&2; rc=1
 fi
+# The SPDX snapshot is the provenance the notices cite: an edited text, one SOURCE.txt does not
+# record, or one it records and the tree does not, fails even though a regeneration would match.
+spdx_case() { # $1 = description, $2 = expected text, $3 = change (a command on the spdx directory)
+  local w out
+  w="$(mktemp -d)"
+  cp -r "$LIC_FIX/." "$w/"
+  "$3" "$w/licenses/spdx"
+  if out="$(env GHOST_ROOT="$w" "$(lic_list positive)" bash "$DIR/license-notices.sh" rust 2>&1)"; then
+    echo "SELF-TEST FAIL: license-notices $1 passed" >&2; rc=1
+  elif ! printf '%s\n' "$out" | grep -qF -- "$2"; then
+    echo "SELF-TEST FAIL: license-notices $1 without reporting: $2" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  else
+    echo "self-test ok: license-notices $1"
+  fi
+  rm -rf "$w"
+}
+spdx_edit_text() { printf 'x\n' >> "$1/MIT.txt"; }
+spdx_add_text() { cp "$1/MIT.txt" "$1/ISC.txt"; }
+spdx_drop_text() { rm -f "$1/MPL-2.0.txt"; }
+spdx_case "rejects an SPDX text altered by one line" "licenses/spdx/MIT.txt does not match the SHA-256 that SOURCE.txt records" spdx_edit_text
+spdx_case "rejects an SPDX text SOURCE.txt does not record" "licenses/spdx/ISC.txt: SOURCE.txt records no SHA-256 for it" spdx_add_text
+spdx_case "rejects an SPDX text SOURCE.txt records and the tree has not" "licenses/spdx/MPL-2.0.txt is missing; SOURCE.txt records it" spdx_drop_text
 hdr_env="$(lic_list headers)"
 out="$(env GHOST_ROOT="$LIC_FIX" "$hdr_env" GHOST_LICENSE_EXCEPTIONS="$LIC_FIX/lists/headers-exceptions.txt" bash "$DIR/rust-license-headers.sh" 2>&1 || true)"
 hdr_hits="$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)"
@@ -394,26 +429,64 @@ bundle="$(mktemp -d)"
 lic_case mpl-sources "builds the source bundle from checked .crate archives" pass "[mpl-sources] OK" "$(lic_list mpl)" CARGO_HOME="$LIC_FIX" -- --bundle "$bundle"
 if [ -f "$bundle/mpl-pkg-1.0.0.crate" ]; then echo "self-test ok: mpl-sources --bundle holds mpl-pkg-1.0.0.crate"; else echo "SELF-TEST FAIL: mpl-sources --bundle did not copy the .crate archive" >&2; rc=1; fi
 rm -rf "$bundle"
-# G-L1 android mode and G-L2 (gradle-license-allowlist.txt) on a fabricated Gradle cache: a POM and a
-# classes jar with a NOTICE, built here (no binary fixture is committed).
+# scripts/license-upstream-snapshot.sh, the maintainer tool that writes ghost/licenses/upstream: a
+# listing it cannot read must stop the run, never be recorded as `none` (an entry recorded `none` is
+# what lets G-L1 accept a package used under Apache-2.0 with no NOTICE reproduced). The fixture puts
+# stubs for gh and cargo on PATH (test-harness/gates/upstream-snapshot/README.md).
+US="$HARNESS/upstream-snapshot"
+us_case() { # $1 = description, $2 = pass|fail, $3 = expected text, $4 = gh mode, $5 = text of the written index
+  local w out got
+  w="$(mktemp -d)"
+  mkdir -p "$w/scripts/gates" "$w/licenses/upstream" "$w/bin"
+  cp "$DIR/../license-upstream-snapshot.sh" "$w/scripts/"
+  cp "$DIR/licenses.pl" "$w/scripts/gates/"
+  cp "$US/deny.toml" "$w/deny.toml"
+  cp "$US/bin/gh" "$US/bin/cargo" "$w/bin/"
+  chmod +x "$w/bin/gh" "$w/bin/cargo"
+  printf '# No Gradle component in this fixture.\n' > "$w/licenses/upstream/maven-sources.txt"
+  if out="$(env PATH="$w/bin:$PATH" GHOST_FIXTURE_GH="$4" GHOST_LICENSE_PACKAGES="$US/lists/candidates.tsv" \
+    bash "$w/scripts/license-upstream-snapshot.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" != "$2" ]; then
+    echo "SELF-TEST FAIL: license-upstream-snapshot $1 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif ! printf '%s\n' "$out" | grep -qF -- "$3"; then
+    echo "SELF-TEST FAIL: license-upstream-snapshot $1 without reporting: $3" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+  elif [ -n "${5:-}" ] && ! grep -qF -- "$5" "$w/licenses/upstream/index.txt"; then
+    echo "SELF-TEST FAIL: license-upstream-snapshot $1 did not write: $5" >&2; rc=1
+  elif [ "$2" = fail ] && grep -q '^cargo ' "$w/licenses/upstream/index.txt" 2>/dev/null; then
+    echo "SELF-TEST FAIL: license-upstream-snapshot $1 wrote an index entry anyway" >&2; rc=1
+  else
+    echo "self-test ok: license-upstream-snapshot $1"
+  fi
+  rm -rf "$w"
+}
+us_case "records none when the package ships no upstream NOTICE" pass "upstream snapshot: 1 entries" empty \
+  "cargo apache-vcs 1.0.0 https://github.com/fixture/apache-vcs 4444444444444444444444444444444444444444 none"
+us_case "stops when the package-directory listing fails" fail "apache-vcs 1.0.0: cannot list fixture/apache-vcs/apache-vcs at" dir-error
+us_case "stops when the repository-root listing fails" fail "apache-vcs 1.0.0: cannot list fixture/apache-vcs at" root-error
+# G-L1 android mode and G-L2 (gradle-license-allowlist.txt) on a fabricated Gradle cache: a POM, a
+# classes jar with a NOTICE and the component as published, an AAR whose root carries a licence text
+# the classes jar does not (all built here; no binary fixture is committed).
 jar_of() { # $1 = jar path, $2 = directory holding META-INF
   mkdir -p "$(dirname "$1")"
   if command -v zip >/dev/null; then (cd "$2" && zip -q -r "$1" META-INF)
   elif command -v jar >/dev/null; then (cd "$2" && jar cfM "$1" META-INF)
   else return 3; fi
 }
-gradle_case() { # $1 = description, $2 = pass|fail, $3 = expected text, $4 = allowlist lines, $5 = POM licences
-  local w jarfile
+gradle_case() { # $1 = description, $2 = pass|fail, $3 = expected text, $4 = allowlist lines, $5 = POM licences, $6 = no-archive to publish no AAR
+  local w cache jarfile
   w="$(mktemp -d)"
-  mkdir -p "$w/gradle/caches/modules-2/files-2.1/org.example/lib/1.0.0/0a1b" "$w/classes/META-INF"
-  printf '<project><licenses>%s</licenses></project>\n' "$5" > "$w/gradle/caches/modules-2/files-2.1/org.example/lib/1.0.0/0a1b/lib-1.0.0.pom"
+  cache="$w/gradle/caches/modules-2/files-2.1/org.example/lib/1.0.0/0a1b"
+  mkdir -p "$cache" "$w/classes/META-INF" "$w/aar/META-INF"
+  printf '<project><licenses>%s</licenses></project>\n' "$5" > "$cache/lib-1.0.0.pom"
   printf 'org.example lib\nCopyright 2026 The lib fixture authors\n' > "$w/classes/META-INF/NOTICE.txt"
+  printf 'The lib fixture licence, as the AAR carries it at its own root.\n' > "$w/aar/META-INF/LICENSE.txt"
   jarfile="$w/gradle/caches/9.7.1/transforms/0a1b/transformed/lib-1.0.0-runtime.jar"
-  if ! jar_of "$jarfile" "$w/classes"; then
+  if ! jar_of "$jarfile" "$w/classes" || ! jar_of "$w/lib-1.0.0.aar" "$w/aar"; then
     rm -rf "$w"
     if [ -n "${CI:-}" ]; then echo "SELF-TEST FAIL: no zip/jar in CI" >&2; rc=1; else echo "self-test skipped: license-notices android (no zip/jar)"; fi
     return
   fi
+  [ "${6:-}" = no-archive ] || mv "$w/lib-1.0.0.aar" "$cache/lib-1.0.0.aar"
   printf 'org.example:lib:1.0.0\t%s\n' "$jarfile" > "$w/components.txt"
   printf '%s\n' "$4" > "$w/allowlist.txt"
   lic_case license-notices "$1" "$2" "$3" GHOST_GRADLE_ALLOWLIST="$w/allowlist.txt" -- android "$w/components.txt"
@@ -428,6 +501,13 @@ gradle_case "(android) rejects a POM declaring another licence" fail "org.exampl
   '<license><name>MIT License</name><url>https://opensource.org/licenses/MIT</url></license>'
 gradle_case "(android) rejects an allowlist line whose component is gone" fail "gradle-license-allowlist.txt: org.example:gone is not a release runtime component any more" \
   "$(printf 'org.example:lib Apache-2.0\norg.example:gone MIT')" "$APACHE_POM"
+gradle_case "(android) rejects a component whose published archive is not in the Gradle cache" fail \
+  "org.example:lib:1.0.0: no aar or jar of the component in the Gradle cache" "org.example:lib Apache-2.0" "$APACHE_POM" no-archive
+if grep -qF "META-INF/LICENSE.txt of org.example:lib:1.0.0" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-android.txt"; then
+  echo "self-test ok: license-notices (android) carries the licence text the AAR ships outside its classes jar"
+else
+  echo "SELF-TEST FAIL: the fixture Gradle notices miss the licence text of the published AAR" >&2; rc=1
+fi
 # G-L3 (apk-notices.sh) on fabricated APKs: the committed notices pass; changed or missing ones fail.
 notices_case() { # $1 = description, $2 = pass|fail, $3 = setup (assets directory)
   local w got

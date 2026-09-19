@@ -1,2 +1,5 @@
 # Fixture copy of three texts of ghost/licenses/spdx (no ISC text: the no-text case needs one missing).
 license-list-version 3.28.0
+text Apache-2.0 074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff
+text MIT b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5
+text MPL-2.0 3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04

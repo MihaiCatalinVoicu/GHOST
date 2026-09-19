@@ -13,7 +13,8 @@ shipped; the licence texts under `licenses/spdx` are copies of `ghost/licenses/s
 | `Cargo.toml` | a `[patch]` of `mpl-patched` without a published diff |
 | `licenses/graphs.txt` | one graph, `fixture` |
 | `licenses/THIRD_PARTY_NOTICES-fixture.txt` | the notices of `lists/positive.tsv` |
-| `licenses/THIRD_PARTY_NOTICES-android.txt` | the Gradle notices of the component that `self-test.sh` builds (a POM and a classes jar with a NOTICE) |
+| `licenses/THIRD_PARTY_NOTICES-android.txt` | the Gradle notices of the component that `self-test.sh` builds (a POM, a classes jar with a NOTICE and a published AAR whose root carries a licence text the classes jar does not) |
+| `licenses/spdx/SOURCE.txt` | the SHA-256 of each fixture text: an edited text, one it does not record, or one it records and the tree has not, fails G-L1 |
 | `licenses/upstream/` | an upstream NOTICE of `apache-pkg`, and an entry of `apache-dropped` whose file is missing |
 | `licenses/vendored-licences.txt` | `vendored-pkg`'s `third_party/zlib/LICENSE` included |
 | `licenses/mpl-sources*.txt` | MPL-2.0 manifests: correct, wrong checksum, empty, patched package |
@@ -31,3 +32,5 @@ shipped; the licence texts under `licenses/spdx` are copies of `ghost/licenses/s
 | rust-license-headers | `headers.tsv` with `headers-exceptions.txt` | fail, exactly 5 lines | AGPL header, Signal Messenger copyright, GPL notice across comment lines, GPL text, no allowed alternative; `excepted` (an LGPL header with an exception) and `clean` pass |
 | rust-license-headers | `headers-own.tsv` with `headers-exceptions-unused.txt` | fail | GHOST's own crates are scanned; an exception that matches nothing fails |
 | mpl-sources | `mpl.tsv` (manifests as named in `self-test.sh`) | pass, then fail | missing line, wrong checksum; `mit-only.tsv`: stale line; `mpl-patched.tsv`: `[patch]` without a diff; `--bundle` copies `mpl-pkg-1.0.0.crate` |
+| license-notices rust | `positive.tsv` on a copy with an edited `licenses/spdx` | fail | `does not match the SHA-256 that SOURCE.txt records`, `SOURCE.txt records no SHA-256 for it`, `is missing; SOURCE.txt records it` |
+| license-notices android | the component `self-test.sh` builds | pass, then fail | the notices carry the AAR-root licence text; without the published AAR in the cache: `no aar or jar of the component in the Gradle cache` |

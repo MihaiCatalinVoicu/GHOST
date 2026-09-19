@@ -8,11 +8,13 @@
 #   license-notices.sh android <components> [--write]
 #       ghost/licenses/THIRD_PARTY_NOTICES-android.txt from the release runtime components listed by
 #       `./gradlew :app:releaseRuntimeComponents` (app/build/licenses/release-runtime-components.txt),
-#       their POMs in the Gradle cache and scripts/gates/gradle-license-allowlist.txt (G-L2; CI job
-#       android, after the build).
+#       their classes jars and the artifacts as published (the AAR or jar next to the POM), their POMs
+#       in the Gradle cache and scripts/gates/gradle-license-allowlist.txt (G-L2; CI job android,
+#       after the build).
 # Fails on a difference, on a component used under no licence whose text it can resolve (from the
 # component, the upstream snapshot ghost/licenses/upstream or the SPDX texts ghost/licenses/spdx),
-# on a NOTICE of the upstream snapshot that is missing, on an undecided licence file of vendored
+# on an SPDX text that does not match the SHA-256 ghost/licenses/spdx/SOURCE.txt records for it, on
+# a NOTICE of the upstream snapshot that is missing, on an undecided licence file of vendored
 # sources (ghost/licenses/vendored-licences.txt) and, in android mode, on an unknown or copyleft
 # licence. --write rewrites the committed files instead of comparing (review the diff). The APK
 # asset assets/THIRD_PARTY_NOTICES.txt is apk-notices-preamble.txt, then the android part, then the

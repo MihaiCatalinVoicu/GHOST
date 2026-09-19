@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# cargo stub of the upstream snapshot fixture: the package list comes from GHOST_LICENSE_PACKAGES,
+# so nothing has to be fetched.
+set -u
+case "${1:-}" in
+  fetch) exit 0 ;;
+esac
+echo "cargo: the fixture stub does not run '$*'" >&2
+exit 2

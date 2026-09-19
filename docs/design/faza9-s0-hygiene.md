@@ -48,24 +48,24 @@ Removed from `ghost/android/gradle/libs.versions.toml` (the `libsignal = "0.86.5
 
 | Gate | Script / file | CI | Rule as implemented | Negative fixtures (`self-test.sh`) |
 |---|---|---|---|---|
-| G-L1 (Rust) | `license-notices.sh rust` | `rust` (and `rust-gates.sh`) | regenerates `ghost/licenses/THIRD_PARTY_NOTICES-{client-net,relay,issuer}.txt` for the graphs of `ghost/licenses/graphs.txt` and fails on a difference, a licence without a resolvable text, an Apache-2.0 component without an upstream NOTICE snapshot entry, a dropped NOTICE, an undecided licence file of vendored sources, a committed notices file of an unknown graph | differs, no text, dropped NOTICE, no snapshot entry, undecided vendored licence, copyleft-only package; positive case also checks that the NOTICE and the vendored licence are carried and the unused alternative is not |
-| G-L1 (Gradle) and G-L2 | `license-notices.sh android <components>`; `gradle-license-allowlist.txt` | `android`, after the build | `./gradlew :app:releaseRuntimeComponents` lists the external components of the release runtime classpath with their classes jar; each needs a `group:artifact SPDX` line, a licence of the `deny.toml` allow list without MPL-2.0 (ADR-37 point 2), and a POM (parents followed) whose licence maps to that SPDX id; stale lines fail; texts from `META-INF` licence and notice files of the jar, the upstream snapshot, or SPDX; regenerates `THIRD_PARTY_NOTICES-android.txt` and compares | missing allowlist line, copyleft licence, POM declaring another licence, stale line; positive case (a Gradle cache, POM and jar built at test time) |
+| G-L1 (Rust) | `license-notices.sh rust` | `rust` (and `rust-gates.sh`) | regenerates `ghost/licenses/THIRD_PARTY_NOTICES-{client-net,relay,issuer}.txt` for the graphs of `ghost/licenses/graphs.txt` and fails on a difference, a licence without a resolvable text, an Apache-2.0 component without an upstream NOTICE snapshot entry, a dropped NOTICE, an SPDX text that does not match `ghost/licenses/spdx/SOURCE.txt` (§11), an undecided licence file of vendored sources, a committed notices file of an unknown graph | differs, no text, dropped NOTICE, no snapshot entry, edited SPDX text, unrecorded SPDX text, recorded text missing, undecided vendored licence, copyleft-only package; positive case also checks that the NOTICE and the vendored licence are carried and the unused alternative is not |
+| G-L1 (Gradle) and G-L2 | `license-notices.sh android <components>`; `gradle-license-allowlist.txt` | `android`, after the build | `./gradlew :app:releaseRuntimeComponents` lists the external components of the release runtime classpath with their classes jar; each needs a `group:artifact SPDX` line, a licence of the `deny.toml` allow list without MPL-2.0 (ADR-37 point 2), and a POM (parents followed) whose licence maps to that SPDX id; stale lines fail; texts from the `META-INF` licence and notice files of the classes jar **and of the component as published** (the AAR keeps them at its own root; §11), the upstream snapshot, or SPDX; regenerates `THIRD_PARTY_NOTICES-android.txt` and compares | missing allowlist line, copyleft licence, POM declaring another licence, stale line, published archive absent from the Gradle cache; positive case (a Gradle cache, POM, classes jar and published AAR built at test time) |
 | G-L3 | `apk-notices.sh <apk>` | `android` and `reproducible-build.sh` | the APK has `assets/THIRD_PARTY_NOTICES.txt` whose SHA-256 equals preamble + Gradle part + client-net part | changed asset, missing asset; positive case |
 | G-L4 | `mpl-sources.sh [--bundle <dir>]`; `ghost/licenses/mpl-sources.txt` | `rust` (with `--bundle $RUNNER_TEMP/mpl-sources`) | the manifest lists exactly the packages used under MPL-2.0 with their Cargo.lock SHA-256; a `[patch]` of one needs `ghost/licenses/mpl-patches/<crate>-<version>.diff`; `--bundle` copies the checked `.crate` archives (the release source bundle) | missing line, wrong checksum, stale line, `[patch]` without diff; positive and bundle cases |
-| G-L5 | `no-public-binaries.sh` | `static-gates` | §3 | 11 cases |
+| G-L5 | `no-public-binaries.sh` | `static-gates` | §3 | 11 cases, plus a rule engine that cannot start (§11) |
 | G-R5 | `rust-license-headers.sh`; `rust-license-exceptions.txt` | `rust` | over the packages of `cargo tree -e normal --target <shipped triples>` (and GHOST's own crates of those graphs): SPDX expressions parse and have an allowed alternative; a file fails when it declares a GNU licence (an `SPDX-License-Identifier` with GPL, LGPL or AGPL; the "under the terms of the GNU … General Public License" notice across comment lines; a GNU licence text) or carries a "Signal Messenger" copyright; reviewed exceptions (crate, version, file or `*`, reason); an unused exception fails | AGPL header, Signal Messenger copyright, GPL notice, GPL text, no allowed alternative (5 lines reported exactly), own-crate scan with an unused exception; an excepted LGPL header passes |
 | `deny.toml` bans | 14 named bans | `rust` (cargo-deny-action), self-test | §4 | 14 banned names and one control |
 
 **Facts of the current graphs (2026-09-16).**
 - Shipped Rust graphs: `ghost-client-net` for `aarch64-linux-android` and `x86_64-linux-android` (**421** third-party packages, proc-macros included), `ghost-relay-node` for `x86_64-unknown-linux-gnu` (**113**), `ghost-issuer` and `ghost-issuer-ops` for `x86_64-unknown-linux-gnu` (**136**); 443 distinct packages. The relay and issuer images build on `rust:1.98.1-bookworm` for x86_64 (`infra/*/Dockerfile`).
 - **Licence choice** for packages that offer alternatives: only licences of the `deny.toml` allow list; the alternative whose texts the package ships; then MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unlicense, CC0-1.0, Apache-2.0 WITH LLVM-exception, MPL-2.0. Texts of alternatives not used (LICENSE-APACHE of a package used under MIT, the LGPL text of `priority-queue`) are left out; every other licence or notice file at the package root is kept.
-- **Texts from SPDX** where a package ships none (arti and tor-* crates, `amplify_num`, `amplify_syn`, `cesu8`'s MIT/Apache texts, AndroidX): SPDX License List **3.28.0** as embedded in the crates.io `spdx` crate 0.13.4 (`.crate` SHA-256 `a8da593e30beb790fc9424502eb898320b44e5eb30367dbda1c1edde8e2f32d7`, the licence-list data cargo-deny 0.20.2 uses), copied for the ids of the allow list plus `LLVM-exception` into `ghost/licenses/spdx/` with per-text SHA-256 in `SOURCE.txt` (`licenses.pl spdx-snapshot` rewrites it). For such packages the notices name the Cargo `authors`.
-- **Upstream NOTICE snapshot** (`ghost/licenses/upstream/`, written by `ghost/scripts/license-upstream-snapshot.sh` through the GitHub API): the 9 Rust packages used under Apache-2.0 (`amplify_derive` 4.0.1, `amplify_num` 0.5.4, `amplify_syn` 2.0.1, `imara-diff` 0.2.0, `prost` 0.14.4, `prost-derive` 0.14.4, `reseeding_rng` 0.10.7, `ring` 0.17.14, `sync_wrapper` 1.0.2) have **no NOTICE file** at their published commit (`.cargo_vcs_info.json`), in the package directory or at the repository root; `ring`'s archive is marked `dirty` by cargo, the check still reads the recorded commit. Gradle: `net.zetetic:sqlcipher-android` 4.19.0 ships no licence text in its AAR; its `LICENSE` was captured at tag `v4.19.0` (commit `9a5d685404489cbff14d4c46da81555de1a38787`). Every other Gradle component's text is the SPDX Apache-2.0 text, the AndroidX `META-INF/.../LICENSE.txt` files, or BouncyCastle's `META-INF/LICENSE.md`.
+- **Texts from SPDX** where a package ships none (arti and tor-* crates, `amplify_num`, `amplify_syn`, `cesu8`'s MIT/Apache texts, 19 of the 66 Gradle components): SPDX License List **3.28.0** as embedded in the crates.io `spdx` crate 0.13.4 (`.crate` SHA-256 `a8da593e30beb790fc9424502eb898320b44e5eb30367dbda1c1edde8e2f32d7`, the licence-list data cargo-deny 0.20.2 uses), copied for the ids of the allow list plus `LLVM-exception` into `ghost/licenses/spdx/` with per-text SHA-256 in `SOURCE.txt` (`licenses.pl spdx-snapshot` rewrites it; G-L1 checks every text against it, §11). For such packages the notices name the Cargo `authors`.
+- **Upstream NOTICE snapshot** (`ghost/licenses/upstream/`, written by `ghost/scripts/license-upstream-snapshot.sh` through the GitHub API): the 9 Rust packages used under Apache-2.0 (`amplify_derive` 4.0.1, `amplify_num` 0.5.4, `amplify_syn` 2.0.1, `imara-diff` 0.2.0, `prost` 0.14.4, `prost-derive` 0.14.4, `reseeding_rng` 0.10.7, `ring` 0.17.14, `sync_wrapper` 1.0.2) have **no NOTICE file** at their published commit (`.cargo_vcs_info.json`), in the package directory or at the repository root; `ring`'s archive is marked `dirty` by cargo, the check still reads the recorded commit. Gradle: `net.zetetic:sqlcipher-android` 4.19.0 ships no licence text in its AAR; its `LICENSE` was captured at tag `v4.19.0` (commit `9a5d685404489cbff14d4c46da81555de1a38787`). Of the other 65 Gradle components, **46 ship a licence text themselves** — 45 the AndroidX `META-INF/<group>/<artifact>/LICENSE.txt` (at the AAR's own root, or in the jar of a plain Java library; one text after deduplication) and `org.bouncycastle:bcprov-jdk18on` its `META-INF/LICENSE.md` — and **19 ship none**, so their text is the SPDX Apache-2.0 one. No component of the release runtime classpath ships a `NOTICE` (checked over every archive of the 66, §11).
 - **Vendored sources** (`ghost/licenses/vendored-licences.txt`, 13 decisions): the licence files of xz in `liblzma-sys` (0BSD kept; the GPL and LGPL texts of the tools, scripts and getopt, which `build.rs` does not compile, left out), `zstd-sys` (BSD kept, GPL-2.0 alternative left out), `regex-syntax` (Unicode data), `ring` (once_cell polyfill under MIT, fiat-crypto), `tracing-core` (spin); `libsqlite3-sys`'s `sqlcipher/LICENSE` is left out because the `bundled` feature compiles SQLite, not the vendored SQLCipher.
 - **G-R5 findings and exceptions:** `priority-queue` 2.7.0 (`*`: LGPL text and headers of the unused alternative; MPL-2.0 used), `zstd-sys` 2.1.0+zstd.1.5.7 `zstd/COPYING` (GPL-2.0 alternative), 19 files of `liblzma-sys` 0.4.8 (xz scripts, getopt, build files, GPL/LGPL texts; `build.rs` compiles only `xz/src/liblzma` and two `xz/src/common` files). No AGPL header and no Signal Messenger copyright in any shipped package or GHOST crate.
 - **MPL-2.0:** `option-ext` 0.2.0 and `priority-queue` 2.7.0, both in the `ghost-client-net` graph only; the client-net notices end with the source offer (crates.io download address and Cargo.lock SHA-256 of each archive; archives provided with every release).
 - **Gradle release runtime classpath:** 66 components: 64 Apache-2.0, `org.bouncycastle:bcprov-jdk18on` MIT (POM "Bouncy Castle Licence"), `net.zetetic:sqlcipher-android` BSD-3-Clause (POM URL `zetetic.net/sqlcipher/license`). They include `kotlinx-coroutines` and `kotlinx-serialization-core` as transitive dependencies of AndroidX lifecycle (not used by GHOST code).
-- **Notices sizes:** client-net 469 947 B (421 components, 229 distinct texts), relay 159 005 B, issuer 179 445 B, Gradle part 32 244 B; the APK asset `assets/THIRD_PARTY_NOTICES.txt` is 503 175 B. A local offline `:app:assembleRelease` built it and `apk-notices.sh` passed on that APK.
+- **Notices sizes:** client-net 469 947 B (421 components, 229 distinct texts), relay 159 005 B, issuer 179 445 B, Gradle part 32 248 B (4 distinct texts; 32 244 B before §11 made the AAR roots readable); the APK asset `assets/THIRD_PARTY_NOTICES.txt` is 503 179 B. A local offline `:app:assembleRelease` built it and `apk-notices.sh` passed on that APK.
 - **App wiring** (`ghost/android/app/build.gradle.kts`): task `thirdPartyNoticesAsset` concatenates `ghost/licenses/apk-notices-preamble.txt` (GHOST copyright, the part layout, the SQLCipher credit: SQLCipher for Android by Zetetic LLC, based on SQLite, with LibTomCrypt, which the AAR's `libsqlcipher.so` names), `THIRD_PARTY_NOTICES-android.txt` and `THIRD_PARTY_NOTICES-client-net.txt` into a generated assets directory of every variant; task `releaseRuntimeComponents` writes the component list. No Gradle coordinate or plugin was added.
 
 ## 6. ADRs filed (Appendix A, §16.4 list, B.6)
@@ -160,6 +160,7 @@ Removed or void: Q1 (removed), Q2, Q3, Q21 (void). Owner decisions already taken
 10. **Gate placement follows §22.8.10 point 10**; `license-notices.sh rust`, `rust-license-headers.sh` and `mpl-sources.sh` also run from `rust-gates.sh` locally. G-L1 runs `cargo fetch --locked` first, because `cargo tree` resolves target-specific packages whose sources may not be extracted.
 11. **§22.8.9 point 4 (CI plan on private 2-CPU runners)** is superseded by the owner's self-hosted runners; measured durations are in `docs/ci-self-hosted.md` §8. The Phase 9 jobs' budgets are measured when those jobs exist.
 12. **Not in this slice:** G-R1 … G-R8, the `rust-crypto-pins.sh` version sets (§22.8.10 point 5) and the allowlist names of the DM graph (they need the DM crates, S4a/S4b), the spikes V-1 … V-17.
+13. **G-L1 (Gradle) finds the component as published in the Gradle cache** (§11 point 3), next to its POM, with the lookup `pom_licences` already used, instead of having `releaseRuntimeComponents` name a second artifact: the design fixes no mechanism, this keeps the components file and the Gradle task unchanged, and an artifact view for the published type is ambiguous under AGP. It ties the gate to the cache layout the POM lookup already depends on; a component with no archive there fails.
 
 ## 9. Open items
 
@@ -187,3 +188,64 @@ The WIP commit `30c7aa1` was saved unverified. Everything below ran on that tree
 **Fixed.** `test-harness/gates/no-public-binaries/no-declaration/` had no `ghost/` directory in git (an empty directory is not tracked), so `no-public-binaries.sh` stopped at `cd` with a shell error instead of reporting `repository-visibility.txt missing`, and the self-test flagged the case. A README in `no-declaration/ghost/scripts/gates/` keeps the directory; the gate now reports the declared reason.
 
 **Environment note (no change to this branch).** The cargo target directory shared by the Phase 9 worktrees held build-script outputs of other worktrees: `relay/crates/api/build.rs` bakes `CARGO_MANIFEST_DIR` into the build script and cargo's metadata hash is workspace-relative, so an output generated from the `p9-relay` worktree's `relay.proto` (with `RegisterKey`) was reused here and `ghost-relay-node` failed to compile (`missing register_key`). This branch changes no Rust source; `rust-gates.sh` was re-run in a target directory of its own (still on the C: drive, as App Control requires). Not run locally: `reproducible-build.sh`, which needs the native libraries of both ABIs; its only change is the `apk-notices.sh` call, exercised above on the release APK.
+
+## 11. Review fixes (2026-09-19)
+
+A review of §1–§10 raised four findings; each was reproduced before it was fixed, and each fix has a
+self-test case that fails on the previous code.
+
+1. **G-L5 reported `OK` when its rule engine could not run.** The whole rule set of
+   `no-public-binaries.sh` was a `perl -e` in a process substitution whose exit status nothing read,
+   so a `perl` that died printed its error and the gate exited 0 — an APK upload in a private
+   repository passed. Reproduced on the `private-apk` fixture with a failing `perl` on `PATH`
+   (`GATE-FAIL: … is not an internal native hand-off` before, `[no-public-binaries] OK` after).
+   Fixed the way the three sibling licence gates already worked: the engine's output is captured,
+   its status checked, and a non-zero status reports `no-public-binaries.sh rule engine stopped
+   (exit N)`. Self-test: the gate runs on `private-apk` with a `perl` stub that exits 2 and must
+   fail.
+2. **`license-upstream-snapshot.sh` recorded `none` after a failed listing.** Both NOTICE listings of
+   a package went through command substitutions whose failure the caller never saw, so a GitHub API
+   error was indistinguishable from "upstream ships no NOTICE" — and a `none` entry is exactly what
+   lets G-L1 accept an Apache-2.0 package with no NOTICE reproduced. The review attributed this to
+   the package-directory listing only; on this bash **both** listings were swallowed, because `set
+   -e` is suppressed inside a command substitution whose status the caller tests, so the function
+   ran on past the failing `gh` and returned the status of its last pipeline. `notice_names` now
+   checks `gh` itself (`|| return 1`) and each listing is assigned on its own with its own error.
+   Exposure was live: 4 of the 9 Apache-2.0 cargo entries recorded `none` have a non-empty
+   `path_in_vcs` (`amplify_num`, `amplify_syn`, `prost`, `prost-derive`). The entries were **not**
+   re-verified here: that needs network access and `gh` (owner action, §9).
+   Fixture: `test-harness/gates/upstream-snapshot/` (stubs for `gh` and `cargo`, three cases).
+3. **The Gradle half of G-L1 never read the component as published.** It opened only the
+   AGP-transformed classes jar, so licence and notice files an AAR keeps at its own root were
+   invisible: 45 of the 66 release runtime components carry `META-INF/<group>/<artifact>/LICENSE.txt`
+   at the AAR root, and the notices cited the SPDX text instead. A component that shipped a `NOTICE`
+   that way would have been dropped with G-L1 green (none does today; every archive of the 66 was
+   checked). `licenses.pl` now also reads the artifact as
+   published, found next to the POM in the Gradle cache — the same lookup the POM already used,
+   which keeps the components file and the Gradle task unchanged. The file name is the one the
+   module metadata gives (`androidx.compose.ui:ui-android` publishes `ui.aar`), so every archive of
+   the version's cache directories counts, source and documentation jars apart; each component has
+   exactly one. `THIRD_PARTY_NOTICES-android.txt` was regenerated (45 components now cite the text
+   they ship; 4 distinct texts, unchanged), the APK asset rebuilt and G-L3 re-run. A component with
+   no archive in the cache fails.
+4. **Nothing checked the SPDX snapshot against `SOURCE.txt`.** The notices cite "SPDX License List
+   3.28.0" as their provenance and `SOURCE.txt` records a SHA-256 per text, but only the version
+   line was ever read: an edited text plus a regeneration moved both together. G-L1 now re-hashes
+   every `ghost/licenses/spdx/*.txt` against `SOURCE.txt` and fails on a mismatch, on a text the
+   file does not record and on one it records that the tree has not. All 11 recorded hashes match
+   today (independently re-computed).
+
+No property was weakened. The reviewer's fourth finding also quoted the version line as
+`license-version`; it is `license-list-version` (no effect on the finding).
+
+**Verification of this round** (same workstation and environment note as §10).
+
+| What ran | Result |
+|---|---|
+| `run-all.sh` (10 static gates, G-L5 included) | green |
+| `self-test.sh` with `GHOST_SELFTEST_OPS=1` | **229 cases ok**, exit 0 (220 before; the 9 new cases are the rule-engine case, three SPDX snapshot cases, three `license-upstream-snapshot.sh` cases and the two Gradle ones); nothing skipped |
+| the 9 new cases against the previous code | each fails: `[no-public-binaries] OK` on `private-apk`, `none` recorded after a failed listing, the Gradle positive case `differs from the regenerated notices`, the no-archive case passing |
+| `license-notices.sh rust` on the real tree | green |
+| `./gradlew --no-daemon --offline :app:assembleRelease :app:releaseRuntimeComponents` | green, 66 components; `license-notices.sh android` and `apk-notices.sh` (G-L3) green on the rebuilt APK, whose asset is 503 179 B |
+| `no-public-binaries.sh` on the real tree and the 11 fixture roots | unchanged from §10; with a failing `perl`, `rule engine stopped (exit 2)` |
+| `rust-gates.sh` | green in the target directory of this worktree (97 test binaries, 0 failures) |
