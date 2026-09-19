@@ -7,8 +7,9 @@
 //!
 //! The client only moves opaque, already-encrypted, bucket-sized blobs. It never frames or pads
 //! plaintext itself (padding belongs inside the AEAD plaintext, see `ghost-relay-transport`), it
-//! snaps TTLs to the allowed buckets, bounds every RPC with a deadline of at most
-//! [`RELAY_RPC_DEADLINE`], and treats every relay response as hostile input.
+//! refuses a store whose TTL is not exactly one of the allowed buckets before any I/O (it never
+//! rounds), bounds every RPC with a deadline of at most [`RELAY_RPC_DEADLINE`], and treats every
+//! relay response as hostile input.
 //!
 //! A `RelayClient` is built only inside this crate: callers get one bound to a namespace through
 //! [`crate::NamespaceClient::over_tor`], which also checks each capability against that namespace
@@ -280,11 +281,22 @@ pub(crate) const CLOCK_SKEW_SECONDS: u64 = 3 * 86_400;
 /// early (e.g. another writer pre-stored the same ciphertext with a short TTL on a relay that does
 /// not extend it) and is reported as `NotStored`.
 ///
-/// It must also not hold it for longer than asked (T30, design §10.2 point 6): the honest expiry
-/// is `ceil_hour(relay now + ttl)` with a relay clock within [`CLOCK_SKEW_SECONDS`] of ours, so
-/// anything above `ceil_hour(now + ttl) + CLOCK_SKEW_SECONDS` is `Malformed`. A relay that keeps
-/// a blob past the TTL its sender chose breaks the bounded relay lifetime the ephemeral timers
-/// rest on, and it is detected here rather than believed.
+/// It must also not hold it much longer than asked (T30, design §10.2 point 6): the honest expiry
+/// is `ceil_hour(relay now + ttl)`, so anything above `ceil_hour(now + ttl) + CLOCK_SKEW_SECONDS`
+/// is `Malformed`. A relay that keeps a blob past the TTL its sender chose breaks the bounded
+/// relay lifetime the ephemeral timers rest on, and it is detected here rather than believed.
+///
+/// What this achieves exactly: **an over-promise of more than `CLOCK_SKEW_SECONDS` is detected**,
+/// not every over-promise. The same σ is the tolerance for a relay clock ahead of ours, so a
+/// relay may declare up to σ (3 days) more than the honest expiry of every bucket — 73 hours for
+/// a 1-hour store — and be believed. The residue is declared as L7-D27 (design §11.5), the mirror
+/// image of the lower bound's L7-D15; a relay-corrected bound is a Phase 12 option.
+///
+/// Premise: `|relay now − now| ≤ CLOCK_SKEW_SECONDS`. Nothing enforces it, and it is **not**
+/// implied by each clock being within σ of true time: a device σ behind and a relay ahead of true
+/// time makes an honest receipt `Malformed`. The T32 device-offset model of design §15.6
+/// (`U[−3 d, +3 d]`) must be narrowed, or the relay skew set to 0, before the S11 worlds run it
+/// (§11.5, L7-D27).
 pub(crate) fn validate_store(
     hash: &[u8; 32],
     resp: &StoreBlobResponse,
@@ -309,10 +321,14 @@ pub(crate) fn validate_store(
 
 /// Latest expiry a relay can truthfully declare for a store of `ttl_seconds` at `now`: the
 /// hour-rounded end of the requested TTL plus [`CLOCK_SKEW_SECONDS`] (the tolerated difference
-/// between the relay's clock and ours). Never above [`latest_valid_expiry`], since the TTL is one
-/// of the buckets.
+/// between the relay's clock and ours), clamped to [`latest_valid_expiry`]. The clamp is not
+/// cosmetic: `ceil_hour` rounds up and [`latest_valid_expiry`] does not, so at the 90-day bucket
+/// the unclamped bound would accept a receipt up to one hour above the absolute bound
+/// [`validate_get`] enforces on the same blob.
 fn latest_store_expiry(now: u64, ttl_seconds: u32) -> u64 {
-    ceil_hour(now.saturating_add(u64::from(ttl_seconds))).saturating_add(CLOCK_SKEW_SECONDS)
+    ceil_hour(now.saturating_add(u64::from(ttl_seconds)))
+        .saturating_add(CLOCK_SKEW_SECONDS)
+        .min(latest_valid_expiry(now))
 }
 
 /// Latest expiry a relay can truthfully declare at `now`: the maximum TTL bucket (90 days) plus
@@ -798,6 +814,58 @@ mod tests {
         assert_eq!(ceil_hour(3_600), 3_600);
         assert_eq!(ceil_hour(3_601), 7_200);
         assert_eq!(ceil_hour(u64::MAX), u64::MAX, "saturates, never overflows");
+    }
+
+    /// The store bound is never above the absolute bound [`validate_get`] enforces: `ceil_hour`
+    /// rounds up while [`latest_valid_expiry`] does not, so without the clamp the 90-day bucket
+    /// would accept a receipt up to one hour above it (review of S2).
+    #[test]
+    fn the_store_bound_never_exceeds_the_absolute_expiry_bound() {
+        for now in [0u64, 1, 3_599, 1_800_000_000, 1_800_000_001, 1_800_003_599] {
+            for ttl in TTL_BUCKETS_SECONDS {
+                assert!(
+                    latest_store_expiry(now, ttl) <= latest_valid_expiry(now),
+                    "now {now}, ttl {ttl}: {} > {}",
+                    latest_store_expiry(now, ttl),
+                    latest_valid_expiry(now)
+                );
+            }
+        }
+    }
+
+    /// What the receipt upper bound achieves (T30, design §10.2 point 6): for every bucket an
+    /// over-promise of more than `CLOCK_SKEW_SECONDS` is refused and one of at most that is
+    /// tolerated, because the same σ covers a relay clock ahead of ours. The tolerated residue is
+    /// declared (L7-D27), the mirror image of the lower bound's L7-D15.
+    #[test]
+    fn the_receipt_upper_bound_tolerates_exactly_sigma_of_over_promise() {
+        let blob = vec![7u8; 1024];
+        let h = sha256(&blob);
+        // An hour-aligned `now`, so the 90-day bucket is not clamped by `latest_valid_expiry`.
+        let now = 1_800_000_000;
+        let receipt = |expiry| StoreBlobResponse {
+            success: true,
+            stored_hash: h.to_vec(),
+            expiry_unix_seconds: expiry,
+        };
+        for ttl in TTL_BUCKETS_SECONDS {
+            let honest = ceil_hour(now + u64::from(ttl));
+            assert!(
+                validate_store(&h, &receipt(honest), ttl, now).is_ok(),
+                "{ttl}"
+            );
+            assert!(
+                validate_store(&h, &receipt(honest + CLOCK_SKEW_SECONDS), ttl, now).is_ok(),
+                "an over-promise of exactly sigma is tolerated: {ttl}"
+            );
+            assert!(
+                matches!(
+                    validate_store(&h, &receipt(honest + CLOCK_SKEW_SECONDS + 1), ttl, now),
+                    Err(RelayError::Malformed)
+                ),
+                "anything above it is detected: {ttl}"
+            );
+        }
     }
 
     #[test]

@@ -55,6 +55,23 @@ internal class HarnessDriver(private val world: World) {
     /** Called when a client's session finished. */
     var onSessionFinished: ((Client, Session) -> Unit)? = null
 
+    /**
+     * Runs [body] as if a lane item of [client] were running, so a test may call the relay port
+     * directly (the port asserts that every relay call happens inside a lane item). It starts no
+     * session and schedules nothing; only [HarnessRelayPortMirrorTest] uses it.
+     */
+    fun <T> asLaneItem(client: Client, body: () -> T): T {
+        check(currentItemId == null) { "already inside a lane item" }
+        currentItemId = ++itemIds
+        currentClient = client
+        try {
+            return body()
+        } finally {
+            currentItemId = null
+            currentClient = null
+        }
+    }
+
     fun schedule(at: Long, label: String, run: () -> Unit) {
         timeline.add(Timed(at, seq++, label, null, null, run))
     }

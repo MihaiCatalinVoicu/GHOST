@@ -205,20 +205,39 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
         }.sortedWith(compareBy({ it.validUntil }, { it.record.period }))
     }
 
+    /** What a deposit charge did, mirroring `DepositLedger::charge` and its two `CapError`s. */
+    private sealed class Charge {
+        class Charged(val record: DepositKey) : Charge()
+
+        /** No allowance covers the bytes: RESOURCE_EXHAUSTED, `quota` at the client. */
+        object Exhausted : Charge()
+
+        /**
+         * Every candidate is valid only until the ledger's prune high-water, so none is ever
+         * charged again: `CapError::Expired`, PERMISSION_DENIED, `unauthorized` at the client
+         * (`relay/crates/capability/src/lib.rs`, `node/src/lib.rs` `cap_error`).
+         */
+        object Expired : Charge()
+    }
+
     /**
-     * Charges [bytes] to the first registration whose allowance still covers them (design §4.5);
-     * null when none does (`quota`). The used bytes live in memory and restart empty (E29).
+     * Charges [bytes] to the first registration whose allowance still covers them (design §4.5).
+     * The used bytes live in memory and restart empty (E29). A candidate at or below the prune
+     * high-water is skipped; when every candidate is, the answer is [Charge.Expired] and not
+     * [Charge.Exhausted] (`register.txt` section 6).
      */
-    private fun chargeDeposit(allowances: List<Allowance>, bytes: Long): DepositKey? {
+    private fun chargeDeposit(allowances: List<Allowance>, bytes: Long): Charge {
+        var expired = true
         for (a in allowances) {
             if (a.validUntil <= depositsPrunedThrough) continue
+            expired = false
             val (used, _) = deposits[a.record] ?: Pair(0L, a.validUntil)
             if (used + bytes <= a.quotaBytes) {
                 deposits[a.record] = Pair(used + bytes, a.validUntil)
-                return a.record
+                return Charge.Charged(a.record)
             }
         }
-        return null
+        return if (expired && allowances.isNotEmpty()) Charge.Expired else Charge.Exhausted
     }
 
     // ------------------------------------------------------------------ operations
@@ -244,7 +263,11 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
                 ledger[scope] = Pair(used + data.size, cap.expiry)
             }
             is Auth.Bearer -> {
-                chargeDeposit(auth.allowances, data.size.toLong()) ?: return Reply.Err("quota")
+                when (chargeDeposit(auth.allowances, data.size.toLong())) {
+                    is Charge.Charged -> Unit
+                    Charge.Exhausted -> return Reply.Err("quota")
+                    Charge.Expired -> return Reply.Err("unauthorized")
+                }
             }
         }
         val key = Pair(namespace, hash)

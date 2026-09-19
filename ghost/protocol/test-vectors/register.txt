@@ -88,6 +88,8 @@
 #     with a live record of its verifier for some period in [week(now) - 3, week(now) + 1];
 #   - a store with a deposit credential is charged to the earliest live record (by valid_until)
 #     whose allowance still covers it; none: quota, nothing written; the ledger lives in memory;
+#     a record that is live but valid only until the ledger's prune high-water is never charged
+#     again and answers unauthorized, not quota (DepositLedger::charge, CapError::Expired);
 #   - get with a read or fetch credential answers uploaded_at floored to the start of its ISO week;
 #     with a fetch credential also the expiry rounded up to the next ISO week boundary; a
 #     capability gets the upload minute and the hour-rounded expiry;
@@ -328,3 +330,21 @@ store ns=lost blob=Z2 cred=KD ttl=604800 -> unauthorized
 get blob=Z1 cred=K -> ok uploaded=2959+86400 expiry=2960+86400
 register ns=lost period=2959 kind=deposit verifier=KD cap=K req=z2 -> ok valid_until=2961+3600   # the owner heals it
 store ns=lost blob=Z2 cred=KD ttl=604800 -> ok expiry=2960+86400
+
+# ---------------------------------------------------------------------------------------------
+# 6. The ledger's prune high-water against a live record: a record the sweep never saw, whose
+#    validity ends at or below the high-water, authorizes the credential (it is live at `now`) but
+#    is never charged again, so the store is refused as unauthorized (CapError::Expired), not as
+#    quota. It needs a clock stepped back by more than a registration's validity; pinned so that
+#    neither replayer may merge the relay's two deposit-charge refusals.
+relay slot=1 start=2965+3600
+credential HD kind=deposit slot=1 ns=hw secret=hw
+blob H1 size=1024
+sweep -> ok removed=0                                               # the high-water is now 2965+3600
+at 2959+86400                                                       # the clock steps back below it
+cap O v2 ns=hw week=2959 serial=o
+register ns=hw period=2959 kind=deposit verifier=HD cap=O req=h1 -> ok valid_until=2961+3600
+record ns=hw period=2959 kind=deposit verifier=HD -> quota=268435456 serials=1 valid_until=2961+3600
+store ns=hw blob=H1 cred=HD ttl=86400 -> unauthorized               # live for the credential, below the high-water for the ledger
+deposits ns=hw period=2959 verifier=HD -> used=0                    # nothing was charged
+ledger -> 0
