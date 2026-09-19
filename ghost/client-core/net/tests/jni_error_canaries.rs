@@ -12,11 +12,12 @@ use ghost_client_net::categories::{for_issuer, for_relay, ALL};
 use ghost_client_net::entitlement::{self, Product};
 use ghost_client_net::issuer_client::IssuerError;
 use ghost_client_net::issuer_flow;
-use ghost_client_net::namespace_client::redeem_with;
+use ghost_client_net::namespace_client::{redeem_with, register_with};
 use ghost_client_net::RelayError;
 use ghost_entitlement::batch;
 use ghost_entitlement::Kind;
 use ghost_relay_api::proto::Capability;
+use ghost_relay_api::BearerKind;
 use tonic::Code;
 
 const SEED: [u8; 32] = *b"canary-seed-3f9a1c7e5b2d4f608192";
@@ -25,6 +26,10 @@ const INVOICE_ID: [u8; 16] = *b"canary-invoice-1";
 const CLAIM_ID: [u8; 16] = *b"canary-claimid-2";
 const REQUEST_ID: [u8; 16] = *b"canary-request-3";
 const NAMESPACE: [u8; 32] = *b"canary-namespace-0123456789abcde";
+/// A registered verifier and the bearer secret behind it (Phase 9 design §4.3): the secret is
+/// never sent at all, the verifier only inside a `RegisterKey` request.
+const VERIFIER: [u8; 32] = *b"canary-verifier-0123456789abcdef";
+const BEARER_SECRET: [u8; 32] = *b"canary-bearer-secret-0123456789a";
 
 fn encodings(secret: &[u8]) -> Vec<Vec<u8>> {
     vec![
@@ -334,4 +339,64 @@ async fn redemption_error_paths_carry_categories_only() {
     let shown = format!("{ok:?}");
     assert!(!shown.contains(&hex::encode(&cap)));
     canaries.assert_clean("RedeemOutcome Debug", &shown);
+
+    // Key registration (Phase 9 design §4.4) on the same paths: the verifier is a canary, and so
+    // is the bearer secret behind it, which never leaves the device at all.
+    let canaries = Canaries::new(&[&a1, &VERIFIER, &BEARER_SECRET]);
+    let mut forged = cap.clone();
+    forged[97] ^= 1;
+    for (why, capability) in [
+        ("register forged", forged),
+        ("register none", Vec::new()),
+        (
+            "register echoed",
+            [&NAMESPACE[..], &VERIFIER[..], &BEARER_SECRET[..32]].concat(),
+        ),
+    ] {
+        let e = register_with(
+            &mut relay,
+            NAMESPACE,
+            capability,
+            2959,
+            BearerKind::Deposit,
+            VERIFIER,
+            REQUEST_ID,
+            now,
+        )
+        .await
+        .unwrap_err();
+        canaries.relay_error(why, &e);
+    }
+    // A hostile answer that echoes the verifier in the validity is refused as malformed, and its
+    // error says only that.
+    relay.tamper_register = Some(Box::new(|a| {
+        a.valid_until_unix = u64::from_be_bytes(VERIFIER[..8].try_into().unwrap())
+    }));
+    let e = register_with(
+        &mut relay,
+        NAMESPACE,
+        cap.clone(),
+        2959,
+        BearerKind::Deposit,
+        VERIFIER,
+        REQUEST_ID,
+        now,
+    )
+    .await
+    .unwrap_err();
+    canaries.relay_error("register echo", &e);
+    relay.tamper_register = None;
+    let registered = register_with(
+        &mut relay,
+        NAMESPACE,
+        cap,
+        2959,
+        BearerKind::Deposit,
+        VERIFIER,
+        REQUEST_ID,
+        now,
+    )
+    .await
+    .unwrap();
+    canaries.assert_clean("RegisterOutcome Debug", &format!("{registered:?}"));
 }

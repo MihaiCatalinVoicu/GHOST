@@ -96,10 +96,21 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         }
     }
 
-    private fun scopeGuard(capability: ByteArray, ns: NamespaceId, write: Boolean) {
-        val header = ModelRelay.header(capability) ?: fail("invalid_argument")
+    /**
+     * The T21 guard of `NamespaceClient::authorize` (client-core), which runs before any I/O: the
+     * token names this namespace and fits the operation. A bearer credential v3 is read by its own
+     * parser and its kind names its operations exactly (Phase 9 design §4.3, §22.8.7); anything
+     * else must be a capability, write for a store.
+     */
+    private fun scopeGuard(token: ByteArray, ns: NamespaceId, op: ModelRelay.Companion.Op) {
+        val credential = ModelRelay.credential(token)
+        if (credential != null) {
+            if (credential.namespace != ns || !ModelRelay.allows(credential.kind, op)) fail("invalid_argument")
+            return
+        }
+        val header = ModelRelay.header(token) ?: fail("invalid_argument")
         if (header.namespace != ns) fail("invalid_argument")
-        if (write && header.kind != ModelRelay.KIND_WRITE) fail("invalid_argument")
+        if (op == ModelRelay.Companion.Op.STORE && header.kind != ModelRelay.KIND_WRITE) fail("invalid_argument")
     }
 
     private fun begin(kind: CallKind, relay: OnionAddress, ns: NamespaceId, limit: Int, deadlineMillis: Int, hashes: List<BlobHash>): Pair<RelayNode, CallInfo> {
@@ -141,7 +152,10 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         val (node, info) = begin(CallKind.STORE, relay, ns, 0, deadlineMillis, listOf(hash))
         opIdCanary(ns.toByteArray(), capability, ciphertext)
         if (ciphertext.size !in Buckets.SIZES) fail("not_bucket_sized")
-        scopeGuard(capability, ns, write = true)
+        // The TTL must be exactly one relay bucket; the Rust client refuses every other value
+        // before any I/O instead of rounding it (Phase 9 design §10.2 point 6).
+        if (ttlSeconds.toLong() !in ModelRelay.TTL_BUCKETS) fail("invalid_argument")
+        scopeGuard(capability, ns, ModelRelay.Companion.Op.STORE)
         if (world.ops.values.none { it.client === client && it.namespace == ns && it.hash == hash }) {
             violation("a store sent bytes that are no op's frozen payload (OUT-3: a second ciphertext)")
         }
@@ -164,7 +178,9 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
             // Rust validate_store, with the device clock.
             val now = world.clock.epochSeconds()
             if (receipt.hash != hash) fail("malformed_response")
-            if (receipt.expiry > now + MAX_TTL + RetentionPolicy.SKEW_SECONDS) fail("malformed_response")
+            // The upper bound of design §10.2 point 6 (T30): a relay may not promise to keep the
+            // blob longer than the TTL it was given, its clock allowed for.
+            if (receipt.expiry > ModelRelay.ceilHour(now + ttlSeconds) + RetentionPolicy.SKEW_SECONDS) fail("malformed_response")
             if (receipt.expiry + RetentionPolicy.SKEW_SECONDS < now + ttlSeconds) fail("not_stored")
             event(EventKind.RELAY_AFTER_RESPONSE, info, node, capability)?.let { fail(it) }
             call.result = "receipt@${world.clock.millis}"
@@ -202,7 +218,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
     override fun get(relay: OnionAddress, ns: NamespaceId, capability: ByteArray, hash: BlobHash, deadlineMillis: Int): FetchedBlob {
         val (node, info) = begin(CallKind.GET, relay, ns, 0, deadlineMillis, listOf(hash))
         opIdCanary(ns.toByteArray(), capability, hash.toByteArray())
-        scopeGuard(capability, ns, write = false)
+        scopeGuard(capability, ns, ModelRelay.Companion.Op.GET)
         event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
         reachability(node)
         val arrived = travel(node, ns, CallKind.GET, deadlineMillis)
@@ -239,7 +255,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         opIdCanary(ns.toByteArray(), capability, cursor)
         require(limit in 1..ModelRelay.MAX_BATCH) { "limit out of range" }
         if (cursor.isNotEmpty() && cursor.size != 8) fail("invalid_argument")
-        scopeGuard(capability, ns, write = false)
+        scopeGuard(capability, ns, ModelRelay.Companion.Op.LIST)
         event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
         reachability(node)
         val arrived = travel(node, ns, CallKind.LIST, deadlineMillis)
@@ -294,7 +310,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         require(hashes.toSet().size == hashes.size) { "check hashes must be distinct" }
         val (node, info) = begin(CallKind.CHECK, relay, ns, hashes.size, deadlineMillis, hashes)
         opIdCanary(ns.toByteArray(), capability, *hashes.map { it.toByteArray() }.toTypedArray())
-        scopeGuard(capability, ns, write = false)
+        scopeGuard(capability, ns, ModelRelay.Companion.Op.CHECK)
         event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
         reachability(node)
         val arrived = travel(node, ns, CallKind.CHECK, deadlineMillis)

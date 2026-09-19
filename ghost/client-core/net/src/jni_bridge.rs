@@ -15,8 +15,9 @@
 //! surface as `org.ghost.network.NetworkException` with a constant category (see
 //! [`crate::categories`]), never with relay, issuer or network detail.
 //!
-//! Relay calls (store, get, list, check, redeem) go through a [`NamespaceClient`] built per call
-//! for the call's namespace, so the capability must name that namespace (T21), and each takes a
+//! Relay calls (store, get, list, check, redeem, registerKey) go through a [`NamespaceClient`]
+//! built per call for the call's namespace, so the token must name that namespace (T21, a
+//! capability or a bearer credential v3), and each takes a
 //! `deadlineMs`: the effective deadline is `min(deadlineMs, RELAY_RPC_DEADLINE)`; zero or a
 //! negative value is `invalid_argument`. One handle serves concurrent calls from several JVM
 //! threads: its runtime is multi-threaded and each call blocks only its own thread.
@@ -39,7 +40,7 @@ use crate::relay_client::{FetchedBlob, OnionConnector, RelayError, RELAY_RPC_DEA
 use crate::transport::{TorTransport, TransportConfig};
 use ghost_entitlement::monero::AddressPurpose;
 use ghost_entitlement::{Kind, Schedule, Token};
-use ghost_relay_api::MAX_BATCH;
+use ghost_relay_api::{BearerKind, MAX_BATCH, VERIFIER_BYTES};
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
@@ -573,6 +574,48 @@ pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeRedeem(
         let outcome = h.run(async {
             namespace_client(transport, &addr, ns, deadline)?
                 .redeem(&token, request_id)
+                .await
+                .map_err(relay_category)
+        })?;
+        to_java(env, &outcome.pack())
+    })
+}
+
+/// Registers a bearer verifier for one ISO week in `namespace` at `relay` (Phase 9 design §4.4),
+/// with a usable write capability of that namespace and a 16-byte `requestId` identical on every
+/// retry. `kind` is a `KeyKind` value (1 read, 3 deposit, 4 fetch); anything else is
+/// `invalid_argument` before any I/O, as is a capability that does not name `namespace` (T21).
+/// The secret behind `verifier` (32 bytes) never crosses this boundary. Returns
+/// `result(1) || relay_period(8) || relay_minute(8) || valid_until(8)`, result 1 OK (with the
+/// registration's validity), 2 WRONG_PERIOD (validity 0).
+#[no_mangle]
+pub extern "system" fn Java_org_ghost_network_TorRelayTransport_nativeRegisterKey(
+    mut env: JNIEnv,
+    _class: JClass,
+    id: jlong,
+    relay: JString,
+    namespace: JByteArray,
+    capability: JByteArray,
+    period_id: jlong,
+    kind: jint,
+    verifier: JByteArray,
+    request_id: JByteArray,
+    deadline_ms: jint,
+) -> jbyteArray {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let addr = onion(env, &relay)?;
+        let ns = fixed::<32>(env, &namespace)?;
+        let cap = bytes(env, &capability)?;
+        let period = unsigned(period_id)?;
+        let kind = BearerKind::from_key_kind(kind).ok_or(cat::INVALID_ARGUMENT)?;
+        let verifier = fixed::<VERIFIER_BYTES>(env, &verifier)?;
+        let request_id = fixed::<16>(env, &request_id)?;
+        let deadline = deadline(deadline_ms)?;
+        let h = lookup(id)?;
+        let transport = h.transport()?;
+        let outcome = h.run(async {
+            namespace_client(transport, &addr, ns, deadline)?
+                .register_key(cap, period, kind, verifier, request_id)
                 .await
                 .map_err(relay_category)
         })?;

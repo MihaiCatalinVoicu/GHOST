@@ -112,6 +112,43 @@ class RelayWireTest {
         assertThrows(IllegalArgumentException::class.java) { TorRelayTransport.packHashes(listOf(hash(1), hash(2), hash(1))) }
     }
 
+    /** `RegisterKey` answers (Phase 9 design §4.2, §4.4): 25 bytes, validity exactly on OK. */
+    @Test
+    fun registerDecodingIsStrict() {
+        val validUntil = 1_791_000_000L
+        val ok = TorRelayTransport.decodeRegister(byteArrayOf(1) + long8(2959) + long8(29_850_000) + long8(validUntil))
+        assertEquals(TorRelayTransport.REGISTER_OK, ok.result)
+        assertEquals(2959L, ok.relayPeriodId)
+        assertEquals(29_850_000L, ok.relayMinute)
+        assertEquals(validUntil, ok.validUntilUnixSeconds)
+        assertEquals("RegisterAnswer(result=1)", ok.toString())
+        val wrongPeriod = TorRelayTransport.decodeRegister(byteArrayOf(2) + long8(2959) + long8(29_850_000) + long8(0))
+        assertEquals(TorRelayTransport.REGISTER_WRONG_PERIOD, wrongPeriod.result)
+        assertEquals(0L, wrongPeriod.validUntilUnixSeconds)
+        val bad = listOf(
+            ByteArray(24),
+            ByteArray(26),
+            byteArrayOf(0) + long8(2959) + long8(1) + long8(0), // REGISTER_RESULT_UNSPECIFIED
+            byteArrayOf(3) + long8(2959) + long8(1) + long8(validUntil), // no such result
+            byteArrayOf(1) + long8(2959) + long8(1) + long8(0), // OK without a validity
+            byteArrayOf(2) + long8(2959) + long8(1) + long8(validUntil), // WRONG_PERIOD with one
+            byteArrayOf(1) + long8(-1L) + long8(1) + long8(validUntil), // negative period
+            byteArrayOf(1) + long8(2959) + long8(-1L) + long8(validUntil), // negative minute
+            byteArrayOf(1) + long8(2959) + long8(1) + long8(-1L), // negative validity
+        )
+        for (b in bad) malformed { TorRelayTransport.decodeRegister(b) }
+    }
+
+    /** The key kinds are the `KeyKind` values of `relay.proto`; 2 is Write and is never one. */
+    @Test
+    fun keyKindCodes() {
+        assertEquals(1, TorRelayTransport.KeyKind.READ.code)
+        assertEquals(3, TorRelayTransport.KeyKind.DEPOSIT.code)
+        assertEquals(4, TorRelayTransport.KeyKind.FETCH.code)
+        assertEquals(3, TorRelayTransport.KeyKind.entries.size)
+        assertTrue(TorRelayTransport.KeyKind.entries.none { it.code == 0 || it.code == 2 })
+    }
+
     @Test
     fun deadlinesAreOneToSixtyThousandMillis() {
         TorRelayTransport.requireDeadline(1)

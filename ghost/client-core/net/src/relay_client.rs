@@ -21,7 +21,8 @@ use arti_client::{DataStream, TorClient};
 use ghost_relay_api::proto::relay_service_client::RelayServiceClient;
 use ghost_relay_api::proto::*;
 use ghost_relay_api::{
-    is_bucket_size, HASH_BYTES, MAX_BATCH, PROTOCOL_VERSION, REQUEST_ID_BYTES, TTL_BUCKETS_SECONDS,
+    is_bucket_size, ttl_bucket_seconds, HASH_BYTES, MAX_BATCH, PROTOCOL_VERSION, REQUEST_ID_BYTES,
+    TTL_BUCKETS_SECONDS,
 };
 use hyper_util::client::legacy::connect::{Connected, Connection};
 use hyper_util::client::legacy::Client as HyperClient;
@@ -256,29 +257,34 @@ pub(crate) fn transport_cause(status: &tonic::Status) -> Option<TransportError> 
     None
 }
 
-/// Snaps a TTL to the smallest relay TTL bucket of at least one day at or above it (threat model
-/// §6: relays observe `ttl_bucket_seconds` only, and store exactly the bucket named). Zero and
-/// anything above 90 days are rejected.
-pub(crate) fn bucketed_ttl_seconds(ttl_seconds: u32) -> Result<u32, RelayError> {
-    if ttl_seconds == 0 {
-        return Err(RelayError::InvalidArgument);
-    }
-    TTL_BUCKETS_SECONDS
-        .iter()
-        .copied()
-        .find(|&bucket| bucket >= 86_400 && ttl_seconds <= bucket)
-        .ok_or(RelayError::InvalidArgument)
+/// The TTL of a store must be **exactly** one of [`TTL_BUCKETS_SECONDS`] (Phase 9 design §10.2,
+/// ADR-32, X-10): the relay stores exactly the bucket it is given and refuses every other TTL
+/// (`rejected_ttl`), so a client that rounded silently would turn a caller's mistake into a
+/// relay-visible refusal. Anything else is [`RelayError::InvalidArgument`], before any I/O.
+pub(crate) fn exact_ttl_bucket(ttl_seconds: u32) -> Result<u32, RelayError> {
+    ttl_bucket_seconds(ttl_seconds).ok_or(RelayError::InvalidArgument)
+}
+
+/// Rounds a time up to the hour, the granularity of every relay expiry
+/// (`ghost_relay_storage::quantize_expiry`).
+fn ceil_hour(t: u64) -> u64 {
+    t.div_ceil(3_600).saturating_mul(3_600)
 }
 
 /// Clock difference tolerated between device and relay when checking a store receipt. Arti
 /// itself accepts a device clock up to 3 days fast (directory post-valid tolerance).
 pub(crate) const CLOCK_SKEW_SECONDS: u64 = 3 * 86_400;
 
-/// Checks a store receipt. The relay must hold the blob for at least the requested (bucketed)
-/// TTL, give or take [`CLOCK_SKEW_SECONDS`]: a receipt with a shorter expiry means the blob would
-/// disappear early (e.g. another writer pre-stored the same ciphertext with a short TTL on a relay
-/// that does not extend it) and is reported as `NotStored`. An expiry beyond the maximum TTL plus
-/// skew is not a valid answer.
+/// Checks a store receipt. The relay must hold the blob for at least the requested TTL, give or
+/// take [`CLOCK_SKEW_SECONDS`]: a receipt with a shorter expiry means the blob would disappear
+/// early (e.g. another writer pre-stored the same ciphertext with a short TTL on a relay that does
+/// not extend it) and is reported as `NotStored`.
+///
+/// It must also not hold it for longer than asked (T30, design §10.2 point 6): the honest expiry
+/// is `ceil_hour(relay now + ttl)` with a relay clock within [`CLOCK_SKEW_SECONDS`] of ours, so
+/// anything above `ceil_hour(now + ttl) + CLOCK_SKEW_SECONDS` is `Malformed`. A relay that keeps
+/// a blob past the TTL its sender chose breaks the bounded relay lifetime the ephemeral timers
+/// rest on, and it is detected here rather than believed.
 pub(crate) fn validate_store(
     hash: &[u8; 32],
     resp: &StoreBlobResponse,
@@ -289,7 +295,7 @@ pub(crate) fn validate_store(
         return Err(RelayError::Malformed);
     }
     let expiry = resp.expiry_unix_seconds;
-    if expiry > latest_valid_expiry(now) {
+    if expiry > latest_store_expiry(now, ttl_seconds) {
         return Err(RelayError::Malformed);
     }
     if expiry.saturating_add(CLOCK_SKEW_SECONDS) < now.saturating_add(u64::from(ttl_seconds)) {
@@ -299,6 +305,14 @@ pub(crate) fn validate_store(
         blob_hash: *hash,
         expiry_unix_seconds: resp.expiry_unix_seconds,
     })
+}
+
+/// Latest expiry a relay can truthfully declare for a store of `ttl_seconds` at `now`: the
+/// hour-rounded end of the requested TTL plus [`CLOCK_SKEW_SECONDS`] (the tolerated difference
+/// between the relay's clock and ours). Never above [`latest_valid_expiry`], since the TTL is one
+/// of the buckets.
+fn latest_store_expiry(now: u64, ttl_seconds: u32) -> u64 {
+    ceil_hour(now.saturating_add(u64::from(ttl_seconds))).saturating_add(CLOCK_SKEW_SECONDS)
 }
 
 /// Latest expiry a relay can truthfully declare at `now`: the maximum TTL bucket (90 days) plus
@@ -416,7 +430,7 @@ where
         Ok(())
     }
 
-    /// Stores an already-encrypted, bucket-sized blob. The TTL is snapped to an allowed bucket.
+    /// Stores an already-encrypted, bucket-sized blob. The TTL must be exactly one bucket.
     pub async fn store(
         &mut self,
         namespace: [u8; 32],
@@ -427,7 +441,7 @@ where
         if !is_bucket_size(ciphertext.len()) {
             return Err(RelayError::NotBucketSized);
         }
-        let ttl_seconds = bucketed_ttl_seconds(ttl_seconds)?;
+        let ttl_seconds = exact_ttl_bucket(ttl_seconds)?;
         let hash = sha256(&ciphertext);
         let req = StoreBlobRequest {
             version: PROTOCOL_VERSION,
@@ -508,6 +522,16 @@ where
         req: RedeemTokenRequest,
     ) -> Result<RedeemTokenResponse, RelayError> {
         with_deadline(self.deadline, self.inner.redeem_token(req)).await
+    }
+
+    /// Sends one `RegisterKey` request as given. Crate-private: every registration goes through
+    /// [`crate::namespace_client::register_with`], which checks the capability before (T21) and
+    /// the answer after.
+    pub(crate) async fn register_raw(
+        &mut self,
+        req: RegisterKeyRequest,
+    ) -> Result<RegisterKeyResponse, RelayError> {
+        with_deadline(self.deadline, self.inner.register_key(req)).await
     }
 }
 
@@ -591,12 +615,19 @@ mod tests {
         let read = mint(&relay, Kind::Read, ns);
         let blob: Vec<u8> = (0..4096u32).map(|i| (i * 7 % 251) as u8).collect();
 
+        // A TTL that is no bucket never leaves the device (design §10.2 point 6).
+        assert!(matches!(
+            client
+                .store(ns, write.clone(), blob.clone(), 3 * 86_400)
+                .await,
+            Err(RelayError::InvalidArgument)
+        ));
         let receipt = client
-            .store(ns, write.clone(), blob.clone(), 3 * 86_400)
+            .store(ns, write.clone(), blob.clone(), 7 * 86_400)
             .await
             .unwrap();
         assert_eq!(receipt.blob_hash, sha256(&blob));
-        // TTL was snapped to the 7-day bucket; the relay rounds expiries up to the hour.
+        // The relay stores the bucket it was given and rounds the expiry up to the hour.
         let expected = now_unix() + 7 * 86_400;
         assert!(
             receipt.expiry_unix_seconds + 5 >= expected
@@ -735,14 +766,38 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    /// Design §10.2 point 6: the TTL is a bucket or nothing; the client never rounds (X-10).
     #[test]
-    fn ttl_is_snapped_to_buckets() {
-        assert_eq!(bucketed_ttl_seconds(1).unwrap(), 86_400);
-        assert_eq!(bucketed_ttl_seconds(11_820).unwrap(), 86_400);
-        assert_eq!(bucketed_ttl_seconds(2 * 86_400).unwrap(), 7 * 86_400);
-        assert_eq!(bucketed_ttl_seconds(90 * 86_400).unwrap(), 90 * 86_400);
-        assert!(bucketed_ttl_seconds(90 * 86_400 + 1).is_err());
-        assert!(bucketed_ttl_seconds(0).is_err());
+    fn only_exact_ttl_buckets_are_accepted() {
+        for bucket in TTL_BUCKETS_SECONDS {
+            assert_eq!(exact_ttl_bucket(bucket).unwrap(), bucket);
+        }
+        for other in [
+            0,
+            1,
+            3_599,
+            3_601,
+            7_200,
+            11_820,
+            86_399,
+            2 * 86_400,
+            90 * 86_400 + 1,
+            u32::MAX,
+        ] {
+            assert!(
+                matches!(exact_ttl_bucket(other), Err(RelayError::InvalidArgument)),
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn hours_round_up_and_saturate() {
+        assert_eq!(ceil_hour(0), 0);
+        assert_eq!(ceil_hour(1), 3_600);
+        assert_eq!(ceil_hour(3_600), 3_600);
+        assert_eq!(ceil_hour(3_601), 7_200);
+        assert_eq!(ceil_hour(u64::MAX), u64::MAX, "saturates, never overflows");
     }
 
     #[test]
@@ -786,10 +841,31 @@ mod tests {
         ));
         // A device clock up to 3 days fast still accepts a correct 1-day receipt.
         assert!(validate_store(&h, &receipt(now - 2 * DAY + 1), DAY as u32, now).is_ok());
-        // A longer existing membership (relay keeps the max) is fine; beyond 90 days + skew is not.
-        assert!(validate_store(&h, &receipt(now + 90 * DAY), DAY as u32, now).is_ok());
+        // Upper bound (T30, design §10.2 point 6): a relay whose clock is up to 3 days ahead of
+        // ours is still inside it; a relay promising to keep a 1-day blob for 90 days is not.
+        let hour = |t: u64| t.div_ceil(3_600) * 3_600;
+        assert!(validate_store(
+            &h,
+            &receipt(hour(now + DAY) + CLOCK_SKEW_SECONDS),
+            DAY as u32,
+            now
+        )
+        .is_ok());
         assert!(matches!(
-            validate_store(&h, &receipt(now + 94 * DAY), DAY as u32, now),
+            validate_store(
+                &h,
+                &receipt(hour(now + DAY) + CLOCK_SKEW_SECONDS + 1),
+                DAY as u32,
+                now
+            ),
+            Err(RelayError::Malformed)
+        ));
+        assert!(matches!(
+            validate_store(&h, &receipt(now + 90 * DAY), DAY as u32, now),
+            Err(RelayError::Malformed),
+        ));
+        assert!(matches!(
+            validate_store(&h, &receipt(now + 94 * DAY), 90 * DAY as u32, now),
             Err(RelayError::Malformed)
         ));
         // get: tampered data, not bucket-sized
