@@ -19,3 +19,4 @@
 {"op":"store","protocol_version":1,"size_bucket":4096,"time_bucket":1789434480,"ttl_bucket_seconds":3600,"key_kind":"deposit","result":"ok"}
 {"op":"register","protocol_version":1,"period_id":"0000000000000b8f","key_kind":"deposit","verifier":"9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9","time_bucket":1789434360,"result":"ok"}
 {"op":"register","protocol_version":1,"period_id":"0000000000000b8f","key_kind":"deposit","request_id":"9a8b7c6d5e4f30211203f4e5d6c7b8a99a8b7c6d5e4f30211203f4e5d6c7b8a9","time_bucket":1789434360,"result":"ok"}
+{"op":"list","protocol_version":1,"namespace_id":"4e1b7c2a9d3f5e6071829304a5b6c7d8e9f0112233445566778899aabbccddee","time_bucket":1789434480,"ttl_bucket_seconds":3600,"result":"ok"}

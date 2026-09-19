@@ -370,6 +370,27 @@ mod tests {
     }
 
     #[test]
+    fn ttl_bucket_seconds_is_allowed_on_store_events_only() {
+        assert!(schema()
+            .check_capture(r#"{"op":"store","ttl_bucket_seconds":3600}"#)
+            .is_empty());
+        for line in [
+            r#"{"op":"get","ttl_bucket_seconds":3600}"#,
+            r#"{"op":"list","ttl_bucket_seconds":2592000}"#,
+            r#"{"op":"check","ttl_bucket_seconds":86400}"#,
+            r#"{"op":"register","ttl_bucket_seconds":3600}"#,
+            r#"{"op":"redeem","ttl_bucket_seconds":604800}"#,
+            r#"{"ttl_bucket_seconds":3600}"#,
+        ] {
+            let v = schema().check_capture(line);
+            assert!(
+                v.iter().any(|x| x.field == "ttl_bucket_seconds"),
+                "a TTL bucket outside a store is a privacy violation: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn key_kind_is_allowed_on_register_events_only() {
         for kind in ["read", "deposit", "fetch"] {
             let line = format!(r#"{{"op":"register","key_kind":"{kind}"}}"#);

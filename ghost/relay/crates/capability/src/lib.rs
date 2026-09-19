@@ -48,6 +48,12 @@ pub const CAP_SERIAL_LABEL: &[u8] = b"ghost/v1/cap-serial";
 pub const NULLIFIER_STORE_KEY_LABEL: &[u8] = b"ghost/v1/nullifier-store-key";
 /// Length of that key check value.
 pub const STORE_CHECK_BYTES: usize = 8;
+/// Label of the round function of the list cursor permutation ([`RelayKey::seal_list_cursor`]).
+pub const LIST_CURSOR_LABEL: &[u8] = b"ghost/v1/list-cursor";
+/// Length of a `ListNamespace` cursor on the wire.
+pub const LIST_CURSOR_BYTES: usize = 8;
+/// Rounds of the list cursor permutation.
+const LIST_CURSOR_ROUNDS: u8 = 6;
 
 /// Right granted by a capability (the API crate's [`ghost_relay_api::CapabilityKind`]).
 pub use ghost_relay_api::CapabilityKind as Kind;
@@ -171,6 +177,53 @@ impl RelayKey {
     /// answering identical retries `REPLAYED`. It tells keys apart; it proves nothing about them.
     pub fn store_check(&self) -> [u8; STORE_CHECK_BYTES] {
         truncate(&self.hmac(&[NULLIFIER_STORE_KEY_LABEL]))
+    }
+
+    /// Seals a namespace's list sequence into the opaque cursor `ListNamespace` answers with;
+    /// [`RelayKey::open_list_cursor`] reads it back.
+    ///
+    /// The blob store seeds a namespace's sequence from the UTC hour of its first store and counts
+    /// up per store, so a caller that could read the sequence would learn that hour and the number
+    /// of stores since: for a bundle namespace, whose fetch secret every card holder has and which
+    /// costs no token, the activation or restore hour and the publication count, in one call
+    /// (Phase 9 design §1.2, §21.9 point 4, §22.8.7 point 1, LIMITE L7-D10 "fetch reads return
+    /// only week-coarse times"). A caller that could also choose a sequence would search for the
+    /// same hour by probing cursors.
+    ///
+    /// The relay is the only party that has to read a cursor, so it keeps one: a six-round Feistel
+    /// network over the sequence's two 32-bit halves whose round function is `HMAC-SHA256(relay
+    /// key, "ghost/v1/list-cursor" || round(1) || namespace(32) || u32_be(half))` — a permutation
+    /// of the 64-bit sequence space, keyed by the relay key and tweaked by the namespace. Paging is
+    /// unchanged, because the map is a bijection: one cursor per sequence, and the relay resumes
+    /// exactly where it left off. A cursor of one namespace names an unrelated sequence at another,
+    /// and a cursor is worthless at another relay, like every capability of the same key.
+    pub fn seal_list_cursor(&self, namespace: &[u8; 32], seq: u64) -> [u8; LIST_CURSOR_BYTES] {
+        let (mut left, mut right) = ((seq >> 32) as u32, seq as u32);
+        for round in 0..LIST_CURSOR_ROUNDS {
+            let next = left ^ self.cursor_round(namespace, round, right);
+            left = right;
+            right = next;
+        }
+        ((u64::from(left) << 32) | u64::from(right)).to_be_bytes()
+    }
+
+    /// The sequence a cursor of `namespace` names. Every 8-byte value is a cursor of some
+    /// sequence: a forged or foreign one names a sequence the caller did not choose, never an
+    /// error the caller could read.
+    pub fn open_list_cursor(&self, namespace: &[u8; 32], cursor: &[u8; LIST_CURSOR_BYTES]) -> u64 {
+        let sealed = u64::from_be_bytes(*cursor);
+        let (mut left, mut right) = ((sealed >> 32) as u32, sealed as u32);
+        for round in (0..LIST_CURSOR_ROUNDS).rev() {
+            let previous = right ^ self.cursor_round(namespace, round, left);
+            right = left;
+            left = previous;
+        }
+        (u64::from(left) << 32) | u64::from(right)
+    }
+
+    fn cursor_round(&self, namespace: &[u8; 32], round: u8, half: u32) -> u32 {
+        let mac = self.hmac(&[LIST_CURSOR_LABEL, &[round], namespace, &half.to_be_bytes()]);
+        u32::from_be_bytes(truncate(&mac))
     }
 
     fn hmac(&self, parts: &[&[u8]]) -> [u8; 32] {
@@ -579,6 +632,58 @@ mod tests {
         );
         let later = cap(151);
         assert!(ledger.charge(&key.mint(&later), &later, 10).is_ok());
+    }
+
+    #[test]
+    fn list_cursors_are_a_keyed_permutation_of_the_sequence() {
+        let key = RelayKey::from_bytes([3; 32]);
+        let other = RelayKey::from_bytes([4; 32]);
+        // The sequences a namespace really uses: an hour seed and the stores counted above it.
+        let sequences: Vec<u64> = (0..64).map(|i| (497_239u64 << 32) + i).collect();
+        let mut sealed = std::collections::BTreeSet::new();
+        for &seq in &sequences {
+            let cursor = key.seal_list_cursor(&ns(1), seq);
+            assert_eq!(
+                key.open_list_cursor(&ns(1), &cursor),
+                seq,
+                "the cursor reads back as its sequence"
+            );
+            assert_ne!(cursor, seq.to_be_bytes(), "the sequence never leaves");
+            assert_ne!(
+                key.seal_list_cursor(&ns(2), seq),
+                cursor,
+                "another namespace, another cursor"
+            );
+            assert_ne!(
+                other.seal_list_cursor(&ns(1), seq),
+                cursor,
+                "another relay key, another cursor"
+            );
+            assert!(
+                sealed.insert(cursor),
+                "distinct sequences, distinct cursors"
+            );
+        }
+        // Neither half of a cursor is a half of its sequence: nothing of the hour or of the store
+        // counter survives.
+        for &seq in &sequences {
+            let cursor = key.seal_list_cursor(&ns(1), seq);
+            assert_ne!(cursor[..4], seq.to_be_bytes()[..4]);
+            assert_ne!(cursor[4..], seq.to_be_bytes()[4..]);
+        }
+        // Every 8-byte value opens as some sequence: a forged cursor is never an error.
+        assert_eq!(
+            key.seal_list_cursor(&ns(1), key.open_list_cursor(&ns(1), &[0xab; 8])),
+            [0xab; 8]
+        );
+        assert_eq!(
+            key.open_list_cursor(&ns(1), &key.seal_list_cursor(&ns(1), 0)),
+            0
+        );
+        assert_eq!(
+            key.open_list_cursor(&ns(1), &key.seal_list_cursor(&ns(1), u64::MAX)),
+            u64::MAX
+        );
     }
 
     #[test]

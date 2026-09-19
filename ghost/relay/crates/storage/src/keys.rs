@@ -38,7 +38,12 @@ use crate::StoreError;
 
 /// On-disk schema version of `keys.redb`; any other version is refused.
 pub const KEYS_SCHEMA_VERSION: u64 = 1;
-/// Capability serials (and quota credits) a record keeps at most.
+/// Capability serials (and quota credits) a record keeps at most (design §4.4 point 4). A card
+/// holder knows the shared deposit secret and can credit the owner's record with its own
+/// capability, so the four credits of a record need not be the owner's; every redeemed capability
+/// carries the same `capability_quota_bytes`, so foreign credits raise the record's allowance and
+/// never lower it, and what the owner loses when it registers fifth is its own credit, not
+/// allowance (`protocol/test-vectors/register.txt` section 1).
 pub const MAX_SERIALS: usize = 4;
 /// Length of a capability serial.
 pub const SERIAL_BYTES: usize = 16;

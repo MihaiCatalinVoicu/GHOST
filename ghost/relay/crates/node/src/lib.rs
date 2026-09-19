@@ -18,7 +18,7 @@ use ghost_relay_api::{
 };
 use ghost_relay_capability::{
     scope_hash, Allowance, CapError, Capability, DepositLedger, DepositRecord, Kind, QuotaLedger,
-    RelayKey,
+    RelayKey, LIST_CURSOR_BYTES,
 };
 use ghost_relay_prune::{KeyRegistrations, NullifierPeriods, SweepReport};
 use ghost_relay_storage::keys::KeyStore;
@@ -527,7 +527,11 @@ impl Relay {
         outcome
     }
 
-    /// ListNamespace at time `now`.
+    /// ListNamespace at time `now`. The cursor on the wire is the blob store's per-namespace
+    /// sequence sealed under the relay key ([`RelayKey::seal_list_cursor`]): the sequence itself
+    /// carries the UTC hour of the namespace's first store and the number of stores since, which a
+    /// holder of the free shared fetch secret must not learn (design §1.2, §21.9 point 4, §22.8.7
+    /// point 1, L7-D10).
     pub fn list_at(
         &self,
         req: ListNamespaceRequest,
@@ -561,13 +565,31 @@ impl Relay {
                 .map(|c| c.token.as_slice())
                 .unwrap_or(&[]);
             self.authorize(cap_token, Op::List, Some(&namespace), now, &mut event)?;
-            match self
-                .store
-                .list(&namespace, &req.cursor, req.limit as usize, now)
-            {
+            let from = match (
+                req.cursor.is_empty(),
+                fixed::<LIST_CURSOR_BYTES>(&req.cursor),
+            ) {
+                (true, _) => Vec::new(),
+                (false, Some(cursor)) => self
+                    .key
+                    .open_list_cursor(&namespace, &cursor)
+                    .to_be_bytes()
+                    .to_vec(),
+                (false, None) => {
+                    event.result = "rejected_size";
+                    return Err(Status::invalid_argument(REJECTED));
+                }
+            };
+            match self.store.list(&namespace, &from, req.limit as usize, now) {
                 Ok((hashes, next)) => Ok(ListNamespaceResponse {
                     blob_hashes: hashes.iter().map(|h| h.to_vec()).collect(),
-                    next_cursor: next,
+                    next_cursor: match fixed::<LIST_CURSOR_BYTES>(&next) {
+                        Some(seq) => self
+                            .key
+                            .seal_list_cursor(&namespace, u64::from_be_bytes(seq))
+                            .to_vec(),
+                        None => Vec::new(),
+                    },
                 }),
                 Err(e) => {
                     event.result = "rejected_size";

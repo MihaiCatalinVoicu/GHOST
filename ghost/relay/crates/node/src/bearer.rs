@@ -6,6 +6,12 @@
 //! `keys.redb`. Every refusal a client can cause (a kind that does not allow the operation, a relay
 //! without a slot, another slot, another namespace, an unregistered or lapsed verifier) is one
 //! answer, `PERMISSION_DENIED` with capture `rejected_capability`: no oracle.
+//!
+//! The verifier names the ES slot, not the serving relay, so the slot check bounds replay across
+//! slots and not across a slot handover: an operator that held slot s can present the secrets it
+//! saw at the slot's successor relay, which registers the same static verifiers. Declared as
+//! LIMITE L7-D26 (design §4.3, §21.2 point 11); binding the verifier to the relay's onion identity
+//! is the Phase 13 alternative.
 
 use std::ops::RangeInclusive;
 

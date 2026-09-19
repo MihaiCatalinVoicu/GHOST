@@ -136,6 +136,15 @@ register ns=inbox period=2959 kind=deposit verifier=DEP cap=E req=r12 -> ok vali
 record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=1073741824 serials=4 valid_until=2961+3600
 register ns=inbox period=2959 kind=deposit verifier=DEP cap=G req=r13 -> ok valid_until=2961+3600  # a fifth capability: bound, no fifth credit
 record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=1073741824 serials=4 valid_until=2961+3600
+# Every card holder derives the shared deposit secret, so a card holder can spend its own token to
+# credit the owner's record (§4.4 points 4 and 5). The four credits are then not the owner's, and
+# the owner's own registration is bound without a fifth credit. The record keeps four times the
+# allowance a redeemed capability carries -- all of them carry the Entitlement Schedule's
+# capability_quota_bytes -- so the owner loses its own credit, never allowance, and the record's
+# validity and verifier are the ones it registered. Reviewed 2026-09-19 (finding P9S1-02).
+cap OWN v2 ns=inbox week=2959 serial=own
+register ns=inbox period=2959 kind=deposit verifier=DEP cap=OWN req=r13b -> ok valid_until=2961+3600
+record ns=inbox period=2959 kind=deposit verifier=DEP -> quota=1073741824 serials=4 valid_until=2961+3600
 register ns=inbox period=2959 kind=deposit verifier=DEP2 cap=G req=r14 -> rejected_capability      # G is bound to DEP
 register ns=inbox period=2959 kind=deposit verifier=DEP cap=none req=r15 -> rejected_capability
 register ns=inbox period=2959 kind=deposit verifier=DEP cap=OLD req=r16 -> rejected_capability     # expired
