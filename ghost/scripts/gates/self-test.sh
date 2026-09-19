@@ -6,6 +6,9 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS="$(cd "$DIR/../../test-harness/gates" && pwd)"
 rc=0
+# Output checks use here-strings (grep ... <<<"$out"), never `printf '%s\n' "$out" | grep -q`: under
+# pipefail that pipeline fails whenever grep -q stops reading before printf has flushed everything
+# (EPIPE; the static-gates self-test of run 35473735223 reported a present message as missing).
 expect_fail() {
   local gate="$1" root="$2"
   if GHOST_ROOT="$root" bash "$DIR/$gate.sh" >/dev/null 2>&1; then
@@ -25,7 +28,7 @@ sync_out="$(GHOST_ROOT="$HARNESS/negative-sync" bash "$DIR/sync-no-catch-all.sh"
 sync_hits="$(printf '%s\n' "$sync_out" | grep -c '^GATE-FAIL' || true)"
 if [ "$sync_hits" = "12" ]; then echo "self-test ok: sync-no-catch-all reports all 12 fixture lines"; else echo "SELF-TEST FAIL: sync-no-catch-all reported $sync_hits of 12 fixture lines" >&2; rc=1; fi
 for want in CatchAllParticipant.kt:6: CatchAllParticipant.kt:10: CatchAllParticipant.kt:13:; do
-  if printf '%s\n' "$sync_out" | grep -qF "android/entitlement/src/main/kotlin/org/ghost/entitlement/bad/$want"; then
+  if grep -qF "android/entitlement/src/main/kotlin/org/ghost/entitlement/bad/$want" <<<"$sync_out"; then
     echo "self-test ok: sync-no-catch-all reports entitlement $want"
   else
     echo "SELF-TEST FAIL: sync-no-catch-all does not report entitlement $want" >&2; rc=1
@@ -33,7 +36,7 @@ for want in CatchAllParticipant.kt:6: CatchAllParticipant.kt:10: CatchAllPartici
 done
 expect_fail sync-no-catch-all "$HARNESS/negative-sync-no-entitlement"
 out="$(GHOST_ROOT="$HARNESS/negative-sync-no-entitlement" bash "$DIR/sync-no-catch-all.sh" 2>&1 || true)"
-if [ "$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)" = "1" ] && printf '%s\n' "$out" | grep -qF "android/entitlement/src/main: missing"; then
+if [ "$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)" = "1" ] && grep -qF "android/entitlement/src/main: missing" <<<"$out"; then
   echo "self-test ok: sync-no-catch-all reports a missing entitlement module"
 else
   echo "SELF-TEST FAIL: sync-no-catch-all does not report exactly a missing entitlement module" >&2; rc=1
@@ -84,7 +87,7 @@ done
 for g in anti-placeholder no-logging; do
   out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/$g.sh" 2>&1 || true)"
   for f in issuer/crates/blind-rsa/src/lib.rs issuer/crates/service/src/main.rs; do
-    if printf '%s\n' "$out" | grep -qF "$f:"; then
+    if grep -qF "$f:" <<<"$out"; then
       echo "self-test ok: $g reports $f"
     else
       echo "SELF-TEST FAIL: $g does not report $f" >&2; rc=1
@@ -95,13 +98,13 @@ done
 # ops/src/report.rs, and only for println!/eprintln! there.
 out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/no-logging.sh" 2>&1 || true)"
 for want in issuer/crates/ops/src/keygen.rs: issuer/crates/service/src/report.rs: issuer/crates/ops/src/report.rs:6:; do
-  if printf '%s\n' "$out" | grep -qF "$want"; then
+  if grep -qF "$want" <<<"$out"; then
     echo "self-test ok: no-logging reports $want"
   else
     echo "SELF-TEST FAIL: no-logging does not report $want" >&2; rc=1
   fi
 done
-if printf '%s\n' "$out" | grep -qF "issuer/crates/ops/src/report.rs:5:"; then
+if grep -qF "issuer/crates/ops/src/report.rs:5:" <<<"$out"; then
   echo "SELF-TEST FAIL: no-logging reports the exempt eprintln! of ops/src/report.rs" >&2; rc=1
 else
   echo "self-test ok: no-logging exempts println!/eprintln! in ops/src/report.rs only"
@@ -116,14 +119,14 @@ for want in issuer/crates/service/src/logging.rs:3: issuer/crates/service/src/lo
   issuer/crates/service/Cargo.toml:12: issuer/crates/service/Cargo.toml:15: \
   issuer/crates/service/src/renamed.rs:3: issuer/crates/service/src/renamed.rs:4: \
   issuer/crates/service/src/renamed.rs:5:; do
-  if printf '%s\n' "$out" | grep -qF "$want"; then
+  if grep -qF "$want" <<<"$out"; then
     echo "self-test ok: no-logging reports $want"
   else
     echo "SELF-TEST FAIL: no-logging does not report $want" >&2; rc=1
   fi
 done
 out="$(GHOST_ROOT="$HARNESS/negative-client-core" bash "$DIR/no-logging.sh" 2>&1 || true)"
-if printf '%s\n' "$out" | grep -qF "client-core/bad/src/logging.rs:3:"; then
+if grep -qF "client-core/bad/src/logging.rs:3:" <<<"$out"; then
   echo "self-test ok: no-logging reports client-core/bad/src/logging.rs:3:"
 else
   echo "SELF-TEST FAIL: no-logging does not report client-core/bad/src/logging.rs:3:" >&2; rc=1
@@ -138,7 +141,7 @@ for want in service/src/service.rs:4: service/src/service.rs:5: service/src/serv
   ops/src/report.rs:4: ops/src/output.rs:4: ops/src/keygen.rs:3: api/src/lib.rs:3: \
   service/src/scanner.rs:3: service/src/scanner.rs:4: service/src/scanner.rs:5: \
   service/src/scanner.rs:8: service/src/scanner.rs:9:; do
-  if printf '%s\n' "$out" | grep -qF "issuer/crates/$want"; then
+  if grep -qF "issuer/crates/$want" <<<"$out"; then
     echo "self-test ok: issuer-output reports $want"
   else
     echo "SELF-TEST FAIL: issuer-output does not report $want" >&2; rc=1
@@ -146,7 +149,7 @@ for want in service/src/service.rs:4: service/src/service.rs:5: service/src/serv
 done
 # S12 review GATE-ISSUER-OUTPUT-BRACE: a read-only brace import is not a write.
 for allowed in service/src/scanner.rs:10: service/src/scanner.rs:11:; do
-  if printf '%s\n' "$out" | grep -qF "issuer/crates/$allowed"; then
+  if grep -qF "issuer/crates/$allowed" <<<"$out"; then
     echo "SELF-TEST FAIL: issuer-output reports the read-only import $allowed" >&2; rc=1
   else
     echo "self-test ok: issuer-output allows the read-only import $allowed"
@@ -154,7 +157,7 @@ for allowed in service/src/scanner.rs:10: service/src/scanner.rs:11:; do
 done
 for allowed in service/src/status.rs:3: service/src/store.rs:3: service/src/payout.rs:3: \
   ops/src/report.rs:3: ops/src/output.rs:3:; do
-  if printf '%s\n' "$out" | grep -qF "issuer/crates/$allowed"; then
+  if grep -qF "issuer/crates/$allowed" <<<"$out"; then
     echo "SELF-TEST FAIL: issuer-output reports the allowed $allowed" >&2; rc=1
   else
     echo "self-test ok: issuer-output allows $allowed"
@@ -169,7 +172,7 @@ mp_case() { # $1 = case, $2 = pass|fail, $3 = text the output must contain
   if out="$(GHOST_ROOT="$MP_FIX/$1/ghost" bash "$DIR/monero-pin.sh" 2>&1)"; then got=pass; else got=fail; fi
   if [ "$got" != "$2" ]; then
     echo "SELF-TEST FAIL: monero-pin $1 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
-  elif ! printf '%s\n' "$out" | grep -qF -- "$3"; then
+  elif ! grep -qF -- "$3" <<<"$out"; then
     echo "SELF-TEST FAIL: monero-pin $1 without reporting: $3" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
   else
     echo "self-test ok: monero-pin $1"
@@ -202,10 +205,10 @@ if command -v protoc >/dev/null; then
   if [ "$proto_hits" = "8" ]; then echo "self-test ok: proto-check reports the 8 unversioned request messages"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 8 unversioned request messages" >&2; rc=1; fi
   for m in MissingRequest WrongNumberRequest NestedRequest NestedVersionRequest BraceOnNextLineRequest \
     RedeemTokenRequest GetBlobRequest ListNamespaceRequest; do
-    if printf '%s\n' "$out" | grep -qF "message $m lacks"; then echo "self-test ok: proto-check reports $m"; else echo "SELF-TEST FAIL: proto-check does not report $m" >&2; rc=1; fi
+    if grep -qF "message $m lacks" <<<"$out"; then echo "self-test ok: proto-check reports $m"; else echo "SELF-TEST FAIL: proto-check does not report $m" >&2; rc=1; fi
   done
   for m in GoodRequest InlineGoodRequest GoodNextLineRequest StoreBlobRequest RegisterKeyRequest; do
-    if printf '%s\n' "$out" | grep -qF "message $m "; then echo "SELF-TEST FAIL: proto-check reports the versioned $m" >&2; rc=1; else echo "self-test ok: proto-check accepts $m"; fi
+    if grep -qF "message $m " <<<"$out"; then echo "SELF-TEST FAIL: proto-check reports the versioned $m" >&2; rc=1; else echo "self-test ok: proto-check accepts $m"; fi
   done
   # Phase 9 (design §4.2, §16.1): the key registration enums field for field and the request's
   # presence (test-harness/gates/negative-proto-register/README.md): exactly three violations.
@@ -214,7 +217,7 @@ if command -v protoc >/dev/null; then
   proto_hits="$(printf '%s\n' "$out" | grep -c '^GATE-FAIL' || true)"
   if [ "$proto_hits" = "3" ]; then echo "self-test ok: proto-check reports the 3 key registration schema violations"; else echo "SELF-TEST FAIL: proto-check reported $proto_hits of 3 key registration schema violations" >&2; rc=1; fi
   for want in "enum KeyKind must be exactly" "enum RegisterResult must be exactly" "message RegisterKeyRequest is missing"; do
-    if printf '%s\n' "$out" | grep -qF "$want"; then echo "self-test ok: proto-check reports: $want"; else echo "SELF-TEST FAIL: proto-check does not report: $want" >&2; rc=1; fi
+    if grep -qF "$want" <<<"$out"; then echo "self-test ok: proto-check reports: $want"; else echo "SELF-TEST FAIL: proto-check does not report: $want" >&2; rc=1; fi
   done
 elif [ -n "${CI:-}" ]; then
   echo "SELF-TEST FAIL: protoc missing in CI; proto-check not proven" >&2; rc=1
@@ -234,7 +237,7 @@ es_case() { # $1 = description, $2 = pass|fail, $3 = fixture root, $4 = text the
   if out="$(env GHOST_ROOT="$root" "$@" bash "$DIR/entitlement-schedule.sh" 2>&1)"; then got=pass; else got=fail; fi
   if [ "$got" != "$expect" ]; then
     echo "SELF-TEST FAIL: entitlement-schedule $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
-  elif ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+  elif ! grep -qF -- "$want" <<<"$out"; then
     echo "SELF-TEST FAIL: entitlement-schedule $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
   else
     echo "self-test ok: entitlement-schedule $desc"
@@ -317,7 +320,7 @@ apk_case "rejects an unlisted native library in an allowed ABI" fail apk_extra_l
 # Phase 9 S0′ (ADR-37, ADR-39; design §2.10.2, §22.8.9, §22.8.10): the dependency denylist names the
 # Signal group, even where a version catalog declares it.
 out="$(GHOST_ROOT="$HARNESS/negative" bash "$DIR/dependency-allowlist.sh" 2>&1 || true)"
-if printf '%s\n' "$out" | grep -qF "DENIED dependency group 'org.signal'"; then
+if grep -qF "DENIED dependency group 'org.signal'" <<<"$out"; then
   echo "self-test ok: dependency-allowlist denies org.signal (ADR-37)"
 else
   echo "SELF-TEST FAIL: dependency-allowlist does not deny org.signal" >&2; rc=1
@@ -330,7 +333,7 @@ npb_case() { # $1 = case, $2 = pass|fail, $3 = expected text, $4 = event payload
   if out="$(GHOST_VISIBILITY_EVENT="$4" GHOST_ROOT="$NPB/$1/ghost" bash "$DIR/no-public-binaries.sh" 2>&1)"; then got=pass; else got=fail; fi
   if [ "$got" != "$2" ]; then
     echo "SELF-TEST FAIL: no-public-binaries $1 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
-  elif ! printf '%s\n' "$out" | grep -qF -- "$3"; then
+  elif ! grep -qF -- "$3" <<<"$out"; then
     echo "SELF-TEST FAIL: no-public-binaries $1 without reporting: $3" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
   else
     echo "self-test ok: no-public-binaries $1${4:+ (with its event payload)}"
@@ -354,7 +357,7 @@ npb_stub="$(mktemp -d)"
 printf '#!/usr/bin/env bash\necho "stub perl: the rule engine cannot run" >&2\nexit 2\n' > "$npb_stub/perl"
 chmod +x "$npb_stub/perl"
 if npb_out="$(PATH="$npb_stub:$PATH" GHOST_VISIBILITY_EVENT="" GHOST_ROOT="$NPB/private-apk/ghost" bash "$DIR/no-public-binaries.sh" 2>&1)"; then npb_got=pass; else npb_got=fail; fi
-if [ "$npb_got" = fail ] && printf '%s\n' "$npb_out" | grep -qF "no-public-binaries.sh rule engine stopped"; then
+if [ "$npb_got" = fail ] && grep -qF "no-public-binaries.sh rule engine stopped" <<<"$npb_out"; then
   echo "self-test ok: no-public-binaries fails closed when its rule engine cannot run"
 else
   echo "SELF-TEST FAIL: no-public-binaries did not fail closed on a broken rule engine ($npb_got)" >&2
@@ -373,7 +376,7 @@ lic_case() { # $1 = gate, $2 = description, $3 = pass|fail, $4 = expected text, 
   if out="$(env GHOST_ROOT="$LIC_FIX" "${envs[@]}" bash "$DIR/$gate.sh" "$@" 2>&1)"; then got=pass; else got=fail; fi
   if [ "$got" != "$expect" ]; then
     echo "SELF-TEST FAIL: $gate $desc ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
-  elif ! printf '%s\n' "$out" | grep -qF -- "$want"; then
+  elif ! grep -qF -- "$want" <<<"$out"; then
     echo "SELF-TEST FAIL: $gate $desc without reporting: $want" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
   else
     echo "self-test ok: $gate $desc"
@@ -403,7 +406,7 @@ spdx_case() { # $1 = description, $2 = expected text, $3 = change (a command on 
   "$3" "$w/licenses/spdx"
   if out="$(env GHOST_ROOT="$w" "$(lic_list positive)" bash "$DIR/license-notices.sh" rust 2>&1)"; then
     echo "SELF-TEST FAIL: license-notices $1 passed" >&2; rc=1
-  elif ! printf '%s\n' "$out" | grep -qF -- "$2"; then
+  elif ! grep -qF -- "$2" <<<"$out"; then
     echo "SELF-TEST FAIL: license-notices $1 without reporting: $2" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
   else
     echo "self-test ok: license-notices $1"
@@ -425,7 +428,7 @@ for want in "agpl-header 1.0.0: src/lib.rs: SPDX-License-Identifier: AGPL-3.0-on
   "gpl-notice 1.0.0: src/lib.rs: a GNU licence notice" \
   "gpl-text 1.0.0: COPYING: the text of a GNU licence" \
   "bad-expression 1.0.0: no alternative of 'GPL-3.0-only' is an allowed licence"; do
-  if printf '%s\n' "$out" | grep -qF -- "$want"; then echo "self-test ok: rust-license-headers reports $want"; else echo "SELF-TEST FAIL: rust-license-headers does not report $want" >&2; rc=1; fi
+  if grep -qF -- "$want" <<<"$out"; then echo "self-test ok: rust-license-headers reports $want"; else echo "SELF-TEST FAIL: rust-license-headers does not report $want" >&2; rc=1; fi
 done
 lic_case rust-license-headers "scans GHOST's own crates and rejects an exception that matches nothing" fail "rust-license-exceptions.txt: clean 1.0.0 src/lib.rs is not needed" \
   "$(lic_list headers-own)" GHOST_LICENSE_EXCEPTIONS="$LIC_FIX/lists/headers-exceptions-unused.txt"
@@ -457,7 +460,7 @@ us_case() { # $1 = description, $2 = pass|fail, $3 = expected text, $4 = gh mode
     bash "$w/scripts/license-upstream-snapshot.sh" 2>&1)"; then got=pass; else got=fail; fi
   if [ "$got" != "$2" ]; then
     echo "SELF-TEST FAIL: license-upstream-snapshot $1 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
-  elif ! printf '%s\n' "$out" | grep -qF -- "$3"; then
+  elif ! grep -qF -- "$3" <<<"$out"; then
     echo "SELF-TEST FAIL: license-upstream-snapshot $1 without reporting: $3" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
   elif [ -n "${5:-}" ] && ! grep -qF -- "$5" "$w/licenses/upstream/index.txt"; then
     echo "SELF-TEST FAIL: license-upstream-snapshot $1 did not write: $5" >&2; rc=1
@@ -548,7 +551,7 @@ expect_fail_msg() { # $1 = description, $2 = expected stderr text, rest = comman
   shift 2
   if out="$("$@" 2>&1)"; then
     echo "SELF-TEST FAIL: $desc passed" >&2; rc=1
-  elif ! printf '%s' "$out" | grep -qF "$want"; then
+  elif ! grep -qF "$want" <<<"$out"; then
     echo "SELF-TEST FAIL: $desc failed without reporting: $want" >&2
     printf '%s\n' "$out" | tail -5 >&2; rc=1
   else
@@ -632,9 +635,9 @@ if command -v cargo >/dev/null; then
         echo "SELF-TEST FAIL: cargo-deny bans: no scratch lock file for $1" >&2; rc=1; return
       fi
       if out="$(cargo deny --offline --color never --manifest-path "$deny_fix/Cargo.toml" check bans 2>&1)"; then got=pass; else got=fail; fi
-      if [ "$2" = fail ] && [ "$got" = fail ] && printf '%s\n' "$out" | grep -qE "^error\[banned\]:.*'$1 = 0\.1\.0'" && printf '%s\n' "$out" | grep -qF "bans FAILED"; then
+      if [ "$2" = fail ] && [ "$got" = fail ] && grep -qE "^error\[banned\]:.*'$1 = 0\.1\.0'" <<<"$out" && grep -qF "bans FAILED" <<<"$out"; then
         echo "self-test ok: cargo-deny bans FAILED on $1"
-      elif [ "$2" = pass ] && [ "$got" = pass ] && printf '%s\n' "$out" | grep -qF "bans ok"; then
+      elif [ "$2" = pass ] && [ "$got" = pass ] && grep -qF "bans ok" <<<"$out"; then
         echo "self-test ok: cargo-deny bans ok on the unbanned $1"
       else
         echo "SELF-TEST FAIL: cargo-deny bans on $1 ($got, expected $2)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
