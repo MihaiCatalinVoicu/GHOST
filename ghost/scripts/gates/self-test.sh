@@ -604,8 +604,15 @@ if command -v cargo >/dev/null; then
   rm -f "$tmp"
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate
-  # of each banned name; its lock file must fail with "bans FAILED", and a crate of an unbanned name
-  # must pass. Needs the cargo-deny binary (the CI rust job installs it and sets GHOST_SELFTEST_DENY).
+  # of each banned name; its lock file must fail with a [banned] diagnostic naming that crate and the
+  # summary "bans FAILED", and a crate of an unbanned name must pass with "bans ok". The output is
+  # parsed, so it is asked for plainly (--color never): the CI rust job exports CARGO_TERM_COLOR=always
+  # (dtolnay/rust-toolchain), cargo-deny honours it even into a pipe, and the colour escapes split the
+  # summary into "bans <ESC>[31mFAILED<ESC>[0m" (run 35461620207 failed every case that way, on the
+  # same cargo-deny 0.20.2 that passes plainly on a Windows shell). The match keys on the diagnostic
+  # code [banned], cargo-deny's documented identifier, and on the crate as it prints it
+  # ('name = version'); the sentence after them may change between versions.
+  # Needs the cargo-deny binary (the CI rust job installs it and sets GHOST_SELFTEST_DENY).
   if cargo deny --version >/dev/null 2>&1; then
     deny_names="$(grep -oP '\{ crate = "\K[^"]+(?=", reason = "ADR-37)' "$DIR/../../deny.toml")"
     if [ "$(printf '%s\n' "$deny_names" | grep -c .)" != "14" ]; then
@@ -624,8 +631,8 @@ if command -v cargo >/dev/null; then
       if ! (cd "$deny_fix" && cargo generate-lockfile --offline >/dev/null 2>&1); then
         echo "SELF-TEST FAIL: cargo-deny bans: no scratch lock file for $1" >&2; rc=1; return
       fi
-      if out="$(cargo deny --offline --manifest-path "$deny_fix/Cargo.toml" check bans 2>&1)"; then got=pass; else got=fail; fi
-      if [ "$2" = fail ] && [ "$got" = fail ] && printf '%s\n' "$out" | grep -qF "crate '$1 = 0.1.0' is explicitly banned" && printf '%s\n' "$out" | grep -qF "bans FAILED"; then
+      if out="$(cargo deny --offline --color never --manifest-path "$deny_fix/Cargo.toml" check bans 2>&1)"; then got=pass; else got=fail; fi
+      if [ "$2" = fail ] && [ "$got" = fail ] && printf '%s\n' "$out" | grep -qE "^error\[banned\]:.*'$1 = 0\.1\.0'" && printf '%s\n' "$out" | grep -qF "bans FAILED"; then
         echo "self-test ok: cargo-deny bans FAILED on $1"
       elif [ "$2" = pass ] && [ "$got" = pass ] && printf '%s\n' "$out" | grep -qF "bans ok"; then
         echo "self-test ok: cargo-deny bans ok on the unbanned $1"
