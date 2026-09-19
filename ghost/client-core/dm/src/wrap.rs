@@ -1,0 +1,334 @@
+//! State wrapping (design §2.5, §22.8.3): every secret Kotlin stores crosses JNI wrapped.
+//!
+//! ```text
+//! envelope = nonce(12) || ChaCha20-Poly1305(session_state_key, nonce,
+//!                          AD = "ghost/v1/wrap/" || name || binding, plaintext)
+//! ```
+//!
+//! The binding never changes when a value moves between rows — a slot swap is a delete and an
+//! insert of the same envelope bytes, and a held row's `prov_env` moves unchanged — so the AD is
+//! stable across the flows §22.8.3 lists. An envelope that does not open under its binding is
+//! [`DmCode::StateCorrupt`], which the caller handles like `OVERSIZE`: the contact's sessions are
+//! deleted and `reset_needed` is set.
+//!
+//! The wrapping key is `session_state_key`, 32 random bytes created at ACTIVATE and stored in
+//! `dm_self.state_key_wrapped` by a non-exportable Keystore key with the database-key
+//! authentication policy. **Keystore is Android-only**, so this crate never touches it: it takes
+//! the unwrapped [`StateKey`] as an argument, and the Keystore wrapper stays in Kotlin
+//! (`:crypto-bridge`, S4b). That seam is what keeps the crate pure Rust and JVM-testable.
+
+use crate::derive::StateKey;
+use crate::pq;
+use crate::result::{DmCode, DmResult};
+use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+
+/// Length of a wrap nonce.
+pub const NONCE_BYTES: usize = 12;
+/// Length of the Poly1305 tag.
+pub const TAG_BYTES: usize = 16;
+/// The bytes an envelope adds to its plaintext.
+pub const ENVELOPE_OVERHEAD: usize = NONCE_BYTES + TAG_BYTES;
+/// Prefix of every wrap associated data.
+pub const WRAP_LABEL: &[u8] = b"ghost/v1/wrap/";
+
+/// The kinds of value that are wrapped, and the `name` each one puts in its associated data
+/// (§22.8.3 table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapName {
+    /// `olm_session.state_env`: an Olm session pickle.
+    OlmSession,
+    /// `olm_session.prov_env` and `dm_held.prov_env`: a session's `reply_seed`.
+    ReplySeed,
+    /// `olm_prekey_gen.secrets_env`: a generation's fallback secret and X-Wing seed.
+    Generation,
+    /// `dm_pair_key.open_env`: a pair week opening key.
+    PairKey,
+    /// `dm_pair_offer.root_env`: an offered pair root.
+    PairRoot,
+    /// `dm_pair_offer.offer_env`: the offered TLV bytes, so re-attachment repeats them exactly.
+    PairOffer,
+    /// A transient `kbEnv` or `kioEnv`: a card-derived seal key on its way into a call.
+    CardKey,
+}
+
+impl WrapName {
+    /// The name string inside the associated data.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            WrapName::OlmSession => "olm-session",
+            WrapName::ReplySeed => "reply-seed",
+            WrapName::Generation => "generation",
+            WrapName::PairKey => "pair-key",
+            WrapName::PairRoot => "pair-root",
+            WrapName::PairOffer => "pair-offer",
+            WrapName::CardKey => "card-key",
+        }
+    }
+
+    /// Every name, for the exhaustiveness test.
+    pub const ALL: [WrapName; 7] = [
+        WrapName::OlmSession,
+        WrapName::ReplySeed,
+        WrapName::Generation,
+        WrapName::PairKey,
+        WrapName::PairRoot,
+        WrapName::PairOffer,
+        WrapName::CardKey,
+    ];
+}
+
+/// `contact_id(16) || session_id(32)` (`olm_session.state_env`).
+pub fn olm_session_binding(contact_id: &[u8; 16], session_id: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(48);
+    out.extend_from_slice(contact_id);
+    out.extend_from_slice(session_id);
+    out
+}
+
+/// `session_id(32)` (`prov_env`). It does not name the row, so a held row's envelope moves to the
+/// session row unchanged.
+pub fn reply_seed_binding(session_id: &[u8; 32]) -> Vec<u8> {
+    session_id.to_vec()
+}
+
+/// `u32_be(gen_id) || fallback_pub(32)` (`olm_prekey_gen.secrets_env`).
+pub fn generation_binding(gen_id: u32, fallback_public: &[u8; 32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(36);
+    out.extend_from_slice(&gen_id.to_be_bytes());
+    out.extend_from_slice(fallback_public);
+    out
+}
+
+/// `contact_id || direction(1) || u16_be(root_gen) || u64_be(week)` (`dm_pair_key.open_env`).
+pub fn pair_key_binding(contact_id: &[u8; 16], direction: u8, root_gen: u16, week: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(27);
+    out.extend_from_slice(contact_id);
+    out.push(direction);
+    out.extend_from_slice(&root_gen.to_be_bytes());
+    out.extend_from_slice(&week.to_be_bytes());
+    out
+}
+
+/// `contact_id || u16_be(root_gen)` (`dm_pair_offer.root_env` and `offer_env`).
+pub fn pair_root_binding(contact_id: &[u8; 16], root_gen: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(18);
+    out.extend_from_slice(contact_id);
+    out.extend_from_slice(&root_gen.to_be_bytes());
+    out
+}
+
+/// `identity_pk(32) || kind(1)` of the card the key belongs to (transient `kbEnv`, `kioEnv`).
+pub fn card_key_binding(identity_pk: &[u8; 32], kind: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(33);
+    out.extend_from_slice(identity_pk);
+    out.push(kind);
+    out
+}
+
+fn associated_data(name: WrapName, binding: &[u8]) -> Vec<u8> {
+    let mut ad = Vec::with_capacity(WRAP_LABEL.len() + name.as_str().len() + binding.len());
+    ad.extend_from_slice(WRAP_LABEL);
+    ad.extend_from_slice(name.as_str().as_bytes());
+    ad.extend_from_slice(binding);
+    ad
+}
+
+fn cipher(key: &StateKey) -> DmResult<ChaCha20Poly1305> {
+    ChaCha20Poly1305::new_from_slice(key.as_bytes()).map_err(|_| DmCode::StateCorrupt)
+}
+
+/// Wraps a value with a given nonce (the vector and equivalence-fixture path).
+pub fn wrap_with_nonce(
+    key: &StateKey,
+    name: WrapName,
+    binding: &[u8],
+    plaintext: &[u8],
+    nonce: &[u8; NONCE_BYTES],
+) -> DmResult<Vec<u8>> {
+    let ad = associated_data(name, binding);
+    let ciphertext = cipher(key)?
+        .encrypt(
+            &Nonce::from(*nonce),
+            Payload {
+                msg: plaintext,
+                aad: &ad,
+            },
+        )
+        .map_err(|_| DmCode::StateCorrupt)?;
+    let mut out = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
+    out.extend_from_slice(nonce);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// Wraps a value with a fresh random nonce.
+pub fn wrap(key: &StateKey, name: WrapName, binding: &[u8], plaintext: &[u8]) -> DmResult<Vec<u8>> {
+    let mut nonce = [0u8; NONCE_BYTES];
+    pq::fill_random(&mut nonce);
+    wrap_with_nonce(key, name, binding, plaintext, &nonce)
+}
+
+/// Opens an envelope under its name and binding. Anything else is [`DmCode::StateCorrupt`].
+pub fn unwrap(
+    key: &StateKey,
+    name: WrapName,
+    binding: &[u8],
+    envelope: &[u8],
+) -> DmResult<Vec<u8>> {
+    if envelope.len() < ENVELOPE_OVERHEAD {
+        return Err(DmCode::StateCorrupt);
+    }
+    let mut nonce = [0u8; NONCE_BYTES];
+    nonce.copy_from_slice(&envelope[..NONCE_BYTES]);
+    let ad = associated_data(name, binding);
+    cipher(key)?
+        .decrypt(
+            &Nonce::from(nonce),
+            Payload {
+                msg: &envelope[NONCE_BYTES..],
+                aad: &ad,
+            },
+        )
+        .map_err(|_| DmCode::StateCorrupt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> StateKey {
+        StateKey::from_bytes([0x91; 32])
+    }
+
+    const CONTACT: [u8; 16] = [1u8; 16];
+    const SESSION: [u8; 32] = [2u8; 32];
+
+    #[test]
+    fn an_envelope_round_trips_and_costs_twenty_eight_bytes() {
+        let binding = olm_session_binding(&CONTACT, &SESSION);
+        let plaintext = vec![7u8; 100];
+        let envelope = wrap(&key(), WrapName::OlmSession, &binding, &plaintext).expect("wrap");
+        assert_eq!(envelope.len(), plaintext.len() + ENVELOPE_OVERHEAD);
+        assert_eq!(
+            unwrap(&key(), WrapName::OlmSession, &binding, &envelope).expect("unwrap"),
+            plaintext
+        );
+    }
+
+    /// `WrapBindingTest` (§22.8.3): a value copied to another row does not open.
+    #[test]
+    fn a_value_moved_to_another_binding_is_state_corrupt() {
+        let binding = olm_session_binding(&CONTACT, &SESSION);
+        let envelope = wrap(&key(), WrapName::OlmSession, &binding, b"state").expect("wrap");
+        let other_contact = olm_session_binding(&[9u8; 16], &SESSION);
+        assert_eq!(
+            unwrap(&key(), WrapName::OlmSession, &other_contact, &envelope).err(),
+            Some(DmCode::StateCorrupt)
+        );
+        assert_eq!(
+            unwrap(&key(), WrapName::ReplySeed, &binding, &envelope).err(),
+            Some(DmCode::StateCorrupt)
+        );
+        let other_key = StateKey::from_bytes([0u8; 32]);
+        assert_eq!(
+            unwrap(&other_key, WrapName::OlmSession, &binding, &envelope).err(),
+            Some(DmCode::StateCorrupt)
+        );
+    }
+
+    /// A slot swap and a held-to-session move keep the binding, so the same bytes still open.
+    #[test]
+    fn a_slot_swap_and_a_held_row_move_keep_the_binding() {
+        let binding = reply_seed_binding(&SESSION);
+        let envelope = wrap(&key(), WrapName::ReplySeed, &binding, b"reply seed").expect("wrap");
+        // The row changes from dm_held to olm_session; the binding is the session id either way.
+        assert_eq!(
+            unwrap(
+                &key(),
+                WrapName::ReplySeed,
+                &reply_seed_binding(&SESSION),
+                &envelope
+            )
+            .expect("unwrap"),
+            b"reply seed"
+        );
+    }
+
+    #[test]
+    fn generations_pair_keys_and_offers_are_bound_to_their_coordinates() {
+        let k = key();
+        let generation = generation_binding(7, &[3u8; 32]);
+        let envelope = wrap(&k, WrapName::Generation, &generation, b"secrets").expect("wrap");
+        assert_eq!(
+            unwrap(
+                &k,
+                WrapName::Generation,
+                &generation_binding(8, &[3u8; 32]),
+                &envelope
+            )
+            .err(),
+            Some(DmCode::StateCorrupt)
+        );
+
+        let week = pair_key_binding(&CONTACT, 1, 2, 2_870);
+        let envelope = wrap(&k, WrapName::PairKey, &week, b"week key").expect("wrap");
+        assert_eq!(
+            unwrap(
+                &k,
+                WrapName::PairKey,
+                &pair_key_binding(&CONTACT, 1, 2, 2_871),
+                &envelope
+            )
+            .err(),
+            Some(DmCode::StateCorrupt)
+        );
+        assert_eq!(
+            unwrap(
+                &k,
+                WrapName::PairKey,
+                &pair_key_binding(&CONTACT, 2, 2, 2_870),
+                &envelope
+            )
+            .err(),
+            Some(DmCode::StateCorrupt)
+        );
+
+        let offer = pair_root_binding(&CONTACT, 4);
+        let envelope = wrap(&k, WrapName::PairOffer, &offer, b"tlv").expect("wrap");
+        assert_eq!(
+            unwrap(&k, WrapName::PairRoot, &offer, &envelope).err(),
+            Some(DmCode::StateCorrupt)
+        );
+    }
+
+    #[test]
+    fn a_truncated_or_empty_envelope_is_state_corrupt() {
+        let binding = card_key_binding(&[4u8; 32], 1);
+        let envelope = wrap(&key(), WrapName::CardKey, &binding, b"kb").expect("wrap");
+        for len in 0..envelope.len() {
+            assert_eq!(
+                unwrap(&key(), WrapName::CardKey, &binding, &envelope[..len]).err(),
+                Some(DmCode::StateCorrupt),
+                "length {len}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_name_is_distinct() {
+        let mut names: Vec<&str> = WrapName::ALL.iter().map(|n| n.as_str()).collect();
+        names.sort_unstable();
+        let count = names.len();
+        names.dedup();
+        assert_eq!(names.len(), count);
+    }
+
+    #[test]
+    fn a_fresh_nonce_gives_fresh_bytes() {
+        let binding = reply_seed_binding(&SESSION);
+        let first = wrap(&key(), WrapName::ReplySeed, &binding, b"x").expect("wrap");
+        let second = wrap(&key(), WrapName::ReplySeed, &binding, b"x").expect("wrap");
+        assert_ne!(first, second);
+    }
+}

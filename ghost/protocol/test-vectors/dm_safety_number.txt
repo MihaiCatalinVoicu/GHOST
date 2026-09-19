@@ -1,0 +1,28 @@
+# GHOST safety number v1 vectors (Phase 9 design faza9-dm.md §8.4). Generated and checked by
+# client-core/dm/tests/vectors.rs::dm_safety_number_vectors; an independent implementation
+# replays it on the JDK's own MessageDigest.
+#
+#   own_id(party) = identity_pk(32, Ed25519) || oi(32, Olm identity)
+#   h_0           = SHA-512("ghost/v1/safety-number" || 01 || own_id)
+#   h_{k+1}       = SHA-512(h_k || own_id)          for k = 0 .. 5199   (5201 evaluations)
+#   digits(party) = for j in 0..5: (u40_be(h_5200[5j .. 5j+5]) mod 100000) as 5 decimal digits
+#   display       = digits(a) || digits(b), the smaller 30-digit string first
+#   scannable     = 01 || h_5200(own)[0..32] || h_5200(peer)[0..32]           (65 bytes)
+#
+# The digits of a GHOST safety number are never compared with another messenger's.
+
+[parties]
+iterations = 5200
+a_identity_pk = 6161616161616161616161616161616161616161616161616161616161616161
+a_olm_identity = 6262626262626262626262626262626262626262626262626262626262626262
+b_identity_pk = 6363636363636363636363636363636363636363636363636363636363636363
+b_olm_identity = 6464646464646464646464646464646464646464646464646464646464646464
+
+[outputs]
+a_hash = d415feb73a7b5dd9f5fcbcd0d5be18263e1651c61b46824ba23b9a55ab8f0375cfa5a44b0690b41f0bc046a2030f5ee76e3a0152bce6e36e76e54d6f6c3a0768
+b_hash = 97502caeffbaaa73b00efd6ec77cde3c64a0d413422ceb7a4c906cecc63e33841ffe16d2e471802c18127080cedd317d7c6b7ec7b21b69452ba3fa5dcacdeb0f
+a_digits = 813384278020408073666115476207
+b_digits = 673592548693278994117130847198
+display = 673592548693278994117130847198813384278020408073666115476207
+scannable_from_a = 01d415feb73a7b5dd9f5fcbcd0d5be18263e1651c61b46824ba23b9a55ab8f037597502caeffbaaa73b00efd6ec77cde3c64a0d413422ceb7a4c906cecc63e3384
+scannable_from_b = 0197502caeffbaaa73b00efd6ec77cde3c64a0d413422ceb7a4c906cecc63e3384d415feb73a7b5dd9f5fcbcd0d5be18263e1651c61b46824ba23b9a55ab8f0375
