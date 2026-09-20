@@ -145,6 +145,9 @@ enum class DmField(val tag: Int) {
 
     /** A wrapped `olm_prekey_gen.secrets_env`. */
     GENERATION_SECRETS(0x16),
+
+    /** The inbox read secret `RX_{i,s}`: a bearer secret that goes into a credential v3 (§4.3). */
+    READ_SECRET(0x17),
     ;
 
     companion object {

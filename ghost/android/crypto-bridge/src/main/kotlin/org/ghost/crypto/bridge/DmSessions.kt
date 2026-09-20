@@ -322,6 +322,25 @@ object DmSessions {
         )
     }
 
+    /**
+     * §2.6 function 4: `RX_{i,s}`, the seed-derived inbox read secret of the relay at ES slot
+     * [slot] (§3.1, §4.8). Null when the library is missing or the call failed.
+     *
+     * This is the one DM secret the design lets Kotlin hold **unwrapped**, because it is a bearer
+     * secret: the owner puts it into a 67-byte [CredentialV3] and presents those bytes to the relay
+     * (§3.2's closing sentence, §4.3). Its verifier — what the relay actually stores — is
+     * [CredentialV3.verifier]; the secret itself is never registered.
+     *
+     * Callers zeroise the array once the credential is built; it is the caller's array, so this
+     * facade cannot do it for them the way [openContext] does for its own inputs.
+     */
+    fun ownReadSecret(handle: Long, cardIndex: Int, slot: Int): ByteArray? {
+        if (!DmNative.isAvailable()) return null
+        val result = call { DmNative.ownReadSecret(handle, cardIndex, slot) }
+        if (!result.isOk) return null
+        return result.bytes(DmField.READ_SECRET)
+    }
+
     /** §2.6 function 5: a fresh generation, signed into a bundle v2 and sealed under `KB_i`. */
     fun bundleCreate(
         handle: Long,

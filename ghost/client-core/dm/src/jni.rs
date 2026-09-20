@@ -53,7 +53,7 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
     (2, "ownCard", Availability::Exported),
     (3, "cardParse", Availability::Declared("S7")),
     (3, "cardDerive", Availability::Declared("S7")),
-    (4, "ownReadSecret", Availability::Declared("S6")),
+    (4, "ownReadSecret", Availability::Exported),
     (5, "bundleCreate", Availability::Exported),
     (6, "bundleOpen", Availability::Declared("S7")),
     (7, "sessionOutbound", Availability::Exported),
@@ -93,6 +93,14 @@ pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
     ("ctxOpen", &[DmCode::NonCanonical]),
     ("ctxClose", &[DmCode::CryptoUnavailable]),
     ("ownCard", &[DmCode::InvalidCard, DmCode::CryptoUnavailable]),
+    (
+        "ownReadSecret",
+        &[
+            DmCode::InvalidCard,
+            DmCode::NonCanonical,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
     (
         "bundleCreate",
         &[
@@ -214,6 +222,10 @@ pub enum Field {
     XwingPublic = 0x15,
     /// A wrapped `olm_prekey_gen.secrets_env` (`f_g || q_g seed`).
     GenerationSecrets = 0x16,
+    /// The inbox read secret `RX_{i,s}` (§3.1). It is a **bearer** secret: it is presented to the
+    /// relay of slot s inside the 67-byte credential v3, so Kotlin holds it in clear (§3.2's last
+    /// sentence lists bearer credentials among the three things Kotlin may hold unwrapped).
+    ReadSecret = 0x17,
 }
 
 impl Field {
@@ -244,6 +256,7 @@ impl Field {
         Field::FallbackPublic,
         Field::XwingPublic,
         Field::GenerationSecrets,
+        Field::ReadSecret,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -272,6 +285,7 @@ impl Field {
             Field::FallbackPublic => 0x14,
             Field::XwingPublic => 0x15,
             Field::GenerationSecrets => 0x16,
+            Field::ReadSecret => 0x17,
         }
     }
 }
@@ -490,6 +504,37 @@ pub fn own_card(env: &mut JNIEnv, handle: jlong, card_index: jint) -> Result<Vec
                 &derive::olm_identity_public(&context.olm_identity),
             )
             .into_bytes())
+    })
+}
+
+/// §2.6 function 4: `ownReadSecret(h, cardIndex, slot)`. `RX_{i,s}`, the **seed-derived** inbox
+/// read secret the owner registers and then presents to the relay of ES slot `s` (§3.1, §4.8).
+///
+/// It is the D11 key (C-5, D7): contacts hold the card and can therefore derive every card-level
+/// value, but not this one, which is why a card holder cannot read the inbox with the card alone
+/// (§3.2 "the inbox read secrets and the Olm identity are **not** in it"). The `MESSAGING` branch
+/// is the key input, so T26 holds by the type system like every other derivation here.
+///
+/// `slot` is the relay's ES slot number, one byte on the wire in the credential and in the
+/// verifier (§4.3), so a value outside `0..=255` is [`DmCode::NonCanonical`] rather than a
+/// silently truncated derivation that would produce a secret no relay accepts.
+pub fn own_read_secret(
+    env: &mut JNIEnv,
+    handle: jlong,
+    card_index: jint,
+    slot: jint,
+) -> Result<Vec<u8>, DmCode> {
+    let _ = env;
+    let card_index = u16::try_from(card_index).map_err(|_| DmCode::InvalidCard)?;
+    let slot = u8::try_from(slot).map_err(|_| DmCode::NonCanonical)?;
+    with_context(handle, |context| {
+        let mut secret =
+            Zeroizing::new(derive::derive_inbox_read_secret(&context.messaging, card_index, slot));
+        let reply = Reply::ok()
+            .field(Field::ReadSecret, secret.as_ref())
+            .into_bytes();
+        secret.zeroize();
+        Ok(reply)
     })
 }
 
@@ -949,6 +994,19 @@ pub mod entry {
         guarded(&mut env, |env| super::own_card(env, handle, card_index))
     }
 
+    /// `ownReadSecret`
+    pub fn own_read_secret<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        card_index: jint,
+        slot: jint,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| {
+            super::own_read_secret(env, handle, card_index, slot)
+        })
+    }
+
     /// `bundleCreate`
     pub fn bundle_create<'local>(
         mut env: JNIEnv<'local>,
@@ -1141,6 +1199,7 @@ macro_rules! export_jni {
         $crate::export_jni!(@one ctxOpen ctx_open);
         $crate::export_jni!(@one ctxClose ctx_close);
         $crate::export_jni!(@one ownCard own_card);
+        $crate::export_jni!(@one ownReadSecret own_read_secret);
         $crate::export_jni!(@one bundleCreate bundle_create);
         $crate::export_jni!(@one sessionOutbound session_outbound);
         $crate::export_jni!(@one encrypt encrypt);
@@ -1197,6 +1256,20 @@ macro_rules! paste_export {
             card_index: ::jni::sys::jint,
         ) -> ::jni::sys::jbyteArray {
             $crate::jni::entry::own_card(env, class, handle, card_index)
+        }
+    };
+    (ownReadSecret, $rust:ident) => {
+        /// One entry point of the closed JNI surface (design §2.6); the body is in
+        /// [`crate::jni::entry`].
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_ownReadSecret<'local>(
+            env: ::jni::JNIEnv<'local>,
+            class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            card_index: ::jni::sys::jint,
+            slot: ::jni::sys::jint,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::own_read_secret(env, class, handle, card_index, slot)
         }
     };
     (bundleCreate, $rust:ident) => {

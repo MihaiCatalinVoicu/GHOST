@@ -90,7 +90,8 @@ class DmResultCodesTest {
         // non-OK code, so there are no arms to compare: a context that did not open, a card index
         // out of range, a generation that could not be sealed, a safety number that could not be
         // computed. They are named here so a new exported function cannot quietly join them.
-        val nullOnFailure = setOf("ctxOpen", "ctxClose", "ownCard", "bundleCreate", "safetyNumber")
+        val nullOnFailure =
+            setOf("ctxOpen", "ctxClose", "ownCard", "ownReadSecret", "bundleCreate", "safetyNumber")
 
         val facade = File("src/main/kotlin/org/ghost/crypto/bridge/DmSessions.kt").canonicalFile
         assertTrue("$facade must exist", facade.isFile)

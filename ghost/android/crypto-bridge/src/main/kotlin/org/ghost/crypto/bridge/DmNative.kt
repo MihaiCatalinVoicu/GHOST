@@ -86,6 +86,11 @@ object DmNative {
     @JvmName("ownCard")
     internal external fun ownCard(handle: Long, cardIndex: Int): ByteArray?
 
+    // §2.6 function 4.
+    @JvmStatic
+    @JvmName("ownReadSecret")
+    internal external fun ownReadSecret(handle: Long, cardIndex: Int, slot: Int): ByteArray?
+
     // §2.6 function 5.
     @JvmStatic
     @JvmName("bundleCreate")
