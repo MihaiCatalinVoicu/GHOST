@@ -216,13 +216,20 @@ fn envelopes_decode_strictly() {
 
 #[test]
 fn transport_failures_and_limits() {
-    // Nobody listens.
-    let addr = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap()
-    };
+    // Nobody listens: every connection is dropped the instant it is accepted, before a byte
+    // crosses. Deterministic, unlike binding an ephemeral port and dropping the listener — on a
+    // busy machine (observed on Windows CI, 2026-09-19) something else, even another test in this
+    // binary starting its own emulator, can claim the freed port before this test connects, and
+    // then answer for real (`Rpc { code: -32601 }` instead of `Transport`).
+    let refusing = Emulator::start(
+        Options {
+            refuse: true,
+            ..Options::default()
+        },
+        |_| Reply::Status(200),
+    );
     let c = RpcClient::new(
-        Endpoint::new(addr).unwrap(),
+        refusing.endpoint(),
         creds(epee::PASSWORD),
         Timeouts::default(),
     )

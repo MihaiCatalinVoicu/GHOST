@@ -127,6 +127,11 @@ pub struct Options {
     /// The connection forgets its nonce after every this many authenticated requests (as at a
     /// nonce expiry): the next request is answered `stale=true`.
     pub rotate_nonce_after: Option<u32>,
+    /// Every connection is dropped the instant it is accepted, before a byte is read or written:
+    /// the deterministic stand-in for "nobody listens". A real unused loopback port races
+    /// whatever else on the machine (even another test's own emulator, `TcpListener::bind`'d to
+    /// `127.0.0.1:0` like this one) might claim it between freeing it and connecting.
+    pub refuse: bool,
 }
 
 type Script = Arc<dyn Fn(&Call) -> Reply + Send + Sync>;
@@ -158,6 +163,10 @@ impl Emulator {
         std::thread::spawn(move || {
             for (id, stream) in listener.incoming().enumerate() {
                 let Ok(stream) = stream else { continue };
+                if options.refuse {
+                    drop(stream);
+                    continue;
+                }
                 if let Ok(server_side) = stream.try_clone() {
                     st.lock().unwrap().push(server_side);
                 }
