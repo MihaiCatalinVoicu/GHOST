@@ -3,6 +3,7 @@ package org.ghost.sync.store
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
 import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.InstalledCapability
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.SyncChange
@@ -73,6 +74,26 @@ internal class CapabilityStore {
                 "AND state IN ('usable', 'exhausted') AND (expires_hour IS NULL OR expires_hour > ?3)",
             listOf(relay.value, ns.raw, now),
         ) { CapabilityToken(CapabilityKind.WRITE, it.blob(0), it.long(1)) }
+
+    /**
+     * The installed row's state and floored expiry hour, without its token (Phase 9 design §4.8:
+     * the `KEEPER` step refreshes its own READ credential "when fewer than 7 days remain" and must
+     * therefore be able to read back what it installed, without re-putting and bumping the
+     * generation on every pass).
+     */
+    fun installed(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, kind: CapabilityKind): InstalledCapability? =
+        tx.sql.single(
+            "SELECT state, expires_hour FROM relay_capability WHERE relay_id = ?1 AND namespace_id = ?2 AND kind = ?3",
+            listOf(relay.value, ns.raw, kind.code),
+        ) { row ->
+            val state = when (val code = row.string(0)) {
+                "usable" -> InstalledCapability.State.USABLE
+                "rejected" -> InstalledCapability.State.REJECTED
+                "exhausted" -> InstalledCapability.State.EXHAUSTED
+                else -> throw IllegalStateException("unknown capability state '$code'")
+            }
+            InstalledCapability(state, if (row.isNull(1)) null else row.long(1))
+        }
 
     fun generation(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, kind: CapabilityKind): Long? =
         tx.sql.single(

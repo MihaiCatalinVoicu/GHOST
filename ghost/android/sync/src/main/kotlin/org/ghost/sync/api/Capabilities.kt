@@ -17,6 +17,32 @@ interface Capabilities {
     )
 
     fun needed(): List<CapabilityNeed>
+
+    /**
+     * What is installed for the triple today, in the caller's transaction, or null when nothing
+     * is. Reads only: it installs nothing and wakes nothing.
+     *
+     * Phase 9's `KEEPER` step (design §4.8) needs it. The owner's READ credential v3 is a bearer
+     * credential it mints itself, with an 8-day expiry it refreshes "when fewer than 7 days
+     * remain", so the step has to see what it put there the last time — and it must not re-put on
+     * every pass, because [put] bumps the generation and re-arms parked deliveries. A copy of the
+     * expiry kept in memory would be lost at every restart and would re-arm on every start.
+     */
+    fun installed(
+        tx: SyncTransaction,
+        relay: RelayId,
+        namespace: NamespaceId,
+        kind: CapabilityKind,
+    ): InstalledCapability?
+}
+
+/** The state and floored expiry hour of an installed capability ([Capabilities.installed]). */
+class InstalledCapability(val state: State, val expiresHour: Long?) {
+    /** The `relay_capability.state` values of design §3.8. */
+    enum class State { USABLE, REJECTED, EXHAUSTED }
+
+    /** Never shows the token: this class deliberately carries none (T3). */
+    override fun toString(): String = "InstalledCapability($state)"
 }
 
 /**

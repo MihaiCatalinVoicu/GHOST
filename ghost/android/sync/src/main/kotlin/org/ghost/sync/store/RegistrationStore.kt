@@ -57,8 +57,13 @@ internal class RegistrationLease(
  */
 internal class RegistrationStore(private val capabilities: CapabilityStore, private val requestId: () -> ByteArray) {
 
-    /** Records that [key] must be registered with [verifier]; idempotent, and a different verifier throws. */
-    fun request(tx: SyncTransaction, key: RegistrationKey, verifier: ByteArray, now: Long) {
+    /**
+     * Records that [key] must be registered with [verifier]; idempotent, and a different verifier
+     * throws. Returns true only when this call inserted the row, so a caller whose whole step is
+     * "insert only missing rows" (Phase 9 design §7.2, REGROWS) can report whether it changed
+     * anything without reading this table itself.
+     */
+    fun request(tx: SyncTransaction, key: RegistrationKey, verifier: ByteArray, now: Long): Boolean {
         require(verifier.size == VERIFIER_SIZE) { "a verifier is 32 bytes" }
         require(key.periodId >= 0) { "period must not be negative" }
         val sql = tx.sql
@@ -68,7 +73,7 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
         ) { it.blob(0) }
         if (stored != null) {
             check(stored.contentEquals(verifier)) { "a registration keeps the verifier it was created with" }
-            return
+            return false
         }
         val id = requestId()
         check(id.size == REQUEST_ID_SIZE) { "a request id is 16 bytes" }
@@ -79,6 +84,7 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
                 "VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, NULL, 0, ?7, NULL)",
             listOf(key.relayId.value, key.namespace.raw, key.periodId, key.kind.dbCode, verifier.copyOf(), id, Time.floorMinute(now)),
         )
+        return true
     }
 
     /** The healing rule of §4.8: done rows of (relay, namespace) from [fromPeriod] on return to pending. */

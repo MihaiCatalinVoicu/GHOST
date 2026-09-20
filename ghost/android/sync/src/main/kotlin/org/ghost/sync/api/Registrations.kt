@@ -32,6 +32,9 @@ interface Registrations {
      * Records that (relay, namespace, period, kind) must be registered with [verifier], inside the
      * caller's transaction. Idempotent on the four key columns; a different verifier for a row that
      * already exists throws, because the verifier of a row is fixed at insert (§4.8).
+     *
+     * Returns true only when this call inserted the row (Phase 9 design §7.2: REGROWS "inserts
+     * only missing rows", and has to be able to say that it inserted none).
      */
     fun request(
         tx: SyncTransaction,
@@ -40,7 +43,7 @@ interface Registrations {
         periodId: Long,
         kind: KeyKind,
         verifier: ByteArray,
-    )
+    ): Boolean
 
     /**
      * The healing rule of §4.8: rows of (relay, namespace) with `period >= fromPeriod` that are

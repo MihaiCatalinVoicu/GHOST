@@ -10,6 +10,7 @@ import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
 import org.ghost.sync.api.Inbox
 import org.ghost.sync.api.InboundBlob
+import org.ghost.sync.api.InstalledCapability
 import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.Namespaces
@@ -112,7 +113,7 @@ class SyncStores(
             periodId: Long,
             kind: KeyKind,
             verifier: ByteArray,
-        ) = registrationStore.request(tx.checked(), RegistrationKey(relay, namespace, periodId, kind), verifier, clock.epochSeconds())
+        ): Boolean = registrationStore.request(tx.checked(), RegistrationKey(relay, namespace, periodId, kind), verifier, clock.epochSeconds())
 
         override fun rearm(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, fromPeriod: Long): Int =
             registrationStore.rearm(tx.checked(), relay, namespace, fromPeriod, clock.epochSeconds())
@@ -171,6 +172,13 @@ class SyncStores(
 
         override fun needed(): List<CapabilityNeed> =
             database.transaction { tx -> capabilityStore.needed(tx, clock.epochSeconds()) }
+
+        override fun installed(
+            tx: SyncTransaction,
+            relay: RelayId,
+            namespace: NamespaceId,
+            kind: CapabilityKind,
+        ): InstalledCapability? = capabilityStore.installed(tx.checked(), relay, namespace, kind)
 
         override fun toString(): String = "Capabilities"
     }
