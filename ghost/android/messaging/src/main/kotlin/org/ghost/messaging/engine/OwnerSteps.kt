@@ -286,7 +286,9 @@ class OwnerSteps(
      * For each own namespace, each relay of its current set and each kind it needs — `X_0`:
      * DEPOSIT and READ; `P_0`: FETCH (§22.8.7) — a `relay_key_registration` row must exist for
      * week `w`, whether or not a capability exists, so that a pending row is there to be served
-     * (and, under Q31's default, counts as write work so the planner redeems for it).
+     * (and, under Q31's default, counts as write work so the planner redeems for it), **and for
+     * `c` and `c + 1` of the pair's usable write capability's week `c`** (graft G-3). See
+     * [periodsFor] for why the `c + 1` row is what buys the offline tolerance of E-8.
      *
      * `Registrations.request` inserts only what is missing and refuses a **differing** verifier for
      * a row that already exists, which is §7.2's "REGROWS inserts only missing rows" in one call.
@@ -319,10 +321,12 @@ class OwnerSteps(
                 val secrets = crypto.ownSecrets(cardIndex, slot.slot)
                     ?: return@transaction Result.CRYPTO_UNAVAILABLE
                 try {
-                    // DEPOSIT: card-derived, so every holder of the card presents one value (P-2).
-                    changed = request(tx, slot, inboxNs, week, KeyKind.DEPOSIT, CredentialV3.Kind.DEPOSIT, own.inboxNamespace, secrets.deposit) || changed
-                    // READ: seed-derived, the D11 key no card holder can compute (C-5).
-                    changed = request(tx, slot, inboxNs, week, KeyKind.READ, CredentialV3.Kind.READ, own.inboxNamespace, secrets.read) || changed
+                    for (period in periodsFor(tx, slot.relay, inboxNs, week)) {
+                        // DEPOSIT: card-derived, so every card holder presents one value (P-2).
+                        changed = request(tx, slot, inboxNs, period, KeyKind.DEPOSIT, CredentialV3.Kind.DEPOSIT, own.inboxNamespace, secrets.deposit) || changed
+                        // READ: seed-derived, the D11 key no card holder can compute (C-5).
+                        changed = request(tx, slot, inboxNs, period, KeyKind.READ, CredentialV3.Kind.READ, own.inboxNamespace, secrets.read) || changed
+                    }
                 } finally {
                     secrets.clear()
                 }
@@ -332,7 +336,9 @@ class OwnerSteps(
                 val secrets = crypto.ownSecrets(cardIndex, slot.slot)
                     ?: return@transaction Result.CRYPTO_UNAVAILABLE
                 try {
-                    changed = request(tx, slot, bundleNs, week, KeyKind.FETCH, CredentialV3.Kind.FETCH, own.bundleNamespace, secrets.fetch) || changed
+                    for (period in periodsFor(tx, slot.relay, bundleNs, week)) {
+                        changed = request(tx, slot, bundleNs, period, KeyKind.FETCH, CredentialV3.Kind.FETCH, own.bundleNamespace, secrets.fetch) || changed
+                    }
                 } finally {
                     secrets.clear()
                 }
@@ -393,6 +399,37 @@ class OwnerSteps(
         if (installed.state != InstalledCapability.State.USABLE) return true
         val expires = installed.expiresHour ?: return false
         return expires - now < READ_CREDENTIAL_REFRESH_SECONDS
+    }
+
+    /**
+     * The periods a pair must hold rows for (§4.8, graft G-3): **`week(now)` always**, whether or
+     * not a capability exists — so a pending row is there to be served, and under Q31's default
+     * counts as write work that makes the planner redeem — **and `c`, `c + 1` for the week `c` of
+     * the pair's usable write capability**.
+     *
+     * The `c + 1` row is what buys the offline tolerance of E-8: an owner online in week `w`
+     * registers `{w, w + 1}`, so a sender's deposits keep succeeding until `start(c + 3) + 1 h`,
+     * about two to three weeks of absence. Without it the registration would lapse a week sooner
+     * and the sender, which has no week choice and no fallback (§21.2), would simply be refused.
+     *
+     * `c` comes from the capability's **declared expiry**, not from the clock: a redeemed
+     * capability of week `c` expires at `start(c + 1) + 1 h`, and §4.4 point 3 has the relay judge
+     * the period the same way, so client and relay agree without either reading the other's clock.
+     * A capability whose expiry is unknown names no week and contributes nothing.
+     */
+    private fun periodsFor(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, week: Long): List<Long> {
+        val periods = linkedSetOf(week)
+        val write = sync.capabilities.installed(tx, relay, ns, CapabilityKind.WRITE)
+        if (write != null && write.state == InstalledCapability.State.USABLE) {
+            write.expiresHour?.let { expiry ->
+                val c = DmTime.week(expiry - DmTime.HOUR - 1)
+                periods += c
+                periods += c + 1
+            }
+        }
+        // A period before `w - 1` is one `forget` deletes in this same pass; requesting it would
+        // insert a row this step then removes, and would report a change that is not one.
+        return periods.filter { it >= week - 1 }
     }
 
     /**

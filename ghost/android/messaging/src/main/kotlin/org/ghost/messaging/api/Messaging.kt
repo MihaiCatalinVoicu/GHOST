@@ -10,9 +10,9 @@ import org.ghost.messaging.engine.OwnerSteps
  * key-change calls, `resetSession`, `reconnect`, the request calls, `block`/`unblock`/
  * `deleteContact`, revocation, `status` and the two listener setters. S6 is the **owner side**:
  * the identity's own card and the activation hooks. Everything that needs a contact arrives with
- * S7, trust and restore with S8, the ephemeral calls with S9; each signature lands with its slice
- * rather than as a stub that returns nothing, so a caller cannot compile against a method that
- * does not work yet (`anti-placeholder.sh`).
+ * S7, trust and restore with S8, the ephemeral calls with S9. Each signature lands **with** its
+ * slice rather than ahead of it: a method that compiled and answered nothing would be refused by
+ * the static gates, and a caller written against one would be written against a promise.
  *
  * The contract §13.2 states already holds for what is here: every method posts to the DM actor and
  * returns after its transaction commits, none performs network I/O, and `toString()` of every

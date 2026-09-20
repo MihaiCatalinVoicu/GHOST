@@ -464,6 +464,58 @@ class OwnerStepsTest {
         }
     }
 
+    /**
+     * §4.8 and graft G-3: beside `week(now)`, a pair with a usable **write** capability of week
+     * `c` also holds rows for `c` and `c + 1`. That `c + 1` row is what buys the offline tolerance
+     * of E-8 — a sender presents one static credential with no week choice and no fallback
+     * (§21.2), so a registration that lapsed a week earlier would simply refuse it.
+     *
+     * `c` comes from the capability's **declared expiry**, which is how the relay judges the
+     * period too (§4.4 point 3): a capability of week `c` expires at `start(c + 1) + 1 h`.
+     */
+    @Test
+    fun aPairWithAWriteCapabilityAlsoHoldsItsWeekAndTheNext() {
+        OwnerWorld().use { world ->
+            val now = weekStart(2_870) + 2 * day
+            world.activateAt(now)
+            world.steps.regrows()
+            assertEquals(setOf(2_870L), world.registrations().map { it["period_id"] }.toSet())
+
+            // A write capability of week 2 870 is redeemed for the inbox on one of its relays.
+            val own = world.crypto.ownCard(0)!!
+            val relay = world.registrations().first()["relay_id"] as Long
+            world.database.transaction { tx ->
+                world.stores.capabilities.put(
+                    tx,
+                    org.ghost.sync.api.RelayId(relay),
+                    org.ghost.sync.api.NamespaceId(own.inboxNamespace),
+                    org.ghost.sync.api.CapabilityKind.WRITE,
+                    ByteArray(64) { 0x21 },
+                    weekStart(2_871) + hour,
+                )
+            }
+
+            assertEquals(OwnerSteps.Result.DONE, world.steps.regrows())
+            val forThatRelay = world.registrations()
+                .filter { it["relay_id"] == relay && it["ns"] == own.inboxNamespace.toHex() }
+            assertEquals(
+                "week(now) plus the capability's week and the next",
+                setOf(2_870L, 2_871L),
+                forThatRelay.map { it["period_id"] }.toSet(),
+            )
+            // Only that pair grew: a capability of one relay says nothing about another's.
+            assertEquals(
+                setOf(2_870L),
+                world.registrations()
+                    .filter { it["relay_id"] != relay }
+                    .map { it["period_id"] }
+                    .toSet(),
+            )
+            // And it is idempotent from there on.
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.regrows())
+        }
+    }
+
     /** §7.2: "REGROWS inserts only missing rows". */
     @Test
     fun regrowsIsIdempotentAndInsertsOnlyMissingRows() {
