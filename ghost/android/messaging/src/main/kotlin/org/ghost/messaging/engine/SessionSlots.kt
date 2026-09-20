@@ -46,22 +46,24 @@ internal class SessionSlots(private val sessions: SessionStore = SessionStore())
     /**
      * R-SS1 as amended by §22.8.4 rule 2: where a newly created inbound session goes.
      *
-     * [bindingMinute] is the sealing minute of the intro envelope that carried the first flight,
+     * [bindingSeconds] is the sealing minute of the intro envelope that carried the first flight,
      * written by the **contact's** clock; so is every `peer_bind_minute` it is compared with,
      * which is what makes the comparison meaningful across two devices (§22.8.4 rule 5 declares
-     * the case where the contact's own clock moved backwards).
+     * the case where the contact's own clock moved backwards). It is on the **minute grid in epoch
+     * seconds**, like every other minute column of §13.6 and like the `author_minute` of
+     * [swapAfterPreviousDecrypted], never the wire's minute index.
      */
     fun admitNewInbound(
         tx: SyncTransaction,
         contactId: ByteArray,
-        bindingMinute: Long,
+        bindingSeconds: Long,
         today: Long,
     ): Admission {
         val current = sessions.current(tx.sql, contactId)
         val previous = sessions.previous(tx.sql, contactId)
         val currentIsNewerResponder = current != null &&
             !current.initiator &&
-            (current.peerBindMinute ?: Long.MIN_VALUE) > bindingMinute
+            (current.peerBindMinute ?: Long.MIN_VALUE) > bindingSeconds
         if (!currentIsNewerResponder) {
             if (current != null) {
                 demote(tx, contactId, current, today)
@@ -74,7 +76,7 @@ internal class SessionSlots(private val sessions: SessionStore = SessionStore())
         }
         // `current` is a responder session the contact sealed **later** than this first flight.
         val previousIsOlderResponder = previous == null ||
-            (!previous.initiator && (previous.peerBindMinute ?: Long.MIN_VALUE) < bindingMinute)
+            (!previous.initiator && (previous.peerBindMinute ?: Long.MIN_VALUE) < bindingSeconds)
         if (!previousIsOlderResponder) return Admission.STALE
         if (previous != null) sessions.deleteSession(tx, contactId, SessionStore.SLOT_PREVIOUS)
         return Admission.PREVIOUS

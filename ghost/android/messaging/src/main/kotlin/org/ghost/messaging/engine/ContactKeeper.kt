@@ -4,8 +4,11 @@ import org.ghost.crypto.bridge.CredentialV3
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.store.ContactStore
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.InstalledCapability
 import org.ghost.sync.api.NamespaceId
+import org.ghost.sync.api.SendDelay
 import org.ghost.sync.api.SyncDatabase
 
 /**
@@ -130,6 +133,21 @@ internal class ContactKeeper(
         }
 
         return database.transaction { tx ->
+            // A capability is scoped to a **registered** namespace (`Capabilities.put` refuses an
+            // unknown one), and this pass may be the first thing that ever touches a contact's
+            // inbox: KEEPER runs at a session start, before any send. So the write-only
+            // registration is made here exactly as SEND makes it (§7.3 step S7, §13.3 item 3) —
+            // same arguments, so whichever step runs first the row is the same and the other is a
+            // no-op. `listen = false`: this device deposits into `X_c`, it never reads it.
+            sync.namespaces.register(
+                tx = tx,
+                namespace = inboxNs,
+                consumer = Consumer.DM,
+                relays = set.map { it.relay }.toSet(),
+                listen = false,
+                sendDelay = SendDelay.DEFAULT,
+                capabilitySource = CapabilitySource.LOCAL,
+            )
             for (slot in needed) {
                 sync.capabilities.put(
                     tx,

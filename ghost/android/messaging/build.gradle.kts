@@ -41,3 +41,25 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.sqlite.jdbc)
 }
+
+// The send-and-receive worlds run the **real** DM cryptography through the host build
+// `ghost-dm-host` (Phase 9 design §2.7, §15.1): the seal, the ratchet and the KEM decide whether
+// the other device can open what this one sealed, and a fake of them would prove its own
+// arithmetic. The `android` CI job builds the library with
+// `cargo build -p ghost-dm-host --release --locked` and passes `-Dghost.dm.native=<path>`;
+// without it `DmWorld.nativeAvailable()` is false and those worlds report themselves skipped,
+// while the owner-side worlds of S6 — which fake the derivations deliberately — still run.
+//
+// Declared as a test input so a rebuilt library re-runs the tests instead of reusing a cached
+// result (build caching is on), exactly as `:crypto-bridge` declares it.
+val hostLibrary = providers.systemProperty("ghost.dm.native")
+    .orElse(providers.gradleProperty("ghost.dm.native"))
+tasks.withType<Test>().configureEach {
+    inputs.property("ghost.dm.native", hostLibrary.orElse(""))
+    hostLibrary.orNull?.let { path ->
+        systemProperty("ghost.dm.native", path)
+        inputs.file(path)
+            .withPropertyName("dmHostLibrary")
+            .withPathSensitivity(PathSensitivity.NAME_ONLY)
+    }
+}

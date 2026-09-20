@@ -520,7 +520,7 @@ internal class ContactStore {
         val changed = tx.sql.execUpdate(
             "UPDATE dm_peer_pq SET bundle_week = ?, source = ?, xwing_pk = ? " +
                 "WHERE contact_id = ? AND gen_id = ?",
-            listOf(bundleWeek, source, xwingPublic, contactId, genId.toLong()),
+            listOf(bundleWeek, source, xwingPublic, contactId, unsigned(genId)),
         )
         if (changed != 0) return
         // The trigger refuses a fourth row, so the oldest goes first — the newest bundle week is
@@ -530,13 +530,13 @@ internal class ContactStore {
             val oldest = existing.last()
             tx.sql.exec(
                 "DELETE FROM dm_peer_pq WHERE contact_id = ? AND gen_id = ?",
-                listOf(contactId, oldest.genId.toLong()),
+                listOf(contactId, unsigned(oldest.genId)),
             )
         }
         tx.sql.exec(
             "INSERT INTO dm_peer_pq(contact_id, gen_id, bundle_week, source, xwing_pk) " +
                 "VALUES (?, ?, ?, ?, ?)",
-            listOf(contactId, genId.toLong(), bundleWeek, source, xwingPublic),
+            listOf(contactId, unsigned(genId), bundleWeek, source, xwingPublic),
         )
     }
 
@@ -578,5 +578,16 @@ internal class ContactStore {
 
         /** `dm_peer_pq.source` for a key that came out of a bundle (§5.5). */
         const val PQ_SOURCE_BUNDLE: String = "bundle"
+
+        /**
+         * `gen_id` is a **`u32`** (§13.6: `CHECK (gen_id BETWEEN 0 AND 4294967295)`) and crosses
+         * the bridge as a signed `Int`, so the top half of the range arrives negative. Widening it
+         * as unsigned is the same convention `PeekOrder` and `ReceiveStep` use; binding
+         * `Int.toLong()` instead would fail the CHECK on roughly half the generations a peer
+         * publishes — which is a bug nothing but a run of bundles would ever show.
+         */
+        private const val U32 = 0xffff_ffffL
+
+        internal fun unsigned(genId: Int): Long = genId.toLong() and U32
     }
 }

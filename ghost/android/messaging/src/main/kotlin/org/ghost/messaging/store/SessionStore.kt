@@ -114,7 +114,7 @@ internal class SessionStore {
                 if (acknowledged) 1L else 0L,
                 stateEnv,
                 provEnv,
-                peerGenId?.toLong(),
+                peerGenId?.let { ContactStore.unsigned(it) },
                 unackSinceDay,
                 retireDay,
                 peerBindMinute,
@@ -208,7 +208,7 @@ internal class SessionStore {
     fun markFirstFlightUsed(tx: SyncTransaction, genId: Int, sessionId: ByteArray): Boolean =
         tx.sql.execUpdate(
             "INSERT OR IGNORE INTO olm_prekey_used(gen_id, session_id) VALUES (?, ?)",
-            listOf(genId.toLong(), sessionId),
+            listOf(ContactStore.unsigned(genId), sessionId),
         ) == 1
 
     /** Whether this first flight was already used on a generation this device still holds. */
@@ -216,7 +216,7 @@ internal class SessionStore {
         var used = false
         sql.query(
             "SELECT 1 FROM olm_prekey_used WHERE gen_id = ? AND session_id = ?",
-            listOf(genId.toLong(), sessionId),
+            listOf(ContactStore.unsigned(genId), sessionId),
         ) { used = true }
         return used
     }

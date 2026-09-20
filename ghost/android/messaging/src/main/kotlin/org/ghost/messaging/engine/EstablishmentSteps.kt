@@ -114,7 +114,13 @@ internal class EstablishmentSteps(
             val contact = contacts.contact(tx.sql, contactId) ?: return@transaction Result.UNCHANGED
             if (contact.fetchAttempts >= MAX_FETCH_ATTEMPTS) return@transaction Result.UNCHANGED
             val bundleNs = NamespaceId(namespaces.bundle)
-            sync.inbox.forgetConsumed(tx, bundleNs)
+            // §21.7 point 2 writes the forget **before** the register; the order here is the other
+            // way round because `Inbox.forgetConsumed` refuses a namespace that is not registered
+            // at all, which `P_c` is not before the first establishment. Inside one transaction
+            // the outcome is the same — the register reuses the row and keeps its tombstones, and
+            // the forget then deletes them — and nothing can fetch in between, which is the whole
+            // point of the rule ("a bundle consumed during an earlier establishment must be
+            // fetchable again after a reset, a key change or a re-added contact").
             sync.namespaces.register(
                 tx = tx,
                 namespace = bundleNs,
@@ -123,6 +129,7 @@ internal class EstablishmentSteps(
                 listen = true,
                 capabilitySource = CapabilitySource.LOCAL,
             )
+            sync.inbox.forgetConsumed(tx, bundleNs)
             for (slot in set) {
                 sync.capabilities.put(
                     tx,

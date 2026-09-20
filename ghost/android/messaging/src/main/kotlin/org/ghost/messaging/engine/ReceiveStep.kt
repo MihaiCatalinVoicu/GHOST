@@ -211,7 +211,7 @@ internal class ReceiveStep(
             now = now,
             pairWeek = pairWeek,
             pairRootGen = pairRootGen,
-            bindingMinute = null,
+            bindingSeconds = null,
             intro = null,
         )
     }
@@ -350,7 +350,7 @@ internal class ReceiveStep(
             now = now,
             pairWeek = null,
             pairRootGen = null,
-            bindingMinute = introduced.bindingMinute,
+            bindingSeconds = bindingSeconds,
             intro = Intro(genId, generation.secretsEnv, generation.fallbackPublic, introduced),
         )
         // R-P2b: a request row lives only with its message. A forged, replayed or undecryptable
@@ -380,7 +380,10 @@ internal class ReceiveStep(
         now: Long,
         pairWeek: Long?,
         pairRootGen: Int?,
-        bindingMinute: Long?,
+        // The **minute grid in epoch seconds**, not the wire's minute index: `peer_bind_minute` is
+        // an `x % 60 = 0` column (§13.6) and is compared with `author_minute` in the same unit, so
+        // the one multiplication happens where the envelope is opened and nowhere else.
+        bindingSeconds: Long?,
         intro: Intro?,
     ): Result {
         val today = DmTime.day(now).toInt()
@@ -424,7 +427,7 @@ internal class ReceiveStep(
             val admission = slots.admitNewInbound(
                 tx = tx,
                 contactId = contact.contactId,
-                bindingMinute = requireNotNull(bindingMinute),
+                bindingSeconds = requireNotNull(bindingSeconds),
                 today = DmTime.day(now),
             )
             if (admission == SessionSlots.Admission.STALE) {
@@ -453,7 +456,7 @@ internal class ReceiveStep(
                 } else {
                     null
                 },
-                peerBindMinute = bindingMinute,
+                peerBindMinute = bindingSeconds,
             )
             sessions.markFirstFlightUsed(tx, intro.genId, created.sessionId)
             if (admission == SessionSlots.Admission.CURRENT) {
@@ -490,9 +493,9 @@ internal class ReceiveStep(
             }
             sessions.setStateEnv(tx, contact.contactId, usedSlot, ok.stateEnv)
             if (ok.acknowledged) sessions.acknowledge(tx, contact.contactId, usedSlot)
-            if (bindingMinute != null && usedSlot.isNotEmpty()) {
+            if (bindingSeconds != null && usedSlot.isNotEmpty()) {
                 // §22.8.4 rule 1: a responder session's `peer_bind_minute` only rises.
-                sessions.raisePeerBindMinute(tx, contact.contactId, usedSlot, bindingMinute)
+                sessions.raisePeerBindMinute(tx, contact.contactId, usedSlot, bindingSeconds)
             }
             plaintext = ok.plaintext
         }
