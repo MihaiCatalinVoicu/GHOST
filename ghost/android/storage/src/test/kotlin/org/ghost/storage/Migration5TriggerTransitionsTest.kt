@@ -14,6 +14,16 @@ import org.junit.Test
  * accepted and every other one must be refused by name. A trigger that lost an arm passes a walk
  * through the arms it kept; it cannot pass a matrix.
  *
+ * Beside the two state machines, the same idea is applied to the **immutability** triggers, which
+ * are not state machines but disjunctions of arms: `dm_self_fixed`, `dm_contact_identity`,
+ * `dm_message_identity`, `dm_pair_offer_root`, `olm_session_identity` and `olm_prekey_gen_fixed`
+ * each name a set of columns that may not change, and a walk that updates one of them passes even
+ * after the trigger lost the arms for the others. Every one of those triggers therefore gets the
+ * `PRAGMA table_info` treatment [everyColumnOfAMessageButItsStateAndExpiriesIsFrozen] gives
+ * `dm_message`: the whole row is attempted column by column, the frozen ones must be refused, the
+ * changeable ones must be accepted, and the two sets together must be the table's own column list —
+ * so a column added later is either covered or the test fails.
+ *
  * Two further rules of §13.6 step 6 that no walk reaches are covered here too: a message's
  * unread deadline (the incoming half of `dm_message_expiry`, where [Migration5Test] exercises the
  * outgoing one), and `olm_session`'s write-once `unack_since_day` and erase-only `prov_env`.
@@ -163,6 +173,249 @@ class Migration5TriggerTransitionsTest {
         assertEquals("the matrix ran", messageStates.size * messageStates.size, i)
     }
 
+    // ---------------------------------------------------------------- the frozen-column matrices
+
+    /**
+     * The matrix of one immutability trigger: every column of [table] is attempted on a row that
+     * [where] selects, and each must land in exactly one of three declared places.
+     *
+     *  - [frozen]: the column with a value the trigger must refuse, by [message]. The assertion is
+     *    on the trigger's own text, so a CHECK or a foreign key that would also have refused the
+     *    write cannot stand in for the arm (a `BEFORE UPDATE` trigger runs before both).
+     *  - [changeable]: a value the table must accept, so the trigger cannot be over-wide.
+     *  - [otherwiseRuled]: a column whose rule is not this trigger's — a CHECK that ties it to
+     *    another column, a state machine of its own, a key the REPLACE guard covers — with the
+     *    reason and where it is tested instead.
+     *
+     * The three together must be the table's whole column list, read from `PRAGMA table_info`: a
+     * column added to the table later is in none of them and fails here, which is what stops a
+     * trigger from quietly stopping short of the row it guards.
+     */
+    private fun JdbcSqlExecutor.everyColumnOf(
+        table: String,
+        where: String,
+        key: List<Any?>,
+        message: String,
+        frozen: Map<String, Any?>,
+        changeable: Map<String, Any?>,
+        otherwiseRuled: Map<String, String>,
+    ) {
+        for ((column, value) in frozen) {
+            rejects(
+                message,
+                "UPDATE $table SET $column = ? WHERE $where",
+                *(listOf(value) + key).toTypedArray(),
+            )
+        }
+        for ((column, value) in changeable) {
+            assertEquals(
+                "$table.$column must still be writable",
+                1,
+                execUpdate("UPDATE $table SET $column = ? WHERE $where", listOf(value) + key),
+            )
+        }
+        val columns = ArrayList<String>()
+        query("PRAGMA table_info($table)") { columns += it.string(1) }
+        assertEquals(
+            "every column of $table is frozen, changeable or ruled elsewhere, and no other",
+            columns.toSortedSet().toList(),
+            (frozen.keys + changeable.keys + otherwiseRuled.keys).toSortedSet().toList(),
+        )
+    }
+
+    private fun JdbcSqlExecutor.aContact(i: Int = 1) = exec(
+        "INSERT INTO dm_contact(contact_id, identity_pk, card_env, card_index, trust_state, source, establishment) " +
+            "VALUES (?, ?, ?, 0, 'unverified', 'link', 'card_only')",
+        listOf(bytes(16, i), bytes(32, i), bytes(159, i)),
+    )
+
+    /** `dm_self_fixed` and `dm_self_monotonic`, arm by arm (§13.6: `id`, `seen_key`, `card_index`). */
+    @Test
+    fun theIdentityRowFreezesItsIdItsSeenKeyAndItsCardIndex() = db().use { db ->
+        db.exec(
+            "INSERT INTO dm_self(id, card_index, seen_key, content_key_wrapped, state_key_wrapped, expiry_clock_minute) " +
+                "VALUES (1, 0, ?, ?, ?, 60)",
+            listOf(bytes(32, 1), bytes(60, 2), bytes(60, 3)),
+        )
+        db.everyColumnOf(
+            "dm_self", "id = ?", listOf(1L),
+            "the identity row keeps its id, seen key and card index",
+            frozen = mapOf(
+                // `id` also carries `CHECK (id = 1)`, and the message is what tells the two apart.
+                "id" to 2L,
+                "seen_key" to bytes(32, 9),
+                "card_index" to 1,
+            ),
+            changeable = mapOf(
+                "content_key_wrapped" to bytes(60, 9),
+                "state_key_wrapped" to bytes(60, 9),
+                "expiry_clock_minute" to 120L,
+                "accept_after_minute" to 600L,
+                "bundle_week" to 2870L,
+                "bundle_published_week" to 2870L,
+            ),
+            otherwiseRuled = emptyMap(),
+        )
+        // And the two monotonic columns still are: `dm_self_monotonic` is a separate trigger.
+        db.rejects("never go backwards", "UPDATE dm_self SET bundle_week = 2869 WHERE id = 1")
+        db.rejects("never go backwards", "UPDATE dm_self SET bundle_week = NULL WHERE id = 1")
+        db.rejects("never go backwards", "UPDATE dm_self SET expiry_clock_minute = 60 WHERE id = 1")
+    }
+
+    /** `dm_contact_identity` (§13.6: `contact_id`, `identity_pk` immutable), arm by arm. */
+    @Test
+    fun aContactFreezesItsIdAndItsIdentityAndNothingElse() = db().use { db ->
+        db.aContact()
+        db.everyColumnOf(
+            "dm_contact", "contact_id = ?", listOf(bytes(16, 1)),
+            "a contact keeps its id and its Ed25519 identity",
+            frozen = mapOf(
+                // The `contact_id` arm is the one no walk reaches: `identity_pk` is the one
+                // `Migration5Test.aContactKeepsItsIdentityAndPinsOnce` fires.
+                "contact_id" to bytes(16, 9),
+                "identity_pk" to bytes(32, 9),
+            ),
+            changeable = mapOf(
+                "card_env" to bytes(159, 9),
+                "card_index" to 1,
+                "bundle_week_seen" to 2870L,
+                "source" to "qr_in_person",
+                "establishment" to "ready",
+                "fetch_attempts" to 1,
+                "reset_needed" to 1,
+                "verified_fp" to bytes(32, 9),
+                "name_env" to bytes(100, 9),
+                "pq_announced_week" to 2870L,
+            ),
+            otherwiseRuled = mapOf(
+                "trust_state" to "the state machine of [theTrustMachineAcceptsEveryLegalEdgeAndRefusesEveryOther]",
+                "pinned_identity" to "dm_contact_pin (Migration5Test.aContactKeepsItsIdentityAndPinsOnce)",
+                "pending_identity" to "CHECK-tied to trust_state = 'changed' (§8.3)",
+                "request_until_day" to "CHECK-tied to trust_state = 'request'",
+                "fetch_listen_until_minute" to "CHECK-tied to establishment = 'fetching'",
+            ),
+        )
+    }
+
+    /**
+     * `olm_prekey_gen_fixed` (§13.6: `gen_id`, `fallback_pub`, `secrets_env`, `bundle_week`
+     * immutable). `Migration5Test` fires the `secrets_env` and `bundle_week` arms; the two this
+     * adds are `gen_id` and `fallback_pub`, which no walk reaches.
+     */
+    @Test
+    fun aGenerationFreezesItsIdItsFallbackKeyItsSecretsAndItsWeek() = db().use { db ->
+        db.exec(
+            "INSERT INTO olm_prekey_gen(gen_id, bundle_week, fallback_pub, secrets_env) VALUES (1, 2870, ?, ?)",
+            listOf(bytes(32, 1), bytes(92, 1)),
+        )
+        db.everyColumnOf(
+            "olm_prekey_gen", "gen_id = ?", listOf(1L),
+            "a generation is immutable and is superseded once",
+            frozen = mapOf(
+                "gen_id" to 2L,
+                "fallback_pub" to bytes(32, 9),
+                "secrets_env" to bytes(92, 9),
+                "bundle_week" to 2871L,
+            ),
+            changeable = emptyMap(),
+            otherwiseRuled = mapOf(
+                "superseded_day" to "written once together with delete_after_day " +
+                    "([aGenerationsDeletionDayIsWrittenOnceWithItsSupersession])",
+                "delete_after_day" to "derived by CHECK from superseded_day, written in the same statement",
+            ),
+        )
+    }
+
+    /**
+     * `dm_pair_offer_root` (§13.6: "`root_env` **and** `offer_env` may only become NULL;
+     * `acknowledged` only 0 → 1"). `Migration5Test.anOfferedRootIsErasedNeverReplaced` walks
+     * `root_env` and `acknowledged`; the `offer_env` arms are the ones no walk reaches, and a
+     * trigger that lost both of them passes that walk.
+     */
+    @Test
+    fun bothEnvelopesOfAPairOfferAreErasedNeverReplaced() = db().use { db ->
+        db.aContact()
+        db.exec(
+            "INSERT INTO dm_pair_offer(contact_id, root_gen, root_env, offer_env, base_week) VALUES (?, 0, ?, ?, 2870)",
+            listOf(bytes(16, 1), bytes(60, 1), bytes(70, 1)),
+        )
+        db.everyColumnOf(
+            "dm_pair_offer", "contact_id = ? AND root_gen = 0", listOf(bytes(16, 1)),
+            "an offered root is erased, never replaced, and is acknowledged once",
+            frozen = mapOf("root_env" to bytes(60, 2), "offer_env" to bytes(70, 2)),
+            changeable = mapOf("acknowledged" to 1, "root_env" to null, "offer_env" to null),
+            otherwiseRuled = mapOf(
+                "contact_id" to "the row's key; the REPLACE guard covers it (ReplaceGuardsTest)",
+                "root_gen" to "the row's key; the REPLACE guard covers it (ReplaceGuardsTest)",
+                "base_week" to "the week the root was derived for; no rule of §13.6 freezes it",
+            ),
+        )
+        // Erased, and it cannot come back — which is the half a value-to-value test never reaches.
+        db.rejects(
+            "never replaced",
+            "UPDATE dm_pair_offer SET offer_env = ? WHERE contact_id = ? AND root_gen = 0",
+            bytes(70, 3), bytes(16, 1),
+        )
+        db.rejects(
+            "acknowledged once",
+            "UPDATE dm_pair_offer SET acknowledged = 0 WHERE contact_id = ? AND root_gen = 0",
+            bytes(16, 1),
+        )
+    }
+
+    /**
+     * `olm_session_identity` arm by arm (§13.6: `session_id`, `role`, `peer_gen_id` immutable;
+     * `acknowledged` only 0 → 1; `peer_bind_minute` only increases; `prov_anchor_minute`
+     * write-once; `pair_sent` only 0 → 1). The `unack_since_day` and `prov_env` arms are
+     * [theUnackDayIsWriteOnceAndTheProvisionalEnvelopeIsOnlyErased]'s.
+     */
+    @Test
+    fun everyFrozenColumnOfASessionIsRefusedOnItsOwn() = db().use { db ->
+        db.aContact()
+        // A responder session, the one shape that carries `peer_bind_minute` and `prov_anchor_minute`.
+        db.exec(
+            "INSERT INTO olm_session(contact_id, slot, session_id, role, acknowledged, state_env, peer_bind_minute, " +
+                "prov_anchor_minute, pair_sent) VALUES (?, 'current', ?, 'responder', 1, ?, 600, 600, 1)",
+            listOf(bytes(16, 1), bytes(32, 1), bytes(200, 1)),
+        )
+        db.everyColumnOf(
+            "olm_session", "contact_id = ? AND slot = 'current'", listOf(bytes(16, 1)),
+            "a session keeps its identity",
+            frozen = mapOf(
+                "session_id" to bytes(32, 9),
+                "role" to "initiator",
+                "acknowledged" to 0,
+                // Write-once: the anchor is already set, so any other value is refused.
+                "prov_anchor_minute" to 660L,
+                "pair_sent" to 0,
+                // `peer_bind_minute` only increases, and NULL is "decreases" under R-T6.
+                "peer_bind_minute" to null,
+            ),
+            changeable = mapOf("state_env" to bytes(200, 9), "peer_bind_minute" to 660L),
+            otherwiseRuled = mapOf(
+                "contact_id" to "the row's key; a slot change is a delete and an insert (§22.8.3)",
+                "slot" to "the row's key; a slot change is a delete and an insert (§22.8.3)",
+                "retire_day" to "CHECK-tied to slot = 'previous'",
+                "peer_gen_id" to "CHECK-tied to role = 'initiator'; frozen below on such a session",
+                "unack_since_day" to "[theUnackDayIsWriteOnceAndTheProvisionalEnvelopeIsOnlyErased]",
+                "prov_env" to "[theUnackDayIsWriteOnceAndTheProvisionalEnvelopeIsOnlyErased]",
+                "prov_erase_minute" to "CHECK-tied to prov_env, erased with it",
+            ),
+        )
+        // The `peer_gen_id` arm on the one session shape that may carry it.
+        db.aContact(2)
+        db.exec(
+            "INSERT INTO olm_session(contact_id, slot, session_id, role, acknowledged, state_env, peer_gen_id, " +
+                "unack_since_day) VALUES (?, 'current', ?, 'initiator', 0, ?, 7, 100)",
+            listOf(bytes(16, 2), bytes(32, 2), bytes(200, 2)),
+        )
+        db.rejects(
+            "a session keeps its identity",
+            "UPDATE olm_session SET peer_gen_id = 8 WHERE contact_id = ? AND slot = 'current'",
+            bytes(16, 2),
+        )
+    }
+
     // ---------------------------------------------------------------- the remaining v5 rules
 
     /** `dm_message_identity`: everything but the state and the three expiry columns is frozen. */
@@ -249,6 +502,14 @@ class Migration5TriggerTransitionsTest {
             ),
         )
         assertEquals(3300L, db.queryLong("SELECT delete_at_minute FROM dm_message"))
+        // The other half of the same trigger, and the arm no walk reaches: an expiry minute that
+        // is set never becomes NULL either. (The `delete_at_minute` CHECK would also refuse this
+        // write; the trigger is a BEFORE UPDATE one, so its message is what answers.)
+        db.rejects(
+            "an expiry time only moves earlier",
+            "UPDATE dm_message SET expire_at_minute = NULL, delete_at_minute = NULL $where",
+            bytes(16, 1),
+        )
     }
 
     /** `dm_conversation_timer` (§10.5 R-T9): the timer version never decreases. */

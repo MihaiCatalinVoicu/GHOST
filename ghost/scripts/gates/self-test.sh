@@ -622,9 +622,11 @@ else
 fi
 
 # G-DM6 (Phase 9 design §13.6 R-M4, §10.7; mutant ME-18): no CREATE VIRTUAL TABLE and no `fts`
-# token in production SQL. The four fixtures are single-purpose — one statement, one token, one
-# `.sql` file, one vacuous tree — so each half of the gate is proven without the others, and each
-# says how many violations it holds so a gate that started reporting everything is caught too.
+# token in production SQL. The five fixtures are single-purpose — one statement on one line, the
+# same statement split across lines (the house style, which a line-oriented grep cannot match),
+# one token, one `.sql` file, one vacuous tree — so each half of the gate is proven without the
+# others, and each says how many violations it holds so a gate that started reporting everything
+# is caught too.
 dmfts_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
   local out hits
   out="$(GHOST_ROOT="$HARNESS/negative-dm-fts-$1" bash "$DIR/dm-no-fts.sh" 2>&1 || true)"
@@ -638,6 +640,9 @@ dmfts_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expect
 }
 expect_fail dm-no-fts "$HARNESS/negative-dm-fts-virtual"
 dmfts_case virtual 1 "VirtualTableSchema.kt:18" "reports the virtual table and nothing else"
+expect_fail dm-no-fts "$HARNESS/negative-dm-fts-virtual-split"
+dmfts_case virtual-split 1 "SplitVirtualTableSchema.kt (R-M4" \
+  "reports a CREATE VIRTUAL TABLE whose words sit on different lines"
 expect_fail dm-no-fts "$HARNESS/negative-dm-fts-token"
 dmfts_case token 3 "SearchIndexSchema.kt:19" "reports all three fts tokens and no decoy"
 expect_fail dm-no-fts "$HARNESS/negative-dm-fts-sql-file"

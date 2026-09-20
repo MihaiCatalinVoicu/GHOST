@@ -35,7 +35,13 @@
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-fts-*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# `CREATE   VIRTUAL\n TABLE` counts: any run of whitespace between the words.
+# `CREATE   VIRTUAL TABLE` counts: any run of whitespace between the words. `grep` is line
+# oriented, so `[[:space:]]+` cannot span a newline and this expression alone would miss
+# `CREATE VIRTUAL\n TABLE` — which is the house style, every DDL statement of `Schema.kt` being a
+# multi-line raw string. Each file is therefore matched twice: line by line, which gives the line
+# number a report needs, and once over its whitespace-normalised text, which catches the statement
+# whichever way it is wrapped. R-M4 forbids the statement outright, not only its FTS modules, so
+# the `fts` token check does not rescue a line-split `rtree` or a custom module.
 VIRTUAL_TABLE='CREATE[[:space:]]+VIRTUAL[[:space:]]+TABLE'
 # A token boundary before `fts`, none needed after it (`fts5`, `fts_content`, `ftsIndex`).
 FTS_TOKEN='(^|[^A-Za-z0-9])fts'
@@ -66,11 +72,27 @@ while IFS= read -r file; do
   # Each hit is read from a variable with a here-string, never `producer | grep -q`: under
   # `set -o pipefail` such a pipeline fails whenever grep stops reading early (EPIPE), which is
   # the race the static-gate sweep of 2026-09-20 removed from four other gates.
-  hits="$(grep -niE -- "$VIRTUAL_TABLE" "$file" || true)"
-  if [ -n "$hits" ]; then
-    while IFS= read -r line; do
-      fail "$rel:$line (R-M4: no CREATE VIRTUAL TABLE in production SQL)"
-    done <<< "$hits"
+  # The statement is looked for in the file's newline-squashed text, so the words may sit on
+  # different lines. `$(< file)` and the `${var//}` substitution are builtins and `[[ =~ ]]` is a
+  # shell match: the common file, which holds no such statement, costs no process at all. Only a
+  # file that does hold one is then grepped line by line, to report the line number.
+  squashed="$(< "$file")"
+  squashed="${squashed//$'\n'/ }"
+  # `nocasematch` is set and unset around the one match that needs it, so the `case` of
+  # [is_test_path] keeps matching paths case-sensitively.
+  shopt -s nocasematch
+  matched=0
+  [[ "$squashed" =~ $VIRTUAL_TABLE ]] && matched=1
+  shopt -u nocasematch
+  if [ "$matched" = 1 ]; then
+    hits="$(grep -niE -- "$VIRTUAL_TABLE" "$file" || true)"
+    if [ -n "$hits" ]; then
+      while IFS= read -r line; do
+        fail "$rel:$line (R-M4: no CREATE VIRTUAL TABLE in production SQL)"
+      done <<< "$hits"
+    else
+      fail "$rel (R-M4: no CREATE VIRTUAL TABLE in production SQL; the statement is split across lines)"
+    fi
   fi
   hits="$(grep -niE -- "$FTS_TOKEN" "$file" || true)"
   if [ -n "$hits" ]; then

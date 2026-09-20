@@ -22,17 +22,33 @@ import java.io.File
  *     reads an expiring table. Every query found must be registered in [DmDaoQueries]. This is
  *     what makes the lint automatic — a DAO added in S6 or S7 cannot be written without the lint
  *     noticing, wherever in the Android modules it lands.
- *  2. **Behavioural** ([showsAnExpiredRow]): each registered query is run against a database
- *     holding one expired row and one live row. A query that returns the expired row fails. This
- *     is §10.7's own words — "runs every DAO query against an expired row" — and it catches what
- *     a text scan cannot: a filter that is present but wrong (`>=` for `>`, `now` for `now_e`, a
- *     filter on the wrong column, a filter in a subquery that the outer join undoes).
+ *  2. **Behavioural** ([outcomeOf]): each registered query is run twice, against a database that
+ *     still holds the expired rows and against the same database after they were swept, and the
+ *     two results must be **identical** — a compliant read path cannot tell whether SWEEP has run
+ *     yet. This is §10.7's own words — "runs every DAO query against an expired row" — and it
+ *     catches what a text scan cannot: a filter that is present but wrong (`>=` for `>`, `now` for
+ *     `now_e`, a filter on the wrong column, a filter in a subquery that the outer join undoes).
+ *
+ * **Why the two-world comparison and not "did the expired id come back".** A lint that looks for
+ * the expired `message_id` in the first column of the result sees nothing in an aggregate
+ * (`SELECT count(*) …`, an unread badge — which is ME-16 exactly, §10.3), nothing in a projection
+ * that puts the id anywhere but first, and nothing in a query that returns another table's columns
+ * joined to `dm_message`. Comparing the whole result set of the two worlds needs no assumption
+ * about what a query projects. Beside it, [Outcome.returnsNothing] refuses a query that matches no
+ * row even in the swept world: such a query is broken, not compliant, and would otherwise pass for
+ * free.
  *
  * **Scope (design §22.10 item 3).** The expiring table is `dm_message` and the column is
  * `delete_at_minute`, which is what §10.7 point 4 names. The other rows SWEEP deletes by time —
  * held envelopes, seen tags, pair keys, generations, retired sessions — are not read into a view,
  * so their bound is the sweep itself and not a read filter; if S7 gives one of them a read path
  * that a user sees, it joins [expiringTables] then.
+ *
+ * **What the static half still cannot see**, recorded so it is not mistaken for coverage: a query
+ * whose *table name* arrives through a Kotlin template or a constant (`"SELECT … FROM $DM_MESSAGE"`)
+ * names no expiring table in its text. Adjacent literals joined by `+` are concatenated before
+ * matching ([literalRuns]), so the repo's own house style of splitting a long statement across
+ * lines is covered; an interpolated table name is not, and a DM DAO must spell the table out.
  *
  * **Today the registry is empty**, and that is a fact the lint asserts rather than assumes: no DM
  * DAO exists (`:messaging` is a manifest and nothing else; `:storage` has no DM repository), the
@@ -45,8 +61,9 @@ object DmExpiredRowLint {
     val expiringTables: Map<String, String> = mapOf("dm_message" to "delete_at_minute")
 
     /**
-     * One SQL string literal found in a production source. It renders as `path:line: sql` from the
-     * Android root down, so a failure can be opened without searching for the file first.
+     * One SQL string literal (or one run of `+`-joined literals) found in a production source. It
+     * renders as `path:line: sql` from the Android root down, so a failure can be opened without
+     * searching for the file first.
      */
     data class Found(val file: File, val line: Int, val sql: String) {
         override fun toString(): String {
@@ -57,24 +74,44 @@ object DmExpiredRowLint {
         }
     }
 
+    /** Directories that hold no production source and are never descended into. */
+    private val prunedDirectories = setOf("build", "target", ".git", ".gradle", ".idea", "node_modules")
+
     /**
      * The Android modules' production Kotlin and Java sources. Resolved from the module directory
      * upwards, so the test does not depend on which module Gradle runs it from; returns null when
      * the Android root cannot be found, which callers must treat as a failure and not as "clean".
+     *
+     * Every `src/main` under the root is scanned, **at any depth**: `settings.gradle.kts` is flat
+     * today, but a nested module (`features/dm/src/main`) must not be silently unscanned — the
+     * other modules would still satisfy the vacuity floor and the gap would be invisible. This is
+     * the same rule `dm-no-fts.sh` applies with its recursive `find`.
      */
     fun androidProductionSources(start: File = File(".").absoluteFile): List<File>? {
         var dir: File? = start
         while (dir != null && !File(dir, "settings.gradle.kts").isFile) dir = dir.parentFile
         val root = dir ?: return null
-        return root.listFiles()
-            .orEmpty()
-            .filter { it.isDirectory && File(it, "src/main").isDirectory }
-            .flatMap { module ->
-                File(module, "src/main").walkTopDown()
+        val mains = ArrayList<File>()
+        collectMainDirectories(root, mains)
+        return mains
+            .flatMap { main ->
+                main.walkTopDown()
                     .filter { it.isFile && (it.extension == "kt" || it.extension == "java") }
                     .toList()
             }
             .sortedBy { it.path }
+    }
+
+    private fun collectMainDirectories(dir: File, out: MutableList<File>) {
+        if (dir.name in prunedDirectories) return
+        // `src/test`, `src/androidTest`, `src/testShared`, …: not production, and nothing
+        // production sits below them.
+        if (dir.parentFile?.name == "src" && dir.name != "main") return
+        if (dir.name == "main" && dir.parentFile?.name == "src") {
+            out += dir
+            return
+        }
+        for (child in dir.listFiles().orEmpty()) if (child.isDirectory) collectMainDirectories(child, out)
     }
 
     private val selectLike = Regex("\\b(SELECT|FROM|JOIN)\\b", RegexOption.IGNORE_CASE)
@@ -85,21 +122,30 @@ object DmExpiredRowLint {
      * it reads the table to refuse a conflicting insert, it never shows anything, and an expiry
      * filter there would break the guard. The migration and index statements are excluded for the
      * same reason. [DmExpiredRowLintTest.theScannerIgnoresSchemaStatements] pins this.
+     *
+     * `CREATE VIEW` is **not** on this list although it is a schema statement: a view over
+     * `dm_message` *is* a read path, and a DAO that selects from it never names `dm_message` at
+     * all, so skipping the view would bypass both halves of the lint end to end. A view over an
+     * expiring table is therefore reported like any other read, and must be registered or removed.
      */
-    private val schemaStatement = Regex("\\bCREATE\\s+(TRIGGER|TABLE|INDEX|UNIQUE\\s+INDEX|VIEW)\\b", RegexOption.IGNORE_CASE)
+    private val schemaStatement = Regex("\\bCREATE\\s+(TRIGGER|TABLE|INDEX|UNIQUE\\s+INDEX)\\b", RegexOption.IGNORE_CASE)
 
     /**
      * Every SQL string literal of [sources] that reads one of [expiringTables]. A literal is a
      * `"..."` or `"""..."""` run that names `SELECT` and the table; writes (`DELETE`, `UPDATE`,
      * `INSERT`) are not read paths and are left alone — SWEEP's own `DELETE ... WHERE
      * delete_at_minute <= ?` is the one statement that is *supposed* to name expired rows.
+     *
+     * Adjacent literals joined by `+` are matched as one string, because that is how this repo
+     * writes long SQL (`OutboxStore`, `DirectoryStore`, `StateStore`): the `SELECT` list and the
+     * `FROM` clause sit in different literals, and a per-literal test would see neither half.
      */
     fun readQueriesOverExpiringRows(sources: List<File>): List<Found> {
         val out = ArrayList<Found>()
         for (file in sources) {
             val text = runCatching { file.readText() }.getOrNull() ?: continue
             if (expiringTables.keys.none { text.contains(it) }) continue
-            for (literal in stringLiterals(text)) {
+            for (literal in literalRuns(text, stringLiterals(text))) {
                 val sql = literal.text
                 if (!selectLike.containsMatchIn(sql)) continue
                 if (!sql.contains("SELECT", ignoreCase = true)) continue
@@ -111,7 +157,33 @@ object DmExpiredRowLint {
         return out
     }
 
-    private data class Literal(val line: Int, val text: String)
+    private data class Literal(val line: Int, val text: String, val start: Int, val end: Int)
+
+    /** Only whitespace and a single `+` between two literals: they are one string at runtime. */
+    private val concatenation = Regex("^\\s*\\+\\s*$")
+
+    /**
+     * The literals of a source with every `+`-joined run collapsed into the string the runtime
+     * actually builds. The run keeps the **first** literal's line, which is where a reader looks
+     * for the statement, and its text is exactly what a DAO would register verbatim.
+     */
+    private fun literalRuns(text: String, literals: List<Literal>): List<Literal> {
+        val out = ArrayList<Literal>()
+        var i = 0
+        while (i < literals.size) {
+            var last = i
+            val body = StringBuilder(literals[i].text)
+            while (last + 1 < literals.size &&
+                concatenation.matches(text.substring(literals[last].end, literals[last + 1].start))
+            ) {
+                last += 1
+                body.append(literals[last].text)
+            }
+            out += Literal(literals[i].line, body.toString(), literals[i].start, literals[last].end)
+            i = last + 1
+        }
+        return out
+    }
 
     /**
      * String literals of a Kotlin or Java source, `"""raw"""` ones joined across their lines. This
@@ -130,7 +202,7 @@ object DmExpiredRowLint {
                 val end = text.indexOf("\"\"\"", i + 3)
                 if (end < 0) break
                 val body = text.substring(i + 3, end)
-                out += Literal(line, body)
+                out += Literal(line, body, i, end + 3)
                 line += body.count { it == '\n' }
                 i = end + 3
             } else {
@@ -141,7 +213,7 @@ object DmExpiredRowLint {
                     if (j < text.length) body.append(text[j])
                     j += 1
                 }
-                out += Literal(line, body.toString())
+                out += Literal(line, body.toString(), i, minOf(j + 1, text.length))
                 i = j + 1
             }
         }
@@ -149,36 +221,122 @@ object DmExpiredRowLint {
     }
 
     /**
-     * Runs [sql] against a database that holds exactly two `dm_message` rows of one conversation,
-     * one expired at [now] and one that is not, and reports whether the expired one came back.
+     * What a query returns in the world that still holds the expired rows, and in the same world
+     * after SWEEP removed them.
+     */
+    data class Outcome(val beforeTheSweep: List<String>, val afterTheSweep: List<String>) {
+        /**
+         * The two worlds are distinguishable, so something the query returned depended on a row
+         * the user was told had gone: a body, an id, or only a count. That is ME-16.
+         */
+        val showsAnExpiredRow: Boolean get() = beforeTheSweep != afterTheSweep
+
+        /** A query that matches nothing even in the swept world is broken, not compliant. */
+        val returnsNothing: Boolean get() = afterTheSweep.isEmpty()
+    }
+
+    /**
+     * Runs [sql] against two databases that differ only in the expired `dm_message` rows — the
+     * fixture world of [seedMessages] with and without them — and reports both result sets.
      *
      * The query is given `now` for every bind placeholder it carries, which is the shape §10.7
      * point 4 prescribes (`:now_e`); a query that needs other arguments registers them.
      */
-    fun showsAnExpiredRow(sql: String, args: List<Any?>): Boolean {
+    fun outcomeOf(sql: String, args: List<Any?>): Outcome =
+        Outcome(rowsOf(sql, args, withExpired = true), rowsOf(sql, args, withExpired = false))
+
+    /** Shorthand for [Outcome.showsAnExpiredRow]. */
+    fun showsAnExpiredRow(sql: String, args: List<Any?>): Boolean = outcomeOf(sql, args).showsAnExpiredRow
+
+    private fun rowsOf(sql: String, args: List<Any?>, withExpired: Boolean): List<String> =
         JdbcSqlExecutor().use { db ->
             MigrationRunner(db).migrate()
-            seedOneExpiredAndOneLiveMessage(db)
-            var sawExpired = false
-            db.query(sql, args) { row ->
-                // Every registered query selects the message id first; the lint reads that column
-                // and nothing else, so a query may project whatever it needs beside it.
-                if (!row.isNull(0) && row.blob(0).contentEquals(EXPIRED_ID)) sawExpired = true
-            }
-            return sawExpired
+            seedMessages(db, withExpired)
+            val out = ArrayList<String>()
+            db.query(sql, args) { out += renderRow(it) }
+            out.sorted()
         }
+
+    /** No query of a DM DAO projects more columns than this; the reader stops at the first gap. */
+    private const val MAX_COLUMNS = 64
+
+    /**
+     * A row rendered as the hex of every column it has, so two result sets can be compared without
+     * knowing what the query projects. `getBytes` renders an INTEGER or TEXT value as its bytes
+     * rather than failing, which is all the comparison needs.
+     */
+    private fun renderRow(row: SqlExecutor.Row): String {
+        val cells = ArrayList<String>()
+        for (index in 0 until MAX_COLUMNS) {
+            val cell: String
+            try {
+                cell = if (row.isNull(index)) "null" else row.blob(index).joinToString("") { "%02x".format(it) }
+            } catch (e: Exception) {
+                break
+            }
+            cells += cell
+        }
+        return cells.joinToString("|")
     }
 
-    /** The expired row's id, so a lint failure names which row leaked. */
-    val EXPIRED_ID: ByteArray = ByteArray(16) { 0xE0.toByte() }
-    /** The live row's id: a query that returns nothing at all is not passing, it is broken. */
-    val LIVE_ID: ByteArray = ByteArray(16) { 0x11 }
+    /**
+     * The five fixture rows. Three are expired and two are not, and the shapes are chosen so that
+     * a filter on the **wrong column** is caught by a value rather than by a NULL:
+     *
+     * | id | direction | state | `expire_at` | `unread_deadline` | `delete_at` |
+     * |---|---|---|---|---|---|
+     * | [EXPIRED_OUT] | out | sent | `NOW` | NULL | `NOW` — the boundary: `>=` admits it, `>` does not |
+     * | [EXPIRED_READ_IN] | in | read | `NOW - 60` | `NOW + 3600` | `NOW - 60` — an unread-deadline filter admits it |
+     * | [EXPIRED_UNREAD_IN] | in | unread | NULL | `NOW - 60` | `NOW - 60` — an `expire_at` filter admits it |
+     * | [LIVE_OUT] | out | sent | `NOW + 3600` | NULL | `NOW + 3600` |
+     * | [LIVE_IN] | in | unread | NULL | `NOW + 3600` | `NOW + 3600` |
+     *
+     * Both directions carry a live row, so an inbound-only or unread-only read path still matches
+     * something and cannot pass [Outcome.returnsNothing] for free.
+     */
+    val EXPIRED_OUT: ByteArray = ByteArray(16) { 0xE0.toByte() }
+    val EXPIRED_READ_IN: ByteArray = ByteArray(16) { 0xE1.toByte() }
+    val EXPIRED_UNREAD_IN: ByteArray = ByteArray(16) { 0xE2.toByte() }
+    val LIVE_OUT: ByteArray = ByteArray(16) { 0x11 }
+    val LIVE_IN: ByteArray = ByteArray(16) { 0x12 }
+
+    /** The rows SWEEP takes, and the rows it leaves. */
+    val expiredIds: List<ByteArray> = listOf(EXPIRED_OUT, EXPIRED_READ_IN, EXPIRED_UNREAD_IN)
+    val liveIds: List<ByteArray> = listOf(LIVE_OUT, LIVE_IN)
+
     /** The `now_e` the fixture world is built around. */
     const val NOW: Long = 1_800_000_000L - 1_800_000_000L % 60
-    /** The conversation both rows belong to. */
+    /** The conversation every row belongs to. */
     val CONVERSATION: ByteArray = ByteArray(16) { 0x01 }
 
-    fun seedOneExpiredAndOneLiveMessage(db: SqlExecutor) {
+    private const val AUTHOR: Long = NOW - 86_400
+
+    /** A row of the fixture world: what [seedMessages] inserts, and whether SWEEP takes it. */
+    private data class Fixture(
+        val id: ByteArray,
+        val direction: String,
+        val state: String,
+        val expireAt: Long?,
+        val unreadDeadline: Long?,
+    ) {
+        /** `delete_at_minute` follows its CHECK: the expiry minute when there is one, else the deadline. */
+        val deleteAt: Long? get() = expireAt ?: unreadDeadline
+    }
+
+    private val fixtures = listOf(
+        Fixture(EXPIRED_OUT, "out", "sent", NOW, null),
+        Fixture(EXPIRED_READ_IN, "in", "read", NOW - 60, NOW + 3600),
+        Fixture(EXPIRED_UNREAD_IN, "in", "unread", null, NOW - 60),
+        Fixture(LIVE_OUT, "out", "sent", NOW + 3600, null),
+        Fixture(LIVE_IN, "in", "unread", null, NOW + 3600),
+    )
+
+    /**
+     * The fixture world: one contact, one conversation and the messages of [fixtures]. With
+     * [withExpired] false the rows whose `delete_at_minute` has passed are simply never inserted,
+     * which is the state the database reaches once SWEEP has run.
+     */
+    fun seedMessages(db: SqlExecutor, withExpired: Boolean = true) {
         db.exec(
             "INSERT INTO dm_contact(contact_id, identity_pk, card_env, card_index, trust_state, source, establishment) " +
                 "VALUES (?, ?, ?, 0, 'unverified', 'link', 'card_only')",
@@ -188,13 +346,17 @@ object DmExpiredRowLint {
             "INSERT INTO dm_conversation(conversation_id, contact_id) VALUES (?, ?)",
             listOf(CONVERSATION, CONVERSATION),
         )
-        // The expired one went one minute ago; the live one goes in an hour.
-        for ((id, deleteAt) in listOf(EXPIRED_ID to NOW - 60, LIVE_ID to NOW + 3600)) {
+        for (row in fixtures) {
+            val expired = row.deleteAt!! <= NOW
+            if (expired && !withExpired) continue
             db.exec(
                 "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
-                    "minute_index, timer_code, body_env, state, expire_at_minute, delete_at_minute) " +
-                    "VALUES (?, ?, 'out', 1, ?, ?, 0, 4, ?, 'sent', ?, ?)",
-                listOf(id, CONVERSATION, NOW - 86_400, NOW - 86_400, ByteArray(100) { id[0] }, deleteAt, deleteAt),
+                    "minute_index, timer_code, body_env, state, expire_at_minute, unread_deadline_minute, " +
+                    "delete_at_minute) VALUES (?, ?, ?, 1, ?, ?, 0, 4, ?, ?, ?, ?, ?)",
+                listOf(
+                    row.id, CONVERSATION, row.direction, AUTHOR, AUTHOR,
+                    ByteArray(100) { row.id[0] }, row.state, row.expireAt, row.unreadDeadline, row.deleteAt,
+                ),
             )
         }
     }
@@ -205,7 +367,8 @@ object DmExpiredRowLint {
  * the DAOs that read `dm_message` land with the owner side and the send/receive slice, and
  * [DmExpiredRowLintTest.everyProductionReadOfAnExpiringTableIsRegistered] fails the day one is
  * written without being registered here. Add the query verbatim — the point of the registry is
- * that the string the DAO runs is the string the lint runs.
+ * that the string the DAO runs is the string the lint runs. A query built from `+`-joined literals
+ * registers as the string those literals build, which is what the scanner reports.
  */
 object DmDaoQueries {
     data class Query(val name: String, val sql: String, val args: List<Any?>)
