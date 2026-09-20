@@ -338,6 +338,78 @@ pub fn header(l1: &[u8], is_pre_key: bool) -> DmResult<L1Header> {
     message::parse(l1, is_pre_key)
 }
 
+/// The two provisional keys of one session (§6.7), with the direction bytes they belong to.
+///
+/// `K_prov(dir) = HKDF(ikm = reply_seed, salt = sb, info = "ghost/v1/dm/prov" || dir)` and
+/// `sb = SHA-256(label || OI_initiator || base_key || F_g || OI_responder)`. The three middle
+/// inputs are exactly vodozemac's `SessionKeys` — the **initiator's** identity key, the
+/// initiator's base key and the recipient's one-time (here: fallback) key — which
+/// `Session::session_keys()` exposes on the public API (`vz:src/olm/session/mod.rs:404`), so this
+/// reads no pickle field and is not part of the §2.1 layout deviation.
+///
+/// **The role is derived, never supplied.** `session_keys.identity_key` is the initiator's `OI`
+/// by construction on both sides (`create_outbound_session` writes the account's own key,
+/// `create_inbound_session` writes the PreKey message's), so comparing it with `own_oi` says
+/// which side this device is, and a caller cannot get the role wrong. A session whose keys name
+/// neither identity is [`DmCode::StateCorrupt`]: it is not this contact's session.
+pub struct ProvisionalKeys {
+    /// The key this device **seals** provisional envelopes with, and its direction byte.
+    pub outgoing: Zeroizing<[u8; SECRET_BYTES]>,
+    /// The direction byte of [`Self::outgoing`].
+    pub outgoing_direction: u8,
+    /// The key this device **opens** the peer's provisional envelopes with.
+    pub incoming: Zeroizing<[u8; SECRET_BYTES]>,
+    /// The direction byte of [`Self::incoming`].
+    pub incoming_direction: u8,
+}
+
+/// Derives [`ProvisionalKeys`] from a stored session and its `reply_seed`.
+pub fn provisional_keys(
+    state: &[u8],
+    reply_seed: &ReplySeed,
+    own_oi: &[u8; 32],
+    peer_oi: &[u8; 32],
+) -> DmResult<ProvisionalKeys> {
+    let (session, _) = load(state)?;
+    let keys = session.session_keys();
+    let initiator = keys.identity_key.to_bytes();
+    let base_key = keys.base_key.to_bytes();
+    let fallback_key = keys.one_time_key.to_bytes();
+    let (responder, own_is_initiator) = if initiator == *own_oi {
+        (*peer_oi, true)
+    } else if initiator == *peer_oi {
+        (*own_oi, false)
+    } else {
+        return Err(DmCode::StateCorrupt);
+    };
+    let binding = crate::derive::session_binding(&initiator, &base_key, &fallback_key, &responder);
+    let (outgoing_direction, incoming_direction) = if own_is_initiator {
+        (
+            crate::derive::PROVISIONAL_DIR_TO_RESPONDER,
+            crate::derive::PROVISIONAL_DIR_TO_INITIATOR,
+        )
+    } else {
+        (
+            crate::derive::PROVISIONAL_DIR_TO_INITIATOR,
+            crate::derive::PROVISIONAL_DIR_TO_RESPONDER,
+        )
+    };
+    Ok(ProvisionalKeys {
+        outgoing: Zeroizing::new(crate::derive::derive_provisional_key(
+            reply_seed,
+            &binding,
+            outgoing_direction,
+        )),
+        outgoing_direction,
+        incoming: Zeroizing::new(crate::derive::derive_provisional_key(
+            reply_seed,
+            &binding,
+            incoming_direction,
+        )),
+        incoming_direction,
+    })
+}
+
 /// Real Olm material for the seeded parser runs of §15.2 and R-C4 (review round 2, S4B2-04).
 ///
 /// A mutation of a **well-formed** message or state reaches fields a free-form input never does —
@@ -1146,5 +1218,92 @@ mod tests {
             Some(DmCode::StateCorrupt)
         );
         assert_eq!(session_prune(b"short", 0).err(), Some(DmCode::StateCorrupt));
+    }
+
+    /// §6.7: both sides of one session derive the **same two** provisional keys, and each one's
+    /// outgoing key is the other's incoming key. Without that, a provisional reply would be
+    /// unrecognisable to its recipient and the one-scan flow of §12.2 would fall to
+    /// `NO_SEAL_KEY`, a bundle fetch and a relay-visible re-establishment (§6.8 rule 4).
+    ///
+    /// The role is not supplied by the caller: it is read off the session's own keys, so this
+    /// also proves the derivation cannot be driven to the wrong direction by a wrong argument.
+    #[test]
+    fn both_sides_of_a_session_derive_the_same_pair_of_provisional_keys() {
+        let a = party(1);
+        let b = party(2);
+        let (b_fallback_secret, b_fallback_public) = fallback(3);
+        let outbound = session_outbound(
+            &a.identity,
+            &a.signing,
+            &b.identity_public,
+            &b_fallback_public,
+            10,
+        )
+        .expect("outbound");
+        let first = encrypt(&outbound.state, b"hello", 10).expect("encrypt");
+        let inbound = session_inbound(
+            &b.identity,
+            &b.signing,
+            b_fallback_secret,
+            &a.identity_public,
+            &first.l1,
+            10,
+        )
+        .expect("inbound");
+
+        // Both sides hold the same `reply_seed`: A generated it, and it travelled inside the
+        // intro inner layer (§6.4). The seal layer's own tests cover that transport; here the
+        // point is the derivation on top of it.
+        let seed = &outbound.reply_seed;
+        let initiator =
+            provisional_keys(&first.state, seed, &a.identity_public, &b.identity_public)
+                .expect("initiator keys");
+        let responder =
+            provisional_keys(&inbound.state, seed, &b.identity_public, &a.identity_public)
+                .expect("responder keys");
+
+        assert_eq!(*initiator.outgoing, *responder.incoming);
+        assert_eq!(*initiator.incoming, *responder.outgoing);
+        assert_ne!(*initiator.outgoing, *initiator.incoming);
+        assert_eq!(
+            initiator.outgoing_direction,
+            crate::derive::PROVISIONAL_DIR_TO_RESPONDER
+        );
+        assert_eq!(
+            responder.outgoing_direction,
+            crate::derive::PROVISIONAL_DIR_TO_INITIATOR
+        );
+        assert_eq!(
+            initiator.incoming_direction, responder.outgoing_direction,
+            "each side opens with the direction the other seals with"
+        );
+    }
+
+    /// A session whose keys name neither the own nor the peer identity is not this contact's
+    /// session: `STATE_CORRUPT`, never a silently wrong role and a key the peer cannot hold.
+    #[test]
+    fn provisional_keys_refuse_a_session_of_another_pair() {
+        let a = party(1);
+        let b = party(2);
+        let stranger = party(9);
+        let (_, b_fallback_public) = fallback(3);
+        let outbound = session_outbound(
+            &a.identity,
+            &a.signing,
+            &b.identity_public,
+            &b_fallback_public,
+            10,
+        )
+        .expect("outbound");
+        assert_eq!(
+            provisional_keys(
+                &outbound.state,
+                &outbound.reply_seed,
+                &stranger.identity_public,
+                &b.identity_public,
+            )
+            .err(),
+            Some(DmCode::StateCorrupt)
+        );
     }
 }

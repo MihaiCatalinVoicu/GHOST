@@ -50,6 +50,17 @@ pub enum WrapName {
     PairOffer,
     /// A transient `kbEnv` or `kioEnv`: a card-derived seal key on its way into a call.
     CardKey,
+    /// A transient provisional opening key `K_prov(dir)` (§6.7), on its way into `sealSym` or
+    /// `openOuter`.
+    ///
+    /// **Added by S7.** §22.8.3's table stops at the seven envelopes that have a **column**; this
+    /// one has none, and deliberately: `K_prov` is a pure function of the session's `reply_seed`
+    /// and its session keys, so re-deriving it costs one call and storing it would be a second
+    /// place for a key to outlive its `prov_erase_minute` (§6.7, mutant PM-36's family). It is
+    /// wrapped all the same, because Kotlin holds **recognition** keys in clear and opening keys
+    /// never (rule R-S6), and it carries a binding of its own so a key of one direction cannot be
+    /// presented as the other's.
+    ProvisionalKey,
 }
 
 impl WrapName {
@@ -63,11 +74,12 @@ impl WrapName {
             WrapName::PairRoot => "pair-root",
             WrapName::PairOffer => "pair-offer",
             WrapName::CardKey => "card-key",
+            WrapName::ProvisionalKey => "provisional-key",
         }
     }
 
     /// Every name, for the exhaustiveness test.
-    pub const ALL: [WrapName; 7] = [
+    pub const ALL: [WrapName; 8] = [
         WrapName::OlmSession,
         WrapName::ReplySeed,
         WrapName::Generation,
@@ -75,6 +87,7 @@ impl WrapName {
         WrapName::PairRoot,
         WrapName::PairOffer,
         WrapName::CardKey,
+        WrapName::ProvisionalKey,
     ];
 }
 
@@ -115,6 +128,18 @@ pub fn pair_root_binding(contact_id: &[u8; 16], root_gen: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(18);
     out.extend_from_slice(contact_id);
     out.extend_from_slice(&root_gen.to_be_bytes());
+    out
+}
+
+/// `session_id(32) || dir(1)` of a transient provisional opening key (§6.7).
+///
+/// The direction is in the binding because the two keys of a session differ only by it: without
+/// it, an envelope of the responder's direction would open as the initiator's and a sender could
+/// be made to seal under the key its peer recognises as its own.
+pub fn provisional_key_binding(session_id: &[u8; 32], direction: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(33);
+    out.extend_from_slice(session_id);
+    out.push(direction);
     out
 }
 

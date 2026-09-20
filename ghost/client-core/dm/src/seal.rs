@@ -805,6 +805,59 @@ pub fn open_intro_inner(
     prekey: &PreKeyFields<'_>,
     generation_fallback_key: &[u8; 32],
 ) -> DmResult<IntroPlain> {
+    let opened = open_intro_layer(gen_seed, context, outer)?;
+    verify_intro_binding(&opened, context, outer, prekey, generation_fallback_key)?;
+    Ok(opened)
+}
+
+/// Opens the inner layer and, in the same decapsulation, checks §6.5 step 4 against the PreKey
+/// header the layer itself carries.
+///
+/// This is the shape the JNI surface uses (§2.6 function 12), because the three equalities of
+/// §6.5 step 4 are checked against the **message inside this envelope** and nothing else: taking
+/// the header from a caller would make a mismatched pair a caller's mistake rather than an
+/// impossibility, and decapsulating twice to read it first would double the KEM cost of every
+/// first flight.
+pub fn open_intro_checked(
+    gen_seed: &KemSecret,
+    context: &IntroContext<'_>,
+    outer: &IntroOuter,
+    generation_fallback_key: &[u8; 32],
+) -> DmResult<(IntroPlain, crate::olm::message::L1Header)> {
+    let opened = open_intro_layer(gen_seed, context, outer)?;
+    let header = crate::olm::message::parse(&opened.l1, true)?;
+    let crate::olm::message::L1Header::PreKey {
+        identity_key,
+        base_key,
+        one_time_key,
+        ..
+    } = header
+    else {
+        // An intro envelope carries a PreKey message by construction (§6.4); a normal message
+        // inside one is `drop(non_canonical)` of §6.5 step 5's mirror image.
+        return Err(DmCode::NonCanonical);
+    };
+    verify_intro_binding(
+        &opened,
+        context,
+        outer,
+        &PreKeyFields {
+            identity_key: &identity_key,
+            base_key: &base_key,
+            fallback_key: &one_time_key,
+        },
+        generation_fallback_key,
+    )?;
+    Ok((opened, header))
+}
+
+/// The decapsulation and the AEAD open of the inner layer, without any signature check: both
+/// public entry points add their own, and neither returns before they have.
+fn open_intro_layer(
+    gen_seed: &KemSecret,
+    context: &IntroContext<'_>,
+    outer: &IntroOuter,
+) -> DmResult<IntroPlain> {
     if context.gen_id != outer.gen_id || context.bucket != outer.bucket {
         return Err(DmCode::NotOpen);
     }
@@ -822,8 +875,17 @@ pub fn open_intro_inner(
             )
             .map_err(|_| DmCode::NotOpen)?,
     );
-    let opened = parse_intro_inner(&plain)?;
+    parse_intro_inner(&plain)
+}
 
+/// Binding v3 and the generation's fallback key (§6.5 step 4), against an already-opened layer.
+fn verify_intro_binding(
+    opened: &IntroPlain,
+    context: &IntroContext<'_>,
+    outer: &IntroOuter,
+    prekey: &PreKeyFields<'_>,
+    generation_fallback_key: &[u8; 32],
+) -> DmResult<()> {
     // The card is parsed for the `identity_pk` binding v3 verifies under. A card that does not
     // parse is `drop(non_canonical)` (§6.5 step 4, §2.6 function 12): `INVALID_CARD` belongs to
     // `cardParse`, which is a different call.
@@ -844,9 +906,7 @@ pub fn open_intro_inner(
         },
         &opened.binding_sig,
     )?;
-    check_generation_fallback_key(prekey, generation_fallback_key)?;
-
-    Ok(opened)
+    check_generation_fallback_key(prekey, generation_fallback_key)
 }
 
 /// The generation's fallback key check of §6.5 step 4: `PreKey.one_time_key = F_{gen_id}`.
@@ -1554,6 +1614,137 @@ mod tests {
         assert_eq!(
             open_bundle(&key, &NAMESPACE, &blob[..2048], 1393).err(),
             Some(DmCode::NotOpen)
+        );
+    }
+
+    /// [`open_intro_checked`] on a **real** first flight: the PreKey header it checks binding v3
+    /// against is read from the message inside the envelope, not from an argument, so §6.5 step
+    /// 4's three equalities hold by construction. A caller that supplies the header can get them
+    /// wrong; this entry point cannot.
+    ///
+    /// It is the shape §2.6 function 12 uses, and it decapsulates **once**: the transcript covers
+    /// the ciphertext and both recipient identities, so reading the header first would mean either
+    /// a second decapsulation or shuttling opaque parts through Kotlin.
+    #[test]
+    fn open_intro_checked_reads_its_prekey_header_from_the_envelope() {
+        use crate::derive::{self, MessagingBranch, OlmSecret};
+        use crate::olm::message::L1Header;
+        use crate::olm::session;
+
+        let sender_branch = MessagingBranch::from_bytes([0x81; 32]);
+        let recipient_branch = MessagingBranch::from_bytes([0x82; 32]);
+        let sender_identity = derive::derive_olm_identity(&sender_branch);
+        let sender_signing = derive::derive_olm_account_signing(&sender_branch);
+        let sender_oi = derive::olm_identity_public(&sender_identity);
+        let recipient_oi =
+            derive::olm_identity_public(&derive::derive_olm_identity(&recipient_branch));
+        let fallback_secret = [0x83u8; 32];
+        let fallback_public = derive::olm_identity_public(&OlmSecret::from_bytes(fallback_secret));
+
+        let outbound = session::session_outbound(
+            &sender_identity,
+            &sender_signing,
+            &recipient_oi,
+            &fallback_public,
+            700,
+        )
+        .expect("outbound");
+        let first = session::encrypt(&outbound.state, b"first flight", 700).expect("encrypt");
+        assert!(first.is_pre_key);
+
+        let fixture = intro_fixture();
+        let context = IntroContext {
+            namespace: &NAMESPACE,
+            bucket: BUCKETS[0],
+            gen_id: 0xdead_beef,
+            gen_public: &fixture.gen_public,
+            recipient_oi: &recipient_oi,
+            recipient_identity_pk: &[0x65; 32],
+        };
+        let L1Header::PreKey { base_key, .. } = session::header(&first.l1, true).expect("header")
+        else {
+            panic!("a first flight is a PreKey message");
+        };
+        let sender = IntroSender {
+            identity_seed: &IDENTITY_SEED,
+            card: &fixture.card,
+            oi: &sender_oi,
+            base_key: &base_key,
+            binding_minute: 29_000_000,
+            reply_seed: &fixture.reply_seed,
+        };
+        let blob = seal_intro(&fixture.outer_key, &context, &sender, &first.l1).expect("seal");
+        let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
+        let (plain, header) =
+            open_intro_checked(&fixture.gen_seed, &context, &outer, &fallback_public)
+                .expect("checked open");
+        assert_eq!(plain.l1, first.l1);
+        assert_eq!(
+            header.ratchet_key(),
+            session::header(&first.l1, true).unwrap().ratchet_key()
+        );
+        assert!(header.is_pre_key());
+
+        // The generation's fallback key is still checked, and the whole open fails without it.
+        assert_eq!(
+            open_intro_checked(&fixture.gen_seed, &context, &outer, &[0u8; 32]).err(),
+            Some(DmCode::NonCanonical)
+        );
+    }
+
+    /// An intro envelope whose inner layer carries a **normal** Olm message is refused: §6.4 says
+    /// the inner kind byte is `0x02` (PreKey) and the message under it is a first flight, so a
+    /// normal message there is `drop(non_canonical)` — never a header read as if it were one.
+    #[test]
+    fn open_intro_checked_refuses_a_normal_message_inside_an_intro_envelope() {
+        use crate::derive::{self, MessagingBranch, OlmSecret};
+        use crate::olm::session;
+
+        let branch = MessagingBranch::from_bytes([0x91; 32]);
+        let peer = MessagingBranch::from_bytes([0x92; 32]);
+        let identity = derive::derive_olm_identity(&branch);
+        let signing = derive::derive_olm_account_signing(&branch);
+        let peer_identity = derive::derive_olm_identity(&peer);
+        let peer_signing = derive::derive_olm_account_signing(&peer);
+        let fallback_secret = [0x93u8; 32];
+        let fallback_public = derive::olm_identity_public(&OlmSecret::from_bytes(fallback_secret));
+        let outbound = session::session_outbound(
+            &identity,
+            &signing,
+            &derive::olm_identity_public(&peer_identity),
+            &fallback_public,
+            700,
+        )
+        .expect("outbound");
+        let first = session::encrypt(&outbound.state, b"hello", 700).expect("encrypt");
+        let inbound = session::session_inbound(
+            &peer_identity,
+            &peer_signing,
+            fallback_secret,
+            &derive::olm_identity_public(&identity),
+            &first.l1,
+            700,
+        )
+        .expect("inbound");
+        // The reply is a **normal** message.
+        let reply = session::encrypt(&inbound.state, b"hi", 700).expect("reply");
+        assert!(!reply.is_pre_key);
+
+        let fixture = intro_fixture();
+        let context = intro_context(&fixture, BUCKETS[0]);
+        let sender = IntroSender {
+            identity_seed: &IDENTITY_SEED,
+            card: &fixture.card,
+            oi: &OI_SENDER,
+            base_key: &[0x71; 32],
+            binding_minute: 29_000_000,
+            reply_seed: &fixture.reply_seed,
+        };
+        let blob = seal_intro(&fixture.outer_key, &context, &sender, &reply.l1).expect("seal");
+        let outer = open_intro_outer(&fixture.outer_key, &NAMESPACE, &blob).expect("outer");
+        assert_eq!(
+            open_intro_checked(&fixture.gen_seed, &context, &outer, &[0x72; 32]).err(),
+            Some(DmCode::NonCanonical)
         );
     }
 }

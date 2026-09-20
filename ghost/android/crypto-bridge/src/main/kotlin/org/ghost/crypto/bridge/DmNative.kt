@@ -185,4 +185,169 @@ object DmNative {
         stateEnv: ByteArray,
         today: Int,
     ): ByteArray?
+
+    // ------------------------------------------------------------------ slice S7
+
+    // §2.6 function 3. Stateless: the parse of §3.3 needs no key material, and the own-card
+    // refusal is a comparison Kotlin makes against what `ownCard` already returned.
+    @JvmStatic
+    @JvmName("cardParse")
+    internal external fun cardParse(card: ByteArray): ByteArray?
+
+    // §2.6 function 3.
+    @JvmStatic
+    @JvmName("cardDerive")
+    internal external fun cardDerive(handle: Long, card: ByteArray, slot: Int): ByteArray?
+
+    // §2.6 function 6.
+    @JvmStatic
+    @JvmName("bundleOpen")
+    internal external fun bundleOpen(
+        handle: Long,
+        bundleKeyEnv: ByteArray,
+        bundleNamespace: ByteArray,
+        blob: ByteArray,
+        expectedIdentityPk: ByteArray,
+        expectedCardIndex: Int,
+    ): ByteArray?
+
+    // §2.6 function 9. `cardIndex` instead of the own card bytes, and no base key: both are read
+    // where they cannot disagree with the signing seed or with the message (see the crate).
+    @JvmStatic
+    @JvmName("sealIntro")
+    @Suppress("LongParameterList")
+    internal external fun sealIntro(
+        handle: Long,
+        cardIndex: Int,
+        namespace: ByteArray,
+        bucket: Int,
+        introKeyEnv: ByteArray,
+        peerIdentityPk: ByteArray,
+        peerOlmIdentity: ByteArray,
+        genId: Int,
+        genPublic: ByteArray,
+        bindingMinute: Int,
+        sessionId: ByteArray,
+        replySeedEnv: ByteArray,
+        l1: ByteArray,
+    ): ByteArray?
+
+    // §2.6 function 10. The key binding is the one its mode fixes (§22.8.3): pair keys name the
+    // contact, direction, root generation and week; provisional keys name the session and the
+    // direction. The unused half is an empty array or a zero.
+    @JvmStatic
+    @JvmName("sealSym")
+    @Suppress("LongParameterList")
+    internal external fun sealSym(
+        handle: Long,
+        mode: Int,
+        namespace: ByteArray,
+        bucket: Int,
+        keyEnv: ByteArray,
+        contactId: ByteArray,
+        direction: Int,
+        rootGen: Int,
+        week: Long,
+        sessionId: ByteArray,
+        oiSender: ByteArray,
+        oiRecipient: ByteArray,
+        l1: ByteArray,
+    ): ByteArray?
+
+    // §2.6 function 11.
+    @JvmStatic
+    @JvmName("openOuter")
+    @Suppress("LongParameterList")
+    internal external fun openOuter(
+        handle: Long,
+        mode: Int,
+        blob: ByteArray,
+        namespace: ByteArray,
+        cardIndex: Int,
+        keyEnv: ByteArray,
+        contactId: ByteArray,
+        direction: Int,
+        rootGen: Int,
+        week: Long,
+        sessionId: ByteArray,
+        oiSender: ByteArray,
+        oiRecipient: ByteArray,
+    ): ByteArray?
+
+    // §2.6 function 12.
+    @JvmStatic
+    @JvmName("openIntro")
+    @Suppress("LongParameterList")
+    internal external fun openIntro(
+        handle: Long,
+        cardIndex: Int,
+        namespace: ByteArray,
+        genId: Int,
+        genSecretsEnv: ByteArray,
+        genFallbackPublic: ByteArray,
+        blob: ByteArray,
+    ): ByteArray?
+
+    // §2.6 function 15.
+    @JvmStatic
+    @JvmName("pairKeys")
+    @Suppress("LongParameterList")
+    internal external fun pairKeys(
+        handle: Long,
+        contactId: ByteArray,
+        direction: Int,
+        rootGen: Int,
+        rootEnv: ByteArray,
+        baseWeek: Long,
+        fromWeek: Long,
+        toWeek: Long,
+    ): ByteArray?
+
+    // Function 22, added by S7: the random root a recipient offers (§6.3).
+    @JvmStatic
+    @JvmName("pairOffer")
+    internal external fun pairOffer(
+        handle: Long,
+        contactId: ByteArray,
+        rootGen: Int,
+        baseWeek: Long,
+    ): ByteArray?
+
+    // Function 21, added by S7: the two provisional keys of one session (§6.7).
+    @JvmStatic
+    @JvmName("provisionalKeys")
+    internal external fun provisionalKeys(
+        handle: Long,
+        contactId: ByteArray,
+        sessionId: ByteArray,
+        stateEnv: ByteArray,
+        replySeedEnv: ByteArray,
+        peerOlmIdentity: ByteArray,
+    ): ByteArray?
+
+    // §2.6 function 18.
+    @JvmStatic
+    @JvmName("l0Encode")
+    @Suppress("LongParameterList")
+    internal external fun l0Encode(
+        handle: Long,
+        kind: Int,
+        messageId: ByteArray,
+        authorMinute: Int,
+        minuteIndex: Int,
+        timerCode: Int,
+        timerVersion: Int,
+        quoteRef: ByteArray,
+        body: ByteArray,
+        contactId: ByteArray,
+        rootGen: Int,
+        offerEnv: ByteArray,
+        revocation: ByteArray,
+        sessionReset: Int,
+    ): ByteArray?
+
+    // §2.6 function 18.
+    @JvmStatic
+    @JvmName("l0Decode")
+    internal external fun l0Decode(handle: Long, contactId: ByteArray, l0: ByteArray): ByteArray?
 }

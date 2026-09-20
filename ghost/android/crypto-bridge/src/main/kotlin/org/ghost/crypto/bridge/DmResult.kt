@@ -157,6 +157,109 @@ enum class DmField(val tag: Int) {
 
     /** The own bundle fetch secret `RP_{i,s}` (§3.2), registered as kind FETCH (§22.8.7). */
     FETCH_SECRET(0x1a),
+
+    /** An Ed25519 `identity_pk`: a card's owner, or a bundle's signer (§3.3, §5.3). */
+    IDENTITY_PK(0x1b),
+
+    /** A card index, `u32` big-endian. */
+    CARD_INDEX(0x1c),
+
+    /** A **wrapped** card-derived intro outer key `KIO_c` (rule R-S6). */
+    INTRO_KEY(0x1d),
+
+    /** A **wrapped** card-derived bundle seal key `KB_c`. */
+    BUNDLE_KEY(0x1e),
+
+    /** A bundle's ISO week, `u64` big-endian (§5.3). */
+    BUNDLE_WEEK(0x1f),
+
+    /** A bundle's rank inside its week, `u32` big-endian (§5.3). */
+    BUNDLE_RANK(0x20),
+
+    /** A bundle generation id, `u32` big-endian. */
+    GEN_ID(0x21),
+
+    /** An Olm PreKey message's base key (§3.4). */
+    BASE_KEY(0x22),
+
+    /** An Olm PreKey message's one-time (here: fallback) key (§6.5 step 4). */
+    ONE_TIME_KEY(0x23),
+
+    /** An Olm message's receiver-chain ratchet key (§7.7). */
+    RATCHET_KEY(0x24),
+
+    /**
+     * The packed pair-week keys of `pairKeys`: `u32_be(count) || (u64_be(week) || u32_be(len) ||
+     * open_env || recog_key(32))*` (§6.3).
+     *
+     * One field rather than a repeated tag, because [DmResult] refuses a repeated tag: the surface
+     * is closed and a tag arriving twice means the two sides disagree, which is a stronger rule
+     * than a list would be worth relaxing for.
+     */
+    PAIR_KEYS(0x25),
+
+    /** A binding minute, `u32` big-endian (§3.4). */
+    BINDING_MINUTE(0x26),
+
+    /** An L0 `message_id` (§7.1). */
+    MESSAGE_ID(0x27),
+
+    /** An L0 `author_minute`, `u32` big-endian. */
+    AUTHOR_MINUTE(0x28),
+
+    /** An L0 `minute_index`, `u32` big-endian. */
+    MINUTE_INDEX(0x29),
+
+    /** An L0 `timer_code`, one byte. */
+    TIMER_CODE(0x2a),
+
+    /** An L0 `timer_version`, `u32` big-endian. */
+    TIMER_VERSION(0x2b),
+
+    /** An L0 `quote_ref`: 16 bytes, absent when the message quotes nothing. */
+    QUOTE_REF(0x2c),
+
+    /** An L0 body. */
+    BODY(0x2d),
+
+    /** An L0 `kind`, one byte (§7.1). */
+    CONTENT_KIND(0x2e),
+
+    /** Which TLVs an L0 carried; see [DM_TLV_SEAL_ROOT] and its siblings. */
+    TLV_FLAGS(0x2f),
+
+    /** A `seal_root` generation number, `u32` big-endian. */
+    ROOT_GEN(0x30),
+
+    /** A `seal_root` base week, `u64` big-endian. */
+    BASE_WEEK(0x31),
+
+    /** A **wrapped** pair root (`dm_pair_offer.root_env`). */
+    PAIR_ROOT_ENV(0x32),
+
+    /** A **wrapped** offered TLV value (`dm_pair_offer.offer_env`). */
+    PAIR_OFFER_ENV(0x33),
+
+    /** A revocation certificate v2 carried by TLV 0x0003 (§8.5). */
+    REVOCATION(0x34),
+
+    /** A **wrapped** provisional opening key this device seals with (§6.7). */
+    PROVISIONAL_OUT_ENV(0x35),
+
+    /** A **wrapped** provisional opening key this device opens the peer's envelopes with. */
+    PROVISIONAL_IN_ENV(0x36),
+
+    /** The recognition key of [PROVISIONAL_OUT_ENV] (rule R-S6). */
+    RECOGNITION_PROV_OUT(0x37),
+
+    /** The recognition key of [PROVISIONAL_IN_ENV]. */
+    RECOGNITION_PROV_IN(0x38),
+
+    /** The direction byte [PROVISIONAL_OUT_ENV] is bound to, one byte (§6.7). */
+    PROVISIONAL_OUT_DIRECTION(0x39),
+
+    /** The direction byte [PROVISIONAL_IN_ENV] is bound to, one byte. */
+    PROVISIONAL_IN_DIRECTION(0x3a),
     ;
 
     companion object {
@@ -172,6 +275,18 @@ const val DM_FLAG_PRE_KEY: Int = 0x01
 
 /** Bit 1 of [DmField.FLAGS]. */
 const val DM_FLAG_ACKNOWLEDGED: Int = 0x02
+
+/** Bit 0 of [DmField.TLV_FLAGS]: the L0 carried a `seal_root` (§6.3). */
+const val DM_TLV_SEAL_ROOT: Int = 0x01
+
+/** Bit 1 of [DmField.TLV_FLAGS]: the L0 carried a `session_reset` (§8.6). */
+const val DM_TLV_SESSION_RESET: Int = 0x02
+
+/** Bit 2 of [DmField.TLV_FLAGS]: the L0 carried a revocation certificate v2 (§8.5). */
+const val DM_TLV_REVOCATION: Int = 0x04
+
+/** Bit 3 of [DmField.TLV_FLAGS]: the L0 carried a PQ-C TLV, counted and ignored in Phase 9. */
+const val DM_TLV_PQ: Int = 0x08
 
 /**
  * A decoded reply of [DmNative]: a code and the fields that came with it.

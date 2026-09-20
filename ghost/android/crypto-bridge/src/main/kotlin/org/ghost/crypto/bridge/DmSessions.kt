@@ -598,24 +598,6 @@ object DmSessions {
 
     private val EMPTY = ByteArray(0)
 
-    /**
-     * Calls the native side and decodes the reply. An `UnsatisfiedLinkError` from a library that
-     * disappeared between the availability check and the call becomes `CRYPTO_UNAVAILABLE`, never
-     * an `Error` escaping into `:messaging`.
-     */
-    private inline fun call(body: () -> ByteArray?): DmResult = try {
-        DmResult.decode(body())
-    } catch (e: UnsatisfiedLinkError) {
-        DmResult.unavailable()
-    }
-
-    /**
-     * A code the surface cannot produce for this function. `INTERNAL` is a caught Rust panic;
-     * everything else reaching here is a disagreement between this class and the native library,
-     * which `DmResultCodesTest` fails the build on. Both mean the caller must roll back and treat
-     * the blob as poison (§7.4 R2, §7.8) — which is why a code a **peer** can provoke must never
-     * arrive here (review round 2, S4B2-01/R2-01).
-     */
-    private fun unexpected(code: DmCode, function: String): Nothing =
-        throw IllegalStateException("DM native $function returned ${code.name}")
+    /** The shared decoder of [dmCall]; see `DmFacade.kt` for why it lives beside the facades. */
+    private inline fun call(body: () -> ByteArray?): DmResult = dmCall(body)
 }

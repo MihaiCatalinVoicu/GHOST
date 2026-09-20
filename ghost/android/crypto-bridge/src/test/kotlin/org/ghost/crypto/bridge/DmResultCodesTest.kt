@@ -93,19 +93,43 @@ class DmResultCodesTest {
         val nullOnFailure =
             setOf("ctxOpen", "ctxClose", "ownCard", "ownReadSecret", "bundleCreate", "safetyNumber")
 
-        val facade = File("src/main/kotlin/org/ghost/crypto/bridge/DmSessions.kt").canonicalFile
-        assertTrue("$facade must exist", facade.isFile)
-        val arms = Regex(
-            """when \(result\.code\) \{(.*?)else -> unexpected\(result\.code, "(\w+)"\)""",
-            RegexOption.DOT_MATCHES_ALL,
-        )
-            .findAll(facade.readText())
-            .associate { match ->
-                match.groupValues[2] to Regex("""DmCode\.([A-Z_]+)""")
-                    .findAll(match.groupValues[1])
-                    .map { it.groupValues[1] }
-                    .toSet()
-            }
+        // **Every** facade source of the package, not `DmSessions.kt` alone (slice S7): the card,
+        // bundle, seal, pairing and content facades each answer functions of the same closed
+        // surface, and a facade added in a new file must be covered the day it exists rather than
+        // the day somebody remembers to name it here.
+        val facadeDir = File("src/main/kotlin/org/ghost/crypto/bridge").canonicalFile
+        assertTrue("$facadeDir must exist", facadeDir.isDirectory)
+        val sources = facadeDir.listFiles { file -> file.extension == "kt" }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        assertTrue("the facade package must hold sources", sources.size >= 6)
+        val arms = LinkedHashMap<String, Set<String>>()
+        for (source in sources) {
+            Regex(
+                """when \(result\.code\) \{(.*?)else -> unexpected\(result\.code, "(\w+)"\)""",
+                RegexOption.DOT_MATCHES_ALL,
+            )
+                .findAll(source.readText())
+                .forEach { match ->
+                    val function = match.groupValues[2]
+                    val codes = Regex("""DmCode\.([A-Z_]+)""")
+                        .findAll(match.groupValues[1])
+                        .map { it.groupValues[1] }
+                        .toSet()
+                    val existing = arms[function]
+                    if (existing != null) {
+                        // Two blocks may answer one native function — `openOuter` has an intro
+                        // arm and a symmetric one — but they must answer the **same** codes, or
+                        // one of the two would leave a reachable code to `unexpected`.
+                        assertEquals(
+                            "$function is answered twice with different arms (${source.name})",
+                            existing,
+                            codes,
+                        )
+                    }
+                    arms[function] = codes
+                }
+        }
 
         for ((function, codes) in declared) {
             if (function in nullOnFailure) {
