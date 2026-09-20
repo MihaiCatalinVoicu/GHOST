@@ -56,7 +56,11 @@ features() { # $1 = crate; features enabled on it in the shipped client graph
   { printf '%s\n' "$out" | grep -oE "$1 feature \"[a-z0-9_-]+\"" || true; } \
     | sed -E 's/.*"(.*)"/\1/' | sort -u
 }
-has() { printf '%s\n' "$1" | grep -qx "$2"; }
+# A here-string, not `printf ... | grep -qx ...`: under `set -o pipefail`, grep's early exit on a
+# match can SIGPIPE printf while it is still writing a large haystack (e.g. `pkgs`, the whole
+# shipped dependency graph), and the pipeline's exit status then reflects the SIGPIPE, not the
+# match (self-test.sh and clippy-clearnet-fixture.sh hit the same class; see their comments).
+has() { grep -qx "$2" <<< "$1"; }
 
 arti="$(features arti-client)"
 [ -n "$arti" ] || { fail "no arti-client features resolved"; finish rust-feature-policy; }
@@ -118,7 +122,7 @@ dm_allowed="default jni-bridge"
   && dm_allowed="$(printf '%s\n' $dm_allowed | grep -vx "$GHOST_POLICY_DM_FORBID_EXTRA" || true)"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  if ! printf '%s\n' $dm_allowed | grep -qx "$f"; then
+  if ! grep -qx "$f" <<< "$(printf '%s\n' $dm_allowed)"; then
     fail "ghost-client-dm feature '$f' is enabled in the client; G-R2 allows: $(echo $dm_allowed)"
   fi
 done <<< "$(features ghost-client-dm)"
@@ -131,7 +135,7 @@ check_rsa() { # $1 = version, $2 = allowed direct dependents
   users="$(printf '%s\n' "$raw" | awk 'NR>1 && NF {print $1}' | sort -u)"
   while IFS= read -r u; do
     [ -n "$u" ] || continue
-    if ! printf '%s\n' $2 | grep -qx "$u"; then
+    if ! grep -qx "$u" <<< "$(printf '%s\n' $2)"; then
       fail "'$u' depends on rsa $1 directly: re-review RUSTSEC-2023-0071 in deny.toml first"
     fi
   done <<< "$users"

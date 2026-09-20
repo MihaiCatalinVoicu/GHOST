@@ -16,7 +16,12 @@ for part in apk-notices-preamble.txt THIRD_PARTY_NOTICES-android.txt THIRD_PARTY
 done
 [ "$FAILURES" -eq 0 ] || finish apk-notices
 cat "$LIC/apk-notices-preamble.txt" "$LIC/THIRD_PARTY_NOTICES-android.txt" "$LIC/THIRD_PARTY_NOTICES-client-net.txt" > "$work/expected"
-if ! unzip -Z1 "$APK" 2>/dev/null | grep -qx 'assets/THIRD_PARTY_NOTICES.txt'; then
+# A here-string, not `unzip -Z1 ... | grep -qx ...`: under `set -o pipefail`, grep's early exit on
+# a match can SIGPIPE unzip while it is still listing entries, and the pipeline's exit status then
+# reflects the SIGPIPE, not the match (self-test.sh and clippy-clearnet-fixture.sh hit the same
+# class; see their comments).
+listing="$(unzip -Z1 "$APK" 2>/dev/null || true)"
+if ! grep -qx 'assets/THIRD_PARTY_NOTICES.txt' <<< "$listing"; then
   fail "$APK carries no assets/THIRD_PARTY_NOTICES.txt"
 else
   unzip -p "$APK" assets/THIRD_PARTY_NOTICES.txt > "$work/actual"

@@ -175,11 +175,17 @@ fetchers() {
     scan -E "$FETCH_REGEX"
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      if code "$f" | grep -iE "$DOWNLOAD_REGEX" | grep -qi 'getmonero\.org'; then printf '%s\n' "$f"; fi
+      # Here-strings, not `code "$f" | grep -qi ...`: under `set -o pipefail`, a `-q` consumer's
+      # early exit on a match can SIGPIPE an upstream producer still writing, and the pipeline's
+      # exit status then reflects the SIGPIPE, not the match (self-test.sh and
+      # clippy-clearnet-fixture.sh hit the same class; see their comments).
+      downloads="$(grep -iE "$DOWNLOAD_REGEX" <<< "$(code "$f")")"
+      if grep -qi 'getmonero\.org' <<< "$downloads"; then printf '%s\n' "$f"; fi
     done < <(scan -F "getmonero.org")
     for f in "$INFRA"/* "$WORKFLOWS"/*; do
       [ -f "$f" ] || continue
-      if code "$f" | grep -qE "$BINARY_REGEX" && code "$f" | grep -qE "$DOWNLOAD_REGEX"; then printf '%s\n' "$f"; fi
+      src="$(code "$f")"
+      if grep -qE "$BINARY_REGEX" <<< "$src" && grep -qE "$DOWNLOAD_REGEX" <<< "$src"; then printf '%s\n' "$f"; fi
     done
     for f in "$INFRA"/Dockerfile*; do [ -f "$f" ] && printf '%s\n' "$f"; done
   } | grep -v -x -F -e "$PIN" -e "$SELF" | sort -u || true
@@ -199,7 +205,7 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   [ "$f" = "$JOB" ] && continue
   r="$(rel "$f")"
-  code "$f" | grep -qF "$PIN_NAME" || fail "$r: fetches Monero binaries without reading ghost/$PIN_REL"
+  grep -qF "$PIN_NAME" <<< "$(code "$f")" || fail "$r: fetches Monero binaries without reading ghost/$PIN_REL"
   own_values "$f" "$r"
   case "$(check_order "$f")" in
     none) fail "$r: fetches Monero binaries without checking them with sha256sum -c" ;;
@@ -235,7 +241,7 @@ pr_paths() {
 if [ ! -f "$JOB" ]; then
   fail "$JOB_REL: the regtest workflow is missing"
 else
-  code "$JOB" | grep -qF "$PIN_REL" || fail "$JOB_REL: does not read ghost/$PIN_REL"
+  grep -qF "$PIN_REL" <<< "$(code "$JOB")" || fail "$JOB_REL: does not read ghost/$PIN_REL"
   own_values "$JOB" "$JOB_REL"
   case "$(check_order "$JOB")" in
     none) fail "$JOB_REL: does not check the archive with sha256sum -c" ;;

@@ -13,7 +13,11 @@ out="$(cargo clippy --locked -p ghost-client-net --features clippy-fixture --mes
 # own non-zero exit then becomes the pipeline's status even though grep matched (or found nothing
 # and exited 1, which is also swallowed the same way here). Here-strings avoid the second process.
 if grep -qE '^error\[E[0-9]+\]' <<< "$out"; then
-  grep -E '^error\[E[0-9]+\]' <<< "$out" | head -5 >&2
+  # || true: head -5 can close its end while grep is still writing more matching lines, and under
+  # `set -o pipefail` that SIGPIPEs grep and aborts the script right here (this line is a bare
+  # statement, not an `if`/`||` condition) instead of reaching the `fail` below (license-notices.sh
+  # guards its own `diff | head` the same way).
+  grep -E '^error\[E[0-9]+\]' <<< "$out" | head -5 >&2 || true
   fail "the clippy fixture does not compile; the bans were not exercised"
 fi
 paths="$(grep -oE 'path = "[^"]+"' "$CONF" | sed -E 's/path = "(.*)"/\1/')"
