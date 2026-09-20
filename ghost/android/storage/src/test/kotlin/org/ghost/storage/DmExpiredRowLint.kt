@@ -44,9 +44,17 @@ object DmExpiredRowLint {
     /** Table -> the column whose value makes a row expired, per §10.6 and §10.7 point 4. */
     val expiringTables: Map<String, String> = mapOf("dm_message" to "delete_at_minute")
 
-    /** One SQL string literal found in a production source. */
+    /**
+     * One SQL string literal found in a production source. It renders as `path:line: sql` from the
+     * Android root down, so a failure can be opened without searching for the file first.
+     */
     data class Found(val file: File, val line: Int, val sql: String) {
-        override fun toString(): String = "${file.name}:$line: ${sql.take(120)}"
+        override fun toString(): String {
+            val path = file.invariantSeparatorsPath
+            val marker = path.indexOf("/src/main/")
+            val shown = if (marker < 0) path else path.substring(path.lastIndexOf('/', marker - 1) + 1)
+            return "$shown:$line: ${sql.take(160)}"
+        }
     }
 
     /**
