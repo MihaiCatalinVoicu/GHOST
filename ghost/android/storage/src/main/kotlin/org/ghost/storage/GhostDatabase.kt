@@ -106,23 +106,31 @@ class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHel
  */
 class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
     override fun exec(sql: String, args: List<Any?>) {
-        if (args.isEmpty()) db.execSQL(sql) else db.execSQL(sql, args.onEach(::requireBindable).toTypedArray())
+        try {
+            if (args.isEmpty()) db.execSQL(sql) else db.execSQL(sql, args.onEach(::requireBindable).toTypedArray())
+        } catch (e: RuntimeException) {
+            throw StorageFull.wrap(e)
+        }
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int =
-        db.compileStatement(sql).use { statement ->
-            args.forEachIndexed { i, arg ->
-                val index = i + 1
-                when (arg) {
-                    null -> statement.bindNull(index)
-                    is ByteArray -> statement.bindBlob(index, arg)
-                    is Long -> statement.bindLong(index, arg)
-                    is Int -> statement.bindLong(index, arg.toLong())
-                    is String -> statement.bindString(index, arg)
-                    else -> requireBindable(arg)
+        try {
+            db.compileStatement(sql).use { statement ->
+                args.forEachIndexed { i, arg ->
+                    val index = i + 1
+                    when (arg) {
+                        null -> statement.bindNull(index)
+                        is ByteArray -> statement.bindBlob(index, arg)
+                        is Long -> statement.bindLong(index, arg)
+                        is Int -> statement.bindLong(index, arg.toLong())
+                        is String -> statement.bindString(index, arg)
+                        else -> requireBindable(arg)
+                    }
                 }
+                statement.executeUpdateDelete()
             }
-            statement.executeUpdateDelete()
+        } catch (e: RuntimeException) {
+            throw StorageFull.wrap(e)
         }
 
     /**
@@ -151,12 +159,31 @@ class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
     override fun <T> transaction(block: () -> T): T {
         check(!db.inTransaction()) { "nested transaction on the same thread" }
         db.beginTransaction()
+        var failure: Throwable? = null
         try {
             val result = block()
             db.setTransactionSuccessful()
-            return result
-        } finally {
+            // endTransaction issues the COMMIT, so it belongs inside the guarded region: a commit
+            // that runs out of space fails here, not in a statement (§21.12 point 1).
             db.endTransaction()
+            return result
+        } catch (e: Throwable) {
+            failure = e
+            throw if (e is RuntimeException) StorageFull.wrap(e) else e
+        } finally {
+            // The driver leaves the frame open only when the work failed before the commit: the
+            // commit itself pops it, successfully or not. Ending it here rolls the transaction back.
+            if (db.inTransaction()) {
+                try {
+                    db.endTransaction()
+                } catch (e: RuntimeException) {
+                    // SQLite rolls its own transaction back on SQLITE_FULL, so this rollback can
+                    // fail; what the caller must see is the failure that started it, with the
+                    // second one attached (the JVM double does the same).
+                    val started = failure
+                    if (started != null) started.addSuppressed(e) else throw StorageFull.wrap(e)
+                }
+            }
         }
     }
 

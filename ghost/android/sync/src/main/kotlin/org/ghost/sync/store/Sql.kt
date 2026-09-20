@@ -13,6 +13,10 @@ object Time {
     const val MINUTE: Long = 60
     const val HOUR: Long = 3_600
     const val DAY: Long = 86_400
+    const val WEEK: Long = 604_800
+
+    /** First Monday of the ISO-week grid the relays judge periods by (Phase 8 design §4.1). */
+    const val WEEK_ORIGIN: Long = 345_600
 
     fun floorMinute(seconds: Long): Long = Math.floorDiv(seconds, MINUTE) * MINUTE
 
@@ -24,6 +28,17 @@ object Time {
 
     /** Epoch day of a unix time. */
     fun day(seconds: Long): Long = Math.floorDiv(seconds, DAY)
+
+    /** ISO week index of a unix time, on the grid of [WEEK_ORIGIN]. */
+    fun week(seconds: Long): Long = Math.floorDiv(seconds - WEEK_ORIGIN, WEEK)
+
+    /**
+     * The week a Phase 8 write capability belongs to, from its declared expiry (Phase 9 design §4.4
+     * point 3): a redeemed capability of week c expires at `start(c + 1) + 1 h`, so the week is the
+     * one holding `expiry − 1 h − 1 s`. The relay judges a registration's period by the capability
+     * this way too, so the client and the relay agree without either reading the other's clock.
+     */
+    fun capabilityWeek(expiryHour: Long): Long = week(expiryHour - HOUR - 1)
 
     /**
      * A due time `delaySeconds` from now at minute granularity: the current minute plus the delay

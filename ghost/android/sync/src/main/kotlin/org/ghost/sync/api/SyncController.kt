@@ -25,6 +25,13 @@ interface SyncController {
     fun setParticipant(p: SessionParticipant?)
 
     /**
+     * Installs the one consumer tail (Phase 9 design §13.3 item 6: the DM layer's drain), or removes
+     * it with null. One slot, set once at wiring like the participant and the inbox listener; it
+     * takes effect from the next background session or quiet run.
+     */
+    fun setConsumerTail(tail: ConsumerTail?)
+
+    /**
      * Runs [block] exactly once, on its own thread, with a USER_ISSUER_CALL session (onboarding's
      * `RedeemInvite` and the optional STANDARD-mode buttons, declared L3 samples). For user actions
      * only, while the app is visible: READY on the one transport, the foreground session's if it

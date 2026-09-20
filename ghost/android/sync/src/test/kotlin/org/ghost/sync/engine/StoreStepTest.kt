@@ -1,5 +1,6 @@
 package org.ghost.sync.engine
 
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.PrivacyMode
@@ -48,7 +49,7 @@ class StoreStepTest {
     private fun fixture(w: EngineWorld): Fixture {
         w.mode = PrivacyMode.HIGH
         val relays = w.relays(1, 2, 3)
-        val ns = w.namespace(1, relays, listen = false, sendDelay = SendDelay.OFF)
+        val ns = w.namespace(1, relays, listen = false, sendDelay = SendDelay.OFF, consumer = Consumer.CHANNEL)
         relays.forEach { w.capability(it, ns) }
         val (session, driver) = w.session()
         driver.runUntil(0)

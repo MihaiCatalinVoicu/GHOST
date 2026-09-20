@@ -34,9 +34,12 @@ object RetentionPolicy {
     /** Rounds an epoch day up to the next multiple of 7 (the schema CHECK). */
     fun ceil7(day: Long): Long = -Math.floorDiv(-day, 7L) * 7L
 
-    /** Own blob, while its op exists and when the op row is deleted: `ceil7(today + TTL days + 8)`. */
+    /** Seconds as whole days, rounded up: every user of a TTL in days rounds up (design §10.2 row 7). */
+    fun ceilDays(seconds: Long): Long = -Math.floorDiv(-seconds, Time.DAY)
+
+    /** Own blob, while its op exists and when the op row is deleted: `ceil7(today + ceil(TTL in days) + 8)`. */
     fun ownRetainDay(nowEpochSeconds: Long, ttlSeconds: Long): Long =
-        ceil7(Time.day(nowEpochSeconds) + ttlSeconds / Time.DAY + OWN_EXTRA_DAYS)
+        ceil7(Time.day(nowEpochSeconds) + ceilDays(ttlSeconds) + OWN_EXTRA_DAYS)
 
     /** Listed or unavailable row: `ceil7(last listing day + 111)`. */
     fun listedRetainDay(nowEpochSeconds: Long): Long = ceil7(Time.day(nowEpochSeconds) + LISTED_RETAIN_DAYS)

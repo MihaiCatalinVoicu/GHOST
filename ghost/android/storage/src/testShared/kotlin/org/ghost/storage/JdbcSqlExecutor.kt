@@ -63,13 +63,22 @@ class JdbcSqlExecutor(
 
     override fun exec(sql: String, args: List<Any?>) = locked {
         injectFailure(sql)
-        withStatement(sql) { ps -> bind(ps, args); ps.execute() }
+        // SQLITE_FULL reaches the caller as StorageFullException on both executors (§13.1).
+        try {
+            withStatement(sql) { ps -> bind(ps, args); ps.execute() }
+        } catch (e: java.sql.SQLException) {
+            throw StorageFull.wrap(e)
+        }
         Unit
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int = locked {
         injectFailure(sql)
-        withStatement(sql) { ps -> bind(ps, args); ps.executeUpdate() }
+        try {
+            withStatement(sql) { ps -> bind(ps, args); ps.executeUpdate() }
+        } catch (e: java.sql.SQLException) {
+            throw StorageFull.wrap(e)
+        }
     }
 
     override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) = locked {
@@ -96,10 +105,21 @@ class JdbcSqlExecutor(
                 conn.autoCommit = false
                 try {
                     val r = block()
-                    conn.commit()
+                    try {
+                        conn.commit()
+                    } catch (e: java.sql.SQLException) {
+                        throw StorageFull.wrap(e)
+                    }
                     r
                 } catch (t: Throwable) {
-                    conn.rollback()
+                    // SQLite rolls its own transaction back on some errors (SQLITE_FULL), so the
+                    // explicit rollback can fail with "no transaction is active"; what the caller
+                    // must see is the failure that started this, with the second one attached.
+                    try {
+                        conn.rollback()
+                    } catch (r: java.sql.SQLException) {
+                        t.addSuppressed(r)
+                    }
                     throw t
                 } finally {
                     conn.autoCommit = true

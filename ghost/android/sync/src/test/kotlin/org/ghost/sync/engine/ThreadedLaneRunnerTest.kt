@@ -13,8 +13,11 @@ import org.ghost.sync.api.RelayEntry
 import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.port.FetchedBlob
 import org.ghost.sync.port.ListPage
+import org.ghost.sync.port.RegisterAnswer
+import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.StoreReceipt
 import org.ghost.sync.port.SyncClock
@@ -69,6 +72,17 @@ class ThreadedLaneRunnerTest {
 
         override fun check(relay: OnionAddress, ns: NamespaceId, capability: ByteArray, hashes: List<BlobHash>, deadlineMillis: Int): Set<BlobHash> =
             hashes.filter { space(relay, ns).containsKey(it) }.toSet()
+
+        override fun registerKey(
+            relay: OnionAddress,
+            ns: NamespaceId,
+            capability: ByteArray,
+            periodId: Long,
+            kind: KeyKind,
+            verifier: ByteArray,
+            requestId: ByteArray,
+            deadlineMillis: Int,
+        ): RegisterAnswer = RegisterAnswer(RegisterResult.OK, RealClock.epochSeconds() + 14L * 86_400)
     }
 
     private class QuickTransport(override val relays: RelayPort) : TransportPort {
@@ -86,7 +100,7 @@ class ThreadedLaneRunnerTest {
         }
     }
 
-    private class World(steps: Steps = Steps.DEFAULT) : AutoCloseable {
+    private class World(steps: Steps = Steps.default()) : AutoCloseable {
         private val dir: File = Files.createTempDirectory("ghost-runner-test").toFile()
         val sql = JdbcSqlExecutor(File(dir, "sync.db").absolutePath).also { MigrationRunner(it).migrate() }
         val db = SyncDatabase(sql)

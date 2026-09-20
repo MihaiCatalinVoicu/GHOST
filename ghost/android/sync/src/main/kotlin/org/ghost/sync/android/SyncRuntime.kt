@@ -3,6 +3,7 @@ package org.ghost.sync.android
 import org.ghost.network.NetworkException
 import org.ghost.network.TorIssuerTransport
 import org.ghost.storage.SqlExecutor
+import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
@@ -147,7 +148,7 @@ internal class SyncRuntime(
     private val random: RandomSources,
     private val policy: TrafficPolicy,
     private val threads: ThreadFactory,
-    private val steps: Steps = Steps.DEFAULT,
+    private val steps: Steps = Steps.default(),
     private val leases: LeasePort = ClosedLeases,
 ) {
     private class Run(val kind: SessionKind, val session: Session, val ticket: JobTicket?, val lease: TransportLease, val hold: RedeemHold) {
@@ -166,7 +167,13 @@ internal class SyncRuntime(
     }
 
     /** A quiet run: the transport READY for the participant alone. */
-    private class Quiet(val engine: SyncEngine, val ticket: JobTicket, val lease: TransportLease, val deadline: Long) {
+    private class Quiet(
+        val engine: SyncEngine,
+        val ticket: JobTicket,
+        val lease: TransportLease,
+        val startedAt: Long,
+        val deadline: Long,
+    ) {
         /** The participant returned, or was never called. */
         val done = CountDownLatch(1)
     }
@@ -199,6 +206,9 @@ internal class SyncRuntime(
 
     @Volatile
     private var participant: SessionParticipant? = null
+
+    @Volatile
+    private var consumerTail: ConsumerTail? = null
 
     @Volatile
     private var engine: SyncEngine? = null
@@ -320,6 +330,11 @@ internal class SyncRuntime(
     /** The one session participant; it takes effect from the next session, quiet run or user call. */
     fun setParticipant(p: SessionParticipant?) {
         participant = p
+    }
+
+    /** The one consumer tail; it takes effect from the next background session or quiet run. */
+    fun setConsumerTail(tail: ConsumerTail?) {
+        consumerTail = tail
     }
 
     /** Runs [block] exactly once on its own thread with a USER_ISSUER_CALL session (see the class doc). */
@@ -599,8 +614,50 @@ internal class SyncRuntime(
         if (!run.session.engine.disabled) run.session.engine.setTransportStatus(TransportStatus.OFF)
         // A runner that failed left its session unfinished; the process is ending (§11.2 #11).
         if (run.runner.hasFailed) halted = true
-        run.ticket?.finish()
+        // The consumer tail runs after the lanes, the redeem hold and the transport close, so
+        // nothing relay-visible can depend on how much the consumer had to do (Phase 9 §13.3 item 6).
+        if (run.kind == SessionKind.BACKGROUND) {
+            runConsumerTail(ParticipantKind.BACKGROUND, run.ticket, run.session.startedAt + policy.jobBudgetMillis)
+        } else {
+            run.ticket?.finish()
+        }
         reconcile()
+    }
+
+    /**
+     * Runs the consumer tail of a finished background run (Phase 9 design §13.3 item 6), on its own
+     * thread after the transport is closed, and reports the job's end when it returns. A watchdog
+     * reports the end at the deadline whether or not the tail has returned, so a tail that runs to
+     * its deadline never delays the job past it; [JobTicket.finish] reports at most once.
+     */
+    private fun runConsumerTail(kind: ParticipantKind, ticket: JobTicket?, jobDeadline: Long) {
+        val tail = consumerTail
+        // No tail after a wipe (the database is being closed), after a halt, or once JobScheduler
+        // has taken the job back: the tail is local work the next run does instead.
+        if (tail == null || wiped || halted || ticket?.stopped == true) {
+            ticket?.finish()
+            return
+        }
+        val deadline = jobDeadline - policy.consumerTailReserveMillis
+        val done = CountDownLatch(1)
+        startCallbackThread {
+            try {
+                tail.run(kind, deadline)
+            } finally {
+                done.countDown()
+                post { ticket?.finish() }
+            }
+        }
+        threads.newThread {
+            while (true) {
+                val left = deadline - clock.monotonicMillis()
+                if (left <= 0) {
+                    post { ticket?.finish() }
+                    break
+                }
+                if (done.await(minOf(left, WATCHDOG_STEP_MILLIS), TimeUnit.MILLISECONDS)) break
+            }
+        }.start()
     }
 
     /**
@@ -640,7 +697,7 @@ internal class SyncRuntime(
 
     private fun startQuiet(e: SyncEngine, ticket: JobTicket, p: SessionParticipant) {
         val startedAt = clock.monotonicMillis()
-        val q = Quiet(e, ticket, leases.openLease(), startedAt + policy.backgroundSessionMillis)
+        val q = Quiet(e, ticket, leases.openLease(), startedAt, startedAt + policy.backgroundSessionMillis)
         setActivity { quiet = q }
         val session = schedule.session(ParticipantKind.QUIET, q.lease, q.deadline, e::clockTrusted, { e.stores.database.inTransaction })
         startCallbackThread {
@@ -696,7 +753,8 @@ internal class SyncRuntime(
         transport.abort()
         setActivity { quiet = null }
         if (!q.engine.disabled) q.engine.setTransportStatus(TransportStatus.OFF)
-        q.ticket.finish()
+        // After the issuer call returned and the transport closed (Phase 9 design §13.3 item 6).
+        runConsumerTail(ParticipantKind.QUIET, q.ticket, q.startedAt + policy.jobBudgetMillis)
     }
 
     /**

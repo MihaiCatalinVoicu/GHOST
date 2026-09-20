@@ -8,6 +8,7 @@ import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.RelayEntry
@@ -18,6 +19,8 @@ import org.ghost.sync.engine.SessionKind
 import org.ghost.sync.engine.TrafficPolicy
 import org.ghost.sync.port.FetchedBlob
 import org.ghost.sync.port.ListPage
+import org.ghost.sync.port.RegisterAnswer
+import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.StoreReceipt
 import org.ghost.sync.port.SyncClock
@@ -110,6 +113,17 @@ class SyncRuntimeTest {
 
         override fun check(relay: OnionAddress, ns: NamespaceId, capability: ByteArray, hashes: List<BlobHash>, deadlineMillis: Int): Set<BlobHash> =
             call { emptySet() }
+
+        override fun registerKey(
+            relay: OnionAddress,
+            ns: NamespaceId,
+            capability: ByteArray,
+            periodId: Long,
+            kind: KeyKind,
+            verifier: ByteArray,
+            requestId: ByteArray,
+            deadlineMillis: Int,
+        ): RegisterAnswer = call { RegisterAnswer(RegisterResult.OK, RealClock.epochSeconds() + 14L * 86_400) }
     }
 
     /** Counts ensures and aborts; an abort ends held calls (and a held bootstrap) like closing the native transport. */

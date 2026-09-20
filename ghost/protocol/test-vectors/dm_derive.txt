@@ -1,0 +1,87 @@
+# GHOST DM derivations, contact card v2 and state wrapping (Phase 9 design faza9-dm.md §3.1, §3.2,
+# §3.3, §6.3, §6.7, §2.5, §22.8.3). Generated and checked by
+# client-core/dm/tests/vectors.rs::dm_derive_vectors; an independent implementation replays it.
+#
+# Conventions
+#   Every value is lower-case hex unless it is a decimal number or a string.
+#   hkdf(ikm, salt, info) = HKDF-SHA256(ikm, salt, info, L = 32); an absent salt is the empty one.
+#   m  = hkdf(root_entropy, -, "ghost/v1/messaging")      (the Phase 3 MESSAGING branch)
+#   Seed-level values are hkdf(m, -, label || params); card-level values are
+#   hkdf(card_secret_i, -, label || params). Parameters are big-endian.
+#
+# The card link is "ghost://contact/" || z-base-32(card), 226 characters.
+
+[seed]
+root_entropy = 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+messaging_label = ghost/v1/messaging
+messaging_seed = 82453de069051555acf43dc3b93fa3be1a218d828bc156f7c1f4ad77a66f50cf
+
+[olm_identity]
+secret_label = ghost/v1/dm/olm-identity
+olm_identity_secret = 79cdcb451fc995e1e37a34488b1620ace66ba06281b07f90ff9a989d7e857b42
+olm_identity_pub = d80580eca7efdcd429060d7c25bb83d731943aef3cfecd947b048b72d8b00603
+account_signing_label = ghost/v1/dm/olm-account-signing
+olm_account_signing_seed = 2effc5ecfd3b5519b55f1eb591fd7ede5519106e5a457c45cdaeebb9e6fa3c2d
+
+[seed_values]
+card_index = 0
+card_secret = 110b3f714127e58dba742092287aae2f51ba9d32faa6f8c9a9d533e00525f58d
+inbox_read_secret_slot_0 = 3fb4bc24628158baa30ddba39ca123c8ae0ea8a1064eb52b01d52541800ebb9a
+inbox_read_secret_slot_7 = 3097b2d3d3b5b5baae002f1dbfab748a202c07f31de91c070d0e237b1f70efdb
+schedule_key = 8483d4f538f09f2d89ad67f09ded632265483b20dab51ef40d973dda432cbfe8
+card_secret_index_1 = dd5d716f553e17fe6f56b39406b43b915b9181f63cede011114ec58cc4f79be4
+
+[card_values]
+inbox_namespace = 9d0c9932b13a16ec5bffb12395c66b743e0eead015f9de7b5e4f2a0b3959d0f8
+bundle_namespace = 791fad75c9e5f6182532f5c25ca3ea21402958eb57ade504ac3a77d7c7d8e6d9
+deposit_secret_slot_0 = 8c49b6e968f97604cb2593a726039a042ee61e129e2d352ec4416a1fe3662190
+deposit_secret_slot_7 = b50abf5d4fa6041aac03b669e82055e6b882e96e11d2b1afe348e7aecf24109f
+bundle_read_secret_slot_0 = 99d48efbb848956c542ff31c0ce2808e065d50f0494836d9ee3adefd19c7d054
+bundle_seal_key = dafbd126cb4e1d38134293e25e150e0c39529a3613c463595e21bc17915c8db6
+intro_outer_key = bbb26cc58dae4b40800dc48c91cb493490f0fc425a02e41433b3355e6514f307
+
+[recognition]
+recognition_label = ghost/v1/dm-recognition
+recognition_key_of_bundle_seal = bdf90039b646ee83416717efa1a88454cce215c2cbf0747ffb63fe0f49a12c49
+recognition_key_of_intro_outer = 0ee0aedb34a066f4a5b8e0d312f2952e6744f8a755307329a62aabc86a70b6b9
+
+[pair]
+epoch_label = ghost/v1/dm/pair-epoch
+next_label = ghost/v1/dm/pair-next
+pair_root = 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+base_week = 2870
+week_key_2870 = 40f1a1a1006b0f5fc626728ebab108fffe4e5f9a4956df8a2c32abbf3831097e
+week_key_2871 = 1a096e0295d684cc272a8ea07a6bb6cc53257baac532ef8e5a61655540881ca5
+week_key_2872 = 2477405547ef39cd03cb274d6318f1a3ddcc51acdacc3f444638ee9341710194
+
+[provisional]
+session_binding_label = ghost/v1/dm-session-binding
+provisional_label = ghost/v1/dm/prov
+oi_initiator = 1111111111111111111111111111111111111111111111111111111111111111
+base_key = 1212121212121212121212121212121212121212121212121212121212121212
+fallback_key = 1313131313131313131313131313131313131313131313131313131313131313
+oi_responder = 1414141414141414141414141414141414141414141414141414141414141414
+session_binding = 1ae0d260b4b9b3b3f95f45f00a1eb06ac3f3a6241fc0103acfdaa4fc58b6d388
+reply_seed = 6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b
+provisional_key_dir_01 = 92f232f1c998bfa36f3dd46e47df9b992534a95b76938678ea2e49646dc020b1
+provisional_key_dir_02 = 9ee170f02a4513668ac7d75d22d2260e863397ddb34a478ae2fcc04ba2809c27
+
+[card]
+card_sign_label = ghost/v1/contact-card
+identity_seed = d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0
+identity_pk = b79a5770956e8d5e416f49b671092d075615b1ac6ed0a0507b0c9fb2defb008b
+ghost1 = ghost1y8f49g7s1gbpc1x9ubahojgi73qxnks5qhypnqsfnrzmxq3j6o4e6on9p91y
+card = 020000b79a5770956e8d5e416f49b671092d075615b1ac6ed0a0507b0c9fb2defb008b110b3f714127e58dba742092287aae2f51ba9d32faa6f8c9a9d533e00525f58de68e474e50adb8ce2ed9029f9b8ad139d9b237d530937723ab23cf4456d2caa4861340c3298d81b8b909654ae18461310c76afae50ad2cc4d10e109be2c3b10b
+card_link = ghost://contact/yeyybph4k7ajk5wpm3ys61psqrr14b4snsa4a5sowbe8sdr9smxxsyrmnrfu6hkbr91a5quwrnjno6iqf7e5i8j19kuxt1pj4w36ybjf6sg6pd18j3ek5qgqf5cof8h5tmeuusp1g9kubr5zrqi18u4rk5jcijrgnpycgkcpoghm1nmfjmoaeajtbt5k9m1oiwscjweqnnp6fo7tbc
+
+[wrap]
+wrap_label = ghost/v1/wrap/
+state_key = 7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c
+contact_id = 21212121212121212121212121212121
+session_id = 2222222222222222222222222222222222222222222222222222222222222222
+nonce = 232323232323232323232323
+olm_session_binding = 212121212121212121212121212121212222222222222222222222222222222222222222222222222222222222222222
+wrap_plaintext = 67686f73742f76312077726170706564207374617465
+olm_session_envelope = 2323232323232323232323231962d6059a88f7ba650156857c5f3ccedfd2126cb7805a51092710819d6770d5cb026c5688ab
+pair_key_binding_week_2870 = 212121212121212121212121212121210100020000000000000b36
+generation_binding = 000000072424242424242424242424242424242424242424242424242424242424242424

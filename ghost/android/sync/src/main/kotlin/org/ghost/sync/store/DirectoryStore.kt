@@ -1,6 +1,7 @@
 package org.ghost.sync.store
 
 import org.ghost.network.OnionAddress
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.RelayEntry
@@ -15,8 +16,14 @@ internal class RelayRow(val id: RelayId, val entry: RelayEntry, val active: Bool
 }
 
 /** A registered namespace. */
-internal class NamespaceRow(val id: NamespaceId, val consumer: Consumer, val listening: Boolean, val sendDelay: SendDelay) {
-    override fun toString(): String = "NamespaceRow($consumer, listening=$listening, $sendDelay)"
+internal class NamespaceRow(
+    val id: NamespaceId,
+    val consumer: Consumer,
+    val listening: Boolean,
+    val sendDelay: SendDelay,
+    val capabilitySource: CapabilitySource,
+) {
+    override fun toString(): String = "NamespaceRow($consumer, listening=$listening, $sendDelay, $capabilitySource)"
 }
 
 /** A pair the read lane lists: listening namespace × active relay of its set with a usable read (or write) token. */
@@ -104,18 +111,24 @@ internal class DirectoryStore(
 
     fun namespace(tx: SyncTransaction, ns: NamespaceId): NamespaceRow? =
         tx.sql.single(
-            "SELECT consumer, listening, send_delay FROM sync_namespace WHERE namespace_id = ?1",
+            "SELECT consumer, listening, send_delay, capability_source FROM sync_namespace WHERE namespace_id = ?1",
             listOf(ns.raw),
-        ) { NamespaceRow(ns, Consumer.ofCode(it.string(0)), it.long(1) == 1L, SendDelay.ofCode(it.string(2))) }
+        ) {
+            NamespaceRow(ns, Consumer.ofCode(it.string(0)), it.long(1) == 1L, SendDelay.ofCode(it.string(2)), CapabilitySource.ofCode(it.string(3)))
+        }
 
     fun namespaces(tx: SyncTransaction): List<NamespaceRow> =
-        tx.sql.rows("SELECT namespace_id, consumer, listening, send_delay FROM sync_namespace ORDER BY namespace_id") {
-            NamespaceRow(NamespaceId(it.blob(0)), Consumer.ofCode(it.string(1)), it.long(2) == 1L, SendDelay.ofCode(it.string(3)))
+        tx.sql.rows("SELECT namespace_id, consumer, listening, send_delay, capability_source FROM sync_namespace ORDER BY namespace_id") {
+            NamespaceRow(
+                NamespaceId(it.blob(0)), Consumer.ofCode(it.string(1)), it.long(2) == 1L, SendDelay.ofCode(it.string(3)),
+                CapabilitySource.ofCode(it.string(4)),
+            )
         }
 
     /**
      * Registers [ns] or reuses its row (a known namespace keeps its consumer and its tombstones),
-     * then applies [relays] as [setRelays] does.
+     * then applies [relays] as [setRelays] does. A DM namespace may not turn the send delay off
+     * (Phase 9 design §13.3 item 8); the v4 trigger refuses it as well.
      */
     fun register(
         tx: SyncTransaction,
@@ -124,16 +137,19 @@ internal class DirectoryStore(
         relays: Set<RelayId>,
         listen: Boolean,
         sendDelay: SendDelay,
+        capabilitySource: CapabilitySource,
         now: Long,
     ) {
         val sql = tx.sql
         val existing = namespace(tx, ns)
         check(existing == null || existing.consumer == consumer) { "namespace is registered for another consumer" }
+        checkDmDelay(consumer, sendDelay)
         sql.updateExactly(
             1,
-            "INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?1, ?2, ?3, ?4) " +
-                "ON CONFLICT(namespace_id) DO UPDATE SET listening = excluded.listening, send_delay = excluded.send_delay",
-            listOf(ns.raw, consumer.code, if (listen) 1 else 0, sendDelay.code),
+            "INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay, capability_source) VALUES (?1, ?2, ?3, ?4, ?5) " +
+                "ON CONFLICT(namespace_id) DO UPDATE SET listening = excluded.listening, send_delay = excluded.send_delay, " +
+                "capability_source = excluded.capability_source",
+            listOf(ns.raw, consumer.code, if (listen) 1 else 0, sendDelay.code, capabilitySource.code),
         )
         // A known write-only namespace now listens: own tombstones for its ops (design §11.5 #1).
         if (listen && existing != null && !existing.listening) outbox.writeOwnTombstones(tx, ns, now)
@@ -174,8 +190,18 @@ internal class DirectoryStore(
     }
 
     fun setSendDelay(tx: SyncTransaction, ns: NamespaceId, sendDelay: SendDelay) {
-        checkNotNull(namespace(tx, ns)) { "namespace is not registered" }
+        val existing = checkNotNull(namespace(tx, ns)) { "namespace is not registered" }
+        checkDmDelay(existing.consumer, sendDelay)
         tx.sql.updateExactly(1, "UPDATE sync_namespace SET send_delay = ?1 WHERE namespace_id = ?2", listOf(sendDelay.code, ns.raw))
+    }
+
+    /**
+     * A DM namespace keeps its send delay (Phase 9 design §13.3 item 8): without it a store would
+     * name the minute the user pressed send. A Kotlin pre-check, so the v4 trigger is a backstop and
+     * never an expected path (§21.4 point 5).
+     */
+    private fun checkDmDelay(consumer: Consumer, sendDelay: SendDelay) {
+        check(consumer != Consumer.DM || sendDelay != SendDelay.OFF) { "DM namespaces cannot turn the send delay off" }
     }
 
     /**
@@ -197,6 +223,9 @@ internal class DirectoryStore(
         sql.execUpdate("DELETE FROM namespace_relay WHERE namespace_id = ?1", listOf(ns.raw))
         sql.execUpdate("DELETE FROM relay_cursor WHERE namespace_id = ?1", listOf(ns.raw))
         val capabilitiesDropped = sql.execUpdate("DELETE FROM relay_capability WHERE namespace_id = ?1", listOf(ns.raw))
+        // Key registrations of a namespace we no longer use are work that must not outlive it; the
+        // relay forgets its own records on its own (§4.6).
+        sql.execUpdate("DELETE FROM relay_key_registration WHERE namespace_id = ?1", listOf(ns.raw))
         sql.execUpdate("DELETE FROM inbox_blob WHERE namespace_id = ?1 AND state IN ('listed', 'unavailable')", listOf(ns.raw))
         sql.execUpdate(
             "DELETE FROM sync_namespace WHERE namespace_id = ?1 AND NOT EXISTS (SELECT 1 FROM inbox_blob b WHERE b.namespace_id = ?1)",

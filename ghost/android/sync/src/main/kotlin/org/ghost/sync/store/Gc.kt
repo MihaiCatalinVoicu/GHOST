@@ -1,5 +1,6 @@
 package org.ghost.sync.store
 
+import org.ghost.storage.Checkpoint
 import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.NamespaceId
@@ -14,12 +15,13 @@ internal class GcReport(
     val capabilities: Int,
     val relays: Int,
     val namespaces: Int,
+    val registrations: Int,
 ) {
-    val total: Int get() = operations + tombstones + listedRows + capabilities + relays + namespaces
+    val total: Int get() = operations + tombstones + listedRows + capabilities + relays + namespaces + registrations
 
     override fun toString(): String =
         "GcReport(operations=$operations, tombstones=$tombstones, listed=$listedRows, capabilities=$capabilities, " +
-            "relays=$relays, namespaces=$namespaces)"
+            "relays=$relays, namespaces=$namespaces, registrations=$registrations)"
 }
 
 /**
@@ -28,7 +30,11 @@ internal class GcReport(
  * (design §3.7, §11.5 #2). Fetched rows are
  * never collected (no loss); `done` tombstones of own blobs are kept while their op exists.
  */
-internal class Gc(private val outbox: OutboxStore, private val capabilities: CapabilityStore) {
+internal class Gc(
+    private val outbox: OutboxStore,
+    private val capabilities: CapabilityStore,
+    private val registrations: RegistrationStore,
+) {
 
     fun pass(tx: SyncTransaction, now: Long): GcReport {
         val sql = tx.sql
@@ -63,6 +69,9 @@ internal class Gc(private val outbox: OutboxStore, private val capabilities: Cap
 
         val caps = capabilities.collect(tx, now)
 
+        // Key registrations the relay has forgotten (§4.8: done rows are deleted after their validity).
+        val registrationRows = registrations.collect(tx, now)
+
         // Relays retired for LISTED_RETAIN days that nothing refers to (capabilities, cursors, sources cascade).
         val relays = sql.execUpdate(
             "DELETE FROM relay_directory WHERE state = 'retired' AND retired_day + ?1 <= ?2 " +
@@ -78,19 +87,19 @@ internal class Gc(private val outbox: OutboxStore, private val capabilities: Cap
                 "AND NOT EXISTS (SELECT 1 FROM relay_capability c WHERE c.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM relay_cursor r WHERE r.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM inbox_blob b WHERE b.namespace_id = sync_namespace.namespace_id) " +
+                "AND NOT EXISTS (SELECT 1 FROM relay_key_registration k WHERE k.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM outbox_op o WHERE o.namespace_id = sync_namespace.namespace_id)",
         )
-        return GcReport(ops.size, tombstones.size, listed.size, caps, relays, namespaces)
+        return GcReport(ops.size, tombstones.size, listed.size, caps, relays, namespaces, registrationRows)
     }
 
     /**
-     * After a pass that deleted rows: truncate the WAL so deleted pages leave the log (design §2.3).
-     * Runs outside any transaction, through `query` because the pragma returns a row.
+     * After a pass that deleted rows: truncate the write-ahead log so deleted pages leave it
+     * (design §2.3). Phase 9 design §10.7 replaces the ignored pragma result by [Checkpoint.truncate],
+     * which requires `busy = 0` and retries; false means the log was still held and the caller asks
+     * again at its next sweep. Runs outside any transaction.
      */
-    fun checkpoint(sql: SqlExecutor) {
-        check(!sql.inTransaction) { "checkpoint inside a transaction" }
-        sql.query("PRAGMA wal_checkpoint(TRUNCATE)") { }
-    }
+    fun checkpoint(sql: SqlExecutor): Boolean = Checkpoint.truncate(sql)
 
     /** Collects up to [limit] (namespace, hash) keys; [query] takes ?1 = today and ?2 = limit. */
     private fun keys(sql: SqlExecutor, query: String, today: Long, limit: Int): List<Pair<NamespaceId, BlobHash>> =

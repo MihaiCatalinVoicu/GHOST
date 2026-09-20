@@ -3,10 +3,14 @@ package org.ghost.sync.android
 import org.ghost.network.NetworkException
 import org.ghost.network.OnionAddress
 import org.ghost.network.RelayTransport
+import org.ghost.network.TorRelayTransport
 import org.ghost.sync.api.BlobHash
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.port.FetchedBlob
 import org.ghost.sync.port.ListPage
+import org.ghost.sync.port.RegisterAnswer
+import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.StoreReceipt
 
@@ -66,6 +70,38 @@ internal class TorRelayPort(private val transport: TransportAccess) : RelayPort 
         return out
     }
 
+    override fun registerKey(
+        relay: OnionAddress,
+        ns: NamespaceId,
+        capability: ByteArray,
+        periodId: Long,
+        kind: KeyKind,
+        verifier: ByteArray,
+        requestId: ByteArray,
+        deadlineMillis: Int,
+    ): RegisterAnswer {
+        // RegisterKey lives on the Tor transport, beside redemption (Phase 8 design §11.7); a
+        // transport of another kind has none, and the call fails `internal` before any I/O.
+        val answer = transport.use {
+            val tor = it as? TorRelayTransport ?: throw NetworkException(INTERNAL)
+            tor.registerKey(relay, ns.toByteArray(), capability, periodId, transportKind(kind), verifier, requestId, deadlineMillis)
+        }
+        val result = when (answer.result) {
+            TorRelayTransport.REGISTER_OK -> RegisterResult.OK
+            TorRelayTransport.REGISTER_WRONG_PERIOD -> RegisterResult.WRONG_PERIOD
+            // The native side answers only the two results of design §4.2; anything else is a
+            // protocol break, not a local bug, so it must not fail the registration permanently.
+            else -> throw NetworkException(MALFORMED)
+        }
+        return RegisterAnswer(result, answer.validUntilUnixSeconds)
+    }
+
+    private fun transportKind(kind: KeyKind): TorRelayTransport.KeyKind = when (kind) {
+        KeyKind.READ -> TorRelayTransport.KeyKind.READ
+        KeyKind.DEPOSIT -> TorRelayTransport.KeyKind.DEPOSIT
+        KeyKind.FETCH -> TorRelayTransport.KeyKind.FETCH
+    }
+
     private fun hashOf(raw: ByteArray): BlobHash {
         if (raw.size != BlobHash.SIZE) throw NetworkException(MALFORMED)
         return BlobHash(raw)
@@ -75,6 +111,7 @@ internal class TorRelayPort(private val transport: TransportAccess) : RelayPort 
 
     private companion object {
         const val MALFORMED = "malformed_response"
+        const val INTERNAL = "internal"
         const val CURSOR_SIZE = 8
     }
 }

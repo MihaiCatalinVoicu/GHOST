@@ -5,6 +5,7 @@ import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.engine.EngineWorld.Companion.MINUTE
 import org.ghost.sync.engine.EngineWorld.Companion.SECOND
+import org.ghost.sync.store.Time
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,7 +24,14 @@ import java.security.MessageDigest
  */
 class T19BasicTest {
 
-    private class Observed(val requests: List<Triple<Long, String, Int>>, val stores: Int, val gets: Int, val checks: Int, val continuations: Int)
+    private class Observed(
+        val requests: List<Triple<Long, String, Int>>,
+        val stores: Int,
+        val gets: Int,
+        val checks: Int,
+        val registrations: Int,
+        val continuations: Int,
+    )
 
     private val workFailures = listOf("timeout", "transport", "internal", "relay_unavailable", "malformed_response", "not_stored", "rejected", "not_found", "invalid_argument")
 
@@ -36,9 +44,18 @@ class T19BasicTest {
     private fun run(mode: PrivacyMode, activity: Boolean): Observed = EngineWorld(TrafficPolicy(listLimit = 4)).use { w ->
         w.mode = mode
         val relays = w.relays(1, 2, 3, 4)
+        // The capabilities declare the expiry of a redeemed week, in both runs alike: a key
+        // registration is due only against a capability whose week is known (Phase 9 §13.3 item 5).
+        val week = Time.week(w.clock.epochSeconds())
+        val capabilityExpiry = Time.WEEK_ORIGIN + Time.WEEK * (week + 1) + Time.HOUR
         // 8 read pairs over 4 event workers (read via write tokens), plus a write-only namespace.
-        val listened: List<NamespaceId> = (1..2).map { n -> w.namespace(n, relays).also { ns -> relays.forEach { w.capability(it, ns) } } }
-        val writeOnly = w.namespace(3, relays, listen = false).also { ns -> relays.forEach { w.capability(it, ns) } }
+        val listened: List<NamespaceId> =
+            (1..2).map { n -> w.namespace(n, relays).also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } } }
+        val writeOnly = w.namespace(3, relays, listen = false).also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } }
+        // A relay in no namespace's set, as the owner keeps one after a slot change (§21.1 point 3):
+        // it adds no read pair, and run (b) gives it key registrations of its own.
+        val spare = w.relays(5).single()
+        w.capability(spare, writeOnly, expiresAt = capabilityExpiry)
         val firstList = HashSet<Pair<String, String>>()
         w.net.latency = { call ->
             when (call.kind) {
@@ -60,6 +77,10 @@ class T19BasicTest {
         }
         val (session, driver) = w.session()
         if (activity) {
+            // Key registrations are work-lane work too (Phase 9 design §13.3 item 5): the read lane
+            // must not see them either.
+            for (period in listOf(week, week + 1)) w.registration(spare, writeOnly, period)
+            check(w.tx { w.stores.registrationStore.due(it, w.clock.epochSeconds(), 16, null, null) }.size == 2) { "registrations are not due" }
             relays.forEachIndexed { i, r -> listened.forEach { ns -> w.inbound(r, ns, 1_000 * (i + 1) + ns.hashCode() % 7, 7) } }
             var items = 0
             var seed = 1
@@ -90,6 +111,7 @@ class T19BasicTest {
             w.net.callsOf(TestRelays.Kind.STORE).size,
             w.net.callsOf(TestRelays.Kind.GET).size,
             w.net.callsOf(TestRelays.Kind.CHECK).size,
+            w.net.callsOf(TestRelays.Kind.REGISTER).size,
             driver.started.map { it.second }.filterIsInstance<ReadItem>().count { it.continuation },
         )
     }
@@ -101,9 +123,10 @@ class T19BasicTest {
         assertTrue(idle.requests.size > 200)
         assertEquals(idle.requests, busy.requests)
         // The busy run really was busy, and every one of its work-lane calls failed.
-        assertEquals(0, idle.stores + idle.gets + idle.checks)
+        assertEquals(0, idle.stores + idle.gets + idle.checks + idle.registrations)
         assertTrue(busy.stores >= 8)
         assertTrue(busy.gets > 0)
+        assertTrue("key registrations ran on the work lane", busy.registrations > 0)
         assertTrue("inbound volume made further pages", busy.continuations > 0)
     }
 
@@ -115,6 +138,7 @@ class T19BasicTest {
         assertEquals(idle.requests, busy.requests)
         assertEquals(0, busy.continuations)
         assertTrue(busy.stores > 0 && busy.gets > 0)
+        assertTrue("key registrations ran at the pair's events", busy.registrations > 0)
     }
 
     @Test

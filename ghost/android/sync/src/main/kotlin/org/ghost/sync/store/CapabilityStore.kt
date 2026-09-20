@@ -2,6 +2,7 @@ package org.ghost.sync.store
 
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.SyncChange
@@ -101,14 +102,20 @@ internal class CapabilityStore {
      *  - READ MISSING for a listening namespace with no token of either kind on that relay;
      *  - WRITE MISSING where the outbox still has work at the relay (deliveries waiting to be
      *    stored, acknowledged ones awaiting verification, possible copies still resolvable) and no
-     *    write token exists.
+     *    write token exists;
+     *  - WRITE MISSING where a pending key registration of the pair exists and no write token does
+     *    (Phase 9 design §13.3 item 4, Q31: a registration is write work like a delivery).
+     *
+     * Every need carries the namespace's [CapabilitySource]; the entitlement planner never redeems a
+     * LOCAL one (§13.4).
      */
     fun needed(tx: SyncTransaction, now: Long): List<CapabilityNeed> {
         val sql = tx.sql
         val out = LinkedHashSet<CapabilityNeed>()
         sql.rows(
-            "SELECT c.relay_id, c.namespace_id, c.kind, c.state, c.expires_hour FROM relay_capability c " +
+            "SELECT c.relay_id, c.namespace_id, c.kind, c.state, c.expires_hour, n.capability_source FROM relay_capability c " +
                 "JOIN namespace_relay nr ON nr.namespace_id = c.namespace_id AND nr.relay_id = c.relay_id " +
+                "JOIN sync_namespace n ON n.namespace_id = c.namespace_id " +
                 "JOIN relay_directory rd ON rd.relay_id = c.relay_id WHERE rd.state = 'active' " +
                 "ORDER BY c.relay_id, c.namespace_id, c.kind",
         ) { row ->
@@ -117,24 +124,34 @@ internal class CapabilityStore {
                 "exhausted" -> CapabilityNeed.Reason.EXHAUSTED
                 else -> if (!row.isNull(4) && row.long(4) <= now + EXPIRING_SECONDS) CapabilityNeed.Reason.EXPIRING else null
             }
-            reason?.let { CapabilityNeed(RelayId(row.long(0)), NamespaceId(row.blob(1)), CapabilityKind.ofCode(row.string(2)), it) }
+            reason?.let {
+                CapabilityNeed(
+                    RelayId(row.long(0)), NamespaceId(row.blob(1)), CapabilityKind.ofCode(row.string(2)), it,
+                    CapabilitySource.ofCode(row.string(5)),
+                )
+            }
         }.filterNotNull().forEach { out += it }
         sql.rows(
-            "SELECT nr.relay_id, nr.namespace_id FROM namespace_relay nr " +
+            "SELECT nr.relay_id, nr.namespace_id, n.capability_source FROM namespace_relay nr " +
                 "JOIN sync_namespace n ON n.namespace_id = nr.namespace_id " +
                 "JOIN relay_directory rd ON rd.relay_id = nr.relay_id " +
                 "WHERE rd.state = 'active' AND n.listening = 1 AND NOT EXISTS (SELECT 1 FROM relay_capability c " +
                 "WHERE c.relay_id = nr.relay_id AND c.namespace_id = nr.namespace_id) ORDER BY nr.relay_id, nr.namespace_id",
-        ) { CapabilityNeed(RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.READ, CapabilityNeed.Reason.MISSING) }
-            .forEach { out += it }
+        ) {
+            CapabilityNeed(
+                RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.READ, CapabilityNeed.Reason.MISSING,
+                CapabilitySource.ofCode(it.string(2)),
+            )
+        }.forEach { out += it }
         // A write token is missing wherever the outbox still has work at the relay: deliveries that
         // may store (pending, parked), acknowledged ones awaiting verification, and possible copies
         // still resolvable by a check (the same set as OutboxStore.workPairs). Without a token that
         // can check, an acknowledged delivery could never be verified or struck, and its op would
         // stay undecided for ever (found by seeded world 18694).
         sql.rows(
-            "SELECT DISTINCT d.relay_id, o.namespace_id FROM outbox_delivery d " +
+            "SELECT DISTINCT d.relay_id, o.namespace_id, n.capability_source FROM outbox_delivery d " +
                 "JOIN outbox_op o ON o.operation_id = d.operation_id " +
+                "JOIN sync_namespace n ON n.namespace_id = o.namespace_id " +
                 "JOIN relay_directory rd ON rd.relay_id = d.relay_id " +
                 "WHERE rd.state = 'active' AND (d.state IN ('pending', 'wait_capability', 'acked') " +
                 "OR (d.copy_hour IS NOT NULL AND d.ack_minute IS NULL AND d.state IN ('failed', 'closed') " +
@@ -142,8 +159,29 @@ internal class CapabilityStore {
                 "AND NOT EXISTS (SELECT 1 FROM relay_capability c " +
                 "WHERE c.relay_id = d.relay_id AND c.namespace_id = o.namespace_id AND c.kind = 'write') ORDER BY d.relay_id, o.namespace_id",
             listOf(now, RetentionPolicy.SKEW_SECONDS),
-        ) { CapabilityNeed(RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.WRITE, CapabilityNeed.Reason.MISSING) }
-            .forEach { out += it }
+        ) {
+            CapabilityNeed(
+                RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.WRITE, CapabilityNeed.Reason.MISSING,
+                CapabilitySource.ofCode(it.string(2)),
+            )
+        }.forEach { out += it }
+        // Phase 9 design §13.3 item 4 (Q31): a pending key registration is write work too, so an
+        // owner whose capabilities all lapsed redeems for it and recovers in the background (§13.4).
+        sql.rows(
+            "SELECT DISTINCT r.relay_id, r.namespace_id, n.capability_source FROM relay_key_registration r " +
+                "JOIN namespace_relay nr ON nr.namespace_id = r.namespace_id AND nr.relay_id = r.relay_id " +
+                "JOIN sync_namespace n ON n.namespace_id = r.namespace_id " +
+                "JOIN relay_directory rd ON rd.relay_id = r.relay_id " +
+                "WHERE rd.state = 'active' AND r.state = 'pending' " +
+                "AND NOT EXISTS (SELECT 1 FROM relay_capability c " +
+                "WHERE c.relay_id = r.relay_id AND c.namespace_id = r.namespace_id AND c.kind = 'write') " +
+                "ORDER BY r.relay_id, r.namespace_id",
+        ) {
+            CapabilityNeed(
+                RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.WRITE, CapabilityNeed.Reason.MISSING,
+                CapabilitySource.ofCode(it.string(2)),
+            )
+        }.forEach { out += it }
         return out.toList()
     }
 

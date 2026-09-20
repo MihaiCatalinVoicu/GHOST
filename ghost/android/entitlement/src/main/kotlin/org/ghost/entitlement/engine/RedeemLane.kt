@@ -94,6 +94,7 @@ internal class RedeemLane(private val c: EngineContext) {
             when (val d = planner.plan(need, relay, c.summary, relayNow, week, trusted, c.memory.firstSeen(need, now), writeExpiry[need])) {
                 is RedeemPlanner.Decision.Redeem -> plans += d
                 RedeemPlanner.Decision.NoSlot -> c.memory.count(Counters.NO_SLOT)
+                RedeemPlanner.Decision.LocalSkipped -> c.memory.count(Counters.LOCAL_SKIPPED)
                 else -> Unit
             }
         }

@@ -30,7 +30,7 @@ internal class SyncEngine(
     val clock: SyncClock,
     val random: RandomSources,
     val policy: TrafficPolicy = TrafficPolicy.DEFAULT,
-    val steps: Steps = Steps.DEFAULT,
+    val steps: Steps = Steps.default(),
     private val mode: () -> PrivacyMode,
 ) {
     /** The transport reached READY in this process (Arti accepted the consensus clock): a precondition of [clockTrusted] (§3.7, §11.5 #2). */

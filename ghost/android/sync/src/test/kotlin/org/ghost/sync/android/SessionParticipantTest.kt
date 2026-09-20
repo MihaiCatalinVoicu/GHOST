@@ -8,6 +8,8 @@ import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.ConsumerTail
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.OutboundBlob
@@ -37,6 +39,8 @@ import org.ghost.sync.port.FetchedBlob
 import org.ghost.sync.port.LeasePort
 import org.ghost.sync.port.ListPage
 import org.ghost.sync.port.RandomSources
+import org.ghost.sync.port.RegisterAnswer
+import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.StoreReceipt
 import org.ghost.sync.port.SyncClock
@@ -237,6 +241,20 @@ class SessionParticipantTest {
         override fun check(relay: OnionAddress, ns: NamespaceId, capability: ByteArray, hashes: List<BlobHash>, deadlineMillis: Int): Set<BlobHash> {
             calls.incrementAndGet()
             return emptySet()
+        }
+
+        override fun registerKey(
+            relay: OnionAddress,
+            ns: NamespaceId,
+            capability: ByteArray,
+            periodId: Long,
+            kind: KeyKind,
+            verifier: ByteArray,
+            requestId: ByteArray,
+            deadlineMillis: Int,
+        ): RegisterAnswer {
+            calls.incrementAndGet()
+            return RegisterAnswer(RegisterResult.OK, clock.epochSeconds() + REGISTRATION_VALIDITY_SECONDS)
         }
     }
 
@@ -1237,7 +1255,122 @@ class SessionParticipantTest {
         assertEquals("never held past the longest hold", 2, w.transport.ensures.get())
     }
 
+    /**
+     * What one consumer-tail run saw when it started: the session kind it was told, its deadline,
+     * whether an activity still owned the transport, and the transport's abort count.
+     */
+    private class TailRun(val kind: ParticipantKind, val deadline: Long, val activeKind: SessionKind?, val quiet: Boolean, val aborts: Int)
+
+    /** Records every tail run and, while [hold] is set, blocks inside it. */
+    private class RecordingTail(private val w: World, private val hold: CountDownLatch? = null) : ConsumerTail {
+        val runs = CopyOnWriteArrayList<TailRun>()
+        val entered = CountDownLatch(1)
+
+        /** Issuer calls the transport had made when this run started (the quiet run's own call). */
+        @Volatile
+        var issuerCalls: Int = -1
+
+        override fun run(kind: ParticipantKind, deadlineMonotonicMillis: Long) {
+            runs += TailRun(kind, deadlineMonotonicMillis, w.runtime.activeKind, w.runtime.quietRunning, w.transport.aborts.get())
+            issuerCalls = w.transport.calls.calls.size
+            entered.countDown()
+            hold?.await(60, TimeUnit.SECONDS)
+        }
+    }
+
+    /**
+     * The consumer tail (Phase 9 design §13.3 item 6): it runs after a background session's lanes,
+     * its redeem hold and the transport close, and after a quiet run's issuer call returned and its
+     * transport closed; never in a foreground session; and a tail that runs to its deadline does not
+     * delay the job's end past that deadline.
+     */
+    @Test
+    fun theConsumerTailRunsAfterTheLanesTheHoldAndTheTransportClose(): Unit = World().use { w ->
+        w.writeNeed()
+        val tail = RecordingTail(w)
+        w.controller.setConsumerTail(tail)
+        val step = CountDownLatch(1)
+        val p = ScriptedParticipant(onRelay = { s ->
+            // The tail must not have run while the hold still keeps the session the activity.
+            assertEquals(0, tail.runs.size)
+            step.await(20, TimeUnit.SECONDS)
+            checkNotNull(s.relayRedeem).stepDone()
+        })
+        w.controller.setParticipant(p)
+        val done = w.job()
+        assertTrue(waitFor(10_000) { w.runtime.redeemHeld })
+        assertEquals("the hold keeps the tail waiting", 0, tail.runs.size)
+        step.countDown()
+        assertTrue(done.await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        val run = tail.runs.single()
+        assertEquals(ParticipantKind.BACKGROUND, run.kind)
+        assertNull("the lanes and the hold have ended", run.activeKind)
+        assertTrue("the transport is closed", run.aborts >= 1)
+        assertFalse(w.runtime.redeemHeld)
+        // The deadline is the job's budget less its reserve (§13.3 item 6).
+        assertTrue(run.deadline <= w.clock.monotonicMillis() + w.policy.jobBudgetMillis - w.policy.consumerTailReserveMillis)
+    }
+
+    @Test
+    fun theConsumerTailOfAQuietRunStartsAfterTheIssuerCallAndTheTransportClose(): Unit = World(Draws({ true })).use { w ->
+        val tail = RecordingTail(w)
+        w.controller.setConsumerTail(tail)
+        val p = ScriptedParticipant(onQuiet = { s ->
+            assertEquals(0, tail.runs.size)
+            category { invoiceStatus(s) }
+        })
+        w.controller.setParticipant(p)
+        assertTrue(w.job().await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        val run = tail.runs.single()
+        assertEquals(ParticipantKind.QUIET, run.kind)
+        assertFalse("the quiet run has ended", run.quiet)
+        assertTrue("the transport is closed", run.aborts >= 1)
+        assertEquals("the issuer call returned before the tail started", 1, tail.issuerCalls)
+        assertEquals(0, w.transport.relays.lists.get())
+    }
+
+    @Test
+    fun aTailThatRunsToItsDeadlineDoesNotDelayTheJobsEndPastIt(): Unit = World().use { w ->
+        val hold = CountDownLatch(1)
+        val tail = RecordingTail(w, hold)
+        w.controller.setConsumerTail(tail)
+        try {
+            val done = w.job()
+            assertTrue(tail.entered.await(20, TimeUnit.SECONDS))
+            assertFalse("the job waits for the tail while its deadline lasts", done.await(200, TimeUnit.MILLISECONDS))
+            // Past the deadline (a clock jump: the watchdog reads the sync clock, not a timer).
+            w.clock.offsetMillis += w.policy.jobBudgetMillis + MINUTE
+            assertTrue("the job ends at the deadline whatever the tail does", done.await(20, TimeUnit.SECONDS))
+            assertTrue(w.runtime.awaitNoActivity(5_000))
+            assertEquals(1, tail.runs.size)
+        } finally {
+            hold.countDown()
+        }
+    }
+
+    @Test
+    fun noConsumerTailRunsInAForegroundSession(): Unit = World().use { w ->
+        val tail = RecordingTail(w)
+        w.controller.setConsumerTail(tail)
+        w.controller.onAppForeground()
+        assertTrue(waitFor(10_000) { w.runtime.activeKind == SessionKind.FOREGROUND })
+        w.controller.onAppBackground()
+        assertTrue(waitFor(10_000) { w.runtime.activeKind == null })
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals(emptyList<TailRun>(), tail.runs.toList())
+        // Removing the tail takes effect from the next background run.
+        w.controller.setConsumerTail(null)
+        assertTrue(w.job().await(30, TimeUnit.SECONDS))
+        assertTrue(w.runtime.awaitIdle(5_000))
+        assertEquals(emptyList<TailRun>(), tail.runs.toList())
+    }
+
     private companion object {
         val FLOWS = AtomicLong()
+
+        /** What a relay answers a registration: `start(period + 2) + 1 h`, two weeks away here. */
+        const val REGISTRATION_VALIDITY_SECONDS = 14L * 86_400
     }
 }

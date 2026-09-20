@@ -1,9 +1,11 @@
 package org.ghost.sync.store
 
 import org.ghost.sync.api.BlobHash
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.InboundBlob
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
+import org.ghost.sync.api.PeekedBlob
 import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncTransaction
@@ -217,9 +219,9 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
         require(sha256(ciphertext) == hash) { "ciphertext does not match its hash" }
         val changed = tx.sql.execUpdate(
             "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?1, fetch_seq = (SELECT COALESCE(MAX(fetch_seq), 0) + 1 FROM inbox_blob), " +
-                "fetch_attempts = 0, next_fetch_minute = 0, retain_until_day = ?2 " +
+                "fetch_attempts = 0, next_fetch_minute = 0, retain_until_day = ?2, relay_expiry_hour = ?5 " +
                 "WHERE namespace_id = ?3 AND blob_hash = ?4 AND state = 'listed'",
-            listOf(ciphertext, RetentionPolicy.expiryRetainDay(expiryEpochSeconds), ns.raw, hash.raw),
+            listOf(ciphertext, RetentionPolicy.expiryRetainDay(expiryEpochSeconds), ns.raw, hash.raw, Time.floorHour(expiryEpochSeconds)),
         )
         if (changed == 1) tx.hint(SyncChange.INBOX)
         return changed == 1
@@ -305,44 +307,112 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
      */
     fun claim(tx: SyncTransaction, consumerCode: String, limit: Int, now: Long): List<InboundBlob> {
         require(limit > 0) { "limit must be positive" }
-        val sql = tx.sql
-        val due = sql.rows(
-            "SELECT b.namespace_id, b.blob_hash, b.offers FROM inbox_blob b JOIN sync_namespace n ON n.namespace_id = b.namespace_id " +
-                "WHERE n.consumer = ?1 AND b.state = 'fetched' AND (b.offer_after_minute <= ?2 OR b.offer_after_minute > ?2 + " +
-                "CASE WHEN b.offers >= ${StoreLimits.BACKOFF_OFFERS} THEN $OFFER_BACKOFF_CLAMP_SECONDS ELSE $DEFER_CLAMP_SECONDS END) " +
-                "ORDER BY b.fetch_seq LIMIT ?3",
-            listOf(consumerCode, now, limit),
-        ) { Offer(NamespaceId(it.blob(0)), BlobHash(it.blob(1)), it.int(2)) }
+        val due = dueOffers(tx, consumerCode, limit, now, null, null)
         val suspect = due.firstOrNull { it.offers >= StoreLimits.SUSPECT_OFFERS }
         val chosen = if (suspect != null) listOf(suspect) else due
-        val out = ArrayList<InboundBlob>(chosen.size)
-        for (offer in chosen) {
-            val offers = offer.offers + 1
-            val offerAfter = if (offers >= StoreLimits.BACKOFF_OFFERS) Time.dueMinute(now, offerBackoffSeconds(offers)) else null
-            sql.updateExactly(
-                1,
-                "UPDATE inbox_blob SET offers = offers + 1, offer_after_minute = COALESCE(?1, offer_after_minute) " +
-                    "WHERE namespace_id = ?2 AND blob_hash = ?3 AND state = 'fetched' AND offers = ?4",
-                listOf(offerAfter, offer.namespace.raw, offer.hash.raw, offer.offers),
-            )
-            val ciphertext = sql.single(
-                "SELECT ciphertext FROM inbox_blob WHERE namespace_id = ?1 AND blob_hash = ?2 AND state = 'fetched'",
-                listOf(offer.namespace.raw, offer.hash.raw),
-            ) { it.blob(0) } ?: throw IllegalStateException("claimed row vanished")
-            out += InboundBlob(offer.namespace, offer.hash, ciphertext)
-        }
-        return out
+        return chosen.map { offer(tx, it, now) }
     }
 
-    private class Offer(val namespace: NamespaceId, val hash: BlobHash, val offers: Int)
+    /**
+     * Claims the one named row of [consumerCode] if it is still fetched and due for an offer
+     * (Phase 9 design §13.3 item 10): the same offer rules as [claim], for one row the consumer has
+     * chosen after [peek]. Null when the row is gone, consumed, in another consumer's namespace or
+     * backed off.
+     */
+    fun claimOne(tx: SyncTransaction, consumerCode: String, ns: NamespaceId, hash: BlobHash, now: Long): InboundBlob? {
+        val due = dueOffers(tx, consumerCode, 1, now, ns, hash).firstOrNull() ?: return null
+        return offer(tx, due, now)
+    }
 
-    /** Consumed: the row becomes a tombstone carrying only (namespace, hash, retain_until_day). True exactly once. */
+    /**
+     * Fetched rows of [consumerCode] in local arrival order, read only: no offer counter moves and
+     * nothing is claimed (Phase 9 design §13.3 item 10). Its rows are exactly the ones [claimOne]
+     * would take now.
+     */
+    fun peek(tx: SyncTransaction, consumerCode: String, limit: Int, now: Long): List<PeekedBlob> {
+        require(limit > 0) { "limit must be positive" }
+        return dueOffers(tx, consumerCode, limit, now, null, null).map { row ->
+            val ciphertext = tx.sql.single(
+                "SELECT ciphertext FROM inbox_blob WHERE namespace_id = ?1 AND blob_hash = ?2 AND state = 'fetched'",
+                listOf(row.namespace.raw, row.hash.raw),
+            ) { it.blob(0) } ?: throw IllegalStateException("peeked row vanished")
+            PeekedBlob(row.namespace, row.hash, ciphertext, row.relayExpiryHour)
+        }
+    }
+
+    /** Fetched rows due for an offer, oldest hand-off number first; with [ns] and [hash] set, that row alone. */
+    private fun dueOffers(tx: SyncTransaction, consumerCode: String, limit: Int, now: Long, ns: NamespaceId?, hash: BlobHash?): List<Offer> {
+        require((ns == null) == (hash == null)) { "a row filter needs the namespace and the hash" }
+        val args = mutableListOf<Any?>(consumerCode, now, limit)
+        val rowFilter = if (ns != null && hash != null) {
+            args += ns.raw
+            args += hash.raw
+            "AND b.namespace_id = ?4 AND b.blob_hash = ?5 "
+        } else {
+            ""
+        }
+        // The relay expiry bounds the lifetime of what the consumer holds back (§10.3), and 0 is a
+        // legal expiry hour, so a row that carries none is not offered at all rather than handed
+        // out with a sentinel. Migration 4 fills the column for every row fetched before schema v4,
+        // so no row of a migrated database is held back by this.
+        return tx.sql.rows(
+            "SELECT b.namespace_id, b.blob_hash, b.offers, b.relay_expiry_hour FROM inbox_blob b " +
+                "JOIN sync_namespace n ON n.namespace_id = b.namespace_id " +
+                "WHERE n.consumer = ?1 AND b.state = 'fetched' AND b.relay_expiry_hour IS NOT NULL " +
+                "AND (b.offer_after_minute <= ?2 OR b.offer_after_minute > ?2 + " +
+                "CASE WHEN b.offers >= ${StoreLimits.BACKOFF_OFFERS} THEN $OFFER_BACKOFF_CLAMP_SECONDS ELSE $DEFER_CLAMP_SECONDS END) " +
+                rowFilter +
+                "ORDER BY b.fetch_seq LIMIT ?3",
+            args,
+        ) { Offer(NamespaceId(it.blob(0)), BlobHash(it.blob(1)), it.int(2), it.long(3)) }
+    }
+
+    /** Commits the offer counter (and, from the third offer, the backoff), then reads the row out. */
+    private fun offer(tx: SyncTransaction, offer: Offer, now: Long): InboundBlob {
+        val sql = tx.sql
+        val offers = offer.offers + 1
+        val offerAfter = if (offers >= StoreLimits.BACKOFF_OFFERS) Time.dueMinute(now, offerBackoffSeconds(offers)) else null
+        sql.updateExactly(
+            1,
+            "UPDATE inbox_blob SET offers = offers + 1, offer_after_minute = COALESCE(?1, offer_after_minute) " +
+                "WHERE namespace_id = ?2 AND blob_hash = ?3 AND state = 'fetched' AND offers = ?4",
+            listOf(offerAfter, offer.namespace.raw, offer.hash.raw, offer.offers),
+        )
+        val ciphertext = sql.single(
+            "SELECT ciphertext FROM inbox_blob WHERE namespace_id = ?1 AND blob_hash = ?2 AND state = 'fetched'",
+            listOf(offer.namespace.raw, offer.hash.raw),
+        ) { it.blob(0) } ?: throw IllegalStateException("claimed row vanished")
+        return InboundBlob(offer.namespace, offer.hash, ciphertext, offer.relayExpiryHour, offers)
+    }
+
+    private class Offer(val namespace: NamespaceId, val hash: BlobHash, val offers: Int, val relayExpiryHour: Long)
+
+    /**
+     * Consumed: the row becomes a tombstone carrying only (namespace, hash, retain_until_day). True
+     * exactly once. The relay expiry goes with the ciphertext, in the same statement (§13.3 item 2).
+     */
     fun markConsumed(tx: SyncTransaction, ns: NamespaceId, hash: BlobHash): Boolean =
         tx.sql.execUpdate(
-            "UPDATE inbox_blob SET state = 'done', ciphertext = NULL, fetch_seq = NULL, offers = 0, offer_after_minute = 0 " +
-                "WHERE namespace_id = ?1 AND blob_hash = ?2 AND state = 'fetched'",
+            "UPDATE inbox_blob SET state = 'done', ciphertext = NULL, fetch_seq = NULL, offers = 0, offer_after_minute = 0, " +
+                "relay_expiry_hour = NULL WHERE namespace_id = ?1 AND blob_hash = ?2 AND state = 'fetched'",
             listOf(ns.raw, hash.raw),
         ) == 1
+
+    /**
+     * Forgets the consumed-blob tombstones of a bundle namespace (Phase 9 design §21.7 point 2).
+     * Refused for any consumer but `prekeys`, and own blobs (an op of the namespace still exists)
+     * keep their tombstone, so nothing of ours is ever fetched back.
+     */
+    fun forgetConsumed(tx: SyncTransaction, ns: NamespaceId): Int {
+        val consumer = tx.sql.single("SELECT consumer FROM sync_namespace WHERE namespace_id = ?1", listOf(ns.raw)) { it.string(0) }
+        checkNotNull(consumer) { "namespace is not registered" }
+        check(consumer == Consumer.PREKEYS.code) { "only a bundle namespace forgets its tombstones" }
+        return tx.sql.execUpdate(
+            "DELETE FROM inbox_blob WHERE namespace_id = ?1 AND state = 'done' " +
+                "AND NOT EXISTS (SELECT 1 FROM outbox_op o WHERE o.namespace_id = inbox_blob.namespace_id AND o.blob_hash = inbox_blob.blob_hash)",
+            listOf(ns.raw),
+        )
+    }
 
     /** Re-offer no earlier than [seconds] from now (1 s .. 7 d); resets the offer counter. */
     fun defer(tx: SyncTransaction, ns: NamespaceId, hash: BlobHash, seconds: Int, now: Long): Boolean {

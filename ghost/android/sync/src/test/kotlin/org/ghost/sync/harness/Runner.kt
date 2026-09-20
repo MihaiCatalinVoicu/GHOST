@@ -118,7 +118,7 @@ internal abstract class Scenario(val name: String) {
         } else {
             consumer
         }
-        return w.client(ClientSpec(name, armed = true, mode = mode, policy = policy, steps = m?.steps ?: Steps.DEFAULT, consumer = consumerPolicy, rewrite = m?.rewrite?.invoke(w)))
+        return w.client(ClientSpec(name, armed = true, mode = mode, policy = policy, steps = m?.steps ?: Steps.default(), consumer = consumerPolicy, rewrite = m?.rewrite?.invoke(w)))
     }
 
     override fun toString(): String = "Scenario($name)"

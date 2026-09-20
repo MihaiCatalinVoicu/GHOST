@@ -2,6 +2,7 @@ package org.ghost.sync.android
 
 import android.content.Context
 import android.os.SystemClock
+import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.ParticipantSession
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.SessionParticipant
@@ -49,6 +50,8 @@ class AndroidSyncController internal constructor(
     }
 
     override fun setParticipant(p: SessionParticipant?) = runtime.setParticipant(p)
+
+    override fun setConsumerTail(tail: ConsumerTail?) = runtime.setConsumerTail(tail)
 
     override fun runUserIssuerCall(block: (ParticipantSession) -> Unit) = runtime.runUserIssuerCall(block)
 

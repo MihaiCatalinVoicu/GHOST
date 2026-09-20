@@ -4,9 +4,12 @@ import org.ghost.network.NetworkException
 import org.ghost.network.OnionAddress
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.Buckets
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.port.FetchedBlob
 import org.ghost.sync.port.ListPage
+import org.ghost.sync.port.RegisterAnswer
+import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.port.RelayPort
 import org.ghost.sync.port.StoreReceipt
 import org.ghost.sync.store.RetentionPolicy
@@ -327,6 +330,51 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         }
         calls.last().result = "held=${held.size}/${hashes.size}@${world.clock.millis}"
         return held.toSet()
+    }
+
+    // ------------------------------------------------------------------ register key
+
+    override fun registerKey(
+        relay: OnionAddress,
+        ns: NamespaceId,
+        capability: ByteArray,
+        periodId: Long,
+        kind: KeyKind,
+        verifier: ByteArray,
+        requestId: ByteArray,
+        deadlineMillis: Int,
+    ): RegisterAnswer {
+        val (node, info) = begin(CallKind.REGISTER, relay, ns, 0, deadlineMillis, emptyList())
+        opIdCanary(ns.toByteArray(), capability, verifier, requestId)
+        // The Kotlin argument checks of TorRelayTransport.registerKey, before any I/O.
+        require(verifier.size == 32 && requestId.size == 16) { "verifier 32, request id 16 bytes" }
+        require(periodId >= 0) { "period must not be negative" }
+        // T21: a bearer credential registers nothing; only a write capability of this namespace does.
+        if (ModelRelay.credential(capability) != null) fail("invalid_argument")
+        val header = ModelRelay.header(capability) ?: fail("invalid_argument")
+        if (header.namespace != ns || header.kind != ModelRelay.KIND_WRITE) fail("invalid_argument")
+        event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
+        reachability(node)
+        val arrived = travel(node, ns, CallKind.REGISTER, deadlineMillis)
+        val reply = if (arrived) {
+            node.model.registerKey(ns.toByteArray(), periodId, kind.code, verifier, capability, requestId, world.relayNow(node))
+        } else {
+            null
+        }
+        event(EventKind.RELAY_AFTER_APPLY, info, node, capability)?.let { fail(it) }
+        if (!arrived || node.hostile == Hostile.STALL) fail("timeout")
+        val answer = if (reply == null) fail("timeout") else answer(node, capability, reply)
+        // The native side refuses any other validity as malformed (TorRelayTransport.decodeRegister).
+        val expected = when (answer.result) {
+            ModelRelay.RESULT_OK -> answer.validUntil == ModelRelay.weekStart(periodId + 2) + 3_600
+            ModelRelay.RESULT_WRONG_PERIOD -> answer.validUntil == 0L
+            else -> false
+        }
+        if (!expected) fail("malformed_response")
+        event(EventKind.RELAY_AFTER_RESPONSE, info, node, capability)?.let { fail(it) }
+        calls.last().result = "register=${answer.result}@${world.clock.millis}"
+        val result = if (answer.result == ModelRelay.RESULT_OK) RegisterResult.OK else RegisterResult.WRONG_PERIOD
+        return RegisterAnswer(result, answer.validUntil)
     }
 
     /** What the relay showed that it really holds (a hostile relay's false claims are not inventory). */

@@ -77,7 +77,7 @@ internal class CallInfo(
  * Relay calls of the sync engine, and the Phase 8 calls an extension of this harness adds on the
  * same bus (the `:entitlement` harness: token redemption at a relay and issuer calls).
  */
-internal enum class CallKind { STORE, GET, LIST, CHECK, REDEEM, ISSUER }
+internal enum class CallKind { STORE, GET, LIST, CHECK, REGISTER, REDEEM, ISSUER }
 
 /** One event: its index in the armed phase (1-based), kind, and call. */
 internal class Event(val index: Long, val kind: EventKind, val call: CallInfo?) {

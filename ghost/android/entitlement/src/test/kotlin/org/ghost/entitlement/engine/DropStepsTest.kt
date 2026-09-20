@@ -32,6 +32,9 @@ import org.junit.Test
  */
 class DropStepsTest {
 
+    /** A fetch records the relay expiry beside the ciphertext (Phase 9 design §13.3 item 2); a whole hour. */
+    private val relayExpiryHour: Long = 3_600L * 24 * 400
+
     /** An activated invitee at its drop time with coverage of that week. */
     private fun World.atDropTime(credit: Boolean): ByteArray? {
         engine.activate(inviteText())
@@ -143,7 +146,10 @@ class DropStepsTest {
         val hash = TestBytes.sha256(blob)
         tx { t ->
             t.sql.exec("INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?1, ?2, 'listed', 0)", listOf(ns, hash))
-            t.sql.exec("UPDATE inbox_blob SET state = 'fetched', ciphertext = ?1, fetch_seq = 1 WHERE namespace_id = ?2 AND blob_hash = ?3", listOf(blob, ns, hash))
+            t.sql.exec(
+                "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?1, fetch_seq = 1, relay_expiry_hour = ?4 WHERE namespace_id = ?2 AND blob_hash = ?3",
+                listOf(blob, ns, hash, relayExpiryHour),
+            )
         }
     }
 
@@ -333,8 +339,9 @@ class DropStepsTest {
                 listOf(invite.dropNamespace, TestBytes.sha256(staleBlob)),
             )
             t.sql.exec(
-                "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?1, fetch_seq = 2 WHERE namespace_id = ?2 AND blob_hash = ?3",
-                listOf(staleBlob, invite.dropNamespace, TestBytes.sha256(staleBlob)),
+                "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?1, fetch_seq = 2, relay_expiry_hour = ?4 " +
+                    "WHERE namespace_id = ?2 AND blob_hash = ?3",
+                listOf(staleBlob, invite.dropNamespace, TestBytes.sha256(staleBlob), relayExpiryHour),
             )
         }
         w.ctx().dropSteps.receive(w.clock.now)

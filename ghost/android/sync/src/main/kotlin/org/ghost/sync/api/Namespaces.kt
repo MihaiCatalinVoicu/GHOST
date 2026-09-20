@@ -7,6 +7,11 @@ interface Namespaces {
      * [relays] as in [setRelays]. `listen = false` means write-only (no inbox rows are kept);
      * registering a known write-only namespace with `listen = true` turns listening on as
      * [setListening] does.
+     *
+     * [capabilitySource] says who obtains the write access of the namespace (Phase 9 design §13.3
+     * item 3); re-registering a known namespace applies it like the other arguments. A DM namespace
+     * cannot turn the send delay off (`sendDelay = SendDelay.OFF` with `consumer = Consumer.DM`
+     * throws, and a v4 trigger refuses it as well).
      */
     fun register(
         tx: SyncTransaction,
@@ -15,6 +20,7 @@ interface Namespaces {
         relays: Set<RelayId>,
         listen: Boolean,
         sendDelay: SendDelay = SendDelay.DEFAULT,
+        capabilitySource: CapabilitySource = CapabilitySource.REDEEM,
     )
 
     /** Replaces the relay set and repairs deliveries (design §3.9). */
@@ -23,6 +29,10 @@ interface Namespaces {
     /** Cursors are kept. */
     fun setListening(tx: SyncTransaction, namespace: NamespaceId, listen: Boolean)
 
+    /**
+     * Refuses [SendDelay.OFF] for a [Consumer.DM] namespace (Phase 9 design §13.3 item 8): the
+     * ADR-15 delay is what keeps a DM store from naming the moment the user pressed send.
+     */
     fun setSendDelay(tx: SyncTransaction, namespace: NamespaceId, sendDelay: SendDelay)
 
     /**

@@ -2,6 +2,9 @@ package org.ghost.sync.harness
 
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.TtlBucket
+import org.ghost.sync.harness.World.Companion.DAY
+import org.ghost.sync.harness.World.Companion.HOUR
+import org.ghost.sync.harness.World.Companion.MINUTE
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -57,6 +60,30 @@ class ExhaustiveScenarioTest {
             }
         }
     }
+
+    /**
+     * S-F with the Phase 9 short TTL buckets (design §10.4): 1 h and 1 d, with and without the DM
+     * deadline, and offline windows of 30 minutes, 3 hours and 3 days. The default build enumerates
+     * them in WAL only; the `sync-exit-gate` job runs every variant in both journal modes.
+     */
+    @Test
+    fun sF_shortTtlWindows() {
+        val modes = if (Harness.fullExhaustive) JournalMode.entries else listOf(JournalMode.WAL)
+        for (applied in listOf(true, false)) {
+            for (offline in listOf(30 * MINUTE, 3 * HOUR, 3 * DAY)) {
+                for (ttl in listOf(TtlBucket.HOUR_1, TtlBucket.DAY_1)) {
+                    for (deadline in listOf(false, true)) {
+                        val s = ScenarioShortTtl(applied, offline, ttl, deadline)
+                        both(s.name, doubles = false, modes = modes) { ScenarioShortTtl(applied, offline, ttl, deadline) }
+                    }
+                }
+            }
+        }
+    }
+
+    /** V-11: the exhaustive suite with a consumer that uses `Inbox.peek` and `Inbox.claimOne`. */
+    @Test
+    fun sP_peekAndClaimOne() = both("S-P", doubles = false) { ScenarioPeekClaimOne() }
 
     @Test
     fun sG_verification() = both("S-G", doubles = false) { ScenarioG() }

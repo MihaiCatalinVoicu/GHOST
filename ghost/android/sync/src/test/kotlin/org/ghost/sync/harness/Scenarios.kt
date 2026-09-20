@@ -261,6 +261,115 @@ internal class ScenarioF(private val applied: Boolean, private val offlineDays: 
 }
 
 /**
+ * S-F with the short TTL buckets (Phase 9 design §10.4, §13.3 item 1): the same ambiguous first
+ * store attempt and offline window as [ScenarioF], with a 1-hour or 1-day TTL and, in half the
+ * variants, the DM deadline `author + min(bucket, 7 d)` of §21.10 point 1.
+ *
+ * §10.4's re-derivation for these buckets: resolution never applies (`now < copy_hour + ttl − σ` is
+ * never true, since every bucket is shorter than σ = 3 d), so no identical resend happens and an
+ * op whose only possible copy is ambiguous ends INDETERMINATE instead of being resolved. The safety
+ * invariants do not use σ and are unchanged, which the structural checks of every run assert.
+ */
+internal class ScenarioShortTtl(
+    private val applied: Boolean,
+    private val offlineMillis: Long,
+    private val ttl: TtlBucket,
+    private val withDeadline: Boolean,
+) : Scenario(
+    "S-F/short/${if (applied) "applied" else "lost"}/${offlineMillis / MINUTE}m/${ttl.seconds}s/${if (withDeadline) "deadline" else "open"}",
+) {
+    override val maxTailRounds: Int = 64
+
+    /** The DM deadline of §21.10 point 1: `author + min(bucket, 7 d)`, in seconds from the enqueue. */
+    private val deadlineInSeconds: Long? = if (withDeadline) minOf(ttl.seconds.toLong(), 7 * 86_400L) else null
+
+    override fun build(w: World) {
+        val relays = listOf(w.relay("A", 1), w.relay("B", 2), w.relay("C", 3))
+        val alice = subject(w, "alice")
+        val bob = w.client(ClientSpec("bob", armed = false))
+        val ns = alice.namespace("bob-dm", relays, listen = false)
+        relays.forEach { alice.capability(it, ns) }
+        bob.namespace("bob-dm", relays, listen = true)
+        relays.forEach { bob.capability(it, ns, CapabilityKind.READ, validSeconds = 400L * 86_400) }
+        var first = true
+        w.relayHook = { client, kind, info ->
+            val target = if (applied) EventKind.RELAY_AFTER_APPLY else EventKind.RELAY_BEFORE_SEND
+            if (first && client === alice && info.kind == CallKind.STORE && kind == target) {
+                first = false
+                w.scriptState++
+                // The window ends at a fixed moment, not one the attempt's time sets: a crash that
+                // delays the attempt must not push alice's return past her jobs (it leaves her
+                // online instead, which `allowed` accepts for a faulted run).
+                val now = w.clock.millis
+                alice.offlineWindows += now until maxOf(now, offlineMillis)
+                "timeout"
+            } else {
+                null
+            }
+        }
+        w.at(0, "enqueue op") { alice.enqueue("op", ns, ttl, deadlineInSeconds = deadlineInSeconds) }
+        w.jobs(alice, MINUTE, MINUTE)
+        // The offline window starts at the ambiguous attempt, a little after the first job, so alice
+        // returns a few minutes after it ends; her jobs are then close enough for a store and its
+        // verification to fit inside a one-hour deadline. Bob polls sparsely while she is away and
+        // closely around the stores, so a one-hour blob is fetched inside its life.
+        w.jobs(alice, offlineMillis + 3 * MINUTE, offlineMillis + 45 * MINUTE, every = 5 * MINUTE)
+        w.jobs(bob, 10 * MINUTE, offlineMillis, every = 12 * HOUR)
+        w.jobs(bob, offlineMillis + 5 * MINUTE, offlineMillis + 2 * HOUR, every = 20 * MINUTE)
+        w.endMillis = offlineMillis + 3 * HOUR
+    }
+
+    /**
+     * The op reaches every relay once alice is back, unless its deadline passed while she was away:
+     * then the deliveries close undecided and, because resolution never applies to these buckets
+     * (§10.4 point 1), D2 answers INDETERMINATE from the one possible copy — the ambiguous attempt
+     * leaves a `copy_hour` whether or not the relay applied it.
+     */
+    override fun allowed(op: OpRecord, w: World): Set<Outcome> {
+        val deadlinePassed = deadlineInSeconds != null && deadlineInSeconds * 1_000 <= offlineMillis
+        val exact = if (deadlinePassed) setOf(Outcome.INDETERMINATE) else setOf(Outcome.SENT)
+        if (!w.bus.faulted) return exact
+        // With a crash the first attempt, and so the offline window, can start later or not at all;
+        // an op whose deadline then passes before any attempt fails, and one stored before it is sent.
+        return if (deadlinePassed) {
+            setOf(Outcome.SENT, Outcome.DEGRADED, Outcome.INDETERMINATE, Outcome.FAILED)
+        } else {
+            setOf(Outcome.SENT, Outcome.DEGRADED, Outcome.INDETERMINATE)
+        }
+    }
+}
+
+/**
+ * The consumer takes its blobs with `Inbox.peek` and `Inbox.claimOne` instead of `Inbox.claim`
+ * (Phase 9 design §13.3 item 10; V-11): the exactly-once argument of Phase 7 is unchanged, so the
+ * same invariants hold with a consumer that orders its batch before claiming any of it.
+ */
+internal class ScenarioPeekClaimOne : Scenario("S-P/peek-claim-one") {
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val pia = subject(w, "pia", consumer = ConsumerPolicy(claimStyle = ClaimStyle.PEEK_ONE, deferOnce = { (it.toByteArray()[0].toInt() and 3) == 0 }))
+        val inbox = pia.namespace("in", listOf(a, b), listen = true)
+        pia.capability(a, inbox, CapabilityKind.READ)
+        pia.capability(b, inbox, CapabilityKind.READ)
+        val out = pia.namespace("out", listOf(a, b), listen = true)
+        listOf(a, b).forEach { pia.capability(it, out) }
+        for (i in 1..4) {
+            w.otherWrite(a, inbox, "h$i")
+            w.otherWrite(b, inbox, "h$i")
+        }
+        w.otherWrite(b, inbox, "h5", TtlBucket.HOUR_1)
+        w.at(0, "enqueue op1") { pia.enqueue("op1", out) }
+        w.at(90 * SECOND, "others write h6, h7") {
+            w.otherWrite(a, inbox, "h6")
+            w.otherWrite(b, inbox, "h7", TtlBucket.HOUR_1)
+        }
+        w.jobs(pia, MINUTE, 61 * MINUTE)
+        w.endMillis = 75 * MINUTE
+    }
+}
+
+/**
  * S-G verification (design §8.3): relay B acknowledges stores and drops them (repair, then failed
  * at the second strike); relay D answers the first store of each hash `malformed_response`
  * without storing. op1 (A, B, C, D) ends SENT; op2 (A, B) can only be verified on A: DEGRADED.

@@ -62,7 +62,8 @@ class ApiTypesTest {
             OutboundBlob(op, ns, canaryCiphertext, TtlBucket.DAYS_7),
             OutboundOutcome(op, ns, Outcome.INDETERMINATE, 123L),
             OutboxProgress(1, 0, 2, null),
-            InboundBlob(ns, hash, canaryCiphertext),
+            InboundBlob(ns, hash, canaryCiphertext, 3_600L, 1),
+            PeekedBlob(ns, hash, canaryCiphertext, 3_600L),
             CapabilityNeed(RelayId(1), ns, CapabilityKind.READ, CapabilityNeed.Reason.MISSING),
             RelayEntry(onion, ByteArray(16) { 0x5a }, RelayEntry.Source.CONFIG),
             SyncStatus(TransportStatus.READY, PrivacyMode.STANDARD, setOf(StatusFlag.BUG), SyncCounts.EMPTY),
@@ -96,9 +97,14 @@ class ApiTypesTest {
     @Test
     fun enumCodesMatchTheSchema() {
         assertEquals(listOf("dm", "prekeys", "channel", "media", "identity"), Consumer.entries.map { it.code })
-        assertEquals(listOf(86_400, 604_800, 2_592_000, 7_776_000), TtlBucket.entries.map { it.seconds })
+        assertEquals(listOf(3_600, 86_400, 604_800, 2_592_000, 7_776_000), TtlBucket.entries.map { it.seconds })
         assertEquals(TtlBucket.DAYS_30, TtlBucket.ofSeconds(2_592_000))
+        assertEquals(TtlBucket.HOUR_1, TtlBucket.ofSeconds(3_600))
+        // Days round up (design §10.2 row 7), so the hour bucket counts as one day, never as none.
+        assertEquals(listOf(1L, 1L, 7L, 30L, 90L), TtlBucket.entries.map { it.days })
         assertTrue(Outcome.ofCode("pending") == null)
         assertEquals(listOf("default", "on", "off"), SendDelay.entries.map { it.code })
+        assertEquals(listOf("redeem", "local"), CapabilitySource.entries.map { it.code })
+        assertEquals(listOf(1, 3, 4), KeyKind.entries.map { it.code })
     }
 }

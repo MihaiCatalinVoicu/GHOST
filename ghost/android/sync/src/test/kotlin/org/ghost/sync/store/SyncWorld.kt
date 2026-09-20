@@ -6,6 +6,7 @@ import org.ghost.storage.MigrationRunner
 import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
 import org.ghost.sync.api.NamespaceId
@@ -41,6 +42,7 @@ class ManualClock(var now: Long) : SyncClock {
 /** Random streams with fixed, test-chosen values. */
 class FixedRandom(var sendDelayValue: Double = 0.5, var selectionValue: Double = 0.5) : RandomSources {
     var sendDelayDraws = 0
+    var requestIdDraws = 0
 
     override fun schedule(pair: PairKey, purpose: SchedulePurpose, index: Long): Double = 0.5
 
@@ -56,6 +58,9 @@ class FixedRandom(var sendDelayValue: Double = 0.5, var selectionValue: Double =
     override fun quietRun(index: Long): Double = 0.5
 
     override fun paymentHold(index: Long): Double = 0.5
+
+    /** Distinct per draw, so two registrations never share a request id. */
+    override fun requestId(): ByteArray = TestBytes.of(16, 9_000 + requestIdDraws++)
 }
 
 object TestBytes {
@@ -177,9 +182,10 @@ internal class SyncWorld(start: Long = T0) : AutoCloseable {
         listen: Boolean = true,
         consumer: Consumer = Consumer.DM,
         sendDelay: SendDelay = SendDelay.DEFAULT,
+        capabilitySource: CapabilitySource = CapabilitySource.REDEEM,
     ): NamespaceId {
         val ns = TestBytes.namespace(seed)
-        tx { stores.namespaces.register(it, ns, consumer, relays.toSet(), listen, sendDelay) }
+        tx { stores.namespaces.register(it, ns, consumer, relays.toSet(), listen, sendDelay, capabilitySource) }
         return ns
     }
 

@@ -6,6 +6,7 @@ import org.ghost.network.EntitlementCrypto.ScheduleSummary
 import org.ghost.network.OnionAddress
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import java.nio.ByteBuffer
 
 /**
@@ -18,6 +19,7 @@ import java.nio.ByteBuffer
  * | EXPIRING earlier in week p (a capability that ends before `start(p+1)`) | p | at once |
  * | WRITE MISSING, EXHAUSTED, REJECTED | p | at once (as soon as an eligible token exists) |
  * | READ MISSING | p | `PRF(pair, p)` in `[first seen, first seen + 6 h]` |
+ * | any, of a namespace whose capabilities are LOCAL | — | never (`LOCAL_SKIPPED`, Phase 9 §13.4) |
  * | any, within ±1 h of a week boundary or without a trusted clock | — | deferred |
  * | any, on a relay listed in no ES slot for the week | — | never (`NO_SLOT`) |
  * | any, whose pair holds a usable write capability reaching `start(target + 1)` | — | skipped |
@@ -43,6 +45,13 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
         /** The relay holds no ES slot in the token week (counted, never raises ENTITLEMENT_NEEDED). */
         object NoSlot : Decision()
 
+        /**
+         * The namespace installs its own credentials (Phase 9 design §13.4): a contact's inbox or
+         * bundle, whose write access is a bearer credential derived from the contact's card. It is
+         * counted and never redeemed for, so DM breadth costs no token (§4.8 token accounting).
+         */
+        object LocalSkipped : Decision()
+
         /** Nothing to do: the relay is not active in the directory, or a write capability already covers the need. */
         object Skip : Decision()
     }
@@ -57,6 +66,9 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
         firstSeen: Long,
         writeExpiryHour: Long?,
     ): Decision {
+        // A LOCAL need is decided before anything else, so no token is ever reserved for it and no
+        // unmet need of it raises ENTITLEMENT_NEEDED (Phase 9 design §13.4, mutant PM-1b).
+        if (need.source == CapabilitySource.LOCAL) return Decision.LocalSkipped
         if (relay == null) return Decision.Skip
         if (!trusted || nearBoundary(nowEst)) return Decision.Deferred
         val p = relayWeek

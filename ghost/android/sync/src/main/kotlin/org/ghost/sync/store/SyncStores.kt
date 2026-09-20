@@ -5,10 +5,12 @@ import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.Capabilities
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
 import org.ghost.sync.api.Inbox
 import org.ghost.sync.api.InboundBlob
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.Namespaces
 import org.ghost.sync.api.OperationId
@@ -16,7 +18,9 @@ import org.ghost.sync.api.OutboundBlob
 import org.ghost.sync.api.OutboundOutcome
 import org.ghost.sync.api.Outbox
 import org.ghost.sync.api.OutboxProgress
+import org.ghost.sync.api.PeekedBlob
 import org.ghost.sync.api.PrivacyMode
+import org.ghost.sync.api.Registrations
 import org.ghost.sync.api.RelayDirectory
 import org.ghost.sync.api.RelayEntry
 import org.ghost.sync.api.RelayId
@@ -45,8 +49,9 @@ class SyncStores(
     internal val outboxStore = OutboxStore(capabilityStore)
     internal val inboxStore = InboxStore(outboxStore, cursorStore)
     internal val directoryStore = DirectoryStore(outboxStore, capabilityStore)
-    internal val statusStore = StatusStore(capabilityStore)
-    internal val gc = Gc(outboxStore, capabilityStore)
+    internal val registrationStore = RegistrationStore(capabilityStore) { random.requestId() }
+    internal val statusStore = StatusStore(capabilityStore, registrationStore)
+    internal val gc = Gc(outboxStore, capabilityStore, registrationStore)
 
     private fun SyncTransaction.checked(): SyncTransaction {
         requireActive(database)
@@ -79,15 +84,45 @@ class SyncStores(
         override fun claim(consumer: Consumer, limit: Int): List<InboundBlob> =
             database.transaction { tx -> inboxStore.claim(tx, consumer.code, limit, clock.epochSeconds()) }
 
+        override fun peek(consumer: Consumer, limit: Int): List<PeekedBlob> =
+            database.transaction { tx -> inboxStore.peek(tx, consumer.code, limit, clock.epochSeconds()) }
+
+        override fun claimOne(consumer: Consumer, namespace: NamespaceId, hash: BlobHash): InboundBlob? =
+            database.transaction { tx -> inboxStore.claimOne(tx, consumer.code, namespace, hash, clock.epochSeconds()) }
+
         override fun markConsumed(tx: SyncTransaction, namespace: NamespaceId, hash: BlobHash): Boolean =
             inboxStore.markConsumed(tx.checked(), namespace, hash)
 
         override fun defer(tx: SyncTransaction, namespace: NamespaceId, hash: BlobHash, seconds: Int): Boolean =
             inboxStore.defer(tx.checked(), namespace, hash, seconds, clock.epochSeconds())
 
+        override fun forgetConsumed(tx: SyncTransaction, namespace: NamespaceId): Int =
+            inboxStore.forgetConsumed(tx.checked(), namespace)
+
         override fun setListener(listener: SyncListener?) = database.setConsumerListener(listener)
 
         override fun toString(): String = "Inbox"
+    }
+
+    val registrations: Registrations = object : Registrations {
+        override fun request(
+            tx: SyncTransaction,
+            relay: RelayId,
+            namespace: NamespaceId,
+            periodId: Long,
+            kind: KeyKind,
+            verifier: ByteArray,
+        ) = registrationStore.request(tx.checked(), RegistrationKey(relay, namespace, periodId, kind), verifier, clock.epochSeconds())
+
+        override fun rearm(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, fromPeriod: Long): Int =
+            registrationStore.rearm(tx.checked(), relay, namespace, fromPeriod, clock.epochSeconds())
+
+        override fun forget(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, beforePeriod: Long): Int =
+            registrationStore.forget(tx.checked(), relay, namespace, beforePeriod)
+
+        override fun pendingCount(): Int = database.transaction { tx -> registrationStore.pendingCount(tx) }
+
+        override fun toString(): String = "Registrations"
     }
 
     val namespaces: Namespaces = object : Namespaces {
@@ -98,7 +133,8 @@ class SyncStores(
             relays: Set<RelayId>,
             listen: Boolean,
             sendDelay: SendDelay,
-        ) = directoryStore.register(tx.checked(), namespace, consumer, relays, listen, sendDelay, clock.epochSeconds())
+            capabilitySource: CapabilitySource,
+        ) = directoryStore.register(tx.checked(), namespace, consumer, relays, listen, sendDelay, capabilitySource, clock.epochSeconds())
 
         override fun setRelays(tx: SyncTransaction, namespace: NamespaceId, relays: Set<RelayId>) =
             directoryStore.setRelays(tx.checked(), namespace, relays, clock.epochSeconds())
@@ -127,7 +163,10 @@ class SyncStores(
             val checked = tx.checked()
             val now = clock.epochSeconds()
             capabilityStore.put(checked, relay, namespace, kind, token, expiresAtEpochSeconds)
-            if (kind == CapabilityKind.WRITE) outboxStore.rearm(checked, relay, namespace, now)
+            if (kind == CapabilityKind.WRITE) {
+                outboxStore.rearm(checked, relay, namespace, now)
+                registrationStore.rearmForCapability(checked, relay, namespace, now)
+            }
         }
 
         override fun needed(): List<CapabilityNeed> =

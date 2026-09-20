@@ -39,6 +39,9 @@ class EngineDeps(
 /** In-process counters (design §11.6, §12.4, §5.7): counts only, never persisted or sent. */
 internal object Counters {
     const val NO_SLOT = "no_slot"
+
+    /** Needs of a LOCAL namespace, which is never redeemed for (Phase 9 design §13.4). */
+    const val LOCAL_SKIPPED = "local_skipped"
     const val TOKENS_REPLAYED = "tokens_replayed"
     const val TOKENS_REFUSED_LOCALLY = "tokens_refused_locally"
     const val REFRESH_REPLAYED = "refresh_replayed"

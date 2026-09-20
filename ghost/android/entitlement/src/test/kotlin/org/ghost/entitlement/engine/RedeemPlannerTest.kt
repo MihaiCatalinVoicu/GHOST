@@ -11,6 +11,7 @@ import org.ghost.network.EntitlementCrypto
 import org.ghost.network.OnionAddress
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.RelayId
 import org.junit.Assert.assertEquals
@@ -116,6 +117,26 @@ class RedeemPlannerTest {
         // A capability that ends before the week does is renewed with a current-week token at once.
         val early = plan(need(CapabilityKind.WRITE, CapabilityNeed.Reason.EXPIRING), writeExpiry = T0 + 3600) as RedeemPlanner.Decision.Redeem
         assertEquals(WEEK0, early.week)
+    }
+
+    /**
+     * A LOCAL namespace installs its own bearer credentials (Phase 9 design §13.3 item 3), so the
+     * planner never redeems for it: a contact's inbox or bundle costs no access token (§4.8 token
+     * accounting; mutant PM-1b). The decision comes before every other, so no token is reserved and
+     * no unmet need of it raises ENTITLEMENT_NEEDED.
+     */
+    @Test
+    fun aLocalNeedIsSkippedWhateverItsKindReasonOrClock() {
+        for (kind in listOf(CapabilityKind.WRITE, CapabilityKind.READ)) {
+            for (reason in CapabilityNeed.Reason.entries) {
+                val local = CapabilityNeed(RelayId(1), ns, kind, reason, CapabilitySource.LOCAL)
+                assertSame("$kind $reason", RedeemPlanner.Decision.LocalSkipped, plan(local))
+                assertSame("$kind $reason untrusted", RedeemPlanner.Decision.LocalSkipped, plan(local, trusted = false))
+                assertSame("$kind $reason without a relay", RedeemPlanner.Decision.LocalSkipped, plan(local, on = null))
+                // The same need on a REDEEM namespace is planned as before.
+                assertTrue("$kind $reason redeem", plan(CapabilityNeed(RelayId(1), ns, kind, reason)) !is RedeemPlanner.Decision.LocalSkipped)
+            }
+        }
     }
 
     @Test

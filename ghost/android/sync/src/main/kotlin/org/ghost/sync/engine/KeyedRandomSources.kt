@@ -31,6 +31,7 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
     private val mac: ThreadLocal<Mac> = ThreadLocal.withInitial { Mac.getInstance(ALGORITHM).apply { init(keySpec) } }
     private val sendDelayCounter = AtomicLong()
     private val selectionCounter = AtomicLong()
+    private val requestIdCounter = AtomicLong()
 
     override fun schedule(pair: PairKey, purpose: SchedulePurpose, index: Long): Double =
         unit(DOMAIN_SCHEDULE, purposeCode(purpose), pair.relayId.value, pair.namespace.raw, index)
@@ -45,13 +46,18 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
 
     override fun paymentHold(index: Long): Double = unit(DOMAIN_PAYMENT_HOLD, 0, 0, EMPTY, index)
 
+    override fun requestId(): ByteArray = mac(DOMAIN_REQUEST_ID, 0, 0, EMPTY, requestIdCounter.getAndIncrement()).copyOf(REQUEST_ID_SIZE)
+
     private fun unit(domain: Byte, purpose: Byte, relay: Long, namespace: ByteArray, index: Long): Double {
+        val bits = ByteBuffer.wrap(mac(domain, purpose, relay, namespace, index), 0, 8).long ushr 11
+        return bits * TWO_POW_MINUS_53
+    }
+
+    private fun mac(domain: Byte, purpose: Byte, relay: Long, namespace: ByteArray, index: Long): ByteArray {
         val input = ByteBuffer.allocate(1 + 1 + 8 + 1 + namespace.size + 8)
             .put(domain).put(purpose).putLong(relay).put(namespace.size.toByte()).put(namespace).putLong(index)
             .array()
-        val out = checkNotNull(mac.get()) { "no mac" }.doFinal(input)
-        val bits = ByteBuffer.wrap(out, 0, 8).long ushr 11
-        return bits * TWO_POW_MINUS_53
+        return checkNotNull(mac.get()) { "no mac" }.doFinal(input)
     }
 
     /** Never shows the key (T3). */
@@ -68,6 +74,10 @@ class KeyedRandomSources(key: ByteArray = freshKey()) : RandomSources {
         private const val DOMAIN_SELECTION: Byte = 4
         private const val DOMAIN_QUIET_RUN: Byte = 5
         private const val DOMAIN_PAYMENT_HOLD: Byte = 6
+        private const val DOMAIN_REQUEST_ID: Byte = 7
+
+        /** Request ids of `RegisterKey` are 16 bytes (Phase 9 design §4.2). */
+        private const val REQUEST_ID_SIZE: Int = 16
 
         private fun purposeCode(purpose: SchedulePurpose): Byte = when (purpose) {
             SchedulePurpose.FOREGROUND_START -> 1
