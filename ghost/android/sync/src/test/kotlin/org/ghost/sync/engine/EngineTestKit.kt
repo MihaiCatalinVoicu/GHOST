@@ -370,10 +370,13 @@ internal class DeterministicDriver(private val clock: VirtualClock, private val 
 internal class EngineWorld(
     val policy: TrafficPolicy = TrafficPolicy(),
     key: ByteArray = ByteArray(32) { (it * 7 + 3).toByte() },
-    steps: Steps = Steps.DEFAULT,
+    steps: Steps = Steps.default(),
 ) : AutoCloseable {
     private val dir: File = Files.createTempDirectory("ghost-engine-test").toFile()
-    val sql: JdbcSqlExecutor = JdbcSqlExecutor(File(dir, "sync.db").absolutePath).also {
+
+    /** The database file, for a test that opens a second connection on it (a concurrent reader). */
+    val databaseFile: File = File(dir, "sync.db")
+    val sql: JdbcSqlExecutor = JdbcSqlExecutor(databaseFile.absolutePath).also {
         MigrationRunner(it).migrate()
         MigrationRunner(it).verifyIntegrity()
     }

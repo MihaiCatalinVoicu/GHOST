@@ -100,7 +100,8 @@ class ApiTypesTest {
         assertEquals(listOf(3_600, 86_400, 604_800, 2_592_000, 7_776_000), TtlBucket.entries.map { it.seconds })
         assertEquals(TtlBucket.DAYS_30, TtlBucket.ofSeconds(2_592_000))
         assertEquals(TtlBucket.HOUR_1, TtlBucket.ofSeconds(3_600))
-        assertEquals(0L, TtlBucket.HOUR_1.days)
+        // Days round up (design §10.2 row 7), so the hour bucket counts as one day, never as none.
+        assertEquals(listOf(1L, 1L, 7L, 30L, 90L), TtlBucket.entries.map { it.days })
         assertTrue(Outcome.ofCode("pending") == null)
         assertEquals(listOf("default", "on", "off"), SendDelay.entries.map { it.code })
         assertEquals(listOf("redeem", "local"), CapabilitySource.entries.map { it.code })

@@ -172,8 +172,11 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
 
     /**
      * Write-ahead lease (the store pattern of §3.3): attempts + 1, in flight, lease hour, next
-     * attempt after [backoffSeconds]. The guard re-checks the due conditions except the week rule,
-     * which the caller has just read in the same transaction. Null when the guard does not match.
+     * attempt after [backoffSeconds]. The guard re-checks every planning condition except the week
+     * rule, including a usable, unexpired write capability that declares its week: the caller reads
+     * the due rows in an earlier transaction and makes one call per row, so another writer (or this
+     * pair's own previous answer) can refuse the capability in between. Null when the guard does not
+     * match; the row then stays pending and the next capability generation re-arms it.
      */
     fun lease(tx: SyncTransaction, key: RegistrationKey, now: Long, backoffSeconds: Long): RegistrationLease? {
         require(backoffSeconds in 0..Time.HOUR) { "backoff out of range" }
@@ -182,7 +185,9 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
             "UPDATE relay_key_registration SET attempts = attempts + 1, inflight = 1, lease_hour = ?1, next_attempt_minute = ?2 " +
                 "WHERE relay_id = ?3 AND namespace_id = ?4 AND period_id = ?5 AND kind = ?6 AND state = 'pending' AND inflight = 0 " +
                 "AND (next_attempt_minute <= ?7 OR next_attempt_minute > ?7 + $DUE_CLAMP_SECONDS) " +
-                "AND EXISTS (SELECT 1 FROM relay_directory rd WHERE rd.relay_id = ?3 AND rd.state = 'active')",
+                "AND EXISTS (SELECT 1 FROM relay_directory rd WHERE rd.relay_id = ?3 AND rd.state = 'active') " +
+                "AND EXISTS (SELECT 1 FROM relay_capability c WHERE c.relay_id = ?3 AND c.namespace_id = ?4 " +
+                "AND c.kind = 'write' AND c.state = 'usable' AND c.expires_hour IS NOT NULL AND c.expires_hour > ?7)",
             listOf(
                 Time.floorHour(now), Time.dueMinute(now, backoffSeconds), key.relayId.value, key.namespace.raw,
                 key.periodId, key.kind.dbCode, now,
@@ -195,6 +200,7 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
                 "WHERE r.relay_id = ?1 AND r.namespace_id = ?2 AND r.period_id = ?3 AND r.kind = ?4",
             listOf(key.relayId.value, key.namespace.raw, key.periodId, key.kind.dbCode),
         ) { Triple(it.blob(0), it.blob(1), it.string(2)) } ?: throw IllegalStateException("leased registration vanished")
+        // Unreachable: the guard above took the lease only over a usable, unexpired write capability.
         val token = capabilities.usable(tx, key.relayId, key.namespace, CapabilityKind.WRITE, now)
             ?: throw IllegalStateException("leased registration has no write capability")
         return RegistrationLease(key, OnionAddress.parse(row.third), row.first, row.second, token)

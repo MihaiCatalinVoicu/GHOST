@@ -56,9 +56,10 @@ internal open class Maintenance {
 internal open class GcStep {
 
     /**
-     * A checkpoint that stayed busy is owed to the next pass (Phase 9 design §10.7: `checkpoint_due`
-     * in memory). It is a hint only: the log is truncated at the latest by the next pass that
-     * deletes rows, and nothing persists it.
+     * A checkpoint that stayed busy is owed to the next pass of **this** sweeper (Phase 9 design
+     * §10.7: `checkpoint_due` in memory; one step object per engine, [Steps.default]). It is a hint
+     * only: the log is truncated at the latest by the next pass that deletes rows, and nothing
+     * persists it.
      */
     @Volatile
     private var checkpointDue: Boolean = false

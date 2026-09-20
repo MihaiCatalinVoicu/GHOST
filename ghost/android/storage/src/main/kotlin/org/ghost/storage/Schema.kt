@@ -827,6 +827,13 @@ object Schema {
         """CREATE TRIGGER inbox_blob_relay_expiry_update BEFORE UPDATE OF state, relay_expiry_hour ON inbox_blob
                 WHEN NEW.relay_expiry_hour IS NOT NULL AND NEW.state <> 'fetched'
                 BEGIN SELECT RAISE(ABORT, 'relay expiry is kept only while fetched'); END""",
+        // A row already fetched at the upgrade recorded no relay expiry, and 0 is a legal expiry
+        // hour, so the column is filled instead of left NULL: the retention of a fetched row is
+        // ceil7(day(E) + 24), hence day(E) <= retain_until_day - 24 and (retain_until_day - 23) days
+        // is above every expiry the row can have had. A consumer that bounds a message's life by
+        // min(E, its own rule) then falls back to its own rule, never deleting on arrival.
+        """UPDATE inbox_blob SET relay_expiry_hour = max(0, (retain_until_day - 23) * 86400)
+                WHERE state = 'fetched' AND relay_expiry_hour IS NULL""",
         // (3) Capability source and the DM send-delay rule. LOCAL namespaces (a contact's inbox or
         // bundle) install their credentials themselves and are never redeemed (§13.3 item 3).
         """ALTER TABLE sync_namespace ADD COLUMN capability_source TEXT NOT NULL DEFAULT 'redeem'

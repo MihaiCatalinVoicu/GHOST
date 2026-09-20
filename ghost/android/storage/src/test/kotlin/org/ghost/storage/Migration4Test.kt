@@ -173,6 +173,57 @@ class Migration4Test {
         )
     }
 
+    /**
+     * Step 2 on a database that already holds fetched rows: the new column is filled from the
+     * row's retention, which is `ceil7(day(E) + 24)`, so `(retain_until_day − 23) days` is above
+     * every relay expiry the row can have had. A consumer therefore never reads an unknown expiry
+     * as an expiry of 0 (deletion on arrival); listed rows and tombstones keep none.
+     */
+    @Test
+    fun aRowFetchedBeforeTheUpgradeGetsAnExpiryBoundedByItsRetention() = atV3().use { db ->
+        db.exec(
+            "INSERT INTO relay_directory(relay_id, onion_address, operator_id, state, source) VALUES (1, ?, ?, 'active', 'config')",
+            listOf(onion(1), bytes(16, 1)),
+        )
+        db.exec("INSERT INTO sync_namespace(namespace_id, consumer, listening) VALUES (?, 'dm', 1)", listOf(bytes(32, 1)))
+        for (i in 1..3) {
+            db.exec(
+                "INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?, ?, 'listed', ?)",
+                listOf(bytes(32, 1), hash(i), 112L + 7 * i),
+            )
+        }
+        db.exec(
+            "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?, fetch_seq = 1 WHERE namespace_id = ? AND blob_hash = ?",
+            listOf(bytes(1024, 1), bytes(32, 1), hash(1)),
+        )
+        db.exec(
+            "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?, fetch_seq = 2 WHERE namespace_id = ? AND blob_hash = ?",
+            listOf(bytes(1024, 3), bytes(32, 1), hash(3)),
+        )
+        db.exec(
+            "UPDATE inbox_blob SET state = 'done', ciphertext = NULL, fetch_seq = NULL WHERE namespace_id = ? AND blob_hash = ?",
+            listOf(bytes(32, 1), hash(3)),
+        )
+
+        assertEquals(listOf(4), MigrationRunner(db).migrate())
+        MigrationRunner(db).verifyIntegrity()
+
+        val fetched = db.queryLong("SELECT relay_expiry_hour FROM inbox_blob WHERE blob_hash = ?", listOf(hash(1)))
+        assertEquals((112L + 7 - 23) * 86_400, fetched)
+        assertEquals("an expiry hour is a whole hour", 0L, checkNotNull(fetched) % 3600)
+        assertNull("a listed row has no relay expiry", db.queryLong("SELECT relay_expiry_hour FROM inbox_blob WHERE blob_hash = ?", listOf(hash(2))))
+        assertNull("a tombstone carries no relay time", db.queryLong("SELECT relay_expiry_hour FROM inbox_blob WHERE blob_hash = ?", listOf(hash(3))))
+        // The filled row still consumes: the expiry goes with the ciphertext (§13.3 item 2).
+        assertEquals(
+            1,
+            db.changes(
+                "UPDATE inbox_blob SET state = 'done', ciphertext = NULL, fetch_seq = NULL, relay_expiry_hour = NULL " +
+                    "WHERE namespace_id = ? AND blob_hash = ?",
+                bytes(32, 1), hash(1),
+            ),
+        )
+    }
+
     /** Step 2: the relay expiry of a fetched blob, and only of a fetched blob. */
     @Test
     fun theRelayExpiryIsKeptOnlyWhileFetched() = SyncFixture().use { f ->

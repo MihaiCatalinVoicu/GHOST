@@ -100,7 +100,7 @@ class ThreadedLaneRunnerTest {
         }
     }
 
-    private class World(steps: Steps = Steps.DEFAULT) : AutoCloseable {
+    private class World(steps: Steps = Steps.default()) : AutoCloseable {
         private val dir: File = Files.createTempDirectory("ghost-runner-test").toFile()
         val sql = JdbcSqlExecutor(File(dir, "sync.db").absolutePath).also { MigrationRunner(it).migrate() }
         val db = SyncDatabase(sql)

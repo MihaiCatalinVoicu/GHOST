@@ -148,7 +148,7 @@ internal class SyncRuntime(
     private val random: RandomSources,
     private val policy: TrafficPolicy,
     private val threads: ThreadFactory,
-    private val steps: Steps = Steps.DEFAULT,
+    private val steps: Steps = Steps.default(),
     private val leases: LeasePort = ClosedLeases,
 ) {
     private class Run(val kind: SessionKind, val session: Session, val ticket: JobTicket?, val lease: TransportLease, val hold: RedeemHold) {

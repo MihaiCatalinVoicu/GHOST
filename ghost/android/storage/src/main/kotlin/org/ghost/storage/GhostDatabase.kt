@@ -159,15 +159,31 @@ class SupportSqlExecutor(private val db: SupportSQLiteDatabase) : SqlExecutor {
     override fun <T> transaction(block: () -> T): T {
         check(!db.inTransaction()) { "nested transaction on the same thread" }
         db.beginTransaction()
+        var failure: Throwable? = null
         try {
             val result = block()
             db.setTransactionSuccessful()
-            return result
-        } catch (e: RuntimeException) {
-            // A commit that runs out of space fails here, not in a statement (§21.12 point 1).
-            throw StorageFull.wrap(e)
-        } finally {
+            // endTransaction issues the COMMIT, so it belongs inside the guarded region: a commit
+            // that runs out of space fails here, not in a statement (§21.12 point 1).
             db.endTransaction()
+            return result
+        } catch (e: Throwable) {
+            failure = e
+            throw if (e is RuntimeException) StorageFull.wrap(e) else e
+        } finally {
+            // The driver leaves the frame open only when the work failed before the commit: the
+            // commit itself pops it, successfully or not. Ending it here rolls the transaction back.
+            if (db.inTransaction()) {
+                try {
+                    db.endTransaction()
+                } catch (e: RuntimeException) {
+                    // SQLite rolls its own transaction back on SQLITE_FULL, so this rollback can
+                    // fail; what the caller must see is the failure that started it, with the
+                    // second one attached (the JVM double does the same).
+                    val started = failure
+                    if (started != null) started.addSuppressed(e) else throw StorageFull.wrap(e)
+                }
+            }
         }
     }
 

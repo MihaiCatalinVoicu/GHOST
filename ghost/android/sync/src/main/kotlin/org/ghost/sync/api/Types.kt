@@ -51,8 +51,8 @@ value class RelayId(val value: Long) {
 enum class TtlBucket(val seconds: Int) {
     HOUR_1(3_600), DAY_1(86_400), DAYS_7(604_800), DAYS_30(2_592_000), DAYS_90(7_776_000);
 
-    /** Whole days of the bucket; 0 for [HOUR_1], which is shorter than a day. */
-    val days: Long get() = seconds / 86_400L
+    /** Days of the bucket, rounded up (design §10.2 row 7): 1 for [HOUR_1], which is shorter than a day. */
+    val days: Long get() = -Math.floorDiv(-seconds.toLong(), 86_400L)
 
     companion object {
         internal fun ofSeconds(seconds: Long): TtlBucket =

@@ -40,6 +40,26 @@ class GcRetentionTest {
         assertEquals(RetentionPolicy.ceil7(20_900 + 24), RetentionPolicy.expiryRetainDay(20_900 * DAY + 86_399))
     }
 
+    /**
+     * A TTL shorter than a day, or not a whole number of them, is retained for the whole day it
+     * touches: every user of a TTL in days rounds up (design §10.2 row 7). The 1-hour bucket keeps
+     * its own tombstone for `ceil7(today + 1 + 8)`, which covers TTL + 1 h + 2σ with room to spare.
+     */
+    @Test
+    fun aTtlShorterThanADayIsRetainedForAWholeDay() {
+        assertEquals(0L, RetentionPolicy.ceilDays(0))
+        assertEquals(1L, RetentionPolicy.ceilDays(1))
+        assertEquals(1L, RetentionPolicy.ceilDays(TtlBucket.HOUR_1.seconds.toLong()))
+        assertEquals(1L, RetentionPolicy.ceilDays(DAY))
+        assertEquals(2L, RetentionPolicy.ceilDays(DAY + 1))
+        assertEquals(1L, TtlBucket.HOUR_1.days)
+        assertEquals(listOf(1L, 1L, 7L, 30L, 90L), TtlBucket.entries.map { it.days })
+        val hour = RetentionPolicy.ownRetainDay(20_833 * DAY + 5, TtlBucket.HOUR_1.seconds.toLong())
+        assertEquals(RetentionPolicy.ceil7(20_833 + 1 + 8), hour)
+        val margin = TtlBucket.HOUR_1.seconds + HOUR + 2 * RetentionPolicy.SKEW_SECONDS
+        assertTrue("the retention covers TTL + 1 h + 2σ", hour * DAY >= 20_833 * DAY + 5 + margin)
+    }
+
     @Test
     fun everyRetentionDayWrittenIsAWeekBoundary(): Unit = SyncWorld().use { w ->
         val (ns, relays) = w.inboxSet()

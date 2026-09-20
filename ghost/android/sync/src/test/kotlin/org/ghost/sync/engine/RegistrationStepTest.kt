@@ -135,6 +135,33 @@ class RegistrationStepTest {
         assertEquals(RegistrationResult.RECORDED, f.attempt(key))
     }
 
+    /**
+     * Two rows of one pair read as due in the same pass: the first answer refuses the write
+     * capability, so the second row's lease no longer matches the guard (the capability is part of
+     * it) and the pass ends with one attempt and both rows pending, never a throw.
+     */
+    @Test
+    fun aRefusedCapabilityLeavesTheOtherDueRowOfThePairUntouched(): Unit = EngineWorld().use { w ->
+        val f = fixture(w)
+        val deposit = f.key(kind = KeyKind.DEPOSIT)
+        val read = f.key(kind = KeyKind.READ)
+        for (key in listOf(deposit, read)) w.registration(key.relayId, key.namespace, key.periodId, key.kind, verifier)
+        w.net.failBefore = { if (it.kind == TestRelays.Kind.REGISTER) "unauthorized" else null }
+        assertEquals("the second row is skipped, not attempted", 1, f.step.round(f.ctx, null, 8))
+        assertEquals("rejected", w.string("SELECT state FROM relay_capability WHERE kind = 'write' AND relay_id = ?", f.relays[0].value))
+        assertEquals("pending", f.state(deposit))
+        assertEquals("pending", f.state(read))
+        assertEquals(2, w.stores.registrations.pendingCount())
+        assertEquals(0L, w.long("SELECT sum(inflight) FROM relay_key_registration"))
+        assertEquals("the skipped row kept its attempts", 0L, w.long("SELECT attempts FROM relay_key_registration WHERE kind = 'read'"))
+        // The next capability generation re-arms both rows and the relay then records them.
+        w.net.failBefore = { null }
+        val expiry = Time.WEEK_ORIGIN + Time.WEEK * (f.week + 1) + Time.HOUR
+        w.capability(f.relays[0], f.ns, CapabilityKind.WRITE, seed = 9, expiresAt = expiry)
+        assertEquals(2, f.step.round(f.ctx, null, 8))
+        assertEquals(0, w.stores.registrations.pendingCount())
+    }
+
     @Test
     fun transientFailuresBackOffAndATransportFailureStopsTheSession(): Unit = EngineWorld().use { w ->
         val f = fixture(w)

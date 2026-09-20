@@ -59,7 +59,7 @@ internal class ClientSpec(
     val armed: Boolean,
     val mode: PrivacyMode = PrivacyMode.STANDARD,
     val policy: TrafficPolicy = Harness.POLICY,
-    val steps: Steps = Steps.DEFAULT,
+    val steps: Steps = Steps.default(),
     val consumer: ConsumerPolicy = ConsumerPolicy(),
     /** Offline windows of true time [from, to) in ms: no network, ensureReady answers UNAVAILABLE. */
     val offline: List<LongRange> = emptyList(),

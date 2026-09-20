@@ -91,6 +91,30 @@ class InboxPeekClaimTest {
         assertNull(w.stores.inbox.claimOne(Consumer.DM, ns, w.hashOf(9)))
     }
 
+    /**
+     * A fetched row always carries the relay expiry its consumer bounds the message's life by
+     * (design §10.3): migration 4 gives one to every row fetched before schema v4, and a row whose
+     * expiry is unknown is never handed out — 0 is a legal expiry hour, so no sentinel could tell
+     * the two apart.
+     */
+    @Test
+    fun aFetchedRowWithNoRelayExpiryIsNeverOffered(): Unit = SyncWorld().use { w ->
+        val (ns, relays) = w.inboxSet()
+        for (seed in 1..2) w.listAndFetch(relays[0], ns, seed, w.now + 7 * DAY)
+        assertEquals(
+            1,
+            w.sql.execUpdate(
+                "UPDATE inbox_blob SET relay_expiry_hour = NULL WHERE namespace_id = ? AND blob_hash = ?",
+                listOf(ns.toByteArray(), w.hashOf(1).toByteArray()),
+            ),
+        )
+        assertNull(w.relayExpiry(ns, w.hashOf(1)))
+        assertEquals(listOf(w.hashOf(2)), w.stores.inbox.peek(Consumer.DM, 8).map { it.hash })
+        assertEquals(listOf(w.hashOf(2)), w.stores.inbox.claim(Consumer.DM, 8).map { it.hash })
+        assertNull(w.stores.inbox.claimOne(Consumer.DM, ns, w.hashOf(1)))
+        assertEquals("the row was not offered", 0L, w.long("SELECT offers FROM inbox_blob WHERE blob_hash = ?", w.hashOf(1)))
+    }
+
     @Test
     fun peekAndClaimOneFollowTheOfferBackoff(): Unit = SyncWorld().use { w ->
         val (ns, relays) = w.inboxSet()

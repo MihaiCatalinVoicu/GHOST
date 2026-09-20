@@ -11,10 +11,14 @@ import org.ghost.sync.store.CapabilityToken
 import org.ghost.sync.store.SyncStores
 
 /**
- * The injected steps of the engine (design §1.3). Production uses [DEFAULT]; the exit-gate harness
+ * The injected steps of one engine (design §1.3). Production uses [default]; the exit-gate harness
  * substitutes mutant steps (subclasses in test sources, design §8.8) to prove it catches classic
  * bugs. There are no test switches or observers in production code: a harness sees the engine only
  * through the ports, the clock, the SqlExecutor and these objects.
+ *
+ * A set belongs to the engine it was built for: [default] returns a new one per engine, so what a
+ * step keeps between its own runs (the sweeper's checkpoint debt of design §10.7, [GcStep]) never
+ * reaches another engine or another world of the harness.
  */
 internal class Steps(
     val schedule: (RandomSources, TrafficPolicy) -> PairSchedule = { random, policy -> PairSchedule(random, policy) },
@@ -30,7 +34,8 @@ internal class Steps(
     override fun toString(): String = "Steps"
 
     companion object {
-        val DEFAULT: Steps = Steps()
+        /** The production steps of one engine; never shared between two of them. */
+        fun default(): Steps = Steps()
     }
 }
 

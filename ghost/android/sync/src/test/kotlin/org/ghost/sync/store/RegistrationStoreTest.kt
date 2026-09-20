@@ -128,6 +128,35 @@ class RegistrationStoreTest {
         assertEquals("older periods are left alone", 0, w.tx { w.stores.registrations.rearm(it, relay, ns, week + 5) })
     }
 
+    /**
+     * The capability belongs to the lease guard: the caller reads the due rows in one transaction
+     * and leases in another, one call apart, so a refusal, an expiry or an undeclared week in
+     * between leaves the row alone instead of handing out a lease with no capability.
+     */
+    @Test
+    fun aLeaseIsRefusedWhenTheWriteCapabilityWentAwayAfterThePlan(): Unit = SyncWorld().use { w ->
+        val (ns, relay, week) = w.ownSet()
+        val store = w.stores.registrationStore
+        val key = w.key(ns, relay, week)
+        w.request(key)
+        assertEquals(1, w.tx { store.due(it, w.now, 8, relay, ns) }.size)
+        // Another writer's `unauthorized` refuses the capability between the plan and the lease.
+        w.tx { w.caps.refuse(it, relay, ns, CapabilityKind.WRITE, w.caps.generation(it, relay, ns, CapabilityKind.WRITE)!!, false) }
+        assertNull(w.tx { store.lease(it, key, w.now, 600) })
+        assertEquals(0L, w.long("SELECT attempts FROM relay_key_registration"))
+        assertEquals(0L, w.long("SELECT inflight FROM relay_key_registration"))
+        assertEquals("pending", w.string("SELECT state FROM relay_key_registration"))
+        // A capability that declares no week names no period, so it carries no registration either.
+        w.capability(relay, ns, CapabilityKind.WRITE, expiresAt = null, seed = 9)
+        assertNull(w.tx { store.lease(it, key, w.now, 600) })
+        // An expired one is refused as well; a usable, unexpired one leases.
+        w.capability(relay, ns, CapabilityKind.WRITE, expiresAt = w.now - HOUR, seed = 10)
+        assertNull(w.tx { store.lease(it, key, w.now, 600) })
+        w.capability(relay, ns, CapabilityKind.WRITE, expiresAt = expiryOf(week), seed = 11)
+        assertNotNull(w.tx { store.lease(it, key, w.now, 600) })
+        assertEquals(1L, w.long("SELECT attempts FROM relay_key_registration"))
+    }
+
     @Test
     fun aRefusedPeriodStaysPendingAndTheNextCapabilityGenerationRearmsIt(): Unit = SyncWorld().use { w ->
         val (ns, relay, week) = w.ownSet()

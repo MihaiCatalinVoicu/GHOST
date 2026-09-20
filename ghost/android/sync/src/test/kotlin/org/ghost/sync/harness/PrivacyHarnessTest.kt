@@ -86,7 +86,7 @@ internal object T19Worlds {
      * T19 violation when STANDARD first list requests, or the whole HIGH list sequence, differ.
      */
     fun compare(mode: PrivacyMode, mutation: Mutation?) {
-        val steps = mutation?.steps ?: org.ghost.sync.engine.Steps.DEFAULT
+        val steps = mutation?.steps ?: org.ghost.sync.engine.Steps.default()
         val (idle, _, w1) = run(mode, busy = false, steps)
         val (busy, _, w2) = run(mode, busy = true, steps)
         try {
@@ -111,7 +111,7 @@ internal object T19Worlds {
     fun run(
         mode: PrivacyMode,
         busy: Boolean,
-        steps: org.ghost.sync.engine.Steps = org.ghost.sync.engine.Steps.DEFAULT,
+        steps: org.ghost.sync.engine.Steps = org.ghost.sync.engine.Steps.default(),
     ): Triple<List<ListRequest>, List<HarnessRelayPort.Call>, World> {
         val w = World("T19", 19, JournalMode.WAL)
         val relays = (1..4).map { w.relay("R$it", it) }

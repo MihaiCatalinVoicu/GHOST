@@ -5,9 +5,10 @@ package org.ghost.sync.api
  *
  * [relayExpiryHour] is the relay expiry of the blob floored to the hour, recorded at the fetch and
  * dropped again when the row is consumed (Phase 9 design §13.3 item 2): the DM consumer needs it to
- * bound the lifetime of a message it holds back. It is 0 for a row fetched before schema v4, which
- * recorded no relay expiry. [offers] is the offer count committed before this hand-off (the poison
- * guard of design §11.2 #3).
+ * bound the lifetime of a message it holds back. Every fetched row carries one — a row fetched
+ * before schema v4 was given the bound its retention implies by migration 4 — so no value of it
+ * means "unknown". [offers] is the offer count committed before this hand-off (the poison guard of
+ * design §11.2 #3).
  */
 class InboundBlob(
     val namespace: NamespaceId,

@@ -351,15 +351,20 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
         } else {
             ""
         }
+        // The relay expiry bounds the lifetime of what the consumer holds back (§10.3), and 0 is a
+        // legal expiry hour, so a row that carries none is not offered at all rather than handed
+        // out with a sentinel. Migration 4 fills the column for every row fetched before schema v4,
+        // so no row of a migrated database is held back by this.
         return tx.sql.rows(
             "SELECT b.namespace_id, b.blob_hash, b.offers, b.relay_expiry_hour FROM inbox_blob b " +
                 "JOIN sync_namespace n ON n.namespace_id = b.namespace_id " +
-                "WHERE n.consumer = ?1 AND b.state = 'fetched' AND (b.offer_after_minute <= ?2 OR b.offer_after_minute > ?2 + " +
+                "WHERE n.consumer = ?1 AND b.state = 'fetched' AND b.relay_expiry_hour IS NOT NULL " +
+                "AND (b.offer_after_minute <= ?2 OR b.offer_after_minute > ?2 + " +
                 "CASE WHEN b.offers >= ${StoreLimits.BACKOFF_OFFERS} THEN $OFFER_BACKOFF_CLAMP_SECONDS ELSE $DEFER_CLAMP_SECONDS END) " +
                 rowFilter +
                 "ORDER BY b.fetch_seq LIMIT ?3",
             args,
-        ) { Offer(NamespaceId(it.blob(0)), BlobHash(it.blob(1)), it.int(2), it.longOrNull(3) ?: 0L) }
+        ) { Offer(NamespaceId(it.blob(0)), BlobHash(it.blob(1)), it.int(2), it.long(3)) }
     }
 
     /** Commits the offer counter (and, from the third offer, the backoff), then reads the row out. */
