@@ -61,14 +61,20 @@
 # reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`, S7) is what covers those; this half
 # is the one that fails before a world is ever built.
 #
-# **Slice S6 (2026-09-20).** The mechanism is built and armed now; the corpus is partial, because
-# S7 has not landed. What exists today and is really checked: `OwnerSteps.kt`, which holds
-# ACTIVATE, OWNER-WEEK, KEEPER and REGROWS and calls eight of the restricted functions. What is
-# **not** exercisable yet: the forbidden side of the rule, since no RECV, BUNDLE or HELD file
-# exists to call one of these functions wrongly. The gate is written so that the day those files
-# land they are refused unless they are added to the allowlist deliberately — the allowlist names
-# the files that MAY call, so a new file is refused by default. The self-test proves the forbidden
-# side against fixtures. Recorded in the design as §22.11.
+# **Slice S6 (2026-09-20).** The mechanism was built and armed then, with a partial corpus:
+# `OwnerSteps.kt` alone, and no RECV, BUNDLE or HELD file to exercise the forbidden side. The gate
+# was written so that the day those files landed they would be refused unless added to the
+# allowlist deliberately — the allowlist names the files that MAY call, so a new file is refused
+# by default. Recorded in the design as §22.11 item 8.
+#
+# **Slice S7 (2026-09-21).** The corpus is now the real one, and the forbidden side is exercised by
+# production code rather than by fixtures alone. `SendStep.kt` (SEND, RESEND),
+# `EstablishmentSteps.kt` (EST-START, EST-READY, EST-END) and `ContactKeeper.kt` (the contact half
+# of KEEPER) joined the allowlist deliberately; `ReceiveStep.kt`, `PeekOrder.kt`, `OutcomeStep.kt`,
+# `ContactSteps.kt`, `PairKeySteps.kt`, `DmActor.kt` and the store layer did **not**, and each of
+# them handles inbound blobs or contact state without making a restricted call. `NoReflexTest`, the
+# behavioural half §16.1 names, arrived with the same slice: it compares two worlds that differ
+# only in what arrived.
 #
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
@@ -92,6 +98,7 @@ ALLOWED_FILES='
 OwnerSteps.kt          ACTIVATE, OWNER-WEEK, KEEPER, REGROWS (slice S6)
 SendStep.kt            SEND, RESEND (slice S7)
 EstablishmentSteps.kt  EST-START, EST-READY, EST-END (slice S7)
+ContactKeeper.kt       KEEPER, the contact half of §7.2 KEEPER row (slice S7)
 '
 # Files that may call `Namespaces.remove` and nothing else. `Sweeper.kt` is deliberately **not** in
 # ALLOWED_FILES: §21.12 point 3 gives SWEEP the removal of an orphaned namespace and nothing more,

@@ -6,9 +6,25 @@ package org.ghost.messaging.port
  * what makes the owner steps of §7.2 reproducible in a seeded world.
  */
 
-/** Wall clock, in unix seconds. Never read inside `ghost-client-dm`, which has no clock (G-R8). */
-fun interface DmClock {
+/**
+ * The two clocks the DM engine reads. Neither is ever read inside `ghost-client-dm`, which has no
+ * clock at all (G-R8): every time value crosses the JNI boundary as an argument.
+ */
+interface DmClock {
+    /**
+     * Wall clock, in unix seconds. Everything the DM tables store is floored or ceiled from this
+     * onto the minute, hour or day grid of `DmTime` (T13).
+     */
     fun nowEpochSeconds(): Long
+
+    /**
+     * Elapsed realtime, in milliseconds: the clock `ConsumerTail`'s deadline is on (§13.3 item 6).
+     *
+     * It is a **separate** clock because a wall clock can step and a deadline cannot: the tail
+     * must return by the job's end whatever the user did with the system time. `:app` wires one
+     * object to this and to `:sync`'s `SyncClock`, so both see one elapsed-realtime source.
+     */
+    fun monotonicMillis(): Long
 }
 
 /** The CSPRNG of the DM layer. Generation ids, operation ids and the two device keys come from it. */

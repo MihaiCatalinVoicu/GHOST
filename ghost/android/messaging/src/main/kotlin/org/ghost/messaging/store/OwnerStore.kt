@@ -26,6 +26,8 @@ internal class OwnerStore {
     /** The `dm_self` row, or null before ACTIVATE has run (§21.12 point 2). */
     class SelfRow(
         val cardIndex: Int,
+        /** The key of the D3 dedup tags (§7.6); read by `RECV` since S7. */
+        val seenKey: ByteArray,
         val contentKeyWrapped: ByteArray,
         val stateKeyWrapped: ByteArray,
         val bundleWeek: Long?,
@@ -54,17 +56,18 @@ internal class OwnerStore {
     fun self(sql: SqlExecutor): SelfRow? {
         var row: SelfRow? = null
         sql.query(
-            "SELECT card_index, content_key_wrapped, state_key_wrapped, bundle_week, " +
+            "SELECT card_index, seen_key, content_key_wrapped, state_key_wrapped, bundle_week, " +
                 "bundle_published_week, expiry_clock_minute, accept_after_minute FROM dm_self WHERE id = 1",
         ) { r ->
             row = SelfRow(
                 cardIndex = r.long(0).toInt(),
-                contentKeyWrapped = r.blob(1),
-                stateKeyWrapped = r.blob(2),
-                bundleWeek = if (r.isNull(3)) null else r.long(3),
-                bundlePublishedWeek = if (r.isNull(4)) null else r.long(4),
-                expiryClockMinute = r.long(5),
-                acceptAfterMinute = if (r.isNull(6)) null else r.long(6),
+                seenKey = r.blob(1),
+                contentKeyWrapped = r.blob(2),
+                stateKeyWrapped = r.blob(3),
+                bundleWeek = if (r.isNull(4)) null else r.long(4),
+                bundlePublishedWeek = if (r.isNull(5)) null else r.long(5),
+                expiryClockMinute = r.long(6),
+                acceptAfterMinute = if (r.isNull(7)) null else r.long(7),
             )
         }
         return row

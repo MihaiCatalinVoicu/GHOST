@@ -155,6 +155,9 @@ class SyncStores(
         override fun setListening(tx: SyncTransaction, namespace: NamespaceId, listen: Boolean) =
             directoryStore.setListening(tx.checked(), namespace, listen, clock.epochSeconds())
 
+        override fun listening(tx: SyncTransaction, namespace: NamespaceId): Boolean? =
+            directoryStore.namespace(tx.checked(), namespace)?.listening
+
         override fun setSendDelay(tx: SyncTransaction, namespace: NamespaceId, sendDelay: SendDelay) =
             directoryStore.setSendDelay(tx.checked(), namespace, sendDelay)
 

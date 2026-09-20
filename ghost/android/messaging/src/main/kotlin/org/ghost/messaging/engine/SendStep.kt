@@ -1,0 +1,959 @@
+package org.ghost.messaging.engine
+
+import org.ghost.crypto.bridge.CredentialV3
+import org.ghost.crypto.bridge.DmContent
+import org.ghost.crypto.bridge.DmPairing
+import org.ghost.crypto.bridge.DmSeal
+import org.ghost.crypto.bridge.DmSessions
+import org.ghost.messaging.port.DmClock
+import org.ghost.messaging.port.DmEnvelopes
+import org.ghost.messaging.port.DmRandom
+import org.ghost.messaging.port.EsSlot
+import org.ghost.messaging.store.ContactStore
+import org.ghost.messaging.store.ContentCipher
+import org.ghost.messaging.store.MessageStore
+import org.ghost.messaging.store.SessionStore
+import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.InstalledCapability
+import org.ghost.sync.api.InsufficientReplicasException
+import org.ghost.sync.api.NamespaceId
+import org.ghost.sync.api.OperationId
+import org.ghost.sync.api.OutboundBlob
+import org.ghost.sync.api.SendDelay
+import org.ghost.sync.api.SyncDatabase
+import org.ghost.sync.api.SyncTransaction
+import org.ghost.sync.api.TtlBucket
+import org.ghost.storage.StorageFullException
+
+/**
+ * **SEND** and **RESEND** (Phase 9 design §7.3, §7.5, §21.8).
+ *
+ * Why a send is safe (CS-1), in the design's own words:
+ *
+ * > The session state is passed into the native call as a stored envelope and comes back as a new
+ * > envelope that Kotlin writes through `tx.sql` in the same transaction; no native session object
+ * > survives the call (§7.9). The ciphertext leaves the device only through the outbox, which sees
+ * > it only after commit. A crash before commit leaves no ratchet step, row or op; after commit,
+ * > an op the engine sends. A message key is used only inside a transaction that either commits
+ * > the op or leaves no trace.
+ *
+ * **Two phases, one writer.** The relay set, the deposit credentials and the L0 are prepared
+ * **before** the writing transaction opens, because minting or encoding inside it would commit
+ * half a step while reporting an error (§7.2's first sentence, §22.11 item 17). That is sound only
+ * because the DM actor is the single DM writer (§13.7): nothing else can write DM state between
+ * the two phases, and the writing transaction re-reads every guard it depends on anyway.
+ *
+ * **The mode rule is §6.8's, and all of it**: a PreKey output is intro; a normal output with an
+ * out pair key for `week(author_minute)` is pair; a normal output with a `prov_env`, no pair
+ * envelope ever sealed on the session and an anchor inside 28 days is provisional; anything else
+ * is `NO_SEAL_KEY`, which keeps the item pending and re-establishes — a user-caused
+ * re-establishment, never an inbound one (T28).
+ */
+internal class SendStep(
+    private val database: SyncDatabase,
+    private val sync: DmSyncPorts,
+    private val envelopes: DmEnvelopes,
+    private val material: ContactMaterial,
+    private val relays: RelaySetResolver,
+    private val clock: DmClock,
+    private val random: DmRandom,
+    private val contexts: SelfContexts,
+) {
+    private val contacts = ContactStore()
+    private val messages = MessageStore()
+    private val sessions = SessionStore()
+
+    /** The facade's `send` result (§13.2), plus the two the engine needs internally. */
+    enum class Outcome {
+        /** The message is stored and either enqueued or waiting for establishment. */
+        QUEUED,
+
+        /** A key change is pending the user's decision; no ciphertext is produced (§8.3, CS-5). */
+        KEY_CHANGED,
+
+        /** The contact is blocked (§12.4). */
+        BLOCKED,
+
+        /** The contact's identity is revoked: terminal (§8.5). */
+        REVOKED,
+
+        /** The contact is a request the user has not accepted (§12.3). */
+        REQUEST_NOT_ACCEPTED,
+
+        /** `|body| > MAX_BODY_BYTES`; Phase 11 media carries more (§6.6, §12.6). */
+        TOO_LARGE,
+
+        /** The week's ES slot table cannot span two operators (ADR-11, §5.2). */
+        NO_REPLICAS,
+
+        /** The local database is full (`SQLITE_FULL`, §7.8). */
+        STORAGE_FULL,
+
+        /** The DM context is closed or the native library is missing (§13.2). */
+        CRYPTO_UNAVAILABLE,
+
+        /** No such contact, or no conversation for it. */
+        UNKNOWN_CONTACT,
+
+        /** A user retry past the original deadline (§7.5). */
+        DEADLINE_PASSED,
+    }
+
+    /** What [send] decided, so the caller knows whether to run `EST-START` after it commits. */
+    class Sent(val outcome: Outcome, val establish: Boolean) {
+        override fun toString(): String = "Sent($outcome, establish=$establish)"
+    }
+
+    // ------------------------------------------------------------------- SEND
+
+    /**
+     * §7.3: one user-initiated send.
+     *
+     * [timerCode] is null for a TEXT or a REACTION, which take the conversation's timer, and the
+     * new code for a TIMER_SET, whose blob takes the larger of the two buckets (R-T3).
+     */
+    @Suppress("ReturnCount")
+    fun send(
+        contactId: ByteArray,
+        kind: DmContent.Kind,
+        body: ByteArray,
+        quoteRef: ByteArray?,
+        timerCode: Int?,
+    ): Sent {
+        val self = contexts.get() ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        if (body.size > DmContent.MAX_BODY_BYTES) return Sent(Outcome.TOO_LARGE, establish = false)
+        val now = clock.nowEpochSeconds()
+        val authorMinute = DmTime.floorMinute(now)
+
+        val plan = database.transaction { tx ->
+            plan(tx, contactId, kind, timerCode, now, createOffer = true)
+        }
+        plan.refusal?.let { return Sent(it, establish = false) }
+        val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+
+        val messageId = random.bytes(MESSAGE_ID_BYTES)
+        val encoded = envelopes.encodeContent(
+            kind = kind,
+            messageId = messageId,
+            authorMinute = authorMinute / DmTime.MINUTE,
+            minuteIndex = prepared.minuteIndex,
+            timerCode = prepared.timerCode,
+            timerVersion = prepared.timerVersion,
+            quoteRef = quoteRef,
+            body = body,
+            contactId = contactId,
+            offerRootGen = prepared.offer?.rootGen ?: 0,
+            offerEnv = prepared.offer?.offerEnv ?: EMPTY,
+            revocation = EMPTY,
+            sessionReset = false,
+        )
+        val l0 = when (encoded) {
+            is DmContent.Encoded.Ok -> encoded
+            DmContent.Encoded.Oversize -> return Sent(Outcome.TOO_LARGE, establish = false)
+            // A record this engine built that the codec refuses is a bug, not an outcome: the
+            // fields come from the schema's own ranges and the TLVs from R-C3's own list.
+            DmContent.Encoded.NonCanonical ->
+                throw IllegalStateException("the engine built a non-canonical L0")
+            DmContent.Encoded.StateCorrupt,
+            DmContent.Encoded.Unavailable,
+            -> return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        }
+
+        val credentials = depositCredentials(prepared)
+            ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+
+        return commit(
+            self = self,
+            contactId = contactId,
+            kind = kind,
+            messageId = messageId,
+            authorMinute = authorMinute,
+            now = now,
+            prepared = prepared,
+            l0 = l0,
+            body = body,
+            quoteRef = quoteRef,
+            credentials = credentials,
+        )
+    }
+
+    /**
+     * §21.7 point 4: every pending item of a contact, sealed and enqueued once a session exists.
+     *
+     * One transaction **per item**, not one for all of them: an item whose seal fails must not
+     * roll back the ones already enqueued, and each item's ratchet step has to commit with its own
+     * op (CS-1).
+     */
+    fun flushPending(contactId: ByteArray): Int {
+        val self = contexts.get() ?: return 0
+        var sent = 0
+        val pending = database.transaction { tx -> messages.pendingSends(tx.sql, contactId) }
+        for (row in pending) if (flushOne(self, contactId, row.itemId)) sent += 1
+        return sent
+    }
+
+    /**
+     * §7.5: the **user retry** of a FAILED item.
+     *
+     * It re-encrypts the **same L0** — same `message_id`, author minute, minute index and timer
+     * fields — under the next ratchet step, as a new op, while `now` is before the original
+     * deadline. No copy ever existed, so re-encrypting is safe, and D3 dedups by `message_id` if
+     * one somehow did (§7.6).
+     *
+     * SEND's guards run again against `now` (§22.8.5 rule 2): the trust check, the no-session
+     * check and the mode rule of §6.8. The out key of the **author's own week** is what makes the
+     * pair branch reachable across a week boundary, which is why the maintenance step keeps it
+     * while a retryable item of that week lives (§22.8.5 rule 1).
+     */
+    @Suppress("ReturnCount")
+    fun retry(itemId: ByteArray): Outcome {
+        val self = contexts.get() ?: return Outcome.CRYPTO_UNAVAILABLE
+        val now = clock.nowEpochSeconds()
+        val row = database.transaction { tx -> messages.item(tx.sql, itemId) }
+            ?: return Outcome.UNKNOWN_CONTACT
+        if (row.state != STATE_FAILED) return Outcome.UNKNOWN_CONTACT
+        if (now >= row.deadlineHour) return Outcome.DEADLINE_PASSED
+        val plan = database.transaction { tx ->
+            plan(tx, row.contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
+        }
+        plan.refusal?.let { return it }
+        val prepared = plan.prepared ?: return Outcome.CRYPTO_UNAVAILABLE
+        val credentials = depositCredentials(prepared) ?: return Outcome.CRYPTO_UNAVAILABLE
+        val operationId = random.bytes(OperationId.SIZE)
+        return try {
+            database.transaction { tx ->
+                val contact = contacts.contact(tx.sql, row.contactId)
+                    ?: return@transaction Outcome.UNKNOWN_CONTACT
+                refusalFor(contact.trust)?.let { return@transaction it }
+                val item = messages.item(tx.sql, itemId) ?: return@transaction Outcome.UNKNOWN_CONTACT
+                if (item.state != STATE_FAILED) return@transaction Outcome.UNKNOWN_CONTACT
+                val l0 = self.content.open(item.l0Env ?: return@transaction Outcome.UNKNOWN_CONTACT, itemId)
+                    ?: return@transaction Outcome.UNKNOWN_CONTACT
+                val decoded = envelopes.decodeContent(row.contactId, l0)
+                if (decoded !is DmContent.DecodeResult.Ok) return@transaction Outcome.UNKNOWN_CONTACT
+                val session = sessions.current(tx.sql, row.contactId)
+                if (session == null || isStale(session, now)) {
+                    messages.setItemState(tx, itemId, STATE_FAILED, MessageStore.ITEM_PENDING)
+                    messages.setMessageState(tx, itemId, STATE_FAILED, MessageStore.STATE_QUEUED)
+                    messages.insertPendingSend(tx, itemId, row.contactId, item.deadlineHour)
+                    return@transaction Outcome.QUEUED
+                }
+                messages.setItemState(tx, itemId, STATE_FAILED, MessageStore.ITEM_PENDING)
+                messages.setMessageState(tx, itemId, STATE_FAILED, MessageStore.STATE_QUEUED)
+                val outcome = sealAndEnqueue(
+                    tx = tx,
+                    self = self,
+                    contact = contact,
+                    prepared = prepared,
+                    session = session,
+                    itemId = itemId,
+                    l0 = l0,
+                    bucket = decoded.content.bucket,
+                    authorMinute = decoded.content.authorMinute * DmTime.MINUTE,
+                    now = now,
+                    operationId = operationId,
+                    deadlineHour = item.deadlineHour,
+                    ttl = DmTimers.bucketOf(decoded.content.timerCode),
+                    credentials = credentials,
+                )
+                when (outcome) {
+                    SealOutcome.OK -> Outcome.QUEUED
+                    SealOutcome.NO_SEAL_KEY, SealOutcome.INVALID_SESSION -> {
+                        if (outcome == SealOutcome.INVALID_SESSION) {
+                            sessions.deleteSessions(tx, row.contactId)
+                        }
+                        messages.insertPendingSend(tx, itemId, row.contactId, item.deadlineHour)
+                        Outcome.QUEUED
+                    }
+                    SealOutcome.UNAVAILABLE -> Outcome.CRYPTO_UNAVAILABLE
+                }
+            }
+        } catch (e: InsufficientReplicasException) {
+            Outcome.NO_REPLICAS
+        } catch (e: StorageFullException) {
+            Outcome.STORAGE_FULL
+        }
+    }
+
+    // ----------------------------------------------------------------- RESEND
+
+    /**
+     * §7.5: the automatic **identical-bytes** resend of an INDETERMINATE op (G-7, C-15).
+     *
+     * The bytes are the retained ones, never a re-encryption: a second ratchet step would produce
+     * a second ciphertext the recipient would have to dedup at D3 instead of at D1, and would cost
+     * a message key for nothing (mutant MC-3). At most two, only while `now < resendNotAfter` and
+     * before the op's deadline — both checked by the caller against the Phase 7 contract — and
+     * only while the contact is `unverified` or `verified` (§22.8.5 rule 2).
+     */
+    @Suppress("LongParameterList")
+    fun resend(
+        contactId: ByteArray,
+        previousOperationId: ByteArray,
+        namespace: ByteArray,
+        blob: ByteArray,
+        ttl: TtlBucket,
+        deadlineHour: Long,
+        itemId: ByteArray,
+        resendCount: Int,
+    ): Boolean {
+        val operationId = random.bytes(OperationId.SIZE)
+        return try {
+            database.transaction { tx ->
+                val contact = contacts.contact(tx.sql, contactId) ?: return@transaction false
+                if (!maySend(contact.trust)) return@transaction false
+                messages.insertItemOp(tx, operationId, itemId, blob, resendCount + 1, deadlineHour)
+                messages.clearOpBlob(tx, previousOperationId)
+                sync.outbox.enqueue(
+                    tx,
+                    OutboundBlob(
+                        OperationId(operationId),
+                        NamespaceId(namespace),
+                        blob,
+                        ttl,
+                        deadlineEpochSeconds = deadlineHour,
+                    ),
+                )
+                true
+            }
+        } catch (e: InsufficientReplicasException) {
+            false
+        } catch (e: StorageFullException) {
+            false
+        }
+    }
+
+    // ---------------------------------------------------------------- planning
+
+    /** Everything the first phase read, so the second can act without reading it again. */
+    private class Prepared(
+        val card: ByteArray,
+        val conversation: ContactStore.ConversationRow,
+        val inboxNamespace: ByteArray,
+        val minuteIndex: Int,
+        val timerCode: Int,
+        val timerVersion: Long,
+        val offer: PendingOffer?,
+        val set: List<EsSlot>,
+        val needCredential: Set<Long>,
+    )
+
+    /** A root offer waiting to ride on the next normal-output send (§6.3, R-C3). */
+    private class PendingOffer(val rootGen: Int, val offerEnv: ByteArray)
+
+    private class Plan(val refusal: Outcome?, val prepared: Prepared?)
+
+    @Suppress("LongParameterList", "ReturnCount")
+    private fun plan(
+        tx: SyncTransaction,
+        contactId: ByteArray,
+        kind: DmContent.Kind,
+        timerCode: Int?,
+        now: Long,
+        createOffer: Boolean,
+    ): Plan {
+        val contact = contacts.contact(tx.sql, contactId)
+            ?: return Plan(Outcome.UNKNOWN_CONTACT, null)
+        // S1, before any native session call: sessions exist only for the pinned identity (§8.2).
+        refusalFor(contact.trust)?.let { return Plan(it, null) }
+        val conversation = contacts.conversation(tx.sql, contactId)
+            ?: return Plan(Outcome.UNKNOWN_CONTACT, null)
+        val card = material.card(contact) ?: return Plan(Outcome.CRYPTO_UNAVAILABLE, null)
+        val namespaces = material.namespaces(card) ?: return Plan(Outcome.CRYPTO_UNAVAILABLE, null)
+        val week = DmTime.week(now)
+        val set = relays.forNamespace(namespaces.inbox, week)
+            ?: return Plan(Outcome.NO_REPLICAS, null)
+
+        val current = sessions.current(tx.sql, contactId)
+        // §21.3 point 1: a root never rides in a PreKey message, and an unacknowledged session's
+        // output is one — `acknowledged` is exactly vodozemac's `has_received_message()`.
+        val offer = if (createOffer && current != null && current.acknowledged) {
+            pendingOffer(tx, contactId, week)
+        } else {
+            null
+        }
+
+        val inboxNs = NamespaceId(namespaces.inbox)
+        val needCredential = set.filter { slot ->
+            val installed = sync.capabilities.installed(tx, slot.relay, inboxNs, CapabilityKind.WRITE)
+            installed == null ||
+                installed.state != InstalledCapability.State.USABLE ||
+                (installed.expiresHour ?: Long.MAX_VALUE) - now < CREDENTIAL_REFRESH_SECONDS
+        }.map { it.relay.value }.toSet()
+
+        val authorMinute = DmTime.floorMinute(now)
+        return Plan(
+            null,
+            Prepared(
+                card = card,
+                conversation = conversation,
+                inboxNamespace = namespaces.inbox,
+                minuteIndex = messages.nextMinuteIndex(
+                    sql = tx.sql,
+                    conversationId = conversation.conversationId,
+                    authorMinute = authorMinute,
+                    nowMinute = authorMinute,
+                ),
+                timerCode = timerCode ?: conversation.timerCode,
+                timerVersion = if (kind == DmContent.Kind.TIMER_SET) {
+                    conversation.timerVersion + 1
+                } else {
+                    conversation.timerVersion
+                },
+                offer = offer,
+                set = set,
+                needCredential = needCredential,
+            ),
+        )
+    }
+
+    /**
+     * §6.3: the root this device offers for `c → me`, created at the first send whose output is a
+     * normal message and re-attached, byte for byte, until a pair envelope under it opens (§9.4's
+     * `offer_env` is stored for exactly that reason).
+     *
+     * The generation is `1 + max(root_gen)` over the contact's rows (§21.3 point 3), so it never
+     * repeats on a device that kept the contact and the peer's "a `root_gen` not greater than the
+     * stored one is ignored" rule cannot reject it.
+     */
+    private fun pendingOffer(
+        tx: SyncTransaction,
+        contactId: ByteArray,
+        week: Long,
+    ): PendingOffer? {
+        val offers = contacts.pairOffers(tx.sql, contactId)
+        offers.firstOrNull { !it.acknowledged && it.offerEnv != null }?.let { row ->
+            return PendingOffer(row.rootGen, requireNotNull(row.offerEnv))
+        }
+        // An unacknowledged offer whose bytes are gone is one this device already erased; a new
+        // generation is what §21.3 point 3 asks for, not a second offer of the same one.
+        val rootGen = (offers.maxOfOrNull { it.rootGen } ?: -1) + 1
+        if (rootGen > MAX_ROOT_GEN) return null
+        val created = envelopes.pairOffer(contactId, rootGen, week)
+        if (created !is DmPairing.OfferResult.Ok) return null
+        contacts.insertPairOffer(
+            tx = tx,
+            contactId = contactId,
+            rootGen = rootGen,
+            rootEnv = created.offer.rootEnv,
+            offerEnv = created.offer.offerEnv,
+            baseWeek = week,
+        )
+        // The **in** key of the base week exists from the moment the root does, so a pair envelope
+        // that arrives before the next maintenance pass is recognisable (§6.3, rule R-S5).
+        val keys = envelopes.pairKeys(
+            contactId = contactId,
+            direction = DmSeal.PairDirection.IN,
+            rootGen = rootGen,
+            from = DmPairing.From.ROOT,
+            keyEnv = created.offer.rootEnv,
+            baseWeek = week,
+            fromWeek = week,
+            toWeek = week,
+        )
+        if (keys is DmPairing.KeysResult.Ok) {
+            for (key in keys.weeks) {
+                contacts.putPairKey(
+                    tx = tx,
+                    contactId = contactId,
+                    direction = ContactStore.DIRECTION_IN,
+                    rootGen = rootGen,
+                    week = key.week,
+                    recognitionKey = key.recognitionKey,
+                    openEnv = key.openEnv,
+                )
+            }
+        }
+        return PendingOffer(rootGen, created.offer.offerEnv)
+    }
+
+    /** The deposit credentials of the relays that need one, minted outside the transaction. */
+    private fun depositCredentials(prepared: Prepared): Map<Long, ByteArray>? {
+        val out = LinkedHashMap<Long, ByteArray>()
+        for (slot in prepared.set) {
+            if (slot.relay.value !in prepared.needCredential) continue
+            val derived = material.fromCard(prepared.card, slot.slot) ?: return null
+            out[slot.relay.value] = try {
+                CredentialV3.credential(
+                    CredentialV3.Kind.DEPOSIT,
+                    slot.slot,
+                    prepared.inboxNamespace,
+                    derived.deposit,
+                )
+            } finally {
+                derived.clearSecrets()
+            }
+        }
+        return out
+    }
+
+    // ----------------------------------------------------------------- commit
+
+    @Suppress("LongParameterList", "ReturnCount", "LongMethod")
+    private fun commit(
+        self: SelfContext,
+        contactId: ByteArray,
+        kind: DmContent.Kind,
+        messageId: ByteArray,
+        authorMinute: Long,
+        now: Long,
+        prepared: Prepared,
+        l0: DmContent.Encoded.Ok,
+        body: ByteArray,
+        quoteRef: ByteArray?,
+        credentials: Map<Long, ByteArray>,
+    ): Sent {
+        val ttl = if (kind == DmContent.Kind.TIMER_SET) {
+            DmTimers.timerSetBucket(prepared.conversation.timerCode, prepared.timerCode)
+        } else {
+            DmTimers.bucketOf(prepared.timerCode)
+        }
+        val deadline = DmTimers.deadlineSeconds(authorMinute, ttl)
+        val deadlineHour = DmTime.ceilHour(deadline)
+        val failAfterHour = DmTime.ceilHour(
+            minOf(authorMinute + DmTimers.DEADLINE_CAP_SECONDS, deadline),
+        )
+        val bodyNonce = random.bytes(ContentCipher.NONCE_BYTES)
+        val l0Nonce = random.bytes(ContentCipher.NONCE_BYTES)
+        val operationId = random.bytes(OperationId.SIZE)
+
+        return try {
+            database.transaction { tx ->
+                val contact = contacts.contact(tx.sql, contactId)
+                    ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
+                refusalFor(contact.trust)?.let { return@transaction Sent(it, false) }
+
+                // S3: the message row (TEXT and TIMER_SET only) and the item row (every kind).
+                if (kind == DmContent.Kind.TEXT || kind == DmContent.Kind.TIMER_SET) {
+                    messages.insertMessage(
+                        tx = tx,
+                        messageId = messageId,
+                        conversationId = prepared.conversation.conversationId,
+                        outgoing = true,
+                        kind = kind.wire,
+                        authorMinute = authorMinute,
+                        sortMinute = authorMinute,
+                        minuteIndex = prepared.minuteIndex,
+                        timerCode = prepared.timerCode,
+                        bodyEnv = if (kind == DmContent.Kind.TEXT) {
+                            self.content.seal(bodyNonce, messageId, bodyPlain(quoteRef, body))
+                        } else {
+                            null
+                        },
+                        state = MessageStore.STATE_QUEUED,
+                        expireAtMinute = DmTimers.senderExpireMinute(now, prepared.timerCode),
+                        unreadDeadlineMinute = null,
+                    )
+                }
+                if (kind == DmContent.Kind.TIMER_SET) {
+                    contacts.adoptTimer(
+                        tx,
+                        prepared.conversation.conversationId,
+                        prepared.timerCode,
+                        prepared.timerVersion,
+                    )
+                }
+                if (kind == DmContent.Kind.REACTION) {
+                    messages.putReaction(
+                        tx = tx,
+                        targetId = reactionTarget(body),
+                        fromSelf = true,
+                        graphemeEnv = self.content.seal(
+                            bodyNonce,
+                            reactionTarget(body),
+                            body.copyOfRange(REACTION_TARGET_BYTES, body.size),
+                        ),
+                    )
+                }
+                messages.insertItem(
+                    tx = tx,
+                    itemId = messageId,
+                    contactId = contactId,
+                    messageRef = if (kind == DmContent.Kind.REACTION) {
+                        reactionTarget(body)
+                    } else {
+                        messageId
+                    },
+                    kind = kind.wire,
+                    control = null,
+                    l0Env = self.content.seal(l0Nonce, messageId, l0.l0),
+                    deadlineHour = deadlineHour,
+                    state = MessageStore.ITEM_PENDING,
+                )
+
+                // S4: no usable session, so the item waits and the caller runs `EST-START`.
+                val current = sessions.current(tx.sql, contactId)
+                if (current == null || isStale(current, now)) {
+                    messages.insertPendingSend(tx, messageId, contactId, failAfterHour)
+                    return@transaction Sent(Outcome.QUEUED, establish = true)
+                }
+
+                when (
+                    sealAndEnqueue(
+                        tx = tx,
+                        self = self,
+                        contact = contact,
+                        prepared = prepared,
+                        session = current,
+                        itemId = messageId,
+                        l0 = l0.l0,
+                        bucket = l0.bucket,
+                        authorMinute = authorMinute,
+                        now = now,
+                        operationId = operationId,
+                        deadlineHour = deadlineHour,
+                        ttl = ttl,
+                        credentials = credentials,
+                    )
+                ) {
+                    SealOutcome.OK -> Sent(Outcome.QUEUED, establish = false)
+                    // §6.8 rule 4: the item stays pending and the caller re-establishes. The rows
+                    // written above stay — the message is the user's, and it is queued, not lost.
+                    SealOutcome.NO_SEAL_KEY -> {
+                        messages.insertPendingSend(tx, messageId, contactId, failAfterHour)
+                        Sent(Outcome.QUEUED, establish = true)
+                    }
+                    // §22.8.2 rule 2 and §21.5: the session cannot encrypt again, so it goes, the
+                    // item stays pending, and the next establishment builds a new one.
+                    SealOutcome.INVALID_SESSION -> {
+                        sessions.deleteSessions(tx, contactId)
+                        messages.insertPendingSend(tx, messageId, contactId, failAfterHour)
+                        Sent(Outcome.QUEUED, establish = true)
+                    }
+                    SealOutcome.UNAVAILABLE -> Sent(Outcome.CRYPTO_UNAVAILABLE, false)
+                }
+            }
+        } catch (e: InsufficientReplicasException) {
+            Sent(Outcome.NO_REPLICAS, establish = false)
+        } catch (e: StorageFullException) {
+            Sent(Outcome.STORAGE_FULL, establish = false)
+        }
+    }
+
+    /** What [sealAndEnqueue] decided. */
+    private enum class SealOutcome { OK, NO_SEAL_KEY, UNAVAILABLE, INVALID_SESSION }
+
+    @Suppress("LongParameterList", "ReturnCount")
+    private fun sealAndEnqueue(
+        tx: SyncTransaction,
+        self: SelfContext,
+        contact: ContactStore.ContactRow,
+        prepared: Prepared,
+        session: SessionStore.SessionRow,
+        itemId: ByteArray,
+        l0: ByteArray,
+        bucket: Int,
+        authorMinute: Long,
+        now: Long,
+        operationId: ByteArray,
+        deadlineHour: Long,
+        ttl: TtlBucket,
+        credentials: Map<Long, ByteArray>,
+    ): SealOutcome {
+        val step = when (
+            val encrypted = envelopes.encrypt(
+                contactId = contact.contactId,
+                current = DmSessions.StoredSlot(session.sessionId, session.stateEnv),
+                l0 = l0,
+                today = DmTime.day(now).toInt(),
+            )
+        ) {
+            is DmSessions.Encrypted.Ok -> encrypted
+            DmSessions.Encrypted.Unavailable -> return SealOutcome.UNAVAILABLE
+            DmSessions.Encrypted.InvalidSession,
+            DmSessions.Encrypted.StateCorrupt,
+            DmSessions.Encrypted.Oversize,
+            -> return SealOutcome.INVALID_SESSION
+        }
+
+        val pinned = contact.pinnedIdentity ?: return SealOutcome.NO_SEAL_KEY
+        val blob = when (
+            val sealed = seal(tx, self, contact, prepared, session, step, pinned, bucket, authorMinute)
+                ?: return SealOutcome.NO_SEAL_KEY
+        ) {
+            is DmSeal.Sealed.Ok -> sealed.blob
+            DmSeal.Sealed.Unavailable -> return SealOutcome.UNAVAILABLE
+            DmSeal.Sealed.InvalidKey -> return SealOutcome.NO_SEAL_KEY
+            DmSeal.Sealed.StateCorrupt -> return SealOutcome.INVALID_SESSION
+            // R-B1 chose the bucket from the body length before encryption and the crate asserts
+            // the fit after sealing, so `NO_FIT` is a bug and never a peer's doing (§6.6); the
+            // same is true of a malformed own card or row value. Both leave as exceptions and roll
+            // the transaction back before the session state commits (§7.3's table).
+            DmSeal.Sealed.NoFit ->
+                throw IllegalStateException("a sealed DM blob does not fit its bucket")
+            DmSeal.Sealed.NonCanonical, DmSeal.Sealed.InvalidCard ->
+                throw IllegalStateException("the own card or a row value is malformed")
+        }
+
+        // The ratchet step commits here, with the op, and never without it (CS-1).
+        sessions.setStateEnv(tx, contact.contactId, session.slot, step.stateEnv)
+        if (step.acknowledged) sessions.acknowledge(tx, contact.contactId, session.slot)
+
+        // S7: the namespace and the deposit credential, idempotently (§7.3).
+        val inboxNs = NamespaceId(prepared.inboxNamespace)
+        sync.namespaces.register(
+            tx = tx,
+            namespace = inboxNs,
+            consumer = Consumer.DM,
+            relays = prepared.set.map { it.relay }.toSet(),
+            listen = false,
+            sendDelay = SendDelay.DEFAULT,
+            capabilitySource = CapabilitySource.LOCAL,
+        )
+        for (slot in prepared.set) {
+            val credential = credentials[slot.relay.value] ?: continue
+            sync.capabilities.put(
+                tx,
+                slot.relay,
+                inboxNs,
+                CapabilityKind.WRITE,
+                credential,
+                DmTime.ceilHour(now) + CREDENTIAL_LIFETIME_SECONDS,
+            )
+        }
+
+        messages.insertItemOp(tx, operationId, itemId, blob, 0, deadlineHour)
+        messages.setItemState(tx, itemId, MessageStore.ITEM_PENDING, MessageStore.ITEM_ENQUEUED)
+        sync.outbox.enqueue(
+            tx,
+            OutboundBlob(
+                OperationId(operationId),
+                inboxNs,
+                blob,
+                ttl,
+                deadlineEpochSeconds = DmTimers.deadlineSeconds(authorMinute, ttl),
+            ),
+        )
+        return SealOutcome.OK
+    }
+
+    /** §6.8, in the order the rule gives: intro, pair, provisional, `NO_SEAL_KEY`. */
+    @Suppress("LongParameterList", "ReturnCount")
+    private fun seal(
+        tx: SyncTransaction,
+        self: SelfContext,
+        contact: ContactStore.ContactRow,
+        prepared: Prepared,
+        session: SessionStore.SessionRow,
+        step: DmSessions.Encrypted.Ok,
+        pinned: ByteArray,
+        bucket: Int,
+        authorMinute: Long,
+    ): DmSeal.Sealed? {
+        if (step.isPreKey) {
+            // Rule 1: every PreKey message is intro, addressed to the generation the session was
+            // built on (`peer_gen_id`), whose key is in `dm_peer_pq`.
+            val genId = session.peerGenId ?: return null
+            val peer = contacts.peerPq(tx.sql, contact.contactId).firstOrNull { it.genId == genId }
+                ?: return null
+            val replySeedEnv = session.provEnv ?: return null
+            val derived = material.fromCard(prepared.card, ANY_SLOT) ?: return null
+            return try {
+                envelopes.sealIntro(
+                    cardIndex = self.cardIndex,
+                    namespace = prepared.inboxNamespace,
+                    bucket = bucket,
+                    introKeyEnv = derived.introKeyEnv,
+                    peerIdentityPk = contact.identityPk,
+                    peerOlmIdentity = pinned,
+                    genId = genId,
+                    genPublic = peer.xwingPublic,
+                    // §21.4 point 1: the sealing minute, not the compose minute — a pending send
+                    // may be sealed days after the user wrote it.
+                    bindingMinute = DmTime.floorMinute(clock.nowEpochSeconds()) / DmTime.MINUTE,
+                    sessionId = session.sessionId,
+                    replySeedEnv = replySeedEnv,
+                    l1 = step.l1,
+                )
+            } finally {
+                derived.clearSecrets()
+            }
+        }
+
+        // Rule 2: a normal message with an out pair key for the author's own week. R9 on the
+        // other side requires `week(author_minute)` to equal the key's week (binding B1).
+        val week = DmTime.week(authorMinute)
+        val outKey = contacts.pairKeys(tx.sql, contact.contactId, ContactStore.DIRECTION_OUT)
+            .firstOrNull { it.week == week }
+        if (outKey != null) {
+            sessions.markPairSent(tx, contact.contactId, session.slot)
+            return envelopes.sealPair(
+                namespace = prepared.inboxNamespace,
+                bucket = bucket,
+                openEnv = outKey.openEnv,
+                contactId = contact.contactId,
+                rootGen = outKey.rootGen,
+                week = outKey.week,
+                oiSender = self.olmIdentity,
+                oiRecipient = pinned,
+                l1 = step.l1,
+            )
+        }
+
+        // Rule 3: provisional, while the session holds a `reply_seed`, no pair envelope was ever
+        // sealed on it, and its anchor is inside 28 days (§22.8.5 rule 3).
+        val provEnv = session.provEnv ?: return null
+        if (session.pairSent) return null
+        val nowSeconds = clock.nowEpochSeconds()
+        val anchor = session.provAnchorMinute
+        if (anchor != null && nowSeconds >= anchor + PROVISIONAL_SEAL_WINDOW_SECONDS) return null
+        val keys = envelopes.provisionalKeys(
+            contactId = contact.contactId,
+            sessionId = session.sessionId,
+            stateEnv = step.stateEnv,
+            replySeedEnv = provEnv,
+            peerOlmIdentity = pinned,
+        )
+        if (keys !is DmPairing.ProvisionalResult.Ok) return null
+        if (anchor == null) {
+            // §22.8.5 rule 4: a responder session's anchor is its first provisional seal.
+            sessions.setProvisionalAnchor(
+                tx,
+                contact.contactId,
+                session.slot,
+                DmTime.floorMinute(nowSeconds),
+            )
+        }
+        return envelopes.sealProvisional(
+            namespace = prepared.inboxNamespace,
+            bucket = bucket,
+            openEnv = keys.keys.outEnv,
+            direction = keys.keys.outDirection,
+            sessionId = session.sessionId,
+            oiSender = self.olmIdentity,
+            oiRecipient = pinned,
+            l1 = step.l1,
+        )
+    }
+
+    /** One pending item, sealed and enqueued in its own transaction (§21.7 point 4). */
+    @Suppress("ReturnCount")
+    private fun flushOne(self: SelfContext, contactId: ByteArray, itemId: ByteArray): Boolean {
+        val now = clock.nowEpochSeconds()
+        val plan = database.transaction { tx ->
+            // No new root offer on this path: the L0 was encoded at the send that queued it, and
+            // attaching an offer now would produce bytes nobody sealed (R-C3).
+            plan(tx, contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
+        }
+        val prepared = plan.prepared ?: return false
+        val credentials = depositCredentials(prepared) ?: return false
+        val operationId = random.bytes(OperationId.SIZE)
+        return try {
+            database.transaction { tx ->
+                val contact = contacts.contact(tx.sql, contactId) ?: return@transaction false
+                if (!maySend(contact.trust)) return@transaction false
+                val item = messages.item(tx.sql, itemId) ?: return@transaction false
+                if (item.state != MessageStore.ITEM_PENDING) return@transaction false
+                val session = sessions.current(tx.sql, contactId) ?: return@transaction false
+                val l0 = self.content.open(item.l0Env ?: return@transaction false, itemId)
+                    ?: return@transaction false
+                val decoded = envelopes.decodeContent(contactId, l0)
+                if (decoded !is DmContent.DecodeResult.Ok) return@transaction false
+                val outcome = sealAndEnqueue(
+                    tx = tx,
+                    self = self,
+                    contact = contact,
+                    prepared = prepared,
+                    session = session,
+                    itemId = itemId,
+                    l0 = l0,
+                    bucket = decoded.content.bucket,
+                    authorMinute = decoded.content.authorMinute * DmTime.MINUTE,
+                    now = now,
+                    operationId = operationId,
+                    deadlineHour = item.deadlineHour,
+                    ttl = DmTimers.bucketOf(decoded.content.timerCode),
+                    credentials = credentials,
+                )
+                if (outcome != SealOutcome.OK) return@transaction false
+                messages.deletePendingSend(tx, itemId)
+                true
+            }
+        } catch (e: InsufficientReplicasException) {
+            false
+        } catch (e: StorageFullException) {
+            false
+        }
+    }
+
+    // --------------------------------------------------------------- internals
+
+    /**
+     * §21.8 point 6: `body_env = AEAD(flags(1) || quote_ref(0 | 16) || body)`.
+     *
+     * The quote reference lives **inside** the envelope and never in a column of its own: a
+     * plaintext column equal to a quoted `message_id` fails the T25 physical scan legitimately,
+     * while content inside `body_env` is invisible to a byte scan.
+     */
+    private fun bodyPlain(quoteRef: ByteArray?, body: ByteArray): ByteArray {
+        val out = ByteArray(1 + (quoteRef?.size ?: 0) + body.size)
+        out[0] = (if (quoteRef != null) FLAG_HAS_QUOTE else 0).toByte()
+        var at = 1
+        quoteRef?.let { it.copyInto(out, at); at += it.size }
+        body.copyInto(out, at)
+        return out
+    }
+
+    /** A REACTION body is `target message_id(16) || grapheme` (§7.1). */
+    private fun reactionTarget(body: ByteArray): ByteArray {
+        require(body.size >= REACTION_TARGET_BYTES) { "a reaction names no target" }
+        return body.copyOf(REACTION_TARGET_BYTES)
+    }
+
+    /**
+     * §8.7: an **initiator** session unacknowledged for `UNACK_MAX = 28 days` is stale, and the
+     * next user send re-establishes. There is no time-triggered re-establishment (T28, T31).
+     */
+    private fun isStale(session: SessionStore.SessionRow, now: Long): Boolean {
+        if (!session.initiator || session.acknowledged) return false
+        val since = session.unackSinceDay ?: return false
+        return DmTime.day(now) - since >= UNACK_MAX_DAYS
+    }
+
+    private fun maySend(trust: ContactStore.Trust): Boolean =
+        trust == ContactStore.Trust.UNVERIFIED || trust == ContactStore.Trust.VERIFIED
+
+    private fun refusalFor(trust: ContactStore.Trust): Outcome? = when (trust) {
+        ContactStore.Trust.UNVERIFIED, ContactStore.Trust.VERIFIED -> null
+        ContactStore.Trust.CHANGED -> Outcome.KEY_CHANGED
+        ContactStore.Trust.BLOCKED -> Outcome.BLOCKED
+        ContactStore.Trust.REVOKED -> Outcome.REVOKED
+        ContactStore.Trust.REQUEST -> Outcome.REQUEST_NOT_ACCEPTED
+    }
+
+    companion object {
+        /** `dm_message.message_id` and `dm_outbound_item.item_id`: the same 16 random bytes. */
+        const val MESSAGE_ID_BYTES: Int = 16
+
+        /** §8.7: `UNACK_MAX`. */
+        const val UNACK_MAX_DAYS: Long = 28
+
+        /** §22.8.5 rule 3: provisional sealing stops 28 days after the session's anchor. */
+        const val PROVISIONAL_SEAL_WINDOW_SECONDS: Long = 28 * DmTime.DAY
+
+        /** The deposit credential's lifetime, as §4.8 gives the owner's READ credential. */
+        const val CREDENTIAL_LIFETIME_SECONDS: Long = 8 * DmTime.DAY
+
+        /** Refreshed when fewer than 7 days remain (§4.8, §21.2 point 7). */
+        const val CREDENTIAL_REFRESH_SECONDS: Long = 7 * DmTime.DAY
+
+        /** `flags` bit 0 of a `body_env` (§7.1). */
+        const val FLAG_HAS_QUOTE: Int = 0x01
+
+        /** A REACTION body starts with the target's `message_id` (§7.1). */
+        const val REACTION_TARGET_BYTES: Int = 16
+
+        /** `dm_pair_offer.root_gen` is a `u16` (§13.6). */
+        const val MAX_ROOT_GEN: Int = 65_535
+
+        /** `dm_outbound_item.state` and `dm_message.state` for a decided-FAILED item (§13.5). */
+        const val STATE_FAILED: String = "failed"
+
+        /** The namespaces a card derives are slot-independent (§21.2 point 1). */
+        private const val ANY_SLOT: Int = 0
+
+        private val EMPTY = ByteArray(0)
+    }
+}

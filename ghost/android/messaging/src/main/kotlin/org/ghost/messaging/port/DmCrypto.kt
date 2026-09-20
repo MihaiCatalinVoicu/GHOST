@@ -1,10 +1,11 @@
 package org.ghost.messaging.port
 
+import org.ghost.crypto.bridge.DmCards
 import org.ghost.crypto.bridge.DmSessions
 
 /**
- * The three DM cryptographic calls the **owner** side needs (Phase 9 design §2.6 functions 2, 4
- * and 5), behind one port.
+ * The DM **derivation** calls of §2.6 behind one port: the owner's own card, secrets and
+ * generations (functions 2, 4 and 5), and, since S7, a contact's card (function 3).
  *
  * Why a port and not `DmSessions` directly. §13.1 makes `:crypto-bridge` the only module that
  * touches the JNI surface, and it already is: [NativeDmCrypto] below is the whole of the coupling.
@@ -14,8 +15,10 @@ import org.ghost.crypto.bridge.DmSessions
  * `ghost-dm-host` is on the test classpath (§2.7, §15.1). Both halves are exercised: the fake
  * proves the transaction behaviour on every machine, the native one proves this wiring.
  *
- * It exposes no session call. Sessions are S7's, and a port that could start one would be a place
- * for S7 material to leak into this slice.
+ * It exposes no session call and no seal: those are [DmEnvelopes], whose only implementation is
+ * the native one. The split is by **fakeability**, and that is the honest line — a derivation is
+ * a deterministic function of its inputs and a fake of it proves what the owner steps are about,
+ * while a fake ratchet or a fake seal would prove only its own arithmetic (§15.1).
  */
 interface DmCrypto {
 
@@ -33,6 +36,16 @@ interface DmCrypto {
 
     /** The wrapped `session_state_key` of the open context, for `dm_self` at ACTIVATE (§2.5). */
     fun stateKeyWrapped(): ByteArray?
+
+    /** §2.6 function 3: the fail-closed parse of a contact card v2 (§3.3). Added by S7. */
+    fun parseCard(card: ByteArray): DmCards.ParseResult
+
+    /**
+     * §2.6 function 3: a contact's card-level values for one ES slot (§3.2). Added by S7, and
+     * needed by KEEPER as well as by establishment: a contact's deposit and fetch credentials are
+     * card-derived (§7.2's KEEPER row, §22.11 item 7).
+     */
+    fun deriveCard(card: ByteArray, slot: Int): DmCards.DeriveResult
 }
 
 /**
@@ -65,6 +78,13 @@ class NativeDmCrypto(private val context: DmContext) : DmCrypto {
     }
 
     override fun stateKeyWrapped(): ByteArray? = context.stateKeyWrapped()
+
+    override fun parseCard(card: ByteArray): DmCards.ParseResult = DmCards.parse(card)
+
+    override fun deriveCard(card: ByteArray, slot: Int): DmCards.DeriveResult {
+        val handle = context.handleOrNull() ?: return DmCards.DeriveResult.Unavailable
+        return DmCards.derive(handle, card, slot)
+    }
 
     override fun toString(): String = "NativeDmCrypto"
 }

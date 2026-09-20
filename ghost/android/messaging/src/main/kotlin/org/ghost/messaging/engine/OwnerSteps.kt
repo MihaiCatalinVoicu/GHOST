@@ -244,9 +244,8 @@ class OwnerSteps(
      * reporting an error. §7.2's "each step is exactly one transaction" means all or nothing, so
      * the closed context is found first and the transaction holds database work only.
      *
-     * Contacts' deposit and bundle-read credentials — the other half of §7.2's KEEPER row — are
-     * **S7**: no contact exists before `addContact`, and their credentials are card-derived, which
-     * needs `cardDerive` (§2.6 function 3, declared for S7). Recorded in §22.11.
+     * Contacts' deposit credentials — the other half of §7.2's KEEPER row — are [contactKeeper]'s,
+     * added in S7 once `cardDerive` existed.
      */
     fun keeper(): Result {
         val own = ownCard() ?: return Result.CRYPTO_UNAVAILABLE

@@ -274,6 +274,7 @@ pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
         "l0Decode",
         &[
             DmCode::NonCanonical,
+            DmCode::Oversize,
             DmCode::StateCorrupt,
             DmCode::CryptoUnavailable,
         ],
@@ -429,6 +430,12 @@ pub enum Field {
     ProvisionalOutDirection = 0x39,
     /// The direction byte of [`Field::ProvisionalInEnv`], one byte.
     ProvisionalInDirection = 0x3a,
+    /// The bucket rule R-B1 chose for an `l0Encode` record, `u32` big-endian (§6.6).
+    ///
+    /// It crosses so that the bucket is a function of the **body length** computed by the code
+    /// that owns the rule: a Kotlin caller that derived it from the encoded L0 or from the
+    /// ciphertext would be mutants ME-22 and ME-3, and nothing in the engine would catch it.
+    Bucket = 0x3b,
 }
 
 impl Field {
@@ -495,6 +502,7 @@ impl Field {
         Field::RecognitionProvIn,
         Field::ProvisionalOutDirection,
         Field::ProvisionalInDirection,
+        Field::Bucket,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -559,6 +567,7 @@ impl Field {
             Field::RecognitionProvIn => 0x38,
             Field::ProvisionalOutDirection => 0x39,
             Field::ProvisionalInDirection => 0x3a,
+            Field::Bucket => 0x3b,
         }
     }
 }
@@ -1756,13 +1765,26 @@ pub fn open_intro(
     })
 }
 
-/// §2.6 function 15: `pairKeys(h, contactId, direction, rootGen, rootEnv, baseWeek, fromWeek,
-/// toWeek)`. The week keys of §6.3, ratcheted from the base week.
+/// [`pair_keys`]'s `fromKind` = 0: the envelope is a **root** (`dm_pair_offer.root_env`) and the
+/// base week's key is `HKDF(root, "pair-epoch" ‖ b)`.
+pub const PAIR_FROM_ROOT: u8 = 0;
+/// `fromKind` = 1: the envelope is the **week key** of `baseWeek` itself
+/// (`dm_pair_key.open_env`), and the walk starts from it.
+///
+/// This is what lets a side ratchet forward without keeping the root, which §6.3 requires of
+/// both: the sender "erases the root as soon as `K_b` is computed", and the recipient erases its
+/// offered root once a pair envelope under that generation opens. `K_{w+1} = HKDF(K_w,
+/// "pair-next")` needs only the previous week's key, so nothing is lost by erasing the root — but
+/// a function that could only start from one would have made the erasure impossible.
+pub const PAIR_FROM_WEEK_KEY: u8 = 1;
+
+/// §2.6 function 15: `pairKeys(h, contactId, direction, rootGen, fromKind, keyEnv, baseWeek,
+/// fromWeek, toWeek)`. The week keys of §6.3.
 ///
 /// `K_b = HKDF(root, "pair-epoch" ‖ b)` and `K_{w+1} = HKDF(K_w, "pair-next")`, so a week is
-/// reachable only by ratcheting forward from the base: the caller asks for the window it keeps
-/// and gets each week's **opening** envelope and **recognition** key together, which is what R-S6
-/// means by "it follows the erasure schedule of its opening key".
+/// reachable only by ratcheting **forward**: the caller asks for the window it keeps and gets each
+/// week's **opening** envelope and **recognition** key together, which is what R-S6 means by "it
+/// follows the erasure schedule of its opening key".
 #[allow(clippy::too_many_arguments)]
 pub fn pair_keys(
     env: &mut JNIEnv,
@@ -1770,7 +1792,8 @@ pub fn pair_keys(
     contact_id: &JByteArray,
     direction: jint,
     root_gen: jint,
-    root_env: &JByteArray,
+    from_kind: jint,
+    key_env: &JByteArray,
     base_week: jlong,
     from_week: jlong,
     to_week: jlong,
@@ -1778,7 +1801,8 @@ pub fn pair_keys(
     let contact_id = fixed::<16>(env, contact_id)?;
     let direction = u8::try_from(direction).map_err(|_| DmCode::NonCanonical)?;
     let root_gen = u16::try_from(root_gen).map_err(|_| DmCode::NonCanonical)?;
-    let root_env = bytes(env, root_env)?;
+    let from_kind = u8::try_from(from_kind).map_err(|_| DmCode::NonCanonical)?;
+    let key_env = bytes(env, key_env)?;
     let base_week = u64::try_from(base_week).map_err(|_| DmCode::NonCanonical)?;
     let from_week = u64::try_from(from_week).map_err(|_| DmCode::NonCanonical)?;
     let to_week = u64::try_from(to_week).map_err(|_| DmCode::NonCanonical)?;
@@ -1791,19 +1815,28 @@ pub fn pair_keys(
         return Err(DmCode::NonCanonical);
     }
     with_context(handle, |context| {
-        let mut root_plain = wrap::unwrap(
-            &context.state_key,
-            wrap::WrapName::PairRoot,
-            &wrap::pair_root_binding(&contact_id, root_gen),
-            &root_env,
-        )?;
-        let root_bytes: [u8; 32] = root_plain
+        let (name, binding) = match from_kind {
+            PAIR_FROM_ROOT => (
+                wrap::WrapName::PairRoot,
+                wrap::pair_root_binding(&contact_id, root_gen),
+            ),
+            PAIR_FROM_WEEK_KEY => (
+                wrap::WrapName::PairKey,
+                wrap::pair_key_binding(&contact_id, direction, root_gen, base_week),
+            ),
+            _ => return Err(DmCode::NonCanonical),
+        };
+        let mut plain = wrap::unwrap(&context.state_key, name, &binding, &key_env)?;
+        let material: [u8; 32] = plain
             .as_slice()
             .try_into()
             .map_err(|_| DmCode::StateCorrupt)?;
-        root_plain.zeroize();
-        let root = derive::PairRoot::from_bytes(root_bytes);
-        let mut week_key = derive::derive_pair_base_week_key(&root, base_week);
+        plain.zeroize();
+        let mut week_key = if from_kind == PAIR_FROM_ROOT {
+            derive::derive_pair_base_week_key(&derive::PairRoot::from_bytes(material), base_week)
+        } else {
+            derive::PairWeekKey::from_bytes(material)
+        };
         let mut packed = Vec::new();
         let count = u32::try_from(to_week - from_week + 1).map_err(|_| DmCode::NonCanonical)?;
         packed.extend_from_slice(&count.to_be_bytes());
@@ -2042,12 +2075,20 @@ pub fn l0_encode(
             body: body.to_vec(),
             ext,
         };
+        // R-B1: the bucket is chosen from the **body length** alone, before encryption, by the
+        // code that owns the rule (§6.6). It crosses with the record so no caller can derive it
+        // from the encoded L0 (mutant ME-22) or from a ciphertext (ME-3).
+        let bucket = content.bucket();
         let encoded = content.encode();
         body.zeroize();
+        let bucket = u32::try_from(bucket?).map_err(|_| DmCode::Oversize)?;
         // The encoded L0 is the plaintext of the message: it leaves as the reply and the copy
         // this frame built is erased with the content behind it.
         let mut encoded = Zeroizing::new(encoded?);
-        let reply = Reply::ok().field(Field::L0, encoded.as_ref()).into_bytes();
+        let reply = Reply::ok()
+            .field(Field::L0, encoded.as_ref())
+            .field(Field::Bucket, &bucket.to_be_bytes())
+            .into_bytes();
         encoded.zeroize();
         Ok(reply)
     })
@@ -2076,9 +2117,14 @@ pub fn l0_decode(
     let contact_id = fixed::<16>(env, contact_id)?;
     let l0 = bytes(env, l0)?;
     let content = codec::decode(&l0)?;
+    // R-B1 again, from the **body length** of the record that just decoded: a caller re-sealing a
+    // stored L0 (a pending send flushed at `EST-READY`, a FAILED item retried) needs the bucket
+    // the original send chose, and computing it in Kotlin would be mutants ME-22 and ME-3.
+    let bucket = u32::try_from(content.bucket()?).map_err(|_| DmCode::Oversize)?;
     with_context(handle, |context| {
         let mut flags = 0u8;
         let mut reply = Reply::ok()
+            .field(Field::Bucket, &bucket.to_be_bytes())
             .field(Field::ContentKind, &[content.kind.as_u8()])
             .field(Field::MessageId, &content.message_id)
             .field(Field::AuthorMinute, &content.author_minute.to_be_bytes())
@@ -2623,7 +2669,8 @@ pub mod entry {
         contact_id: JByteArray<'local>,
         direction: jint,
         root_gen: jint,
-        root_env: JByteArray<'local>,
+        from_kind: jint,
+        key_env: JByteArray<'local>,
         base_week: jlong,
         from_week: jlong,
         to_week: jlong,
@@ -2635,7 +2682,8 @@ pub mod entry {
                 &contact_id,
                 direction,
                 root_gen,
-                &root_env,
+                from_kind,
+                &key_env,
                 base_week,
                 from_week,
                 to_week,
@@ -3147,13 +3195,15 @@ macro_rules! paste_export {
             a: ::jni::objects::JByteArray<'local>,
             direction: ::jni::sys::jint,
             root_gen: ::jni::sys::jint,
+            from_kind: ::jni::sys::jint,
             b: ::jni::objects::JByteArray<'local>,
             base_week: ::jni::sys::jlong,
             from_week: ::jni::sys::jlong,
             to_week: ::jni::sys::jlong,
         ) -> ::jni::sys::jbyteArray {
             $crate::jni::entry::pair_keys(
-                env, class, handle, a, direction, root_gen, b, base_week, from_week, to_week,
+                env, class, handle, a, direction, root_gen, from_kind, b, base_week, from_week,
+                to_week,
             )
         }
     };

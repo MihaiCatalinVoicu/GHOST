@@ -30,6 +30,23 @@ interface Namespaces {
     fun setListening(tx: SyncTransaction, namespace: NamespaceId, listen: Boolean)
 
     /**
+     * Whether the namespace is registered and listening, in the caller's transaction. Null when it
+     * is not registered at all. Reads only: it registers nothing and wakes nothing.
+     *
+     * Phase 9's establishment steps need it (design §21.7 points 2, 4 and 5). A bundle fetch has
+     * two states with one stored decision minute — a 15-minute attempt **window** that is open,
+     * and the wait before the next attempt, which is at least 6 hours — and `dm_contact` carries
+     * one column for both (`fetch_listen_until_minute`, whose CHECK ties it to
+     * `establishment = 'fetching'`). The listening flag is the bit that tells them apart, and it
+     * is already persisted here: keeping a second copy in `:messaging` would lose it at every
+     * restart and turn a mid-window restart into either a lost attempt or an endless deferral.
+     *
+     * This is the same reason `Capabilities.installed` exists for the owner's READ credential
+     * (Phase 9 design §4.8, slice S6).
+     */
+    fun listening(tx: SyncTransaction, namespace: NamespaceId): Boolean?
+
+    /**
      * Refuses [SendDelay.OFF] for a [Consumer.DM] namespace (Phase 9 design §13.3 item 8): the
      * ADR-15 delay is what keeps a DM store from naming the moment the user pressed send.
      */

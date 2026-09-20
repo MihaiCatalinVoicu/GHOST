@@ -106,6 +106,22 @@ object DmPairing {
         data object Unavailable : ProvisionalResult
     }
 
+    /** Where a [keys] walk starts (§6.3). */
+    enum class From(val wire: Int) {
+        /** From a **root** (`dm_pair_offer.root_env`): the base week's key is derived from it. */
+        ROOT(0),
+
+        /**
+         * From the **week key** of the base week itself (`dm_pair_key.open_env`).
+         *
+         * This is what lets a side ratchet forward without keeping the root, which §6.3 requires
+         * of both: the sender erases the root as soon as `K_b` exists, and the recipient erases
+         * its offer once a pair envelope under that generation opens. `K_{w+1} = HKDF(K_w,
+         * "pair-next")` needs only the previous week's key.
+         */
+        WEEK_KEY(1),
+    }
+
     /**
      * §2.6 function 15: the week keys of `[fromWeek, toWeek]`, ratcheted from [baseWeek].
      *
@@ -118,7 +134,8 @@ object DmPairing {
         contactId: ByteArray,
         direction: DmSeal.PairDirection,
         rootGen: Int,
-        rootEnv: ByteArray,
+        from: From,
+        keyEnv: ByteArray,
         baseWeek: Long,
         fromWeek: Long,
         toWeek: Long,
@@ -130,7 +147,8 @@ object DmPairing {
                 contactId,
                 direction.wire,
                 rootGen,
-                rootEnv,
+                from.wire,
+                keyEnv,
                 baseWeek,
                 fromWeek,
                 toWeek,

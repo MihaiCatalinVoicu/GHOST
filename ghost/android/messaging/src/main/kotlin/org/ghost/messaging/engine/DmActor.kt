@@ -1,0 +1,320 @@
+package org.ghost.messaging.engine
+
+import org.ghost.messaging.port.DmClock
+import org.ghost.messaging.store.ContactStore
+import org.ghost.messaging.store.MessageStore
+import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.SessionKind
+import org.ghost.sync.api.SyncChange
+import org.ghost.sync.api.SyncDatabase
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * The **DM actor** (Phase 9 design §13.7, §21.9): one process-wide single-thread executor that
+ * owns every `:messaging` transaction and every session call.
+ *
+ * > One process-wide single-thread executor (`ghost-dm`) owns every `:messaging` transaction and
+ * > every `DmNative` session call (§7.9). It is woken by: listener hints (`SyncChange.INBOX`,
+ * > `OUTCOMES`, `CAPABILITIES`, `TOPOLOGY`), facade calls, the in-process expiry timer, the alarm
+ * > receiver, the database open, and the `ConsumerTail`. Hints carry no payload and the actor
+ * > re-reads state, so a lost or duplicated hint is harmless.
+ *
+ * **Why one thread and not a lock.** Two reasons the design names. The value-state rule of §7.9
+ * point 3 — "the DM actor is the only thread that calls `DmNative` session functions; the context
+ * handle is not shared with other threads" — and the two-phase shape of SEND and the
+ * establishment steps, which read, prepare outside a transaction and then write: that is sound
+ * **because** nothing else can write DM state in between.
+ *
+ * **No work on lane threads** (§13.7). `Inbox.setListener` fires on the committing thread, which
+ * can be a lane thread; the listener only posts a coalesced flag here and returns.
+ *
+ * **The pass, and the two kinds of it** (§21.9 rule 1, mutant PM-30). Every pass runs the steps
+ * that answer what is already in the database: OUTCOME, the bundle claims, the peek order and
+ * `RECV`. Only a **time-triggered** pass — the actor timer, a database open, a relay session
+ * start — also runs the steps whose *timing* must not depend on what arrived: the owner's
+ * OWNER-WEEK, KEEPER and REGROWS, the contact KEEPER, the pair-key advance, `EST-READY`,
+ * `EST-END` and the expired pending items. A card holder that deposits a probe during this
+ * device's session must not make a bundle, a registration or an establishment follow it.
+ *
+ * **Not here, and recorded**: SWEEP and the expiry timer (slice S9), the HELD replay of a key
+ * change (slice S8), and the `ExpiryAlarm` receiver (slice S9). The pass order below leaves their
+ * places in it.
+ */
+internal class DmActor(
+    private val database: SyncDatabase,
+    private val sync: DmSyncPorts,
+    private val establishment: EstablishmentSteps,
+    private val sendStep: SendStep,
+    private val receiveStep: ReceiveStep,
+    private val outcomeStep: OutcomeStep,
+    private val pairKeys: PairKeySteps,
+    private val contactKeeper: ContactKeeper,
+    private val ownerMaintenance: () -> Unit,
+    private val peekOrder: PeekOrder,
+    private val material: ContactMaterial,
+    private val clock: DmClock,
+    private val contexts: SelfContexts,
+) : AutoCloseable {
+
+    private val contacts = ContactStore()
+    private val messages = MessageStore()
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, THREAD_NAME).apply { isDaemon = true }
+    }
+
+    /** A wake that arrived while a pass was running; coalesced, because hints carry no payload. */
+    private val pending = AtomicBoolean(false)
+
+    /** When a bundle candidate was first stored, so `EST-READY` waits two minutes (§21.7 point 4). */
+    private val candidateSince = HashMap<List<Byte>, Long>()
+
+    /** Runs [body] on the actor thread and waits for it: the facade's contract (§13.2). */
+    fun <T> call(body: () -> T): T = executor.submit(Callable(body)).get()
+
+    /** Posts [body] without waiting; used by the listener hand-off, which must not block a lane. */
+    fun post(body: () -> Unit): Future<*> = executor.submit(body)
+
+    /**
+     * The inbox and outcome listener hand-off (§13.7).
+     *
+     * It returns without touching the database: the hint is a coalesced flag and the pass reads
+     * state for itself, so a lost or duplicated hint is harmless and a lane thread is never held.
+     */
+    fun onChange(change: SyncChange) {
+        when (change) {
+            SyncChange.INBOX, SyncChange.OUTCOMES, SyncChange.CAPABILITIES, SyncChange.TOPOLOGY ->
+                wake(timeTriggered = false)
+            else -> Unit
+        }
+    }
+
+    /**
+     * A relay session start, a database open or the actor timer: the three triggers §21.9 rule 1
+     * gives the time-triggered steps.
+     */
+    fun onTimeTrigger() {
+        wake(timeTriggered = true)
+    }
+
+    /**
+     * The `ConsumerTail` body (§13.3 item 6, G-8, SC-7): local work at the end of a background
+     * run, after the lanes, the redeem hold and the **transport close**.
+     *
+     * Because it runs after the close, relay session close times and issuer-call times cannot
+     * depend on how much there was to consume (NI-DM1, mutant PM-25). It has no transport access,
+     * and it returns by the deadline — the job's end never waits past it.
+     */
+    fun consumerTail(kind: SessionKind, deadlineMonotonicMillis: Long) {
+        // Both kinds do the same work: a background session's tail runs after its lanes, its
+        // redeem hold and the transport close, and a quiet run's after the issuer call returned
+        // and its transport closed — and in both the local work owed is the same pass. The
+        // distinction is the sync runtime's, which is what decides **when** to call this.
+        require(kind == SessionKind.BACKGROUND || kind == SessionKind.QUIET) {
+            "the tail runs in background sessions and quiet runs only (§13.3 item 6)"
+        }
+        val future = executor.submit {
+            // A relay session start is one of §21.9 rule 1's three triggers, and so is its end.
+            runPass(timeTriggered = true, deadlineMonotonicMillis = deadlineMonotonicMillis)
+        }
+        val remaining = deadlineMonotonicMillis - clock.monotonicMillis()
+        if (remaining <= 0) return
+        try {
+            future.get(remaining, TimeUnit.MILLISECONDS)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            // The pass keeps going on the actor thread; the job's end does not wait past the
+            // deadline, which is the contract `ConsumerTail` states.
+            Unit
+        }
+    }
+
+    private fun wake(timeTriggered: Boolean) {
+        if (!pending.compareAndSet(false, true) && !timeTriggered) return
+        executor.submit {
+            pending.set(false)
+            runPass(timeTriggered, deadlineMonotonicMillis = null)
+        }
+    }
+
+    /**
+     * One pass, in the order §13.7 fixes.
+     *
+     * The order is not arbitrary: OUTCOME releases the ops whose results are already in, so the
+     * bundle claims and `RECV` see a settled outbox; the bundle claims feed `EST-READY`, which
+     * flushes the pending items a send left behind; and the peek order runs last, because it is
+     * the only step that reads a whole batch and its ordering must see every session those steps
+     * created.
+     */
+    @Suppress("ReturnCount")
+    fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
+        if (contexts.get() == null) return
+        outcomeStep.run()
+        claimBundles()
+        if (timeTriggered) {
+            ownerMaintenance()
+            contactKeeper.run()
+            pairKeys.run()
+            runEstablishment()
+        }
+        consumeInbox(deadlineMonotonicMillis)
+    }
+
+    // ---------------------------------------------------------------- inbound
+
+    /**
+     * §7.7 point 1: peek, order, then claim and consume **one blob at a time**.
+     *
+     * The claim is `Inbox.claimOne`, which commits the offer counter before the hand-off, so a
+     * native crash inside `RECV` is counted against the poison guard even though the transaction
+     * rolled back (§7.8).
+     */
+    private fun consumeInbox(deadlineMonotonicMillis: Long?) {
+        for (peeked in peekOrder.order()) {
+            if (outOfTime(deadlineMonotonicMillis)) return
+            val blob = sync.inbox.claimOne(Consumer.DM, peeked.namespace, peeked.hash) ?: continue
+            val result = receiveStep.receive(blob)
+            if (result == ReceiveStep.Result.CRYPTO_UNAVAILABLE) return
+        }
+    }
+
+    /**
+     * `BUNDLE` (§21.7 point 3): the fetched bundles of the contacts currently establishing.
+     *
+     * A blob whose namespace belongs to no `fetching` contact is consumed and dropped: it is a
+     * bundle of a namespace this device stopped listening to, and leaving it would keep the
+     * namespace un-removable at `EST-END`.
+     */
+    private fun claimBundles() {
+        val owners = bundleOwners()
+        if (owners.isEmpty()) {
+            // Nothing is establishing, so nothing may arrive; a stale row is consumed all the
+            // same, because `Namespaces.remove` answers false while one is left (§21.7 point 5).
+            for (blob in sync.inbox.claim(Consumer.PREKEYS, BUNDLE_CLAIM)) {
+                database.transaction { tx -> sync.inbox.markConsumed(tx, blob.namespace, blob.hash) }
+            }
+            return
+        }
+        for (blob in sync.inbox.claim(Consumer.PREKEYS, BUNDLE_CLAIM)) {
+            val contactId = owners[blob.namespace.toByteArray().toList()]
+            database.transaction { tx ->
+                if (!sync.inbox.markConsumed(tx, blob.namespace, blob.hash)) return@transaction
+                if (contactId == null) return@transaction
+                if (establishment.bundle(tx, contactId, blob.ciphertext)) {
+                    candidateSince.putIfAbsent(contactId.toList(), clock.nowEpochSeconds())
+                }
+            }
+        }
+    }
+
+    /** `P_c -> contact`, for the contacts whose attempt window is open. */
+    private fun bundleOwners(): Map<List<Byte>, ByteArray> {
+        val out = HashMap<List<Byte>, ByteArray>()
+        val fetching = database.transaction { tx -> contacts.fetching(tx.sql) }
+        for (contact in fetching) {
+            val card = material.card(contact) ?: continue
+            val namespaces = material.namespaces(card) ?: continue
+            out[namespaces.bundle.toList()] = contact.contactId
+        }
+        return out
+    }
+
+    // ------------------------------------------------------------ time-triggered
+
+    /**
+     * The three time-triggered establishment steps (§21.9 rule 1).
+     *
+     * `EST-READY` runs two minutes after the first candidate — a delay that lives in memory, so
+     * after a restart an existing candidate is processed at the next time-triggered pass, which
+     * is what §21.7 point 4 says. `EST-START` and `EST-END` are decided by
+     * [EstablishmentSteps.dueStep] from the stored decision minute and `P_c`'s listening flag.
+     */
+    private fun runEstablishment() {
+        val now = clock.nowEpochSeconds()
+        val fetching = database.transaction { tx -> contacts.fetching(tx.sql) }
+        for (contact in fetching) {
+            val ready = database.transaction { tx ->
+                contacts.bundleCandidate(tx.sql, contact.contactId) != null
+            }
+            if (ready) {
+                val since = candidateSince[contact.contactId.toList()]
+                if (since == null || now - since >= EstablishmentSteps.READY_DELAY_SECONDS) {
+                    if (establishment.estReady(contact.contactId) == EstablishmentSteps.Result.DONE) {
+                        candidateSince.remove(contact.contactId.toList())
+                        sendStep.flushPending(contact.contactId)
+                        continue
+                    }
+                }
+            }
+            val due = database.transaction { tx -> establishment.dueStep(tx, contact, now) }
+            when (due) {
+                EstablishmentSteps.Due.END -> {
+                    // The window ended. A usable session may have arrived from the contact's own
+                    // side meanwhile (R-SS1), which `EST-READY` turns into a `ready` contact
+                    // without a candidate (§21.7 point 4).
+                    if (establishment.estReady(contact.contactId) == EstablishmentSteps.Result.DONE) {
+                        sendStep.flushPending(contact.contactId)
+                    } else {
+                        establishment.estEnd(contact.contactId)
+                    }
+                }
+                EstablishmentSteps.Due.START -> establishment.estStart(contact.contactId)
+                EstablishmentSteps.Due.NONE -> Unit
+            }
+        }
+        failExpiredPending(now)
+    }
+
+    /**
+     * R-T5 (§10.1): a message waiting for a bundle fails at its deadline. It never reaches the
+     * session layer after its store deadline, because no copy could be stored then anyway.
+     */
+    private fun failExpiredPending(now: Long) {
+        database.transaction { tx ->
+            for (contact in contacts.contacts(tx.sql)) {
+                for (pending in messages.pendingSends(tx.sql, contact.contactId)) {
+                    if (pending.failAfterHour > now) continue
+                    messages.deletePendingSend(tx, pending.itemId)
+                    messages.setItemState(
+                        tx,
+                        pending.itemId,
+                        MessageStore.ITEM_PENDING,
+                        EstablishmentSteps.STATE_FAILED,
+                    )
+                    messages.setMessageState(
+                        tx,
+                        pending.itemId,
+                        MessageStore.STATE_QUEUED,
+                        EstablishmentSteps.STATE_FAILED,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun outOfTime(deadlineMonotonicMillis: Long?): Boolean {
+        val deadline = deadlineMonotonicMillis ?: return false
+        // §21.12 point 1: the tail claims one blob at a time and stops claiming when fewer than
+        // two seconds of its deadline remain, so a claimed blob is never abandoned unconsumed.
+        return clock.monotonicMillis() + TAIL_RESERVE_MILLIS >= deadline
+    }
+
+    override fun close() {
+        executor.shutdown()
+        peekOrder.clear()
+    }
+
+    companion object {
+        /** §13.7: the actor's thread name. */
+        const val THREAD_NAME: String = "ghost-dm"
+
+        /** How many bundle blobs one pass claims. */
+        const val BUNDLE_CLAIM: Int = 16
+
+        /** §21.12 point 1: the tail stops claiming with fewer than two seconds left. */
+        const val TAIL_RESERVE_MILLIS: Long = 2_000
+    }
+}

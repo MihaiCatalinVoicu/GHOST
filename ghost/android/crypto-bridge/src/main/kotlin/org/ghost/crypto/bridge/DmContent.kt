@@ -40,6 +40,15 @@ object DmContent {
 
     /** A decoded L0 (§7.1). */
     class Decoded(
+        /**
+         * The bucket R-B1 chooses for this record's **body length** (§6.6).
+         *
+         * It comes back from the crate for the same reason [Encoded.Ok] carries one: a caller
+         * re-sealing a stored L0 — a pending send flushed at `EST-READY`, a FAILED item retried —
+         * must use the bucket the original send chose, and deriving it in Kotlin from the encoded
+         * record or from a ciphertext would be mutants ME-22 and ME-3.
+         */
+        val bucket: Int,
         /** What this message is. */
         val kind: Kind,
         /** The end-to-end idempotency key; never relay-visible. */
@@ -81,10 +90,17 @@ object DmContent {
         override fun toString(): String = "SealRoot(gen=$rootGen, baseWeek=$baseWeek)"
     }
 
+    /**
+     * The API cap of §6.6 and §12.6: content longer than this is `TOO_LARGE` at the facade, and
+     * waits for Phase 11 media. It mirrors the crate's `seal::MAX_BODY_BYTES`, which
+     * `DmBucketsTest` pins against the source so the two cannot drift.
+     */
+    const val MAX_BODY_BYTES: Int = 61_440
+
     /** The outcome of [encode]. */
     sealed interface Encoded {
-        /** The canonical L0 bytes. */
-        data class Ok(val l0: ByteArray) : Encoded
+        /** The canonical L0 bytes and the bucket R-B1 chose from the body length (§6.6). */
+        data class Ok(val l0: ByteArray, val bucket: Int) : Encoded
 
         /** A field is out of range, or the TLV list is not the shape R-C4 admits. */
         data object NonCanonical : Encoded
@@ -110,6 +126,9 @@ object DmContent {
          * session state still committed because the message key was used.
          */
         data object NonCanonical : DecodeResult
+
+        /** A record no bucket carries: the same `drop(bad_content)` (R-B1). */
+        data object Oversize : DecodeResult
 
         /** The root could not be wrapped for storage (§22.8.3). */
         data object StateCorrupt : DecodeResult
@@ -162,7 +181,10 @@ object DmContent {
             )
         }
         return when (result.code) {
-            DmCode.OK -> Encoded.Ok(result.bytes(DmField.L0))
+            DmCode.OK -> Encoded.Ok(
+                l0 = result.bytes(DmField.L0),
+                bucket = result.u32(DmField.BUCKET).toInt(),
+            )
             DmCode.NON_CANONICAL -> Encoded.NonCanonical
             DmCode.OVERSIZE -> Encoded.Oversize
             DmCode.STATE_CORRUPT -> Encoded.StateCorrupt
@@ -182,6 +204,7 @@ object DmContent {
                     ?: throw IllegalStateException("DM l0Decode named an unknown kind")
                 DecodeResult.Ok(
                     Decoded(
+                        bucket = result.u32(DmField.BUCKET).toInt(),
                         kind = kind,
                         messageId = result.bytes(DmField.MESSAGE_ID),
                         authorMinute = result.u32(DmField.AUTHOR_MINUTE),
@@ -210,6 +233,7 @@ object DmContent {
                 )
             }
             DmCode.NON_CANONICAL -> DecodeResult.NonCanonical
+            DmCode.OVERSIZE -> DecodeResult.Oversize
             DmCode.STATE_CORRUPT -> DecodeResult.StateCorrupt
             DmCode.CRYPTO_UNAVAILABLE -> DecodeResult.Unavailable
             else -> unexpected(result.code, "l0Decode")

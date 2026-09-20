@@ -1,7 +1,17 @@
 package org.ghost.messaging
 
+import org.ghost.crypto.bridge.DmCards
 import org.ghost.crypto.bridge.DmSessions
+import org.ghost.messaging.engine.ContactMaterial
+import org.ghost.messaging.engine.ContactSteps
+import org.ghost.messaging.engine.DmCounters
+import org.ghost.messaging.engine.DmSyncPorts
+import org.ghost.messaging.engine.EstablishmentSteps
+import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OwnerSteps
+import org.ghost.messaging.engine.RelaySetResolver
+import org.ghost.messaging.engine.SelfContexts
+import org.ghost.messaging.engine.SendStep
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.port.DmCrypto
 import org.ghost.messaging.port.DmRandom
@@ -59,6 +69,56 @@ class OwnerWorld(
     val esSlots = EsSlots { week -> slotsByWeek[week] ?: slots }
 
     val steps: OwnerSteps
+
+    /**
+     * The envelope layer, as far as an **owner-side** world needs one: none at all.
+     *
+     * S6's steps are about transactions, guards and idempotence, and none of them seals, opens or
+     * ratchets; the context handed here is closed, so every call answers the `CRYPTO_UNAVAILABLE`
+     * path of §2.7. A world that exercises sending and receiving wires the real one against
+     * `ghost-dm-host` (§15.1), which is what `DmWorld` does.
+     */
+    val envelopes: org.ghost.messaging.port.DmEnvelopes =
+        org.ghost.messaging.port.NativeDmEnvelopes(
+            object : org.ghost.messaging.port.DmContext {
+                override fun handleOrNull(): Long? = null
+
+                override fun stateKeyWrapped(): ByteArray? = null
+            },
+        )
+
+    internal val contexts: SelfContexts by lazy { SelfContexts(database, crypto, wrapper) }
+
+    internal val material: ContactMaterial by lazy { ContactMaterial(crypto, contexts) }
+
+    internal val counters: DmCounters by lazy { DmCounters() }
+
+    private val relayResolver: RelaySetResolver by lazy { RelaySetResolver(esSlots) }
+
+    private val dmSync: DmSyncPorts by lazy {
+        DmSyncPorts(
+            stores.namespaces,
+            stores.capabilities,
+            stores.registrations,
+            stores.outbox,
+            stores.inbox,
+        )
+    }
+
+    internal val contactSteps: ContactSteps by lazy { ContactSteps(database, crypto, random, contexts) }
+
+    internal val sendStep: SendStep by lazy {
+        SendStep(database, dmSync, envelopes, material, relayResolver, clock, random, contexts)
+    }
+
+    internal val establishment: EstablishmentSteps by lazy {
+        EstablishmentSteps(database, dmSync, envelopes, material, relayResolver, clock, contexts)
+    }
+
+    /** The facade, wired to this world's steps. No actor: the world is single-threaded already. */
+    internal val engine: MessagingEngine by lazy {
+        MessagingEngine(database, steps, contactSteps, sendStep, establishment, counters, clock, contexts)
+    }
 
     init {
         val relayIds = database.transaction { tx ->
@@ -314,6 +374,43 @@ class FakeDmCrypto : DmCrypto {
     override fun stateKeyWrapped(): ByteArray? =
         if (available) FakeKeyWrapper.PREFIX + derive("state-key", 0, 0, 32) else null
 
+    /**
+     * §2.6 function 3, faked: a card is 131 bytes whose bytes 1..3 are the index and 3..35 the
+     * identity key, exactly as §3.3 lays one out, so a caller that reads those offsets reads the
+     * same fields a real card carries. The signature is not checked here — a fake that verified
+     * one would be verifying its own arithmetic — so a world that needs the real parse uses the
+     * native crypto (§15.1).
+     */
+    override fun parseCard(card: ByteArray): DmCards.ParseResult {
+        if (!available) return DmCards.ParseResult.Unavailable
+        if (card.size != CARD_BYTES) return DmCards.ParseResult.InvalidCard
+        val index = ((card[1].toInt() and 0xff) shl 8) or (card[2].toInt() and 0xff)
+        return DmCards.ParseResult.Ok(DmCards.Parsed(index, card.copyOfRange(3, 35)))
+    }
+
+    /**
+     * §2.6 function 3, faked: deterministic values of the card and the slot, with the shapes the
+     * schema and the credential layout demand — 32-byte namespaces and secrets, 60-byte wrapped
+     * opening keys — so a length that drifted fails a CHECK here exactly as on device.
+     */
+    override fun deriveCard(card: ByteArray, slot: Int): DmCards.DeriveResult {
+        if (!available) return DmCards.DeriveResult.Unavailable
+        if (card.size != CARD_BYTES) return DmCards.DeriveResult.InvalidCard
+        val tag = card.take(8).joinToString("") { "%02x".format(it) }
+        return DmCards.DeriveResult.Ok(
+            DmCards.Derived(
+                inboxNamespace = derive("inbox-ns-$tag", 0, 0, 32),
+                bundleNamespace = derive("bundle-ns-$tag", 0, 0, 32),
+                deposit = derive("d-$tag", 0, slot, 32),
+                fetch = derive("rp-$tag", 0, slot, 32),
+                recognitionIntro = derive("rec-intro-$tag", 0, 0, 32),
+                recognitionBundle = derive("rec-bundle-$tag", 0, 0, 32),
+                introKeyEnv = derive("kio-$tag", 0, 0, 60),
+                bundleKeyEnv = derive("kb-$tag", 0, 0, 60),
+            ),
+        )
+    }
+
     private fun derive(label: String, cardIndex: Int, slot: Int, size: Int): ByteArray {
         val out = ByteArray(size)
         var pos = 0
@@ -327,6 +424,11 @@ class FakeDmCrypto : DmCrypto {
             block++
         }
         return out
+    }
+
+    private companion object {
+        /** A contact card v2 (§3.3). */
+        const val CARD_BYTES = 131
     }
 }
 

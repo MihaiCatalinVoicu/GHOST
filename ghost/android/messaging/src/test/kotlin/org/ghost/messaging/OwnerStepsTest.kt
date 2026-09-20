@@ -2,7 +2,6 @@ package org.ghost.messaging
 
 import org.ghost.crypto.bridge.CredentialV3
 import org.ghost.crypto.bridge.RelaySets
-import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.port.EsSlot
 import org.junit.Assert.assertArrayEquals
@@ -686,7 +685,7 @@ class OwnerStepsTest {
         OwnerWorld().use { world ->
             val now = weekStart(2_870) + 2 * day
             world.activateAt(now)
-            val engine = MessagingEngine(world.steps)
+            val engine = world.engine
             engine.runOwnerMaintenance()
             val validUntil = ceilHour(now) + 14 * day
             world.markRegistrationsDone(validUntilHour = validUntil)
@@ -728,7 +727,7 @@ class OwnerStepsTest {
         OwnerWorld().use { world ->
             val now = weekStart(2_870) + 2 * day
             world.activateAt(now)
-            val engine = MessagingEngine(world.steps)
+            val engine = world.engine
             engine.runOwnerMaintenance()
             world.markRegistrationsDone(validUntilHour = ceilHour(now) + 14 * day)
 
@@ -759,7 +758,7 @@ class OwnerStepsTest {
         OwnerWorld().use { world ->
             val now = weekStart(2_870) + 2 * day
             world.activateAt(now)
-            val engine = MessagingEngine(world.steps)
+            val engine = world.engine
             engine.runOwnerMaintenance()
             world.markRegistrationsDone(validUntilHour = ceilHour(now) + 14 * day)
             val rejected = world.capabilities().first { it["kind"] == "read" }["relay_id"] as Long
@@ -881,7 +880,7 @@ class OwnerStepsTest {
         OwnerWorld().use { world ->
             world.crypto.publicationOffsetSeconds = day
             world.activateAt(weekStart(2_870) + 2 * day)
-            val engine = MessagingEngine(world.steps)
+            val engine = world.engine
 
             world.clock.now = weekStart(2_871) + 2 * day
             val first = engine.runOwnerMaintenance()

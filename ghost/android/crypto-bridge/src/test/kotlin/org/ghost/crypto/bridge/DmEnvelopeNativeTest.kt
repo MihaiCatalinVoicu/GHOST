@@ -450,7 +450,7 @@ class DmEnvelopeNativeTest {
             assertEquals(bundleWeek, root.baseWeek)
 
             val outKeys = DmPairing.keys(
-                alice, bobAtAlice, DmSeal.PairDirection.OUT, root.rootGen, root.rootEnv,
+                alice, bobAtAlice, DmSeal.PairDirection.OUT, root.rootGen, DmPairing.From.ROOT, root.rootEnv,
                 root.baseWeek, bundleWeek, bundleWeek,
             )
             assertTrue("pairKeys: $outKeys", outKeys is DmPairing.KeysResult.Ok)
@@ -459,7 +459,7 @@ class DmEnvelopeNativeTest {
 
             // B holds the same generation's **in** key from its own offer.
             val inKeys = DmPairing.keys(
-                bob, aliceAtBob, DmSeal.PairDirection.IN, 0, bobOffer.rootEnv, bundleWeek,
+                bob, aliceAtBob, DmSeal.PairDirection.IN, 0, DmPairing.From.ROOT, bobOffer.rootEnv, bundleWeek,
                 bundleWeek, bundleWeek,
             )
             assertTrue("pairKeys: $inKeys", inKeys is DmPairing.KeysResult.Ok)
@@ -536,7 +536,7 @@ class DmEnvelopeNativeTest {
             val contact = bytes(0x33, 16)
             val offer = offer(device, contact, rootGen = 4, baseWeek = 2_900L)
             val window = DmPairing.keys(
-                device, contact, DmSeal.PairDirection.IN, 4, offer.rootEnv, 2_900L, 2_900L, 2_908L,
+                device, contact, DmSeal.PairDirection.IN, 4, DmPairing.From.ROOT, offer.rootEnv, 2_900L, 2_900L, 2_908L,
             )
             assertTrue("pairKeys: $window", window is DmPairing.KeysResult.Ok)
             val weeks = (window as DmPairing.KeysResult.Ok).weeks
@@ -549,7 +549,7 @@ class DmEnvelopeNativeTest {
             }
             // A later sub-window is the same keys: the ratchet is a function of the base week.
             val later = DmPairing.keys(
-                device, contact, DmSeal.PairDirection.IN, 4, offer.rootEnv, 2_900L, 2_905L, 2_906L,
+                device, contact, DmSeal.PairDirection.IN, 4, DmPairing.From.ROOT, offer.rootEnv, 2_900L, 2_905L, 2_906L,
             )
             assertTrue(later is DmPairing.KeysResult.Ok)
             assertArrayEquals(
@@ -560,14 +560,14 @@ class DmEnvelopeNativeTest {
             assertEquals(
                 DmPairing.KeysResult.NonCanonical,
                 DmPairing.keys(
-                    device, contact, DmSeal.PairDirection.IN, 4, offer.rootEnv, 2_900L, 2_899L,
+                    device, contact, DmSeal.PairDirection.IN, 4, DmPairing.From.ROOT, offer.rootEnv, 2_900L, 2_899L,
                     2_905L,
                 ),
             )
             assertEquals(
                 DmPairing.KeysResult.NonCanonical,
                 DmPairing.keys(
-                    device, contact, DmSeal.PairDirection.IN, 4, offer.rootEnv, 2_900L, 2_900L,
+                    device, contact, DmSeal.PairDirection.IN, 4, DmPairing.From.ROOT, offer.rootEnv, 2_900L, 2_900L,
                     2_999L,
                 ),
             )
@@ -575,7 +575,7 @@ class DmEnvelopeNativeTest {
             assertEquals(
                 DmPairing.KeysResult.StateCorrupt,
                 DmPairing.keys(
-                    device, contact, DmSeal.PairDirection.IN, 5, offer.rootEnv, 2_900L, 2_900L,
+                    device, contact, DmSeal.PairDirection.IN, 5, DmPairing.From.ROOT, offer.rootEnv, 2_900L, 2_900L,
                     2_900L,
                 ),
             )
@@ -613,6 +613,7 @@ class DmEnvelopeNativeTest {
             )
             assertTrue("encode: $encoded", encoded is DmContent.Encoded.Ok)
             val l0 = (encoded as DmContent.Encoded.Ok).l0
+            assertEquals(bucket, encoded.bucket)
 
             val decoded = DmContent.decode(device, contact, l0)
             assertTrue("decode: $decoded", decoded is DmContent.DecodeResult.Ok)
@@ -636,10 +637,10 @@ class DmEnvelopeNativeTest {
             // The root that came back opens the same week keys the offer does: the TLV carried
             // the offered root and nothing else.
             val fromOffer = DmPairing.keys(
-                device, contact, DmSeal.PairDirection.IN, 2, offer.rootEnv, 2_880L, 2_880L, 2_880L,
+                device, contact, DmSeal.PairDirection.IN, 2, DmPairing.From.ROOT, offer.rootEnv, 2_880L, 2_880L, 2_880L,
             ) as DmPairing.KeysResult.Ok
             val fromTlv = DmPairing.keys(
-                device, contact, DmSeal.PairDirection.OUT, 2, root.rootEnv, 2_880L, 2_880L, 2_880L,
+                device, contact, DmSeal.PairDirection.OUT, 2, DmPairing.From.ROOT, root.rootEnv, 2_880L, 2_880L, 2_880L,
             ) as DmPairing.KeysResult.Ok
             assertArrayEquals(
                 fromOffer.weeks.single().recognitionKey,
@@ -670,15 +671,15 @@ class DmEnvelopeNativeTest {
             assertNull(controlContent.quoteRef)
 
             // Garbage does not decode. A body over the API cap `MAX_BODY_BYTES = 61 440` is
-            // `NON_CANONICAL`, not `OVERSIZE`: R-C4's per-kind rule refuses it before the record
-            // is built, and §13.2's `TOO_LARGE` is the engine's own guard at SEND S2, which runs
-            // earlier still. `OVERSIZE` is reserved for a record no bucket carries (R-B1).
+            // `OVERSIZE`: R-B1 has no bucket for it, and that is decided from the body length
+            // before the record is built. §13.2's `TOO_LARGE` is the engine's own guard at SEND
+            // S2, which runs earlier still and is what a user sees.
             assertEquals(
                 DmContent.DecodeResult.NonCanonical,
                 DmContent.decode(device, contact, ByteArray(3)),
             )
             assertEquals(
-                DmContent.Encoded.NonCanonical,
+                DmContent.Encoded.Oversize,
                 DmContent.encode(
                     handle = device,
                     kind = DmContent.Kind.TEXT,

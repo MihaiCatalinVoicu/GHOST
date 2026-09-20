@@ -363,15 +363,78 @@ object DmExpiredRowLint {
 }
 
 /**
- * Every read query of a DM DAO, with the arguments the lint should bind. **Empty until S6/S7**:
- * the DAOs that read `dm_message` land with the owner side and the send/receive slice, and
- * [DmExpiredRowLintTest.everyProductionReadOfAnExpiringTableIsRegistered] fails the day one is
- * written without being registered here. Add the query verbatim — the point of the registry is
- * that the string the DAO runs is the string the lint runs. A query built from `+`-joined literals
- * registers as the string those literals build, which is what the scanner reports.
+ * Every read query of a DM DAO, with the arguments the lint should bind.
+ *
+ * The registry is filled by **slice S7**, which wrote the first DAO that reads `dm_message`
+ * (`:messaging`'s `MessageStore`). Each entry is the query **verbatim**, because the point of the
+ * registry is that the string the DAO runs is the string the lint runs; a query built from
+ * `+`-joined literals registers as the string those literals build, which is what the scanner
+ * reports and what `normalize` compares.
+ *
+ * **What the arguments are chosen for.** Each set makes the query match something in the swept
+ * world — [DmExpiredRowLint.Outcome.returnsNothing] refuses a query that matches nothing even
+ * there, because such a query is broken rather than compliant — and, where the fixture allows it,
+ * makes the **unswept** world differ if the filter were missing. `theUnreadCount` and
+ * `theConversationPageBeforeACursor` are the two that do both: without the filter the first
+ * counts `EXPIRED_UNREAD_IN` and the second returns all three expired rows.
  */
 object DmDaoQueries {
     data class Query(val name: String, val sql: String, val args: List<Any?>)
 
-    val registered: List<Query> = emptyList()
+    /** The conversation of the fixture world; `seedMessages` keys the contact by it too. */
+    private val conversation = DmExpiredRowLint.CONVERSATION
+
+    /** The `now_e` every read is given, as §10.7 point 4 writes it (`:now_e`). */
+    private const val NOW = DmExpiredRowLint.NOW
+
+    /** The fixture's author minute: `NOW - 86 400`, which every row shares. */
+    private const val AUTHOR = NOW - 86_400
+
+    val registered: List<Query> = listOf(
+        Query(
+            name = "theConversationPage",
+            sql = "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
+                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "WHERE conversation_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+                "ORDER BY sort_minute DESC, minute_index DESC, message_id DESC LIMIT ?",
+            args = listOf(conversation, NOW, 50L),
+        ),
+        Query(
+            name = "theConversationPageBeforeACursor",
+            sql = "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
+                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "WHERE conversation_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+                "AND (sort_minute < ? OR (sort_minute = ? AND minute_index < ?) " +
+                "OR (sort_minute = ? AND minute_index = ? AND message_id < ?)) " +
+                "ORDER BY sort_minute DESC, minute_index DESC, message_id DESC LIMIT ?",
+            // A cursor a minute after every fixture row, so the first disjunct admits all five and
+            // the expiry filter is the only thing that can remove the three expired ones.
+            args = listOf(
+                conversation, NOW, AUTHOR + 60, AUTHOR + 60, 0L, AUTHOR + 60, 0L,
+                ByteArray(16) { 0xFF.toByte() }, 50L,
+            ),
+        ),
+        Query(
+            name = "oneMessageById",
+            sql = "SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
+                "minute_index, timer_code, body_env, state FROM dm_message " +
+                "WHERE message_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+            // A **live** id: an expired one would return nothing in either world, which the lint
+            // refuses as broken rather than accepting as compliant.
+            args = listOf(DmExpiredRowLint.LIVE_IN, NOW),
+        ),
+        Query(
+            name = "theUnreadCount",
+            sql = "SELECT count(*) FROM dm_message WHERE direction = 'in' AND state = 'unread' " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+            args = listOf(NOW),
+        ),
+        Query(
+            name = "theNextMinuteIndex",
+            sql = "SELECT max(minute_index) FROM dm_message WHERE conversation_id = ? " +
+                "AND direction = 'out' AND author_minute = ? " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
+            args = listOf(conversation, AUTHOR, NOW),
+        ),
+    )
 }

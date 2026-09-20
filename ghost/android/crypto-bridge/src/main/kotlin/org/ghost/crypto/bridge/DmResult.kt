@@ -260,6 +260,9 @@ enum class DmField(val tag: Int) {
 
     /** The direction byte [PROVISIONAL_IN_ENV] is bound to, one byte. */
     PROVISIONAL_IN_DIRECTION(0x3a),
+
+    /** The bucket rule R-B1 chose for an `l0Encode` record, `u32` big-endian (§6.6). */
+    BUCKET(0x3b),
     ;
 
     companion object {
