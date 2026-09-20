@@ -1,0 +1,50 @@
+[package]
+publish = false
+name = "ghost-client-dm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST direct messages: derivations, contact card v2, the four seal modes, the X-Wing intro layer, binding v3, the L0 codec, safety numbers and state wrapping (Phase 9 design faza9-dm.md §2-§9)"
+
+[lib]
+# Slice S4a is a library only: the `jni-bridge` feature and the export macro arrive with the Olm
+# facade in S4b (design §2.3), which is also when `ghost-client-net` takes this crate as a
+# dependency and the client allowlist, the notices and G-R6 start covering it.
+crate-type = ["rlib"]
+
+[features]
+# G-R2: no default feature. `provenance` turns the PQ-B key-provenance assertions of T35 (§9.3)
+# into runtime checks outside `cfg(test)`; the crate's own unit tests get them unconditionally.
+default = []
+provenance = []
+
+[dependencies]
+# Exact pins (design §2.3, §16.3, ADR-36). X-Wing is reached only through `libcrux_kem::XWing` and
+# the `libcrux_traits::kem::slice::Kem` trait; the enum API panics on short inputs and links every
+# KEM of the crate (+415 KB arm64-v8a, +514 KB x86_64; evidence V-6, V-9).
+libcrux-kem = { version = "=0.0.9", default-features = false }
+libcrux-traits = { version = "=0.0.8", default-features = false }
+# The slice trait performs no ML-KEM input check, so `mlkem768::validate_public_key` is called
+# explicitly on the first 1 184 bytes of every encapsulation key (evidence V-6).
+libcrux-ml-kem = { version = "=0.0.10", default-features = false, features = ["mlkem768"] }
+# The seal AEAD and the state-wrapping envelopes (§6.2, §2.5); the version vodozemac 0.11.0 brings
+# in S4b, taken directly here.
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+hkdf = "=0.13.0"
+# The contributory X25519 trial of the whole-key validation (§22.8.2 rule 3).
+x25519-dalek = "=2.0.1"
+zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
+# Workspace baseline (spec Appendix A): the versions the lock already carries.
+sha2 = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+# The 8-torsion u-coordinates of the low-order key tests (§22.8.2 rule 3), dev graph only.
+curve25519-dalek = { workspace = true }
+# Differential oracle for X-Wing, dev graph only (G-R1, §16.3).
+x-wing = "=0.1.0"
+serde_json = { workspace = true }
