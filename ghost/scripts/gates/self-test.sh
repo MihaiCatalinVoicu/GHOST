@@ -621,6 +621,40 @@ else
   echo "SELF-TEST FAIL: dm-jni-surface rejects the real closed list" >&2; rc=1
 fi
 
+# G-DM6 (Phase 9 design §13.6 R-M4, §10.7; mutant ME-18): no CREATE VIRTUAL TABLE and no `fts`
+# token in production SQL. The four fixtures are single-purpose — one statement, one token, one
+# `.sql` file, one vacuous tree — so each half of the gate is proven without the others, and each
+# says how many violations it holds so a gate that started reporting everything is caught too.
+dmfts_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/negative-dm-fts-$1" bash "$DIR/dm-no-fts.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF "$3" <<<"$out"; then
+    echo "self-test ok: dm-no-fts $4"
+  else
+    echo "SELF-TEST FAIL: dm-no-fts $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail dm-no-fts "$HARNESS/negative-dm-fts-virtual"
+dmfts_case virtual 1 "VirtualTableSchema.kt:18" "reports the virtual table and nothing else"
+expect_fail dm-no-fts "$HARNESS/negative-dm-fts-token"
+dmfts_case token 3 "SearchIndexSchema.kt:19" "reports all three fts tokens and no decoy"
+expect_fail dm-no-fts "$HARNESS/negative-dm-fts-sql-file"
+dmfts_case sql-file 1 "relay/schema/search.sql:8" "reads a plain .sql file outside android/"
+expect_fail dm-no-fts "$HARNESS/negative-dm-fts-no-sql"
+dmfts_case no-sql 1 "contains a CREATE TABLE (the gate would pass vacuously)" \
+  "refuses a tree whose production sources hold no SQL"
+dmfts_empty="$(mktemp -d)"
+expect_fail_msg "dm-no-fts refuses a tree with no production sources at all" \
+  "no production SQL sources found" env GHOST_ROOT="$dmfts_empty" bash "$DIR/dm-no-fts.sh"
+rmdir "$dmfts_empty"
+if bash "$DIR/dm-no-fts.sh" >/dev/null 2>&1; then
+  echo "self-test ok: dm-no-fts accepts the real schema"
+else
+  echo "SELF-TEST FAIL: dm-no-fts rejects the real schema" >&2; rc=1
+fi
+
 if command -v cargo >/dev/null; then
   tmp="$(mktemp)"
   grep -vx "tokio" "$DIR/../../client-core/rust-dependency-allowlist.txt" > "$tmp"

@@ -10,7 +10,8 @@ rc=0
 # dm-jni-surface (G-R6) runs here without a library argument: the source halves of the closed list
 # need no toolchain. The CI android job runs it again with the built ghost-dm-host, which adds the
 # symbol check (Phase 9 design §2.6).
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface; do
+# dm-no-fts (G-DM6, Phase 9 design §13.6 R-M4) reads production sources as text and needs no SDK.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc
