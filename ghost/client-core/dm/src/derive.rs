@@ -262,6 +262,40 @@ pub fn derive_schedule_key(m: &MessagingBranch, card_index: u16) -> [u8; SECRET_
     hkdf32(m.as_bytes(), None, &DmLabel::Schedule(card_index).info())
 }
 
+/// Label of the weekly bundle-publication offset (§5.4).
+pub const PUB_OFFSET_LABEL: &str = "ghost/v1/dm/pub-offset";
+
+/// Seconds in an ISO week.
+const WEEK_SECONDS: u64 = 604_800;
+
+/// `t_pub(w) = start(w) + (HMAC-SHA256(S_i, "ghost/v1/dm/pub-offset") mod 7 d)`, floored to the
+/// minute (§5.4): the **fixed offset per card** at which the owner republishes its bundle, so two
+/// consecutive publications are exactly 7 days apart and nothing about contacts, fetches or
+/// messages enters the timing (T31, mutant PM-11).
+///
+/// This function returns the offset alone, the part the owner's scheduler needs; adding the week's
+/// start is arithmetic Kotlin does.
+///
+/// **Convention fixed by S6.** §5.4 writes the HMAC where an integer is wanted without saying how
+/// the 32 bytes become one. GHOST reads the **first 8 bytes, big-endian**, as a `u64` and reduces
+/// it modulo the week. The modulo bias is `2^64 mod 604 800` in `2^64`, about one part in `3·10^13`,
+/// which is below every threshold this design cares about; taking the whole digest as a 256-bit
+/// integer would change no observable and would need a bignum reduction in a crate that has none.
+pub fn publication_offset(schedule_key: &[u8; SECRET_BYTES]) -> u32 {
+    use hmac::digest::KeyInit as HmacKeyInit;
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<Sha256> as HmacKeyInit>::new_from_slice(schedule_key)
+        .expect("HMAC-SHA256 accepts a 32-byte key");
+    mac.update(PUB_OFFSET_LABEL.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    let mut head = [0u8; 8];
+    head.copy_from_slice(&tag[..8]);
+    let offset = u64::from_be_bytes(head) % WEEK_SECONDS;
+    // Floored to the minute, like every `*_minute` value GHOST stores (§13.6 step 5).
+    let floored = offset - (offset % 60);
+    u32::try_from(floored).expect("an offset below one week fits a u32")
+}
+
 /// A card-level value of the card secret (§3.2). Namespaces and relay-presented secrets.
 pub fn derive_card_value(card_secret: &CardSecret, label: CardLabel) -> [u8; SECRET_BYTES] {
     hkdf32(card_secret.as_bytes(), None, &label.info())
@@ -395,6 +429,40 @@ mod tests {
     type DerivePqRoot =
         fn(&PairRoot, &KemSecret, &[u8; 32], &[u8; 32], u32, &[u8], &[u8]) -> PairRoot;
 
+    /// §5.4: the offset is a **fixed** function of the card's schedule key, inside one week, on a
+    /// minute boundary, and it depends on nothing else. Two consecutive publications are then
+    /// exactly 7 days apart, which is what keeps contacts, fetches and messages out of the timing
+    /// (T31, mutant PM-11).
+    #[test]
+    fn the_publication_offset_is_fixed_per_card_and_lands_on_a_minute() {
+        let m = branch();
+        for index in [0u16, 1, 65535] {
+            let key = derive_schedule_key(&m, index);
+            let offset = publication_offset(&key);
+            assert!(u64::from(offset) < WEEK_SECONDS, "offset is inside a week");
+            assert_eq!(offset % 60, 0, "offset lands on a minute");
+            assert_eq!(offset, publication_offset(&key), "the offset is a function");
+        }
+        // Different cards of one seed do not share a publication minute by construction.
+        assert_ne!(
+            publication_offset(&derive_schedule_key(&m, 0)),
+            publication_offset(&derive_schedule_key(&m, 1)),
+        );
+        // The offset is the first 8 bytes of the tag, big-endian, modulo the week, floored: the
+        // transcript is spelled out here so a change to it fails rather than drifting silently.
+        use hmac::digest::KeyInit as HmacKeyInit;
+        use hmac::{Hmac, Mac};
+        let key = derive_schedule_key(&m, 0);
+        let mut mac =
+            <Hmac<Sha256> as HmacKeyInit>::new_from_slice(&key).expect("32-byte key");
+        mac.update(b"ghost/v1/dm/pub-offset");
+        let tag = mac.finalize().into_bytes();
+        let mut head = [0u8; 8];
+        head.copy_from_slice(&tag[..8]);
+        let expected = u64::from_be_bytes(head) % WEEK_SECONDS;
+        assert_eq!(u64::from(publication_offset(&key)), expected - expected % 60);
+    }
+
     #[test]
     fn no_label_is_a_prefix_of_another() {
         let mut labels: Vec<&str> = DmLabel::LABELS.to_vec();
@@ -404,6 +472,7 @@ mod tests {
         labels.push(PROVISIONAL_LABEL);
         labels.push(PQ_ROOT_LABEL);
         labels.push(SESSION_BINDING_LABEL);
+        labels.push(PUB_OFFSET_LABEL);
         for (i, a) in labels.iter().enumerate() {
             for (j, b) in labels.iter().enumerate() {
                 if i != j {

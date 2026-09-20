@@ -148,6 +148,15 @@ enum class DmField(val tag: Int) {
 
     /** The inbox read secret `RX_{i,s}`: a bearer secret that goes into a credential v3 (§4.3). */
     READ_SECRET(0x17),
+
+    /** `t_pub(w) − start(w)` in seconds, `u32` big-endian: the weekly publication offset (§5.4). */
+    PUBLICATION_OFFSET(0x18),
+
+    /** The own deposit secret `D_{i,s}` (§3.2). */
+    DEPOSIT_SECRET(0x19),
+
+    /** The own bundle fetch secret `RP_{i,s}` (§3.2), registered as kind FETCH (§22.8.7). */
+    FETCH_SECRET(0x1a),
     ;
 
     companion object {

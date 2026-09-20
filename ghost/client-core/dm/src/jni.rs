@@ -226,6 +226,14 @@ pub enum Field {
     /// relay of slot s inside the 67-byte credential v3, so Kotlin holds it in clear (§3.2's last
     /// sentence lists bearer credentials among the three things Kotlin may hold unwrapped).
     ReadSecret = 0x17,
+    /// The weekly bundle-publication offset `t_pub(w) − start(w)` in seconds, `u32` big-endian
+    /// (§5.4). Derived from the schedule key `S_i`, which itself never leaves the context.
+    PublicationOffset = 0x18,
+    /// The own deposit secret `D_{i,s}` (§3.2): what the owner registers a verifier for and what
+    /// every holder of its card presents to deposit.
+    DepositSecret = 0x19,
+    /// The own bundle fetch secret `RP_{i,s}` (§3.2), registered as kind FETCH (§22.8.7).
+    FetchSecret = 0x1a,
 }
 
 impl Field {
@@ -257,6 +265,9 @@ impl Field {
         Field::XwingPublic,
         Field::GenerationSecrets,
         Field::ReadSecret,
+        Field::PublicationOffset,
+        Field::DepositSecret,
+        Field::FetchSecret,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -286,6 +297,9 @@ impl Field {
             Field::XwingPublic => 0x15,
             Field::GenerationSecrets => 0x16,
             Field::ReadSecret => 0x17,
+            Field::PublicationOffset => 0x18,
+            Field::DepositSecret => 0x19,
+            Field::FetchSecret => 0x1a,
         }
     }
 }
@@ -503,17 +517,41 @@ pub fn own_card(env: &mut JNIEnv, handle: jlong, card_index: jint) -> Result<Vec
                 Field::OlmIdentity,
                 &derive::olm_identity_public(&context.olm_identity),
             )
+            // Added by S6: the weekly publication offset of §5.4. The scheduler that has to wake
+            // at `t_pub(w)` lives in Kotlin (`:messaging`'s OWNER-WEEK step), and the schedule key
+            // `S_i` it is derived from must not leave this context — it is not on §3.2's list of
+            // the three things Kotlin may hold. So the offset crosses, and the key does not.
+            .field(
+                Field::PublicationOffset,
+                &derive::publication_offset(&Zeroizing::new(derive::derive_schedule_key(
+                    &context.messaging,
+                    card_index,
+                )))
+                .to_be_bytes(),
+            )
             .into_bytes())
     })
 }
 
-/// §2.6 function 4: `ownReadSecret(h, cardIndex, slot)`. `RX_{i,s}`, the **seed-derived** inbox
-/// read secret the owner registers and then presents to the relay of ES slot `s` (§3.1, §4.8).
+/// §2.6 function 4: `ownReadSecret(h, cardIndex, slot)`. The **own bearer secrets** the owner
+/// presents to, and registers verifiers for, at the relay of ES slot `s` (§3.1, §3.2, §4.8):
 ///
-/// It is the D11 key (C-5, D7): contacts hold the card and can therefore derive every card-level
-/// value, but not this one, which is why a card holder cannot read the inbox with the card alone
-/// (§3.2 "the inbox read secrets and the Olm identity are **not** in it"). The `MESSAGING` branch
-/// is the key input, so T26 holds by the type system like every other derivation here.
+///  - `RX_{i,s}`, the **seed-derived** inbox read secret. It is the D11 key (C-5, D7): contacts
+///    hold the card and can derive every card-level value, but not this one, which is why a card
+///    holder cannot read the inbox with the card alone (§3.2 "the inbox read secrets and the Olm
+///    identity are **not** in it");
+///  - `D_{i,s}`, the deposit secret, and `RP_{i,s}`, the bundle fetch secret, both **card-level**.
+///
+/// **Extended by S6** beyond §2.6's "`RX_{i,s}`" output column. The owner's `REGROWS` step has to
+/// register a verifier for all three kinds of its own namespaces (§4.8: `X`: DEPOSIT and READ;
+/// `P`: FETCH), and all three are bearer secrets Kotlin is allowed to hold (§3.2's closing
+/// sentence). The alternative was to open `cardDerive` — function 3, `Declared("S7")` — early, but
+/// its other half is contact-card parsing, which is the S7 material this slice must not build.
+/// Three secrets of the same `(card index, slot)` in one call is also one fewer JNI crossing than
+/// three calls, and the caller needs them together.
+///
+/// The key inputs stay typed (T26, gate G-DM3): the MESSAGING branch for `RX`, the card secret for
+/// the other two.
 ///
 /// `slot` is the relay's ES slot number, one byte on the wire in the credential and in the
 /// verifier (§4.3), so a value outside `0..=255` is [`DmCode::NonCanonical`] rather than a
@@ -528,12 +566,28 @@ pub fn own_read_secret(
     let card_index = u16::try_from(card_index).map_err(|_| DmCode::InvalidCard)?;
     let slot = u8::try_from(slot).map_err(|_| DmCode::NonCanonical)?;
     with_context(handle, |context| {
-        let mut secret =
-            Zeroizing::new(derive::derive_inbox_read_secret(&context.messaging, card_index, slot));
+        let card_secret = derive::derive_card_secret(&context.messaging, card_index);
+        let mut read = Zeroizing::new(derive::derive_inbox_read_secret(
+            &context.messaging,
+            card_index,
+            slot,
+        ));
+        let mut deposit = Zeroizing::new(derive::derive_card_value(
+            &card_secret,
+            derive::CardLabel::Deposit(slot),
+        ));
+        let mut fetch = Zeroizing::new(derive::derive_card_value(
+            &card_secret,
+            derive::CardLabel::BundleRead(slot),
+        ));
         let reply = Reply::ok()
-            .field(Field::ReadSecret, secret.as_ref())
+            .field(Field::ReadSecret, read.as_ref())
+            .field(Field::DepositSecret, deposit.as_ref())
+            .field(Field::FetchSecret, fetch.as_ref())
             .into_bytes();
-        secret.zeroize();
+        read.zeroize();
+        deposit.zeroize();
+        fetch.zeroize();
         Ok(reply)
     })
 }

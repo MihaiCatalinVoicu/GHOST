@@ -293,6 +293,14 @@ object DmSessions {
         val recognitionBundle: ByteArray,
         /** The own Olm identity public key, which every contact pins. */
         val olmIdentity: ByteArray,
+        /**
+         * `t_pub(w) − start(w)` in seconds: the fixed weekly offset at which the owner
+         * republishes its bundle (§5.4). **Added by S6** to §2.6 function 2's outputs, because the
+         * scheduler that wakes at `t_pub(w)` is in `:messaging` while the schedule key `S_i` it
+         * comes from must not leave the native context — it is not one of the three things §3.2
+         * lets Kotlin hold.
+         */
+        val publicationOffsetSeconds: Long,
     )
 
     /** A freshly created bundle generation (§2.6 function 5, §5.3). */
@@ -319,26 +327,48 @@ object DmSessions {
             recognitionIntro = result.bytes(DmField.RECOGNITION_INTRO),
             recognitionBundle = result.bytes(DmField.RECOGNITION_BUNDLE),
             olmIdentity = result.bytes(DmField.OLM_IDENTITY),
+            publicationOffsetSeconds = result.u32(DmField.PUBLICATION_OFFSET),
         )
     }
 
     /**
-     * §2.6 function 4: `RX_{i,s}`, the seed-derived inbox read secret of the relay at ES slot
-     * [slot] (§3.1, §4.8). Null when the library is missing or the call failed.
+     * The own bearer secrets of one relay slot (§2.6 function 4 as S6 extends it; §3.1, §3.2,
+     * §4.8). These are the DM secrets the design lets Kotlin hold **unwrapped**, because they are
+     * exactly the secrets that go on the wire: the owner puts each into a 67-byte [CredentialV3]
+     * and the relay only ever stores a [CredentialV3.verifier] of it.
      *
-     * This is the one DM secret the design lets Kotlin hold **unwrapped**, because it is a bearer
-     * secret: the owner puts it into a 67-byte [CredentialV3] and presents those bytes to the relay
-     * (§3.2's closing sentence, §4.3). Its verifier — what the relay actually stores — is
-     * [CredentialV3.verifier]; the secret itself is never registered.
-     *
-     * Callers zeroise the array once the credential is built; it is the caller's array, so this
-     * facade cannot do it for them the way [openContext] does for its own inputs.
+     * Callers zeroise the arrays once the credential or the verifier is built; they are the
+     * caller's arrays, so this facade cannot do it for them the way [openContext] does for its own
+     * inputs.
      */
-    fun ownReadSecret(handle: Long, cardIndex: Int, slot: Int): ByteArray? {
+    class OwnSecrets(
+        /** `RX_{i,s}`: seed-derived, the D11 key no card holder can compute (§3.1). */
+        val read: ByteArray,
+        /** `D_{i,s}`: card-derived, what every holder of the card presents to deposit (§3.2). */
+        val deposit: ByteArray,
+        /** `RP_{i,s}`: card-derived, the bundle fetch secret, registered as kind FETCH. */
+        val fetch: ByteArray,
+    ) {
+        /** Zeroises all three. */
+        fun clear() {
+            read.fill(0)
+            deposit.fill(0)
+            fetch.fill(0)
+        }
+
+        override fun toString(): String = "OwnSecrets(redacted)"
+    }
+
+    /** §2.6 function 4. Null when the library is missing or the call failed. */
+    fun ownSecrets(handle: Long, cardIndex: Int, slot: Int): OwnSecrets? {
         if (!DmNative.isAvailable()) return null
         val result = call { DmNative.ownReadSecret(handle, cardIndex, slot) }
         if (!result.isOk) return null
-        return result.bytes(DmField.READ_SECRET)
+        return OwnSecrets(
+            read = result.bytes(DmField.READ_SECRET),
+            deposit = result.bytes(DmField.DEPOSIT_SECRET),
+            fetch = result.bytes(DmField.FETCH_SECRET),
+        )
     }
 
     /** §2.6 function 5: a fresh generation, signed into a bundle v2 and sealed under `KB_i`. */
