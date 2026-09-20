@@ -6,16 +6,37 @@
 //! sampling a huge sequence space. Breadth-first search from the initial state applies every
 //! enabled action, canonicalises the result (session and root identifiers are renamed to their
 //! order of first appearance, so two runs that differ only in numbering are one state), and checks
-//! every property at every state. Bounds: at most two user sends per side by default — the design
-//! writes "at most 6 user sends per side", and `GHOST_DM_EM_SENDS` (with `GHOST_DM_EM_BUDGET`
-//! raised alongside it) takes the run there for a gate-scale run, since the reachable state count
-//! grows roughly an order of magnitude per extra send — and at most [`WIRE_MAX`] messages in
-//! flight. Recorded deviation: the PR-scale default is 2, not 6.
+//! every property at every state and every seal decision.
+//!
+//! **What EM-1 covers.** R-SS0 … R-SS4: `UNACK_MAX` re-establishment, R-SS1's creation and the
+//! §22.8.4 stale-first-flight exception, R-SS2's swap, R-SS3's convergence (the directed
+//! enumeration of `em1_simultaneous_initiation_converges`) and SWEEP's retirement of a `previous`
+//! row at its `retire_day`, with the D2b reuse tuple that outlives it. Properties: the structural
+//! invariants of §15.3 this model can see, no decryption on a session of another identity, no
+//! second session from a replayed first flight, CS-2 (nothing displayed twice inside one database)
+//! and no message lost on a session the device held. Process death at every step (RG-1) is not a
+//! separate action: a crash before a commit leaves the world unchanged, which is the same
+//! successor as not taking the action, and the search takes every other action from that state.
+//!
+//! **What EM-2 covers.** The intro → provisional → pair transitions per direction, root offers and
+//! acknowledgements, renewals, the erasure of generations and of `prov_env`, and the three clauses
+//! of §22.8.5 rule 3 with the write-once anchors and monotone `pair_sent` of rule 4. Its property
+//! is §15.2's — the sender never seals with a key the **recipient** cannot hold — which the mode
+//! rule never reads, so `em2_detects_a_sender_that_breaks_the_mode_rule` runs three mutants
+//! through the search and each breaks it. Rule 5's day arithmetic is not abstracted into the
+//! search: `the_provisional_schedule_has_no_gap` checks it exhaustively in days.
+//!
+//! **Bounds.** At most two user sends per side by default, and at most [`WIRE_MAX`] messages in
+//! flight. The design writes "at most 6 user sends per side": the reachable state count grows by
+//! roughly an order of magnitude per extra send (140 075 states at two, 2 296 274 at three), so
+//! `GHOST_DM_EM_SENDS`, with `GHOST_DM_EM_BUDGET` raised alongside it, takes the run further, and
+//! the nightly `dm-state-models` workflow runs three in the release profile. **Recorded
+//! deviation:** the enforced bounds are 2 (pull requests) and 3 (nightly), not 6.
 //!
 //! The models complement the ProVerif obligations M-1 … M-8 of §9.5, which check secrecy and
 //! authentication rather than state reachability, and mutant MC-19 ("newest decrypt wins") must
 //! fail EM-1 — `mc19_newest_decrypt_wins_is_detected` runs the model with that rule substituted and
-//! asserts that a property breaks.
+//! asserts that a **property** breaks, told apart from a budget overflow by [`Stop`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -23,16 +44,22 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 const UNACK_MAX: u32 = 28;
 /// Design §8.2 R-SS1: a demoted row retires after this many days.
 const RETIRE_DAYS: u32 = 46;
-/// Messages allowed in flight at once.
+/// Messages allowed in flight at once in the exhaustive search.
 const WIRE_MAX: usize = 2;
+/// Messages allowed in flight in the directed R-SS3 convergence enumeration, which explores
+/// schedules rather than states and can afford more: with three sends per side both flows can be
+/// wholly in flight at once, which is the simultaneous initiation R-SS3 is about.
+const CONVERGENCE_WIRE_MAX: usize = 6;
 /// Explored states before the search gives up (a guard against a model change that explodes).
-/// Raising `GHOST_DM_EM_SENDS` needs `GHOST_DM_EM_BUDGET` raised with it: the reachable state
-/// count grows roughly an order of magnitude per extra send per side.
+/// The default leaves both models room to grow — EM-1 explores 140 075 states at the default
+/// bound and EM-2 356 463 — while still catching an explosion. Raising `GHOST_DM_EM_SENDS` needs
+/// `GHOST_DM_EM_BUDGET` raised with it: the reachable state count grows roughly an order of
+/// magnitude per extra send per side.
 fn state_budget() -> usize {
     std::env::var("GHOST_DM_EM_BUDGET")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(400_000)
+        .unwrap_or(1_000_000)
 }
 
 fn sends_per_side() -> u8 {
@@ -79,7 +106,17 @@ struct Device {
     /// D2b, `olm_prekey_used(gen_id, session_id)`.
     reuse: BTreeSet<(u8, u16)>,
     sends_used: u8,
+    /// Message ids this device rendered. Part of the canonical state: two worlds that differ in
+    /// what was displayed are two worlds (§15.2's "no lost message outside the declared bound").
     displayed: BTreeSet<u16>,
+    /// Set when a message id was rendered twice, which CS-2 forbids.
+    displayed_twice: bool,
+    /// Set when a message arrived on a session this device **held**, on a chain index that row had
+    /// not seen, and was not displayed: a loss outside the declared classes of §7.7.
+    lost_on_held_session: bool,
+    /// Sessions SWEEP retired (R-SS4). A retired session never comes back: the D2b reuse tuple
+    /// outlives its row.
+    retired: BTreeSet<u16>,
     /// The peer identity pinned at first contact; `None` before it.
     pinned_peer: Option<u8>,
 }
@@ -123,6 +160,9 @@ impl World {
             reuse: BTreeSet::new(),
             sends_used: 0,
             displayed: BTreeSet::new(),
+            displayed_twice: false,
+            lost_on_held_session: false,
+            retired: BTreeSet::new(),
             pinned_peer: None,
         };
         Self {
@@ -166,9 +206,25 @@ impl World {
                 .iter()
                 .map(|(gen, session)| format!("{gen}.{}", rename(*session, &mut sessions)))
                 .collect();
+            let retired: Vec<u16> = device
+                .retired
+                .iter()
+                .map(|session| rename(*session, &mut sessions))
+                .collect();
+            // What was displayed is part of the state, as a count and the two flags that name the
+            // ways it can go wrong: message identifiers themselves are not (they would split
+            // states that differ only in numbering), but a world that displayed a message and one
+            // that did not are different worlds.
             out.push_str(&format!(
-                "|g{}|s{}|u{:?}|p{:?}",
-                device.generation, device.sends_used, reuse, device.pinned_peer
+                "|g{}|s{}|u{:?}|p{:?}|d{}|x{}|l{}|t{:?}",
+                device.generation,
+                device.sends_used,
+                reuse,
+                device.pinned_peer,
+                device.displayed.len(),
+                u8::from(device.displayed_twice),
+                u8::from(device.lost_on_held_session),
+                retired
             ));
         }
         for message in &self.wire {
@@ -219,15 +275,15 @@ fn should_swap(selection: Selection, current: &Row, previous: &Row, message: &Me
     previous.acknowledged && previous.session < current.session
 }
 
-/// One transition of EM-1. Returns the worlds reachable by every enabled action.
-fn em1_successors(world: &World, selection: Selection, sends: u8) -> Vec<World> {
-    let mut out = Vec::new();
-
-    // A user send on either device.
-    for index in 0..2 {
-        if world.devices[index].sends_used >= sends || world.wire.len() >= WIRE_MAX {
-            continue;
-        }
+/// One user send by device `index`, or `None` when the device cannot send now: its budget is used
+/// or the wire is full.
+///
+/// This is the **only** send transition. `em1_successors` and the convergence enumeration both go
+/// through it, so neither can take a different action while believing it sent something.
+fn em1_send(world: &World, index: usize, sends: u8, wire_max: usize) -> Option<World> {
+    if world.devices[index].sends_used >= sends || world.wire.len() >= wire_max {
+        None
+    } else {
         let mut next = world.clone();
         let peer_generation = next.devices[1 - index].generation;
         let day = next.day;
@@ -284,7 +340,19 @@ fn em1_successors(world: &World, selection: Selection, sends: u8) -> Vec<World> 
         };
         next.next_message += 1;
         next.wire.push(message);
-        out.push(next);
+        Some(next)
+    }
+}
+
+/// One transition of EM-1. Returns the worlds reachable by every enabled action.
+fn em1_successors(world: &World, selection: Selection, sends: u8) -> Vec<World> {
+    let mut out = Vec::new();
+
+    // A user send on either device.
+    for index in 0..2 {
+        if let Some(next) = em1_send(world, index, sends, WIRE_MAX) {
+            out.push(next);
+        }
     }
 
     // Deliver, duplicate (a replay: the message stays on the wire) or drop any message in flight.
@@ -306,6 +374,25 @@ fn em1_successors(world: &World, selection: Selection, sends: u8) -> Vec<World> 
         out.push(dropped);
     }
 
+    // SWEEP (R-SS4): a `previous` row is deleted at its `retire_day`. The D2b reuse tuple stays,
+    // so a replayed first flight of that session creates nothing afterwards.
+    for index in 0..2 {
+        let due = world.devices[index]
+            .previous
+            .as_ref()
+            .and_then(|row| row.retire)
+            .is_some_and(|retire| world.day >= retire);
+        if !due {
+            continue;
+        }
+        let mut next = world.clone();
+        let device = &mut next.devices[index];
+        if let Some(row) = device.previous.take() {
+            device.retired.insert(row.session);
+        }
+        out.push(next);
+    }
+
     // A restore: sessions and generations are lost, the Olm identity is not (C-1, §8.6).
     for index in 0..2 {
         if world.devices[index].generation > 1 {
@@ -317,14 +404,24 @@ fn em1_successors(world: &World, selection: Selection, sends: u8) -> Vec<World> 
         device.current = None;
         device.previous = None;
         device.reuse.clear();
+        device.retired.clear();
+        // A restore from seed loses the database, message history and `oracle_displayed` with it
+        // (SCN-I): CS-2 is "at most one row per device and message id" inside one database, so what
+        // this device rendered before the restore is not what it renders after it.
+        device.displayed.clear();
         device.pinned_peer = None;
         out.push(next);
     }
 
-    // Time passing, enough to make an unacknowledged initiator session stale.
+    // Time passing: to `UNACK_MAX`, where an unacknowledged initiator session is stale, and then
+    // past the `retire_day` of a row demoted then, where SWEEP's R-SS4 deletion becomes enabled.
     if world.day == 0 {
         let mut next = world.clone();
         next.day = UNACK_MAX;
+        out.push(next);
+    } else if world.day == UNACK_MAX {
+        let mut next = world.clone();
+        next.day = UNACK_MAX + RETIRE_DAYS;
         out.push(next);
     }
 
@@ -332,7 +429,33 @@ fn em1_successors(world: &World, selection: Selection, sends: u8) -> Vec<World> 
 }
 
 /// The receive path: §7.6 dedup, §8.2 R-SS1 and R-SS2, §8.2 rules 3 and 5.
+///
+/// It also records what the device rendered. A message delivered on a session the device **held**,
+/// on a chain index that row had not seen, must be displayed: every other loss belongs to one of
+/// the declared classes of §7.7 (a replay, a reuse tuple, an unknown generation, a stale first
+/// flight, an unpinned identity, a normal message of a session that is gone). The two flags the
+/// properties read are set here, at delivery time, because that is where the information is.
 fn apply_delivery(world: &mut World, target: usize, message: &Message, selection: Selection) {
+    // Held by the recipient, on a chain index that row has not consumed: the message must render.
+    let held = {
+        let device = &world.devices[target];
+        let pinned_elsewhere = device
+            .pinned_peer
+            .is_some_and(|pinned| pinned != message.sender_identity);
+        !pinned_elsewhere
+            && [&device.current, &device.previous]
+                .into_iter()
+                .flatten()
+                .any(|row| row.session == message.session && !row.seen.contains(&message.chain))
+    };
+    let displayed = deliver(world, target, message, selection);
+    if held && !displayed {
+        world.devices[target].lost_on_held_session = true;
+    }
+}
+
+/// The delivery itself. Returns whether the message was rendered.
+fn deliver(world: &mut World, target: usize, message: &Message, selection: Selection) -> bool {
     let day = world.day;
     let device = &mut world.devices[target];
 
@@ -340,7 +463,7 @@ fn apply_delivery(world: &mut World, target: usize, message: &Message, selection
     // no state change. The pin is taken at first contact.
     if let Some(pinned) = device.pinned_peer {
         if pinned != message.sender_identity {
-            return;
+            return false;
         }
     }
 
@@ -375,7 +498,7 @@ fn apply_delivery(world: &mut World, target: usize, message: &Message, selection
         };
         // D2a: the message key is gone after the first decryption.
         if row.seen.contains(&message.chain) {
-            return;
+            return false;
         }
         row.seen.insert(message.chain);
         row.acknowledged = true;
@@ -383,7 +506,10 @@ fn apply_delivery(world: &mut World, target: usize, message: &Message, selection
         if let Kind::PreKey { bind, .. } = message.kind {
             row.bind = row.bind.max(bind);
         }
-        device.displayed.insert(message.id);
+        // CS-2: at most one rendering per device and message.
+        if !device.displayed.insert(message.id) {
+            device.displayed_twice = true;
+        }
 
         if !on_current {
             if let Some(current) = other {
@@ -398,19 +524,19 @@ fn apply_delivery(world: &mut World, target: usize, message: &Message, selection
                 }
             }
         }
-        return;
+        return true;
     }
 
     let Kind::PreKey { generation, bind } = message.kind else {
-        return; // a normal message of an unknown session does not decrypt
+        return false; // a normal message of an unknown session does not decrypt
     };
     // D2b: a replayed first flight after its session was replaced or deleted.
     if device.reuse.contains(&(generation, message.session)) {
-        return;
+        return false;
     }
     // The generation the message names was regenerated by a restore: `unknown_generation`.
     if generation != device.generation {
-        return;
+        return false;
     }
 
     // R-SS1, with the §22.8.4 stale-first-flight exception. MC-19 ("newest decrypt wins") drops
@@ -437,7 +563,7 @@ fn apply_delivery(world: &mut World, target: usize, message: &Message, selection
             .as_ref()
             .is_none_or(|old| old.role == Role::Responder && old.bind < bind);
         if !replaceable {
-            return; // drop(stale_session): no session, no reuse tuple
+            return false; // drop(stale_session): no session, no reuse tuple
         }
         let mut demoted = row;
         demoted.retire = Some(day + RETIRE_DAYS);
@@ -451,7 +577,10 @@ fn apply_delivery(world: &mut World, target: usize, message: &Message, selection
     }
     device.reuse.insert((generation, message.session));
     device.pinned_peer = Some(message.sender_identity);
-    device.displayed.insert(message.id);
+    if !device.displayed.insert(message.id) {
+        device.displayed_twice = true;
+    }
+    true
 }
 
 /// The structural invariants of §15.3 that this model can see, plus the EM-1 properties of §15.2.
@@ -521,11 +650,42 @@ fn em1_properties(world: &World) -> Result<(), String> {
                 ));
             }
         }
+        // R-SS4: SWEEP deleted the row at its retire day, and the session does not come back — a
+        // replayed first flight of it meets the reuse tuple, which outlives the row.
+        for row in [&device.current, &device.previous].into_iter().flatten() {
+            if device.retired.contains(&row.session) {
+                return Err(format!(
+                    "device {index}: a retired session is live again ({})",
+                    row.session
+                ));
+            }
+        }
+        // CS-2 and §15.2's "no lost message outside the declared bound of §7.7", as recorded by
+        // the delivery: nothing rendered twice, and nothing lost on a session the device held.
+        if device.displayed_twice {
+            return Err(format!("device {index}: a message was displayed twice"));
+        }
+        if device.lost_on_held_session {
+            return Err(format!(
+                "device {index}: a message of a held session on an unseen chain index was lost"
+            ));
+        }
     }
     Ok(())
 }
 
-fn explore_em1(selection: Selection) -> Result<usize, String> {
+/// Why an exploration stopped. A budget overflow is **not** a property failure: a model change
+/// that merely explodes the state space must not read as "the mutant was detected", which is what
+/// an untyped error let `mc19_newest_decrypt_wins_is_detected` accept.
+#[derive(Debug, PartialEq, Eq)]
+enum Stop {
+    /// A property of §15.2 or an invariant of §15.3 failed, with its text.
+    Property(String),
+    /// The search hit `GHOST_DM_EM_BUDGET` states.
+    Budget(usize),
+}
+
+fn explore_em1(selection: Selection) -> Result<usize, Stop> {
     let sends = sends_per_side();
     let budget = state_budget();
     let mut seen = BTreeSet::new();
@@ -538,9 +698,9 @@ fn explore_em1(selection: Selection) -> Result<usize, String> {
     while let Some(world) = queue.pop_front() {
         states += 1;
         if states > budget {
-            return Err(format!("the state space exceeded {budget} states"));
+            return Err(Stop::Budget(budget));
         }
-        em1_properties(&world)?;
+        em1_properties(&world).map_err(Stop::Property)?;
         for next in em1_successors(&world, selection, sends) {
             if seen.insert(next.canonical()) {
                 queue.push_back(next);
@@ -557,14 +717,79 @@ fn em1_sessions_hold_every_property() {
     println!("EM-1: {states} states");
 }
 
-/// §8.2 "Model obligation": mutant MC-19 ("newest decrypt wins") must fail EM-1. It breaks
-/// R-SS3's convergence — the two sides keep promoting whatever decrypted last and never settle on
-/// one session id — which is the property the design names, so the detection is asserted there.
+/// §8.2 "Model obligation": mutant MC-19 ("newest decrypt wins") must fail an EM-1 **property**.
+///
+/// What fires is the §22.8.4 structural invariant — the mutant promotes whatever decrypted last,
+/// so a first flight older than the responder `current` becomes `current` itself. R-SS3's
+/// convergence is *not* what catches it (measured: `converges(Selection::NewestWins)` returns
+/// `Ok`), and a budget overflow is not a detection either, so both are named here rather than
+/// accepted as "some error".
 #[test]
 fn mc19_newest_decrypt_wins_is_detected() {
+    match explore_em1(Selection::NewestWins) {
+        Err(Stop::Property(reason)) => assert!(
+            reason.contains("an older first flight became current"),
+            "MC-19 must break the §22.8.4 invariant, not {reason}"
+        ),
+        other => panic!("MC-19 must fail an EM-1 property, got {other:?}"),
+    }
+}
+
+/// The two properties this model gained are falsifiable, and this is where that is shown: each
+/// half applies the transition function, then breaks one rule by hand — the way a mutant would —
+/// and asserts that `em1_properties` names the failure.
+///
+/// - CS-2, D2a: a message key that comes back renders its message a second time.
+/// - R-SS4, D2b: a reuse tuple deleted with the retired row lets a replayed first flight bring the
+///   retired session back.
+#[test]
+fn the_display_and_retirement_properties_catch_their_mutants() {
+    // D2a removed: the row forgets the chain index it consumed.
+    let mut world = em1_send(&World::new(), 0, 2, WIRE_MAX).expect("send");
+    let message = world.wire[0];
+    apply_delivery(&mut world, 1, &message, Selection::Rules);
+    em1_properties(&world).expect("one delivery holds every property");
+    world.devices[1]
+        .current
+        .as_mut()
+        .expect("the first flight created a row")
+        .seen
+        .clear();
+    apply_delivery(&mut world, 1, &message, Selection::Rules);
+    let reason = em1_properties(&world).expect_err("a second rendering must be caught");
+    assert!(reason.contains("displayed twice"), "{reason}");
+
+    // D2b removed: the reuse tuple goes with the retired row.
+    let mut world = em1_send(&World::new(), 0, 2, WIRE_MAX).expect("send");
+    let first = world.wire.remove(0);
+    apply_delivery(&mut world, 1, &first, Selection::Rules);
+    let device = &mut world.devices[1];
+    let mut retired = device.current.take().expect("the row").clone();
+    retired.retire = Some(RETIRE_DAYS);
+    device.retired.insert(retired.session);
+    device.current = Some(Row {
+        session: 99,
+        role: Role::Responder,
+        acknowledged: true,
+        bind: 0,
+        unack_since: None,
+        retire: None,
+        peer_identity: first.sender_identity,
+        seen: BTreeSet::new(),
+        sent: 0,
+    });
+    device.reuse.insert((device.generation, 99));
+    em1_properties(&world).expect("a retired session that stays retired holds");
+    // The mutant: SWEEP deleted the reuse tuple with the row it retired.
+    let session = retired.session;
+    world.devices[1]
+        .reuse
+        .retain(|(_, reused)| *reused != session);
+    apply_delivery(&mut world, 1, &first, Selection::Rules);
+    let reason = em1_properties(&world).expect_err("a revived retired session must be caught");
     assert!(
-        explore_em1(Selection::NewestWins).is_err() || converges(Selection::NewestWins).is_err(),
-        "MC-19 must break an EM-1 property"
+        reason.contains("a retired session is live again"),
+        "{reason}"
     );
 }
 
@@ -593,8 +818,15 @@ fn converges(selection: Selection) -> Result<(), String> {
             match action {
                 0 | 1 => {
                     let index = usize::try_from(action).expect("0 or 1");
-                    if world.devices[index].sends_used < sends && world.wire.len() < 6 {
-                        world = em1_successors_send(&world, index, selection);
+                    // A send or nothing: the wire bound of this enumeration is its own, and a
+                    // schedule that cannot send at this step simply does not.
+                    if let Some(next) = em1_send(&world, index, sends, CONVERGENCE_WIRE_MAX) {
+                        assert_eq!(
+                            next.devices[index].sends_used,
+                            world.devices[index].sends_used + 1,
+                            "the send transition must send"
+                        );
+                        world = next;
                     }
                 }
                 _ => {
@@ -618,7 +850,8 @@ fn converges(selection: Selection) -> Result<(), String> {
         for _ in 0..3 {
             for index in 0..2 {
                 world.devices[index].sends_used = 0;
-                world = em1_successors_send(&world, index, selection);
+                world = em1_send(&world, index, sends, CONVERGENCE_WIRE_MAX)
+                    .expect("a settling send is always enabled: budget reset, wire empty");
                 let message = world.wire.remove(0);
                 let target = 1 - usize::from(message.from);
                 apply_delivery(&mut world, target, &message, selection);
@@ -637,18 +870,11 @@ fn converges(selection: Selection) -> Result<(), String> {
     Ok(())
 }
 
-/// The send action alone, for the directed convergence enumeration above.
-fn em1_successors_send(world: &World, index: usize, selection: Selection) -> World {
-    let mut candidates = em1_successors(world, selection, u8::MAX);
-    // The first two successors are the sends of device 0 and device 1, in order.
-    candidates.remove(index)
-}
-
 // ---------------------------------------------------------------------------------------------
-// EM-2: seal modes
+// EM-2: seal modes, the provisional lifetime of §22.8.5 rules 3-5, and the root-travel rules
 // ---------------------------------------------------------------------------------------------
 
-/// The seal mode a sender picks (§6.8 sender mode rule).
+/// The seal mode a sender picks (§6.8 sender mode rule, as amended by §22.8.5 rule 3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Mode {
     Intro,
@@ -656,57 +882,98 @@ enum Mode {
     Pair,
 }
 
+/// Which sender rule the model runs. The mutants are run **through the search**, so what catches
+/// them is a property of a reachable state, not a hand-built call to the checker.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SealRule {
+    /// §6.8 with §22.8.5 rule 3.
+    Design,
+    /// A sender that keeps sealing in pair mode after a renewal dropped its root.
+    IgnoreRenewal,
+    /// A sender that ignores rule 3's `olm_session.pair_sent = 0` clause.
+    IgnorePairSent,
+    /// A sender that ignores rule 3's `now < prov_anchor_minute + 28 d` clause.
+    IgnoreWindow,
+}
+
+/// One device's side of one session. Time is **ordinal** here, not arithmetic: the instants that
+/// matter are "the sealing window closed" and "the erase deadline passed", and the day arithmetic
+/// behind them is checked exactly, and separately, by `the_provisional_schedule_has_no_gap`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Direction {
-    /// The sender has an acknowledged session, so a root may ride in a normal message (§21.3).
+struct Party {
+    /// It decrypted a message of the peer, so its session is acknowledged (§21.3 point 1).
     acknowledged: bool,
-    /// The recipient offered a root and the sender received it.
+    /// It holds the peer's pair root and seals pair mode toward it (§6.3).
     root_held: bool,
-    /// The recipient's offer is acknowledged, so it stops re-offering (§21.3 point 2).
+    /// Its own offer reached the peer, so it stops re-offering (§21.3 point 2).
     offer_acknowledged: bool,
-    /// The sender may still key provisional mode from `reply_seed`.
-    reply_seed_live: bool,
-    /// The recipient's generation this direction's intro envelopes name is still live.
-    generation_live: bool,
-    /// The recipient still holds the pair week key of the current week.
-    pair_key_live: bool,
+    /// §22.8.5 rule 3: it sealed a pair envelope on this session. Never back to `false`.
+    pair_sent: bool,
+    /// `prov_anchor_minute` is set — write-once (§22.8.5 rule 4).
+    anchored: bool,
+    /// `now >= prov_anchor_minute + 28 d`: the provisional **sealing** window closed (rule 3).
+    window_closed: bool,
+    /// It still holds its own `prov_env`, the key that opens provisional envelopes sent **to** it.
+    prov_env: bool,
+    /// It opened a pair envelope under the newest root: the `pair-open + 45 d` branch of
+    /// `prov_erase_minute` (rule 4) is armed for its `prov_env`.
+    pair_opened: bool,
+    /// It still holds the generation secrets its published bundle names (§5.4).
+    generation: bool,
+    /// It fetched a bundle of the peer and can name that generation in an intro envelope (§5.5).
+    peer_generation_known: bool,
+}
+
+/// A sealed envelope in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Envelope {
+    from: u8,
+    mode: Mode,
+    carries_root: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Seal {
-    directions: [Direction; 2],
-    week: u8,
-    /// Sealed messages in flight: (direction, mode, carries a root).
-    wire: Vec<(u8, Mode, bool)>,
+    parties: [Party; 2],
+    wire: Vec<Envelope>,
 }
 
 impl Seal {
     fn new() -> Self {
-        let direction = Direction {
+        let party = Party {
             acknowledged: false,
             root_held: false,
             offer_acknowledged: false,
-            reply_seed_live: true,
-            generation_live: true,
-            pair_key_live: true,
+            pair_sent: false,
+            anchored: false,
+            window_closed: false,
+            prov_env: true,
+            pair_opened: false,
+            generation: true,
+            peer_generation_known: true,
         };
         Self {
-            directions: [direction.clone(), direction],
-            week: 0,
+            parties: [party.clone(), party],
             wire: Vec::new(),
         }
     }
 
-    /// §6.8: pair mode when a root is held and its week key lives, provisional while the
-    /// `reply_seed` lives, intro otherwise — and `None` when even intro has no key, which is
+    /// §6.8 with §22.8.5 rule 3: pair mode while a root is held, provisional while the session's
+    /// `reply_seed` may still key it — acknowledged, `pair_sent = 0` and inside the anchor's
+    /// 28-day window — intro otherwise, and `None` when even intro has no key, which is
     /// `NO_SEAL_KEY`: the sender fetches a bundle (EST-START, §5.5) instead of sealing.
-    fn mode(&self, index: usize) -> Option<Mode> {
-        let direction = &self.directions[index];
-        if direction.root_held && direction.pair_key_live {
+    fn mode(&self, index: usize, rule: SealRule) -> Option<Mode> {
+        let party = &self.parties[index];
+        if party.root_held || rule == SealRule::IgnoreRenewal {
             Some(Mode::Pair)
-        } else if direction.reply_seed_live && direction.acknowledged {
+        } else if party.prov_env
+            && party.acknowledged
+            && party.anchored
+            && (!party.pair_sent || rule == SealRule::IgnorePairSent)
+            && (!party.window_closed || rule == SealRule::IgnoreWindow)
+        {
             Some(Mode::Provisional)
-        } else if direction.generation_live {
+        } else if party.peer_generation_known {
             Some(Mode::Intro)
         } else {
             None
@@ -717,62 +984,109 @@ impl Seal {
 /// §21.3 point 1: a root travels only in an acknowledged session's normal message, and only while
 /// the offer it answers is unacknowledged.
 fn root_rides(seal: &Seal, index: usize, mode: Mode) -> bool {
-    seal.directions[1 - index].acknowledged
-        && !seal.directions[1 - index].offer_acknowledged
+    seal.parties[index].acknowledged
+        && !seal.parties[index].offer_acknowledged
         && mode != Mode::Intro
 }
 
-fn em2_successors(seal: &Seal) -> Vec<Seal> {
+fn em2_successors(seal: &Seal, rule: SealRule) -> Vec<Seal> {
     let mut out = Vec::new();
     for index in 0..2 {
         // A send in the mode the rule picks; a root rides only in an acknowledged session's
         // normal message (§21.3 point 1), never in a PreKey message.
         if seal.wire.len() < WIRE_MAX {
-            if let Some(mode) = seal.mode(index) {
-                let carries_root = root_rides(seal, index, mode);
+            if let Some(mode) = seal.mode(index, rule) {
                 let mut next = seal.clone();
-                next.wire.push((
-                    u8::try_from(index).expect("two directions"),
+                if mode == Mode::Pair {
+                    // Rule 3: `pair_sent` goes 0 -> 1 and never back.
+                    next.parties[index].pair_sent = true;
+                }
+                next.wire.push(Envelope {
+                    from: u8::try_from(index).expect("two parties"),
                     mode,
-                    carries_root,
-                ));
+                    carries_root: root_rides(seal, index, mode),
+                });
                 out.push(next);
             }
         }
         // EST-START: a fetch installs the peer's live generation again (§5.5), which is what a
         // sender with `NO_SEAL_KEY` does instead of naming an erased one.
-        if !seal.directions[index].generation_live {
-            let mut refetched = seal.clone();
-            refetched.directions[index].generation_live = true;
-            out.push(refetched);
-        }
-        // A renewal: out keys for the peer are dropped and a new root is offered (§21.3 point 2).
-        let mut renewed = seal.clone();
-        renewed.directions[index].root_held = false;
-        renewed.directions[index].offer_acknowledged = false;
-        out.push(renewed);
-        // The erasure schedules (§5.4, §22.8.5, §6.3).
-        for erase in 0..3 {
+        if !seal.parties[index].peer_generation_known && seal.parties[1 - index].generation {
             let mut next = seal.clone();
-            match erase {
-                0 => next.directions[index].generation_live = false,
-                1 => next.directions[index].reply_seed_live = false,
-                _ => next.directions[index].pair_key_live = false,
-            }
+            next.parties[index].peer_generation_known = true;
+            out.push(next);
+        }
+        // A renewal: the root this side holds is dropped and a new one is offered (§21.3 point 2).
+        if seal.parties[index].root_held || seal.parties[index].offer_acknowledged {
+            let mut next = seal.clone();
+            next.parties[index].root_held = false;
+            next.parties[index].offer_acknowledged = false;
+            out.push(next);
+        }
+        // `now >= prov_anchor_minute + 28 d`: the provisional sealing window closes (rule 3).
+        if seal.parties[index].anchored && !seal.parties[index].window_closed {
+            let mut next = seal.clone();
+            next.parties[index].window_closed = true;
+            out.push(next);
+        }
+        // `prov_erase_minute`, the `prov_anchor_minute + 119 d` branch of rule 4. It is enabled
+        // only once the **peer's** sealing window has closed and no provisional envelope of the
+        // peer is still in flight, which is the ordering rule 5 derives and
+        // `the_provisional_schedule_has_no_gap` checks in days: 28 d of sealing plus 51 d of
+        // acceptance, from an anchor at most 37 d 2 h later than the peer's, stay inside 119 d.
+        if seal.parties[index].prov_env
+            && seal.parties[1 - index].window_closed
+            && !seal
+                .wire
+                .iter()
+                .any(|envelope| envelope.from != index as u8 && envelope.mode == Mode::Provisional)
+        {
+            let mut next = seal.clone();
+            next.parties[index].prov_env = false;
+            out.push(next);
+        }
+        // The `pair-open + 45 d` branch of rule 4: armed as soon as this side opened a pair
+        // envelope. **Nothing else guards it** — what keeps a provisional envelope from arriving
+        // afterwards is rule 3's `pair_sent = 0` clause on the sender, which is the property
+        // `em2_properties` checks and the `IgnorePairSent` mutant breaks.
+        if seal.parties[index].prov_env && seal.parties[index].pair_opened {
+            let mut next = seal.clone();
+            next.parties[index].prov_env = false;
+            out.push(next);
+        }
+        // §5.4: a superseded generation is erased after its retention, which outlives every
+        // sender's use of the bundle that named it — so the peer's knowledge of it goes with it.
+        if seal.parties[index].generation {
+            let mut next = seal.clone();
+            next.parties[index].generation = false;
+            next.parties[1 - index].peer_generation_known = false;
+            out.push(next);
+        }
+        // A new generation is published (the weekly rotation of §5.3, or a restore).
+        if !seal.parties[index].generation {
+            let mut next = seal.clone();
+            next.parties[index].generation = true;
             out.push(next);
         }
     }
+
     for position in 0..seal.wire.len() {
-        let (index, _, carries_root) = seal.wire[position];
-        let index = usize::from(index);
+        let envelope = seal.wire[position];
+        let recipient = 1 - usize::from(envelope.from);
+
         let mut delivered = seal.clone();
         delivered.wire.remove(position);
-        delivered.directions[index].acknowledged = true;
-        delivered.directions[1 - index].acknowledged = true;
-        if carries_root {
-            delivered.directions[1 - index].root_held = true;
-            delivered.directions[1 - index].pair_key_live = true;
-            delivered.directions[index].offer_acknowledged = true;
+        delivered.parties[recipient].acknowledged = true;
+        // Rule 4: the anchor is write-once. The model sets it at the first decryption, which is
+        // the initiator's rule and is never later than the responder's (its first provisional
+        // seal), so every erase deadline the model derives is at or before the design's.
+        delivered.parties[recipient].anchored = true;
+        if envelope.mode == Mode::Pair {
+            delivered.parties[recipient].pair_opened = true;
+        }
+        if envelope.carries_root {
+            delivered.parties[recipient].root_held = true;
+            delivered.parties[usize::from(envelope.from)].offer_acknowledged = true;
         }
         out.push(delivered);
 
@@ -780,31 +1094,42 @@ fn em2_successors(seal: &Seal) -> Vec<Seal> {
         dropped.wire.remove(position);
         out.push(dropped);
     }
-    if seal.week < 2 {
-        let mut next = seal.clone();
-        next.week += 1;
-        out.push(next);
-    }
     out
 }
 
-/// The EM-2 properties, evaluated **at seal time** (§15.2: "the sender never seals with a key the
-/// recipient cannot hold"). They are about the choice the sender makes, not about what a later
-/// erasure does to an envelope already in flight — a blob whose key the recipient erased after it
-/// was sealed is a declared loss (§8.6), not a violation.
+/// The EM-2 property of §15.2 — **"the sender never seals with a key the recipient cannot
+/// hold"** — and the sender-side clauses of §6.8, §22.8.5 rule 3 and §21.3 point 1.
+///
+/// The first half is about the **recipient's** state, which the mode rule never reads: it holds
+/// only because the recipient's two erasure branches are each blocked by something on the sender's
+/// side — the `prov_anchor_minute + 119 d` branch by the sender's closed window (rule 5's
+/// arithmetic, checked in days by `the_provisional_schedule_has_no_gap`) and the
+/// `pair-open + 45 d` branch by rule 3's `pair_sent = 0` clause. Drop either clause and a
+/// reachable state breaks this.
+///
+/// It is stated at **seal time**, as §15.2 words it: an envelope already in flight when the
+/// recipient erases is §8.6's declared loss, not a violation.
 fn em2_seal_time(seal: &Seal, index: usize, mode: Mode, carries_root: bool) -> Result<(), String> {
-    let direction = &seal.directions[index];
+    let party = &seal.parties[index];
+    let recipient = &seal.parties[1 - index];
     match mode {
-        Mode::Pair if !direction.root_held => {
-            return Err("a pair envelope without a root".to_string())
+        Mode::Provisional if !recipient.prov_env => {
+            return Err("a provisional envelope the recipient can no longer open".to_string())
         }
-        Mode::Pair if !direction.pair_key_live => {
-            return Err("a pair envelope after the week key was erased".to_string())
+        Mode::Intro if !recipient.generation => {
+            return Err("an intro envelope the recipient can no longer open".to_string())
         }
-        Mode::Provisional if !direction.reply_seed_live => {
+        _ => {}
+    }
+    // The sender holds the key it seals with. `pair_sent` and the 28-day window are **rules**, not
+    // properties, so they are not restated here: a mutant that drops one of them must be caught by
+    // the property above, which is where §22.8.5 rule 3 earns its place.
+    match mode {
+        Mode::Pair if !party.root_held => return Err("a pair envelope without a root".to_string()),
+        Mode::Provisional if !party.prov_env => {
             return Err("a provisional envelope after the reply seed was erased".to_string())
         }
-        Mode::Intro if !direction.generation_live => {
+        Mode::Intro if !party.peer_generation_known => {
             return Err("an intro envelope naming an erased generation".to_string())
         }
         _ => {}
@@ -814,31 +1139,45 @@ fn em2_seal_time(seal: &Seal, index: usize, mode: Mode, carries_root: bool) -> R
         return Err("a root rode in an intro (PreKey) envelope".to_string());
     }
     // A root only leaves an acknowledged session (§21.3 point 1).
-    if carries_root && !seal.directions[1 - index].acknowledged {
+    if carries_root && !party.acknowledged {
         return Err("a root left an unacknowledged session".to_string());
     }
     Ok(())
 }
 
-/// The state-level property: the mode rule of §6.8 never names a key the sender does not hold.
+/// The state property: no envelope in flight carries a root it should not (§21.3 point 1), in
+/// any state, however it got there.
 fn em2_properties(seal: &Seal) -> Result<(), String> {
-    for index in 0..2 {
-        let Some(mode) = seal.mode(index) else {
-            continue;
-        };
-        let direction = &seal.directions[index];
-        if mode == Mode::Pair && !(direction.root_held && direction.pair_key_live) {
-            return Err("the mode rule picked pair without a live pair key".to_string());
-        }
-        if mode == Mode::Provisional && !direction.reply_seed_live {
-            return Err("the mode rule picked provisional without a reply seed".to_string());
+    for envelope in &seal.wire {
+        if envelope.mode == Mode::Intro && envelope.carries_root {
+            return Err("a root is in flight inside an intro envelope".to_string());
         }
     }
     Ok(())
 }
 
-#[test]
-fn em2_seal_modes_hold_every_property() {
+/// Rule 4's write-once anchor and monotone `pair_sent`, as a property of every transition.
+fn em2_transition(before: &Seal, after: &Seal) -> Result<(), String> {
+    for index in 0..2 {
+        if before.parties[index].anchored && !after.parties[index].anchored {
+            return Err(format!(
+                "party {index}: the provisional anchor was rewritten"
+            ));
+        }
+        if before.parties[index].pair_sent && !after.parties[index].pair_sent {
+            return Err(format!("party {index}: pair_sent went back to 0"));
+        }
+        if before.parties[index].window_closed && !after.parties[index].window_closed {
+            return Err(format!("party {index}: the sealing window reopened"));
+        }
+        if before.parties[index].pair_opened && !after.parties[index].pair_opened {
+            return Err(format!("party {index}: a pair-open was forgotten"));
+        }
+    }
+    Ok(())
+}
+
+fn explore_em2(rule: SealRule) -> Result<(usize, usize), Stop> {
     let budget = state_budget();
     let mut seen = BTreeSet::new();
     let mut queue = VecDeque::new();
@@ -847,38 +1186,159 @@ fn em2_seal_modes_hold_every_property() {
     queue.push_back(start);
     let mut states = 0usize;
     let mut seals_checked = 0usize;
+
     while let Some(seal) = queue.pop_front() {
         states += 1;
-        assert!(states <= budget, "EM-2 exceeded {budget} states");
-        em2_properties(&seal).expect("EM-2 state property");
+        if states > budget {
+            return Err(Stop::Budget(budget));
+        }
+        em2_properties(&seal).map_err(Stop::Property)?;
         for index in 0..2 {
-            let Some(mode) = seal.mode(index) else {
+            let Some(mode) = seal.mode(index, rule) else {
                 continue;
             };
             let carries_root = root_rides(&seal, index, mode);
-            em2_seal_time(&seal, index, mode, carries_root).expect("EM-2 seal-time property");
+            em2_seal_time(&seal, index, mode, carries_root).map_err(Stop::Property)?;
             seals_checked += 1;
         }
-        for next in em2_successors(&seal) {
+        for next in em2_successors(&seal, rule) {
+            em2_transition(&seal, &next).map_err(Stop::Property)?;
             if seen.insert(format!("{next:?}")) {
                 queue.push_back(next);
             }
         }
     }
-    assert!(states > 500, "EM-2 explored only {states} states");
-    println!("EM-2: {states} states, {seals_checked} seal decisions");
+    Ok((states, seals_checked))
 }
 
-/// The EM-2 counterpart of MC-19: a sender that keeps sealing in pair mode after a renewal dropped
-/// its root must break the "never seal with a key the recipient cannot hold" property.
 #[test]
-fn em2_detects_a_sender_that_ignores_a_renewal() {
+fn em2_seal_modes_hold_every_property() {
+    let (states, seals) = explore_em2(SealRule::Design).expect("EM-2");
+    assert!(states > 500, "EM-2 explored only {states} states");
+    println!("EM-2: {states} states, {seals} seal decisions");
+}
+
+/// The EM-2 counterparts of MC-19, each run **through the search**: a sender that ignores the
+/// renewal, one that ignores rule 3's `pair_sent` clause, and one that ignores its 28-day window
+/// must each break a property of a reachable state.
+#[test]
+fn em2_detects_a_sender_that_breaks_the_mode_rule() {
+    let cases = [
+        // It seals pair with a root it no longer holds.
+        (SealRule::IgnoreRenewal, "a pair envelope without a root"),
+        // Both of rule 3's clauses are load-bearing: without either, the sender reaches a state in
+        // which the recipient has already erased the `prov_env` that opens what it seals.
+        (
+            SealRule::IgnorePairSent,
+            "a provisional envelope the recipient can no longer open",
+        ),
+        (
+            SealRule::IgnoreWindow,
+            "a provisional envelope the recipient can no longer open",
+        ),
+    ];
+    for (rule, expected) in cases {
+        match explore_em2(rule) {
+            Err(Stop::Property(reason)) => {
+                assert!(reason.contains(expected), "{rule:?}: got {reason}")
+            }
+            other => panic!("{rule:?} must break an EM-2 property, got {other:?}"),
+        }
+    }
+}
+
+/// §15.2's EM-2 property, stated over the recipient's own state: a sender that seals provisional
+/// to a peer that has erased its `prov_env` breaks it. Under the design rules no reachable state
+/// admits this call — which is the point of the mutants above.
+#[test]
+fn em2_names_a_provisional_envelope_the_recipient_cannot_open() {
     let mut seal = Seal::new();
-    seal.directions[0].acknowledged = true;
-    seal.directions[1].acknowledged = true;
-    seal.directions[0].root_held = false;
-    assert!(em2_seal_time(&seal, 0, Mode::Pair, false).is_err());
-    // And a sender that attaches a root to a first flight.
-    seal.directions[0].root_held = true;
-    assert!(em2_seal_time(&seal, 0, Mode::Intro, true).is_err());
+    seal.parties[0].acknowledged = true;
+    seal.parties[0].anchored = true;
+    seal.parties[1].prov_env = false;
+    seal.parties[1].pair_opened = true;
+    let reason = em2_seal_time(&seal, 0, Mode::Provisional, false)
+        .expect_err("the recipient cannot open it");
+    assert!(reason.contains("can no longer open"), "{reason}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The day arithmetic of §22.8.5 rules 3-5, exhaustively
+// ---------------------------------------------------------------------------------------------
+
+/// §7.7 point 4 / §6.3: `FRESH` and the `2σ` slack an envelope is accepted with.
+const FRESH_DAYS: u32 = 45;
+const SIGMA2_DAYS: u32 = 6;
+/// The acceptance window of §7.6: an envelope authored at `t` is opened at the latest at
+/// `t + FRESH + 2σ`.
+const ACCEPT_DAYS: u32 = FRESH_DAYS + SIGMA2_DAYS;
+/// §7.6: the relay lifetime, the bound CS-3's premise uses (37 d 2 h, rounded up to whole days).
+const RELAY_LIFETIME_DAYS: u32 = 38;
+/// §22.8.5 rule 3: provisional sealing stops at `prov_anchor_minute + 28 d`.
+const PROV_WINDOW_DAYS: u32 = 28;
+/// §22.8.5 rule 4: `prov_erase_minute = min(pair-open + 45 d, prov_anchor_minute + 119 d)`.
+const PROV_LIFETIME_DAYS: u32 = 119;
+const PAIR_OPEN_KEEP_DAYS: u32 = 45;
+
+/// Rule 5 ("Derivation (no loss inside CS-3)"), checked exhaustively in days rather than argued:
+/// every provisional envelope either side seals inside its window is still openable when it
+/// arrives, for every anchor offset CS-3 admits, every seal day inside the window and every
+/// delivery day inside the acceptance window.
+///
+/// This is the arithmetic EM-2's search abstracts into an ordering ("the peer's window closed and
+/// its last provisional envelope left the acceptance window, therefore the erase may happen"). It
+/// is what the numbers of rule 4 are for: widening the window or shortening the lifetime fails
+/// here, and the `+ 3 d` of headroom the design derives (`116 d 2 h` against `119 d`) is asserted
+/// as the smallest margin of the whole enumeration.
+#[test]
+fn the_provisional_schedule_has_no_gap() {
+    let mut worst = u32::MAX;
+    let mut checked = 0usize;
+    // The responder's anchor is its first provisional seal; the initiator's is its first
+    // decryption, at most one relay lifetime later (CS-3's premise), and never earlier than the
+    // responder's first seal (it decrypts that seal).
+    for offset in 0..=RELAY_LIFETIME_DAYS {
+        let responder_anchor = 0u32;
+        let initiator_anchor = responder_anchor + offset;
+        for (sender_anchor, recipient_anchor) in [
+            (responder_anchor, initiator_anchor),
+            (initiator_anchor, responder_anchor),
+        ] {
+            for seal in sender_anchor..sender_anchor + PROV_WINDOW_DAYS {
+                for delivery in seal..=seal + ACCEPT_DAYS {
+                    // The recipient's `pair-open` branch cannot apply to a provisional envelope:
+                    // a pair envelope from this sender would have set its `pair_sent`, and rule 3
+                    // forbids provisional afterwards. What is left is the anchor branch.
+                    let erase = recipient_anchor + PROV_LIFETIME_DAYS;
+                    assert!(
+                        delivery < erase,
+                        "a provisional envelope sealed on day {seal} and delivered on day \
+                         {delivery} finds an erased reply seed (erase {erase})"
+                    );
+                    worst = worst.min(erase - delivery);
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 100_000, "only {checked} combinations");
+    // The design's own margin, restated: the last provisional seal is on day
+    // `anchor + 28 d - 1`, its last acceptance `+ 51 d`, from an anchor at most one relay lifetime
+    // after the peer's — `38 + 27 + 51 = 116 d` against the 119 d of rule 4, so 3 days of slack
+    // (the design writes it as `anchor_R + 116 d 2 h`).
+    assert_eq!(
+        worst,
+        PROV_LIFETIME_DAYS - (RELAY_LIFETIME_DAYS + (PROV_WINDOW_DAYS - 1) + ACCEPT_DAYS)
+    );
+    println!("rules 3-5: {checked} day combinations, smallest margin {worst} d");
+}
+
+/// The other half of rule 4's `min`: the `pair-open + 45 d` branch is safe because no provisional
+/// envelope can still be in flight once a pair envelope has been opened — `pair_sent` blocks the
+/// sender — and because the branch is never shorter than the acceptance window of the pair
+/// envelope that armed it.
+#[test]
+fn the_pair_open_branch_outlasts_the_acceptance_window() {
+    const { assert!(PAIR_OPEN_KEEP_DAYS >= FRESH_DAYS) };
+    const { assert!(PAIR_OPEN_KEEP_DAYS + SIGMA2_DAYS >= ACCEPT_DAYS) };
 }

@@ -412,6 +412,14 @@ fn golden_prune_outputs_are_pinned_and_the_pruned_state_continues() {
         u64::try_from(removed).expect("count"),
         golden.number("prune_removed")
     );
+    // The pinned output itself, byte for byte: `pickle::prune` round-trips the document through
+    // `serde_json::Value`, so the pruned pickle's key order is the map's, not the library's, and a
+    // change in either — or in the sidecar beside it — is a pin change (§2.1, §2.6, G-R7).
+    assert_eq!(
+        pruned,
+        golden.bytes("responder_state_pruned"),
+        "the pruned state is not the pinned one"
+    );
     let state = SessionState::decode(&pruned).expect("state");
     assert!(state.sidecar.is_empty());
     assert!(pickle::skipped_keys(&state.pickle)

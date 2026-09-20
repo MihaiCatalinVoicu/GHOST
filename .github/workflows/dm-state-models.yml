@@ -1,0 +1,64 @@
+name: dm-state-models
+
+# The exhaustive DM state models EM-1 and EM-2 (Phase 9 design §15.2, graft RG-1) at a bound the
+# pull-request run cannot afford. `cargo test -p ghost-client-dm --test state_models` runs in the
+# `rust` job of ci.yml at two user sends per side, because the reachable state count grows by
+# roughly an order of magnitude per extra send (measured: 140 075 states at two, 2 296 274 at
+# three). This job runs the same models at **three** sends per side in the release profile, so the
+# design's "at most 6 user sends per side" is approached by something rather than by nothing.
+# Measured on the owner's workstation: 88 s at three sends, release; the timeout leaves room for a
+# slower runner and the build.
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ghost/client-core/dm/**"
+      - ".github/workflows/dm-state-models.yml"
+  pull_request:
+    paths:
+      - "ghost/client-core/dm/tests/state_models.rs"
+      - ".github/workflows/dm-state-models.yml"
+  schedule:
+    - cron: "53 2 * * *"
+  workflow_dispatch:
+    inputs:
+      sends:
+        description: "User sends per side (EM-1); 4 and above need hours"
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  dm-state-models:
+    name: DM state models (EM-1, EM-2 at three sends per side, release)
+    runs-on: [self-hosted, linux, x64, ghost]
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: EM-1 and EM-2 at the raised bound
+        env:
+          GHOST_DM_EM_SENDS: ${{ github.event.inputs.sends || '3' }}
+          GHOST_DM_EM_BUDGET: "4000000"
+        run: |
+          cargo test --locked --release -p ghost-client-dm --test state_models -- --nocapture \
+            | tee "$RUNNER_TEMP/dm-state-models.txt"
+          {
+            echo "### DM state models (sends per side: $GHOST_DM_EM_SENDS)"
+            echo '```'
+            grep -E "^(EM-1|EM-2|rules 3-5):" "$RUNNER_TEMP/dm-state-models.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
