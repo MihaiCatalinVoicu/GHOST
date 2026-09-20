@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6 (`scripts/gates/dm-jni-surface.sh`), positive case: it prints
+# exactly the closed list's `Exported` entries, in `nm -D --defined-only` shape.
+#
+# The names are read from the closed list itself rather than restated here, so a function promoted
+# to `Exported` needs no fixture change — what the fixtures drill is the gate's symbol **diff**,
+# not the list. The arguments (`-D --defined-only <library>`) are accepted and ignored.
+set -euo pipefail
+source="${GHOST_DM_JNI_FIXTURE_SOURCE:-$(dirname "$0")/../../../../client-core/dm/src/jni.rs}"
+address=4096
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_crypto_bridge_DmNative_%s\n' "$address" "$name"
+  address=$((address + 16))
+done < <(grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::Exported\)' "$source" \
+  | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
+# A library exports more than the DM surface; the gate must ignore everything else.
+printf '%016x T Java_org_ghost_client_net_NativeBridge_start\n' "$((address + 16))"
+printf '%016x T rust_eh_personality\n' "$((address + 32))"

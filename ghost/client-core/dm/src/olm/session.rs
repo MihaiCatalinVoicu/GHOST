@@ -34,6 +34,7 @@ use crate::pq;
 use crate::result::{DmCode, DmResult};
 use vodozemac::olm::{Session, SessionConfig, SessionPickle};
 use vodozemac::Curve25519PublicKey;
+use zeroize::Zeroizing;
 
 /// The skipped-key age bound of §7.7 point 4: `FRESH + 2σ` = 45 d + 6 d.
 pub const SKIPPED_KEY_MAX_AGE_DAYS: u32 = 51;
@@ -138,11 +139,19 @@ fn session_id_of(session: &Session) -> DmResult<[u8; SESSION_ID_BYTES]> {
 
 /// The store of a function whose §2.6 row does **not** list `OVERSIZE`.
 ///
-/// Only function 8 (`encrypt`) may report it, and the typed facade's `when` arms mirror the table
-/// row by row: an `OVERSIZE` from `sessionOutbound`, `decrypt`, `sessionInbound` or `sessionPrune`
-/// would reach `DmSessions.unexpected` and throw instead of producing an outcome. The state is one
-/// this crate cannot work with either way, so those paths report [`DmCode::StateCorrupt`]; with
-/// 26 285 B of spare (§7.9 point 4) the case means a bug or a format change, never a peer's doing.
+/// Only function 8 (`encrypt`) may report it: `DmSessions.Encrypted` is the one outcome type that
+/// carries `Oversize`, so an `OVERSIZE` from `sessionOutbound`, `decrypt`, `sessionInbound` or
+/// `sessionPrune` would reach `DmSessions.unexpected` and throw instead of producing an outcome.
+/// The state is one this crate cannot work with either way, so those paths report
+/// [`DmCode::StateCorrupt`]; with 26 285 B of spare (§7.9 point 4) the case means a bug or a format
+/// change, never a peer's doing.
+///
+/// **Corrected in review round 2 (S4B2-03).** The earlier wording justified the remap with
+/// "`STATE_CORRUPT` is the code their rows do name", which was not true of function 7: its code
+/// column reads `INVALID_KEY` alone, and `DmSessions.Outbound` had no `StateCorrupt` member, so an
+/// over-large state from `sessionOutbound` still threw. The facade now carries that outcome on all
+/// four paths — the surface addition is recorded against §2.6 function 7 — and this function is
+/// what makes `OVERSIZE` one of them.
 fn stored_state(state: DmResult<Vec<u8>>) -> DmResult<Vec<u8>> {
     state.map_err(|code| match code {
         DmCode::Oversize => DmCode::StateCorrupt,
@@ -176,12 +185,15 @@ pub fn session_outbound(
             .map_err(|error| message::creation_code(&error))
     })?;
 
-    let mut seed = [0u8; SECRET_BYTES];
-    pq::fill_random(&mut seed);
+    // The provisional-mode seed lives on the stack until `ReplySeed` takes a copy of it, and the
+    // `?`s below can leave by the error path: `Zeroizing` erases it on either way out (review
+    // round 2, R2-04).
+    let mut seed = Zeroizing::new([0u8; SECRET_BYTES]);
+    pq::fill_random(seed.as_mut_slice());
     Ok(Outbound {
         state: stored_state(store(&session, &Sidecar::new(), today))?,
         session_id: session_id_of(&session)?,
-        reply_seed: ReplySeed::from_bytes(seed),
+        reply_seed: ReplySeed::from_bytes(*seed),
     })
 }
 
@@ -324,6 +336,94 @@ pub fn session_prune(state: &[u8], today: u32) -> DmResult<(Vec<u8>, usize)> {
 /// The L1 header of a message, for the seal-opening functions that hand it to Kotlin.
 pub fn header(l1: &[u8], is_pre_key: bool) -> DmResult<L1Header> {
     message::parse(l1, is_pre_key)
+}
+
+/// Real Olm material for the seeded parser runs of §15.2 and R-C4 (review round 2, S4B2-04).
+///
+/// A mutation of a **well-formed** message or state reaches fields a free-form input never does —
+/// a valid length prefix with a broken pickle behind it, a sidecar that claims keys the pickle
+/// does not hold — so the seeded runs of `message`, `state` and this module all take their
+/// templates from here. It lives beside the session calls because building one costs a whole round
+/// trip, which is exactly what the other modules must not reimplement.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+    use crate::derive::{self, MessagingBranch};
+
+    /// A settled session of two devices, with one message skipped so the sidecar is not empty.
+    pub(crate) struct Settled {
+        /// A real first flight and two real normal messages.
+        pub(crate) messages: Vec<Vec<u8>>,
+        /// The initiator's stored state after it read the reply.
+        pub(crate) initiator: Vec<u8>,
+        /// The responder's stored state, holding one skipped message key.
+        pub(crate) responder: Vec<u8>,
+    }
+
+    /// The day every call of the fixture is given; the sidecar records it.
+    pub(crate) const DAY: u32 = 900;
+
+    pub(crate) fn settled() -> Settled {
+        let branch = |tag: u8| MessagingBranch::from_bytes([tag; 32]);
+        let identity = |tag: u8| derive::derive_olm_identity(&branch(tag));
+        let signing = |tag: u8| derive::derive_olm_account_signing(&branch(tag));
+        let public = |tag: u8| derive::olm_identity_public(&identity(tag));
+        let fallback_secret = [0x5a; SECRET_BYTES];
+        let fallback_public = derive::olm_identity_public(&OlmSecret::from_bytes(fallback_secret));
+
+        let outbound = session_outbound(
+            &identity(0x61),
+            &signing(0x61),
+            &public(0x62),
+            &fallback_public,
+            DAY,
+        )
+        .expect("outbound");
+        let first = encrypt(&outbound.state, b"first flight", DAY).expect("encrypt");
+        let inbound = session_inbound(
+            &identity(0x62),
+            &signing(0x62),
+            fallback_secret,
+            &public(0x61),
+            &first.l1,
+            DAY,
+        )
+        .expect("inbound");
+        let reply = encrypt(&inbound.state, b"reply", DAY).expect("reply");
+        let read = decrypt(
+            &[StoredSession {
+                slot: Slot::Current,
+                state: &first.state,
+            }],
+            &reply.l1,
+            reply.is_pre_key,
+            DAY,
+        )
+        .expect("decrypt");
+        let settled = encrypt(&read.state, b"settled", DAY).expect("encrypt");
+
+        // The responder skips one message of the initiator, so its state carries a skipped key and
+        // a sidecar entry for it.
+        let skipped = encrypt(&settled.state, b"skipped", DAY).expect("encrypt");
+        let next = encrypt(&skipped.state, b"next", DAY).expect("encrypt");
+        let responder = decrypt(
+            &[StoredSession {
+                slot: Slot::Current,
+                state: &reply.state,
+            }],
+            &next.l1,
+            next.is_pre_key,
+            DAY,
+        )
+        .expect("decrypt");
+
+        assert!(first.is_pre_key && !reply.is_pre_key && !settled.is_pre_key);
+        Settled {
+            messages: vec![first.l1, reply.l1, settled.l1],
+            initiator: read.state,
+            responder: responder.state,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -785,6 +885,128 @@ mod tests {
         );
     }
 
+    /// Review round 2 (R2-06): a first flight whose identity, base or one-time key is a
+    /// **non-canonical encoding** of its point is refused, so one key set cannot produce two
+    /// sessions with two session ids.
+    ///
+    /// The flipped top bit survives X25519 (RFC 7748 masks it) and
+    /// `curve25519-dalek`'s point comparison, so the pinned-identity check still passed and
+    /// `create_inbound_session` produced a session whose id — `SHA-256(identity ‖ base ‖ one-time
+    /// key)` over the **raw bytes** — was a different one. Only the sender can author the L1 (it
+    /// sits inside the KEM-keyed inner layer), so the effect was confined to a sender giving its
+    /// peer a second `olm_session` row and a spurious safety-number mismatch against itself; it is
+    /// still an encoding the design never admitted.
+    #[test]
+    fn a_first_flight_with_a_non_canonical_key_is_refused() {
+        let a = party(50);
+        let b = party(51);
+        let (b_fallback_secret, b_fallback_public) = fallback(52);
+        let outbound = session_outbound(
+            &a.identity,
+            &a.signing,
+            &b.identity_public,
+            &b_fallback_public,
+            8,
+        )
+        .expect("outbound");
+        let first = encrypt(&outbound.state, b"one", 8).expect("encrypt");
+
+        let genuine = session_inbound(
+            &b.identity,
+            &b.signing,
+            b_fallback_secret,
+            &a.identity_public,
+            &first.l1,
+            8,
+        )
+        .expect("inbound");
+        assert_eq!(genuine.session_id, outbound.session_id);
+
+        let keys = match message::parse(&first.l1, true).expect("header") {
+            L1Header::PreKey {
+                identity_key,
+                base_key,
+                one_time_key,
+                ..
+            } => [identity_key, base_key, one_time_key],
+            L1Header::Normal { .. } => panic!("the first flight is a PreKey message"),
+        };
+        for key in keys {
+            let at = first
+                .l1
+                .windows(32)
+                .position(|window| window == key)
+                .expect("the key is in the message");
+            let mut flipped = first.l1.clone();
+            flipped[at + 31] ^= 0x80;
+            assert_eq!(
+                session_inbound(
+                    &b.identity,
+                    &b.signing,
+                    b_fallback_secret,
+                    &a.identity_public,
+                    &flipped,
+                    8
+                )
+                .err(),
+                Some(DmCode::NonCanonical),
+                "a flipped top bit must not create a second session"
+            );
+        }
+    }
+
+    /// §2.6 function 14: a first flight whose **inner** chain index is past Olm's 2 000-message
+    /// gap is `UNDECRYPTABLE`, the code that row names, and never `GAP_TOO_BIG`.
+    ///
+    /// The sender needs no key material for this beyond the recipient's published fallback key,
+    /// and vodozemac checks the gap **before** the MAC
+    /// (`vz:src/olm/session/receiver_chain.rs:184-190`), so any holder of the card could otherwise
+    /// hand `DmSessions.inbound` a code its `when` has no arm for — an `IllegalStateException` per
+    /// blob instead of the silent drop of D10 and §7.4.
+    #[test]
+    fn a_first_flight_past_the_message_gap_is_undecryptable() {
+        let a = party(40);
+        let b = party(41);
+        let (b_fallback_secret, b_fallback_public) = fallback(42);
+        let outbound = session_outbound(
+            &a.identity,
+            &a.signing,
+            &b.identity_public,
+            &b_fallback_public,
+            7,
+        )
+        .expect("outbound");
+
+        // B never answers, so every message stays a PreKey message and the inner chain index
+        // climbs. `MAX_MESSAGE_GAP` is 2 000: the 2 001st index is the first one past it.
+        let mut state = outbound.state;
+        let mut last = None;
+        for _ in 0..2_002 {
+            let sent = encrypt(&state, b"one", 7).expect("encrypt");
+            assert!(sent.is_pre_key);
+            state = sent.state;
+            last = Some(sent.l1);
+        }
+        let last = last.expect("2 002 messages");
+        assert_eq!(
+            message::parse(&last, true).expect("header").chain_index(),
+            2_001
+        );
+
+        assert_eq!(
+            session_inbound(
+                &b.identity,
+                &b.signing,
+                b_fallback_secret,
+                &a.identity_public,
+                &last,
+                7
+            )
+            .err(),
+            Some(DmCode::Undecryptable)
+        );
+    }
+
     /// The two-slot trial of §7.6: a replay on one slot and a MAC failure on the other reports the
     /// replay, not the forgery.
     #[test]
@@ -871,6 +1093,49 @@ mod tests {
             Some(DmCode::StateCorrupt)
         );
         assert_eq!(stored_state(Ok(vec![7])).expect("passes through"), vec![7]);
+    }
+
+    /// §15.2 and R-C4 for the pickle-layout readers (review round 2, S4B2-04): seeded inputs
+    /// through the three functions that hand a stored state to [`crate::olm::pickle`] —
+    /// [`chain_position`], [`session_prune`] and [`encrypt`], which unpickles a whole `Session`.
+    /// Never a panic, and every refusal a typed code.
+    ///
+    /// The count is [`crate::property::signature_inputs`], for the reason `property.rs` gives the
+    /// signature-verifying parsers: one input here costs a `serde_json` parse of a whole session
+    /// pickle, four orders of magnitude more than a byte parser, and the mutations that matter —
+    /// a valid frame around a broken document, a sidecar that disagrees with the pickle — are
+    /// reached by shape, not by count. The byte-level framing above it runs the full `10^6`
+    /// (`state::tests::the_state_parsers_never_panic_on_seeded_inputs`).
+    #[test]
+    fn the_pickle_readers_never_panic_on_seeded_inputs() {
+        let real = fixtures::settled();
+        let templates = [real.initiator, real.responder];
+        let mut rng = crate::property::Seeded::new(0x5049_434b_4c45_0001);
+        let mut key = [0u8; 32];
+
+        for _ in 0..crate::property::signature_inputs() {
+            let pick = rng.below(templates.len());
+            let bytes = rng.mutate(&templates[pick]);
+            rng.fill(&mut key);
+
+            match chain_position(&bytes, &key) {
+                Ok(_) => {}
+                Err(code) => assert_eq!(code, DmCode::StateCorrupt, "{code:?}"),
+            }
+            match session_prune(&bytes, fixtures::DAY + 1) {
+                Ok((state, _)) => {
+                    // A prune that succeeded produced a state this crate can read again.
+                    SessionState::decode(&state).expect("a pruned state decodes");
+                }
+                Err(code) => assert_eq!(code, DmCode::StateCorrupt, "{code:?}"),
+            }
+            if let Err(code) = encrypt(&bytes, b"x", fixtures::DAY) {
+                assert!(
+                    matches!(code, DmCode::StateCorrupt | DmCode::InvalidSession),
+                    "{code:?}"
+                );
+            }
+        }
     }
 
     #[test]

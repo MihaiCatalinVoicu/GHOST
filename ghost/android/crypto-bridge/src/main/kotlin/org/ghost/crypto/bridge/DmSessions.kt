@@ -29,11 +29,23 @@ package org.ghost.crypto.bridge
  * slot decrypted, whether the session is acknowledged, whether the output was a PreKey message —
  * is what this facade returns.
  *
- * **One outcome per code the function can produce.** The `when` arms below are §2.6's table, row by
- * row, and an unnamed code throws ([unexpected]). `OVERSIZE` belongs to function 8 alone, so
- * [Encrypted] carries it and [Decrypted], [Inbound], [Outbound] and [Pruned] do not: the native
- * side reports a state that does not fit as `STATE_CORRUPT` on those paths (`olm::session`'s
- * `stored_state`), which is the code their rows do name.
+ * **One outcome per code the function can produce.** The `when` arms below are the code set of the
+ * native function, `DmNative`'s `FUNCTION_CODES` table, which `DmResultCodesTest` compares with
+ * these arms in both directions — a code with no arm would throw where the design asks for an
+ * outcome, and an arm for a code the function cannot return is a stale surface. Review round 2
+ * found the first kind: a first flight past Olm's 2 000-message gap reached `sessionInbound` as
+ * `GAP_TOO_BIG`, which no arm named, so an ordinary inbound blob threw (fixed in the crate: every
+ * inner decryption failure of a session **creation** is `UNDECRYPTABLE`, §2.6 function 14's own
+ * code). `INTERNAL` — a caught Rust panic — is therefore the one outcome that throws, as §2.6
+ * states it, and [unexpected] otherwise fires only on a disagreement between this class and the
+ * library.
+ *
+ * `OVERSIZE` belongs to function 8 alone, so [Encrypted] carries it and [Decrypted], [Inbound],
+ * [Outbound] and [Pruned] do not: the native side reports a state that does not fit as
+ * `STATE_CORRUPT` on those paths (`olm::session`'s `stored_state`). `NON_CANONICAL` is the native
+ * side's answer to a row value or a published key whose **length** is not the one the surface
+ * takes; it joins `STATE_CORRUPT` wherever it can appear, because the caller's move is the same —
+ * the row it holds cannot be used and must not be retried.
  */
 object DmSessions {
 
@@ -85,6 +97,15 @@ object DmSessions {
         /** The contact's published key is malformed or non-contributory (§22.8.2 rule 1). */
         data object InvalidKey : Outbound
 
+        /**
+         * The row values this call was given are not the shapes the surface takes, or the state
+         * the fresh session encodes to does not fit `SESSION_STATE_MAX` (`olm::session`'s
+         * `stored_state`). Recorded against §2.6 function 7, whose code column names `INVALID_KEY`
+         * alone: the native function can produce both codes and an outcome is what the facade owes
+         * the caller (review round 2, S4B2-03/R2-01).
+         */
+        data object StateCorrupt : Outbound
+
         /** The native library is missing or the context is closed (§2.5). */
         data object Unavailable : Outbound
     }
@@ -106,7 +127,10 @@ object DmSessions {
         /** A library encryption error (§22.8.2 rule 2). */
         data object InvalidSession : Encrypted
 
-        /** The state does not open under its binding or does not parse (§22.8.3). */
+        /**
+         * The state does not open under its binding or does not parse (§22.8.3), or a row value
+         * this call was given is not the shape the surface takes (`NON_CANONICAL`).
+         */
         data object StateCorrupt : Encrypted
 
         /** The state grew past `SESSION_STATE_MAX`: a bug or a format change (§7.9 point 4). */
@@ -170,7 +194,12 @@ object DmSessions {
         /** A non-contributory key in the first flight (§22.8.2). */
         data object InvalidKey : Inbound
 
-        /** A MAC, padding, format or session-config failure (S0′ V-2). */
+        /**
+         * A MAC, padding, format or session-config failure (S0′ V-2), and every other way the
+         * first flight's inner message fails to decrypt — an inner chain index past Olm's
+         * 2 000-message gap included, which vodozemac reports before the MAC and which any holder
+         * of the card can author (review round 2, S4B2-01/R2-01).
+         */
         data object Undecryptable : Inbound
 
         /** The generation secrets do not open under their binding. */
@@ -188,7 +217,10 @@ object DmSessions {
         /** The chains are readable and none matches — the hold reads this as position 0. */
         data object NewChain : ChainPosition
 
-        /** The stored state, or vodozemac's pickle layout, drifted (§2.1 rule 2). */
+        /**
+         * The stored state, or vodozemac's pickle layout, drifted (§2.1 rule 2), or a row value
+         * this call was given is not the shape the surface takes (`NON_CANONICAL`).
+         */
         data object StateCorrupt : ChainPosition
 
         /** The native library is missing or the context is closed. */
@@ -200,7 +232,10 @@ object DmSessions {
         /** The new state and how many skipped keys the age bound removed. */
         data class Ok(val stateEnv: ByteArray, val removed: Long) : Pruned
 
-        /** The stored state, or vodozemac's pickle layout, drifted. */
+        /**
+         * The stored state, or vodozemac's pickle layout, drifted, or a row value this call was
+         * given is not the shape the surface takes (`NON_CANONICAL`).
+         */
         data object StateCorrupt : Pruned
 
         /** The native library is missing or the context is closed. */
@@ -325,6 +360,7 @@ object DmSessions {
                 replySeedEnv = result.bytes(DmField.REPLY_SEED),
             )
             DmCode.INVALID_KEY -> Outbound.InvalidKey
+            DmCode.STATE_CORRUPT, DmCode.NON_CANONICAL -> Outbound.StateCorrupt
             DmCode.CRYPTO_UNAVAILABLE -> Outbound.Unavailable
             else -> unexpected(result.code, "sessionOutbound")
         }
@@ -353,7 +389,7 @@ object DmSessions {
                 )
             }
             DmCode.INVALID_SESSION -> Encrypted.InvalidSession
-            DmCode.STATE_CORRUPT -> Encrypted.StateCorrupt
+            DmCode.STATE_CORRUPT, DmCode.NON_CANONICAL -> Encrypted.StateCorrupt
             DmCode.OVERSIZE -> Encrypted.Oversize
             DmCode.CRYPTO_UNAVAILABLE -> Encrypted.Unavailable
             else -> unexpected(result.code, "encrypt")
@@ -466,7 +502,7 @@ object DmSessions {
         return when (result.code) {
             DmCode.OK -> ChainPosition.Index(result.i64(DmField.CHAIN_INDEX))
             DmCode.NEW_CHAIN -> ChainPosition.NewChain
-            DmCode.STATE_CORRUPT -> ChainPosition.StateCorrupt
+            DmCode.STATE_CORRUPT, DmCode.NON_CANONICAL -> ChainPosition.StateCorrupt
             DmCode.CRYPTO_UNAVAILABLE -> ChainPosition.Unavailable
             else -> unexpected(result.code, "chainPosition")
         }
@@ -483,7 +519,7 @@ object DmSessions {
                 stateEnv = result.bytes(DmField.STATE),
                 removed = result.u32(DmField.PRUNED),
             )
-            DmCode.STATE_CORRUPT -> Pruned.StateCorrupt
+            DmCode.STATE_CORRUPT, DmCode.NON_CANONICAL -> Pruned.StateCorrupt
             DmCode.CRYPTO_UNAVAILABLE -> Pruned.Unavailable
             else -> unexpected(result.code, "sessionPrune")
         }
@@ -525,9 +561,11 @@ object DmSessions {
     }
 
     /**
-     * A code the surface cannot produce for this function. `INTERNAL` is a caught Rust panic and
-     * everything else here is a disagreement between this class and the native library; both mean
-     * the caller must roll back and treat the blob as poison (§7.4 R2, §7.8).
+     * A code the surface cannot produce for this function. `INTERNAL` is a caught Rust panic;
+     * everything else reaching here is a disagreement between this class and the native library,
+     * which `DmResultCodesTest` fails the build on. Both mean the caller must roll back and treat
+     * the blob as poison (§7.4 R2, §7.8) — which is why a code a **peer** can provoke must never
+     * arrive here (review round 2, S4B2-01/R2-01).
      */
     private fun unexpected(code: DmCode, function: String): Nothing =
         throw IllegalStateException("DM native $function returned ${code.name}")

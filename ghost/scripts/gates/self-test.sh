@@ -592,6 +592,29 @@ expect_fail_msg "dm-jni-surface rejects an internal declaration Kotlin would man
   env GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeMangled.kt" bash "$DIR/dm-jni-surface.sh"
 expect_fail_msg "dm-jni-surface rejects a library that was named but is not there" \
   "library not found" bash "$DIR/dm-jni-surface.sh" "$HARNESS/dm-jni/no-such-library.so"
+# The symbol half (review round 2, R2-05), whose only fixture used to be the missing library. The
+# readers in `dm-jni/nm/` stand in for built libraries — they print the closed list with one symbol
+# too many, one too few, or fail outright — so the diff and the reader-failure path are drilled
+# without committing binaries. The file itself only has to look like ELF.
+elf="$(mktemp)"
+printf '\177ELF G-R6 fixture: the symbols come from GHOST_DM_JNI_NM\n' > "$elf"
+expect_fail_msg "dm-jni-surface rejects a library exporting a symbol outside the closed list" \
+  "exports 'debugDumpState'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/stray-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a library that does not export an Exported entry" \
+  "does not export 'sessionPrune'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/missing-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a symbol reader that cannot read the library" \
+  "could not read" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/unreadable-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+if env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" "$elf" >/dev/null 2>&1
+then
+  echo "self-test ok: dm-jni-surface accepts a library whose symbols are the closed list"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface rejects a library whose symbols are the closed list" >&2
+  rc=1
+fi
+rm -f "$elf"
 if bash "$DIR/dm-jni-surface.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-jni-surface accepts the real closed list"
 else
@@ -613,6 +636,19 @@ if command -v cargo >/dev/null; then
   expect_fail_msg "rust-feature-policy rejects a forbidden feature on a secondary crate" \
     "tor-proto feature 'hs-client' is enabled in the client" \
     env GHOST_POLICY_FORBID_ON=tor-proto:hs-client bash "$DIR/rust-feature-policy.sh"
+  # G-R2's DM clauses (Phase 9 design §16.1; review round 2, R2-03). The vodozemac pairs live in
+  # the same `forbid_on` loop as the Arti ones and no vodozemac feature is enabled in the shipped
+  # graph — which is the point of the gate — so the loop is drilled here on a DM crate whose
+  # feature really is on, and the two clauses that can fail on their own get a fixture each.
+  expect_fail_msg "rust-feature-policy rejects a forbidden feature on a DM crate" \
+    "ghost-client-dm feature 'jni-bridge' is enabled in the client" \
+    env GHOST_POLICY_FORBID_ON=ghost-client-dm:jni-bridge bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "rust-feature-policy rejects a ghost-client-dm feature outside G-R2's list" \
+    "G-R2 allows: default" \
+    env GHOST_POLICY_DM_FORBID_EXTRA=jni-bridge bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "rust-feature-policy rejects a shipped graph without the Olm library" \
+    "is not in the shipped client graph" \
+    env GHOST_POLICY_DM_GRAPH="vodozemac-no-such-crate" bash "$DIR/rust-feature-policy.sh"
   expect_fail_msg "rust-feature-policy fails when a secondary cargo query fails" \
     "GATE-FAIL: cargo tree" \
     env GHOST_POLICY_BAD_SPEC=tor-hsclient bash "$DIR/rust-feature-policy.sh"

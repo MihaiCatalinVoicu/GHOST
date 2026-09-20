@@ -21,13 +21,19 @@
 #  issuer-only crates (blind-rsa-signatures, crypto-bigint 0.7.5, md-5, ghost-issuer and the operator
 #  tools ghost-issuer-ops) must not be linked into the client library (both Android targets) or the
 #  relay node (normal and build edges).
+#  and, for the DM stack (Phase 9 design §16.1 G-R2, ADR-35), vodozemac without `libolm-compat`,
+#  `low-level-api`, `experimental-session-config` or `insecure-pk-encryption`, and `ghost-client-dm`
+#  with no feature of its own but `jni-bridge` (its `default` is the empty list). Both crates must
+#  be present in the shipped graph, or the clause would hold vacuously.
 # Every cargo query result is stored in a variable first, so a failing `cargo tree` (e.g. an
 # ambiguous spec after an Arti bump) aborts the gate instead of being read as "no features".
 # Self-test hooks (scripts/gates/self-test.sh): GHOST_POLICY_REQUIRE_EXTRA / _FORBID_EXTRA add an
 # arti-client feature to the required / forbidden list; GHOST_POLICY_FORBID_ON="crate:feature"
 # forbids one more feature on one more crate; GHOST_POLICY_RSA_ALLOWED / GHOST_POLICY_RSA10_ALLOWED
 # override the allowed direct dependents of rsa 0.9.10 / 0.10.0-rc.18; GHOST_POLICY_ISSUER_ONLY_EXTRA
-# adds a package to the issuer-only list; GHOST_POLICY_BAD_SPEC="crate" makes that crate's query fail.
+# adds a package to the issuer-only list; GHOST_POLICY_BAD_SPEC="crate" makes that crate's query fail;
+# GHOST_POLICY_DM_GRAPH replaces the packages the DM stack must contribute to the shipped graph and
+# GHOST_POLICY_DM_FORBID_EXTRA drops one name from `ghost-client-dm`'s allowed feature list.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
 cd "$GHOST_ROOT"
@@ -65,6 +71,12 @@ for f in onion-service-service keymgr ctor-keystore ephemeral-keystore pt-client
 done
 
 forbid_on=("tor-proto:relay" "tor-chanmgr:relay" "tor-llcrypto:relay" "tor-hsclient:keymgr")
+# G-R2 (Phase 9 design §16.1, ADR-35): the DM stack's Olm library ships without `libolm-compat`,
+# `low-level-api`, `experimental-session-config` and `insecure-pk-encryption`. `low-level-api` is a
+# **dev** feature of the key-schedule oracle, which this query cannot see (`no-dev`); a normal
+# dependency that turned any of these on would otherwise pass every gate.
+forbid_on+=("vodozemac:libolm-compat" "vodozemac:low-level-api")
+forbid_on+=("vodozemac:experimental-session-config" "vodozemac:insecure-pk-encryption")
 [ -n "${GHOST_POLICY_FORBID_ON:-}" ] && forbid_on+=("$GHOST_POLICY_FORBID_ON")
 for pair in "${forbid_on[@]}"; do
   crate="${pair%%:*}"
@@ -89,6 +101,27 @@ pkgs="$(printf '%s\n' "$pkgs_raw" | awk '{print $1}' | sort -u)"
 for p in tor-hsservice arti-relay tor-relay-crypto; do
   if has "$pkgs" "$p"; then fail "package '$p' is linked into the client"; fi
 done
+
+# G-R2, second half: the DM crate ships with **no feature of its own** beyond `jni-bridge` (its
+# `default` is the empty list, §16.1). `provenance` turns the PQ-B assertions of T35 into runtime
+# checks and belongs to tests; anything else is a feature nobody approved for the shipped library.
+# The vodozemac clause above is only meaningful while the library really is in this graph, so the
+# two packages that carry it are checked for presence: a DM stack dropped from
+# `libghost_client_net.so` must fail loudly, not silently pass a feature policy about it.
+for p in ${GHOST_POLICY_DM_GRAPH:-ghost-client-dm vodozemac}; do
+  if ! has "$pkgs" "$p"; then
+    fail "package '$p' is not in the shipped client graph: G-R2's vodozemac clause would be vacuous"
+  fi
+done
+dm_allowed="default jni-bridge"
+[ -n "${GHOST_POLICY_DM_FORBID_EXTRA:-}" ] \
+  && dm_allowed="$(printf '%s\n' $dm_allowed | grep -vx "$GHOST_POLICY_DM_FORBID_EXTRA" || true)"
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if ! printf '%s\n' $dm_allowed | grep -qx "$f"; then
+    fail "ghost-client-dm feature '$f' is enabled in the client; G-R2 allows: $(echo $dm_allowed)"
+  fi
+done <<< "$(features ghost-client-dm)"
 
 # rsa, per version: direct dependents across the whole workspace, all targets (dev edges excluded,
 # so the differential test's dev-dependency on the reference signer does not count).

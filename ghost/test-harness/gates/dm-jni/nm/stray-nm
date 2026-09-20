@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6, negative case: the closed list plus one DM symbol that is not on
+# it — a library built from a tree that exported a debugging entry point.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmNative_debugDumpState\n' 8192

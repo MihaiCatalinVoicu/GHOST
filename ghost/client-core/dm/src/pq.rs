@@ -136,6 +136,31 @@ pub fn contributory(point: &[u8; 32]) -> bool {
     shared != [0u8; 32]
 }
 
+/// The Curve25519 field prime `p = 2^255 - 19`, little-endian: the bound a canonical u-coordinate
+/// encoding stays under.
+pub const CURVE25519_P: [u8; 32] = [
+    0xed, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
+];
+
+/// Whether a 32-byte u-coordinate is the **canonical** encoding of its point: the little-endian
+/// value is below [`CURVE25519_P`] (review round 2, R2-06).
+///
+/// RFC 7748 masks the top bit and reduces mod `p` before use, so `k`, `k | 2^255` and `k + p` are
+/// one point to X25519 and to `curve25519-dalek`'s `MontgomeryPoint::ct_eq`, which compares field
+/// elements. Anything that **hashes or compares the bytes** — an Olm session id, a receiver
+/// chain's ratchet key, a pinned identity — therefore needs the encoding pinned as well as the
+/// point. The values are public, so a data-dependent exit is not a leak.
+pub fn canonical_u_coordinate(point: &[u8; 32]) -> bool {
+    for index in (0..32).rev() {
+        if point[index] != CURVE25519_P[index] {
+            return point[index] < CURVE25519_P[index];
+        }
+    }
+    // Exactly `p`, which encodes the point 0.
+    false
+}
+
 /// Whole-key validation of a 1 216-byte encapsulation key (§22.8.2 rule 3): the exact length, then
 /// FIPS 203 modulus validation of the ML-KEM half, then a contributory trial on the X25519 half.
 pub fn validate_public_key(bytes: &[u8]) -> DmResult<()> {
@@ -236,6 +261,33 @@ mod tests {
 
     fn seed(byte: u8) -> KemSecret {
         KemSecret::from_bytes([byte; 32])
+    }
+
+    /// R2-06: the canonical range is exactly `0 ..= p - 1`, and both ways out of it — the top bit
+    /// and the 19 values from `p` up — are refused.
+    #[test]
+    fn a_u_coordinate_is_canonical_below_the_field_prime() {
+        assert!(canonical_u_coordinate(&[0u8; 32]));
+        let mut p_minus_one = CURVE25519_P;
+        p_minus_one[0] -= 1;
+        assert!(canonical_u_coordinate(&p_minus_one));
+        assert!(!canonical_u_coordinate(&CURVE25519_P), "p itself");
+        // `p ..= 2^255 - 1`: the 19 values that reduce to `0 ..= 18`.
+        for extra in 0..19u8 {
+            let mut over = CURVE25519_P;
+            over[0] += extra;
+            assert!(!canonical_u_coordinate(&over), "p + {extra}");
+        }
+        // The top bit, on a value that is canonical without it.
+        let mut high = [7u8; 32];
+        assert!(canonical_u_coordinate(&high));
+        high[31] |= 0x80;
+        assert!(!canonical_u_coordinate(&high));
+        assert!(!canonical_u_coordinate(&[0xff; 32]));
+        // A real key is canonical.
+        let public =
+            crate::derive::olm_identity_public(&crate::derive::OlmSecret::from_bytes([0x31; 32]));
+        assert!(canonical_u_coordinate(&public));
     }
 
     /// The runtime half of §22.8.2 rule 4: every variant of the three KEM error types GHOST

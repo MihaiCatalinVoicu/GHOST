@@ -401,6 +401,65 @@ mod tests {
         assert_eq!(state.encode().err(), Some(DmCode::Oversize));
     }
 
+    /// §15.2 and R-C4 for the stored-state parsers (review round 2, S4B2-04): `10^6` seeded inputs
+    /// through [`SessionState::decode`] and [`Sidecar::decode`], mutated from a **real** state and
+    /// free-form. Never a panic, never an over-read, and every refusal
+    /// [`DmCode::StateCorrupt`] — the only code either parser may report.
+    ///
+    /// The state is not attacker-supplied (it opens under `session_state_key` first, §22.8.3), but
+    /// §15.2 says "every parser", and the length prefix and the sidecar's own counts are exactly
+    /// the shapes a drifted row or a format change hands it.
+    #[test]
+    fn the_state_parsers_never_panic_on_seeded_inputs() {
+        let real = crate::olm::session::fixtures::settled();
+        let synthetic = SessionState::build(
+            &Sidecar::new(),
+            pickle_with(&[([0xaa; 32], &[1, 2]), ([0xbb; 32], &[4])]),
+            7,
+        )
+        .expect("build")
+        .encode()
+        .expect("encode");
+        let templates = [real.initiator, real.responder, synthetic];
+        let mut rng = crate::property::Seeded::new(0x5354_4154_4530_0001);
+
+        for _ in 0..crate::property::inputs() {
+            let pick = rng.below(templates.len());
+            let bytes = rng.mutate(&templates[pick]);
+            match SessionState::decode(&bytes) {
+                Ok(state) => {
+                    // What decodes re-encodes to the same bytes: one encoding per state.
+                    assert_eq!(state.encode().expect("re-encode"), bytes);
+                }
+                Err(code) => assert_eq!(code, DmCode::StateCorrupt, "{code:?}"),
+            }
+        }
+        // The sidecar alone, mutated from a real one and free-form: a mutated **state** reaches it
+        // only behind a length prefix that survived, and its own counts are what it refuses on.
+        let sidecar = SessionState::decode(&templates[1])
+            .expect("a real state")
+            .sidecar
+            .encode()
+            .expect("encode");
+        assert!(!sidecar.is_empty());
+        for _ in 0..crate::property::inputs() / 4 {
+            let bytes = rng.random_input(96);
+            if let Err(code) = SessionState::decode(&bytes) {
+                assert_eq!(code, DmCode::StateCorrupt);
+            }
+            for input in [rng.mutate(&sidecar), bytes] {
+                // A decoded sidecar always encodes again (its counts are bounded by construction);
+                // anything that does not decode is `STATE_CORRUPT` and nothing else.
+                match Sidecar::decode(&input) {
+                    Ok(decoded) => {
+                        decoded.encode().expect("a decoded sidecar re-encodes");
+                    }
+                    Err(code) => assert_eq!(code, DmCode::StateCorrupt),
+                }
+            }
+        }
+    }
+
     #[test]
     fn expiry_uses_the_recorded_day_and_never_runs_backwards() {
         let pickle_bytes = pickle_with(&[([0xaa; 32], &[1, 2])]);

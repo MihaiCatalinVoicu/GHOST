@@ -282,6 +282,8 @@ This section was rewritten by the revision of 2026-09-16 (§22). The round-9 rou
 
 ### 2.1 Library decision and alternatives (normative)
 
+**Forward note (S4b, 2026-09-20).** §22.9 items 9 and 10 record what the pickle reads of `chainPosition` and `sessionPrune` leave behind and where `chainPosition` is stricter than function 19's row.
+
 The owner excluded libsignal and every (A)GPL component (2026-09-16). No permissively licensed library matches libsignal's maturity; the ranking of R-libs §11, re-weighted for the owner decision, is:
 
 | Candidate | Licence (whole shipped graph) | Maturity evidence | Fit for GHOST DMs | Disposition |
@@ -344,6 +346,8 @@ The owner excluded libsignal and every (A)GPL component (2026-09-16). No permiss
 - Rationale: the JVM heap never holds ratchet, KEM or seal opening secrets (the vodozemac audit's Issue I, for the JVM side); SQLCipher rows are doubly encrypted. Declared residue: secrets are in native memory while unlocked (L7-D19).
 
 ### 2.6 JNI surface (closed list; gate G-R6) and result codes (normative)
+
+**Forward note (S4b, 2026-09-20).** §22.9 items 3, 4, 5, 6 and 12 win over this section for the shape of the typed facade, the slice `ownCard` and `bundleCreate` arrive in, function 14's code set (every inner decryption failure of a session creation is `UNDECRYPTABLE`), function 7's outcomes and `L1.parse`.
 
 All functions are `static native` on `org.ghost.crypto.bridge.DmNative`; inputs are byte arrays and ints; outputs are one byte array `code(1) ‖ TLV fields` decoded by `DmResult` in Kotlin. No function performs I/O, reads a clock, logs, or keeps state between calls other than the context handle. Rust panics are caught (`catch_unwind`) **under a silent panic hook installed once per process at library load and by `ctxOpen`** (the `ghost-client-net` `jni_bridge` pattern), so no panic text reaches stderr or logcat (**added by S0′, V-5, 2026-09-19:** the JVM probe survived a libcrux panic and returned `INTERNAL`, but the **default** hook printed the panic message and its source location to stderr, which the no-logging rule forbids for the DM graph, T3), and returned as `INTERNAL`, which Kotlin turns into `IllegalStateException` (rollback, crash, poison guard). `ErrorPolicyTest` (21 JNI categories of the network surface) is unchanged; DM codes are a separate enumeration with its own exhaustive test (`DmResultCodesTest`).
 
@@ -456,6 +460,8 @@ Forbidden in addition to the existing rules: "open source", "sursă deschisă", 
 ## 3. Identity, key hierarchy and the contact card (I5, I9; ADR-30′, ADR-33′, ADR-35)
 
 ### 3.1 Keys (normative; rewritten by §22)
+
+**Forward note (S4b, 2026-09-20).** §22.9 item 13 adds the canonical-encoding rule for the Curve25519 keys an L1 carries.
 
 Let `m = RootEntropy.deriveBranch(DerivationLabels.MESSAGING)` (the existing MESSAGING branch, vector `messaging_seed` in `KeyDerivationTest.kt:37`). Every DM secret derived from the seed is `HKDF-SHA256(ikm = m, salt = ∅, info = label ‖ params, L = 32)` with a label of `DmLabels` (prefix `ghost/v1/dm/`). Every card-level value is `HKDF-SHA256(ikm = card_secret_i, salt = ∅, info = label ‖ params, L = 32)` with a label of `CardLabels` (prefix `ghost/v1/card/`). Both label sets live in `ghost-client-dm` (Rust); nothing has shipped, so labels keep their prefixes and the vectors are regenerated.
 
@@ -1129,6 +1135,8 @@ So a legitimate blob is accepted by `now − author_minute ≤ 37 d 2 h + 6 d = 
 
 ### 7.9 Value state and atomicity (normative; replaces the libsignal store rules, §22)
 
+**Forward note (S4b, 2026-09-20).** §22.9 item 7 records what point 4's bound covers: pickle, sidecar and framing together.
+
 1. **Value semantics.** Every `DmNative` call receives stored envelopes and returns new envelopes; nothing is cached across calls or transactions (MC-2 now means "a Kotlin or Rust cache of a session across transactions"). Kotlin writes returned state only inside the calling transaction, and only on `OK`.
 2. **vodozemac is not all-or-nothing in memory, and GHOST does not rely on it being so.** For a message with an unknown ratchet key, `Session::decrypt` advances the sending ratchet in place: an *inactive* sending ratchet is activated with a fresh random ratchet key before the decryption can fail (`vz:src/olm/session/double_ratchet.rs:168-191`, called from `vz:src/olm/session/mod.rs:444-458`). The claim that decryption "commits only after success" holds for receiver chains, not for this activation (RX-1, §22.3). Because GHOST unpickles a fresh object per call and discards it on any non-`OK` result, stored state never contains the activation of a failed attempt. `FailedDecryptLeavesStateTest`: after a failed decrypt against an inactive ratchet the stored envelope is byte-identical and the next valid message decrypts (V-10; mutant MC-29). **Confirmed by S0′ (V-10, 2026-09-19):** the activation reproduces on 0.11.0 and 0.10.0, for **inactive ratchets only** — an active ratchet and an all-zero (non-contributory) ratchet key leave the object unchanged (`activate()` returns `None` first). Persisting the activated object does **not** stop the peer from decrypting later replies; it is forbidden because it lets a forged, relay-injectable blob change stored state (T28, the byte-identical crash runs of §15.3), which MC-29 detects. The consequence is narrower than "the session diverges": it is local state drift, not message loss.
 3. **Thread.** The DM actor is the only thread that calls `DmNative` session functions (§13.7); the context handle is not shared with other threads.
@@ -1175,6 +1183,8 @@ Olm receives no address, no contact identifier and no device id: a session is a 
 - **Model obligation.** Session handling can lose FS and PCS that single-session proofs give (Cremers, Jacomme, Naska, USENIX Security 2023). The ProVerif model of §9.5 includes R-SS0 … R-SS4 with two sessions per pair (M-5), and mutant MC-19 ("newest decrypt wins") must fail EM-1, RO5 and RO8.
 
 ### 8.3 Key change (normative; FR-4.6, spec §7.2(d), plan gate "schimbare de cheie blochează"; C-14, E-1, E-2; mechanics re-sourced by §22)
+
+**Forward note (S4b, 2026-09-20).** §22.9 item 13: a non-canonical encoding of a pinned key's point is refused at the parser, so it never reaches a pin comparison.
 
 **Definition.** For a contact c with pinned Ed25519 `identity_pk` and pinned Olm identity `OI`:
 
@@ -2194,6 +2204,8 @@ CREATE TABLE dm_peer_pq (              -- peer X-Wing keys: the establishment ge
 
 ### 15.2 Unit, vector and property tests
 
+**Forward note (S4b, 2026-09-20).** §22.9 items 1, 16 and 17 win over this section for the enforced EM-1 and EM-2 bounds, the seeded-input counts of the S4b parsers and the mutant that makes EM-1's loss property falsifiable.
+
 - **Rust (`cargo test -p ghost-client-dm`, `rust` job):** derivation vectors for every `DmLabels` and `CardLabels` output and the Olm labels, label prefix tests; card v2 codec (round trip; every single-byte mutation and every length refused; alphabet; own card; index ≠ 0; version 1 refused); bundle v2 build and open; seal vectors `dm_seal.txt` for pair, intro, provisional and bundle at every bucket, recognition hints included; L0 and TLV vectors `dm_content.txt` including 0x0005, 0x0006 and the slack rule; binding v3 vectors; safety-number vectors `dm_safety_number.txt`; X-Wing (draft-06, draft-10) and ML-KEM-768 known-answer tests; the differential X-Wing test against RustCrypto `x-wing`; `FailedDecryptLeavesStateTest` (§7.9); the dehydrated-pickle encoder check; golden pickles and `UpgradeTest`; the Olm key-schedule oracle (below); property tests (10⁶ seeded inputs per CI run) for every parser: never panics, never over-reads; provenance-tag assertions (T35); `DmResultCodesTest`.
 - **Exhaustive state-model enumerations (RG-1; `rust` job).** An abstract model of the DM session and seal layers, enumerated exhaustively with at most 6 user sends per side, message loss, duplication, reordering, process death at every step and a restore:
   - **EM-1 (sessions):** the `current`/`previous` slots under R-SS0 … R-SS4, the D2b reuse set, `UNACK_MAX` re-establishment and simultaneous initiation; properties: convergence to one session per pair, no decryption on a session of another identity, no second session from a replayed first flight, no lost message outside the declared bound of §7.7;
@@ -2438,6 +2450,8 @@ Gate: *"2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochea
 
 ### 16.1 Gates (each change has a negative fixture and a `self-test.sh` hit count)
 
+**Forward note (S4b, 2026-09-20).** §22.9 item 15: G-R2 is implemented in `rust-feature-policy.sh`; G-R4's dependency-graph half and G-R7 are deferred to the S0′ gate slice with G-R3 and G-R8.
+
 | Gate | Rule | Supports |
 |---|---|---|
 | **G-R1** `rust-client-allowlist.sh`, `client-core/rust-dependency-allowlist.txt`, `rust-crypto-pins.txt` | the new crate names of vodozemac 0.11.0 (`aead`, `block-padding`, `cbc`, `chacha20poly1305`, `hpke`, `matrix-pickle`, `matrix-pickle-derive`, `poly1305`, `serde_bytes`, `serdect`, `vodozemac`) and of libcrux (`libcrux-kem`, `libcrux-ml-kem`, `libcrux-sha3`, `libcrux-intrinsics`, `libcrux-platform`, `libcrux-secrets`, `libcrux-traits`, `libcrux-curve25519`, **`libcrux-hacl-rs`**, `libcrux-ecdh`, `libcrux-p256`, `libcrux-macros`, `libcrux-sha2`, `hax-lib`, `hax-lib-macros`; the final list generated from `cargo tree -e normal` on both shipped triples in S0′, V-6, RX-10, §22.8.10 point 8); exact versions of vodozemac, `hpke`, every libcrux crate, and the version sets `curve25519-dalek {4.1.3, 5.0.0}`, `x25519-dalek {2.0.1, 3.0.0}`, `ed25519-dalek {2.2.0, 3.0.0}`, `rand {0.8.8, 0.10.2}` per shipped graph (both `rand` majors are already in `ghost-client-net`; `rust-crypto-pins.sh` gains version sets on `graph` lines with a self-test, §22.8.10 point 5); `x-wing` and `vodozemac/low-level-api` only in dev graphs; `ghost-dm-host` excluded from the shipped graph. **Confirmed by S0′ (V-6, 2026-09-19):** the names are exactly this list (11 vodozemac + 15 libcrux) on **both** shipped triples, generated by `cargo tree -e normal`; vodozemac 0.11.0 adds no further name, while 0.10.0 would add `opaque-debug` and not `hpke` or `serdect`. `libcrux-traits 0.0.8` becomes a direct dependency (§2.3). The nine **new versions of existing names** are identical on both triples (`base16ct 1.0.0`, `base64 0.23.1`, `curve25519-dalek 5.0.0`, `ed25519 3.0.0`, `ed25519-dalek 3.0.0`, `hkdf 0.13.0`, `hmac 0.13.0`, `signature 3.0.0`, `x25519-dalek 3.0.0`); `chacha20poly1305 0.11.0` is a **new name**, not a new version (the unpatched graph holds none), and `curve25519-dalek-derive 0.1.1` is already in the unpatched x86_64 graph and is added by neither triple. No `cc`, `cmake`, `bindgen`, `clang-sys`, `crabgrind` or `libloading` in the normal+build graph of either triple, and no new `links` key: the DM stack adds **no C code** | T7, I1 |
@@ -2469,6 +2483,8 @@ Gate: *"2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochea
 Withdrawn with libsignal (§22): G-LS1 … G-LS7 (their generic halves survive above: typed catches in `sync-no-catch-all.sh`, the merged-manifest rule in G-DM7).
 
 ### 16.2 CI jobs
+
+**Forward note (S4b, 2026-09-20).** §22.9 item 11 adds the nightly `dm-state-models` job.
 
 | Job | Change |
 |---|---|
@@ -2513,6 +2529,8 @@ Withdrawn with libsignal (§22): G-LS1 … G-LS7 (their generic halves survive a
 ## 17. Implementation slices and exit-gate checklist (rewritten by §22)
 
 ### 17.1 Slices (each ends green in CI; the owner's standing instruction applies the Q defaults unless the owner objects)
+
+**Forward note (S4b, 2026-09-20).** §22.9 items 1 and 2 win over this section for the EM bounds and for `dm-spike`, which S4b keeps and the S0′ gate slice deletes.
 
 | Slice | Content | Depends on | Can start before S0′ closes? |
 |---|---|---|---|
@@ -3170,6 +3188,35 @@ JNI inputs gained (§2.6 edited): `bundleCreate` takes the `genId` Kotlin chose 
 
 **Forward note (S0′ evidence, 2026-09-19).** The counts above are the round-9c record and are not rewritten; the conditional they carry is now resolved. S0′ adopted Q67's prune (V-15), so **MC-30 is in the gate and the count is 40 privacy + 33 correctness + 24 ephemeral = `dm mutants: 97 run, 97 detected`** — the number §15.7, §16.1 (`dm-report-check.sh`), §16.2, §17.1 S10 and §17.2 item 8 now carry, and the one `dm-report-check.sh` requires. S0′ also added the JNI functions `chainPosition` (19) and `sessionPrune` (20) to the closed list of §2.6 and to G-R6, and the result `NEW_CHAIN` beside `STATE_CORRUPT` for function 19 (§2.1, §7.7 points 2 and 4).
 
+### 22.9 Forward notes (S4b implementation, 2026-09-20)
+
+**Precedence.** These notes are the record of what slice S4b (the Olm facade, the JNI surface, the
+`:crypto-bridge` facade, migration 5, EM-1 and EM-2) delivered where the sections above say
+something else. They win over §0–§21 and over §22.0–§22.8 for the items they name, and for nothing
+else. The items that carry no round marker are the deviations the first review round left recorded
+only in source comments (R2-02); the rest are marked with the round-2 finding they answer. Every
+item is implemented and tested on the branch; nothing here is a plan.
+
+| # | Section it corrects | What S4b does, and why |
+|---|---|---|
+| 1 | §15.2, §17.1, RG-1 ("at most 6 user sends per side") | **EM-1** is enforced at **2** user sends per side on pull requests and **3** nightly (140 075 and 2 296 274 states; the reachable count grows about an order of magnitude per extra send). **EM-2 has no user-send notion at all** — a send is enabled whenever the mode rule yields a mode — so its bound is the number of envelopes in flight: **2** on pull requests, **3** nightly (356 463 and 2 851 029 states, 134 s in the release profile). `GHOST_DM_EM_SENDS` reaches EM-1 and `GHOST_DM_EM_WIRE` reaches EM-2; before round 2 the nightly raised only the first and explored the same EM-2 space as a pull request (S4B2-02) |
+| 2 | §17.1 S4b row, Appendix C ("`dm-spike` … deleted in S4b") | `client-core/dm-spike` is **kept**: §15.2's vendor-test substitute runs `dm-spike/scripts/v12-vendor-tests.sh`, and the spike is the verified reference the production crate's identity, session and X-Wing paths are compared against. It is outside the workspace, is not in any shipped graph (G-R1) and is deleted by the S0′ gate slice that moves the vendor-test script to `scripts/ci/` |
+| 3 | §2.6 "Typed facade" | `DmSessions` takes **row values** (contact id, the two slots' session ids and wrapped envelopes) instead of `(tx, contact)`: `:crypto-bridge` has no dependency on `:storage` or `:messaging` and must not gain one (§13.1). The transaction rule is unchanged — the caller writes what comes back, inside its own transaction, on `Ok` only. `created` and `renewed` are not outputs: both are GHOST decisions under R-SS1, taken by the layer that owns the two slots (S7) |
+| 4 | §2.6 functions 2 and 5 | `ownCard` and `bundleCreate` are exported in **S4b**, not S6: a first flight needs a generation and a peer's pinned Olm identity, and the JVM session tests build both through the real surface rather than reimplementing a derivation |
+| 5 | §2.6 function 14 (`sessionInbound`) | **Round 2 (S4B2-01/R2-01).** Every inner decryption failure of a session **creation** is `UNDECRYPTABLE`, the code the row names — including `TooBigMessageGap`, which vodozemac reports *before* the MAC check, and which any holder of the recipient's card could produce with no key material beyond the published fallback key. It used to reach the facade as `GAP_TOO_BIG`, a code `DmSessions.inbound` has no arm for, so an ordinary inbound blob threw `IllegalStateException`: three process deaths per blob before §7.8's poison guard consumed it, against D10 and §7.4's "undecryptable, duplicate, replayed and forged blobs are consumed silently". A gap on an **established** session is still `GAP_TOO_BIG` (function 13) |
+| 6 | §2.6 function 7 (`sessionOutbound`) and the typed facade's arms | **Round 2 (S4B2-03/R2-01).** `DmSessions.Outbound` gains `StateCorrupt`, and `NON_CANONICAL` — the JNI layer's answer to a row value or published key of the wrong length — joins `STATE_CORRUPT` on `sessionOutbound`, `encrypt`, `chainPosition` and `sessionPrune`. `INTERNAL` is now literally the only code the facade throws on, as §2.6 states. The code set of each function is the Rust table `jni::FUNCTION_CODES`, and `DmResultCodesTest` compares it with the facade's `when` arms in both directions |
+| 7 | §7.9 point 4 ("bytes of pickle") | `SESSION_STATE_MAX` = 65 536 bounds **pickle + sidecar + framing**, which is the arithmetic §7.9 itself uses (39 251 = 36 685 + 2 566, 26 285 B to spare) and what `olm_session.state_env`'s CHECK admits. `OVERSIZE` is reported by `encrypt` alone; the other state-storing functions report `STATE_CORRUPT` |
+| 8 | §22.8.2 rule 4 | The libcrux **slice trait** has error types of its own (`KeyGenError`, `EncapsError`, `DecapsError`), not the enum API's single `Error`; each variant is mapped with a wildcard-free `match` and a runtime table test, which is what rule 4 asks for |
+| 9 | §2.1 | The pickle reads of `chainPosition` and `sessionPrune` parse with `serde_json` and wipe every value they parsed before dropping the tree. Declared residue, beside the §2.1 deviation: `serde_json`'s own reallocations can leave copies in freed buffers, of the same kind as the library's (L7-D19) |
+| 10 | §2.6 function 19 | `chainPosition` is **stricter** than the row: a single unreadable entry among readable ones is `STATE_CORRUPT`, not a silent skip — the layout is one shape for all entries |
+| 11 | §16.2 | New nightly job **`dm-state-models`** (EM-1 at three sends per side, EM-2 at three envelopes in flight, release profile), beside the `rust` job's default-bound run |
+| 12 | §2.6 "Typed facade", `L1.parse` | `L1` in Kotlin is a **view type** over what `openOuter`/`openIntro` return, not a Kotlin parser: ADR-19 puts no protocol logic in Kotlin, and those two functions arrive with S7 |
+| 13 | §3.1, §8.3 | **Round 2 (R2-06).** Every Curve25519 key an L1 carries — the PreKey message's identity, base and one-time key, and either kind's ratchet key — must be the **canonical** encoding of its point (little-endian value below `p = 2^255 − 19`); anything else is `NON_CANONICAL`. RFC 7748 masks the top bit and reduces mod `p`, so `k`, `k \| 2^255` and `k + p` are one point to X25519 and to `curve25519-dalek`'s comparison, while Olm hashes the **bytes** into the session id and matches a receiver chain by them: without the rule one key set named two sessions, and a sender could give its peer a second `olm_session` row and a safety-number mismatch against itself |
+| 14 | §2.5, L7-D19 | **Round 2 (R2-04).** Every byte array crossing the JNI boundary is copied into a `Zeroizing` buffer, so `ctxOpen`'s MESSAGING branch, `ghost1` seed and `session_state_key`, and every L0 plaintext, are erased when the call returns instead of surviving `ctxClose` in freed native memory |
+| 15 | §16.1 G-R2, G-R4, G-R7 | **Round 2 (R2-03).** G-R2 is implemented in `rust-feature-policy.sh`: vodozemac in the shipped client graph without `libolm-compat`, `low-level-api`, `experimental-session-config` or `insecure-pk-encryption`, `ghost-client-dm` with no feature but `jni-bridge`, and both crates required to be in that graph so the clause cannot hold vacuously; three self-test fixtures. **Deferred to the S0′ gate slice, with G-R3 and G-R8:** G-R4's dependency-graph half (`no-logging.sh` already covers its source half over `client-core`, including this crate) and G-R7's **script**, whose content S4b already carries as tests — `tests/golden.rs` pins the golden pickles, the transcripts and the `chainPosition` and `sessionPrune` outputs per pin, and the wildcard-free error matches are its compile-time half; what the script adds is the two-directory comparison at a bump, and the first pin is exempt by G-R7's own rule |
+| 16 | §15.2 property tests | **Round 2 (S4B2-04).** The S4b parsers run the `10^6` seeded inputs of R-C4: `olm::message::parse`/`decode` over mutated real PreKey and normal messages, and `SessionState::decode`/`Sidecar::decode` over mutated real states. The pickle readers reached through `chainPosition`, `sessionPrune` and `encrypt` run `10^3`, for the reason `property.rs` gives the signature-verifying parsers: one input costs a `serde_json` parse of a whole session pickle |
+| 17 | §15.2 EM-1 properties | **Round 2 (R2-07).** "No message lost on a session the device held" had no mutant and could not fail; `Selection::DropsHeldMessage` is the receiver that breaks it, run through the search like MC-19. The JVM V-10 / MC-29 test now forges with another pair's normal message — the unknown ratchet key that reaches the sending ratchet's activation — instead of one on a chain the receiver already held |
+
 ---
 
 ## Appendix A: ADR drafts (Romanian)
@@ -3791,7 +3838,7 @@ Round 9's assumptions A1–A11, A18 and A19 (libsignal natives, AAR, logging sin
 
 **S0′ checks (a false result changes the named section before code depends on it)**
 
-**Run and recorded 2026-09-19** (`docs/design/faza9-s0-evidence.md`, branch `p9-spikes` over base `cc24c5c`; crate `ghost/client-core/dm-spike`, outside the ghost workspace with its own `[workspace]` and `Cargo.lock`, deleted in S4b; Rust 1.98.1, cargo-ndk 4.1.2, NDK 30.0.16248370, JDK 17.0.20.1, cargo-deny 0.20.2; every check re-run from scratch and each number verified in that document's Appendix V, then a seven-finding review pass in its Appendix W). **Result: V-1, V-2, V-3, V-4, V-5 (Windows half), V-6, V-7, V-8, V-9, V-10, V-14, V-15 hold; V-12 and V-16 produced a specification but could not run on this host; V-11, V-13 and V-17 belong to other slices.** The fifteen normative corrections S0-1 … S0-15 are merged into this document with the marker "corrected/added by S0′ … 2026-09-19". **Declared as not done on that host, each with its closing place:** V-5 on Linux (the first `android` job run executes `scripts/v5-host-load.sh` before S4b), the X-Wing draft-10 vectors and the byte comparison of the draft-06 vectors with the IETF Appendix text (S4a; the draft-06 file used is byte-identical to the RustCrypto `x-wing` 0.1.0 copy, SHA-256 `a8726596…4f00`, which cites the draft repository at `tests/kats.rs:59`), the V-12 suite run (no CMake on the host; the `vendor-tests` job on the runner image), low-end device timings (§15.10 step 9), V-16 (S12, `dm-emulator.yml`), and turning the G-R3 detector, the G-R8 scanner and their fixtures into `ghost/scripts/gates/*.sh` (the S0′ gate slice — that work changes the gate scripts and the product lock, which the spike lane deliberately left alone).
+**Run and recorded 2026-09-19** (`docs/design/faza9-s0-evidence.md`, branch `p9-spikes` over base `cc24c5c`; crate `ghost/client-core/dm-spike`, outside the ghost workspace with its own `[workspace]` and `Cargo.lock`, deleted in S4b — **kept by S4b, §22.9 item 2**; Rust 1.98.1, cargo-ndk 4.1.2, NDK 30.0.16248370, JDK 17.0.20.1, cargo-deny 0.20.2; every check re-run from scratch and each number verified in that document's Appendix V, then a seven-finding review pass in its Appendix W). **Result: V-1, V-2, V-3, V-4, V-5 (Windows half), V-6, V-7, V-8, V-9, V-10, V-14, V-15 hold; V-12 and V-16 produced a specification but could not run on this host; V-11, V-13 and V-17 belong to other slices.** The fifteen normative corrections S0-1 … S0-15 are merged into this document with the marker "corrected/added by S0′ … 2026-09-19". **Declared as not done on that host, each with its closing place:** V-5 on Linux (the first `android` job run executes `scripts/v5-host-load.sh` before S4b), the X-Wing draft-10 vectors and the byte comparison of the draft-06 vectors with the IETF Appendix text (S4a; the draft-06 file used is byte-identical to the RustCrypto `x-wing` 0.1.0 copy, SHA-256 `a8726596…4f00`, which cites the draft repository at `tests/kats.rs:59`), the V-12 suite run (no CMake on the host; the `vendor-tests` job on the runner image), low-end device timings (§15.10 step 9), V-16 (S12, `dm-emulator.yml`), and turning the G-R3 detector, the G-R8 scanner and their fixtures into `ghost/scripts/gates/*.sh` (the S0′ gate slice — that work changes the gate scripts and the product lock, which the spike lane deliberately left alone).
 
 | # | Check | Affects |
 |---|---|---|

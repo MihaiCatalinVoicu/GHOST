@@ -28,7 +28,11 @@
 #              `libghost_client_net.so` (§22.8.10 points 6 and 10). Without one the symbol half is
 #              skipped and the source halves still run, so the gate is useful on a host without
 #              the Rust toolchain.
-# Self-test hooks: GHOST_DM_JNI_SOURCE, GHOST_DM_JNI_KOTLIN, GHOST_DM_JNI_SCAN.
+# Self-test hooks: GHOST_DM_JNI_SOURCE, GHOST_DM_JNI_KOTLIN, GHOST_DM_JNI_SCAN, and
+# GHOST_DM_JNI_NM, which names the symbol reader — the fixtures in
+# `test-harness/gates/dm-jni/nm/` are readers that print an exported list with one symbol too many,
+# one too few, or fail outright, which is how the symbol half gets negative fixtures without
+# committing built libraries (review round 2, R2-05).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 SOURCE="${GHOST_DM_JNI_SOURCE:-$GHOST_ROOT/client-core/dm/src/jni.rs}"
 KOTLIN="${GHOST_DM_JNI_KOTLIN:-$GHOST_ROOT/android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt}"
@@ -129,7 +133,15 @@ done < <(comm -13 "$work/kotlin" "$work/expected")
 # `llvm-nm` is preferred where it exists, as §22.8.10 point 6 writes it: `android-native` passes
 # the **Android** libraries, and a host binutils `nm` is not always built with the aarch64 target,
 # while llvm-nm reads every target it was compiled for.
-if command -v llvm-nm >/dev/null; then NM=llvm-nm; elif command -v nm >/dev/null; then NM=nm; else NM=""; fi
+#
+# The reader's **exit status** is checked (review round 2, R2-05): an `nm` that cannot read the
+# library — a binutils build without the aarch64 target, a truncated file — used to be swallowed by
+# `2>/dev/null … || true` and reported as eleven missing exports, which reads as "the library is
+# wrong" when the truth is "the runner is". A broken reader is its own failure.
+if [ -n "${GHOST_DM_JNI_NM:-}" ]; then NM="$GHOST_DM_JNI_NM"
+elif command -v llvm-nm >/dev/null; then NM=llvm-nm
+elif command -v nm >/dev/null; then NM=nm
+else NM=""; fi
 for LIBRARY in "$@"; do
   if [ ! -f "$LIBRARY" ]; then
     fail "library not found: $LIBRARY"
@@ -137,8 +149,10 @@ for LIBRARY in "$@"; do
     echo "[dm-jni-surface] symbol check skipped: $LIBRARY is not ELF (${NM:-nm} -D cannot read it)" >&2
   elif [ -z "$NM" ]; then
     fail "neither llvm-nm nor nm found: the symbol check of an ELF library needs one of them"
+  elif ! "$NM" -D --defined-only "$LIBRARY" > "$work/nm-out" 2> "$work/nm-err"; then
+    fail "$NM could not read $LIBRARY: $(head -n 1 "$work/nm-err")"
   else
-    "$NM" -D --defined-only "$LIBRARY" 2>/dev/null | grep -oE "${PREFIX}[A-Za-z0-9]+" \
+    grep -oE "${PREFIX}[A-Za-z0-9]+" "$work/nm-out" \
       | sed -E "s/${PREFIX}//" | sort -u > "$work/symbols" || true
     while read -r name; do
       [ -n "$name" ] || continue

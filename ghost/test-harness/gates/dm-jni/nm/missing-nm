@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6, negative case: one entry of the closed list is **not** exported —
+# a linker that dropped `sessionPrune`, which is what the gate exists to catch before a device does.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@" | grep -v 'DmNative_sessionPrune$'

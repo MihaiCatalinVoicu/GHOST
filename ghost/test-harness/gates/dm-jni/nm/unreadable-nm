@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6, negative case: a reader that cannot read the library at all —
+# a binutils `nm` without the aarch64 target, which prints nothing and exits non-zero. Before
+# review round 2 (R2-05) the gate swallowed this and reported every export as missing.
+set -euo pipefail
+echo "nm: ${*: -1}: file format not recognized" >&2
+exit 1

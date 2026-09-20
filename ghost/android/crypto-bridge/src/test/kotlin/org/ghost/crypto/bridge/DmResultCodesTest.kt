@@ -53,6 +53,79 @@ class DmResultCodesTest {
         }
     }
 
+    /**
+     * Per **function**, not only per list (review round 2, S4B2-01/R2-01): `DmSessions`' `when`
+     * arms are exactly the code set the native function declares in `FUNCTION_CODES`, plus `OK`
+     * and the `CRYPTO_UNAVAILABLE` Kotlin synthesises when the library is missing.
+     *
+     * A code with no arm falls into `unexpected` and throws `IllegalStateException`, which §2.6
+     * reserves for `INTERNAL` — that is how a first flight past Olm's message gap turned an
+     * ordinary inbound blob into three process deaths. An arm for a code the function cannot
+     * return is the opposite drift: a surface that outlived its reason. Both fail here.
+     */
+    @Test
+    fun everyFacadeFunctionHandlesExactlyTheCodesItsNativeFunctionCanReturn() {
+        val rust = rustSource("jni.rs").readText()
+        val table = rust.substringAfter("pub const FUNCTION_CODES").substringBefore("\n];")
+        val spelling = Regex("""DmCode::(\w+) => "([A-Z_]+)",""")
+            .findAll(rustResultSource().readText())
+            .associate { it.groupValues[1] to it.groupValues[2] }
+        val declared = Regex(
+            """\(\s*"(\w+)"\s*,\s*&\[([^\]]*)]\s*,?\s*\)""",
+            RegexOption.DOT_MATCHES_ALL,
+        )
+            .findAll(table)
+            .associate { match ->
+                match.groupValues[1] to Regex("""DmCode::(\w+)""")
+                    .findAll(match.groupValues[2])
+                    .map { code ->
+                        val variant = code.groupValues[1]
+                        spelling[variant] ?: error("Rust has no name() arm for $variant")
+                    }
+                    .toSet()
+            }
+        assertTrue("FUNCTION_CODES must be readable", declared.size >= 11)
+
+        // The functions whose facade wrapper returns `null` (or ignores the reply) on **any**
+        // non-OK code, so there are no arms to compare: a context that did not open, a card index
+        // out of range, a generation that could not be sealed, a safety number that could not be
+        // computed. They are named here so a new exported function cannot quietly join them.
+        val nullOnFailure = setOf("ctxOpen", "ctxClose", "ownCard", "bundleCreate", "safetyNumber")
+
+        val facade = File("src/main/kotlin/org/ghost/crypto/bridge/DmSessions.kt").canonicalFile
+        assertTrue("$facade must exist", facade.isFile)
+        val arms = Regex(
+            """when \(result\.code\) \{(.*?)else -> unexpected\(result\.code, "(\w+)"\)""",
+            RegexOption.DOT_MATCHES_ALL,
+        )
+            .findAll(facade.readText())
+            .associate { match ->
+                match.groupValues[2] to Regex("""DmCode\.([A-Z_]+)""")
+                    .findAll(match.groupValues[1])
+                    .map { it.groupValues[1] }
+                    .toSet()
+            }
+
+        for ((function, codes) in declared) {
+            if (function in nullOnFailure) {
+                assertNull("$function must have no when block", arms[function])
+                continue
+            }
+            val handled = arms[function] ?: error("DmSessions has no when block for $function")
+            assertEquals(
+                "$function: the facade arms and the native code set disagree",
+                codes + "OK" + "CRYPTO_UNAVAILABLE",
+                handled,
+            )
+        }
+        for (function in arms.keys) {
+            assertTrue(
+                "DmSessions answers $function, which FUNCTION_CODES does not declare",
+                function in declared,
+            )
+        }
+    }
+
     @Test
     fun everyWireByteRoundTripsAndUndefinedBytesHaveNoCode() {
         val defined = DmCode.entries.map { it.wire }.toSet()

@@ -26,12 +26,27 @@
 //! through the search and each breaks it. Rule 5's day arithmetic is not abstracted into the
 //! search: `the_provisional_schedule_has_no_gap` checks it exhaustively in days.
 //!
-//! **Bounds.** At most two user sends per side by default, and at most [`WIRE_MAX`] messages in
-//! flight. The design writes "at most 6 user sends per side": the reachable state count grows by
-//! roughly an order of magnitude per extra send (140 075 states at two, 2 296 274 at three), so
-//! `GHOST_DM_EM_SENDS`, with `GHOST_DM_EM_BUDGET` raised alongside it, takes the run further, and
+//! **Every property is falsifiable, and each has the mutant that shows it.** MC-19 for R-SS2, the
+//! display-twice and retirement mutants of `the_display_and_retirement_properties_catch_their_mutants`,
+//! [`Selection::DropsHeldMessage`] for "no message lost on a held session" (review round 2,
+//! R2-07: that one property had no mutant and could not fail), and EM-2's three sender rules.
+//!
+//! **Bounds — one per model, and they are not the same bound** (corrected in review round 2,
+//! S4B2-02).
+//!
+//! *EM-1* is bounded by **user sends per side**: two by default, and at most [`WIRE_MAX`] messages
+//! in flight. The design writes "at most 6 user sends per side"; the reachable state count grows
+//! by roughly an order of magnitude per extra send (140 075 states at two, 2 296 274 at three), so
+//! `GHOST_DM_EM_SENDS`, with `GHOST_DM_EM_BUDGET` raised alongside it, takes the run further and
 //! the nightly `dm-state-models` workflow runs three in the release profile. **Recorded
 //! deviation:** the enforced bounds are 2 (pull requests) and 3 (nightly), not 6.
+//!
+//! *EM-2* has **no user-send notion at all**: a send is enabled whenever the mode rule yields a
+//! mode, and each party's state is a finite bit-vector, so the only bound is how many envelopes
+//! may be in flight at once — [`em2_wire_max`], read from `GHOST_DM_EM_WIRE`. Inside that bound
+//! the search is exhaustive (356 463 states at two, 2 851 029 at three, measured in the release
+//! profile; 134 s at three). `GHOST_DM_EM_SENDS` never reached this model, so the nightly used to
+//! explore exactly the pull request's state space; it now raises `GHOST_DM_EM_WIRE` to 3.
 //!
 //! The models complement the ProVerif obligations M-1 … M-8 of §9.5, which check secrecy and
 //! authentication rather than state reachability, and mutant MC-19 ("newest decrypt wins") must
@@ -67,6 +82,20 @@ fn sends_per_side() -> u8 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2)
+}
+
+/// Envelopes allowed in flight at once in EM-2, which is that model's whole bound: its state is a
+/// finite bit-vector per party, so the search is exhaustive over everything else it can reach.
+///
+/// It is a **separate** knob from [`sends_per_side`] because EM-2 has no notion of a user send —
+/// a send is enabled whenever the mode rule yields a mode — and `GHOST_DM_EM_SENDS` therefore
+/// never reached it (review round 2, S4B2-02). `GHOST_DM_EM_WIRE` is what deepens EM-2, and the
+/// nightly `dm-state-models` workflow raises both.
+fn em2_wire_max() -> usize {
+    std::env::var("GHOST_DM_EM_WIRE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(WIRE_MAX)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -240,13 +269,18 @@ impl World {
     }
 }
 
-/// How R-SS2 decides a swap. The mutant substitutes [`Selection::NewestWins`] for MC-19.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Which receive rules the model runs. The mutants are run **through the search**, so what catches
+/// them is a property of a reachable state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Selection {
     /// The design's R-SS2.
     Rules,
     /// MC-19: whichever row decrypted last becomes `current`.
     NewestWins,
+    /// A receiver that drops a message of a session it **holds**, on a chain index that row has
+    /// not seen. Nothing in the design admits this; it is what makes EM-1's "no message lost on a
+    /// held session" property falsifiable (review round 2, R2-07).
+    DropsHeldMessage,
 }
 
 /// R-SS2 (§8.2, with the §22.8.4 age guards): should the row that just decrypted be promoted?
@@ -485,6 +519,18 @@ fn deliver(world: &mut World, target: usize, message: &Message, selection: Selec
     };
 
     if let Some(on_current) = slot {
+        // The R2-07 mutant: the message belongs to a session this device holds, on a chain index
+        // that row has not consumed, and it is dropped anyway.
+        if selection == Selection::DropsHeldMessage {
+            let held = if on_current {
+                device.current.as_ref()
+            } else {
+                device.previous.as_ref()
+            };
+            if held.is_some_and(|row| !row.seen.contains(&message.chain)) {
+                return false;
+            }
+        }
         let (row, other) = if on_current {
             (
                 device.current.as_mut().expect("current"),
@@ -732,6 +778,25 @@ fn mc19_newest_decrypt_wins_is_detected() {
             "MC-19 must break the §22.8.4 invariant, not {reason}"
         ),
         other => panic!("MC-19 must fail an EM-1 property, got {other:?}"),
+    }
+}
+
+/// §15.2's "no lost message outside the declared bound of §7.7", falsified: a receiver that drops
+/// a message of a session it holds must break an EM-1 property.
+///
+/// Review round 2 (R2-07) found the check vacuous — `lost_on_held_session` is set only when
+/// `deliver` refuses a message the device holds on an unseen chain index, and no rule variant of
+/// the model could do that, so the flag could never be set and the 51 688 held-session deliveries
+/// of the report proved nothing. [`Selection::DropsHeldMessage`] is the mutant that can, and the
+/// search finds it, which is what makes the property mean something on the design run.
+#[test]
+fn em1_detects_a_receiver_that_loses_a_held_message() {
+    match explore_em1(Selection::DropsHeldMessage) {
+        Err(Stop::Property(reason)) => assert!(
+            reason.contains("was lost"),
+            "the mutant must break the loss property, not {reason}"
+        ),
+        other => panic!("a receiver that drops a held message must fail EM-1, got {other:?}"),
     }
 }
 
@@ -989,12 +1054,12 @@ fn root_rides(seal: &Seal, index: usize, mode: Mode) -> bool {
         && mode != Mode::Intro
 }
 
-fn em2_successors(seal: &Seal, rule: SealRule) -> Vec<Seal> {
+fn em2_successors(seal: &Seal, rule: SealRule, wire_max: usize) -> Vec<Seal> {
     let mut out = Vec::new();
     for index in 0..2 {
         // A send in the mode the rule picks; a root rides only in an acknowledged session's
         // normal message (§21.3 point 1), never in a PreKey message.
-        if seal.wire.len() < WIRE_MAX {
+        if seal.wire.len() < wire_max {
             if let Some(mode) = seal.mode(index, rule) {
                 let mut next = seal.clone();
                 if mode == Mode::Pair {
@@ -1180,6 +1245,7 @@ fn em2_transition(before: &Seal, after: &Seal) -> Result<(), String> {
 
 fn explore_em2(rule: SealRule) -> Result<(usize, usize), Stop> {
     let budget = state_budget();
+    let wire_max = em2_wire_max();
     let mut seen = BTreeSet::new();
     let mut queue = VecDeque::new();
     let start = Seal::new();
@@ -1202,7 +1268,7 @@ fn explore_em2(rule: SealRule) -> Result<(usize, usize), Stop> {
             em2_seal_time(&seal, index, mode, carries_root).map_err(Stop::Property)?;
             seals_checked += 1;
         }
-        for next in em2_successors(&seal, rule) {
+        for next in em2_successors(&seal, rule, wire_max) {
             em2_transition(&seal, &next).map_err(Stop::Property)?;
             if seen.insert(format!("{next:?}")) {
                 queue.push_back(next);
@@ -1216,7 +1282,10 @@ fn explore_em2(rule: SealRule) -> Result<(usize, usize), Stop> {
 fn em2_seal_modes_hold_every_property() {
     let (states, seals) = explore_em2(SealRule::Design).expect("EM-2");
     assert!(states > 500, "EM-2 explored only {states} states");
-    println!("EM-2: {states} states, {seals} seal decisions");
+    println!(
+        "EM-2: {states} states, {seals} seal decisions (wire {})",
+        em2_wire_max()
+    );
 }
 
 /// The EM-2 counterparts of MC-19, each run **through the search**: a sender that ignores the

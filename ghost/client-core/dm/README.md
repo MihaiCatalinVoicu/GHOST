@@ -96,9 +96,12 @@ cargo test -p ghost-client-dm
   checking the **8-byte** V1 MAC, with `M` exported through vodozemac's `low-level-api` (dev graph
   only). It catches the configuration misuse the library's own tests cannot see.
 - `tests/state_models.rs`: **EM-1** (sessions) and **EM-2** (seal modes), enumerated exhaustively
-  by breadth-first search over canonicalised states. MC-19 ("newest decrypt wins") is run as a
-  substituted rule and must break a property. PR scale is two user sends per side;
-  `GHOST_DM_EM_SENDS` with `GHOST_DM_EM_BUDGET` takes it to the design's six for a gate run.
+  by breadth-first search over canonicalised states. Every property has a mutant that breaks it,
+  run through the search: MC-19 ("newest decrypt wins"), a receiver that drops a message of a
+  session it holds, and EM-2's three sender rules. The two models have **different bounds**:
+  EM-1 counts user sends per side (`GHOST_DM_EM_SENDS`, 2 by default), EM-2 counts envelopes in
+  flight (`GHOST_DM_EM_WIRE`, 2 by default) because it has no user-send notion at all. Raise
+  `GHOST_DM_EM_BUDGET` with either; the nightly `dm-state-models` workflow runs 3 and 3.
 - `tests/xwing_kat.rs`: the X-Wing draft-06 vectors and a differential test against RustCrypto
   `x-wing` 0.1.0 (dev graph only).
 - `tests/vectors.rs`: generates and checks `protocol/test-vectors/dm_derive.txt`, `dm_seal.txt`,

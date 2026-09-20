@@ -11,6 +11,7 @@
 //! lets the typed facade's `L1.parse` be a view over a decoded result rather than a Kotlin parser
 //! (ADR-19: no protocol logic in Kotlin).
 
+use crate::pq;
 use crate::result::{DmCode, DmResult};
 use vodozemac::olm::{
     DecryptionError, EncryptionError, OlmMessage, PreKeyMessage, SessionCreationError,
@@ -96,13 +97,40 @@ pub fn parse(l1: &[u8], is_pre_key: bool) -> DmResult<L1Header> {
 }
 
 /// Decodes L1 bytes into the library's message type.
+///
+/// Every key the message carries must be a **canonical** Curve25519 encoding
+/// ([`pq::canonical_u_coordinate`]); anything else is [`DmCode::NonCanonical`] (review round 2,
+/// R2-06). This is the one place every L1 passes — [`parse`], [`decode_pre_key`] and
+/// `session::decrypt` all come through here — which is what makes the rule hold for the session
+/// id, the pinned identity and the receiver chain a message names at once.
 pub fn decode(l1: &[u8], is_pre_key: bool) -> DmResult<OlmMessage> {
     let kind = if is_pre_key {
         MESSAGE_TYPE_PRE_KEY
     } else {
         MESSAGE_TYPE_NORMAL
     };
-    OlmMessage::from_parts(kind, l1).map_err(|_| DmCode::NonCanonical)
+    let message = OlmMessage::from_parts(kind, l1).map_err(|_| DmCode::NonCanonical)?;
+    if !canonical_keys(&message) {
+        return Err(DmCode::NonCanonical);
+    }
+    Ok(message)
+}
+
+/// Whether every Curve25519 key of a decoded message is a canonical encoding of its point.
+///
+/// Olm hashes the three PreKey fields into the session id and matches a receiver chain by the
+/// ratchet key's **bytes**, while X25519 works on the point: without this, one key set would name
+/// two sessions and one chain two chains (R2-06).
+fn canonical_keys(message: &OlmMessage) -> bool {
+    match message {
+        OlmMessage::PreKey(pre_key) => {
+            pq::canonical_u_coordinate(&pre_key.identity_key().to_bytes())
+                && pq::canonical_u_coordinate(&pre_key.base_key().to_bytes())
+                && pq::canonical_u_coordinate(&pre_key.one_time_key().to_bytes())
+                && pq::canonical_u_coordinate(&pre_key.message().ratchet_key().to_bytes())
+        }
+        OlmMessage::Normal(normal) => pq::canonical_u_coordinate(&normal.ratchet_key().to_bytes()),
+    }
 }
 
 /// Decodes L1 bytes that must be a PreKey message.
@@ -124,6 +152,17 @@ pub fn session_id_bytes(session_id: &str) -> DmResult<[u8; SESSION_ID_BYTES]> {
 }
 
 /// Every `SessionCreationError` variant (§2.6 function 14; S0′ V-2 added the session-config row).
+///
+/// **The whole `Decryption` branch is `UNDECRYPTABLE`** (review round 2, S4B2-01/R2-01), which is
+/// the code §2.6 function 14's row names for a first flight that does not open. It is not
+/// [`decryption_code`], because that function's codes belong to function 13: `create_inbound_session`
+/// forwards the inner decryption of the first message, and `DecryptionError::TooBigMessageGap` —
+/// which vodozemac reports **before** the MAC is checked
+/// (`vz:src/olm/session/receiver_chain.rs:184-190`) — would otherwise hand the typed facade a
+/// `GAP_TOO_BIG` its `sessionInbound` arm list does not carry. Any holder of the recipient's card
+/// can author such a first flight with no key material beyond the published fallback key, and the
+/// outcome would be an `IllegalStateException` per blob rather than the silent drop D10 and §7.4
+/// require. A gap on an established session is still `GAP_TOO_BIG`: that path is function 13's.
 pub const fn creation_code(error: &SessionCreationError) -> DmCode {
     match error {
         SessionCreationError::MissingOneTimeKey(_) => DmCode::MissingKey,
@@ -131,7 +170,7 @@ pub const fn creation_code(error: &SessionCreationError) -> DmCode {
         // A PreKey message of another session version: not our peer's session, and not a forgery
         // we can name any better than "does not decrypt".
         SessionCreationError::MismatchedSessionConfig { .. } => DmCode::Undecryptable,
-        SessionCreationError::Decryption(inner) => decryption_code(inner),
+        SessionCreationError::Decryption(_) => DmCode::Undecryptable,
         SessionCreationError::NonContributoryKey => DmCode::InvalidKey,
     }
 }
@@ -229,16 +268,165 @@ mod tests {
             }),
             DmCode::Undecryptable
         );
+        // Every inner decryption failure is one code at session creation (S4B2-01/R2-01): the two
+        // that differ from `decryption_code` are named here, because a wildcard-free match cannot
+        // pin what a branch maps to.
         assert_eq!(
             creation_code(&SessionCreationError::Decryption(
                 DecryptionError::MissingMessageKey(0)
             )),
-            DmCode::DuplicateOrLost
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            creation_code(&SessionCreationError::Decryption(
+                DecryptionError::TooBigMessageGap(2_001, 2_000)
+            )),
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            creation_code(&SessionCreationError::Decryption(
+                DecryptionError::InvalidMAC(MacError)
+            )),
+            DmCode::Undecryptable
         );
         assert_eq!(
             creation_code(&SessionCreationError::NonContributoryKey),
             DmCode::InvalidKey
         );
+    }
+
+    /// §15.2 and R-C4 for the L1 parsers (review round 2, S4B2-04): `10^6` seeded inputs, free-form
+    /// and mutated from a **real** PreKey and a real normal message, through both `is_pre_key`
+    /// values. Never a panic, never an over-read, and every refusal a typed [`DmCode`].
+    ///
+    /// These bytes are attacker-supplied: a card holder's intro envelope carries L1 whole, so this
+    /// is the parser §15.2's "every parser" means most literally. Both entry points are covered at
+    /// once — [`parse`] calls [`decode`] and then reads every field out of the decoded message,
+    /// which is where an over-read would live.
+    #[test]
+    fn the_l1_parsers_never_panic_on_seeded_inputs() {
+        let templates = crate::olm::session::fixtures::settled().messages;
+        let mut rng = crate::property::Seeded::new(0x4f_6c_6d_31_5f_4c_31_00);
+        for _ in 0..crate::property::inputs() {
+            let template = &templates[rng.below(templates.len())];
+            let bytes = rng.mutate(template);
+            // The kind is the caller's claim, not the blob's: both are tried on every input.
+            for is_pre_key in [false, true] {
+                match parse(&bytes, is_pre_key) {
+                    Ok(header) => assert_eq!(header.is_pre_key(), is_pre_key),
+                    Err(code) => assert!(
+                        matches!(code, DmCode::NonCanonical | DmCode::StateCorrupt),
+                        "{code:?}"
+                    ),
+                }
+                if let Ok(message) = decode(&bytes, is_pre_key) {
+                    assert_eq!(
+                        matches!(message, OlmMessage::PreKey(_)),
+                        is_pre_key,
+                        "the decoded kind is the one that was asked for"
+                    );
+                }
+            }
+        }
+        for _ in 0..crate::property::inputs() / 4 {
+            let bytes = rng.random_input(256);
+            for is_pre_key in [false, true] {
+                if let Err(code) = parse(&bytes, is_pre_key) {
+                    assert!(
+                        matches!(code, DmCode::NonCanonical | DmCode::StateCorrupt),
+                        "{code:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Review round 2 (R2-06): an L1 whose keys are **non-canonical encodings** of their points is
+    /// refused, so one key set names one session id and one receiver chain.
+    ///
+    /// RFC 7748 masks the top bit of a u-coordinate and reduces mod `p`, so `k`, `k | 2^255` and
+    /// `k + p` are the same point to X25519 — `curve25519-dalek`'s `MontgomeryPoint::ct_eq`
+    /// compares field elements — while `to_bytes()` keeps the raw byte that
+    /// `PreKeyMessage::session_id` hashes. Without this check a sender could hand its peer two
+    /// `olm_session` rows for one key set, or a normal message that names a chain the peer holds
+    /// under a different encoding.
+    #[test]
+    fn a_non_canonical_key_encoding_is_refused() {
+        let settled = crate::olm::session::fixtures::settled();
+        let first = &settled.messages[0];
+        let normal = &settled.messages[1];
+
+        let pre_key = match parse(first, true).expect("header") {
+            L1Header::PreKey {
+                identity_key,
+                base_key,
+                one_time_key,
+                ratchet_key,
+                ..
+            } => vec![identity_key, base_key, one_time_key, ratchet_key],
+            L1Header::Normal { .. } => panic!("the first flight is a PreKey message"),
+        };
+        for key in pre_key {
+            for variant in non_canonical_variants(&key) {
+                let blob = replace_key(first, &key, &variant);
+                assert_eq!(
+                    parse(&blob, true).err(),
+                    Some(DmCode::NonCanonical),
+                    "a PreKey message key must be canonical"
+                );
+                assert_eq!(decode(&blob, true).err(), Some(DmCode::NonCanonical));
+            }
+        }
+
+        let ratchet_key = parse(normal, false).expect("header").ratchet_key();
+        for variant in non_canonical_variants(&ratchet_key) {
+            let blob = replace_key(normal, &ratchet_key, &variant);
+            assert_eq!(parse(&blob, false).err(), Some(DmCode::NonCanonical));
+        }
+
+        // The genuine messages, whose keys are canonical, still parse.
+        assert!(parse(first, true).is_ok());
+        assert!(parse(normal, false).is_ok());
+    }
+
+    /// The two encodings of one point RFC 7748 accepts and this crate does not: the top bit set,
+    /// and the value `k + p` when it still fits in 255 bits.
+    fn non_canonical_variants(key: &[u8; 32]) -> Vec<[u8; 32]> {
+        let mut variants = Vec::new();
+        let mut high = *key;
+        high[31] |= 0x80;
+        if high != *key {
+            variants.push(high);
+        }
+        // `k + p`, kept only when it did not overflow 255 bits: `p = 2^255 - 19`.
+        let mut sum = [0u8; 32];
+        let mut carry = 0u16;
+        let p = crate::pq::CURVE25519_P;
+        for i in 0..32 {
+            let value = u16::from(key[i]) + u16::from(p[i]) + carry;
+            sum[i] = (value & 0xff) as u8;
+            carry = value >> 8;
+        }
+        if carry == 0 && sum[31] & 0x80 == 0 {
+            variants.push(sum);
+        }
+        assert!(
+            !variants.is_empty(),
+            "no non-canonical variant for this key"
+        );
+        variants
+    }
+
+    /// Replaces the 32 bytes of `key` inside an encoded message. The keys of an Olm message are
+    /// protobuf `bytes` fields, so they appear verbatim.
+    fn replace_key(l1: &[u8], key: &[u8; 32], replacement: &[u8; 32]) -> Vec<u8> {
+        let at = l1
+            .windows(32)
+            .position(|window| window == key)
+            .expect("the key is in the message");
+        let mut out = l1.to_vec();
+        out[at..at + 32].copy_from_slice(replacement);
+        out
     }
 
     #[test]

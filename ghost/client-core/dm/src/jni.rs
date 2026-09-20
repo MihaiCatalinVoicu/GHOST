@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Whether a function of the closed list is exported by the current build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +72,98 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
     (18, "l0Decode", Availability::Declared("S7")),
     (19, "chainPosition", Availability::Exported),
     (20, "sessionPrune", Availability::Exported),
+];
+
+/// The codes each exported function can return besides [`DmCode::Ok`] (review round 2,
+/// S4B2-01/R2-01).
+///
+/// §2.6's table gives the **protocol** codes of each function; this table adds the codes the JNI
+/// layer itself produces — [`DmCode::NonCanonical`] from an argument whose length is not the one
+/// the signature takes, [`DmCode::CryptoUnavailable`] from a closed or foreign handle, and the
+/// [`DmCode::StateCorrupt`] of [`wrap::unwrap`] and [`wrap::wrap`] — so it is the set a caller has
+/// to answer. [`DmCode::Internal`] is not listed: it is a caught panic, it belongs to every
+/// function, and it is the one outcome the typed facade throws on (§2.6). Kotlin synthesises
+/// `CRYPTO_UNAVAILABLE` of its own when the library is missing, so every facade function answers
+/// that code whether or not its row names it.
+///
+/// `DmResultCodesTest` reads this table out of this file and checks that `DmSessions`' `when` arms
+/// are exactly it, in both directions: a code with no arm would reach `unexpected` and throw — the
+/// `GAP_TOO_BIG` of S4B2-01 — and an arm for a code the function cannot return is a stale surface.
+pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
+    ("ctxOpen", &[DmCode::NonCanonical]),
+    ("ctxClose", &[DmCode::CryptoUnavailable]),
+    ("ownCard", &[DmCode::InvalidCard, DmCode::CryptoUnavailable]),
+    (
+        "bundleCreate",
+        &[
+            DmCode::InvalidCard,
+            DmCode::NonCanonical,
+            DmCode::InvalidKey,
+            DmCode::NoFit,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    (
+        "sessionOutbound",
+        &[
+            DmCode::NonCanonical,
+            DmCode::InvalidKey,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    (
+        "encrypt",
+        &[
+            DmCode::NonCanonical,
+            DmCode::InvalidSession,
+            DmCode::Oversize,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    (
+        "decrypt",
+        &[
+            DmCode::NonCanonical,
+            DmCode::Undecryptable,
+            DmCode::DuplicateOrLost,
+            DmCode::GapTooBig,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    (
+        "sessionInbound",
+        &[
+            DmCode::NonCanonical,
+            DmCode::MissingKey,
+            DmCode::IdentityMismatch,
+            DmCode::InvalidKey,
+            DmCode::Undecryptable,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    ("safetyNumber", &[DmCode::NonCanonical]),
+    (
+        "chainPosition",
+        &[
+            DmCode::NonCanonical,
+            DmCode::NewChain,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    (
+        "sessionPrune",
+        &[
+            DmCode::NonCanonical,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
 ];
 
 /// The TLV field tags of the reply. Kotlin's `DmResult` decodes exactly this set.
@@ -297,11 +389,23 @@ fn guarded(
     }
 }
 
-fn bytes(env: &JNIEnv, array: &JByteArray) -> Result<Vec<u8>, DmCode> {
+/// The native copy of a Java byte array, **erased when it is dropped**.
+///
+/// `convert_byte_array` allocates a `Vec` on the native heap and copies the array into it. Some of
+/// those arrays are the crown jewels — `ctxOpen`'s MESSAGING branch, `ghost1` seed and
+/// `session_state_key`, and every L0 plaintext `encrypt` is handed — so the copy is a
+/// [`Zeroizing`] rather than a plain `Vec`: without it the secrets survived `ctxClose` in freed
+/// native memory, which §2.5 and L7-D19 ("zeroised on lock and wipe") do not allow (review round
+/// 2, R2-04). The rest of the crate already erases every intermediate it builds; this is the copy
+/// the boundary itself makes.
+fn bytes(env: &JNIEnv, array: &JByteArray) -> Result<Zeroizing<Vec<u8>>, DmCode> {
     env.convert_byte_array(array)
+        .map(Zeroizing::new)
         .map_err(|_| DmCode::NonCanonical)
 }
 
+/// The same copy, as a fixed-size array: the [`Zeroizing`] temporary erases itself at the end of
+/// the statement, so a secret of known length leaves nothing behind either.
 fn fixed<const N: usize>(env: &JNIEnv, array: &JByteArray) -> Result<[u8; N], DmCode> {
     bytes(env, array)?
         .as_slice()
@@ -632,7 +736,7 @@ pub fn decrypt(
 }
 
 /// One stored slot as it crosses JNI: its raw session id and its wrapped state envelope.
-type StoredSlot = ([u8; 32], Vec<u8>);
+type StoredSlot = ([u8; 32], Zeroizing<Vec<u8>>);
 
 /// Decodes one slot argument pair. An absent slot is an empty session id **and** an empty
 /// envelope; a session id without an envelope is [`DmCode::StateCorrupt`], because the caller
@@ -1263,6 +1367,47 @@ mod tests {
         }
     }
 
+    /// [`FUNCTION_CODES`] covers exactly the exported functions, once each, and names no code that
+    /// is not an outcome: `OK` is the absence of one and `INTERNAL` is the caught panic every
+    /// function shares and the only one the facade throws on (§2.6). The arm-by-arm comparison
+    /// against `DmSessions` is `DmResultCodesTest`'s, on the Kotlin side where the arms live.
+    #[test]
+    fn every_exported_function_declares_the_codes_it_can_return() {
+        let exported: Vec<&str> = CLOSED_LIST
+            .iter()
+            .filter(|(_, _, availability)| *availability == Availability::Exported)
+            .map(|(_, name, _)| *name)
+            .collect();
+        let listed: Vec<&str> = FUNCTION_CODES.iter().map(|(name, _)| *name).collect();
+        for name in &exported {
+            assert_eq!(
+                listed.iter().filter(|other| *other == name).count(),
+                1,
+                "{name} needs exactly one row in FUNCTION_CODES"
+            );
+        }
+        for name in &listed {
+            assert!(
+                exported.contains(name),
+                "FUNCTION_CODES names '{name}', which the closed list does not export"
+            );
+        }
+        for (name, codes) in FUNCTION_CODES {
+            let mut seen: Vec<DmCode> = codes.to_vec();
+            let count = seen.len();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), count, "{name} lists a code twice");
+            for code in *codes {
+                assert!(
+                    !matches!(code, DmCode::Ok | DmCode::Internal),
+                    "{name} must not list {}",
+                    code.name()
+                );
+            }
+        }
+    }
+
     /// Every tag of the reply codec, not a hand-picked subset: the tags are distinct, they are the
     /// contiguous run `0x01 ..= ALL.len()`, and each one equals the enumeration's own
     /// discriminant. A tag added to [`Field`] without a line in [`Field::ALL`] leaves the run short
@@ -1279,6 +1424,27 @@ mod tests {
         for field in Field::ALL {
             assert_eq!(field.tag(), *field as u8, "{field:?} renumbered");
         }
+    }
+
+    /// §2.5 and L7-D19 (review round 2, R2-04): the copy the boundary makes of an input array
+    /// erases itself. `ctxOpen` receives the MESSAGING branch, the `ghost1` seed and
+    /// `session_state_key` this way, and `encrypt` every L0 plaintext.
+    ///
+    /// The check is on the **signature**, because that is what propagates: [`fixed`] and every
+    /// call site inherit the erasure from [`bytes`], and a change back to a plain `Vec` stops
+    /// compiling here.
+    #[test]
+    fn every_input_array_copy_erases_itself() {
+        /// The signature [`bytes`] must keep, and the one [`fixed`] and every call site inherit.
+        type ArrayReader = for<'a, 'b> fn(
+            &'a JNIEnv<'b>,
+            &'a JByteArray<'b>,
+        ) -> Result<Zeroizing<Vec<u8>>, DmCode>;
+
+        fn erases_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        erases_on_drop::<Zeroizing<Vec<u8>>>();
+        let reader: ArrayReader = bytes;
+        let _ = reader;
     }
 
     fn test_context() -> DmContext {

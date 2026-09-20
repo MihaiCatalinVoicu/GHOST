@@ -176,14 +176,26 @@ class DmSessionsNativeTest {
     }
 
     /**
-     * §7.9 point 2 across the JNI boundary: a failed decrypt returns no state, so the caller has
-     * nothing to write and the stored envelope stays byte-identical (V-10, mutant MC-29).
+     * §7.9 point 2 across the JNI boundary (V-10, mutant MC-29): a failed decrypt returns no state,
+     * and the session the caller still holds goes on talking to its peer.
+     *
+     * The forgery is a **normal message of another pair**, as `olm::session`'s `forgery_scene`
+     * builds it: a message on a ratchet key the recipient does not hold is the one that reaches
+     * `sending_ratchet.advance` and activates the inactive sending ratchet in place, *before* the
+     * decryption can fail (`vz:src/olm/session/double_ratchet.rs:168-191`). Review round 2 (R2-07)
+     * found this test forging on a chain B already held — the hit path, which never touches the
+     * sending ratchet — and asserting only that the **input** array was unchanged, which JNI's own
+     * array copy makes true of every call. What is checked now is the outcome the caller acts on:
+     * no state came back to write, and the envelope the caller kept still encrypts a message the
+     * peer reads.
      */
     @Test
     fun aFailedDecryptReturnsNoStateToWrite() {
         requireNative()
         val alice = context(0x41)
         val bob = context(0x51)
+        val carol = context(0x52)
+        val dave = context(0x53)
         try {
             val generation = TestGeneration.of(bob)
             val contact = bytes(0x61, 16)
@@ -208,15 +220,9 @@ class DmSessionsNativeTest {
                 today,
             ) as DmSessions.Inbound.Ok
 
-            val genuine = DmSessions.encrypt(
-                alice,
-                contact,
-                DmSessions.StoredSlot(outbound.sessionId, first.stateEnv),
-                "two".toByteArray(),
-                today,
-            ) as DmSessions.Encrypted.Ok
-            val forged = genuine.l1.copyOf()
-            forged[forged.size - 1] = (forged[forged.size - 1].toInt() xor 0xff).toByte()
+            // Another pair's settled session: its reply is a normal message whose ratchet key is
+            // none of Bob's receiver chains.
+            val unknownChain = foreignNormalMessage(carol, dave)
 
             val stored = inbound.stateEnv.copyOf()
             val failed = DmSessions.decrypt(
@@ -224,23 +230,135 @@ class DmSessionsNativeTest {
                 contact,
                 DmSessions.StoredSlot(inbound.sessionId, stored),
                 null,
-                forged,
-                genuine.isPreKey,
+                unknownChain,
+                false,
                 today,
             )
-            assertTrue("a forged message must not decrypt", failed !is DmSessions.Decrypted.Ok)
+            assertEquals(
+                "a message on an unknown ratchet key must not decrypt",
+                DmSessions.Decrypted.Undecryptable,
+                failed,
+            )
             assertArrayEquals("the caller's envelope is untouched", inbound.stateEnv, stored)
 
-            val ok = DmSessions.decrypt(
+            // The property a persisted activation would break: the session the caller still holds
+            // sends, and Alice reads what it sends.
+            val reply = DmSessions.encrypt(
                 bob,
                 contact,
                 DmSessions.StoredSlot(inbound.sessionId, stored),
+                "two".toByteArray(),
+                today,
+            ) as DmSessions.Encrypted.Ok
+            val read = DmSessions.decrypt(
+                alice,
+                contact,
+                DmSessions.StoredSlot(outbound.sessionId, first.stateEnv),
                 null,
-                genuine.l1,
-                genuine.isPreKey,
+                reply.l1,
+                reply.isPreKey,
                 today,
             )
-            assertTrue("the next valid message still decrypts", ok is DmSessions.Decrypted.Ok)
+            assertTrue(
+                "the peer reads the reply of the unchanged session",
+                read is DmSessions.Decrypted.Ok,
+            )
+            assertArrayEquals("two".toByteArray(), (read as DmSessions.Decrypted.Ok).plaintext)
+        } finally {
+            DmSessions.closeContext(alice)
+            DmSessions.closeContext(bob)
+            DmSessions.closeContext(carol)
+            DmSessions.closeContext(dave)
+        }
+    }
+
+    /** A settled session of two other contexts, and the normal message its responder sends. */
+    private fun foreignNormalMessage(initiator: Long, responder: Long): ByteArray {
+        val generation = TestGeneration.of(responder)
+        val contact = bytes(0x62, 16)
+        val outbound = DmSessions.outbound(
+            initiator, contact, generation.olmIdentity, generation.fallbackPublic, today,
+        ) as DmSessions.Outbound.Ok
+        val opening = DmSessions.encrypt(
+            initiator,
+            contact,
+            DmSessions.StoredSlot(outbound.sessionId, outbound.stateEnv),
+            "x".toByteArray(),
+            today,
+        ) as DmSessions.Encrypted.Ok
+        val answered = DmSessions.inbound(
+            responder,
+            contact,
+            generation.genId,
+            generation.secretsEnv,
+            generation.fallbackPublic,
+            TestGeneration.olmIdentityOf(initiator),
+            opening.l1,
+            today,
+        ) as DmSessions.Inbound.Ok
+        val foreign = DmSessions.encrypt(
+            responder,
+            contact,
+            DmSessions.StoredSlot(answered.sessionId, answered.stateEnv),
+            "y".toByteArray(),
+            today,
+        ) as DmSessions.Encrypted.Ok
+        assertTrue("the forgery is a normal message", !foreign.isPreKey)
+        return foreign.l1
+    }
+
+    /**
+     * §2.6 function 14 through the facade: a first flight whose **inner** chain index is past
+     * Olm's 2 000-message gap is [DmSessions.Inbound.Undecryptable] — an outcome, not an
+     * `IllegalStateException`.
+     *
+     * vodozemac checks the gap before the MAC, so any holder of the recipient's card can author
+     * such a blob with no key material beyond the published fallback key (review round 2,
+     * S4B2-01/R2-01). Before the fix it arrived as `GAP_TOO_BIG`, which `inbound`'s `when` did not
+     * name: three process deaths per blob before §7.8's poison guard consumed it.
+     */
+    @Test
+    fun aFirstFlightPastTheMessageGapIsAnOutcomeNotAThrow() {
+        requireNative()
+        val alice = context(0x42)
+        val bob = context(0x43)
+        try {
+            val generation = TestGeneration.of(bob)
+            val contact = bytes(0x63, 16)
+            val outbound = DmSessions.outbound(
+                alice, contact, generation.olmIdentity, generation.fallbackPublic, today,
+            ) as DmSessions.Outbound.Ok
+
+            // Bob never answers, so every message stays a PreKey message and the inner chain index
+            // climbs past `MAX_MESSAGE_GAP` (2 000).
+            var stateEnv = outbound.stateEnv
+            var last: ByteArray? = null
+            repeat(2_002) {
+                val sent = DmSessions.encrypt(
+                    alice,
+                    contact,
+                    DmSessions.StoredSlot(outbound.sessionId, stateEnv),
+                    "one".toByteArray(),
+                    today,
+                ) as DmSessions.Encrypted.Ok
+                assertTrue("an unanswered session sends PreKey messages", sent.isPreKey)
+                stateEnv = sent.stateEnv
+                last = sent.l1
+            }
+            // The inner index itself is pinned on the Rust side
+            // (`olm::session::tests::a_first_flight_past_the_message_gap_is_undecryptable`): there
+            // is no Kotlin parser for L1 (ADR-19), so what this test owns is the **outcome**.
+            val outcome = DmSessions.inbound(
+                bob,
+                contact,
+                generation.genId,
+                generation.secretsEnv,
+                generation.fallbackPublic,
+                TestGeneration.olmIdentityOf(alice),
+                requireNotNull(last),
+                today,
+            )
+            assertEquals(DmSessions.Inbound.Undecryptable, outcome)
         } finally {
             DmSessions.closeContext(alice)
             DmSessions.closeContext(bob)

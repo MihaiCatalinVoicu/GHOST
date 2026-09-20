@@ -2,12 +2,15 @@ name: dm-state-models
 
 # The exhaustive DM state models EM-1 and EM-2 (Phase 9 design §15.2, graft RG-1) at a bound the
 # pull-request run cannot afford. `cargo test -p ghost-client-dm --test state_models` runs in the
-# `rust` job of ci.yml at two user sends per side, because the reachable state count grows by
-# roughly an order of magnitude per extra send (measured: 140 075 states at two, 2 296 274 at
-# three). This job runs the same models at **three** sends per side in the release profile, so the
-# design's "at most 6 user sends per side" is approached by something rather than by nothing.
-# Measured on the owner's workstation: 88 s at three sends, release; the timeout leaves room for a
-# slower runner and the build.
+# `rust` job of ci.yml at the default bounds; this job raises **both** models in the release
+# profile, each by the knob that reaches it (corrected in review round 2, S4B2-02: EM-2 has no
+# user-send notion, so `GHOST_DM_EM_SENDS` never reached it and the nightly used to explore the
+# same EM-2 state space as a pull request):
+#   - EM-1: `GHOST_DM_EM_SENDS` = 3 user sends per side (140 075 states at two, 2 296 274 at
+#     three), which is as close as the run gets to the design's "at most 6 user sends per side";
+#   - EM-2: `GHOST_DM_EM_WIRE` = 3 envelopes in flight (356 463 states at two, 2 851 029 at three).
+# Measured on the owner's workstation, release: 88 s for EM-1 at three sends, 134 s for EM-2 at
+# wire 3; the timeout leaves room for a slower runner and the build.
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
   push:
@@ -27,6 +30,10 @@ on:
         description: "User sends per side (EM-1); 4 and above need hours"
         type: string
         default: "3"
+      wire:
+        description: "Envelopes in flight (EM-2); 4 and above need a raised GHOST_DM_EM_BUDGET"
+        type: string
+        default: "3"
 
 permissions:
   contents: read
@@ -37,7 +44,7 @@ defaults:
 
 jobs:
   dm-state-models:
-    name: DM state models (EM-1, EM-2 at three sends per side, release)
+    name: DM state models (EM-1 at three sends per side, EM-2 at three in flight, release)
     runs-on: [self-hosted, linux, x64, ghost]
     timeout-minutes: 60
     defaults:
@@ -49,15 +56,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: 1.98.1
-      - name: EM-1 and EM-2 at the raised bound
+      - name: EM-1 and EM-2 at the raised bounds
         env:
           GHOST_DM_EM_SENDS: ${{ github.event.inputs.sends || '3' }}
+          GHOST_DM_EM_WIRE: ${{ github.event.inputs.wire || '3' }}
           GHOST_DM_EM_BUDGET: "4000000"
         run: |
           cargo test --locked --release -p ghost-client-dm --test state_models -- --nocapture \
             | tee "$RUNNER_TEMP/dm-state-models.txt"
           {
-            echo "### DM state models (sends per side: $GHOST_DM_EM_SENDS)"
+            echo "### DM state models (EM-1 sends per side: $GHOST_DM_EM_SENDS; EM-2 wire: $GHOST_DM_EM_WIRE)"
             echo '```'
             # The counts the models print. `|| true`: the summary is evidence, never the verdict —
             # the verdict is the exit status of the test run above.
