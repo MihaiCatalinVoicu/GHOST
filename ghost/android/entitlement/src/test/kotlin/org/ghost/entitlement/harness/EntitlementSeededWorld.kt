@@ -16,6 +16,7 @@ import org.ghost.sync.harness.World.Companion.HOUR
 import org.ghost.sync.harness.World.Companion.MINUTE
 import org.ghost.sync.harness.foreground
 import org.ghost.sync.harness.jobs
+import org.ghost.sync.store.RetentionPolicy
 import java.util.SplittableRandom
 
 /**
@@ -142,7 +143,20 @@ internal class EntitlementSeededWorld(val seed: Long) : EntScenario("ent-seed $s
         Fault.Network(pool[rnd.nextInt(pool.size)])
     }
 
-    override fun allowed(op: OpRecord, w: World): Set<Outcome> = if (disturbed) Outcome.entries.toSet() else setOf(Outcome.SENT)
+    /**
+     * SENT unless the script made it infeasible, with the same Phase 9 exception as
+     * [org.ghost.sync.harness.SeededWorld.allowed]: an op whose TTL is at most σ (here, [TtlBucket.DAY_1],
+     * a quarter of `op$i`'s draws) accepts SENT, DEGRADED or INDETERMINATE, never only SENT — for
+     * such a TTL `now < copy_hour + ttl − σ` is never true, so resolution never applies and the
+     * receipt lower bound is vacuous, so an honest relay may expire the blob before a check has seen
+     * it (design §10.4 points 1 and 3, G-10; declared L7-D15). FAILED stays out: it needs no copy
+     * anywhere, which an undisturbed script does not produce.
+     */
+    override fun allowed(op: OpRecord, w: World): Set<Outcome> = when {
+        disturbed -> Outcome.entries.toSet()
+        op.ttl.seconds.toLong() <= RetentionPolicy.SKEW_SECONDS -> setOf(Outcome.SENT, Outcome.DEGRADED, Outcome.INDETERMINATE)
+        else -> setOf(Outcome.SENT)
+    }
 
     override fun toString(): String = "EntitlementSeededWorld($seed)"
 }
