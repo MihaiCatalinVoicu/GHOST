@@ -9,9 +9,11 @@
 //! an *inactive* sending ratchet with a fresh random ratchet key **before** the decryption can
 //! fail (`vz:src/olm/session/double_ratchet.rs:168-191`). Because every function here unpickles a
 //! fresh `Session` and drops it on any non-`OK` result, stored state never contains the activation
-//! of a failed attempt — V-10, `failed_decrypt_leaves_the_stored_state_byte_identical`, mutant
-//! MC-29. Persisting the activated object would let a forged, relay-injectable blob change stored
-//! state (T28).
+//! of a failed attempt — V-10, `a_failed_decrypt_leaves_the_stored_state_byte_identical`, whose
+//! forgery names a ratchet key the receiver does **not** hold, so the activation really is reached;
+//! `a_failed_decrypt_does_change_the_object_it_left_behind` is mutant MC-29 itself and shows the
+//! byte comparison is falsifiable. Persisting the activated object would let a forged,
+//! relay-injectable blob change stored state (T28).
 //!
 //! **No clock.** `today` is an argument, because the first-seen sidecar of §7.7 point 4 is rebuilt
 //! on every state-storing call and this crate reads no clock.
@@ -134,6 +136,20 @@ fn session_id_of(session: &Session) -> DmResult<[u8; SESSION_ID_BYTES]> {
     message::session_id_bytes(&session.session_id())
 }
 
+/// The store of a function whose §2.6 row does **not** list `OVERSIZE`.
+///
+/// Only function 8 (`encrypt`) may report it, and the typed facade's `when` arms mirror the table
+/// row by row: an `OVERSIZE` from `sessionOutbound`, `decrypt`, `sessionInbound` or `sessionPrune`
+/// would reach `DmSessions.unexpected` and throw instead of producing an outcome. The state is one
+/// this crate cannot work with either way, so those paths report [`DmCode::StateCorrupt`]; with
+/// 26 285 B of spare (§7.9 point 4) the case means a bug or a format change, never a peer's doing.
+fn stored_state(state: DmResult<Vec<u8>>) -> DmResult<Vec<u8>> {
+    state.map_err(|code| match code {
+        DmCode::Oversize => DmCode::StateCorrupt,
+        other => other,
+    })
+}
+
 /// `sessionOutbound` (§2.6 function 7, §8.1): a throwaway account from the own identity runs
 /// Olm's 3DH to the peer's identity and fallback key with a fresh base key.
 ///
@@ -163,7 +179,7 @@ pub fn session_outbound(
     let mut seed = [0u8; SECRET_BYTES];
     pq::fill_random(&mut seed);
     Ok(Outbound {
-        state: store(&session, &Sidecar::new(), today)?,
+        state: stored_state(store(&session, &Sidecar::new(), today))?,
         session_id: session_id_of(&session)?,
         reply_seed: ReplySeed::from_bytes(seed),
     })
@@ -208,7 +224,7 @@ pub fn decrypt(
                 return Ok(Decrypted {
                     slot: stored.slot,
                     plaintext,
-                    state: store(&session, &sidecar, today)?,
+                    state: stored_state(store(&session, &sidecar, today))?,
                     acknowledged: session.has_received_message(),
                 });
             }
@@ -270,7 +286,7 @@ pub fn session_inbound(
             .map_err(|error| message::creation_code(&error))
     })?;
     Ok(Inbound {
-        state: store(&created.session, &Sidecar::new(), today)?,
+        state: stored_state(store(&created.session, &Sidecar::new(), today))?,
         session_id: session_id_of(&created.session)?,
         plaintext: created.plaintext,
     })
@@ -302,7 +318,7 @@ pub fn session_prune(state: &[u8], today: u32) -> DmResult<(Vec<u8>, usize)> {
     let mut next = SessionState::build(&decoded.sidecar, pickle, today)?;
     let encoded = next.encode();
     next.zeroize_pickle();
-    Ok((encoded?, removed))
+    Ok((stored_state(encoded)?, removed))
 }
 
 /// The L1 header of a message, for the seal-opening functions that hand it to Kotlin.
@@ -392,13 +408,28 @@ mod tests {
         round_trip();
     }
 
-    /// V-10 / MC-29 (§7.9 point 2): a failed decrypt against an inactive sending ratchet leaves the
-    /// stored envelope byte-identical, and the next valid message still decrypts.
-    #[test]
-    fn a_failed_decrypt_leaves_the_stored_state_byte_identical() {
-        let a = party(4);
-        let b = party(5);
-        let (b_fallback_secret, b_fallback_public) = fallback(6);
+    /// The scene V-10 and MC-29 need: A's session after its first flight, B's session as
+    /// `sessionInbound` left it — with an **inactive** sending ratchet — and a normal message whose
+    /// ratchet key B has never seen.
+    ///
+    /// The unknown key is what matters: a forgery on a key B already holds as a receiver chain
+    /// takes `receiving_chains.find_ratchet`'s hit path and never touches the sending ratchet,
+    /// while a message with an unknown one reaches `sending_ratchet.advance`
+    /// (`vz:src/olm/session/double_ratchet.rs:168-191`), the only place an inactive ratchet is
+    /// activated in place, **before** the decryption can fail.
+    struct Forgery {
+        /// A's state after sending its first flight; it reads B's normal messages.
+        initiator: Vec<u8>,
+        /// B's state as stored, sending ratchet inactive.
+        responder: Vec<u8>,
+        /// A normal message of another pair: a well-formed message on an unknown ratchet key.
+        unknown_chain: Vec<u8>,
+    }
+
+    fn forgery_scene(tag: u8) -> Forgery {
+        let a = party(tag);
+        let b = party(tag + 1);
+        let (b_fallback_secret, b_fallback_public) = fallback(tag + 2);
         let outbound = session_outbound(
             &a.identity,
             &a.signing,
@@ -418,38 +449,110 @@ mod tests {
         )
         .expect("inbound");
 
-        // B's sending ratchet is inactive until it sends; a forged normal message with an unknown
-        // ratchet key is exactly the case that activates it in memory.
-        let genuine = encrypt(&first.state, b"two", 1).expect("encrypt");
-        let mut forged = genuine.l1.clone();
-        let last = forged.len() - 1;
-        forged[last] ^= 0xff;
+        // Another pair's settled session: its reply is a normal message with a ratchet key that is
+        // not one of B's receiver chains.
+        let c = party(tag + 3);
+        let d = party(tag + 4);
+        let (d_fallback_secret, d_fallback_public) = fallback(tag + 5);
+        let other = session_outbound(
+            &c.identity,
+            &c.signing,
+            &d.identity_public,
+            &d_fallback_public,
+            1,
+        )
+        .expect("outbound");
+        let opening = encrypt(&other.state, b"x", 1).expect("encrypt");
+        let answered = session_inbound(
+            &d.identity,
+            &d.signing,
+            d_fallback_secret,
+            &c.identity_public,
+            &opening.l1,
+            1,
+        )
+        .expect("inbound");
+        let foreign = encrypt(&answered.state, b"y", 1).expect("encrypt");
+        assert!(!foreign.is_pre_key, "the forgery is a normal message");
+        let stored = SessionState::decode(&inbound.state).expect("state");
+        let foreign_key = message::parse(&foreign.l1, false)
+            .expect("header")
+            .ratchet_key();
+        assert!(
+            !pickle::chain_views(&stored.pickle)
+                .expect("views")
+                .iter()
+                .any(|view| view.ratchet_key == foreign_key),
+            "the forgery must name a ratchet key B does not hold"
+        );
 
-        let before = inbound.state.clone();
+        Forgery {
+            initiator: first.state,
+            responder: inbound.state,
+            unknown_chain: foreign.l1,
+        }
+    }
+
+    /// V-10 / MC-29 (§7.9 point 2, RX-1): a failed decrypt that **did** activate the inactive
+    /// sending ratchet in memory leaves the stored envelope byte-identical, and the session that
+    /// envelope holds still talks to the peer.
+    #[test]
+    fn a_failed_decrypt_leaves_the_stored_state_byte_identical() {
+        let scene = forgery_scene(4);
+        // An independently held copy: the comparison below is against bytes no call can reach.
+        let held = scene.responder.clone();
+
         let failed = decrypt(
             &[StoredSession {
                 slot: Slot::Current,
-                state: &before,
+                state: &scene.responder,
             }],
-            &forged,
+            &scene.unknown_chain,
             false,
             1,
         );
-        assert!(failed.is_err(), "a forged message must not decrypt");
-        // Value semantics: the caller stored nothing, so the state is the one it already held.
-        assert_eq!(before, inbound.state);
+        assert_eq!(
+            failed.err(),
+            Some(DmCode::Undecryptable),
+            "a message on an unknown ratchet key must not decrypt"
+        );
+        assert_eq!(scene.responder, held, "the stored state is byte-identical");
 
-        let ok = decrypt(
+        // The property a persisted activation would break: the stored session still sends, and the
+        // peer reads what it sends.
+        let reply = encrypt(&scene.responder, b"two", 1).expect("encrypt");
+        let read = decrypt(
             &[StoredSession {
                 slot: Slot::Current,
-                state: &before,
+                state: &scene.initiator,
             }],
-            &genuine.l1,
-            genuine.is_pre_key,
+            &reply.l1,
+            reply.is_pre_key,
             1,
         )
-        .expect("the next valid message decrypts");
-        assert_eq!(ok.plaintext, b"two");
+        .expect("the peer reads the reply of the unchanged session");
+        assert_eq!(read.plaintext, b"two");
+    }
+
+    /// Mutant MC-29, so the comparison above is known to be falsifiable: the object a failed
+    /// decrypt leaves behind is **not** the object that was loaded. vodozemac activated the
+    /// inactive sending ratchet in place before the MAC check failed
+    /// (`vz:src/olm/session/double_ratchet.rs:168-191`), so a caller that stored the object would
+    /// write a state a forged, relay-injectable blob had changed — T28's "every store maps to an
+    /// action". GHOST drops the object instead, which is why the bytes above stay equal.
+    #[test]
+    fn a_failed_decrypt_does_change_the_object_it_left_behind() {
+        let scene = forgery_scene(30);
+        let (mut session, sidecar) = load(&scene.responder).expect("load");
+        let parsed = message::decode(&scene.unknown_chain, false).expect("decode");
+        let error = session.decrypt(&parsed).expect_err("the forgery fails");
+        assert_eq!(message::decryption_code(&error), DmCode::Undecryptable);
+
+        let mutated = store(&session, &sidecar, 1).expect("store");
+        assert_ne!(
+            mutated, scene.responder,
+            "the failed attempt changed the object: this is the state GHOST does not store"
+        );
     }
 
     /// D2a: the same normal message twice is `DUPLICATE_OR_LOST`, never a forgery.
@@ -747,6 +850,27 @@ mod tests {
             .err(),
             Some(DmCode::DuplicateOrLost)
         );
+    }
+
+    /// §2.6: `OVERSIZE` belongs to function 8 alone. The other state-storing functions report a
+    /// state that does not fit as `STATE_CORRUPT`, because the typed facade has an arm for that and
+    /// none for `OVERSIZE` — an unnamed code there is an `IllegalStateException`, not an outcome.
+    ///
+    /// The mapping is tested at the function: `SESSION_STATE_MAX` is 26 285 B above the worst
+    /// pickle Olm can produce (§7.9 point 4), so no session reachable through this API encodes
+    /// over the bound; `state::tests::a_state_larger_than_the_maximum_is_oversize` covers the
+    /// encoder itself.
+    #[test]
+    fn only_encrypt_reports_an_over_large_state() {
+        assert_eq!(
+            stored_state(Err(DmCode::Oversize)).err(),
+            Some(DmCode::StateCorrupt)
+        );
+        assert_eq!(
+            stored_state(Err(DmCode::StateCorrupt)).err(),
+            Some(DmCode::StateCorrupt)
+        );
+        assert_eq!(stored_state(Ok(vec![7])).expect("passes through"), vec![7]);
     }
 
     #[test]

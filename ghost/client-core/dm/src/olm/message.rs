@@ -170,6 +170,77 @@ mod tests {
         }
     }
 
+    /// The **runtime half** of §22.8.2 rule 4 (S0′ forward note: "its runtime half checks the
+    /// mapping table"): every variant of vodozemac's three error types is named here with the code
+    /// §2.6 gives it. The compile-time half is the wildcard-free `match` of each function above,
+    /// which a bump that adds a variant fails; this table pins what each variant maps to, which a
+    /// wildcard-free match cannot.
+    #[test]
+    fn every_vodozemac_error_has_the_code_2_6_gives_it() {
+        use aes::cipher::block_padding::Error as UnpadError;
+        use hmac::digest::MacError;
+        use vodozemac::olm::SessionConfig;
+        use vodozemac::Curve25519PublicKey;
+
+        let key = Curve25519PublicKey::from_bytes([7u8; 32]);
+
+        assert_eq!(
+            decryption_code(&DecryptionError::InvalidMAC(MacError)),
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            decryption_code(&DecryptionError::InvalidMACLength(8, 7)),
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            decryption_code(&DecryptionError::InvalidPadding(UnpadError)),
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            decryption_code(&DecryptionError::NonContributoryKey),
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            decryption_code(&DecryptionError::MissingMessageKey(3)),
+            DmCode::DuplicateOrLost
+        );
+        assert_eq!(
+            decryption_code(&DecryptionError::TooBigMessageGap(2_001, 2_000)),
+            DmCode::GapTooBig
+        );
+
+        assert_eq!(
+            encryption_code(&EncryptionError::NonContributoryKey),
+            DmCode::InvalidSession
+        );
+
+        assert_eq!(
+            creation_code(&SessionCreationError::MissingOneTimeKey(key)),
+            DmCode::MissingKey
+        );
+        assert_eq!(
+            creation_code(&SessionCreationError::MismatchedIdentityKey(key, key)),
+            DmCode::IdentityMismatch
+        );
+        assert_eq!(
+            creation_code(&SessionCreationError::MismatchedSessionConfig {
+                expected: SessionConfig::version_1(),
+                got: None,
+            }),
+            DmCode::Undecryptable
+        );
+        assert_eq!(
+            creation_code(&SessionCreationError::Decryption(
+                DecryptionError::MissingMessageKey(0)
+            )),
+            DmCode::DuplicateOrLost
+        );
+        assert_eq!(
+            creation_code(&SessionCreationError::NonContributoryKey),
+            DmCode::InvalidKey
+        );
+    }
+
     #[test]
     fn a_session_id_that_is_not_thirty_two_bytes_is_state_corrupt() {
         assert_eq!(session_id_bytes("").err(), Some(DmCode::StateCorrupt));

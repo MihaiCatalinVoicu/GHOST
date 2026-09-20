@@ -16,9 +16,61 @@ use crate::derive::KemSecret;
 use crate::result::{DmCode, DmResult};
 use libcrux_kem::XWing;
 use libcrux_ml_kem::mlkem768::{validate_public_key as validate_ml_kem, MlKem768PublicKey};
-use libcrux_traits::kem::slice::Kem;
+use libcrux_traits::kem::slice::{DecapsError, EncapsError, Kem, KeyGenError};
 use rand::TryRng;
 use zeroize::Zeroize;
+
+// -------------------------------------------------------------------------------------------
+// §22.8.2 rule 4: every KEM error is typed, and the matches below carry no wildcard, so a variant
+// added at a libcrux bump fails the build instead of collapsing into a generic code (the
+// compile-time half of `DmResultCodesTest`; `every_kem_error_has_a_code` is its runtime half).
+//
+// The error types are the ones GHOST actually receives. The §22.8.2 text names `libcrux-kem`'s
+// `Error`, which belongs to the **enum API**; the S0′ forward note of that section replaced that
+// call path with `libcrux_kem::XWing` through `libcrux_traits::kem::slice::Kem` (V-6, V-9), whose
+// errors are `KeyGenError`, `EncapsError` and `DecapsError`. None of the three is
+// `#[non_exhaustive]` in `libcrux-traits` 0.0.8.
+// -------------------------------------------------------------------------------------------
+
+/// Key expansion: a seed that does not expand is a key GHOST cannot seal to or open with. The
+/// sealing side reports it as [`DmCode::InvalidKey`]; [`decapsulate`] re-maps it to
+/// [`DmCode::NotOpen`], because there the seed is ours and the blob is the one that is dropped.
+const fn keygen_code(error: &KeyGenError) -> DmCode {
+    match error {
+        KeyGenError::InvalidRandomness
+        | KeyGenError::InvalidRandomnessLength
+        | KeyGenError::InvalidEncapsKeyLength
+        | KeyGenError::InvalidDecapsKeyLength
+        | KeyGenError::Unknown => DmCode::InvalidKey,
+    }
+}
+
+/// Encapsulation: every error is [`DmCode::InvalidKey`] — the candidate key is dropped and the
+/// attempt continues (§22.8.2 rule 4).
+const fn encaps_code(error: &EncapsError) -> DmCode {
+    match error {
+        EncapsError::InvalidEncapsKey
+        | EncapsError::InvalidRandomness
+        | EncapsError::InvalidRandomnessLength
+        | EncapsError::InvalidEncapsKeyLength
+        | EncapsError::InvalidCiphertextLength
+        | EncapsError::InvalidSharedSecretLength
+        | EncapsError::Unknown => DmCode::InvalidKey,
+    }
+}
+
+/// Decapsulation: every error is [`DmCode::NotOpen`] — a ciphertext that does not open is a blob
+/// that is dropped, never a crash (§22.8.2 rule 4).
+const fn decaps_code(error: &DecapsError) -> DmCode {
+    match error {
+        DecapsError::InvalidCiphertext
+        | DecapsError::InvalidDecapsKey
+        | DecapsError::InvalidDecapsKeyLength
+        | DecapsError::InvalidCiphertextLength
+        | DecapsError::InvalidSharedSecretLength
+        | DecapsError::Unknown => DmCode::NotOpen,
+    }
+}
 
 /// Length of an X-Wing decapsulation seed (the private key GHOST stores).
 pub const SEED_BYTES: usize = 32;
@@ -62,7 +114,7 @@ pub fn keygen(seed: &KemSecret) -> DmResult<KeyPair> {
     let mut public = vec![0u8; PUBLIC_KEY_BYTES];
     let mut decapsulation = vec![0u8; DECAPS_KEY_BYTES];
     XWing::keygen(&mut public, &mut decapsulation, seed.as_bytes())
-        .map_err(|_| DmCode::InvalidKey)?;
+        .map_err(|error| keygen_code(&error))?;
     Ok(KeyPair {
         public,
         decapsulation,
@@ -121,7 +173,7 @@ pub fn encapsulate_with(
     let mut ciphertext = vec![0u8; CIPHERTEXT_BYTES];
     let mut shared = [0u8; SHARED_SECRET_BYTES];
     XWing::encaps(&mut ciphertext, &mut shared, public, randomness)
-        .map_err(|_| DmCode::InvalidKey)?;
+        .map_err(|error| encaps_code(&error))?;
     let secret = KemSecret::from_bytes(shared);
     shared.zeroize();
     Ok((ciphertext, secret))
@@ -135,7 +187,8 @@ pub fn decapsulate(seed: &KemSecret, ciphertext: &[u8]) -> DmResult<KemSecret> {
     }
     let pair = keygen(seed).map_err(|_| DmCode::NotOpen)?;
     let mut shared = [0u8; SHARED_SECRET_BYTES];
-    XWing::decaps(&mut shared, ciphertext, &pair.decapsulation).map_err(|_| DmCode::NotOpen)?;
+    XWing::decaps(&mut shared, ciphertext, &pair.decapsulation)
+        .map_err(|error| decaps_code(&error))?;
     let secret = KemSecret::from_bytes(shared);
     shared.zeroize();
     Ok(secret)
@@ -183,6 +236,43 @@ mod tests {
 
     fn seed(byte: u8) -> KemSecret {
         KemSecret::from_bytes([byte; 32])
+    }
+
+    /// The runtime half of §22.8.2 rule 4: every variant of the three KEM error types GHOST
+    /// receives is named here with the code it maps to. The compile-time half is the wildcard-free
+    /// `match` of each function above, which a bump that adds a variant fails.
+    #[test]
+    fn every_kem_error_has_a_code() {
+        for error in [
+            KeyGenError::InvalidRandomness,
+            KeyGenError::InvalidRandomnessLength,
+            KeyGenError::InvalidEncapsKeyLength,
+            KeyGenError::InvalidDecapsKeyLength,
+            KeyGenError::Unknown,
+        ] {
+            assert_eq!(keygen_code(&error), DmCode::InvalidKey, "{error:?}");
+        }
+        for error in [
+            EncapsError::InvalidEncapsKey,
+            EncapsError::InvalidRandomness,
+            EncapsError::InvalidRandomnessLength,
+            EncapsError::InvalidEncapsKeyLength,
+            EncapsError::InvalidCiphertextLength,
+            EncapsError::InvalidSharedSecretLength,
+            EncapsError::Unknown,
+        ] {
+            assert_eq!(encaps_code(&error), DmCode::InvalidKey, "{error:?}");
+        }
+        for error in [
+            DecapsError::InvalidCiphertext,
+            DecapsError::InvalidDecapsKey,
+            DecapsError::InvalidDecapsKeyLength,
+            DecapsError::InvalidCiphertextLength,
+            DecapsError::InvalidSharedSecretLength,
+            DecapsError::Unknown,
+        ] {
+            assert_eq!(decaps_code(&error), DmCode::NotOpen, "{error:?}");
+        }
     }
 
     #[test]

@@ -21,9 +21,17 @@
 //! Nothing here writes a clock or a time value into the pickle: the day of a skipped key lives in
 //! the GHOST sidecar beside it ([`super::state`]), which is what keeps T33 executable ("library
 //! state holds no time at all").
+//!
+//! **Erasure.** Reading a pickle means parsing it, and a parsed pickle holds the root key, the
+//! chain keys and every skipped message key as values on the heap — the same secrets
+//! `SessionState::zeroize_pickle` exists for. Every function below therefore ends by wiping the
+//! tree it built ([`wipe`]), whatever its outcome, so the two reads leave no copy of a session's
+//! keys behind; `chainPosition` runs on every peeked blob (§7.7 point 2), which makes it the most
+//! frequently executed of the two.
 
 use crate::result::{DmCode, DmResult};
 use serde_json::Value;
+use zeroize::Zeroize;
 
 /// Olm's per-chain skipped-key limit (`vz:src/olm/session/receiver_chain.rs:50`).
 pub const MAX_MESSAGE_KEYS: usize = 40;
@@ -104,6 +112,29 @@ fn skipped_indices(chain: &Value) -> DmResult<Vec<u64>> {
         .collect()
 }
 
+/// Overwrites every value a parsed pickle holds, before the tree is dropped.
+///
+/// The parsed document **is** the session's root key, chain keys and skipped message keys, as
+/// numbers on the heap: `SessionState::zeroize_pickle` erases the bytes it was parsed from, and
+/// this erases the values parsed out of them — numbers back to 0, strings zeroised. Every function
+/// of this module calls it before returning, whatever the outcome. The object keys are the
+/// layout's own field names, not secrets.
+///
+/// **Declared residue, beside the §2.1 deviation.** `serde_json` grows its own arrays while
+/// parsing, so a reallocation can leave a copy of already-parsed values in a freed buffer that no
+/// GHOST code holds a reference to; the same is true of the encoder's scratch. What this module
+/// owns is erased, the pickle bytes are erased by [`super::state`], and the residue is of the same
+/// kind as the library's own (the vodozemac audit's Issue I, L7-D19).
+fn wipe(value: &mut Value) {
+    match value {
+        Value::Number(_) => *value = Value::Number(0.into()),
+        Value::String(text) => text.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(wipe),
+        Value::Object(fields) => fields.values_mut().for_each(wipe),
+        Value::Null | Value::Bool(_) => {}
+    }
+}
+
 /// Every receiver chain of a stored pickle, in stored order.
 ///
 /// A non-empty `/receiving_chains/inner` in which **no** entry carries a readable 32-byte
@@ -111,8 +142,16 @@ fn skipped_indices(chain: &Value) -> DmResult<Vec<u64>> {
 /// the answer is [`DmCode::StateCorrupt`]. A single unreadable entry among readable ones is drift
 /// too — the layout is one shape for all entries — so both cases fail the same way.
 pub fn chain_views(pickle: &[u8]) -> DmResult<Vec<ChainView>> {
-    let value = parse(pickle)?;
-    chains(&value)?
+    let mut value = parse(pickle)?;
+    let views = read_chains(&value);
+    // The parsed tree held the chain keys and the skipped message keys beside the three values
+    // read above; it does not leave the function un-erased.
+    wipe(&mut value);
+    views
+}
+
+fn read_chains(value: &Value) -> DmResult<Vec<ChainView>> {
+    chains(value)?
         .iter()
         .map(|chain| {
             Ok(ChainView {
@@ -162,37 +201,49 @@ pub fn skipped_keys(pickle: &[u8]) -> DmResult<Vec<SkippedKey>> {
 /// [`super::state`]; SWEEP calls it on every live session (§7.7 point 4).
 pub fn prune(
     pickle: &[u8],
-    mut drop_key: impl FnMut(&SkippedKey) -> bool,
+    drop_key: impl FnMut(&SkippedKey) -> bool,
 ) -> DmResult<(Vec<u8>, usize)> {
     let mut value = parse(pickle)?;
+    let outcome = prune_tree(&mut value, drop_key).and_then(|removed| {
+        let bytes = serde_json::to_vec(&value).map_err(|_| DmCode::StateCorrupt)?;
+        Ok((bytes, removed))
+    });
+    // The whole document is in memory as values here; it leaves no copy behind (the returned
+    // bytes are the caller's to zeroise, and `session::session_prune` does).
+    wipe(&mut value);
+    outcome
+}
+
+/// The edit itself, on the parsed tree.
+fn prune_tree(value: &mut Value, mut drop_key: impl FnMut(&SkippedKey) -> bool) -> DmResult<usize> {
     let mut removed = 0usize;
-    let mut drift = false;
-    for chain in chains_mut(&mut value)?.iter_mut() {
-        let ratchet_key = match bytes32(chain.get("ratchet_key")) {
-            Some(key) => key,
-            None => return Err(DmCode::StateCorrupt),
-        };
+    for chain in chains_mut(value)?.iter_mut() {
+        let ratchet_key = bytes32(chain.get("ratchet_key")).ok_or(DmCode::StateCorrupt)?;
         let keys = chain
             .pointer_mut("/skipped_message_keys/inner")
             .and_then(Value::as_array_mut)
             .ok_or(DmCode::StateCorrupt)?;
-        let before = keys.len();
-        keys.retain(|key| match key.get("index").and_then(Value::as_u64) {
-            Some(index) => !drop_key(&SkippedKey { ratchet_key, index }),
-            None => {
-                drift = true;
-                true
-            }
-        });
-        if drift {
-            return Err(DmCode::StateCorrupt);
+        let mut keep = Vec::with_capacity(keys.len());
+        for key in keys.iter() {
+            let index = key
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or(DmCode::StateCorrupt)?;
+            keep.push(!drop_key(&SkippedKey { ratchet_key, index }));
         }
-        removed += before - keys.len();
+        // A removed entry is overwritten **before** it goes: `retain` moves the survivors down and
+        // leaves the dropped entries' bytes in the array's spare capacity, where nothing can reach
+        // them to erase them afterwards.
+        for (key, keep) in keys.iter_mut().zip(&keep) {
+            if !keep {
+                wipe(key);
+            }
+        }
+        let mut decision = keep.iter();
+        keys.retain(|_| *decision.next().unwrap_or(&true));
+        removed += keep.iter().filter(|keep| !**keep).count();
     }
-    Ok((
-        serde_json::to_vec(&value).map_err(|_| DmCode::StateCorrupt)?,
-        removed,
-    ))
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -291,6 +342,53 @@ mod tests {
         assert_eq!(
             chain_position(b"not json", &[0xaa; 32]).err(),
             Some(DmCode::StateCorrupt)
+        );
+    }
+
+    /// The tree [`prune`] must build — a whole pickle, root key and chain keys included — is
+    /// overwritten before it is dropped, the way every other buffer that holds a plaintext pickle
+    /// is (`SessionState::zeroize_pickle`).
+    #[test]
+    fn wiping_a_tree_overwrites_every_value_it_holds() {
+        let mut value = serde_json::json!({
+            "root_key": { "key": vec![9u8; 32] },
+            "receiving_chains": { "inner": [{
+                "ratchet_key": vec![0xaau8; 32],
+                "skipped_message_keys": { "inner": [{ "key": vec![7u8; 32], "index": 5 }] },
+            }] },
+            "text": "a secret",
+        });
+        wipe(&mut value);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "root_key": { "key": vec![0u8; 32] },
+                "receiving_chains": { "inner": [{
+                    "ratchet_key": vec![0u8; 32],
+                    "skipped_message_keys": { "inner": [{ "key": vec![0u8; 32], "index": 0 }] },
+                }] },
+                "text": "",
+            })
+        );
+    }
+
+    /// The reader takes exactly the three values §2.1 names — a chain's ratchet key, its next
+    /// index and the indices of its skipped keys — and nothing of the key material beside them: a
+    /// pickle without any `key` field reads the same as one with them.
+    #[test]
+    fn the_reader_takes_no_key_material() {
+        let with_keys = shaped(&[(0xaa, 7, &[3, 5])]);
+        let without_keys = serde_json::to_vec(&serde_json::json!({
+            "receiving_chains": { "inner": [{
+                "ratchet_key": vec![0xaau8; 32],
+                "hkdf_ratchet": { "index": 7 },
+                "skipped_message_keys": { "inner": [{ "index": 3 }, { "index": 5 }] },
+            }] }
+        }))
+        .expect("json");
+        assert_eq!(
+            chain_views(&with_keys).expect("views"),
+            chain_views(&without_keys).expect("views")
         );
     }
 

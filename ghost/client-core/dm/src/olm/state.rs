@@ -47,9 +47,17 @@ const LENGTH_PREFIX: usize = 4;
 type SidecarChain = ([u8; 32], Vec<(u64, u32)>);
 
 /// The first-seen day of every skipped key of a session, in the pickle's own order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Sidecar {
     entries: Vec<(SkippedKey, u32)>,
+}
+
+impl core::fmt::Debug for Sidecar {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The ratchet keys are public, but the sidecar names the keys of a live session: it
+        // renders its shape, like every other secret-bearing type of this crate.
+        write!(f, "Sidecar {{ keys: {} }}", self.entries.len())
+    }
 }
 
 impl Sidecar {
@@ -168,12 +176,27 @@ impl Sidecar {
 }
 
 /// A decoded session state: the library's pickle and GHOST's sidecar beside it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionState {
     /// The vodozemac JSON pickle.
     pub pickle: Vec<u8>,
     /// The first-seen days of its skipped keys.
     pub sidecar: Sidecar,
+}
+
+impl core::fmt::Debug for SessionState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The pickle is the session's root key, chain keys and skipped message keys in the clear
+        // (see [`SessionState::zeroize_pickle`]), so it never renders: a `{:?}` of it — in an
+        // `assert_eq!` message, an `expect` or a panic payload — would put the whole ratchet state
+        // into a `String` the silent panic hook of §2.6 cannot take back.
+        write!(
+            f,
+            "SessionState {{ pickle: {} bytes, sidecar: {:?} }}",
+            self.pickle.len(),
+            self.sidecar
+        )
+    }
 }
 
 impl SessionState {
@@ -323,6 +346,29 @@ mod tests {
         let state = SessionState::build(&Sidecar::new(), pickle_bytes, 7).expect("build");
         assert_eq!(state.sidecar.len(), 200);
         assert_eq!(state.sidecar.encode().expect("encode").len(), SIDECAR_MAX);
+    }
+
+    /// The crate's rule for secrets, which `secret_newtype!` states: "Secrets never render: a
+    /// Debug of a key would put it in a panic payload". [`SessionState`] carries the plaintext
+    /// pickle — the root key, the chain keys and every skipped message key — so it renders its
+    /// shape and nothing else, and the silent panic hook of §2.6 never has a payload to hide.
+    #[test]
+    fn a_state_renders_its_shape_and_never_its_pickle() {
+        let pickle_bytes = pickle_with(&[([0xaa; 32], &[5])]);
+        let state = SessionState::build(&Sidecar::new(), pickle_bytes, 11).expect("build");
+        let rendered = format!("{state:?}");
+        assert_eq!(
+            rendered,
+            format!(
+                "SessionState {{ pickle: {} bytes, sidecar: Sidecar {{ keys: 1 }} }}",
+                state.pickle.len()
+            )
+        );
+        assert!(
+            !rendered.contains("ratchet_key"),
+            "the pickle must not render: {rendered}"
+        );
+        assert_eq!(format!("{:?}", Sidecar::new()), "Sidecar { keys: 0 }");
     }
 
     #[test]

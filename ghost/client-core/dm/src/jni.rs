@@ -19,7 +19,7 @@
 //! card, bundle, seal and PQ layers are declared here and exported by their own slices (S6, S7,
 //! S13), which is what keeps the list closed while it is being filled.
 
-use crate::derive::{self, KemSecret, MessagingBranch, OlmSecret, StateKey};
+use crate::derive::{self, IdentitySeed, KemSecret, MessagingBranch, OlmSecret, StateKey};
 use crate::olm::pickle::ChainPosition;
 use crate::olm::session::{self, Slot, StoredSession};
 use crate::provenance::{CardSource, KeyProvenance, SealKey};
@@ -31,7 +31,7 @@ use jni::JNIEnv;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
 use zeroize::Zeroize;
 
 /// Whether a function of the closed list is exported by the current build.
@@ -125,9 +125,62 @@ pub enum Field {
 }
 
 impl Field {
-    /// The wire tag.
+    /// Every tag of the reply codec, in wire order. Kotlin's `DmField` holds the same list, and
+    /// `DmResultCodesTest` reads the enumeration above out of this file to compare the two — the
+    /// same drill it runs for `DmCode`, because two tags of equal-length payloads could otherwise
+    /// be swapped without a decode failure on either side.
+    pub const ALL: &'static [Field] = &[
+        Field::Handle,
+        Field::State,
+        Field::SessionId,
+        Field::L1,
+        Field::L0,
+        Field::Flags,
+        Field::SlotUsed,
+        Field::ReplySeed,
+        Field::ChainIndex,
+        Field::Pruned,
+        Field::Digits,
+        Field::Scannable,
+        Field::Card,
+        Field::InboxNamespace,
+        Field::BundleNamespace,
+        Field::RecognitionIntro,
+        Field::RecognitionBundle,
+        Field::OlmIdentity,
+        Field::Blob,
+        Field::FallbackPublic,
+        Field::XwingPublic,
+        Field::GenerationSecrets,
+    ];
+
+    /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
+    /// line here fails the build.
     pub const fn tag(self) -> u8 {
-        self as u8
+        match self {
+            Field::Handle => 0x01,
+            Field::State => 0x02,
+            Field::SessionId => 0x03,
+            Field::L1 => 0x04,
+            Field::L0 => 0x05,
+            Field::Flags => 0x06,
+            Field::SlotUsed => 0x07,
+            Field::ReplySeed => 0x08,
+            Field::ChainIndex => 0x09,
+            Field::Pruned => 0x0a,
+            Field::Digits => 0x0b,
+            Field::Scannable => 0x0c,
+            Field::Card => 0x0d,
+            Field::InboxNamespace => 0x0e,
+            Field::BundleNamespace => 0x0f,
+            Field::RecognitionIntro => 0x10,
+            Field::RecognitionBundle => 0x11,
+            Field::OlmIdentity => 0x12,
+            Field::Blob => 0x13,
+            Field::FallbackPublic => 0x14,
+            Field::XwingPublic => 0x15,
+            Field::GenerationSecrets => 0x16,
+        }
     }
 }
 
@@ -173,7 +226,7 @@ struct DmContext {
     /// The branch the card, namespace and read secrets derive from (§3.1).
     messaging: MessagingBranch,
     /// The `ghost1` Ed25519 seed, handed over by `:identity` at unlock (§2.4, X-21).
-    identity_seed: [u8; 32],
+    identity_seed: IdentitySeed,
 }
 
 fn registry() -> &'static Mutex<HashMap<i64, DmContext>> {
@@ -181,9 +234,29 @@ fn registry() -> &'static Mutex<HashMap<i64, DmContext>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The registry guard, **recovered from poisoning**.
+///
+/// [`with_context`] holds this guard across the call body, so a panic caught by [`guarded`] —
+/// the `INTERNAL` of §2.6, which S0′ V-5 saw a libcrux panic produce — unwinds through it and
+/// poisons the mutex. Treating that as an error would make every later call, `ctxOpen` and
+/// `ctxClose` included, report `INTERNAL` for the life of the process: the crash loop §2.7
+/// forbids, and a context that lock and wipe can never close or zeroise (§2.5). The map itself
+/// cannot be left half-written by such a panic — the body receives `&DmContext` and inserts and
+/// removes happen with no user code under the guard — so the recovered contents are sound.
+fn registry_lock() -> MutexGuard<'static, HashMap<i64, DmContext>> {
+    registry().lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn next_handle() -> i64 {
     static NEXT: AtomicI64 = AtomicI64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Registers a context and returns its handle.
+fn insert_context(context: DmContext) -> i64 {
+    let handle = next_handle();
+    registry_lock().insert(handle, context);
+    handle
 }
 
 /// Runs `body` with the named context, or reports [`DmCode::CryptoUnavailable`] for a closed or
@@ -192,7 +265,7 @@ fn with_context<T>(
     handle: jlong,
     body: impl FnOnce(&DmContext) -> Result<T, DmCode>,
 ) -> Result<T, DmCode> {
-    let guard = registry().lock().map_err(|_| DmCode::Internal)?;
+    let guard = registry_lock();
     let context = guard.get(&handle).ok_or(DmCode::CryptoUnavailable)?;
     body(context)
 }
@@ -249,7 +322,7 @@ pub fn ctx_open(
     state_key: &JByteArray,
 ) -> Result<Vec<u8>, DmCode> {
     let messaging = MessagingBranch::from_bytes(fixed::<32>(env, messaging_branch)?);
-    let identity_seed = fixed::<32>(env, identity_seed)?;
+    let identity_seed = IdentitySeed::from_bytes(fixed::<32>(env, identity_seed)?);
     let state_key = StateKey::from_bytes(fixed::<32>(env, state_key)?);
     let context = DmContext {
         olm_identity: derive::derive_olm_identity(&messaging),
@@ -258,23 +331,17 @@ pub fn ctx_open(
         messaging,
         identity_seed,
     };
-    let handle = next_handle();
-    registry()
-        .lock()
-        .map_err(|_| DmCode::Internal)?
-        .insert(handle, context);
+    let handle = insert_context(context);
     Ok(Reply::ok()
         .field(Field::Handle, &handle.to_be_bytes())
         .into_bytes())
 }
 
-/// §2.6 function 1: `ctxClose(handle)`. Zeroising is the `Zeroize` drop of the held secrets; a
-/// second close is [`DmCode::CryptoUnavailable`], never a crash.
+/// §2.6 function 1: `ctxClose(handle)`. Zeroising is the `Zeroize` drop of the held secrets — the
+/// four of them, the `ghost1` seed included; a second close is [`DmCode::CryptoUnavailable`],
+/// never a crash.
 pub fn ctx_close(handle: jlong) -> Result<Vec<u8>, DmCode> {
-    let removed = registry()
-        .lock()
-        .map_err(|_| DmCode::Internal)?
-        .remove(&handle);
+    let removed = registry_lock().remove(&handle);
     removed.ok_or(DmCode::CryptoUnavailable)?;
     Ok(Reply::ok().into_bytes())
 }
@@ -290,7 +357,7 @@ pub fn own_card(env: &mut JNIEnv, handle: jlong, card_index: jint) -> Result<Vec
     let card_index = u16::try_from(card_index).map_err(|_| DmCode::InvalidCard)?;
     with_context(handle, |context| {
         let card_secret = derive::derive_card_secret(&context.messaging, card_index);
-        let card = card::build(&context.identity_seed, card_index, &card_secret);
+        let card = card::build(context.identity_seed.as_bytes(), card_index, &card_secret);
         let intro = derive::derive_card_value(&card_secret, derive::CardLabel::IntroOuter);
         let bundle_key = derive::derive_card_value(&card_secret, derive::CardLabel::BundleSeal);
         let intro_key = SealKey::new(intro, KeyProvenance::Card(CardSource::InPerson));
@@ -346,7 +413,7 @@ pub fn bundle_create(
         let xwing = pq::keygen(&KemSecret::from_bytes(xwing_seed))?;
 
         let plain = bundle::build(
-            &context.identity_seed,
+            context.identity_seed.as_bytes(),
             &bundle::BundleFields {
                 card_index,
                 bundle_week,
@@ -1192,27 +1259,67 @@ mod tests {
         }
     }
 
+    /// Every tag of the reply codec, not a hand-picked subset: the tags are distinct, they are the
+    /// contiguous run `0x01 ..= ALL.len()`, and each one equals the enumeration's own
+    /// discriminant. A tag added to [`Field`] without a line in [`Field::ALL`] leaves the run short
+    /// and fails here; one added without a line in [`Field::tag`] fails the build.
     #[test]
-    fn the_field_tags_are_distinct() {
-        let fields = [
-            Field::Handle,
-            Field::State,
-            Field::SessionId,
-            Field::L1,
-            Field::L0,
-            Field::Flags,
-            Field::SlotUsed,
-            Field::ReplySeed,
-            Field::ChainIndex,
-            Field::Pruned,
-            Field::Digits,
-            Field::Scannable,
-        ];
-        let mut tags: Vec<u8> = fields.iter().map(|field| field.tag()).collect();
+    fn the_field_tags_are_the_closed_contiguous_set() {
+        let mut tags: Vec<u8> = Field::ALL.iter().map(|field| field.tag()).collect();
+        let listed = tags.len();
         tags.sort_unstable();
-        let count = tags.len();
         tags.dedup();
-        assert_eq!(tags.len(), count);
+        assert_eq!(tags.len(), listed, "a tag appears twice");
+        let expected: Vec<u8> = (1..=u8::try_from(listed).expect("tags fit in a byte")).collect();
+        assert_eq!(tags, expected);
+        for field in Field::ALL {
+            assert_eq!(field.tag(), *field as u8, "{field:?} renumbered");
+        }
+    }
+
+    fn test_context() -> DmContext {
+        let messaging = MessagingBranch::from_bytes([0x11; 32]);
+        DmContext {
+            olm_identity: derive::derive_olm_identity(&messaging),
+            olm_signing: derive::derive_olm_account_signing(&messaging),
+            state_key: StateKey::from_bytes([0x22; 32]),
+            messaging,
+            identity_seed: IdentitySeed::from_bytes([0x33; 32]),
+        }
+    }
+
+    /// §2.5: `ctxClose(handle)` "zeroises (`zeroize` on drop)", so every secret the context holds
+    /// must erase itself when the context is dropped. The `ghost1` seed signs card v2, bundle v2,
+    /// binding v3 and revocation v2: it is the one a lock must not leave in native memory.
+    #[test]
+    fn every_secret_of_the_context_zeroises_on_drop() {
+        fn zeroises_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        zeroises_on_drop::<OlmSecret>();
+        zeroises_on_drop::<StateKey>();
+        zeroises_on_drop::<MessagingBranch>();
+        zeroises_on_drop::<IdentitySeed>();
+    }
+
+    /// §2.7 ("never to a crash loop") and §2.5 ("lock and wipe call it"): a caught panic — the
+    /// `INTERNAL` of §2.6, which S0′ V-5 saw a libcrux panic produce — is one failed call, not a
+    /// dead surface. The next call is served and `ctxClose` still reaches the context.
+    #[test]
+    fn a_caught_panic_leaves_the_surface_usable() {
+        let handle = insert_context(test_context());
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            with_context(handle, |_| -> Result<(), DmCode> {
+                panic!("a library panic")
+            })
+        }));
+        assert!(panicked.is_err(), "the panic unwinds through the guard");
+        assert_eq!(with_context(handle, |_| Ok(())), Ok(()));
+        assert!(
+            ctx_close(handle).is_ok(),
+            "ctxClose must still wipe the context"
+        );
+        assert_eq!(ctx_close(handle).err(), Some(DmCode::CryptoUnavailable));
+        let reopened = insert_context(test_context());
+        assert!(ctx_close(reopened).is_ok());
     }
 
     #[test]

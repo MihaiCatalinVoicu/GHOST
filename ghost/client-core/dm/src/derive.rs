@@ -82,6 +82,14 @@ secret_newtype!(
     /// `session_state_key`: the wrapping key of every persisted DM secret (§2.5).
     StateKey
 );
+secret_newtype!(
+    /// The `ghost1` Ed25519 seed `:identity` hands the DM context at unlock (§2.4, X-21). Like
+    /// [`OlmSecret`] it is never an HKDF key input; it is here so that the seed which signs card
+    /// v2, bundle v2, binding v3 and revocation v2 erases itself when the context is dropped,
+    /// which is what makes `ctxClose` — and therefore lock and wipe — the zeroising step §2.5
+    /// states.
+    IdentitySeed
+);
 
 /// `HKDF-SHA256(ikm, salt, info, L = 32)`.
 fn hkdf32(ikm: &[u8], salt: Option<&[u8]>, info: &[u8]) -> [u8; SECRET_BYTES] {
