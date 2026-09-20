@@ -86,7 +86,18 @@ class ReplaceGuardsTest {
         // writer upserts and whose rule runs on INSERT as well (sync_namespace_dm_delay_insert), so a
         // REPLACE cannot skip it (Phase 9 design §13.6 step 3).
         assertEquals(setOf("outbox_delivery", "inbox_blob", "sync_namespace"), withRules - guarded)
-        assertEquals(emptySet<String>(), guarded - withRules)
+        // The v5 DM tables are guarded whether or not they carry an UPDATE or DELETE rule: §13.6
+        // step 6 names them one by one, and the guards are what make "no REPLACE, no
+        // INSERT OR REPLACE and no UPSERT anywhere in DM code" (gate G-DM4) enforceable by the
+        // database instead of by review. A REPLACE on any of them would delete a row the DM engine
+        // still references — an outbound item its op and pending send point at, a namespace the
+        // sync engine listens on, a candidate an establishment is waiting for — without running a
+        // single trigger.
+        val guardedWithoutRules = setOf(
+            "dm_own_namespace", "dm_outbound_item", "dm_outbound_op", "dm_pending_send",
+            "dm_bundle_candidate", "dm_orphan_namespace", "dm_scheduled", "dm_reaction", "dm_peer_pq",
+        )
+        assertEquals(guardedWithoutRules, guarded - withRules)
         for (table in guarded) {
             val (name, sql) = triggers.getValue(table).single { it.first.endsWith("_no_replace") }
             assertEquals("${table}_no_replace", name)
@@ -102,7 +113,26 @@ class ReplaceGuardsTest {
             }
             val unique = ArrayList<String>()
             db.query("PRAGMA index_list($table)") { if (it.long(2) == 1L) unique += it.string(1) }
-            for (index in unique) db.query("PRAGMA index_info($index)") { keys += it.string(2) }
+            for (index in unique) {
+                // An expression index names no column in `index_info` (the name column is NULL),
+                // so the columns it conflicts on are read from its own CREATE statement: a REPLACE
+                // that conflicts only on such an index deletes a row and runs no trigger, and the
+                // guard has to see it coming (Phase 9: `idx_olm_prekey_gen_current`).
+                var expression = false
+                db.query("PRAGMA index_info($index)") {
+                    if (it.isNull(2)) expression = true else keys += it.string(2)
+                }
+                if (expression) {
+                    var indexSql = ""
+                    db.query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", listOf(index)) {
+                        indexSql = it.string(0)
+                    }
+                    db.query("PRAGMA table_info($table)") { column ->
+                        val name = column.string(1)
+                        if (Regex("\\b$name\\b").containsMatchIn(indexSql)) keys += name
+                    }
+                }
+            }
             var create = ""
             db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", listOf(table)) { create = it.string(0) }
             val rowidTable = !create.trimEnd().endsWith("WITHOUT ROWID")

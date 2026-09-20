@@ -7,7 +7,10 @@ rc=0
 # The licence gates that read build outputs run where those exist (Phase 9 design §22.8.10 point 10):
 # license-notices.sh rust, rust-license-headers.sh (G-R5) and mpl-sources.sh (G-L4) in the rust job
 # (rust-gates.sh); license-notices.sh android (G-L1, G-L2) and apk-notices.sh (G-L3) in the android job.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries; do
+# dm-jni-surface (G-R6) runs here without a library argument: the source halves of the closed list
+# need no toolchain. The CI android job runs it again with the built ghost-dm-host, which adds the
+# symbol check (Phase 9 design §2.6).
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

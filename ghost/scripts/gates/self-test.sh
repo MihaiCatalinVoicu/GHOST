@@ -558,6 +558,35 @@ expect_fail_msg() { # $1 = description, $2 = expected stderr text, rest = comman
     echo "self-test ok: $desc"
   fi
 }
+# G-R6 (Phase 9 design §2.6, §2.3): the DM JNI surface is a closed list, checked in both
+# directions and against the Kotlin declarations. The fixtures are source excerpts, because the
+# gate reads the closed-list constant, the macro arms and the `external fun` lines as text.
+DM_JNI="$HARNESS/dm-jni"
+expect_fail_msg "dm-jni-surface rejects an export outside the closed list" \
+  "which is not on the closed list" \
+  env GHOST_DM_JNI_SOURCE="$DM_JNI/undeclared-export.rs" GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeExtra.kt" \
+  bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects an Exported entry with no entry point" \
+  "'sessionOutbound' is marked Exported on the closed list but the crate emits no entry point" \
+  env GHOST_DM_JNI_SOURCE="$DM_JNI/missing-export.rs" GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeMissing.kt" \
+  bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a later slice's function exported early" \
+  "'sealIntro' is emitted but not marked Exported" \
+  env GHOST_DM_JNI_SOURCE="$DM_JNI/unmarked-export.rs" GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeMissing.kt" \
+  bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a Kotlin declaration the crate does not export" \
+  "DmNative declares 'external fun debugDumpState'" \
+  env GHOST_DM_JNI_SOURCE="$DM_JNI/missing-export.rs" GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeExtra.kt" \
+  bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a missing Kotlin declaration" \
+  "DmNative does not declare 'external fun ctxClose'" \
+  env GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeMissing.kt" bash "$DIR/dm-jni-surface.sh"
+if bash "$DIR/dm-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: dm-jni-surface accepts the real closed list"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface rejects the real closed list" >&2; rc=1
+fi
+
 if command -v cargo >/dev/null; then
   tmp="$(mktemp)"
   grep -vx "tokio" "$DIR/../../client-core/rust-dependency-allowlist.txt" > "$tmp"

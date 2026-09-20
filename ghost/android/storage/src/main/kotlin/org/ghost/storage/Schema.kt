@@ -101,14 +101,23 @@ private object OutboxObjects {
  *    expiry of a fetched blob; `sync_namespace` records who obtains its capabilities and refuses to
  *    turn the send delay off for a DM namespace; `relay_key_registration` holds the bearer-key
  *    registrations the owner keeps at its relays (§4.8). The `dm_*` and `olm_*` tables are migration
- *    5 (§21.13 point 3), so every slice leaves a schema [MigrationRunner.verifyIntegrity] accepts.
+ *    5 (§21.13 point 3), so every slice leaves a schema [MigrationRunner.verifyIntegrity] accepts;
+ *  - v5 (Phase 9 direct messages, §13.6 steps 5–6, the DM tables themselves): the `dm_*` and
+ *    `olm_*` tables. Every table has a random key (WITHOUT ROWID) or a random generation id, no
+ *    created or last-activity column, and time columns `*_minute` (Unix seconds, `% 60 = 0`),
+ *    `*_hour` (`% 3600 = 0`) or `*_day` (a day index) with `typeof` CHECKs (T33). Content columns
+ *    are envelopes under the content key (28 bytes of overhead); the secret-bearing `*_env`
+ *    columns of `olm_*`, `dm_pair_key`, `dm_pair_offer` and `dm_held` are envelopes under
+ *    `session_state_key` (§2.5), so a SQLCipher row is doubly encrypted and the JVM heap never
+ *    holds a ratchet, KEM or seal opening secret. The round-9 `sig_*` tables and
+ *    `dm_self.registration_id` are not created (§22).
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
  * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2.
  */
 object Schema {
-    const val CURRENT_VERSION = 4
+    const val CURRENT_VERSION = 5
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -726,6 +735,10 @@ object Schema {
             version = 4,
             statements = migration4(),
         ),
+        Migration(
+            version = 5,
+            statements = migration5Tables() + migration5Triggers(),
+        ),
     )
 
     /**
@@ -877,6 +890,377 @@ object Schema {
                 BEGIN SELECT RAISE(ABORT, 'relay_key_registration rows are never replaced'); END""",
     )
 
+    /**
+     * Step 5 of Phase 9 design §13.6: the messaging and Olm tables. One transaction, append-only,
+     * fail-closed, like every migration before it.
+     */
+    private fun migration5Tables(): List<String> = listOf(
+        """CREATE TABLE dm_self (
+                  id                  INTEGER PRIMARY KEY CHECK (id = 1),
+                  card_index          INTEGER NOT NULL CHECK (typeof(card_index) = 'integer' AND card_index BETWEEN 0 AND 65535),
+                  seen_key            BLOB NOT NULL CHECK (length(seen_key) = 32),
+                  content_key_wrapped BLOB NOT NULL CHECK (length(content_key_wrapped) BETWEEN 40 AND 256),
+                  state_key_wrapped   BLOB NOT NULL CHECK (length(state_key_wrapped) BETWEEN 40 AND 256),
+                  bundle_week         INTEGER CHECK (bundle_week IS NULL OR (typeof(bundle_week) = 'integer' AND bundle_week >= 0)),
+                  expiry_clock_minute INTEGER NOT NULL CHECK (typeof(expiry_clock_minute) = 'integer' AND expiry_clock_minute % 60 = 0),
+                  accept_after_minute INTEGER CHECK (accept_after_minute IS NULL
+                                                     OR (typeof(accept_after_minute) = 'integer' AND accept_after_minute % 60 = 0)),
+                  bundle_published_week INTEGER CHECK (bundle_published_week IS NULL
+                                                       OR (typeof(bundle_published_week) = 'integer' AND bundle_published_week >= 0))
+                )""",
+        """CREATE TABLE dm_own_namespace (
+                  namespace_id BLOB PRIMARY KEY NOT NULL CHECK (length(namespace_id) = 32),
+                  role         TEXT NOT NULL CHECK (role IN ('inbox', 'bundle')),
+                  card_index   INTEGER NOT NULL CHECK (typeof(card_index) = 'integer' AND card_index BETWEEN 0 AND 65535),
+                  UNIQUE (role, card_index)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_contact (
+                  contact_id        BLOB PRIMARY KEY NOT NULL CHECK (length(contact_id) = 16),
+                  identity_pk       BLOB NOT NULL UNIQUE CHECK (length(identity_pk) = 32),
+                  card_env          BLOB CHECK (card_env IS NULL OR length(card_env) = 159),
+                  card_index        INTEGER NOT NULL CHECK (typeof(card_index) = 'integer' AND card_index BETWEEN 0 AND 65535),
+                  pinned_identity   BLOB CHECK (pinned_identity IS NULL OR length(pinned_identity) = 32),
+                  pending_identity  BLOB CHECK (pending_identity IS NULL OR length(pending_identity) = 32),
+                  bundle_week_seen  INTEGER CHECK (bundle_week_seen IS NULL
+                                                   OR (typeof(bundle_week_seen) = 'integer' AND bundle_week_seen >= 0)),
+                  trust_state       TEXT NOT NULL
+                                    CHECK (trust_state IN ('request', 'unverified', 'verified', 'changed', 'blocked', 'revoked')),
+                  source            TEXT NOT NULL CHECK (source IN ('qr_in_person', 'link', 'request')),
+                  establishment     TEXT NOT NULL CHECK (establishment IN ('card_only', 'fetching', 'ready', 'unreachable')),
+                  fetch_attempts    INTEGER NOT NULL DEFAULT 0 CHECK (fetch_attempts BETWEEN 0 AND 3),
+                  fetch_listen_until_minute INTEGER CHECK (fetch_listen_until_minute IS NULL
+                                                           OR (typeof(fetch_listen_until_minute) = 'integer'
+                                                               AND fetch_listen_until_minute % 60 = 0)),
+                  reset_needed      INTEGER NOT NULL DEFAULT 0 CHECK (reset_needed IN (0, 1)),
+                  verified_fp       BLOB CHECK (verified_fp IS NULL OR length(verified_fp) = 32),
+                  name_env          BLOB CHECK (name_env IS NULL OR length(name_env) BETWEEN 29 AND 284),
+                  request_until_day INTEGER CHECK (request_until_day IS NULL
+                                                   OR (typeof(request_until_day) = 'integer' AND request_until_day >= 0)),
+                  pq_announced_week INTEGER CHECK (pq_announced_week IS NULL
+                                                   OR (typeof(pq_announced_week) = 'integer' AND pq_announced_week >= 0)),
+                  CHECK ((trust_state = 'changed') = (pending_identity IS NOT NULL)),
+                  CHECK ((trust_state = 'request') = (request_until_day IS NOT NULL)),
+                  CHECK (trust_state IN ('blocked', 'revoked') OR card_env IS NOT NULL),
+                  CHECK (trust_state <> 'changed' OR pinned_identity IS NOT NULL),
+                  CHECK (pending_identity IS NULL OR pending_identity IS NOT pinned_identity),
+                  CHECK ((establishment = 'fetching') = (fetch_listen_until_minute IS NOT NULL))
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_pair_key (
+                  contact_id BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  direction  TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+                  root_gen   INTEGER NOT NULL CHECK (typeof(root_gen) = 'integer' AND root_gen BETWEEN 0 AND 65535),
+                  week       INTEGER NOT NULL CHECK (typeof(week) = 'integer' AND week >= 0),
+                  recog_key  BLOB NOT NULL CHECK (length(recog_key) = 32),
+                  open_env   BLOB NOT NULL CHECK (length(open_env) = 60),
+                  PRIMARY KEY (contact_id, direction, root_gen, week)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_pair_offer (
+                  contact_id   BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  root_gen     INTEGER NOT NULL CHECK (typeof(root_gen) = 'integer' AND root_gen BETWEEN 0 AND 65535),
+                  root_env     BLOB CHECK (root_env IS NULL OR length(root_env) = 60),
+                  offer_env    BLOB CHECK (offer_env IS NULL OR length(offer_env) IN (70, 1194)),
+                  base_week    INTEGER NOT NULL CHECK (typeof(base_week) = 'integer' AND base_week >= 0),
+                  acknowledged INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged IN (0, 1)),
+                  PRIMARY KEY (contact_id, root_gen)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_conversation (
+                  conversation_id BLOB PRIMARY KEY NOT NULL CHECK (length(conversation_id) = 16),
+                  contact_id      BLOB NOT NULL UNIQUE REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  timer_code      INTEGER NOT NULL DEFAULT 4 CHECK (timer_code BETWEEN 0 AND 5),
+                  timer_version   INTEGER NOT NULL DEFAULT 0 CHECK (typeof(timer_version) = 'integer' AND timer_version >= 0)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_message (
+                  message_id             BLOB PRIMARY KEY NOT NULL CHECK (length(message_id) = 16),
+                  conversation_id        BLOB NOT NULL REFERENCES dm_conversation(conversation_id) ON DELETE CASCADE,
+                  direction              TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+                  kind                   INTEGER NOT NULL CHECK (kind IN (1, 2)),
+                  author_minute          INTEGER NOT NULL CHECK (typeof(author_minute) = 'integer' AND author_minute % 60 = 0),
+                  sort_minute            INTEGER NOT NULL CHECK (typeof(sort_minute) = 'integer' AND sort_minute % 60 = 0
+                                                                 AND sort_minute <= author_minute),
+                  minute_index           INTEGER NOT NULL CHECK (minute_index BETWEEN 0 AND 65535),
+                  timer_code             INTEGER NOT NULL CHECK (timer_code BETWEEN 0 AND 5),
+                  body_env               BLOB CHECK (body_env IS NULL OR length(body_env) BETWEEN 30 AND 61485),
+                  state                  TEXT NOT NULL
+                                         CHECK (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate', 'unread', 'read')),
+                  expire_at_minute       INTEGER CHECK (expire_at_minute IS NULL
+                                                        OR (typeof(expire_at_minute) = 'integer' AND expire_at_minute % 60 = 0)),
+                  unread_deadline_minute INTEGER CHECK (unread_deadline_minute IS NULL
+                                                        OR (typeof(unread_deadline_minute) = 'integer'
+                                                            AND unread_deadline_minute % 60 = 0)),
+                  delete_at_minute       INTEGER CHECK (delete_at_minute IS NULL
+                                                        OR (typeof(delete_at_minute) = 'integer' AND delete_at_minute % 60 = 0)),
+                  CHECK ((direction = 'out') = (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate'))),
+                  CHECK (direction = 'in' OR sort_minute = author_minute),
+                  CHECK ((kind = 1) = (body_env IS NOT NULL)),
+                  CHECK (timer_code <> 0 OR (expire_at_minute IS NULL AND unread_deadline_minute IS NULL)),
+                  CHECK (timer_code = 0 OR direction = 'in' OR expire_at_minute IS NOT NULL),
+                  CHECK (timer_code = 0 OR direction = 'out' OR unread_deadline_minute IS NOT NULL),
+                  CHECK (state <> 'read' OR timer_code = 0 OR expire_at_minute IS NOT NULL),
+                  CHECK (delete_at_minute IS (CASE WHEN expire_at_minute IS NOT NULL
+                                                   THEN expire_at_minute ELSE unread_deadline_minute END))
+                ) WITHOUT ROWID""",
+        "CREATE INDEX idx_dm_message_order ON dm_message(conversation_id, sort_minute, minute_index, message_id)",
+        "CREATE INDEX idx_dm_message_delete ON dm_message(delete_at_minute) WHERE delete_at_minute IS NOT NULL",
+        """CREATE TABLE dm_outbound_item (
+                  item_id       BLOB PRIMARY KEY NOT NULL CHECK (length(item_id) = 16),
+                  contact_id    BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  message_ref   BLOB REFERENCES dm_message(message_id) ON DELETE CASCADE,
+                  kind          INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 4),
+                  control       TEXT CHECK (control IS NULL OR control IN ('reconnect', 'revocation', 'reset')),
+                  l0_env        BLOB CHECK (l0_env IS NULL OR length(l0_env) BETWEEN 29 AND 65564),
+                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
+                  state         TEXT NOT NULL
+                                CHECK (state IN ('pending', 'enqueued', 'sent', 'degraded', 'failed', 'indeterminate')),
+                  CHECK ((kind = 4) = (control IS NOT NULL)),
+                  CHECK (kind = 4 OR message_ref IS NOT NULL)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_outbound_op (
+                  operation_id  BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
+                  purpose       TEXT NOT NULL CHECK (purpose IN ('item', 'bundle')),
+                  item_id       BLOB REFERENCES dm_outbound_item(item_id) ON DELETE CASCADE,
+                  bundle_week   INTEGER CHECK (bundle_week IS NULL OR (typeof(bundle_week) = 'integer' AND bundle_week >= 0)),
+                  blob          BLOB CHECK (blob IS NULL OR length(blob) IN (4096, 16384, 65536)),
+                  resend_count  INTEGER NOT NULL DEFAULT 0 CHECK (resend_count BETWEEN 0 AND 2),
+                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
+                  CHECK ((purpose = 'item') = (item_id IS NOT NULL)),
+                  CHECK ((purpose = 'bundle') = (bundle_week IS NOT NULL))
+                ) WITHOUT ROWID""",
+        "CREATE INDEX idx_dm_outbound_op_item ON dm_outbound_op(item_id) WHERE item_id IS NOT NULL",
+        """CREATE TABLE dm_pending_send (
+                  item_id         BLOB PRIMARY KEY NOT NULL REFERENCES dm_outbound_item(item_id) ON DELETE CASCADE,
+                  contact_id      BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  fail_after_hour INTEGER NOT NULL CHECK (typeof(fail_after_hour) = 'integer' AND fail_after_hour % 3600 = 0)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_bundle_candidate (
+                  contact_id   BLOB PRIMARY KEY NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  bundle_env   BLOB NOT NULL CHECK (length(bundle_env) = 1421),
+                  bundle_week  INTEGER NOT NULL CHECK (typeof(bundle_week) = 'integer' AND bundle_week >= 0),
+                  bundle_rank  INTEGER NOT NULL CHECK (typeof(bundle_rank) = 'integer' AND bundle_rank BETWEEN 0 AND 65535)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_orphan_namespace (
+                  namespace_id BLOB PRIMARY KEY NOT NULL CHECK (length(namespace_id) = 32)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_scheduled (
+                  sched_id   BLOB PRIMARY KEY NOT NULL CHECK (length(sched_id) = 16),
+                  contact_id BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  what       TEXT NOT NULL CHECK (what IN ('reconnect', 'revocation')),
+                  payload    BLOB CHECK (payload IS NULL OR length(payload) = 102),
+                  due_minute INTEGER NOT NULL CHECK (typeof(due_minute) = 'integer' AND due_minute % 60 = 0),
+                  CHECK ((what = 'revocation') = (payload IS NOT NULL)),
+                  UNIQUE (contact_id, what)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_held (
+                  held_id           BLOB PRIMARY KEY NOT NULL CHECK (length(held_id) = 16),
+                  contact_id        BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  identity          BLOB NOT NULL CHECK (length(identity) = 32),
+                  l1_env            BLOB NOT NULL CHECK (length(l1_env) BETWEEN 29 AND 65564),
+                  gen_id            INTEGER NOT NULL CHECK (typeof(gen_id) = 'integer' AND gen_id BETWEEN 0 AND 4294967295),
+                  prov_env          BLOB CHECK (prov_env IS NULL OR length(prov_env) = 60),
+                  hold_until_minute INTEGER NOT NULL CHECK (typeof(hold_until_minute) = 'integer' AND hold_until_minute % 60 = 0),
+                  relay_expiry_hour INTEGER NOT NULL CHECK (typeof(relay_expiry_hour) = 'integer' AND relay_expiry_hour % 3600 = 0),
+                  consume_minute    INTEGER NOT NULL CHECK (typeof(consume_minute) = 'integer' AND consume_minute % 60 = 0)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_reaction (
+                  target_id    BLOB NOT NULL REFERENCES dm_message(message_id) ON DELETE CASCADE,
+                  from_self    INTEGER NOT NULL CHECK (from_self IN (0, 1)),
+                  grapheme_env BLOB NOT NULL CHECK (length(grapheme_env) BETWEEN 29 AND 60),
+                  PRIMARY KEY (target_id, from_self)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_seen (
+                  tag       BLOB PRIMARY KEY NOT NULL CHECK (length(tag) = 16),
+                  until_day INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0 AND until_day % 7 = 0)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE olm_session (
+                  contact_id        BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  slot              TEXT NOT NULL CHECK (slot IN ('current', 'previous')),
+                  session_id        BLOB NOT NULL CHECK (length(session_id) = 32),
+                  role              TEXT NOT NULL CHECK (role IN ('initiator', 'responder')),
+                  acknowledged      INTEGER NOT NULL CHECK (acknowledged IN (0, 1)),
+                  state_env         BLOB NOT NULL CHECK (length(state_env) BETWEEN 29 AND 65564),
+                  prov_env          BLOB CHECK (prov_env IS NULL OR length(prov_env) = 60),
+                  prov_erase_minute INTEGER CHECK (prov_erase_minute IS NULL
+                                                   OR (typeof(prov_erase_minute) = 'integer' AND prov_erase_minute % 60 = 0)),
+                  peer_gen_id       INTEGER CHECK (peer_gen_id IS NULL
+                                                   OR (typeof(peer_gen_id) = 'integer' AND peer_gen_id BETWEEN 0 AND 4294967295)),
+                  unack_since_day   INTEGER CHECK (unack_since_day IS NULL
+                                                   OR (typeof(unack_since_day) = 'integer' AND unack_since_day >= 0)),
+                  retire_day        INTEGER CHECK (retire_day IS NULL
+                                                   OR (typeof(retire_day) = 'integer' AND retire_day >= 0)),
+                  peer_bind_minute  INTEGER CHECK (peer_bind_minute IS NULL
+                                                   OR (typeof(peer_bind_minute) = 'integer' AND peer_bind_minute % 60 = 0)),
+                  prov_anchor_minute INTEGER CHECK (prov_anchor_minute IS NULL
+                                                    OR (typeof(prov_anchor_minute) = 'integer' AND prov_anchor_minute % 60 = 0)),
+                  pair_sent         INTEGER NOT NULL DEFAULT 0 CHECK (pair_sent IN (0, 1)),
+                  CHECK ((role = 'responder') = (peer_bind_minute IS NOT NULL)),
+                  CHECK (role = 'initiator' OR acknowledged = 1),
+                  CHECK ((role = 'initiator' AND acknowledged = 0) = (unack_since_day IS NOT NULL)),
+                  CHECK ((role = 'initiator') = (peer_gen_id IS NOT NULL)),
+                  CHECK ((slot = 'previous') = (retire_day IS NOT NULL)),
+                  CHECK (prov_erase_minute IS NULL OR prov_env IS NOT NULL),
+                  PRIMARY KEY (contact_id, slot),
+                  UNIQUE (contact_id, session_id)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE olm_prekey_gen (
+                  gen_id           INTEGER PRIMARY KEY NOT NULL
+                                   CHECK (typeof(gen_id) = 'integer' AND gen_id BETWEEN 0 AND 4294967295),
+                  bundle_week      INTEGER NOT NULL CHECK (typeof(bundle_week) = 'integer' AND bundle_week >= 0),
+                  fallback_pub     BLOB NOT NULL UNIQUE CHECK (length(fallback_pub) = 32),
+                  secrets_env      BLOB NOT NULL CHECK (length(secrets_env) = 92),
+                  superseded_day   INTEGER CHECK (superseded_day IS NULL
+                                                  OR (typeof(superseded_day) = 'integer' AND superseded_day >= 0)),
+                  delete_after_day INTEGER CHECK (delete_after_day IS NULL
+                                                  OR (typeof(delete_after_day) = 'integer' AND delete_after_day >= 0)),
+                  CHECK ((superseded_day IS NULL) = (delete_after_day IS NULL)),
+                  CHECK (delete_after_day IS NULL OR delete_after_day = superseded_day + 91)
+                ) WITHOUT ROWID""",
+        "CREATE UNIQUE INDEX idx_olm_prekey_gen_current ON olm_prekey_gen((superseded_day IS NULL)) WHERE superseded_day IS NULL",
+        """CREATE TABLE olm_prekey_used (
+                  gen_id     INTEGER NOT NULL REFERENCES olm_prekey_gen(gen_id) ON DELETE CASCADE,
+                  session_id BLOB NOT NULL CHECK (length(session_id) = 32),
+                  PRIMARY KEY (gen_id, session_id)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE dm_peer_pq (
+                  contact_id  BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  gen_id      INTEGER NOT NULL CHECK (typeof(gen_id) = 'integer' AND gen_id BETWEEN 0 AND 4294967295),
+                  bundle_week INTEGER NOT NULL CHECK (typeof(bundle_week) = 'integer' AND bundle_week >= 0),
+                  source      TEXT NOT NULL CHECK (source IN ('bundle', 'in_band')),
+                  xwing_pk    BLOB NOT NULL CHECK (length(xwing_pk) = 1216),
+                  PRIMARY KEY (contact_id, gen_id)
+                ) WITHOUT ROWID""",
+    )
+
+    /**
+     * Step 6 of §13.6: the state-machine, write-once and REPLACE guards of v5.
+     *
+     * Comparisons are NULL-safe (`IS NOT`, R-T6): SQLite's `<>` is NULL for a NULL operand, and a
+     * `WHEN` clause that evaluates to NULL does not fire, which would let a write-once column go
+     * from a value to NULL unnoticed.
+     */
+    private fun migration5Triggers(): List<String> = listOf(
+        """CREATE TRIGGER dm_self_fixed BEFORE UPDATE ON dm_self
+                WHEN NEW.id IS NOT OLD.id OR NEW.seen_key IS NOT OLD.seen_key OR NEW.card_index IS NOT OLD.card_index
+                BEGIN SELECT RAISE(ABORT, 'the identity row keeps its id, seen key and card index'); END""",
+        """CREATE TRIGGER dm_self_monotonic BEFORE UPDATE OF bundle_week, expiry_clock_minute ON dm_self
+                WHEN (NEW.bundle_week IS NOT NULL AND OLD.bundle_week IS NOT NULL AND NEW.bundle_week < OLD.bundle_week)
+                  OR (NEW.bundle_week IS NULL AND OLD.bundle_week IS NOT NULL)
+                  OR NEW.expiry_clock_minute < OLD.expiry_clock_minute
+                BEGIN SELECT RAISE(ABORT, 'the bundle week and the expiry clock never go backwards'); END""",
+        """CREATE TRIGGER dm_contact_identity BEFORE UPDATE ON dm_contact
+                WHEN NEW.contact_id IS NOT OLD.contact_id OR NEW.identity_pk IS NOT OLD.identity_pk
+                BEGIN SELECT RAISE(ABORT, 'a contact keeps its id and its Ed25519 identity'); END""",
+        """CREATE TRIGGER dm_contact_pin BEFORE UPDATE OF pinned_identity ON dm_contact
+                WHEN NEW.pinned_identity IS NOT OLD.pinned_identity
+                  AND NOT (OLD.pinned_identity IS NULL AND NEW.pinned_identity IS NOT NULL)
+                  AND NOT (OLD.trust_state = 'changed' AND NEW.pinned_identity IS OLD.pending_identity)
+                BEGIN SELECT RAISE(ABORT, 'the pinned identity is set once and changes only through KEYDEC'); END""",
+        """CREATE TRIGGER dm_contact_trust BEFORE UPDATE OF trust_state ON dm_contact
+                WHEN NOT ((OLD.trust_state = NEW.trust_state)
+                       OR (OLD.trust_state = 'request'    AND NEW.trust_state IN ('unverified', 'blocked', 'revoked'))
+                       OR (OLD.trust_state = 'unverified' AND NEW.trust_state IN ('verified', 'changed', 'blocked', 'revoked'))
+                       OR (OLD.trust_state = 'verified'   AND NEW.trust_state IN ('unverified', 'changed', 'blocked', 'revoked'))
+                       OR (OLD.trust_state = 'changed'    AND NEW.trust_state IN ('unverified', 'verified', 'blocked', 'revoked'))
+                       OR (OLD.trust_state = 'blocked'    AND NEW.trust_state = 'revoked'))
+                BEGIN SELECT RAISE(ABORT, 'illegal trust transition'); END""",
+        """CREATE TRIGGER dm_message_identity BEFORE UPDATE ON dm_message
+                WHEN NEW.message_id IS NOT OLD.message_id OR NEW.conversation_id IS NOT OLD.conversation_id
+                  OR NEW.direction IS NOT OLD.direction OR NEW.kind IS NOT OLD.kind
+                  OR NEW.author_minute IS NOT OLD.author_minute OR NEW.sort_minute IS NOT OLD.sort_minute
+                  OR NEW.minute_index IS NOT OLD.minute_index OR NEW.timer_code IS NOT OLD.timer_code
+                  OR NEW.body_env IS NOT OLD.body_env
+                BEGIN SELECT RAISE(ABORT, 'only the state and the three expiry columns of a message change'); END""",
+        """CREATE TRIGGER dm_message_state BEFORE UPDATE OF state ON dm_message
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'queued' AND NEW.state IN ('sent', 'degraded', 'failed', 'indeterminate'))
+                       OR (OLD.state = 'failed' AND NEW.state = 'queued')
+                       OR (OLD.state = 'unread' AND NEW.state = 'read'))
+                BEGIN SELECT RAISE(ABORT, 'illegal message state transition'); END""",
+        """CREATE TRIGGER dm_message_expiry
+                BEFORE UPDATE OF expire_at_minute, unread_deadline_minute ON dm_message
+                WHEN (OLD.expire_at_minute IS NOT NULL
+                      AND (NEW.expire_at_minute IS NULL OR NEW.expire_at_minute > OLD.expire_at_minute))
+                  OR (OLD.unread_deadline_minute IS NOT NULL
+                      AND (NEW.unread_deadline_minute IS NULL OR NEW.unread_deadline_minute > OLD.unread_deadline_minute))
+                BEGIN SELECT RAISE(ABORT, 'an expiry time only moves earlier'); END""",
+        """CREATE TRIGGER dm_held_expiry BEFORE UPDATE OF hold_until_minute ON dm_held
+                WHEN NEW.hold_until_minute > OLD.hold_until_minute
+                BEGIN SELECT RAISE(ABORT, 'a hold deadline only moves earlier'); END""",
+        """CREATE TRIGGER dm_conversation_timer BEFORE UPDATE OF timer_version ON dm_conversation
+                WHEN NEW.timer_version < OLD.timer_version
+                BEGIN SELECT RAISE(ABORT, 'the timer version never decreases'); END""",
+        """CREATE TRIGGER dm_held_limit BEFORE INSERT ON dm_held
+                WHEN (SELECT count(*) FROM dm_held WHERE contact_id = NEW.contact_id) >= 256
+                BEGIN SELECT RAISE(ABORT, 'at most 256 held rows per contact'); END""",
+        """CREATE TRIGGER dm_pair_offer_root BEFORE UPDATE ON dm_pair_offer
+                WHEN (OLD.root_env IS NOT NULL AND NEW.root_env IS NOT NULL AND NEW.root_env IS NOT OLD.root_env)
+                  OR (OLD.root_env IS NULL AND NEW.root_env IS NOT NULL)
+                  OR (OLD.offer_env IS NOT NULL AND NEW.offer_env IS NOT NULL AND NEW.offer_env IS NOT OLD.offer_env)
+                  OR (OLD.offer_env IS NULL AND NEW.offer_env IS NOT NULL)
+                  OR NEW.acknowledged < OLD.acknowledged
+                BEGIN SELECT RAISE(ABORT, 'an offered root is erased, never replaced, and is acknowledged once'); END""",
+        """CREATE TRIGGER olm_session_identity BEFORE UPDATE ON olm_session
+                WHEN NEW.session_id IS NOT OLD.session_id OR NEW.role IS NOT OLD.role
+                  OR NEW.peer_gen_id IS NOT OLD.peer_gen_id
+                  OR NEW.acknowledged < OLD.acknowledged
+                  OR (OLD.unack_since_day IS NOT NULL AND NEW.unack_since_day IS NOT NULL
+                      AND NEW.unack_since_day IS NOT OLD.unack_since_day)
+                  OR (OLD.unack_since_day IS NULL AND NEW.unack_since_day IS NOT NULL)
+                  OR (OLD.prov_env IS NOT NULL AND NEW.prov_env IS NOT NULL AND NEW.prov_env IS NOT OLD.prov_env)
+                  OR (OLD.prov_env IS NULL AND NEW.prov_env IS NOT NULL)
+                  OR (OLD.peer_bind_minute IS NOT NULL
+                      AND (NEW.peer_bind_minute IS NULL OR NEW.peer_bind_minute < OLD.peer_bind_minute))
+                  OR (OLD.prov_anchor_minute IS NOT NULL AND NEW.prov_anchor_minute IS NOT OLD.prov_anchor_minute)
+                  OR NEW.pair_sent < OLD.pair_sent
+                BEGIN SELECT RAISE(ABORT, 'a session keeps its identity; a slot change is a delete and an insert'); END""",
+        """CREATE TRIGGER olm_prekey_gen_fixed BEFORE UPDATE ON olm_prekey_gen
+                WHEN NEW.gen_id IS NOT OLD.gen_id OR NEW.fallback_pub IS NOT OLD.fallback_pub
+                  OR NEW.secrets_env IS NOT OLD.secrets_env OR NEW.bundle_week IS NOT OLD.bundle_week
+                  OR (OLD.superseded_day IS NOT NULL AND NEW.superseded_day IS NOT OLD.superseded_day)
+                  OR (OLD.delete_after_day IS NOT NULL AND NEW.delete_after_day IS NOT OLD.delete_after_day)
+                BEGIN SELECT RAISE(ABORT, 'a generation is immutable and is superseded once'); END""",
+        """CREATE TRIGGER olm_prekey_used_append_only BEFORE UPDATE ON olm_prekey_used
+                BEGIN SELECT RAISE(ABORT, 'the first-flight reuse set is append-only'); END""",
+        """CREATE TRIGGER dm_peer_pq_limit BEFORE INSERT ON dm_peer_pq
+                WHEN (SELECT count(*) FROM dm_peer_pq WHERE contact_id = NEW.contact_id) >= 3
+                BEGIN SELECT RAISE(ABORT, 'at most 3 peer X-Wing keys per contact'); END""",
+        // REPLACE guards (§19.21 point 4): SQLite runs no DELETE trigger for a row that REPLACE
+        // conflict resolution deletes, so every table with write-once, frozen or state rules
+        // refuses an insert that conflicts on any of its keys. `dm_seen` is inserted with
+        // INSERT OR IGNORE, which deletes nothing, and `dm_pair_key` is written with
+        // UPDATE-then-INSERT pairs, so neither needs one.
+        replaceGuard("dm_self", "id = NEW.id"),
+        replaceGuard("dm_own_namespace", "namespace_id = NEW.namespace_id OR (role = NEW.role AND card_index = NEW.card_index)"),
+        replaceGuard("dm_contact", "contact_id = NEW.contact_id OR identity_pk = NEW.identity_pk"),
+        replaceGuard("dm_conversation", "conversation_id = NEW.conversation_id OR contact_id = NEW.contact_id"),
+        replaceGuard("dm_message", "message_id = NEW.message_id"),
+        replaceGuard("dm_outbound_item", "item_id = NEW.item_id"),
+        replaceGuard("dm_outbound_op", "operation_id = NEW.operation_id"),
+        replaceGuard("dm_pending_send", "item_id = NEW.item_id"),
+        replaceGuard("dm_bundle_candidate", "contact_id = NEW.contact_id"),
+        replaceGuard("dm_orphan_namespace", "namespace_id = NEW.namespace_id"),
+        replaceGuard("dm_scheduled", "sched_id = NEW.sched_id OR (contact_id = NEW.contact_id AND what = NEW.what)"),
+        replaceGuard("dm_held", "held_id = NEW.held_id"),
+        replaceGuard("dm_reaction", "target_id = NEW.target_id AND from_self = NEW.from_self"),
+        replaceGuard("dm_pair_offer", "contact_id = NEW.contact_id AND root_gen = NEW.root_gen"),
+        replaceGuard("olm_session", "(contact_id = NEW.contact_id AND slot = NEW.slot) OR (contact_id = NEW.contact_id AND session_id = NEW.session_id)"),
+        // `idx_olm_prekey_gen_current` is a **partial unique index on an expression**: a REPLACE
+        // that conflicts only on it would delete the live generation and cascade away its
+        // `olm_prekey_used` reuse tuples, which is exactly the D2b state a replayed first flight
+        // needs to create a second session (§7.6). The guard therefore refuses a second live
+        // generation as well as a repeated id or fallback key.
+        replaceGuard(
+            "olm_prekey_gen",
+            "gen_id = NEW.gen_id OR fallback_pub = NEW.fallback_pub " +
+                "OR (NEW.superseded_day IS NULL AND superseded_day IS NULL)",
+        ),
+        replaceGuard("olm_prekey_used", "gen_id = NEW.gen_id AND session_id = NEW.session_id"),
+        replaceGuard("dm_peer_pq", "contact_id = NEW.contact_id AND gen_id = NEW.gen_id"),
+    )
+
+    private fun replaceGuard(table: String, conflict: String): String =
+        """CREATE TRIGGER ${table}_no_replace BEFORE INSERT ON $table
+                WHEN EXISTS (SELECT 1 FROM $table WHERE $conflict)
+                BEGIN SELECT RAISE(ABORT, '$table rows are never replaced'); END"""
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
@@ -891,6 +1275,11 @@ object Schema {
         // v4 (Phase 9 §13.6 steps 0-4; the v1 DM tables contacts, conversations, messages and
         // signal_state are dropped, the `dm_*` and `olm_*` tables arrive with migration 5)
         "relay_key_registration",
+        // v5 (Phase 9 §13.6 steps 5-6): the DM tables themselves.
+        "dm_self", "dm_own_namespace", "dm_contact", "dm_pair_key", "dm_pair_offer",
+        "dm_conversation", "dm_message", "dm_outbound_item", "dm_outbound_op", "dm_pending_send",
+        "dm_bundle_candidate", "dm_orphan_namespace", "dm_scheduled", "dm_held", "dm_reaction",
+        "dm_seen", "olm_session", "olm_prekey_gen", "olm_prekey_used", "dm_peer_pq",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -910,6 +1299,20 @@ object Schema {
         "inbox_blob_relay_expiry_insert", "inbox_blob_relay_expiry_update",
         "sync_namespace_dm_delay", "sync_namespace_dm_delay_insert",
         "relay_key_registration_state", "relay_key_registration_no_replace",
+        // v5 (Phase 9 §13.6 step 6): state, write-once and limit rules of the DM tables
+        "dm_self_fixed", "dm_self_monotonic",
+        "dm_contact_identity", "dm_contact_pin", "dm_contact_trust",
+        "dm_message_identity", "dm_message_state", "dm_message_expiry", "dm_held_expiry",
+        "dm_conversation_timer", "dm_held_limit", "dm_pair_offer_root",
+        "olm_session_identity", "olm_prekey_gen_fixed", "olm_prekey_used_append_only",
+        "dm_peer_pq_limit",
+        // v5 REPLACE guards
+        "dm_self_no_replace", "dm_own_namespace_no_replace", "dm_contact_no_replace",
+        "dm_conversation_no_replace", "dm_message_no_replace", "dm_outbound_item_no_replace",
+        "dm_outbound_op_no_replace", "dm_pending_send_no_replace", "dm_bundle_candidate_no_replace",
+        "dm_orphan_namespace_no_replace", "dm_scheduled_no_replace", "dm_held_no_replace",
+        "dm_reaction_no_replace", "dm_pair_offer_no_replace", "olm_session_no_replace",
+        "olm_prekey_gen_no_replace", "olm_prekey_used_no_replace", "dm_peer_pq_no_replace",
     )
 
     /**

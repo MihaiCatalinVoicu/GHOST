@@ -215,7 +215,24 @@ jobs:
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-      - run: ./gradlew build --no-daemon
+      # The DM JVM tests run the real ratchet (Phase 9 design §2.7, §15.1; evidence V-5): the host
+      # build of `ghost-client-dm` is a minute-scale build (no Arti), and `-Dghost.dm.native` points
+      # `DmNative` at it. S0' verified the MSVC variant on the owner's machine and left the Linux
+      # load to this job; if `System.load` fails here, the §17.1 re-plan applies.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: build ghost-dm-host (the DM host library the JVM tests load)
+        working-directory: ghost
+        run: |
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo build -p ghost-dm-host --release --locked
+          echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
+      - run: ./gradlew build --no-daemon -Dghost.dm.native="$GHOST_DM_NATIVE"
+      # G-R6: the exported DM JNI symbols of the built library are exactly the closed list of §2.6.
+      - name: G-R6 closed JNI surface
+        working-directory: ghost
+        run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 10): the Gradle part of the third-party notices and
       # the Gradle licence allowlist (G-L1, G-L2), then the notices asset of the release APK (G-L3).
       - name: licence gates (G-L1 Gradle notices, G-L2 licence allowlist, G-L3 notices in the APK)
