@@ -425,6 +425,17 @@ fn the_global_token_bucket_limits_redemptions() {
 /// retry spends most of its time in steps 6 and 7 (the challenge and the RSA verification), so
 /// one of them is between steps 5 and 9 when the week closes. The capture must hold whatever the
 /// interleaving.
+///
+/// The bucket of step 2 is off here. The retries all carry the same frozen `now` (the week must
+/// stay open under them while the sweep closes it), and the bucket is refilled per whole second of
+/// the handler's clock (design §10.2 step 2, default 50/s burst 500), so a clock that never
+/// advances refills nothing: the loop spends the burst and every later try is answered
+/// `RESOURCE_EXHAUSTED` at step 2, never reaching steps 5..9 again. How many tries the closing
+/// sweep takes to land is unbounded — it and `record_or_get` contend for the store's single write
+/// transaction, and the loser is whichever the OS scheduler starves — so the burst must not be the
+/// limit: 22 tries per round here, past 500 on a loaded CI runner (CI 35483094600). The T2 world
+/// drives its relays the same way (`issuer/crates/service/tests/t2/world.rs`); the bucket itself is
+/// pinned by `the_global_token_bucket_limits_redemptions`.
 #[test]
 fn a_week_closed_during_a_redemption_captures_no_nullifier() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -434,10 +445,15 @@ fn a_week_closed_during_a_redemption_captures_no_nullifier() {
         let dir = tempfile::tempdir().unwrap();
         let clock = VirtualClock::new(tuesday());
         let capture = dir.path().join("capture.ndjson");
+        let mut p = policy(test_schedule(), 1, RELAY_B, NullifierMode::Create);
+        p.rate = RedeemRate {
+            per_second: u32::MAX,
+            burst: u32::MAX,
+        };
         let relay = open_relay(
             &dir.path().join("data"),
             &RelayKey::from_bytes([0x42; 32]),
-            Some(policy(test_schedule(), 1, RELAY_B, NullifierMode::Create)),
+            Some(p),
             &clock,
             Some(&capture),
         )
@@ -457,7 +473,10 @@ fn a_week_closed_during_a_redemption_captures_no_nullifier() {
                 match got {
                     Outcome::Ok(_) => {}
                     Outcome::WrongPeriod => break,
-                    other => panic!("{other:?}"),
+                    other => panic!(
+                        "round {round} try {}: {other:?}",
+                        tries.load(Ordering::SeqCst)
+                    ),
                 }
             })
         };
