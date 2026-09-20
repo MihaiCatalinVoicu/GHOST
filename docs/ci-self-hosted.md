@@ -112,6 +112,28 @@ wsl -d ghost-runner -u runner -- env RUNNER_VERSION=<versiune> RUNNER_SHA=<sha25
 
 Restul sistemului: `sudo apt-get update && sudo apt-get upgrade` în distribuție (actualizările de securitate se instalează oricum zilnic prin `unattended-upgrades`). Imaginile Docker construite de `cargo-deny-action` (~1,2 GB fiecare, una per runner) se adună în timp: `wsl -d ghost-runner -- docker image prune -af` din când în când, cu runnerele libere (se reconstruiesc la următorul job `rust`). Toolchain-ul Rust, pachetele SDK și NDK sunt fixate de workflow-uri; o schimbare a lor în workflow se preinstalează cu `03-runners.sh` (Rust; editați `RUST_TOOLCHAIN`) sau `02-android.sh` (SDK; editați `PACKAGES`), altfel acțiunile de setup le instalează la primul job (mai lent, dar funcționează).
 
+### 5.1 O instalare „înțepenită” în `CARGO_HOME`
+
+`CARGO_HOME` e per runner și persistent (`/home/runner/ci-cache/runner-N/cargo`, secțiunea 2.3), spre deosebire de un runner hosted efemer. Un `cargo install <unealtă> --locked` obișnuit copiază fiecare binar în `$CARGO_HOME/bin` doar dacă nu găsește deja un fișier cu acel nume acolo; dacă o rulare e anulată chiar în timpul copierii, binarele rămân în `bin/` fără ca propria evidență a lui cargo (`.crates.toml`/`.crates2.json`) să fi fost actualizată. Rularea următoare programată pe același runner vede fișierele, nu evidența, și refuză:
+
+```
+error: binary `cargo-ndk` already exists in destination
+binary `cargo-ndk-env` already exists in destination
+Add --force to overwrite
+```
+
+(observat pe `ghost-runner-4`, rularea CI 35492470508, după ce rularea 35492418192 a fost anulată în timpul acestui pas pe același runner).
+
+Singurul loc din workflow-uri care face un `cargo install` brut într-un `CARGO_HOME` persistent e pasul „install pinned protoc and cargo-ndk” al jobului `android-native`; de la reparația din 2026-09-20 e idempotent și rezistent la întrerupere: sare peste instalare când `cargo install --list` arată deja versiunea fixată, altfel instalează cu `--force` (curăță atât un binar „înțepenit”, cât și o versiune veche). Pasul echivalent din jobul `rust` (`taiki-e/install-action` pentru `cargo-audit`/`cargo-deny`) nu are aceeași problemă: descarcă binarul precompilat și îl mută (`mv`) peste orice există deja la destinație, fără verificare de coliziune — nu trece prin evidența `cargo install`. (Bazat pe sursa acțiunii, nu pe o garanție documentată a ei; dacă vreodată apare aceeași eroare la un pas `install-action`, aplicați aceeași reparație acolo.)
+
+Deblocare manuală a unui runner deja înțepenit (fără să așteptați reparația din workflow, sau pentru orice altă unealtă instalată la fel): ștergeți binarele din `$CARGO_HOME/bin` pe runnerul afectat și lăsați job-ul următor să reinstaleze, sau reinstalați direct cu `--force`:
+
+```powershell
+wsl -d ghost-runner -u runner -- bash -c 'rm -f /home/runner/ci-cache/runner-4/cargo/bin/cargo-ndk*'
+# sau, cu toolchain-ul Rust deja pe PATH-ul acelui runner:
+wsl -d ghost-runner -u runner -- env CARGO_HOME=/home/runner/ci-cache/runner-4/cargo bash -c 'cargo install cargo-ndk --version 4.1.2 --locked --force'
+```
+
 ## 6. Ce s-a schimbat în workflow-uri
 
 - Toate joburile din `ci.yml`, `entitlement-exit-gate.yml`, `t2-exit-gate.yml`, `monero-regtest.yml`, `signer-timing.yml`: `runs-on: [self-hosted, linux, x64, ghost]`; pașii au rămas aceiași.

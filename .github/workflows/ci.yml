@@ -164,7 +164,17 @@ jobs:
         run: |
           bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
-          cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
+          # CARGO_HOME is persistent on the self-hosted runners (docs/ci-self-hosted.md): a run
+          # cancelled mid-install can leave cargo-ndk's binaries in CARGO_HOME/bin without cargo's
+          # own install record, so a later plain `cargo install` refuses them ("already exists in
+          # destination"). `cargo install --list` reflects only a completed install, so this skips
+          # reinstalling a good one and --force clears a stray or wedged one either way.
+          installed="$(cargo install --list)"
+          if grep -qx "cargo-ndk v${CARGO_NDK_VERSION}:" <<< "$installed"; then
+            echo "cargo-ndk $CARGO_NDK_VERSION already installed"
+          else
+            cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked --force
+          fi
       - name: build twice at the same path from a clean target dir (remapped paths, leak check)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/${NDK_PACKAGE#ndk;}"
