@@ -287,9 +287,29 @@ internal class SendStep(
      * a message key for nothing (mutant MC-3). At most two, only while `now < resendNotAfter` and
      * before the op's deadline — both checked by the caller against the Phase 7 contract — and
      * only while the contact is `unverified` or `verified` (§22.8.5 rule 2).
+     *
+     * **It runs in the caller's transaction, which is OUTCOME's** (§7.5, §7.8). `Outbox.release`
+     * answers true exactly once per operation, so the release and the new op have to commit
+     * together: a resend in a second transaction is lost for good if the process dies between the
+     * two — the op is released, the item is still `enqueued`, no op carries it, and nothing looks
+     * for it again. That is the structural invariant of §15 ("every `pending` or `enqueued` item
+     * has a pending send or an unreleased op") broken by a crash, which is exactly the class of
+     * bug §7.8 is about. The `Outbox.enqueue` call site stays in this file, which is what gate
+     * G-DM2 reads.
+     *
+     * **Why the enqueue goes first, and which failure is caught.** `InsufficientReplicasException`
+     * is raised by the quorum check before `enqueue` writes anything (`OutboxStore.enqueue` step
+     * 1), so swallowing it leaves the caller's transaction untouched and the item ends
+     * `indeterminate` — "may not have been delivered", which is what is true when this week's slot
+     * table cannot give two operators. `StorageFullException` is a failed **write** and is
+     * deliberately **not** caught: it rolls the release back with everything else, and the outcome
+     * is offered again at the next pass, which is the right answer to a full disk and the wrong
+     * answer to give a user as "indeterminate". Nothing else is written before the enqueue, so
+     * there is nothing to undo either way.
      */
     @Suppress("LongParameterList")
     fun resend(
+        tx: SyncTransaction,
         contactId: ByteArray,
         previousOperationId: ByteArray,
         namespace: ByteArray,
@@ -299,30 +319,26 @@ internal class SendStep(
         itemId: ByteArray,
         resendCount: Int,
     ): Boolean {
+        val contact = contacts.contact(tx.sql, contactId) ?: return false
+        if (!maySend(contact.trust)) return false
         val operationId = random.bytes(OperationId.SIZE)
-        return try {
-            database.transaction { tx ->
-                val contact = contacts.contact(tx.sql, contactId) ?: return@transaction false
-                if (!maySend(contact.trust)) return@transaction false
-                messages.insertItemOp(tx, operationId, itemId, blob, resendCount + 1, deadlineHour)
-                messages.clearOpBlob(tx, previousOperationId)
-                sync.outbox.enqueue(
-                    tx,
-                    OutboundBlob(
-                        OperationId(operationId),
-                        NamespaceId(namespace),
-                        blob,
-                        ttl,
-                        deadlineEpochSeconds = deadlineHour,
-                    ),
-                )
-                true
-            }
+        try {
+            sync.outbox.enqueue(
+                tx,
+                OutboundBlob(
+                    OperationId(operationId),
+                    NamespaceId(namespace),
+                    blob,
+                    ttl,
+                    deadlineEpochSeconds = deadlineHour,
+                ),
+            )
         } catch (e: InsufficientReplicasException) {
-            false
-        } catch (e: StorageFullException) {
-            false
+            return false
         }
+        messages.insertItemOp(tx, operationId, itemId, blob, resendCount + 1, deadlineHour)
+        messages.clearOpBlob(tx, previousOperationId)
+        return true
     }
 
     // ---------------------------------------------------------------- planning

@@ -20,12 +20,16 @@ import org.ghost.sync.api.SyncDatabase
  * | FAILED | `failed`; the user may retry, which re-encrypts the same L0 | no copy ever existed, so re-encrypting is safe, and D3 makes a wrongly decided FAILED harmless |
  *
  * **The enqueue is not here.** `Outbox.enqueue` is [SendStep]'s, which is the file gate G-DM2
- * allows it in; this step decides and calls `SendStep.resend`. The distinction matters because
- * the gate reads call sites, and the reason the call is allowed at all is that the resend is
- * caused by the **user's own earlier send** and never by something that arrived.
+ * allows it in; this step decides and calls [SendStep.resend] **with its own transaction**. The
+ * distinction matters because the gate reads call sites, and the reason the call is allowed at all
+ * is that the resend is caused by the **user's own earlier send** and never by something that
+ * arrived.
  *
- * **`Outbox.release` first, effect second, in one transaction.** It answers true exactly once per
- * operation, so an outcome cannot be applied twice across a crash (§7.5's `if (!release) continue`).
+ * **`Outbox.release` first, effect second, one transaction for both** (§7.5, §7.8). The release
+ * answers true exactly once per operation, so an outcome cannot be applied twice across a crash;
+ * and because the resend commits with it, it cannot be **lost** across one either — a resend in a
+ * second transaction would leave, after a process death between the two, a released op and an
+ * item still `enqueued` that nothing ever looks at again.
  */
 internal class OutcomeStep(
     private val database: SyncDatabase,
@@ -52,30 +56,23 @@ internal class OutcomeStep(
     @Suppress("ReturnCount")
     private fun applyOne(outcome: OutboundOutcome): Boolean {
         val now = clock.nowEpochSeconds()
-        val plan = database.transaction { tx ->
-            if (!sync.outbox.release(tx, outcome.operationId)) return@transaction null
+        return database.transaction { tx ->
+            if (!sync.outbox.release(tx, outcome.operationId)) return@transaction false
             val op = messages.op(tx.sql, outcome.operationId.toByteArray())
                 // The message expired and was swept meanwhile (§7.5): the release stands and
                 // there is nothing left to record.
-                ?: return@transaction null
-            val itemId = op.itemId ?: return@transaction null
-            val item = messages.item(tx.sql, itemId) ?: return@transaction null
+                ?: return@transaction true
+            val itemId = op.itemId ?: return@transaction true
+            val item = messages.item(tx.sql, itemId) ?: return@transaction true
             when (outcome.outcome) {
-                Outcome.SENT -> {
-                    terminal(tx, op.operationId, itemId, item, STATE_SENT)
-                    null
-                }
-                Outcome.DEGRADED -> {
-                    terminal(tx, op.operationId, itemId, item, STATE_DEGRADED)
-                    null
-                }
+                Outcome.SENT -> terminal(tx, op.operationId, itemId, item, STATE_SENT)
+                Outcome.DEGRADED -> terminal(tx, op.operationId, itemId, item, STATE_DEGRADED)
                 Outcome.FAILED -> {
                     // §7.5: the user may retry, which re-encrypts the same L0 — so `l0_env` stays
                     // until the deadline, unlike at the three terminal outcomes.
                     messages.setItemState(tx, itemId, item.state, STATE_FAILED)
                     messages.setMessageState(tx, itemId, MessageStore.STATE_QUEUED, STATE_FAILED)
                     messages.clearOpBlob(tx, op.operationId)
-                    null
                 }
                 Outcome.INDETERMINATE -> {
                     val blob = op.blob
@@ -85,45 +82,31 @@ internal class OutcomeStep(
                         resendNotAfter != null &&
                         now < resendNotAfter &&
                         now < op.deadlineHour
-                    if (!mayResend) {
-                        terminal(tx, op.operationId, itemId, item, STATE_INDETERMINATE)
-                        null
-                    } else {
-                        val conversation = contacts.conversation(tx.sql, item.contactId)
-                        Resend(
-                            contactId = item.contactId,
-                            itemId = itemId,
-                            blob = requireNotNull(blob),
-                            timerCode = conversation?.timerCode ?: DmTimers.TIMER_DEFAULT,
-                            deadlineHour = op.deadlineHour,
-                            resendCount = op.resendCount,
-                        )
-                    }
+                    val resent = mayResend && sendStep.resend(
+                        tx = tx,
+                        contactId = item.contactId,
+                        previousOperationId = op.operationId,
+                        namespace = outcome.namespace.toByteArray(),
+                        blob = requireNotNull(blob),
+                        // The identical bytes go out under the conversation's **current** bucket:
+                        // the relay TTL is a bucket, not the timer (§10.2), and a resend is one
+                        // op's lifetime, not a second message's.
+                        ttl = DmTimers.bucketOf(
+                            contacts.conversation(tx.sql, item.contactId)?.timerCode
+                                ?: DmTimers.TIMER_DEFAULT,
+                        ),
+                        deadlineHour = op.deadlineHour,
+                        itemId = itemId,
+                        resendCount = op.resendCount,
+                    )
+                    // The contact is no longer sendable, or this week's slot table cannot give a
+                    // quorum: the release stands and the item ends `indeterminate` — "may not have
+                    // been delivered", which is exactly what is true.
+                    if (!resent) terminal(tx, op.operationId, itemId, item, STATE_INDETERMINATE)
                 }
             }
-        } ?: return true
-
-        // The resend is its own transaction, in the file that may enqueue (§7.5, gate G-DM2).
-        val sent = sendStep.resend(
-            contactId = plan.contactId,
-            previousOperationId = outcome.operationId.toByteArray(),
-            namespace = outcome.namespace.toByteArray(),
-            blob = plan.blob,
-            ttl = DmTimers.bucketOf(plan.timerCode),
-            deadlineHour = plan.deadlineHour,
-            itemId = plan.itemId,
-            resendCount = plan.resendCount,
-        )
-        if (!sent) {
-            // The contact stopped being sendable between the two transactions, or the relay set
-            // shrank: the op is already released, so the item ends `indeterminate` — "may not
-            // have been delivered", which is exactly what is true.
-            database.transaction { tx ->
-                val item = messages.item(tx.sql, plan.itemId) ?: return@transaction
-                terminal(tx, outcome.operationId.toByteArray(), plan.itemId, item, STATE_INDETERMINATE)
-            }
+            true
         }
-        return true
     }
 
     /**
@@ -157,15 +140,6 @@ internal class OutcomeStep(
         messages.clearOpBlob(tx, operationId)
         messages.clearItemL0(tx, itemId)
     }
-
-    private class Resend(
-        val contactId: ByteArray,
-        val itemId: ByteArray,
-        val blob: ByteArray,
-        val timerCode: Int,
-        val deadlineHour: Long,
-        val resendCount: Int,
-    )
 
     companion object {
         /** §7.5: `Outbox.outcomes(DM, 64) + Outbox.outcomes(PREKEYS, 16)`. */
