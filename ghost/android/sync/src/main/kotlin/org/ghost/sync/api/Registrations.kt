@@ -46,11 +46,42 @@ interface Registrations {
     ): Boolean
 
     /**
+     * Keeps (relay, namespace, period, kind) registered with [verifier]: [request] when no row
+     * exists, and a **replacement** when the row that exists carries another verifier, which is the
+     * ES slot-table change of §5.2 — a verifier binds the relay's slot number (§21.2 point 2), so a
+     * relay that keeps the set while moving to another of its slots invalidates the rows of the
+     * earlier periods. Returns true when this call inserted or replaced a row.
+     *
+     * This is what the owner's `REGROWS` step calls: it keeps rows for `c` and `c + 1` of an
+     * earlier week's write capability (§4.8, graft G-3), so it is the one caller that can meet a
+     * row created under another slot, and [request]'s refusal would abort its whole transaction
+     * every pass until the period lapsed.
+     */
+    fun keep(
+        tx: SyncTransaction,
+        relay: RelayId,
+        namespace: NamespaceId,
+        periodId: Long,
+        kind: KeyKind,
+        verifier: ByteArray,
+    ): Boolean
+
+    /**
      * The healing rule of §4.8: rows of (relay, namespace) with `period >= fromPeriod` that are
      * done return to pending with new request ids, so the owner registers them again (its records
      * at the relay were lost, or its read credential was refused). Returns the number of rows moved.
      */
     fun rearm(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, fromPeriod: Long): Int
+
+    /**
+     * How many rows of (relay, namespace) with `period >= fromPeriod` are still pending, inside the
+     * caller's transaction. Counts only (T3), and reads only: it registers nothing.
+     *
+     * §21.2 point 8 needs it: while the owner's refused READ credential is being healed, reads use
+     * the write capability "until a row is done again", and the credential is re-put only once
+     * there is nothing pending left — which is what bounds the re-put (mutant MC-15).
+     */
+    fun pending(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, fromPeriod: Long): Int
 
     /** Drops the rows of (relay, namespace) whose period is before [beforePeriod]. Returns the count. */
     fun forget(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, beforePeriod: Long): Int

@@ -115,8 +115,20 @@ class SyncStores(
             verifier: ByteArray,
         ): Boolean = registrationStore.request(tx.checked(), RegistrationKey(relay, namespace, periodId, kind), verifier, clock.epochSeconds())
 
+        override fun keep(
+            tx: SyncTransaction,
+            relay: RelayId,
+            namespace: NamespaceId,
+            periodId: Long,
+            kind: KeyKind,
+            verifier: ByteArray,
+        ): Boolean = registrationStore.keep(tx.checked(), RegistrationKey(relay, namespace, periodId, kind), verifier, clock.epochSeconds())
+
         override fun rearm(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, fromPeriod: Long): Int =
             registrationStore.rearm(tx.checked(), relay, namespace, fromPeriod, clock.epochSeconds())
+
+        override fun pending(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, fromPeriod: Long): Int =
+            registrationStore.pending(tx.checked(), relay, namespace, fromPeriod)
 
         override fun forget(tx: SyncTransaction, relay: RelayId, namespace: NamespaceId, beforePeriod: Long): Int =
             registrationStore.forget(tx.checked(), relay, namespace, beforePeriod)

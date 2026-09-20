@@ -87,6 +87,55 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
         return true
     }
 
+    /**
+     * Keeps (relay, namespace, period, kind) registered with [verifier]: inserts the row when it is
+     * missing, and **replaces** it when the row that exists carries a different verifier.
+     *
+     * The second case is the ES slot-table change of Phase 9 design §5.2. A verifier binds the
+     * relay's **slot number** (§21.2 point 2), and a relay may keep a namespace's set while moving
+     * to another of its slots; the row of an earlier period was then created with a verifier no
+     * credential can present any more, and [request]'s "a registration keeps the verifier it was
+     * created with" would abort the owner's whole REGROWS transaction for as long as the period
+     * lives. A row never changes its verifier — the `relay_key_registration_state` trigger refuses
+     * that — so the stale row is deleted and a fresh pending one inserted, which is also what the
+     * relay needs: `RegisterKey` records accumulate per verifier (SC-1), so the new one is a new
+     * record beside the old.
+     *
+     * A row with a call in flight is left to its result transaction, exactly as [forget] leaves it;
+     * the next pass replaces it. Returns true when this call inserted or replaced a row.
+     */
+    fun keep(tx: SyncTransaction, key: RegistrationKey, verifier: ByteArray, now: Long): Boolean {
+        require(verifier.size == VERIFIER_SIZE) { "a verifier is 32 bytes" }
+        require(key.periodId >= 0) { "period must not be negative" }
+        val stored = tx.sql.single(
+            "SELECT verifier, inflight FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 AND period_id = ?3 AND kind = ?4",
+            listOf(key.relayId.value, key.namespace.raw, key.periodId, key.kind.dbCode),
+        ) { Pair(it.blob(0), it.int(1)) }
+        if (stored != null) {
+            if (stored.first.contentEquals(verifier)) return false
+            if (stored.second != 0) return false
+            tx.sql.updateExactly(
+                1,
+                "DELETE FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 AND period_id = ?3 " +
+                    "AND kind = ?4 AND inflight = 0",
+                listOf(key.relayId.value, key.namespace.raw, key.periodId, key.kind.dbCode),
+            )
+        }
+        return request(tx, key, verifier, now)
+    }
+
+    /**
+     * How many rows of (relay, namespace) with `period >= fromPeriod` are still pending — the
+     * "until the rows are done again" of §21.2 point 8, which is what bounds the re-put of a
+     * refused own READ credential (mutant MC-15). Counts only (T3).
+     */
+    fun pending(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, fromPeriod: Long): Int =
+        tx.sql.single(
+            "SELECT count(*) FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 " +
+                "AND period_id >= ?3 AND state = 'pending'",
+            listOf(relay.value, ns.raw, fromPeriod),
+        ) { it.int(0) } ?: 0
+
     /** The healing rule of §4.8: done rows of (relay, namespace) from [fromPeriod] on return to pending. */
     fun rearm(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, fromPeriod: Long, now: Long): Int {
         val rows = tx.sql.rows(

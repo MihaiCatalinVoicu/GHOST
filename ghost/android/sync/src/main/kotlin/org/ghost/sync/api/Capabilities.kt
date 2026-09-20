@@ -25,8 +25,14 @@ interface Capabilities {
      * Phase 9's `KEEPER` step (design §4.8) needs it. The owner's READ credential v3 is a bearer
      * credential it mints itself, with an 8-day expiry it refreshes "when fewer than 7 days
      * remain", so the step has to see what it put there the last time — and it must not re-put on
-     * every pass, because [put] bumps the generation and re-arms parked deliveries. A copy of the
-     * expiry kept in memory would be lost at every restart and would re-arm on every start.
+     * every pass, because [put] bumps the generation (and, for a write token, re-arms parked
+     * deliveries and pending registrations). A copy of the expiry kept in memory would be lost at
+     * every restart and would re-put on every start.
+     *
+     * The **state** matters as much as the expiry: §21.2 point 8 has a refused own READ credential
+     * heal its pair's registrations and stay refused — reads fall back to the write capability —
+     * until those rows are done again, which is a decision the step can only make by reading the
+     * row back.
      */
     fun installed(
         tx: SyncTransaction,

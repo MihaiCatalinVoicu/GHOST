@@ -222,15 +222,10 @@ internal class OwnerStore {
         )
     }
 
-    /** True while an undecided bundle operation of [bundleWeek] is still on the outbox. */
-    fun hasBundleOp(sql: SqlExecutor, bundleWeek: Long): Boolean {
-        var found = false
-        sql.query(
-            "SELECT 1 FROM dm_outbound_op WHERE purpose = 'bundle' AND bundle_week = ? LIMIT 1",
-            listOf(bundleWeek),
-        ) { found = true }
-        return found
-    }
+    // No "has this week a bundle op?" read lives here. `dm_outbound_op` carries no outcome column
+    // (§13.6 step 5), so such a query cannot tell an undecided operation from a decided or failed
+    // one, and OWNER-WEEK's guard is `dm_self.bundle_week` alone (§5.4). The re-seal of a FAILED or
+    // INDETERMINATE bundle op is S7's, and it reads `dm_self.bundle_published_week` (§21.8).
 
     companion object {
         /** `delete_after_day = superseded_day + 91` (§5.4; 7 + 28 + 45 + 6 days, rounded to 13 weeks). */

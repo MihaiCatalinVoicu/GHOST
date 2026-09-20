@@ -26,6 +26,8 @@ class RegistrationStoreTest {
     private val verifier = TestBytes.of(32, 41)
     private val otherVerifier = TestBytes.of(32, 42)
 
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02X".format(it.toInt() and 0xff) }
+
     /** The week of a capability that expires at `start(week + 1) + 1 h` (§4.4 point 3). */
     private fun weekOf(now: Long): Long = Time.week(now)
 
@@ -203,6 +205,64 @@ class RegistrationStoreTest {
         w.clock.now = validUntil
         assertEquals(1, w.tx { store.collect(it, w.now) })
         assertEquals(0L, w.count("relay_key_registration"))
+    }
+
+    /**
+     * `keep` is `request` plus the one case §4.8 leaves out: the ES slot-table change of §5.2. A
+     * verifier binds the relay's **slot number** (§21.2 point 2), a relay may keep a namespace's
+     * set while moving to another of its slots, and the rows of the earlier periods then carry a
+     * verifier no credential can present. A row never changes its verifier — the
+     * `relay_key_registration_state` trigger refuses that — so the stale row goes and a fresh
+     * pending one takes its place, which is what the relay expects too: its records accumulate per
+     * verifier (SC-1).
+     */
+    @Test
+    fun keepReplacesTheRowOfASlotThatMoved(): Unit = SyncWorld().use { w ->
+        val (ns, relay, week) = w.ownSet()
+        val store = w.stores.registrationStore
+        val key = w.key(ns, relay, week)
+        assertTrue("a missing row is inserted, exactly like request", w.tx { store.keep(it, key, verifier, w.now) })
+        assertFalse("the same verifier changes nothing", w.tx { store.keep(it, key, verifier, w.now) })
+
+        // The row is done when the slot moves under it.
+        assertNotNull(w.tx { store.lease(it, key, w.now, 0) })
+        assertTrue(w.tx { store.recordDone(it, key, expiryOf(week) + Time.WEEK) })
+        assertTrue(w.tx { store.keep(it, key, otherVerifier, w.now) })
+        assertEquals(1L, w.count("relay_key_registration"))
+        assertEquals("pending", w.string("SELECT state FROM relay_key_registration"))
+        assertNull(w.long("SELECT valid_until_hour FROM relay_key_registration"))
+        assertEquals(0L, w.long("SELECT attempts FROM relay_key_registration"))
+        assertEquals(hex(otherVerifier), w.string("SELECT hex(verifier) FROM relay_key_registration"))
+
+        // A row with a call in flight is left to its result transaction, as `forget` leaves it.
+        assertNotNull(w.tx { store.lease(it, key, w.now, 0) })
+        assertFalse(w.tx { store.keep(it, key, verifier, w.now) })
+        assertEquals(hex(otherVerifier), w.string("SELECT hex(verifier) FROM relay_key_registration"))
+    }
+
+    /**
+     * `pending` counts what is still to be registered for one pair from a period on — the "until a
+     * row is done again" of §21.2 point 8, which is what bounds KEEPER's re-put of a refused own
+     * READ credential (mutant MC-15).
+     */
+    @Test
+    fun pendingCountsOnePairsUnfinishedRowsFromAPeriodOn(): Unit = SyncWorld().use { w ->
+        val (ns, relay, week) = w.ownSet()
+        val store = w.stores.registrationStore
+        val other = w.relays(3)[0]
+        w.tx { w.stores.namespaces.setRelays(it, ns, setOf(relay, other)) }
+        for (period in listOf(week - 1, week)) w.request(w.key(ns, relay, period))
+        w.request(w.key(ns, other, week))
+
+        assertEquals(2, w.tx { w.stores.registrations.pending(it, relay, ns, week - 1) })
+        assertEquals("the older period is below the bound", 1, w.tx { w.stores.registrations.pending(it, relay, ns, week) })
+        assertEquals("another relay's rows are not this pair's", 1, w.tx { w.stores.registrations.pending(it, other, ns, week) })
+
+        val key = w.key(ns, relay, week)
+        assertNotNull(w.tx { store.lease(it, key, w.now, 0) })
+        assertEquals("a row in flight is still pending work", 1, w.tx { w.stores.registrations.pending(it, relay, ns, week) })
+        assertTrue(w.tx { store.recordDone(it, key, expiryOf(week) + Time.WEEK) })
+        assertEquals(0, w.tx { w.stores.registrations.pending(it, relay, ns, week) })
     }
 
     @Test

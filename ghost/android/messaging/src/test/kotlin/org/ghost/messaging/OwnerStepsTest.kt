@@ -281,6 +281,90 @@ class OwnerStepsTest {
         }
     }
 
+    /**
+     * §5.4 "A missed week publishes at the next time-triggered pass", read together with §5.4
+     * "Validity": a bundle of week `w′` is valid only in `w′` and `w′ + 1`. An owner back online in
+     * week `w` whose newest bundle is of `w − 2` therefore holds **none**, and must publish at that
+     * pass — not at `t_pub(w)`, which a late offset puts up to a week further away while every
+     * establishment, reset and reconnect fetch against `P_0` fails (§21.7, L7-D10, E-8).
+     */
+    @Test
+    fun aCatchUpPublicationDoesNotWaitForThisWeeksPublicationMinute() {
+        OwnerWorld().use { world ->
+            world.crypto.publicationOffsetSeconds = 6 * day
+            world.activateAt(weekStart(2_870) + 6 * day)
+            assertEquals(2_870L, world.selfRow()!!["bundle_week"])
+
+            // Offline over the whole of week 2 871; back one hour into 2 872, six days before
+            // `t_pub(2 872)`. The bundle of 2 870 stopped being valid at `start(2 872)`.
+            world.clock.now = weekStart(2_872) + hour
+            assertEquals(OwnerSteps.Result.DONE, world.steps.ownerWeek())
+            assertEquals(2_872L, world.selfRow()!!["bundle_week"])
+            assertEquals(listOf(1, 0), world.crypto.requestedRanks.map { it.second })
+
+            // And the week is still claimed once: the catch-up does not repeat at `t_pub(2 872)`.
+            world.clock.now = weekStart(2_872) + 6 * day
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.ownerWeek())
+        }
+    }
+
+    /**
+     * The same rule must not fire while the last bundle is still valid: an owner that published in
+     * week `w − 1` waits for `t_pub(w)`, which is the whole of PM-11 and PM-30.
+     */
+    @Test
+    fun aValidBundleOfThePreviousWeekStillWaitsForThePublicationMinute() {
+        OwnerWorld().use { world ->
+            world.crypto.publicationOffsetSeconds = 6 * day
+            world.activateAt(weekStart(2_870) + 6 * day)
+            for (offset in listOf(hour, day, 5 * day, 6 * day - 60)) {
+                world.clock.now = weekStart(2_871) + offset
+                assertEquals(
+                    "offset $offset is before t_pub and the bundle of 2 870 is still valid",
+                    OwnerSteps.Result.UNCHANGED,
+                    world.steps.ownerWeek(),
+                )
+            }
+            world.clock.now = weekStart(2_871) + 6 * day
+            assertEquals(OwnerSteps.Result.DONE, world.steps.ownerWeek())
+        }
+    }
+
+    /**
+     * §7.2 "atomic", §5.4: an interrupted OWNER-WEEK leaves **nothing** — not the claimed week, not
+     * the superseded generation — and the pass that resumes it does the whole rotation once. The
+     * interrupt is a real one: `P_0`'s relay set is emptied, so `Outbox.enqueue` refuses under
+     * ADR-11 after the week was claimed and the old generation superseded.
+     */
+    @Test
+    fun anInterruptedOwnerWeekRollsBackWholeAndResumes() {
+        OwnerWorld().use { world ->
+            world.crypto.publicationOffsetSeconds = day
+            world.activateAt(weekStart(2_870) + 2 * day)
+            val bundleNs = org.ghost.sync.api.NamespaceId(world.crypto.ownCard(0)!!.bundleNamespace)
+            val relays = world.namespaceRelays(world.crypto.ownCard(0)!!.bundleNamespace)
+                .map { org.ghost.sync.api.RelayId(it) }.toSet()
+            world.database.transaction { tx -> world.stores.namespaces.setRelays(tx, bundleNs, emptySet()) }
+
+            world.clock.now = weekStart(2_871) + day
+            assertThrows(org.ghost.sync.api.InsufficientReplicasException::class.java) {
+                world.steps.ownerWeek()
+            }
+            assertEquals("the week was not claimed", 2_870L, world.selfRow()!!["bundle_week"])
+            assertEquals(1, world.generations().size)
+            assertNull("the generation was not superseded", world.generations()[0]["superseded_day"])
+            assertEquals(1, world.bundleOps().size)
+
+            world.database.transaction { tx -> world.stores.namespaces.setRelays(tx, bundleNs, relays) }
+            world.clock.now = weekStart(2_871) + day + hour
+            assertEquals(OwnerSteps.Result.DONE, world.steps.ownerWeek())
+            assertEquals(2_871L, world.selfRow()!!["bundle_week"])
+            assertEquals(2, world.generations().size)
+            assertEquals(2, world.bundleOps().size)
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.ownerWeek())
+        }
+    }
+
     @Test
     fun ownerWeekBeforeActivationIsNotActivated() {
         OwnerWorld().use { world ->
@@ -565,7 +649,9 @@ class OwnerStepsTest {
     /**
      * §4.8's healing rule: a **rejected** own READ credential means the relay lost its `keys.redb`,
      * so every `done` row of that pair from this week on returns to pending and is registered
-     * again.
+     * again. It is KEEPER's, because the re-arm and the re-put that clears the refusal have to be
+     * one decision — a step that only re-armed would re-arm again at every later pass, since
+     * `rejected` stays set until a new generation is installed.
      */
     @Test
     fun aRejectedReadCredentialSendsTheDoneRowsBackToPending() {
@@ -580,10 +666,198 @@ class OwnerStepsTest {
             val rejected = world.capabilities().first { it["kind"] == "read" }["relay_id"] as Long
             world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
 
-            assertEquals(OwnerSteps.Result.DONE, world.steps.regrows())
+            assertEquals(OwnerSteps.Result.DONE, world.steps.keeper())
             val pending = world.registrations().filter { it["state"] == "pending" }
             assertTrue("the rejected relay's rows are pending again", pending.isNotEmpty())
             assertEquals(setOf(rejected), pending.map { it["relay_id"] }.toSet())
+            // REGROWS does not undo the work that follows: the rows it finds are the ones it keeps.
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.regrows())
+        }
+    }
+
+    /**
+     * The other half of the same rule, and the reason it is not REGROWS's: while a refusal is being
+     * healed, a row the work lane has just registered must **stay** done. A step that re-armed on
+     * the `rejected` level alone would send it back to pending at every pass and the pair would
+     * never converge.
+     */
+    @Test
+    fun aRowRegisteredDuringTheHealingIsNotSentBackToPending() {
+        OwnerWorld().use { world ->
+            val now = weekStart(2_870) + 2 * day
+            world.activateAt(now)
+            val engine = MessagingEngine(world.steps)
+            engine.runOwnerMaintenance()
+            val validUntil = ceilHour(now) + 14 * day
+            world.markRegistrationsDone(validUntilHour = validUntil)
+            val rejected = world.capabilities().first { it["kind"] == "read" }["relay_id"] as Long
+            world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
+            world.clock.now = now + hour
+            engine.runOwnerMaintenance()
+            assertTrue(world.registrations().any { it["state"] == "pending" })
+
+            // The work lane registers one of the re-armed rows, and the relay refuses the
+            // credential once more before the other is done.
+            world.sql.exec(
+                "UPDATE relay_key_registration SET state = 'done', valid_until_hour = ? " +
+                    "WHERE state = 'pending' AND kind = 'read'",
+                listOf(validUntil),
+            )
+            world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
+            world.clock.now = now + 2 * hour
+            engine.runOwnerMaintenance()
+
+            assertEquals(
+                "the row the work lane finished stays done while the rest of the pair is pending",
+                listOf("done"),
+                world.registrations().filter { it["relay_id"] == rejected && it["kind"] == "read" }
+                    .map { it["state"] },
+            )
+        }
+    }
+
+    /**
+     * §4.8's healing rule **through the pass a device really runs** (`runOwnerMaintenance`, §13.7),
+     * not through `regrows()` alone. KEEPER decides whether a refused credential is re-put, so a
+     * healing that ran after it would only ever see the credential KEEPER had just made usable
+     * again — mutant MC-14, and the reason this rule was dead in the pass order while the test
+     * above passed.
+     */
+    @Test
+    fun aRejectedReadCredentialIsHealedByTheMaintenancePass() {
+        OwnerWorld().use { world ->
+            val now = weekStart(2_870) + 2 * day
+            world.activateAt(now)
+            val engine = MessagingEngine(world.steps)
+            engine.runOwnerMaintenance()
+            world.markRegistrationsDone(validUntilHour = ceilHour(now) + 14 * day)
+
+            val rejected = world.capabilities().first { it["kind"] == "read" }["relay_id"] as Long
+            val generationBefore = world.capabilities()
+                .first { it["relay_id"] == rejected && it["kind"] == "read" }["generation"] as Long
+            world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
+
+            world.clock.now = now + 2 * hour
+            assertTrue(engine.runOwnerMaintenance().changed)
+            val pending = world.registrations().filter { it["state"] == "pending" }
+            assertTrue("the rejected relay's rows are pending again", pending.isNotEmpty())
+            assertEquals(setOf(rejected), pending.map { it["relay_id"] }.toSet())
+            val healed = world.capabilities().first { it["relay_id"] == rejected && it["kind"] == "read" }
+            assertEquals("the re-put clears the refusal in the same transaction", "usable", healed["state"])
+            assertEquals(generationBefore + 1, healed["generation"])
+        }
+    }
+
+    /**
+     * §21.2 point 8, mutant MC-15: the re-put is **bounded**. While the pair still has pending
+     * rows the healing is under way, reads use the write capability, and a second refusal costs no
+     * further capability generation — the credential is re-put once per registration round trip,
+     * not once per `CAPABILITIES` hint.
+     */
+    @Test
+    fun aSecondRefusalWhileTheRowsArePendingCostsNoNewGeneration() {
+        OwnerWorld().use { world ->
+            val now = weekStart(2_870) + 2 * day
+            world.activateAt(now)
+            val engine = MessagingEngine(world.steps)
+            engine.runOwnerMaintenance()
+            world.markRegistrationsDone(validUntilHour = ceilHour(now) + 14 * day)
+            val rejected = world.capabilities().first { it["kind"] == "read" }["relay_id"] as Long
+            world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
+            world.clock.now = now + 2 * hour
+            engine.runOwnerMaintenance()
+            val afterHealing = world.capabilities()
+
+            // The relay refuses the credential again while the rows are still pending.
+            world.markCapabilityRejected(org.ghost.sync.api.RelayId(rejected))
+            world.clock.now = now + 3 * hour
+            assertFalse(engine.runOwnerMaintenance().changed)
+            val row = world.capabilities().first { it["relay_id"] == rejected && it["kind"] == "read" }
+            assertEquals("still refused: reads fall back to the write capability", "rejected", row["state"])
+            assertEquals(
+                "no re-put, so no new generation",
+                afterHealing.first { it["relay_id"] == rejected && it["kind"] == "read" }["generation"],
+                row["generation"],
+            )
+        }
+    }
+
+    /**
+     * §5.2 "Slot-table changes" with §21.2 point 2: a verifier binds the relay's **slot number**, a
+     * relay may keep a namespace's set while moving to another of its slots, and REGROWS keeps rows
+     * for `c` and `c + 1` of an earlier week (graft G-3). The rows of the old slot can then no
+     * longer be presented by anyone, and `Registrations.request`'s "a registration keeps the
+     * verifier it was created with" would abort the whole owner pass — `forget` loop included — at
+     * every pass for as long as those periods lived.
+     */
+    @Test
+    fun regrowsReplacesTheRowsOfARelayThatMovedToAnotherSlot() {
+        OwnerWorld().use { world ->
+            world.crypto.publicationOffsetSeconds = day
+            world.activateAt(weekStart(2_870) + 2 * day)
+            val own = world.crypto.ownCard(0)!!
+            val chosen = RelaySets.forNamespace(
+                own.inboxNamespace,
+                world.slots.map { RelaySets.Slot(it.slot, it.relay.value, it.operatorId) },
+            ).map { it.slot }
+            // Two chosen slots of one operator: swapping the relays that serve them leaves every
+            // slot's operator — and therefore the chosen slot numbers — exactly as they were.
+            val pair = chosen.filter { it % 2 == 0 }.take(2)
+                .takeIf { it.size == 2 } ?: chosen.filter { it % 2 == 1 }.take(2)
+            assertEquals("the ES shape must offer two chosen slots of one operator", 2, pair.size)
+            val (slotA, slotB) = pair
+            val moving = world.slots.first { it.slot == slotA }.relay
+
+            // A write capability of week 2 870 on the moving relay, so REGROWS keeps rows for
+            // 2 870 and 2 871 there (graft G-3) — rows of the slot it is about to leave.
+            world.database.transaction { tx ->
+                world.stores.capabilities.put(
+                    tx,
+                    moving,
+                    org.ghost.sync.api.NamespaceId(own.inboxNamespace),
+                    org.ghost.sync.api.CapabilityKind.WRITE,
+                    ByteArray(64) { 0x21 },
+                    weekStart(2_871) + hour,
+                )
+            }
+            assertEquals(OwnerSteps.Result.DONE, world.steps.regrows())
+            assertEquals(
+                setOf(2_870L, 2_871L),
+                world.registrations().filter { it["relay_id"] == moving.value }.map { it["period_id"] }.toSet(),
+            )
+
+            // Week 2 871: the relays of the two slots swap places.
+            val atA = world.slots.first { it.slot == slotA }
+            val atB = world.slots.first { it.slot == slotB }
+            world.slotsByWeek[2_871L] = world.slots.map { slot ->
+                when (slot.slot) {
+                    slotA -> EsSlot(slotA, atB.relay, atB.operatorId)
+                    slotB -> EsSlot(slotB, atA.relay, atA.operatorId)
+                    else -> slot
+                }
+            }
+            world.clock.now = weekStart(2_871) + 2 * day
+            assertEquals(OwnerSteps.Result.DONE, world.steps.regrows())
+
+            // The moving relay's rows now carry the verifier of its new slot, and are to be made.
+            val secrets = world.crypto.ownSecrets(0, slotB)!!
+            val expected = CredentialV3.verifier(
+                CredentialV3.Kind.DEPOSIT,
+                slotB,
+                own.inboxNamespace,
+                secrets.deposit,
+            )
+            val rows = world.registrations().filter {
+                it["relay_id"] == moving.value && it["kind"] == "deposit" &&
+                    it["ns"] == own.inboxNamespace.toHex()
+            }
+            assertTrue(rows.isNotEmpty())
+            for (row in rows) {
+                assertEquals(expected.toHex(), row["verifier"])
+                assertEquals("pending", row["state"])
+            }
+            // And from there it is idempotent again: the rows are the ones this slot yields.
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.steps.regrows())
         }
     }
 
@@ -650,6 +924,44 @@ class OwnerStepsTest {
             assertNull(world.selfRow())
             assertEquals(0, world.generations().size)
             assertEquals(0, world.ownNamespaces().size)
+        }
+    }
+
+    /**
+     * The other half of the rollback, which §21.12 point 2 is the net for: the activation that
+     * rolled back **completes** at the next pass, whole, once the week's ES can satisfy ADR-11.
+     * S6 has no actor to run that pass (§22.11 item 9a); the step itself is resumable, and this is
+     * what says so.
+     */
+    @Test
+    fun theRolledBackActivationCompletesAtTheNextPass() {
+        OwnerWorld(slotCount = 3, operators = 1).use { world ->
+            assertThrows(org.ghost.sync.api.InsufficientReplicasException::class.java) {
+                world.activateAt(weekStart(2_870) + 2 * day)
+            }
+            assertNull(world.selfRow())
+
+            // A relay of a second operator joins the ES.
+            val joined = world.database.transaction { tx ->
+                world.stores.relayDirectory.upsert(
+                    tx,
+                    listOf(
+                        org.ghost.sync.api.RelayEntry(
+                            OwnerWorld.onion(20),
+                            OwnerWorld.operatorId(1),
+                            org.ghost.sync.api.RelayEntry.Source.CONFIG,
+                        ),
+                    ),
+                )
+            }
+            world.slots = world.slots + EsSlot(3, joined.getValue(OwnerWorld.onion(20)), OwnerWorld.operatorId(1))
+
+            assertEquals(OwnerSteps.Result.DONE, world.activateAt(weekStart(2_870) + 2 * day + hour))
+            assertNotNull(world.selfRow())
+            assertEquals(1, world.generations().size)
+            assertEquals(1, world.bundleOps().size)
+            assertEquals(2, world.ownNamespaces().size)
+            assertEquals(OwnerSteps.Result.UNCHANGED, world.activateAt(weekStart(2_870) + 2 * day + 2 * hour))
         }
     }
 
