@@ -28,6 +28,12 @@ package org.ghost.crypto.bridge
  * taken by the layer that owns the two `olm_session` slots. What the library can tell us — which
  * slot decrypted, whether the session is acknowledged, whether the output was a PreKey message —
  * is what this facade returns.
+ *
+ * **One outcome per code the function can produce.** The `when` arms below are §2.6's table, row by
+ * row, and an unnamed code throws ([unexpected]). `OVERSIZE` belongs to function 8 alone, so
+ * [Encrypted] carries it and [Decrypted], [Inbound], [Outbound] and [Pruned] do not: the native
+ * side reports a state that does not fit as `STATE_CORRUPT` on those paths (`olm::session`'s
+ * `stored_state`), which is the code their rows do name.
  */
 object DmSessions {
 

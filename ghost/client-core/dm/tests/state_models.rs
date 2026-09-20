@@ -1034,21 +1034,22 @@ fn em2_successors(seal: &Seal, rule: SealRule) -> Vec<Seal> {
         // peer is still in flight, which is the ordering rule 5 derives and
         // `the_provisional_schedule_has_no_gap` checks in days: 28 d of sealing plus 51 d of
         // acceptance, from an anchor at most 37 d 2 h later than the peer's, stay inside 119 d.
+        let peer = u8::try_from(1 - index).expect("two parties");
         if seal.parties[index].prov_env
             && seal.parties[1 - index].window_closed
             && !seal
                 .wire
                 .iter()
-                .any(|envelope| envelope.from != index as u8 && envelope.mode == Mode::Provisional)
+                .any(|envelope| envelope.from == peer && envelope.mode == Mode::Provisional)
         {
             let mut next = seal.clone();
             next.parties[index].prov_env = false;
             out.push(next);
         }
         // The `pair-open + 45 d` branch of rule 4: armed as soon as this side opened a pair
-        // envelope. **Nothing else guards it** — what keeps a provisional envelope from arriving
-        // afterwards is rule 3's `pair_sent = 0` clause on the sender, which is the property
-        // `em2_properties` checks and the `IgnorePairSent` mutant breaks.
+        // envelope. **Nothing else guards it** — what keeps a sender from sealing provisional
+        // afterwards is rule 3's `pair_sent = 0` clause, which is why `em2_seal_time`'s first
+        // clause holds and why the `IgnorePairSent` mutant breaks it.
         if seal.parties[index].prov_env && seal.parties[index].pair_opened {
             let mut next = seal.clone();
             next.parties[index].prov_env = false;

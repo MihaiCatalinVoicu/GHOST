@@ -2,19 +2,25 @@
 # Gate G-R6 (Phase 9 design §2.6, §2.3): the DM JNI surface is a **closed list**.
 #
 # Two directions, both checked:
-#   1. every `Java_org_ghost_crypto_bridge_DmNative_*` symbol the built library exports is on the
-#      list `client-core/dm/src/jni.rs` declares, and
-#   2. every list entry marked `Availability::Exported` really is exported.
+#   1. every `Java_org_ghost_crypto_bridge_DmNative_*` entry point the **workspace** writes, and
+#      every such symbol a built library exports, is on the list `client-core/dm/src/jni.rs`
+#      declares, and
+#   2. every list entry marked `Availability::Exported` really is emitted, and really is exported
+#      by each library the caller names.
 #
 # The list itself is the Rust constant `CLOSED_LIST`, so the gate and the code cannot drift: a
 # function added to the crate without a list entry fails direction 1, and an entry promoted to
 # `Exported` without an export fails direction 2. Entries marked `Declared("Sn")` name the slice
 # that will export them; a build that exports one of those early fails direction 1 as well, which
-# is what keeps the list closed while it is being filled.
+# is what keeps the list closed while it is being filled. The entry points are looked for across
+# the whole workspace, not only in the file the list lives in: `ghost-client-net` invokes
+# `export_jni!`, and a hand-written entry point in any other crate would otherwise be invisible.
 #
 # The Kotlin side is checked too: `org.ghost.crypto.bridge.DmNative` must declare exactly the
 # exported names as `external fun`, so a native method without a body or a body without a
-# declaration is caught before a device sees `UnsatisfiedLinkError`.
+# declaration is caught before a device sees `UnsatisfiedLinkError`; and each declaration must be
+# `internal` **with** an explicit `@JvmName`, which is the facade rule of §2.6 and §13.1 together
+# with the only way to keep it (Kotlin mangles internal members' JVM names).
 #
 # Usage: dm-jni-surface.sh [<library> ...]
 #   <library>  a built library to read symbols from: the CI `android` job passes the

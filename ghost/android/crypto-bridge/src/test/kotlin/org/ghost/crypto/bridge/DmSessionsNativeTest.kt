@@ -17,7 +17,12 @@ import java.net.URLClassLoader
  * The `android` CI job builds `ghost-dm-host` before the Gradle tests and passes
  * `-Dghost.dm.native=<path>`; without it these tests are skipped (`assumeTrue`), so a developer
  * without the Rust toolchain still builds and tests the module, and the decoder tests of
- * `DmResultCodesTest` still run. When the property is set, a failure here is a real failure.
+ * `DmResultCodesTest` still run. When the property **is** set, a library that does not load is a
+ * failure of this job, not a skip: see [requireNative].
+ *
+ * One test goes the other way and needs **no** library: it loads the module in a class loader of
+ * its own, with the property cleared, which is the `CRYPTO_UNAVAILABLE` path of §2.7 and runs
+ * wherever the rest of the class does.
  */
 class DmSessionsNativeTest {
 
@@ -362,15 +367,40 @@ class DmSessionsNativeTest {
         }
     }
 
+    /**
+     * §2.7: "a missing or unloadable library, or a closed context, maps to `CRYPTO_UNAVAILABLE`,
+     * never to a crash loop". The facade answers without a library, and this runs wherever the
+     * rest of the class does — the loader of [withoutTheLibrary] has none, whatever the JVM under
+     * test was given.
+     */
     @Test
     fun aMissingNativeLibraryIsUnavailableNotAnError() {
-        // Independent of the property: the facade must answer without the library too.
-        if (DmNative.isAvailable()) return
-        assertNull(DmSessions.openContext(bytes(1, 32), bytes(2, 32), bytes(3, 32)))
-        assertEquals(
-            DmSessions.Outbound.Unavailable,
-            DmSessions.outbound(0L, bytes(1, 16), bytes(2, 32), bytes(3, 32), today),
-        )
-        assertNull(DmSessions.safetyNumber(bytes(1, 32), bytes(2, 32), bytes(3, 32), bytes(4, 32)))
+        withoutTheLibrary { loader ->
+            val sessions = loader.loadClass("org.ghost.crypto.bridge.DmSessions")
+            val instance = sessions.getField("INSTANCE").get(null)
+
+            val outbound = sessions.getMethod(
+                "outbound",
+                Long::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                Int::class.java,
+            ).invoke(instance, 0L, bytes(1, 16), bytes(2, 32), bytes(3, 32), today)
+            assertEquals(
+                "an unloadable library is an outcome, not an error",
+                "Unavailable",
+                outbound!!.javaClass.simpleName,
+            )
+
+            val safetyNumber = sessions.getMethod(
+                "safetyNumber",
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+            ).invoke(instance, bytes(1, 32), bytes(2, 32), bytes(3, 32), bytes(4, 32))
+            assertNull("no library, no safety number", safetyNumber)
+        }
     }
 }
