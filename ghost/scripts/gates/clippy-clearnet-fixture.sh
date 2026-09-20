@@ -8,8 +8,12 @@ command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
 cd "$GHOST_ROOT"
 CONF="client-core/net/clippy.toml"
 out="$(cargo clippy --locked -p ghost-client-net --features clippy-fixture --message-format short -- -D warnings 2>&1 || true)"
-if printf '%s\n' "$out" | grep -qE '^error\[E[0-9]+\]'; then
-  printf '%s\n' "$out" | grep -E '^error\[E[0-9]+\]' | head -5 >&2
+# Piped `printf | grep -q` can report a spurious pipeline failure under `set -o pipefail`: grep
+# exits after its first match and closes its end of the pipe, so printf can get SIGPIPE and its
+# own non-zero exit then becomes the pipeline's status even though grep matched (or found nothing
+# and exited 1, which is also swallowed the same way here). Here-strings avoid the second process.
+if grep -qE '^error\[E[0-9]+\]' <<< "$out"; then
+  grep -E '^error\[E[0-9]+\]' <<< "$out" | head -5 >&2
   fail "the clippy fixture does not compile; the bans were not exercised"
 fi
 paths="$(grep -oE 'path = "[^"]+"' "$CONF" | sed -E 's/path = "(.*)"/\1/')"
@@ -20,8 +24,8 @@ n=0
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   n=$((n + 1))
-  printf '%s\n' "$out" | grep -qF "disallowed method \`$p\`" \
-    || printf '%s\n' "$out" | grep -qF "disallowed type \`$p\`" \
+  grep -qF "disallowed method \`$p\`" <<< "$out" \
+    || grep -qF "disallowed type \`$p\`" <<< "$out" \
     || fail "clippy.toml ban '$p' did not fire on the fixture"
 done <<< "$paths"
 echo "checked $n bans"

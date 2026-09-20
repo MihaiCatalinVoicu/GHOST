@@ -73,7 +73,7 @@ if [ "$mode" = rust ]; then
     name="$(basename "$f" .txt)"
     name="${name#THIRD_PARTY_NOTICES-}"
     [ "$name" = android ] && continue
-    printf '%s\n' "$graphs" | grep -qx -- "$name" || fail "licenses/THIRD_PARTY_NOTICES-$name.txt names no graph of licenses/graphs.txt"
+    grep -qx -- "$name" <<< "$graphs" || fail "licenses/THIRD_PARTY_NOTICES-$name.txt names no graph of licenses/graphs.txt"
   done
 else
   generate android-notices "$components" "$work/THIRD_PARTY_NOTICES-android.txt" && compare android

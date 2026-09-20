@@ -16,12 +16,18 @@ NATIVE_ALLOWLIST=(
   libsqlcipher.so               # net.zetetic:sqlcipher-android (ADR-05, storage)
   libandroidx.graphics.path.so  # androidx.graphics:graphics-path (via androidx.compose.ui:ui-graphics)
 )
+# Joined once, one element per line, so array membership checks below can use a here-string
+# instead of `printf ... | grep -q`: under `set -o pipefail`, grep -q's early exit on a match can
+# SIGPIPE the printf and turn its own non-zero exit into a spurious pipeline failure (self-test.sh
+# and clippy-clearnet-fixture.sh hit the same class; see their comments).
+abis_lines="$(printf '%s\n' "${ABIS[@]}")"
+native_allowlist_lines="$(printf '%s\n' "${NATIVE_ALLOWLIST[@]}")"
 [ -f "$APK" ] || { fail "missing $APK"; finish apk-native-libs; }
 [ -s "$SUMS" ] || { fail "missing or empty $SUMS"; finish apk-native-libs; }
 listing="$(unzip -Z1 "$APK" | grep '^lib/' || true)"
 for abi in "${ABIS[@]}"; do
   entry="lib/$abi/libghost_client_net.so"
-  if ! printf '%s\n' "$listing" | grep -qx "$entry"; then
+  if ! grep -qx "$entry" <<< "$listing"; then
     fail "APK lacks $entry"
     continue
   fi
@@ -31,13 +37,13 @@ for abi in "${ABIS[@]}"; do
   [ "$got" = "$want" ] || fail "$entry in APK ($got) differs from the recorded build ($want)"
 done
 for dir in $(printf '%s\n' "$listing" | awk -F/ 'NF>=3 {print $2}' | sort -u); do
-  printf '%s\n' "${ABIS[@]}" | grep -qx "$dir" || fail "APK ships unexpected ABI directory lib/$dir"
+  grep -qx "$dir" <<< "$abis_lines" || fail "APK ships unexpected ABI directory lib/$dir"
 done
 while IFS= read -r entry; do
   [ -n "$entry" ] || continue
   name="${entry##*/}"
   [ -n "$name" ] || continue
-  printf '%s\n' "${NATIVE_ALLOWLIST[@]}" | grep -qx "$name" \
+  grep -qx "$name" <<< "$native_allowlist_lines" \
     || fail "APK ships native library $entry, which is not on the native allowlist"
 done <<< "$listing"
 finish apk-native-libs

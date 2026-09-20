@@ -243,7 +243,7 @@ else
   esac
   paths="$(pr_paths "$JOB")"
   for p in "${JOB_PATHS[@]}"; do
-    printf '%s\n' "$paths" | grep -qx -F -e "$p" || fail "$JOB_REL: pull_request paths miss $p"
+    grep -qx -F -e "$p" <<< "$paths" || fail "$JOB_REL: pull_request paths miss $p"
   done
 fi
 finish monero-pin
