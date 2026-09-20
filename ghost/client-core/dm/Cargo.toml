@@ -52,3 +52,11 @@ hex = { workspace = true }
 curve25519-dalek = { workspace = true }
 # Differential oracle for X-Wing, dev graph only (G-R1, §16.3).
 x-wing = "=0.1.0"
+# The Olm key-schedule oracle (design §15.2 item 3): vodozemac's `low-level-api` exports the
+# message key, and the oracle re-derives `HKDF(salt = 0x00, M, "OLM_KEYS", 80)` and decrypts the
+# golden ciphertext with AES-256-CBC, checking the **8-byte** V1 MAC. Dev graph only: G-R2 keeps
+# `low-level-api` out of every shipped graph, and `aes`/`cbc` are already in the lock through
+# vodozemac itself, so the oracle adds no crate to the shipped library.
+vodozemac = { version = "=0.11.0", default-features = false, features = ["low-level-api"] }
+aes = "=0.9.3"
+cbc = "=0.2.1"

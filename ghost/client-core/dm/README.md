@@ -62,6 +62,21 @@ cargo test -p ghost-client-dm
   exact-length input and a further `10⁶ / 1000` exact-length mutants cover it; both records are
   fixed-length and additionally have an exhaustive single-bit mutation test, which is stronger
   than sampling for them.
+- `tests/golden.rs`: the golden Olm pickles of design §15.2 item 2 under
+  `tests/golden/vodozemac-<version>/`. They are **loaded, not regenerated**: Olm draws random base
+  and ratchet keys inside the library, so the drill is the one §2.8 names — load the committed
+  pickles with the pinned version, decrypt the messages each side had not read, continue both
+  ways, and check the pinned `chainPosition` and `sessionPrune` outputs (G-R7). Regenerate at a
+  pin change only, with `GHOST_DM_GOLDEN_WRITE=1`, into the new version's directory, keeping the
+  old one until the upgrade drill has run against it.
+- `tests/key_schedule.rs`: the Olm key-schedule oracle of §15.2 item 3. It re-derives
+  `HKDF(salt = 0x00, M, "OLM_KEYS", 80)` and decrypts GHOST's own ciphertext with AES-256-CBC,
+  checking the **8-byte** V1 MAC, with `M` exported through vodozemac's `low-level-api` (dev graph
+  only). It catches the configuration misuse the library's own tests cannot see.
+- `tests/state_models.rs`: **EM-1** (sessions) and **EM-2** (seal modes), enumerated exhaustively
+  by breadth-first search over canonicalised states. MC-19 ("newest decrypt wins") is run as a
+  substituted rule and must break a property. PR scale is two user sends per side;
+  `GHOST_DM_EM_SENDS` with `GHOST_DM_EM_BUDGET` takes it to the design's six for a gate run.
 - `tests/xwing_kat.rs`: the X-Wing draft-06 vectors and a differential test against RustCrypto
   `x-wing` 0.1.0 (dev graph only).
 - `tests/vectors.rs`: generates and checks `protocol/test-vectors/dm_derive.txt`, `dm_seal.txt`,
