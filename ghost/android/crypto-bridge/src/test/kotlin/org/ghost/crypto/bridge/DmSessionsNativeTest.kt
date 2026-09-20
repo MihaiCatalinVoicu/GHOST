@@ -208,6 +208,24 @@ class DmSessionsNativeTest {
         }
     }
 
+    /** §2.5: the caller's seed arrays do not outlive the call on the JVM heap. */
+    @Test
+    fun openingAContextZeroisesTheCallersArrays() {
+        requireNative()
+        val branch = bytes(0xe1, 32)
+        val seed = bytes(0xe2, 32)
+        val stateKey = bytes(0xe3, 32)
+        val handle = DmSessions.openContext(branch, seed, stateKey)
+        assertNotNull(handle)
+        try {
+            assertArrayEquals(ByteArray(32), branch)
+            assertArrayEquals(ByteArray(32), seed)
+            assertArrayEquals(ByteArray(32), stateKey)
+        } finally {
+            DmSessions.closeContext(handle!!)
+        }
+    }
+
     /** §2.5: a closed or foreign handle is `CRYPTO_UNAVAILABLE`, never a crash. */
     @Test
     fun aClosedOrForeignHandleIsUnavailable() {

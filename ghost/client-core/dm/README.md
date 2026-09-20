@@ -11,6 +11,28 @@ with the value semantics of §7.9, the stored state with the first-seen sidecar 
 and the two pickle-layout reads of §2.1 (`chainPosition`, `sessionPrune`) — the single recorded
 deviation from "public API only", every drift of which is `STATE_CORRUPT`.
 
+## The JNI surface and the host build
+
+`src/jni.rs` (feature `jni-bridge`) is the closed surface `org.ghost.crypto.bridge.DmNative` of
+design §2.6: byte arrays in, one `code(1) || TLV fields` array out, no I/O, no clock, no logging,
+no state between calls but the context handle, and nothing thrown — a Rust panic is caught under a
+silent hook and comes back as `INTERNAL`. `CLOSED_LIST` is the list itself; each entry names the
+slice that exports it, and gate G-R6 (`scripts/gates/dm-jni-surface.sh`) checks both directions,
+plus the Kotlin `external fun` declarations and, in CI, the exported symbols of the built library.
+
+`export_jni!()` emits the entry points. `ghost-client-net` invokes it in `jni_bridge.rs` so the
+closed list is visible in the crate that produces `libghost_client_net.so`, and
+`client-core/dm-host` (`ghost-dm-host`, test-only, never built for Android) invokes it so JVM
+tests call exactly the shipped code:
+
+```
+cargo build -p ghost-dm-host --release --locked
+./gradlew :crypto-bridge:testDebugUnitTest -Dghost.dm.native=<path to the cdylib>
+```
+
+Without the property the native tests skip themselves and the decoder tests still run, so the
+module builds and tests without the Rust toolchain.
+
 ## What the crate guarantees about itself
 
 - **No clock.** Every time value is an argument (`binding_minute`, `now_minute`). This is what
@@ -119,7 +141,19 @@ wants, since every major has to be routed through the deterministic world backen
   Carrying the tag everywhere is what lets one code path serve both, and it is strictly stronger
   than the design asks.
 
-## Deferred, with the reason
+## Deferred, with the reason (S4b)
+
+- **The card, bundle, seal and PQ functions of the closed list** (`cardParse`, `cardDerive`,
+  `ownReadSecret`, `bundleOpen`, `sealIntro`, `sealSym`, `openOuter`, `openIntro`, `pairKeys`,
+  `pqRootSeal`, `pqRootOpen`, `l0Encode`, `l0Decode`). They are **declared** in `CLOSED_LIST` with
+  the slice that exports them (S6, S7, S13) and G-R6 refuses an early export, so the list stays
+  closed while it is being filled. `ownCard` and `bundleCreate` were pulled forward into S4b
+  because the session functions are untestable without an own Olm identity and a generation.
+- **`vendor-tests`** (design §15.2 item 1, V-12): vodozemac's own suite at the pinned tag needs
+  CMake and a C++ compiler for `olm-sys`; the spike script `v12-vendor-tests.sh` is written and
+  the CI runner image has both, so this is a job to add, not code to write.
+
+## Deferred, with the reason (S4a)
 
 - **`cargo-fuzz` targets (design §9.5 M-8, §16.2 `dm-fuzz`).** `cargo-fuzz` needs a nightly
   toolchain and libFuzzer's C++ runtime; this host has only the pinned `1.98.1` toolchain and no

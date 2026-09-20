@@ -72,12 +72,19 @@ while read -r name; do
 done < <(comm -13 "$work/kotlin" "$work/expected")
 
 # The built library, when one was named: its dynamic symbols are exactly the expected set.
+#
+# `nm -D` reads ELF. The CI android job builds the Linux `.so` and this half runs there; the
+# owner's Windows machine builds an MSVC `.dll`, which `nm` cannot read at all, so that case is
+# reported as skipped rather than failed — a missing toolchain must not look like a passing gate,
+# and a *wrong* one must not look like a failing build. An ELF library with no `nm` is a broken
+# runner and does fail.
 if [ -n "$LIBRARY" ]; then
   if [ ! -f "$LIBRARY" ]; then
     fail "library not found: $LIBRARY"
+  elif [ "$(head -c 4 "$LIBRARY" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+    echo "[dm-jni-surface] symbol check skipped: $LIBRARY is not ELF (nm -D cannot read it)" >&2
   elif ! command -v nm >/dev/null; then
-    echo "nm not found: the symbol check needs binutils" >&2
-    FAILURES=$((FAILURES + 1))
+    fail "nm not found: the symbol check of an ELF library needs binutils"
   else
     nm -D --defined-only "$LIBRARY" 2>/dev/null | grep -oE "${PREFIX}[A-Za-z0-9]+" \
       | sed -E "s/${PREFIX}//" | sort -u > "$work/symbols" || true

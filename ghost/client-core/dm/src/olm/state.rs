@@ -22,6 +22,7 @@
 
 use crate::olm::pickle::{self, SkippedKey};
 use crate::result::{DmCode, DmResult};
+use zeroize::Zeroize;
 
 /// Largest first-seen sidecar of one session, from Olm's own limits (V-15).
 pub const SIDECAR_MAX: usize =
@@ -199,6 +200,17 @@ impl SessionState {
         out.extend_from_slice(&self.pickle);
         out.extend_from_slice(&sidecar);
         Ok(out)
+    }
+
+    /// Overwrites the pickle buffer with zeros.
+    ///
+    /// The JSON pickle is the session's **root key, chain keys and skipped message keys in the
+    /// clear**: it exists only between a `Session` and its wrapped envelope, and every call site
+    /// of this module ends by calling this, so the plaintext state does not linger on the heap
+    /// after the call that needed it. It is not a substitute for the library's own zeroising (the
+    /// vodozemac audit's Issue I is declared unresolved, L7-D19); it is the part GHOST owns.
+    pub fn zeroize_pickle(&mut self) {
+        self.pickle.zeroize();
     }
 
     /// Decodes stored bytes. Anything that does not parse exactly is [`DmCode::StateCorrupt`].

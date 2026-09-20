@@ -1157,7 +1157,9 @@ object Schema {
                 WHEN NOT ((OLD.trust_state = NEW.trust_state)
                        OR (OLD.trust_state = 'request'    AND NEW.trust_state IN ('unverified', 'blocked', 'revoked'))
                        OR (OLD.trust_state = 'unverified' AND NEW.trust_state IN ('verified', 'changed', 'blocked', 'revoked'))
-                       OR (OLD.trust_state = 'verified'   AND NEW.trust_state IN ('unverified', 'changed', 'blocked', 'revoked'))
+                       -- No verified -> unverified edge: §8.3 clears a verification only through a
+                       -- key change, which goes verified -> changed -> unverified.
+                       OR (OLD.trust_state = 'verified'   AND NEW.trust_state IN ('changed', 'blocked', 'revoked'))
                        OR (OLD.trust_state = 'changed'    AND NEW.trust_state IN ('unverified', 'verified', 'blocked', 'revoked'))
                        OR (OLD.trust_state = 'blocked'    AND NEW.trust_state = 'revoked'))
                 BEGIN SELECT RAISE(ABORT, 'illegal trust transition'); END""",

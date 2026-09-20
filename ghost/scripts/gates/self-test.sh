@@ -581,6 +581,8 @@ expect_fail_msg "dm-jni-surface rejects a Kotlin declaration the crate does not 
 expect_fail_msg "dm-jni-surface rejects a missing Kotlin declaration" \
   "DmNative does not declare 'external fun ctxClose'" \
   env GHOST_DM_JNI_KOTLIN="$DM_JNI/DmNativeMissing.kt" bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a library that was named but is not there" \
+  "library not found" bash "$DIR/dm-jni-surface.sh" "$HARNESS/dm-jni/no-such-library.so"
 if bash "$DIR/dm-jni-surface.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-jni-surface accepts the real closed list"
 else

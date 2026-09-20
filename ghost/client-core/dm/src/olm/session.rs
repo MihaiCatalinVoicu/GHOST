@@ -107,16 +107,27 @@ pub struct StoredSession<'a> {
     pub state: &'a [u8],
 }
 
+/// Decodes a stored state into a live `Session` and the sidecar beside it.
+///
+/// The decoded JSON pickle is the session's root key, chain keys and skipped message keys in the
+/// clear; it is zeroised as soon as vodozemac has parsed it, so the plaintext state lives on the
+/// heap for one `serde_json::from_slice` and no longer.
 fn load(state: &[u8]) -> DmResult<(Session, Sidecar)> {
-    let decoded = SessionState::decode(state)?;
-    let parsed: SessionPickle =
-        serde_json::from_slice(&decoded.pickle).map_err(|_| DmCode::StateCorrupt)?;
+    let mut decoded = SessionState::decode(state)?;
+    let parsed: Result<SessionPickle, _> = serde_json::from_slice(&decoded.pickle);
+    decoded.zeroize_pickle();
+    let parsed = parsed.map_err(|_| DmCode::StateCorrupt)?;
     Ok((Session::from_pickle(parsed), decoded.sidecar))
 }
 
+/// Serialises a session and its reconciled sidecar into the plaintext of `state_env`, zeroising
+/// the intermediate pickle for the same reason.
 fn store(session: &Session, previous: &Sidecar, today: u32) -> DmResult<Vec<u8>> {
     let pickle = serde_json::to_vec(&session.pickle()).map_err(|_| DmCode::StateCorrupt)?;
-    SessionState::build(previous, pickle, today)?.encode()
+    let mut state = SessionState::build(previous, pickle, today)?;
+    let encoded = state.encode();
+    state.zeroize_pickle();
+    encoded
 }
 
 fn session_id_of(session: &Session) -> DmResult<[u8; SESSION_ID_BYTES]> {
@@ -268,7 +279,10 @@ pub fn session_inbound(
 /// `chainPosition` (§2.6 function 19): the gap hold's expected index, read from the stored state.
 /// It writes nothing (T28) and is called during peek, outside any transaction.
 pub fn chain_position(state: &[u8], ratchet_key: &[u8; 32]) -> DmResult<ChainPosition> {
-    pickle::chain_position(&SessionState::decode(state)?.pickle, ratchet_key)
+    let mut decoded = SessionState::decode(state)?;
+    let position = pickle::chain_position(&decoded.pickle, ratchet_key);
+    decoded.zeroize_pickle();
+    position
 }
 
 /// `sessionPrune` (§2.6 function 20, §7.7 point 4): SWEEP's age bound on the skipped keys of a
@@ -278,13 +292,17 @@ pub fn chain_position(state: &[u8], ratchet_key: &[u8; 32]) -> DmResult<ChainPos
 /// [`SKIPPED_KEY_MAX_AGE_DAYS`] old; the reconciliation afterwards drops their sidecar entries
 /// with them, so the projection property of §7.7 point 4 holds after a prune as after any store.
 pub fn session_prune(state: &[u8], today: u32) -> DmResult<(Vec<u8>, usize)> {
-    let decoded = SessionState::decode(state)?;
+    let mut decoded = SessionState::decode(state)?;
     let expired: Vec<SkippedKey> = decoded.sidecar.expired(today, SKIPPED_KEY_MAX_AGE_DAYS);
-    let (pickle, removed) = pickle::prune(&decoded.pickle, |key| expired.contains(key))?;
+    let pruned = pickle::prune(&decoded.pickle, |key| expired.contains(key));
+    decoded.zeroize_pickle();
+    let (pickle, removed) = pruned?;
     // A prune is a store: the sidecar is rebuilt as a projection of the pickle it just edited, and
     // a key that survives keeps the day it already had.
-    let state = SessionState::build(&decoded.sidecar, pickle, today)?.encode()?;
-    Ok((state, removed))
+    let mut next = SessionState::build(&decoded.sidecar, pickle, today)?;
+    let encoded = next.encode();
+    next.zeroize_pickle();
+    Ok((encoded?, removed))
 }
 
 /// The L1 header of a message, for the seal-opening functions that hand it to Kotlin.

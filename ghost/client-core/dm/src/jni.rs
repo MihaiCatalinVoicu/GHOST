@@ -401,7 +401,7 @@ pub fn session_outbound(
     let peer_fallback = fixed::<32>(env, peer_fallback)?;
     let today = day(today)?;
     with_context(handle, |context| {
-        let out = session::session_outbound(
+        let mut out = session::session_outbound(
             &context.olm_identity,
             &context.olm_signing,
             &peer_identity,
@@ -413,7 +413,9 @@ pub fn session_outbound(
             wrap::WrapName::OlmSession,
             &wrap::olm_session_binding(&contact_id, &out.session_id),
             &out.state,
-        )?;
+        );
+        out.state.zeroize();
+        let state_env = state_env?;
         let reply_seed_env = wrap::wrap(
             &context.state_key,
             wrap::WrapName::ReplySeed,
@@ -445,19 +447,23 @@ pub fn encrypt(
     let today = day(today)?;
     with_context(handle, |context| {
         let binding = wrap::olm_session_binding(&contact_id, &session_id);
-        let state = wrap::unwrap(
+        let mut state = wrap::unwrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
             &binding,
             &state_env,
         )?;
-        let out = session::encrypt(&state, &l0, today)?;
+        let out = session::encrypt(&state, &l0, today);
+        state.zeroize();
+        let mut out = out?;
         let new_state = wrap::wrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
             &binding,
             &out.state,
-        )?;
+        );
+        out.state.zeroize();
+        let new_state = new_state?;
         let mut flags = 0u8;
         if out.is_pre_key {
             flags |= FLAG_PRE_KEY;
@@ -512,14 +518,22 @@ pub fn decrypt(
             )?;
             states.push((slot, *session_id, state));
         }
-        let trial: Vec<StoredSession<'_>> = states
-            .iter()
-            .map(|(slot, _, state)| StoredSession {
-                slot: *slot,
-                state: state.as_slice(),
-            })
-            .collect();
-        let out = session::decrypt(&trial, &l1, is_pre_key != 0, today)?;
+        let out = {
+            let trial: Vec<StoredSession<'_>> = states
+                .iter()
+                .map(|(slot, _, state)| StoredSession {
+                    slot: *slot,
+                    state: state.as_slice(),
+                })
+                .collect();
+            session::decrypt(&trial, &l1, is_pre_key != 0, today)
+        };
+        // The unwrapped states are the session's keys in the clear: they go no further than this
+        // call, whatever its outcome (§2.5).
+        for (_, _, state) in states.iter_mut() {
+            state.zeroize();
+        }
+        let mut out = out?;
         let (_, session_id, _) = states
             .iter()
             .find(|(slot, _, _)| *slot == out.slot)
@@ -529,7 +543,9 @@ pub fn decrypt(
             wrap::WrapName::OlmSession,
             &wrap::olm_session_binding(&contact_id, session_id),
             &out.state,
-        )?;
+        );
+        out.state.zeroize();
+        let new_state = new_state?;
         let flags = if out.acknowledged {
             FLAG_ACKNOWLEDGED
         } else {
@@ -589,18 +605,17 @@ pub fn session_inbound(
     let l1 = bytes(env, l1)?;
     let today = day(today)?;
     with_context(handle, |context| {
-        let secrets = wrap::unwrap(
+        let mut secrets = wrap::unwrap(
             &context.state_key,
             wrap::WrapName::Generation,
             &wrap::generation_binding(gen_id, &gen_fallback_public),
             &gen_secrets_env,
         )?;
         // `secrets_env` holds the fallback secret and the X-Wing seed (§13.6, 64 bytes wrapped).
-        let fallback: [u8; 32] = secrets
-            .get(..32)
-            .ok_or(DmCode::StateCorrupt)?
-            .try_into()
-            .map_err(|_| DmCode::StateCorrupt)?;
+        let mut fallback = [0u8; 32];
+        let taken = secrets.get(..32).map(|half| fallback.copy_from_slice(half));
+        secrets.zeroize();
+        taken.ok_or(DmCode::StateCorrupt)?;
         let out = session::session_inbound(
             &context.olm_identity,
             &context.olm_signing,
@@ -608,13 +623,17 @@ pub fn session_inbound(
             &expected_peer_identity,
             &l1,
             today,
-        )?;
+        );
+        fallback.zeroize();
+        let mut out = out?;
         let state_env = wrap::wrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
             &wrap::olm_session_binding(&contact_id, &out.session_id),
             &out.state,
-        )?;
+        );
+        out.state.zeroize();
+        let state_env = state_env?;
         Ok(Reply::ok()
             .field(Field::L0, &out.plaintext)
             .field(Field::State, &state_env)
@@ -661,13 +680,15 @@ pub fn chain_position(
     let state_env = bytes(env, state_env)?;
     let ratchet_key = fixed::<32>(env, ratchet_key)?;
     with_context(handle, |context| {
-        let state = wrap::unwrap(
+        let mut state = wrap::unwrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
             &wrap::olm_session_binding(&contact_id, &session_id),
             &state_env,
         )?;
-        match session::chain_position(&state, &ratchet_key)? {
+        let position = session::chain_position(&state, &ratchet_key);
+        state.zeroize();
+        match position? {
             ChainPosition::Index(index) => Ok(Reply::ok()
                 .field(Field::ChainIndex, &index.to_be_bytes())
                 .into_bytes()),
@@ -692,19 +713,23 @@ pub fn session_prune(
     let today = day(today)?;
     with_context(handle, |context| {
         let binding = wrap::olm_session_binding(&contact_id, &session_id);
-        let state = wrap::unwrap(
+        let mut state = wrap::unwrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
             &binding,
             &state_env,
         )?;
-        let (pruned, removed) = session::session_prune(&state, today)?;
+        let outcome = session::session_prune(&state, today);
+        state.zeroize();
+        let (mut pruned, removed) = outcome?;
         let new_state = wrap::wrap(
             &context.state_key,
             wrap::WrapName::OlmSession,
             &binding,
             &pruned,
-        )?;
+        );
+        pruned.zeroize();
+        let new_state = new_state?;
         let removed = u32::try_from(removed).unwrap_or(u32::MAX);
         Ok(Reply::ok()
             .field(Field::State, &new_state)

@@ -22,6 +22,12 @@ package org.ghost.crypto.bridge
  * slots' session ids and wrapped envelopes — and return the new envelope for the caller to write.
  * The `tx`/`contact` shape of §2.6 is the `:messaging` wrapper that S7 builds on top of this, and
  * the transaction rule is unchanged: the write happens in the caller's transaction, on `Ok` only.
+ *
+ * For the same reason §2.6's `created` and `renewed` are not outputs here: both are **GHOST
+ * decisions under R-SS1** ("an explicit GHOST decision rather than a library side effect", §8.2),
+ * taken by the layer that owns the two `olm_session` slots. What the library can tell us — which
+ * slot decrypted, whether the session is acknowledged, whether the output was a PreKey message —
+ * is what this facade returns.
  */
 object DmSessions {
 
@@ -196,8 +202,11 @@ object DmSessions {
     }
 
     /**
-     * Opens a DM context (§2.5). The caller zeroises its own arrays after the call (best effort);
-     * the native side holds the derived secrets until [closeContext].
+     * Opens a DM context (§2.5). The three arrays are **zeroised here** after the call, which is
+     * the "the Kotlin caller zeroises its arrays after the call (best effort)" of §2.5: best
+     * effort because the JVM may have copied them during GC, which is exactly why the derived
+     * secrets live in native memory from here on and the JVM heap never holds a ratchet, KEM or
+     * seal opening key. The native side holds them until [closeContext].
      */
     fun openContext(
         messagingBranch: ByteArray,
@@ -205,8 +214,14 @@ object DmSessions {
         sessionStateKey: ByteArray,
     ): Long? {
         if (!DmNative.isAvailable()) return null
-        val result = call { DmNative.ctxOpen(messagingBranch, identitySeed, sessionStateKey) }
-        return if (result.isOk) result.i64(DmField.HANDLE) else null
+        return try {
+            val result = call { DmNative.ctxOpen(messagingBranch, identitySeed, sessionStateKey) }
+            if (result.isOk) result.i64(DmField.HANDLE) else null
+        } finally {
+            messagingBranch.fill(0)
+            identitySeed.fill(0)
+            sessionStateKey.fill(0)
+        }
     }
 
     /** Closes a DM context; a second close is a no-op from the caller's point of view. */

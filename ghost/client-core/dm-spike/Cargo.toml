@@ -3,9 +3,23 @@
 #
 # Not a member of the ghost workspace and never linked into a shipped library: it has its own
 # workspace root and lock file, so the product lock, the client allowlist and the crypto pins are
-# untouched. It depends on vodozemac 0.11.0 AND 0.10.0 (renamed) to compare both pins. It is
-# deleted when S4b lands: ghost-client-dm re-implements the encoder check, golden sizes, the
-# failed-decrypt test and the session harness under review, with the pins of §2.3.
+# untouched. It depends on vodozemac 0.11.0 AND 0.10.0 (renamed) to compare both pins.
+#
+# RECORDED DEVIATION (S4b). Design §17.1 says this crate is "deleted in S4b", and the session half
+# of it is indeed superseded: `ghost-client-dm` now carries the dehydrated-pickle encoder check,
+# the golden pickles, `FailedDecryptLeavesStateTest`, the chain-position and prune reads and the
+# session harness, under review and with the pins of §2.3. What is **not** superseded yet lives
+# only here:
+#
+#   scripts/libcrux-portable-detector.sh   the G-R3 detector
+#   scripts/v8-g-r8-baseline.sh + examples/g_r8_scan.rs + baseline/g-r8-baseline.txt
+#                                          the G-R8 clock/logging scanner and its baseline
+#   scripts/v12-vendor-tests.sh            the `vendor-tests` job of §15.2 item 1
+#
+# §17.1 leaves "turning the G-R3 detector and the G-R8 scanner into ghost/scripts/gates/*.sh with
+# fixtures" to the S0' gate slice, which has not run. Deleting the crate now would remove the only
+# working copy of those three before their replacements exist, so it stays until that slice lands
+# and then goes with it.
 [package]
 name = "ghost-dm-spike"
 version = "0.0.0"

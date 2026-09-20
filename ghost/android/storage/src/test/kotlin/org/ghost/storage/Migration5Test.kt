@@ -186,6 +186,13 @@ class Migration5Test {
             ),
         )
         assertEquals(1, db.changes("UPDATE dm_contact SET trust_state = 'verified' WHERE contact_id = ?", bytes(16, 1)))
+        // §8.3 clears a verification only through a key change: there is no verified -> unverified
+        // edge, and the route back is verified -> changed -> unverified.
+        db.rejects(
+            "illegal trust transition",
+            "UPDATE dm_contact SET trust_state = 'unverified' WHERE contact_id = ?",
+            bytes(16, 1),
+        )
         assertEquals(1, db.changes("UPDATE dm_contact SET trust_state = 'revoked' WHERE contact_id = ?", bytes(16, 1)))
         // `revoked` is terminal: only deleteContact() ends it.
         db.rejects(
