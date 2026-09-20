@@ -212,16 +212,20 @@ object DmSessions {
         messagingBranch: ByteArray,
         identitySeed: ByteArray,
         sessionStateKey: ByteArray,
-    ): Long? {
-        if (!DmNative.isAvailable()) return null
-        return try {
+    ): Long? = try {
+        // The availability check is **inside** the `try`: a missing or unloadable library is the
+        // routine `CRYPTO_UNAVAILABLE` of §2.7, and it is the one path where the three arrays are
+        // not consumed natively, so it is the one path that must not hand them back populated.
+        if (!DmNative.isAvailable()) {
+            null
+        } else {
             val result = call { DmNative.ctxOpen(messagingBranch, identitySeed, sessionStateKey) }
             if (result.isOk) result.i64(DmField.HANDLE) else null
-        } finally {
-            messagingBranch.fill(0)
-            identitySeed.fill(0)
-            sessionStateKey.fill(0)
         }
+    } finally {
+        messagingBranch.fill(0)
+        identitySeed.fill(0)
+        sessionStateKey.fill(0)
     }
 
     /** Closes a DM context; a second close is a no-op from the caller's point of view. */

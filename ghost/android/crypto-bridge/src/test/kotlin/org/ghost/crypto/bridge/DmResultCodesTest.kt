@@ -18,12 +18,14 @@ import java.io.File
  */
 class DmResultCodesTest {
 
-    private fun rustResultSource(): File {
+    private fun rustSource(name: String): File {
         // The module is ghost/android/crypto-bridge; the crate is ghost/client-core/dm.
-        val file = File("../../client-core/dm/src/result.rs").canonicalFile
+        val file = File("../../client-core/dm/src/$name").canonicalFile
         assertTrue("$file must exist", file.isFile)
         return file
     }
+
+    private fun rustResultSource(): File = rustSource("result.rs")
 
     @Test
     fun theKotlinAndRustCodeListsAgree() {
@@ -63,6 +65,35 @@ class DmResultCodesTest {
                 "0x%02x must be undefined".format(byte),
                 DmCode.fromWire(byte),
             )
+        }
+    }
+
+    /**
+     * The field tags are one list too (Phase 9 design §2.6: the reply is `code(1) || TLV fields`).
+     * A tag renumbered to an unused value is loud — [DmField.fromTag] returns null and the reply
+     * decodes as `STATE_CORRUPT` — but two tags of equal-length payloads **swapped** would be
+     * silent on both sides, and `ownCard` reads four 32-byte fields in a row. So this reads the
+     * Rust enumeration the same way [theKotlinAndRustCodeListsAgree] reads `DmCode`.
+     */
+    @Test
+    fun theKotlinAndRustFieldTagsAgree() {
+        val source = rustSource("jni.rs").readText()
+        val body = source.substringAfter("pub enum Field {").substringBefore("\n}")
+        val rust = Regex("""^\s{4}(\w+) = 0x([0-9a-f]{2}),$""", RegexOption.MULTILINE)
+            .findAll(body)
+            .map { it.groupValues[1] to it.groupValues[2].toInt(16) }
+            .toList()
+        assertEquals(
+            "the Rust enumeration lost or gained a field tag",
+            DmField.entries.size,
+            rust.size,
+        )
+        for ((variant, tag) in rust) {
+            // `SessionId` is `SESSION_ID`, `L0` stays `L0`.
+            val spelled = variant.replace(Regex("(?<=.)([A-Z])"), "_$1").uppercase()
+            val field = DmField.entries.firstOrNull { it.name == spelled }
+                ?: error("Kotlin has no DmField.$spelled for Rust Field::$variant")
+            assertEquals("wire tag of $spelled", field.tag, tag)
         }
     }
 

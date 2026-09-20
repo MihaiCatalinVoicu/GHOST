@@ -176,6 +176,15 @@ jobs:
           mkdir -p android/network/src/main/jniLibs
           cp -r "$RUNNER_TEMP/native-a/." android/network/src/main/jniLibs/
           cp "$RUNNER_TEMP/a.sha256" native-libs.sha256
+      # G-R6 (Phase 9 design §2.6, §22.8.10 points 6 and 10): the **shipped** libraries export
+      # exactly the closed DM surface. This is the artifact that reaches a device; the `android`
+      # job checks the same list against the `ghost-dm-host` build the JVM tests load. Release
+      # builds strip `.symtab` (ghost/Cargo.toml) and keep `.dynsym`, which is what `nm -D` reads.
+      - name: G-R6 closed JNI surface (the shipped libraries)
+        run: |
+          bash scripts/gates/dm-jni-surface.sh \
+            "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
+            "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
       # Internal hand-off (Phase 9 design §22.8.9 point 3, private repository only): the android and
       # reproducible jobs of this run download it. One day is enough: they start when a runner is free
       # (a full run took 1 h 55 min on the four self-hosted runners, docs/ci-self-hosted.md §8). A run
@@ -229,8 +238,10 @@ jobs:
           cargo build -p ghost-dm-host --release --locked
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       - run: ./gradlew build --no-daemon -Dghost.dm.native="$GHOST_DM_NATIVE"
-      # G-R6: the exported DM JNI symbols of the built library are exactly the closed list of §2.6.
-      - name: G-R6 closed JNI surface
+      # G-R6 (host half, §22.8.10 point 10): the exported DM JNI symbols of the `ghost-dm-host`
+      # build the JVM tests just loaded are exactly the closed list of §2.6. The shipped
+      # `libghost_client_net.so` is checked in `android-native`, where it is built.
+      - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 10): the Gradle part of the third-party notices and

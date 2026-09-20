@@ -7,6 +7,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.io.File
+import java.net.URLClassLoader
 
 /**
  * The JVM half of the exit-gate argument (Phase 9 design §15.1): `:crypto-bridge` drives the
@@ -20,11 +22,43 @@ import org.junit.Test
 class DmSessionsNativeTest {
 
     private fun requireNative() {
+        val path = System.getProperty(DmNative.HOST_LIBRARY_PROPERTY)
+        // Only the *absent* property is a skip: a developer without the Rust toolchain still
+        // builds and tests the module.
         assumeTrue(
             "set -D${DmNative.HOST_LIBRARY_PROPERTY} to the ghost-dm-host library",
-            !System.getProperty(DmNative.HOST_LIBRARY_PROPERTY).isNullOrEmpty(),
+            !path.isNullOrEmpty(),
         )
-        assumeTrue("the host library must load", DmNative.isAvailable())
+        // Once it is set, this is the CI `android` job of §2.7 and §15.1, which exists to run the
+        // real ratchet: a library that does not load fails the job. Assuming it away would leave
+        // the job green with every native test skipped, and ci.yml's "if `System.load` fails here,
+        // the §17.1 re-plan applies" would never fire.
+        assertTrue(
+            "the host library must load from $path: ${DmNative.loadFailure()}",
+            DmNative.isAvailable(),
+        )
+    }
+
+    /**
+     * The test classpath in a loader of its own, so `DmNative`'s `loaded` lazy is evaluated again
+     * — with [DmNative.HOST_LIBRARY_PROPERTY] cleared, which is the unloadable-library path of
+     * §2.7 even when the JVM under test was given a library.
+     */
+    private fun withoutTheLibrary(body: (ClassLoader) -> Unit) {
+        val classpath = System.getProperty("java.class.path")
+            .split(File.pathSeparator)
+            .filter { it.isNotEmpty() }
+            .map { File(it).toURI().toURL() }
+            .toTypedArray()
+        val previous = System.getProperty(DmNative.HOST_LIBRARY_PROPERTY)
+        System.clearProperty(DmNative.HOST_LIBRARY_PROPERTY)
+        try {
+            // No parent but the bootstrap loader: this loader defines its own `DmNative`, so its
+            // `loaded` lazy runs again and finds neither the property nor `ghost_client_net`.
+            URLClassLoader(classpath, null).use(body)
+        } finally {
+            if (previous != null) System.setProperty(DmNative.HOST_LIBRARY_PROPERTY, previous)
+        }
     }
 
     private fun bytes(value: Int, size: Int) = ByteArray(size) { value.toByte() }
@@ -224,6 +258,35 @@ class DmSessionsNativeTest {
         } finally {
             DmSessions.closeContext(handle!!)
         }
+    }
+
+    /**
+     * §2.5 on the path §2.7 calls routine: with no library to load, `openContext` returns no
+     * handle **and** still zeroises the caller's arrays. This is the one path where the three
+     * arrays are not consumed natively, so it is the one that could hand them back populated.
+     */
+    @Test
+    fun openingAContextWithoutTheLibraryZeroisesTheCallersArrays() {
+        val branch = bytes(0xf1, 32)
+        val seed = bytes(0xf2, 32)
+        val stateKey = bytes(0xf3, 32)
+        withoutTheLibrary { loader ->
+            val sessions = loader.loadClass("org.ghost.crypto.bridge.DmSessions")
+            val instance = sessions.getField("INSTANCE").get(null)
+            val openContext = sessions.getMethod(
+                "openContext",
+                ByteArray::class.java,
+                ByteArray::class.java,
+                ByteArray::class.java,
+            )
+            assertNull(
+                "an unloadable library gives no context",
+                openContext.invoke(instance, branch, seed, stateKey),
+            )
+        }
+        assertArrayEquals(ByteArray(32), branch)
+        assertArrayEquals(ByteArray(32), seed)
+        assertArrayEquals(ByteArray(32), stateKey)
     }
 
     /** §2.5: a closed or foreign handle is `CRYPTO_UNAVAILABLE`, never a crash. */

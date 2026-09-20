@@ -20,6 +20,15 @@ package org.ghost.crypto.bridge
  * loads lazily; JVM tests load the host build `ghost-dm-host` from the path in
  * `-Dghost.dm.native`. A missing or unloadable library is [DmCode.CRYPTO_UNAVAILABLE], never a
  * crash loop.
+ *
+ * **Visibility.** Every declaration is `internal`, like every other native declaration in GHOST
+ * (`EntitlementCrypto`, `TorRelayTransport`, `TorIssuerTransport`): a module that depends on
+ * `:crypto-bridge` reaches the ratchet through [DmSessions] or not at all, which is what makes the
+ * typed facade the only place an unexpected code becomes an `IllegalStateException`. Kotlin
+ * **mangles** an internal member's JVM name (`ctxClose` would become `ctxClose$crypto_bridge`, a
+ * name no JNI symbol matches), so each one carries an explicit `@JvmName`; G-R6 checks both halves,
+ * because dropping the annotation would be an `UnsatisfiedLinkError` on a device and nothing at
+ * compile time.
  */
 object DmNative {
 
@@ -61,22 +70,26 @@ object DmNative {
 
     // §2.6 function 1.
     @JvmStatic
-    external fun ctxOpen(
+    @JvmName("ctxOpen")
+    internal external fun ctxOpen(
         messagingBranch: ByteArray,
         identitySeed: ByteArray,
         sessionStateKey: ByteArray,
     ): ByteArray?
 
     @JvmStatic
-    external fun ctxClose(handle: Long): ByteArray?
+    @JvmName("ctxClose")
+    internal external fun ctxClose(handle: Long): ByteArray?
 
     // §2.6 function 2.
     @JvmStatic
-    external fun ownCard(handle: Long, cardIndex: Int): ByteArray?
+    @JvmName("ownCard")
+    internal external fun ownCard(handle: Long, cardIndex: Int): ByteArray?
 
     // §2.6 function 5.
     @JvmStatic
-    external fun bundleCreate(
+    @JvmName("bundleCreate")
+    internal external fun bundleCreate(
         handle: Long,
         cardIndex: Int,
         bundleWeek: Long,
@@ -86,7 +99,8 @@ object DmNative {
 
     // §2.6 function 7.
     @JvmStatic
-    external fun sessionOutbound(
+    @JvmName("sessionOutbound")
+    internal external fun sessionOutbound(
         handle: Long,
         contactId: ByteArray,
         peerOlmIdentity: ByteArray,
@@ -96,7 +110,8 @@ object DmNative {
 
     // §2.6 function 8.
     @JvmStatic
-    external fun encrypt(
+    @JvmName("encrypt")
+    internal external fun encrypt(
         handle: Long,
         contactId: ByteArray,
         sessionId: ByteArray,
@@ -107,7 +122,8 @@ object DmNative {
 
     // §2.6 function 13. An absent slot is an empty session id and an empty envelope.
     @JvmStatic
-    external fun decrypt(
+    @JvmName("decrypt")
+    internal external fun decrypt(
         handle: Long,
         contactId: ByteArray,
         currentSessionId: ByteArray,
@@ -121,7 +137,8 @@ object DmNative {
 
     // §2.6 function 14.
     @JvmStatic
-    external fun sessionInbound(
+    @JvmName("sessionInbound")
+    internal external fun sessionInbound(
         handle: Long,
         contactId: ByteArray,
         genId: Int,
@@ -134,7 +151,8 @@ object DmNative {
 
     // §2.6 function 17.
     @JvmStatic
-    external fun safetyNumber(
+    @JvmName("safetyNumber")
+    internal external fun safetyNumber(
         ownIdentityPk: ByteArray,
         ownOlm: ByteArray,
         peerIdentityPk: ByteArray,
@@ -143,7 +161,8 @@ object DmNative {
 
     // §2.6 function 19.
     @JvmStatic
-    external fun chainPosition(
+    @JvmName("chainPosition")
+    internal external fun chainPosition(
         handle: Long,
         contactId: ByteArray,
         sessionId: ByteArray,
@@ -153,7 +172,8 @@ object DmNative {
 
     // §2.6 function 20.
     @JvmStatic
-    external fun sessionPrune(
+    @JvmName("sessionPrune")
+    internal external fun sessionPrune(
         handle: Long,
         contactId: ByteArray,
         sessionId: ByteArray,

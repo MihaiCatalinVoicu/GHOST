@@ -16,15 +16,22 @@
 # exported names as `external fun`, so a native method without a body or a body without a
 # declaration is caught before a device sees `UnsatisfiedLinkError`.
 #
-# Usage: dm-jni-surface.sh [<library>]
-#   <library>  the built cdylib to read symbols from (the CI `android` job passes the
-#              `ghost-dm-host` build). Without it the symbol half is skipped and the source halves
-#              still run, so the gate is useful on a host without the Rust toolchain.
-# Self-test hooks: GHOST_DM_JNI_SOURCE, GHOST_DM_JNI_KOTLIN.
+# Usage: dm-jni-surface.sh [<library> ...]
+#   <library>  a built library to read symbols from: the CI `android` job passes the
+#              `ghost-dm-host` build and `android-native` every shipped
+#              `libghost_client_net.so` (§22.8.10 points 6 and 10). Without one the symbol half is
+#              skipped and the source halves still run, so the gate is useful on a host without
+#              the Rust toolchain.
+# Self-test hooks: GHOST_DM_JNI_SOURCE, GHOST_DM_JNI_KOTLIN, GHOST_DM_JNI_SCAN.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 SOURCE="${GHOST_DM_JNI_SOURCE:-$GHOST_ROOT/client-core/dm/src/jni.rs}"
 KOTLIN="${GHOST_DM_JNI_KOTLIN:-$GHOST_ROOT/android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt}"
-LIBRARY="${1:-}"
+# Where entry points are looked for. The closed list lives in one file; an entry point does not
+# have to, and one added to `ghost-client-net` (which invokes `export_jni!`) or to any other crate
+# of the workspace would be invisible to a file-scoped read. The default is the whole workspace,
+# minus build outputs, the gate's own fixtures and the S0' spike crate, which is not shipped.
+if [ -n "${GHOST_DM_JNI_SOURCE:-}" ]; then SCAN_DEFAULT="$SOURCE"; else SCAN_DEFAULT="$GHOST_ROOT"; fi
+SCAN="${GHOST_DM_JNI_SCAN:-$SCAN_DEFAULT}"
 PREFIX="Java_org_ghost_crypto_bridge_DmNative_"
 
 [ -f "$SOURCE" ] || { echo "DM JNI source not found: $SOURCE" >&2; exit 2; }
@@ -41,13 +48,25 @@ sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' "$work/entries" | sort -u > "$work
 grep 'Availability::Exported' "$work/entries" \
   | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/expected"
 
-# The names the export macro really emits, from the macro arms of the same file.
-grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SOURCE" \
-  | sed -E "s/.*${PREFIX}//" | sort -u > "$work/emitted"
+# The names the export macro really emits: the macro arms of the closed-list file, and every other
+# Rust source of the scan root, so an entry point written by hand somewhere else is caught too.
+prune=(-not -path '*/target/*')
+if [ -z "${GHOST_DM_JNI_SCAN:-}" ]; then
+  prune+=(-not -path '*/test-harness/*' -not -path '*/dm-spike/*')
+fi
+{
+  grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SOURCE" || true
+  if [ -d "$SCAN" ]; then
+    find "$SCAN" -name '*.rs' "${prune[@]}" -exec \
+      grep -ohE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" {} + || true
+  elif [ "$SCAN" != "$SOURCE" ]; then
+    grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SCAN" || true
+  fi
+} | sed -E "s/.*${PREFIX}//" | sort -u > "$work/emitted"
 
 while read -r name; do
   [ -n "$name" ] || continue
-  fail "the crate exports '$name', which is not on the closed list of §2.6 ($SOURCE)"
+  fail "the crate exports '$name', which is not on the closed list of §2.6 ($SOURCE; scanned $SCAN)"
 done < <(comm -23 "$work/emitted" "$work/declared")
 
 while read -r name; do
@@ -60,7 +79,29 @@ while read -r name; do
   fail "'$name' is emitted but not marked Exported on the closed list"
 done < <(comm -13 "$work/expected" "$work/emitted")
 
-# Kotlin declares exactly the exported names.
+# Kotlin declares exactly the exported names, and declares them `internal` with an explicit
+# `@JvmName`: `:messaging` must go through the typed facade (§2.6, §13.1), and Kotlin mangles an
+# internal member's JVM name (`ctxClose` -> `ctxClose$crypto_bridge`), which no JNI symbol matches.
+# Both halves are checked, so tightening the visibility cannot turn into an UnsatisfiedLinkError on
+# a device, and loosening it cannot slip past review.
+awk '
+  match($0, /@JvmName\("[A-Za-z0-9]+"\)/) {
+    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR; next
+  }
+  match($0, /external fun [A-Za-z0-9]+/) {
+    name = substr($0, RSTART + 13, RLENGTH - 13)
+    if ($0 !~ /internal external fun/) { print "public " name; next }
+    if (pinned != name || NR - pinned_line > 2) { print "unpinned " name }
+  }
+' "$KOTLIN" > "$work/visibility"
+while read -r kind name; do
+  [ -n "$name" ] || continue
+  case "$kind" in
+    public) fail "DmNative declares 'external fun $name' outside the module: it must be internal" ;;
+    unpinned) fail "DmNative's internal 'external fun $name' has no @JvmName(\"$name\"): Kotlin would mangle the JNI name" ;;
+  esac
+done < "$work/visibility"
+
 grep -oE 'external fun [A-Za-z0-9]+' "$KOTLIN" | sed -E 's/external fun //' | sort -u > "$work/kotlin"
 while read -r name; do
   [ -n "$name" ] || continue
@@ -78,7 +119,7 @@ done < <(comm -13 "$work/kotlin" "$work/expected")
 # reported as skipped rather than failed — a missing toolchain must not look like a passing gate,
 # and a *wrong* one must not look like a failing build. An ELF library with no `nm` is a broken
 # runner and does fail.
-if [ -n "$LIBRARY" ]; then
+for LIBRARY in "$@"; do
   if [ ! -f "$LIBRARY" ]; then
     fail "library not found: $LIBRARY"
   elif [ "$(head -c 4 "$LIBRARY" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
@@ -97,6 +138,6 @@ if [ -n "$LIBRARY" ]; then
       fail "$LIBRARY does not export '$name', which the closed list marks Exported"
     done < <(comm -13 "$work/symbols" "$work/expected")
   fi
-fi
+done
 
 finish dm-jni-surface
