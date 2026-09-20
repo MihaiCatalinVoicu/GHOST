@@ -660,6 +660,39 @@ else
   echo "SELF-TEST FAIL: dm-no-fts rejects the real schema" >&2; rc=1
 fi
 
+# G-DM2 (Phase 9 design §16.1, §21.7, §21.9; T28, T31): the restricted sync calls are made only
+# from the steps that may make them. Three single-purpose fixtures — a RECV that registers (the
+# reflex T28 forbids), a store-layer `Namespaces.remove` (§21.12 point 3 makes it SWEEP's), and a
+# tree whose DM sources make no restricted call at all — plus an empty tree, so each half is proven
+# without the others. Slice S6 arms the mechanism; its corpus grows with S7 (see §22.11).
+dmenq_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/negative-dm-enqueue-$1" bash "$DIR/dm-enqueue-callers.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF "$3" <<<"$out"; then
+    echo "self-test ok: dm-enqueue-callers $4"
+  else
+    echo "SELF-TEST FAIL: dm-enqueue-callers $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-recv"
+dmenq_case recv 1 "ReceiveStep.kt:9" "refuses a RECV step that registers a namespace"
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-remove"
+dmenq_case remove 1 "ContactDao.kt:10" "refuses Namespaces.remove from the store layer"
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-vacuous"
+dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
+  "refuses a tree whose DM sources make no restricted call"
+dmenq_empty="$(mktemp -d)"
+expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
+  "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
+rmdir "$dmenq_empty"
+if bash "$DIR/dm-enqueue-callers.sh" >/dev/null 2>&1; then
+  echo "self-test ok: dm-enqueue-callers accepts the real DM engine"
+else
+  echo "SELF-TEST FAIL: dm-enqueue-callers rejects the real DM engine" >&2; rc=1
+fi
+
 if command -v cargo >/dev/null; then
   tmp="$(mktemp)"
   grep -vx "tokio" "$DIR/../../client-core/rust-dependency-allowlist.txt" > "$tmp"

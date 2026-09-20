@@ -11,7 +11,9 @@ rc=0
 # need no toolchain. The CI android job runs it again with the built ghost-dm-host, which adds the
 # symbol check (Phase 9 design §2.6).
 # dm-no-fts (G-DM6, Phase 9 design §13.6 R-M4) reads production sources as text and needs no SDK.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts; do
+# dm-enqueue-callers (G-DM2, Phase 9 design §16.1, §21.7, §21.9) is the static half of T28 and T31;
+# it reads the DM modules' production sources as text and needs no SDK either.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc
