@@ -76,6 +76,7 @@ internal class TrialSteps(private val c: EngineContext) {
             return ActivationResult.UNAVAILABLE
         }
         c.identity.create(invite)
+        c.notifyActivated(restored = false)
         startCall(id)
         return ActivationResult.PENDING
     }
@@ -109,7 +110,10 @@ internal class TrialSteps(private val c: EngineContext) {
      */
     fun resume(now: Long) {
         val pending = c.tx { tx -> pendingOnboarding(tx) } ?: return
-        if (!c.identity.hasIdentity()) c.identity.create(null)
+        if (!c.identity.hasIdentity()) {
+            c.identity.create(null)
+            c.notifyActivated(restored = false)
+        }
         startCall(pending.id())
     }
 

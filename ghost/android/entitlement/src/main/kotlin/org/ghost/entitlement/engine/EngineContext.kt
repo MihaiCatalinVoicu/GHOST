@@ -1,5 +1,6 @@
 package org.ghost.entitlement.engine
 
+import org.ghost.entitlement.api.IdentityActivationHook
 import org.ghost.entitlement.port.EntitlementClock
 import org.ghost.entitlement.port.EntitlementRandom
 import org.ghost.entitlement.port.IdentityPort
@@ -31,6 +32,16 @@ class EngineDeps(
     val identity: IdentityPort,
     val seal: SealPort,
     val userCalls: UserCallPort,
+    /**
+     * The K20 hook of Phase 9 design §13.4: the messaging layer's `ACTIVATE`, called after the
+     * activation finalization and after `Entitlement.restore`. A supplier rather than a value,
+     * because `:app` wires the two engines in one order and the hook in the other; null until it
+     * does, and null for ever in a world with no messaging layer (every Phase 8 test).
+     *
+     * It sits **before** [privacyMode] so that the trailing-lambda call `EngineDeps(...) { mode }`
+     * every Phase 8 construction uses still binds to [privacyMode].
+     */
+    val activationHook: () -> IdentityActivationHook? = { null },
     val privacyMode: () -> PrivacyMode,
 ) {
     override fun toString(): String = "EngineDeps"
@@ -165,6 +176,20 @@ internal class EngineContext(val sync: SyncStores, val summary: ScheduleSummary,
     val clock: EntitlementClock get() = deps.clock
     val identity: IdentityPort get() = deps.identity
     val seal: SealPort get() = deps.seal
+
+    /**
+     * Runs the K20 hook (Phase 9 design §13.4), **outside** any transaction of this engine.
+     *
+     * Nothing is caught here, deliberately, and `sync-no-catch-all.sh` would refuse it anyway: the
+     * crash-fidelity rule of the engine is that an unexpected throwable reaches the top level. The
+     * hook's own contract is that it does not throw — `Messaging.onActivated()` answers with an
+     * enum, `CRYPTO_UNAVAILABLE` included — and the safety net behind it is §21.12 point 2, which
+     * runs `ACTIVATE` again at every actor start and database open. So a hook that is absent, or
+     * that runs before the app has wired it, costs at most a delay until the next start.
+     */
+    fun notifyActivated(restored: Boolean) {
+        deps.activationHook()?.onIdentityActivated(restored)
+    }
 
     val purchaseSteps: PurchaseSteps by lazy { PurchaseSteps(this) }
     val trialSteps: TrialSteps by lazy { TrialSteps(this) }

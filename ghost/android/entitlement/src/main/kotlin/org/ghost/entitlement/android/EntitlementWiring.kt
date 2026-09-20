@@ -2,6 +2,7 @@ package org.ghost.entitlement.android
 
 import android.os.SystemClock
 import org.ghost.entitlement.api.Entitlement
+import org.ghost.entitlement.api.IdentityActivationHook
 import org.ghost.entitlement.engine.EngineDeps
 import org.ghost.entitlement.engine.EntitlementEngine
 import org.ghost.entitlement.port.EntitlementClock
@@ -34,8 +35,27 @@ class EntitlementWiring(
     crypto: TokenCryptoPort = NativeTokenCrypto(),
     random: EntitlementRandom = SecureEntitlementRandom(),
 ) {
+    /**
+     * The K20 hook (Phase 9 design §13.4): the app sets it to the messaging layer's `ACTIVATE`
+     * once both engines exist. Volatile and read through a supplier, because the two engines are
+     * wired in one order and this reference points the other way; null until the app sets it, and
+     * an activation that happens before then is picked up by the resumable activation of §21.12
+     * point 2 at the next actor start or database open.
+     */
+    @Volatile
+    var activationHook: IdentityActivationHook? = null
+
     private val engine = EntitlementEngine(
-        EngineDeps(crypto, AndroidEntitlementClock, random, ManagerIdentity(identity), IdentitySeal(identity), ControllerUserCalls(controller), privacyMode),
+        EngineDeps(
+            crypto,
+            AndroidEntitlementClock,
+            random,
+            ManagerIdentity(identity),
+            IdentitySeal(identity),
+            ControllerUserCalls(controller),
+            activationHook = { activationHook },
+            privacyMode = privacyMode,
+        ),
         stores,
     )
 

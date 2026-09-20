@@ -57,6 +57,7 @@ internal class RestoreScan(private val c: EngineContext) {
             settled.set(false)
         }
         c.identity.restore(mnemonic)
+        c.notifyActivated(restored = true)
         return RestoreResult.RESTORED
     }
 
