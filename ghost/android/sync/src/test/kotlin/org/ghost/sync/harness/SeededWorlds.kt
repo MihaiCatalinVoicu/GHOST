@@ -8,6 +8,7 @@ import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.harness.World.Companion.DAY
 import org.ghost.sync.harness.World.Companion.HOUR
 import org.ghost.sync.harness.World.Companion.MINUTE
+import org.ghost.sync.store.RetentionPolicy
 import org.ghost.sync.store.StoreLimits
 import java.util.SplittableRandom
 
@@ -50,7 +51,7 @@ internal class SeededWorld(val seed: Long) : Scenario("seed $seed") {
     override val maxTailRounds: Int
         get() {
             val longestTtl = world?.ops?.values?.maxOfOrNull { it.ttl.seconds.toLong() } ?: 0L
-            val policy = org.ghost.sync.store.RetentionPolicy
+            val policy = RetentionPolicy
             val seconds = policy.STORE_WINDOW_SECONDS + maxOf(0L, longestTtl - policy.SKEW_SECONDS) + 2 * 86_400L
             return maxOf(400, (seconds * 1_000 / Harness.JOB_PERIOD).toInt())
         }
@@ -260,8 +261,28 @@ internal class SeededWorld(val seed: Long) : Scenario("seed $seed") {
         "timeout", "transport", "relay_unavailable", "internal", "closed", "not_bootstrapped", "tor_bootstrap", "tor_bootstrap_timeout", "no_such_category",
     )
 
-    override fun allowed(op: OpRecord, w: World): Set<Outcome> =
-        if (disturbedAll || op.label in disturbed) Outcome.entries.toSet() else setOf(Outcome.SENT)
+    /**
+     * SENT unless the script made it infeasible (design §8.4 OUT-1), with one case the Phase 9
+     * bucket set adds: an op whose TTL is at most σ — the 1 h and 1 d buckets, and [TtlBucket.HOUR_1]
+     * is drawn here as often as any other since it joined `TtlBucket.entries` (Phase 9 design §13.3
+     * item 1). For such a TTL `now < copy_hour + ttl − σ` is never true, so resolution never applies,
+     * and the receipt lower bound `expiry + σ ≥ now + ttl` is vacuous, so an honest relay may expire
+     * the blob before a check has seen it — indistinguishable from ack-and-drop (design §10.4 points
+     * 1 and 3, G-10; declared L7-D15, a relay-corrected bound is a Phase 12 option). The op then ends
+     * INDETERMINATE, when its only remaining copy is ambiguous, or DEGRADED, when another operator
+     * verified: seed 8015's op14 (1 h, no deadline) is acknowledged by R0, struck twice by checks that
+     * the expired membership no longer answers, and decided DEGRADED beside R1's verified copy.
+     *
+     * The scenario S-F/short of §10.4 point 5 ([ScenarioShortTtl]) accepts exactly the same set.
+     * FAILED stays out: it needs no copy anywhere, which an undisturbed script does not produce.
+     * Nothing of safety is relaxed — `failed ⇒ never held`, `sent ⇒ memberships`, `acked ⇒ membership`
+     * and OUT-3 are structural and checked after every commit, whatever this returns.
+     */
+    override fun allowed(op: OpRecord, w: World): Set<Outcome> = when {
+        disturbedAll || op.label in disturbed -> Outcome.entries.toSet()
+        op.ttl.seconds.toLong() <= RetentionPolicy.SKEW_SECONDS -> setOf(Outcome.SENT, Outcome.DEGRADED, Outcome.INDETERMINATE)
+        else -> setOf(Outcome.SENT)
+    }
 
     /** Design §8.5: the hostile relay costs its pairs' slots only, and its rows stay bounded. */
     override fun finalChecks(w: World) {
