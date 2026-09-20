@@ -11,6 +11,9 @@ description = "GHOST client network core: Tor (Arti) onion-only transport, per-c
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
+# DM cryptography (Phase 9 design §2.3, D2): one Rust runtime in the APK, so the DM crate is
+# linked into this cdylib and its JNI surface is exported from `libghost_client_net.so`.
+ghost-client-dm = { path = "../dm", features = ["jni-bridge"] }
 ghost-relay-api = { path = "../../relay/crates/api" }
 # Entitlement formats, the ES verifier and seed-derived blinding (ADR-22): workspace crates on
 # packages the library already links (rust-dependency-allowlist.txt).

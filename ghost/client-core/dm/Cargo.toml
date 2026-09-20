@@ -15,6 +15,9 @@ crate-type = ["rlib"]
 # into runtime checks outside `cfg(test)`; the crate's own unit tests get them unconditionally.
 default = []
 provenance = []
+# The closed JNI surface of §2.6 and the `export_jni!` macro `ghost-client-net` and
+# `ghost-dm-host` invoke (§2.3). Off by default so the crate stays testable without a JVM.
+jni-bridge = ["dep:jni"]
 
 [dependencies]
 # Olm (design §2.1, §2.3, D1; ADR-35). `default-features = false` drops `libolm-compat` and
@@ -45,6 +48,8 @@ sha2 = { workspace = true }
 hmac = { workspace = true }
 rand = { workspace = true }
 ed25519-dalek = { workspace = true }
+# The closed JNI surface (§2.6), behind `jni-bridge`; the version `ghost-client-net` already uses.
+jni = { workspace = true, optional = true }
 
 [dev-dependencies]
 hex = { workspace = true }

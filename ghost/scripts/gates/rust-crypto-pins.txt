@@ -53,6 +53,17 @@ lock zeroize 1.9.0
 graph ghost-client-net aarch64-linux-android,x86_64-linux-android rsa 0.9.10 required
 graph ghost-client-net aarch64-linux-android,x86_64-linux-android num-bigint-dig 0.8.6 required
 graph ghost-client-net aarch64-linux-android,x86_64-linux-android ring 0.17.14 required
+# The DM stack inside the shipped library (slice S4b). The dalek and `rand` version sets are the
+# point of §22.8.10 point 5: vodozemac 0.11.0 brings the 5/3/3 majors next to the 4.1.3 / 2.0.1 /
+# 2.2.0 the client already had, and `rand 0.10.2` and `0.8.8` were both already there, so the DM
+# stack adds no `rand` major. A set that grows or shrinks fails here.
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android vodozemac 0.11.0 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android libcrux-kem 0.0.9 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android libcrux-ml-kem 0.0.10 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android curve25519-dalek 4.1.3,5.0.0 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android ed25519-dalek 2.2.0,3.0.0 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android x25519-dalek 2.0.1,3.0.0 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android rand 0.8.8,0.10.2 required
 # Relay node: token redemption (slice S3) verifies authenticators with ring through
 # ghost-entitlement / ghost-blind-rsa (num-bigint-dig for the key checks).
 graph ghost-relay-node all num-bigint-dig 0.8.6 required

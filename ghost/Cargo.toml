@@ -14,6 +14,9 @@ members = [
     # DM cryptography (Phase 9 design §2.3): a workspace member so cargo-deny, the licence gates
     # and the Rust gates cover it. The S0' spike client-core/dm-spike stays outside the workspace.
     "client-core/dm",
+    # Test-only host build of the DM JNI surface (Phase 9 design §2.3): a workspace member so the
+    # gates cover it, never built for Android and never in the shipped graph.
+    "client-core/dm-host",
     "test-harness/privacy/capture-check",
     # The T2 analyzer (Phase 8 design §13.4): test tooling, linked only by the issuer's T2 tests.
     "test-harness/privacy/t2-join",

@@ -393,3 +393,45 @@ zmij
 zstd
 zstd-safe
 zstd-sys
+
+# Phase 9 DM stack (design faza9-dm.md §2.3, §16.3; ADR-35 Olm from vodozemac, ADR-36 the X-Wing
+# suite). Added in slice S4b, when `ghost-client-dm` became a dependency of `ghost-client-net` and
+# its JNI surface started being exported from `libghost_client_net.so`.
+#
+#   ghost-client-dm  the DM crate itself (workspace, proprietary)
+#   vodozemac        Olm, Apache-2.0, exact pin =0.11.0, default-features = false
+#   matrix-pickle*   the MSC3814 pickle codec vodozemac decodes (§2.2)
+#   hpke             not optional in vodozemac 0.11.0; dropped by the linker (V-9), so it stays in
+#                    the licence and advisory checks and outside the external audit scope
+#   libcrux-*        the X-Wing / ML-KEM-768 stack and its graph, portable code only (G-R3)
+#   hax-lib*         the proof-macro layer every libcrux crate carries
+#   chacha20poly1305, poly1305, aead, cbc, block-padding, serdect, serde_bytes
+#                    the AEAD, CBC and serialisation crates the seal, the wrap envelopes and the
+#                    Olm cipher need; all already in the lock through the workspace or vodozemac
+aead
+block-padding
+cbc
+chacha20poly1305
+ghost-client-dm
+hax-lib
+hax-lib-macros
+hpke
+libcrux-curve25519
+libcrux-ecdh
+libcrux-hacl-rs
+libcrux-intrinsics
+libcrux-kem
+libcrux-macros
+libcrux-ml-kem
+libcrux-p256
+libcrux-platform
+libcrux-secrets
+libcrux-sha2
+libcrux-sha3
+libcrux-traits
+matrix-pickle
+matrix-pickle-derive
+poly1305
+serde_bytes
+serdect
+vodozemac

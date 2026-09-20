@@ -1,0 +1,19 @@
+[package]
+publish = false
+name = "ghost-dm-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Test-only host build of the DM JNI surface, so JVM tests call the real ratchet on Linux and Windows (Phase 9 design faza9-dm.md §2.3, §2.7, §15.1; evidence V-5)"
+
+[lib]
+# A cdylib the JVM loads with `System.load` through `-Dghost.dm.native=<path>`. Never built for
+# Android: on a device the same code is inside `libghost_client_net.so` (§2.3).
+name = "ghost_dm_host"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The whole point of this package: the JVM tests run the shipped crate, not a stand-in.
+ghost-client-dm = { path = "../dm", features = ["jni-bridge"] }
+jni = { workspace = true }

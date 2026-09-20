@@ -54,6 +54,14 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
 
+// The DM surface `org.ghost.crypto.bridge.DmNative` (Phase 9 design §2.3, §2.6). The macro is
+// invoked here rather than inside `ghost-client-dm` so the closed list of G-R6 stays visible in
+// the crate that produces `libghost_client_net.so`; the bodies live in `ghost_client_dm::jni`,
+// which is where the DM result codes, the state wrapping and the Olm facade are. S0′ V-5 verified
+// that macro exports and a dependency's `#[no_mangle]` exports both survive linking and
+// `strip = "symbols"` on arm64-v8a and x86_64.
+ghost_client_dm::export_jni!();
+
 const EXCEPTION: &str = "org/ghost/network/NetworkException";
 const FALLBACK_EXCEPTION: &str = "java/lang/IllegalStateException";
 

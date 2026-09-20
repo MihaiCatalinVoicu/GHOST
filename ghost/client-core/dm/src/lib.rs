@@ -48,6 +48,8 @@ pub mod bundle;
 pub mod card;
 pub mod codec;
 pub mod derive;
+#[cfg(feature = "jni-bridge")]
+pub mod jni;
 pub mod olm;
 pub mod pq;
 #[cfg(test)]
