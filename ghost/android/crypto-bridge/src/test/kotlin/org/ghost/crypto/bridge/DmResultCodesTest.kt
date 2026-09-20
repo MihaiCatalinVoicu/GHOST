@@ -9,12 +9,12 @@ import org.junit.Test
 import java.io.File
 
 /**
- * `DmResultCodesTest` (Phase 9 design §2.6): the closed DM result-code list is one list, and this
- * class and the Rust `result.rs` agree on it.
+ * `DmResultCodesTest` (Phase 9 design §2.6): the closed DM result-code list is one list, the TLV
+ * field tags are one list, and this class and the Rust crate agree on both.
  *
- * The Rust file is the numbering (§2.6 names the codes but fixes no bytes), so the test reads it
- * and compares, rather than restating the bytes a second time: a code added, removed or renumbered
- * on either side fails here.
+ * The Rust files are the numbering (§2.6 names the codes but fixes no bytes), so the tests read
+ * `result.rs` and `jni.rs` and compare, rather than restating the bytes a second time: a code or a
+ * tag added, removed or renumbered on either side fails here.
  */
 class DmResultCodesTest {
 

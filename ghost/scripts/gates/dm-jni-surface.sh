@@ -123,17 +123,22 @@ done < <(comm -13 "$work/kotlin" "$work/expected")
 # `nm -D` reads ELF. The CI android job builds the Linux `.so` and this half runs there; the
 # owner's Windows machine builds an MSVC `.dll`, which `nm` cannot read at all, so that case is
 # reported as skipped rather than failed — a missing toolchain must not look like a passing gate,
-# and a *wrong* one must not look like a failing build. An ELF library with no `nm` is a broken
+# and a *wrong* one must not look like a failing build. An ELF library with no reader is a broken
 # runner and does fail.
+#
+# `llvm-nm` is preferred where it exists, as §22.8.10 point 6 writes it: `android-native` passes
+# the **Android** libraries, and a host binutils `nm` is not always built with the aarch64 target,
+# while llvm-nm reads every target it was compiled for.
+if command -v llvm-nm >/dev/null; then NM=llvm-nm; elif command -v nm >/dev/null; then NM=nm; else NM=""; fi
 for LIBRARY in "$@"; do
   if [ ! -f "$LIBRARY" ]; then
     fail "library not found: $LIBRARY"
   elif [ "$(head -c 4 "$LIBRARY" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
-    echo "[dm-jni-surface] symbol check skipped: $LIBRARY is not ELF (nm -D cannot read it)" >&2
-  elif ! command -v nm >/dev/null; then
-    fail "nm not found: the symbol check of an ELF library needs binutils"
+    echo "[dm-jni-surface] symbol check skipped: $LIBRARY is not ELF (${NM:-nm} -D cannot read it)" >&2
+  elif [ -z "$NM" ]; then
+    fail "neither llvm-nm nor nm found: the symbol check of an ELF library needs one of them"
   else
-    nm -D --defined-only "$LIBRARY" 2>/dev/null | grep -oE "${PREFIX}[A-Za-z0-9]+" \
+    "$NM" -D --defined-only "$LIBRARY" 2>/dev/null | grep -oE "${PREFIX}[A-Za-z0-9]+" \
       | sed -E "s/${PREFIX}//" | sort -u > "$work/symbols" || true
     while read -r name; do
       [ -n "$name" ] || continue

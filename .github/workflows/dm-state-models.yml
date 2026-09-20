@@ -59,6 +59,8 @@ jobs:
           {
             echo "### DM state models (sends per side: $GHOST_DM_EM_SENDS)"
             echo '```'
-            grep -E "^(EM-1|EM-2|rules 3-5):" "$RUNNER_TEMP/dm-state-models.txt"
+            # The counts the models print. `|| true`: the summary is evidence, never the verdict —
+            # the verdict is the exit status of the test run above.
+            grep -E "^(EM-1|EM-2|rules 3-5):" "$RUNNER_TEMP/dm-state-models.txt" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -261,6 +261,10 @@ fn insert_context(context: DmContext) -> i64 {
 
 /// Runs `body` with the named context, or reports [`DmCode::CryptoUnavailable`] for a closed or
 /// foreign handle (§2.5).
+///
+/// The guard is held across the body on purpose: the alternative is to copy the context's secrets
+/// out of the map, and DM calls arrive on one actor thread (§2.7), so nothing waits on it. What
+/// the guard must not do is latch a panic, which is [`registry_lock`]'s job.
 fn with_context<T>(
     handle: jlong,
     body: impl FnOnce(&DmContext) -> Result<T, DmCode>,

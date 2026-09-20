@@ -764,8 +764,8 @@ fn the_display_and_retirement_properties_catch_their_mutants() {
     let first = world.wire.remove(0);
     apply_delivery(&mut world, 1, &first, Selection::Rules);
     let device = &mut world.devices[1];
-    let mut retired = device.current.take().expect("the row").clone();
-    retired.retire = Some(RETIRE_DAYS);
+    // SWEEP took the row at its retire day and left the session in `retired`.
+    let retired = device.current.take().expect("the row");
     device.retired.insert(retired.session);
     device.current = Some(Row {
         session: 99,
