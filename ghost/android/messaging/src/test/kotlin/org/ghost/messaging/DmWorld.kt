@@ -85,12 +85,16 @@ class DmWorld(
      * inbox that owns the namespace. Nothing is delivered twice: the source row is marked so a
      * second [deliver] is a no-op, which is what makes a replay test have to ask for one.
      */
-    fun deliver(): Int {
-        var moved = 0
-        moved += deliverFrom(alice, bob)
-        moved += deliverFrom(bob, alice)
-        return moved
-    }
+    fun deliver(): Int = deliverTo(bob) + deliverTo(alice)
+
+    /**
+     * One direction only: what the **other** device has enqueued lands in [to]'s inbox.
+     *
+     * `NoReflexTest` needs it. Two worlds that are to differ only in what arrived at B must run
+     * A's establishment identically — and A's establishment needs B's bundle — so "deliver" has to
+     * be splittable by recipient rather than by round.
+     */
+    fun deliverTo(to: DmDevice): Int = deliverFrom(if (to === bob) alice else bob, to)
 
     /**
      * Re-serves a blob that was already delivered, as a relay that lies about expiry or serves a
