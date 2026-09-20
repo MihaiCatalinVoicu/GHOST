@@ -8,9 +8,6 @@ rust-version.workspace = true
 description = "GHOST direct messages: derivations, contact card v2, the four seal modes, the X-Wing intro layer, binding v3, the L0 codec, safety numbers and state wrapping (Phase 9 design faza9-dm.md §2-§9)"
 
 [lib]
-# Slice S4a is a library only: the `jni-bridge` feature and the export macro arrive with the Olm
-# facade in S4b (design §2.3), which is also when `ghost-client-net` takes this crate as a
-# dependency and the client allowlist, the notices and G-R6 start covering it.
 crate-type = ["rlib"]
 
 [features]
@@ -20,6 +17,14 @@ default = []
 provenance = []
 
 [dependencies]
+# Olm (design §2.1, §2.3, D1; ADR-35). `default-features = false` drops `libolm-compat` and
+# `precomputed-tables`; `low-level-api`, `experimental-session-config` and `insecure-pk-encryption`
+# are forbidden in every shipped graph (G-R2) and appear only as dev features of the key-schedule
+# oracle. Used through public API only, except the recorded pickle-layout deviation of §2.1
+# (`src/olm/pickle.rs`).
+vodozemac = { version = "=0.11.0", default-features = false }
+# The session pickle and its sidecar (§7.9, §7.7 point 4); already a vodozemac dependency.
+serde_json = { workspace = true }
 # Exact pins (design §2.3, §16.3, ADR-36). X-Wing is reached only through `libcrux_kem::XWing` and
 # the `libcrux_traits::kem::slice::Kem` trait; the enum API panics on short inputs and links every
 # KEM of the crate (+415 KB arm64-v8a, +514 KB x86_64; evidence V-6, V-9).
@@ -47,4 +52,3 @@ hex = { workspace = true }
 curve25519-dalek = { workspace = true }
 # Differential oracle for X-Wing, dev graph only (G-R1, §16.3).
 x-wing = "=0.1.0"
-serde_json = { workspace = true }

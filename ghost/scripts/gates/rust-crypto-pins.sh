@@ -58,11 +58,15 @@ while read -r -a f; do
         fail "cargo tree failed for $pkg ($targets)"
         continue
       fi
+      # A version set is one comma-separated token, so the line keeps its six fields (Phase 9
+      # design §22.8.10 point 5): the DM stack brings a second dalek and `rand` major into the
+      # client graph, and the pin must say which majors are expected rather than fail on the count.
+      want="$(printf '%s\n' "${version//,/ }" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ $//')"
       got="$(printf '%s\n' "$pkgs" | versions_of "$crate")"
       if [ -z "$got" ]; then
-        [ "$presence" = required ] && fail "$pkg ($targets): $crate is missing (pinned $version, required)"
-      elif [ "$got" != "$version" ]; then
-        fail "$pkg ($targets): $crate resolves to [$got], pinned $version"
+        [ "$presence" = required ] && fail "$pkg ($targets): $crate is missing (pinned $want, required)"
+      elif [ "$got" != "$want" ]; then
+        fail "$pkg ($targets): $crate resolves to [$got], pinned $want"
       fi
       ;;
     *) fail "unknown pins line: ${f[*]}" ;;

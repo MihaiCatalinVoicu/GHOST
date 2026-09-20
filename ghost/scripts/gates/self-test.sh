@@ -604,6 +604,14 @@ if command -v cargo >/dev/null; then
   expect_fail_msg "rust-crypto-pins rejects a required crate missing from a graph" \
     "ghost-relay-node (all): blind-rsa-signatures is missing" \
     env GHOST_CRYPTO_PINS="$tmp" bash "$DIR/rust-crypto-pins.sh"
+  # Version sets (Phase 9 design §22.8.10 point 5, slice S4b): a `graph` line may name several
+  # versions of one crate, and the gate must still refuse a set that is missing a member the graph
+  # actually resolves to (here the vodozemac dalek major dropped from ghost-client-dm's pin).
+  sed 's/^\(graph ghost-client-dm all ed25519-dalek\) 2\.2\.0,3\.0\.0 required$/\1 2.2.0 required/' \
+    "$DIR/rust-crypto-pins.txt" > "$tmp"
+  expect_fail_msg "rust-crypto-pins rejects an incomplete version set" \
+    "ghost-client-dm (all): ed25519-dalek resolves to [2.2.0 3.0.0], pinned 2.2.0" \
+    env GHOST_CRYPTO_PINS="$tmp" bash "$DIR/rust-crypto-pins.sh"
   rm -f "$tmp"
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate

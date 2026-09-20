@@ -8,11 +8,11 @@
 //! rows, `:sync` calls, the Keystore wrappers and the recognition-hint **matching**; it never
 //! holds an opening key in clear.
 //!
-//! **Slice S4a** is this crate without Olm: derivations, the contact card, the four seal modes,
+//! **Slice S4a** was this crate without Olm: derivations, the contact card, the four seal modes,
 //! the X-Wing wrapper and the intro inner layer, binding v3, the L0 codec, safety numbers and
-//! state wrapping. An Olm message (L1) is opaque bytes here; the session layer, the throwaway
-//! accounts, the JNI surface and the `jni-bridge` feature arrive in S4b, together with the
-//! vodozemac dependency. **This crate has no vodozemac and no Olm dependency yet.**
+//! state wrapping. **Slice S4b** adds [`olm`]: throwaway accounts through the MSC3814 dehydrated
+//! pickle, the session calls, the stored state with its first-seen sidecar, and the two recorded
+//! pickle-layout reads (`chainPosition`, `sessionPrune`).
 //!
 //! The crate has no network, no async runtime, no logging and **no clock**: every time value is an
 //! argument (`binding_minute`, `today`, `now_minute`), which is what makes the deterministic
@@ -32,6 +32,7 @@
 //! | [`seal`] | §6 the four seal modes, buckets and recognition |
 //! | [`pq`] | §9.2 the X-Wing wrapper |
 //! | [`codec`] | §7.1 the L0 content codec and the TLV registry |
+//! | [`olm`] | §2.2, §7.9, §8.1 the Olm facade over vodozemac |
 //! | [`safety`] | §8.4 safety number v1 |
 //! | [`wrap`] | §2.5, §22.8.3 state wrapping |
 //! | [`provenance`] | §9.3 the PQ-B provenance tags of T35 |
@@ -47,6 +48,7 @@ pub mod bundle;
 pub mod card;
 pub mod codec;
 pub mod derive;
+pub mod olm;
 pub mod pq;
 #[cfg(test)]
 pub(crate) mod property;

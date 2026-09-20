@@ -5,10 +5,11 @@ the four seal modes, the X-Wing intro layer, binding v3, the L0 codec, safety nu
 wrapping. Normative design: `docs/design/faza9-dm.md` §2–§9, as corrected by §21, §22 and the
 S0′ evidence of `docs/design/faza9-s0-evidence.md`.
 
-Slice **S4a** delivers the crate **without Olm**. An Olm message (L1) is opaque bytes here. The
-session layer, the throwaway accounts, the closed JNI surface, the `jni-bridge` feature and the
-vodozemac dependency arrive in **S4b**, which is also when `ghost-client-net` takes this crate as
-a dependency and the client allowlist (G-R1), the third-party notices and G-R6 start covering it.
+Slice **S4a** delivered the crate **without Olm**. Slice **S4b** adds `src/olm/`: the throwaway
+accounts of §2.2 (the MSC3814 dehydrated pickle GHOST encodes itself), the session calls of §8.1
+with the value semantics of §7.9, the stored state with the first-seen sidecar of §7.7 point 4,
+and the two pickle-layout reads of §2.1 (`chainPosition`, `sessionPrune`) — the single recorded
+deviation from "public API only", every drift of which is `STATE_CORRUPT`.
 
 ## What the crate guarantees about itself
 
