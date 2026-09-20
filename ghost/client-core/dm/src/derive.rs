@@ -453,14 +453,16 @@ mod tests {
         use hmac::digest::KeyInit as HmacKeyInit;
         use hmac::{Hmac, Mac};
         let key = derive_schedule_key(&m, 0);
-        let mut mac =
-            <Hmac<Sha256> as HmacKeyInit>::new_from_slice(&key).expect("32-byte key");
+        let mut mac = <Hmac<Sha256> as HmacKeyInit>::new_from_slice(&key).expect("32-byte key");
         mac.update(b"ghost/v1/dm/pub-offset");
         let tag = mac.finalize().into_bytes();
         let mut head = [0u8; 8];
         head.copy_from_slice(&tag[..8]);
         let expected = u64::from_be_bytes(head) % WEEK_SECONDS;
-        assert_eq!(u64::from(publication_offset(&key)), expected - expected % 60);
+        assert_eq!(
+            u64::from(publication_offset(&key)),
+            expected - expected % 60
+        );
     }
 
     #[test]
