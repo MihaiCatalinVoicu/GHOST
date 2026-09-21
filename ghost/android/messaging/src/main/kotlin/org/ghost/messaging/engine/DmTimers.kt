@@ -127,6 +127,20 @@ internal object DmTimers {
         return DmTime.ceilMinute(minOf(relayExpiryHour, cap))
     }
 
+    /**
+     * §8.3: how long a held ciphertext lives —
+     * `hold_until_minute = ceil_minute(min(relayExpiryHour, consume + 30 d + 1 h))`.
+     *
+     * The message's own timer is **unknown until it decrypts**, so the longest DM bucket bounds
+     * the hold; the relay expiry caps it, for the reason it caps an unread message's deadline
+     * (C-11, [unreadDeadlineMinute]). A `changed` state never resolves itself — the held rows go at
+     * this minute and the state stays until the user acts (declared, L7-D17).
+     */
+    fun holdUntilMinute(consumeSeconds: Long, relayExpiryHour: Long): Long {
+        val cap = consumeSeconds + TtlBucket.DAYS_30.seconds.toLong() + DmTime.HOUR
+        return DmTime.ceilMinute(minOf(relayExpiryHour, cap))
+    }
+
     /** The timer's own length in seconds (§7.1: 0 off, 5 min, 1 h, 1 d, 7 d, 30 d). */
     fun timerSeconds(timerCode: Int): Long = when (timerCode) {
         TIMER_OFF -> 0

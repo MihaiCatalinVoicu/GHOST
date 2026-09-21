@@ -90,11 +90,35 @@ internal class DmCounters {
         /** A PQ-C TLV: counted and ignored in Phase 9 (§9.4, slice S13). */
         PQ_TLV_IGNORED,
 
-        /** A revocation certificate: slice S8 acts on it, S7 counts it (§8.5). */
-        REVOCATION_DEFERRED,
+        /**
+         * §8.3: an intro PreKey message under a **new** Olm identity, bound by a signature valid
+         * under the contact's pinned Ed25519 key, was held undecrypted. The contact is `changed`
+         * and waits for the user; nothing is shown and nothing is sent (CS-5, T28).
+         */
+        KEY_CHANGE_HELD,
 
-        /** A `session_reset` notice: slice S8 acts on it, S7 counts it (§8.6). */
-        SESSION_RESET_DEFERRED,
+        /** §8.3: `MAX_HELD_PER_CONTACT` was reached and the oldest held row was evicted. */
+        HOLD_OVERFLOW,
+
+        /**
+         * §21.10 point 5: a held message replayed after the user's decision whose unread deadline,
+         * computed from the row's own `relay_expiry_hour` and `consume_minute`, has already
+         * passed. It is not inserted; the ciphertext is deleted with its row.
+         */
+        EXPIRED_WHILE_HELD,
+
+        /** §8.5: a valid revocation certificate v2 was applied; the contact is terminal. */
+        REVOKED,
+
+        /** §8.5: a `revocation` TLV that did not parse, verify, or named another identity. */
+        BAD_REVOCATION,
+
+        /**
+         * §8.6: a `session_reset` notice — a content-free contact event, no message row. It is
+         * counted because that is the only record §7.4's "no persisted rejection history" allows,
+         * and because the renewal it announces is R-SS1's work and not this TLV's.
+         */
+        SESSION_RENEWED,
     }
 
     private val drops = EnumMap<Reason, Int>(Reason::class.java)

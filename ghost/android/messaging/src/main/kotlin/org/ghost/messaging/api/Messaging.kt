@@ -1,7 +1,9 @@
 package org.ghost.messaging.api
 
+import org.ghost.crypto.bridge.DmRevocations
 import org.ghost.messaging.engine.ContactSteps
 import org.ghost.messaging.engine.DmCounters
+import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.engine.SendStep
 import org.ghost.messaging.store.ContactStore
@@ -10,13 +12,12 @@ import org.ghost.messaging.store.ContactStore
  * The UI-less DM facade of Phase 9 design §13.2, **as far as slices S6 and S7 build it**.
  *
  * §13.2 gives the whole interface Phase 13 will call. S6 was the **owner side**: the identity's
- * own card and the activation hooks. S7 is **contacts, sending and receiving**: `addContact`,
- * `contacts`, `conversation`, `send`, `react`, `setTimer`, `retry`, the request decisions, and
- * `block`/`unblock`/`deleteContact`. What is left arrives with its own slice — trust, safety
- * numbers, key-change decisions, reset, reconnect and revocation with **S8**, `markDisplayed` and
- * the notification port with **S9** — and each signature lands **with** its slice rather than
- * ahead of it: a method that compiled and answered nothing would be refused by the static gates,
- * and a caller written against one would be written against a promise.
+ * own card and the activation hooks. S7 is **contacts, sending and receiving**. S8 is **trust and
+ * restore**: safety numbers, the two key-change decisions, `markVerified`, `resetSession`,
+ * `reconnect` and the two revocation calls. What is left arrives with its own slice —
+ * `markDisplayed` and the notification port with **S9** — and each signature lands **with** its
+ * slice rather than ahead of it: a method that compiled and answered nothing would be refused by
+ * the static gates, and a caller written against one would be written against a promise.
  *
  * The contract §13.2 states holds for everything here: **every method posts to the DM actor** and
  * returns after its transaction commits (§13.7), none performs network I/O (gate G-DM1), and
@@ -127,10 +128,133 @@ interface Messaging {
      */
     fun retry(message: MessageId): SendResult
 
+    // -------------------------------------------------------- trust and restore
+
+    /**
+     * §8.4: the 60 digits and the 65-byte scannable form over both `ghost1` keys and both Olm
+     * identity keys, or null when the contact has no pinned Olm identity yet (a card added but
+     * never established) or the DM context is closed.
+     *
+     * Computing, displaying, scanning and comparing cause **no network I/O** (T31).
+     */
+    fun safetyNumber(contact: ContactId): SafetyNumberView?
+
+    /**
+     * §8.4: the number the contact **would** have after the pending key change is accepted, so the
+     * user can verify before deciding rather than after. Null unless the contact is `CHANGED`.
+     */
+    fun pendingSafetyNumber(contact: ContactId): SafetyNumberView?
+
+    /** §8.4: the user scanned this contact's code and it matched, so the contact is `VERIFIED`. */
+    fun markVerified(contact: ContactId, scanned: ByteArray): VerifyResult
+
+    /** §8.4: the user compared the 60 digits by voice or in person and says they matched. */
+    fun markVerifiedManually(contact: ContactId): VerifyResult
+
+    /**
+     * §8.3 "explicit confirmation" (FR-4.6): the user accepts the new Olm identity **without**
+     * comparing it. The contact becomes `UNVERIFIED` — nothing was asserted about the new key — its
+     * sessions are deleted, and the messages held since the change are replayed in order.
+     */
+    fun acknowledgeKeyChange(contact: ContactId): Boolean
+
+    /** §8.3: the same decision after scanning the contact's new code; the contact is `VERIFIED`. */
+    fun verifyKeyChange(contact: ContactId, scanned: ByteArray): VerifyResult
+
+    /**
+     * §8.7: the user resets a conversation that stopped working. Both session rows go (R-SS0) and
+     * the next message goes through the one-shot bundle fetch; the contact sees an ordinary
+     * renewal, with no key-change warning.
+     */
+    fun resetSession(contact: ContactId): SendResult
+
+    /**
+     * §8.6: after a restore, the user re-adds cards and asks for the contacts to be reconnected.
+     *
+     * Each one gets a `session_reset` control due at its own `U[0, 48 h]` offset, drawn now and
+     * persisted — a burst of k deposits into k inboxes in one session would show a degree of k.
+     * Returns how many were accepted and scheduled.
+     */
+    fun reconnect(contacts: List<ContactId>): Int
+
+    /**
+     * §8.5: mints this identity's revocation certificate v2. **Local**: nothing is sent, and
+     * nothing is published in a namespace contacts poll (T31).
+     *
+     * It returns the 102 bytes because schema v5 has no column for a self-issued certificate; hand
+     * them back to [notifyContactsOfRevocation] to propagate. They are public and signed, and every
+     * contact that receives one keeps a copy.
+     */
+    fun issueRevocation(reason: RevocationReason): ByteArray?
+
+    /**
+     * §8.5: one CONTROL message per contact carrying the certificate, each due at its own
+     * `U[0, 24 h]` offset. Returns how many were scheduled.
+     */
+    fun notifyContactsOfRevocation(certificate: ByteArray): Int
+
     // ------------------------------------------------------------------- status
 
     /** §13.2 `status`: counts only, never an identity, a time or a rejection history (T33). */
     fun status(): MessagingStatus
+}
+
+/** §8.4: what a contact's safety number looks like to the UI. */
+class SafetyNumberView(
+    /** The 60 decimal digits, in the order §8.4 fixes (the smaller 30-digit string first). */
+    val digits: String,
+    scannable: ByteArray,
+) {
+    private val raw: ByteArray = scannable.copyOf()
+
+    /** The 65-byte versioned form a QR code carries. */
+    val scannable: ByteArray get() = raw.copyOf()
+
+    /** Never shows the digits: they are a fingerprint of two identities (T3). */
+    override fun toString(): String = "SafetyNumberView(redacted)"
+}
+
+/** What a verification decided (§8.4, §13.2). */
+enum class VerifyResult {
+    /** The code matched and the contact is verified (and, for a key change, re-pinned). */
+    VERIFIED,
+
+    /** The scanned code is of another format version. */
+    VERSION_MISMATCH,
+
+    /** The scanned code belongs to another pair, or to another key. */
+    MISMATCH,
+
+    /** No such contact, or it is not in the state this call needs. */
+    UNKNOWN,
+
+    /** The DM context is closed or the native library is missing (§13.2). */
+    CRYPTO_UNAVAILABLE,
+    ;
+
+    internal companion object {
+        fun of(outcome: KeyDecision.Outcome): VerifyResult = when (outcome) {
+            KeyDecision.Outcome.DONE -> VERIFIED
+            KeyDecision.Outcome.VERSION_MISMATCH -> VERSION_MISMATCH
+            KeyDecision.Outcome.MISMATCH -> MISMATCH
+            KeyDecision.Outcome.NOT_CHANGED -> UNKNOWN
+            KeyDecision.Outcome.UNAVAILABLE -> CRYPTO_UNAVAILABLE
+        }
+    }
+}
+
+/** §8.5: why an identity was revoked (the Phase 3 code set, kept by certificate v2). */
+enum class RevocationReason {
+    DEVICE_LOST,
+    DEVICE_COMPROMISED,
+    KEY_ROTATION,
+    ;
+
+    internal fun toBridge(): DmRevocations.Reason = when (this) {
+        DEVICE_LOST -> DmRevocations.Reason.DEVICE_LOST
+        DEVICE_COMPROMISED -> DmRevocations.Reason.DEVICE_COMPROMISED
+        KEY_ROTATION -> DmRevocations.Reason.KEY_ROTATION
+    }
 }
 
 /** The owner's own card: 131 bytes and the 226-character link (§3.3). */

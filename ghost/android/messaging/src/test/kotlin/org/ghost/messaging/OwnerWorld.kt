@@ -1,17 +1,24 @@
 package org.ghost.messaging
 
 import org.ghost.crypto.bridge.DmCards
+import org.ghost.crypto.bridge.DmRevocations
 import org.ghost.crypto.bridge.DmSessions
 import org.ghost.messaging.engine.ContactMaterial
 import org.ghost.messaging.engine.ContactSteps
 import org.ghost.messaging.engine.DmCounters
 import org.ghost.messaging.engine.DmSyncPorts
 import org.ghost.messaging.engine.EstablishmentSteps
+import org.ghost.messaging.engine.HeldReplay
+import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OwnerSteps
+import org.ghost.messaging.engine.ReceiveStep
+import org.ghost.messaging.engine.RecognitionKeys
 import org.ghost.messaging.engine.RelaySetResolver
+import org.ghost.messaging.engine.ScheduledSteps
 import org.ghost.messaging.engine.SelfContexts
 import org.ghost.messaging.engine.SendStep
+import org.ghost.messaging.engine.SessionSlots
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.port.DmCrypto
 import org.ghost.messaging.port.DmRandom
@@ -117,9 +124,34 @@ class OwnerWorld(
         EstablishmentSteps(database, dmSync, envelopes, material, relayResolver, clock, contexts)
     }
 
+    internal val keyDecision: KeyDecision by lazy { KeyDecision(database, crypto, contexts) }
+
+    /**
+     * The receive step exists here only so the facade can be built: an owner-side world receives
+     * nothing, and the envelope layer above answers `CRYPTO_UNAVAILABLE` to every call it would
+     * make. `DmWorld` is where `RECV` and `HELD` are exercised against the real library (§15.1).
+     */
+    internal val receiveStep: ReceiveStep by lazy {
+        ReceiveStep(
+            database, dmSync, envelopes, crypto, material, RecognitionKeys(envelopes),
+            SessionSlots(), clock, random, contexts, counters,
+        )
+    }
+
+    internal val heldReplay: HeldReplay by lazy {
+        HeldReplay(database, envelopes, receiveStep, clock, contexts, counters)
+    }
+
+    internal val scheduledSteps: ScheduledSteps by lazy {
+        ScheduledSteps(database, crypto, sendStep, establishment, clock, random, contexts)
+    }
+
     /** The facade, wired to this world's steps. No actor: the world is single-threaded already. */
     internal val engine: MessagingEngine by lazy {
-        MessagingEngine(database, steps, contactSteps, sendStep, establishment, counters, clock, contexts)
+        MessagingEngine(
+            database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
+            scheduledSteps, counters, clock, contexts,
+        )
     }
 
     init {
@@ -412,6 +444,49 @@ class FakeDmCrypto : DmCrypto {
             ),
         )
     }
+
+    /**
+     * §2.6 function 17, faked: a deterministic 60 digits and 65 scannable bytes of the four keys,
+     * in the **shape** §8.4 fixes — a version byte and two 32-byte halves, the own one first — so
+     * a caller that compares two halves the wrong way round is caught here as it would be on
+     * device. The digits themselves are `dm_safety_number.txt`'s, replayed by the crate.
+     */
+    override fun safetyNumber(
+        ownIdentityPk: ByteArray,
+        ownOlm: ByteArray,
+        peerIdentityPk: ByteArray,
+        peerOlm: ByteArray,
+    ): DmSessions.SafetyNumber? {
+        if (!available) return null
+        val own = derive("sn-${hex(ownIdentityPk)}-${hex(ownOlm)}", 0, 0, 32)
+        val peer = derive("sn-${hex(peerIdentityPk)}-${hex(peerOlm)}", 0, 0, 32)
+        val digits = (own + peer).take(30).joinToString("") { ((it.toInt() and 0x0f)).toString() }
+        return DmSessions.SafetyNumber(digits, byteArrayOf(1) + own + peer)
+    }
+
+    /**
+     * §8.5, faked: a 102-byte certificate whose identity half is derived from the reason, so a
+     * caller that hands the wrong bytes to [verifyRevocation] is caught. A real signature is the
+     * crate's, and `DmWorld` is where one is made.
+     */
+    override fun issueRevocation(
+        issuedMinute: Long,
+        reason: DmRevocations.Reason,
+    ): DmRevocations.Issued {
+        if (!available) return DmRevocations.Issued.Unavailable
+        return DmRevocations.Issued.Ok(derive("revocation-${reason.code}", 0, 0, 102))
+    }
+
+    override fun verifyRevocation(
+        certificate: ByteArray,
+        expectedIdentityPk: ByteArray,
+    ): DmRevocations.Verified {
+        if (!available) return DmRevocations.Verified.Unavailable
+        if (certificate.size != 102) return DmRevocations.Verified.NonCanonical
+        return DmRevocations.Verified.Ok(expectedIdentityPk, 0, DmRevocations.Reason.DEVICE_LOST)
+    }
+
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
     private fun derive(label: String, cardIndex: Int, slot: Int, size: Int): ByteArray {
         val out = ByteArray(size)

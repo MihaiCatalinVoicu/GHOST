@@ -172,6 +172,7 @@ internal class SendStep(
             self = self,
             contactId = contactId,
             kind = kind,
+            control = null,
             messageId = messageId,
             authorMinute = authorMinute,
             now = now,
@@ -182,6 +183,100 @@ internal class SendStep(
             credentials = credentials,
             minted = minted,
         )
+    }
+
+    /**
+     * §7.2's SEND row, control half: the **scheduled CONTROL** of a reconnect or a revocation
+     * notice, and the `reset` control of an explicit `resetSession`.
+     *
+     * It is the same transaction as a user send, minus the rows a CONTROL has no business writing:
+     * `dm_message` carries TEXT and TIMER_SET only (§21.8 point 2), so a control is an item, an op
+     * and nothing else. It still waits for establishment like any other item when there is no
+     * usable session — which is the whole point of §21.8's "a reconnect could not wait for a
+     * bundle" defect: the reconnect notice of §8.6 is **exactly** the message that has to travel as
+     * an intro envelope, so its item has to be able to sit in `dm_pending_send` while `EST-START`
+     * and `EST-READY` run.
+     *
+     * **It is not a reflex** (T28, §21.9 rule 2). The three controls are caused by a user action —
+     * `reconnect(contacts)`, `notifyContactsOfRevocation()`, `resetSession(c)` — and the moment
+     * each one goes out is a minute drawn at that action and persisted, never the minute something
+     * arrived. Gate G-DM2 reads this file for the `Outbox.enqueue` that follows.
+     */
+    @Suppress("ReturnCount")
+    fun sendControl(
+        contactId: ByteArray,
+        control: Control,
+        revocation: ByteArray,
+        sessionReset: Boolean,
+    ): Sent {
+        val self = contexts.get() ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        val now = clock.nowEpochSeconds()
+        val authorMinute = DmTime.floorMinute(now)
+
+        val plan = database.transaction { tx ->
+            plan(tx, contactId, DmContent.Kind.CONTROL, null, now, createOffer = true)
+        }
+        plan.refusal?.let { return Sent(it, establish = false) }
+        val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        val minted = mintOffer(contactId, prepared)
+        val rootGen = prepared.offer?.rootGen ?: minted?.rootGen ?: 0
+        val offerEnv = prepared.offer?.offerEnv ?: minted?.offerEnv ?: EMPTY
+
+        val messageId = random.bytes(MESSAGE_ID_BYTES)
+        val encoded = envelopes.encodeContent(
+            kind = DmContent.Kind.CONTROL,
+            messageId = messageId,
+            authorMinute = authorMinute / DmTime.MINUTE,
+            minuteIndex = 0,
+            timerCode = prepared.timerCode,
+            timerVersion = prepared.timerVersion,
+            quoteRef = null,
+            body = EMPTY,
+            contactId = contactId,
+            offerRootGen = rootGen,
+            offerEnv = offerEnv,
+            revocation = revocation,
+            sessionReset = sessionReset,
+        )
+        val l0 = when (encoded) {
+            is DmContent.Encoded.Ok -> encoded
+            DmContent.Encoded.Oversize -> return Sent(Outcome.TOO_LARGE, establish = false)
+            DmContent.Encoded.NonCanonical ->
+                throw IllegalStateException("the engine built a non-canonical control L0")
+            DmContent.Encoded.StateCorrupt,
+            DmContent.Encoded.Unavailable,
+            -> return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        }
+        val credentials = depositCredentials(prepared)
+            ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+
+        return commit(
+            self = self,
+            contactId = contactId,
+            kind = DmContent.Kind.CONTROL,
+            control = control,
+            messageId = messageId,
+            authorMinute = authorMinute,
+            now = now,
+            prepared = prepared,
+            l0 = l0,
+            body = EMPTY,
+            quoteRef = null,
+            credentials = credentials,
+            minted = minted,
+        )
+    }
+
+    /** `dm_outbound_item.control` (§21.8 point 1): which CONTROL an item is. */
+    enum class Control(val wire: String) {
+        /** §8.6: the `session_reset` notice a `reconnect(contacts)` schedules. */
+        RECONNECT("reconnect"),
+
+        /** §8.5: the revocation certificate a `notifyContactsOfRevocation()` schedules. */
+        REVOCATION("revocation"),
+
+        /** §8.7: the control an explicit `resetSession(c)` sends once the new session exists. */
+        RESET("reset"),
     }
 
     /**
@@ -577,6 +672,7 @@ internal class SendStep(
         self: SelfContext,
         contactId: ByteArray,
         kind: DmContent.Kind,
+        control: Control?,
         messageId: ByteArray,
         authorMinute: Long,
         now: Long,
@@ -658,13 +754,16 @@ internal class SendStep(
                     tx = tx,
                     itemId = messageId,
                     contactId = contactId,
-                    messageRef = if (kind == DmContent.Kind.REACTION) {
-                        reactionTarget(body)
-                    } else {
-                        messageId
+                    // §21.8 point 1: TEXT and TIMER_SET point at themselves, a REACTION at its
+                    // target, and a CONTROL at nothing — it has no `dm_message` row to point at,
+                    // which is what `CHECK (kind = 4 OR message_ref IS NOT NULL)` says.
+                    messageRef = when {
+                        control != null -> null
+                        kind == DmContent.Kind.REACTION -> reactionTarget(body)
+                        else -> messageId
                     },
                     kind = kind.wire,
-                    control = null,
+                    control = control?.wire,
                     l0Env = self.content.seal(l0Nonce, messageId, l0.l0),
                     deadlineHour = deadlineHour,
                     state = MessageStore.ITEM_PENDING,

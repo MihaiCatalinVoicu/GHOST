@@ -100,6 +100,8 @@ internal class ContactStore {
         val fetchListenUntilMinute: Long?,
         val resetNeeded: Boolean,
         val requestUntilDay: Long?,
+        /** `SHA-256(displayed digits)` of the safety number the user compared (§8.4). */
+        val verifiedFp: ByteArray?,
     ) {
         /** Never shows the card: it is a bearer secret for "may message me" (§3.3). */
         override fun toString(): String = "ContactRow(trust=$trust, establishment=$establishment)"
@@ -151,7 +153,7 @@ internal class ContactStore {
     private val contactColumns =
         "contact_id, identity_pk, card_env, card_index, pinned_identity, pending_identity, " +
             "bundle_week_seen, trust_state, source, establishment, fetch_attempts, " +
-            "fetch_listen_until_minute, reset_needed, request_until_day"
+            "fetch_listen_until_minute, reset_needed, request_until_day, verified_fp"
 
     fun contact(sql: SqlExecutor, contactId: ByteArray): ContactRow? =
         contactBy(sql, "contact_id = ?", listOf(contactId))
@@ -214,7 +216,7 @@ internal class ContactStore {
     ) {
         tx.sql.exec(
             "INSERT INTO dm_contact($contactColumns) " +
-                "VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 'card_only', 0, NULL, 0, ?)",
+                "VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, 'card_only', 0, NULL, 0, ?, NULL)",
             listOf(
                 contactId,
                 identityPk,
@@ -309,7 +311,77 @@ internal class ContactStore {
         fetchListenUntilMinute = if (r.isNull(11)) null else r.long(11),
         resetNeeded = r.long(12) != 0L,
         requestUntilDay = if (r.isNull(13)) null else r.long(13),
+        verifiedFp = if (r.isNull(14)) null else r.blob(14),
     )
+
+    // --------------------------------------------------- key change (§8.3, KEYDEC)
+
+    /**
+     * §8.3: a classified key change. The trust state and `pending_identity` move in **one**
+     * statement, because the schema's `CHECK ((trust_state = 'changed') = (pending_identity IS NOT
+     * NULL))` makes either half on its own an aborted transaction — and §21.4 rule 5 says a CHECK
+     * abort inside a DM transaction is a bug, never an expected path.
+     *
+     * A contact already in `changed` under another pending key takes the new one (the newest valid
+     * binding wins); its held rows of the superseded key go with it, in the caller's transaction
+     * (`HeldStore.deleteHeldOtherThan`).
+     */
+    fun setChanged(tx: SyncTransaction, contactId: ByteArray, pendingIdentity: ByteArray): Boolean =
+        tx.sql.execUpdate(
+            "UPDATE dm_contact SET trust_state = 'changed', pending_identity = ?, " +
+                "request_until_day = NULL WHERE contact_id = ? AND pinned_identity IS NOT NULL " +
+                "AND pinned_identity IS NOT ?",
+            listOf(pendingIdentity, contactId, pendingIdentity),
+        ) == 1
+
+    /**
+     * KEYDEC's acceptance (§8.3 "Unblock"): `pinned := pending`, `pending := NULL`, the trust state
+     * to `unverified` (acknowledge) or `verified` (verify), and `verified_fp` set only by the
+     * second.
+     *
+     * One statement again, and for a second reason beside the CHECK: the `dm_contact_pin` trigger
+     * admits a new pinned identity only while `OLD.trust_state = 'changed' AND NEW.pinned_identity
+     * IS OLD.pending_identity`, so the move has to be read against the row as it was before it.
+     */
+    fun acceptPendingIdentity(
+        tx: SyncTransaction,
+        contactId: ByteArray,
+        trust: Trust,
+        verifiedFp: ByteArray?,
+    ): Boolean = tx.sql.execUpdate(
+        "UPDATE dm_contact SET pinned_identity = pending_identity, pending_identity = NULL, " +
+            "trust_state = ?, verified_fp = ? " +
+            "WHERE contact_id = ? AND trust_state = 'changed' AND pending_identity IS NOT NULL",
+        listOf(trust.wire, verifiedFp, contactId),
+    ) == 1
+
+    /**
+     * §8.4: what the user compared, recorded. Any change of the pinned key clears it, which is
+     * [acceptPendingIdentity]'s `verified_fp` argument and not a second statement.
+     */
+    fun setVerifiedFp(tx: SyncTransaction, contactId: ByteArray, fingerprint: ByteArray?) {
+        tx.sql.exec(
+            "UPDATE dm_contact SET verified_fp = ? WHERE contact_id = ?",
+            listOf(fingerprint, contactId),
+        )
+    }
+
+    /**
+     * §8.5: a valid revocation certificate. Terminal — only `deleteContact` leaves it.
+     *
+     * The card **stays**. Blocking erases it because unblocking must not silently restore an
+     * address the user gave up (§12.4); a revoked contact has no unblock, and the card is what
+     * `X_c` and `P_c` are derived from when the user finally deletes the row, so erasing it here
+     * would leave two `:sync` namespaces nothing on the device could name (§21.12 point 3).
+     * `pending_identity` goes, because the schema's CHECK ties it to `trust_state = 'changed'`.
+     */
+    fun revoke(tx: SyncTransaction, contactId: ByteArray): Boolean = tx.sql.execUpdate(
+        "UPDATE dm_contact SET trust_state = 'revoked', pending_identity = NULL, " +
+            "request_until_day = NULL, verified_fp = NULL, establishment = 'card_only', " +
+            "fetch_attempts = 0, fetch_listen_until_minute = NULL " +
+            "WHERE contact_id = ? AND trust_state <> 'revoked'",
+        listOf(contactId),
+    ) == 1
 
     // ----------------------------------------------------------- dm_conversation
 
@@ -502,7 +574,34 @@ internal class ContactStore {
             listOf(contactId, rootGen.toLong()),
         ) == 1
 
+    /**
+     * §8.3 and §22.8.6 rule 1: a KEYDEC acceptance or a renewal **discards** this device's
+     * unacknowledged root offers for a contact — the bytes go, the row stays.
+     *
+     * The row stays because `root_gen` is a per-contact counter and §21.3 point 3 needs
+     * `1 + max(root_gen)` never to repeat on a device that kept the contact; a peer ignores a
+     * generation "not greater than the stored out generation" (§6.3), so a repeated number would
+     * be a root the peer silently drops. The `dm_pair_offer_root` trigger admits exactly this
+     * direction: a root is erased, never replaced, and `acknowledged` never goes back.
+     */
+    fun discardOfferSecrets(tx: SyncTransaction, contactId: ByteArray): Int = tx.sql.execUpdate(
+        "UPDATE dm_pair_offer SET root_env = NULL, offer_env = NULL " +
+            "WHERE contact_id = ? AND acknowledged = 0 " +
+            "AND (root_env IS NOT NULL OR offer_env IS NOT NULL)",
+        listOf(contactId),
+    )
+
     // ----------------------------------------------------------------- dm_peer_pq
+
+    /**
+     * §22.8.6 rule 1: a renewal or a KEYDEC acceptance deletes the contact's in-band X-Wing keys
+     * and every bundle key no live session names. After a KEYDEC acceptance **both** sessions are
+     * gone (R-SS0), so no `peer_gen_id` names anything and the whole set goes: a PQ offer
+     * encapsulated to a pre-change key is one the contact's new device could never open, and
+     * re-attaching it would block pair mode from that contact for up to `start(b + 1) + 45 d`.
+     */
+    fun deletePeerPq(tx: SyncTransaction, contactId: ByteArray): Int =
+        tx.sql.execUpdate("DELETE FROM dm_peer_pq WHERE contact_id = ?", listOf(contactId))
 
     fun peerPq(sql: SqlExecutor, contactId: ByteArray): List<PeerPqRow> {
         val out = ArrayList<PeerPqRow>()

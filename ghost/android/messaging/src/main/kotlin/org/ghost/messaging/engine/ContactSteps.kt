@@ -259,6 +259,40 @@ internal class ContactSteps(
         }
     }
 
+    /**
+     * §8.7 `resetSession(c)`: a user action that deletes **both** session rows (R-SS0) and leaves
+     * the contact to the one-shot bundle fetch of §5.5.
+     *
+     * It is not a key change and it is not a reconnect: the contact's Olm identity is unchanged, so
+     * the first flight of the new session reaches it as an ordinary renewal under R-SS1, with no
+     * warning and no notice TLV (§8.3's "an intro PreKey message with `OI′ = OI` … a content-free
+     * session-renewed contact event"). What it *is* is the user's answer to a conversation that
+     * stopped working — a `reset_needed` contact whose bundle named an identity this device could
+     * not build on, a session whose state is corrupt — and the design gives it a `reset` control
+     * (§21.8 point 1) rather than a silent delete, because a session deleted on one side and kept
+     * on the other is exactly the state that produces nothing at all.
+     *
+     * True when the rows were deleted; the caller sends the control and runs `EST-START`.
+     */
+    fun resetSession(contactId: ByteArray): Boolean {
+        contexts.get() ?: return false
+        return database.transaction { tx ->
+            val row = store.contact(tx.sql, contactId) ?: return@transaction false
+            if (row.trust != ContactStore.Trust.UNVERIFIED &&
+                row.trust != ContactStore.Trust.VERIFIED
+            ) {
+                return@transaction false
+            }
+            tx.sql.exec("DELETE FROM olm_session WHERE contact_id = ?", listOf(contactId))
+            // The candidate of an earlier attempt is not reused: §21.7 point 2 has `EST-START`
+            // forget the namespace's tombstones so the bundle can be fetched again, and a reset is
+            // the user saying the stored one did not work.
+            store.deleteBundleCandidate(tx, contactId)
+            store.setResetNeeded(tx, contactId, false)
+            true
+        }
+    }
+
     /** §12.4 `deleteContact`: every row of the contact, and its namespaces recorded as orphans. */
     fun deleteContact(contactId: ByteArray): Boolean {
         val self = contexts.get() ?: return false

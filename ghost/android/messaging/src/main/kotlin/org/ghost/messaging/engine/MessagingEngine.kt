@@ -16,9 +16,12 @@ import org.ghost.messaging.api.MessageKind
 import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.MessageView
 import org.ghost.messaging.api.MessagingStatus
+import org.ghost.messaging.api.RevocationReason
+import org.ghost.messaging.api.SafetyNumberView
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.api.Timer
 import org.ghost.messaging.api.TrustState
+import org.ghost.messaging.api.VerifyResult
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.MessageStore
@@ -26,7 +29,8 @@ import org.ghost.sync.api.SyncDatabase
 
 /**
  * The DM engine behind the facade (Phase 9 design §13.1 `…messaging.engine`), at the size slices
- * S6 and S7 give it: the owner side, and contacts, sending and receiving.
+ * S6, S7 and S8 give it: the owner side; contacts, sending and receiving; and trust, reset,
+ * reconnect and revocation.
  *
  * **Every method posts to the DM actor** (§13.7, §13.2): one thread owns every `:messaging`
  * transaction and every session call, which is what the value-state rule of §7.9 point 3 needs
@@ -41,6 +45,9 @@ internal class MessagingEngine(
     private val contactSteps: ContactSteps,
     private val sendStep: SendStep,
     private val establishment: EstablishmentSteps,
+    private val keyDecision: KeyDecision,
+    private val heldReplay: HeldReplay,
+    private val scheduledSteps: ScheduledSteps,
     private val counters: DmCounters,
     private val clock: DmClock,
     private val contexts: SelfContexts,
@@ -249,6 +256,83 @@ internal class MessagingEngine(
         // retry", so it also reopens a contact the three automatic windows gave up on.
         if (sent.establish) establishment.estStart(contactId, userRetry = true)
         return SendResult.of(sent.outcome)
+    }
+
+    // -------------------------------------------------- trust, reset, revocation
+
+    override fun safetyNumber(contact: ContactId): SafetyNumberView? = onActor {
+        keyDecision.safetyNumber(contact.toByteArray())?.let {
+            SafetyNumberView(it.digits, it.scannable)
+        }
+    }
+
+    override fun pendingSafetyNumber(contact: ContactId): SafetyNumberView? = onActor {
+        keyDecision.pendingSafetyNumber(contact.toByteArray())?.let {
+            SafetyNumberView(it.digits, it.scannable)
+        }
+    }
+
+    override fun markVerified(contact: ContactId, scanned: ByteArray): VerifyResult = onActor {
+        VerifyResult.of(keyDecision.markVerified(contact.toByteArray(), scanned))
+    }
+
+    override fun markVerifiedManually(contact: ContactId): VerifyResult = onActor {
+        VerifyResult.of(keyDecision.markVerifiedManually(contact.toByteArray()))
+    }
+
+    /**
+     * §8.3: the acceptance and the replay it owes.
+     *
+     * The two are **separate transactions**, and §22.8.1 rule 2 requires it: each held row runs in
+     * its own HELD transaction, so a row that drops cannot roll back the decision or the rows
+     * already applied. A crash between the two leaves the decision taken and the rows held; the
+     * next pass replays them, because [DmActor] runs HELD for every contact that still has live
+     * held rows and is no longer `changed`.
+     */
+    override fun acknowledgeKeyChange(contact: ContactId): Boolean = onActor {
+        val contactId = contact.toByteArray()
+        val done = keyDecision.acknowledge(contactId) == KeyDecision.Outcome.DONE
+        if (done) heldReplay.replay(contactId)
+        done
+    }
+
+    override fun verifyKeyChange(contact: ContactId, scanned: ByteArray): VerifyResult = onActor {
+        val contactId = contact.toByteArray()
+        val outcome = keyDecision.verifyKeyChange(contactId, scanned)
+        if (outcome == KeyDecision.Outcome.DONE) heldReplay.replay(contactId)
+        VerifyResult.of(outcome)
+    }
+
+    /**
+     * §8.7: the rows go, a `reset` control is queued, and the establishment that follows is the
+     * one-shot bundle fetch of §5.5.
+     *
+     * The control is what makes the reset reach the contact at all: a session deleted on one side
+     * and kept on the other produces nothing until the other side happens to write.
+     */
+    override fun resetSession(contact: ContactId): SendResult = onActor {
+        val contactId = contact.toByteArray()
+        if (!contactSteps.resetSession(contactId)) return@onActor SendResult.UNKNOWN
+        val sent = sendStep.sendControl(
+            contactId = contactId,
+            control = SendStep.Control.RESET,
+            revocation = ByteArray(0),
+            sessionReset = false,
+        )
+        if (sent.establish) establishment.estStart(contactId, userRetry = true)
+        SendResult.of(sent.outcome)
+    }
+
+    override fun reconnect(contacts: List<ContactId>): Int = onActor {
+        scheduledSteps.reconnect(contacts.map { it.toByteArray() })
+    }
+
+    override fun issueRevocation(reason: RevocationReason): ByteArray? = onActor {
+        scheduledSteps.issueRevocation(reason.toBridge())
+    }
+
+    override fun notifyContactsOfRevocation(certificate: ByteArray): Int = onActor {
+        scheduledSteps.notifyContactsOfRevocation(certificate)
     }
 
     // ----------------------------------------------------------------- status

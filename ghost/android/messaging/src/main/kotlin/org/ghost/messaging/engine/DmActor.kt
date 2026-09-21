@@ -42,9 +42,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * `EST-END` and the expired pending items. A card holder that deposits a probe during this
  * device's session must not make a bundle, a registration or an establishment follow it.
  *
- * **Not here, and recorded**: SWEEP and the expiry timer (slice S9), the HELD replay of a key
- * change (slice S8), and the `ExpiryAlarm` receiver (slice S9). The pass order below leaves their
- * places in it.
+ * **Not here, and recorded**: SWEEP and the expiry timer, and the `ExpiryAlarm` receiver (slice
+ * S9). The pass order below leaves their places in it.
  */
 internal class DmActor(
     private val database: SyncDatabase,
@@ -54,6 +53,8 @@ internal class DmActor(
     private val sendStep: SendStep,
     private val receiveStep: ReceiveStep,
     private val outcomeStep: OutcomeStep,
+    private val heldReplay: HeldReplay,
+    private val scheduledSteps: ScheduledSteps,
     private val pairKeys: PairKeySteps,
     private val contactKeeper: ContactKeeper,
     private val ownerMaintenance: () -> Unit,
@@ -157,13 +158,48 @@ internal class DmActor(
         if (contexts.get() == null) return
         outcomeStep.run()
         claimBundles()
+        // §22.8.1 rule 3: HELD runs **before** the peek and the RECV claims. Rule 2 makes either
+        // order correct — a session a RECV pass created first is matched by `session_id` and
+        // decrypts on its slot — but this order is the one the rule names, and it keeps a released
+        // hold from being ordered against blobs that arrived after the user's decision.
+        //
+        // It is not time-triggered: it is local work on ciphertext this device already holds, and
+        // the decision that released it was the user's. What §21.9 rule 1 confines to a
+        // time-triggered pass is work whose **timing** would otherwise follow an arrival, and a
+        // replay produces no relay-visible event at all (T28, §21.7 point 7).
+        replayReleasedHolds()
         if (timeTriggered) {
             ownerMaintenance()
             contactKeeper.run()
             pairKeys.run()
             runEstablishment()
+            // §21.9 rule 1 names "due scheduled controls" among the time-triggered steps, and this
+            // is the whole of PM-30 for them: a card holder must not be able to deposit a probe
+            // during this device's session and watch a reconnect or revocation notice follow.
+            scheduledSteps.runDue()
         }
         consumeInbox(deadlineMonotonicMillis)
+    }
+
+    /**
+     * §22.8.1: the held rows of every contact whose key change has been decided.
+     *
+     * The facade replays them inside the decision that released them; this is the **recovery**
+     * half, for a crash between the KEYDEC commit and the replay — the decision is taken, the rows
+     * are still there, and nothing else would ever look at them again. The predicate is exactly
+     * that state: live held rows on a contact that is no longer `changed`.
+     */
+    private fun replayReleasedHolds() {
+        val contactIds = database.transaction { tx ->
+            val out = ArrayList<ByteArray>()
+            tx.sql.query(
+                "SELECT DISTINCT h.contact_id FROM dm_held h JOIN dm_contact c " +
+                    "ON c.contact_id = h.contact_id WHERE c.trust_state <> 'changed' " +
+                    "ORDER BY h.contact_id",
+            ) { out += it.blob(0) }
+            out
+        }
+        for (contactId in contactIds) heldReplay.replay(contactId)
     }
 
     // ---------------------------------------------------------------- inbound

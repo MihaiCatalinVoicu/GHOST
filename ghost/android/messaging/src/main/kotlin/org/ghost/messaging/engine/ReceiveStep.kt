@@ -3,6 +3,7 @@ package org.ghost.messaging.engine
 import org.ghost.crypto.bridge.DmCards
 import org.ghost.crypto.bridge.DmContent
 import org.ghost.crypto.bridge.DmPairing
+import org.ghost.crypto.bridge.DmRevocations
 import org.ghost.crypto.bridge.DmSeal
 import org.ghost.crypto.bridge.DmSessions
 import org.ghost.messaging.port.DmClock
@@ -11,6 +12,7 @@ import org.ghost.messaging.port.DmEnvelopes
 import org.ghost.messaging.port.DmRandom
 import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.ContentCipher
+import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.messaging.store.OwnerStore
 import org.ghost.messaging.store.SessionStore
@@ -39,12 +41,17 @@ import javax.crypto.spec.SecretKeySpec
  * `Registrations.*`, `Namespaces.*` and `Capabilities.put` do not appear here. A pending send is
  * flushed by the **time-triggered** `EST-READY` (§21.7), never by the arrival of a blob.
  *
- * **Key change is slice S8's, and S7 refuses rather than classifies.** §8.3 holds an intro PreKey
- * message that names an Olm identity other than the pinned one under a valid binding, moves the
- * contact to `changed` and waits for the user. S7 has no `KEYDEC` to resolve that state, so it
- * would strand the contact; until S8 lands, such a message is `drop(untrusted)` and counted.
- * CS-5's guarantee still holds — nothing is decrypted from the new identity and nothing is shown
- * — what is missing is the **detection**, and it is recorded in the design's forward notes.
+ * **Key change (§8.3), since S8.** An intro PreKey message that names an Olm identity other than
+ * the pinned one, **under a binding valid by the contact's own Ed25519 key**, is a key change: the
+ * ciphertext is held undecrypted in `dm_held`, the contact moves to `changed`, and nothing is
+ * shown and nothing is sent until the user acknowledges, verifies or blocks (CS-5, T28). The
+ * binding is what separates a key change from a forgery (E-1): anyone holding the contact's card
+ * can build an intro envelope naming it, and nobody without its Ed25519 secret can sign a binding
+ * for a second Olm identity — so `IDENTITY_MISMATCH` alone is never a key change, and a binding
+ * that does not verify never reaches here at all (`openIntro` refuses it).
+ *
+ * [replayHeld] is the other half: after the user decides, `HELD` (§22.8.1) runs R7 … R12 on each
+ * stored L1 through **this** code, which is what "exactly RECV's R7 dispatch" means.
  */
 internal class ReceiveStep(
     private val database: SyncDatabase,
@@ -63,6 +70,7 @@ internal class ReceiveStep(
     private val messages = MessageStore()
     private val sessions = SessionStore()
     private val owner = OwnerStore()
+    private val heldRows = HeldStore()
 
     /** What one blob did. Counts only ever leave through [DmCounters] (T33). */
     enum class Result {
@@ -204,7 +212,8 @@ internal class ReceiveStep(
         return decryptAndApply(
             tx = tx,
             self = self,
-            blob = blob,
+            relayExpiryHour = blob.relayExpiryHour,
+            arrivalSeconds = now,
             contact = contact,
             l1 = symmetric.l1,
             isPreKey = false,
@@ -336,22 +345,26 @@ internal class ReceiveStep(
                 DmCounters.Reason.NON_CANONICAL,
             )
         } else if (!pinned.contentEquals(introduced.olmIdentity)) {
-            // §21.4 point 5 for a `request`; for every other state this is where §8.3's hold
-            // belongs, and S7 refuses instead (see the class comment).
-            if (createdRequest) deleteRequest(tx, contact.contactId)
-            return dropped(
-                if (contact.trust == ContactStore.Trust.REQUEST) {
-                    DmCounters.Reason.REQUEST_KEY_MISMATCH
-                } else {
-                    DmCounters.Reason.UNTRUSTED
-                },
-            )
+            // §21.4 point 5: a `request` contact that sends a second Olm identity is dropped, and
+            // its row goes with the message (R-P2b). A request has not been accepted, so there is
+            // nothing to block in either direction and nothing for the user to decide about.
+            if (contact.trust == ContactStore.Trust.REQUEST) {
+                if (createdRequest) deleteRequest(tx, contact.contactId)
+                return dropped(DmCounters.Reason.REQUEST_KEY_MISMATCH)
+            }
+            // §8.3: a **key change**. The binding verified under this contact's own Ed25519 key
+            // inside `openIntro` (a forgery never gets here, E-1), and R5 already bounded its
+            // minute, so a valid binding for another Olm identity can only have been signed by the
+            // holder of the contact's Ed25519 secret. Hold the ciphertext, block both directions,
+            // and wait for the user.
+            return hold(tx, self, contact, introduced, genId, blob, now)
         }
 
         val result = decryptAndApply(
             tx = tx,
             self = self,
-            blob = blob,
+            relayExpiryHour = blob.relayExpiryHour,
+            arrivalSeconds = now,
             contact = contact,
             l1 = introduced.l1,
             isPreKey = true,
@@ -359,7 +372,13 @@ internal class ReceiveStep(
             pairWeek = null,
             pairRootGen = null,
             bindingSeconds = bindingSeconds,
-            intro = Intro(genId, generation.secretsEnv, generation.fallbackPublic, introduced),
+            intro = Intro(
+                genId = genId,
+                genSecretsEnv = generation.secretsEnv,
+                genFallbackPublic = generation.fallbackPublic,
+                sessionId = introduced.sessionId,
+                replySeedEnv = introduced.replySeedEnv,
+            ),
         )
         // R-P2b: a request row lives only with its message. A forged, replayed or undecryptable
         // intro envelope therefore leaves no contact behind.
@@ -367,12 +386,79 @@ internal class ReceiveStep(
         return result
     }
 
-    /** What an intro envelope carries into the session step. */
+    /**
+     * §8.3: the key change itself — the ciphertext kept, the contact stopped, nothing sent.
+     *
+     * Three rules live here beside the insert:
+     *
+     *  - **The newest valid binding wins.** A contact already `changed` under another pending key
+     *    takes this one, and the held rows of the superseded key go in the same transaction. Two
+     *    live devices under one seed flip-flop between two pending keys; that is declared (R-20)
+     *    rather than arbitrated, because nothing on this device can tell them apart.
+     *  - **The cap is 256 rows per contact** (the `dm_held_limit` trigger, CS-8), and the oldest
+     *    goes first. A trigger abort inside a DM transaction is a bug (§21.4 rule 5), so the
+     *    eviction happens **before** the insert rather than being caught after it.
+     *  - **Nothing reaches a relay** (T28, T31, NI-DM5): a hold is a row and a counter, and the
+     *    contact is not told. A PreKey envelope has the same bucket as any message (T29), so the
+     *    hold is not visible in the shape either.
+     */
+    @Suppress("LongParameterList")
+    private fun hold(
+        tx: SyncTransaction,
+        self: SelfContext,
+        contact: ContactStore.ContactRow,
+        introduced: DmSeal.Intro,
+        genId: Int,
+        blob: InboundBlob,
+        now: Long,
+    ): Result {
+        val pending = introduced.olmIdentity
+        if (contact.pendingIdentity == null || !contact.pendingIdentity.contentEquals(pending)) {
+            if (!contacts.setChanged(tx, contact.contactId, pending)) {
+                // The row moved under us (a delete or a block in the same pass): nothing to hold.
+                return dropped(DmCounters.Reason.UNTRUSTED)
+            }
+            heldRows.deleteHeldOtherThan(tx, contact.contactId, pending)
+        }
+        while (heldRows.heldCount(tx.sql, contact.contactId) >= HeldStore.MAX_HELD_PER_CONTACT) {
+            val oldest = heldRows.oldestHeld(tx.sql, contact.contactId) ?: break
+            heldRows.deleteHeld(tx, oldest.heldId)
+            counters.drop(DmCounters.Reason.HOLD_OVERFLOW)
+        }
+        val heldId = random.bytes(HELD_ID_BYTES)
+        heldRows.insertHeld(
+            tx = tx,
+            heldId = heldId,
+            contactId = contact.contactId,
+            identity = pending,
+            l1Env = self.content.seal(
+                random.bytes(ContentCipher.NONCE_BYTES),
+                heldId,
+                introduced.l1,
+            ),
+            genId = genId,
+            provEnv = introduced.replySeedEnv,
+            holdUntilMinute = DmTimers.holdUntilMinute(now, blob.relayExpiryHour),
+            relayExpiryHour = blob.relayExpiryHour,
+            consumeMinute = DmTime.floorMinute(now),
+        )
+        counters.drop(DmCounters.Reason.KEY_CHANGE_HELD)
+        return Result.DROPPED
+    }
+
+    /**
+     * What a first flight carries into the session step — an intro envelope's, or a held row's.
+     *
+     * It holds **fields**, not the opened envelope, because `HELD` has no envelope left: a held
+     * row stores the L1, the generation id and the wrapped `reply_seed`, which is exactly this
+     * list (§8.3, §22.8.1 rule 2).
+     */
     private class Intro(
         val genId: Int,
         val genSecretsEnv: ByteArray,
         val genFallbackPublic: ByteArray,
-        val opened: DmSeal.Intro,
+        val sessionId: ByteArray,
+        val replySeedEnv: ByteArray?,
     )
 
     // --------------------------------------------------------------- R7 … R12
@@ -381,7 +467,19 @@ internal class ReceiveStep(
     private fun decryptAndApply(
         tx: SyncTransaction,
         self: SelfContext,
-        blob: InboundBlob,
+        /** The relay expiry the blob arrived with; a held row keeps its own (§21.10 point 5). */
+        relayExpiryHour: Long,
+        /**
+         * When the ciphertext **arrived**, which R9's freshness, R-O1's `sort_minute` and C-11's
+         * unread deadline are all measured from.
+         *
+         * For `RECV` it is `now`. For `HELD` it is the held row's `consume_minute`: §21.10 point 5
+         * says "HELD evaluates R9 at the held row's consume minute", and it has to — a message held
+         * for three weeks while the user thought about a key change would otherwise be refused as
+         * stale by the very decision that released it, and would be given a `sort_minute` weeks
+         * after the one its neighbours in the same burst got.
+         */
+        arrivalSeconds: Long,
         contact: ContactStore.ContactRow,
         l1: ByteArray,
         isPreKey: Boolean,
@@ -402,13 +500,13 @@ internal class ReceiveStep(
         var createdSession = false
 
         val matchesStored = intro != null &&
-            listOfNotNull(current, previous).any { it.sessionId.contentEquals(intro.opened.sessionId) }
+            listOfNotNull(current, previous).any { it.sessionId.contentEquals(intro.sessionId) }
 
         if (intro != null && !matchesStored) {
             // D2b (§7.6): a replayed first flight of a live generation, whose session was
             // replaced or deleted, must not create a second session — vodozemac would, because
             // fallback keys are not consumed.
-            if (sessions.firstFlightUsed(tx.sql, intro.genId, intro.opened.sessionId)) {
+            if (sessions.firstFlightUsed(tx.sql, intro.genId, intro.sessionId)) {
                 return dropped(DmCounters.Reason.REPLAY)
             }
             val pinned = contact.pinnedIdentity ?: return dropped(DmCounters.Reason.UNTRUSTED)
@@ -456,7 +554,7 @@ internal class ReceiveStep(
                 initiator = false,
                 acknowledged = true,
                 stateEnv = created.stateEnv,
-                provEnv = intro.opened.replySeedEnv,
+                provEnv = intro.replySeedEnv,
                 peerGenId = null,
                 unackSinceDay = null,
                 retireDay = if (slot == SessionStore.SLOT_PREVIOUS) {
@@ -519,10 +617,12 @@ internal class ReceiveStep(
             DmContent.DecodeResult.StateCorrupt -> return dropped(DmCounters.Reason.STATE_CORRUPT)
         }
 
-        // R9: freshness (§7.6, §21.10 point 3).
+        // R9: freshness (§7.6, §21.10 points 3 and 5), measured from when the ciphertext arrived.
         val authorSeconds = content.authorMinute * DmTime.MINUTE
         val fresh = DmTimers.freshSeconds(DmTimers.bucketOf(content.timerCode))
-        if (authorSeconds < now - fresh || authorSeconds > now + 2 * DmTimers.SIGMA_SECONDS) {
+        if (authorSeconds < arrivalSeconds - fresh ||
+            authorSeconds > arrivalSeconds + 2 * DmTimers.SIGMA_SECONDS
+        ) {
             return dropped(DmCounters.Reason.STALE)
         }
         val acceptAfter = owner.self(tx.sql)?.acceptAfterMinute
@@ -561,7 +661,17 @@ internal class ReceiveStep(
             if (swapped) usedSlot = SessionStore.SLOT_CURRENT
         }
 
-        apply(tx, self, contact, content, blob, now, createdSession, usedSlot)
+        apply(
+            tx = tx,
+            self = self,
+            contact = contact,
+            content = content,
+            relayExpiryHour = relayExpiryHour,
+            arrivalSeconds = arrivalSeconds,
+            now = now,
+            createdSession = createdSession,
+            usedSlot = usedSlot,
+        )
         applyTlvs(tx, contact, content, isPreKey, now)
         if (pairRootGen != null) acknowledgeOffer(tx, contact, pairRootGen, now)
         return Result.APPLIED
@@ -575,7 +685,8 @@ internal class ReceiveStep(
         self: SelfContext,
         contact: ContactStore.ContactRow,
         content: DmContent.Decoded,
-        blob: InboundBlob,
+        relayExpiryHour: Long,
+        arrivalSeconds: Long,
         now: Long,
         createdSession: Boolean,
         usedSlot: String,
@@ -597,11 +708,15 @@ internal class ReceiveStep(
         }
         when (content.kind) {
             DmContent.Kind.TEXT -> insertIncoming(
-                tx, self, conversation, content, blob, now, body = content.body,
+                tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
+                body = content.body,
             )
             DmContent.Kind.TIMER_SET -> {
                 // ADR-27 C.8: a timer change is shown to both sides, as a row with no body.
-                insertIncoming(tx, self, conversation, content, blob, now, body = null)
+                insertIncoming(
+                    tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
+                    body = null,
+                )
             }
             DmContent.Kind.REACTION -> {
                 val target = content.body.copyOf(minOf(REACTION_TARGET_BYTES, content.body.size))
@@ -660,11 +775,25 @@ internal class ReceiveStep(
         self: SelfContext,
         conversation: ContactStore.ConversationRow,
         content: DmContent.Decoded,
-        blob: InboundBlob,
+        relayExpiryHour: Long,
+        arrivalSeconds: Long,
         now: Long,
         body: ByteArray?,
     ) {
         val authorSeconds = content.authorMinute * DmTime.MINUTE
+        val unreadDeadline = DmTimers.unreadDeadlineMinute(
+            consumeSeconds = arrivalSeconds,
+            relayExpiryHour = relayExpiryHour,
+            timerCode = content.timerCode,
+        )
+        // §21.10 point 5: a held message released after its own unread cap is **not** inserted.
+        // The cap was fixed when the ciphertext arrived — `min(E, consume + bucket + 1 h)` — and a
+        // user who takes three weeks to decide a key change must not be shown a one-hour message
+        // as if it were new. The row is never written, so the T25 bound needs nothing extra.
+        if (unreadDeadline != null && unreadDeadline <= DmTime.floorMinute(now)) {
+            counters.drop(DmCounters.Reason.EXPIRED_WHILE_HELD)
+            return
+        }
         messages.insertMessage(
             tx = tx,
             messageId = content.messageId,
@@ -674,8 +803,9 @@ internal class ReceiveStep(
             authorMinute = authorSeconds,
             // R-O1: `min(author_minute, receive_minute)`, which stops a peer with a future clock
             // from pinning its messages below every later one. `receive_minute` is used here and
-            // never stored (§7.7).
-            sortMinute = minOf(authorSeconds, DmTime.floorMinute(now)),
+            // never stored (§7.7); for a held row it is the minute the **ciphertext** arrived, so
+            // a released hold sorts where the burst it belonged to did.
+            sortMinute = minOf(authorSeconds, DmTime.floorMinute(arrivalSeconds)),
             minuteIndex = content.minuteIndex,
             timerCode = content.timerCode,
             bodyEnv = body?.let {
@@ -687,11 +817,7 @@ internal class ReceiveStep(
             },
             state = MessageStore.STATE_UNREAD,
             expireAtMinute = null,
-            unreadDeadlineMinute = DmTimers.unreadDeadlineMinute(
-                consumeSeconds = now,
-                relayExpiryHour = blob.relayExpiryHour,
-                timerCode = content.timerCode,
-            ),
+            unreadDeadlineMinute = unreadDeadline,
         )
     }
 
@@ -709,8 +835,24 @@ internal class ReceiveStep(
      * decryption keys this device keeps until `superseded_day + 91`: mutant PM-29, and the P-7 /
      * T34 seizure the rule exists to prevent.
      *
-     * `revocation` and `session_reset` are slice S8's; a PQ-C TLV is counted and ignored (§9.4).
+     * **`revocation` (§8.5)** is verified in Rust under the contact's **pinned** `identity_pk` and,
+     * when it verifies, moves the contact to the terminal `revoked` state and takes its sessions,
+     * pair keys, held rows and pending sends with it — in this transaction, so a crash leaves
+     * either the whole revocation or none of it. A certificate that does not parse, does not
+     * verify, or names another identity is counted and ignored: it can only ever **block**, so
+     * refusing a bad one costs nothing and accepting a forged one would be a denial of service
+     * anyone holding a card could mount. It returns early, because the rest of the TLVs would
+     * install key material for a contact that no longer has a session.
+     *
+     * **`session_reset` (§8.6)** is a content-free contact event and writes no row of its own: the
+     * renewal it announces is R-SS1's — the contact's first flight under the **same** Olm identity
+     * created a new session and deleted this device's out keys for it — and by the time this runs
+     * that has already happened. It is counted so the notice is not silently indistinguishable
+     * from its absence.
+     *
+     * A PQ-C TLV is counted and ignored (§9.4, slice S13).
      */
+    @Suppress("ReturnCount")
     private fun applyTlvs(
         tx: SyncTransaction,
         contact: ContactStore.ContactRow,
@@ -719,8 +861,10 @@ internal class ReceiveStep(
         now: Long,
     ) {
         if (content.sawPqTlv) counters.drop(DmCounters.Reason.PQ_TLV_IGNORED)
-        if (content.revocation != null) counters.drop(DmCounters.Reason.REVOCATION_DEFERRED)
-        if (content.sessionReset) counters.drop(DmCounters.Reason.SESSION_RESET_DEFERRED)
+        if (content.sessionReset) counters.drop(DmCounters.Reason.SESSION_RENEWED)
+        content.revocation?.let { certificate ->
+            if (applyRevocation(tx, contact, certificate)) return
+        }
         val root = content.sealRoot ?: return
         if (isPreKey) {
             counters.drop(DmCounters.Reason.ROOT_IN_PREKEY)
@@ -794,6 +938,106 @@ internal class ReceiveStep(
         }
     }
 
+    /**
+     * §8.5: a revocation certificate v2 that arrived in a `revocation` TLV.
+     *
+     * True when the contact was revoked, so the caller stops applying the rest of the TLVs. The
+     * message that carried it keeps its row: it decrypted under a session the contact still had,
+     * and the user is entitled to read the message that told them.
+     *
+     * "A revocation can only block, so a thief holding the seed gains nothing by forging one" —
+     * which is also why there is no freshness rule and no user decision: the state is terminal,
+     * and the way out is `deleteContact`.
+     */
+    private fun applyRevocation(
+        tx: SyncTransaction,
+        contact: ContactStore.ContactRow,
+        certificate: ByteArray,
+    ): Boolean {
+        val verified = crypto.verifyRevocation(certificate, contact.identityPk)
+        if (verified !is DmRevocations.Verified.Ok) {
+            counters.drop(DmCounters.Reason.BAD_REVOCATION)
+            return false
+        }
+        if (!contacts.revoke(tx, contact.contactId)) return false
+        // §8.5: "sessions, pair keys, held rows and pending sends deleted in the same
+        // transaction". The pending sends are **failed** rather than deleted, for the reason
+        // §12.4's block has to do the same: the row is the only thing that could ever resolve the
+        // item and its message, and with the timer off neither would expire (§22.12 item 18(c)).
+        sessions.deleteSessions(tx, contact.contactId)
+        contacts.deleteOutPairKeys(tx, contact.contactId)
+        tx.sql.exec(
+            "DELETE FROM dm_pair_key WHERE contact_id = ?",
+            listOf(contact.contactId),
+        )
+        contacts.discardOfferSecrets(tx, contact.contactId)
+        contacts.deletePeerPq(tx, contact.contactId)
+        heldRows.deleteHeldFor(tx, contact.contactId)
+        for (pending in messages.pendingSends(tx.sql, contact.contactId)) {
+            messages.failPending(tx, pending.itemId)
+        }
+        tx.sql.exec("DELETE FROM dm_scheduled WHERE contact_id = ?", listOf(contact.contactId))
+        counters.drop(DmCounters.Reason.REVOKED)
+        return true
+    }
+
+    // ------------------------------------------------------------------- HELD
+
+    /**
+     * **HELD** (§22.8.1 rule 2): one held row, replayed through RECV's R7 dispatch and R8 … R12.
+     *
+     * The caller ([HeldReplay]) owns the transaction, the order and the deletion of the row; what
+     * belongs here is the dispatch, and it is **this** code rather than a copy of it — "exactly
+     * RECV's R7" in §22.8.1's own words, which a second implementation could not stay.
+     *
+     * Two inputs differ from RECV's, and both are the held row's own (§21.10 point 5): the relay
+     * expiry the ciphertext arrived with, and the minute it was consumed, which R9's freshness,
+     * R-O1's `sort_minute` and C-11's unread cap are all measured from.
+     *
+     * **The session-age input differs too, and this is the one place it is not the contact's
+     * clock.** §22.8.4's R-SS1 compares an intro envelope's `binding_minute` with a stored
+     * `peer_bind_minute`, both written by the contact; `dm_held` carries no binding minute (§13.6
+     * step 5 fixes its columns and migration 5 is closed), so the replay supplies `consume_minute`
+     * — this device's own arrival minute, and the same value §22.8.1 rule 1 already orders the
+     * groups by. It is sound where it is used: a KEYDEC acceptance deletes **both** sessions
+     * (R-SS0) before HELD runs, so every comparison is between two held rows of the same window,
+     * and their arrival order at this device is the only order either side agrees on anyway.
+     */
+    @Suppress("LongParameterList", "ReturnCount")
+    internal fun replayHeld(
+        tx: SyncTransaction,
+        self: SelfContext,
+        contact: ContactStore.ContactRow,
+        row: HeldStore.HeldRow,
+        l1: ByteArray,
+        sessionId: ByteArray,
+        now: Long,
+    ): Result {
+        val generation = owner.generations(tx.sql)
+            .firstOrNull { it.genId == row.genId.toLong() and U32 }
+            ?: return dropped(DmCounters.Reason.UNKNOWN_GENERATION)
+        return decryptAndApply(
+            tx = tx,
+            self = self,
+            relayExpiryHour = row.relayExpiryHour,
+            arrivalSeconds = row.consumeMinute,
+            contact = contact,
+            l1 = l1,
+            isPreKey = true,
+            now = now,
+            pairWeek = null,
+            pairRootGen = null,
+            bindingSeconds = row.consumeMinute,
+            intro = Intro(
+                genId = row.genId,
+                genSecretsEnv = generation.secretsEnv,
+                genFallbackPublic = generation.fallbackPublic,
+                sessionId = sessionId,
+                replySeedEnv = row.provEnv,
+            ),
+        )
+    }
+
     // --------------------------------------------------------------- internals
 
     private fun deleteRequest(tx: SyncTransaction, contactId: ByteArray) {
@@ -850,6 +1094,9 @@ internal class ReceiveStep(
 
         /** A REACTION body is `target message_id(16) || grapheme` (§7.1). */
         const val REACTION_TARGET_BYTES: Int = 16
+
+        /** `dm_held.held_id` is 16 random bytes, like every other id of the schema (T33). */
+        const val HELD_ID_BYTES: Int = 16
 
         /** §22.8.5 rule 4: 45 days after a pair envelope under the newest root first opened. */
         const val PROV_ERASE_AFTER_PAIR_SECONDS: Long = 45 * DmTime.DAY

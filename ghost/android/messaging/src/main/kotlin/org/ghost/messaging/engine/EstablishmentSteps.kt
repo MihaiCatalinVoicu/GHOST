@@ -199,10 +199,15 @@ internal class EstablishmentSteps(
      * [SendStep], which demotes before asking for the establishment. This step only has to be sure
      * it is not fooled by a row.
      *
-     * **Key change is slice S8's.** A bundle that verifies under the pinned Ed25519 key but names
-     * another Olm identity is a key change (§5.5, §8.3): until S8 classifies and holds it, the
-     * candidate is dropped, `reset_needed` is set and **no session is built**. Refusing is the
-     * safe half of the rule; silently pinning the new identity would be mutant PM-16.
+     * **Key change from a bundle (§5.5, §8.3), since S8.** A candidate that verifies under the
+     * contact's pinned Ed25519 key but names another Olm identity is a key change, and the second
+     * of the two ways one is detected — the first is an intro PreKey message at `RECV` R6. No
+     * session is built, the contact goes to `changed` with `pending_identity = OI′`, and **the
+     * candidate is kept**: §5.5 says so ("the candidate is kept, and after the user's decision
+     * `EST-READY` builds from it while it is valid"), and it is what lets an acceptance be followed
+     * by a send that does not have to fetch the bundle again. Silently pinning the new identity
+     * would be mutant PM-16; dropping it silently, as S7 did, leaves the user with no decision to
+     * take.
      */
     @Suppress("LongMethod")
     fun estReady(contactId: ByteArray): Result {
@@ -250,8 +255,11 @@ internal class EstablishmentSteps(
                 if (pinned == null) {
                     contacts.pinIdentity(tx, contactId, bundle.olmIdentity)
                 } else if (!pinned.contentEquals(bundle.olmIdentity)) {
-                    contacts.deleteBundleCandidate(tx, contactId)
-                    contacts.setResetNeeded(tx, contactId, true)
+                    // §8.3: a key change. `BundleStep` only keeps a candidate whose signature
+                    // verified under this contact's own `identity_pk` (§5.5, E-2), so a bundle
+                    // that names another Olm identity was signed by the holder of that Ed25519
+                    // secret and is the same event a bound intro envelope would be.
+                    contacts.setChanged(tx, contactId, bundle.olmIdentity)
                     return@transaction Result.UNCHANGED
                 }
                 contacts.putPeerPq(

@@ -5,6 +5,7 @@ import org.ghost.crypto.bridge.DmContent
 import org.ghost.crypto.bridge.DmPairing
 import org.ghost.crypto.bridge.DmSeal
 import org.ghost.crypto.bridge.DmSessions
+import org.ghost.crypto.bridge.L1
 import org.ghost.crypto.bridge.Recognition
 
 /**
@@ -228,6 +229,15 @@ interface DmEnvelopes {
 
     /** §2.6 function 18: the fail-closed decode of §7.1 (R-C4). */
     fun decodeContent(contactId: ByteArray, l0: ByteArray): DmContent.DecodeResult
+
+    /**
+     * §2.6 function 24: the Olm header of a **stored** L1 (§22.8.1 rule 1). Added by S8.
+     *
+     * Every other caller holds an envelope and gets the header from `openOuter` or `openIntro`; a
+     * `dm_held` row stores the L1 alone, and the replay has to group the rows by `session_id` and
+     * order each group by the inner chain index before the first `sessionInbound` runs.
+     */
+    fun parseL1(l1: ByteArray, isPreKey: Boolean): L1
 
     // --------------------------------------------------------------- recognition
 
@@ -590,6 +600,8 @@ class NativeDmEnvelopes(private val context: DmContext) : DmEnvelopes {
         val handle = context.handleOrNull() ?: return DmContent.DecodeResult.Unavailable
         return DmContent.decode(handle, contactId, l0)
     }
+
+    override fun parseL1(l1: ByteArray, isPreKey: Boolean): L1 = L1.parse(l1, isPreKey)
 
     override fun hintMatches(blob: ByteArray, recognitionKey: ByteArray): Boolean =
         Recognition.matches(blob, recognitionKey)

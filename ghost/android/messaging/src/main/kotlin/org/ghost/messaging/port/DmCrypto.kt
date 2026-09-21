@@ -1,6 +1,7 @@
 package org.ghost.messaging.port
 
 import org.ghost.crypto.bridge.DmCards
+import org.ghost.crypto.bridge.DmRevocations
 import org.ghost.crypto.bridge.DmSessions
 
 /**
@@ -46,6 +47,27 @@ interface DmCrypto {
      * card-derived (§7.2's KEEPER row, §22.11 item 7).
      */
     fun deriveCard(card: ByteArray, slot: Int): DmCards.DeriveResult
+
+    /**
+     * §2.6 function 17: safety number v1 (§8.4). Added by S8.
+     *
+     * A deterministic function of four public keys, with no clock and no network I/O (T31), which
+     * is why it is on this port and not on [DmEnvelopes]: it is exactly the shape a fake can stand
+     * in for, and the digits themselves are pinned by `dm_safety_number.txt` in the crate and by
+     * the independent JDK implementation §8.4 requires.
+     */
+    fun safetyNumber(
+        ownIdentityPk: ByteArray,
+        ownOlm: ByteArray,
+        peerIdentityPk: ByteArray,
+        peerOlm: ByteArray,
+    ): DmSessions.SafetyNumber?
+
+    /** Function 23: a revocation certificate v2 for this identity (§8.5). Added by S8. */
+    fun issueRevocation(issuedMinute: Long, reason: DmRevocations.Reason): DmRevocations.Issued
+
+    /** Function 23: parse and verify one, against a contact's pinned key (§8.5). Added by S8. */
+    fun verifyRevocation(certificate: ByteArray, expectedIdentityPk: ByteArray): DmRevocations.Verified
 }
 
 /**
@@ -85,6 +107,27 @@ class NativeDmCrypto(private val context: DmContext) : DmCrypto {
         val handle = context.handleOrNull() ?: return DmCards.DeriveResult.Unavailable
         return DmCards.derive(handle, card, slot)
     }
+
+    override fun safetyNumber(
+        ownIdentityPk: ByteArray,
+        ownOlm: ByteArray,
+        peerIdentityPk: ByteArray,
+        peerOlm: ByteArray,
+    ): DmSessions.SafetyNumber? =
+        DmSessions.safetyNumber(ownIdentityPk, ownOlm, peerIdentityPk, peerOlm)
+
+    override fun issueRevocation(
+        issuedMinute: Long,
+        reason: DmRevocations.Reason,
+    ): DmRevocations.Issued {
+        val handle = context.handleOrNull() ?: return DmRevocations.Issued.Unavailable
+        return DmRevocations.issue(handle, issuedMinute, reason)
+    }
+
+    override fun verifyRevocation(
+        certificate: ByteArray,
+        expectedIdentityPk: ByteArray,
+    ): DmRevocations.Verified = DmRevocations.verify(certificate, expectedIdentityPk)
 
     override fun toString(): String = "NativeDmCrypto"
 }

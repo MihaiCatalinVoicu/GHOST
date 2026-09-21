@@ -10,6 +10,8 @@ import org.ghost.messaging.engine.DmActor
 import org.ghost.messaging.engine.DmCounters
 import org.ghost.messaging.engine.DmSyncPorts
 import org.ghost.messaging.engine.EstablishmentSteps
+import org.ghost.messaging.engine.HeldReplay
+import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OutcomeStep
 import org.ghost.messaging.engine.OwnerSteps
@@ -18,6 +20,7 @@ import org.ghost.messaging.engine.PeekOrder
 import org.ghost.messaging.engine.ReceiveStep
 import org.ghost.messaging.engine.RecognitionKeys
 import org.ghost.messaging.engine.RelaySetResolver
+import org.ghost.messaging.engine.ScheduledSteps
 import org.ghost.messaging.engine.SelfContexts
 import org.ghost.messaging.engine.SendStep
 import org.ghost.messaging.engine.SessionSlots
@@ -255,6 +258,11 @@ class DmDevice(
         contexts, counters,
     )
     internal val peekOrder = PeekOrder(database, dmSync, envelopes, recognition, clock, contexts)
+    internal val keyDecision = KeyDecision(database, crypto, contexts)
+    internal val heldReplay = HeldReplay(database, envelopes, receiveStep, clock, contexts, counters)
+    internal val scheduledSteps = ScheduledSteps(
+        database, crypto, sendStep, establishment, clock, random, contexts,
+    )
     internal val engine: MessagingEngine
     internal val outcomeStep: OutcomeStep
     internal val actor: DmActor
@@ -288,7 +296,8 @@ class DmDevice(
             esSlots = esSlots,
         )
         engine = MessagingEngine(
-            database, steps, contactSteps, sendStep, establishment, counters, clock, contexts,
+            database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
+            scheduledSteps, counters, clock, contexts,
         )
         outcomeStep = OutcomeStep(database, dmSync, sendStep, clock)
         actor = DmActor(
@@ -299,6 +308,8 @@ class DmDevice(
             sendStep = sendStep,
             receiveStep = receiveStep,
             outcomeStep = outcomeStep,
+            heldReplay = heldReplay,
+            scheduledSteps = scheduledSteps,
             pairKeys = PairKeySteps(database, envelopes, clock),
             contactKeeper = ContactKeeper(database, dmSync, material, relayResolver, clock, contexts),
             ownerMaintenance = { engine.runOwnerMaintenance() },
