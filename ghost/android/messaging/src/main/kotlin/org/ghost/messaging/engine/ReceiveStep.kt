@@ -358,6 +358,15 @@ internal class ReceiveStep(
             // holder of the contact's Ed25519 secret. Hold the ciphertext, block both directions,
             // and wait for the user.
             return hold(tx, self, contact, introduced, genId, blob, now)
+        } else if (contact.trust == ContactStore.Trust.CHANGED) {
+            // §8.2 rule 4: "No session row is created for a contact in `changed`, `blocked` or
+            // `revoked`." A first flight under the **old** pinned identity while a key change is
+            // undecided is neither of §7.4 R6's two `changed` cases — it is not a PreKey message
+            // under the pending key, and it is not a normal message of a session that already
+            // exists — so it is dropped rather than allowed to build a third session for a contact
+            // the user is being asked about. Holding it would buy nothing: a hold is replayed only
+            // under the identity the user accepted, and this one is the other.
+            return dropped(DmCounters.Reason.UNTRUSTED)
         }
 
         val result = decryptAndApply(

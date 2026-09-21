@@ -286,6 +286,42 @@ class KeyChangeTest {
         }
     }
 
+    /**
+     * §8.2 rule 4: **no** session row is created for a contact in `changed`, not even under the
+     * old pinned identity.
+     *
+     * §7.4 R6 names two `changed` cases — a PreKey message under the pending key is held, a normal
+     * message continues under the pinned sessions — and a first flight under the **old** key is
+     * neither. Letting it through would build a third session for a contact the user is at that
+     * moment being asked about, and the message could not be shown under the identity that is
+     * about to be replaced anyway.
+     */
+    @Test
+    fun aFirstFlightUnderTheOldIdentityIsRefusedWhileTheChangeIsUndecided() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
+            heldKeyChange(world, contactB)
+            val sessionsBefore = sessionIds(alice)
+
+            // The original B resets and writes again: a first flight under the **pinned** identity.
+            assertEquals(SendResult.QUEUED, bob.engine.resetSession(contactA))
+            deliverBundle(world, from = alice, to = bob, again = true)
+            world.deliverBetween(bob, alice)
+            alice.hintPass()
+
+            assertEquals(TrustState.CHANGED, alice.engine.contacts().single().trust)
+            assertEquals("no third session", sessionsBefore, sessionIds(alice))
+            assertEquals("and still one held row, of the pending key", 1, heldCount(alice))
+            assertTrue(
+                "it was dropped and counted",
+                (alice.engine.status().drops["untrusted"] ?: 0) > 0,
+            )
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /** A contact in `changed` with exactly one held row. */
@@ -310,8 +346,13 @@ class KeyChangeTest {
     }
 
     /** Moves [to]'s establishment of [from] forward until its bundle candidate is usable. */
-    private fun deliverBundle(world: DmWorld, from: DmDevice, to: DmDevice) {
-        world.deliverBetween(from, to)
+    private fun deliverBundle(
+        world: DmWorld,
+        from: DmDevice,
+        to: DmDevice,
+        again: Boolean = false,
+    ) {
+        world.deliverBetween(from, to, again)
         to.timeTriggeredPass()
         world.advanceTo(to.clock.now + 3 * DmWorld.MINUTE)
         to.timeTriggeredPass()
