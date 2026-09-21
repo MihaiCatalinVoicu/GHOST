@@ -211,7 +211,155 @@ class TrustFlowTest {
         }
     }
 
+    /**
+     * §8.6 and graft G-6: a pre-restore envelope **stays unopenable** on the restored device, and
+     * is counted rather than shown.
+     *
+     * This is the residue the whole of §8.6 is arranged around, and the R-P2b withdrawal of round
+     * 9 is the reason it must hold: an intro envelope built on the lost device's bundle names a
+     * generation whose secrets were random and are gone, and nothing seed-derived opens it. A
+     * restored device therefore learns **nothing** about who wrote to the lost one — which is the
+     * price of "no seed-derivable first-contact key", and the thing that would quietly stop being
+     * true if a healing path were ever re-introduced.
+     */
+    @Test
+    fun aPreRestoreEnvelopeStaysUnopenableAndIsCounted() {
+        requireNative()
+        DmWorld().use { world ->
+            val bob = world.bob
+            val (_, contactA) = establishBothWays(world)
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "before the restore", null))
+            val (namespace, ciphertext) = lastStore(bob)
+
+            val restored = world.restored(world.alice)
+            restored.engine.onRestored()
+            // The relay still holds B's blob and serves it to the restored device's inbox, which
+            // is the **same** namespace: `X_0` is a card derivation and the card survived.
+            world.redeliver(bob, restored, namespace, ciphertext)
+            restored.hintPass()
+
+            assertTrue("nothing was shown", restored.engine.contacts().isEmpty())
+            val drops = restored.engine.status().drops
+            assertTrue(
+                "it is counted as unopenable, not applied: $drops",
+                (drops["unknown_seal"] ?: 0) + (drops["unknown_generation"] ?: 0) > 0,
+            )
+        }
+    }
+
+    /**
+     * §6.3's replacement rule (c): a root older than `ROOT_REPLACE_WEEKS` is replaced at the next
+     * user send, acknowledged or not.
+     *
+     * Without it a root acknowledged once is never replaced, and a seizure of either device reads
+     * every pair envelope of that conversation back to its base week. Triggers (a) and (b) — a
+     * restore, a KEYDEC acceptance — hold by construction; this is the one that needs a clock.
+     */
+    @Test
+    fun aRootOlderThanTheBoundIsReplacedAtTheNextSend() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val (contactB, _) = establishBothWays(world)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "with a root", null))
+            val first = rootGenerations(alice)
+            assertEquals("one offered root so far", 1, first.size)
+
+            // Inside the bound: the same generation, whatever the number of sends. The weekly
+            // passes are `PairKeySteps`, which ratchets the out key forward — without them the
+            // conversation falls to `NO_SEAL_KEY` at the first week boundary and the test would be
+            // measuring that instead (§21.3 point 5).
+            weeks(world, 12)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "still inside", null))
+            assertEquals(first, rootGenerations(alice))
+
+            // Past it: a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
+            weeks(world, 2)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "past the bound", null))
+            val second = rootGenerations(alice)
+            assertEquals(2, second.size)
+            assertEquals(first.max() + 1, second.max())
+        }
+    }
+
+    /**
+     * §8.7: an **initiator** session unanswered for `UNACK_MAX = 28 days` is stale, and the next
+     * user send re-establishes rather than sealing onto it.
+     *
+     * The old session is **demoted**, not deleted (R-SS0): the peer may still answer it, so it
+     * receives on `previous` until its `retire_day`. There is no time-triggered re-establishment
+     * (T28, T31) — the send is what causes it.
+     */
+    @Test
+    fun anInitiatorSessionUnansweredForTwentyEightDaysIsReEstablished() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            alice.engine.onActivated()
+            bob.engine.onActivated()
+            alice.engine.addContact(bob.card(), CardSource.QR_IN_PERSON)
+            val contactB = alice.engine.contacts().single().id
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "hello", null))
+            deliverBundle(world, from = bob, to = alice)
+            val first = sessionIds(alice)
+            assertEquals(1, first.size)
+
+            // B never answers. Nothing time-triggered may replace the session on its own, over
+            // five weeks of passes on both devices.
+            weeks(world, 5)
+            assertEquals("no automatic reset (§8.7, D10)", first, sessionIds(alice))
+
+            // The user's send is what re-establishes it. B has published fresh bundles in the
+            // meantime, so the fetch finds a **valid** candidate (§5.4 "Validity").
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "are you there", null))
+            deliverBundle(world, from = bob, to = alice)
+            val now = sessionIds(alice)
+            assertEquals("two slots: the new current and the demoted old one", 2, now.size)
+            assertTrue("the old one was demoted, not deleted", now.containsAll(first))
+            assertEquals(listOf("current", "previous"), sessionSlots(alice))
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    /**
+     * [count] ISO weeks, a week at a time, with a time-triggered pass on both devices.
+     *
+     * A week at a time and not one jump, for two reasons that are both the design's: OWNER-WEEK
+     * publishes one bundle per week and a device that skipped several would hold none valid
+     * (§5.4), and `PairKeySteps` ratchets at most eight weeks per pass, because a key older than
+     * that has no live successor left (§21.3 point 5).
+     */
+    private fun weeks(world: DmWorld, count: Int) {
+        repeat(count) {
+            world.advanceTo(world.alice.clock.now + DmWorld.WEEK)
+            world.alice.timeTriggeredPass()
+            world.bob.timeTriggeredPass()
+        }
+    }
+
+    private fun rootGenerations(device: DmDevice): List<Int> {
+        val out = ArrayList<Int>()
+        device.sql.query("SELECT root_gen FROM dm_pair_offer ORDER BY root_gen") {
+            out += it.long(0).toInt()
+        }
+        return out
+    }
+
+    private fun sessionSlots(device: DmDevice): List<String> {
+        val out = ArrayList<String>()
+        device.sql.query("SELECT slot FROM olm_session ORDER BY slot") { out += it.string(0) }
+        return out
+    }
+
+    private fun lastStore(device: DmDevice): Pair<ByteArray, ByteArray> {
+        var found: Pair<ByteArray, ByteArray>? = null
+        device.sql.query(
+            "SELECT namespace_id, ciphertext FROM outbox_op ORDER BY rowid DESC LIMIT 1",
+        ) { found = it.blob(0) to it.blob(1) }
+        return requireNotNull(found)
+    }
 
     private fun deliverBundle(
         world: DmWorld,

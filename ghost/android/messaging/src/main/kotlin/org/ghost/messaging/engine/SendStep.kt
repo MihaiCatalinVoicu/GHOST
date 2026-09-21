@@ -533,7 +533,23 @@ internal class SendStep(
         var nextRootGen: Int? = null
         if (createOffer && current != null && current.acknowledged) {
             val offers = contacts.pairOffers(tx.sql, contactId)
-            val live = offers.firstOrNull { !it.acknowledged && it.offerEnv != null }
+            // §6.3's replacement rule (c), added by S8: `week(now) ≥ base_week +
+            // ROOT_REPLACE_WEEKS` for my **newest** root for this contact, acknowledged or not.
+            //
+            // Triggers (a) and (b) — a restore, and a KEYDEC acceptance — are already here by
+            // construction: a restored device has no offer rows at all, and KEYDEC erases the
+            // secrets of the ones it has, so the `live` search below finds nothing and a new
+            // generation is minted. (c) is the one that needs a clock, and without it a root
+            // acknowledged once is never replaced: a stolen device's state would open every pair
+            // envelope of that conversation for as long as it lasted, which is exactly the window
+            // the bound exists to close.
+            val newest = offers.maxByOrNull { it.rootGen }
+            val expired = newest != null && week >= newest.baseWeek + ROOT_REPLACE_WEEKS
+            val live = if (expired) {
+                null
+            } else {
+                offers.firstOrNull { !it.acknowledged && it.offerEnv != null }
+            }
             if (live != null) {
                 offer = PendingOffer(live.rootGen, requireNotNull(live.offerEnv))
             } else {
@@ -1199,6 +1215,17 @@ internal class SendStep(
 
         /** `dm_pair_offer.root_gen` is a `u16` (§13.6). */
         const val MAX_ROOT_GEN: Int = 65_535
+
+        /**
+         * §6.3's `ROOT_REPLACE_WEEKS`: **13** without PQ-C, 4 with it (slice S13, Q49).
+         *
+         * It bounds a stolen-state window. A pair root opens every pair envelope of its
+         * conversation from its base week onwards, so a seizer of either device reads that much of
+         * the history whatever the ratchet did; replacing it means the seizure reaches back at
+         * most this far. Q68 asks for one week, and S13's four is the PQ-C cadence — this is the
+         * value §6.3 gives for a client without PQ-C, which Phase 9 ships.
+         */
+        const val ROOT_REPLACE_WEEKS: Long = 13
 
         /** `dm_outbound_item.state` and `dm_message.state` for a decided-FAILED item (§13.5). */
         const val STATE_FAILED: String = "failed"
