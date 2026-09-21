@@ -661,14 +661,15 @@ else
 fi
 
 # G-DM2 (Phase 9 design §16.1, §21.7, §21.9; T28, T31): the restricted sync calls are made only
-# from the steps that may make them, and an owner pass is started only by what may start one. Six
-# single-purpose fixtures — a RECV that registers (the reflex T28 forbids), a store-layer
-# `Namespaces.remove` (§21.12 point 3 makes it SWEEP's), a RECV that hides its three call sites
-# from a line-by-line reader (a receiver on the line above, a local alias, a scope function), a
-# SWEEP that does more than remove a namespace, a RECV that reaches the enqueue through the facade
-# instead (PM-11, PM-30), and a tree whose DM sources make no restricted call at all — plus an
-# empty tree, so each half is proven without the others. Slice S6 arms the mechanism; its corpus
-# grows with S7 (see §22.11).
+# from the steps that may make them, an owner pass is started only by what may start one, and a
+# relay-visible step is driven only by what may drive one. Seven single-purpose fixtures — a RECV
+# that registers (the reflex T28 forbids), a store-layer `Namespaces.remove` (§21.12 point 3 makes
+# it SWEEP's), a RECV that hides its three call sites from a line-by-line reader (a receiver on the
+# line above, a local alias, a scope function), a SWEEP that does more than remove a namespace, a
+# RECV that reaches the enqueue through the facade instead (PM-11, PM-30), a RECV that reaches it
+# through a **step object** instead (the S8 review's fourth rule), and a tree whose DM sources make
+# no restricted call at all — plus an empty tree, so each half is proven without the others. Slice
+# S6 arms the mechanism; its corpus grows with S7 and S8 (see §22.11, §22.13).
 dmenq_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
   local out hits
   out="$(GHOST_ROOT="$HARNESS/negative-dm-enqueue-$1" bash "$DIR/dm-enqueue-callers.sh" 2>&1 || true)"
@@ -692,6 +693,9 @@ dmenq_case sweeper 1 "Sweeper.kt:11" "lets SWEEP remove a namespace and nothing 
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-trigger"
 dmenq_case trigger 1 "an owner pass starts from the actor timer" \
   "refuses a RECV step that starts an owner pass through the facade"
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-step"
+dmenq_case step 2 "a send, a resend, a control or an establishment step is driven by" \
+  "refuses a RECV step that reaches a relay through a step object"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-vacuous"
 dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
   "refuses a tree whose DM sources make no restricted call"

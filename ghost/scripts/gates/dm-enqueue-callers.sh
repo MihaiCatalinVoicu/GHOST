@@ -13,6 +13,9 @@
 #   Messaging.runOwnerMaintenance, Messaging.onActivated, Messaging.onRestored
 #       only from the app wiring and the DM actor — the actor timer, a database open, a relay
 #       session start and the K20 hook of §21.9 rule 1 and §13.4
+#   SendStep.sendControl, SendStep.flushPending, SendStep.resend, EstablishmentSteps.estStart,
+#   EstablishmentSteps.estReady, EstablishmentSteps.estEnd
+#       only from the files that declare them and from the four that drive them
 #
 # and from none of RECV, BUNDLE, HELD, the apply code or the store layer.
 #
@@ -87,6 +90,15 @@
 # call. `NoReflexTest`, the behavioural half §16.1 names, arrived with the same slice: it compares
 # two worlds that differ only in what arrived.
 #
+# **Slice S8 (2026-09-21).** HELD landed, which is the third of the three steps line 17 forbids,
+# and with it the key-change and scheduled-control files. **None of them joined `ALLOWED_FILES`**,
+# and that is the record this convention asks each slice to leave: `HeldReplay.kt` (HELD itself),
+# `KeyDecision.kt` (KEYDEC), `HeldStore.kt` (the `dm_held`/`dm_scheduled` DAO) and
+# `ScheduledSteps.kt` (the due control) make no restricted call — `ScheduledSteps` asks `SendStep`,
+# whose file is the one allowed for it. `ALLOWED_FILES` and `REMOVE_ONLY` are byte-identical to
+# S7's. The fourth rule below (`STEP_TRIGGERS`) arrived with this slice's review, because
+# `ScheduledSteps` is the first file to reach a relay through a step object rather than a port.
+#
 # **The BUNDLE transaction moved out of `EstablishmentSteps.kt`** in the S7 review, and the reason
 # is this file's own rationale. The allowlist is by file because a file holds one step; while
 # `EstablishmentSteps.kt` held four — `estStart`, `bundle`, `estReady`, `estEnd` — allowlisting it
@@ -148,6 +160,31 @@ TRIGGERS='runOwnerMaintenance|onActivated|onRestored'
 # pass publishes a bundle and shows up as a `store` line in the noisy world only.
 TRIGGER_ALLOWED='Messaging.kt MessagingEngine.kt MessagingWiring.kt DmActor.kt'
 
+# **Who may start a relay-visible step** (added by the review of S8, and the same shape as the rule
+# above one frame lower). The third rule closed the facade road into OWNER-WEEK; it left the
+# **step-object** road open, and S8 is the slice that first drives down it: `ScheduledSteps` holds
+# `SendStep` and `EstablishmentSteps` as constructor properties and calls `sendControl` and
+# `estStart` on them. That is correct there — the due step is gated behind `if (timeTriggered)` in
+# `DmActor.runPass` — but with no rule naming these entry points an inbound path could have reached
+# `Outbox.enqueue` without writing a single restricted call, and the static half whose stated
+# purpose is "a new call site added under a new condition is exactly what NoReflexTest would not
+# exercise" would have passed it.
+#
+# The names are matched the way `TRIGGERS` are: by name, with or without a receiver, because they
+# are unique to these two step objects. `resend` is included even though OUTCOME's use of it is the
+# one §7.5 requires, for the same reason `DmActor.kt` is on the trigger list — the allowlist says
+# where the call may be *written*.
+#
+# **No vacuity floor, deliberately.** The restricted-call floor below already refuses a tree the
+# gate would scan without reading any DM code, and a second floor would make each of the
+# single-purpose negative fixtures report an extra violation, which their exact hit counts in
+# `self-test.sh` exist to pin. `negative-dm-enqueue-step` is the fixture that keeps this rule
+# honest instead.
+STEP_TRIGGERS='sendControl|flushPending|resend|estStart|estReady|estEnd'
+# The two files that declare them, and the four that drive them: the actor's time-triggered and
+# establishment passes, the facade's user actions, OUTCOME's resend, and the due scheduled control.
+STEP_ALLOWED='SendStep.kt EstablishmentSteps.kt DmActor.kt MessagingEngine.kt OutcomeStep.kt ScheduledSteps.kt'
+
 allowed_file() { # $1 = basename
   local name
   while read -r name _; do
@@ -167,6 +204,13 @@ remove_allowed() { # $1 = basename
 
 trigger_allowed() { # $1 = basename
   case " $TRIGGER_ALLOWED " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
+step_allowed() { # $1 = basename
+  case " $STEP_ALLOWED " in
     *" $1 "*) return 0 ;;
   esac
   return 1
@@ -253,6 +297,7 @@ while IFS= read -r file; do
   restricted_hits=""
   remove_hits=""
   trigger_hits=""
+  step_hits=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     if is_call_site "$line" "$RESTRICTED"; then restricted_hits+="$line"$'\n'; fi
@@ -260,6 +305,8 @@ while IFS= read -r file; do
     # The facade's entry points are matched by name, with or without a receiver: they are unique to
     # this facade, so a line that writes one either declares it or calls it.
     if [[ "$line" =~ (^|[^A-Za-z0-9_])($TRIGGERS)[[:space:]]*\( ]]; then trigger_hits+="$line"$'\n'; fi
+    # The step objects' relay-visible entry points, matched the same way.
+    if [[ "$line" =~ (^|[^A-Za-z0-9_])($STEP_TRIGGERS)[[:space:]]*\( ]]; then step_hits+="$line"$'\n'; fi
   done <<< "$text"
 
   if [ -n "$restricted_hits" ] || [ -n "$remove_hits" ]; then
@@ -283,6 +330,12 @@ while IFS= read -r file; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: an owner pass starts from the actor timer, a database open, a relay session start or the K20 hook, and from nothing else)"
     done <<< "$trigger_hits"
+  fi
+  if [ -n "$step_hits" ] && ! step_allowed "$base"; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      fail "$rel:$line (G-DM2: a send, a resend, a control or an establishment step is driven by the actor, the facade, OUTCOME or the due scheduled control, and by nothing else)"
+    done <<< "$step_hits"
   fi
 done < <(dm_caller_files)
 

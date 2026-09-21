@@ -380,7 +380,7 @@ class DmDevice(
         )
         engine = MessagingEngine(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
-            scheduledSteps, counters, clock, contexts,
+            scheduledSteps, counters, clock, contexts, recognition,
         )
         outcomeStep = OutcomeStep(database, dmSync, sendStep, clock)
         actor = DmActor(
@@ -396,6 +396,14 @@ class DmDevice(
             pairKeys = PairKeySteps(database, envelopes, clock),
             contactKeeper = ContactKeeper(database, dmSync, material, relayResolver, clock, contexts),
             ownerMaintenance = { engine.runOwnerMaintenance() },
+            // §21.12 point 2's resume, wired to the **step** and not to the facade: the actor
+            // calls it from inside a pass, and a facade call would post to the actor's own thread.
+            // `restored = true` is the side that is safe in both cases; see `DmActor`.
+            resumeActivation = {
+                steps.activate(restored = true)
+                contexts.invalidate()
+                recognition.clear()
+            },
             peekOrder = peekOrder,
             material = material,
             clock = clock,

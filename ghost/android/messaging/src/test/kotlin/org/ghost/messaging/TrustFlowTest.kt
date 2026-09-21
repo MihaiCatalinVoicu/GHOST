@@ -332,7 +332,69 @@ class TrustFlowTest {
         }
     }
 
+    /**
+     * §8.7: the **bound** is 28 days, and this pins the side the other tests do not.
+     *
+     * `anInitiatorSessionUnansweredForTwentyEightDaysIsReEstablished` advances 35 days and
+     * `DmResidueTest` 29; both are above the bound and both assert only that a session past it is
+     * replaced, so a mutant `UNACK_MAX_DAYS = 1` survives them — with a smaller bound nothing
+     * time-triggered replaces the session either (T28: there is no automatic re-establishment), so
+     * "no automatic reset" still holds and the later send still re-establishes. What distinguishes
+     * 28 from 1 is a send on **day 27**: it must seal onto the session that already exists.
+     */
+    @Test
+    fun aSendInsideTheStalenessBoundKeepsTheSessionAndOneOutsideItDoesNot() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            alice.engine.onActivated()
+            bob.engine.onActivated()
+            alice.engine.addContact(bob.card(), CardSource.QR_IN_PERSON)
+            val contactB = alice.engine.contacts().single().id
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "hello", null))
+            deliverBundle(world, from = bob, to = alice)
+            val first = sessionIds(alice)
+            assertEquals(1, first.size)
+
+            // Day 27, B still silent. `unack_since_day` was written at creation and nothing bumps
+            // it, so the age here is one day short of `UNACK_MAX`.
+            days(world, 27)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "still inside", null))
+            assertEquals(
+                "a send inside the bound seals onto the session that exists",
+                first,
+                sessionIds(alice),
+            )
+            assertEquals(listOf("current"), sessionSlots(alice))
+
+            // Day 29. Now the send must demote and re-establish through the bundle fetch.
+            days(world, 2)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "past it", null))
+            deliverBundle(world, from = bob, to = alice)
+            val now = sessionIds(alice)
+            assertEquals("the new current and the demoted old one", 2, now.size)
+            assertTrue("the old one was demoted, not deleted", now.containsAll(first))
+            assertEquals(listOf("current", "previous"), sessionSlots(alice))
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    /**
+     * [count] days, a day at a time, with a time-triggered pass on both devices.
+     *
+     * A day at a time for the reason [weeks] gives: OWNER-WEEK publishes one bundle per week and a
+     * device that skipped several would hold none valid (§5.4), and `PairKeySteps` ratchets at
+     * most eight weeks per pass.
+     */
+    private fun days(world: DmWorld, count: Int) {
+        repeat(count) {
+            world.advanceTo(world.alice.clock.now + DmWorld.DAY)
+            world.alice.timeTriggeredPass()
+            world.bob.timeTriggeredPass()
+        }
+    }
 
     /**
      * [count] ISO weeks, a week at a time, with a time-triggered pass on both devices.

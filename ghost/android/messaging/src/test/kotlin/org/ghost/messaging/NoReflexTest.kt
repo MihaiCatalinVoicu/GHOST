@@ -2,6 +2,7 @@ package org.ghost.messaging
 
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.TrustState
+import org.ghost.messaging.engine.KeyDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -179,7 +180,46 @@ class NoReflexTest {
         assertEquals(quiet, noisy)
     }
 
+    /**
+     * And neither does the **recovery** half of the replay — the one that runs on a hint pass.
+     *
+     * `DmActor.replayReleasedHolds` sits outside the `if (timeTriggered)` block, and the comment
+     * that puts it there argues that a replay "produces no relay-visible event at all", so §21.9
+     * rule 1's confinement does not apply to it. Until the S8 review that argument had no test:
+     * both worlds above replay **inside** the facade call that decided, where the trigger is the
+     * user and not an arrival.
+     *
+     * This world takes the KEYDEC transaction alone, the way a crash between the decision's commit
+     * and the facade's replay leaves it, and then drives a **hint** pass — the pass a blob's
+     * arrival causes. If the recovery path ever grew a reflex, an inbound blob would be what set
+     * it off, which is precisely T28's sentence.
+     */
+    @Test
+    fun replayingAReleasedHoldOnAHintPassLeavesNoRelayVisibleTrace() {
+        var applied = false
+        val quiet = alicesRelayView(deliverChange = false) { _, alice -> alice.hintPass() }
+        val noisy = alicesRelayView(deliverChange = true) { _, alice ->
+            val contact = alice.engine.contacts().single().id
+            assertEquals(
+                KeyDecision.Outcome.DONE,
+                alice.keyDecision.acknowledge(contact.toByteArray()),
+            )
+            assertEquals("the rows are still held: the facade never replayed them", 1, heldCount(alice))
+            alice.hintPass()
+            assertEquals(0, heldCount(alice))
+            applied = alice.engine.conversation(contact, 10, null).any { it.text == "it is me" }
+        }
+        assertTrue("the recovery path really replayed the held message", applied)
+        assertEquals(quiet, noisy)
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private fun heldCount(device: DmDevice): Int {
+        var count = 0
+        device.sql.query("SELECT count(*) FROM dm_held") { count = it.long(0).toInt() }
+        return count
+    }
 
     /** The `store` lines of a relay-visible view: what actually reaches a relay. */
     private fun stores(view: List<String>): List<String> = view.filter { it.startsWith("store ") }

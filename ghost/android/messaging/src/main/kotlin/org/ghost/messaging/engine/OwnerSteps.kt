@@ -132,6 +132,13 @@ class OwnerSteps(
      * committed, and this returns [Result.UNCHANGED] without touching anything. A crash anywhere
      * inside leaves no row and the next start runs it again.
      *
+     * **"The next start" is `DmActor.runPass`'s `resumeActivation`** (§21.12 point 2, wired by the
+     * S8 review; it did not exist while this paragraph claimed it). It is what makes the two
+     * no-write refusals above survivable: [Result.NO_RELAYS] — this week's ES slot table is empty,
+     * which is the normal state of a fresh install for the minutes after a restore, before the
+     * relay directory has synced — and [Result.CRYPTO_UNAVAILABLE]. Without it the K20 hook was
+     * the only tap and a restore that hit either one left the identity mute for good.
+     *
      * **"Per identity" is checked, not assumed (§22.11 item 11, S8).** `dm_self` carries no
      * identity column and nothing in it could: `seen_key`, `content_key_wrapped` and
      * `state_key_wrapped` are random. What does name the identity is `dm_own_namespace`, whose two

@@ -72,23 +72,35 @@ sealed interface L1 {
     /** No usable header: the blob is dropped with no state change and no traffic (T28). */
     data object Invalid : L1
 
+    /**
+     * The DM context is closed or the library is missing — **not** a statement about the bytes.
+     *
+     * It is a separate answer from [Invalid] because the two have opposite consequences for the
+     * one caller that holds the only copy of the ciphertext: HELD **deletes** a row it cannot
+     * parse, and a row that failed to parse because the library was not loaded would be destroyed
+     * for a reason that has nothing to do with it. Every other typed facade of §2.6 already
+     * separates them (`Unavailable` on `DmCards`, `DmSeal`, `DmSessions`, `DmPairing`,
+     * `DmRevocations`), and this one did not.
+     */
+    data object Unavailable : L1
+
     /** Whether this is a first flight. */
     val isPreKey: Boolean get() = this is PreKey
 
-    /** The ratchet key, for the gap hold; `null` for [Invalid]. */
+    /** The ratchet key, for the gap hold; `null` for [Invalid] and [Unavailable]. */
     val ratchetKeyOrNull: ByteArray?
         get() = when (this) {
             is PreKey -> ratchetKey
             is Normal -> ratchetKey
-            Invalid -> null
+            Invalid, Unavailable -> null
         }
 
-    /** The chain index, for the gap hold; `null` for [Invalid]. */
+    /** The chain index, for the gap hold; `null` for [Invalid] and [Unavailable]. */
     val chainIndexOrNull: Long?
         get() = when (this) {
             is PreKey -> chainIndex
             is Normal -> chainIndex
-            Invalid -> null
+            Invalid, Unavailable -> null
         }
 
     companion object {
@@ -103,10 +115,12 @@ sealed interface L1 {
          * returned, not a Kotlin protobuf reader over attacker-supplied bytes (ADR-19).
          *
          * [isPreKey] says which kind the caller expects; a mismatch is [Invalid], as is anything
-         * that does not decode or carries a non-canonical Curve25519 key (R2-06).
+         * that does not decode or carries a non-canonical Curve25519 key (R2-06). A closed context
+         * or a missing library is [Unavailable] and never [Invalid]: see that type for why the
+         * distinction is load-bearing here and nowhere else.
          */
         fun parse(l1: ByteArray, isPreKey: Boolean): L1 {
-            if (!DmNative.isAvailable()) return Invalid
+            if (!DmNative.isAvailable()) return Unavailable
             val result = dmCall { DmNative.l1Parse(l1, if (isPreKey) 1 else 0) }
             return when (result.code) {
                 DmCode.OK ->
@@ -126,7 +140,7 @@ sealed interface L1 {
                         )
                     }
                 DmCode.NON_CANONICAL -> Invalid
-                DmCode.CRYPTO_UNAVAILABLE -> Invalid
+                DmCode.CRYPTO_UNAVAILABLE -> Unavailable
                 else -> unexpected(result.code, "l1Parse")
             }
         }

@@ -2,6 +2,7 @@ package org.ghost.messaging.engine
 
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.store.ContactStore
+import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.messaging.store.SessionStore
 import org.ghost.sync.api.Consumer
@@ -58,6 +59,24 @@ internal class DmActor(
     private val pairKeys: PairKeySteps,
     private val contactKeeper: ContactKeeper,
     private val ownerMaintenance: () -> Unit,
+    /**
+     * §21.12 point 2's safety net: **ACTIVATE, again**, for an activated identity that has no
+     * `dm_self` row. It runs on a time-triggered pass only (see [runPass]).
+     *
+     * It is a lambda for the same reason [ownerMaintenance] is: the actor names the work, not the
+     * step object that does it, and the wiring binds `OwnerSteps.activate(restored = true)` to it
+     * followed by `SelfContexts.invalidate()`.
+     *
+     * **Why `restored = true` and not the caller's own flag.** The flag decides one thing —
+     * whether `dm_self.accept_after_minute` is set to this minute — and nothing here can know it:
+     * the K20 hook's `restored` argument died with the process (or with the failed call) that did
+     * not write the row. `true` is the side that is safe in both cases. An identity that really
+     * was restored keeps the one guard §7.6 has left against pre-restore-authored content, now
+     * that `dm_seen` and the pair keys are gone; an identity that was not cannot lose anything by
+     * it, because without a `dm_self` row it has published no bundle, registered no namespace and
+     * could not have been written to at all.
+     */
+    private val resumeActivation: () -> Unit,
     private val peekOrder: PeekOrder,
     private val material: ContactMaterial,
     private val clock: DmClock,
@@ -67,6 +86,7 @@ internal class DmActor(
     private val contacts = ContactStore()
     private val messages = MessageStore()
     private val sessions = SessionStore()
+    private val held = HeldStore()
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, THREAD_NAME).apply { isDaemon = true }
     }
@@ -155,7 +175,26 @@ internal class DmActor(
      */
     @Suppress("ReturnCount")
     fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
-        if (contexts.get() == null) return
+        if (contexts.get() == null) {
+            // §21.12 point 2: "at every actor start and database open, an activated identity with
+            // no `dm_self` row runs ACTIVATE". This is that call, and until the S8 review it did
+            // not exist anywhere in the tree while two KDocs named it as their safety net.
+            //
+            // It matters most for the one path that has no second tap: `Messaging.onRestored()`
+            // runs from the K20 hook exactly once, and `activate(restored = true)` answers
+            // `NO_RELAYS` without writing anything when the ES schedule facts have not synced yet
+            // — which is the normal state of a fresh install a second after a restore. Without a
+            // resume the restored identity is mute for good: no `dm_self`, no registration, no
+            // bundle, and no `accept_after_minute`.
+            //
+            // **Time-triggered only** (§21.9 rule 1, T28). ACTIVATE publishes a bundle, so a pass
+            // driven by an arriving blob must not be able to cause one. The three triggers §21.12
+            // point 2 names — the actor timer, a database open and a relay session start — are
+            // all time-triggered, so nothing is lost by the restriction.
+            if (!timeTriggered) return
+            resumeActivation()
+            if (contexts.get() == null) return
+        }
         outcomeStep.run()
         claimBundles()
         // §22.8.1 rule 3: HELD runs **before** the peek and the RECV claims. Rule 2 makes either
@@ -190,14 +229,9 @@ internal class DmActor(
      * that state: live held rows on a contact that is no longer `changed`.
      */
     private fun replayReleasedHolds() {
+        val nowMinute = DmTime.floorMinute(clock.nowEpochSeconds())
         val contactIds = database.transaction { tx ->
-            val out = ArrayList<ByteArray>()
-            tx.sql.query(
-                "SELECT DISTINCT h.contact_id FROM dm_held h JOIN dm_contact c " +
-                    "ON c.contact_id = h.contact_id WHERE c.trust_state <> 'changed' " +
-                    "ORDER BY h.contact_id",
-            ) { out += it.blob(0) }
-            out
+            held.contactsWithReleasedHolds(tx.sql, nowMinute)
         }
         for (contactId in contactIds) heldReplay.replay(contactId)
     }

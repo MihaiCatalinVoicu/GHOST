@@ -51,6 +51,13 @@ internal class MessagingEngine(
     private val counters: DmCounters,
     private val clock: DmClock,
     private val contexts: SelfContexts,
+    /**
+     * Only so that [onActivated] and [onRestored] can drop its cache: §2.5's "drops every cached
+     * key … the identity changed". `SelfContexts.invalidate()` alone left the previous identity's
+     * derived provisional session keys live in the process heap across the `clearForeignIdentity`
+     * branch of ACTIVATE (found by the S8 review).
+     */
+    private val recognition: RecognitionKeys,
 ) : Messaging {
 
     private val contacts = ContactStore()
@@ -78,14 +85,20 @@ internal class MessagingEngine(
 
     override fun onActivated(): ActivationOutcome = onActor {
         val result = ActivationOutcome.of(steps.activate(restored = false))
-        contexts.invalidate()
+        forgetCachedKeys()
         result
     }
 
     override fun onRestored(): ActivationOutcome = onActor {
         val result = ActivationOutcome.of(steps.activate(restored = true))
-        contexts.invalidate()
+        forgetCachedKeys()
         result
+    }
+
+    /** §2.5: the identity may have changed under us, so every cached key goes. */
+    private fun forgetCachedKeys() {
+        contexts.invalidate()
+        recognition.clear()
     }
 
     /**

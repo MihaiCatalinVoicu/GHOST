@@ -4,6 +4,7 @@ import org.ghost.crypto.bridge.DmCards
 import org.ghost.messaging.port.DmCrypto
 import org.ghost.messaging.port.DmRandom
 import org.ghost.messaging.store.ContactStore
+import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.api.SyncTransaction
@@ -36,6 +37,7 @@ internal class ContactSteps(
 ) {
     private val store = ContactStore()
     private val messages = MessageStore()
+    private val held = HeldStore()
 
     /** What [addContact] did (§13.2). */
     enum class AddResult {
@@ -370,8 +372,11 @@ internal class ContactSteps(
         tx.sql.exec("DELETE FROM dm_peer_pq WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_bundle_candidate WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_pending_send WHERE contact_id = ?", listOf(row.contactId))
-        tx.sql.exec("DELETE FROM dm_held WHERE contact_id = ?", listOf(row.contactId))
-        tx.sql.exec("DELETE FROM dm_scheduled WHERE contact_id = ?", listOf(row.contactId))
+        // The two S8 tables go through their DAO, which is where their bounded reads live: a raw
+        // read of `dm_held` written outside it is how the unbounded recovery query of §22.13
+        // item 8 escaped the one place that could have caught it.
+        held.deleteHeldFor(tx, row.contactId)
+        held.deleteScheduledFor(tx, row.contactId)
     }
 
     /**

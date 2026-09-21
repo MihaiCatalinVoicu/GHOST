@@ -19,10 +19,20 @@ import org.ghost.sync.api.SyncTransaction
  * (RP §3.8), and an offset kept in memory would collapse to a burst at the next process start.
  *
  * **Neither is an expiring table for the lint's purposes** (§22.10 item 3, `DmExpiredRowLint`'s
- * scope note): both are swept by time, neither reaches a view the user sees, and the reads below
- * carry the bound each step needs — [heldFor] takes `nowMinute` and leaves a row past its hold
- * deadline alone, [due] takes it and returns nothing early. A read path a user sees would join
- * `expiringTables`; there is none.
+ * scope note): both are swept by time, and neither reaches a view the user sees. A read path a
+ * user sees would join `expiringTables`; there is none.
+ *
+ * **Which reads carry the bound, exactly** (corrected by the S8 review; §22.13 item 8). The two
+ * that drive a step do: [heldFor] takes `nowMinute` and leaves a row past its hold deadline
+ * alone, and [due] takes it and returns nothing early. So does [contactsWithReleasedHolds], and
+ * it did **not** when it lived as a raw query in `DmActor` — a contact whose key change was
+ * decided after some of its rows had passed `hold_until_minute` was selected by every pass for
+ * ever, opening two transactions each time to replay nothing, because `HeldReplay` leaves those
+ * rows for SWEEP (S9) and `heldFor` skips them. That is precisely the shape the lint's static
+ * half catches — a filter present in one read of a table and absent in another — and it could
+ * not, because `dm_held` is not in `expiringTables`. Keeping every read of these two tables in
+ * this file is what stands in for the lint here. [heldCount] and [oldestHeld] are deliberately
+ * unbounded: they mirror the `dm_held_limit` trigger, which counts unfiltered.
  *
  * **Every write goes through the caller's [SyncTransaction]**, like the other DAOs, and there is
  * no `REPLACE` anywhere (gate G-DM4): `dm_scheduled` carries a `UNIQUE (contact_id, what)`, so a
@@ -91,6 +101,26 @@ internal class HeldStore {
                 "ORDER BY consume_minute, held_id",
             listOf(contactId, nowMinute),
         ) { r -> out += readHeld(r) }
+        return out
+    }
+
+    /**
+     * §22.8.1's recovery predicate: the contacts that hold **live** rows and are no longer
+     * `changed`, so the decision that released them has been taken and nothing else would look at
+     * them again (a crash between the KEYDEC commit and the replay).
+     *
+     * The `hold_until_minute` bound is the point of the query and not a detail: without it a
+     * contact whose rows all expired after the decision is returned by every pass, for ever,
+     * because the replay reads none of them and SWEEP (S9) has not deleted them yet.
+     */
+    fun contactsWithReleasedHolds(sql: SqlExecutor, nowMinute: Long): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        sql.query(
+            "SELECT DISTINCT h.contact_id FROM dm_held h JOIN dm_contact c " +
+                "ON c.contact_id = h.contact_id WHERE c.trust_state <> 'changed' " +
+                "AND h.hold_until_minute > ? ORDER BY h.contact_id",
+            listOf(nowMinute),
+        ) { out += it.blob(0) }
         return out
     }
 
@@ -177,13 +207,21 @@ internal class HeldStore {
 
     private val scheduledColumns = "sched_id, contact_id, what, payload, due_minute"
 
-    /** The controls whose drawn minute has arrived (§21.9 rule 1: a **time-triggered** step). */
-    fun due(sql: SqlExecutor, nowMinute: Long): List<ScheduledRow> {
+    /**
+     * The controls whose drawn minute has arrived (§21.9 rule 1: a **time-triggered** step), at
+     * most [limit] of them.
+     *
+     * The limit is the reason this takes one: the offsets exist so that k notices do not become k
+     * deposits into k inboxes inside one relay session (RP §3.8), and a device offline across the
+     * whole spread comes back with every row due at once — the burst the spread was drawn to
+     * prevent, arriving by a different road (§22.13 item 15).
+     */
+    fun due(sql: SqlExecutor, nowMinute: Long, limit: Int): List<ScheduledRow> {
         val out = ArrayList<ScheduledRow>()
         sql.query(
             "SELECT $scheduledColumns FROM dm_scheduled WHERE due_minute <= ? " +
-                "ORDER BY due_minute, sched_id",
-            listOf(nowMinute),
+                "ORDER BY due_minute, sched_id LIMIT ?",
+            listOf(nowMinute, limit.toLong()),
         ) { r -> out += readScheduled(r) }
         return out
     }
@@ -226,6 +264,21 @@ internal class HeldStore {
 
     fun deleteScheduled(tx: SyncTransaction, schedId: ByteArray): Int =
         tx.sql.execUpdate("DELETE FROM dm_scheduled WHERE sched_id = ?", listOf(schedId))
+
+    /** Every scheduled control of one contact: a block, a delete or an inbound revocation. */
+    fun deleteScheduledFor(tx: SyncTransaction, contactId: ByteArray): Int =
+        tx.sql.execUpdate("DELETE FROM dm_scheduled WHERE contact_id = ?", listOf(contactId))
+
+    /**
+     * §8.6: the reconnect notice is "skipped if the user sends to that contact earlier". A user
+     * send to a contact with no usable session is itself the intro PreKey message the notice
+     * would have caused, so the row goes in that send's transaction.
+     */
+    fun deleteScheduledOfKind(tx: SyncTransaction, contactId: ByteArray, what: String): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM dm_scheduled WHERE contact_id = ? AND what = ?",
+            listOf(contactId, what),
+        )
 
     private fun readScheduled(r: SqlExecutor.Row) = ScheduledRow(
         schedId = r.blob(0),

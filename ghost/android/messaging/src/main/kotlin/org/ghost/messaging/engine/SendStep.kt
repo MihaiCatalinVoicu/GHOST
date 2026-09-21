@@ -11,6 +11,7 @@ import org.ghost.messaging.port.DmRandom
 import org.ghost.messaging.port.EsSlot
 import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.ContentCipher
+import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.messaging.store.SessionStore
 import org.ghost.sync.api.CapabilityKind
@@ -65,6 +66,7 @@ internal class SendStep(
     private val contacts = ContactStore()
     private val messages = MessageStore()
     private val sessions = SessionStore()
+    private val scheduled = HeldStore()
 
     /** The facade's `send` result (§13.2), plus the two the engine needs internally. */
     enum class Outcome {
@@ -201,6 +203,13 @@ internal class SendStep(
      * `reconnect(contacts)`, `notifyContactsOfRevocation()`, `resetSession(c)` — and the moment
      * each one goes out is a minute drawn at that action and persisted, never the minute something
      * arrived. Gate G-DM2 reads this file for the `Outbox.enqueue` that follows.
+     *
+     * **[scheduledId] retires the `dm_scheduled` row in this send's own transaction** (the S8
+     * review; the same shape the S7 review fixed for RESEND in 8bd2f0a). Deleting it afterwards,
+     * in a transaction of its own, means a crash in between deposits the notice **twice**: a
+     * second `sendControl` mints a fresh `message_id`, so D3's `seen_tag` cannot dedup it, and it
+     * is a fresh ratchet step, so D2b cannot either. Null for the `reset` control of
+     * `resetSession`, which has no scheduled row.
      */
     @Suppress("ReturnCount")
     fun sendControl(
@@ -208,6 +217,7 @@ internal class SendStep(
         control: Control,
         revocation: ByteArray,
         sessionReset: Boolean,
+        scheduledId: ByteArray? = null,
     ): Sent {
         val self = contexts.get() ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
         val now = clock.nowEpochSeconds()
@@ -264,6 +274,7 @@ internal class SendStep(
             quoteRef = null,
             credentials = credentials,
             minted = minted,
+            scheduledId = scheduledId,
         )
     }
 
@@ -698,6 +709,7 @@ internal class SendStep(
         quoteRef: ByteArray?,
         credentials: Map<Long, ByteArray>,
         minted: MintedOffer?,
+        scheduledId: ByteArray? = null,
     ): Sent {
         val ttl = if (kind == DmContent.Kind.TIMER_SET) {
             DmTimers.timerSetBucket(prepared.conversation.timerCode, prepared.timerCode)
@@ -715,6 +727,22 @@ internal class SendStep(
 
         return try {
             database.transaction { tx ->
+                // The scheduled row this send discharges, retired **first** and inside this
+                // transaction (§8.5, §8.6, and the S7 RESEND precedent). It goes whatever the rest
+                // of the transaction decides, including a refusal below: a contact blocked between
+                // the drawn minute and now is one the user's own later action supersedes, and the
+                // notice must not be re-offered for ever. What must **not** delete it is a
+                // transient failure, and none of those reaches this transaction — they are
+                // refused before it opens, or they throw and roll it back (see `runDue`).
+                scheduledId?.let { scheduled.deleteScheduled(tx, it) }
+                // §8.6: "a `dm_scheduled` row … (skipped if the user sends to that contact
+                // earlier)". A user send with no usable session **is** the intro PreKey message
+                // the reconnect notice would have caused, so the row goes with it; a control is
+                // not a user send and does not skip it.
+                if (control == null) {
+                    scheduled.deleteScheduledOfKind(tx, contactId, HeldStore.WHAT_RECONNECT)
+                }
+
                 val contact = contacts.contact(tx.sql, contactId)
                     ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
                 refusalFor(contact.trust)?.let { return@transaction Sent(it, false) }

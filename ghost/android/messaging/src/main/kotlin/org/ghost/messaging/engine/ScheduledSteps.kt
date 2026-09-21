@@ -145,23 +145,46 @@ internal class ScheduledSteps(
     // ------------------------------------------------------------- the due step
 
     /**
-     * §21.9 rule 1: the controls whose drawn minute has arrived, sent and their rows deleted.
+     * §21.9 rule 1: the controls whose drawn minute has arrived, sent and their rows retired.
      *
-     * One control per pass per contact, in due order. The row is deleted **whatever** the send
-     * answered, and a control that could not be sent at all is not rescheduled here: §21.8 point 4
-     * reschedules a **FAILED** control, which is an outcome and therefore OUTCOME's, and a control
-     * refused before it was ever enqueued (a contact blocked between the action and the minute) is
-     * one the user's own later action supersedes.
+     * **At most [MAX_CONTROLS_PER_PASS] control per pass, across every contact** (§22.13 item 15).
+     * The offsets keep k notices from becoming k deposits into k inboxes inside one relay session
+     * (RP §3.8), and both callers make a long offline gap the *likely* case rather than the corner
+     * one — §8.6 says a restored device has no token until it obtains a trial or a pack, so it
+     * cannot deposit at all right after `reconnect(contacts)`, and a revocation is issued when the
+     * phone is lost. A device that comes back after the whole spread finds every row due, and an
+     * uncapped loop would send them all in the one session the spread exists to thin out. The cap
+     * is what actually bounds the degree an observer reads off the wire; the offsets decide the
+     * order and the delay.
      *
-     * The row goes in the **same** transaction as nothing else — the send has its own, as every
-     * SEND does — so a crash between them re-offers the control at the next pass, which is the
-     * idempotent direction: a second reconnect notice to the same contact is another PreKey
-     * envelope of the same session, which the peer dedups at D2b or at D3.
+     * **The row is retired inside the send's own transaction** (`scheduledId`), so a crash between
+     * the deposit and the deletion cannot deposit the notice twice. A second `sendControl` mints a
+     * fresh `message_id` and takes a fresh ratchet step, so neither D3 nor D2b would dedup it.
+     *
+     * **A transient failure keeps the row and takes a fresh minute.** `NO_REPLICAS`,
+     * `STORAGE_FULL` and `CRYPTO_UNAVAILABLE` are exactly the outcomes §21.7 point 4 retries for a
+     * pending item, and none of them says anything about this notice — one relay set momentarily
+     * short of quorum must not be the reason a contact never learns that a device was lost. Two of
+     * the three never reach the send's transaction (they are refused before it opens, or they
+     * throw and roll it back with the retirement inside it); the third, a context that closes
+     * between the seal and the enqueue, is answered from inside it, so the re-schedule is a
+     * `putScheduled` and restores the row whichever happened. The fresh minute is drawn from the
+     * notice's own spread, which keeps the privacy property of the first draw and also keeps a
+     * contact this device cannot reach from holding the head of the queue for ever.
+     *
+     * A **permanent** refusal — a contact blocked, revoked or deleted between the drawn minute and
+     * now — deletes the row here: the send's transaction refused before reaching the deletion, and
+     * the user's own later action supersedes the notice. §21.8 point 4's rescheduling of a
+     * **FAILED** control (one that was enqueued and failed) is an outcome and therefore OUTCOME's;
+     * it is still deferred (§22.13 item 9).
      */
     fun runDue(): Int {
         contexts.get() ?: return 0
         val now = clock.nowEpochSeconds()
-        val due = database.transaction { tx -> scheduled.due(tx.sql, DmTime.floorMinute(now)) }
+        val nowMinute = DmTime.floorMinute(now)
+        val due = database.transaction { tx ->
+            scheduled.due(tx.sql, nowMinute, MAX_CONTROLS_PER_PASS)
+        }
         var sent = 0
         for (row in due) {
             val outcome = when (row.what) {
@@ -170,13 +193,17 @@ internal class ScheduledSteps(
                     control = SendStep.Control.RECONNECT,
                     revocation = ByteArray(0),
                     sessionReset = true,
+                    scheduledId = row.schedId,
                 )
                 HeldStore.WHAT_REVOCATION -> sendStep.sendControl(
                     contactId = row.contactId,
                     control = SendStep.Control.REVOCATION,
                     revocation = row.payload ?: ByteArray(0),
                     sessionReset = false,
+                    scheduledId = row.schedId,
                 )
+                // A `what` no version of this engine writes: the row is not a control anybody can
+                // send, so it goes rather than being retried for ever.
                 else -> null
             }
             if (outcome != null && outcome.establish) {
@@ -184,7 +211,27 @@ internal class ScheduledSteps(
                 // intro envelope, so it is also the one most likely to find no usable session.
                 establishment.estStart(row.contactId, userRetry = true)
             }
-            database.transaction { tx -> scheduled.deleteScheduled(tx, row.schedId) }
+            if (outcome != null && transient(outcome.outcome)) {
+                // `putScheduled` and not an UPDATE: one transient outcome — the context closing
+                // between the seal and the enqueue — is answered from **inside** the send's
+                // transaction, which by then has already retired the row. The UPDATE-then-INSERT
+                // pair restores it either way, under the same `sched_id`, and it is the same
+                // guarded write `reconnect` and `notifyContactsOfRevocation` use (gate G-DM4: no
+                // REPLACE anywhere).
+                database.transaction { tx ->
+                    scheduled.putScheduled(
+                        tx = tx,
+                        schedId = row.schedId,
+                        contactId = row.contactId,
+                        what = row.what,
+                        payload = row.payload,
+                        dueMinute = nowMinute + drawOffset(spreadOf(row.what)),
+                    )
+                }
+            } else {
+                // Idempotent: the send's own transaction deleted it whenever it got that far.
+                database.transaction { tx -> scheduled.deleteScheduled(tx, row.schedId) }
+            }
             if (outcome?.outcome == SendStep.Outcome.QUEUED) sent += 1
         }
         return sent
@@ -208,6 +255,22 @@ internal class ScheduledSteps(
         contact.trust == ContactStore.Trust.UNVERIFIED ||
             contact.trust == ContactStore.Trust.VERIFIED
 
+    /**
+     * The outcomes that say nothing about this notice and everything about this minute: the week's
+     * slot table cannot span two operators, the disk is full, or the DM context is closed. They
+     * are §21.7 point 4's own retry set, read here for the control a `dm_scheduled` row carries.
+     */
+    private fun transient(outcome: SendStep.Outcome): Boolean =
+        outcome == SendStep.Outcome.NO_REPLICAS ||
+            outcome == SendStep.Outcome.STORAGE_FULL ||
+            outcome == SendStep.Outcome.CRYPTO_UNAVAILABLE
+
+    /** The spread a retry is re-drawn from: the same one the action drew from. */
+    private fun spreadOf(what: String): Long = when (what) {
+        HeldStore.WHAT_REVOCATION -> REVOCATION_SPREAD_SECONDS
+        else -> RECONNECT_SPREAD_SECONDS
+    }
+
     companion object {
         /** §8.6: the reconnect spread, `U[0, 48 h]`. */
         const val RECONNECT_SPREAD_SECONDS: Long = 48 * DmTime.HOUR
@@ -217,5 +280,16 @@ internal class ScheduledSteps(
 
         /** `dm_scheduled.sched_id` is 16 random bytes, like every other id of the schema (T33). */
         const val SCHED_ID_BYTES: Int = 16
+
+        /**
+         * How many due controls one pass may send, across every contact (§22.13 item 15).
+         *
+         * One. A relay session sees at most one scheduled deposit, whatever happened while the
+         * device was offline, which is the degree RP §3.8 lets an observer read. The cost is that
+         * a backlog of k notices drains over k time-triggered passes — the actor timer, a database
+         * open and a relay session start — rather than inside the drawn spread, and that is the
+         * right trade: the spread exists for the degree, not for the latency.
+         */
+        const val MAX_CONTROLS_PER_PASS: Int = 1
     }
 }

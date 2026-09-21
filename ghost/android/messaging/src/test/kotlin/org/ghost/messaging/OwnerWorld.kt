@@ -131,9 +131,11 @@ class OwnerWorld(
      * nothing, and the envelope layer above answers `CRYPTO_UNAVAILABLE` to every call it would
      * make. `DmWorld` is where `RECV` and `HELD` are exercised against the real library (§15.1).
      */
+    internal val recognition: RecognitionKeys by lazy { RecognitionKeys(envelopes) }
+
     internal val receiveStep: ReceiveStep by lazy {
         ReceiveStep(
-            database, dmSync, envelopes, crypto, material, RecognitionKeys(envelopes),
+            database, dmSync, envelopes, crypto, material, recognition,
             SessionSlots(), clock, random, contexts, counters,
         )
     }
@@ -150,7 +152,7 @@ class OwnerWorld(
     internal val engine: MessagingEngine by lazy {
         MessagingEngine(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
-            scheduledSteps, counters, clock, contexts,
+            scheduledSteps, counters, clock, contexts, recognition,
         )
     }
 

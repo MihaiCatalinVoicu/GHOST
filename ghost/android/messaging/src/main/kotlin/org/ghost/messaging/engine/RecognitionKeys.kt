@@ -41,8 +41,24 @@ internal class RecognitionKeys(private val envelopes: DmEnvelopes) {
     /** The most-recently-matched contacts, newest first. Never persisted (T33). */
     private val recent = ArrayList<List<Byte>>()
 
-    /** `sessionId -> the two provisional keys`, for as long as the session holds a `prov_env`. */
-    private val provisional = HashMap<List<Byte>, DmPairing.Provisional>()
+    /**
+     * `sessionId -> the two provisional keys`, for as long as the session holds a `prov_env`.
+     *
+     * **Bounded, and in access order** (added by the S8 review). This is derived key material in a
+     * module whose forensic-residue rules are strict, and the map had no eviction at all: a
+     * long-lived process accumulated one derived key set per session it had ever seen, including
+     * every session since deleted by `resetSession`, a KEYDEC acceptance, a revocation or a block.
+     * Nothing could be decrypted with a stale entry — [matchContact] only consults the cache for
+     * sessions still present in `olm_session` — so this is retention, not a leak, and the fix is a
+     * bound rather than a new lifecycle. [PROVISIONAL_MAX] entries, least-recently-used first out;
+     * [forgetSession] and [clear] are the two prompt paths.
+     */
+    private val provisional =
+        object : LinkedHashMap<List<Byte>, DmPairing.Provisional>(16, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<List<Byte>, DmPairing.Provisional>?,
+            ): Boolean = size > PROVISIONAL_MAX
+        }
 
     /** What a matched hint names. */
     sealed interface Match {
@@ -132,7 +148,13 @@ internal class RecognitionKeys(private val envelopes: DmEnvelopes) {
         contactId: ByteArray,
         session: SessionStore.SessionRow,
     ): DmPairing.Provisional? {
-        val provEnv = session.provEnv ?: return null
+        val provEnv = session.provEnv ?: run {
+            // R-S6 and mutant PM-36: "a recognition key follows the erasure schedule of its
+            // opening key". The column is gone, so the derived keys go with it rather than
+            // waiting for the cache bound to evict them.
+            forgetSession(session.sessionId)
+            return null
+        }
         val key = session.sessionId.toList()
         provisional[key]?.let { return it }
         val contact = contacts.contact(sql, contactId) ?: return null
@@ -174,6 +196,17 @@ internal class RecognitionKeys(private val envelopes: DmEnvelopes) {
          * correctness — the order is an optimisation, and rule R-S5 bounds the worst case anyway.
          */
         const val RECENT_MAX: Int = 64
+
+        /**
+         * How many sessions' derived provisional keys the cache holds.
+         *
+         * It is a **retention** bound and not a correctness one: a miss costs one
+         * `provisionalKeys` call, and a session whose entry was evicted derives again on its next
+         * blob. 256 is two slots for each of the 128 most active conversations, well inside
+         * `MAX_CONTACTS = 1 000` and small enough that a process which has run for months does
+         * not hold key material for every session it ever saw.
+         */
+        const val PROVISIONAL_MAX: Int = 256
 
         /** A blob shorter than a seal header cannot carry a hint (§6.2). */
         const val MIN_BLOB_BYTES: Int = Recognition.HEADER_BYTES

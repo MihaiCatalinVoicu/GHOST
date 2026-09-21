@@ -63,7 +63,19 @@ internal class HeldReplay(
      * the decision it was waiting for has been taken and no later pass could do better with it.
      * A row past its `hold_until_minute` is not read at all ([HeldStore.heldFor]) and is left for
      * SWEEP, which owns deletion by time (slice S9).
+     *
+     * **Two things stop the pass rather than dropping a row**, and both are states in which a
+     * deletion would destroy the only copy of a ciphertext for a reason that is not the row's:
+     *  - the DM context closing under it (`CRYPTO_UNAVAILABLE`, here and at the parse);
+     *  - the contact leaving the two trust states a session may be built in. `RECV` drops a
+     *    blocked or revoked contact before any session call (R5, §7.4) and the replay owes the
+     *    same guard: the list this loop walks was read **before** the first transaction, and a
+     *    `revocation` TLV inside an earlier row revokes the contact and deletes its held rows
+     *    (§8.5) while the loop still holds them in memory. Without the guard the next group
+     *    would run `sessionInbound` and insert an `olm_session` row for a revoked contact, which
+     *    §8.2 rule 4 forbids, and show its messages, which §8.5 does.
      */
+    @Suppress("ReturnCount")
     fun replay(contactId: ByteArray): Report {
         val self = contexts.get() ?: return Report(0, 0)
         val now = clock.nowEpochSeconds()
@@ -74,24 +86,36 @@ internal class HeldReplay(
         // inside the writing transaction would commit half a replay while reporting an error.
         val rows = database.transaction { tx -> held.heldFor(tx.sql, contactId, nowMinute) }
         if (rows.isEmpty()) return Report(0, 0)
-        val ordered = order(self, rows)
+        // Null: the library went away mid-parse. Nothing is deleted and nothing is counted — the
+        // next pass reads the same rows.
+        val ordered = order(self, rows) ?: return Report(0, 0)
 
         var applied = 0
         var dropped = 0
         for (parsed in ordered) {
-            val outcome = database.transaction { tx ->
+            val outcome: ReceiveStep.Result? = database.transaction { tx ->
+                // The contact row is gone (`deleteContact`, and the held rows cascaded with it):
+                // there is nothing left to replay and nothing to count.
                 val contact = contacts.contact(tx.sql, contactId)
-                    ?: return@transaction ReceiveStep.Result.DROPPED
-                // A row whose ciphertext did not open or whose L1 did not parse: it was counted
-                // where that was found, and it is deleted here because nothing later could
-                // replay it.
-                if (!parsed.replayable) {
+                    ?: return@transaction null
+                // RECV's R5, re-read inside every row's own transaction: see the KDoc above.
+                if (contact.trust != ContactStore.Trust.UNVERIFIED &&
+                    contact.trust != ContactStore.Trust.VERIFIED
+                ) {
+                    return@transaction null
+                }
+                // A row whose ciphertext did not open or whose L1 did not parse: counted here,
+                // inside the transaction that deletes it, so a pass that stops early cannot count
+                // the same row twice.
+                parsed.broken?.let { reason ->
                     held.deleteHeld(tx, parsed.row.heldId)
+                    counters.drop(reason)
                     return@transaction ReceiveStep.Result.DROPPED
                 }
                 // The user's decision pinned the new identity; a contact that went back to
                 // `changed` under a **third** key while this pass ran keeps its new rows, and
-                // this one is no longer replayable under the pin it was held for.
+                // this one is no longer replayable under the pin it was held for. (`changed` is
+                // refused by the trust guard above; this catches the rest.)
                 if (contact.pinnedIdentity?.contentEquals(parsed.row.identity) != true) {
                     held.deleteHeld(tx, parsed.row.heldId)
                     return@transaction ReceiveStep.Result.DROPPED
@@ -103,6 +127,7 @@ internal class HeldReplay(
                     row = parsed.row,
                     l1 = parsed.l1,
                     sessionId = parsed.sessionId,
+                    bindingSeconds = parsed.groupMinute,
                     now = now,
                 )
                 if (result != ReceiveStep.Result.CRYPTO_UNAVAILABLE) {
@@ -111,6 +136,7 @@ internal class HeldReplay(
                 result
             }
             when (outcome) {
+                null -> return Report(applied, dropped)
                 ReceiveStep.Result.APPLIED -> applied += 1
                 ReceiveStep.Result.CRYPTO_UNAVAILABLE -> return Report(applied, dropped)
                 else -> dropped += 1
@@ -125,36 +151,53 @@ internal class HeldReplay(
         val l1: ByteArray,
         val sessionId: ByteArray,
         val chainIndex: Long,
-        /** False for a row whose envelope did not open or whose L1 did not parse. */
-        val replayable: Boolean = true,
+        /**
+         * The **group's** smallest `consume_minute`, which is R-SS1's session-age input for every
+         * row of the group (§22.13 item 3). Never the row's own: see [order].
+         */
+        val groupMinute: Long = 0,
+        /** Why this row cannot be replayed, or null; the caller counts it and deletes the row. */
+        val broken: DmCounters.Reason? = null,
     )
 
     /**
      * §22.8.1 rule 1: grouped by `session_id`, the groups by their smallest `consume_minute`, the
      * rows inside a group by the inner chain index, `held_id` breaking every remaining tie.
      *
+     * Null when the library went away mid-parse: the caller then replays nothing, because a row
+     * that did not parse for want of a context is not a row that cannot be replayed.
+     *
      * A row whose `l1_env` does not open under the content key, or whose L1 does not parse as a
      * PreKey message, is left out of the order and **deleted** by the caller's loop as a drop: it
      * cannot be replayed and nothing later could change that.
+     *
+     * **Each row carries its group's minute, not its own** (§22.13 item 3a). The group order and
+     * R-SS1's input have to be the **same** number or the invariant that justifies the
+     * substitution is not the one the code keeps: §22.8.4 rule 2 drops a first flight older than
+     * both stored responder sessions, so the groups must reach `admitNewInbound` in nondecreasing
+     * binding order. Groups are ordered by their smallest `consume_minute`, but the row that
+     * reaches `admitNewInbound` is the one with the lowest **chain index**, and §7.7's gap hold
+     * tolerates a chain order that is not the arrival order. Feeding that row's own minute would
+     * present the groups out of order and `drop(stale_session)` a whole group — every message of a
+     * session, lost inside the decision that released it.
      */
-    private fun order(self: SelfContext, rows: List<HeldStore.HeldRow>): List<Parsed> {
+    private fun order(self: SelfContext, rows: List<HeldStore.HeldRow>): List<Parsed>? {
         val parsed = ArrayList<Parsed>(rows.size)
         val broken = ArrayList<Parsed>()
         for (row in rows) {
             val l1 = self.content.open(row.l1Env, row.heldId)
             if (l1 == null) {
-                counters.drop(DmCounters.Reason.STATE_CORRUPT)
-                broken += Parsed(row, ByteArray(0), ByteArray(0), 0, replayable = false)
+                broken += Parsed(row, EMPTY, EMPTY, 0, broken = DmCounters.Reason.STATE_CORRUPT)
                 continue
             }
             when (val header = envelopes.parseL1(l1, isPreKey = true)) {
                 is L1.PreKey -> parsed += Parsed(row, l1, header.sessionId, header.chainIndex)
+                // Not a statement about the bytes: the context closed. Nothing is deleted.
+                L1.Unavailable -> return null
                 // Only PreKey messages are ever held (§8.3: a normal message of a session under the
                 // **old** pinned identity is shown, because it was authenticated to it).
-                is L1.Normal, L1.Invalid -> {
-                    counters.drop(DmCounters.Reason.NON_CANONICAL)
-                    broken += Parsed(row, ByteArray(0), ByteArray(0), 0, replayable = false)
-                }
+                is L1.Normal, L1.Invalid ->
+                    broken += Parsed(row, EMPTY, EMPTY, 0, broken = DmCounters.Reason.NON_CANONICAL)
             }
         }
         val firstConsume = HashMap<List<Byte>, Long>()
@@ -165,14 +208,20 @@ internal class HeldReplay(
                 firstConsume[key] = item.row.consumeMinute
             }
         }
-        val ordered = parsed.sortedWith(
-            compareBy<Parsed> { firstConsume.getValue(it.sessionId.toList()) }
-                .thenBy { it.sessionId.joinToString("") { b -> "%02x".format(b) } }
-                .thenBy { it.chainIndex }
-                .thenBy { it.row.heldId.joinToString("") { b -> "%02x".format(b) } },
-        )
+        val ordered = parsed
+            .map { Parsed(it.row, it.l1, it.sessionId, it.chainIndex, firstConsume.getValue(it.sessionId.toList())) }
+            .sortedWith(
+                compareBy<Parsed> { it.groupMinute }
+                    .thenBy { it.sessionId.joinToString("") { b -> "%02x".format(b) } }
+                    .thenBy { it.chainIndex }
+                    .thenBy { it.row.heldId.joinToString("") { b -> "%02x".format(b) } },
+            )
         // The unreplayable rows go last, so a broken row cannot delay a good one; each is deleted
         // by the loop above, which finds its pin check or its dispatch refuses it.
         return ordered + broken
+    }
+
+    private companion object {
+        val EMPTY = ByteArray(0)
     }
 }

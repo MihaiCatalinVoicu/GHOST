@@ -327,8 +327,14 @@ internal class ReceiveStep(
                 random.bytes(ContactSteps.CONVERSATION_ID_BYTES),
                 contactId,
             )
-            contact = contacts.contact(tx.sql, contactId)
-                ?: return dropped(DmCounters.Reason.NON_CANONICAL)
+            // §21.4 rule 5: a row that vanished inside the transaction that wrote it is always a
+            // bug, and a `dropped(...)` here would be an exit that skips the R-P2b deletion below
+            // — the one shape the withdrawal of R-P2b exists to forbid ("a forged, replayed or
+            // undecryptable intro envelope leaves no contact behind"). It throws instead, which
+            // rolls the insert back with everything else.
+            contact = checkNotNull(contacts.contact(tx.sql, contactId)) {
+                "the contact row inserted by this transaction is not readable in it"
+            }
             createdRequest = true
         }
         if (contact.trust == ContactStore.Trust.BLOCKED ||
@@ -341,9 +347,11 @@ internal class ReceiveStep(
         val pinned = contact.pinnedIdentity
         if (pinned == null) {
             contacts.pinIdentity(tx, contact.contactId, introduced.olmIdentity)
-            contact = contacts.contact(tx.sql, contact.contactId) ?: return dropped(
-                DmCounters.Reason.NON_CANONICAL,
-            )
+            // §21.4 rule 5 again, and R-P2b again: an exit here would leave the request row of a
+            // message that was never applied.
+            contact = checkNotNull(contacts.contact(tx.sql, contact.contactId)) {
+                "the contact row this transaction just pinned is not readable in it"
+            }
         } else if (!pinned.contentEquals(introduced.olmIdentity)) {
             // §21.4 point 5: a `request` contact that sends a second Olm identity is dropped, and
             // its row goes with the message (R-P2b). A request has not been accepted, so there is
@@ -985,7 +993,7 @@ internal class ReceiveStep(
         for (pending in messages.pendingSends(tx.sql, contact.contactId)) {
             messages.failPending(tx, pending.itemId)
         }
-        tx.sql.exec("DELETE FROM dm_scheduled WHERE contact_id = ?", listOf(contact.contactId))
+        heldRows.deleteScheduledFor(tx, contact.contactId)
         counters.drop(DmCounters.Reason.REVOKED)
         return true
     }
@@ -1006,11 +1014,16 @@ internal class ReceiveStep(
      * **The session-age input differs too, and this is the one place it is not the contact's
      * clock.** §22.8.4's R-SS1 compares an intro envelope's `binding_minute` with a stored
      * `peer_bind_minute`, both written by the contact; `dm_held` carries no binding minute (§13.6
-     * step 5 fixes its columns and migration 5 is closed), so the replay supplies `consume_minute`
-     * — this device's own arrival minute, and the same value §22.8.1 rule 1 already orders the
-     * groups by. It is sound where it is used: a KEYDEC acceptance deletes **both** sessions
-     * (R-SS0) before HELD runs, so every comparison is between two held rows of the same window,
-     * and their arrival order at this device is the only order either side agrees on anyway.
+     * step 5 fixes its columns and migration 5 is closed), so the replay supplies a consume minute
+     * — this device's own arrival minute, and the same value §22.8.1 rule 1 orders the groups by.
+     * It is sound where it is used: a KEYDEC acceptance deletes **both** sessions (R-SS0) before
+     * HELD runs, so every comparison is between two held rows of the same window, and their
+     * arrival order at this device is the only order either side agrees on anyway.
+     *
+     * [bindingSeconds] is therefore the **group's** smallest consume minute and not the row's own
+     * (§22.13 item 3a): it has to be the number the groups were ordered by, or the groups reach
+     * `admitNewInbound` out of order and §22.8.4 rule 2 drops one whole session's worth of held
+     * rows. [HeldReplay] computes it; this function does not, because it sees one row at a time.
      */
     @Suppress("LongParameterList", "ReturnCount")
     internal fun replayHeld(
@@ -1020,6 +1033,7 @@ internal class ReceiveStep(
         row: HeldStore.HeldRow,
         l1: ByteArray,
         sessionId: ByteArray,
+        bindingSeconds: Long,
         now: Long,
     ): Result {
         val generation = owner.generations(tx.sql)
@@ -1036,7 +1050,7 @@ internal class ReceiveStep(
             now = now,
             pairWeek = null,
             pairRootGen = null,
-            bindingSeconds = row.consumeMinute,
+            bindingSeconds = bindingSeconds,
             intro = Intro(
                 genId = row.genId,
                 genSecretsEnv = generation.secretsEnv,
