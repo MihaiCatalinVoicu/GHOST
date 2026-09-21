@@ -263,6 +263,12 @@ enum class DmField(val tag: Int) {
 
     /** The bucket rule R-B1 chose for an `l0Encode` record, `u32` big-endian (§6.6). */
     BUCKET(0x3b),
+
+    /** A revocation certificate v2's `issued_minute`, `u32` big-endian (§8.5, T13). */
+    ISSUED_MINUTE(0x3c),
+
+    /** A revocation certificate v2's reason code, one byte (§8.5). */
+    REVOCATION_REASON(0x3d),
     ;
 
     companion object {

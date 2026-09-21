@@ -56,6 +56,7 @@ pub mod pq;
 pub(crate) mod property;
 pub mod provenance;
 pub mod result;
+pub mod revocation;
 pub mod safety;
 pub mod seal;
 pub mod sign;

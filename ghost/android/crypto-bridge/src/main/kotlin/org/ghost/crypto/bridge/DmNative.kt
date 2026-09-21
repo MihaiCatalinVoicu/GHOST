@@ -351,4 +351,22 @@ object DmNative {
     @JvmStatic
     @JvmName("l0Decode")
     internal external fun l0Decode(handle: Long, contactId: ByteArray, l0: ByteArray): ByteArray?
+
+    // ------------------------------------------------------------------ slice S8
+
+    // Function 23, added by S8: the revocation certificate v2 of §8.5. Issuing needs the `ghost1`
+    // seed, which lives in the context and never crosses (§3.2); `issuedMinute` is supplied
+    // because nothing in the crate reads a clock (G-R8).
+    @JvmStatic
+    @JvmName("revocationIssue")
+    internal external fun revocationIssue(handle: Long, issuedMinute: Int, reason: Int): ByteArray?
+
+    // Function 23, added by S8. Stateless, like `safetyNumber`: the certificate carries the key it
+    // is verified under. An empty `expectedIdentityPk` means "no contact to check against".
+    @JvmStatic
+    @JvmName("revocationVerify")
+    internal external fun revocationVerify(
+        cert: ByteArray,
+        expectedIdentityPk: ByteArray,
+    ): ByteArray?
 }

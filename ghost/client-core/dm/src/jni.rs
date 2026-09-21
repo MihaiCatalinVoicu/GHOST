@@ -24,7 +24,7 @@ use crate::olm::pickle::ChainPosition;
 use crate::olm::session::{self, Slot, StoredSession};
 use crate::provenance::{CardSource, KeyProvenance, SealKey};
 use crate::result::DmCode;
-use crate::{bundle, card, codec, pq, safety, seal, wrap};
+use crate::{bundle, card, codec, pq, revocation, safety, seal, wrap};
 use jni::objects::{JByteArray, JClass};
 use jni::sys::{jbyteArray, jint, jlong};
 use jni::JNIEnv;
@@ -90,6 +90,19 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
     // on the table creates one.
     (21, "provisionalKeys", Availability::Exported),
     (22, "pairOffer", Availability::Exported),
+    // Number 23 is **added by S8**, beyond §2.6's table, and the list stays closed for the same
+    // reason: G-R6 refuses an export that is not on it.
+    //
+    // 23 `revocationIssue`/`revocationVerify` exist because §8.5 puts the revocation certificate
+    // v2 among the four X-21 artifacts "signed and verified in Rust", and §2.6's table — written
+    // before §22 re-sourced X-21 — lists no function for either half. Issuing needs the `ghost1`
+    // seed, which is one of the four secrets the context holds and §3.2 does not let Kotlin
+    // hold; verifying needs `verify_strict`, which S0′ V-14 showed BouncyCastle cannot
+    // reproduce, so a Kotlin verifier would accept certificates this one refuses. `l0Encode` and
+    // `l0Decode` already carry the 102 bytes as an opaque TLV value (§7.1), and that is all they
+    // do with them.
+    (23, "revocationIssue", Availability::Exported),
+    (23, "revocationVerify", Availability::Exported),
 ];
 
 /// The codes each exported function can return besides [`DmCode::Ok`] (review round 2,
@@ -257,6 +270,24 @@ pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
             DmCode::NonCanonical,
             DmCode::StateCorrupt,
             DmCode::CryptoUnavailable,
+        ],
+    ),
+    // ---- added by S8 ----
+    // `revocationIssue` takes a handle (the `ghost1` seed lives in the context); `NON_CANONICAL`
+    // is a reason code outside §8.5's set or an argument of the wrong width.
+    (
+        "revocationIssue",
+        &[DmCode::NonCanonical, DmCode::CryptoUnavailable],
+    ),
+    // `revocationVerify` is stateless, like `safetyNumber`: a certificate carries the key it is
+    // verified under. `INVALID_CARD` is "this certificate names another identity than the contact
+    // it arrived for" — GHOST never links two Ed25519 identities (§8.3).
+    (
+        "revocationVerify",
+        &[
+            DmCode::NonCanonical,
+            DmCode::InvalidCard,
+            DmCode::BadSignature,
         ],
     ),
     (
@@ -436,6 +467,12 @@ pub enum Field {
     /// that owns the rule: a Kotlin caller that derived it from the encoded L0 or from the
     /// ciphertext would be mutants ME-22 and ME-3, and nothing in the engine would catch it.
     Bucket = 0x3b,
+    // ---- added by S8 ----
+    /// A revocation certificate v2's `issued_minute`, `u32` big-endian (§8.5; T13 makes the
+    /// minute the finest time any DM byte carries).
+    IssuedMinute = 0x3c,
+    /// A revocation certificate v2's reason code, one byte.
+    RevocationReason = 0x3d,
 }
 
 impl Field {
@@ -503,6 +540,8 @@ impl Field {
         Field::ProvisionalOutDirection,
         Field::ProvisionalInDirection,
         Field::Bucket,
+        Field::IssuedMinute,
+        Field::RevocationReason,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -568,6 +607,8 @@ impl Field {
             Field::ProvisionalOutDirection => 0x39,
             Field::ProvisionalInDirection => 0x3a,
             Field::Bucket => 0x3b,
+            Field::IssuedMinute => 0x3c,
+            Field::RevocationReason => 0x3d,
         }
     }
 }
@@ -1920,6 +1961,55 @@ pub fn pair_offer(
     })
 }
 
+/// Function 23 (added by S8): `revocationIssue(h, issuedMinute, reason)` (§8.5).
+///
+/// The certificate names the identity the context's `ghost1` seed belongs to, so it cannot be
+/// issued for anybody else; `issued_minute` is supplied by Kotlin because nothing in this crate
+/// reads a clock (G-R8).
+pub fn revocation_issue(
+    handle: jlong,
+    issued_minute: jint,
+    reason: jint,
+) -> Result<Vec<u8>, DmCode> {
+    let issued_minute = u32::try_from(issued_minute).map_err(|_| DmCode::NonCanonical)?;
+    let reason = u8::try_from(reason).map_err(|_| DmCode::NonCanonical)?;
+    with_context(handle, |context| {
+        let cert = revocation::issue(context.identity_seed.as_bytes(), issued_minute, reason)?;
+        Ok(Reply::ok().field(Field::Revocation, &cert).into_bytes())
+    })
+}
+
+/// Function 23 (added by S8): `revocationVerify(cert, expectedIdentityPk)` (§8.5).
+///
+/// Stateless, like `safetyNumber`: a certificate carries the public key it is verified under. The
+/// expected key is the contact's **pinned** `identity_pk`, so a certificate that verifies under
+/// its own key but names another identity is refused rather than applied to the wrong row; an
+/// empty array means "no contact to check against", which only the vectors use.
+pub fn revocation_verify(
+    env: &mut JNIEnv,
+    cert: &JByteArray,
+    expected_identity_pk: &JByteArray,
+) -> Result<Vec<u8>, DmCode> {
+    let cert = bytes(env, cert)?;
+    let expected = bytes(env, expected_identity_pk)?;
+    let expected: Option<[u8; 32]> = if expected.is_empty() {
+        None
+    } else {
+        Some(
+            (*expected)
+                .as_slice()
+                .try_into()
+                .map_err(|_| DmCode::NonCanonical)?,
+        )
+    };
+    let parsed = revocation::verify(&cert, expected.as_ref())?;
+    Ok(Reply::ok()
+        .field(Field::IdentityPk, &parsed.identity_pk)
+        .field(Field::IssuedMinute, &parsed.issued_minute.to_be_bytes())
+        .field(Field::RevocationReason, &[parsed.reason])
+        .into_bytes())
+}
+
 /// Function 21 (added by S7): `provisionalKeys(h, contactId, sessionId, stateEnv, provEnv,
 /// ownIsSenderUnused, peerOlmIdentity)`.
 ///
@@ -2705,6 +2795,31 @@ pub mod entry {
         })
     }
 
+    /// `revocationIssue`
+    pub fn revocation_issue<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        issued_minute: jint,
+        reason: jint,
+    ) -> jbyteArray {
+        guarded(&mut env, |_env| {
+            super::revocation_issue(handle, issued_minute, reason)
+        })
+    }
+
+    /// `revocationVerify`
+    pub fn revocation_verify<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        cert: JByteArray<'local>,
+        expected_identity_pk: JByteArray<'local>,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| {
+            super::revocation_verify(env, &cert, &expected_identity_pk)
+        })
+    }
+
     /// `provisionalKeys`
     #[allow(clippy::too_many_arguments)]
     pub fn provisional_keys<'local>(
@@ -2816,6 +2931,8 @@ macro_rules! export_jni {
         $crate::export_jni!(@one pairKeys pair_keys);
         $crate::export_jni!(@one pairOffer pair_offer);
         $crate::export_jni!(@one provisionalKeys provisional_keys);
+        $crate::export_jni!(@one revocationIssue revocation_issue);
+        $crate::export_jni!(@one revocationVerify revocation_verify);
         $crate::export_jni!(@one l0Encode l0_encode);
         $crate::export_jni!(@one l0Decode l0_decode);
     };
@@ -3220,6 +3337,33 @@ macro_rules! paste_export {
             base_week: ::jni::sys::jlong,
         ) -> ::jni::sys::jbyteArray {
             $crate::jni::entry::pair_offer(env, class, handle, a, root_gen, base_week)
+        }
+    };
+    (revocationIssue, $rust:ident) => {
+        /// One entry point of the closed JNI surface (design §2.6); the body is in
+        /// [`crate::jni::entry`].
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_revocationIssue<'local>(
+            env: ::jni::JNIEnv<'local>,
+            class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            issued_minute: ::jni::sys::jint,
+            reason: ::jni::sys::jint,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::revocation_issue(env, class, handle, issued_minute, reason)
+        }
+    };
+    (revocationVerify, $rust:ident) => {
+        /// One entry point of the closed JNI surface (design §2.6); the body is in
+        /// [`crate::jni::entry`].
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_revocationVerify<'local>(
+            env: ::jni::JNIEnv<'local>,
+            class: ::jni::objects::JClass<'local>,
+            a: ::jni::objects::JByteArray<'local>,
+            b: ::jni::objects::JByteArray<'local>,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::revocation_verify(env, class, a, b)
         }
     };
     (provisionalKeys, $rust:ident) => {
