@@ -132,6 +132,25 @@ class OwnerSteps(
      * committed, and this returns [Result.UNCHANGED] without touching anything. A crash anywhere
      * inside leaves no row and the next start runs it again.
      *
+     * **"Per identity" is checked, not assumed (§22.11 item 11, S8).** `dm_self` carries no
+     * identity column and nothing in it could: `seen_key`, `content_key_wrapped` and
+     * `state_key_wrapped` are random. What does name the identity is `dm_own_namespace`, whose two
+     * rows are HKDF outputs of `card_secret_0` — so a row set that does not match the namespaces
+     * **this** context derives belongs to somebody else. A restore onto such a database is the one
+     * case that has to act rather than report `UNCHANGED`: it would otherwise set no
+     * `accept_after_minute`, publish no bundle and leave the restored identity mute while the old
+     * identity's contacts, sessions and generations sat in the tables. Nothing on the device can
+     * use any of it — the sessions are the lost device's, the pinned identities are its contacts'
+     * views of *it*, and §8.6 lists contacts and cards among what a restore loses anyway — so the
+     * DM tables are cleared and ACTIVATE runs for real. The two stale `:sync` namespaces become
+     * `dm_orphan_namespace` rows, which is where §21.12 point 3 sends every namespace whose card
+     * is gone.
+     *
+     * `RestoreScan.restore` refuses while `identity.hasIdentity()` and no path in the tree removes
+     * an identity while keeping the DM tables, so this is **armed rather than exercised** on the
+     * device; it is written because §22.11 item 11 assigned it here and because the alternative —
+     * a silent `UNCHANGED` — is the failure mode nobody would see.
+     *
      * **Deferred (recorded in §22.11).** §5.3's off-schedule rank rule is
      * `1 + max(rank)` over the valid bundles of weeks `w−1 … w+1` that the device **lists in its
      * own `P_0`**. That list is a relay read, which cannot happen inside this transaction and
@@ -158,7 +177,10 @@ class OwnerSteps(
         val seenKey = random.bytes(32)
 
         return database.transaction { tx ->
-            if (store.self(tx.sql) != null) return@transaction Result.UNCHANGED
+            if (store.self(tx.sql) != null) {
+                if (!restored || ownNamespacesMatch(tx, own)) return@transaction Result.UNCHANGED
+                clearForeignIdentity(tx)
+            }
             store.insertSelf(
                 tx = tx,
                 cardIndex = cardIndex,
@@ -583,6 +605,52 @@ class OwnerSteps(
             tx, NamespaceId(bundle), Consumer.PREKEYS, bundleSet.map { RelayId(it.relay) }.toSet(),
             listen = false,
         )
+    }
+
+    /**
+     * §22.11 item 11: whether the stored own namespaces are **this** identity's.
+     *
+     * `X_0` and `P_0` are HKDF outputs of `card_secret_0`, which is a seed derivation, so the pair
+     * is a name for the identity that wrote them. A database with no rows at all is treated as
+     * matching, so a half-written activation resumed by §21.12 point 2 is completed rather than
+     * wiped.
+     */
+    private fun ownNamespacesMatch(tx: SyncTransaction, own: DmSessions.OwnCard): Boolean {
+        val stored = store.ownNamespaces(tx.sql, cardIndex)
+        if (stored.isEmpty()) return true
+        val inbox = stored[OwnerStore.ROLE_INBOX] ?: return false
+        val bundle = stored[OwnerStore.ROLE_BUNDLE] ?: return false
+        return inbox.contentEquals(own.inboxNamespace) && bundle.contentEquals(own.bundleNamespace)
+    }
+
+    /**
+     * §22.11 item 11: clears the DM tables of an identity this context cannot speak for.
+     *
+     * The two stale namespaces become `dm_orphan_namespace` rows **first**, because everything
+     * after this erases what names them, and SWEEP is what calls `Namespaces.remove` once their
+     * ops are released (§21.12 point 3; the same fail-closed order `ContactSteps` uses for a block).
+     * `dm_contact` then cascades the whole contact side — conversations, messages, items, ops,
+     * pending sends, pair keys and offers, peer keys, held rows, scheduled controls, sessions —
+     * and the generations, the reuse tuples and the D3 tags go with `dm_self`'s own erasure.
+     */
+    private fun clearForeignIdentity(tx: SyncTransaction) {
+        for (namespace in store.ownNamespaces(tx.sql, cardIndex).values) {
+            val changed = tx.sql.execUpdate(
+                "UPDATE dm_orphan_namespace SET namespace_id = ? WHERE namespace_id = ?",
+                listOf(namespace, namespace),
+            )
+            if (changed == 0) {
+                tx.sql.exec(
+                    "INSERT INTO dm_orphan_namespace(namespace_id) VALUES (?)",
+                    listOf(namespace),
+                )
+            }
+        }
+        tx.sql.exec("DELETE FROM dm_contact")
+        tx.sql.exec("DELETE FROM olm_prekey_gen")
+        tx.sql.exec("DELETE FROM dm_seen")
+        tx.sql.exec("DELETE FROM dm_own_namespace")
+        tx.sql.exec("DELETE FROM dm_self")
     }
 
     /**

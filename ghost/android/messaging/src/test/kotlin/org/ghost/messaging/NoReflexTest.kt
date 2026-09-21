@@ -16,12 +16,17 @@ import org.junit.Test
  * > forged, key-changed, request, probe, poison) enqueues nothing, redeems nothing, registers
  * > nothing, changes no read schedule …
  *
- * `dm-enqueue-callers.sh` (gate G-DM2) is the static half: no branch of `RECV`, `BUNDLE` or the
- * peek order may *name* `Outbox.enqueue`, `Registrations.*`, `Namespaces.*` or `Capabilities.put`,
- * and no inbound path may reach `runOwnerMaintenance`. That is a statement about call sites; this
- * is the statement about behaviour, and the two fail on different mutants. A reflex reached
- * through an alias the script does not track, or through a step the actor runs *because*
- * something arrived, passes the script and fails here.
+ * `dm-enqueue-callers.sh` (gate G-DM2) is the static half: no branch of `RECV`, `BUNDLE`, `HELD`
+ * or the peek order may *name* `Outbox.enqueue`, `Registrations.*`, `Namespaces.*` or
+ * `Capabilities.put`, and no inbound path may reach `runOwnerMaintenance`. That is a statement
+ * about call sites; this is the statement about behaviour, and the two fail on different mutants.
+ * A reflex reached through an alias the script does not track, or through a step the actor runs
+ * *because* something arrived, passes the script and fails here.
+ *
+ * **The key-change pair is the case the static half cannot reach at all** (S8). A hold is not a
+ * call in `ReceiveStep`; it is a contact that stops being sendable, and a step that treated that
+ * as a trigger would register, re-register or stop registering without naming a forbidden
+ * function anywhere.
  *
  * **How the two worlds are made to differ only in what arrived.** B's device is deterministic —
  * the same MESSAGING branch, the same identity seed, the same sequential randomness — so two
@@ -130,10 +135,112 @@ class NoReflexTest {
         assertNotEquals("an accepted contact does get its deposit credential", quiet, noisy)
     }
 
+    /**
+     * §8.3's "Nothing reaches a relay": detection and **holding** a key change produce no
+     * relay-visible event, and neither does leaving the contact undecided.
+     *
+     * This is the case the static gate cannot reach at all. `dm-enqueue-callers.sh` reads call
+     * sites, and the reflex a key change could produce is not a call in `ReceiveStep` — it is a
+     * *step the actor runs because something arrived*: a contact in `changed` is not sendable, so a
+     * KEEPER or an establishment that treated the state change as a trigger would re-register, or
+     * stop registering, and the difference would show here.
+     */
+    @Test
+    fun holdingAKeyChangeLeavesNoRelayVisibleTrace() {
+        var held = false
+        val quiet = alicesRelayView(deliverChange = false) { _, _ -> }
+        val noisy = alicesRelayView(deliverChange = true) { _, alice ->
+            held = alice.engine.contacts().single().trust == TrustState.CHANGED
+        }
+        assertTrue("the world under test really held a key change", held)
+        assertEquals(quiet, noisy)
+    }
+
+    /**
+     * And neither does the **decision** and the replay it runs (§22.8.1, §21.7 point 7: "RECV,
+     * BUNDLE and HELD never call `Outbox.enqueue`, `Namespaces.*`, `Registrations` or
+     * `Capabilities.put`").
+     *
+     * The replay applies a message, deletes two sessions, erases pair keys and mints a root
+     * offer — every one of them a local row — and the relay-visible view must not move by a byte.
+     * The re-establishment §8.3 leaves to "the user's next send" is what would move it, and this
+     * test is what says the acknowledgement alone does not.
+     */
+    @Test
+    fun acknowledgingAKeyChangeAndReplayingLeavesNoRelayVisibleTrace() {
+        var applied = false
+        val quiet = alicesRelayView(deliverChange = false) { _, _ -> }
+        val noisy = alicesRelayView(deliverChange = true) { _, alice ->
+            val contact = alice.engine.contacts().single().id
+            alice.engine.acknowledgeKeyChange(contact)
+            applied = alice.engine.conversation(contact, 10, null).any { it.text == "it is me" }
+        }
+        assertTrue("the world under test really replayed the held message", applied)
+        assertEquals(quiet, noisy)
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /** The `store` lines of a relay-visible view: what actually reaches a relay. */
     private fun stores(view: List<String>): List<String> = view.filter { it.startsWith("store ") }
+
+    /**
+     * A's relay-visible view after a fixed script in which a **key-changed** first flight either
+     * arrives or does not, with [decision] the user action A takes once it has.
+     *
+     * Both worlds run every other step identically, B′ included: it activates, adds A's card,
+     * fetches A's bundle and enqueues its envelope in both. Only the last delivery differs, which
+     * is the single switch T28 is about.
+     */
+    private fun alicesRelayView(
+        deliverChange: Boolean,
+        decision: (DmWorld, DmDevice) -> Unit,
+    ): List<String> {
+        requireNative()
+        return DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            alice.engine.onActivated()
+            bob.engine.onActivated()
+
+            alice.engine.addContact(bob.card(), CardSource.QR_IN_PERSON)
+            val contactB = alice.engine.contacts().single().id
+            alice.engine.send(contactB, "hello", null)
+            world.deliverBetween(bob, alice)
+            alice.timeTriggeredPass()
+            world.advanceTo(alice.clock.now + 3 * DmWorld.MINUTE)
+            alice.timeTriggeredPass()
+            world.deliverBetween(alice, bob)
+            bob.hintPass()
+            bob.engine.acceptRequest(bob.engine.contacts().single().id)
+            bob.engine.send(bob.engine.contacts().single().id, "hi back", null)
+            world.deliverBetween(bob, alice)
+            alice.hintPass()
+
+            // B′: the same script in both worlds, up to the one delivery that differs.
+            val newB = world.reincarnation(bob, branch = 0x64)
+            newB.engine.onActivated()
+            newB.engine.addContact(alice.card(), CardSource.LINK)
+            val contactA = newB.engine.contacts().single().id
+            newB.engine.send(contactA, "it is me", null)
+            world.deliverBetween(alice, newB)
+            newB.timeTriggeredPass()
+            world.advanceTo(newB.clock.now + 3 * DmWorld.MINUTE)
+            newB.timeTriggeredPass()
+
+            if (deliverChange) world.deliverBetween(newB, alice)
+            alice.hintPass()
+            decision(world, alice)
+
+            repeat(4) {
+                world.advanceTo(alice.clock.now + 20 * DmWorld.MINUTE)
+                alice.timeTriggeredPass()
+            }
+            alice.relayVisible().also { view ->
+                assertTrue("the relay-visible view is empty: it proves nothing", view.isNotEmpty())
+            }
+        }
+    }
 
     /**
      * B's relay-visible view after one fixed script, with [deliverToBob] the only difference and

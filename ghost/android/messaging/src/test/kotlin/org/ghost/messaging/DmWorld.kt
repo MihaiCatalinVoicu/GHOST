@@ -70,15 +70,66 @@ class DmWorld(
     val alice: DmDevice = DmDevice(0x41, slotCount, operators, startSeconds)
     val bob: DmDevice = DmDevice(0x51, slotCount, operators, startSeconds)
 
+    private val extra = ArrayList<DmDevice>()
+
     private var sequence = 1L
 
-    /** Moves the virtual clock of both devices. */
-    fun advanceTo(seconds: Long) {
-        alice.clock.now = seconds
-        bob.clock.now = seconds
-        alice.clock.monotonic += 1_000
-        bob.clock.monotonic += 1_000
+    /**
+     * A device that holds [of]'s **`ghost1` Ed25519 seed** under a different MESSAGING branch: a
+     * contact whose Olm identity changed (§8.3).
+     *
+     * That is the only shape a key change can take. §8.3's classification needs a signature valid
+     * under the contact's **pinned** Ed25519 key over a *different* Olm identity, and §3.4 says
+     * where such a signature comes from: "the holder of that Ed25519 secret signed another Olm
+     * identity — the contact itself (including a modified client), a derivation-version change, or
+     * a seed thief". This is that device. Anything that does not hold the Ed25519 secret produces
+     * a **forgery**, which `openIntro` refuses before any of this code sees it.
+     *
+     * Its card carries the same `identity_pk` and a different `card_secret` (which is a MESSAGING
+     * derivation), so the old device's inbox is not this one's — which is exactly what makes the
+     * change one-directional until the user re-adds a card, and is R-20's declared behaviour.
+     */
+    /**
+     * The **same identity on a fresh database**: a restore from the seed (§8.6).
+     *
+     * Every derivation survives — the `ghost1` key, the Olm identity, `card_secret_0`, `X_0`, `P_0`
+     * and every credential — and nothing else does: contacts, cards, sessions, pair keys, the
+     * lost device's generations, `dm_seen`, held rows, messages and scheduled controls are all
+     * regenerated or gone, which is §8.6's own table.
+     */
+    fun restored(of: DmDevice): DmDevice {
+        val device = DmDevice(
+            branch = of.branch,
+            slotCount = of.slotCount,
+            operators = of.operators,
+            startSeconds = of.clock.now,
+            identityBranch = of.identityBranch,
+        )
+        extra += device
+        return device
     }
+
+    fun reincarnation(of: DmDevice, branch: Int): DmDevice {
+        val device = DmDevice(
+            branch = branch,
+            slotCount = of.slotCount,
+            operators = of.operators,
+            startSeconds = of.clock.now,
+            identityBranch = of.identityBranch,
+        )
+        extra += device
+        return device
+    }
+
+    /** Moves the virtual clock of every device of the world. */
+    fun advanceTo(seconds: Long) {
+        for (device in devices()) {
+            device.clock.now = seconds
+            device.clock.monotonic += 1_000
+        }
+    }
+
+    private fun devices(): List<DmDevice> = listOf(alice, bob) + extra
 
     /**
      * One relay round: every enqueued blob of each device lands in the inbox of whichever device
@@ -89,7 +140,25 @@ class DmWorld(
      * inbox that owns the namespace. Nothing is delivered twice: the source row is marked so a
      * second [deliver] is a no-op, which is what makes a replay test have to ask for one.
      */
-    fun deliver(): Int = deliverTo(bob) + deliverTo(alice)
+    fun deliver(): Int {
+        var moved = 0
+        for (to in devices()) for (from in devices()) if (from !== to) moved += deliverFrom(from, to)
+        return moved
+    }
+
+    /**
+     * One direction between any two devices of the world, for a three-device key-change flow.
+     *
+     * [again] serves a blob the recipient **already consumed once**, which is what a relay does
+     * after `EST-START` forgets a bundle namespace's tombstones (§21.7 point 2: "a bundle consumed
+     * during an earlier establishment must be fetchable again after a reset, a key change or a
+     * re-added contact"). The relay never forgot the blob; this world's bookkeeping did, and that
+     * is the only reason the flag exists. The recipient's own `inbox_blob` uniqueness still
+     * refuses it while its tombstone lives, so a caller cannot use this to fake a replay — the
+     * replay path is [redeliver], which inserts under a fresh model row.
+     */
+    fun deliverBetween(from: DmDevice, to: DmDevice, again: Boolean = false): Int =
+        deliverFrom(from, to, again)
 
     /**
      * One direction only: what the **other** device has enqueued lands in [to]'s inbox.
@@ -108,10 +177,17 @@ class DmWorld(
         insert(to, namespace, ciphertext, from.clock.now)
     }
 
-    /** The `operation_id`s already moved, so a second [deliver] is a no-op. */
-    private val delivered = HashSet<List<Byte>>()
+    /**
+     * The `(operation_id, recipient)` pairs already moved, so a second [deliver] is a no-op.
+     *
+     * The recipient is part of the key because a world with three devices has two of them holding
+     * the same `ghost1` identity — and, after [restored], two holding the **same** MESSAGING
+     * branch, hence the same random stream and the same operation ids. An op keyed by its id alone
+     * would then be "delivered" to whichever of them the loop reached first.
+     */
+    private val delivered = HashSet<Pair<List<Byte>, DmDevice>>()
 
-    private fun deliverFrom(from: DmDevice, to: DmDevice): Int {
+    private fun deliverFrom(from: DmDevice, to: DmDevice, again: Boolean = false): Int {
         val blobs = ArrayList<Triple<ByteArray, ByteArray, ByteArray>>()
         from.sql.query(
             "SELECT operation_id, namespace_id, ciphertext FROM outbox_op ORDER BY rowid",
@@ -123,7 +199,8 @@ class DmWorld(
             // is exactly how `EST-START` finds a bundle the contact published before the scan, and
             // marking such a blob delivered here would model a relay that forgets it.
             if (!listens(to, namespace)) continue
-            if (!delivered.add(operationId.toList())) continue
+            val fresh = delivered.add(operationId.toList() to to)
+            if (!fresh && !again) continue
             insert(to, namespace, ciphertext, from.clock.now)
             moved += 1
         }
@@ -167,8 +244,7 @@ class DmWorld(
     }
 
     override fun close() {
-        alice.close()
-        bob.close()
+        for (device in devices()) device.close()
     }
 
     companion object {
@@ -193,10 +269,17 @@ class DmWorld(
 
 /** One device of a [DmWorld]: its own database, its own DM context, its own engine. */
 class DmDevice(
-    branch: Int,
-    slotCount: Int,
-    operators: Int,
+    /** The MESSAGING branch: the card, the namespaces, the read secrets and the Olm identity. */
+    internal val branch: Int,
+    internal val slotCount: Int,
+    internal val operators: Int,
     startSeconds: Long,
+    /**
+     * The `ghost1` Ed25519 seed's branch, separate from [branch] so a world can build the one
+     * device §8.3 calls a key change: the **same** identity key under a different Olm identity
+     * (`DmWorld.reincarnation`). On every ordinary device it is `branch + 1`.
+     */
+    internal val identityBranch: Int = branch + 1,
 ) : AutoCloseable {
 
     val sql: JdbcSqlExecutor = JdbcSqlExecutor().also { MigrationRunner(it).migrate() }
@@ -210,7 +293,7 @@ class DmDevice(
     private val handle: Long? = if (DmWorld.nativeAvailable()) {
         DmSessions.openContext(
             messagingBranch = ByteArray(32) { branch.toByte() },
-            identitySeed = ByteArray(32) { (branch + 1).toByte() },
+            identitySeed = ByteArray(32) { identityBranch.toByte() },
             sessionStateKey = ByteArray(32) { (branch + 2).toByte() },
         )
     } else {
