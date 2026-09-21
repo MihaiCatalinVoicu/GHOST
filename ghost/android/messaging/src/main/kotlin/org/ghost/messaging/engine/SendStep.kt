@@ -60,6 +60,7 @@ internal class SendStep(
     private val clock: DmClock,
     private val random: DmRandom,
     private val contexts: SelfContexts,
+    private val slots: SessionSlots = SessionSlots(),
 ) {
     private val contacts = ContactStore()
     private val messages = MessageStore()
@@ -132,6 +133,9 @@ internal class SendStep(
         }
         plan.refusal?.let { return Sent(it, establish = false) }
         val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        val minted = mintOffer(contactId, prepared)
+        val rootGen = prepared.offer?.rootGen ?: minted?.rootGen ?: 0
+        val offerEnv = prepared.offer?.offerEnv ?: minted?.offerEnv ?: EMPTY
 
         val messageId = random.bytes(MESSAGE_ID_BYTES)
         val encoded = envelopes.encodeContent(
@@ -144,8 +148,8 @@ internal class SendStep(
             quoteRef = quoteRef,
             body = body,
             contactId = contactId,
-            offerRootGen = prepared.offer?.rootGen ?: 0,
-            offerEnv = prepared.offer?.offerEnv ?: EMPTY,
+            offerRootGen = rootGen,
+            offerEnv = offerEnv,
             revocation = EMPTY,
             sessionReset = false,
         )
@@ -176,6 +180,7 @@ internal class SendStep(
             body = body,
             quoteRef = quoteRef,
             credentials = credentials,
+            minted = minted,
         )
     }
 
@@ -206,39 +211,62 @@ internal class SendStep(
      * check and the mode rule of §6.8. The out key of the **author's own week** is what makes the
      * pair branch reachable across a week boundary, which is why the maintenance step keeps it
      * while a retryable item of that week lives (§22.8.5 rule 1).
+     *
+     * **It returns [Sent], not an outcome alone**, for the reason SEND does: a retry that finds no
+     * usable session queues a pending item, and a pending item nobody establishes for is a message
+     * that waits until its deadline and then fails while later ones go out. The caller runs
+     * `EST-START` on `establish`, exactly as it does after a send.
      */
     @Suppress("ReturnCount")
-    fun retry(itemId: ByteArray): Outcome {
-        val self = contexts.get() ?: return Outcome.CRYPTO_UNAVAILABLE
+    fun retry(itemId: ByteArray): Sent {
+        val self = contexts.get() ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
         val now = clock.nowEpochSeconds()
         val row = database.transaction { tx -> messages.item(tx.sql, itemId) }
-            ?: return Outcome.UNKNOWN_CONTACT
-        if (row.state != STATE_FAILED) return Outcome.UNKNOWN_CONTACT
-        if (now >= row.deadlineHour) return Outcome.DEADLINE_PASSED
+            ?: return Sent(Outcome.UNKNOWN_CONTACT, establish = false)
+        if (row.state != STATE_FAILED) return Sent(Outcome.UNKNOWN_CONTACT, establish = false)
+        if (now >= row.deadlineHour) return Sent(Outcome.DEADLINE_PASSED, establish = false)
         val plan = database.transaction { tx ->
             plan(tx, row.contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
         }
-        plan.refusal?.let { return it }
-        val prepared = plan.prepared ?: return Outcome.CRYPTO_UNAVAILABLE
-        val credentials = depositCredentials(prepared) ?: return Outcome.CRYPTO_UNAVAILABLE
+        plan.refusal?.let { return Sent(it, establish = false) }
+        val prepared = plan.prepared
+            ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
+        val credentials = depositCredentials(prepared)
+            ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
         val operationId = random.bytes(OperationId.SIZE)
         return try {
             database.transaction { tx ->
                 val contact = contacts.contact(tx.sql, row.contactId)
-                    ?: return@transaction Outcome.UNKNOWN_CONTACT
-                refusalFor(contact.trust)?.let { return@transaction it }
-                val item = messages.item(tx.sql, itemId) ?: return@transaction Outcome.UNKNOWN_CONTACT
-                if (item.state != STATE_FAILED) return@transaction Outcome.UNKNOWN_CONTACT
-                val l0 = self.content.open(item.l0Env ?: return@transaction Outcome.UNKNOWN_CONTACT, itemId)
-                    ?: return@transaction Outcome.UNKNOWN_CONTACT
+                    ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
+                refusalFor(contact.trust)?.let { return@transaction Sent(it, false) }
+                val item = messages.item(tx.sql, itemId)
+                    ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
+                if (item.state != STATE_FAILED) {
+                    return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
+                }
+                val l0Env = item.l0Env ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
+                val l0 = self.content.open(l0Env, itemId)
+                    ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
                 val decoded = envelopes.decodeContent(row.contactId, l0)
-                if (decoded !is DmContent.DecodeResult.Ok) return@transaction Outcome.UNKNOWN_CONTACT
+                if (decoded !is DmContent.DecodeResult.Ok) {
+                    return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
+                }
+                // The **exact** deadline, not the hour it was rounded up to: `author_minute` is on
+                // the minute grid, so `ceil_hour(deadline)` can be up to 59 minutes past it, and
+                // `Outbox.enqueue` requires `deadline > now` with an `IllegalArgumentException`
+                // that no caller on this path catches (Phase 7 `OutboxStore`).
+                val ttl = DmTimers.bucketOf(decoded.content.timerCode)
+                val authorMinute = decoded.content.authorMinute * DmTime.MINUTE
+                if (now >= DmTimers.deadlineSeconds(authorMinute, ttl)) {
+                    return@transaction Sent(Outcome.DEADLINE_PASSED, false)
+                }
                 val session = sessions.current(tx.sql, row.contactId)
                 if (session == null || isStale(session, now)) {
+                    if (session != null) demoteForReestablishment(tx, row.contactId, now)
                     messages.setItemState(tx, itemId, STATE_FAILED, MessageStore.ITEM_PENDING)
                     messages.setMessageState(tx, itemId, STATE_FAILED, MessageStore.STATE_QUEUED)
                     messages.insertPendingSend(tx, itemId, row.contactId, item.deadlineHour)
-                    return@transaction Outcome.QUEUED
+                    return@transaction Sent(Outcome.QUEUED, establish = true)
                 }
                 messages.setItemState(tx, itemId, STATE_FAILED, MessageStore.ITEM_PENDING)
                 messages.setMessageState(tx, itemId, STATE_FAILED, MessageStore.STATE_QUEUED)
@@ -251,29 +279,31 @@ internal class SendStep(
                     itemId = itemId,
                     l0 = l0,
                     bucket = decoded.content.bucket,
-                    authorMinute = decoded.content.authorMinute * DmTime.MINUTE,
+                    authorMinute = authorMinute,
                     now = now,
                     operationId = operationId,
                     deadlineHour = item.deadlineHour,
-                    ttl = DmTimers.bucketOf(decoded.content.timerCode),
+                    ttl = ttl,
                     credentials = credentials,
                 )
                 when (outcome) {
-                    SealOutcome.OK -> Outcome.QUEUED
+                    SealOutcome.OK -> Sent(Outcome.QUEUED, establish = false)
                     SealOutcome.NO_SEAL_KEY, SealOutcome.INVALID_SESSION -> {
                         if (outcome == SealOutcome.INVALID_SESSION) {
                             sessions.deleteSessions(tx, row.contactId)
+                        } else {
+                            demoteForReestablishment(tx, row.contactId, now)
                         }
                         messages.insertPendingSend(tx, itemId, row.contactId, item.deadlineHour)
-                        Outcome.QUEUED
+                        Sent(Outcome.QUEUED, establish = true)
                     }
-                    SealOutcome.UNAVAILABLE -> Outcome.CRYPTO_UNAVAILABLE
+                    SealOutcome.UNAVAILABLE -> Sent(Outcome.CRYPTO_UNAVAILABLE, false)
                 }
             }
         } catch (e: InsufficientReplicasException) {
-            Outcome.NO_REPLICAS
+            Sent(Outcome.NO_REPLICAS, establish = false)
         } catch (e: StorageFullException) {
-            Outcome.STORAGE_FULL
+            Sent(Outcome.STORAGE_FULL, establish = false)
         }
     }
 
@@ -352,12 +382,31 @@ internal class SendStep(
         val timerCode: Int,
         val timerVersion: Long,
         val offer: PendingOffer?,
+        /**
+         * The generation a **new** root offer would take, when the planning read found no
+         * unacknowledged one to re-attach and the caller asked for one. The offer itself is minted
+         * between the two transactions and written by the second; see [mintOffer].
+         */
+        val nextRootGen: Int?,
+        val week: Long,
         val set: List<EsSlot>,
         val needCredential: Set<Long>,
     )
 
     /** A root offer waiting to ride on the next normal-output send (§6.3, R-C3). */
     private class PendingOffer(val rootGen: Int, val offerEnv: ByteArray)
+
+    /**
+     * A root offer this send minted and the second transaction has to write: the offer row and the
+     * **in** recognition key of its base week (§6.3, rule R-S5).
+     */
+    private class MintedOffer(
+        val rootGen: Int,
+        val rootEnv: ByteArray,
+        val offerEnv: ByteArray,
+        val baseWeek: Long,
+        val keys: List<DmPairing.WeekKey>,
+    )
 
     private class Plan(val refusal: Outcome?, val prepared: Prepared?)
 
@@ -385,10 +434,23 @@ internal class SendStep(
         val current = sessions.current(tx.sql, contactId)
         // §21.3 point 1: a root never rides in a PreKey message, and an unacknowledged session's
         // output is one — `acknowledged` is exactly vodozemac's `has_received_message()`.
-        val offer = if (createOffer && current != null && current.acknowledged) {
-            pendingOffer(tx, contactId, week)
-        } else {
-            null
+        var offer: PendingOffer? = null
+        var nextRootGen: Int? = null
+        if (createOffer && current != null && current.acknowledged) {
+            val offers = contacts.pairOffers(tx.sql, contactId)
+            val live = offers.firstOrNull { !it.acknowledged && it.offerEnv != null }
+            if (live != null) {
+                offer = PendingOffer(live.rootGen, requireNotNull(live.offerEnv))
+            } else {
+                // An unacknowledged offer whose bytes are gone is one this device already erased;
+                // a new generation is what §21.3 point 3 asks for, not a second offer of the same
+                // one. The generation is decided here, but nothing is written: this transaction is
+                // the planning read, and §7.2's "each step is exactly one transaction" means a
+                // send that ends `TOO_LARGE`, `NO_REPLICAS` or rolled back must leave no offer and
+                // no recognition key behind.
+                val rootGen = (offers.maxOfOrNull { it.rootGen } ?: -1) + 1
+                if (rootGen <= MAX_ROOT_GEN) nextRootGen = rootGen
+            }
         }
 
         val inboxNs = NamespaceId(namespaces.inbox)
@@ -419,6 +481,8 @@ internal class SendStep(
                     conversation.timerVersion
                 },
                 offer = offer,
+                nextRootGen = nextRootGen,
+                week = week,
                 set = set,
                 needCredential = needCredential,
             ),
@@ -430,33 +494,18 @@ internal class SendStep(
      * normal message and re-attached, byte for byte, until a pair envelope under it opens (§9.4's
      * `offer_env` is stored for exactly that reason).
      *
-     * The generation is `1 + max(root_gen)` over the contact's rows (§21.3 point 3), so it never
-     * repeats on a device that kept the contact and the peer's "a `root_gen` not greater than the
-     * stored one is ignored" rule cannot reject it.
+     * It is **minted between the two transactions** and written by the second ([writeOffer]), with
+     * the relay set and the deposit credentials, for the reason the class comment gives: the
+     * planning transaction is a read, and a native call inside a writing transaction commits half
+     * a step while reporting an error. The generation was decided by the planning read as
+     * `1 + max(root_gen)` over the contact's rows (§21.3 point 3), so it never repeats on a device
+     * that kept the contact and the peer's "a `root_gen` not greater than the stored one is
+     * ignored" rule cannot reject it.
      */
-    private fun pendingOffer(
-        tx: SyncTransaction,
-        contactId: ByteArray,
-        week: Long,
-    ): PendingOffer? {
-        val offers = contacts.pairOffers(tx.sql, contactId)
-        offers.firstOrNull { !it.acknowledged && it.offerEnv != null }?.let { row ->
-            return PendingOffer(row.rootGen, requireNotNull(row.offerEnv))
-        }
-        // An unacknowledged offer whose bytes are gone is one this device already erased; a new
-        // generation is what §21.3 point 3 asks for, not a second offer of the same one.
-        val rootGen = (offers.maxOfOrNull { it.rootGen } ?: -1) + 1
-        if (rootGen > MAX_ROOT_GEN) return null
-        val created = envelopes.pairOffer(contactId, rootGen, week)
+    private fun mintOffer(contactId: ByteArray, prepared: Prepared): MintedOffer? {
+        val rootGen = prepared.nextRootGen ?: return null
+        val created = envelopes.pairOffer(contactId, rootGen, prepared.week)
         if (created !is DmPairing.OfferResult.Ok) return null
-        contacts.insertPairOffer(
-            tx = tx,
-            contactId = contactId,
-            rootGen = rootGen,
-            rootEnv = created.offer.rootEnv,
-            offerEnv = created.offer.offerEnv,
-            baseWeek = week,
-        )
         // The **in** key of the base week exists from the moment the root does, so a pair envelope
         // that arrives before the next maintenance pass is recognisable (§6.3, rule R-S5).
         val keys = envelopes.pairKeys(
@@ -465,24 +514,40 @@ internal class SendStep(
             rootGen = rootGen,
             from = DmPairing.From.ROOT,
             keyEnv = created.offer.rootEnv,
-            baseWeek = week,
-            fromWeek = week,
-            toWeek = week,
+            baseWeek = prepared.week,
+            fromWeek = prepared.week,
+            toWeek = prepared.week,
         )
-        if (keys is DmPairing.KeysResult.Ok) {
-            for (key in keys.weeks) {
-                contacts.putPairKey(
-                    tx = tx,
-                    contactId = contactId,
-                    direction = ContactStore.DIRECTION_IN,
-                    rootGen = rootGen,
-                    week = key.week,
-                    recognitionKey = key.recognitionKey,
-                    openEnv = key.openEnv,
-                )
-            }
+        return MintedOffer(
+            rootGen = rootGen,
+            rootEnv = created.offer.rootEnv,
+            offerEnv = created.offer.offerEnv,
+            baseWeek = prepared.week,
+            keys = if (keys is DmPairing.KeysResult.Ok) keys.weeks else emptyList(),
+        )
+    }
+
+    /** The offer rows of [mintOffer], written inside the one transaction the send commits. */
+    private fun writeOffer(tx: SyncTransaction, contactId: ByteArray, minted: MintedOffer) {
+        contacts.insertPairOffer(
+            tx = tx,
+            contactId = contactId,
+            rootGen = minted.rootGen,
+            rootEnv = minted.rootEnv,
+            offerEnv = minted.offerEnv,
+            baseWeek = minted.baseWeek,
+        )
+        for (key in minted.keys) {
+            contacts.putPairKey(
+                tx = tx,
+                contactId = contactId,
+                direction = ContactStore.DIRECTION_IN,
+                rootGen = minted.rootGen,
+                week = key.week,
+                recognitionKey = key.recognitionKey,
+                openEnv = key.openEnv,
+            )
         }
-        return PendingOffer(rootGen, created.offer.offerEnv)
     }
 
     /** The deposit credentials of the relays that need one, minted outside the transaction. */
@@ -520,6 +585,7 @@ internal class SendStep(
         body: ByteArray,
         quoteRef: ByteArray?,
         credentials: Map<Long, ByteArray>,
+        minted: MintedOffer?,
     ): Sent {
         val ttl = if (kind == DmContent.Kind.TIMER_SET) {
             DmTimers.timerSetBucket(prepared.conversation.timerCode, prepared.timerCode)
@@ -540,6 +606,11 @@ internal class SendStep(
                 val contact = contacts.contact(tx.sql, contactId)
                     ?: return@transaction Sent(Outcome.UNKNOWN_CONTACT, false)
                 refusalFor(contact.trust)?.let { return@transaction Sent(it, false) }
+
+                // The root offer this send attached, written here and nowhere earlier: the L0 that
+                // carries it is in this transaction's item row, so the offer and its bytes commit
+                // together or not at all (§7.2, §6.3).
+                minted?.let { writeOffer(tx, contactId, it) }
 
                 // S3: the message row (TEXT and TIMER_SET only) and the item row (every kind).
                 if (kind == DmContent.Kind.TEXT || kind == DmContent.Kind.TIMER_SET) {
@@ -602,6 +673,9 @@ internal class SendStep(
                 // S4: no usable session, so the item waits and the caller runs `EST-START`.
                 val current = sessions.current(tx.sql, contactId)
                 if (current == null || isStale(current, now)) {
+                    // R-SS0: `UNACK_MAX` demotes `current`, which is also what makes `EST-READY`'s
+                    // "unless a usable session already exists" find an empty slot to fill.
+                    if (current != null) demoteForReestablishment(tx, contactId, now)
                     messages.insertPendingSend(tx, messageId, contactId, failAfterHour)
                     return@transaction Sent(Outcome.QUEUED, establish = true)
                 }
@@ -628,6 +702,9 @@ internal class SendStep(
                     // §6.8 rule 4: the item stays pending and the caller re-establishes. The rows
                     // written above stay — the message is the user's, and it is queued, not lost.
                     SealOutcome.NO_SEAL_KEY -> {
+                        // R-SS0 again: this session cannot produce an output any more (§6.8 rule
+                        // 4), so it is demoted and the establishment that follows fills the slot.
+                        demoteForReestablishment(tx, contactId, now)
                         messages.insertPendingSend(tx, messageId, contactId, failAfterHour)
                         Sent(Outcome.QUEUED, establish = true)
                     }
@@ -794,8 +871,7 @@ internal class SendStep(
         val outKey = contacts.pairKeys(tx.sql, contact.contactId, ContactStore.DIRECTION_OUT)
             .firstOrNull { it.week == week }
         if (outKey != null) {
-            sessions.markPairSent(tx, contact.contactId, session.slot)
-            return envelopes.sealPair(
+            val sealed = envelopes.sealPair(
                 namespace = prepared.inboxNamespace,
                 bucket = bucket,
                 openEnv = outKey.openEnv,
@@ -806,6 +882,13 @@ internal class SendStep(
                 oiRecipient = pinned,
                 l1 = step.l1,
             )
+            // **After** the seal, never before. `pair_sent` permanently disables §6.8 rule 3 for
+            // this session, and an `InvalidKey` here is a `NO_SEAL_KEY` the caller returns
+            // *normally* — so the transaction commits. Writing it first would mark a session as
+            // having sealed a pair envelope that was never produced, and every later normal
+            // output would fall through rule 3 to `NO_SEAL_KEY` and a re-establishment.
+            if (sealed is DmSeal.Sealed.Ok) sessions.markPairSent(tx, contact.contactId, session.slot)
+            return sealed
         }
 
         // Rule 3: provisional, while the session holds a `reply_seed`, no pair envelope was ever
@@ -823,16 +906,7 @@ internal class SendStep(
             peerOlmIdentity = pinned,
         )
         if (keys !is DmPairing.ProvisionalResult.Ok) return null
-        if (anchor == null) {
-            // §22.8.5 rule 4: a responder session's anchor is its first provisional seal.
-            sessions.setProvisionalAnchor(
-                tx,
-                contact.contactId,
-                session.slot,
-                DmTime.floorMinute(nowSeconds),
-            )
-        }
-        return envelopes.sealProvisional(
+        val sealed = envelopes.sealProvisional(
             namespace = prepared.inboxNamespace,
             bucket = bucket,
             openEnv = keys.keys.outEnv,
@@ -842,10 +916,38 @@ internal class SendStep(
             oiRecipient = pinned,
             l1 = step.l1,
         )
+        // §22.8.5 rule 4: a responder session's anchor is its **first provisional seal** — so it is
+        // written once one exists, and not before. The anchor starts the 28-day window of rule 3,
+        // and a failed seal that started it would shorten the window of the first envelope that
+        // really goes out.
+        if (sealed is DmSeal.Sealed.Ok && anchor == null) {
+            sessions.setProvisionalAnchor(
+                tx,
+                contact.contactId,
+                session.slot,
+                DmTime.floorMinute(nowSeconds),
+            )
+        }
+        return sealed
     }
 
-    /** One pending item, sealed and enqueued in its own transaction (§21.7 point 4). */
-    @Suppress("ReturnCount")
+    /**
+     * One pending item, sealed and enqueued in its own transaction (§21.7 point 4).
+     *
+     * Three guards the first implementation did not have, each of which left an item that no later
+     * pass would look at again:
+     *
+     *  - **the session must be usable**, not merely present: sealing onto a session the contact
+     *    dropped 28 days ago produces an intro envelope addressed to a generation it may already
+     *    have erased. A stale one is demoted here (R-SS0) and the item stays pending for the
+     *    establishment that follows;
+     *  - **the exact deadline**, because `deadline_hour` is `ceil_hour` of it and `Outbox.enqueue`
+     *    refuses `deadline <= now` by throwing. An item past it is failed here rather than left to
+     *    sit until `fail_after_hour`;
+     *  - **`NO_SEAL_KEY` demotes** (R-SS0, §6.8 rule 4), so the next establishment has an empty
+     *    `current` to fill instead of finding a session it decides is good enough.
+     */
+    @Suppress("ReturnCount", "LongMethod")
     private fun flushOne(self: SelfContext, contactId: ByteArray, itemId: ByteArray): Boolean {
         val now = clock.nowEpochSeconds()
         val plan = database.transaction { tx ->
@@ -862,11 +964,21 @@ internal class SendStep(
                 if (!maySend(contact.trust)) return@transaction false
                 val item = messages.item(tx.sql, itemId) ?: return@transaction false
                 if (item.state != MessageStore.ITEM_PENDING) return@transaction false
-                val session = sessions.current(tx.sql, contactId) ?: return@transaction false
                 val l0 = self.content.open(item.l0Env ?: return@transaction false, itemId)
                     ?: return@transaction false
                 val decoded = envelopes.decodeContent(contactId, l0)
                 if (decoded !is DmContent.DecodeResult.Ok) return@transaction false
+                val ttl = DmTimers.bucketOf(decoded.content.timerCode)
+                val authorMinute = decoded.content.authorMinute * DmTime.MINUTE
+                if (now >= DmTimers.deadlineSeconds(authorMinute, ttl)) {
+                    messages.failPending(tx, itemId)
+                    return@transaction false
+                }
+                val session = sessions.current(tx.sql, contactId) ?: return@transaction false
+                if (isStale(session, now)) {
+                    demoteForReestablishment(tx, contactId, now)
+                    return@transaction false
+                }
                 val outcome = sealAndEnqueue(
                     tx = tx,
                     self = self,
@@ -876,23 +988,37 @@ internal class SendStep(
                     itemId = itemId,
                     l0 = l0,
                     bucket = decoded.content.bucket,
-                    authorMinute = decoded.content.authorMinute * DmTime.MINUTE,
+                    authorMinute = authorMinute,
                     now = now,
                     operationId = operationId,
                     deadlineHour = item.deadlineHour,
-                    ttl = DmTimers.bucketOf(decoded.content.timerCode),
+                    ttl = ttl,
                     credentials = credentials,
                 )
+                if (outcome == SealOutcome.NO_SEAL_KEY) {
+                    demoteForReestablishment(tx, contactId, now)
+                    return@transaction false
+                }
+                if (outcome == SealOutcome.INVALID_SESSION) {
+                    sessions.deleteSessions(tx, contactId)
+                    return@transaction false
+                }
                 if (outcome != SealOutcome.OK) return@transaction false
                 messages.deletePendingSend(tx, itemId)
                 true
             }
         } catch (e: InsufficientReplicasException) {
+            // Both are retried, which is why the item keeps its `dm_pending_send` row: §21.7 point
+            // 4 names `StorageFullException` explicitly ("retried at the next time-triggered
+            // pass") and a week whose slot table cannot span two operators is the same shape of
+            // transient. The retry is [flushStranded]'s, which visits every contact with pending
+            // items and not only the ones still fetching.
             false
         } catch (e: StorageFullException) {
             false
         }
     }
+
 
     // --------------------------------------------------------------- internals
 
@@ -921,11 +1047,25 @@ internal class SendStep(
     /**
      * §8.7: an **initiator** session unacknowledged for `UNACK_MAX = 28 days` is stale, and the
      * next user send re-establishes. There is no time-triggered re-establishment (T28, T31).
+     *
+     * The predicate itself is [SessionSlots.isStale], because `EST-READY` and the pending flush
+     * have to read it the same way (§21.7 point 4's "unless a **usable** session already exists").
      */
-    private fun isStale(session: SessionStore.SessionRow, now: Long): Boolean {
-        if (!session.initiator || session.acknowledged) return false
-        val since = session.unackSinceDay ?: return false
-        return DmTime.day(now) - since >= UNACK_MAX_DAYS
+    private fun isStale(session: SessionStore.SessionRow, now: Long): Boolean =
+        SessionSlots.isStale(session, now)
+
+    /**
+     * R-SS0 (§8.2): "a re-establishment caused by `UNACK_MAX` or `NO_SEAL_KEY` demotes `current`
+     * to `previous` (the peer may still answer it) and deletes the old `previous`."
+     *
+     * It runs **where the re-establishment is decided** — the send, the retry or the flush that
+     * found the session unusable — and not in `EST-READY`, so that the slot the establishment then
+     * fills is empty by the time it looks: without it, `EST-READY` sees a row, decides a usable
+     * session already exists, throws the fetched candidate away and leaves the conversation on a
+     * session that can never send again. The demoted row keeps receiving until its `retire_day`.
+     */
+    private fun demoteForReestablishment(tx: SyncTransaction, contactId: ByteArray, now: Long) {
+        slots.demoteForReestablishment(tx, contactId, DmTime.day(now))
     }
 
     private fun maySend(trust: ContactStore.Trust): Boolean =
@@ -942,9 +1082,6 @@ internal class SendStep(
     companion object {
         /** `dm_message.message_id` and `dm_outbound_item.item_id`: the same 16 random bytes. */
         const val MESSAGE_ID_BYTES: Int = 16
-
-        /** §8.7: `UNACK_MAX`. */
-        const val UNACK_MAX_DAYS: Long = 28
 
         /** §22.8.5 rule 3: provisional sealing stops 28 days after the session's anchor. */
         const val PROVISIONAL_SEAL_WINDOW_SECONDS: Long = 28 * DmTime.DAY

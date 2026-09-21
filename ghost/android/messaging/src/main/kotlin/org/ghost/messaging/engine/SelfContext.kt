@@ -41,8 +41,31 @@ internal class SelfContext(
     /** The own Olm identity, which `pair_ad` binds on both sides (rule R-S7). */
     val olmIdentity: ByteArray get() = card.olmIdentity
 
+    /**
+     * The own Ed25519 `identity_pk`, read out of the own card at the offset §3.3 fixes.
+     *
+     * It exists so the **`identity_pk ≠ own`** half of §3.3's fail-closed parse can run wherever a
+     * card of another person is parsed: `card::parse_foreign` is the crate's own form of the rule,
+     * and the closed surface exports `cardParse` alone (§2.6 function 3 keeps this comparison in
+     * Kotlin deliberately, because it is a byte comparison against what `ownCard` already returns).
+     * Both the user-add path and the inbound intro path complete the parse with it.
+     */
+    val identityPk: ByteArray
+        get() = card.card.copyOfRange(IDENTITY_PK_OFFSET, IDENTITY_PK_OFFSET + IDENTITY_PK_BYTES)
+
     /** Never shows a key (T3). */
     override fun toString(): String = "SelfContext(cardIndex=$cardIndex)"
+
+    companion object {
+        /**
+         * `card = version(1) || card_index(2) || identity_pk(32) || …` (§3.3), so the identity key
+         * starts at byte 3.
+         */
+        const val IDENTITY_PK_OFFSET: Int = 3
+
+        /** An Ed25519 public key. */
+        const val IDENTITY_PK_BYTES: Int = 32
+    }
 }
 
 /**

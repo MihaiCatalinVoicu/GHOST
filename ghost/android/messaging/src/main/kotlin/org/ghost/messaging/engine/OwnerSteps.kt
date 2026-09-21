@@ -201,6 +201,19 @@ class OwnerSteps(
      *
      * Nothing about contacts, fetches or messages enters either half: the offset is the card's, and
      * the only state the decision reads is `dm_self.bundle_week` (T31).
+     *
+     * **What it does *not* do, and why** (§21.8 point 5, deferred in §22.12). The week guard is
+     * claimed at *attempt* time, so a publication op that ends FAILED or INDETERMINATE costs the
+     * owner the whole week: `bundle_published_week` records that the bundle never landed, and
+     * nothing re-publishes it. §21.8 point 5's remedy is to "re-seal the current bundle (new salt,
+     * same generation and `bundle_rank`)", and neither half of that is reachable from here.
+     * `bundleCreate` is the only bundle function on the closed surface of §2.6 and it draws a
+     * **fresh** generation, so the same generation cannot be re-sealed; and re-depositing the
+     * identical bytes instead is refused by Phase 7's own `outbox_op UNIQUE (namespace_id,
+     * blob_hash)` — "these bytes are already queued under another operation" — which is what makes
+     * the *new salt* of the rule load-bearing rather than cosmetic. The fix is a new closed-list
+     * function, which is a deliberate act the JNI gate exists to make deliberate, and it belongs
+     * to a slice that opens that surface.
      */
     fun ownerWeek(): Result {
         val own = ownCard() ?: return Result.CRYPTO_UNAVAILABLE

@@ -296,6 +296,22 @@ internal class MessageStore {
         ) == 1
 
     /**
+     * A pending item that will never be sent: the `dm_pending_send` row goes and the item and its
+     * message move `pending → failed` and `queued → failed` (§21.7 point 5, §13.5).
+     *
+     * The three writes live together because every caller owes all three. An item left `pending`
+     * with no pending send breaks §21.8 point 7's structural invariant ("every `pending` or
+     * `enqueued` item has a pending send or an unreleased op"), and a `dm_message` left `queued` is
+     * a message the UI shows as still on its way with nothing left that could ever resolve it —
+     * which is what `block` did to the messages queued before it.
+     */
+    fun failPending(tx: SyncTransaction, itemId: ByteArray) {
+        deletePendingSend(tx, itemId)
+        setItemState(tx, itemId, ITEM_PENDING, STATE_FAILED)
+        setMessageState(tx, itemId, STATE_QUEUED, STATE_FAILED)
+    }
+
+    /**
      * Drops the stored L0 at a terminal outcome (§21.8 point 1: `l0_env` becomes NULL at SENT,
      * DEGRADED or INDETERMINATE; a FAILED item keeps it until its deadline, for the user retry).
      */
@@ -367,11 +383,27 @@ internal class MessageStore {
 
     // --------------------------------------------------------- dm_pending_send
 
+    /**
+     * A contact's pending sends, **oldest first**.
+     *
+     * The order matters because a flush turns these rows into ratchet steps: `item_id` is 16
+     * random bytes, so ordering by it gives the Olm chain an arbitrary permutation of the order
+     * the user wrote the messages in — the display order survives (R-O1 sorts by
+     * `sort_minute, minute_index`), but the chain order the gap hold reconstructs no longer
+     * matches the author order it is built around (§7.7).
+     *
+     * `dm_pending_send` stores no author minute and is `WITHOUT ROWID` with a random primary key,
+     * so the key is the item's `deadline_hour`: `ceil_hour(author_minute + min(bucket, 7 d))`, which
+     * is monotone in the author minute for every item of the same TTL bucket — that is, for every
+     * item of one conversation between two timer changes. `item_id` breaks the remaining ties
+     * deterministically.
+     */
     fun pendingSends(sql: SqlExecutor, contactId: ByteArray): List<PendingRow> {
         val out = ArrayList<PendingRow>()
         sql.query(
-            "SELECT item_id, contact_id, fail_after_hour FROM dm_pending_send WHERE contact_id = ? " +
-                "ORDER BY item_id",
+            "SELECT p.item_id, p.contact_id, p.fail_after_hour FROM dm_pending_send p " +
+                "JOIN dm_outbound_item i ON i.item_id = p.item_id " +
+                "WHERE p.contact_id = ? ORDER BY i.deadline_hour, p.item_id",
             listOf(contactId),
         ) { r -> out += PendingRow(r.blob(0), r.blob(1), r.long(2)) }
         return out
@@ -443,5 +475,11 @@ internal class MessageStore {
 
         /** Handed to the outbox. */
         const val ITEM_ENQUEUED: String = "enqueued"
+
+        /**
+         * `dm_message.state` and `dm_outbound_item.state` for an item that will not be stored
+         * (§13.5). Shared by every caller of [failPending].
+         */
+        const val STATE_FAILED: String = "failed"
     }
 }

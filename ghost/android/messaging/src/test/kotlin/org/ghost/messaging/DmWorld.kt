@@ -2,6 +2,7 @@ package org.ghost.messaging
 
 import org.ghost.crypto.bridge.DmNative
 import org.ghost.crypto.bridge.DmSessions
+import org.ghost.messaging.engine.BundleStep
 import org.ghost.messaging.engine.ContactKeeper
 import org.ghost.messaging.engine.ContactMaterial
 import org.ghost.messaging.engine.ContactSteps
@@ -240,13 +241,14 @@ class DmDevice(
     )
 
     internal val steps: OwnerSteps
-    internal val contactSteps = ContactSteps(database, crypto, random, contexts)
     internal val sendStep = SendStep(
         database, dmSync, envelopes, material, relayResolver, clock, random, contexts,
     )
     internal val establishment = EstablishmentSteps(
         database, dmSync, envelopes, material, relayResolver, clock, contexts,
     )
+    internal val bundleStep = BundleStep(envelopes, material, clock, contexts)
+    internal val contactSteps = ContactSteps(database, crypto, random, contexts, establishment)
     internal val recognition = RecognitionKeys(envelopes)
     internal val receiveStep = ReceiveStep(
         database, dmSync, envelopes, crypto, material, recognition, SessionSlots(), clock, random,
@@ -293,6 +295,7 @@ class DmDevice(
             database = database,
             sync = dmSync,
             establishment = establishment,
+            bundleStep = bundleStep,
             sendStep = sendStep,
             receiveStep = receiveStep,
             outcomeStep = outcomeStep,
@@ -322,17 +325,42 @@ class DmDevice(
         actor.runPass(timeTriggered = false, deadlineMonotonicMillis = null)
     }
 
-    /** Every relay-visible effect this device has produced so far, as a comparable list. */
+    /**
+     * Every relay-visible effect this device has produced so far, as a comparable list.
+     *
+     * The projection has to cover **every** call gate G-DM2 restricts, or the behavioural half of
+     * T28 is narrower than the static half it is supposed to back up. Three were missing and are
+     * here now:
+     *  - `namespace_relay`, which `Namespaces.setRelays` writes and nothing else read — a reflex
+     *    that repointed a namespace's relay set on receipt of a blob was invisible, and that is
+     *    not "wider than the wire", it is narrower than it;
+     *  - `sync_namespace.send_delay`, which `Namespaces.setSendDelay` moves (the ADR-15 delay that
+     *    keeps a store from naming the moment the user pressed send);
+     *  - `outbox_op.outcome` and `outbox_delivery`, because `Outbox.cancel` does not delete an op:
+     *    it fails the deliveries and sets the outcome.
+     */
     fun relayVisible(): List<String> {
         val out = ArrayList<String>()
         sql.query(
-            "SELECT hex(namespace_id), ttl_seconds, deadline_hour, length(ciphertext) " +
+            "SELECT hex(namespace_id), ttl_seconds, deadline_hour, length(ciphertext), outcome " +
                 "FROM outbox_op ORDER BY rowid",
-        ) { out += "store ${it.string(0)} ${it.long(1)} ${it.long(2)} ${it.long(3)}" }
+        ) {
+            out += "store ${it.string(0)} ${it.long(1)} ${it.long(2)} ${it.long(3)} ${it.string(4)}"
+        }
         sql.query(
-            "SELECT hex(namespace_id), consumer, listening, capability_source FROM sync_namespace " +
-                "ORDER BY namespace_id",
-        ) { out += "ns ${it.string(0)} ${it.string(1)} ${it.long(2)} ${it.string(3)}" }
+            "SELECT hex(operation_id), relay_id, state FROM outbox_delivery " +
+                "ORDER BY operation_id, relay_id",
+        ) { out += "del ${it.string(0)} ${it.long(1)} ${it.string(2)}" }
+        sql.query(
+            "SELECT hex(namespace_id), consumer, listening, capability_source, send_delay " +
+                "FROM sync_namespace ORDER BY namespace_id",
+        ) {
+            out += "ns ${it.string(0)} ${it.string(1)} ${it.long(2)} ${it.string(3)} ${it.string(4)}"
+        }
+        sql.query(
+            "SELECT hex(namespace_id), relay_id FROM namespace_relay " +
+                "ORDER BY namespace_id, relay_id",
+        ) { out += "nsrelay ${it.string(0)} ${it.long(1)}" }
         sql.query(
             "SELECT relay_id, hex(namespace_id), kind, state, generation FROM relay_capability " +
                 "ORDER BY relay_id, namespace_id, kind",

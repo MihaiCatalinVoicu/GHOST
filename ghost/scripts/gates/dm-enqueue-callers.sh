@@ -53,13 +53,24 @@
 #
 # **How a call site is recognized, and what still escapes.** A physical line is joined with the
 # lines that follow it while they begin with `.`, so a receiver and its call may sit on separate
-# lines (the violation is reported at the receiver's line). A line is a call site when it names one
-# of the four ports beside a restricted call, when it calls one through a **local alias** of a port
-# (`val ob = sync.outbox; ob.enqueue(…)`), or when the file scopes over a port with `with(…)`,
-# `run`, `apply`, `also` or `let` and then makes a **bare** call. What is still not seen: an alias
-# that travels through a function parameter, a field or a collection, and a call reached by
-# reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`, S7) is what covers those; this half
-# is the one that fails before a world is ever built.
+# lines (the violation is reported at the receiver's line). Comment lines are dropped first, so a
+# KDoc sentence such as "…are a request (§12.3)…" is not read as a call to `Registrations.request`.
+# A line is a call site when it names one of the four ports beside a restricted call, when it calls
+# one through a **local alias** of a port (`val ob = sync.outbox; ob.enqueue(…)`), when the file
+# scopes over a port with `with(…)`, `run` or `apply` and then makes a **bare** call, or when it
+# scopes over one with `also`/`let` and calls through the **lambda's own receiver** (`it`, or the
+# name the lambda binds).
+#
+# `also` and `let` needed that last clause and did not have it (found by the review of S7): they
+# bind the port to `it` rather than to `this`, so they can never produce the bare call the third
+# branch looks for, and when the receiver and the call sit on different physical lines `joined_lines`
+# does not fold them either (the continuation only folds lines starting with `.`). Listing them in
+# `SCOPES` while matching only bare calls meant `sync.outbox.let { it.enqueue(tx) }` across two
+# lines passed a gate whose header claimed to catch it.
+#
+# What is still not seen: an alias that travels through a function parameter, a field or a
+# collection, and a call reached by reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`,
+# S7) is what covers those; this half is the one that fails before a world is ever built.
 #
 # **Slice S6 (2026-09-20).** The mechanism was built and armed then, with a partial corpus:
 # `OwnerSteps.kt` alone, and no RECV, BUNDLE or HELD file to exercise the forbidden side. The gate
@@ -70,11 +81,17 @@
 # **Slice S7 (2026-09-21).** The corpus is now the real one, and the forbidden side is exercised by
 # production code rather than by fixtures alone. `SendStep.kt` (SEND, RESEND),
 # `EstablishmentSteps.kt` (EST-START, EST-READY, EST-END) and `ContactKeeper.kt` (the contact half
-# of KEEPER) joined the allowlist deliberately; `ReceiveStep.kt`, `PeekOrder.kt`, `OutcomeStep.kt`,
-# `ContactSteps.kt`, `PairKeySteps.kt`, `DmActor.kt` and the store layer did **not**, and each of
-# them handles inbound blobs or contact state without making a restricted call. `NoReflexTest`, the
-# behavioural half §16.1 names, arrived with the same slice: it compares two worlds that differ
-# only in what arrived.
+# of KEEPER) joined the allowlist deliberately; `ReceiveStep.kt`, `BundleStep.kt`, `PeekOrder.kt`,
+# `OutcomeStep.kt`, `ContactSteps.kt`, `PairKeySteps.kt`, `DmActor.kt` and the store layer did
+# **not**, and each of them handles inbound blobs or contact state without making a restricted
+# call. `NoReflexTest`, the behavioural half §16.1 names, arrived with the same slice: it compares
+# two worlds that differ only in what arrived.
+#
+# **The BUNDLE transaction moved out of `EstablishmentSteps.kt`** in the S7 review, and the reason
+# is this file's own rationale. The allowlist is by file because a file holds one step; while
+# `EstablishmentSteps.kt` held four — `estStart`, `bundle`, `estReady`, `estEnd` — allowlisting it
+# silently granted BUNDLE, the one establishment transaction driven by an arriving blob, the
+# permission §21.7 point 7 denies it. `BundleStep.kt` restores the invariant the gate depends on.
 #
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
@@ -88,8 +105,11 @@ REMOVE='remove'
 # A receiver that makes the match a **DM** call rather than any `.put(` on a map. The call sites of
 # this codebase always go through a named port; a call on something else is not one of these.
 RECEIVERS='outbox|registrations|namespaces|capabilities'
-# The scope functions that turn a port into an implicit receiver, so a call inside can be bare.
-SCOPES='run|apply|also|let'
+# The scope functions that turn a port into `this`, so a call inside can be bare.
+SCOPES='run|apply'
+# The scope functions that bind the port to a lambda **parameter** instead: the call inside is
+# `it.enqueue(` or `<name>.enqueue(`, never bare, so they feed the alias list and not `scoped`.
+LAMBDA_SCOPES='also|let'
 
 # Files that MAY make the restricted calls: the steps of §7.2 that §16.1 names. A file not on this
 # list is refused, which is what makes a new step arrive deliberately rather than by accident.
@@ -97,7 +117,7 @@ SCOPES='run|apply|also|let'
 ALLOWED_FILES='
 OwnerSteps.kt          ACTIVATE, OWNER-WEEK, KEEPER, REGROWS (slice S6)
 SendStep.kt            SEND, RESEND (slice S7)
-EstablishmentSteps.kt  EST-START, EST-READY, EST-END (slice S7)
+EstablishmentSteps.kt  EST-START, EST-READY, EST-END (slice S7; BUNDLE is BundleStep.kt, not here)
 ContactKeeper.kt       KEEPER, the contact half of §7.2 KEEPER row (slice S7)
 '
 # Files that may call `Namespaces.remove` and nothing else. `Sweeper.kt` is deliberately **not** in
@@ -113,8 +133,19 @@ REMOVE_ONLY='Sweeper.kt'
 # which is exactly mutants PM-11 and PM-30. §21.9 rule 1 gives these entry points three triggers —
 # the actor timer, a database open and a relay session start — and the K20 hook (§13.4).
 TRIGGERS='runOwnerMaintenance|onActivated|onRestored'
-# The two files that declare and implement them, and the two that may call them: the app wiring
-# (database open, the K20 hook) and the DM actor (its timer and the relay session start, slice S7).
+# The two files that declare and implement them, and the two that may call them by name: the app
+# wiring (database open, the K20 hook) and the DM actor.
+#
+# **What this rule does and does not see** (stated precisely after the review of S7, which found
+# the comment claiming more than the code does). It matches the three entry points **by name**, so
+# a file that writes `engine.runOwnerMaintenance()` is refused wherever it sits. `DmActor.kt` is on
+# the list because it is the actor, but it does not in fact write any of the three names: S7 injects
+# the trigger as a `() -> Unit` constructor parameter, invoked as `ownerMaintenance()`. A lambda
+# that closes over the facade therefore still trips the rule **where the lambda is written** — that
+# file contains the name — which is the case that matters, because an inbound path would have to
+# write it somewhere. What the rule cannot see is an already-built `() -> Unit` handed on from an
+# allowed file to one that may not have it; `NoReflexTest` is what covers that, since an owner
+# pass publishes a bundle and shows up as a `store` line in the noisy world only.
 TRIGGER_ALLOWED='Messaging.kt MessagingEngine.kt MessagingWiring.kt DmActor.kt'
 
 allowed_file() { # $1 = basename
@@ -151,12 +182,22 @@ dm_caller_files() {
 # `<first line number>:<text>`, with every continuation line (one that begins with `.`) folded into
 # the line that carries its receiver. `sync.namespaces` on one line and `.register(` on the next is
 # one call site, reported where the receiver is.
+#
+# Comment lines are dropped before the fold, and so is the tail of a line after `//`. Prose is not
+# code: a KDoc line that happens to contain `request (` matched the bare-call branch of
+# `is_call_site` in any file that also scoped over a port, so the gate could report a violation at
+# a sentence. Dropping them costs nothing — a restricted call inside a comment is not a call.
 joined_lines() { # $1 = file
   awk '
-    { t = $0; sub(/^[[:space:]]+/, "", t)
+    { line = $0
+      t = line; sub(/^[[:space:]]+/, "", t)
+      if (t ~ /^(\*|\/\/|\/\*)/) next
+      sub(/\/\/.*$/, "", line)
+      t = line; sub(/^[[:space:]]+/, "", t)
+      if (t == "") next
       if (have && substr(t, 1, 1) == ".") { buf = buf t; next }
       if (have) print bufno ":" buf
-      buf = $0; bufno = NR; have = 1 }
+      buf = line; bufno = NR; have = 1 }
     END { if (have) print bufno ":" buf }
   ' "$1"
 }
@@ -186,6 +227,18 @@ while IFS= read -r file; do
     if [[ "$line" =~ with[[:space:]]*\([^\)]*($RECEIVERS) ]] ||
        [[ "$line" =~ ($RECEIVERS)[[:space:]]*\.[[:space:]]*($SCOPES)[[:space:]]*[\{\(] ]]; then
       scoped=1
+    fi
+    # `also` / `let` over a port: the receiver is the lambda's parameter, so it joins the alias
+    # list. `it` is the implicit name; `{ ob ->` names it explicitly.
+    if [[ "$line" =~ ($RECEIVERS)[[:space:]]*\.[[:space:]]*($LAMBDA_SCOPES)[[:space:]]*[\{\(] ]]; then
+      alias_alt="${alias_alt:+$alias_alt|}it"
+      if [[ "$line" =~ \{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
+        alias_alt="$alias_alt|${BASH_REMATCH[1]}"
+      fi
+    fi
+    # The same, with the lambda's parameter named on a later line than the receiver.
+    if [ -n "$alias_alt" ] && [[ "$line" =~ ^[[:space:]]*\{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
+      alias_alt="$alias_alt|${BASH_REMATCH[1]}"
     fi
   done <<< "$text"
 

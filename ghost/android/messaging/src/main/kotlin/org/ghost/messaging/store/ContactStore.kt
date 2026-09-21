@@ -244,12 +244,19 @@ internal class ContactStore {
     /**
      * `block` (§12.4): the card and the request deadline go with the trust state, because
      * unblocking must not silently restore an address the user gave up.
+     *
+     * `pending_identity` goes too, and it has to: the schema's
+     * `CHECK ((trust_state = 'changed') = (pending_identity IS NOT NULL))` makes "blocked with a
+     * pending identity" an aborted transaction, and §7.2 routes exactly that case — "`block` of a
+     * changed contact" — through KEYDEC. §21.4 rule 5 says a CHECK abort inside a DM transaction
+     * is a bug and never an expected path, so the block clears the column rather than meeting it.
+     * Nothing sets `changed` before slice S8, so this is armed rather than exercised.
      */
     fun block(tx: SyncTransaction, contactId: ByteArray) {
         tx.sql.exec(
             "UPDATE dm_contact SET trust_state = 'blocked', card_env = NULL, " +
-                "request_until_day = NULL, establishment = 'card_only', fetch_attempts = 0, " +
-                "fetch_listen_until_minute = NULL WHERE contact_id = ?",
+                "pending_identity = NULL, request_until_day = NULL, establishment = 'card_only', " +
+                "fetch_attempts = 0, fetch_listen_until_minute = NULL WHERE contact_id = ?",
             listOf(contactId),
         )
     }

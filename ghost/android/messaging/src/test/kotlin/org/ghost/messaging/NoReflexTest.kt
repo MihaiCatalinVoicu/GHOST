@@ -174,7 +174,14 @@ class NoReflexTest {
                 world.advanceTo(bob.clock.now + 20 * DmWorld.MINUTE)
                 bob.timeTriggeredPass()
             }
-            bob.relayVisible()
+            bob.relayVisible().also { view ->
+                // The vacuity floor of this half. Four of the five tests assert only
+                // `quiet == noisy`, which two empty lists satisfy — a renamed column, or a closed
+                // context making `runPass` return at its first line, would turn every one of them
+                // green while proving nothing. B activated and ran five passes, so its own
+                // namespaces, capabilities and registrations are there whatever arrived.
+                assertTrue("the relay-visible view is empty: it proves nothing", view.isNotEmpty())
+            }
         }
     }
 

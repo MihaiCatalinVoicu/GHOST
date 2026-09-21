@@ -227,8 +227,15 @@ internal class OwnerStore {
 
     // No "has this week a bundle op?" read lives here. `dm_outbound_op` carries no outcome column
     // (§13.6 step 5), so such a query cannot tell an undecided operation from a decided or failed
-    // one, and OWNER-WEEK's guard is `dm_self.bundle_week` alone (§5.4). The re-seal of a FAILED or
-    // INDETERMINATE bundle op is S7's, and it reads `dm_self.bundle_published_week` (§21.8).
+    // one, and OWNER-WEEK's guard is `dm_self.bundle_week` alone (§5.4).
+    //
+    // **`dm_self.bundle_published_week` still has no reader**, and the S7 review was right that it
+    // is written and never read. The step that should read it is §21.8 point 5's re-seal of a
+    // FAILED or INDETERMINATE publication, and it cannot be written in `:messaging` alone: the
+    // rule says "new salt, same generation and `bundle_rank`", the closed surface of §2.6 offers
+    // only `bundleCreate` (a fresh generation), and the identical-bytes alternative is refused by
+    // Phase 7's `outbox_op UNIQUE (namespace_id, blob_hash)`. Deferred in §22.12 with what the
+    // next slice must add.
 
     companion object {
         /** `delete_after_day = superseded_day + 91` (§5.4; 7 + 28 + 45 + 6 days, rounded to 13 weeks). */

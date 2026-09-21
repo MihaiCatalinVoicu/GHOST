@@ -111,8 +111,17 @@ internal class OutcomeStep(
 
     /**
      * §21.8 point 5: a bundle op. SENT or DEGRADED records the week in
-     * `dm_self.bundle_published_week`, and a FAILED or INDETERMINATE one leaves it behind so the
-     * next time-triggered `OWNER-WEEK` pass re-seals while the week's validity lasts.
+     * `dm_self.bundle_published_week`; a FAILED or INDETERMINATE one leaves the column behind.
+     *
+     * **Nothing reads it yet, and that is a declared gap rather than an oversight** (§22.12). The
+     * rule's remedy is that the next time-triggered OWNER-WEEK pass "re-seals the current bundle
+     * (new salt, same generation and `bundle_rank`)" while the week's validity lasts, and neither
+     * half of that is reachable from `:messaging`: the closed surface of §2.6 has only
+     * `bundleCreate`, which draws a **fresh** generation, and re-depositing the identical retained
+     * bytes is refused by Phase 7's `outbox_op UNIQUE (namespace_id, blob_hash)`. So the column is
+     * written here, where the rule says to write it, and the step that will read it waits for the
+     * slice that adds the re-seal to the JNI surface. The consequence, recorded in the design: a
+     * publication that ends FAILED costs the owner that week's bundle.
      */
     private fun applyBundle(outcome: OutboundOutcome): Boolean = database.transaction { tx ->
         if (!sync.outbox.release(tx, outcome.operationId)) return@transaction false

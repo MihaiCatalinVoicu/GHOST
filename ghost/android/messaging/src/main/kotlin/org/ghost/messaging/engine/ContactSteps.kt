@@ -4,6 +4,7 @@ import org.ghost.crypto.bridge.DmCards
 import org.ghost.messaging.port.DmCrypto
 import org.ghost.messaging.port.DmRandom
 import org.ghost.messaging.store.ContactStore
+import org.ghost.messaging.store.MessageStore
 import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.api.SyncTransaction
 
@@ -26,8 +27,15 @@ internal class ContactSteps(
     private val crypto: DmCrypto,
     private val random: DmRandom,
     private val contexts: SelfContexts,
+    /**
+     * The establishment steps, for the one thing block and delete owe a contact that is still
+     * fetching: closing its `P_c` window ([EstablishmentSteps.abandonFetch]). The call itself has
+     * to be made from a file gate G-DM2 allows, which this one is deliberately not.
+     */
+    private val establishment: EstablishmentSteps,
 ) {
     private val store = ContactStore()
+    private val messages = MessageStore()
 
     /** What [addContact] did (§13.2). */
     enum class AddResult {
@@ -109,7 +117,7 @@ internal class ContactSteps(
             DmCards.ParseResult.InvalidCard -> return AddResult.INVALID_CARD
             DmCards.ParseResult.Unavailable -> return AddResult.CRYPTO_UNAVAILABLE
         }
-        if (parsed.identityPk.contentEquals(ownIdentityPk(self))) return AddResult.OWN_CARD
+        if (parsed.identityPk.contentEquals(self.identityPk)) return AddResult.OWN_CARD
 
         val contactId = random.bytes(CONTACT_ID_BYTES)
         val conversationId = random.bytes(CONVERSATION_ID_BYTES)
@@ -172,11 +180,17 @@ internal class ContactSteps(
      * §12.3: `blockRequest` keeps the identity, so later requests from it are dropped at `RECV`
      * R5 before any state change.
      */
-    fun blockRequest(contactId: ByteArray): RequestResult = database.transaction { tx ->
-        val row = store.contact(tx.sql, contactId) ?: return@transaction RequestResult.NOT_A_REQUEST
-        if (row.trust != ContactStore.Trust.REQUEST) return@transaction RequestResult.NOT_A_REQUEST
-        blockRows(tx, row)
-        RequestResult.DONE
+    fun blockRequest(contactId: ByteArray): RequestResult {
+        val self = contexts.get() ?: return RequestResult.UNAVAILABLE
+        return database.transaction { tx ->
+            val row = store.contact(tx.sql, contactId)
+                ?: return@transaction RequestResult.NOT_A_REQUEST
+            if (row.trust != ContactStore.Trust.REQUEST) {
+                return@transaction RequestResult.NOT_A_REQUEST
+            }
+            if (!blockRows(tx, self, row)) return@transaction RequestResult.UNAVAILABLE
+            RequestResult.DONE
+        }
     }
 
     /**
@@ -187,11 +201,17 @@ internal class ContactSteps(
      * `contact_id`, which is why D3's tags do not stop it and why §21.4 point 4's freshness bound
      * is what keeps a relay from resurrecting a rejected requester for ever (L7-D8).
      */
-    fun rejectRequest(contactId: ByteArray): RequestResult = database.transaction { tx ->
-        val row = store.contact(tx.sql, contactId) ?: return@transaction RequestResult.NOT_A_REQUEST
-        if (row.trust != ContactStore.Trust.REQUEST) return@transaction RequestResult.NOT_A_REQUEST
-        deleteRows(tx, row)
-        RequestResult.DONE
+    fun rejectRequest(contactId: ByteArray): RequestResult {
+        val self = contexts.get() ?: return RequestResult.UNAVAILABLE
+        return database.transaction { tx ->
+            val row = store.contact(tx.sql, contactId)
+                ?: return@transaction RequestResult.NOT_A_REQUEST
+            if (row.trust != ContactStore.Trust.REQUEST) {
+                return@transaction RequestResult.NOT_A_REQUEST
+            }
+            if (!deleteRows(tx, self, row)) return@transaction RequestResult.UNAVAILABLE
+            RequestResult.DONE
+        }
     }
 
     private fun moveRequest(contactId: ByteArray, to: ContactStore.Trust): RequestResult =
@@ -214,58 +234,110 @@ internal class ContactSteps(
      * contact is not told, and copies on its device are not touched; the Phase 13 UI says all
      * three (FR-4.7).
      */
-    fun block(contactId: ByteArray): Boolean = database.transaction { tx ->
-        val row = store.contact(tx.sql, contactId) ?: return@transaction false
-        blockRows(tx, row)
-        true
+    fun block(contactId: ByteArray): Boolean {
+        // Resolved before the transaction opens, like every other step's crypto (§7.2's "each step
+        // is exactly one transaction", §22.11 item 17). `SelfContexts.get()` opens a transaction of
+        // its own when its cache is cold — after `onActivated`, `onRestored` or a context close —
+        // and a nested one on the same thread is an exception out of the facade, not a result.
+        val self = contexts.get() ?: return false
+        return database.transaction { tx ->
+            val row = store.contact(tx.sql, contactId) ?: return@transaction false
+            blockRows(tx, self, row)
+        }
     }
 
     /**
      * §12.4 `unblock`: the blocked row is deleted, and the user must add the card again — the card
      * was erased at block, so unblocking cannot silently restore an address.
      */
-    fun unblock(contactId: ByteArray): Boolean = database.transaction { tx ->
-        val row = store.contact(tx.sql, contactId) ?: return@transaction false
-        if (row.trust != ContactStore.Trust.BLOCKED) return@transaction false
-        deleteRows(tx, row)
-        true
+    fun unblock(contactId: ByteArray): Boolean {
+        val self = contexts.get() ?: return false
+        return database.transaction { tx ->
+            val row = store.contact(tx.sql, contactId) ?: return@transaction false
+            if (row.trust != ContactStore.Trust.BLOCKED) return@transaction false
+            deleteRows(tx, self, row)
+        }
     }
 
     /** §12.4 `deleteContact`: every row of the contact, and its namespaces recorded as orphans. */
-    fun deleteContact(contactId: ByteArray): Boolean = database.transaction { tx ->
-        val row = store.contact(tx.sql, contactId) ?: return@transaction false
-        deleteRows(tx, row)
-        true
+    fun deleteContact(contactId: ByteArray): Boolean {
+        val self = contexts.get() ?: return false
+        return database.transaction { tx ->
+            val row = store.contact(tx.sql, contactId) ?: return@transaction false
+            deleteRows(tx, self, row)
+        }
     }
 
     /**
-     * The rows a block clears: the card, both sessions, the pair keys and offers, the peer keys
-     * and the pending sends. The conversation's messages are kept until their timers, which the
-     * UI may delete (§12.4).
+     * The rows a block clears: the card, both sessions, the pair keys and offers, the peer keys,
+     * the pending sends, the held rows and the scheduled controls — §12.4's list, all of it. The
+     * conversation's messages are kept until their timers, which the UI may delete.
+     *
+     * **[recordOrphans] runs first and may refuse.** Everything after it erases the card the two
+     * namespaces are derived from, so an orphan row not written before it can never be written
+     * afterwards: `X_c` and `P_c` would keep their `:sync` rows, relay sets and credentials for
+     * good, with nothing left on the device able to name them. That breaks §21.12 point 3 and the
+     * "≤ 7 d" of L7-D7, which is the only thing that makes the residue declarable. Refusing the
+     * block instead — the DM context is closed, so the user is locked out of everything else too —
+     * leaves a state the same action succeeds from once it reopens.
+     *
+     * The fetch window closes before the rows go, because after them nothing can: the actor only
+     * visits `fetching` contacts and `block` makes this one `card_only` (§12.4, L7-D6).
      */
-    private fun blockRows(tx: SyncTransaction, row: ContactStore.ContactRow) {
+    private fun blockRows(
+        tx: SyncTransaction,
+        self: SelfContext,
+        row: ContactStore.ContactRow,
+    ): Boolean {
+        if (!recordOrphans(tx, self, row)) return false
+        establishment.abandonFetch(tx, row)
         clearKeyMaterial(tx, row)
         store.block(tx, row.contactId)
-        recordOrphans(tx, row)
+        return true
     }
 
     /** Everything a delete takes: the contact row, and the cascades of the schema behind it. */
-    private fun deleteRows(tx: SyncTransaction, row: ContactStore.ContactRow) {
-        recordOrphans(tx, row)
+    private fun deleteRows(
+        tx: SyncTransaction,
+        self: SelfContext,
+        row: ContactStore.ContactRow,
+    ): Boolean {
+        if (!recordOrphans(tx, self, row)) return false
+        establishment.abandonFetch(tx, row)
         // `dm_conversation`, `dm_message`, `dm_outbound_item`, `dm_outbound_op`,
         // `dm_pending_send`, `dm_pair_key`, `dm_pair_offer`, `dm_peer_pq`, `dm_bundle_candidate`,
         // `dm_held` and `dm_scheduled` all cascade from `dm_contact` (§13.6 step 5), so one
         // delete is the whole contact.
         store.deleteContact(tx, row.contactId)
+        return true
     }
 
+    /**
+     * §12.4's list of what a block erases, and the state changes the rows it erases owed.
+     *
+     * A pending send is **failed**, not merely deleted: `dm_pending_send` is the only thing that
+     * could ever have resolved its `dm_outbound_item` (left `pending`, still holding the sealed
+     * L0) and its `dm_message` (left `queued`, which the UI shows as still on its way). Deleting
+     * the row alone stranded both, and with the conversation timer off (`timer_code = 0`, so
+     * `delete_at_minute IS NULL`) neither ever expires either.
+     *
+     * `dm_held` and `dm_scheduled` are in §12.4's list and in §7.2's KEYDEC row ("held rows
+     * (deleted on block)"). Nothing writes either table before slice S8, so both DELETEs are inert
+     * today; they are here because the list is the rule, and a step that quietly implements six of
+     * its eight items is how the other two get missed on the day the writers land.
+     */
     private fun clearKeyMaterial(tx: SyncTransaction, row: ContactStore.ContactRow) {
+        for (pending in messages.pendingSends(tx.sql, row.contactId)) {
+            messages.failPending(tx, pending.itemId)
+        }
         tx.sql.exec("DELETE FROM olm_session WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_pair_key WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_pair_offer WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_peer_pq WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_bundle_candidate WHERE contact_id = ?", listOf(row.contactId))
         tx.sql.exec("DELETE FROM dm_pending_send WHERE contact_id = ?", listOf(row.contactId))
+        tx.sql.exec("DELETE FROM dm_held WHERE contact_id = ?", listOf(row.contactId))
+        tx.sql.exec("DELETE FROM dm_scheduled WHERE contact_id = ?", listOf(row.contactId))
     }
 
     /**
@@ -275,20 +347,28 @@ internal class ContactSteps(
      * doing it inline would withdraw a namespace whose last op is still in flight.
      *
      * The residue lasts at most until that op's deadline (≤ 7 d) and is declared in L7-D7.
+     *
+     * **False means "do not proceed".** The namespaces are derived from the card, so once the card
+     * is gone they cannot be recomputed; an early return that let the delete commit anyway would
+     * leave a `:sync` residue nothing on the device can name and no bound can cover. A blocked row
+     * is the one contact that legitimately has no card — block recorded its orphans already — so
+     * unblocking it proceeds without recording them twice.
      */
-    private fun recordOrphans(tx: SyncTransaction, row: ContactStore.ContactRow) {
-        val self = contexts.get() ?: return
-        val cardEnv = row.cardEnv ?: return
-        val card = self.content.open(cardEnv, row.contactId) ?: return
+    private fun recordOrphans(
+        tx: SyncTransaction,
+        self: SelfContext,
+        row: ContactStore.ContactRow,
+    ): Boolean {
+        if (row.trust == ContactStore.Trust.BLOCKED && row.cardEnv == null) return true
+        val cardEnv = row.cardEnv ?: return false
+        val card = self.content.open(cardEnv, row.contactId) ?: return false
         val derived = crypto.deriveCard(card, ORPHAN_SLOT)
-        if (derived !is DmCards.DeriveResult.Ok) return
+        if (derived !is DmCards.DeriveResult.Ok) return false
         store.addOrphan(tx, derived.values.inboxNamespace)
         store.addOrphan(tx, derived.values.bundleNamespace)
         derived.values.clearSecrets()
+        return true
     }
-
-    private fun ownIdentityPk(self: SelfContext): ByteArray =
-        self.card.card.copyOfRange(IDENTITY_PK_OFFSET, IDENTITY_PK_OFFSET + IDENTITY_PK_BYTES)
 
     private fun trustOf(source: ContactStore.Source): ContactStore.Trust = when (source) {
         ContactStore.Source.QR_IN_PERSON -> ContactStore.Trust.VERIFIED
@@ -308,16 +388,6 @@ internal class ContactSteps(
 
         /** §12.3: the request cap, counted at `RECV` R5. */
         const val MAX_PENDING_REQUESTS: Int = 64
-
-        /**
-         * `card = version(1) || card_index(2) || identity_pk(32) || …` (§3.3), so the identity key
-         * starts at byte 3. The offset is here rather than in the crate because the comparison it
-         * serves — "is this my own card?" — is a byte comparison Kotlin makes (§2.6 function 3).
-         */
-        const val IDENTITY_PK_OFFSET: Int = 3
-
-        /** An Ed25519 public key. */
-        const val IDENTITY_PK_BYTES: Int = 32
 
         /**
          * The slot the orphan bookkeeping derives with. The namespaces `X_c` and `P_c` are

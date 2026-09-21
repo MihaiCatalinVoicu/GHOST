@@ -272,6 +272,14 @@ internal class ReceiveStep(
             DmCards.ParseResult.InvalidCard -> return dropped(DmCounters.Reason.NON_CANONICAL)
             DmCards.ParseResult.Unavailable -> return Result.CRYPTO_UNAVAILABLE
         }
+        // The `identity_pk ≠ own` half of §3.3's parse, which `card::parse_foreign` is in the
+        // crate and which the user-add path already applies. Binding v3 is signed under the card's
+        // own Ed25519 key, so an attacker cannot reach here with the victim's key — but the parse
+        // §3.3 fixes is stated as fail-closed, and a path that completes only half of it is one
+        // more thing a later change has to remember.
+        if (parsed.identityPk.contentEquals(self.identityPk)) {
+            return dropped(DmCounters.Reason.NON_CANONICAL)
+        }
         val bindingSeconds = introduced.bindingMinute * DmTime.MINUTE
         if (bindingSeconds < now - DmTimers.FRESH_SECONDS ||
             bindingSeconds > now + 2 * DmTimers.SIGMA_SECONDS
@@ -537,8 +545,24 @@ internal class ReceiveStep(
         }
 
         // R11 and R12.
+        // R-SS2 (§8.2, §22.8.4 rule 3): a message that decrypted on `previous` may promote it. It
+        // is decided here rather than beside the decrypt because the normal-message guard reads
+        // `author_minute`, which only exists once R8 decoded the L0 — and only a message that
+        // survived R9 and R10 should move the slots, because a stale or replayed one is exactly
+        // the traffic §22.8.4 rule 3 refuses to promote on.
+        if (!createdSession && usedSlot == SessionStore.SLOT_PREVIOUS) {
+            val swapped = slots.swapAfterPreviousDecrypted(
+                tx = tx,
+                contactId = contact.contactId,
+                isPreKey = isPreKey,
+                authorMinute = authorSeconds,
+                today = DmTime.day(now),
+            )
+            if (swapped) usedSlot = SessionStore.SLOT_CURRENT
+        }
+
         apply(tx, self, contact, content, blob, now, createdSession, usedSlot)
-        applyTlvs(tx, contact, content, now)
+        applyTlvs(tx, contact, content, isPreKey, now)
         if (pairRootGen != null) acknowledgeOffer(tx, contact, pairRootGen, now)
         return Result.APPLIED
     }
@@ -676,20 +700,32 @@ internal class ReceiveStep(
      * the root itself never leaves the native side — it arrives wrapped and goes straight into
      * [DmEnvelopes.pairKeys] (rule R-S6).
      *
+     * **§21.3 rule 1 is enforced here, on receipt**, and [isPreKey] is what enforces it: a root TLV
+     * carried by a PreKey message is dropped and counted (`root_in_prekey`). This device's own
+     * sender side never produces one — [SendStep] attaches an offer only to an acknowledged
+     * session — but that is a statement about *this* sender, and the rule is normative for every
+     * peer. A modified or older client that puts `seal_root` in the L0 of its first flight would
+     * otherwise install out pair keys from a root riding inside an Olm PreKey message, whose
+     * decryption keys this device keeps until `superseded_day + 91`: mutant PM-29, and the P-7 /
+     * T34 seizure the rule exists to prevent.
+     *
      * `revocation` and `session_reset` are slice S8's; a PQ-C TLV is counted and ignored (§9.4).
      */
     private fun applyTlvs(
         tx: SyncTransaction,
         contact: ContactStore.ContactRow,
         content: DmContent.Decoded,
+        isPreKey: Boolean,
         now: Long,
     ) {
         if (content.sawPqTlv) counters.drop(DmCounters.Reason.PQ_TLV_IGNORED)
         if (content.revocation != null) counters.drop(DmCounters.Reason.REVOCATION_DEFERRED)
         if (content.sessionReset) counters.drop(DmCounters.Reason.SESSION_RESET_DEFERRED)
         val root = content.sealRoot ?: return
-        // §21.3 point 1: a root TLV in a PreKey message is ignored. The symmetric path is the only
-        // one that reaches here with one, because an intro envelope's L1 is a PreKey message.
+        if (isPreKey) {
+            counters.drop(DmCounters.Reason.ROOT_IN_PREKEY)
+            return
+        }
         val week = DmTime.week(now)
         val existing = contacts.pairKeys(tx.sql, contact.contactId, ContactStore.DIRECTION_OUT)
         // §6.3: "a `root_gen` not greater than the stored out generation is ignored".

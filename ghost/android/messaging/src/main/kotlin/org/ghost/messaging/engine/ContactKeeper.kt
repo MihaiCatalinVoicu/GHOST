@@ -36,10 +36,19 @@ import org.ghost.sync.api.SyncDatabase
  * most **once per pass**, and a pass runs at a session start, a week change or a `CAPABILITIES`
  * hint (§7.2's KEEPER triggers) — never on an inbound blob (T28).
  *
- * **The bundle fetch credential is not here.** §4.8 gives the owner's `P_0` a FETCH registration,
- * and a **contact's** `P_c` fetch credential is installed by `EST-START` for the duration of an
- * attempt window and removed with the namespace at `EST-END` (§21.7): a credential kept between
- * establishments would be a read scope for a namespace this device is not listening to.
+ * **The bundle fetch credential is not here**, and §7.2's KEEPER row mentions one. §4.8 gives the
+ * owner's `P_0` a FETCH registration; a **contact's** `P_c` credential is minted by `EST-START`,
+ * for that attempt window, and this step never renews it — a credential this step kept fresh
+ * between establishments would be a standing read scope for a namespace the device is not
+ * listening to, which is the opposite of what L7-D6 bounds.
+ *
+ * What it does **not** mean is that the credential is gone between establishments, and an earlier
+ * version of this comment claimed it was ("removed with the namespace at `EST-END`"). On the
+ * success path there is no `EST-END`: `EST-READY` sets `establishment = ready` and
+ * `setListening(P_c, false)` and calls no `Namespaces.remove`, so a `ready` contact keeps its
+ * `P_c` registration and the 8-day READ credential `EST-START` installed until it lapses. §21.7
+ * point 4 does not remove it either, so the code follows the design — but the reason this step
+ * omits the credential is the one above, not a removal that happens somewhere else.
  */
 internal class ContactKeeper(
     private val database: SyncDatabase,

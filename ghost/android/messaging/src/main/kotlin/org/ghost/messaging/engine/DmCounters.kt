@@ -74,6 +74,19 @@ internal class DmCounters {
         /** A `seal_root` whose generation is not newer than the stored one (§6.3). */
         ROOT_NOT_NEWER,
 
+        /**
+         * A `seal_root` TLV carried by a **PreKey** message, which §21.3 rule 1 names and ignores.
+         *
+         * This device's own sender side never attaches one ([SendStep] refuses an offer on an
+         * unacknowledged session), but the rule is about **receipt**: a peer running a modified or
+         * older client can put a root in the L0 of its first flight, and installing out pair keys
+         * from it would let the root ride inside an Olm PreKey message whose decryption keys — the
+         * seed-derived identity plus the generation's retained secrets — live until
+         * `superseded_day + 91`. That is mutant PM-29 and the P-7 / T34 violation the rule exists
+         * to prevent, so the drop is the defence and not a formality.
+         */
+        ROOT_IN_PREKEY,
+
         /** A PQ-C TLV: counted and ignored in Phase 9 (§9.4, slice S13). */
         PQ_TLV_IGNORED,
 

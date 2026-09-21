@@ -208,8 +208,25 @@ internal class MessagingEngine(
         )
     }
 
-    override fun retry(message: MessageId): SendResult =
-        onActor { SendResult.of(sendStep.retry(message.toByteArray())) }
+    /**
+     * §7.5's user retry, with the `EST-START` it owes.
+     *
+     * A retry that finds no usable session re-queues the item as a pending send, exactly as a
+     * fresh send does — so it owes the same follow-up. Without it the retry answered `QUEUED` and
+     * left an item no step would ever flush and no establishment would ever start.
+     */
+    override fun retry(message: MessageId): SendResult = onActor {
+        val itemId = message.toByteArray()
+        val sent = sendStep.retry(itemId)
+        if (sent.establish) {
+            contactOf(itemId)?.let { establishment.estStart(it, userRetry = true) }
+        }
+        SendResult.of(sent.outcome)
+    }
+
+    /** The contact an outbound item belongs to, for the `EST-START` a retry may owe. */
+    private fun contactOf(itemId: ByteArray): ByteArray? =
+        database.transaction { tx -> messages.item(tx.sql, itemId)?.contactId }
 
     /**
      * One send, and the `EST-START` that follows it when there was no usable session.
@@ -228,7 +245,9 @@ internal class MessagingEngine(
     ): SendResult {
         val contactId = contact.toByteArray()
         val sent = sendStep.send(contactId, kind, body, quote, timerCode)
-        if (sent.establish) establishment.estStart(contactId)
+        // `userRetry`: a send is the user action §21.7 point 5 and §13.5 mean by "the user may
+        // retry", so it also reopens a contact the three automatic windows gave up on.
+        if (sent.establish) establishment.estStart(contactId, userRetry = true)
         return SendResult.of(sent.outcome)
     }
 

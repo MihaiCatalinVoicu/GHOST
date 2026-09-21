@@ -3,6 +3,7 @@ package org.ghost.messaging.engine
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.MessageStore
+import org.ghost.messaging.store.SessionStore
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.SyncChange
@@ -49,6 +50,7 @@ internal class DmActor(
     private val database: SyncDatabase,
     private val sync: DmSyncPorts,
     private val establishment: EstablishmentSteps,
+    private val bundleStep: BundleStep,
     private val sendStep: SendStep,
     private val receiveStep: ReceiveStep,
     private val outcomeStep: OutcomeStep,
@@ -63,6 +65,7 @@ internal class DmActor(
 
     private val contacts = ContactStore()
     private val messages = MessageStore()
+    private val sessions = SessionStore()
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, THREAD_NAME).apply { isDaemon = true }
     }
@@ -203,7 +206,7 @@ internal class DmActor(
             database.transaction { tx ->
                 if (!sync.inbox.markConsumed(tx, blob.namespace, blob.hash)) return@transaction
                 if (contactId == null) return@transaction
-                if (establishment.bundle(tx, contactId, blob.ciphertext)) {
+                if (bundleStep.bundle(tx, contactId, blob.ciphertext)) {
                     candidateSince.putIfAbsent(contactId.toList(), clock.nowEpochSeconds())
                 }
             }
@@ -265,7 +268,58 @@ internal class DmActor(
                 EstablishmentSteps.Due.NONE -> Unit
             }
         }
+        flushStranded(now)
         failExpiredPending(now)
+    }
+
+    /**
+     * §21.7 point 4's "retried at the next time-triggered pass", for the pending items of contacts
+     * that are **not** fetching.
+     *
+     * `EST-READY` commits `establishment = ready` and the flush that follows it is a separate
+     * transaction per item, and `flushOne` answers false on a full disk, on a week whose slot table
+     * cannot give a quorum, and on a session that turned out to be unusable. Every one of those
+     * leaves a live `dm_pending_send` row on a contact the establishment loop above no longer
+     * visits — as does a process death between the `EST-READY` commit and the flush. The user's
+     * send reported `QUEUED`; without this step the item would sit until `fail_after_hour` and
+     * fail, days after later messages to the same contact were delivered.
+     *
+     * **It is not a time-triggered re-establishment** (§8.7, T28, T31). The cause is the user's own
+     * send — the pending item exists because of it, and §21.9 rule 1 already makes `EST-START` a
+     * step a time-triggered pass may run to *continue* one. What is forbidden is a re-establishment
+     * caused by something that **arrived**, and nothing here reads the inbox: the set of contacts
+     * it visits is a function of local rows that are identical in the two worlds `NoReflexTest`
+     * compares. `fetch_attempts` bounds it at three windows, after which `EST-END` fails the items.
+     */
+    private fun flushStranded(now: Long) {
+        val stranded = database.transaction { tx ->
+            contacts.contacts(tx.sql)
+                .filter { it.establishment != ContactStore.Establishment.FETCHING }
+                .filter {
+                    it.trust == ContactStore.Trust.UNVERIFIED ||
+                        it.trust == ContactStore.Trust.VERIFIED
+                }
+                .filter { messages.pendingSends(tx.sql, it.contactId).isNotEmpty() }
+                .map { it.contactId }
+        }
+        for (contactId in stranded) {
+            sendStep.flushPending(contactId)
+            // A fetch only when the contact has **no usable session to seal onto**, never merely
+            // because the flush did not succeed. A full disk or a week whose slot table gives no
+            // quorum leaves the item pending on a perfectly good session, and re-establishing for
+            // that would spend a `P_c` window — relay-visible, and bounded by L7-D6 — on a problem
+            // no bundle can solve. When there is no usable session, the send that queued the item
+            // already asked for an establishment, and this is that establishment continuing.
+            val needsSession = database.transaction { tx ->
+                if (messages.pendingSends(tx.sql, contactId).isEmpty()) {
+                    false
+                } else {
+                    val current = sessions.current(tx.sql, contactId)
+                    current == null || SessionSlots.isStale(current, now)
+                }
+            }
+            if (needsSession) establishment.estStart(contactId)
+        }
     }
 
     /**

@@ -283,16 +283,27 @@ object DmExpiredRowLint {
      * The five fixture rows. Three are expired and two are not, and the shapes are chosen so that
      * a filter on the **wrong column** is caught by a value rather than by a NULL:
      *
-     * | id | direction | state | `expire_at` | `unread_deadline` | `delete_at` |
-     * |---|---|---|---|---|---|
-     * | [EXPIRED_OUT] | out | sent | `NOW` | NULL | `NOW` — the boundary: `>=` admits it, `>` does not |
-     * | [EXPIRED_READ_IN] | in | read | `NOW - 60` | `NOW + 3600` | `NOW - 60` — an unread-deadline filter admits it |
-     * | [EXPIRED_UNREAD_IN] | in | unread | NULL | `NOW - 60` | `NOW - 60` — an `expire_at` filter admits it |
-     * | [LIVE_OUT] | out | sent | `NOW + 3600` | NULL | `NOW + 3600` |
-     * | [LIVE_IN] | in | unread | NULL | `NOW + 3600` | `NOW + 3600` |
+     * | id | direction | state | `minute_index` | `expire_at` | `unread_deadline` | `delete_at` |
+     * |---|---|---|---|---|---|---|
+     * | [EXPIRED_OUT] | out | sent | 1 | `NOW` | NULL | `NOW` — the boundary: `>=` admits it, `>` does not |
+     * | [EXPIRED_READ_IN] | in | read | 0 | `NOW - 60` | `NOW + 3600` | `NOW - 60` — an unread-deadline filter admits it |
+     * | [EXPIRED_UNREAD_IN] | in | unread | 0 | NULL | `NOW - 60` | `NOW - 60` — an `expire_at` filter admits it |
+     * | [LIVE_OUT] | out | sent | 0 | `NOW + 3600` | NULL | `NOW + 3600` |
+     * | [LIVE_IN] | in | unread | 0 | NULL | `NOW + 3600` | `NOW + 3600` |
      *
      * Both directions carry a live row, so an inbound-only or unread-only read path still matches
      * something and cannot pass [Outcome.returnsNothing] for free.
+     *
+     * **Why [EXPIRED_OUT] is the one row with a `minute_index` above zero.** `NEXT_MINUTE_INDEX`
+     * is `SELECT max(minute_index) … direction = 'out' AND author_minute = ?`, and every fixture
+     * row used to carry index 0 — so the aggregate answered 0 in both worlds whether or not the
+     * expiry filter was there, and an aggregate always returns a row, so
+     * [Outcome.returnsNothing] did not catch it either. The registry entry was vacuous: deleting
+     * the filter from the production query left the lint green. With the expired outgoing row one
+     * index above the live one, the unswept world answers 1 and the swept world 0, which is the
+     * repeat `MessageStore.nextMinuteIndex` exists to prevent. `dm_message` has no UNIQUE over
+     * `(conversation_id, author_minute, minute_index)`, only
+     * `CHECK (minute_index BETWEEN 0 AND 65535)`, so the fixture is legal.
      */
     val EXPIRED_OUT: ByteArray = ByteArray(16) { 0xE0.toByte() }
     val EXPIRED_READ_IN: ByteArray = ByteArray(16) { 0xE1.toByte() }
@@ -318,13 +329,14 @@ object DmExpiredRowLint {
         val state: String,
         val expireAt: Long?,
         val unreadDeadline: Long?,
+        val minuteIndex: Long = 0,
     ) {
         /** `delete_at_minute` follows its CHECK: the expiry minute when there is one, else the deadline. */
         val deleteAt: Long? get() = expireAt ?: unreadDeadline
     }
 
     private val fixtures = listOf(
-        Fixture(EXPIRED_OUT, "out", "sent", NOW, null),
+        Fixture(EXPIRED_OUT, "out", "sent", NOW, null, minuteIndex = 1),
         Fixture(EXPIRED_READ_IN, "in", "read", NOW - 60, NOW + 3600),
         Fixture(EXPIRED_UNREAD_IN, "in", "unread", null, NOW - 60),
         Fixture(LIVE_OUT, "out", "sent", NOW + 3600, null),
@@ -352,9 +364,9 @@ object DmExpiredRowLint {
             db.exec(
                 "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, sort_minute, " +
                     "minute_index, timer_code, body_env, state, expire_at_minute, unread_deadline_minute, " +
-                    "delete_at_minute) VALUES (?, ?, ?, 1, ?, ?, 0, 4, ?, ?, ?, ?, ?)",
+                    "delete_at_minute) VALUES (?, ?, ?, 1, ?, ?, ?, 4, ?, ?, ?, ?, ?)",
                 listOf(
-                    row.id, CONVERSATION, row.direction, AUTHOR, AUTHOR,
+                    row.id, CONVERSATION, row.direction, AUTHOR, AUTHOR, row.minuteIndex,
                     ByteArray(100) { row.id[0] }, row.state, row.expireAt, row.unreadDeadline, row.deleteAt,
                 ),
             )
@@ -374,9 +386,15 @@ object DmExpiredRowLint {
  * **What the arguments are chosen for.** Each set makes the query match something in the swept
  * world — [DmExpiredRowLint.Outcome.returnsNothing] refuses a query that matches nothing even
  * there, because such a query is broken rather than compliant — and, where the fixture allows it,
- * makes the **unswept** world differ if the filter were missing. `theUnreadCount` and
- * `theConversationPageBeforeACursor` are the two that do both: without the filter the first
- * counts `EXPIRED_UNREAD_IN` and the second returns all three expired rows.
+ * makes the **unswept** world differ if the filter were missing. `theUnreadCount`,
+ * `theConversationPageBeforeACursor` and `theNextMinuteIndex` all do both: without the filter the
+ * first counts `EXPIRED_UNREAD_IN`, the second returns all three expired rows, and the third
+ * answers the expired row's index instead of the live one's.
+ *
+ * `oneMessageById` is the one entry that cannot: a query keyed by a **live** id returns the same
+ * row in both worlds whatever the filter does, and an **expired** id returns nothing in either,
+ * which `returnsNothing` refuses as broken. Its filter is covered by the text scan alone, and
+ * that is stated here rather than left to be discovered.
  */
 object DmDaoQueries {
     data class Query(val name: String, val sql: String, val args: List<Any?>)

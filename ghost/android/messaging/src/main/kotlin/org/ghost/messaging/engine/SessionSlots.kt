@@ -202,6 +202,28 @@ internal class SessionSlots(private val sessions: SessionStore = SessionStore())
         if (row.pairSent) sessions.markPairSent(tx, contactId, slot)
     }
 
+    companion object {
+        /** §8.7: `UNACK_MAX`. */
+        const val UNACK_MAX_DAYS: Long = 28
+
+        /**
+         * §8.7: an **initiator** session unacknowledged for `UNACK_MAX = 28 days` is stale, and it
+         * is no longer a *usable* session for §21.7 point 4's purposes — the contact never answered
+         * it and may have erased the generation it was built on.
+         *
+         * It lives here rather than in [SendStep] because three steps have to agree on it: the
+         * send that asks for a re-establishment, the flush that must not seal onto the session
+         * being replaced, and `EST-READY`, whose "unless a **usable** session already exists" is
+         * this predicate and not "unless a row exists". A copy in each of them is how a session
+         * becomes permanent (the send keeps asking, the establishment keeps refusing).
+         */
+        fun isStale(session: SessionStore.SessionRow, now: Long): Boolean {
+            if (!session.initiator || session.acknowledged) return false
+            val since = session.unackSinceDay ?: return false
+            return DmTime.day(now) - since >= UNACK_MAX_DAYS
+        }
+    }
+
     /** Bytewise, as §8.2's tie-break reads it: "the smaller session id wins". */
     private fun compareUnsigned(left: ByteArray, right: ByteArray): Int {
         val size = minOf(left.size, right.size)

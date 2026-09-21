@@ -105,7 +105,9 @@ class OwnerWorld(
         )
     }
 
-    internal val contactSteps: ContactSteps by lazy { ContactSteps(database, crypto, random, contexts) }
+    internal val contactSteps: ContactSteps by lazy {
+        ContactSteps(database, crypto, random, contexts, establishment)
+    }
 
     internal val sendStep: SendStep by lazy {
         SendStep(database, dmSync, envelopes, material, relayResolver, clock, random, contexts)
