@@ -103,6 +103,15 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
     // do with them.
     (23, "revocationIssue", Availability::Exported),
     (23, "revocationVerify", Availability::Exported),
+    // 24 `l1Parse` is §2.6's own `L1.parse(bytes)`, which §22.9 item 12 deferred because S4b had
+    // no caller and S7's callers all held an **envelope**: `openOuter` and `openIntro` return the
+    // header beside the L1 they just opened, so nothing had to parse bare bytes. **HELD does**
+    // (§22.8.1 rule 1): a held row stores the L1 and not the envelope — the envelope's own keys
+    // are why `gen_id` and `prov_env` are separate columns — and the replay has to group the rows
+    // by `session_id` and order each group by the inner chain index before the first
+    // `sessionInbound` runs. Parsing those bytes in Kotlin is the protobuf reader over
+    // attacker-supplied input that ADR-19 and `L1.kt`'s own header forbid.
+    (24, "l1Parse", Availability::Exported),
 ];
 
 /// The codes each exported function can return besides [`DmCode::Ok`] (review round 2,
@@ -290,6 +299,9 @@ pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
             DmCode::BadSignature,
         ],
     ),
+    // `l1Parse` is stateless: an L1 is inside a GHOST AEAD by the time anybody holds it, so bytes
+    // that do not decode are a format failure and never a decryption one (§2.6's `Invalid` arm).
+    ("l1Parse", &[DmCode::NonCanonical]),
     (
         "l0Encode",
         &[
@@ -2010,6 +2022,38 @@ pub fn revocation_verify(
         .into_bytes())
 }
 
+/// Function 24 (added by S8): `l1Parse(l1, isPreKey)` — §2.6's `L1.parse` (§22.8.1 rule 1).
+///
+/// Stateless. The caller says which kind it expects, because an Olm message's version byte carries
+/// the type and a held row already knows it was a PreKey message; a mismatch is
+/// [`DmCode::NonCanonical`], the `Invalid` arm of the typed facade. Every Curve25519 key the
+/// message carries is checked for a canonical encoding on the way through (R2-06), so a caller
+/// cannot obtain two session ids for one key set.
+pub fn l1_parse(env: &mut JNIEnv, l1: &JByteArray, is_pre_key: jint) -> Result<Vec<u8>, DmCode> {
+    let l1 = bytes(env, l1)?;
+    let is_pre_key = is_pre_key != 0;
+    let header = crate::olm::message::parse(&l1, is_pre_key)?;
+    let reply = Reply::ok()
+        .field(Field::Flags, &[if is_pre_key { FLAG_PRE_KEY } else { 0 }])
+        .field(Field::RatchetKey, &header.ratchet_key())
+        .field(Field::ChainIndex, &header.chain_index().to_be_bytes());
+    Ok(match header {
+        crate::olm::message::L1Header::PreKey {
+            identity_key,
+            base_key,
+            one_time_key,
+            session_id,
+            ..
+        } => reply
+            .field(Field::OlmIdentity, &identity_key)
+            .field(Field::BaseKey, &base_key)
+            .field(Field::OneTimeKey, &one_time_key)
+            .field(Field::SessionId, &session_id),
+        crate::olm::message::L1Header::Normal { .. } => reply,
+    }
+    .into_bytes())
+}
+
 /// Function 21 (added by S7): `provisionalKeys(h, contactId, sessionId, stateEnv, provEnv,
 /// ownIsSenderUnused, peerOlmIdentity)`.
 ///
@@ -2820,6 +2864,16 @@ pub mod entry {
         })
     }
 
+    /// `l1Parse`
+    pub fn l1_parse<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        l1: JByteArray<'local>,
+        is_pre_key: jint,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| super::l1_parse(env, &l1, is_pre_key))
+    }
+
     /// `provisionalKeys`
     #[allow(clippy::too_many_arguments)]
     pub fn provisional_keys<'local>(
@@ -2933,6 +2987,7 @@ macro_rules! export_jni {
         $crate::export_jni!(@one provisionalKeys provisional_keys);
         $crate::export_jni!(@one revocationIssue revocation_issue);
         $crate::export_jni!(@one revocationVerify revocation_verify);
+        $crate::export_jni!(@one l1Parse l1_parse);
         $crate::export_jni!(@one l0Encode l0_encode);
         $crate::export_jni!(@one l0Decode l0_decode);
     };
@@ -3364,6 +3419,19 @@ macro_rules! paste_export {
             b: ::jni::objects::JByteArray<'local>,
         ) -> ::jni::sys::jbyteArray {
             $crate::jni::entry::revocation_verify(env, class, a, b)
+        }
+    };
+    (l1Parse, $rust:ident) => {
+        /// One entry point of the closed JNI surface (design §2.6); the body is in
+        /// [`crate::jni::entry`].
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_l1Parse<'local>(
+            env: ::jni::JNIEnv<'local>,
+            class: ::jni::objects::JClass<'local>,
+            a: ::jni::objects::JByteArray<'local>,
+            is_pre_key: ::jni::sys::jint,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::l1_parse(env, class, a, is_pre_key)
         }
     };
     (provisionalKeys, $rust:ident) => {

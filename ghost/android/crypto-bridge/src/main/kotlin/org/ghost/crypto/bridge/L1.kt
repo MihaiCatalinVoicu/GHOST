@@ -12,9 +12,10 @@ package org.ghost.crypto.bridge
  * those calls returned, not a Kotlin parser — ADR-19 puts no protocol logic in Kotlin, and a
  * Kotlin protobuf reader over attacker-supplied bytes is exactly what that rule forbids.
  *
- * Those two functions are on the closed list and arrive with slice S7; until then this type is the
- * shape `:messaging` codes against, and [Invalid] is what a caller gets from a reply that does not
- * carry a complete header.
+ * Those two functions are on the closed list and arrived with slice S7. [L1.parse] is the third
+ * source, added by S8 for the one caller that holds bare L1 bytes and no envelope — the HELD
+ * replay — and it is still Rust's parse, not Kotlin's. [Invalid] is what a caller gets from bytes
+ * that do not carry a complete header of the kind it asked for.
  */
 sealed interface L1 {
 
@@ -89,4 +90,45 @@ sealed interface L1 {
             is Normal -> chainIndex
             Invalid -> null
         }
+
+    companion object {
+        /**
+         * §2.6's `L1.parse(bytes)`, through function 24 of the closed surface (added by S8).
+         *
+         * **The one caller that needs it holds no envelope.** `openOuter` and `openIntro` return
+         * the header beside the L1 they just opened, so every S7 caller had its fields for free;
+         * a `dm_held` row stores the L1 alone (§8.3), and §22.8.1 rule 1 has HELD group the rows
+         * by `session_id` and order each group by the inner chain index **before** the first
+         * `sessionInbound` runs. The parse stays in Rust — this is a view over what the crate
+         * returned, not a Kotlin protobuf reader over attacker-supplied bytes (ADR-19).
+         *
+         * [isPreKey] says which kind the caller expects; a mismatch is [Invalid], as is anything
+         * that does not decode or carries a non-canonical Curve25519 key (R2-06).
+         */
+        fun parse(l1: ByteArray, isPreKey: Boolean): L1 {
+            if (!DmNative.isAvailable()) return Invalid
+            val result = dmCall { DmNative.l1Parse(l1, if (isPreKey) 1 else 0) }
+            return when (result.code) {
+                DmCode.OK ->
+                    if (result.byte(DmField.FLAGS) and DM_FLAG_PRE_KEY != 0) {
+                        PreKey(
+                            olmIdentity = result.bytes(DmField.OLM_IDENTITY),
+                            baseKey = result.bytes(DmField.BASE_KEY),
+                            fallbackKey = result.bytes(DmField.ONE_TIME_KEY),
+                            sessionId = result.bytes(DmField.SESSION_ID),
+                            ratchetKey = result.bytes(DmField.RATCHET_KEY),
+                            chainIndex = result.i64(DmField.CHAIN_INDEX),
+                        )
+                    } else {
+                        Normal(
+                            ratchetKey = result.bytes(DmField.RATCHET_KEY),
+                            chainIndex = result.i64(DmField.CHAIN_INDEX),
+                        )
+                    }
+                DmCode.NON_CANONICAL -> Invalid
+                DmCode.CRYPTO_UNAVAILABLE -> Invalid
+                else -> unexpected(result.code, "l1Parse")
+            }
+        }
+    }
 }

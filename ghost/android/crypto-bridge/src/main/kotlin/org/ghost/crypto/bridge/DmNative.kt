@@ -369,4 +369,11 @@ object DmNative {
         cert: ByteArray,
         expectedIdentityPk: ByteArray,
     ): ByteArray?
+
+    // Function 24, added by S8: §2.6's `L1.parse`, for the one caller that holds bare L1 bytes and
+    // no envelope — the HELD replay of §22.8.1, which orders the held rows by `session_id` and
+    // inner chain index. Stateless.
+    @JvmStatic
+    @JvmName("l1Parse")
+    internal external fun l1Parse(l1: ByteArray, isPreKey: Int): ByteArray?
 }
