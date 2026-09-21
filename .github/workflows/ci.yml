@@ -167,10 +167,15 @@ jobs:
           # CARGO_HOME is persistent on the self-hosted runners (docs/ci-self-hosted.md): a run
           # cancelled mid-install can leave cargo-ndk's binaries in CARGO_HOME/bin without cargo's
           # own install record, so a later plain `cargo install` refuses them ("already exists in
-          # destination"). `cargo install --list` reflects only a completed install, so this skips
-          # reinstalling a good one and --force clears a stray or wedged one either way.
-          installed="$(cargo install --list)"
-          if grep -qx "cargo-ndk v${CARGO_NDK_VERSION}:" <<< "$installed"; then
+          # destination"). `cargo install --list` only proves cargo's own ledger has an entry, not
+          # that the binary it names still runs -- a wedged ledger entry with a missing or broken
+          # binary (observed on ghost-runner-2, 2026-09-21: `cargo install --list` said installed,
+          # `cargo ndk --version` found nothing) made this step skip forever while
+          # build-native.sh's own check kept failing. Run the exact check build-native.sh runs, so
+          # the two can never disagree: skip only when the binary itself answers with the pinned
+          # version, and --force clears a stray, wedged or half-installed one either way.
+          have="$(cargo ndk --version 2>/dev/null | awk '{print $2}' || true)"
+          if [ "$have" = "$CARGO_NDK_VERSION" ]; then
             echo "cargo-ndk $CARGO_NDK_VERSION already installed"
           else
             cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked --force
