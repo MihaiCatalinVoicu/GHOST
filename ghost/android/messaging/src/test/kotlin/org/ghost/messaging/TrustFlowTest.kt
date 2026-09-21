@@ -67,11 +67,22 @@ class TrustFlowTest {
             assertEquals("the notice is one store", storesAfterIssue + 1, storeCount(bob))
             assertEquals(0, scheduledCount(bob))
 
+            val establishmentBefore = alice.engine.contacts().single().establishment
             world.deliverBetween(bob, alice)
             alice.hintPass()
             assertEquals(TrustState.REVOKED, alice.engine.contacts().single().trust)
             assertEquals(1, alice.engine.status().drops["revoked"])
             assertEquals("both sessions go with it (§8.5)", 0, sessionCount(alice))
+            // §21.7 point 7 and mutant PM-31: `RECV` may not call `Namespaces.setListening`, and
+            // the actor only visits contacts whose establishment is `fetching` — so a revocation
+            // that rewrote this column would leave an open `P_c` window with nothing left that
+            // could close it. It leaves the column exactly as it found it, and `EST-END` stays in
+            // charge of any window that was open.
+            assertEquals(
+                "a revocation does not touch the establishment state",
+                establishmentBefore,
+                alice.engine.contacts().single().establishment,
+            )
             assertEquals(SendResult.REVOKED, alice.engine.send(contactB, "still there?", null))
 
             // Nothing from B is shown again: an intro envelope hits the revoked contact at R5.
@@ -338,6 +349,7 @@ class TrustFlowTest {
             world.bob.timeTriggeredPass()
         }
     }
+
 
     private fun rootGenerations(device: DmDevice): List<Int> {
         val out = ArrayList<Int>()

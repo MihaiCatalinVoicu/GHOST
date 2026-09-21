@@ -374,11 +374,21 @@ internal class ContactStore {
      * `X_c` and `P_c` are derived from when the user finally deletes the row, so erasing it here
      * would leave two `:sync` namespaces nothing on the device could name (§21.12 point 3).
      * `pending_identity` goes, because the schema's CHECK ties it to `trust_state = 'changed'`.
+     *
+     * **The establishment state stays**, and that is deliberate. A revocation is applied inside
+     * `RECV`, which may not call `Namespaces.setListening` (§21.7 point 7, gate G-DM2), so it
+     * cannot close an open `P_c` window itself; and the actor only ever visits contacts whose
+     * establishment is `fetching`, so moving this one to `card_only` would leave `P_c` listening
+     * with its FETCH credentials installed and nothing left that could ever close it — the
+     * unbounded-attempts half of mutant PM-31, which §22.12 item 18(a) fixed for `block`. Left
+     * `fetching`, the contact is still visited: `EST-READY` refuses it (its guard admits only
+     * `unverified` and `verified`), `EST-END` closes the window at its own minute, and after the
+     * third attempt the namespace is removed and the pending items fail — the bound L7-D6 already
+     * declares. The user's way out is `deleteContact`, which records the orphan namespaces.
      */
     fun revoke(tx: SyncTransaction, contactId: ByteArray): Boolean = tx.sql.execUpdate(
         "UPDATE dm_contact SET trust_state = 'revoked', pending_identity = NULL, " +
-            "request_until_day = NULL, verified_fp = NULL, establishment = 'card_only', " +
-            "fetch_attempts = 0, fetch_listen_until_minute = NULL " +
+            "request_until_day = NULL, verified_fp = NULL " +
             "WHERE contact_id = ? AND trust_state <> 'revoked'",
         listOf(contactId),
     ) == 1
