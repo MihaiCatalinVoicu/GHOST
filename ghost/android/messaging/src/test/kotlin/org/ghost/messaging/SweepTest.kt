@@ -321,6 +321,37 @@ class SweepTest {
         assertTrue(third.checkpointed)
     }
 
+    // --------------------------------------------------------------- a full disk
+
+    /**
+     * §13.1, §21.12 point 1: `SQLITE_FULL` is a **state of the device**, not a bug — and SWEEP is
+     * the first step of every actor pass (§13.7's order), so a full disk propagating out of it
+     * would take `RECV`, `OUTCOME` and the bundle claims down with it.
+     *
+     * A device that cannot delete would then also stop receiving, which is the opposite of what a
+     * disk-full device needs. SQLite rolls its own transaction back, so nothing partial commits;
+     * the next sweep finds the same rows and takes them.
+     *
+     * The fault is injected at the media port, which is the one seam inside SWEEP's transaction a
+     * Phase 11 implementation really writes through.
+     */
+    @Test
+    fun aFullDiskLeavesTheRowsAndDoesNotEscapeTheSweep() = OwnerWorld().use { world ->
+        world.activate()
+        world.seedConversation()
+        world.seedMessage(id = 0xE1, deleteAt = DmTime.floorMinute(world.clock.now) - minute)
+
+        world.media.failStorageFull = true
+        val failed = world.sweeper.sweep()
+        assertEquals("nothing was deleted", 0, failed.rows)
+        assertEquals("and nothing was committed", 1, world.count("SELECT count(*) FROM dm_message"))
+        assertEquals("the expiry clock did not move either", 0L, world.expiryClock() % 60)
+
+        world.media.failStorageFull = false
+        assertEquals("the next sweep takes the same row", 1, world.sweeper.sweep().messages)
+        assertEquals(0, world.count("SELECT count(*) FROM dm_message"))
+    }
+
     // ------------------------------------------------------------------- the wake
 
     /**

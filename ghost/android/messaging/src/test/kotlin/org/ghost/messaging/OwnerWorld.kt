@@ -622,7 +622,19 @@ class RecordingNotifications : NotificationPort {
 class RecordingMedia : MediaPort {
     val deleted = ArrayList<List<String>>()
 
+    /**
+     * When set, the port raises `SQLITE_FULL` from inside SWEEP's transaction — the fault
+     * injection of §21.12 point 1 and SCN-J, at the one seam a Phase 11 media store would really
+     * write through. A full disk must not take the rest of the actor pass down with it.
+     */
+    var failStorageFull: Boolean = false
+
     override fun onMessagesDeleted(tx: SyncTransaction, ids: List<MessageId>) {
+        if (failStorageFull) {
+            throw org.ghost.storage.StorageFullException(
+                IllegalStateException("[SQLITE_FULL] injected"),
+            )
+        }
         deleted += ids.map { id -> id.toByteArray().joinToString("") { "%02x".format(it) } }
     }
 

@@ -11,6 +11,7 @@ import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.messaging.store.OwnerStore
 import org.ghost.messaging.store.SessionStore
+import org.ghost.storage.StorageFullException
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.Namespaces
 import org.ghost.sync.api.SyncDatabase
@@ -130,8 +131,27 @@ internal class Sweeper(
      */
     private var checkpointDue: Boolean = false
 
-    /** Runs one SWEEP. Safe to call at any time and from any of the five triggers of §10.7. */
-    fun sweep(): SweepReport {
+    /**
+     * Runs one SWEEP. Safe to call at any time and from any of the five triggers of §10.7.
+     *
+     * **A full disk does not stop the pass.** SWEEP is the first step of every actor pass
+     * (§13.7's order), so a `StorageFullException` propagating out of it would take `RECV`,
+     * `OUTCOME` and the bundle claims with it — a device that cannot delete would also stop
+     * receiving, which is the opposite of what a disk-full device needs. `SQLITE_FULL` is a failed
+     * **write** and a state of the device, not a bug (§13.1, §21.12 point 1): SQLite rolls its own
+     * transaction back, nothing partial is committed, and the next sweep finds the same rows and
+     * tries again. The report then reads as a sweep that deleted nothing, which is true.
+     *
+     * Nothing else is caught. A CHECK violation, a trigger abort or a constraint failure is a bug
+     * in a rule this file is supposed to keep, and it belongs where it can be seen.
+     */
+    fun sweep(): SweepReport = try {
+        sweepOrThrow()
+    } catch (e: StorageFullException) {
+        SweepReport(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, checkpointed = false)
+    }
+
+    private fun sweepOrThrow(): SweepReport {
         val nowE = expiryClockMinute()
         val today = DmTime.day(nowE)
         val week = DmTime.week(nowE)
