@@ -9,6 +9,9 @@ android {
     defaultConfig {
         minSdk = libs.versions.minSdk.get().toInt()
         consumerProguardFiles("consumer-rules.pro")
+        // `DeviceGateSuite` (Phase 9 design §15.9; slice S12) through the plain-Instrumentation
+        // runner of `:crypto-bridge`'s `src/deviceRunner` (§16.3 adds no Gradle coordinate).
+        testInstrumentationRunner = "org.ghost.messaging.device.MessagingDeviceRunner"
     }
 
     compileOptions {
@@ -25,6 +28,15 @@ android {
         getByName("test") {
             kotlin.srcDir("../storage/src/testShared/kotlin")
         }
+        getByName("androidTest") {
+            kotlin.srcDir("../crypto-bridge/src/deviceRunner/kotlin")
+            // §15.9 item 3: the device suite runs the **shipped** library, `libghost_client_net.so`
+            // with the DM symbols, which `:network` packages into the app. A library module's test
+            // APK does not inherit it, so the suite packages the same directory the CI jobs fill
+            // from `scripts/build-native.sh` (`dm-emulator.yml` does it before assembling). Empty
+            // locally: the suite then fails at `System.loadLibrary`, it does not skip.
+            jniLibs.srcDir(file("../network/src/main/jniLibs"))
+        }
     }
 }
 
@@ -40,6 +52,11 @@ dependencies {
     implementation(project(":identity"))
     testImplementation(libs.junit)
     testImplementation(libs.sqlite.jdbc)
+    // The emulator suite (§15.9): JUnit 4 through `DeviceRunner`, and SQLCipher opened the way
+    // `:storage` opens it. Every coordinate is one the project already ships or tests with (§16.3).
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.sqlcipher.android)
+    androidTestImplementation(libs.androidx.sqlite)
 }
 
 // The send-and-receive worlds run the **real** DM cryptography through the host build

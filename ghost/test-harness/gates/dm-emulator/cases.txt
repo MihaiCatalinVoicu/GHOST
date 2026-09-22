@@ -1,0 +1,5 @@
+# A three-case stand-in for protocol/test-vectors/dm_equivalence.txt (dm-emulator-check.sh reads
+# only its number of cases).
+ok_derive_0 01 00
+refuse_derive_0 01 0001
+control ff 00ff

@@ -1,0 +1,9 @@
+INSTRUMENTATION_RESULT: stream=dm-device: sqlcipher v3 -> v4 -> v5 ok
+dm-device: SCN-A one-scan flow to pair mode, order digests equal
+dm-device: SCN-B shuffled delivery, one rendered order
+dm-device: SCN-F five-minute timer swept, WAL 0 bytes
+dm-device: alarm scheduled and cancelled
+dm-device: SCN-D key change held and released; logcat holds no canary (5 canaries)
+device tests: 6 run, 0 failed, 0 skipped
+
+INSTRUMENTATION_CODE: -1

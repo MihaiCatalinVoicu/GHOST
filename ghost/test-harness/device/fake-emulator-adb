@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# A fake `adb` for the self-test of scripts/device/dm-emulator-run.sh (Phase 9 design §15.9; slice
+# S12). It answers as one booted emulator: `getprop` with CRLF line ends, as `adb shell` prints them
+# on the older platform tools, `install`, and `am instrument` with the green outputs of
+# test-harness/gates/dm-emulator/pass/api35, the same files dm-emulator-check.sh's own self-test
+# reads. The equivalence runner refuses to run without a `commit` argument, as the real test
+# refuses a fixture it cannot tie to a commit.
+#
+# FAKE_EMU_API is the API level it reports (default 35); FAKE_EMU_BUG makes it misbehave:
+#   crash      the messaging suite's process crashes
+#   noinstall  every install fails (as INSTALL_FAILED_NO_MATCHING_ABIS would)
+# Nothing here is an emulator: it is the run script's counterpart for its own self-test.
+set -euo pipefail
+api="${FAKE_EMU_API:-35}"
+bug="${FAKE_EMU_BUG:-}"
+fixture="$(cd "$(dirname "${BASH_SOURCE[0]}")/../gates/dm-emulator/pass/api35" && pwd)"
+
+case "${1:-}" in
+  wait-for-device) exit 0 ;;
+  install)
+    if [ "$bug" = noinstall ]; then echo "Failure [INSTALL_FAILED_NO_MATCHING_ABIS]"; exit 1; fi
+    echo "Success"; exit 0 ;;
+  shell) shift ;;
+  *) echo "fake-emulator-adb: unsupported $*" >&2; exit 2 ;;
+esac
+
+case "${1:-} ${2:-}" in
+  "getprop ro.build.version.sdk") printf '%s\r\n' "$api" ;;
+  "getprop ro.product.cpu.abi") printf 'x86_64\r\n' ;;
+  "am instrument")
+    component="${*: -1}"
+    case "$component" in
+      org.ghost.crypto.bridge.test/org.ghost.crypto.bridge.device.CryptoBridgeDeviceRunner)
+        if [[ " $* " != *" -e commit "* ]]; then
+          printf 'INSTRUMENTATION_RESULT: stream=dm-equivalence: refused (no commit)\ndevice tests: 1 run, 1 failed, 0 skipped\n\nINSTRUMENTATION_CODE: 0\n'
+        else
+          cat "$fixture/crypto-bridge.txt"
+        fi ;;
+      org.ghost.messaging.test/org.ghost.messaging.device.MessagingDeviceRunner)
+        if [ "$bug" = crash ]; then
+          printf 'INSTRUMENTATION_RESULT: shortMsg=Process crashed.\nINSTRUMENTATION_CODE: 0\n'
+        else
+          cat "$fixture/messaging.txt"
+        fi ;;
+      org.ghost.app.test/org.ghost.app.smoke.AppDeviceRunner) cat "$fixture/app-smoke.txt" ;;
+      *) printf 'INSTRUMENTATION_STATUS: Error=Unable to find instrumentation info for: %s\nINSTRUMENTATION_FAILED: %s\n' "$component" "$component" ;;
+    esac ;;
+  *) exit 0 ;;
+esac
