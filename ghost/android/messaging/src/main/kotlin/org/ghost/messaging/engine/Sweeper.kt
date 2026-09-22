@@ -211,6 +211,14 @@ internal class Sweeper(
         for (messageId in expired) messageRows += messages.deleteMessage(tx, messageId)
 
         // 3. Requests past their day: the contact goes and everything of it cascades (§12.3).
+        //
+        // This deletes the contact row directly rather than through `ContactSteps.deleteContact`,
+        // and the difference is the orphan namespaces §21.12 point 3 makes that step record
+        // fail-closed. A contact in `request` has none: `X_c` is registered by SEND's step S7 and
+        // by the contact half of KEEPER, both of which refuse a contact the user cannot send to,
+        // and `P_c` by `EST-START`, which a request never reaches. So there is nothing to record,
+        // and recording nothing is correct here rather than a gap — which is worth saying, because
+        // the S7 review found the opposite shape (a delete that committed with no orphan row).
         var requestRows = 0
         for (contactId in contacts.expiredRequests(tx.sql, today, BATCH)) {
             requestRows += contacts.deleteContact(tx, contactId)
