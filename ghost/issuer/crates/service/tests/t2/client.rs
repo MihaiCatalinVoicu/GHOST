@@ -195,6 +195,35 @@ pub struct Trial {
 /// A pending write: (namespace, blob, blob hash, stored at relay k).
 pub type Outbox = ([u8; 32], Vec<u8>, [u8; 32], [bool; 3]);
 
+/// The DM owner namespaces of an activated identity (Phase 9 design §4.9 point 2, §4.8, §5.1): the
+/// inbox `X` (listened by the owner, registered for DEPOSIT and READ) and the bundle namespace `P`
+/// (write-only for the owner, registered for FETCH). They are registration-only namespaces: the
+/// owner redeems for them at once (Q31's default, a WRITE MISSING need while a registration is
+/// pending) and renews them at the EXPIRING PRF time like every other pair. DM deposits and bundle
+/// publications are not modelled: they spend no token and involve no issuer (T27), which the DM
+/// privacy world of §15.6 is what proves.
+#[derive(Clone, Copy)]
+pub struct DmOwner {
+    pub inbox: [u8; 32],
+    pub bundle: [u8; 32],
+}
+
+impl DmOwner {
+    /// The bearer kinds §4.8 keeps registered for one of the two namespaces.
+    pub fn kinds(&self, ns: &[u8; 32]) -> &'static [ghost_relay_api::BearerKind] {
+        use ghost_relay_api::BearerKind;
+        if *ns == self.inbox {
+            &[BearerKind::Deposit, BearerKind::Read]
+        } else {
+            &[BearerKind::Fetch]
+        }
+    }
+
+    pub fn owns(&self, ns: &[u8; 32]) -> bool {
+        *ns == self.inbox || *ns == self.bundle
+    }
+}
+
 pub struct Client {
     pub id: u32,
     pub spec: ClientSpec,
@@ -228,6 +257,10 @@ pub struct Client {
     pub jobs: u64,
     // Relay-facing state.
     pub namespaces: Vec<[u8; 32]>,
+    /// The DM owner namespaces, from activation on (Phase 9 design §4.9 point 2).
+    pub dm: Option<DmOwner>,
+    /// DM registrations a relay answered `OK`: (relay, namespace, period, kind byte).
+    pub dm_registered: BTreeSet<(u8, [u8; 32], u64, u8)>,
     pub caps: HashMap<(u8, [u8; 32]), Cap>,
     pub cursors: HashMap<(u8, [u8; 32]), Vec<u8>>,
     pub outbox: Vec<Outbox>,
@@ -298,6 +331,8 @@ impl Client {
             first_seen: HashMap::new(),
             jobs: 0,
             namespaces: Vec::new(),
+            dm: None,
+            dm_registered: BTreeSet::new(),
             caps: HashMap::new(),
             cursors: HashMap::new(),
             outbox: Vec::new(),

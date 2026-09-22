@@ -75,6 +75,10 @@ t2r_case fail exempt-twin.txt gate "rejects an NI-2 line that compared an invite
 t2r_case fail no-such-report.txt gate "rejects a missing report"
 t2r_case fail missing-a1.txt gate "rejects a report without the A1 amount-uniformity line (FR-6′.7, §19.31)"
 t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet transfer"
+# Phase 9 design §4.9 point 3 (slice S11): the population line names the DM owner namespaces, and a
+# world whose relays answered none of their registrations OK did not model them.
+t2r_case fail missing-dm-namespaces.txt gate "rejects a population line without dm_owner_namespaces (Phase 9 §4.9)"
+t2r_case fail vacuous-dm-registrations.txt gate "rejects DM owner namespaces with no registration answered OK"
 t2r_case pass mutants-ok.txt mutants "accepts 26 detected mutants"
 t2r_case pass mutants-interleaved.txt mutants "accepts a detected mutant whose ok line another test's output ran into"
 t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"

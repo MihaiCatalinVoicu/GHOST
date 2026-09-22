@@ -361,13 +361,19 @@ pub fn population_check(f: &mut Findings, o: &Outcome, scale: Scale) {
     let packs = g("window packs signed") as f64;
     let need = o.log.need_starts.len() as f64;
     let want_need = population::NEED_SHARE * n;
+    // Phase 9 design §4.9 point 3: two DM owner namespaces per activated client, each registered
+    // at its relays. A world in which no client activated, or none registered, did not model them.
+    let dm_namespaces = g("dm owner namespaces");
+    let dm_registrations = g("dm registrations ok");
     let ok = (packs - n).abs() <= POPULATION_TOLERANCE * n
-        && (need - want_need).abs() <= (0.6 * want_need).max(3.0);
+        && (need - want_need).abs() <= (0.6 * want_need).max(3.0)
+        && dm_namespaces > 0
+        && dm_registrations > 0;
     f.check(
         "population",
         ok,
         format!(
-            "window packs signed {packs} (N = {n}, ±{:.0} %), need-triggered starts {need} ({:.0} % of N: {want_need:.0}), renewals started {}, invitee first packs {}, resumes {}, trials {}, credits packs {}, claims {}",
+            "window packs signed {packs} (N = {n}, ±{:.0} %), need-triggered starts {need} ({:.0} % of N: {want_need:.0}), renewals started {}, invitee first packs {}, resumes {}, trials {}, credits packs {}, claims {}, dm_owner_namespaces {dm_namespaces} ({} registrations ok, {} wrong_period, {} failed)",
             POPULATION_TOLERANCE * 100.0,
             population::NEED_SHARE * 100.0,
             g("window renewals started"),
@@ -375,7 +381,10 @@ pub fn population_check(f: &mut Findings, o: &Outcome, scale: Scale) {
             g("resumes started"),
             g("trials"),
             g("credits packs started"),
-            g("claims answered")
+            g("claims answered"),
+            dm_registrations,
+            g("dm registrations wrong_period"),
+            g("dm registrations failed"),
         ),
     );
 }

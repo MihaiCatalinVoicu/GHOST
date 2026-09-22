@@ -4,7 +4,9 @@
 #                                          for every check of §13.4, §19.16 and §19.31 (A1, the
 #                                          FR-6′.7 amount uniformity), the variant's scale, the
 #                                          reported S3c and E30 lines (E30 with a held session,
-#                                          §19.26), and the final "T2 RESULT: PASS";
+#                                          §19.26), the population line's `dm_owner_namespaces`
+#                                          field with registrations answered OK (Phase 9 design
+#                                          §4.9), and the final "T2 RESULT: PASS";
 #   t2-report-check.sh <report> mutants    the output of tests/t2_mutants.rs: all 26 privacy mutants
 #                                          (M1–M24 with M2b, M5a and M5b) detected.
 # A missing report, a missing line or a FAIL fails the check (exit 1); usage errors exit 2.
@@ -27,6 +29,14 @@ case "$kind" in
     # fails below its floors; a report that says otherwise is not evidence).
     if grep -qE '^(S1|S2): PASS n=0 |^S3[abd]: PASS .*n=0 |^S4( lying issuer)?: PASS .* over 0 |^NI-1d: PASS 0 drop|^NI-1 across cells: PASS 0 flows|^NI-1: PASS .*; 0 finalizations' "$report"; then
       bad "a check passed on an empty sample"
+    fi
+    # Phase 9 design §4.9 point 3: the population line counts the DM owner namespaces (two per
+    # activated client) and the registrations the relays answered OK. A population that names none,
+    # or registered nothing, did not model them.
+    grep -qE '^population: PASS .*dm_owner_namespaces [1-9][0-9]* \([0-9]+ registrations ok' "$report" \
+      || bad "the population line names no dm_owner_namespaces (Phase 9 design §4.9)"
+    if grep -qE '^population: PASS .*dm_owner_namespaces [0-9]+ \(0 registrations ok' "$report"; then
+      bad "the population line counts DM owner namespaces with no registration answered OK"
     fi
     # A1 (FR-6′.7, design §19.31) states every invoice amount and every transfer to an invoice's
     # subaddress: a PASS over no XMR invoice answer or no transfer tested nothing.

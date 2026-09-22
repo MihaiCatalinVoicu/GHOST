@@ -36,6 +36,9 @@ pub enum RelayOp {
     Check,
     List,
     Redeem,
+    /// `RegisterKey` (Phase 9 design §4.4): a DM owner's verifier for its own namespace, presented
+    /// with a write capability of that namespace (§4.9 point 2).
+    Register,
 }
 
 impl RelayOp {
@@ -46,6 +49,7 @@ impl RelayOp {
             RelayOp::Check => "check",
             RelayOp::List => "list",
             RelayOp::Redeem => "redeem",
+            RelayOp::Register => "register",
         }
     }
 }
