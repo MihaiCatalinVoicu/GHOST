@@ -64,9 +64,16 @@ class MessagingRuntimeTest {
 
         @Volatile
         var refuse: Boolean = false
+
+        /** The Keystore cannot create or use the key: `wrap`'s documented `IllegalStateException`. */
+        @Volatile
+        var refuseWrap: Boolean = false
         val unwrapThreads = CopyOnWriteArrayList<String>()
 
-        override fun wrap(key: ByteArray): ByteArray = real.wrap(key)
+        override fun wrap(key: ByteArray): ByteArray {
+            check(!refuseWrap) { "the DM key wrapper is unavailable" }
+            return real.wrap(key)
+        }
 
         override fun unwrap(wrapped: ByteArray): ByteArray {
             unwrapThreads += Thread.currentThread().name
@@ -274,6 +281,96 @@ class MessagingRuntimeTest {
         assertTrue("every pass reschedules the alarm (§10.7 trigger 5)", before > 0)
         runtime.cancelWakes()
         assertNull("§10.7: the alarm is cancelled at wipe", alarm.last)
+    }
+
+    @Test
+    fun aStateKeyTheKeystoreCannotWrapLeavesTheContextClosed() {
+        // S12 review: `wrap`'s IllegalStateException escaped `DmKeys.open`, and on a device every
+        // start with an identity and no `dm_self` row ended the process at the first open.
+        stateKeys.refuseWrap = true
+        assertEquals(DmKeys.Opened.STATE_KEY_UNAVAILABLE, runtime.unlock(::root))
+        assertFalse(runtime.unlocked)
+        assertNull(runtime.messaging.myCard())
+    }
+
+    @Test
+    fun aPostedUnlockAsksOnTheActorWhetherItIsStillWanted() {
+        val wanted = java.util.concurrent.atomic.AtomicBoolean(true)
+        runtime.requestUnlock(::root) { wanted.get() }
+        barrier()
+        assertTrue(runtime.unlocked)
+        runtime.requestLock()
+        barrier()
+        assertFalse(runtime.unlocked)
+        // A lock recorded after the unlock was posted wins, whichever reaches the actor first.
+        wanted.set(false)
+        runtime.requestUnlock(::root) { wanted.get() }
+        barrier()
+        assertFalse(runtime.unlocked)
+    }
+
+    @Test
+    fun theK20TurnReopensAndActivatesOnlyWhileWanted() {
+        assertNull(runtime.reopenAndActivate(::root, restored = false) { false })
+        assertFalse(runtime.unlocked)
+        assertFalse(dmSelfExists())
+        assertEquals(ActivationOutcome.ACTIVATED, runtime.reopenAndActivate(::root, restored = false) { true })
+        assertTrue(runtime.unlocked)
+        assertTrue(dmSelfExists())
+    }
+
+    @Test
+    fun aPassQueuedBeforeCloseDoesNotRearmTheAlarm() {
+        runtime.unlock(::root)
+        runtime.onTimeTrigger()
+        barrier()
+        // Hold the actor inside a facade call, then queue a hint pass and a time-triggered pass
+        // behind it, and close: the S12 review found that such passes ran after the wipe's cancel
+        // and their `afterCommit` put the alarm back into the system's table (§10.7).
+        val holding = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val threads = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val holder = threads.submit {
+                runtime.messaging.setNotificationPort(
+                    NotificationPort {
+                        holding.countDown()
+                        release.await(30, TimeUnit.SECONDS)
+                    },
+                )
+            }
+            assertTrue(holding.await(30, TimeUnit.SECONDS))
+            runtime.listener.onChanged(setOf(SyncChange.INBOX))
+            runtime.onTimeTrigger()
+            val before = alarm.requested.size
+            val closer = threads.submit { runtime.close() }
+            closed = true
+            Thread.sleep(200)
+            release.countDown()
+            closer.get(60, TimeUnit.SECONDS)
+            holder.get(60, TimeUnit.SECONDS)
+            assertNull("§10.7: the last request is the close's cancel", alarm.last)
+            assertEquals("the queued passes did nothing; only the last turn's cancel", before + 1, alarm.requested.size)
+            assertFalse(runtime.unlocked)
+        } finally {
+            release.countDown()
+            threads.shutdownNow()
+        }
+    }
+
+    @Test
+    fun aFacadeCallAfterCloseIsInternalNotAnExecutorRefusal() {
+        runtime.unlock(::root)
+        runtime.close()
+        closed = true
+        assertFalse("close closed the context", runtime.unlocked)
+        try {
+            runtime.messaging.status()
+            org.junit.Assert.fail("a stopped actor answered")
+        } catch (e: IllegalStateException) {
+            // The facade's INTERNAL (§2.6), not `RejectedExecutionException`.
+            Unit
+        }
     }
 
     @Test

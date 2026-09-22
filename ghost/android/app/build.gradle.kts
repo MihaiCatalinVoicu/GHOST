@@ -89,9 +89,19 @@ android {
     // `MessagingWiring`'s end-to-end test runs the real DM stack over a real migrated database
     // (Phase 9 design §13.7; slice S12), through the shared JDBC executor of :storage, :sync and
     // :messaging (Phase 7 design §1.5).
+    //
+    // `src/gate/digests` is the gate's order digest export (§15.10 steps 2 and 3): compiled into the
+    // `gate` variant and into the JVM tests, which pin its pure half (`OrderDigestsTest`, S12
+    // review) — this AGP creates unit tests for the tested build type only, so a `testGate` source
+    // set would never run. It is under `src/gate/`, so gate G-DM5 and anti-placeholder treat it as
+    // the gate's, and no release source set compiles it.
     sourceSets {
         getByName("test") {
             kotlin.srcDir("../storage/src/testShared/kotlin")
+            kotlin.srcDir("src/gate/digests/kotlin")
+        }
+        getByName("gate") {
+            kotlin.srcDir("src/gate/digests/kotlin")
         }
         getByName("androidTest") {
             kotlin.srcDir("../crypto-bridge/src/deviceRunner/kotlin")

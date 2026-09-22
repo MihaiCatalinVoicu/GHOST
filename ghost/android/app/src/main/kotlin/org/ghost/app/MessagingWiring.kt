@@ -4,7 +4,6 @@ import org.ghost.entitlement.api.IdentityActivationHook
 import org.ghost.identity.RootEntropy
 import org.ghost.messaging.api.ActivationOutcome
 import org.ghost.messaging.api.Messaging
-import org.ghost.messaging.engine.DmKeys
 import org.ghost.messaging.engine.MessagingRuntime
 import org.ghost.sync.api.ConsumerTail
 import org.ghost.sync.api.ParticipantSession
@@ -20,6 +19,10 @@ import java.util.concurrent.RejectedExecutionException
  * What [MessagingWiring] needs of one DM stack: `MessagingRuntime`'s surface, behind an interface so
  * the wiring's decisions are tested on the JVM against a recording stack (`MessagingWiringTest`)
  * and end to end against the real one (`MessagingWiringRuntimeTest`).
+ *
+ * Every context operation takes a `wanted` predicate that the stack asks **on the DM actor, in the
+ * turn that would open the context** (S12 review): that is what keeps a lock or a wipe the wiring
+ * recorded after the request was made from being undone by it.
  */
 internal interface DmStack : AutoCloseable {
     /** The sync stores this stack was built over; a new database means a new stack. */
@@ -27,10 +30,28 @@ internal interface DmStack : AutoCloseable {
     val messaging: Messaging
     val listener: SyncListener
     val consumerTail: ConsumerTail
+
+    /** Posts a time-triggered pass (§21.9 rule 1). */
     fun onTimeTrigger()
-    fun unlock(root: () -> RootEntropy?): DmKeys.Opened
+
+    /** Posts: the context reopened from [root] in one actor turn, if [wanted] still holds there. */
+    fun open(root: () -> RootEntropy?, wanted: () -> Boolean)
+
+    /**
+     * The K20 hook's body in one actor turn — reopen from [root], then ACTIVATE with [restored] —
+     * and waits for it. Null when [wanted] did not hold on the actor or the context did not open.
+     */
+    fun openAndActivate(root: () -> RootEntropy?, restored: Boolean, wanted: () -> Boolean): ActivationOutcome?
+
+    /** Posts the context's close: `ctxClose` and the Kotlin-side keys (§2.5). Returns at once. */
     fun lock()
-    fun cancelWakes()
+
+    /**
+     * Stops the stack for good: no pass that has not started runs, the context closes and both
+     * wakes are cancelled in the actor's last turn, then the actor and the timer stop. Blocks for as
+     * long as the pass in flight takes.
+     */
+    override fun close()
 }
 
 /** [DmStack] over the real `MessagingRuntime`. */
@@ -42,11 +63,12 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
 
     override fun onTimeTrigger() = runtime.onTimeTrigger()
 
-    override fun unlock(root: () -> RootEntropy?): DmKeys.Opened = runtime.unlock(root)
+    override fun open(root: () -> RootEntropy?, wanted: () -> Boolean) = runtime.requestUnlock(root, wanted)
 
-    override fun lock() = runtime.lock()
+    override fun openAndActivate(root: () -> RootEntropy?, restored: Boolean, wanted: () -> Boolean): ActivationOutcome? =
+        runtime.reopenAndActivate(root, restored, wanted)
 
-    override fun cancelWakes() = runtime.cancelWakes()
+    override fun lock() = runtime.requestLock()
 
     override fun close() = runtime.close()
 
@@ -79,13 +101,26 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
  *    first read of the connection (§22.14 item 7).
  *  - **The K20 hook** ([activationHook]): the identity changed (a trial, a restore, or — through
  *    the `gate` key-change hook — a bound new Olm identity), so the context is **reopened** from the
- *    identity now stored and ACTIVATE runs with the hook's own `restored` flag. It never throws and
- *    never blocks the entitlement thread that calls it: the work is posted to one wiring thread,
- *    because the hook is a prompt and §21.12 point 2 is the guarantee (§22.11 item 11).
+ *    identity now stored and ACTIVATE runs with the hook's own `restored` flag, in one actor turn.
+ *    It never throws and never blocks the entitlement thread that calls it: the work is posted to
+ *    one wiring thread, because the hook is a prompt and §21.12 point 2 is the guarantee (§22.11
+ *    item 11).
  *  - **Relay session start** ([onRelaySessionStart], through [sessionHooks]) and **the alarm**
  *    ([onAlarm]): time triggers (§21.9 rule 1, §10.7 triggers 3 and 5).
- *  - **Lock** ([onLock]) closes the context and drops the Kotlin-side keys; **wipe** ([onWipe]) does
- *    the same, cancels the in-process timer and the alarm, unsets the listener and stops the stack.
+ *  - **Lock** ([onLock]) closes the context and drops the Kotlin-side keys; **wipe** ([onWipe]) stops
+ *    the stack for good — the listener removed first, then the context closed and both wakes
+ *    cancelled in the actor's last turn — and cancels the alarm itself as well.
+ *
+ * **Lock and wipe are sticky** (S12 review). Both are recorded here before anything is posted, and
+ * every context open asks for them on the actor, in the turn that would open it ([contextWanted]):
+ * a K20 hook, a new database or an unlock posted before the lock can no longer reopen a context the
+ * app reports locked, and nothing builds a stack over a database being wiped until the next
+ * database key exists ([onKeyCreated]).
+ *
+ * **Nothing here throws into the thread that calls it** (S12 review): the hook thread, the sync
+ * runtime's callback thread and the consumer tail's all end the process on an uncaught exception
+ * (Phase 7 design §11.2 #11). A stack that cannot be built or opened leaves the facade answering
+ * `CRYPTO_UNAVAILABLE`, and the next trigger tries again.
  */
 internal class MessagingWiring(
     private val controller: SyncController,
@@ -104,6 +139,12 @@ internal class MessagingWiring(
     private val primeSchedule: () -> Unit,
     /** Installs (or, with null, removes) the alarm receiver's hand-off (`ExpiryAlarmReceiver.onAlarm`). */
     private val setAlarmHandler: ((() -> Unit)?) -> Unit,
+    /**
+     * Cancels the one inexact alarm (`ExpiryAlarm.wakeIn(null)`) whether or not a stack exists: an
+     * alarm set by an earlier process is in the system's table before this one built anything, and
+     * §10.7 cancels it at wipe all the same.
+     */
+    private val cancelAlarm: () -> Unit,
     /** The wiring thread the K20 hook posts to; injectable so a test can run it inline. */
     private val hookExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
         Thread(r, THREAD_NAME).apply { isDaemon = true }
@@ -114,8 +155,19 @@ internal class MessagingWiring(
     @Volatile
     private var stack: DmStack? = null
 
+    /** The app is locked (§2.5): no context opens until [onUnlock]. */
+    @Volatile
+    private var locked = false
+
+    /** Local data is being wiped: no stack is built and no context opens until [onKeyCreated]. */
+    @Volatile
+    private var wiped = false
+
     /** The facade of §13.2 over the open database, or null before the first database open. */
     val messaging: Messaging? get() = stack?.messaging
+
+    /** What every context open asks on the actor, in the turn that would open it. */
+    private fun contextWanted(): Boolean = !locked && !wiped
 
     /**
      * Process start (§13.7): the consumer tail and the alarm hand-off are installed before anything
@@ -129,8 +181,13 @@ internal class MessagingWiring(
         if (keyExists) whenStoresOpen(::onDatabaseOpen)
     }
 
-    /** The database key was just created (onboarding): the first database open follows. */
+    /**
+     * The database key was just created (onboarding): the first database open follows. It is also
+     * what lifts a wipe — the only database a wiped app can open again is the one this key opens.
+     */
     fun onKeyCreated() {
+        synchronized(lock) { wiped = false }
+        setAlarmHandler(::onAlarm)
         whenStoresOpen(::onDatabaseOpen)
     }
 
@@ -148,25 +205,59 @@ internal class MessagingWiring(
      * open owes. Runs on the thread `runWhenStoresOpen` gives it, outside any transaction.
      */
     fun onDatabaseOpen() {
-        primeSchedule()
+        if (wiped) return
+        try {
+            primeSchedule()
+        } catch (e: RuntimeException) {
+            // The acceptance transaction failed (a database closing under a wipe): the DM steps
+            // then find no slot table and answer NO_RELAYS until a later trigger primes it.
+            Unit
+        }
         ensureStack()
     }
 
     /**
      * The stack of the open database, built on first use. A new stack is wired and opened here, in
-     * this order: the Inbox listener, the context, then the database-open time trigger (§21.12
-     * point 2, §10.7 trigger 2). Null when no database is open.
+     * this order: the Inbox listener, the context (posted, and only if [contextWanted]), then the
+     * database-open time trigger (§21.12 point 2, §10.7 trigger 2) — posted after the open, so the
+     * actor runs them in that order. Null when no database is open, while a wipe is in progress, or
+     * when the stack could not be built.
      */
-    fun ensureStack(): DmStack? = synchronized(lock) {
-        val open = stores() ?: return@synchronized null
-        stack?.let { if (it.stores === open) return@synchronized it }
-        stack?.let(::tearDown)
-        val built = stackFor(open)
-        open.inbox.setListener(built.listener)
-        built.unlock(identity)
-        stack = built
-        built.onTimeTrigger()
-        built
+    fun ensureStack(): DmStack? {
+        var replaced: DmStack? = null
+        val result = synchronized(lock) {
+            if (wiped) return@synchronized null
+            val open = stores() ?: return@synchronized null
+            stack?.let { if (it.stores === open) return@synchronized it }
+            // A new database (the runtime reopened it): the old one's stack stops below.
+            replaced = stack
+            stack = null
+            replaced?.let { it.stores.inbox.setListener(null) }
+            val built = try {
+                stackFor(open)
+            } catch (e: RuntimeException) {
+                // The database is closing, or a port could not be built: no stack, and no orphan —
+                // nothing was started. The next trigger tries again.
+                return@synchronized null
+            }
+            try {
+                open.inbox.setListener(built.listener)
+                stack = built
+                built.open(identity, ::contextWanted)
+                built.onTimeTrigger()
+                built
+            } catch (e: RuntimeException) {
+                // Never left half-installed: a stack the wiring does not hold must not keep a
+                // listener, an actor or a timer (§7.9: one actor per database).
+                stack = null
+                open.inbox.setListener(null)
+                stopQuietly(built)
+                null
+            }
+        }
+        // Stopped outside the lock: the last turn waits for the old stack's pass in flight.
+        replaced?.let(::stopQuietly)
+        return result
     }
 
     /** The consumer tail of §13.3 item 6, installed once at process start. */
@@ -180,20 +271,28 @@ internal class MessagingWiring(
     /**
      * The alarm fired (§10.7 trigger 5). The receiver's `goAsync()` window is short, so this posts
      * and returns: with no stack yet — a process started for the broadcast — the database open it
-     * triggers runs the same pass.
+     * triggers runs the same pass. A stack that is being stopped drops the trigger.
      */
     fun onAlarm() {
         val current = stack
-        if (current != null) current.onTimeTrigger() else whenStoresOpen(::onDatabaseOpen)
+        if (current != null) current.onTimeTrigger() else if (!wiped) whenStoresOpen(::onDatabaseOpen)
     }
 
     /**
      * The K20 hook of §13.4, which `EntitlementWiring.activationHook` is set to. See the class note:
-     * it posts and returns, and what it posts reopens the context before ACTIVATE.
+     * it posts and returns, and what it posts reopens the context and runs ACTIVATE in one turn.
      */
     val activationHook: IdentityActivationHook = IdentityActivationHook { restored ->
         try {
-            hookExecutor.execute { activate(restored) }
+            hookExecutor.execute {
+                try {
+                    activate(restored)
+                } catch (e: RuntimeException) {
+                    // An uncaught exception on this thread would end the process; §21.12 point 2's
+                    // resume runs ACTIVATE at the next time-triggered pass instead.
+                    Unit
+                }
+            }
         } catch (e: RejectedExecutionException) {
             // A wiring shut down with the process: §21.12 point 2's resume runs ACTIVATE at the next
             // database open instead.
@@ -202,15 +301,20 @@ internal class MessagingWiring(
     }
 
     /**
-     * The hook's body: reopen the context from the identity now stored, then ACTIVATE. Runs on the
-     * wiring thread for the hook, and on the caller's for a caller that needs the answer (the `gate`
-     * variant's instrumentation after its key-change switch). Null when there is no database or the
-     * context did not open.
+     * The hook's body: reopen the context from the identity now stored, then ACTIVATE — one actor
+     * turn. Runs on the wiring thread for the hook, and on the caller's for a caller that needs the
+     * answer (the `gate` variant's instrumentation after its key-change switch). Null when there is
+     * no database, the app is locked or being wiped, or the context did not open.
      */
     fun activate(restored: Boolean): ActivationOutcome? {
         val current = ensureStack() ?: return null
-        if (current.unlock(identity) != DmKeys.Opened.OPENED) return null
-        return if (restored) current.messaging.onRestored() else current.messaging.onActivated()
+        if (!contextWanted()) return null
+        return try {
+            current.openAndActivate(identity, restored, ::contextWanted)
+        } catch (e: IllegalStateException) {
+            // The facade's INTERNAL, or a stack stopped under the call (a wipe): nothing activated.
+            null
+        }
     }
 
     /**
@@ -233,30 +337,53 @@ internal class MessagingWiring(
     /**
      * Lock (§2.5, §13.7): the DM context closes — `ctxClose` zeroises the native keys — and the
      * Kotlin-side key material goes with it. The facade then answers `CRYPTO_UNAVAILABLE` until
-     * the next unlock ([onUnlock]).
+     * [onUnlock]. The lock is recorded first and the close is posted, so this returns at once on the
+     * main thread, every facade call made after it queues behind the close, and no open posted
+     * before it can undo it.
      */
     fun onLock() {
+        locked = true
         stack?.lock()
     }
 
-    /** Unlock: the context is reopened from the stored identity. */
-    fun onUnlock(): DmKeys.Opened? = stack?.unlock(identity)
-
-    /**
-     * Wipe (§13.7, §10.7): the context closes as at lock, the in-process timer and the one alarm are
-     * cancelled — "cancelled … at wipe", §22.14 item 11 — the Inbox listener is removed and the
-     * stack stops. Call it **before** the sync controller's wipe drops the stores.
-     */
-    fun onWipe() = synchronized(lock) {
-        stack?.let(::tearDown)
-        stack = null
+    /** Unlock: the context is reopened from the stored identity (posted, behind anything queued). */
+    fun onUnlock() {
+        locked = false
+        stack?.open(identity, ::contextWanted)
     }
 
-    private fun tearDown(old: DmStack) {
-        old.lock()
-        old.cancelWakes()
-        old.stores.inbox.setListener(null)
-        old.close()
+    /**
+     * Wipe (§13.7, §10.7): recorded first, so nothing builds a stack or opens a context again until
+     * [onKeyCreated]; then the stack stops — the Inbox listener removed, the context closed and both
+     * wakes cancelled in the actor's last turn, after the pass in flight — and the one alarm is
+     * cancelled and the receiver's hand-off cleared whether or not there was a stack. Call it
+     * **before** the sync controller's wipe drops the stores, and not on the main thread: it waits
+     * for the pass in flight.
+     */
+    fun onWipe() {
+        val old = synchronized(lock) {
+            wiped = true
+            stack.also { stack = null }
+        }
+        old?.let(::stopQuietly)
+        cancelAlarm()
+        setAlarmHandler(null)
+    }
+
+    /** Listener first, so no hint can post a pass behind the last turn; then the stack stops. */
+    private fun stopQuietly(old: DmStack) {
+        try {
+            old.stores.inbox.setListener(null)
+        } catch (e: RuntimeException) {
+            Unit
+        }
+        try {
+            old.close()
+        } catch (e: RuntimeException) {
+            // The last turn failed (the database closing): the actor has stopped all the same, and
+            // the alarm is cancelled by the caller.
+            Unit
+        }
     }
 
     override fun toString(): String = "MessagingWiring"

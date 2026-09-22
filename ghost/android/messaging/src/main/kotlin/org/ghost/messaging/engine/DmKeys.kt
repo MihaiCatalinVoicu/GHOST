@@ -56,8 +56,9 @@ class DmKeys(
      * The MESSAGING branch of an identity. It is `HKDF(root, "ghost/v1/messaging")` everywhere but
      * in the `gate` build type, whose debug key-change hook (`crypto-bridge/src/gate`, §15.1,
      * §21.13 point 7) derives an alternate branch from it — the "stolen seed on a modified client"
-     * of §15.1: another Olm identity, bound by the same Ed25519 key. No release source set passes
-     * anything but the default (gate G-DM5).
+     * of §15.1: another Olm identity, bound by the same Ed25519 key. `:app` passes `DmBranch`'s,
+     * which the release and debug source sets define as this default and only `src/gate` defines
+     * otherwise (gate G-DM5); a constructor argument, not a member a subclass could override.
      */
     private val messagingBranch: (RootEntropy) -> ByteArray = { it.deriveBranch(DerivationLabels.MESSAGING) },
 ) : DmContext {
@@ -73,7 +74,10 @@ class DmKeys(
         /** The native library is missing or refused the keys (§2.7): `CRYPTO_UNAVAILABLE`. */
         CRYPTO_UNAVAILABLE,
 
-        /** `dm_self.state_key_wrapped` exists and does not unwrap on this device (see the class note). */
+        /**
+         * `dm_self.state_key_wrapped` exists and does not unwrap on this device (see the class note),
+         * or — before ACTIVATE has written it — the Keystore cannot wrap a fresh one here.
+         */
         STATE_KEY_UNAVAILABLE,
     }
 
@@ -119,7 +123,15 @@ class DmKeys(
                 wrappedKey = stored
             } else {
                 stateKey = random.bytes(STATE_KEY_BYTES)
-                wrappedKey = stateKeys.wrap(stateKey)
+                wrappedKey = try {
+                    stateKeys.wrap(stateKey)
+                } catch (e: IllegalStateException) {
+                    // The Keystore cannot create or use the state key on this device (the
+                    // wrappers' documented failure, S12 review): the context stays closed, which is
+                    // `CRYPTO_UNAVAILABLE` at the facade, rather than an exception that ended the
+                    // process at every start that had an identity and no `dm_self` row yet.
+                    return Opened.STATE_KEY_UNAVAILABLE
+                }
             }
             branch = messagingBranch(root)
             seed = root.deriveBranch(DerivationLabels.IDENTITY)

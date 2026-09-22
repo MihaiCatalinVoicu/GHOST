@@ -4,10 +4,13 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.os.Bundle
 import android.os.SystemClock
+import org.ghost.app.DmBranch
+import org.ghost.app.GhostApp
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
 import org.ghost.messaging.api.Messaging
 import org.ghost.messaging.api.Timer
+import org.ghost.sync.api.PrivacyMode
 
 /**
  * **The gate variant's instrumentation** (Phase 9 design §15.10, §21.13 point 4; slice S12): the one
@@ -25,7 +28,14 @@ import org.ghost.messaging.api.Timer
  * in memory and never writes it to its log.
  *
  * Running an instrumentation restarts the app's process, so every command also exercises a cold
- * start: the first database open's pass (§21.12 point 2) runs before the command does.
+ * start: the first database open's pass (§21.12 point 2) runs before the command does. It also
+ * means **no command but `pass` moves anything over the network** (S12 review): a process started
+ * for an instrumentation has no activity, so it never has a foreground session, and the periodic
+ * job's next run is minutes away in a process the next command replaces. `pass` is therefore what
+ * the app does when the user opens it: a foreground relay session for `seconds` (its relay session
+ * start is the DM time trigger, and its lanes deposit and fetch), optionally in HIGH privacy mode —
+ * which is in memory only, so it is set in the same process as the session it applies to — and the
+ * drop counters of this process's passes afterwards, because those are in memory too.
  */
 class GateInstrumentation : Instrumentation() {
 
@@ -53,18 +63,18 @@ class GateInstrumentation : Instrumentation() {
         finish(code, out)
     }
 
-    private fun app(): GateGhostApp {
+    private fun app(): GhostApp {
         val deadline = SystemClock.elapsedRealtime() + WAIT_MILLIS
         while (true) {
             val app = targetContext.applicationContext
-            if (app is GateGhostApp) return app
+            if (app is GhostApp) return app
             check(SystemClock.elapsedRealtime() < deadline) { "the gate application did not start" }
             SystemClock.sleep(POLL_MILLIS)
         }
     }
 
     /** The facade once the first database open has built the stack and opened the context. */
-    private fun messaging(app: GateGhostApp): Messaging {
+    private fun messaging(app: GhostApp): Messaging {
         val deadline = SystemClock.elapsedRealtime() + WAIT_MILLIS
         while (true) {
             val messaging = app.messaging
@@ -104,9 +114,13 @@ class GateInstrumentation : Instrumentation() {
                 val count = require("count").toInt()
                 require(count in 1..MAX_BURST) { "count out of range" }
                 val results = LinkedHashMap<String, Int>()
-                // The text is a counter and a random run tag: content the orchestrator never sees
-                // and no digest covers (§15.10: "records digests, never content").
-                val tag = OrderDigests.hex(java.security.SecureRandom().generateSeed(4))
+                // The text is a counter and a run tag no digest covers (§15.10: "records digests,
+                // never content"). The tag is random unless the orchestrator names one: step 6
+                // does, so that its host scan of the exported database can look for it; the
+                // orchestrator never logs it.
+                val tag = arguments.getString("tag")?.also {
+                    require(it.length in 8..32 && it.all { c -> c in '0'..'9' || c in 'a'..'f' }) { "tag is 8-32 lowercase hex" }
+                } ?: OrderDigests.hex(java.security.SecureRandom().generateSeed(4))
                 for (i in 1..count) {
                     val r = messaging.send(contact, "gate $tag $i", null).name
                     results[r] = (results[r] ?: 0) + 1
@@ -129,10 +143,18 @@ class GateInstrumentation : Instrumentation() {
             "ack-key-change" -> out.putBoolean("result", messaging(app).acknowledgeKeyChange(contact()))
             "key-change" -> {
                 // §15.10 step 5: switch to the bound alternate Olm identity (or back) and run the
-                // K20 path the switch stands for — the context reopens, then ACTIVATE (§22.13 item 7
-                // clears the DM tables of the identity it replaces).
-                app.setKeyChanged(require("on") == "true")
-                out.putString("result", app.messagingWiring.activate(restored = false)?.name ?: "UNAVAILABLE")
+                // K20 path the switch stands for — the context reopens, then ACTIVATE in the same
+                // actor turn. **`restored = true`** (S12 review): this phone already has a
+                // `dm_self` row, and ACTIVATE with `restored = false` answers ALREADY_ACTIVE for
+                // any row at all, leaving the new identity running over the old one's rows. The
+                // restore variant checks the stored own namespaces against the ones the new
+                // context derives — every value of §3.1 derived from `m` changes with the switch —
+                // and, finding somebody else's, clears the DM tables and activates for real
+                // (§22.13 item 7). A switch that changed nothing answers ALREADY_ACTIVE, which the
+                // orchestrator refuses.
+                val on = require("on") == "true"
+                DmBranch.setKeyChanged(app, on)
+                out.putString("result", app.messagingWiring.activate(restored = true)?.name ?: "UNAVAILABLE")
             }
             "timer" -> {
                 val timer = Timer.entries.first { it.code == require("code").toInt() }
@@ -141,10 +163,24 @@ class GateInstrumentation : Instrumentation() {
             "reset" -> out.putString("result", messaging(app).resetSession(contact()).name)
             "reconnect" -> out.putInt("result", messaging(app).reconnect(listOf(contact())))
             "pass" -> {
-                messaging(app)
-                app.messagingWiring.onRelaySessionStart()
-                messaging(app).status()
+                val messaging = messaging(app)
+                val seconds = (arguments.getString("seconds") ?: DEFAULT_SESSION_SECONDS.toString()).toLong()
+                require(seconds in 1..MAX_SESSION_SECONDS) { "seconds out of range" }
+                arguments.getString("privacy")?.let { app.syncController.setPrivacyMode(PrivacyMode.valueOf(it)) }
+                // What the app's ON_START does (`SyncWiring.onVisible`): a foreground relay session,
+                // whose relay session start is the DM time trigger (`MessagingWiring.sessionHooks`)
+                // and whose lanes deposit and fetch. Held for `seconds`, then ON_STOP.
+                app.syncController.onAppForeground()
+                try {
+                    SystemClock.sleep(seconds * MILLIS)
+                } finally {
+                    app.syncController.onAppBackground()
+                }
+                app.syncController.awaitIdle(IDLE_WAIT_MILLIS)
+                val status = messaging.status()
                 out.putString("result", "PASSED")
+                out.putString("privacy", app.syncController.privacyMode.name)
+                for ((reason, n) in status.drops) out.putInt("drop.$reason", n)
             }
             "export-deposits" -> exportDeposits(app, out)
             "status" -> {
@@ -168,7 +204,7 @@ class GateInstrumentation : Instrumentation() {
      * the answer to a private capture file and deletes the file after the re-store; nothing of it is
      * logged. Ciphertext and a bearer credential, never plaintext.
      */
-    private fun exportDeposits(app: GateGhostApp, out: Bundle) {
+    private fun exportDeposits(app: GhostApp, out: Bundle) {
         messaging(app)
         val contact = unhex(require(ARG_CONTACT))
         val count = require("count").toInt()
@@ -223,5 +259,13 @@ class GateInstrumentation : Instrumentation() {
 
         /** §15.10 step 2 sends 30-message bursts; the bound only refuses a typo. */
         const val MAX_BURST = 200
+
+        /** How long `pass` holds its foreground session by default, and at most. */
+        const val DEFAULT_SESSION_SECONDS = 30L
+        const val MAX_SESSION_SECONDS = 600L
+        const val MILLIS = 1_000L
+
+        /** How long `pass` waits for the session to close after ON_STOP. */
+        const val IDLE_WAIT_MILLIS = 60_000L
     }
 }

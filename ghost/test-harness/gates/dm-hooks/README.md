@@ -9,6 +9,13 @@ mapping with `GHOST_ROOT` at the real tree:
 - `harness-package/`: a release source set declares a `harness` package. One line.
 - `equivalence/`: the equivalence-test entry point is declared on `DmNative` in `src/main`. One line.
 - `no-gate/`: release sources and no `gate` or `androidTest` source set. One line (vacuity).
+- `srcdir/` (S12 review): a `build.gradle.kts` that adds `src/deviceRunner/kotlin` to `main` in a
+  `getByName("main") { }` block and `src/gate/java` to `release` on a `sourceSets["release"]` line.
+  Two lines; the `test` set's `srcDir` is allowed.
+- `declarations/` (S12 review): an `androidTest` class declared with its annotation on the same
+  line, named by a release source in an import, in plain code and in code after an inline
+  `/* … */`; a block comment that names it in prose; and `BuildTwin`, declared in both `src/debug`
+  and `src/release` (a build-type twin, like `DmBranch`), named without a violation. Three lines.
 - `mapping/positive.txt`: R8's shape with `-keepnames` over `org.ghost.**`; accepted. Its last two
   lines are the two shapes the first real release mapping showed that carry an `org.ghost.` name
   without being a shipped source class: a desugared lambda (`$$ExternalSyntheticLambda1 -> …j`, a
@@ -18,6 +25,9 @@ mapping with `GHOST_ROOT` at the real tree:
 - `mapping/debug-class.txt`: the key-change hook and a lambda class of the gate instrumentation
   shipped. Two lines.
 - `mapping/harness.txt`: a class of a harness package shipped. One line.
+- `mapping/device-runner.txt` (S12 review): `org.ghost.device.DeviceRunner`, the device suites'
+  `Instrumentation` from `crypto-bridge/src/deviceRunner`, shipped. One line; the first version of
+  the gate read `src/gate` and `src/androidTest` only and passed it.
 - `mapping/entry.txt`: the equivalence-test entry point shipped. One line.
 - `mapping/no-ghost.txt`: no `org.ghost.` class at all. One line (vacuity).
 

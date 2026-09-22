@@ -1,6 +1,7 @@
 package org.ghost.app
 
 import org.ghost.crypto.bridge.DmNative
+import org.ghost.identity.DerivationLabels
 import org.ghost.identity.RootEntropy
 import org.ghost.messaging.api.ActivationOutcome
 import org.ghost.messaging.engine.DmKeys
@@ -31,7 +32,8 @@ import java.util.concurrent.TimeUnit
  *
  * It is what proves the wiring end to end: that a process start with a key reaches ACTIVATE through
  * the database-open time trigger alone (§21.12 point 2), with the slot table found through the
- * directory, and that lock and wipe take the facade down.
+ * directory, that lock and wipe take the facade down and stay down (S12 review), and that the
+ * `gate` key change reactivates through the restore variant.
  */
 class MessagingWiringRuntimeTest {
 
@@ -88,6 +90,34 @@ class MessagingWiringRuntimeTest {
         override fun awaitTermination(timeout: Long, unit: TimeUnit): Boolean = true
     }
 
+    /** The alarm port: every request, in order, from any thread (null is a cancel). */
+    private class RecordingAlarm : ExpiryWake {
+        val requested: MutableList<Long?> = java.util.Collections.synchronizedList(ArrayList())
+
+        override fun wakeIn(delaySeconds: Long?) {
+            requested += delaySeconds
+        }
+    }
+
+    private val alarm = RecordingAlarm()
+    private var wiringCancels = 0
+
+    /**
+     * The `gate` key-change hook's shape (`GateKeyChange.alternateBranch`, which is in
+     * `crypto-bridge/src/gate` and so not on every variant's test classpath): another MESSAGING
+     * branch from the same root, switched by a flag, as `src/gate`'s `DmBranch` switches it.
+     */
+    @Volatile
+    private var keyChanged = false
+
+    private fun branch(root: RootEntropy): ByteArray {
+        val derived = root.deriveBranch(DerivationLabels.MESSAGING)
+        if (!keyChanged) return derived
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(derived, "HmacSHA256"))
+        return mac.doFinal("ghost/v1/gate/key-change".toByteArray(Charsets.US_ASCII)).also { derived.fill(0) }
+    }
+
     @Before
     fun setUp() {
         val path = System.getProperty(DmNative.HOST_LIBRARY_PROPERTY)
@@ -113,12 +143,12 @@ class MessagingWiringRuntimeTest {
                 RuntimeStack(
                     MessagingRuntime(
                         stores = stores,
-                        keys = DmKeys(PrefixWrapper(), random),
+                        keys = DmKeys(PrefixWrapper(), random, messagingBranch = ::branch),
                         contentKeys = PrefixWrapper(),
                         esSlots = DirectoryEsSlots(stores.database) { schedule },
                         clock = clock,
                         random = random,
-                        alarm = ExpiryWake.NONE,
+                        alarm = alarm,
                         checkpoint = { Checkpoint.truncate(executor) },
                     ),
                 )
@@ -126,6 +156,7 @@ class MessagingWiringRuntimeTest {
             identity = { RootEntropy.fromRaw(ByteArray(32) { (it + 11).toByte() }) },
             primeSchedule = { },
             setAlarmHandler = { },
+            cancelAlarm = { wiringCancels++ },
             hookExecutor = Inline(),
         )
     }
@@ -140,6 +171,15 @@ class MessagingWiringRuntimeTest {
         var n = 0L
         db.sql.query(query) { n = it.long(0) }
         return n
+    }
+
+    /** `dm_own_namespace`'s namespaces, as hex. */
+    private fun ownNamespaces(): Set<String> {
+        val out = HashSet<String>()
+        db.sql.query("SELECT namespace_id FROM dm_own_namespace") { row ->
+            out += row.blob(0).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        }
+        return out
     }
 
     @Test
@@ -181,9 +221,20 @@ class MessagingWiringRuntimeTest {
         wiring.onDatabaseOpen()
         val card = wiring.messaging!!.myCard()!!.card
         wiring.onLock()
+        // The close is posted; the facade call queues behind it on the actor.
         assertNull(wiring.messaging!!.myCard())
-        assertEquals(DmKeys.Opened.OPENED, wiring.onUnlock())
+        wiring.onUnlock()
         assertTrue(card.contentEquals(wiring.messaging!!.myCard()!!.card))
+    }
+
+    @Test
+    fun aLockIsNotUndoneByTheK20Hook() {
+        wiring.onDatabaseOpen()
+        wiring.messaging!!.status()
+        wiring.onLock()
+        // S12 review: the hook's reopen used to run whatever the app had said.
+        wiring.activationHook.onIdentityActivated(restored = false)
+        assertNull("the context stays closed", wiring.messaging!!.myCard())
     }
 
     @Test
@@ -192,6 +243,60 @@ class MessagingWiringRuntimeTest {
         assertNotNull(wiring.messaging)
         wiring.onWipe()
         assertNull(wiring.messaging)
+    }
+
+    @Test
+    fun aWipeIsFinalAndLeavesTheAlarmCancelled() {
+        wiring.onDatabaseOpen()
+        val old = requireNotNull(wiring.messaging)
+        old.status()
+        assertTrue("the database-open pass rescheduled the alarm (§10.7 trigger 5)", alarm.requested.isNotEmpty())
+        wiring.onWipe()
+        assertNull("§10.7: the stack's last turn cancelled the alarm", alarm.requested.last())
+        assertEquals("and the wiring cancelled it as well", 1, wiringCancels)
+        // The stores are still open (the sync runtime drops them after this): no trigger may build
+        // a stack over them again, reopen a context or run a pass that re-arms the alarm.
+        val requestsAtWipe = alarm.requested.size
+        wiring.onDatabaseOpen()
+        wiring.onRelaySessionStart()
+        wiring.activationHook.onIdentityActivated(restored = false)
+        wiring.onAlarm()
+        assertNull(wiring.messaging)
+        assertEquals("no pass ran after the wipe", requestsAtWipe, alarm.requested.size)
+        // A facade call on the stopped stack is the facade's INTERNAL, not an executor's refusal.
+        try {
+            old.status()
+            org.junit.Assert.fail("a stopped stack answered")
+        } catch (e: IllegalStateException) {
+            Unit
+        }
+    }
+
+    /**
+     * §15.10 step 5's path, as the `gate` instrumentation drives it (S12 review): after the switch to
+     * a bound new Olm identity, `activate(restored = false)` finds the old identity's `dm_self` and
+     * answers ALREADY_ACTIVE; `activate(restored = true)` recognises the rows as another identity's
+     * (§22.13 item 7), clears them and activates.
+     */
+    @Test
+    fun aKeyChangeReactivatesOnlyThroughTheRestoreVariant() {
+        wiring.onDatabaseOpen()
+        val before = wiring.messaging!!.myCard()!!.card
+        wiring.messaging!!.status()
+        assertEquals(1L, count("SELECT count(*) FROM dm_self"))
+        val ownBefore = ownNamespaces()
+        assertEquals(2, ownBefore.size)
+        keyChanged = true
+        assertEquals(ActivationOutcome.ALREADY_ACTIVE, wiring.activate(restored = false))
+        assertEquals("the new identity is still running over the old one's rows", ownBefore, ownNamespaces())
+        assertEquals(ActivationOutcome.ACTIVATED, wiring.activate(restored = true))
+        val after = wiring.messaging!!.myCard()!!.card
+        assertTrue("another card: every value derived from m changed", !before.contentEquals(after))
+        val ownAfter = ownNamespaces()
+        assertEquals(2, ownAfter.size)
+        assertTrue("the old identity's own namespaces were cleared (§22.13 item 7)", ownAfter.none { it in ownBefore })
+        assertEquals(1L, count("SELECT count(*) FROM dm_self"))
+        assertEquals(ActivationOutcome.ALREADY_ACTIVE, wiring.activate(restored = true))
     }
 
     private object NullController : org.ghost.sync.api.SyncController {

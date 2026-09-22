@@ -57,7 +57,11 @@ internal class RecognitionKeys(private val envelopes: DmEnvelopes) {
         object : LinkedHashMap<List<Byte>, DmPairing.Provisional>(16, 0.75f, true) {
             override fun removeEldestEntry(
                 eldest: MutableMap.MutableEntry<List<Byte>, DmPairing.Provisional>?,
-            ): Boolean = size > PROVISIONAL_MAX
+            ): Boolean {
+                val evict = size > PROVISIONAL_MAX
+                if (evict) eldest?.value?.let(::zeroise)
+                return evict
+            }
         }
 
     /** What a matched hint names. */
@@ -117,13 +121,29 @@ internal class RecognitionKeys(private val envelopes: DmEnvelopes) {
 
     /** Drops a session's cached provisional keys: it was deleted, or its `prov_env` was erased. */
     fun forgetSession(sessionId: ByteArray) {
-        provisional.remove(sessionId.toList())
+        provisional.remove(sessionId.toList())?.let(::zeroise)
     }
 
-    /** Drops every cached key: the DM context closed, or the identity changed (§2.5). */
+    /**
+     * Drops every cached key **and zeroises the recognition keys** — the DM context closed, or the
+     * identity changed (§2.5, §13.7 "zeroize the Kotlin-side key material"; S12 review: until then
+     * the map was only cleared, and the derived keys stayed in the heap after a lock).
+     */
     fun clear() {
+        for (keys in provisional.values) zeroise(keys)
         provisional.clear()
         recent.clear()
+    }
+
+    /**
+     * Zeroises the two recognition keys of an entry leaving the cache: they are derived key
+     * material (the HMAC keys of rule R-S5's hints). The two envelopes stay as they are: they are
+     * wrapped under the native context's state key, and a match handed out in the same pass may
+     * still be opening one.
+     */
+    private fun zeroise(keys: DmPairing.Provisional) {
+        keys.recognitionIn.fill(0)
+        keys.recognitionOut.fill(0)
     }
 
     private fun matchContact(sql: SqlExecutor, contactId: ByteArray, blob: ByteArray): Match? {

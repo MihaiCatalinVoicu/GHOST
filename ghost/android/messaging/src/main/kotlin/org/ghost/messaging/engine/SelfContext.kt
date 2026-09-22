@@ -53,6 +53,23 @@ internal class SelfContext(
     val identityPk: ByteArray
         get() = card.card.copyOfRange(IDENTITY_PK_OFFSET, IDENTITY_PK_OFFSET + IDENTITY_PK_BYTES)
 
+    /**
+     * Zeroises every secret this object holds (§13.7 "zeroize the Kotlin-side key material", L7-D19;
+     * S12 review): the content key, `seen_key`, and the own card's secret parts — the card itself,
+     * which carries `card_secret_0` (§3.3), and the recognition keys of the intro outer key and the
+     * bundle seal key. The namespaces and the Olm identity are relay-visible or public and stay.
+     *
+     * Called by [SelfContexts.invalidate] when the context closes or the identity changes, on the
+     * actor thread and between steps, so no step still holds this object.
+     */
+    fun clear() {
+        content.clear()
+        seen.fill(0)
+        card.card.fill(0)
+        card.recognitionIntro.fill(0)
+        card.recognitionBundle.fill(0)
+    }
+
     /** Never shows a key (T3). */
     override fun toString(): String = "SelfContext(cardIndex=$cardIndex)"
 
@@ -109,14 +126,21 @@ internal class SelfContexts(
             )
         } finally {
             contentKey.fill(0)
+            // SelfContext keeps its own copy; the row's is not left in the heap (S12 review).
+            row.seenKey.fill(0)
         }
         cached = context
         return context
     }
 
-    /** Drops the cached context: the identity changed, or the DM context closed (§2.5). */
+    /**
+     * Drops the cached context **and zeroises it** ([SelfContext.clear]): the identity changed, or
+     * the DM context closed (§2.5, §13.7). Until the S12 review only the content key was cleared,
+     * and `seen_key` and the own card's secrets stayed in the heap after a lock.
+     */
     fun invalidate() {
-        cached?.content?.clear()
+        val old = cached
         cached = null
+        old?.clear()
     }
 }

@@ -862,6 +862,12 @@ dmhooks_case "refuses the equivalence entry point in a release source set" 1 "de
   GHOST_ROOT="$DMH/equivalence" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
 dmhooks_case "refuses a tree without the gate build type" 1 "the gate build type is missing" \
   GHOST_ROOT="$DMH/no-gate" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "refuses a build script that adds a directory to a release source set" 2 "adds a directory to a release source set" \
+  GHOST_ROOT="$DMH/srcdir" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "reads annotated declarations and code after a block comment, and exempts a build-type twin" 3 "names a debug-only class" \
+  GHOST_ROOT="$DMH/declarations" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "refuses the device runner (src/deviceRunner) in mapping.txt" 1 "ships the debug-only class org.ghost.device.DeviceRunner" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/device-runner.txt"
 dmhooks_case "refuses a renamed org.ghost. class in mapping.txt" 1 "maps to itself" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/renamed.txt"
 dmhooks_case "refuses the key-change hook and a gate lambda in mapping.txt" 2 "ships the debug-only class" \

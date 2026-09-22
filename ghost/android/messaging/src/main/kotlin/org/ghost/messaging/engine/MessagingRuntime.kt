@@ -1,6 +1,7 @@
 package org.ghost.messaging.engine
 
 import org.ghost.identity.RootEntropy
+import org.ghost.messaging.api.ActivationOutcome
 import org.ghost.messaging.api.MediaPort
 import org.ghost.messaging.api.Messaging
 import org.ghost.messaging.port.DmCheckpoint
@@ -33,16 +34,19 @@ import org.ghost.sync.store.SyncStores
  * **One stack per [SyncStores].** A `SyncDatabase` serializes every transaction through its own
  * lock and delivers its hints to its own listener, so the DM layer must use the very instance the
  * sync engine uses — a second `SyncStores` over the same file would interleave transactions and
- * never hear a hint. A wipe drops the stores; the wiring [close]s this stack with them and builds a
- * new one over the next database the runtime opens.
+ * never hear a hint. A wipe drops the stores; the wiring [close]s this stack before they go and
+ * builds a new one only over a database opened after the next key is created.
  *
  * **What it exposes**, all of it the wiring's to call:
  *  - [messaging], the facade of §13.2, attached to the actor so every call posts to it;
  *  - [listener] for `Inbox.setListener` and [consumerTail] for `SyncController.setConsumerTail`
  *    (§13.3 item 6, §13.7);
  *  - [onTimeTrigger], the relay-session-start, database-open and alarm trigger of §21.9 rule 1;
- *  - [unlock] and [lock], the DM context's lifecycle on the actor thread (§2.5, §13.8);
- *  - [cancelWakes], §10.7's "cancelled … at wipe" (§22.14 item 11), and [close].
+ *  - [unlock] and [lock], the DM context's lifecycle on the actor thread (§2.5, §13.8), with their
+ *    posted forms [requestUnlock] and [requestLock], and [reopenAndActivate], the K20 hook's one
+ *    turn;
+ *  - [cancelWakes], §10.7's "cancelled … at wipe" (§22.14 item 11), and [close], which stops the
+ *    stack for good with the context closed and both wakes cancelled.
  *
  * **Gate G-DM2.** The owner pass is bound here, as `DmDevice` binds it, which makes this file one
  * of the few that may name `runOwnerMaintenance`; `dm-enqueue-callers.sh` lists it for that
@@ -191,21 +195,56 @@ class MessagingRuntime(
     /**
      * Opens the DM context for the identity [root] supplies (§2.5, §13.7 "Wiring"), on the actor
      * thread, after closing the previous one and dropping every key cached from it. [root] is
-     * called on the actor thread; its result is zeroised whatever happens.
+     * called on the actor thread; its result is zeroised whatever happens. Waits for the answer.
      */
-    fun unlock(root: () -> RootEntropy?): DmKeys.Opened = actor.call {
+    fun unlock(root: () -> RootEntropy?): DmKeys.Opened = actor.call { reopen(root) }
+
+    /**
+     * [unlock], posted: the wiring's form (S12 review), which never waits behind a pass. [wanted]
+     * is asked **on the actor thread, in the same turn**, right before the context would open; when
+     * it answers false — the app locked or wiped after this was posted — nothing opens. That is what
+     * makes a lock sticky: a lock recorded after an unlock was posted still wins, whichever reaches
+     * the actor first.
+     */
+    fun requestUnlock(root: () -> RootEntropy?, wanted: () -> Boolean) {
+        actor.post { if (wanted()) reopen(root) }
+    }
+
+    /**
+     * The K20 hook's body (§13.4) in **one actor turn** (S12 review): the context reopened from the
+     * identity now stored, then ACTIVATE with the hook's own [restored] flag. As two turns, a
+     * time-triggered pass could run between them and resume ACTIVATE with `restored = true` on its
+     * own. Null when [wanted] answers false on the actor or the context did not open. Waits.
+     */
+    fun reopenAndActivate(root: () -> RootEntropy?, restored: Boolean, wanted: () -> Boolean): ActivationOutcome? =
+        actor.call {
+            if (!wanted()) return@call null
+            if (reopen(root) != DmKeys.Opened.OPENED) return@call null
+            if (restored) engine.onRestored() else engine.onActivated()
+        }
+
+    private fun reopen(root: () -> RootEntropy?): DmKeys.Opened {
         lockOnActor()
-        keys.open(database, root())
+        return keys.open(database, root())
     }
 
     /**
      * Closes the DM context — `ctxClose` zeroises the native keys (§2.5) — and zeroises the
-     * Kotlin-side key material in the same actor turn: the cached content key and the recognition
-     * and provisional keys (§13.7 "Lock and wipe close the DM context … and zeroize the Kotlin-side
-     * key material").
+     * Kotlin-side key material in the same actor turn: the cached content key, `seen_key` and the own
+     * card's secrets, and the recognition and provisional keys (§13.7 "Lock and wipe close the DM
+     * context … and zeroize the Kotlin-side key material"). Waits for the turn.
      */
     fun lock() {
         actor.call { lockOnActor() }
+    }
+
+    /**
+     * [lock], posted (S12 review): the lock screen's form, which returns at once instead of waiting
+     * behind a pass on the main thread. Every facade call made after it queues behind it, so none
+     * sees the context open.
+     */
+    fun requestLock() {
+        actor.post { lockOnActor() }
     }
 
     private fun lockOnActor() {
@@ -228,12 +267,19 @@ class MessagingRuntime(
     val unlocked: Boolean get() = keys.isOpen
 
     /**
-     * Stops the actor and the timer. The context must already be closed ([lock]); a stack is
-     * closed when its database goes away (a wipe) or the process ends.
+     * Stops the stack for good (§13.7 "Lock and wipe"; S12 review), in the order that makes it
+     * final: no pass that has not started runs any more; after the pass in flight, one actor turn
+     * closes the context, zeroises the Kotlin-side keys and cancels **both** wakes — the in-process
+     * timer and the one alarm (§10.7: "cancelled … at wipe") — and the actor stops; then the timer's
+     * thread stops. Nothing can reschedule the alarm after that turn, because nothing of this stack
+     * runs after it. Blocks for as long as the pass in flight takes; idempotent.
      */
     override fun close() {
+        actor.retire {
+            lockOnActor()
+            schedule.cancel()
+        }
         timer.close()
-        actor.close()
     }
 
     override fun toString(): String = "MessagingRuntime"

@@ -21,6 +21,11 @@ import org.junit.Test
  * its kept name, the facade's members that survived R8, and the shipped `libghost_client_net.so` —
  * nothing of the test library `ghost_dm_host`, and no transport at all. The two "devices" are two DM
  * contexts in this process.
+ *
+ * **Every member it calls must survive R8 in the release**, because nothing keeps a member for a
+ * test: `DmNative.isAvailable`, the `DmSessions` functions and the result getters used below all have
+ * production callers and are listed in the release `mapping.txt` (checked against the S12 build;
+ * `usage.txt` is where a removed one would appear).
  */
 class ReleaseSmokeTest {
 
@@ -32,7 +37,11 @@ class ReleaseSmokeTest {
 
     @Test
     fun theShippedLibraryRunsOneOlmSessionThroughDmNative() {
-        assertTrue("libghost_client_net.so loads from the release APK: ${DmNative.loadFailure()}", DmNative.isAvailable())
+        // Only members the release keeps (S12 review): `DmNative.loadFailure()` has no production
+        // caller, R8 removes it from the shrunk release (usage.txt lists it), and calling it here —
+        // in a message string that is built on every run — would end the test with
+        // `NoSuchMethodError` before it asserted anything. `isAvailable()` has callers and is kept.
+        assertTrue("libghost_client_net.so loads from the release APK", DmNative.isAvailable())
         val alice = context(0x11)
         val bob = context(0x21)
         try {

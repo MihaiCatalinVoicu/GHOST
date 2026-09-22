@@ -207,10 +207,12 @@ class DeviceGateSuite {
         val (contactB, _) = introduce()
         val (a, b) = world.alice to world.bob
         // B switches to a bound new Olm identity (§15.1's debug hook, test form): the context
-        // reopens and ACTIVATE replaces the old identity's DM rows (§22.13 item 7).
+        // reopens and ACTIVATE replaces the old identity's DM rows (§22.13 item 7). The restore
+        // variant is the one that checks the stored own namespaces and clears a foreign identity's
+        // rows; `onActivated()` answers ALREADY_ACTIVE for any `dm_self` row (S12 review).
         b.keyChanged = true
         assertEquals(DmKeys.Opened.OPENED, b.unlock())
-        b.messaging.onActivated()
+        assertEquals(ActivationOutcome.ACTIVATED, b.messaging.onRestored())
         assertEquals(AddContactResult.ADDED, b.messaging.addContact(a.card(), CardSource.QR_IN_PERSON))
         val newA = b.contact()
         assertEquals(SendResult.QUEUED, b.messaging.send(newA, "after the change", null))

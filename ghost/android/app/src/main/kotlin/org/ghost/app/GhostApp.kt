@@ -34,7 +34,7 @@ import java.security.GeneralSecurityException
  * creates the key and then calls [onDatabaseKeyCreated]. The decisions themselves live in
  * [SyncWiring] and [MessagingWiring].
  */
-open class GhostApp : Application(), SyncHost {
+class GhostApp : Application(), SyncHost {
     private val keys: DatabaseKeyProvider by lazy { DatabaseKeyProvider(AndroidKeystoreWrapper(), NoBackupFileSecretStore(this)) }
 
     private val database: AppDatabase by lazy { AppDatabase(this, keys, DatabaseAccess.AUTH_BOUND) }
@@ -69,18 +69,12 @@ open class GhostApp : Application(), SyncHost {
             identity = ::storedIdentity,
             primeSchedule = { entitlementWiring.acceptedSchedule() },
             setAlarmHandler = { handler -> ExpiryAlarmReceiver.onAlarm = handler },
+            cancelAlarm = { ExpiryAlarm(this).wakeIn(null) },
         )
     }
 
     /** The DM facade of §13.2 for Phase 13; null before the first database open. */
     val messaging: Messaging? get() = messagingWiring.messaging
-
-    /**
-     * The MESSAGING branch the DM context is opened with. Only the `gate` build type overrides it,
-     * with the debug key-change hook of `crypto-bridge/src/gate` (§15.1, §21.13 point 7); no release
-     * source set does (gate G-DM5).
-     */
-    protected open fun messagingBranch(root: RootEntropy): ByteArray = root.deriveBranch(org.ghost.identity.DerivationLabels.MESSAGING)
 
     private fun dmStack(stores: SyncStores): DmStack {
         // The database's own connection, read outside any transaction: the checkpoint must run
@@ -93,7 +87,11 @@ open class GhostApp : Application(), SyncHost {
                 keys = DmKeys(
                     stateKeys = KeystoreStateKeyWrapper(DatabaseAccess.AUTH_BOUND),
                     random = random,
-                    messagingBranch = ::messagingBranch,
+                    // `DmBranch` is defined per build type: the plain derivation in `src/release`
+                    // and `src/debug`, the debug key-change hook in `src/gate` only (§21.13 point 7,
+                    // gate G-DM5). An argument fixed at build time, not a member a subclass could
+                    // override: the release carries no such seam (S12 review).
+                    messagingBranch = DmBranch.forApp(this),
                 ),
                 contentKeys = KeystoreContentKeyWrapper(DatabaseAccess.AUTH_BOUND),
                 esSlots = DirectoryEsSlots(stores.database) { entitlementWiring.acceptedScheduleIfKnown()?.slots },
@@ -173,14 +171,16 @@ open class GhostApp : Application(), SyncHost {
     fun onLock() = messagingWiring.onLock()
 
     /** The app unlocked: the DM context is reopened from the stored identity. */
-    fun onUnlock() {
-        messagingWiring.onUnlock()
-    }
+    fun onUnlock() = messagingWiring.onUnlock()
 
     /**
      * Local data is being wiped (design §11.2 #17; Phase 13's wipe flow): the DM layer first —
      * context closed, keys zeroised, timer and alarm cancelled (Phase 9 design §13.7, §10.7) — then
-     * the sync controller, which cancels the periodic job and drops the stores.
+     * the sync controller, which cancels the periodic job and drops the stores. The DM half waits
+     * for the pass in flight, so the wipe flow calls this off the main thread.
+     *
+     * [onLock], [onUnlock] and this have no caller in the tree yet: the lock screen and the wipe
+     * flow are Phase 13's (§22.17).
      */
     fun onWipe() {
         messagingWiring.onWipe()
