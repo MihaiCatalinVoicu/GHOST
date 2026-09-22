@@ -1,7 +1,6 @@
 package org.ghost.messaging.harness
 
 import org.ghost.messaging.DmWorld
-import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.api.Timer
@@ -21,10 +20,9 @@ import org.ghost.messaging.api.TrustState
  * harness stands in for that engine as a whole (see [ModelDmRelay]); what a scenario can therefore
  * vary is the *outcome* a store gets, not which of three relays produced it. Every node is built
  * with four relay slots over two operators so the namespace and registration rows have the shape
- * the invariants check, and the refusal half is modelled by
- * [ModelDmRelay.Mode.REFUSE_ONE_SENDER] and by [ModelDmRelay.outcomeFor]. The second deviation is
- * `PrivacyMode`: every world here is STANDARD, because `DmDevice` fixes the mode at construction;
- * the HIGH halves of SCN-A and SCN-F are deferred with the rest.
+ * the invariants check, and the refusal half is modelled by [ModelDmRelay.outcomeFor]. The second
+ * deviation is `PrivacyMode`: every world here is STANDARD, because `DmDevice` fixes the mode at
+ * construction; the HIGH halves of SCN-A and SCN-F are deferred with the rest.
  */
 internal object DmScenarios {
 
@@ -98,11 +96,12 @@ internal object DmScenarios {
      * MC-10 ("arrival-order display") is what it kills. REPEATS puts the same bytes in twice, which
      * is D1's job.
      *
-     * **Not here:** the RESURRECT-after-tombstone-GC blob, the COPY_NAMESPACE one and the MC-29
-     * variant with an injected unknown ratchet key against an inactive sending ratchet. The relay
-     * can do the first two ([ModelDmRelay.Mode]) but the world has no tombstone-GC step to run them
-     * after; the third needs an envelope the harness cannot build without a second handle on the
-     * peer's session state. §22.15 records all three.
+     * **Not here:** the RESURRECT-after-tombstone-GC blob and the MC-29 variant with an injected
+     * unknown ratchet key against an inactive sending ratchet. The first needs a tombstone-GC step
+     * the world does not have; the second needs an envelope the harness cannot build without a
+     * second handle on the peer's session state. §22.15 records both. SCN-B's COPY_NAMESPACE blob
+     * is covered instead by the RP3 half of `DmSuiteCases.rpHostileBlobsDoNotOpenAndAnswerNothing`,
+     * where it is the whole of the case rather than one blob among six.
      */
     fun scnB(): DmScenario = DmScenario(
         name = "SCN-B",
@@ -479,16 +478,4 @@ internal object DmScenarios {
 
     /** Every scenario this slice implements, in the order the report prints them. */
     fun all(): List<DmScenario> = listOf(scnA(), scnB(), scnD(), scnF(), scnG(), scnJ(), scnL())
-
-    /** A two-node world with a fresh unknown card holder: the CB suite's request cases. */
-    fun requestWorld(world: DmCrashWorld) {
-        world.node("alice", 0x41)
-        world.node("bob", 0x51)
-        DmScripts.activate(world)
-        check(
-            world["alice"].device.engine.addContact(
-                world["bob"].device.card(), CardSource.QR_IN_PERSON,
-            ) == AddContactResult.ADDED,
-        )
-    }
 }

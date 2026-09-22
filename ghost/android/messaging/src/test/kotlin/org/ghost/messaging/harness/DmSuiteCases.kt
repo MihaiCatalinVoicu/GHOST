@@ -10,12 +10,16 @@ import org.ghost.messaging.api.Timer
  * Named sub-cases of the functional suites of Phase 9 design §15.5, written as [DmScenario]s so
  * they run under the crash enumeration and under a mutation with the same code.
  *
- * Three are here, each chosen because it is the **only** case that kills a mutant this slice
- * registers, and each is a case §15.5 names:
+ * Four are here, and each is a case §15.5 names. Three of them are the **only** case that kills a
+ * mutant this slice registers:
  *  - **RP6** "re-encryption after a wrongly reported FAILED" — the one path that reaches D3, and so
  *    the one that can detect MC-5;
  *  - the §12.3 rejected-request replay — the one that reaches D2b, and so MC-7′;
  *  - **EP** "a read path ignores expiry", the behavioural half of the DAO lint, and so ME-16.
+ *
+ * The fourth, **RP9**, is here for a different reason: it is what makes the model relay's TRUNCATE
+ * mode something the engine is measured against rather than a capability of the harness nobody
+ * drives. Its own doc comment says why **RP3** is not beside it.
  *
  * The rest of RO, RS, RP, KC, CB, RE, EP, OS and RK is not here. §22.15 lists them by sub-case.
  */
@@ -180,8 +184,78 @@ internal object DmSuiteCases {
         },
     )
 
+    /**
+     * **RP9 — a blob with a flipped byte** (§15.5, CS-7).
+     *
+     * It does not open, and — the half that is easy to lose — the recipient produces **no traffic
+     * of any kind** in answer: a decryption-error message or an automatic session reset is mutant
+     * PM-6 and an oracle for whoever flipped the byte. So the case asserts both that nothing is
+     * rendered and that the item-op count does not move.
+     *
+     * **RP3 is not here, and it is not constructible in this world.** §15.5 states it as
+     * COPY_NAMESPACE — "a blob of contact A presented as contact B's" — and R-S3 is the rule it
+     * checks ("a relay that copies the blob into another namespace … produces something that does
+     * not open"). But a device has exactly **one** DM inbox namespace per card index (§5.1, §3.3),
+     * and after `EST-END` that is the only namespace it listens on, so "another namespace the
+     * recipient owns" does not exist for it. The relay's first version of this case therefore fell
+     * back to the blob's own namespace and the message opened — correctly, and the case failed for
+     * a reason that was the harness's, not the engine's. §22.15 records what RP3 needs: the second
+     * card index of §3.3, which no slice has exercised yet. The namespace binding itself is covered
+     * by the `dm_seal.txt` vectors of §15.2.
+     */
+    fun rp9FlippedBytesDoNotOpenAndAnswerNothing(): DmScenario = DmScenario(
+        name = "RP9",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world.notes["rendered"] = DmScripts.inboundTexts(world, "bob").size
+            // Item ops, not every op: a weekly bundle publication is time-triggered and would
+            // legitimately move a count over `outbox_op`, which would make this case fail for a
+            // reason that has nothing to do with the blob it is about.
+            world.notes["stores"] = DmScripts.count(
+                world, "bob", "SELECT count(*) FROM dm_outbound_op WHERE purpose = 'item'",
+            )
+        },
+        steps = listOf(
+            step("a blob with a flipped byte") { w ->
+                w.relay.modes = setOf(ModelDmRelay.Mode.TRUNCATE)
+                w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "flipped", null)
+                w.pump()
+                w.passes()
+            },
+            step("and another") { w ->
+                w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "flipped2", null)
+                w.pump()
+                w.passes()
+            },
+        ),
+        alwaysChecks = { world ->
+            val texts = DmScripts.inboundTexts(world, "bob")
+            if (texts.any { it.startsWith("flipped") }) {
+                dmViolation("RP9: a blob with a flipped byte opened")
+            }
+        },
+        finalChecks = { world ->
+            // No answer of any kind: a recipient that stored anything in response would be an
+            // oracle for whoever flipped the byte (PM-6, T28).
+            val stores = DmScripts.count(
+                world, "bob", "SELECT count(*) FROM dm_outbound_op WHERE purpose = 'item'",
+            )
+            val before = world.notes["stores"] as Long
+            if (stores != before) {
+                dmViolation("RP9: bob answered an unopenable blob with ${stores - before} stores")
+            }
+            if (world.notes["rendered"] != DmScripts.inboundTexts(world, "bob").size) {
+                dmViolation("RP9: bob rendered something from an unopenable blob")
+            }
+        },
+    )
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
+        rp9FlippedBytesDoNotOpenAndAnswerNothing(),
         cbRejectedRequestStaysRejected(),
         epExpiredRowsAreNotReadable(),
     )

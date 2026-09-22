@@ -30,34 +30,14 @@ internal class FaultyDmSqlExecutor(
     private val node: String,
 ) : SqlExecutor {
 
-    /** Commits of transactions in which a statement changed a row or ran DDL (crash classes). */
-    var dirtyCommits: Long = 0
-        private set
-
-    /** Statements that changed rows outside any transaction. */
-    var autocommitWrites: Long = 0
-        private set
-
-    private var dirty = false
-
     /**
      * Optional statement rewriting: the SQL-level mutants of [DmMutants], exactly as the Phase 7
      * harness's `FaultySqlExecutor.rewrite` (design §15.7 "implemented only in `src/test`").
      */
     var rewrite: ((String, List<Any?>) -> Pair<String, List<Any?>>)? = null
 
-    /** Observers of every executed update: (sql, args, changed rows). */
-    val onUpdate = ArrayList<(String, List<Any?>, Int) -> Unit>()
-
-    /** Observers of every transaction end: true once committed, false when rolled back. */
-    val onTransactionEnd = ArrayList<(Boolean) -> Unit>()
-
     private fun rewritten(sql: String, args: List<Any?>): Pair<String, List<Any?>> =
         rewrite?.invoke(sql, args) ?: Pair(sql, args)
-
-    private fun wrote() {
-        if (delegate.inTransaction) dirty = true else autocommitWrites++
-    }
 
     /**
      * Raises the event and turns a planned `SQLITE_FULL` into the exception the device would see.
@@ -75,16 +55,12 @@ internal class FaultyDmSqlExecutor(
         fire(DmEventKind.SQL_EXEC, sql)
         val (s, a) = rewritten(sql, args)
         delegate.exec(s, a)
-        wrote()
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int {
         fire(DmEventKind.SQL_UPDATE, sql)
         val (s, a) = rewritten(sql, args)
-        val changed = delegate.execUpdate(s, a)
-        if (changed > 0) wrote()
-        onUpdate.forEach { it(s, a, changed) }
-        return changed
+        return delegate.execUpdate(s, a)
     }
 
     override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) {
@@ -94,20 +70,16 @@ internal class FaultyDmSqlExecutor(
     }
 
     override fun <T> transaction(block: () -> T): T {
-        var committed = false
-        val result = try {
-            delegate.transaction {
-                dirty = false
-                val r = block()
-                fire(DmEventKind.PRE_COMMIT, "commit")
-                r
-            }.also { committed = true }
-        } finally {
-            if (!committed) onTransactionEnd.forEach { it(false) }
+        val result = delegate.transaction {
+            val r = block()
+            // Inside the block, so a crash here unwinds through `JdbcSqlExecutor.transaction`'s
+            // own `catch` and the connection is rolled back — the committed state a process death
+            // mid-transaction leaves.
+            fire(DmEventKind.PRE_COMMIT, "commit")
+            r
         }
-        onTransactionEnd.forEach { it(true) }
-        if (dirty) dirtyCommits++
-        dirty = false
+        // After the commit: the caller never learns it succeeded, which is the other half of the
+        // window §7.8 is about.
         fire(DmEventKind.POST_COMMIT, "commit")
         return result
     }

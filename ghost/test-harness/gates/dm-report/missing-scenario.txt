@@ -8,9 +8,10 @@ dm crash classes: SCN-J 1110 events, 1110 singles, 0 doubles, 3 timeouts
 dm crash classes: SCN-L 1209 events, 1209 singles, 0 doubles, 6 timeouts
 dm storage-full: SCN-J 352 statements injected
 dm crash classes: RP6 1440 events, 1440 singles, 0 doubles, 9 timeouts
+dm crash classes: RP9 1180 events, 1180 singles, 0 doubles, 6 timeouts
 dm crash classes: CB-reject-replay 710 events, 710 singles, 0 doubles, 3 timeouts
 dm crash classes: EP-read-expiry 1214 events, 1214 singles, 0 doubles, 6 timeouts
-dm suite cases: 3 run, 0 failures
+dm suite cases: 4 run, 0 failures
 dm mutants: 6 run, 6 detected
 dm mutant MC-5: detected by RP6 (re-encryption after a wrongly reported FAILED); CS-2 at quiescence
 dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears)

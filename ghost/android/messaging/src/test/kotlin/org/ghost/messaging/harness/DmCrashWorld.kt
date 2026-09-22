@@ -127,11 +127,6 @@ internal class DmCrashWorld(
         drive { this[name].device.hintPass() }
     }
 
-    /** A time-triggered pass on one node, through the same swallow. */
-    fun pass(name: String) {
-        drive { this[name].device.timeTriggeredPass() }
-    }
-
     /**
      * Runs to quiescence: rounds of pump + pass until nothing changes, or [maxRounds] is reached.
      *

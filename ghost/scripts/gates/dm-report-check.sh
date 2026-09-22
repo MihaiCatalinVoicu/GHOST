@@ -13,7 +13,7 @@
 #
 # **What this deliberately does not check.** §15.7's own gate line is `dm mutants: 97 run, 97
 # detected` and §15.3's enumeration is every event of twelve scenarios. Slice S10 implements seven
-# scenarios, three suite cases and six mutants, so the numbers pinned here are the numbers a run
+# scenarios, four suite cases and six mutants, so the numbers pinned here are the numbers a run
 # actually measures. Raising them is the next slice's job and is exactly what should fail this
 # script until the tests behind them exist: a gate that asserted the design's numbers while running
 # a subset would pass on evidence nobody produced, which is the one failure mode a report-checked
@@ -33,7 +33,7 @@ bad() { echo "DM-REPORT-FAIL: $*" >&2; fail=1; }
 # The scenarios and suite cases slice S10 implements. Each must have a crash-class line, and that
 # line must report at least one single crash: an enumeration of zero crash points is a scenario that
 # ran once without faults, which is not a crash enumeration.
-scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-J SCN-L RP6 CB-reject-replay EP-read-expiry)
+scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-J SCN-L RP6 RP9 CB-reject-replay EP-read-expiry)
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
   if [ -z "$line" ]; then

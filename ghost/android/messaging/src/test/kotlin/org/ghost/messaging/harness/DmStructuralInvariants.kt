@@ -256,16 +256,6 @@ internal object DmStructuralInvariants {
         return out.toString()
     }
 
-    /** The rendered order of one node's conversations: CS-4's oracle. */
-    fun renderOrder(node: DmNode): List<String> {
-        val out = ArrayList<String>()
-        node.raw.query(
-            "SELECT hex(conversation_id), hex(message_id) FROM dm_message " +
-                "ORDER BY conversation_id, sort_minute, minute_index, message_id",
-        ) { out += it.string(0) + ":" + it.string(1) }
-        return out
-    }
-
     private fun empty(sql: JdbcSqlExecutor, label: String, what: String, query: String) {
         var count = 0L
         sql.query(query) { count = it.long(0) }

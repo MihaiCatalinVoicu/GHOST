@@ -19,9 +19,10 @@ name: messaging-exit-gate
 # `setup-gradle` restores the local build cache, so an unchanged test task would be restored
 # FROM-CACHE and the gate would run nothing.
 #
-# Budget (measured on the owner's workstation, 8 worker threads): the PR scale is about 3 minutes
-# for the whole `:messaging` suite; the gate scale is ~13× the crash runs and 8× the seeds, so about
-# 90 minutes there and about twice that on a runner — the timeout leaves room for the build.
+# Budget (measured on the owner's workstation, 8 worker threads): the whole `:messaging` suite is
+# about 3 minutes at the PR scale and **25 min 45 s** at this one — 22 500 crash runs over ten
+# scenarios and suite cases, 305 `SQLITE_FULL` injections, 128 seeded worlds and the mutants. A
+# 4-vCPU runner is roughly twice that, and the timeout leaves room for the two builds on top.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:

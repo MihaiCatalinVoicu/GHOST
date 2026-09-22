@@ -36,23 +36,8 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         /** Keeps a blob back for one round (RO7, SCN-E). */
         WITHHOLD,
 
-        /** Re-serves a blob the recipient already consumed and forgot (RP2). */
-        RESURRECT,
-
-        /** Presents a blob of one namespace under another the recipient owns (RP3, B1). */
-        COPY_NAMESPACE,
-
         /** Flips a byte of the served ciphertext (RP9: it must not open, and must not answer). */
         TRUNCATE,
-
-        /** Does not release the sender's outcome for one round (§21.8 the INDETERMINATE window). */
-        DELAY_RELEASE,
-
-        /** Reports every store of one chosen sender as failed (SCN-G's "every relay refusing"). */
-        REFUSE_ONE_SENDER,
-
-        /** Never serves a `prekeys` namespace's newest blob (SCN-C, PM-31's JD7 variant). */
-        WITHHOLD_NEWEST_BUNDLE,
 
         /**
          * Stores the blob and tells the sender it failed: RP6's "re-encryption after a wrongly
@@ -67,9 +52,6 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     }
 
     var modes: Set<Mode> = emptySet()
-
-    /** With [Mode.REFUSE_ONE_SENDER], the node whose stores fail. */
-    var refusedSender: String? = null
 
     /** What the relay says a store's outcome was. `sent` unless a mode or a test says otherwise. */
     var outcomeFor: (String) -> String = { "sent" }
@@ -97,17 +79,11 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     /** `(namespace hex + hash hex, node)` pairs already served, so a round does not repeat. */
     private val served = HashSet<String>()
 
-    /** Ops whose outcome the relay is holding back ([Mode.DELAY_RELEASE]). */
-    private val held = HashSet<String>()
-
     /** Blobs [Mode.WITHHOLD] has already kept back once. */
     private val withheld = HashSet<String>()
 
     private var sequence = 1L
     private var shuffleCounter = 0
-
-    /** Every store the relay accepted, for the report and for JD-style assertions. */
-    val storeLog = ArrayList<String>()
 
     /**
      * One round: every node's pending stores reach the relay, then every stored blob reaches every
@@ -137,17 +113,12 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             val key = operation.hex() + "@" + node.name
             if (!collected.add(key)) continue
             bus.event(DmEventKind.RELAY_BEFORE_SEND, node.name, "store ${operation.hex().take(8)}")
-            val outcome = when {
-                Mode.LIE_FAILED in modes -> "failed"
-                Mode.REFUSE_ONE_SENDER in modes && refusedSender == node.name -> "failed"
-                else -> outcomeFor(operation.hex())
-            }
+            val outcome = if (Mode.LIE_FAILED in modes) "failed" else outcomeFor(operation.hex())
             // LIE_FAILED stores it anyway: that is the whole of the lie.
             if (outcome != "failed" || Mode.LIE_FAILED in modes) {
                 stored += Stored(
                     namespace, sha256(ciphertext), ciphertext, node.clock.now, ttl, node.name,
                 )
-                storeLog += "${node.name} ${namespace.hex()} ${ciphertext.size} $ttl"
             }
             val applied = bus.event(DmEventKind.RELAY_AFTER_APPLY, node.name, "stored")
             if (applied === DmFault.TimeoutAfterApply) {
@@ -158,17 +129,8 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
                 collected.remove(key)
                 continue
             }
-            if (Mode.DELAY_RELEASE in modes && held.add(key)) continue
             release(node, operation, outcome)
             bus.event(DmEventKind.RELAY_AFTER_RESPONSE, node.name, "released $outcome")
-        }
-        if (Mode.DELAY_RELEASE in modes) {
-            // Everything held in an earlier round is released now, one round late.
-            val due = held.filter { it.endsWith("@${node.name}") }
-            for (key in due) {
-                held.remove(key)
-                release(node, hexToBytes(key.substringBefore('@')), outcomeFor(key.substringBefore('@')))
-            }
         }
     }
 
@@ -217,16 +179,10 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             // hold") is about late ones.
             if (Mode.WITHHOLD in modes && withheld.add(key)) continue
             val fresh = served.add(key)
-            if (!fresh && Mode.RESURRECT !in modes && Mode.REPEATS !in modes) continue
+            if (!fresh && Mode.REPEATS !in modes) continue
             val bytes = if (Mode.TRUNCATE in modes) flip(blob.ciphertext) else blob.ciphertext
-            val namespace = if (Mode.COPY_NAMESPACE in modes) {
-                listening.firstOrNull { it != blob.namespace.hex() }?.let { hexToBytes(it) }
-                    ?: blob.namespace
-            } else {
-                blob.namespace
-            }
-            if (insert(node, namespace, bytes)) moved += 1
-            if (Mode.REPEATS in modes && insert(node, namespace, bytes)) moved += 1
+            if (insert(node, blob.namespace, bytes)) moved += 1
+            if (Mode.REPEATS in modes && insert(node, blob.namespace, bytes)) moved += 1
         }
         return moved
     }
@@ -268,11 +224,6 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         return true
     }
 
-    /** Forgets that [node] ever consumed these blobs: the RESURRECT of §15.1 after a tombstone GC. */
-    fun forgetTombstones(node: DmNode) {
-        served.removeAll { it.endsWith("@${node.name}") }
-    }
-
     /** How many blobs the relay is holding. */
     val blobCount: Int get() = stored.size
 
@@ -281,8 +232,5 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
 
     private companion object {
         fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
-
-        fun hexToBytes(hex: String): ByteArray =
-            ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
     }
 }
