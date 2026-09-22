@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6 (`scripts/gates/dm-jni-surface.sh`), test-library case (Phase 9
+# §15.9 item 7, §22.8.10 point 6; slice S12): the closed list, as `exact-nm` prints it, plus the
+# one symbol a library built with `ghost-client-dm`'s `test-vectors` feature adds. Accepted with
+# `--test`; refused for a shipped library.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_run\n' 65536

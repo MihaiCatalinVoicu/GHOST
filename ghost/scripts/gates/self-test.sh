@@ -20,6 +20,15 @@ expect_fail() {
 for g in anti-placeholder no-logging manifest-lint dependency-allowlist; do
   expect_fail "$g" "$HARNESS/negative"
 done
+# Phase 9 §21.13 point 7 (slice S12): anti-placeholder reads the `gate` source sets. The fixture holds
+# a gate source and nothing else, so only that reading can fail it.
+expect_fail anti-placeholder "$HARNESS/negative-gate-placeholder"
+gate_ph_out="$(GHOST_ROOT="$HARNESS/negative-gate-placeholder" bash "$DIR/anti-placeholder.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$gate_ph_out" || true)" = "1" ] && grep -qF "src/gate/kotlin/org/ghost/app/gate/GateStandIn.kt:6:" <<<"$gate_ph_out"; then
+  echo "self-test ok: anti-placeholder reports the gate source set's stand-in"
+else
+  echo "SELF-TEST FAIL: anti-placeholder does not report exactly the gate source set's stand-in" >&2; rc=1
+fi
 # Phase 7 crash fidelity: every catch-all form in the fixture is reported, one line each. Phase 8
 # (design §11.1): the fixture's entitlement module adds 3 lines, each reported by its file name, and
 # a tree without android/entitlement/src/main fails for that reason alone.
@@ -123,6 +132,61 @@ dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeou
 dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
 dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report"
+# Phase 9 S12 (design §15.9): the emulator report check. `pass/` is a green run on API 29 and 35;
+# every negative case is a copy of it with one change, each a way an emulator run could look green
+# while it proved less: an API level or a suite that never ran, a skipped or missing test, a
+# comparator whose control was not detected or that compared fewer cases than the file holds, a
+# failed or crashed instrumentation, the wrong emulator, and SCN-D's logcat scan absent.
+DME="$HARNESS/dm-emulator"
+dme_case() { # $1 = pass|fail, $2 = expected text ("" for a pass), $3 = description, $4 = change (a command on the copy), rest = API levels
+  local expect="$1" want="$2" desc="$3" change="$4" copy out got
+  shift 4
+  copy="$(mktemp -d)"
+  cp -r "$DME/pass/." "$copy/"
+  "$change" "$copy"
+  if out="$(GHOST_DM_EQUIVALENCE_CASES="$DME/cases.txt" bash "$DIR/dm-emulator-check.sh" "$copy" "$@" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$expect" ] && { [ -z "$want" ] || grep -qF "$want" <<<"$out"; }; then
+    echo "self-test ok: dm-emulator-check $desc"
+  else
+    echo "SELF-TEST FAIL: dm-emulator-check $desc ($got)" >&2
+    printf '%s\n' "$out" | tail -3 >&2; rc=1
+  fi
+  rm -rf "$copy"
+}
+dme_same() { :; }
+dme_no_api() { rm -r "$1/api29"; }
+dme_no_suite() { rm "$1/api35/app-smoke.txt"; }
+dme_skipped() { sed -i 's/^device tests: 6 run, 0 failed, 0 skipped$/device tests: 6 run, 0 failed, 1 skipped/' "$1/api35/messaging.txt"; }
+dme_fewer() { sed -i 's/^device tests: 6 run,/device tests: 5 run,/' "$1/api35/messaging.txt"; }
+dme_control() { sed -i 's/control detected/control NOT detected/' "$1/api35/crypto-bridge.txt"; }
+dme_partial() { sed -i 's/3 cases, 3 identical/2 cases, 2 identical/' "$1/api35/crypto-bridge.txt"; }
+dme_code() { sed -i 's/^INSTRUMENTATION_CODE: -1$/INSTRUMENTATION_CODE: 0/' "$1/api35/crypto-bridge.txt"; }
+dme_crash() { printf 'INSTRUMENTATION_RESULT: shortMsg=Process crashed.\n' >> "$1/api35/messaging.txt"; }
+dme_api() { sed -i 's/^sdk=35$/sdk=34/' "$1/api35/device.txt"; }
+dme_abi() { sed -i 's/^abi=x86_64$/abi=arm64-v8a/' "$1/api35/device.txt"; }
+dme_no_scan() { sed -i '/logcat holds no canary/d' "$1/api35/messaging.txt"; }
+dme_case pass "" "accepts a green run on API 29 and 35" dme_same 29 35
+dme_case fail "API 29: not run" "reports an API level that never ran as not run" dme_no_api 29 35
+dme_case fail "app-smoke: not run" "reports a suite that never ran as not run" dme_no_suite 35
+dme_case fail "1 skipped" "rejects a skipped device test" dme_skipped 35
+dme_case fail "expected 6 run" "rejects a run with one device test fewer than the slice runs" dme_fewer 35
+dme_case fail "control detected" "rejects an equivalence run whose control was not detected" dme_control 35
+dme_case fail "3 cases, 3 identical" "rejects an equivalence run over fewer cases than the case file" dme_partial 35
+dme_case fail "code '0'" "rejects an instrumentation that finished with RESULT_CANCELED" dme_code 35
+dme_case fail "crashed" "rejects a crashed instrumentation" dme_crash 35
+dme_case fail "reported API '34'" "rejects an emulator of another API level" dme_api 35
+dme_case fail "not x86_64" "rejects an emulator of another ABI" dme_abi 35
+dme_case fail "logcat holds no canary" "rejects a run without SCN-D's logcat scan" dme_no_scan 35
+if bash "$DIR/dm-emulator-check.sh" "$DME/pass" >/dev/null 2>&1; then
+  echo "SELF-TEST FAIL: dm-emulator-check accepts a run with no API level named" >&2; rc=1
+else
+  echo "self-test ok: dm-emulator-check refuses a call that names no API level"
+fi
+# The device scripts of slice S12 (§21.13 point 4: "each with a self-test"): the physical gate's
+# orchestrator against a fake pair of phones, and the emulator run script against a fake emulator
+# and through the check above. Both run here so `static-gates` proves them on every change.
+bash "$DIR/../device/dm-gate-self-test.sh" || rc=1
+bash "$DIR/../device/dm-emulator-self-test.sh" || rc=1
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"
@@ -652,6 +716,26 @@ expect_fail_msg "dm-jni-surface rejects a library that does not export an Export
 expect_fail_msg "dm-jni-surface rejects a symbol reader that cannot read the library" \
   "could not read" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/unreadable-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+# Slice S12 (§15.9 item 7, §22.8.10 point 6, §21.13 point 7): the test-vectors entry point is one
+# symbol of a test library and none of a shipped one, and only `:crypto-bridge` src/{main,gate}
+# references DmNative.
+expect_fail_msg "dm-jni-surface rejects the test-vectors entry point in a shipped library" \
+  "a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the test-vectors entry point" \
+  "does not export the test-vectors entry point" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf" >/dev/null 2>&1; then
+  echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry point"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry point" >&2; rc=1
+fi
+jni_ref_out="$(env GHOST_DM_JNI_ANDROID="$DM_JNI/android-ref" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$jni_ref_out" || true)" = "2" ] && grep -qF "Shortcut.kt:8: references DmNative outside" <<<"$jni_ref_out"; then
+  echo "self-test ok: dm-jni-surface reports DmNative referenced outside :crypto-bridge (code, not prose)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface does not report exactly the two code references to DmNative" >&2; rc=1
+fi
 if env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" "$elf" >/dev/null 2>&1
 then
   echo "self-test ok: dm-jni-surface accepts a library whose symbols are the closed list"
@@ -753,6 +837,45 @@ if bash "$DIR/dm-enqueue-callers.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-enqueue-callers accepts the real DM engine"
 else
   echo "SELF-TEST FAIL: dm-enqueue-callers rejects the real DM engine" >&2; rc=1
+fi
+
+# G-DM5 (Phase 9 design §16.1, §21.13 points 5 and 7; slice S12): each source tree and each mapping
+# fixture reports exactly its own violations, the positive mapping passes, and the real tree passes.
+DMH="$HARNESS/dm-hooks"
+dmhooks_case() { # $1 = description, $2 = expected count, $3 = expected text, rest = env and args
+  local desc="$1" want="$2" text="$3" out hits
+  shift 3
+  out="$(env "$@" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$want" ] && grep -qF "$text" <<<"$out"; then
+    echo "self-test ok: apk-no-debug-hooks $desc"
+  else
+    echo "SELF-TEST FAIL: apk-no-debug-hooks $desc (reported $hits of $want)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+dmhooks_case "refuses a release source set that reaches the key-change hook" 2 "names a debug-only class" \
+  GHOST_ROOT="$DMH/release-ref" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "refuses a harness package in a release source set" 1 "declares a harness or gate package" \
+  GHOST_ROOT="$DMH/harness-package" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "refuses the equivalence entry point in a release source set" 1 "declares the equivalence-test entry point" \
+  GHOST_ROOT="$DMH/equivalence" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "refuses a tree without the gate build type" 1 "the gate build type is missing" \
+  GHOST_ROOT="$DMH/no-gate" GHOST_DM_HOOKS_MIN_SOURCES=1 bash "$DIR/apk-no-debug-hooks.sh"
+dmhooks_case "refuses a renamed org.ghost. class in mapping.txt" 1 "maps to itself" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/renamed.txt"
+dmhooks_case "refuses the key-change hook and a gate lambda in mapping.txt" 2 "ships the debug-only class" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/debug-class.txt"
+dmhooks_case "refuses a harness class in mapping.txt" 1 "from a harness or gate package" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/harness.txt"
+dmhooks_case "refuses the equivalence entry point in mapping.txt" 1 "ships the equivalence-test entry point" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/entry.txt"
+dmhooks_case "refuses a mapping without an org.ghost. class" 1 "lists no org.ghost. class" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/no-ghost.txt"
+if bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/positive.txt" >/dev/null 2>&1; then
+  echo "self-test ok: apk-no-debug-hooks accepts the real tree and a -keepnames mapping"
+else
+  echo "SELF-TEST FAIL: apk-no-debug-hooks rejects the real tree or a -keepnames mapping" >&2; rc=1
 fi
 
 if command -v cargo >/dev/null; then

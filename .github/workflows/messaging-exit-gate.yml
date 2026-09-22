@@ -100,10 +100,11 @@ jobs:
           cargo build -p ghost-dm-host --release --locked
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       # G-R6 (host half, §22.8.10 point 10): the library this gate is about to load exports exactly
-      # the closed list of §2.6, checked before it is loaded rather than after.
+      # the closed list of §2.6, checked before it is loaded rather than after. `--test`: the host
+      # build also exports the equivalence-test entry point (§15.9 item 7; slice S12), and only that.
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
-        run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
+        run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
       - name: DM exit-gate harness (every event, 64 seeds)
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \

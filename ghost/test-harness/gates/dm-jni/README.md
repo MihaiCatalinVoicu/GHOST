@@ -30,3 +30,13 @@ file that only has to begin with the ELF magic.
 `stray/` is a directory of its own because the scan half takes a **root**: the gate is pointed at
 it with `GHOST_DM_JNI_SCAN`, which is also how the CI jobs point the symbol half at a built
 library.
+
+## Slice S12 additions
+
+- `nm/entry-nm` prints the closed list plus `Java_org_ghost_crypto_bridge_DmEquivalence_run`, the
+  one symbol a library built with the `test-vectors` feature adds (§15.9 item 7, §22.8.10 point 6):
+  the gate accepts it for a library passed with `--test` and refuses it for a shipped one, and
+  refuses `exact-nm` with `--test` (a test library without its entry point).
+- `android-ref/` is an Android tree whose `:messaging` production source imports and calls
+  `DmNative` directly; the source-set half (only `:crypto-bridge` `src/{main,gate}` may) reports
+  the import and the call, not the comment.
