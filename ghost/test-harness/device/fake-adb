@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# A fake `adb` for the self-test of scripts/device/dm-gate.sh (Phase 9 design §15.10; slice S12). It
+# answers as two gate phones — serials A and B — sharing one conversation that is delivered
+# instantly, and speaks the one protocol the orchestrator uses: `am instrument -w -e cmd …` with
+# `INSTRUMENTATION_RESULT: key=value` lines and `INSTRUMENTATION_CODE: -1`.
+#
+# FAKE_ADB_DIR holds the state; FAKE_ADB_BUG makes one phone lie the way a defect would:
+#   reorder    B renders the conversation in another order
+#   duplicate  B renders one message twice
+#   safety     B's safety number digest differs
+#   nochange   A never shows the key change
+#   leak       the phones' card is also printed as an extra result key (the orchestrator must not log it)
+# Nothing here is a phone: it is the orchestrator's counterpart for its own self-test.
+set -euo pipefail
+dir="${FAKE_ADB_DIR:?}"
+bug="${FAKE_ADB_BUG:-}"
+[ "${1:-}" = "-s" ] || { echo "fake-adb: expected -s <serial>" >&2; exit 2; }
+serial="$2"
+shift 2
+mkdir -p "$dir"
+touch "$dir/conversation" "$dir/changed"
+
+sha() { sha256sum | cut -d' ' -f1; }
+card() { printf 'c0%062d' "$(printf '%s' "$1" | od -An -tu1 | tr -d ' \n' | cut -c1-6)"; }
+ok() { printf 'INSTRUMENTATION_RESULT: %s\n' "$@"; printf 'INSTRUMENTATION_CODE: -1\n'; }
+
+case "${1:-}" in
+  install) echo "Success"; exit 0 ;;
+  exec-out) printf 'SQLite format 3\0encrypted pages'; exit 0 ;;
+  shell) shift ;;
+  *) echo "fake-adb: unsupported $*" >&2; exit 2 ;;
+esac
+
+if [ "${1:-}" != am ] || [ "${2:-}" != instrument ]; then exit 0; fi
+shift 3 # am instrument -w
+declare -A arg=()
+while [ $# -gt 1 ] && [ "$1" = -e ]; do arg["$2"]="$3"; shift 3; done
+cmd="${arg[cmd]:-}"
+
+digest_of() { # serial
+  local ids
+  ids="$(cat "$dir/conversation")"
+  if [ "$1" = B ] && [ "$bug" = reorder ]; then ids="$(tac <<<"$ids")"; fi
+  if [ "$1" = B ] && [ "$bug" = duplicate ] && [ -n "$ids" ]; then ids="$ids"$'\n'"$(head -n 1 <<<"$ids")"; fi
+  local count dups
+  count="$(grep -c . <<<"$ids" || true)"
+  dups=$(( count - $(sort -u <<<"$ids" | grep -c . || true) ))
+  printf 'order=%s\nmultiset=%s\ncount=%s\nduplicates=%s\n' \
+    "$(printf '%s' "$ids" | sha)" "$(sort <<<"$ids" | tr -d '\n' | sha)" "$count" "$dups"
+}
+
+case "$cmd" in
+  card)
+    if [ "$bug" = leak ]; then ok "card=$(card "$serial")" "cardcopy=$(card "$serial")"; else ok "card=$(card "$serial")"; fi ;;
+  add-contact) ok "result=ADDED" "contact=$(printf '%s' "contact-$serial" | sha | cut -c1-32)" ;;
+  send)
+    n="${arg[count]}"
+    if [ "$serial" = A ] && [ -s "$dir/changed" ]; then ok "send.KEY_CHANGED=$n"; exit 0; fi
+    for _ in $(seq "$n"); do
+      if [ "$serial" = B ] && [ -f "$dir/keychanged" ] && [ "$bug" != nochange ]; then
+        echo 1 > "$dir/changed"; echo "held-$RANDOM$RANDOM" >> "$dir/held"
+      else
+        printf '%s\n' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" >> "$dir/conversation"
+      fi
+    done
+    ok "send.QUEUED=$n" ;;
+  digest) mapfile -t lines < <(digest_of "$serial"); ok "${lines[@]}" ;;
+  safety)
+    if [ "$serial" = B ] && [ "$bug" = safety ]; then ok "safety=$(echo other | sha)"; else ok "safety=$(echo same | sha)"; fi ;;
+  contacts)
+    c="$(printf '%s' "contact-$serial" | sha | cut -c1-32)"
+    if [ "$serial" = A ] && [ -s "$dir/changed" ]; then ok "contacts=$c:CHANGED:READY"; else ok "contacts=$c:VERIFIED:READY"; fi ;;
+  key-change) touch "$dir/keychanged"; ok "result=ACTIVATED" ;;
+  ack-key-change)
+    : > "$dir/changed"
+    if [ -f "$dir/held" ]; then cat "$dir/held" >> "$dir/conversation"; rm -f "$dir/held"; fi
+    ok "result=true" ;;
+  pass) ok "result=PASSED" ;;
+  status) ok "poisoned=0" "drop.replay=$(grep -c . "$dir/conversation" || true)" ;;
+  timer) ok "result=QUEUED" ;;
+  *) printf 'INSTRUMENTATION_RESULT: error=bad-argument\nINSTRUMENTATION_CODE: 0\n' ;;
+esac

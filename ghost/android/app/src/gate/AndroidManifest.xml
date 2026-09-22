@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The gate variant only (Phase 9 design 15.10, 21.13 points 4 and 7, ADR-34; slice S12): the
+     application with the debug key-change hook, and the instrumentation scripts/device/dm-gate.sh
+     drives. Never in a release manifest (gate G-DM5 reads the release source sets; T15m reads the
+     merged release manifest). The hardening attributes repeat the main manifest's, as T15 requires
+     of every manifest that declares an application. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:name="org.ghost.app.gate.GateGhostApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:name" />
+
+    <instrumentation
+        android:name="org.ghost.app.gate.GateInstrumentation"
+        android:label="GHOST gate"
+        android:targetPackage="${applicationId}" />
+
+</manifest>

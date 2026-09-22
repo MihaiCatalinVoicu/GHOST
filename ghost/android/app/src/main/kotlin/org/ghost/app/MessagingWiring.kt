@@ -2,6 +2,7 @@ package org.ghost.app
 
 import org.ghost.entitlement.api.IdentityActivationHook
 import org.ghost.identity.RootEntropy
+import org.ghost.messaging.api.ActivationOutcome
 import org.ghost.messaging.api.Messaging
 import org.ghost.messaging.engine.DmKeys
 import org.ghost.messaging.engine.MessagingRuntime
@@ -200,11 +201,16 @@ internal class MessagingWiring(
         }
     }
 
-    /** The hook's body, on the wiring thread. */
-    private fun activate(restored: Boolean) {
-        val current = ensureStack() ?: return
-        if (current.unlock(identity) != DmKeys.Opened.OPENED) return
-        if (restored) current.messaging.onRestored() else current.messaging.onActivated()
+    /**
+     * The hook's body: reopen the context from the identity now stored, then ACTIVATE. Runs on the
+     * wiring thread for the hook, and on the caller's for a caller that needs the answer (the `gate`
+     * variant's instrumentation after its key-change switch). Null when there is no database or the
+     * context did not open.
+     */
+    fun activate(restored: Boolean): ActivationOutcome? {
+        val current = ensureStack() ?: return null
+        if (current.unlock(identity) != DmKeys.Opened.OPENED) return null
+        return if (restored) current.messaging.onRestored() else current.messaging.onActivated()
     }
 
     /**
