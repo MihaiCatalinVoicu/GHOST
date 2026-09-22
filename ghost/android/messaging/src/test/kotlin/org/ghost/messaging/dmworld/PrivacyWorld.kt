@@ -151,9 +151,6 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         counters.merge(key, n, Int::plus)
     }
 
-    /** User actions in order: (client, second, what). The recorded half of JD6's oracle. */
-    val actions = ArrayList<Triple<Int, Long, String>>()
-
     /** The edges whose request was accepted, as (initiator, responder). */
     val acceptedEdges = LinkedHashSet<Pair<Int, Int>>()
 
@@ -304,7 +301,6 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         val before = outgoingIds(c)
         val result = body()
         clients[c].userMessages += outgoingIds(c) - before
-        actions += Triple(c, now, what)
         return result
     }
 

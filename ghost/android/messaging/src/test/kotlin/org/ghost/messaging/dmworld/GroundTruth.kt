@@ -45,9 +45,6 @@ internal class GroundTruth {
     /** JD2: every published fallback key and the 32-byte prefix of every published X-Wing key. */
     val bundleKeys = LinkedHashSet<Key>()
 
-    /** Every `gen_id` a bundle was created with, by owner: the seizure world's generation truth. */
-    val generations = ArrayList<Pair<Int, Int>>()
-
     /** JD4: the body length behind every sealed blob, keyed by the blob's SHA-256. */
     val bodyLengthOfBlob = HashMap<Key, Int>()
 
@@ -59,9 +56,6 @@ internal class GroundTruth {
 
     /** The pair week a pair-mode blob was sealed under (T34's "pair-mode envelopes of week w"). */
     val weekOfBlob = HashMap<Key, Long>()
-
-    /** The generation an intro blob was sealed to, and the client that sealed it. */
-    val genOfBlob = HashMap<Key, Int>()
 
     private val bodyLengthOfL0 = HashMap<Key, Int>()
     private val bodyLengthOfL1 = HashMap<Key, Int>()
@@ -170,7 +164,6 @@ internal class RecordingCrypto(
         truth.bundleKeys += GroundTruth.Key(generation.fallbackPublic)
         truth.bundleKeys += GroundTruth.Key(generation.xwingPublic.copyOf(32))
         truth.bundleBlobs += GroundTruth.Key(GroundTruth.sha256(generation.blob))
-        truth.generations += client to genId
         return generation
     }
 
@@ -244,7 +237,6 @@ internal class RecordingEnvelopes(
             genPublic, bindingMinute, sessionId, replySeedEnv, l1,
         )
         truth.recordSeal(DmSeal.Mode.INTRO, l1, sealed, client)
-        if (sealed is DmSeal.Sealed.Ok) truth.genOfBlob[GroundTruth.Key(GroundTruth.sha256(sealed.blob))] = genId
         return sealed
     }
 
