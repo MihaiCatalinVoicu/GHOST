@@ -71,6 +71,31 @@ class SweepTest {
         )
     }
 
+    /**
+     * §10.6's "at most 500 per transaction" bounds the **transaction**, and one sweep drains what
+     * a transaction cannot.
+     *
+     * The reason is the wake, not throughput. Every "next wake" query is strictly in the future
+     * (`> now_e`), because a wake for a minute the sweep has already passed would be an alarm that
+     * fires and finds nothing to do; so rows left over from a full batch — whose deadlines are all
+     * in the **past** — would have nothing scheduled to come back for them, and a device back
+     * after a long absence would delete 500 messages and then wait for an unrelated trigger to
+     * take the next 500.
+     */
+    @Test
+    fun oneSweepDrainsMoreThanOneTransactionWorthOfExpiredRows() = OwnerWorld().use { world ->
+        world.activate()
+        world.seedConversation()
+        val expired = DmTime.floorMinute(world.clock.now) - minute
+        val count = org.ghost.messaging.engine.Sweeper.BATCH + 3
+        for (i in 0 until count) world.seedMessage(id = 0x10_000 + i, deleteAt = expired)
+        assertEquals(count, world.count("SELECT count(*) FROM dm_message"))
+
+        val report = world.sweeper.sweep()
+        assertEquals("every expired row, not the first batch", count, report.messages)
+        assertEquals(0, world.count("SELECT count(*) FROM dm_message"))
+    }
+
     /** §10.6: `MediaPort.onMessagesDeleted(tx, ids)` is given exactly the ids that then disappear. */
     @Test
     fun theMediaPortIsToldTheIdsInsideTheSameTransaction() = OwnerWorld().use { world ->

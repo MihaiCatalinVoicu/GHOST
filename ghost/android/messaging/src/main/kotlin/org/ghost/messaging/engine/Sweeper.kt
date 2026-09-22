@@ -45,6 +45,34 @@ internal class SweepReport(
         retiredSessions, provisional, peerPq, namespaces, prunedKeys, truncated,
     )
 
+    /** One sweep may take several transactions (§10.6 bounds the transaction, not the sweep). */
+    operator fun plus(other: SweepReport): SweepReport = SweepReport(
+        messages + other.messages,
+        held + other.held,
+        requests + other.requests,
+        pendingSends + other.pendingSends,
+        seenTags + other.seenTags,
+        pairKeys + other.pairKeys,
+        offers + other.offers,
+        generations + other.generations,
+        retiredSessions + other.retiredSessions,
+        provisional + other.provisional,
+        peerPq + other.peerPq,
+        namespaces + other.namespaces,
+        prunedKeys + other.prunedKeys,
+        checkpointed = checkpointed && other.checkpointed,
+    )
+
+    /**
+     * True when a batch was filled, so more rows of the same kind are already due. §10.6 bounds
+     * one **transaction** at [Sweeper.BATCH]; a device that comes back to thousands of expired
+     * rows drains them over several transactions of one sweep, not over several sweeps — the
+     * leftovers have deadlines in the **past**, and every "next wake" query is strictly in the
+     * future, so nothing would be scheduled to come back for them.
+     */
+    val batchWasFull: Boolean
+        get() = messages >= Sweeper.BATCH || requests >= Sweeper.BATCH || pendingSends >= Sweeper.BATCH
+
     override fun toString(): String =
         "SweepReport(rows=$rows, pruned=$prunedKeys, checkpointed=$checkpointed)"
 }
@@ -159,7 +187,19 @@ internal class Sweeper(
         // S8 review (§22.12 item 18b): `get()` opens a transaction of its own when its cache is
         // cold, and `SyncDatabase` refuses a nested one outright.
         val canPrune = contexts.get() != null && envelopes.isAvailable()
-        val report = database.transaction { tx -> inside(tx, nowE, today, week, canPrune) }
+        // §10.6's 500 bounds a **transaction**, and this loop is why that is the right reading. A
+        // device back after a long absence has more expired rows than one transaction may take,
+        // and the leftovers are in the **past** — while every "next wake" query is strictly in the
+        // future (`> now_e`), so a sweep that stopped at the batch would schedule nothing to come
+        // back for them and they would wait for an unrelated trigger. `MAX_BATCHES` keeps one
+        // sweep from becoming unbounded work on the actor thread; what it does not drain, the next
+        // pass does, and the passes themselves are frequent.
+        var report = database.transaction { tx -> inside(tx, nowE, today, week, canPrune) }
+        var batches = 1
+        while (report.batchWasFull && batches < MAX_BATCHES) {
+            report += database.transaction { tx -> inside(tx, nowE, today, week, canPrune = false) }
+            batches += 1
+        }
         // After the commit, and outside any transaction: the pragma refuses to run inside one.
         val truncated = if (report.rows > 0 || report.prunedKeys > 0 || checkpointDue) {
             checkpoint.truncate()
@@ -342,5 +382,12 @@ internal class Sweeper(
     companion object {
         /** §10.6: "at most 500 per transaction". */
         const val BATCH: Int = 500
+
+        /**
+         * How many of those transactions one sweep will run: 10 000 expired rows, which is far
+         * more than a device reaches in a normal absence and still a bounded amount of work for
+         * the actor thread, which is the thread every facade call waits on (§13.7).
+         */
+        const val MAX_BATCHES: Int = 20
     }
 }

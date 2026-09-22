@@ -282,7 +282,7 @@ class OwnerWorld(
         withItem: Boolean = false,
         contact: Int = 0x21,
     ) {
-        val messageId = ByteArray(16) { id.toByte() }
+        val messageId = messageId(id)
         val conversation = ByteArray(16) { contact.toByte() }
         val author = deleteAt - 86_400
         sql.exec(
@@ -327,6 +327,21 @@ class OwnerWorld(
             "INSERT INTO dm_pending_send(item_id, contact_id, fail_after_hour) VALUES (?, ?, ?)",
             listOf(messageId, ByteArray(16) { contact.toByte() }, ceilHour(deleteAt) + 86_400),
         )
+    }
+
+    /**
+     * A 16-byte id from a small integer.
+     *
+     * A byte repeated sixteen times for `id ≤ 0xFF`, which is what the assertions of `SweepTest`
+     * spell out (`X'e1e1…'`), and the integer big-endian in the first four bytes above that — a
+     * test that seeds more than a batch of rows needs 500 **distinct** primary keys, and the
+     * repeated low byte would have given it 256.
+     */
+    fun messageId(id: Int): ByteArray {
+        val out = ByteArray(16) { id.toByte() }
+        if (id <= 0xFF) return out
+        for (i in 0 until 4) out[i] = (id ushr (8 * (3 - i))).toByte()
+        return out
     }
 
     /** One `olm_prekey_gen` row, superseded and past (or not past) its retention (§5.4). */
