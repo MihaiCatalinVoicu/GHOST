@@ -723,7 +723,10 @@ mod tests {
         let mut ok = text();
         ok.timer_version = MAX_TIMER_VERSION;
         let bytes = ok.encode().expect("encode");
-        assert_eq!(decode(&bytes).expect("decode").timer_version, MAX_TIMER_VERSION);
+        assert_eq!(
+            decode(&bytes).expect("decode").timer_version,
+            MAX_TIMER_VERSION
+        );
 
         let mut over = text();
         over.timer_version = MAX_TIMER_VERSION + 1;
