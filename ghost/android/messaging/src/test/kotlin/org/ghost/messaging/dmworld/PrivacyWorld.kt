@@ -7,6 +7,7 @@ import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
 import org.ghost.messaging.api.MessageId
+import org.ghost.messaging.api.MessageKind
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.api.Timer
 import org.ghost.storage.JdbcSqlExecutor
@@ -117,8 +118,16 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
 
         var activated = false
 
-        /** Message ids of this client's user actions: JD6's `oracle_user_action` (§15.1). */
+        /**
+         * Message ids of this client's user actions: JD6's `oracle_user_action` (§15.1). Only the
+         * message a facade call is **for** is here — the one text a send created with the typed
+         * text, the one TIMER_SET a timer change created — never anything else the call created
+         * ([unexplained]).
+         */
         val userMessages = HashSet<String>()
+
+        /** Outgoing messages a user action created that are not what the user asked for. */
+        val unexplained = ArrayList<String>()
 
         fun sync() {
             clock.now = now
@@ -155,6 +164,29 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     val acceptedEdges = LinkedHashSet<Pair<Int, Int>>()
 
     private val lastWake = HashMap<Int, Long>()
+
+    /** The second of a client's last relay session (its last SWEEP), or null before the first. */
+    fun lastWakeOf(c: Int): Long? = lastWake[c]
+
+    /**
+     * JD7's establishment truth (§15.6: "one bundle fetch per establishment, reset or reconnect"):
+     * every user send by a client to a peer it holds **no session** with, by the recorder's
+     * [GroundTruth.sessions] — what the crypto port saw, never the reader's `dm_contact` row.
+     */
+    class Establishment(val reader: Int, val owner: Int, val at: Long)
+
+    val establishments = ArrayList<Establishment>()
+
+    /**
+     * JD5's timer truth: each conversation's timer changes as the users made them, from the plan's
+     * `edge.timer` through [userSetTimer], and the message id of each TIMER_SET.
+     */
+    class TimerChange(val setter: Int, val peer: Int, val at: Long, val oldCode: Int, val newCode: Int, val messageId: String?)
+
+    val timerChanges = ArrayList<TimerChange>()
+
+    /** The user texts, `message id hex → (sender, peer)`: JD5 checks each one's TTL. */
+    val userTexts = HashMap<String, Pair<Int, Int>>()
 
     // ---------------------------------------------------------------- running
 
@@ -296,19 +328,52 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         return out
     }
 
-    /** A user action through the facade, with every message it created recorded as the user's. */
-    private fun <T> userAction(c: Int, what: String, body: () -> T): T {
+    /** What a user action is for: the one message it should create, if any (JD6's oracle). */
+    private sealed interface Expect {
+        /** Adding a card, accepting or rejecting a request: no message of the user's. */
+        data object Nothing : Expect
+
+        /** A send: exactly the text the user typed. */
+        class Text(val text: String) : Expect
+
+        /** A timer change: one TIMER_SET. */
+        data object TimerSet : Expect
+    }
+
+    /**
+     * A user action through the facade. The message the action is **for** — the one text a send
+     * created with the typed text, the one TIMER_SET of a timer change — is recorded as the user's
+     * (JD6's `oracle_user_action`); anything else the call created goes to [Client.unexplained],
+     * so a receipt piggy-backed on a send, or a message an acceptance created, maps to no user
+     * action. Returns what the call returned and the id of the message it was for.
+     */
+    private fun <T> userAction(c: Int, peer: Int?, expect: Expect, body: () -> T): Pair<T, String?> {
         val before = outgoingIds(c)
         val result = body()
-        clients[c].userMessages += outgoingIds(c) - before
-        return result
+        val created = outgoingIds(c) - before
+        if (created.isEmpty()) return result to null
+        val contact = peer?.let { contactIdOf(c, it) }
+        val views = contact?.let { clients[c].device.engine.conversation(it, created.size + 10, null) }.orEmpty()
+        val byId = views.associateBy { hex(it.id.toByteArray()) }
+        val wanted = created.sorted().firstOrNull { id ->
+            val view = byId[id]
+            view != null && view.outgoing && when (expect) {
+                is Expect.Text -> view.kind == MessageKind.TEXT && view.text == expect.text
+                Expect.TimerSet -> view.kind == MessageKind.TIMER_SET
+                Expect.Nothing -> false
+            }
+        }
+        wanted?.let { clients[c].userMessages += it }
+        clients[c].unexplained += created - setOfNotNull(wanted)
+        return result to wanted
     }
 
     fun userAdd(c: Int, peer: Int): AddContactResult {
         val card = requireNotNull(truth.clients[peer]?.card) { "client $peer has no card" }
-        val result = userAction(c, "add") {
+        val (result, _) = userAction(c, null, Expect.Nothing) {
             clients[c].device.engine.addContact(card, CardSource.QR_IN_PERSON)
         }
+        if (result == AddContactResult.ADDED) truth.cardSource[c to peer] = "in person"
         count("contacts added")
         config.mutant?.afterAdd?.invoke(this, c, peer)
         return result
@@ -317,15 +382,33 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     fun userSend(c: Int, peer: Int, length: Int): SendResult? {
         val contact = contactIdOf(c, peer) ?: return null
         val text = textOf(c, length)
-        val result = userAction(c, "send") { clients[c].device.engine.send(contact, text, null) }
+        val at = now
+        val establishing = (c to peer) !in truth.sessions
+        val (result, id) = userAction(c, peer, Expect.Text(text)) { clients[c].device.engine.send(contact, text, null) }
+        if (establishing) establishments += Establishment(c, peer, at)
+        id?.let { userTexts[it] = c to peer }
         count("sends")
         if (result != SendResult.QUEUED) count("sends not queued: $result")
         return result
     }
 
+    /** The conversation timer the users set between [a] and [b] (§10.1: 7 d until one is set). */
+    fun timerCodeOf(a: Int, b: Int): Int =
+        timerChanges.lastOrNull { (it.setter == a && it.peer == b) || (it.setter == b && it.peer == a) }?.newCode
+            ?: Timer.DAYS_7.code
+
     fun userSetTimer(c: Int, peer: Int, timer: Timer): SendResult? {
         val contact = contactIdOf(c, peer) ?: return null
-        val result = userAction(c, "timer") { clients[c].device.engine.setTimer(contact, timer) }
+        val at = now
+        val old = timerCodeOf(c, peer)
+        val establishing = (c to peer) !in truth.sessions
+        val (result, id) = userAction(c, peer, Expect.TimerSet) { clients[c].device.engine.setTimer(contact, timer) }
+        if (establishing) establishments += Establishment(c, peer, at)
+        if (result == SendResult.QUEUED && id != null) {
+            timerChanges += TimerChange(c, peer, at, old, timer.code, id)
+        } else {
+            count("timers not queued: $result")
+        }
         count("timers set")
         return result
     }
@@ -334,7 +417,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     fun userDecide(c: Int, peer: Int, accept: Boolean): Boolean {
         if (trustOf(c, peer) != "request") return false
         val contact = contactIdOf(c, peer) ?: return false
-        userAction(c, if (accept) "accept" else "reject") {
+        userAction(c, peer, Expect.Nothing) {
             if (accept) clients[c].device.engine.acceptRequest(contact)
             else clients[c].device.engine.rejectRequest(contact)
         }

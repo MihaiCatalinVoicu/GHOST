@@ -51,7 +51,11 @@ class DmPrivacyWorldTest {
                 val sdm3 = Sdm3.run(world, seed)
                 PrivacyReport.line(sdm3.line() + " $tag")
                 if (!sdm3.passed) failures += "$tag ${sdm3.failureMessage()}"
-                PrivacyReport.line(T35.line(world) + " $tag")
+                // A plain host build writes NOT RUN, which only the report check refuses (a local
+                // run without the provenance build still passes here); a provenance build's FAIL fails.
+                val t35 = T35.run(world)
+                PrivacyReport.line(t35.line + " $tag")
+                if (t35.ran && !t35.passed) failures += "$tag ${t35.line}"
             }
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
@@ -76,12 +80,17 @@ class DmPrivacyWorldTest {
     @Test
     fun t34TheSeizureOpensNothingOfAnExpiredWeek() {
         requireNative()
-        PrivacyWorld(Seizure.config(PrivacySeeds.ALL[0])).use { world ->
-            world.run()
-            val result = Seizure.run(world)
-            PrivacyReport.line(result.line())
-            assertTrue(result.line(), result.passed)
-        }
+        val result = Seizure.seize(Seizure.config(PrivacySeeds.ALL[0]))
+        PrivacyReport.line(result.line())
+        assertTrue(result.line(), result.passed)
+    }
+
+    @Test
+    fun t34OneReplyBothSidesEraseTheirProvisionalKey() {
+        requireNative()
+        val result = Seizure.oneReply(PrivacySeeds.ALL[0])
+        PrivacyReport.line(result.line())
+        assertTrue(result.line(), result.passed)
     }
 
     private companion object {

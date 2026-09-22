@@ -79,6 +79,8 @@ t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet tra
 # world whose relays answered none of their registrations OK did not model them.
 t2r_case fail missing-dm-namespaces.txt gate "rejects a population line without dm_owner_namespaces (Phase 9 §4.9)"
 t2r_case fail vacuous-dm-registrations.txt gate "rejects DM owner namespaces with no registration answered OK"
+t2r_case fail failed-dm-registrations.txt gate "rejects DM registrations the loopback failed"
+t2r_case fail dm-namespaces-per-owner.txt gate "rejects DM owner namespaces that are not two per activated client"
 t2r_case pass mutants-ok.txt mutants "accepts 26 detected mutants"
 t2r_case pass mutants-interleaved.txt mutants "accepts a detected mutant whose ok line another test's output ran into"
 t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"
@@ -132,6 +134,15 @@ dmr_case fail privacy-ni-missing.txt privacy-pr "rejects a report without NI-DM1
 dmr_case fail privacy-ni3-missing.txt privacy-pr "rejects a report without NI-DM3"
 dmr_case fail privacy-undetected-mutant.txt privacy-pr "rejects a privacy mutant not killed by every check it names"
 dmr_case fail privacy-idle-world.txt privacy-pr "rejects a world that sent nothing"
+# Slice S11's review: each is a way the first version of the check still accepted a report that
+# proved less than it said — a seizure control that opened 1 blob of 515, an S-DM3 PASS whose
+# dictionary named namespaces, a PR-scale world under a gate header, a T35 PASS over a thrown seal,
+# and a report without the one-reply seizure variant.
+dmr_case fail privacy-t34-control.txt privacy-pr "rejects a T34 control that opened 1 of 515"
+dmr_case fail privacy-sdm3-dictionary.txt privacy-pr "rejects S-DM3 whose dictionary named a namespace"
+dmr_case fail privacy-world-scale.txt privacy-gate "rejects a PR-scale world line under a gate header"
+dmr_case fail privacy-t35-threw.txt privacy-pr "rejects a T35 line over a seal call that threw"
+dmr_case fail privacy-one-reply-missing.txt privacy-pr "rejects a report without the T34 one-reply variant"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"

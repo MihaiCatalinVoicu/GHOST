@@ -35,15 +35,21 @@ internal class ViewEvent(
     val verifier: ByteArray? = null,
     /** STORE only, ground truth: what the sender's own tables say caused the op. */
     val cause: StoreCause? = null,
-    /** LIST/GET only, ground truth: the reader had a bundle fetch window open on this namespace. */
-    val establishmentWindow: Boolean = false,
     /** STORE only, ground truth: the sender's op deadline (§10.1 R-T4), in epoch seconds. */
     val deadlineSecond: Long? = null,
-    /** LIST only, ground truth: the reader's contact row for a namespace it does not own. */
+    /**
+     * LIST/GET only, **diagnostic**: the reader's contact row for a namespace it does not own, for a
+     * failing JD7's message. No check decides anything on it — the reader's own state is what a
+     * mutant would change (JD7 decides on [PrivacyWorld.establishments]).
+     */
     val readerState: String? = null,
 )
 
-/** Ground truth of one store: the sender's `dm_outbound_op` and `dm_outbound_item` rows. */
+/**
+ * Ground truth of one store: the sender's `dm_outbound_op` and `dm_outbound_item` rows, which name
+ * the message an op carries. Which timer that message **should** have is not read from the sender
+ * (JD5 derives it from the users' timer changes, [PrivacyWorld.timerChanges]).
+ */
 internal class StoreCause(
     val operationId: ByteArray,
     /** `item` or `bundle`, or null when the op has no `dm_outbound_op` row at all. */
@@ -52,9 +58,6 @@ internal class StoreCause(
     val messageRef: ByteArray?,
     /** `reconnect`, `revocation`, `reset` for a control item. */
     val control: String?,
-    /** `dm_message.timer_code` of [messageRef] at store time, and its kind (1 text, 2 TIMER_SET). */
-    val timerCode: Int?,
-    val kind: Int?,
 )
 
 /**
@@ -190,18 +193,7 @@ internal class ViewRelay(private val now: () -> Long) {
                 control = if (r.isNull(1)) null else r.string(1)
             }
         }
-        var timer: Int? = null
-        var kind: Int? = null
-        messageRef?.let { id ->
-            device.sql.query(
-                "SELECT timer_code, kind FROM dm_message WHERE message_id = ?",
-                listOf(id),
-            ) { r ->
-                timer = r.long(0).toInt()
-                kind = r.long(1).toInt()
-            }
-        }
-        return StoreCause(operation, purpose, messageRef, control, timer, kind)
+        return StoreCause(operation, purpose, messageRef, control)
     }
 
     /** The Phase 7 outbox engine's release, the recipe `DmOutcomeTest` pinned in S7. */
@@ -234,7 +226,7 @@ internal class ViewRelay(private val now: () -> Long) {
         var moved = 0
         for (namespace in listening) {
             val nsHex = hex(namespace)
-            val window = nsHex !in ownNamespaces && fetchWindowOpen(device, contactBundles[nsHex])
+            val readerState = if (nsHex in ownNamespaces) null else contactRow(device, contactBundles[nsHex])
             val relays = ArrayList<Long>()
             device.sql.query(
                 "SELECT relay_id FROM namespace_relay WHERE namespace_id = ? ORDER BY relay_id",
@@ -253,8 +245,7 @@ internal class ViewRelay(private val now: () -> Long) {
                     namespace = namespace,
                     second = now(),
                     credential = credential,
-                    establishmentWindow = window,
-                    readerState = if (nsHex in ownNamespaces) null else lastWindowState,
+                    readerState = readerState,
                 )
                 for (blob in stored[slot to nsHex].orEmpty()) {
                     if (blob.from == client) continue
@@ -279,7 +270,7 @@ internal class ViewRelay(private val now: () -> Long) {
                         bytes = blob.bytes,
                         blobHash = blob.hash,
                         credential = credential,
-                        establishmentWindow = window,
+                        readerState = readerState,
                     )
                     moved++
                 }
@@ -288,25 +279,16 @@ internal class ViewRelay(private val now: () -> Long) {
         return moved
     }
 
-    /** True while [device] has an open bundle-fetch window on the contact whose card gave [identityPk]. */
-    private fun fetchWindowOpen(device: DmDevice, identityPk: ByteArray?): Boolean {
-        identityPk ?: return false
-        var open = false
+    /** The reader's contact row for the owner of [identityPk], for a failing JD7's message only. */
+    private fun contactRow(device: DmDevice, identityPk: ByteArray?): String {
+        identityPk ?: return "no card's bundle namespace"
         var state = "no contact"
         device.sql.query(
             "SELECT establishment, trust_state, fetch_attempts FROM dm_contact WHERE identity_pk = ?",
             listOf(identityPk),
-        ) {
-            state = "${it.string(0)}/${it.string(1)}/${it.long(2)}"
-            open = it.string(0) == "fetching"
-        }
-        lastWindowState = state
-        return open
+        ) { state = "${it.string(0)}/${it.string(1)}/${it.long(2)}" }
+        return state
     }
-
-    /** The reader's contact row behind the last window decision, for a failing JD7's message. */
-    var lastWindowState: String = ""
-        private set
 
     /**
      * Puts a blob into a reader's inbox directly, as a relay serving a probe or a replay would

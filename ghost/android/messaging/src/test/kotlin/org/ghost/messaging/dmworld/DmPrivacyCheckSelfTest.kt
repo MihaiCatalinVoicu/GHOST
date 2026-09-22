@@ -25,11 +25,34 @@ class DmPrivacyCheckSelfTest {
         var hits = 0
         dictionary.scan(corpus) { _, _ -> hits++ }
         assertEquals("uniform bytes matched a dictionary entry", 0, hits)
-        // The first 16 bytes of the entry at an odd offset: the prefix rule of JD1 and JD2.
+        // The first 16 bytes of the entry at an odd offset, and its last 16 further on: the window
+        // rule of JD1 and JD2 finds either end of an entry.
         System.arraycopy(entry, 0, corpus, 1_001, 16)
+        System.arraycopy(entry, 16, corpus, 3_003, 16)
         val found = ArrayList<Pair<String, Int>>()
         dictionary.scan(corpus) { e, at -> found += e.name to at }
-        assertEquals(listOf("planted" to 1_001), found)
+        assertEquals(listOf("planted" to 1_001, "planted" to 3_003), found)
+        // A middle slice is not an end of the entry, and is not found.
+        val middle = ByteArray(4096).also { rnd.nextBytes(it) }
+        System.arraycopy(entry, 8, middle, 500, 16)
+        var middleHits = 0
+        dictionary.scan(middle) { _, _ -> middleHits++ }
+        assertEquals(0, middleHits)
+    }
+
+    @Test
+    fun theDictionaryGrowsAndNamesItsEntriesByFamily() {
+        val rnd = SplittableRandom(3)
+        val dictionary = ByteDictionary()
+        val values = List(5_000) { ByteArray(32).also { b -> rnd.nextBytes(b) } }
+        val family = dictionary.family(7) { form -> "value $form" }
+        values.forEachIndexed { i, v -> dictionary.add(family, i, v) }
+        assertEquals(5_000, dictionary.size)
+        val corpus = ByteArray(64)
+        System.arraycopy(values[4_321], 0, corpus, 10, 32)
+        val found = ArrayList<Triple<String, Int?, Int>>()
+        dictionary.scan(corpus) { e, at -> found += Triple(e.name, e.owner, at) }
+        assertEquals(listOf(Triple("value 4321", 7, 10), Triple("value 4321", 7, 26)), found)
     }
 
     @Test

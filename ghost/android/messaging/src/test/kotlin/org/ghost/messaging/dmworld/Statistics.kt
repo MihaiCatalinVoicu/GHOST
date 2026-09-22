@@ -10,46 +10,59 @@ import java.util.SplittableRandom
  *
  * **The attacker, exactly.** It holds every client's public identity material (the Ed25519 key, so
  * the `ghost1` string and hash, and every Olm identity key a card holder could have learned) and
- * every relay's effective view. For each namespace the view shows, it looks the namespace up in
- * JD1's dictionary — every labelled SHA-256 and HKDF of every client's identity material — and names
- * the owner of the entry it finds; where it finds none it guesses uniformly among the N identities
- * with a seeded stream. That is the whole of what public identity material can do against a relay
- * view: a `ghost1` never travels (T26), so the only bridge from it to a namespace is a derivation,
- * and the dictionary is every derivation the design's labels allow. **It is not a learned attacker**:
- * one that also used store and read timing against, say, public activation times would need a model
- * of what the forum makes public, and §22.16 lists it with S-DM1 as deferred.
+ * every relay's effective view. For **every** namespace the view shows — card-derived or not — it
+ * looks the namespace up in JD1's dictionary (every labelled SHA-256 and HKDF of every client's
+ * identity material, matched by 16-byte windows) and names the owner of the entry it finds; where it
+ * finds none it guesses uniformly among the N identities with a seeded stream. That is the whole of
+ * what public identity material can do against a relay view: a `ghost1` never travels (T26), so the
+ * only bridge from it to a namespace is a derivation. **It is not a learned attacker**: one that also
+ * used store and read timing against, say, public activation times would need a model of what the
+ * forum makes public, and §22.16 lists it with S-DM1 as deferred.
  *
- * Under a correct implementation every namespace is card-derived (§3.2), the dictionary finds
- * nothing, and the number of correct names K is Binomial(n, 1/N). Mutant PM-3 (a namespace equal to
- * SHA-256(label ‖ `ghost1` hash)) puts every namespace in the dictionary and K = n.
+ * **What the statistic can and cannot add (§22.16).** Where the dictionary misses, the guess is the
+ * attacker's own random stream, so K is Binomial(n, 1/N) **by construction** and the interval test
+ * measures that stream, not the engine. The evidence this check carries is therefore the dictionary
+ * count, which must be **0** over every namespace of the view — the namespace half of JD1, on the
+ * attacker's side of the relay — and the **control**, which runs the same attacker with the
+ * colluders' cards added to its dictionary and must (a) name exactly the namespaces of the
+ * identities whose cards the colluders hold, all correctly, and (b) push K **out** of the interval:
+ * the statistic rejects chance when the attacker has real information. Mutant PM-3 (a namespace equal
+ * to SHA-256(label ‖ `ghost1` hash)) puts every namespace in the dictionary.
  */
 internal object Sdm3 {
 
     class Result(
         val n: Int,
         val identities: Int,
+        val viewNamespaces: Int,
         val correct: Int,
         val byDictionary: Int,
         val lo: Int,
         val hi: Int,
         val pValue: Double,
-        /** The positive control: namespaces the colluders' cards map, and how many were right. */
+        /** The positive control: the same attacker with the colluders' cards. */
         val colluders: Int,
         val controlMapped: Int,
         val controlCorrect: Int,
         val controlExpected: Int,
         val controlExact: Boolean,
+        val controlK: Int,
+        val controlP: Double,
     ) {
         val floorMet: Boolean get() = n >= FLOOR
         val withinChance: Boolean get() = correct in lo..hi
-        val passed: Boolean get() = floorMet && withinChance && controlExact && controlMapped > 0
+        val controlRejects: Boolean get() = controlK !in lo..hi
+        val passed: Boolean
+            get() = floorMet && byDictionary == 0 && withinChance && controlExact && controlMapped > 0 && controlRejects
 
         fun line(): String =
             "dm S-DM3: ${if (passed) "PASS" else "FAIL"} K=$correct of n=$n namespaces " +
-                "(N=$identities identities, $byDictionary named by the dictionary), 99.9% interval [$lo, $hi], " +
-                "p=${"%.4f".format(pValue)}; control: $colluders colluders' cards map $controlMapped of " +
-                "$controlExpected expected namespaces, $controlCorrect correct" +
+                "(N=$identities identities, $byDictionary named by the dictionary over $viewNamespaces view namespaces), " +
+                "99.9% interval [$lo, $hi], p=${"%.4f".format(pValue)}; control: $colluders colluders' cards map " +
+                "$controlMapped of $controlExpected expected namespaces, $controlCorrect correct, " +
+                "K=$controlK ${if (controlRejects) "outside" else "INSIDE"} the interval (p=${"%.2e".format(controlP)})" +
                 (if (controlExact) "" else " (NOT EXACT)") +
+                (if (byDictionary == 0) "" else " (THE DICTIONARY NAMED $byDictionary)") +
                 (if (floorMet) "" else " (below the n >= $FLOOR floor)")
 
         fun failureMessage(): String = line()
@@ -57,37 +70,48 @@ internal object Sdm3 {
 
     const val FLOOR: Int = 100
 
+    /** The attacker: for each namespace, the owner a dictionary hit names, or null. */
+    private fun named(dictionary: ByteDictionary, namespace: ByteArray): Int? {
+        var owner: Int? = null
+        dictionary.scan(namespace) { entry, _ -> if (owner == null) owner = entry.owner ?: -1 }
+        return owner
+    }
+
     fun run(world: PrivacyWorld, seed: Long): Result {
         val owner = world.ownerOf()
         val identities = world.truth.clients.size
-        val byOwner = HashMap<GroundTruth.Key, Int>()
-        Joins.identityDictionary(world, byOwner)
-        val observed = LinkedHashSet<String>()
-        for (e in world.relay.events) {
-            val ns = Joins.hex(e.namespace)
-            if (ns in owner) observed += ns
-        }
-        val rnd = SplittableRandom(seed)
-        var correct = 0
+        val dictionary = Joins.identityDictionary(world)
+        val view = LinkedHashSet<String>()
+        for (e in world.relay.events) view += Joins.hex(e.namespace)
+        // Every namespace of the view is looked up; only card namespaces have an owner to score.
         var byDictionary = 0
-        for (ns in observed) {
-            val named = byOwner[GroundTruth.Key(ViewRelay.unhex(ns))]
-            val guess = if (named != null) {
+        val hits = HashMap<String, Int>()
+        for (ns in view) {
+            named(dictionary, ViewRelay.unhex(ns))?.let {
                 byDictionary++
-                named
-            } else {
-                rnd.nextInt(identities)
+                hits[ns] = it
             }
-            if (guess == owner[ns]) correct++
         }
-        val n = observed.size
+        val observed = view.filter { it in owner }
         val p = 1.0 / identities
+        val n = observed.size
         val (lo, hi) = interval(n, p, 0.001)
+
+        fun score(extra: Map<String, Int>): Int {
+            val rnd = SplittableRandom(seed)
+            var correct = 0
+            for (ns in observed) {
+                val guess = extra[ns] ?: hits[ns] ?: rnd.nextInt(identities)
+                if (guess == owner[ns]) correct++
+            }
+            return correct
+        }
+        val correct = score(emptyMap())
         val pValue = twoSided(correct, n, p)
 
-        // The positive control: a colluding subset's cards. Every card a colluder holds (its own and
-        // its accepted contacts') is derived with the colluder's own DM context into the card's two
-        // namespaces; the control must name exactly those, all correctly, and nothing else.
+        // The positive control: the same attacker, its dictionary extended with a colluding subset's
+        // cards — every card a colluder holds (its own and its accepted contacts'), derived with the
+        // colluder's own DM context into the card's two namespaces, each naming the card's owner.
         val residue = Math.floorMod(seed, 10L).toInt()
         val colluders = (0 until identities).filter { it % 10 == residue }.toSet()
         val held = HashSet<Int>()
@@ -109,12 +133,18 @@ internal object Sdm3 {
                 derived.values.clearSecrets()
             }
         }
+        val controlDictionary = ByteDictionary()
+        for ((ns, holder) in controlMap) controlDictionary.add("card of c$holder", ViewRelay.unhex(ns), holder)
+        val controlNamed = HashMap<String, Int>()
+        for (ns in observed) named(controlDictionary, ViewRelay.unhex(ns))?.let { controlNamed[ns] = it }
+        val controlK = score(controlNamed)
         val expected = observed.filter { owner[it] in held }.toSet()
-        val mapped = observed.filter { it in controlMap }.toSet()
-        val controlCorrect = mapped.count { controlMap[it] == owner[it] }
+        val mapped = controlNamed.keys
+        val controlCorrect = mapped.count { controlNamed[it] == owner[it] }
         return Result(
             n = n,
             identities = identities,
+            viewNamespaces = view.size,
             correct = correct,
             byDictionary = byDictionary,
             lo = lo,
@@ -125,6 +155,8 @@ internal object Sdm3 {
             controlCorrect = controlCorrect,
             controlExpected = expected.size,
             controlExact = mapped == expected && controlCorrect == mapped.size,
+            controlK = controlK,
+            controlP = twoSided(controlK, n, p),
         )
     }
 

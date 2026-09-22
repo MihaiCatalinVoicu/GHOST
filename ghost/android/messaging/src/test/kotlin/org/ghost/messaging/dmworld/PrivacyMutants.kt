@@ -61,11 +61,12 @@ internal enum class PrivacyCheck(val label: String) {
     NI_DM3("NI-DM3 (twin worlds)"),
     S_DM3("S-DM3 (MEDIUM world, n >= 100)"),
     T34("T34 (seizure world)"),
+    T34_ONE_REPLY("T34 one-reply variant (two clients, 130 days)"),
 }
 
 /**
- * The privacy mutants this slice registers: nine of §15.7's forty, each with the checks that kill
- * it. §22.16 lists the other thirty-one by name, with what each needs.
+ * The privacy mutants this slice registers: ten of §15.7's forty, each with the checks that kill
+ * it. §22.16 lists the other thirty by name, with what each needs.
  */
 internal object PrivacyMutants {
 
@@ -421,5 +422,28 @@ internal object PrivacyMutants {
         configure = { device -> device.slots = device.slots.filter { it.slot != 3 } },
     )
 
-    fun all(): List<PrivacyMutant> = listOf(PM2, PM3, PM4, PM6, PM8, PM13, PM19, PM24, PM36)
+    /** `SessionStore.boundProvisionalErase`: the anchor's 119-day bound on `prov_erase_minute`. */
+    private const val BOUND_PROVISIONAL_ERASE =
+        "UPDATE olm_session SET prov_erase_minute = prov_anchor_minute + ? " +
+            "WHERE contact_id = ? AND slot = ? AND prov_env IS NOT NULL " +
+            "AND prov_anchor_minute IS NOT NULL " +
+            "AND (prov_erase_minute IS NULL OR prov_erase_minute > prov_anchor_minute + ?)"
+
+    /**
+     * **PM-39 — `prov_env` kept past `prov_anchor_minute + 119 d` (§22.8.5).** The anchor no longer
+     * bounds the erase minute, so only a pair envelope under the device's own root schedules it —
+     * which is exactly the engine before slice S11's review: a side whose peer never wrote after
+     * receiving its root keeps its `reply_seed` for as long as the session lives.
+     */
+    val PM39 = PrivacyMutant(
+        id = "PM-39",
+        defeats = "§22.8.5 rule 4, P-7: each side erases prov_env by prov_anchor_minute + 119 d",
+        detectedBy = "T34 one-reply variant (§15.7); here",
+        killers = listOf(
+            PrivacyMutant.Killer(PrivacyCheck.T34_ONE_REPLY, "keeps prov_env past prov_anchor_minute + 119 d"),
+        ),
+        rewrite = { sql, args -> if (sql == BOUND_PROVISIONAL_ERASE) "$sql AND 0" to args else sql to args },
+    )
+
+    fun all(): List<PrivacyMutant> = listOf(PM2, PM3, PM4, PM6, PM8, PM13, PM19, PM24, PM36, PM39)
 }

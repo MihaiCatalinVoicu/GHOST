@@ -44,6 +44,8 @@ class DmPrivacyMutantTest {
 
     @Test fun pm36RetainedRecognitionKeysAreDetected() = kill(PrivacyMutants.PM36)
 
+    @Test fun pm39AProvisionalKeyPastItsAnchorBoundIsDetected() = kill(PrivacyMutants.PM39)
+
     /** The registry is well formed, and the report's lines are armed to be written from the kills. */
     @Test
     fun theRegistryAndTheKillsAgree() {
@@ -68,6 +70,8 @@ class DmPrivacyMutantTest {
             val control = Controls.failure(killer.check)
             assertNull("the control of ${killer.check.label} fails without ${mutant.id}: $control", control)
             val failure = Mutated.failure(mutant, killer.check)
+            // Counted once the mutated world has run to its end, whatever the check said.
+            PrivacyKills.attempted(mutant.id, killer.check.label)
             if (failure == null) {
                 failures += "${mutant.id} survived ${killer.check.label}"
             } else if (!failure.contains(killer.expect)) {
@@ -117,10 +121,8 @@ internal object Checks {
             world.run()
             Sdm3.run(world, seed).let { if (it.passed) null else it.line() }
         }
-        PrivacyCheck.T34 -> PrivacyWorld(Seizure.config(seed, mutant)).use { world ->
-            world.run()
-            Seizure.run(world).let { if (it.passed) null else it.line() }
-        }
+        PrivacyCheck.T34 -> Seizure.seize(Seizure.config(seed, mutant)).let { if (it.passed) null else it.line() }
+        PrivacyCheck.T34_ONE_REPLY -> Seizure.oneReply(seed, mutant).let { if (it.passed) null else it.line() }
     }
 
     private fun small(mutant: PrivacyMutant?): Map<PrivacyCheck, JoinResult> =
@@ -156,8 +158,15 @@ internal object PrivacyKills {
     /** `mutant id → (killer label → failure)`. */
     private val kills = ConcurrentHashMap<String, MutableMap<String, String>>()
 
+    /** `mutant id → killer labels whose mutated world actually ran` (the "run" count). */
+    private val attempts = ConcurrentHashMap<String, MutableSet<String>>()
+
     @Volatile
     private var armed = false
+
+    fun attempted(id: String, check: String) {
+        attempts.computeIfAbsent(id) { ConcurrentHashMap.newKeySet() } += check
+    }
 
     fun record(id: String, check: String, failure: String) {
         kills.computeIfAbsent(id) { ConcurrentHashMap() }[check] = failure
@@ -171,16 +180,19 @@ internal object PrivacyKills {
     }
 
     /**
-     * A mutant counts as detected only when **every** killer its entry names recorded a kill, so a
-     * mutant whose second check was quietly lost is reported as such.
+     * A mutant counts as **run** only when a mutated world ran for every killer its entry names, and
+     * as detected only when every one of them recorded a kill — both from what this JVM did, never
+     * from the registry — so a mutant whose test was skipped or whose second check was quietly lost
+     * lowers the numbers and prints NOT DETECTED.
      */
     private fun write() {
         val registered = PrivacyMutants.all()
+        val ran = registered.filter { m -> m.killers.all { it.check.label in attempts[m.id].orEmpty() } }
         val detected = registered.filter { m ->
             val done = kills[m.id].orEmpty()
             m.killers.all { it.check.label in done }
         }
-        PrivacyReport.line("dm privacy mutants: ${registered.size} run, ${detected.size} detected")
+        PrivacyReport.line("dm privacy mutants: ${ran.size} run, ${detected.size} detected")
         for (m in registered) {
             val done = kills[m.id].orEmpty()
             if (m in detected) {

@@ -46,13 +46,19 @@ internal fun describe(events: List<String>, where: String): String {
  * stores, lists, gets, registrations — as `(op, relay, namespace, size, TTL, minute, credential
  * scope, key kind, period)`. Circuit open and close minutes, batch counts and results are not in the
  * model relay (§22.16). The view must be equal across the four twins, it must contain B's GET of the
- * substituted blob in every twin, and the substitution must have happened exactly once in each.
+ * blob the relay substituted (the GET of A's stored hash, whatever bytes B was handed) in every twin,
+ * and the substitution must have happened exactly once in each. The world runs [DAYS] days, so the
+ * compared window crosses a week boundary (week 2870 → 2871): an effect that only a week rollover
+ * shows — OWNER-WEEK's registrations and publication — is compared too.
  */
 internal object NiDm1 {
 
     enum class Variant { VALID, MALFORMED, PROBE, REQUEST }
 
-    class Run(val variant: Variant, val view: List<String>, val substituted: Int, val bGets: Int)
+    /** Long enough that the compared window crosses the week boundary at `start + 5 d`. */
+    const val DAYS: Int = 6
+
+    class Run(val variant: Variant, val view: List<String>, val substituted: Int, val substitutedGet: Boolean)
 
     class Result(val runs: List<Run>) {
         val reference: Run get() = runs.first { it.variant == Variant.VALID }
@@ -69,14 +75,15 @@ internal object NiDm1 {
                 "${run.variant} vs VALID: ${describe(onlyReference, "VALID")}, ${describe(onlyRun, run.variant.name)}"
             }
 
-        val applied: Boolean get() = runs.all { it.substituted == 1 && it.bGets > 0 }
+        val applied: Boolean get() = runs.all { it.substituted == 1 && it.substitutedGet }
 
         val passed: Boolean get() = differences.isEmpty() && applied && reference.view.isNotEmpty()
 
         fun line(): String =
             "dm NI-DM1: ${if (passed) "PASS" else "FAIL"} ${runs.size} twins " +
-                "(${runs.joinToString(", ") { it.variant.name }}) equal over ${reference.view.size} events of B's view" +
-                (if (applied) "" else "; a substitution did not happen exactly once") +
+                "(${runs.joinToString(", ") { it.variant.name }}) equal over ${reference.view.size} events of B's view " +
+                "across a week boundary, each with B's GET of the substituted blob" +
+                (if (applied) "" else "; a substitution did not happen exactly once, or B never fetched it") +
                 (if (differences.isEmpty()) "" else "; " + differences.joinToString("; "))
     }
 
@@ -99,9 +106,10 @@ internal object NiDm1 {
             ),
             seed = seed,
         )
-        val config = PrivacyWorldConfig(seed = seed, clients = 4, days = 3, mutant = mutant, plan = plan)
+        val config = PrivacyWorldConfig(seed = seed, clients = 4, days = DAYS, mutant = mutant, plan = plan)
         PrivacyWorld(config).use { world ->
             var substituted = 0
+            var substitutedHash: GroundTruth.Key? = null
             var strangerBlob: ByteArray? = null
             if (variant == Variant.REQUEST) {
                 world.schedule(t0 - DmWorld.HOUR) {
@@ -115,6 +123,7 @@ internal object NiDm1 {
             world.relay.serveTransform = { reader, from, storedAt, blob ->
                 if (reader == B && from == A && storedAt >= t0 && substituted == 0) {
                     substituted++
+                    substitutedHash = GroundTruth.Key(GroundTruth.sha256(blob))
                     when (variant) {
                         Variant.VALID -> blob
                         Variant.MALFORMED -> blob.copyOf().also { it[it.size / 2] = (it[it.size / 2].toInt() xor 0x5a).toByte() }
@@ -136,8 +145,12 @@ internal object NiDm1 {
             }
             world.run()
             val view = shapeView(world, B, t0)
-            val gets = world.relay.events.count { it.client == B && it.op == ViewOp.GET && it.second >= t0 }
-            return Run(variant, view, substituted, gets)
+            // The GET the relay answered with the substituted bytes records the hash it listed.
+            val fetched = world.relay.events.any {
+                it.client == B && it.op == ViewOp.GET && it.second >= t0 &&
+                    substitutedHash == GroundTruth.Key(it.blobHash!!)
+            }
+            return Run(variant, view, substituted, fetched)
         }
     }
 
@@ -155,16 +168,21 @@ internal object NiDm1 {
  * NI-DM3 (Phase 9 design §15.6): "degree (k vs k′ idle contacts)" — two worlds that differ only in
  * how many contacts one client holds, the extra ones idle, give that client identical shape views.
  *
- * **The twins.** Five clients: C (0) has two established contacts (1 and 2) in both worlds; in the
- * `k′` world C's user also scans the cards of 3 and 4 in person at `t0` and never writes to them.
- * Contact 1 then writes to C at `t0 + 3 h` in both, so the compared window is not an idle one. With
- * a correct engine an added card is local state: no namespace is registered for an idle contact
- * (§5.1: a contact inbox is registered at the first send), no bundle is fetched (`EST-START` runs
- * from a send, §21.7), and no credential is installed for a namespace that is not registered. C's
- * view from `t0` must be equal, and non-empty, in the two worlds; a failure is reported as the two
- * multiset differences. **Not here:** a `k′` world whose extra contacts were established and then
- * fell idle (their establishment traffic is declared leakage, §1.2, and would need a window that
- * starts after it), and the redeem-lane half PM-1 and PM-11 would need (§22.16).
+ * **The twins.** Five clients: C (0) has two established contacts (1 and 2) in both worlds. At `t0`
+ * C's user opens the app for a two-minute foreground session **in both worlds**; in the `k′` world
+ * it also scans the cards of 3 and 4 in person in that session and never writes to them, and in the
+ * `k` world it does nothing. Contact 1 then writes to C at `t0 + 3 h` in both, so the compared window
+ * is not an idle one. With a correct engine an added card is local state: no namespace is registered
+ * for an idle contact (§5.1: a contact inbox is registered at the first send), no bundle is fetched
+ * (`EST-START` runs from a send, §21.7), and no credential is installed for a namespace that is not
+ * registered. C's view **from `t0`** — the scan session's own relay sessions included, since both
+ * worlds have them — to the end of the world must be equal, and non-empty, in the two worlds; a
+ * failure is reported as the two multiset differences. The world runs [NiDm1.DAYS] days, so the
+ * window crosses the week boundary at `start + 5 d`, where OWNER-WEEK's per-namespace work would
+ * show a contact the engine had quietly registered. **Not here:** a `k′` world whose extra contacts
+ * were established and then fell idle (their establishment traffic is declared leakage, §1.2, and
+ * would need a window that starts after it), and the redeem-lane half PM-1 and PM-11 would need
+ * (§22.16).
  */
 internal object NiDm3 {
 
@@ -173,7 +191,7 @@ internal object NiDm3 {
 
         fun line(): String =
             "dm NI-DM3: ${if (passed) "PASS" else "FAIL"} k=2 vs k'=4 contacts ($added idle cards added): " +
-                "C's view equal over ${k.size} events" +
+                "C's view equal over ${k.size} events from the scan session on, across a week boundary" +
                 (if (k == kPrime) "" else "; ${describe(minus(kPrime, k), "k'")}, ${describe(minus(k, kPrime), "k")}") +
                 (if (added == 2) "" else "; the k' world added $added cards, not 2")
     }
@@ -197,25 +215,23 @@ internal object NiDm3 {
             ),
             seed = seed,
         )
-        PrivacyWorld(PrivacyWorldConfig(seed = seed, clients = 5, days = 3, mutant = mutant, plan = plan)).use { world ->
+        PrivacyWorld(PrivacyWorldConfig(seed = seed, clients = 5, days = NiDm1.DAYS, mutant = mutant, plan = plan)).use { world ->
             var added = 0
-            if (idle) {
-                world.schedule(t0) {
-                    world.session(C, t0, 2, mapOf(0 to {
+            // The same foreground session in both worlds; only the k' world's user scans in it.
+            world.schedule(t0) {
+                world.session(C, t0, 2, mapOf(0 to {
+                    if (idle) {
                         for (peer in listOf(3, 4)) {
                             if (world.userAdd(C, peer) == org.ghost.messaging.api.AddContactResult.ADDED) added++
                         }
-                    }))
-                }
+                    }
+                }))
             }
             world.schedule(t0 + 3 * DmWorld.HOUR) {
                 world.session(1, t0 + 3 * DmWorld.HOUR, 3, mapOf(0 to { world.userSend(1, C, 40) }))
             }
             world.run()
-            // From the minute after the scan: the scan's own foreground session is a user action
-            // the k world does not take, and a session start is declared leakage (LIMITE L2.1 #1);
-            // what NI-DM3 is about is what the extra contacts cause afterwards.
-            return NiDm1.shapeView(world, C, t0 + 2 * DmWorld.MINUTE) to added
+            return NiDm1.shapeView(world, C, t0) to added
         }
     }
 }

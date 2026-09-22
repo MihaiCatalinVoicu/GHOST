@@ -1,6 +1,7 @@
 package org.ghost.messaging.dmworld
 
 import org.ghost.crypto.bridge.DmContent
+import org.ghost.crypto.bridge.DmPairing
 import org.ghost.crypto.bridge.DmSeal
 import org.ghost.crypto.bridge.DmSessions
 import org.ghost.crypto.bridge.L1
@@ -57,11 +58,44 @@ internal class GroundTruth {
     /** The pair week a pair-mode blob was sealed under (T34's "pair-mode envelopes of week w"). */
     val weekOfBlob = HashMap<Key, Long>()
 
+    /** The root generation a pair-mode blob was sealed under (T34's out-direction control). */
+    val rootGenOfBlob = HashMap<Key, Int>()
+
+    /** The recipient's bundle generation an intro blob names (T34's intro expectation). */
+    val introGenOfBlob = HashMap<Key, Int>()
+
+    /** The session a provisional blob was sealed on (T34's provisional half). */
+    val sessionOfBlob = HashMap<Key, Key>()
+
+    /** When each client created each of its bundle generations, in order: `gen_id → second`. */
+    val generations = HashMap<Int, LinkedHashMap<Int, Long>>()
+
     private val bodyLengthOfL0 = HashMap<Key, Int>()
     private val bodyLengthOfL1 = HashMap<Key, Int>()
 
-    /** How many seals of each mode the world performed (T35's denominator). */
+    /** How many seal **calls** of each mode the world made. */
     val seals = HashMap<String, Int>()
+
+    /** How many of them returned a sealed blob (T35's "sealed under the assertion"). */
+    val sealedOk = HashMap<String, Int>()
+
+    /**
+     * Seal calls that **threw** (T35: a provenance panic answers `INTERNAL`, which `DmSeal` turns
+     * into an exception). Counted before the exception goes on, so the number is measured; it also
+     * ends the world, which is why a finished world reports 0.
+     */
+    var sealsThrown: Int = 0
+
+    /**
+     * The source of the card each intro outer layer was sealed with, from the world's own record
+     * of how each card arrived (§22.8.7 rule 6's PQ-R8 listing): `in person`, `link`, or
+     * `transported` for a contact made from a request (its card arrived inside an intro inner
+     * layer). The Rust tag cannot say this: every contact card is tagged `Card(Link)` (§22.16).
+     */
+    val introSealsBySource = java.util.TreeMap<String, Int>()
+
+    /** How the world's user added each card: `(client, peer) → source`; the rest are requests. */
+    val cardSource = HashMap<Pair<Int, Int>, String>()
 
     /** Successful decrypts per (recipient client, contact id hex), for the PM-2 hook. */
     val decrypted = ArrayList<Pair<Int, ByteArray>>()
@@ -74,6 +108,38 @@ internal class GroundTruth {
 
     /** The first minute a pair envelope from a contact opened on a client: T34's prov truth. */
     val firstPairOpen = HashMap<Pair<Int, Key>, Long>()
+
+    /** The first successful decryption per (client, contact id): an initiator session's anchor. */
+    val firstDecrypt = HashMap<Pair<Int, Key>, Long>()
+
+    /** The first provisional seal per (client, session id): a responder session's anchor. */
+    val firstProvisionalSeal = HashMap<Pair<Int, Key>, Long>()
+
+    /**
+     * Every root a client offered: `(client, contact id, root generation) → base week`. T34 derives
+     * week keys from every stored value under each of these, so a root kept past its
+     * acknowledgement is found whatever column holds it.
+     */
+    val offers = HashMap<Triple<Int, Key, Int>, Long>()
+
+    /**
+     * `(client, peer)` pairs where the client **holds a session** with the peer, by what happened
+     * at the crypto port: it sealed to the peer's inbox, or an intro from the peer opened. JD7's
+     * establishment truth ([PrivacyWorld.establishments]) — never the reader's `dm_contact` row.
+     */
+    val sessions = HashSet<Pair<Int, Int>>()
+
+    /** The client whose own card carries [olmIdentity], if it has read its card. */
+    fun ownerOfOlmIdentity(olmIdentity: ByteArray): Int? =
+        clients.values.firstOrNull { it.olmIdentity?.contentEquals(olmIdentity) == true }?.index
+
+    /** The client whose own card carries [identityPk], if it has read its card. */
+    fun ownerOfIdentity(identityPk: ByteArray): Int? =
+        clients.values.firstOrNull { it.identityPk?.contentEquals(identityPk) == true }?.index
+
+    /** The client whose inbox is [namespace]. */
+    fun ownerOfInbox(namespace: ByteArray): Int? =
+        clients.values.firstOrNull { it.inboxNamespace?.contentEquals(namespace) == true }?.index
 
     /** A byte string with value semantics, for sets and maps. */
     class Key(bytes: ByteArray) {
@@ -98,13 +164,25 @@ internal class GroundTruth {
     /** The client that sealed each blob. */
     val senderOfBlob = HashMap<Key, Int>()
 
-    fun recordSeal(mode: DmSeal.Mode, l1: ByteArray, sealed: DmSeal.Sealed, sender: Int) {
-        seals.merge(mode.name, 1, Int::plus)
+    /** Counts one seal call, runs it, and counts a throw before letting it go on (T35). */
+    fun <T> sealCall(mode: String, call: () -> T): T {
+        seals.merge(mode, 1, Int::plus)
+        return try {
+            call()
+        } catch (thrown: RuntimeException) {
+            sealsThrown++
+            throw thrown
+        }
+    }
+
+    fun recordSeal(mode: DmSeal.Mode, l1: ByteArray, sealed: DmSeal.Sealed, sender: Int, namespace: ByteArray) {
         if (sealed !is DmSeal.Sealed.Ok) return
+        sealedOk.merge(mode.name, 1, Int::plus)
         val blobKey = Key(sha256(sealed.blob))
         modeOfBlob[blobKey] = mode
         senderOfBlob[blobKey] = sender
         bodyLengthOfL1[Key(sha256(l1))]?.let { bodyLengthOfBlob[blobKey] = it }
+        ownerOfInbox(namespace)?.let { sessions += sender to it }
     }
 
     fun recordHeader(header: L1) {
@@ -160,7 +238,10 @@ internal class RecordingCrypto(
         bundleRank: Int,
         genId: Int,
     ): DmSessions.BundleGeneration? {
-        val generation = inner.bundleCreate(cardIndex, bundleWeek, bundleRank, genId) ?: return null
+        val generation = truth.sealCall(BUNDLE) { inner.bundleCreate(cardIndex, bundleWeek, bundleRank, genId) }
+            ?: return null
+        truth.sealedOk.merge(BUNDLE, 1, Int::plus)
+        truth.generations.getOrPut(client) { LinkedHashMap() }.putIfAbsent(genId, truth.now())
         truth.bundleKeys += GroundTruth.Key(generation.fallbackPublic)
         truth.bundleKeys += GroundTruth.Key(generation.xwingPublic.copyOf(32))
         truth.bundleBlobs += GroundTruth.Key(GroundTruth.sha256(generation.blob))
@@ -168,6 +249,11 @@ internal class RecordingCrypto(
     }
 
     override fun toString(): String = "RecordingCrypto($inner)"
+
+    companion object {
+        /** The bundle seal's name in [GroundTruth.seals] (it is not a [DmSeal.Mode]). */
+        const val BUNDLE: String = "BUNDLE"
+    }
 }
 
 /**
@@ -232,11 +318,19 @@ internal class RecordingEnvelopes(
         l1: ByteArray,
     ): DmSeal.Sealed {
         truth.olmHeaderKeys += GroundTruth.Key(peerOlmIdentity)
-        val sealed = inner.sealIntro(
-            cardIndex, namespace, bucket, introKeyEnv, peerIdentityPk, peerOlmIdentity, genId,
-            genPublic, bindingMinute, sessionId, replySeedEnv, l1,
-        )
-        truth.recordSeal(DmSeal.Mode.INTRO, l1, sealed, client)
+        val sealed = truth.sealCall(DmSeal.Mode.INTRO.name) {
+            inner.sealIntro(
+                cardIndex, namespace, bucket, introKeyEnv, peerIdentityPk, peerOlmIdentity, genId,
+                genPublic, bindingMinute, sessionId, replySeedEnv, l1,
+            )
+        }
+        truth.recordSeal(DmSeal.Mode.INTRO, l1, sealed, client, namespace)
+        if (sealed is DmSeal.Sealed.Ok) {
+            truth.introGenOfBlob[GroundTruth.Key(GroundTruth.sha256(sealed.blob))] = genId
+            val peer = truth.ownerOfIdentity(peerIdentityPk)
+            val source = peer?.let { truth.cardSource[client to it] } ?: "transported"
+            truth.introSealsBySource.merge(source, 1, Int::plus)
+        }
         return sealed
     }
 
@@ -251,9 +345,15 @@ internal class RecordingEnvelopes(
         oiRecipient: ByteArray,
         l1: ByteArray,
     ): DmSeal.Sealed {
-        val sealed = inner.sealPair(namespace, bucket, openEnv, contactId, rootGen, week, oiSender, oiRecipient, l1)
-        truth.recordSeal(DmSeal.Mode.PAIR, l1, sealed, client)
-        if (sealed is DmSeal.Sealed.Ok) truth.weekOfBlob[GroundTruth.Key(GroundTruth.sha256(sealed.blob))] = week
+        val sealed = truth.sealCall(DmSeal.Mode.PAIR.name) {
+            inner.sealPair(namespace, bucket, openEnv, contactId, rootGen, week, oiSender, oiRecipient, l1)
+        }
+        truth.recordSeal(DmSeal.Mode.PAIR, l1, sealed, client, namespace)
+        if (sealed is DmSeal.Sealed.Ok) {
+            val key = GroundTruth.Key(GroundTruth.sha256(sealed.blob))
+            truth.weekOfBlob[key] = week
+            truth.rootGenOfBlob[key] = rootGen
+        }
         return sealed
     }
 
@@ -267,8 +367,14 @@ internal class RecordingEnvelopes(
         oiRecipient: ByteArray,
         l1: ByteArray,
     ): DmSeal.Sealed {
-        val sealed = inner.sealProvisional(namespace, bucket, openEnv, direction, sessionId, oiSender, oiRecipient, l1)
-        truth.recordSeal(DmSeal.Mode.PROVISIONAL, l1, sealed, client)
+        val sealed = truth.sealCall(DmSeal.Mode.PROVISIONAL.name) {
+            inner.sealProvisional(namespace, bucket, openEnv, direction, sessionId, oiSender, oiRecipient, l1)
+        }
+        truth.recordSeal(DmSeal.Mode.PROVISIONAL, l1, sealed, client, namespace)
+        if (sealed is DmSeal.Sealed.Ok) {
+            truth.sessionOfBlob[GroundTruth.Key(GroundTruth.sha256(sealed.blob))] = GroundTruth.Key(sessionId)
+            truth.firstProvisionalSeal.putIfAbsent(client to GroundTruth.Key(sessionId), truth.now())
+        }
         return sealed
     }
 
@@ -324,6 +430,7 @@ internal class RecordingEnvelopes(
     ): DmSeal.OpenedIntro {
         val opened = inner.openIntro(cardIndex, namespace, genId, genSecretsEnv, genFallbackPublic, blob)
         if (opened is DmSeal.OpenedIntro.Ok) {
+            truth.ownerOfOlmIdentity(opened.intro.olmIdentity)?.let { truth.sessions += client to it }
             truth.olmHeaderKeys += GroundTruth.Key(opened.intro.olmIdentity)
             truth.olmHeaderKeys += GroundTruth.Key(opened.intro.baseKey)
             truth.olmHeaderKeys += GroundTruth.Key(opened.intro.oneTimeKey)
@@ -341,7 +448,10 @@ internal class RecordingEnvelopes(
         today: Int,
     ): DmSessions.Decrypted {
         val decrypted = inner.decrypt(contactId, current, previous, l1, isPreKey, today)
-        if (decrypted is DmSessions.Decrypted.Ok) truth.decrypted += client to contactId.copyOf()
+        if (decrypted is DmSessions.Decrypted.Ok) {
+            truth.decrypted += client to contactId.copyOf()
+            truth.firstDecrypt.putIfAbsent(client to GroundTruth.Key(contactId), truth.now())
+        }
         return decrypted
     }
 
@@ -357,6 +467,12 @@ internal class RecordingEnvelopes(
         val made = inner.inbound(contactId, genId, genSecretsEnv, genFallbackPublic, expectedPeerIdentity, l1, today)
         if (made is DmSessions.Inbound.Ok) truth.decrypted += client to contactId.copyOf()
         return made
+    }
+
+    override fun pairOffer(contactId: ByteArray, rootGen: Int, baseWeek: Long): DmPairing.OfferResult {
+        val offer = inner.pairOffer(contactId, rootGen, baseWeek)
+        if (offer is DmPairing.OfferResult.Ok) truth.offers[Triple(client, GroundTruth.Key(contactId), rootGen)] = baseWeek
+        return offer
     }
 
     override fun toString(): String = "RecordingEnvelopes($inner)"

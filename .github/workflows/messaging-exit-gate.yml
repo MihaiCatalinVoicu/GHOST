@@ -105,7 +105,9 @@ jobs:
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
       # `-Dghost.dm.privacy=off`: the privacy worlds of slice S11 are `dm-privacy-gate.yml`'s and the
-      # `android` job's, which check their own report; this gate neither runs nor checks them.
+      # `android` job's, which check their own report; this gate neither runs nor checks them. That
+      # is a deviation from §16.2, which lists the privacy mutants and the T34 seizure world under
+      # this gate; §22.16 declares it.
       - name: DM exit-gate harness (every event, 64 seeds)
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \
