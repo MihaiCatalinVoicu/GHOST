@@ -194,10 +194,18 @@ internal class Sweeper(
         // back for them and they would wait for an unrelated trigger. `MAX_BATCHES` keeps one
         // sweep from becoming unbounded work on the actor thread; what it does not drain, the next
         // pass does, and the passes themselves are frequent.
-        var report = database.transaction { tx -> inside(tx, nowE, today, week, canPrune) }
+        //
+        // The loop tests the **last** transaction and not the running total: `batchWasFull` is a
+        // property of one batch, and a total that had once reached 500 would stay above it and run
+        // the loop to its bound every time.
+        var last = database.transaction { tx -> inside(tx, nowE, today, week, canPrune) }
+        var report = last
         var batches = 1
-        while (report.batchWasFull && batches < MAX_BATCHES) {
-            report += database.transaction { tx -> inside(tx, nowE, today, week, canPrune = false) }
+        while (last.batchWasFull && batches < MAX_BATCHES) {
+            // The skipped-key prune runs in the first transaction only: it is per session, not per
+            // row, and repeating it would be work with no second effect.
+            last = database.transaction { tx -> inside(tx, nowE, today, week, canPrune = false) }
+            report += last
             batches += 1
         }
         // After the commit, and outside any transaction: the pragma refuses to run inside one.
