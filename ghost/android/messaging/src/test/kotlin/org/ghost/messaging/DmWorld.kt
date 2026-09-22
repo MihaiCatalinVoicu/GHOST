@@ -68,15 +68,41 @@ class DmWorld(
     slotCount: Int = 4,
     operators: Int = 2,
     startSeconds: Long = WEEK_ORIGIN + 2_870 * WEEK + 2 * DAY,
+    /**
+     * When set, each device's database is a **file** under this directory, in WAL mode, instead of
+     * the in-memory default.
+     *
+     * The T25 physical scan of §10.9 point 2 needs it: "the raw `.db` and `-wal` bytes contain
+     * neither the plaintext canary, nor the `body_env` bytes, … nor the `message_id`", and an
+     * in-memory database has no bytes to scan and no write-ahead log to truncate. Every other world
+     * stays in memory, because a file costs a temporary directory per test and proves nothing the
+     * in-memory one does not.
+     */
+    private val databaseDirectory: java.io.File? = null,
 ) : AutoCloseable {
 
     /** The two devices. Distinct MESSAGING branches, so distinct identities and cards. */
-    val alice: DmDevice = DmDevice(0x41, slotCount, operators, startSeconds)
-    val bob: DmDevice = DmDevice(0x51, slotCount, operators, startSeconds)
+    val alice: DmDevice = DmDevice(0x41, slotCount, operators, startSeconds, path = pathFor(0x41))
+    val bob: DmDevice = DmDevice(0x51, slotCount, operators, startSeconds, path = pathFor(0x51))
+
+    private fun pathFor(branch: Int): String? =
+        databaseDirectory?.let { java.io.File(it, "dm-$branch.db").absolutePath }
 
     private val extra = ArrayList<DmDevice>()
 
     private var sequence = 1L
+
+    /**
+     * How far ahead of the store the model relay puts `InboundBlob.relayExpiryHour` — the **E** of
+     * §10.3, which caps an unread message's deadline at `min(E, consume + bucket + 1 h)`.
+     *
+     * The default is the 30-day store-and-forward horizon, which is above every bucket, so the
+     * second term wins and the world behaves like an honest relay serving a fresh blob. A test
+     * lowers it to model a relay **lying short** (C-11: "a relay lying short can only make deletion
+     * earlier, a denial of service it could cause by withholding anyway") and raises it to model
+     * one lying long, which the second term clamps.
+     */
+    var relayExpirySeconds: Long = 30 * DAY
 
     /**
      * A device that holds [of]'s **`ghost1` Ed25519 seed** under a different MESSAGING branch: a
@@ -243,7 +269,7 @@ class DmWorld(
         device.sql.exec(
             "UPDATE inbox_blob SET state = 'fetched', ciphertext = ?, fetch_seq = ?, " +
                 "relay_expiry_hour = ? WHERE namespace_id = ? AND blob_hash = ?",
-            listOf(ciphertext, sequence++, ceilHour(now + 30 * DAY), namespace, hash),
+            listOf(ciphertext, sequence++, ceilHour(now + relayExpirySeconds), namespace, hash),
         )
     }
 
@@ -284,13 +310,28 @@ class DmDevice(
      * (`DmWorld.reincarnation`). On every ordinary device it is `branch + 1`.
      */
     internal val identityBranch: Int = branch + 1,
+    /** A file path for the T25 physical scan, or null for the in-memory default (see [DmWorld]). */
+    private val path: String? = null,
 ) : AutoCloseable {
 
-    val sql: JdbcSqlExecutor = JdbcSqlExecutor().also { MigrationRunner(it).migrate() }
+    val sql: JdbcSqlExecutor = JdbcSqlExecutor(path ?: ":memory:").also {
+        MigrationRunner(it).migrate()
+        // A `-wal` file exists only in WAL mode, and it is what §10.9 point 3 scans and what
+        // `checkpointTruncate()` truncates. `GhostDatabase.finishOpen` does this on device.
+        if (path != null) it.query("PRAGMA journal_mode = WAL") { }
+    }
+
+    /** The database file and its write-ahead log, for the physical scan (null in memory). */
+    val databaseFile: java.io.File? get() = path?.let { java.io.File(it) }
+
+    val walFile: java.io.File? get() = path?.let { java.io.File("$it-wal") }
     val database: SyncDatabase = SyncDatabase(sql)
     val clock = MovableClock(startSeconds)
     val stores: SyncStores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
-    val random = SequentialRandom(branch)
+    // One stream per device: see `SequentialRandom`. Two devices sharing a stream produced a
+    // `message_id` on one that was the 16-byte prefix of a `seen_key` on the other, which the T25
+    // physical scan reads as a message surviving its own deletion.
+    val random = SequentialRandom(branch, "device-$branch-$identityBranch")
     val wrapper = FakeKeyWrapper()
 
     /** The real DM context: one per device, opened on this device's own MESSAGING branch. */

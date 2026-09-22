@@ -161,22 +161,38 @@ class OwnerWorld(
 
     internal val displayStep: DisplayStep by lazy { DisplayStep(database, clock) }
 
-    /** The owner world sweeps nothing of its own, but the facade needs the schedule behind it. */
+    /** The real checkpoint over this world's executor, with its calls counted (ME-10, ME-11). */
+    val checkpoints = RecordingCheckpoint { org.ghost.storage.Checkpoint.truncate(sql) }
+
+    /** The ids SWEEP handed the media port inside its own transaction (§10.6). */
+    val media = RecordingMedia()
+
+    /** Every wake the schedule asked for (§10.7 triggers 1 and 5); null is a cancel. */
+    val wakes = RecordingWake()
+
+    /** Every unread count the notification port was given (§10.6, §10.7 Q19). */
+    val notifications = RecordingNotifications()
+
+    /**
+     * SWEEP over this world's tables. The envelope layer here is always closed, so the skipped-key
+     * prune of §7.7 point 4 is skipped and everything else runs — which is what a table-by-table
+     * test of the cascade wants, and what `DmWorld` complements with the real library.
+     */
     internal val sweeper: Sweeper by lazy {
         Sweeper(
             database = database,
             namespaces = stores.namespaces,
             envelopes = envelopes,
             pairKeys = PairKeySteps(envelopes),
-            checkpoint = DmCheckpoint { org.ghost.storage.Checkpoint.truncate(sql) },
+            checkpoint = checkpoints,
             clock = clock,
             contexts = contexts,
-            media = MediaPort.NONE,
+            media = media,
         )
     }
 
     internal val schedule: ExpirySchedule by lazy {
-        ExpirySchedule(sweeper, ExpiryWake.NONE, UnreadNotices { sweeper.unreadCount() })
+        ExpirySchedule(sweeper, wakes, UnreadNotices { sweeper.unreadCount() })
     }
 
     /** The facade, wired to this world's steps. No actor: the world is single-threaded already. */
@@ -212,6 +228,204 @@ class OwnerWorld(
     override fun close() {
         sql.close()
     }
+
+    // ---- rows SWEEP deletes, written straight in (`SweepTest`) ----
+    //
+    // A live conversation cannot reach most of them inside a test: a generation two months past
+    // its retention with a hold still naming it, a `prov_env` past its erase minute, a request
+    // past its day. Writing the row is exact and the schema still judges it — every CHECK, every
+    // trigger and every REPLACE guard of migration 5 applies to these inserts as much as to the
+    // steps'.
+
+    /** ACTIVATE, so `dm_self` exists and the expiry clock has somewhere to live (R-T7). */
+    fun activate() {
+        check(steps.activate(restored = false) == OwnerSteps.Result.DONE) { "ACTIVATE" }
+    }
+
+    /** One contact, with the columns its CHECKs demand for the trust state asked for. */
+    fun seedContact(
+        contact: Int = 0x21,
+        identity: Int = 0x22,
+        trust: String = "unverified",
+        requestUntilDay: Long? = null,
+    ) {
+        sql.exec(
+            "INSERT INTO dm_contact(contact_id, identity_pk, card_env, card_index, trust_state, " +
+                "source, establishment, request_until_day) VALUES (?, ?, ?, 0, ?, 'link', 'card_only', ?)",
+            listOf(
+                ByteArray(16) { contact.toByte() },
+                ByteArray(32) { identity.toByte() },
+                ByteArray(159) { contact.toByte() },
+                trust,
+                requestUntilDay,
+            ),
+        )
+    }
+
+    /** [seedContact] plus the conversation every message row needs. */
+    fun seedConversation(contact: Int = 0x21) {
+        seedContact(contact = contact)
+        sql.exec(
+            "INSERT INTO dm_conversation(conversation_id, contact_id) VALUES (?, ?)",
+            listOf(ByteArray(16) { contact.toByte() }, ByteArray(16) { contact.toByte() }),
+        )
+    }
+
+    /**
+     * One message with a reaction, and optionally the outbound item, op (with a retained blob) and
+     * pending send that must cascade with it (§10.6).
+     */
+    fun seedMessage(
+        id: Int,
+        deleteAt: Long,
+        incoming: Boolean = false,
+        withItem: Boolean = false,
+        contact: Int = 0x21,
+    ) {
+        val messageId = ByteArray(16) { id.toByte() }
+        val conversation = ByteArray(16) { contact.toByte() }
+        val author = deleteAt - 86_400
+        sql.exec(
+            "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, " +
+                "sort_minute, minute_index, timer_code, body_env, state, expire_at_minute, " +
+                "unread_deadline_minute, delete_at_minute) VALUES (?, ?, ?, 1, ?, ?, 0, 4, ?, ?, ?, ?, ?)",
+            listOf(
+                messageId,
+                conversation,
+                if (incoming) "in" else "out",
+                author,
+                author,
+                ByteArray(100) { id.toByte() },
+                if (incoming) "unread" else "sent",
+                if (incoming) null else deleteAt,
+                if (incoming) deleteAt else null,
+                deleteAt,
+            ),
+        )
+        sql.exec(
+            "INSERT INTO dm_reaction(target_id, from_self, grapheme_env) VALUES (?, 1, ?)",
+            listOf(messageId, ByteArray(40) { id.toByte() }),
+        )
+        if (!withItem) return
+        sql.exec(
+            "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, control, l0_env, " +
+                "deadline_hour, state) VALUES (?, ?, ?, 1, NULL, ?, ?, 'enqueued')",
+            listOf(
+                messageId,
+                ByteArray(16) { contact.toByte() },
+                messageId,
+                ByteArray(60) { id.toByte() },
+                ceilHour(deleteAt),
+            ),
+        )
+        sql.exec(
+            "INSERT INTO dm_outbound_op(operation_id, purpose, item_id, bundle_week, blob, " +
+                "resend_count, deadline_hour) VALUES (?, 'item', ?, NULL, ?, 0, ?)",
+            listOf(messageId, messageId, ByteArray(4096) { id.toByte() }, ceilHour(deleteAt)),
+        )
+        sql.exec(
+            "INSERT INTO dm_pending_send(item_id, contact_id, fail_after_hour) VALUES (?, ?, ?)",
+            listOf(messageId, ByteArray(16) { contact.toByte() }, ceilHour(deleteAt) + 86_400),
+        )
+    }
+
+    /** One `olm_prekey_gen` row, superseded and past (or not past) its retention (§5.4). */
+    fun seedGeneration(genId: Long, deleteAfterDay: Long) {
+        sql.exec(
+            "INSERT INTO olm_prekey_gen(gen_id, bundle_week, fallback_pub, secrets_env, " +
+                "superseded_day, delete_after_day) VALUES (?, 1, ?, ?, ?, ?)",
+            listOf(
+                genId,
+                ByteArray(32) { genId.toByte() },
+                ByteArray(92) { genId.toByte() },
+                deleteAfterDay - 91,
+                deleteAfterDay,
+            ),
+        )
+    }
+
+    /** One held row naming [genId] (§8.3). */
+    fun seedHeld(heldId: Int, genId: Long, holdUntil: Long, contact: Int = 0x21) {
+        sql.exec(
+            "INSERT INTO dm_held(held_id, contact_id, identity, l1_env, gen_id, prov_env, " +
+                "hold_until_minute, relay_expiry_hour, consume_minute) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+            listOf(
+                ByteArray(16) { heldId.toByte() },
+                ByteArray(16) { contact.toByte() },
+                ByteArray(32) { heldId.toByte() },
+                ByteArray(60) { heldId.toByte() },
+                genId,
+                holdUntil,
+                ceilHour(holdUntil),
+                holdUntil - 3_600,
+            ),
+        )
+    }
+
+    /** One D3 tag with its `ceil7` day (§7.6, §21.10 point 3). */
+    fun seedSeen(tag: Int, untilDay: Long) {
+        sql.exec(
+            "INSERT INTO dm_seen(tag, until_day) VALUES (?, ?)",
+            listOf(ByteArray(16) { tag.toByte() }, untilDay),
+        )
+    }
+
+    /** One session in [slot], with the columns that slot's CHECKs demand (§13.6 step 5). */
+    fun seedSession(
+        slot: String,
+        contact: Int = 0x21,
+        retireDay: Long? = null,
+        provEraseMinute: Long? = null,
+    ) {
+        sql.exec(
+            "INSERT INTO olm_session(contact_id, slot, session_id, role, acknowledged, state_env, " +
+                "prov_env, prov_erase_minute, peer_gen_id, unack_since_day, retire_day, " +
+                "peer_bind_minute, prov_anchor_minute, pair_sent) " +
+                "VALUES (?, ?, ?, 'responder', 1, ?, ?, ?, NULL, NULL, ?, ?, NULL, 0)",
+            listOf(
+                ByteArray(16) { contact.toByte() },
+                slot,
+                ByteArray(32) { (contact + slot.length).toByte() },
+                ByteArray(60) { contact.toByte() },
+                if (provEraseMinute == null) null else ByteArray(60) { 0x5a },
+                provEraseMinute,
+                retireDay,
+                floorMinute(clock.now) - 600,
+            ),
+        )
+    }
+
+    /** One peer X-Wing key of a bundle week (§22.8.6 rule 2). */
+    fun seedPeerPq(genId: Long, bundleWeek: Long, contact: Int = 0x21) {
+        sql.exec(
+            "INSERT INTO dm_peer_pq(contact_id, gen_id, bundle_week, source, xwing_pk) " +
+                "VALUES (?, ?, ?, 'bundle', ?)",
+            listOf(ByteArray(16) { contact.toByte() }, genId, bundleWeek, ByteArray(1216) { genId.toByte() }),
+        )
+    }
+
+    /** `dm_self.expiry_clock_minute` (R-T7). */
+    fun expiryClock(): Long {
+        var out: Long? = null
+        sql.query("SELECT expiry_clock_minute FROM dm_self") { out = it.long(0) }
+        return checkNotNull(out) { "no dm_self row" }
+    }
+
+    fun count(query: String, args: List<Any?> = emptyList()): Int {
+        var out = 0
+        sql.query(query, args) { out = it.long(0).toInt() }
+        return out
+    }
+
+    fun longs(query: String): List<Long> {
+        val out = ArrayList<Long>()
+        sql.query(query) { out += it.long(0) }
+        return out
+    }
+
+    private fun ceilHour(seconds: Long): Long = -Math.floorDiv(-seconds, 3_600L) * 3_600L
+
+    private fun floorMinute(seconds: Long): Long = Math.floorDiv(seconds, 60L) * 60L
 
     // ---- queries the assertions use, written out rather than hidden behind the DAOs ----
 
@@ -341,15 +555,27 @@ class MovableClock(var now: Long = 1_800_000_000L) : DmClock, SyncClock {
     override fun monotonicMillis(): Long = monotonic
 }
 
-/** Deterministic, distinct bytes per call: a repeat would hide an id collision the steps must avoid. */
-class SequentialRandom(private var counter: Int = 0) : DmRandom {
+/**
+ * Deterministic, distinct bytes per call: a repeat would hide an id collision the steps must
+ * avoid.
+ *
+ * **[stream] separates two devices' draws, and it is not cosmetic.** Every draw is a prefix of
+ * `SHA-256("<stream>:<n>:<block>")`, so without a per-device stream a 16-byte draw and a 32-byte
+ * draw with the same counter **share their first 16 bytes** — and two devices whose counters
+ * happened to line up produced a `message_id` on one that was the prefix of a `seen_key` on the
+ * other. The T25 physical scan of `EphemeralTest` found exactly that and reported a message id
+ * "surviving the sweep" inside `dm_self`. A real CSPRNG makes the collision negligible; this one
+ * has to be told.
+ */
+class SequentialRandom(private var counter: Int = 0, private val stream: String = "") : DmRandom {
     override fun bytes(count: Int): ByteArray {
         val out = ByteArray(count)
         var pos = 0
         var block = 0
         val seed = counter++
         while (pos < count) {
-            val digest = MessageDigest.getInstance("SHA-256").digest("$seed:$block".toByteArray(Charsets.US_ASCII))
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest("$stream:$seed:$block".toByteArray(Charsets.US_ASCII))
             val n = minOf(digest.size, count - pos)
             System.arraycopy(digest, 0, out, pos, n)
             pos += n
