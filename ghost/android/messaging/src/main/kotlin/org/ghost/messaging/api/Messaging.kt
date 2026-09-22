@@ -14,10 +14,12 @@ import org.ghost.messaging.store.ContactStore
  * §13.2 gives the whole interface Phase 13 will call. S6 was the **owner side**: the identity's
  * own card and the activation hooks. S7 is **contacts, sending and receiving**. S8 is **trust and
  * restore**: safety numbers, the two key-change decisions, `markVerified`, `resetSession`,
- * `reconnect` and the two revocation calls. What is left arrives with its own slice —
- * `markDisplayed` and the notification port with **S9** — and each signature lands **with** its
- * slice rather than ahead of it: a method that compiled and answered nothing would be refused by
- * the static gates, and a caller written against one would be written against a promise.
+ * `reconnect` and the two revocation calls. S9 is **ephemeral**: `markDisplayed`, which starts the
+ * recipient's countdown, and `setNotificationPort`. What is left arrives with its own slice, and
+ * each signature lands **with** its slice rather than ahead of it: a method that compiled and
+ * answered nothing would be refused by the static gates, and a caller written against one would be
+ * written against a promise. `setListener` (the coarse content-free change hints of §13.2) is
+ * still one of those.
  *
  * The contract §13.2 states holds for everything here: **every method posts to the DM actor** and
  * returns after its transaction commits (§13.7), none performs network I/O (gate G-DM1), and
@@ -120,6 +122,33 @@ interface Messaging {
 
     /** §10.5: the conversation timer, as a TIMER_SET message both sides see (ADR-27 C.8). */
     fun setTimer(contact: ContactId, timer: Timer): SendResult
+
+    /**
+     * §10.3, §21.10 point 6: the recipient's countdown starts **here**, at the first display, and
+     * not at receipt (mutant ME-7).
+     *
+     * `expire_at_minute` becomes `ceil_minute(now + timer)` for each id that names a live incoming
+     * unread message of this device, and only if that is **earlier** than a value already there
+     * (R-T6). Ids that name nothing, an outgoing row, an already-displayed one, or a message whose
+     * `delete_at_minute` has passed are ignored: a stale call cannot resurrect a message the unread
+     * cap already took.
+     *
+     * Returns how many rows moved to `read` — a count, never a time or an id (T3).
+     */
+    fun markDisplayed(ids: List<MessageId>): Int
+
+    /**
+     * §10.7 (Q19), §13.2: the only channel from the DM layer to a notifier, and it carries a
+     * **count**.
+     *
+     * The count is published after every transaction that can change it (`RECV`, `HELD`,
+     * `markDisplayed`, SWEEP), and only when it differs from the last one published, so an
+     * implementation that reposts is not turned into a heartbeat. `0` means cancel.
+     *
+     * Phase 9 posts no notification of its own (§21.10 point 9); what it ships is this port and the
+     * guarantee that nothing else ever crosses it.
+     */
+    fun setNotificationPort(port: NotificationPort?)
 
     /**
      * §7.5: the user retry of a FAILED message. It re-encrypts the **same** L0 — same

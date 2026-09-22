@@ -207,6 +207,27 @@ interface DmEnvelopes {
         ratchetKey: ByteArray,
     ): DmSessions.ChainPosition
 
+    /**
+     * §2.6 function 20: **SWEEP's age bound on the skipped keys of a live session** (§7.7 point 4,
+     * §21.3 point 6).
+     *
+     * Olm keeps up to 40 skipped message keys per receiver chain and 5 chains per session, so that
+     * a message lost or reordered in transit still decrypts. Those keys are the one declared
+     * exception to P-7 and T34: a root-carrying message whose key is still stored opens a pair
+     * envelope of a week whose pair keys were erased long ago. S0′ adopted Q67's prune (V-15), so
+     * the exception is **withdrawn** — Rust removes from the stored pickle every key whose
+     * first-seen day is at least `FRESH + 2σ = 51 d` old, keeping the order of the others, and
+     * returns the reconciled first-seen sidecar with the new state. Mutant **MC-30** is this call
+     * not being made, or the sidecar kept as an insert-only log instead of a projection.
+     *
+     * `today` is a **day index** supplied by the caller: `ghost-client-dm` reads no clock (G-R8).
+     */
+    fun prune(
+        contactId: ByteArray,
+        slot: DmSessions.StoredSlot,
+        today: Int,
+    ): DmSessions.Pruned
+
     // ------------------------------------------------------------------- content
 
     /** §2.6 function 18: the canonical L0 of §7.1, with the bucket R-B1 chose (§6.6). */
@@ -559,6 +580,15 @@ class NativeDmEnvelopes(private val context: DmContext) : DmEnvelopes {
     ): DmSessions.ChainPosition {
         val handle = context.handleOrNull() ?: return DmSessions.ChainPosition.Unavailable
         return DmSessions.chainPosition(handle, contactId, slot, ratchetKey)
+    }
+
+    override fun prune(
+        contactId: ByteArray,
+        slot: DmSessions.StoredSlot,
+        today: Int,
+    ): DmSessions.Pruned {
+        val handle = context.handleOrNull() ?: return DmSessions.Pruned.Unavailable
+        return DmSessions.prune(handle, contactId, slot, today)
     }
 
     @Suppress("LongParameterList")
