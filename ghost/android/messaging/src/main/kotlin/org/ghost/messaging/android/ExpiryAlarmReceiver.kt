@@ -46,8 +46,9 @@ class ExpiryAlarmReceiver : BroadcastReceiver() {
 
     companion object {
         /**
-         * The hand-off to the DM actor, set once by `MessagingWiring` (slice S12) and cleared at
-         * wipe.
+         * The hand-off to the DM actor, set by `MessagingWiring` at process start and when a new
+         * database key is created, and cleared at wipe (slice S12; the clearing arrived with the
+         * S12 review — until then this note promised it and nothing did it).
          *
          * It is a static slot rather than a constructor argument because the system instantiates a
          * `BroadcastReceiver` with its no-argument constructor; the same shape `:sync`'s

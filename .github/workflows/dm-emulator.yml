@@ -46,6 +46,10 @@ name: dm-emulator
 on:
   pull_request:
     paths:
+      # :app carries the release smoke test, proguard-rules.pro and MessagingWiring; client-core/net
+      # and build-native.sh build the shipped library the smoke test loads (S12 review: a PR that
+      # broke the shrunk-release smoke test ran nothing until the nightly).
+      - "ghost/android/app/**"
       - "ghost/android/messaging/**"
       - "ghost/android/crypto-bridge/**"
       - "ghost/android/storage/**"
@@ -53,6 +57,8 @@ on:
       - "ghost/android/network/**"
       - "ghost/client-core/dm/**"
       - "ghost/client-core/dm-host/**"
+      - "ghost/client-core/net/**"
+      - "ghost/scripts/build-native.sh"
       - "ghost/protocol/test-vectors/dm_equivalence.txt"
       - "ghost/scripts/device/dm-emulator-run.sh"
       - "ghost/scripts/gates/dm-emulator-check.sh"

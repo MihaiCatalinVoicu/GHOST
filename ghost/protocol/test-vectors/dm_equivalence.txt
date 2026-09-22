@@ -4,9 +4,9 @@
 # and every `refuse_*` case answers a refusal.
 #
 # One case per line: `id kind hex(input)`. `kind` is a `ghost_client_dm::equivalence::kind`
-# constant; the input is `u32_be(len) || bytes` fields. The file holds INPUTS only: the `android`
-# job records the outputs of `ghost-dm-host` through JNI (`DmEquivalence.run`) and `dm-emulator.yml`
-# replays this file on the emulator's x86_64 test library and compares byte for byte. Excluded,
+# constant; the input is `u32_be(len) || bytes` fields. The file holds INPUTS only: `dm-emulator.yml`
+# records the outputs of `ghost-dm-host` through JNI (`DmEquivalence.run`), then replays this file
+# on the emulator's x86_64 test library in the same job and compares byte for byte. Excluded,
 # because they draw randomness: PreKey creation and outbound session creation.
 ok_derive_0 01 00000020c44284416cb773db9bf5be785ecf3344576105f0cb58f01e0ce4345f4f683e0e0000000200000000000100
 ok_derive_1 01 00000020d5f1766a4e8ea2d35b1c71dd1c0c11b5252623438155e0ac0a6a55fdcd2e482c0000000200010000000103

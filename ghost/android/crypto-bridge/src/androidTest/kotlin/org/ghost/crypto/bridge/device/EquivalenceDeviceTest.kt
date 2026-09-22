@@ -10,7 +10,8 @@ import org.junit.Test
  * V-16; slice S12): the case file replayed on the emulator's x86_64 **test library** —
  * `libghost_dm_host.so`, the same source, pins and toolchain as `libghost_client_net.so` plus the
  * `test-vectors` feature, packaged only in this `androidTest` APK (§22.8.10 point 6) — and compared
- * byte for byte with the host fixture the `android` job's JVM test recorded on `ghost-dm-host`.
+ * byte for byte with the host fixture the JVM test `DmEquivalenceHostTest` recorded on
+ * `ghost-dm-host` earlier in the same `dm-emulator.yml` job (design §22.17 item 8).
  *
  * Both files are this APK's assets (`dm_equivalence.txt`, `dm_equivalence_host.txt`); the commit
  * is the `commit` instrumentation argument, and a fixture of another commit is refused. The report

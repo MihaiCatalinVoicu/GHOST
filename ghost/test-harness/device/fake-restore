@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# A fake of the host re-store tool (`cargo run -p ghost-client-net --example dm_restore`) for the
+# self-test of scripts/device/dm-gate.sh (Phase 9 design §15.10 step 4; S12 review). It speaks the
+# real tool's arguments and report lines and checks the capture the orchestrator wrote; the real
+# tool's own self-test is client-core/net/tests/dm_restore.rs, against a real relay.
+#
+#   FAKE_RESTORE_LIVE=1   the relay still holds the originals: every blob is `still-live`
+#   FAKE_ADB_DIR          the fake phones' state; a real re-store is recorded there as `restored`
+set -euo pipefail
+check=0
+capture=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --capture) capture="$2"; shift 2 ;;
+    --onion|--state-dir) shift 2 ;;
+    --check-only) check=1; shift ;;
+    *) echo "fake-restore: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+[ -s "$capture" ] || { echo "dm_restore: cannot read the capture" >&2; exit 2; }
+[ "$(grep -c '^blob [0-9a-f]\{64,\}$' "$capture")" = 5 ] || { echo "dm_restore: capture refused: not 5 blobs" >&2; exit 2; }
+grep -q '^credential [0-9a-f]\{16,\}$' "$capture" || { echo "dm_restore: capture refused: no credential" >&2; exit 2; }
+grep -q '^namespace [0-9a-f]\{64\}$' "$capture" || { echo "dm_restore: capture refused: no namespace" >&2; exit 2; }
+grep -q '^ttl 3600$' "$capture" || { echo "dm_restore: capture refused: not the one-hour bucket" >&2; exit 2; }
+live="${FAKE_RESTORE_LIVE:-0}"
+restored=0
+still=0
+while read -r _ hex; do
+  d="$(printf '%s' "$hex" | cut -c1-16)"
+  if [ "$live" = 1 ]; then echo "blob $d still-live"; still=$((still + 1))
+  elif [ "$check" = 1 ]; then echo "blob $d gone"
+  else echo "blob $d re-stored"; restored=$((restored + 1)); fi
+done < <(grep '^blob ' "$capture")
+echo "dm-restore: 5 blobs, $restored re-stored as new listings, $still still live at the relay"
+if [ "$check" = 0 ] && [ "$restored" -gt 0 ]; then touch "${FAKE_ADB_DIR:?}/restored"; fi
+[ "$check" = 1 ] || [ "$restored" = 5 ]

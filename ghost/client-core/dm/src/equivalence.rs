@@ -14,8 +14,9 @@
 //! first byte of every answer, so a device that refuses what the host accepts is a difference.
 //!
 //! The same deterministic inputs run on both builds (the case file
-//! `protocol/test-vectors/dm_equivalence.txt`), the `android` job records the host's outputs through
-//! JNI, and `dm-emulator.yml` replays the file on the emulator's library and compares byte for byte.
+//! `protocol/test-vectors/dm_equivalence.txt`): `dm-emulator.yml` records the host's outputs through
+//! JNI on `ghost-dm-host` (the JVM test `DmEquivalenceHostTest`), then replays the file on the
+//! emulator's library in the same job and checkout and compares byte for byte (design §22.17 item 8).
 //!
 //! **Framing.** An input is a sequence of fields, each `u32_be(len) ‖ bytes`; an output is
 //! `code(1) ‖` fields in the same framing. A kind that reads a field the input does not carry

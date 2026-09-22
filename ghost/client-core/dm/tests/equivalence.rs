@@ -4,8 +4,8 @@
 //! one case per line — and checks the committed file against it, exactly as `vectors.rs` does for
 //! the conformance vectors (`GHOST_DM_EQUIVALENCE_WRITE=1` rewrites it). It records **inputs
 //! only**: the outputs are what the two builds are compared on, so they are recorded where each
-//! build runs — the `android` job through JNI on `ghost-dm-host`, `dm-emulator.yml` on the
-//! emulator's test library — and never here.
+//! build runs — both in `dm-emulator.yml`, through JNI on `ghost-dm-host` and then on the
+//! emulator's test library (design §22.17 item 8) — and never here.
 //!
 //! What it does assert about the outputs is what makes the file worth replaying:
 //!  - every case is **deterministic**: run twice in this process, byte-identical (a case that drew
@@ -550,9 +550,9 @@ fn render(cases: &[Case]) -> String {
 # and every `refuse_*` case answers a refusal.\n\
 #\n\
 # One case per line: `id kind hex(input)`. `kind` is a `ghost_client_dm::equivalence::kind`\n\
-# constant; the input is `u32_be(len) || bytes` fields. The file holds INPUTS only: the `android`\n\
-# job records the outputs of `ghost-dm-host` through JNI (`DmEquivalence.run`) and `dm-emulator.yml`\n\
-# replays this file on the emulator's x86_64 test library and compares byte for byte. Excluded,\n\
+# constant; the input is `u32_be(len) || bytes` fields. The file holds INPUTS only: `dm-emulator.yml`\n\
+# records the outputs of `ghost-dm-host` through JNI (`DmEquivalence.run`), then replays this file\n\
+# on the emulator's x86_64 test library in the same job and compares byte for byte. Excluded,\n\
 # because they draw randomness: PreKey creation and outbound session creation.\n",
     );
     for case in cases {

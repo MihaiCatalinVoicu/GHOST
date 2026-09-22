@@ -16,9 +16,11 @@ import java.security.MessageDigest
  * The protocol, end to end:
  *  1. `protocol/test-vectors/dm_equivalence.txt` holds the deterministic **inputs** (`id kind hex`),
  *     generated and checked by `client-core/dm/tests/equivalence.rs`;
- *  2. the `android` job runs every case through [run] on the host library and writes the **host
- *     fixture** ([HostFixture.render]): a header naming the commit, then `id sha256 hex(output)`;
- *  3. `dm-emulator.yml` replays the same file on the emulator's library and [compare]s byte for
+ *  2. `dm-emulator.yml` runs every case through [run] on the host library (the JVM test
+ *     `DmEquivalenceHostTest`) and writes the **host fixture** ([HostFixture.render]): a header
+ *     naming the commit, then `id sha256 hex(output)` (design §22.17 item 8: the emulator job
+ *     records it itself, in the same job and checkout, not ci.yml's `android` job);
+ *  3. the same job replays the same file on the emulator's library and [compare]s byte for
  *     byte, printing the first differing case, refusing a fixture of another commit, and running
  *     the **control**: the control case's input with one byte flipped must be reported different,
  *     so the comparator is not vacuous.

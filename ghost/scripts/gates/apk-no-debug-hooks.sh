@@ -203,8 +203,8 @@ if [ -n "$MAPPING" ]; then
         if (original != renamed && !synthetic && !removed) print "mapping.txt renames " original " to " renamed ": every org.ghost. class maps to itself (-keepnames, G-DM5)"
         outer = original; sub(/\$.*$/, "", outer)
         simple = outer; sub(/^.*\./, "", simple)
-        if (outer in debug) print "mapping.txt ships the debug-only class " original " (G-DM5)"
-        else if (simple == entry) print "mapping.txt ships the equivalence-test entry point " original " (G-DM5)"
+        if (simple == entry) print "mapping.txt ships the equivalence-test entry point " original " (G-DM5)"
+        else if (outer in debug) print "mapping.txt ships the debug-only class " original " (G-DM5)"
         else if (outer ~ /\.(harness|gate)(\.|$)/) print "mapping.txt ships " original " from a harness or gate package (G-DM5)"
       }
       END { print "COUNT " (n + 0) }

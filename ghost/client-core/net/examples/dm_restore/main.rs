@@ -5,15 +5,19 @@
 //!
 //! ```text
 //! cargo run -p ghost-client-net --example dm_restore --locked -- \
-//!     --onion <relay onion:port> --capture <file> --state-dir <dir>
+//!     --onion <relay onion:port> --capture <file> --state-dir <dir> [--check-only]
 //! ```
 //!
 //! The capture file is what `scripts/device/dm-gate.sh replay` exports from the sending gate phone:
 //! the recipient's inbox namespace, the sender's deposit credential for it at one relay, the TTL
-//! bucket and five delivered ciphertexts (see `restore.rs`). The output is one line per blob — the
-//! first 8 bytes of its SHA-256 and the outcome — and the summary line
-//! `dm-restore: <n> blobs, <n> stored identical bytes`. Nothing else is printed: no blob, no
-//! credential, no namespace (§15.10: "records digests, never content").
+//! bucket and five delivered ciphertexts (see `restore.rs`). Every blob is checked at the relay
+//! first: one it still holds is `still-live` and is not stored (a re-store would be a no-op the
+//! recipient never sees), one it no longer holds is stored again as a new listing (`re-stored`).
+//! `--check-only` stores nothing and reports `still-live` or `gone` per blob. The output is one line
+//! per blob — the first 8 bytes of its SHA-256 and the outcome — and the summary line
+//! `dm-restore: <n> blobs, <r> re-stored as new listings, <l> still live at the relay`. Nothing else
+//! is printed: no blob, no credential, no namespace (§15.10: "records digests, never content").
+//! The exit status is 0 only when every blob was re-stored (or, with `--check-only`, checked).
 //!
 //! Its self-test is `client-core/net/tests/dm_restore.rs`, which runs the same core against a real
 //! `ghost_relay_node::Relay` in-process with a registered deposit verifier.
@@ -22,13 +26,26 @@ mod restore;
 
 use ghost_client_net::relay_client::OnionConnector;
 use ghost_client_net::{NamespaceClient, OnionAddress, TorTransport, TransportConfig};
-use restore::{parse_capture, report, restore_all, Depositor};
+use restore::{
+    check_all, parse_capture, report, restore_all, RelayPort, GONE, RESTORED, STILL_LIVE,
+};
 use std::path::PathBuf;
 
-/// [`Depositor`] over Tor: the namespace client the app uses, on the namespace's own circuits.
-struct TorDepositor(NamespaceClient<OnionConnector>);
+/// [`RelayPort`] over Tor: the namespace client the app uses, on the namespace's own circuits.
+struct TorRelay(NamespaceClient<OnionConnector>);
 
-impl Depositor for TorDepositor {
+impl RelayPort for TorRelay {
+    async fn held(
+        &mut self,
+        credential: &[u8],
+        hashes: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>, String> {
+        self.0
+            .check(credential.to_vec(), hashes.to_vec())
+            .await
+            .map_err(|error| format!("refused: {error}"))
+    }
+
     async fn deposit(
         &mut self,
         credential: &[u8],
@@ -44,7 +61,9 @@ impl Depositor for TorDepositor {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: dm_restore --onion <onion:port> --capture <file> --state-dir <dir>");
+    eprintln!(
+        "usage: dm_restore --onion <onion:port> --capture <file> --state-dir <dir> [--check-only]"
+    );
     std::process::exit(2)
 }
 
@@ -53,12 +72,14 @@ async fn main() {
     let mut onion = None;
     let mut capture = None;
     let mut state = None;
+    let mut check_only = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--onion" => onion = args.next(),
             "--capture" => capture = args.next(),
             "--state-dir" => state = args.next(),
+            "--check-only" => check_only = true,
             _ => usage(),
         }
     }
@@ -90,13 +111,23 @@ async fn main() {
         eprintln!("dm_restore: {e}");
         std::process::exit(1);
     }
-    let mut depositor = TorDepositor(NamespaceClient::over_tor(
+    let mut relay = TorRelay(NamespaceClient::over_tor(
         &transport,
         &relay,
         capture.namespace,
     ));
-    let outcomes = restore_all(&mut depositor, &capture).await;
+    let outcomes = if check_only {
+        check_all(&mut relay, &capture).await
+    } else {
+        restore_all(&mut relay, &capture).await
+    };
     print!("{}", report(&outcomes));
-    let all = outcomes.iter().all(|o| o.result == "stored");
-    std::process::exit(if all { 0 } else { 1 });
+    let ok = if check_only {
+        outcomes
+            .iter()
+            .all(|o| o.result == STILL_LIVE || o.result == GONE)
+    } else {
+        outcomes.iter().all(|o| o.result == RESTORED)
+    };
+    std::process::exit(if ok { 0 } else { 1 });
 }
