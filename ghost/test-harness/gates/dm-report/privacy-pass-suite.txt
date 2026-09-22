@@ -1,0 +1,14 @@
+GHOST DM privacy gate (Phase 9 design §15.6, §15.7; slice S11)
+scale: pr (N = 120, 14 days), seed pairs 1, STANDARD
+dm T34: PASS seized c0, c7 at day 70; expired-week pair blobs 297, 0 recognised and 0 opened by retained keys, 0 recognised by derived keys; control 515 of 515 current pair blobs opened; intro 6 of 6 expected opened (no generation due for erasure before day 91); prov_env 0 retained, 9 due erased, 0 past the rule
+dm NI-DM1: PASS 4 twins (VALID, MALFORMED, PROBE, REQUEST) equal over 58 events of B's view
+dm privacy mutants: 9 run, 9 detected
+dm privacy mutant PM-2: detected by JD6 (SMALL world), NI-DM1 (twin worlds)
+dm privacy mutant PM-3: detected by JD1 (SMALL world), S-DM3 (MEDIUM world, n >= 100)
+dm privacy mutant PM-4: detected by JD4 (SMALL world)
+dm privacy mutant PM-6: detected by NI-DM1 (twin worlds)
+dm privacy mutant PM-8: detected by JD7 (SMALL world)
+dm privacy mutant PM-13: detected by JD2 (SMALL world), JD1 (SMALL world)
+dm privacy mutant PM-19: detected by T34 (seizure world)
+dm privacy mutant PM-24: detected by JD9 (SMALL world)
+dm privacy mutant PM-36: detected by T34 (seizure world)

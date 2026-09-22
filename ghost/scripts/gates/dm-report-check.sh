@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
-# The DM exit-gate report check (Phase 9 design §15.3, §15.4, §15.6, §15.7; slice S10), built on the
-# `t2-report-check.sh` pattern: **a report is evidence only if something refuses an incomplete one.**
+# The DM exit-gate report check (Phase 9 design §15.3, §15.4, §15.6, §15.7; slices S10 and S11), built
+# on the `t2-report-check.sh` pattern: **a report is evidence only if something refuses an incomplete
+# one.**
 #
 #   dm-report-check.sh <report> gate    the `messaging-exit-gate.yml` run: every implemented crash
 #                                       scenario and suite case with a non-empty enumeration, the
 #                                       seeded-world lines, the `SQLITE_FULL` line, the mutant count
 #                                       and one line per mutant, and the gate scale in the header;
 #   dm-report-check.sh <report> pr      the same lines at the PR scale.
+#
+# The privacy report of slice S11 (§15.6; `build/reports/dm/privacy.txt`, written by the tests of
+# `org.ghost.messaging.dmworld`) has three kinds, because `dm-privacy-gate.yml` splits its run:
+#
+#   privacy-gate    one matrix job's worlds at the gate scale (N = 600, 42 days): per seed pair the
+#                   world line, JD1–JD7 and JD9 (not JD8, not JD10) at `PASS 0` over a non-zero
+#                   denominator, S-DM3 at PASS with n >= 100 and an exact control, and the T35 line of
+#                   a provenance build;
+#   privacy-suite   the scale-independent job: NI-DM1 with its four twins, the T34 seizure line and
+#                   the privacy mutant count with one detection line per mutant;
+#   privacy-pr      both halves in one report at the PR scale (N = 120, 14 days), which is what the
+#                   `android` job of ci.yml writes.
 #
 # A missing report, a missing line, a zero count or a scale that does not match the requested kind
 # fails the check (exit 1); usage errors exit 2.
@@ -18,17 +31,88 @@
 # script until the tests behind them exist: a gate that asserted the design's numbers while running
 # a subset would pass on evidence nobody produced, which is the one failure mode a report-checked
 # gate must not have. §22.15 of the design lists what is still owed, scenario by scenario and
-# mutant by mutant.
+# mutant by mutant. The privacy half follows the same rule: it does not require JD8, JD10, NI-DM2 …
+# NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the AD-7-with-token line, EM-1/EM-2, the
+# `pq-model` status or 31 of the 40 privacy mutants, because nothing in this branch produces them;
+# §22.16 names each.
 set -euo pipefail
 
 report="${1:-}"
 kind="${2:-}"
-[ -n "$report" ] && [ -n "$kind" ] || { echo "usage: dm-report-check.sh <report> gate|pr" >&2; exit 2; }
-case "$kind" in gate|pr) ;; *) echo "unknown report kind: $kind" >&2; exit 2 ;; esac
+kinds="gate|pr|privacy-pr|privacy-gate|privacy-suite"
+[ -n "$report" ] && [ -n "$kind" ] || { echo "usage: dm-report-check.sh <report> $kinds" >&2; exit 2; }
+case "$kind" in gate|pr|privacy-pr|privacy-gate|privacy-suite) ;; *) echo "unknown report kind: $kind" >&2; exit 2 ;; esac
 
 fail=0
 bad() { echo "DM-REPORT-FAIL: $*" >&2; fail=1; }
 [ -f "$report" ] || { echo "DM-REPORT-FAIL: no report at $report" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------------------------------
+# The privacy report (slice S11).
+# ---------------------------------------------------------------------------------------------------
+
+# The per-world half: one line of each kind per seed pair the header names.
+privacy_worlds() {
+  local scale="$1" pairs worlds join n
+  grep -qE "^scale: ${scale}, seed pairs [1-9][0-9]*, STANDARD\$" "$report" \
+    || bad "the report is not of the expected scale (${scale})"
+  pairs="$(sed -nE "s/^scale: ${scale}, seed pairs ([0-9]+), STANDARD\$/\\1/p" "$report" | head -1)"
+  pairs="${pairs:-0}"
+  # One world line per seed pair, and a world that did something.
+  worlds="$(grep -cE '^dm privacy world: N=[0-9]+, [0-9]+ days, [1-9][0-9]* edges accepted of [0-9]+ planned, [1-9][0-9]* user sends, [1-9][0-9]* stores, ' "$report" || true)"
+  [ "$pairs" -gt 0 ] 2>/dev/null || bad "the header names no seed pair"
+  [ "$worlds" = "$pairs" ] || bad "$worlds non-empty world lines for $pairs seed pairs"
+  # The joins: a PASS with zero matches over a non-zero denominator, once per seed pair, and no FAIL.
+  for join in JD1 JD2 JD3 JD4 JD5 JD6 JD7 JD9; do
+    n="$(grep -cE "^dm ${join}: PASS 0 over [1-9][0-9]*; " "$report" || true)"
+    [ "$n" = "$pairs" ] || bad "$join: $n PASS lines over a non-empty sample for $pairs seed pairs"
+    if grep -qE "^dm ${join}: FAIL" "$report"; then bad "$join failed"; fi
+  done
+  # S-DM3 (gating): PASS, the n >= 100 floor, and the colluders' control exact and non-empty.
+  n="$(grep -cE '^dm S-DM3: PASS K=[0-9]+ of n=[1-9][0-9]{2,} namespaces .*control: [0-9]+ colluders. cards map [1-9][0-9]* of [0-9]+ expected namespaces, [0-9]+ correct( \[|$)' "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "S-DM3: $n PASS lines with n >= 100 and a non-empty exact control for $pairs seed pairs"
+  if grep -qE '^dm S-DM3: FAIL' "$report"; then bad "S-DM3 failed, fell below its floor or its control was not exact"; fi
+  # T35: only a provenance build earns the line; a plain build's NOT RUN is a failure here.
+  n="$(grep -cE '^dm T35: PASS provenance build; [1-9][0-9]* seals asserted ' "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "T35: $n PASS lines of a provenance build for $pairs seed pairs"
+  if grep -qE '^dm T35: (FAIL|NOT RUN)' "$report"; then bad "T35 did not run on a provenance build, or failed"; fi
+}
+
+# The scale-independent half: the twins, the seizure world and the mutants.
+privacy_suite() {
+  local mutant
+  grep -qE '^dm NI-DM1: PASS 4 twins \(VALID, MALFORMED, PROBE, REQUEST\) equal over [1-9][0-9]* events' "$report" \
+    || bad "no NI-DM1 PASS over the four twins"
+  if grep -qE '^dm NI-DM1: FAIL' "$report"; then bad "NI-DM1 failed"; fi
+  grep -qE '^dm T34: PASS seized c[0-9]+, c[0-9]+ at day 70; expired-week pair blobs [1-9][0-9]*, 0 recognised and 0 opened by retained keys, 0 recognised by derived keys; control [1-9][0-9]* of ' "$report" \
+    || bad "no T34 PASS over a non-empty expired-week sample with a working control"
+  if grep -qE '^dm T34: FAIL' "$report"; then bad "T34 failed"; fi
+  # The privacy mutants: the count this slice registers, one detection line each, none undetected.
+  # The lines are written from the kills the run recorded (`PrivacyKills`), and a mutant counts only
+  # when every check its entry names killed it.
+  grep -qxF 'dm privacy mutants: 9 run, 9 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 9 run, 9 detected'"
+  for mutant in PM-2 PM-3 PM-4 PM-6 PM-8 PM-13 PM-19 PM-24 PM-36; do
+    grep -qE "^dm privacy mutant ${mutant}: detected by .+" "$report" || bad "no detection line for privacy mutant $mutant"
+  done
+  if grep -qE '^dm privacy mutant .*NOT DETECTED' "$report"; then bad "a registered privacy mutant was not detected by every check it names"; fi
+}
+
+case "$kind" in
+  privacy-gate) privacy_worlds 'gate \(N = 600, 42 days\)' ;;
+  privacy-pr) privacy_worlds 'pr \(N = 120, 14 days\)'; privacy_suite ;;
+  privacy-suite)
+    grep -qE '^scale: (pr|gate) \(N = [0-9]+, [0-9]+ days\), seed pairs [0-9]+, STANDARD$' "$report" || bad "no privacy report header"
+    privacy_suite
+    ;;
+esac
+case "$kind" in
+  privacy-*)
+    [ "$fail" = 0 ] || exit 1
+    echo "[dm-report-check] OK ($kind)"
+    exit 0
+    ;;
+esac
+
 
 # The scenarios and suite cases slice S10 implements. Each must have a crash-class line, and that
 # line must report at least one single crash: an enumeration of zero crash points is a scenario that

@@ -108,6 +108,25 @@ dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeou
 dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
 dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report"
+# Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
+# PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
+# with the gate header, illustrative of the shape the check enforces. Every negative is a way the
+# report could look complete while the run measured nothing, or claimed a scale or a build it was not.
+dmr_case pass privacy-pass-pr.txt privacy-pr "accepts a complete PR-scale privacy report"
+dmr_case pass privacy-pass-gate.txt privacy-gate "accepts a gate-scale world report"
+dmr_case pass privacy-pass-suite.txt privacy-suite "accepts a twins, seizure and mutants report"
+dmr_case fail privacy-pass-pr.txt privacy-gate "rejects a PR-scale privacy report as the gate's"
+dmr_case fail privacy-pass-gate.txt privacy-pr "rejects a gate world report without the suite as a PR report"
+dmr_case fail privacy-failed-join.txt privacy-pr "rejects a join that found a match (JD1)"
+dmr_case fail privacy-empty-join.txt privacy-pr "rejects a join that passed over nothing (JD4 over 0)"
+dmr_case fail privacy-missing-join.txt privacy-pr "rejects a report without a join line (JD9)"
+dmr_case fail privacy-sdm3-floor.txt privacy-pr "rejects S-DM3 under the n >= 100 floor"
+dmr_case fail privacy-sdm3-control.txt privacy-pr "rejects S-DM3 whose colluders' control mapped nothing"
+dmr_case fail privacy-t35-plain.txt privacy-pr "rejects the NOT RUN T35 line of a plain host build"
+dmr_case fail privacy-t34-empty.txt privacy-pr "rejects T34 over no expired-week pair blob"
+dmr_case fail privacy-ni-missing.txt privacy-pr "rejects a report without NI-DM1"
+dmr_case fail privacy-undetected-mutant.txt privacy-pr "rejects a privacy mutant not killed by every check it names"
+dmr_case fail privacy-idle-world.txt privacy-pr "rejects a world that sent nothing"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"
