@@ -130,8 +130,18 @@ internal class SendStep(
         val now = clock.nowEpochSeconds()
         val authorMinute = DmTime.floorMinute(now)
 
-        val plan = database.transaction { tx ->
-            plan(tx, contactId, kind, timerCode, now, createOffer = true)
+        // §13.2's facade answers `STORAGE_FULL`; it may not **throw** one. The planning
+        // transaction writes (the minute index and, with `createOffer`, the offered root), so its
+        // commit is a place a full disk lands — and until S10's exit gate injected `SQLITE_FULL` at
+        // every write and every commit, only the enqueue transaction below caught it and this one
+        // let the exception out of `Messaging.send`. Nothing here has committed when it is caught,
+        // so there is nothing to undo.
+        val plan = try {
+            database.transaction { tx ->
+                plan(tx, contactId, kind, timerCode, now, createOffer = true)
+            }
+        } catch (e: StorageFullException) {
+            return Sent(Outcome.STORAGE_FULL, establish = false)
         }
         plan.refusal?.let { return Sent(it, establish = false) }
         val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
@@ -331,8 +341,14 @@ internal class SendStep(
             ?: return Sent(Outcome.UNKNOWN_CONTACT, establish = false)
         if (row.state != STATE_FAILED) return Sent(Outcome.UNKNOWN_CONTACT, establish = false)
         if (now >= row.deadlineHour) return Sent(Outcome.DEADLINE_PASSED, establish = false)
-        val plan = database.transaction { tx ->
-            plan(tx, row.contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
+        // The same as [send]'s planning transaction, for the same reason: a user retry answers
+        // `STORAGE_FULL` and does not throw it.
+        val plan = try {
+            database.transaction { tx ->
+                plan(tx, row.contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
+            }
+        } catch (e: StorageFullException) {
+            return Sent(Outcome.STORAGE_FULL, establish = false)
         }
         plan.refusal?.let { return Sent(it, establish = false) }
         val prepared = plan.prepared
