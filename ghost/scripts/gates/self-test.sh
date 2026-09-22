@@ -686,8 +686,8 @@ dmenq_case recv 1 "ReceiveStep.kt:9" "refuses a RECV step that registers a names
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-remove"
 dmenq_case remove 1 "ContactDao.kt:10" "refuses Namespaces.remove from the store layer"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-evasion"
-dmenq_case evasion 3 "ReceiveStep.kt:16" \
-  "sees a call through a line break, a local alias and a scope function"
+dmenq_case evasion 4 "ReceiveStep.kt:32" \
+  "sees a call through a line break, a local alias, a scope function and a safe call"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-sweeper"
 dmenq_case sweeper 1 "Sweeper.kt:11" "lets SWEEP remove a namespace and nothing else"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-trigger"

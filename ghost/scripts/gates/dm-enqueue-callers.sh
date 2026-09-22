@@ -99,6 +99,19 @@
 # S7's. The fourth rule below (`STEP_TRIGGERS`) arrived with this slice's review, because
 # `ScheduledSteps` is the first file to reach a relay through a step object rather than a port.
 #
+# **Slice S9 (2026-09-22).** `Sweeper.kt` landed, and it is the file `REMOVE_ONLY` was written for
+# three slices ago: SWEEP calls `Namespaces.remove` for each `dm_orphan_namespace` row (§21.12
+# point 3) and makes no other restricted call. `ALLOWED_FILES` is byte-identical to S7's and
+# `REMOVE_ONLY` to S6's — the entry was made deliberately then, before the file existed, so that
+# the day it arrived it would be permitted for exactly one call and refused for every other. The
+# one this gate now really enforces is **`Outbox.cancel`**: §10.6 and §21.10 point 2 say SWEEP must
+# never cancel a DM op ("ops run to their outcome or deadline"), mutant **ME-21** is that call
+# being made at expiry, and `cancel` is on `RESTRICTED` while `Sweeper.kt` is not on
+# `ALLOWED_FILES` — so the mutant cannot be written in the file that would want to write it.
+# `DisplayStep.kt`, `UnreadNotices.kt`, `PairKeySteps.kt` and the `…messaging.android` alarm files
+# joined the tree in the same slice and are on neither list, because none of them makes a
+# restricted call either.
+#
 # **The BUNDLE transaction moved out of `EstablishmentSteps.kt`** in the S7 review, and the reason
 # is this file's own rationale. The allowlist is by file because a file holds one step; while
 # `EstablishmentSteps.kt` held four — `estStart`, `bundle`, `estReady`, `estEnd` — allowlisting it
@@ -239,7 +252,7 @@ joined_lines() { # $1 = file
       sub(/\/\/.*$/, "", line)
       t = line; sub(/^[[:space:]]+/, "", t)
       if (t == "") next
-      if (have && substr(t, 1, 1) == ".") { buf = buf t; next }
+      if (have && (substr(t, 1, 1) == "." || substr(t, 1, 2) == "?.")) { buf = buf t; next }
       if (have) print bufno ":" buf
       buf = line; bufno = NR; have = 1 }
     END { if (have) print bufno ":" buf }
@@ -269,12 +282,12 @@ while IFS= read -r file; do
       alias_alt="${alias_alt:+$alias_alt|}${BASH_REMATCH[2]}"
     fi
     if [[ "$line" =~ with[[:space:]]*\([^\)]*($RECEIVERS) ]] ||
-       [[ "$line" =~ ($RECEIVERS)[[:space:]]*\.[[:space:]]*($SCOPES)[[:space:]]*[\{\(] ]]; then
+       [[ "$line" =~ ($RECEIVERS)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($SCOPES)[[:space:]]*[\{\(] ]]; then
       scoped=1
     fi
     # `also` / `let` over a port: the receiver is the lambda's parameter, so it joins the alias
     # list. `it` is the implicit name; `{ ob ->` names it explicitly.
-    if [[ "$line" =~ ($RECEIVERS)[[:space:]]*\.[[:space:]]*($LAMBDA_SCOPES)[[:space:]]*[\{\(] ]]; then
+    if [[ "$line" =~ ($RECEIVERS)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($LAMBDA_SCOPES)[[:space:]]*[\{\(] ]]; then
       alias_alt="${alias_alt:+$alias_alt|}it"
       if [[ "$line" =~ \{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
         alias_alt="$alias_alt|${BASH_REMATCH[1]}"
@@ -287,9 +300,15 @@ while IFS= read -r file; do
   done <<< "$text"
 
   # $1 = the joined line, $2 = the call names this pass looks for.
+  # A `?` between a receiver and its `.` is a Kotlin safe call and nothing else: `sync.outbox?.
+  # cancel(tx, id)` is the same call site as `sync.outbox.cancel(tx, id)`. It is admitted
+  # everywhere a `.` is, because the first version of this gate matched only the bare dot and a
+  # safe call therefore passed — found by the S9 review while checking that the file SWEEP lives in
+  # really cannot write `Outbox.cancel` (mutant ME-21). `joined_lines` folds a continuation that
+  # begins with `?.` for the same reason.
   is_call_site() {
-    [[ "$1" =~ \.[[:space:]]*($2)[[:space:]]*\( ]] && [[ "$1" =~ ($RECEIVERS)[[:space:]]*\.[[:space:]]*[a-zA-Z] ]] && return 0
-    [ -n "$alias_alt" ] && [[ "$1" =~ (^|[^A-Za-z0-9_])($alias_alt)[[:space:]]*\.[[:space:]]*($2)[[:space:]]*\( ]] && return 0
+    [[ "$1" =~ \.[[:space:]]*($2)[[:space:]]*\( ]] && [[ "$1" =~ ($RECEIVERS)[[:space:]]*\??[[:space:]]*\.[[:space:]]*[a-zA-Z] ]] && return 0
+    [ -n "$alias_alt" ] && [[ "$1" =~ (^|[^A-Za-z0-9_])($alias_alt)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($2)[[:space:]]*\( ]] && return 0
     [ "$scoped" = 1 ] && [[ "$1" =~ (^|[^.A-Za-z0-9_])($2)[[:space:]]*\( ]] && return 0
     return 1
   }

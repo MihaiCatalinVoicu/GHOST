@@ -20,3 +20,15 @@ internal class ReceiveStep(private val sync: SyncPorts) {
         }
     }
 }
+
+/**
+ * The fourth shape, added by the S9 review: a Kotlin **safe call** on the port. `outbox?.cancel(`
+ * is the same call site as `outbox.cancel(`, and the receiver check matched only a bare `.`, so
+ * the whole of `Outbox.cancel` — mutant ME-21, which SWEEP must never make — could be written in
+ * a file the gate refuses and pass.
+ */
+internal class OutcomeStep(private val sync: SyncPorts) {
+    fun apply(tx: Any, op: Any) {
+        sync.outbox?.cancel(tx, op)
+    }
+}
