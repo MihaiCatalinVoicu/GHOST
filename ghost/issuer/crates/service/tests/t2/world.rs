@@ -22,7 +22,7 @@
 //! its invite drew when the inviter started listening, never at a time the read sets (Q31, §19.26).
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -574,6 +574,25 @@ impl World {
         for c in 0..self.clients.len() {
             self.truth.clients[c].namespaces = self.clients[c].namespaces.len();
         }
+        // Phase 9 design §4.9 point 3 ("2 per activated client"), counted from the client list
+        // rather than from the activation step that increments "dm owner namespaces": the owners,
+        // and how many of their namespaces a relay ever answered OK for.
+        let owners = self.clients.iter().filter(|cl| cl.dm.is_some()).count() as u64;
+        let registered = self
+            .clients
+            .iter()
+            .map(|cl| {
+                cl.dm_registered
+                    .iter()
+                    .map(|&(_, ns, _, _)| ns)
+                    .collect::<BTreeSet<_>>()
+                    .len() as u64
+            })
+            .sum::<u64>();
+        self.log.counts.insert("dm owners", owners);
+        self.log
+            .counts
+            .insert("dm owner namespaces registered", registered);
         // Completeness: the relays' own count of the calls they handled (one capture event each).
         for node in &self.relays {
             let bytes = std::fs::read(&node.capture_path).unwrap_or_default();
@@ -3248,12 +3267,12 @@ impl World {
                 if write_drop && !enqueued {
                     return false;
                 }
-                // A DM owner namespace without a capability has pending registrations, which
-                // `Capabilities.needed()` treats like outbox work: WRITE MISSING (§4.8, Q31), so it
-                // arms the redeem hold too (§13.4).
+                // A DM owner namespace with a pending registration row and no capability is
+                // treated like outbox work by `Capabilities.needed()`: WRITE MISSING (§4.8, Q31), so
+                // it arms the redeem hold too (§13.4). Without a pending row it is READ MISSING.
                 let needs_write = (write_drop
                     && cl.drop_out.as_ref().is_some_and(|d| d.pending_write(k)))
-                    || cl.dm.is_some_and(|d| d.owns(&ns))
+                    || cl.dm_pending(k, &ns, week(est.max(0) as u64))
                     || cl
                         .outbox
                         .iter()
@@ -3435,8 +3454,9 @@ impl World {
         };
         let dm_pair = self.clients[c].dm.is_some_and(|d| d.owns(&ns));
         let dm_bundle = self.clients[c].dm.is_some_and(|d| d.bundle == ns);
+        // §4.8, Q31: WRITE MISSING only while a registration row is pending (`Client::dm_pending`).
         let needs_write = drop_write
-            || dm_pair
+            || self.clients[c].dm_pending(k, &ns, week(now_est.max(0) as u64))
             || self.clients[c]
                 .outbox
                 .iter()

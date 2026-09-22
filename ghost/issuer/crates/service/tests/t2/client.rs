@@ -198,10 +198,11 @@ pub type Outbox = ([u8; 32], Vec<u8>, [u8; 32], [bool; 3]);
 /// The DM owner namespaces of an activated identity (Phase 9 design §4.9 point 2, §4.8, §5.1): the
 /// inbox `X` (listened by the owner, registered for DEPOSIT and READ) and the bundle namespace `P`
 /// (write-only for the owner, registered for FETCH). They are registration-only namespaces: the
-/// owner redeems for them at once (Q31's default, a WRITE MISSING need while a registration is
-/// pending) and renews them at the EXPIRING PRF time like every other pair. DM deposits and bundle
-/// publications are not modelled: they spend no token and involve no issuer (T27), which the DM
-/// privacy world of §15.6 is what proves.
+/// owner redeems for them at once when a registration row is pending and no write capability exists
+/// (Q31's default, WRITE MISSING; [`Client::dm_pending`]) and renews them at the EXPIRING PRF time
+/// like every other pair. DM deposits are not modelled (§4.9 point 2: they spend no token and
+/// involve no issuer, T27, which the DM privacy world of §15.6 is what proves); nor are bundle
+/// publications, which §4.9 does not mention and which likewise spend no token.
 #[derive(Clone, Copy)]
 pub struct DmOwner {
     pub inbox: [u8; 32],
@@ -300,6 +301,24 @@ pub struct Client {
 }
 
 impl Client {
+    /// Phase 9 design §4.8 "Need reason of a registration-only namespace": `WRITE MISSING` **where a
+    /// pending row exists** and no write capability does. The need only matters when the pair holds
+    /// no capability ([`super::world`]'s `need_of`), and then the rows the owner keeps are those of
+    /// `week(now)` alone (§4.8: "`week(now)`, whether or not a capability exists"; the `c`/`c + 1`
+    /// rows need a usable capability of week `c`). So a DM pair has a pending row exactly when some
+    /// kind of this week is not yet registered at relay `k`. A lapsed capability whose rows for this
+    /// week were already registered leaves no pending row: the pair then needs a READ MISSING like
+    /// any other listened pair, until the next week's row appears.
+    pub fn dm_pending(&self, k: u8, ns: &[u8; 32], week_now: u64) -> bool {
+        self.dm.filter(|d| d.owns(ns)).is_some_and(|d| {
+            d.kinds(ns).iter().any(|kind| {
+                !self
+                    .dm_registered
+                    .contains(&(k, *ns, week_now, kind.byte()))
+            })
+        })
+    }
+
     pub fn new(id: u32, spec: ClientSpec, seeds: &super::rng::Seeds) -> Self {
         let idb = id.to_be_bytes();
         let user = Rng::new(seeds.user, &[b"client", &idb, b"user"]);
