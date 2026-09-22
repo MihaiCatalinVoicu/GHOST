@@ -78,6 +78,27 @@ t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet tra
 t2r_case pass mutants-ok.txt mutants "accepts 26 detected mutants"
 t2r_case pass mutants-interleaved.txt mutants "accepts a detected mutant whose ok line another test's output ran into"
 t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"
+# Phase 9 S10 (design §15.3, §15.4, §15.6, §15.7): the DM exit-gate report check accepts only a
+# complete report of the right scale. Every negative fixture is a way the report could look complete
+# while the run measured nothing — a scenario missing, an enumeration of zero crash points, a
+# double-crash count of zero, a seeded loop in which no seed drew a fault, a `SQLITE_FULL` half that
+# injected nothing, and a mutant with no line naming what kills it.
+DMR="$HARNESS/dm-report"
+dmr_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
+  if bash "$DIR/dm-report-check.sh" "$DMR/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ]; then echo "self-test ok: dm-report-check $4"; else echo "SELF-TEST FAIL: dm-report-check $4 ($got)" >&2; rc=1; fi
+}
+dmr_case pass pass-gate.txt gate "accepts a complete gate report"
+dmr_case pass pass-pr.txt pr "accepts a complete PR-scale report"
+dmr_case fail pass-pr.txt gate "rejects a PR-scale report as the gate's"
+dmr_case fail pass-gate.txt pr "rejects a gate-scale report as a PR's"
+dmr_case fail missing-scenario.txt gate "rejects a report without a scenario (SCN-D)"
+dmr_case fail empty-enumeration.txt gate "rejects a scenario that enumerated 0 crash points"
+dmr_case fail no-doubles.txt gate "rejects SCN-F without double crashes (§15.3)"
+dmr_case fail no-storage-full.txt gate "rejects SCN-J with no SQLITE_FULL injected"
+dmr_case fail no-fault-drawn.txt gate "rejects a faulted seeded loop in which no seed drew a fault"
+dmr_case fail unkilled-mutant.txt gate "rejects a mutant with no line naming what kills it"
+dmr_case fail no-such-report.txt gate "rejects a missing report"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do
   expect_fail "$g" "$HARNESS/negative-client-core"

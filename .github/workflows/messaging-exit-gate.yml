@@ -1,0 +1,124 @@
+name: messaging-exit-gate
+
+# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slice S10): the crash enumeration of
+# the implemented SCN-* scenarios and suite cases at **every** event, with the double crashes §15.3
+# names, the "timeout after apply" run at every relay event, SCN-J's `SQLITE_FULL` at every write
+# and every commit, the seeded worlds, and every registered mutant killed by its named case.
+#
+# It runs the real DM cryptography: the `ghost-dm-host` build of `ghost-client-dm` is built first
+# and passed as `-Dghost.dm.native`, because **without it the DM worlds report themselves skipped
+# rather than failing** (`DmWorld.nativeAvailable()`), and a gate whose worlds silently skip is a
+# green tick over nothing. The report check below is the other half of that: it fails the job unless
+# the report carries a line for every scenario, a non-empty enumeration for each, the double-crash
+# counts, the seeded-world lines, the `SQLITE_FULL` line and one line per mutant naming what kills
+# it — the `t2-report-check.sh` rule that a PASS on an empty sample is a failure.
+#
+# Scale. `-Dghost.dm.crash=full` is what makes the enumeration every-event; without it the harness
+# samples (the PR scale the `android` job of ci.yml already runs as part of `./gradlew build`).
+# `--rerun` is required for the same reason `sync-exit-gate` requires it: build caching is on and
+# `setup-gradle` restores the local build cache, so an unchanged test task would be restored
+# FROM-CACHE and the gate would run nothing.
+#
+# Budget (measured on the owner's workstation, 8 worker threads): the PR scale is about 3 minutes
+# for the whole `:messaging` suite; the gate scale is ~13× the crash runs and 8× the seeds, so about
+# 90 minutes there and about twice that on a runner — the timeout leaves room for the build.
+#
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "ghost/android/messaging/**"
+      - "ghost/android/crypto-bridge/**"
+      - "ghost/android/storage/**"
+      - "ghost/android/sync/**"
+      - "ghost/client-core/dm/**"
+      - "ghost/client-core/dm-host/**"
+      - "ghost/scripts/gates/dm-report-check.sh"
+      - ".github/workflows/messaging-exit-gate.yml"
+  schedule:
+    - cron: "43 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The same package list as ci.yml, so this gate and the `android` job build with one SDK.
+  ANDROID_PACKAGES: "platform-tools platforms;android-37.0 platforms;android-37.2 build-tools;37.0.0 build-tools;36.0.0"
+
+jobs:
+  gate:
+    name: DM exit gate (crash enumeration at every event, seeded worlds, mutants)
+    runs-on: [self-hosted, linux, x64, ghost]
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost/android
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: ${{ env.ANDROID_PACKAGES }}
+      - name: validate gradle wrapper checksum
+        uses: gradle/actions/wrapper-validation@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+      # The same host build the `android` job of ci.yml makes, for the same reason (§2.7, §15.1,
+      # evidence V-5): every world of this gate runs the real ratchet, the real seal and the real
+      # X-Wing through the closed JNI surface.
+      - name: build ghost-dm-host (the DM host library the JVM tests load)
+        working-directory: ghost
+        run: |
+          cargo build -p ghost-dm-host --release --locked
+          echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
+      # G-R6 (host half, §22.8.10 point 10): the library this gate is about to load exports exactly
+      # the closed list of §2.6, checked before it is loaded rather than after.
+      - name: G-R6 closed JNI surface (the host build)
+        working-directory: ghost
+        run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
+      - name: DM exit-gate harness (every event, 64 seeds)
+        run: |
+          ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \
+            -Dghost.dm.native="$GHOST_DM_NATIVE" \
+            -Dghost.dm.crash=full \
+            -Dghost.dm.seeds=64
+      - name: job summary and report check
+        if: always()
+        run: |
+          report=messaging/build/reports/dm/report.txt
+          {
+            echo "## DM exit gate"
+            echo
+            echo '```'
+            cat "$report" 2>/dev/null || echo "no DM harness report was written"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash ../scripts/gates/dm-report-check.sh "$report" gate
+      - name: upload the report and the test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: messaging-exit-gate
+          path: |
+            ghost/android/messaging/build/reports/dm
+            ghost/android/messaging/build/reports/tests
+          if-no-files-found: error
+          retention-days: 3
