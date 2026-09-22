@@ -18,6 +18,16 @@ provenance = []
 # The closed JNI surface of §2.6 and the `export_jni!` macro `ghost-client-net` and
 # `ghost-dm-host` invoke (§2.3). Off by default so the crate stays testable without a JVM.
 jni-bridge = ["dep:jni"]
+# The host/Android equivalence entry point of §15.9 item 7 (§22.8.10 point 6, slice S12): the
+# deterministic case runner `equivalence::run` and, with `jni-bridge`, the one extra JNI symbol
+# `Java_org_ghost_crypto_bridge_DmEquivalence_run`. Only `ghost-dm-host` enables it — the library
+# the JVM tests load and, built for `x86_64-linux-android`, the emulator's test library. G-R2 keeps
+# it out of every shipped graph; G-R6 checks that no shipped library exports its symbol.
+test-vectors = []
+
+[[test]]
+name = "equivalence"
+required-features = ["test-vectors"]
 
 [dependencies]
 # Olm (design §2.1, §2.3, D1; ADR-35). `default-features = false` drops `libolm-compat` and

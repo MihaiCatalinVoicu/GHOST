@@ -715,7 +715,7 @@ fn with_context<T>(
     body(context)
 }
 
-fn quiet_panics() {
+pub(crate) fn quiet_panics() {
     static QUIET: Once = Once::new();
     QUIET.call_once(|| std::panic::set_hook(Box::new(|_| {})));
 }

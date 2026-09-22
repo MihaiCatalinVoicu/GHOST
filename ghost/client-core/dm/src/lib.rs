@@ -48,6 +48,9 @@ pub mod bundle;
 pub mod card;
 pub mod codec;
 pub mod derive;
+/// The host/Android equivalence entry point (§15.9 item 7): test builds only (`test-vectors`).
+#[cfg(feature = "test-vectors")]
+pub mod equivalence;
 #[cfg(feature = "jni-bridge")]
 pub mod jni;
 pub mod olm;
