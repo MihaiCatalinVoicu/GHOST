@@ -49,7 +49,22 @@ if [ "$clearnet_hits" = "12" ]; then echo "self-test ok: kotlin-clearnet reports
 # the merged release manifest as built at Phase 7 passes (a gate failing on everything is caught).
 MERGED_FIXTURES="$HARNESS/negative-merged-manifest"
 merged_hits="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/AndroidManifest.xml" 2>&1 | grep -c '^GATE-FAIL' || true)"
-if [ "$merged_hits" = "15" ]; then echo "self-test ok: merged-manifest-lint reports all 15 violations of the negative fixture"; else echo "SELF-TEST FAIL: merged-manifest-lint reported $merged_hits of 15 violations" >&2; rc=1; fi
+if [ "$merged_hits" = "16" ]; then echo "self-test ok: merged-manifest-lint reports all 16 violations of the negative fixture"; else echo "SELF-TEST FAIL: merged-manifest-lint reported $merged_hits of 16 violations" >&2; rc=1; fi
+# G-DM7 (Phase 9 design §16.1; slice S12): the DM alarm receiver exported with an intent filter is
+# three lines (two G-DM7 clauses and T15m's unlisted export), and the missing receiver is V16 above.
+dmrecv_out="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/dm-receiver/AndroidManifest.xml" 2>&1 || true)"
+dmrecv_hits="$(grep -c '^GATE-FAIL' <<<"$dmrecv_out" || true)"
+if [ "$dmrecv_hits" = "3" ] && grep -qF 'must declare android:exported="false" (G-DM7)' <<<"$dmrecv_out" \
+   && grep -qF 'must have no intent filter (G-DM7)' <<<"$dmrecv_out"; then
+  echo "self-test ok: merged-manifest-lint reports the exported DM alarm receiver (G-DM7)"
+else
+  echo "SELF-TEST FAIL: merged-manifest-lint reported $dmrecv_hits of 3 G-DM7 violations" >&2; rc=1
+fi
+if grep -qF 'ExpiryAlarmReceiver: missing' <<<"$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/AndroidManifest.xml" 2>&1 || true)"; then
+  echo "self-test ok: merged-manifest-lint reports a missing DM alarm receiver (G-DM7)"
+else
+  echo "SELF-TEST FAIL: merged-manifest-lint does not report a missing DM alarm receiver" >&2; rc=1
+fi
 if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifest.xml" >/dev/null 2>&1; then
   echo "self-test ok: merged-manifest-lint accepts the Phase 7 merged release manifest"
 else

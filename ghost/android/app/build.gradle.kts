@@ -56,6 +56,31 @@ android {
         includeInApk = false
         includeInBundle = false
     }
+
+    // `MessagingWiring`'s end-to-end test runs the real DM stack over a real migrated database
+    // (Phase 9 design §13.7; slice S12), through the shared JDBC executor of :storage, :sync and
+    // :messaging (Phase 7 design §1.5).
+    sourceSets {
+        getByName("test") {
+            kotlin.srcDir("../storage/src/testShared/kotlin")
+        }
+    }
+}
+
+// The end-to-end wiring test loads the host build of the DM library, as :messaging's worlds do
+// (Phase 9 design §2.7, §15.1): the `android` CI job passes `-Dghost.dm.native`; without it that
+// test reports itself skipped and the decision tests still run. Declared as a test input so a
+// rebuilt library re-runs the tests instead of reusing a cached result.
+val dmHostLibrary = providers.systemProperty("ghost.dm.native")
+    .orElse(providers.gradleProperty("ghost.dm.native"))
+tasks.withType<Test>().configureEach {
+    inputs.property("ghost.dm.native", dmHostLibrary.orElse(""))
+    dmHostLibrary.orNull?.let { path ->
+        systemProperty("ghost.dm.native", path)
+        inputs.file(path)
+            .withPropertyName("dmHostLibrary")
+            .withPathSensitivity(PathSensitivity.NAME_ONLY)
+    }
 }
 
 // Third-party notices (ADR-37; Phase 9 design §2.10.2, gates G-L1 … G-L3). Every variant packages
@@ -147,4 +172,5 @@ dependencies {
     implementation(libs.androidx.compose.material3)
 
     testImplementation(libs.junit)
+    testImplementation(libs.sqlite.jdbc)
 }

@@ -964,6 +964,55 @@ class OwnerStepsTest {
         }
     }
 
+    // -------------------------------------------- the owner wake (§21.9 rule 1, §22.14 item 10)
+
+    @Test
+    fun aClaimedWeekWakesTheOwnerAtTheNextWeekBoundary() {
+        OwnerWorld().use { world ->
+            val now = weekStart(2_870) + 2 * day
+            world.activateAt(now)
+            // ACTIVATE claimed week 2 870 (§22.11 item 5): `t_pub(2 870)` owes nothing, the week
+            // change does (KEEPER, REGROWS and the next publication).
+            assertEquals(weekStart(2_871), world.steps.nextOwnerWakeSeconds())
+        }
+    }
+
+    @Test
+    fun anUnpublishedWeekWakesTheOwnerAtItsPublicationMinute() {
+        OwnerWorld().use { world ->
+            world.activateAt(weekStart(2_869) + 2 * day)
+            world.clock.now = weekStart(2_870) + day
+            val tPub = weekStart(2_870) + world.crypto.publicationOffsetSeconds
+            assertEquals("§5.4: t_pub(w) = start(w) + offset", tPub, world.steps.nextOwnerWakeSeconds())
+            // And the pass at that minute publishes, which is what the wake is for.
+            world.clock.now = tPub
+            assertEquals(OwnerSteps.Result.DONE, world.steps.ownerWeek())
+            assertEquals(weekStart(2_871), world.steps.nextOwnerWakeSeconds())
+        }
+    }
+
+    @Test
+    fun aPublicationThatIsAlreadyDueNeverSchedulesAWakeInThePast() {
+        OwnerWorld().use { world ->
+            world.activateAt(weekStart(2_869) + 2 * day)
+            // Past `t_pub(2 870)` with the week unpublished — a pass that found no relays. A wake
+            // "now" would make the timer fire again at once, for ever; the week boundary is next.
+            world.clock.now = weekStart(2_870) + 5 * day
+            assertEquals(weekStart(2_871), world.steps.nextOwnerWakeSeconds())
+        }
+    }
+
+    @Test
+    fun noOwnerWakeWithoutAnIdentityOrAContext() {
+        OwnerWorld().use { world ->
+            world.clock.now = weekStart(2_870) + 2 * day
+            assertNull("ACTIVATE has not run", world.steps.nextOwnerWakeSeconds())
+            world.activateAt(weekStart(2_870) + 2 * day)
+            world.crypto.available = false
+            assertNull("the DM context is closed", world.steps.nextOwnerWakeSeconds())
+        }
+    }
+
     private fun ceilHour(t: Long): Long = -Math.floorDiv(-t, hour) * hour
 
     private fun ByteArray.toHex(): String =

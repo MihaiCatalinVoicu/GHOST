@@ -120,13 +120,16 @@ internal data class ExpiryAlarmSpec(
  *
  * One alarm, one request code, no extras, no permission, and a cancel whenever nothing is pending
  * — which is [ExpiryWake]'s null. The manifest entry for [ExpiryAlarmReceiver] is `:app`'s
- * (slice S12, §13.7 "Wiring"); this class is what schedules against it.
+ * (slice S12, §13.7 "Wiring"); this class is what schedules against it. It is public since S12
+ * because `:app`'s `MessagingWiring` is what constructs it and hands it to `MessagingRuntime` as the
+ * alarm half of §10.7's two wakes; everything that decides the alarm's shape stays in the internal
+ * [ExpiryAlarmSpec].
  *
  * `T20` is amended for exactly this one alarm (§10.7): "One periodic job without extras" is
  * unchanged, and the messaging layer may hold this one inexact alarm with no extras. A rooted
  * examiner can read the next expiry minute out of it, which is declared in L7-D7.
  */
-internal class ExpiryAlarm(context: Context) : ExpiryWake {
+class ExpiryAlarm(context: Context) : ExpiryWake {
     private val app: Context = context.applicationContext
 
     private fun manager(): AlarmManager? = app.getSystemService(AlarmManager::class.java)

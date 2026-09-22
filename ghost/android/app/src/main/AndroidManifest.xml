@@ -36,6 +36,14 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- Phase 9 design 10.7, 21.10 point 7, 13.7 (slice S12): the receiver of the one inexact DM
+             alarm. Not exported and without an intent filter: only the app's own explicit,
+             immutable PendingIntent reaches it (gate G-DM7, merged-manifest-lint.sh). No new
+             permission. -->
+        <receiver
+            android:name="org.ghost.messaging.android.ExpiryAlarmReceiver"
+            android:exported="false" />
+
         <!-- Design 11.1 Q7: no exported component besides the launcher. The profile installer's
              exported receiver (protected by DUMP) is removed from the merged manifest. The library
              is a transitive runtime dependency only, so lint cannot resolve the class it removes. -->

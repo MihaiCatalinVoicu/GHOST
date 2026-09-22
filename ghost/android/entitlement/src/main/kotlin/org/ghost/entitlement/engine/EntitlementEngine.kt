@@ -43,6 +43,7 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
     @Volatile
     private var summary: ScheduleSummary? = null
 
+    @Volatile
     private var context: EngineContext? = null
 
     /** The context of the open database, accepting the schedule on its first use; null without a database or schedule. */
@@ -64,6 +65,30 @@ class EntitlementEngine(private val deps: EngineDeps, private val stores: () -> 
     }
 
     private fun ready(): EngineContext? = context()?.takeIf { it.accepted }
+
+    /**
+     * The Entitlement Schedule this database **accepted** (ES rule 5), for the DM layer's relay
+     * sets (Phase 9 design §5.2, §13.1 `EsSlots`: "`:app` wires this to the schedule summary the
+     * entitlement engine already holds"; slice S12). Null while no database is open or the engine is
+     * inert — a schedule conflict makes the DM layer inert with it, so a replaced schedule cannot
+     * route DM traffic either.
+     *
+     * The first call for a database opens the acceptance transaction, so it must never run inside
+     * one; [acceptedScheduleIfKnown] is the form that never opens one.
+     */
+    fun acceptedSchedule(): ScheduleSummary? = ready()?.summary
+
+    /**
+     * [acceptedSchedule] without ever opening a transaction: the accepted summary of the open
+     * database once the engine has built its context there (a session, a foreground pass, or a
+     * call to [acceptedSchedule]), and null before. The DM layer reads the slot table from inside
+     * its own transactions, where a nested acceptance transaction would throw.
+     */
+    fun acceptedScheduleIfKnown(): ScheduleSummary? {
+        val s = stores() ?: return null
+        val c = context ?: return null
+        return if (c.sync === s && c.accepted) c.summary else null
+    }
 
     // ------------------------------------------------------------------ participant entry points
 

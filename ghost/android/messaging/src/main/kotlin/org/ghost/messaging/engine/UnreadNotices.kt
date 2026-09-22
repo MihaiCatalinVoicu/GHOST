@@ -75,9 +75,25 @@ internal class ExpirySchedule(
     private val sweeper: Sweeper,
     private val wakes: ExpiryWake,
     private val notices: UnreadNotices,
+    /**
+     * The **actor timer** alone (§21.9 rule 1), when the wiring keeps it apart from [wakes]
+     * (slice S12). It is given the row deadlines [wakes] gets **and** [ownerDelay], which is the
+     * `t_pub` and "next week boundary" terms §21.9 rule 1 puts in the actor timer's minimum and
+     * §22.14 item 10 deferred to S12.
+     *
+     * The owner terms go to the in-process timer only, never to the one inexact alarm: the alarm
+     * exists for **deletion** (§10.7 trigger 5), and an alarm table that carried this device's
+     * weekly publication minute would give a rooted examiner a schedule-key-derived value the
+     * declared residue of L7-D7 (the next expiry minute) does not include. While the process is
+     * not alive, OWNER-WEEK keeps the triggers it always had — a database open and a relay
+     * session start — which is §5.4's "a missed week publishes at the next time-triggered pass".
+     */
+    private val timer: ExpiryWake = ExpiryWake.NONE,
+    /** Seconds until the next owner wake, or null (see [timer]). */
+    private val ownerDelay: () -> Long? = { null },
 ) {
     /**
-     * The count and the two wakes. Null from [Sweeper.nextWake] cancels them (§10.7).
+     * The count and the wakes. Null from [Sweeper.nextWake] cancels them (§10.7).
      *
      * The wakes are given a **delay** and not a minute, because the subtraction has to happen
      * against `now_e` (R-T7) and this side is the one that knows it — see
@@ -85,7 +101,19 @@ internal class ExpirySchedule(
      */
     fun afterCommit() {
         notices.publish()
-        wakes.wakeIn(sweeper.nextWake()?.delaySeconds)
+        val rows = sweeper.nextWake()?.delaySeconds
+        wakes.wakeIn(rows)
+        if (timer !== ExpiryWake.NONE) timer.wakeIn(listOfNotNull(rows, ownerDelay()).minOrNull())
+    }
+
+    /**
+     * Cancels every wake this schedule set, the alarm included: §10.7's "cancelled … at wipe"
+     * (§22.14 item 11). Called by the wiring beside `ctxClose`; the next pass, if any, sets them
+     * again from what is left.
+     */
+    fun cancel() {
+        wakes.wakeIn(null)
+        if (timer !== ExpiryWake.NONE) timer.wakeIn(null)
     }
 
     /**

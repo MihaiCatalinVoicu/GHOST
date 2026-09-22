@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Negative fixture for merged-manifest-lint.sh (T15m): 15 violations, marked V1..V15. -->
+<!-- Negative fixture for merged-manifest-lint.sh (T15m): 16 violations, marked V1..V16. -->
 <!-- V14, V15: RECEIVE_BOOT_COMPLETED and ACCESS_NETWORK_STATE, which the sync job needs, are missing. -->
+<!-- V16 (G-DM7, Phase 9 slice S12): the DM expiry alarm's receiver is missing. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="org.ghost.app"
     android:versionCode="1"
