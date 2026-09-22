@@ -275,7 +275,8 @@ class DmExpiredRowLintTest {
             sources.any { it.name == "Schema.kt" },
         )
         val found = DmExpiredRowLint.readQueriesOverExpiringRows(sources)
-        val registered = DmDaoQueries.registered.map { normalize(it.sql) }.toSet()
+        val registered = (DmDaoQueries.registered + DmSweepQueries.registered)
+            .map { normalize(it.sql) }.toSet()
         val unregistered = found.filter { normalize(it.sql) !in registered }
         assertEquals(
             "a DM read path over an expiring table is not registered with the expired-row lint " +
@@ -285,5 +286,91 @@ class DmExpiredRowLintTest {
         )
         val stale = registered - found.map { normalize(it.sql) }.toSet()
         assertEquals("a registered query no longer exists in the sources", emptySet<String>(), stale)
+    }
+
+    // ------------------------------------------------------------------ the sweep half (S9)
+
+    /**
+     * The mirror contract of [everyRegisteredQueryHidesAnExpiredRow], for the queries SWEEP runs
+     * to find what it deletes (§10.6, [DmSweepQueries]).
+     *
+     * A sweep query must name **exactly** the expired rows: something in the world that still holds
+     * them, nothing at all in the world after they are gone. A UI read moved into this registry to
+     * escape the read contract would return the live rows in the swept world and fail here, and a
+     * sweep query whose boundary is wrong — `<` for `<=`, or a filter on `expire_at_minute`, which
+     * is NULL on an incoming message that was never read — would miss a fixture row and fail the
+     * first half.
+     */
+    @Test
+    fun everyRegisteredSweepQueryNamesExactlyTheExpiredRows() {
+        assertTrue("the sweep registry is empty; SWEEP would not be judged", DmSweepQueries.registered.isNotEmpty())
+        for (query in DmSweepQueries.registered) {
+            val outcome = DmExpiredRowLint.outcomeOf(query.sql, query.args)
+            assertTrue(
+                "${query.name} still returns rows after the sweep, so it names live messages too",
+                outcome.namesOnlyExpiredRows,
+            )
+            assertEquals(
+                "${query.name} does not name every expired row of the fixture world",
+                DmExpiredRowLint.expiredIds.size,
+                outcome.beforeTheSweep.size,
+            )
+        }
+    }
+
+    /**
+     * The near misses of a sweep query, which the mirror contract must catch for the same reason
+     * the read contract catches its own: each of these *mentions* the right idea and still leaves a
+     * message on the device after the minute the user was promised it would go — or takes one that
+     * is still alive.
+     */
+    @Test
+    fun theSweepContractCatchesABoundaryThatIsWrong() {
+        val incomplete = mapOf(
+            "the boundary is exclusive, so the row that expires exactly now is never deleted" to
+                ("SELECT message_id FROM dm_message WHERE delete_at_minute < ?" to listOf<Any?>(now)),
+            "the filter is on expire_at_minute, which is NULL on an unread incoming message" to
+                ("SELECT message_id FROM dm_message WHERE expire_at_minute <= ?" to listOf<Any?>(now)),
+            "the filter is on unread_deadline_minute, which a displayed message may outlive" to
+                ("SELECT message_id FROM dm_message WHERE unread_deadline_minute <= ?" to listOf<Any?>(now)),
+        )
+        for ((why, query) in incomplete) {
+            val outcome = DmExpiredRowLint.outcomeOf(query.first, query.second)
+            assertTrue(why, outcome.beforeTheSweep.size < DmExpiredRowLint.expiredIds.size)
+        }
+        // And the other half: a read smuggled into the sweep registry to escape the read contract
+        // names live rows, which the swept world shows at once.
+        val tooWide = DmExpiredRowLint.outcomeOf("SELECT message_id FROM dm_message", emptyList())
+        assertFalse(
+            "a query with no expiry condition at all names every live message",
+            tooWide.namesOnlyExpiredRows,
+        )
+    }
+
+    /**
+     * A write is not a read path, whatever it contains further in — which is what the scanner's own
+     * KDoc has always said and what it only did for writes with no subquery until S9.
+     *
+     * SWEEP's batched delete needs the subquery form, because SQLite's `DELETE` takes no `LIMIT`
+     * unless it was built with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT` and Android's is not. The
+     * anchoring matters in the other direction too: a `SELECT` that merely names the
+     * `delete_at_minute` column is still a read.
+     */
+    @Test
+    fun theScannerSkipsAWriteWithASubqueryAndNothingElse() {
+        val file = temp.newFile("Sweeper.kt")
+        file.writeText(
+            """
+            val batched = "DELETE FROM dm_message WHERE message_id IN " +
+                "(SELECT message_id FROM dm_message WHERE delete_at_minute <= ? LIMIT 500)"
+            val plain = "DELETE FROM dm_message WHERE delete_at_minute <= ?"
+            val update = "UPDATE dm_message SET state = 'read' WHERE message_id = ?"
+            val stillARead = "SELECT message_id FROM dm_message WHERE delete_at_minute > ?"
+            """.trimIndent(),
+        )
+        assertEquals(
+            listOf("SELECT message_id FROM dm_message WHERE delete_at_minute > ?"),
+            DmExpiredRowLint.readQueriesOverExpiringRows(listOf(file)).map { normalize(it.sql) },
+        )
     }
 }

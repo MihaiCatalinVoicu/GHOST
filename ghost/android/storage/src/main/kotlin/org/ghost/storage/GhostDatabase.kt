@@ -16,9 +16,10 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  *     calls `onCreate`/`onUpgrade` (which apply the pending migrations through
  *     [MigrationRunner.migrateWithinTransaction]) and sets `user_version` in that same transaction,
  *     so an interrupted upgrade leaves the previous version;
- *  3. [open] enables memory security and WAL, then [MigrationRunner.verifyIntegrity] refuses a
- *     database whose tables, triggers, pragmas or version are not the expected ones; a refused
- *     database is closed before the failure propagates.
+ *  3. [open] enables memory security and WAL, runs the **open checkpoint** of Phase 9 design §10.7
+ *     (R-K1), then [MigrationRunner.verifyIntegrity] refuses a database whose tables, triggers,
+ *     pragmas or version are not the expected ones; a refused database is closed before the failure
+ *     propagates.
  */
 class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHelper) {
     val executor: SqlExecutor by lazy { SupportSqlExecutor(helper.writableDatabase) }
@@ -49,22 +50,43 @@ class GhostDatabase private constructor(private val helper: SupportSQLiteOpenHel
         }
 
         /**
-         * The steps after the helper has opened the connection: memory security, WAL, then
-         * [MigrationRunner.verifyIntegrity]. When any of them fails, [close] runs before the
-         * failure propagates, so a refused database never leaves its connection open.
+         * The steps after the helper has opened the connection: memory security, WAL, the open
+         * checkpoint of **R-K1**, then [MigrationRunner.verifyIntegrity]. When any of them fails,
+         * [close] runs before the failure propagates, so a refused database never leaves its
+         * connection open.
+         *
+         * **R-K1** (Phase 9 design §10.7, §7.2 SWEEP): "a checkpoint runs at every database open,
+         * after migration and before the first read". The write-ahead log outlives the process, so
+         * pages a SWEEP freed in the last session — expired `body_env`, held ciphertext, erased
+         * pair keys — sit in `-wal` until something truncates it. Nothing else would: the in-memory
+         * `checkpoint_due` flag a busy sweep keeps (§10.7) dies with the process, and the next
+         * sweep only checkpoints when it deleted rows of its own. Without this call a device that
+         * swept and was then killed keeps the freed pages until its next deletion, which is the
+         * T25 physical bound broken for an unbounded time.
+         *
+         * The migration itself runs **before** this, inside the helper's own upgrade transaction,
+         * so "after migration" holds by construction; this call is placed before
+         * [MigrationRunner.verifyIntegrity] so that no read of this connection precedes it.
+         *
+         * Returns whether the log was truncated. A busy answer is not a failure of the open —
+         * another connection held the log, and the next sweep retries (§10.7) — so the result is
+         * reported rather than raised.
          */
-        internal fun finishOpen(ex: SqlExecutor, close: () -> Unit) {
+        internal fun finishOpen(ex: SqlExecutor, close: () -> Unit): Boolean {
             var finished = false
+            var checkpointed = false
             try {
                 // Wipe key material from SQLCipher's page cache and memory on free.
                 ex.exec("PRAGMA cipher_memory_security = ON")
                 // journal_mode returns the resulting mode as a row, so it runs as a query.
                 ex.query("PRAGMA journal_mode = WAL") { }
+                checkpointed = Checkpoint.truncate(ex)
                 MigrationRunner(ex).verifyIntegrity()
                 finished = true
             } finally {
                 if (!finished) close()
             }
+            return checkpointed
         }
     }
 

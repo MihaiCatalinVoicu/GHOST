@@ -19,9 +19,10 @@ import java.io.File
  * The lint has two halves, and needs both:
  *
  *  1. **Static** ([readQueriesOverExpiringRows]): the production sources are scanned for SQL that
- *     reads an expiring table. Every query found must be registered in [DmDaoQueries]. This is
- *     what makes the lint automatic — a DAO added in S6 or S7 cannot be written without the lint
- *     noticing, wherever in the Android modules it lands.
+ *     reads an expiring table. Every query found must be registered in [DmDaoQueries] — or, since
+ *     slice S9, in [DmSweepQueries], which judges it by the opposite contract. This is what makes
+ *     the lint automatic — a DAO added in S6 or S7 cannot be written without the lint noticing,
+ *     wherever in the Android modules it lands.
  *  2. **Behavioural** ([outcomeOf]): each registered query is run twice, against a database that
  *     still holds the expired rows and against the same database after they were swept, and the
  *     two results must be **identical** — a compliant read path cannot tell whether SWEEP has run
@@ -50,10 +51,9 @@ import java.io.File
  * matching ([literalRuns]), so the repo's own house style of splitting a long statement across
  * lines is covered; an interpolated table name is not, and a DM DAO must spell the table out.
  *
- * **Today the registry is empty**, and that is a fact the lint asserts rather than assumes: no DM
- * DAO exists (`:messaging` is a manifest and nothing else; `:storage` has no DM repository), the
- * static half finds nothing, and both halves are proved on fixtures instead of on production code
- * so the mechanism is known to work before it has work to do.
+ * **The registry filled in S7** (`:messaging`'s `MessageStore`) and **split in S9**. Both halves
+ * are still proved on fixtures as well as on production code, so the mechanism is known to work
+ * independently of what it happens to find today.
  */
 object DmExpiredRowLint {
 
@@ -131,6 +131,24 @@ object DmExpiredRowLint {
     private val schemaStatement = Regex("\\bCREATE\\s+(TRIGGER|TABLE|INDEX|UNIQUE\\s+INDEX)\\b", RegexOption.IGNORE_CASE)
 
     /**
+     * A statement whose **top-level verb** is a write is not a read path, whatever it contains
+     * further in.
+     *
+     * The KDoc above has always said "writes (`DELETE`, `UPDATE`, `INSERT`) are not read paths and
+     * are left alone", and until slice S9 the code only kept that promise for writes with no
+     * subquery: the test was "does the literal contain `SELECT`", so a plain
+     * `DELETE FROM dm_message WHERE delete_at_minute <= ?` was skipped while
+     * `DELETE FROM dm_message WHERE message_id IN (SELECT message_id FROM dm_message …)` — the
+     * batched form SWEEP has to use, because SQLite's `DELETE` takes no `LIMIT` unless it was
+     * compiled with `SQLITE_ENABLE_UPDATE_DELETE_LIMIT` and Android's is not — was reported as a
+     * read of `dm_message`. Anchoring on the first keyword is what the sentence already meant.
+     *
+     * It is deliberately **anchored**: a literal that merely mentions `DELETE` later (a `SELECT …
+     * WHERE delete_at_minute …` does, as a column name) is still a read.
+     */
+    private val writeStatement = Regex("^\\s*(DELETE|UPDATE|INSERT|REPLACE)\\b", RegexOption.IGNORE_CASE)
+
+    /**
      * Every SQL string literal of [sources] that reads one of [expiringTables]. A literal is a
      * `"..."` or `"""..."""` run that names `SELECT` and the table; writes (`DELETE`, `UPDATE`,
      * `INSERT`) are not read paths and are left alone — SWEEP's own `DELETE ... WHERE
@@ -150,6 +168,7 @@ object DmExpiredRowLint {
                 if (!selectLike.containsMatchIn(sql)) continue
                 if (!sql.contains("SELECT", ignoreCase = true)) continue
                 if (schemaStatement.containsMatchIn(sql)) continue
+                if (writeStatement.containsMatchIn(sql)) continue
                 if (expiringTables.keys.none { Regex("\\b$it\\b").containsMatchIn(sql) }) continue
                 out += Found(file, literal.line, sql.replace(Regex("\\s+"), " ").trim())
             }
@@ -233,6 +252,17 @@ object DmExpiredRowLint {
 
         /** A query that matches nothing even in the swept world is broken, not compliant. */
         val returnsNothing: Boolean get() = afterTheSweep.isEmpty()
+
+        /**
+         * The mirror property, for a **sweep** query ([DmSweepQueries]): every row it names is one
+         * the sweep removes, so the swept world — which differs from the other only in those rows —
+         * answers it with nothing at all.
+         *
+         * It is one half of the sweep contract. The other half is **completeness** (it names
+         * *every* expired row), which the registry's test checks by count, because a query that
+         * names two of the three fixture rows still satisfies this one.
+         */
+        val namesOnlyExpiredRows: Boolean get() = afterTheSweep.isEmpty()
     }
 
     /**
@@ -448,11 +478,57 @@ object DmDaoQueries {
             args = listOf(NOW),
         ),
         Query(
+            name = "theNextWakeDeadline",
+            sql = "SELECT min(delete_at_minute) FROM dm_message " +
+                "WHERE delete_at_minute IS NOT NULL AND delete_at_minute > ?",
+            // A wake computed over expired rows is a wake in the past — an alarm that fires and
+            // finds nothing left to do, once per expired row (§10.7 trigger 1). Without the filter
+            // the fixture answers `NOW - 60` instead of `NOW + 3600`, and with `>=` it answers
+            // `NOW`, so both near misses are caught by a value.
+            args = listOf(NOW),
+        ),
+        Query(
             name = "theNextMinuteIndex",
             sql = "SELECT max(minute_index) FROM dm_message WHERE conversation_id = ? " +
                 "AND direction = 'out' AND author_minute = ? " +
                 "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
             args = listOf(conversation, AUTHOR, NOW),
+        ),
+    )
+}
+
+/**
+ * The other side of the same scan: the queries **SWEEP** runs to find the rows it deletes.
+ *
+ * Added by slice S9, which wrote the first one. SWEEP's own statements are the expiry enforcement
+ * and not a read path — they are *supposed* to name expired rows — but the static half of the lint
+ * cannot tell them apart from a DAO read by looking, and it must not be allowed to: a registry
+ * that simply exempted a file would exempt whatever that file later grew.
+ *
+ * So a sweep query is registered here and judged by the **mirror** of the read contract
+ * ([DmExpiredRowLint.Outcome.namesExactlyTheExpiredRows]): run against the world that still holds
+ * the expired rows it must return something, and against the same world after the sweep it must
+ * return **nothing**. A UI read smuggled in here would return the live rows in the swept world and
+ * fail; a sweep query with the boundary the wrong way round (`<` for `<=`, or the filter on
+ * `expire_at_minute`) would miss `EXPIRED_UNREAD_IN` or `EXPIRED_OUT` and fail the same test, for
+ * the same reason the read registry's near misses fail theirs.
+ *
+ * **Why SWEEP needs a `SELECT` at all**, rather than deleting by the condition alone: §10.6 bounds
+ * one transaction at 500 rows, SQLite's `DELETE` takes no `LIMIT` on a build without
+ * `SQLITE_ENABLE_UPDATE_DELETE_LIMIT` (Android's has none), and §10.6 also hands the ids to
+ * `MediaPort.onMessagesDeleted(tx, ids)` inside the same transaction. Both need the ids.
+ */
+object DmSweepQueries {
+    /** The `now_e` of the fixture world (§10.3 R-T7), which every sweep query is given. */
+    private const val NOW = DmExpiredRowLint.NOW
+
+    /** One batch of expired messages, as `Sweeper` reads them (§10.6, at most 500). */
+    val registered: List<DmDaoQueries.Query> = listOf(
+        DmDaoQueries.Query(
+            name = "oneBatchOfExpiredMessages",
+            sql = "SELECT message_id FROM dm_message WHERE delete_at_minute <= ? " +
+                "ORDER BY delete_at_minute, message_id LIMIT ?",
+            args = listOf(NOW, 500L),
         ),
     )
 }
