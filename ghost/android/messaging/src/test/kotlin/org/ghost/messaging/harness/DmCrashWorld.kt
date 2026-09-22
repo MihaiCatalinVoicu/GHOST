@@ -56,6 +56,7 @@ internal class DmCrashWorld(
         mutation?.let {
             node.rewrite = it.rewrite
             node.decorate = it.decorate
+            node.defer = it.defer
         }
         node.boot()
         order += node
@@ -137,17 +138,56 @@ internal class DmCrashWorld(
      */
     fun quiesce(maxRounds: Int = 24, stepSeconds: Long = 5 * DmWorld.MINUTE) {
         var previous = ""
+        var jumps = 0
         for (round in 0 until maxRounds) {
             pump()
             passes()
             advanceBy(stepSeconds)
             val state = order.joinToString("|") { DmStructuralInvariants.digest(it) } +
                 "/" + relay.blobCount
-            if (state == previous) return
+            if (state == previous) {
+                // Nothing moved — but "nothing moved" and "nothing is owed" are different
+                // statements, and only the second is quiescence. A retry backoff, a fetch attempt
+                // or a poison re-offer due in an hour looks exactly like an idle world at a
+                // five-minute step, so every timer-gated recovery went unexercised in every crash
+                // run. So: jump the clock to the next moment something is due and keep going.
+                if (jumps++ >= MAX_JUMPS || !jumpToTheNextDueMinute()) return
+                previous = ""
+                continue
+            }
             previous = state
         }
         // Not a violation by itself: some scenarios legitimately still owe work at their bound
         // (a waiting establishment, a deadline in the future). The runner's own checks decide.
+    }
+
+    /**
+     * Moves every clock to the earliest minute at which some node has work due, and answers whether
+     * it moved at all.
+     *
+     * The jump is refused when it would cross an **expiry** deadline: an ephemeral message deleted
+     * by the harness's own clock jump would be a scenario broken by quiescence rather than by the
+     * engine, and §10.7's deadlines are the subject of SCN-F and of the EP case, not their
+     * machinery. So a world whose next due moment is on the far side of a `delete_at_minute` simply
+     * stops here, which is the state it was already in before this existed.
+     */
+    private fun jumpToTheNextDueMinute(): Boolean {
+        val now = order.minOfOrNull { it.clock.now } ?: return false
+        val due = order.mapNotNull { DmStructuralInvariants.nextDueMinute(it, now) }.minOrNull()
+            ?: return false
+        val expiry = order.mapNotNull { DmStructuralInvariants.nextExpiryMinute(it, now) }.minOrNull()
+        if (expiry != null && expiry <= due) return false
+        if (due - now > MAX_JUMP_SECONDS) return false
+        advanceBy(due - now + DmWorld.MINUTE)
+        return true
+    }
+
+    private companion object {
+        /** At most this many clock jumps per quiescence, so a world that re-arms cannot loop. */
+        const val MAX_JUMPS: Int = 4
+
+        /** The furthest a jump reaches: a day. Anything beyond is an offline window, not a retry. */
+        const val MAX_JUMP_SECONDS: Long = DmWorld.DAY
     }
 
     /** Structural invariants over every node. */

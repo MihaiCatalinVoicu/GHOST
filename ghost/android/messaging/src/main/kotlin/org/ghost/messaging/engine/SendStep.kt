@@ -233,8 +233,20 @@ internal class SendStep(
         val now = clock.nowEpochSeconds()
         val authorMinute = DmTime.floorMinute(now)
 
-        val plan = database.transaction { tx ->
-            plan(tx, contactId, DmContent.Kind.CONTROL, null, now, createOffer = true)
+        // The same catch as [send]'s and [retry]'s planning transaction, and for the same reason:
+        // `Messaging.resetSession` is a facade call that answers `SendResult.STORAGE_FULL`, so it
+        // may not **throw** one. `plan` writes (the minute index and, with `createOffer`, the
+        // offered root), so its commit is a place a full disk lands; nothing has committed when it
+        // is caught, so there is nothing to undo. The scheduled controls reach this through the
+        // actor, which would swallow the exception and owe the notice again — still wrong, because
+        // the scheduled row is retired in this send's own transaction and a throw here would keep
+        // re-planning it for ever.
+        val plan = try {
+            database.transaction { tx ->
+                plan(tx, contactId, DmContent.Kind.CONTROL, null, now, createOffer = true)
+            }
+        } catch (e: StorageFullException) {
+            return Sent(Outcome.STORAGE_FULL, establish = false)
         }
         plan.refusal?.let { return Sent(it, establish = false) }
         val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
@@ -1109,10 +1121,19 @@ internal class SendStep(
     @Suppress("ReturnCount", "LongMethod")
     private fun flushOne(self: SelfContext, contactId: ByteArray, itemId: ByteArray): Boolean {
         val now = clock.nowEpochSeconds()
-        val plan = database.transaction { tx ->
-            // No new root offer on this path: the L0 was encoded at the send that queued it, and
-            // attaching an offer now would produce bytes nobody sealed (R-C3).
-            plan(tx, contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
+        // Inside the catch for the same reason the two transactions below are: a full disk here is
+        // a transient §21.7 point 4 names by name, and the item keeps its `dm_pending_send` row for
+        // the next pass. Outside it, one full-disk planning commit would throw out of `flushOne`
+        // and end the **whole** flush pass, so every other contact's pending item would be deferred
+        // by one item's transient.
+        val plan = try {
+            database.transaction { tx ->
+                // No new root offer on this path: the L0 was encoded at the send that queued it,
+                // and attaching an offer now would produce bytes nobody sealed (R-C3).
+                plan(tx, contactId, DmContent.Kind.TEXT, null, now, createOffer = false)
+            }
+        } catch (e: StorageFullException) {
+            return false
         }
         val prepared = plan.prepared ?: return false
         val credentials = depositCredentials(prepared) ?: return false

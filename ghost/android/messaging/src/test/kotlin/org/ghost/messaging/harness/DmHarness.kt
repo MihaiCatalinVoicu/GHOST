@@ -5,7 +5,8 @@ import org.ghost.messaging.DmWorld
 /**
  * Harness-wide settings, and the one switch that separates a PR run from the exit-gate run
  * (Phase 9 design §15.3, §15.4; the `ghost.sync.exhaustive` / `ghost.sync.seeds` pattern of the
- * Phase 7 harness, which `sync-exit-gate.yml` already sets the same way).
+ * Phase 7 harness, which the `sync-exit-gate` job of `ci.yml` already sets the same way — a job,
+ * not a workflow file of its own, unlike `messaging-exit-gate.yml`).
  *
  * A DM crash run is expensive in a way a `:sync` one is not: every run opens real DM contexts,
  * builds real Olm sessions through `ghost-dm-host` and writes real SQLite files. So the default is

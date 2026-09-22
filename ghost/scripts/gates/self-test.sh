@@ -82,7 +82,11 @@ t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"
 # complete report of the right scale. Every negative fixture is a way the report could look complete
 # while the run measured nothing — a scenario missing, an enumeration of zero crash points, a
 # double-crash count of zero, a seeded loop in which no seed drew a fault, a `SQLITE_FULL` half that
-# injected nothing, and a mutant with no line naming what kills it.
+# injected nothing, and a mutant with no line naming what kills it. Five of them are the ways the
+# slice's own review found the report could still claim more than it ran: a **gate** header over a
+# sampled enumeration, a gate that skipped timeout-after-apply runs, a suite with no timeout run
+# anywhere, a scenario with no relay events to run them over, and a mutant the registry counts while
+# no run killed it.
 DMR="$HARNESS/dm-report"
 dmr_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
   if bash "$DIR/dm-report-check.sh" "$DMR/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
@@ -98,6 +102,11 @@ dmr_case fail no-doubles.txt gate "rejects SCN-F without double crashes (§15.3)
 dmr_case fail no-storage-full.txt gate "rejects SCN-J with no SQLITE_FULL injected"
 dmr_case fail no-fault-drawn.txt gate "rejects a faulted seeded loop in which no seed drew a fault"
 dmr_case fail unkilled-mutant.txt gate "rejects a mutant with no line naming what kills it"
+dmr_case fail undetected-mutant.txt gate "rejects a mutant the run recorded no kill for"
+dmr_case fail sampled-gate.txt gate "rejects a gate header over a sampled enumeration"
+dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeout-after-apply runs"
+dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
+dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).
 for g in anti-placeholder no-logging; do

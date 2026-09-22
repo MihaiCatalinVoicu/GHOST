@@ -47,7 +47,7 @@ internal object DmStructuralInvariants {
      *
      * [where] names the moment ("reboot 3", "end") and goes into every failure message.
      */
-    fun check(node: DmNode, where: String, heavy: Boolean = true) {
+    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) {
         val sql = node.raw
         val label = "${node.name} @ $where"
 
@@ -117,12 +117,33 @@ internal object DmStructuralInvariants {
                                     WHERE o.item_id = i.item_id AND x.released = 0)""",
         )
 
-        // Held rows exist only for `changed` contacts.
+        // Held rows exist only for `changed` contacts — **at quiescence**.
+        //
+        // At a *reboot* the clause as §15.3 writes it is too strong, and the crash enumeration is
+        // what showed it. §8.3 and §22.8.1 put HELD **outside** the KEYDEC transaction on purpose
+        // ("one transaction per row", so a row that drops does not roll back the ones already
+        // applied), and `DmActor.replayReleasedHolds` is the recovery half that exists for exactly
+        // this window: "a crash between the KEYDEC commit and the replay — the decision is taken,
+        // the rows are still there, and nothing else would ever look at them again". A reboot
+        // inside that window therefore finds held rows on an `unverified` contact, legally, and an
+        // invariant that failed there would be asserting that a documented recovery path may not
+        // exist. §22.15 item 16 records the conflict between §15.3's unqualified clause and §8.3.
+        //
+        // What holds at **both** moments is the half that says nothing is stranded: a `blocked` or
+        // `revoked` contact is one the replay refuses (R5), so a held row on one can never be
+        // replayed and never be deleted by anything but SWEEP.
         empty(
-            sql, label, "a held row on a contact that is not 'changed'",
+            sql, label, "a held row on a blocked or revoked contact, which nothing will ever replay",
             """SELECT count(*) FROM dm_held h JOIN dm_contact c ON c.contact_id = h.contact_id
-                 WHERE c.trust_state <> 'changed'""",
+                 WHERE c.trust_state IN ('blocked', 'revoked')""",
         )
+        if (settled) {
+            empty(
+                sql, label, "a held row on a contact that is not 'changed'",
+                """SELECT count(*) FROM dm_held h JOIN dm_contact c ON c.contact_id = h.contact_id
+                     WHERE c.trust_state <> 'changed'""",
+            )
+        }
 
         // At most 2 `olm_session` rows per contact, with exactly one `current` whenever any exists.
         empty(
@@ -204,6 +225,51 @@ internal object DmStructuralInvariants {
     }
 
     /**
+     * §15.3's "the WAL is 0 bytes", asserted on a node that has **just** been through R-K1 — a
+     * reboot the caller already performed.
+     *
+     * [walEmptyAfterReboot] is the same assertion for a caller that has not, and reboots to get
+     * there. This one is what the crash runner uses at every reboot of every run: the checkpoint
+     * has run and the new client has been built, so `walBytesAfterOpen` is the byte count taken
+     * between the two — the moment §15.3 is talking about.
+     */
+    fun checkpointEmptiedTheLog(node: DmNode, where: String) {
+        val label = "${node.name} @ $where"
+        if (!node.lastOpenTruncated) {
+            dmViolation("$label: R-K1 could not truncate the log at the open")
+        }
+        if (node.walBytesAfterOpen != 0L) {
+            dmViolation("$label: the log held ${node.walBytesAfterOpen} bytes after R-K1")
+        }
+    }
+
+    /**
+     * §7.7's rendering order **as the read path returns it**: the `(sort_minute, minute_index)`
+     * pairs of one node's inbound messages, per contact, in the order `Messaging.conversation`
+     * hands them out.
+     *
+     * This is CS-4's subject, and it is what `DmCrashRunner.enumerate` compares across the runs of
+     * one scenario. Two things about how it reads matter. It goes through the **engine**, not
+     * through `ORDER BY sort_minute, minute_index` on the raw connection — a query that sorts by
+     * the columns and is then checked for being sorted by the columns is a tautology, which is what
+     * the seeded worlds' own order check was, and it is the read path that mutant MC-10 changes.
+     * And the page is reversed, because §7.7 returns newest first and a rendering order is read
+     * oldest first.
+     */
+    fun renderOrder(node: DmNode): List<String> {
+        val device = node.device
+        val out = ArrayList<String>()
+        for (contact in device.engine.contacts().sortedBy { it.id.toByteArray().toList().toString() }) {
+            val key = contact.id.toByteArray().hex()
+            for (view in device.engine.conversation(contact.id, 200, null).reversed()) {
+                if (view.outgoing) continue
+                out += "$key/${view.cursor.sortMinute}.${view.cursor.minuteIndex}"
+            }
+        }
+        return out
+    }
+
+    /**
      * The second half: the write-ahead log is empty once the device has been through R-K1.
      *
      * Reboots the node, which is the only place R-K1 runs, and asserts that the checkpoint both
@@ -216,24 +282,24 @@ internal object DmStructuralInvariants {
      */
     fun walEmptyAfterReboot(node: DmNode, where: String) {
         node.reboot()
-        val label = "${node.name} @ $where"
-        if (!node.lastOpenTruncated) {
-            dmViolation("$label: R-K1 could not truncate the log at the open")
-        }
-        if (node.walBytesAfterOpen != 0L) {
-            dmViolation(
-                "$label: the log held ${node.walBytesAfterOpen} bytes after SWEEP and R-K1",
-            )
-        }
+        checkpointEmptiedTheLog(node, "$where (after SWEEP and R-K1)")
+        // A reboot with no invariant check is a reboot that proves nothing about the state it came
+        // back to: §15.3 says "reboot … check the structural invariants", and this is a reboot.
+        check(node, "$where (after the WAL reboot)")
     }
 
     /**
-     * A digest of the committed state a reboot left behind: two crash runs of the same class must
-     * agree on it once both have run to quiescence.
+     * A digest of one node's committed state: what [DmCrashWorld.quiesce] compares round to round
+     * to decide that a world has stopped moving.
      *
-     * It covers what the gate is about — what was displayed, in what order, and what is still owed
-     * — and deliberately not the ciphertexts, which differ by construction whenever the ratchet
-     * stepped a different number of times.
+     * It covers what was displayed, in what order, and **what is still owed**. The second half is
+     * not decoration and its absence was a real hole: with only `dm_contact`, `dm_message`,
+     * `dm_outbound_item.state` and a `dm_held` count in it, a world whose whole remaining work was
+     * an outbox op waiting for a store, a blob waiting to be fetched or a pending send waiting for
+     * a flush looked identical two rounds running and was declared quiescent after ten virtual
+     * minutes — so every recovery that is owed rather than immediate went unrun, and every check
+     * after it was measuring a world that had not finished recovering. The ciphertexts stay out:
+     * they differ by construction whenever the ratchet stepped a different number of times.
      */
     fun digest(node: DmNode): String {
         val out = StringBuilder()
@@ -253,7 +319,76 @@ internal object DmStructuralInvariants {
             "SELECT hex(i.item_id), i.state FROM dm_outbound_item i ORDER BY i.item_id",
         ) { out.append("item ${it.string(0)} ${it.string(1)}\n") }
         node.raw.query("SELECT count(*) FROM dm_held") { out.append("held ${it.long(0)}\n") }
+        // Everything still owed, which is what decides whether a world has stopped moving.
+        node.raw.query(
+            "SELECT hex(operation_id), outcome, released FROM outbox_op ORDER BY operation_id",
+        ) { out.append("op ${it.string(0)} ${it.string(1)} ${it.long(2)}\n") }
+        node.raw.query(
+            "SELECT hex(operation_id), state, attempts FROM outbox_delivery " +
+                "ORDER BY operation_id, relay_id",
+        ) { out.append("delivery ${it.string(0)} ${it.string(1)} ${it.long(2)}\n") }
+        node.raw.query(
+            "SELECT hex(item_id) FROM dm_pending_send ORDER BY item_id",
+        ) { out.append("pending ${it.string(0)}\n") }
+        node.raw.query(
+            "SELECT hex(blob_hash), state, offers, fetch_attempts FROM inbox_blob ORDER BY blob_hash",
+        ) {
+            out.append(
+                "blob ${it.string(0)} ${it.string(1)} ${it.long(2)} ${it.long(3)}\n",
+            )
+        }
         return out.toString()
+    }
+
+    /**
+     * The earliest moment at which a node has work it cannot do yet, or null when it has none.
+     *
+     * [DmCrashWorld.quiesce] uses it to jump the world's clock to the next time something is due
+     * instead of declaring a world quiescent while it waits: a retry backoff, a fetch attempt or a
+     * poison re-offer more than one quiescence step out was systematically unexercised, so every
+     * recovery that is **timer-gated** never ran in any crash run.
+     *
+     * Only *work* deadlines are here — a store's `not_before`, a delivery's next attempt, a blob's
+     * next fetch and its offer hold. Expiry deadlines are deliberately absent: jumping the clock to
+     * a `delete_at_minute` would delete the messages a scenario is about and make quiescence the
+     * thing that broke it.
+     */
+    fun nextDueMinute(node: DmNode, after: Long): Long? {
+        var best = Long.MAX_VALUE
+        fun consider(value: Long) {
+            if (value > after && value < best) best = value
+        }
+        node.raw.query(
+            "SELECT min(not_before_minute) FROM outbox_op WHERE outcome = 'pending' " +
+                "AND not_before_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        node.raw.query(
+            "SELECT min(next_attempt_minute) FROM outbox_delivery WHERE state = 'pending' " +
+                "AND next_attempt_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        node.raw.query(
+            "SELECT min(next_fetch_minute) FROM inbox_blob WHERE state <> 'done' " +
+                "AND next_fetch_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        node.raw.query(
+            "SELECT min(offer_after_minute) FROM inbox_blob WHERE state <> 'done' " +
+                "AND offer_after_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        return if (best == Long.MAX_VALUE) null else best
+    }
+
+    /** The earliest expiry deadline still ahead of [after], or null: the bound on a clock jump. */
+    fun nextExpiryMinute(node: DmNode, after: Long): Long? {
+        var out = Long.MAX_VALUE
+        node.raw.query(
+            "SELECT min(delete_at_minute) FROM dm_message WHERE delete_at_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) out = it.long(0) }
+        return if (out == Long.MAX_VALUE) null else out
     }
 
     private fun empty(sql: JdbcSqlExecutor, label: String, what: String, query: String) {

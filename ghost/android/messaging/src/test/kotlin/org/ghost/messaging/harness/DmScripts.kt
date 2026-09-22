@@ -78,6 +78,22 @@ internal object DmScripts {
             .mapNotNull { it.text }
     }
 
+    /**
+     * The texts of every outgoing message this node has marked **SENT**, over every conversation.
+     *
+     * `SENT` is the engine's own statement that the op was released with a `sent` outcome, so it is
+     * the promise the no-loss oracle of [DmCrashRunner] holds it to. Every conversation, not the
+     * first one, because a seeded world is a chain and a device in the middle of it sends both ways.
+     */
+    fun sentTexts(world: DmCrashWorld, node: String): List<String> {
+        val device = world[node].device
+        return device.engine.contacts().flatMap { contact ->
+            device.engine.conversation(contact.id, 200, null)
+                .filter { it.outgoing && it.state.name == "SENT" }
+                .mapNotNull { it.text }
+        }
+    }
+
     /** The outbound states of one node's single conversation, oldest first. */
     fun outboundStates(world: DmCrashWorld, node: String): List<String> {
         val device = world[node].device

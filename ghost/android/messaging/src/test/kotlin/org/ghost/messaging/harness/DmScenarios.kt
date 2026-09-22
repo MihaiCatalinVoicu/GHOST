@@ -20,7 +20,10 @@ import org.ghost.messaging.api.TrustState
  * harness stands in for that engine as a whole (see [ModelDmRelay]); what a scenario can therefore
  * vary is the *outcome* a store gets, not which of three relays produced it. Every node is built
  * with four relay slots over two operators so the namespace and registration rows have the shape
- * the invariants check, and the refusal half is modelled by [ModelDmRelay.outcomeFor]. The second
+ * the invariants check, and what a scenario can do to a store's outcome is
+ * [ModelDmRelay.outcomeFor]. **Which scenarios actually use it: SCN-G, and no other.** SCN-A's
+ * "one refusing" relay and the refusal half of every other scenario's relay-set text are therefore
+ * **not exercised**, which is a gap and not a modelling choice; §22.15 item 6 lists it. The second
  * deviation is `PrivacyMode`: every world here is STANDARD, because `DmDevice` fixes the mode at
  * construction; the HIGH halves of SCN-A and SCN-F are deferred with the rest.
  */
@@ -36,11 +39,30 @@ internal object DmScenarios {
      * or neither did. A crash between them shows up as one of two things, and the checks below are
      * exactly those two: a message B can never open (the ratchet moved, the bytes never left), or a
      * message A believes it sent twice (the bytes left, the ratchet did not). Mutant MC-1 is the
-     * mutation that splits the transaction, and SCN-A is what kills it.
+     * mutation that splits the transaction, and SCN-A is what kills it — really, now: MC-1 is
+     * registered, it is killed by a crash inside the split window of this scenario and by nothing
+     * else, and `DmMutantDetectionTest.mc1SplitSendTransactionIsDetectedOnlyByACrash` also asserts
+     * that the same crash point leaves the *unmutated* world green. That is the control the
+     * enumeration was missing: without a mutant only a crash can kill, nothing said that two
+     * thousand crash runs could fail at all.
+     *
+     * **What kills it is the no-loss oracle, not the checks below.** The `alwaysChecks` here are
+     * safety properties — a subsequence, in order, each at most once — and a world that simply lost
+     * the message satisfies every one of them. §15.3's two liveness oracles are what refuse that,
+     * and this scenario turns both on.
+     *
+     * **Declared gap, §15.3's "3 relays over 2 operators, one refusing".** Neither `relay.modes`
+     * nor `relay.outcomeFor` is set here, so every store in SCN-A gets the honest `sent`: the
+     * refusing relay of the scenario text is **not** exercised, and §22.15 item 6 now says so.
+     * What the model relay can express is the outcome a store got and not which of three relays
+     * produced it (item 4), and a refusal here would make SCN-A a second SCN-G rather than the
+     * clean atomicity scenario it is.
      */
     fun scnA(): DmScenario = DmScenario(
         name = "SCN-A",
         doubles = true,
+        liveness = "alice" to "bob",
+        noLoss = true,
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -93,8 +115,16 @@ internal object DmScenarios {
      *
      * §7.7's rendering order is `(sort_minute, minute_index)` and nothing else, so the order B
      * renders must be A's order whatever order the blobs arrive in — that is CS-4, and mutant
-     * MC-10 ("arrival-order display") is what it kills. REPEATS puts the same bytes in twice, which
-     * is D1's job.
+     * MC-10 ("arrival-order display") is what it kills.
+     *
+     * **What REPEATS does, exactly, and what it does not.** It offers every blob a second time with
+     * the same bytes, and the second copy is **always refused by the recipient's own `inbox_blob`
+     * row** — the D1 tombstone — so it never reaches RECV. That is D1 doing its job, one layer
+     * below `:messaging`, and the finalCheck below asserts the refusals happened rather than
+     * assuming the mode did something: the mode was a silent no-op before it was measured, and the
+     * doc comment that said "REPEATS puts the same bytes in twice, which is D1's job" would have
+     * survived the mode being deleted. What is therefore **not** exercised here is a duplicate blob
+     * in front of RECV itself, which is RP1/RP2's subject; §22.15 item 6 records it.
      *
      * **Not here:** the RESURRECT-after-tombstone-GC blob and the MC-29 variant with an injected
      * unknown ratchet key against an inactive sending ratchet. The first needs a tombstone-GC step
@@ -106,6 +136,8 @@ internal object DmScenarios {
     fun scnB(): DmScenario = DmScenario(
         name = "SCN-B",
         doubles = true,
+        liveness = "alice" to "bob",
+        noLoss = true,
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -140,6 +172,17 @@ internal object DmScenarios {
             if (seen != (1..6).map { "b$it" }) {
                 dmViolation("SCN-B fault-free: bob saw $seen")
             }
+            // SHUFFLE is measured by the order check above; REPEATS is measured here. Both halves
+            // of the mode have to be non-vacuous or the scenario is a six-message send.
+            if (world.relay.repeatsOffered == 0) {
+                dmViolation("SCN-B: REPEATS offered no second copy at all")
+            }
+            if (world.relay.repeatsRefused != world.relay.repeatsOffered) {
+                dmViolation(
+                    "SCN-B: ${world.relay.repeatsOffered} second copies were offered and only " +
+                        "${world.relay.repeatsRefused} were refused by the tombstone",
+                )
+            }
         },
     )
 
@@ -157,6 +200,16 @@ internal object DmScenarios {
      * The key-change device is `DmWorld`'s `reincarnation`: the same `ghost1` seed under a
      * different MESSAGING branch, which is the only shape §8.3 says a key change can take. The
      * forger is an ordinary third node, which by construction holds neither.
+     *
+     * **All four of §15.3's SCN-D clauses are here**: "A holds and moves to `changed`, A's send
+     * refused; acknowledge → HELD replays; a block variant; a forged variant". The middle two were
+     * missing and §22.15's deferral list did not name them, which is worse than the gap itself —
+     * a scenario that silently covers half of its row is a row nobody will re-read.
+     *
+     * **No liveness probe and no no-loss oracle here**, and both for the same reason: this scenario
+     * ends with the contact **blocked**, so a send is refused by design and a message A queued for
+     * the changed identity is held rather than delivered. Demanding liveness of a scenario whose
+     * subject is refusal would be demanding the opposite of what it asserts.
      */
     fun scnD(): DmScenario = DmScenario(
         name = "SCN-D",
@@ -172,6 +225,13 @@ internal object DmScenarios {
         },
         steps = listOf(
             step("bob2 introduces itself under bob's identity") { w ->
+                // A minute first, so bob2's message does not share an author minute with the last
+                // message bob sent during the establishment. `minute_index` is per author *device*
+                // and two devices of one identity write into one conversation after a key change,
+                // so without this the two collide at `(sort_minute, minute_index)` — which the
+                // harness's CS-2 proxy reads as "one position holds two messages" and §7.7 settles
+                // with its `message_id` tie-break. See `DmCrashRunner.displayedAtMostOnce`.
+                w.advanceBy(DmWorld.MINUTE)
                 // bob2 has to know alice to write to her: it scans alice's card as any device
                 // would, and its envelope then names alice's namespace with a binding valid under
                 // the Ed25519 key alice already pinned for bob.
@@ -194,6 +254,45 @@ internal object DmScenarios {
                 w["mallory"].device.timeTriggeredPass()
             },
             step("alice receives the forgery") { w -> w.pump(); w.passes() },
+            step("what holds before the acknowledgement") { w ->
+                // Recorded rather than asserted, because a crash may have lost the key change
+                // itself and a step is not a `finalCheck`. The assertions are below, fault-free.
+                val alice = w["alice"].device
+                val changed = alice.engine.contacts().filter { it.trust == TrustState.CHANGED }
+                w.notes["changedCount"] = changed.size
+                if (changed.size == 1) {
+                    w.contacts["alice->changed"] = changed.single().id
+                    w.notes["refused"] = alice.engine.send(changed.single().id, "should not go", null)
+                    w.notes["heldBefore"] =
+                        DmScripts.count(w, "alice", "SELECT count(*) FROM dm_held")
+                    w.notes["shownBefore"] = alice.engine.conversation(changed.single().id, 50, null)
+                        .any { it.text == "it is still me" }
+                }
+            },
+            step("alice acknowledges the key change and HELD replays") { w ->
+                // §8.3's other half, and §15.3's "acknowledge → HELD replays": the held row is not
+                // a copy of the message, it is the message, and the acknowledgement is the only
+                // thing that turns it into one. A crash between the two is what this step puts
+                // under the enumeration.
+                val id = w.contacts["alice->changed"] ?: return@step
+                w.notes["acknowledged"] = w["alice"].device.engine.acknowledgeKeyChange(id)
+                w.passes()
+                w.pump()
+                w.passes()
+                w.notes["heldAfter"] = DmScripts.count(w, "alice", "SELECT count(*) FROM dm_held")
+                w.notes["shownAfter"] = w["alice"].device.engine.conversation(id, 50, null)
+                    .any { it.text == "it is still me" }
+            },
+            step("the block variant") { w ->
+                // §15.3 names "a block variant" beside the acknowledge one, and §12.4 is what it
+                // means: the contact is blocked, its sessions go, and a send is refused. The
+                // structural invariant "no session row on a revoked or blocked contact" is what
+                // says the rows really went, at every crash point of this step.
+                val id = w.contacts["alice->changed"] ?: return@step
+                w.notes["blocked"] = w["alice"].device.engine.block(id)
+                w.passes()
+                w.notes["afterBlock"] = w["alice"].device.engine.send(id, "nor this", null)
+            },
         ),
         alwaysChecks = { world ->
             // E-1 in the shape a crash run can break: the forgery never becomes a key change of the
@@ -214,25 +313,37 @@ internal object DmScenarios {
         },
         finalChecks = { world ->
             val alice = world["alice"].device
-            val changed = alice.engine.contacts().filter { it.trust == TrustState.CHANGED }
-            if (changed.size != 1) {
+            if (world.notes["changedCount"] != 1) {
                 dmViolation(
                     "SCN-D: expected exactly one 'changed' contact, got " +
                         alice.engine.contacts().map { it.trust },
                 )
             }
             // CS-5: no encrypt to a `changed` contact — the facade refuses before any ratchet call.
-            val refused = alice.engine.send(changed.single().id, "should not go", null)
-            if (refused != SendResult.KEY_CHANGED) {
-                dmViolation("SCN-D: a send to a 'changed' contact returned $refused")
+            if (world.notes["refused"] != SendResult.KEY_CHANGED) {
+                dmViolation("SCN-D: a send to a 'changed' contact returned ${world.notes["refused"]}")
             }
             // And the held content is not displayed before the acknowledgement (§8.3).
-            val held = DmScripts.count(world, "alice", "SELECT count(*) FROM dm_held")
-            if (held == 0L) dmViolation("SCN-D: the new-key message was not held")
-            if (alice.engine.conversation(changed.single().id, 50, null)
-                    .any { it.text == "it is still me" }
-            ) {
+            if (world.notes["heldBefore"] == 0L) dmViolation("SCN-D: the new-key message was not held")
+            if (world.notes["shownBefore"] != false) {
                 dmViolation("SCN-D: held content was displayed before KEYDEC (CS-5)")
+            }
+            // §15.3's "acknowledge → HELD replays": afterwards the hold is empty and the content is
+            // there. A hold that stayed full would be a message the user can never see, and one
+            // that emptied without the content appearing would be a message the acknowledgement ate.
+            if (world.notes["acknowledged"] != true) {
+                dmViolation("SCN-D: acknowledgeKeyChange refused the changed contact")
+            }
+            if (world.notes["heldAfter"] != 0L) {
+                dmViolation("SCN-D: ${world.notes["heldAfter"]} rows still held after KEYDEC")
+            }
+            if (world.notes["shownAfter"] != true) {
+                dmViolation("SCN-D: HELD did not replay after the acknowledgement")
+            }
+            // §15.3's "a block variant" (§12.4).
+            if (world.notes["blocked"] != true) dmViolation("SCN-D: the contact could not be blocked")
+            if (world.notes["afterBlock"] != SendResult.BLOCKED) {
+                dmViolation("SCN-D: a send to a blocked contact returned ${world.notes["afterBlock"]}")
             }
         },
     )
@@ -252,6 +363,15 @@ internal object DmScenarios {
      *
      * The clock step back is §10.7's and mutant ME-17's ("a wall-clock back step delays deletion"):
      * a deadline already reached is not un-reached by a clock that moves backwards.
+     *
+     * **No no-loss oracle and no liveness probe**, and both because the scenario's subject is
+     * deletion. A message here is sent, delivered, displayed and then *gone by design*, so "a
+     * message the sender called sent was rendered somewhere" is false at the end of a correct run;
+     * and a liveness probe under a five-minute timer would be racing the same deadline. This is the
+     * one scenario where a crash can leave a run with **more** rendered messages than the
+     * fault-free run had — the crash delays the delivery past the deadline that deleted it — which
+     * is why `DmCrashRunner`'s cross-run order comparison is over the positions two runs have in
+     * common rather than a subsequence.
      */
     fun scnF(): DmScenario = DmScenario(
         name = "SCN-F",
@@ -311,11 +431,16 @@ internal object DmScenarios {
      *
      * Mutant MC-3 is "INDETERMINATE resend re-encrypted instead of identical bytes", and what kills
      * it is that the recipient dedups at D1 (same blob hash) rather than at D3 (same message id
-     * under new bytes): a re-encryption costs a ratchet step and a second hash. The check below is
-     * the hash, taken before and after the resend.
+     * under new bytes): a re-encryption costs a ratchet step and a second hash. [rememberItemBlobs]
+     * is that check, taken at every round and compared against the round before.
+     *
+     * No liveness probe: the scenario's last step leaves a relay that refuses **everything**, which
+     * is what it is for, and a probe through it would be asking whether the relay is honest rather
+     * than whether the session is alive.
      */
     fun scnG(): DmScenario = DmScenario(
         name = "SCN-G",
+        noLoss = true,
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -326,13 +451,17 @@ internal object DmScenarios {
             step("an ambiguous store") { w ->
                 w.relay.outcomeFor = { "indeterminate" }
                 w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "ambiguous", null)
-                w.notes["bytes"] = itemBlobs(w, "alice")
+                rememberItemBlobs(w)
                 w.pump()
                 w.passes()
             },
-            step("the first resend") { w -> w.pump(); w.passes() },
-            step("the second resend") { w -> w.pump(); w.passes() },
-            step("and one more round, past the bound") { w -> w.pump(); w.passes() },
+            step("the first resend") { w -> w.pump(); w.passes(); rememberItemBlobs(w) },
+            step("the second resend") { w -> w.pump(); w.passes(); rememberItemBlobs(w) },
+            step("and one more round, past the bound") { w ->
+                w.pump()
+                w.passes()
+                rememberItemBlobs(w)
+            },
             step("a relay that refuses") { w ->
                 w.relay.outcomeFor = { "failed" }
                 w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "refused", null)
@@ -364,14 +493,38 @@ internal object DmScenarios {
         },
     )
 
-    /** The bytes of every item op that still carries them: the MC-3 oracle. */
-    private fun itemBlobs(world: DmCrashWorld, node: String): List<String> {
-        val out = ArrayList<String>()
-        world[node].raw.query(
-            "SELECT hex(blob) FROM dm_outbound_op WHERE purpose = 'item' AND blob IS NOT NULL " +
-                "ORDER BY operation_id",
-        ) { out += it.string(0) }
-        return out
+    /**
+     * The MC-3 oracle, which until now was written and never read: `w.notes["bytes"]` was assigned
+     * once and nothing ever compared it, so "the check below is the hash, taken before and after
+     * the resend" described a check that did not exist.
+     *
+     * What it does now: every time it runs it takes the retained bytes of each item op that still
+     * carries them and **checks them against what the same item carried before**. §7.5's resend is
+     * the retained bytes or it is not a resend — a re-encryption costs a ratchet step and moves the
+     * recipient's dedup from D1's hash to D3's tag, which is exactly the defect MC-3 names — so an
+     * item whose blob changed between two rounds has been re-encrypted, and that is a finding
+     * whether or not the run was faulted. It is an `alwaysCheck` in effect, because it is asserted
+     * inside the steps.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun rememberItemBlobs(world: DmCrashWorld) {
+        val known = world.notes.getOrPut("bytes") { HashMap<String, String>() }
+            as HashMap<String, String>
+        world["alice"].raw.query(
+            "SELECT hex(item_id), hex(blob) FROM dm_outbound_op " +
+                "WHERE purpose = 'item' AND blob IS NOT NULL ORDER BY operation_id",
+        ) { row ->
+            val item = row.string(0)
+            val blob = row.string(1)
+            val before = known[item]
+            if (before != null && before != blob) {
+                dmViolation(
+                    "SCN-G: item $item was re-encrypted between resends — §7.5 says the bytes are " +
+                        "the retained ones (MC-3)",
+                )
+            }
+            known[item] = blob
+        }
     }
 
     // ------------------------------------------------------------------ SCN-J faults
@@ -392,6 +545,11 @@ internal object DmScenarios {
      */
     fun scnJ(): DmScenario = DmScenario(
         name = "SCN-J",
+        // §15.3's own sentence about this scenario is "**single and double** SQL crashes never
+        // reach the threshold", and the double half was simply not run: `doubles` was false.
+        doubles = true,
+        liveness = "alice" to "bob",
+        noLoss = true,
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -417,6 +575,19 @@ internal object DmScenarios {
                     "(SELECT 1 FROM dm_conversation c WHERE c.conversation_id = m.conversation_id)",
             )
             if (orphaned != 0L) dmViolation("SCN-J: $orphaned inbound messages with no conversation")
+            // §15.3's other sentence about SCN-J: "single and double SQL crashes **never reach the
+            // threshold**". The poison guard is for a blob that kills RECV, not for a transaction
+            // that rolled back, and a guard that counted SQL failures as offers would throw away
+            // every message a full disk interrupted. Nothing asserted it until now.
+            for (node in world.nodes()) {
+                val poisoned = node.device.engine.status().poisoned
+                if (poisoned != 0) {
+                    dmViolation(
+                        "SCN-J: ${node.name} poisoned $poisoned blobs — a SQL crash reached the " +
+                            "poison threshold",
+                    )
+                }
+            }
         },
         finalChecks = { world ->
             if (!DmScripts.inboundTexts(world, "bob").contains("j1")) {
@@ -442,6 +613,8 @@ internal object DmScenarios {
      */
     fun scnL(): DmScenario = DmScenario(
         name = "SCN-L",
+        liveness = "alice" to "bob",
+        noLoss = true,
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -460,6 +633,11 @@ internal object DmScenarios {
             },
             step("a reboot re-migrates and re-verifies") { w ->
                 w["bob"].reboot()
+                // §15.3 says "reboot … check the structural invariants", without an exception for
+                // reboots a scenario performs itself. This one had none, so the one scripted reboot
+                // in the suite was the only one in the harness that proved nothing.
+                DmStructuralInvariants.check(w["bob"], "SCN-L scripted reboot")
+                DmStructuralInvariants.checkpointEmptiedTheLog(w["bob"], "SCN-L scripted reboot")
                 w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "l2", null)
                 w.pump()
                 w.passes()

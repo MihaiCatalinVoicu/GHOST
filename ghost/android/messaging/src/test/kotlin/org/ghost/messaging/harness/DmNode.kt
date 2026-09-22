@@ -63,6 +63,13 @@ internal class DmNode(
      */
     var rewrite: ((String, List<Any?>) -> Pair<String, List<Any?>>)? = null
 
+    /**
+     * The transaction-split seam of [FaultyDmSqlExecutor.defer], re-installed at every boot for the
+     * same reason [rewrite] is: a mutation that healed itself at the first process death would be
+     * detected by the reboot and by nothing else.
+     */
+    var defer: ((String) -> Boolean)? = null
+
     private var jdbc: JdbcSqlExecutor? = null
     private var faulty: FaultyDmSqlExecutor? = null
     private var current: DmDevice? = null
@@ -116,6 +123,7 @@ internal class DmNode(
         runner.verifyIntegrity()
         val wrapper = FaultyDmSqlExecutor(connection, bus, name)
         wrapper.rewrite = rewrite
+        wrapper.defer = defer
         jdbc = connection
         faulty = wrapper
         current = DmDevice(

@@ -9,9 +9,11 @@ name: messaging-exit-gate
 # and passed as `-Dghost.dm.native`, because **without it the DM worlds report themselves skipped
 # rather than failing** (`DmWorld.nativeAvailable()`), and a gate whose worlds silently skip is a
 # green tick over nothing. The report check below is the other half of that: it fails the job unless
-# the report carries a line for every scenario, a non-empty enumeration for each, the double-crash
-# counts, the seeded-world lines, the `SQLITE_FULL` line and one line per mutant naming what kills
-# it — the `t2-report-check.sh` rule that a PASS on an empty sample is a failure.
+# the report carries a line for every scenario, an enumeration that crashed at **every** event of
+# each — singles equal to events, which is what "gate scale" means and what the header alone used
+# to assert — a timeout-after-apply run at every relay event, the double-crash counts, the
+# seeded-world lines, the `SQLITE_FULL` line, and one line per mutant naming what killed it, where
+# "killed" means a run recorded the kill and not that the registry lists the mutant.
 #
 # Scale. `-Dghost.dm.crash=full` is what makes the enumeration every-event; without it the harness
 # samples (the PR scale the `android` job of ci.yml already runs as part of `./gradlew build`).
@@ -20,9 +22,13 @@ name: messaging-exit-gate
 # FROM-CACHE and the gate would run nothing.
 #
 # Budget (measured on the owner's workstation, 8 worker threads): the whole `:messaging` suite is
-# about 3 minutes at the PR scale and **25 min 45 s** at this one — 22 500 crash runs over ten
-# scenarios and suite cases, 305 `SQLITE_FULL` injections, 128 seeded worlds and the mutants. A
-# 4-vCPU runner is roughly twice that, and the timeout leaves room for the two builds on top.
+# about 3 minutes at the PR scale and tens of minutes at this one — tens of thousands of crash runs
+# over **eleven** scenarios and suite cases (seven SCN-* plus RP6, RP9, CB-reject-replay and
+# EP-read-expiry, which is what `dm-report-check.sh` requires and what the fixtures carry), the
+# `SQLITE_FULL` injections, 128 seeded worlds and the mutants. A 4-vCPU runner is roughly twice
+# that, and the timeout leaves room for the two builds on top. The every-event scale has not been
+# run end to end on this branch — the self-hosted runners are not up — so the number here is the
+# PR-scale measurement extrapolated, and §22.15 item 11 says so.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
@@ -34,6 +40,9 @@ on:
       - "ghost/android/crypto-bridge/**"
       - "ghost/android/storage/**"
       - "ghost/android/sync/**"
+      # `:messaging` depends on `:identity` for `ZBase32` (the `ghost://contact/` link of §3.3), so
+      # a change there reaches every world this gate runs and has to trigger it on a PR too.
+      - "ghost/android/identity/**"
       - "ghost/client-core/dm/**"
       - "ghost/client-core/dm-host/**"
       - "ghost/scripts/gates/dm-report-check.sh"

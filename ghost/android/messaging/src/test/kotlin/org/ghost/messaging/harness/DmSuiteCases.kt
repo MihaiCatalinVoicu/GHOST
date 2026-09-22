@@ -31,11 +31,22 @@ internal object DmSuiteCases {
      * The relay stores the blob and tells the sender it failed. The user retries, which
      * re-encrypts: new bytes, a new hash, a new ratchet step — so D1's tombstone does not match and
      * D2's structural bindings do not either. What is left is D3, the `dm_seen` tag over the
-     * message's own id, and it is the only thing between the recipient and a message rendered
-     * twice.
+     * message's own id.
+     *
+     * **D3 is not the only thing between the recipient and a second row, and saying so was wrong.**
+     * Under mutant MC-5 — D3 off — the copy reaches RECV as a *new* message and `dm_message`'s
+     * replace guard (§13.6, "dm_message rows are never replaced") refuses the insert with
+     * `SQLITE_CONSTRAINT_TRIGGER`; the pass dies there and the runner reports it, before the
+     * `seen > 1` check below can see anything. So what D3 uniquely provides is that the copy is a
+     * **duplicate** — silently dropped, the message rendered once — rather than an error that ends
+     * a pass. The `seen > 1` check stays, because it is the property CS-2 states and a future
+     * schema without that trigger would need it; §22.15 item 14 records that no run exercises it
+     * today.
      */
     fun rp6ReEncryptionAfterAWronglyReportedFailure(): DmScenario = DmScenario(
         name = "RP6",
+        liveness = "alice" to "bob",
+        noLoss = true,
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -236,10 +247,13 @@ internal object DmSuiteCases {
             if (texts.any { it.startsWith("flipped") }) {
                 dmViolation("RP9: a blob with a flipped byte opened")
             }
-        },
-        finalChecks = { world ->
-            // No answer of any kind: a recipient that stored anything in response would be an
-            // oracle for whoever flipped the byte (PM-6, T28).
+            // **In every run, faulted or not.** A recipient that stored anything in answer to a
+            // blob it could not open would be an oracle for whoever corrupted it (PM-6, T28), and
+            // that is a property of the recipient's own transactions — so a crash is exactly when
+            // it might break. It was a `finalCheck`, which meant no faulted run ever asserted the
+            // half of RP9 that the case is named for. Bob never sends in this scenario and its
+            // establishment is finished in the unfaulted setup, so a store here is always an
+            // answer and never a scenario step.
             val stores = DmScripts.count(
                 world, "bob", "SELECT count(*) FROM dm_outbound_op WHERE purpose = 'item'",
             )
@@ -247,8 +261,20 @@ internal object DmSuiteCases {
             if (stores != before) {
                 dmViolation("RP9: bob answered an unopenable blob with ${stores - before} stores")
             }
-            if (world.notes["rendered"] != DmScripts.inboundTexts(world, "bob").size) {
+            if (world.notes["rendered"] != texts.size) {
                 dmViolation("RP9: bob rendered something from an unopenable blob")
+            }
+        },
+        finalChecks = { world ->
+            // §15.5's RP9 is "TRUNCATE **and** byte flips", and the mode did only the second for as
+            // long as nothing counted. A short blob fails the length check before any AEAD runs and
+            // a flipped one fails the AEAD; two refusal paths, and a case that drove one of them
+            // and claimed both.
+            if (world.relay.truncated == 0 || world.relay.flipped == 0) {
+                dmViolation(
+                    "RP9: the relay served ${world.relay.truncated} short blobs and " +
+                        "${world.relay.flipped} flipped ones — both shapes have to be driven",
+                )
             }
         },
     )

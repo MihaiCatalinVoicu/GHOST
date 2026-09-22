@@ -51,6 +51,17 @@ internal enum class DmEventKind(val relay: Boolean) {
     val sql: Boolean get() = this == SQL_EXEC || this == SQL_UPDATE || this == SQL_QUERY
 
     /**
+     * A statement that changes the file.
+     *
+     * Narrower than [canBeFull] by exactly one kind, and the difference is the point:
+     * [PRE_COMMIT] fires for **every** transaction, including a read-only one, so counting it as a
+     * write would report `DmActor`'s post-death `schedule.afterCommit()` — which is four read-only
+     * transactions — as four writes. A full disk can still fail such a commit, which is why
+     * `canBeFull` keeps it; nothing about it changes a row, which is why this does not.
+     */
+    val writes: Boolean get() = this == SQL_EXEC || this == SQL_UPDATE
+
+    /**
      * Where a `SQLITE_FULL` can actually come from.
      *
      * SQLite raises it when it needs a page it cannot get, which is a **write**: a read never
@@ -59,6 +70,16 @@ internal enum class DmEventKind(val relay: Boolean) {
      * produce, and "the engine does not map an impossible failure" is not a finding. So SCN-J's
      * "every statement of SEND, RECV, BUNDLE and SWEEP" is every statement that writes, plus the
      * commit — which is the statement a full disk fails most often.
+     *
+     * **Before the statement, not during it, and that is a declared narrowing.** `FaultyDmSqlExecutor`
+     * raises the event and throws *before* it calls the delegate, so the statement never runs at
+     * all; the real `SQLITE_FULL` surfaces after SQLite has already done partial work inside the
+     * transaction. The two are equivalent for every path here, because every one of them takes a
+     * whole-transaction rollback and a rollback undoes the partial work either way. They stop being
+     * equivalent the moment a path uses a SAVEPOINT and continues after the failure — then "the
+     * statement did nothing" and "the statement did half of something and was rolled back to the
+     * savepoint" are different states, and this injector only ever produces the first. No DM path
+     * uses a savepoint today; one that does needs its own injection point rather than this one.
      */
     val canBeFull: Boolean get() = this == SQL_EXEC || this == SQL_UPDATE || this == PRE_COMMIT
 }
@@ -121,8 +142,10 @@ internal class SimulatedDmCrash(val event: Long, val kind: DmEventKind, val node
  * on the JVM side of the closed JNI surface. An [Error] for the same reason as [SimulatedDmCrash].
  *
  * A **caught Rust panic** is a different thing entirely — it comes back through the surface as the
- * `INTERNAL` result code, and SCN-J asserts that *that* one "rolls back and crashes like any
- * `IllegalStateException`". Only the uncatchable half is here.
+ * `INTERNAL` result code and "rolls back and crashes like any `IllegalStateException`" (§15.3).
+ * Only the uncatchable half is here; the caught one is
+ * `DmPoisonTest.aCaughtRustPanicRollsBackAndNeverReachesThePoisonThreshold`, which is a case and
+ * not, as this comment used to imply, a sentence in SCN-J that nothing ran.
  */
 internal class SimulatedNativeCrash(val event: Long, val node: String) :
     Error("injected native crash at event $event on $node")
@@ -162,6 +185,36 @@ internal class DmEventBus {
     /** Observers of every event, before the plan (the recording run classifies through it). */
     var onEvent: ((DmEvent) -> Unit)? = null
 
+    /**
+     * True while a mutation that **split a transaction** still owes its second half (see
+     * [DmMutants.MC1] and [FaultyDmSqlExecutor.defer]).
+     *
+     * A crash raised while this is set loses work the unmutated engine had already committed, so
+     * the indices collected in [vulnerable] are the crash points at which the split is observable.
+     * Nothing in an unmutated world ever sets it.
+     */
+    var inSplitWindow: Boolean = false
+
+    /** The event indices raised inside a split window, in order (the recording run collects them). */
+    val vulnerable = ArrayList<Long>()
+
+    /**
+     * The node a crash has just killed, from the moment the [Error] is thrown until the runner has
+     * rebooted it — and every **write** it performed in between.
+     *
+     * A process death is not a `finally`, and on the way out of `DmActor.runPass` one runs:
+     * `schedule.afterCommit()` executes after the injected `Error` has begun propagating, so the
+     * "dead" device performs two more transactions before the runner ever sees the crash. They are
+     * read-only today (`UnreadNotices` re-reads its deadline), which is why the model is still
+     * faithful — but nothing enforced that, and a step that starts writing there would make every
+     * crash run a crash-plus-one-more-transaction run without a single test changing. So the writes
+     * are collected and the runner refuses them; reads are left alone, because a read after death
+     * changes nothing a reboot would not overwrite.
+     */
+    var deadNode: String? = null
+
+    val afterDeathWrites = ArrayList<String>()
+
     /** The recovery phase of a double-crash run counts from 1 again (§15.3's second crash). */
     fun resetCount() {
         count = 0
@@ -176,6 +229,8 @@ internal class DmEventBus {
     fun event(kind: DmEventKind, node: String, detail: String = ""): DmFault? {
         if (!armed) return null
         count++
+        if (inSplitWindow) vulnerable += count
+        if (deadNode == node && kind.writes) afterDeathWrites += "$kind($detail)"
         val e = DmEvent(count, kind, node, detail)
         onEvent?.invoke(e)
         return when (plan.at(e)) {
@@ -183,12 +238,14 @@ internal class DmEventBus {
             DmFault.Crash -> {
                 val crash = SimulatedDmCrash(count, kind, node)
                 injected += crash
+                deadNode = node
                 throw crash
             }
 
             DmFault.NativeCrash -> {
                 val crash = SimulatedNativeCrash(count, node)
                 injected += crash
+                deadNode = node
                 throw crash
             }
 

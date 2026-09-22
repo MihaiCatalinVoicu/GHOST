@@ -18,10 +18,14 @@ import java.util.SplittableRandom
  * > READY; key changes (1 %), restores with reconnect (1 %), blocks and requests; one hostile relay
  * > per set; a crash probability per event and a `SQLITE_FULL` probability.
  *
- * **What this generator draws, and what it does not.** Clients, the contact topology, the message
- * counts, the timer mix, displays, offline windows, week boundaries, clock steps, blocks, requests,
- * the hostile relay mode, the crash probability and the `SQLITE_FULL` probability are all here.
- * Four draws of §15.4 are **not**, and each is deferred for a reason recorded in §22.15: the
+ * **What this generator draws, and what it does not.** Clients (2–6, §15.4's own range), the contact
+ * topology, the message counts, the timer mix, displays, offline windows, week boundaries, clock
+ * steps, blocks, requests, the hostile relay mode — **one in every set**, as §15.4 says — the crash
+ * probability and the `SQLITE_FULL` probability are all here. Two ranges are narrower than §15.4's
+ * and §22.15 item 9 declares both: the message count is **0–12 per world** where §15.4 says 0–40
+ * per *pair*, and the relay set is fixed at four slots over two operators where §15.4 draws 2–4
+ * over 2–3 (the relay set is the Phase 7 engine's; see [ModelDmRelay]). Four draws of §15.4 are
+ * **not** here at all, and each is deferred for a reason recorded in §22.15: the
  * privacy mode (`DmDevice` fixes it at construction), the ES slot-table change (the world owns one
  * slot table per node and `EsSlots` is read at construction), key changes and restores (both need a
  * second device per affected client, which the generator would have to plan before it knows which
@@ -37,8 +41,13 @@ internal class DmSeededWorld(val seed: Long) {
     val description = StringBuilder("seed $seed: ")
 
     fun scenario(): DmScenario {
-        val clients = 2 + rnd.nextInt(3)
-        val messages = rnd.nextInt(9)
+        // §15.4's own ranges for the two draws the first version narrowed without declaring it:
+        // "2–6 clients" and a message mix. The message count is still per **world** and not §15.4's
+        // "0–40 per pair" — a DM world runs the real ratchet and forty messages per pair over six
+        // clients is a gate of its own — and §22.15 item 9 says so rather than leaving the range to
+        // be re-derived from this line.
+        val clients = 2 + rnd.nextInt(5)
+        val messages = rnd.nextInt(13)
         val timerMix = List(messages.coerceAtLeast(1)) { drawTimer() }
         val hostile = drawHostile()
         val offlineSeconds = drawOffline()
@@ -162,22 +171,36 @@ internal class DmSeededWorld(val seed: Long) {
     }
 
     /**
-     * CS-4 over a seeded world: every conversation renders in `(sort_minute, minute_index)` order
-     * and no two inbound messages share a position.
+     * CS-4 over a seeded world: the order the **read path** returns is the order §7.7's columns
+     * decide, and no two inbound messages share a position.
      *
      * A seeded world cannot name the texts it expects — it drew them — so what it can check is the
-     * shape: the order is total, and it is the same one [DmStructuralInvariants.renderOrder]
-     * computes from the columns §7.7 says decide it.
+     * shape. The first half is the one that was missing: the old version compared
+     * `(sort_minute, minute_index)` pairs read *in that order* with themselves, which is a
+     * tautology, and its KDoc pointed at a `DmStructuralInvariants.renderOrder` that did not exist.
+     * It now reads the conversation through `MessagingEngine.conversation` — the path a user sees,
+     * and the one mutant MC-10 changes — and requires it to agree with the columns.
      */
     private fun orderIsAuthorOrder(world: DmCrashWorld) {
         for (node in world.nodes()) {
-            val positions = ArrayList<Pair<Long, Long>>()
-            node.raw.query(
-                "SELECT sort_minute, minute_index FROM dm_message WHERE direction = 'in' " +
-                    "ORDER BY conversation_id, sort_minute, minute_index",
-            ) { positions += it.long(0) to it.long(1) }
-            if (positions.size != positions.toSet().size) {
+            val byColumns = DmStructuralInvariants.renderOrder(node)
+            if (byColumns.size != byColumns.toSet().size) {
                 dmViolation("$description: ${node.name} renders two messages at one position")
+            }
+            val device = node.device
+            for (contact in device.engine.contacts()) {
+                val page = device.engine.conversation(contact.id, 200, null)
+                    .filter { !it.outgoing }
+                    .map { it.cursor.sortMinute to it.cursor.minuteIndex }
+                // The page is newest first (§7.7), so the read path's order reversed has to be
+                // ascending in the pair the columns hold.
+                val ascending = page.reversed()
+                if (ascending != ascending.sortedWith(compareBy({ it.first }, { it.second }))) {
+                    dmViolation(
+                        "$description: ${node.name} renders $ascending, which is not " +
+                            "(sort_minute, minute_index) order (CS-4)",
+                    )
+                }
             }
         }
     }
@@ -191,13 +214,16 @@ internal class DmSeededWorld(val seed: Long) {
         else -> Timer.OFF
     }
 
-    /** One hostile relay per set (§15.4), or an honest one. */
+    /**
+     * **One hostile relay per set**, in every set — which is what §15.4 says, and what this did not
+     * do: two of its six branches returned an honest set, so a third of the seeds drew no hostile
+     * relay at all and the draw's whole purpose was optional.
+     */
     private fun drawHostile(): Set<ModelDmRelay.Mode> = when (rnd.nextInt(6)) {
-        0 -> setOf(ModelDmRelay.Mode.SHUFFLE)
+        0, 4 -> setOf(ModelDmRelay.Mode.SHUFFLE)
         1 -> setOf(ModelDmRelay.Mode.REPEATS)
-        2 -> setOf(ModelDmRelay.Mode.WITHHOLD)
-        3 -> setOf(ModelDmRelay.Mode.SHUFFLE, ModelDmRelay.Mode.REPEATS)
-        else -> emptySet()
+        2, 5 -> setOf(ModelDmRelay.Mode.WITHHOLD)
+        else -> setOf(ModelDmRelay.Mode.SHUFFLE, ModelDmRelay.Mode.REPEATS)
     }
 
     /** Offline windows from 1 minute to 40 days (§15.4). */
@@ -220,9 +246,19 @@ internal class DmSeededWorld(val seed: Long) {
         val crashAt = if (planRandom.nextInt(3) == 0) 1 + planRandom.nextInt(900).toLong() else -1L
         val fullAt = if (planRandom.nextInt(3) == 0) 1 + planRandom.nextInt(900).toLong() else -1L
         description.append(", crashAt=$crashAt, fullAt=$fullAt")
+        // **Once.** `DmCrashRunner` restarts the event counter after the first crash, so a plan
+        // that only compares an index crashes again at the same index of the recovery phase: a seed
+        // whose description said one crash actually took two, and the description a red seed is
+        // reproduced from was wrong about the run it named. The hand-written specs are phase-gated
+        // for the same reason; this one was not.
+        var crashed = false
         return DmFaultPlan { e ->
             when {
-                e.index == crashAt -> DmFault.Crash
+                e.index == crashAt && !crashed -> {
+                    crashed = true
+                    DmFault.Crash
+                }
+
                 e.index == fullAt && e.kind.canBeFull -> DmFault.StorageFull
                 else -> null
             }

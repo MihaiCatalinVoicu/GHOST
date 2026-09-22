@@ -30,13 +30,22 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         /** Serves blobs of a namespace in a scrambled order (SCN-B, RO2). */
         SHUFFLE,
 
-        /** Serves each blob twice in the same round (RP1: the tombstone refuses the second). */
+        /**
+         * Serves each blob twice in the same round.
+         *
+         * The second copy is **always refused**, by the `inbox_blob` row the first one wrote — the
+         * D1 tombstone — so it never reaches RECV. [repeatsRefused] is what says so, and SCN-B
+         * asserts it is non-zero rather than assuming the mode did anything.
+         */
         REPEATS,
 
         /** Keeps a blob back for one round (RO7, SCN-E). */
         WITHHOLD,
 
-        /** Flips a byte of the served ciphertext (RP9: it must not open, and must not answer). */
+        /**
+         * Corrupts the served ciphertext, alternating a **short** blob and a **flipped byte** (RP9:
+         * it must not open, and must not answer). See [corrupt].
+         */
         TRUNCATE,
 
         /**
@@ -46,7 +55,9 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
          * It is the only way to reach D3 from the outside. Every other duplicate the sender can
          * produce carries identical bytes and dies at D1's tombstone; a user retry after a FAILED
          * re-encrypts, so the bytes differ, the hash differs, and the only thing left that says
-         * "this is the same message" is the `dm_seen` tag over its `message_id`.
+         * "this is the same message" is the `dm_seen` tag over its `message_id`. With D3 off the
+         * copy is not rendered twice — `dm_message`'s replace guard refuses the second row first —
+         * so what D3 buys is that the copy is a *duplicate* and not an error; see `DmMutants.MC5`.
          */
         LIE_FAILED,
     }
@@ -111,7 +122,16 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             val ciphertext = row[2] as ByteArray
             val ttl = row[3] as Long
             val key = operation.hex() + "@" + node.name
-            if (!collected.add(key)) continue
+            // The key is taken **after** the response, not before. It exists so a round is
+            // idempotent, and a store the relay never finished answering is not a store this round
+            // already did: a crash at any of the three events below leaves the op `pending` with
+            // its ciphertext, and the next round has to re-store it exactly as a Phase 7 retry
+            // would. Inserting the key first would delete the operation from the world at every
+            // relay-event crash point — the run would go green because nothing was left to be
+            // wrong about, and the `RELAY_AFTER_APPLY` class ("the dangerous window", where the
+            // blob reached the recipient and the sender has not learned it) could never drive the
+            // reboot-then-OUTCOME path it exists for.
+            if (key in collected) continue
             bus.event(DmEventKind.RELAY_BEFORE_SEND, node.name, "store ${operation.hex().take(8)}")
             val outcome = if (Mode.LIE_FAILED in modes) "failed" else outcomeFor(operation.hex())
             // LIE_FAILED stores it anyway: that is the whole of the lie.
@@ -125,12 +145,12 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
                 // The relay has it; the sender does not know. Its op stays `pending`, the next
                 // round re-stores identical bytes, and the recipient must dedup at D1 or D3 —
                 // which is the window §7.6 exists for. Re-storing is what a Phase 7 retry does, so
-                // the collection key is dropped rather than kept.
-                collected.remove(key)
+                // the key is simply never taken.
                 continue
             }
             release(node, operation, outcome)
             bus.event(DmEventKind.RELAY_AFTER_RESPONSE, node.name, "released $outcome")
+            collected.add(key)
         }
     }
 
@@ -180,9 +200,12 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             if (Mode.WITHHOLD in modes && withheld.add(key)) continue
             val fresh = served.add(key)
             if (!fresh && Mode.REPEATS !in modes) continue
-            val bytes = if (Mode.TRUNCATE in modes) flip(blob.ciphertext) else blob.ciphertext
+            val bytes = if (Mode.TRUNCATE in modes) corrupt(blob.ciphertext) else blob.ciphertext
             if (insert(node, blob.namespace, bytes)) moved += 1
-            if (Mode.REPEATS in modes && insert(node, blob.namespace, bytes)) moved += 1
+            if (Mode.REPEATS in modes) {
+                repeatsOffered++
+                if (insert(node, blob.namespace, bytes)) moved += 1 else repeatsRefused++
+            }
         }
         return moved
     }
@@ -227,10 +250,69 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     /** How many blobs the relay is holding. */
     val blobCount: Int get() = stored.size
 
-    private fun flip(bytes: ByteArray): ByteArray =
+    /**
+     * How many second copies [Mode.REPEATS] put in, and how many of them the recipient's own
+     * `inbox_blob` row refused.
+     *
+     * They are counted because without them the mode is unfalsifiable. The second copy carries the
+     * **same bytes**, so the namespace already holds that `blob_hash` — the row the first copy
+     * wrote, or its `done` tombstone — and [insert] returns false. That is D1 doing its job, and it
+     * happens in the Phase 7 inbox, one layer **below** `:messaging`: no duplicate blob ever
+     * reaches RECV from this mode, so what REPEATS measures is the tombstone, not the engine's own
+     * dedup. A case that asserts `repeatsRefused > 0` is asserting something; a doc comment that
+     * says "REPEATS puts the same bytes in twice, which is D1's job" without one is a claim that
+     * would survive the mode being deleted. §22.15 item 6 records what would be needed to put a
+     * duplicate in front of RECV itself.
+     */
+    var repeatsOffered: Int = 0
+        private set
+
+    var repeatsRefused: Int = 0
+        private set
+
+    /** How many served blobs [Mode.TRUNCATE] shortened, and how many it byte-flipped. */
+    var truncated: Int = 0
+        private set
+
+    var flipped: Int = 0
+        private set
+
+    private var corruptions = 0
+
+    /**
+     * §15.5 RP9 is "TRUNCATE **and** byte flips", so the mode does both and alternates: the first
+     * blob it touches has the **wrong length**, the second a flipped byte, and so on. A blob whose
+     * length is wrong fails before any AEAD runs and a flipped one fails the AEAD, which are two
+     * different refusal paths — and only the second was ever driven while this flipped a byte and
+     * called itself TRUNCATE.
+     *
+     * **Why the wrong length is a re-bucketing and not `size - 8`.** `inbox_blob.ciphertext` carries
+     * a CHECK that its length is one of §6.7's padding buckets, so a blob eight bytes short cannot
+     * be stored at all: the Phase 7 schema refuses it before `:messaging` is reached, which is a
+     * true and useful fact and not a case. What a relay *can* present is a blob of a different
+     * legal bucket — the same prefix, zero-filled up or cut down — and that is a length the store
+     * accepts and the engine has to refuse.
+     */
+    private fun corrupt(bytes: ByteArray): ByteArray = if (corruptions++ % 2 == 0) {
+        truncated++
+        reBucket(bytes)
+    } else {
+        flipped++
         bytes.copyOf().also { it[it.size / 2] = (it[it.size / 2].toInt() xor 0x5a).toByte() }
+    }
+
+    /** The same bytes at the next legal padding bucket up, or the one below for the largest. */
+    private fun reBucket(bytes: ByteArray): ByteArray {
+        val bigger = BUCKETS.firstOrNull { it > bytes.size }
+        val smaller = BUCKETS.lastOrNull { it < bytes.size }
+        val target = bigger ?: smaller ?: return bytes
+        return bytes.copyOf(target)
+    }
 
     private companion object {
+        /** §6.7's padding buckets, which `inbox_blob`'s CHECK constraint enforces. */
+        val BUCKETS = listOf(1024, 4096, 16384, 65536)
+
         fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
     }
 }
