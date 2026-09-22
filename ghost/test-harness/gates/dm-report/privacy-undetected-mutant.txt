@@ -1,7 +1,7 @@
 GHOST DM privacy gate (Phase 9 design §15.6, §15.7; slice S11)
 scale: pr (N = 120, 14 days), seed pairs 1, STANDARD
 dm T34: PASS seized c0, c7 at day 70; expired-week pair blobs 297, 0 recognised and 0 opened by retained keys, 0 recognised by derived keys; control 515 of 515 current pair blobs opened; intro 6 of 6 expected opened (no generation due for erasure before day 91); prov_env 0 retained, 9 due erased, 0 past the rule
-dm privacy world: N=120, 14 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {INTRO=372, PAIR=5013, PROVISIONAL=498}, 158 s [seed 5eed0001]
+dm privacy world: N=120, 14 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {INTRO=372, PAIR=5013, PROVISIONAL=498}, 259 s [seed 5eed0001]
 dm JD1: PASS 0 over 15752; identity dictionary of 249000 entries over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD2: PASS 0 over 15752; 5793 Olm header and bundle key strings over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD3: PASS 0 over 20880; inbox stores and registrations; 1047 (relay, inbox, week) cells [seed 5eed0001]
@@ -12,13 +12,14 @@ dm JD7: PASS 0 over 125857; reads, 3808 of them bundle fetches inside a window [
 dm JD9: PASS 0 over 144328; relay events over 240 namespaces [seed 5eed0001]
 dm S-DM3: PASS K=3 of n=240 namespaces (N=120 identities, 0 named by the dictionary), 99.9% interval [0, 8], p=0.6466; control: 12 colluders' cards map 132 of 132 expected namespaces, 132 correct [seed 5eed0001]
 dm T35: PASS provenance build; 6157 seals asserted (intro outer 372, pair 5013, provisional 498, bundle 274), 0 refused; the X-Wing inner layer carries no tag [seed 5eed0001]
+dm NI-DM3: PASS k=2 vs k'=4 contacts (2 idle cards added): C's view equal over 58 events
 dm NI-DM1: PASS 4 twins (VALID, MALFORMED, PROBE, REQUEST) equal over 58 events of B's view
 dm privacy mutants: 9 run, 8 detected
 dm privacy mutant PM-2: NOT DETECTED by NI-DM1 (twin worlds)
 dm privacy mutant PM-3: detected by JD1 (SMALL world), S-DM3 (MEDIUM world, n >= 100)
 dm privacy mutant PM-4: detected by JD4 (SMALL world)
 dm privacy mutant PM-6: detected by NI-DM1 (twin worlds)
-dm privacy mutant PM-8: detected by JD7 (SMALL world)
+dm privacy mutant PM-8: detected by JD7 (SMALL world), NI-DM3 (twin worlds)
 dm privacy mutant PM-13: detected by JD2 (SMALL world), JD1 (SMALL world)
 dm privacy mutant PM-19: detected by T34 (seizure world)
 dm privacy mutant PM-24: detected by JD9 (SMALL world)

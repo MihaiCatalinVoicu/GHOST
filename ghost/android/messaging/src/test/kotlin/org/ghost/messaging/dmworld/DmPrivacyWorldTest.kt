@@ -66,6 +66,14 @@ class DmPrivacyWorldTest {
     }
 
     @Test
+    fun niDm3IdleContactsLeaveTheOwnersViewUnchanged() {
+        requireNative()
+        val result = NiDm3.run(PrivacySeeds.ALL[0])
+        PrivacyReport.line(result.line())
+        assertTrue(result.line(), result.passed)
+    }
+
+    @Test
     fun t34TheSeizureOpensNothingOfAnExpiredWeek() {
         requireNative()
         PrivacyWorld(Seizure.config(PrivacySeeds.ALL[0])).use { world ->

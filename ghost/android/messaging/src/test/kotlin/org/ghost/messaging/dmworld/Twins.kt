@@ -1,7 +1,29 @@
 package org.ghost.messaging.dmworld
 
 import org.ghost.messaging.DmWorld
+import org.ghost.messaging.api.Timer
 import java.util.SplittableRandom
+
+/** The events of [a] that [b] lacks, as multisets: one twin's view against another's. */
+internal fun minus(a: List<String>, b: List<String>): List<String> {
+    val left = b.groupingBy { it }.eachCount().toMutableMap()
+    return a.filter { e ->
+        val n = left[e] ?: 0
+        if (n > 0) {
+            left[e] = n - 1
+            false
+        } else {
+            true
+        }
+    }
+}
+
+/** A multiset difference as a report line names it: count, ops, and the first event. */
+internal fun describe(events: List<String>, where: String): String {
+    if (events.isEmpty()) return "0 events only in $where"
+    val ops = events.groupingBy { it.substringBefore(' ') }.eachCount().toSortedMap()
+    return "${events.size} events only in $where (ops $ops; first: ${events.first()})"
+}
 
 /**
  * NI-DM1 (Phase 9 design §15.6): "Twins (identical shape views `(op, relay, ns, size, ttl, minute,
@@ -47,25 +69,6 @@ internal object NiDm1 {
                 "${run.variant} vs VALID: ${describe(onlyReference, "VALID")}, ${describe(onlyRun, run.variant.name)}"
             }
 
-        private fun describe(events: List<String>, where: String): String {
-            if (events.isEmpty()) return "0 events only in $where"
-            val ops = events.groupingBy { it.substringBefore(' ') }.eachCount().toSortedMap()
-            return "${events.size} events only in $where (ops $ops; first: ${events.first()})"
-        }
-
-        private fun minus(a: List<String>, b: List<String>): List<String> {
-            val left = b.groupingBy { it }.eachCount().toMutableMap()
-            return a.filter { e ->
-                val n = left[e] ?: 0
-                if (n > 0) {
-                    left[e] = n - 1
-                    false
-                } else {
-                    true
-                }
-            }
-        }
-
         val applied: Boolean get() = runs.all { it.substituted == 1 && it.bGets > 0 }
 
         val passed: Boolean get() = differences.isEmpty() && applied && reference.view.isNotEmpty()
@@ -91,8 +94,8 @@ internal object NiDm1 {
         val plan = Plan.scripted(
             activation = LongArray(4) { start },
             edges = listOf(
-                Plan.Edge(A, B, start + DmWorld.HOUR, reject = false, timer = org.ghost.messaging.api.Timer.DAYS_7, bursts = emptyList()),
-                Plan.Edge(C, B, start + 2 * DmWorld.HOUR, reject = false, timer = org.ghost.messaging.api.Timer.DAYS_7, bursts = emptyList()),
+                Plan.Edge(A, B, start + DmWorld.HOUR, reject = false, timer = Timer.DAYS_7, bursts = emptyList()),
+                Plan.Edge(C, B, start + 2 * DmWorld.HOUR, reject = false, timer = Timer.DAYS_7, bursts = emptyList()),
             ),
             seed = seed,
         )
@@ -146,4 +149,73 @@ internal object NiDm1 {
                 "scope=${e.credential?.let { Joins.hex(Joins.sha256(it)).take(12) }} " +
                 "kind=${e.keyKind} period=${e.period}"
         }
+}
+
+/**
+ * NI-DM3 (Phase 9 design §15.6): "degree (k vs k′ idle contacts)" — two worlds that differ only in
+ * how many contacts one client holds, the extra ones idle, give that client identical shape views.
+ *
+ * **The twins.** Five clients: C (0) has two established contacts (1 and 2) in both worlds; in the
+ * `k′` world C's user also scans the cards of 3 and 4 in person at `t0` and never writes to them.
+ * Contact 1 then writes to C at `t0 + 3 h` in both, so the compared window is not an idle one. With
+ * a correct engine an added card is local state: no namespace is registered for an idle contact
+ * (§5.1: a contact inbox is registered at the first send), no bundle is fetched (`EST-START` runs
+ * from a send, §21.7), and no credential is installed for a namespace that is not registered. C's
+ * view from `t0` must be equal, and non-empty, in the two worlds; a failure is reported as the two
+ * multiset differences. **Not here:** a `k′` world whose extra contacts were established and then
+ * fell idle (their establishment traffic is declared leakage, §1.2, and would need a window that
+ * starts after it), and the redeem-lane half PM-1 and PM-11 would need (§22.16).
+ */
+internal object NiDm3 {
+
+    class Result(val k: List<String>, val kPrime: List<String>, val added: Int) {
+        val passed: Boolean get() = k == kPrime && k.isNotEmpty() && added == 2
+
+        fun line(): String =
+            "dm NI-DM3: ${if (passed) "PASS" else "FAIL"} k=2 vs k'=4 contacts ($added idle cards added): " +
+                "C's view equal over ${k.size} events" +
+                (if (k == kPrime) "" else "; ${describe(minus(kPrime, k), "k'")}, ${describe(minus(k, kPrime), "k")}") +
+                (if (added == 2) "" else "; the k' world added $added cards, not 2")
+    }
+
+    private const val C = 0
+
+    fun run(seed: Long, mutant: PrivacyMutant? = null): Result {
+        val k = twin(seed, idle = false, mutant = mutant)
+        val kPrime = twin(seed, idle = true, mutant = mutant)
+        return Result(k.first, kPrime.first, kPrime.second)
+    }
+
+    private fun twin(seed: Long, idle: Boolean, mutant: PrivacyMutant?): Pair<List<String>, Int> {
+        val start = DmWorld.WEEK_ORIGIN + 2_870 * DmWorld.WEEK + 2 * DmWorld.DAY
+        val t0 = start + DmWorld.DAY
+        val plan = Plan.scripted(
+            activation = LongArray(5) { start },
+            edges = listOf(
+                Plan.Edge(1, C, start + DmWorld.HOUR, reject = false, timer = Timer.DAYS_7, bursts = emptyList()),
+                Plan.Edge(2, C, start + 2 * DmWorld.HOUR, reject = false, timer = Timer.DAYS_7, bursts = emptyList()),
+            ),
+            seed = seed,
+        )
+        PrivacyWorld(PrivacyWorldConfig(seed = seed, clients = 5, days = 3, mutant = mutant, plan = plan)).use { world ->
+            var added = 0
+            if (idle) {
+                world.schedule(t0) {
+                    world.session(C, t0, 2, mapOf(0 to {
+                        for (peer in listOf(3, 4)) {
+                            if (world.userAdd(C, peer) == org.ghost.messaging.api.AddContactResult.ADDED) added++
+                        }
+                    }))
+                }
+            }
+            world.schedule(t0 + 3 * DmWorld.HOUR) {
+                world.session(1, t0 + 3 * DmWorld.HOUR, 3, mapOf(0 to { world.userSend(1, C, 40) }))
+            }
+            world.run()
+            // From the minute after the scan: the scan's own foreground session is a user action
+            // the k world does not take, and a session start is declared leakage (LIMITE L2.1 #1);
+            // what NI-DM3 is about is what the extra contacts cause afterwards.
+            return NiDm1.shapeView(world, C, t0 + 2 * DmWorld.MINUTE) to added
+        }
+    }
 }

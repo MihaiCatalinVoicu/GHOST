@@ -129,6 +129,7 @@ dmr_case fail privacy-sdm3-control.txt privacy-pr "rejects S-DM3 whose colluders
 dmr_case fail privacy-t35-plain.txt privacy-pr "rejects the NOT RUN T35 line of a plain host build"
 dmr_case fail privacy-t34-empty.txt privacy-pr "rejects T34 over no expired-week pair blob"
 dmr_case fail privacy-ni-missing.txt privacy-pr "rejects a report without NI-DM1"
+dmr_case fail privacy-ni3-missing.txt privacy-pr "rejects a report without NI-DM3"
 dmr_case fail privacy-undetected-mutant.txt privacy-pr "rejects a privacy mutant not killed by every check it names"
 dmr_case fail privacy-idle-world.txt privacy-pr "rejects a world that sent nothing"
 # Scope checks: these gates must also cover client-core/ (shipped in the APK, ADR-19).

@@ -58,6 +58,7 @@ internal enum class PrivacyCheck(val label: String) {
     JD7("JD7 (SMALL world)"),
     JD9("JD9 (SMALL world)"),
     NI_DM1("NI-DM1 (twin worlds)"),
+    NI_DM3("NI-DM3 (twin worlds)"),
     S_DM3("S-DM3 (MEDIUM world, n >= 100)"),
     T34("T34 (seizure world)"),
 }
@@ -264,8 +265,12 @@ internal object PrivacyMutants {
     val PM8 = PrivacyMutant(
         id = "PM-8",
         defeats = "T31: a client reads only its own namespaces and one bundle fetch per establishment",
-        detectedBy = "JD7, static check (§15.7); JD7 here",
-        killers = listOf(PrivacyMutant.Killer(PrivacyCheck.JD7, "not its own and not an open bundle fetch")),
+        detectedBy = "JD7, static check (§15.7); JD7 here, and NI-DM3, which §15.7 does not name: " +
+            "the idle contacts of the k' world each add a listened namespace",
+        killers = listOf(
+            PrivacyMutant.Killer(PrivacyCheck.JD7, "not its own and not an open bundle fetch"),
+            PrivacyMutant.Killer(PrivacyCheck.NI_DM3, "events only in k' (ops {LIST="),
+        ),
         afterAdd = { world, c, peer ->
             val pk = requireNotNull(world.truth.clients[peer]?.identityPk)
             val md = MessageDigest.getInstance("SHA-256")

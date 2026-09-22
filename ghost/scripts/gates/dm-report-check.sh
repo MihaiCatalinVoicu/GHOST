@@ -16,8 +16,8 @@
 #                   world line, JD1–JD7 and JD9 (not JD8, not JD10) at `PASS 0` over a non-zero
 #                   denominator, S-DM3 at PASS with n >= 100 and an exact control, and the T35 line of
 #                   a provenance build;
-#   privacy-suite   the scale-independent job: NI-DM1 with its four twins, the T34 seizure line and
-#                   the privacy mutant count with one detection line per mutant;
+#   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM3, the T34 seizure
+#                   line and the privacy mutant count with one detection line per mutant;
 #   privacy-pr      both halves in one report at the PR scale (N = 120, 14 days), which is what the
 #                   `android` job of ci.yml writes.
 #
@@ -31,8 +31,8 @@
 # script until the tests behind them exist: a gate that asserted the design's numbers while running
 # a subset would pass on evidence nobody produced, which is the one failure mode a report-checked
 # gate must not have. §22.15 of the design lists what is still owed, scenario by scenario and
-# mutant by mutant. The privacy half follows the same rule: it does not require JD8, JD10, NI-DM2 …
-# NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the AD-7-with-token line, EM-1/EM-2, the
+# mutant by mutant. The privacy half follows the same rule: it does not require JD8, JD10, NI-DM2,
+# NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the AD-7-with-token line, EM-1/EM-2, the
 # `pq-model` status or 31 of the 40 privacy mutants, because nothing in this branch produces them;
 # §22.16 names each.
 set -euo pipefail
@@ -84,6 +84,9 @@ privacy_suite() {
   grep -qE '^dm NI-DM1: PASS 4 twins \(VALID, MALFORMED, PROBE, REQUEST\) equal over [1-9][0-9]* events' "$report" \
     || bad "no NI-DM1 PASS over the four twins"
   if grep -qE '^dm NI-DM1: FAIL' "$report"; then bad "NI-DM1 failed"; fi
+  grep -qE "^dm NI-DM3: PASS k=2 vs k'=4 contacts \(2 idle cards added\): C's view equal over [1-9][0-9]* events" "$report" \
+    || bad "no NI-DM3 PASS with its two idle contacts added"
+  if grep -qE '^dm NI-DM3: FAIL' "$report"; then bad "NI-DM3 failed"; fi
   grep -qE '^dm T34: PASS seized c[0-9]+, c[0-9]+ at day 70; expired-week pair blobs [1-9][0-9]*, 0 recognised and 0 opened by retained keys, 0 recognised by derived keys; control [1-9][0-9]* of ' "$report" \
     || bad "no T34 PASS over a non-empty expired-week sample with a working control"
   if grep -qE '^dm T34: FAIL' "$report"; then bad "T34 failed"; fi

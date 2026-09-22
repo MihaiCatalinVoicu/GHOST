@@ -112,6 +112,7 @@ internal object Checks {
             if (result.passed) null else result.failureMessage()
         }
         PrivacyCheck.NI_DM1 -> NiDm1.run(seed, mutant).let { if (it.passed) null else it.line() }
+        PrivacyCheck.NI_DM3 -> NiDm3.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.S_DM3 -> PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.MEDIUM, seed, mutant)).use { world ->
             world.run()
             Sdm3.run(world, seed).let { if (it.passed) null else it.line() }
