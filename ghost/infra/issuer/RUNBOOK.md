@@ -630,6 +630,65 @@ pentru staging. `GHOST_STAGING_KEYS` numește directorul cu seturile de chei oni
   plăți (R2). După un `--nullifiers-reset`, numărătorile săptămânilor de dinaintea resetului s-au
   pierdut cu store-ul.
 
+### Staging în modul capture (Faza 9, pasul 8 al checklist-ului de dispozitive)
+
+Design Faza 9 §21.13 punctul 8 și §15.10 pasul 8 (slice S12): relay-urile de staging, construite din
+arborele care conține S1 (`RegisterKey`, credențialele v3, `keys.redb`, TTL-urile exacte), rulează
+în modul capture **înaintea** pasului 8 al checklist-ului fizic și doar pe durata lui. Captura
+conține numai observabilele permise (invariantul T1, `ghost/test-harness/privacy/allowed-observables.json`
+v2): identificatori de namespace, hash-uri de blob, bucket-uri de mărime, timp și TTL, tipul cheii
+la `register`, nimic din conținut. Relay-urile în afara acestui pas rulează fără captură.
+
+- [ ] Pornirea în modul capture, după `git pull --ff-only` pe commitul verificat de CI:
+
+  ```sh
+  export GHOST_STAGING_KEYS=/srv/ghost-staging-keys
+  R="docker compose -f ghost/infra/relay/docker-compose.staging.yml"
+  GHOST_RELAY_CAPTURE="--capture /var/lib/ghost/capture.ndjson" \
+    $R up -d --build --force-recreate relay-a relay-b relay-c
+  $R logs relay-a relay-b relay-c | grep -e 'onion address:' -e 'ghost-relay listening on'
+  $R exec relay-a ls /var/lib/ghost
+  ```
+  Așteptat, după cel mult un minut: liniile `onion address:` și `ghost-relay listening on` ale
+  pornirii normale, pentru fiecare relay; în listare, pe lângă `keys.redb`, `nullifiers.redb`,
+  `redemption.marker` și `relay.key` (plus `blobs.redb` și `redemption-counts.txt`), fișierul
+  `capture.ndjson`, creat gol la pornire. `--build` e cerut: imaginea trebuie să fie a commitului
+  tras, nu una veche din cache-ul Docker.
+- [ ] Pasul 8 al checklist-ului (§15.10) rulează cu telefoanele pe acest staging. Apoi, captura
+  fiecărui relay, pe discul criptat al stației, și validarea ei:
+
+  ```sh
+  mkdir -p "$H/transfer/capture" && chmod 0700 "$H/transfer/capture"
+  for r in a b c; do $R exec -T relay-$r cat /var/lib/ghost/capture.ndjson > "$H/transfer/capture/relay-$r.ndjson"; done
+  for r in a b c; do
+    (cd ghost && cargo run -q --locked -p ghost-capture-check -- \
+      --schema test-harness/privacy/allowed-observables.json --capture "$H/transfer/capture/relay-$r.ndjson") \
+      && echo "relay-$r: capture ok"
+  done
+  grep -h '"op":"store"' "$H/transfer/capture"/relay-*.ndjson | grep -c '"ttl_bucket_seconds":3600'
+  grep -ho '"key_kind":"[a-z]*"' "$H/transfer/capture"/relay-*.ndjson | sort | uniq -c
+  ```
+  Așteptat: `relay-a: capture ok`, `relay-b: capture ok`, `relay-c: capture ok` (orice câmp în
+  afara schemei oprește validarea cu cod 1 și îl numește); cel puțin un `store` cu
+  `ttl_bucket_seconds` 3600 (mesajul de 5 minute al pasului 8, depus cu treapta de o oră); evenimente
+  `register` cu `key_kind` (`read`, `deposit`, `fetch`). „Un singur scope de depunere per inbox per
+  săptămână” se citește din aceleași linii (`capability_scope` al depunerilor, grupat pe
+  `namespace_id` și `period_id`) și se trece în foaia semnată a checklist-ului.
+- [ ] Oprirea capturii, imediat după pas: pornirea normală, fără variabilă, și ștergerea fișierelor
+  din volume:
+
+  ```sh
+  $R up -d --force-recreate relay-a relay-b relay-c
+  for r in a b c; do $R exec relay-$r rm -f /var/lib/ghost/capture.ndjson; done
+  $R logs relay-a relay-b relay-c | grep -c 'ghost-relay listening on'
+  ```
+  Așteptat: `3` (câte o pornire nouă per relay; numărul crește cu pornirile anterioare din același
+  log, deci se compară cu valoarea de dinainte). Copiile din `$H/transfer/capture/` rămân doar până
+  la semnarea checklist-ului, apoi se șterg; nu se atașează niciunui issue, job sau mesaj.
+- [ ] Nerulat până acum: nicio pornire a acestui staging în modul capture nu a fost făcută de
+  slice-ul S12 (depanarea și pornirea reală cer host-ul de staging și cheile onion, care nu sunt în
+  repository; design §22.17).
+
 ## 9. P1: plățile (săptămânal)
 
 - [ ] Issuer-ul exportă singur, o dată pe săptămână la o oră aleatoare: `$H/export/batch-<id>.ghpb`
