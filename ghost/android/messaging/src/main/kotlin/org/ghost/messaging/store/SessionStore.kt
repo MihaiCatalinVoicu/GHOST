@@ -193,6 +193,45 @@ internal class SessionStore {
             listOf(contactId, slot),
         )
 
+    /**
+     * §10.6 and §8.7: a `previous` session is deleted at its `retire_day` (46 days after its
+     * demotion, [RETIRE_DAYS]).
+     *
+     * The bound is what T34 relies on for a retired session: its skipped keys, which are the one
+     * declared exception to P-7 in §21.3 point 6, cannot survive it. (Live sessions are covered by
+     * the age prune of §7.7 point 4, which SWEEP runs beside this.)
+     */
+    fun deleteRetiredSessions(tx: SyncTransaction, today: Long): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM olm_session WHERE slot = ? AND retire_day IS NOT NULL AND retire_day <= ?",
+            listOf(SLOT_PREVIOUS, today),
+        )
+
+    /**
+     * §10.6 and §22.8.5 rule 4: the wrapped `reply_seed` of a session past its `prov_erase_minute`.
+     *
+     * The two columns go **together**, and they have to: `CHECK (prov_erase_minute IS NULL OR
+     * prov_env IS NOT NULL)` refuses a row that kept the minute without the bytes, and the
+     * `olm_session_identity` trigger admits `prov_env` going non-NULL → NULL and nothing else. The
+     * session itself stays: it is a live ratchet, and only the provisional material expires.
+     */
+    fun eraseExpiredProvisional(tx: SyncTransaction, nowMinute: Long): Int =
+        tx.sql.execUpdate(
+            "UPDATE olm_session SET prov_env = NULL, prov_erase_minute = NULL " +
+                "WHERE prov_erase_minute IS NOT NULL AND prov_erase_minute <= ?",
+            listOf(nowMinute),
+        )
+
+    /** The next minute a `prov_env` becomes erasable, for the actor timer (§10.7 trigger 1). */
+    fun nextProvisionalErase(sql: SqlExecutor, nowMinute: Long): Long? {
+        var next: Long? = null
+        sql.query(
+            "SELECT min(prov_erase_minute) FROM olm_session WHERE prov_erase_minute > ?",
+            listOf(nowMinute),
+        ) { r -> if (!r.isNull(0)) next = r.long(0) }
+        return next
+    }
+
     fun deleteSessions(tx: SyncTransaction, contactId: ByteArray): Int =
         tx.sql.execUpdate("DELETE FROM olm_session WHERE contact_id = ?", listOf(contactId))
 

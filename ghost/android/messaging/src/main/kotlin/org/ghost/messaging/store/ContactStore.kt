@@ -528,6 +528,21 @@ internal class ContactStore {
     }
 
     /**
+     * SWEEP's erasure of one (direction, generation, week) key: the opening key and the recognition
+     * key go **together**, because they are one row (rule R-S6, §6.3 "both are erased together").
+     */
+    fun deletePairKey(
+        tx: SyncTransaction,
+        contactId: ByteArray,
+        direction: String,
+        rootGen: Int,
+        week: Long,
+    ): Int = tx.sql.execUpdate(
+        "DELETE FROM dm_pair_key WHERE contact_id = ? AND direction = ? AND root_gen = ? AND week = ?",
+        listOf(contactId, direction, rootGen.toLong(), week),
+    )
+
+    /**
      * Deletes every **out** key of a contact: the renewal rule of §21.3 point 2, so the next root
      * TLV from that contact is accepted whatever its generation.
      */
@@ -601,6 +616,60 @@ internal class ContactStore {
         listOf(contactId),
     )
 
+    /**
+     * §6.3 and §21.3 point 3, SWEEP's half: an offered root whose window has closed loses its
+     * **secrets**, and a row whose secrets are gone is deleted only when a **higher** generation
+     * exists.
+     *
+     * The row is what makes `1 + max(root_gen)` never repeat on a device that kept the contact
+     * (§21.3 point 3); a peer ignores a generation not greater than the one it stored, so a reused
+     * number would be a root the peer silently drops. Deleting only below a higher generation keeps
+     * the counter intact while removing the rows nothing reads.
+     */
+    fun eraseOfferSecrets(tx: SyncTransaction, contactId: ByteArray, rootGen: Int): Int =
+        tx.sql.execUpdate(
+            "UPDATE dm_pair_offer SET root_env = NULL, offer_env = NULL " +
+                "WHERE contact_id = ? AND root_gen = ? AND (root_env IS NOT NULL OR offer_env IS NOT NULL)",
+            listOf(contactId, rootGen.toLong()),
+        )
+
+    fun deleteOffer(tx: SyncTransaction, contactId: ByteArray, rootGen: Int): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM dm_pair_offer WHERE contact_id = ? AND root_gen = ? AND root_env IS NULL",
+            listOf(contactId, rootGen.toLong()),
+        )
+
+    // -------------------------------------------------------------- requests
+
+    /**
+     * §12.3 and §10.6: the requests whose `request_until_day` has passed. Deleting the contact
+     * cascades its conversation, messages, sessions, pair keys and rows.
+     */
+    fun expiredRequests(sql: SqlExecutor, today: Long, batch: Int): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        sql.query(
+            "SELECT contact_id FROM dm_contact WHERE trust_state = 'request' " +
+                "AND request_until_day <= ? ORDER BY request_until_day, contact_id LIMIT ?",
+            listOf(today, batch.toLong()),
+        ) { r -> out += r.blob(0) }
+        return out
+    }
+
+    /**
+     * §21.9 rule 1's "next EST timer": the end of the next open bundle-fetch window. It is a wake
+     * and not a deletion, but it is the same timer (§10.7 trigger 1), and a device whose only live
+     * deadline is a fetch window would otherwise sleep through `EST-END`.
+     */
+    fun nextFetchDeadline(sql: SqlExecutor, nowMinute: Long): Long? {
+        var next: Long? = null
+        sql.query(
+            "SELECT min(fetch_listen_until_minute) FROM dm_contact " +
+                "WHERE fetch_listen_until_minute > ?",
+            listOf(nowMinute),
+        ) { r -> if (!r.isNull(0)) next = r.long(0) }
+        return next
+    }
+
     // ----------------------------------------------------------------- dm_peer_pq
 
     /**
@@ -612,6 +681,21 @@ internal class ContactStore {
      */
     fun deletePeerPq(tx: SyncTransaction, contactId: ByteArray): Int =
         tx.sql.execUpdate("DELETE FROM dm_peer_pq WHERE contact_id = ?", listOf(contactId))
+
+    /**
+     * §10.6's "surplus `dm_peer_pq` rows", read through §22.8.6 rule 2: a stored X-Wing key is
+     * usable only while `now < start(bundle_week + 5)`, so a row past that week can never be
+     * encapsulated to again and is a public key kept for nothing.
+     *
+     * It is a public key, so this is hygiene rather than secrecy — but it is also the rule that
+     * keeps the three-row cap (`dm_peer_pq_limit`, CS-8) from being filled with dead weeks and
+     * evicting a live one.
+     */
+    fun deleteStalePeerPq(tx: SyncTransaction, week: Long): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM dm_peer_pq WHERE bundle_week + ? <= ?",
+            listOf(PQ_KEY_WEEKS, week),
+        )
 
     fun peerPq(sql: SqlExecutor, contactId: ByteArray): List<PeerPqRow> {
         val out = ArrayList<PeerPqRow>()
@@ -685,6 +769,12 @@ internal class ContactStore {
     companion object {
         /** `dm_peer_pq_limit`: at most three peer X-Wing keys per contact (CS-8). */
         const val PEER_PQ_MAX: Int = 3
+
+        /**
+         * §22.8.6 rule 2 and §5.4 step 3: a peer's X-Wing key of week `b` is usable while
+         * `now < start(b + 5)`, so a row is stale from week `b + 5` on.
+         */
+        const val PQ_KEY_WEEKS: Long = 5
 
         /** `dm_pair_key.direction` for the keys this device accepts envelopes under. */
         const val DIRECTION_IN: String = "in"

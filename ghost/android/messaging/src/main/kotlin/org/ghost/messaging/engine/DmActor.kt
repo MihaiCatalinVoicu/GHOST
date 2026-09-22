@@ -36,15 +36,21 @@ import java.util.concurrent.atomic.AtomicBoolean
  * can be a lane thread; the listener only posts a coalesced flag here and returns.
  *
  * **The pass, and the two kinds of it** (§21.9 rule 1, mutant PM-30). Every pass runs the steps
- * that answer what is already in the database: OUTCOME, the bundle claims, the peek order and
- * `RECV`. Only a **time-triggered** pass — the actor timer, a database open, a relay session
+ * that answer what is already in the database: SWEEP, OUTCOME, the bundle claims, the peek order
+ * and `RECV`. Only a **time-triggered** pass — the actor timer, a database open, a relay session
  * start — also runs the steps whose *timing* must not depend on what arrived: the owner's
- * OWNER-WEEK, KEEPER and REGROWS, the contact KEEPER, the pair-key advance, `EST-READY`,
- * `EST-END` and the expired pending items. A card holder that deposits a probe during this
- * device's session must not make a bundle, a registration or an establishment follow it.
+ * OWNER-WEEK, KEEPER and REGROWS, the contact KEEPER, `EST-READY`, `EST-END` and the expired
+ * pending items. A card holder that deposits a probe during this device's session must not make a
+ * bundle, a registration or an establishment follow it. SWEEP is on the first list because §21.9
+ * rule 2 puts it there by name, and it carries the pair-key ratchet of §21.3 point 5 with it —
+ * neither writes anything a relay can see.
  *
- * **Not here, and recorded**: SWEEP and the expiry timer, and the `ExpiryAlarm` receiver (slice
- * S9). The pass order below leaves their places in it.
+ * **SWEEP and the wakes arrived with slice S9.** Every pass begins with SWEEP (§13.7's pass order)
+ * and ends by rescheduling the in-process timer and the one inexact alarm to the next due minute
+ * (§10.7 triggers 1 and 5), and by publishing the unread count the pass changed (§7.2's "After
+ * commit" column). Three of §10.7's five sweep triggers are passes that already existed — the
+ * database open and the relay session start are [onTimeTrigger], the `ConsumerTail` is
+ * [consumerTail] — so what S9 added to this file is the step, not a new road to it.
  */
 internal class DmActor(
     private val database: SyncDatabase,
@@ -56,8 +62,15 @@ internal class DmActor(
     private val outcomeStep: OutcomeStep,
     private val heldReplay: HeldReplay,
     private val scheduledSteps: ScheduledSteps,
-    private val pairKeys: PairKeySteps,
     private val contactKeeper: ContactKeeper,
+    /** SWEEP (§7.2, §10.6): the first step of every pass, whatever triggered it. */
+    private val sweeper: Sweeper,
+    /**
+     * §7.2's "After commit" column: the unread count, and the in-process timer and the one inexact
+     * alarm moved to the next due minute (§10.7 triggers 1 and 5). Null cancels both, which is what
+     * keeps a stale expiry minute out of the system's alarm table (L7-D7).
+     */
+    private val schedule: ExpirySchedule,
     private val ownerMaintenance: () -> Unit,
     /**
      * §21.12 point 2's safety net: **ACTIVATE, again**, for an activated identity that has no
@@ -175,6 +188,26 @@ internal class DmActor(
      */
     @Suppress("ReturnCount")
     fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
+        try {
+            pass(timeTriggered, deadlineMonotonicMillis)
+        } finally {
+            // §7.2's "After commit" column and §10.7 triggers 1 and 5, in a `finally` because they
+            // are owed by a pass that ended early as much as by one that ran to the end: a pass
+            // that returned at `CRYPTO_UNAVAILABLE` or at the tail deadline has still swept, and
+            // an alarm that was not rescheduled is a device that never sweeps again until it is
+            // opened by hand.
+            schedule.afterCommit()
+        }
+    }
+
+    @Suppress("ReturnCount")
+    private fun pass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
+        // SWEEP first (§13.7's pass order). It runs before the activation check and before every
+        // other step, because it is the one step that needs nothing to be true: a device whose DM
+        // context is locked, whose identity is half-activated or whose native library is missing
+        // still owes the user the deletion of what has expired. `Sweeper` reads `dm_self` for the
+        // expiry clock and falls back to the wall clock when there is none (R-T7).
+        sweeper.sweep()
         if (contexts.get() == null) {
             // §21.12 point 2: "at every actor start and database open, an activated identity with
             // no `dm_self` row runs ACTIVATE". This is that call, and until the S8 review it did
@@ -210,7 +243,9 @@ internal class DmActor(
         if (timeTriggered) {
             ownerMaintenance()
             contactKeeper.run()
-            pairKeys.run()
+            // The pair-key ratchet is no longer here: §21.3 point 5 puts it inside SWEEP, in the
+            // same transaction as the erasure it must precede (mutant MC-21), and SWEEP is the
+            // first step of every pass above.
             runEstablishment()
             // §21.9 rule 1 names "due scheduled controls" among the time-triggered steps, and this
             // is the whole of PM-30 for them: a card holder must not be able to deposit a probe

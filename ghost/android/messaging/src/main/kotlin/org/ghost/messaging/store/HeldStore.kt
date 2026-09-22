@@ -191,6 +191,40 @@ internal class HeldStore {
     fun deleteHeldFor(tx: SyncTransaction, contactId: ByteArray): Int =
         tx.sql.execUpdate("DELETE FROM dm_held WHERE contact_id = ?", listOf(contactId))
 
+    /**
+     * SWEEP's half of §8.3's "held rows are deleted at `hold_until_minute`" (§10.6).
+     *
+     * [heldFor] and [contactsWithReleasedHolds] already refuse a row past its deadline, so nothing
+     * replays one; this is what makes the ciphertext physically go. It is the only statement in the
+     * engine that deletes a held row by time, and it lives here with every other read and write of
+     * the table (§22.13 item 8).
+     */
+    fun deleteExpiredHeld(tx: SyncTransaction, nowMinute: Long): Int =
+        tx.sql.execUpdate("DELETE FROM dm_held WHERE hold_until_minute <= ?", listOf(nowMinute))
+
+    /**
+     * The next minute at which a held row becomes deletable, for the actor timer and the alarm
+     * (§10.7 trigger 1). Rows already past it are the sweep's, not a wake's.
+     */
+    fun nextHoldDeadline(sql: SqlExecutor, nowMinute: Long): Long? {
+        var next: Long? = null
+        sql.query(
+            "SELECT min(hold_until_minute) FROM dm_held WHERE hold_until_minute > ?",
+            listOf(nowMinute),
+        ) { r -> if (!r.isNull(0)) next = r.long(0) }
+        return next
+    }
+
+    /** The same, for the next scheduled control (§21.9 rule 1's `next due_minute`). */
+    fun nextDueMinute(sql: SqlExecutor, nowMinute: Long): Long? {
+        var next: Long? = null
+        sql.query(
+            "SELECT min(due_minute) FROM dm_scheduled WHERE due_minute > ?",
+            listOf(nowMinute),
+        ) { r -> if (!r.isNull(0)) next = r.long(0) }
+        return next
+    }
+
     private fun readHeld(r: SqlExecutor.Row) = HeldRow(
         heldId = r.blob(0),
         contactId = r.blob(1),

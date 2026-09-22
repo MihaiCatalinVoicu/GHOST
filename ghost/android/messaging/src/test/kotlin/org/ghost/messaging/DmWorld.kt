@@ -6,10 +6,12 @@ import org.ghost.messaging.engine.BundleStep
 import org.ghost.messaging.engine.ContactKeeper
 import org.ghost.messaging.engine.ContactMaterial
 import org.ghost.messaging.engine.ContactSteps
+import org.ghost.messaging.engine.DisplayStep
 import org.ghost.messaging.engine.DmActor
 import org.ghost.messaging.engine.DmCounters
 import org.ghost.messaging.engine.DmSyncPorts
 import org.ghost.messaging.engine.EstablishmentSteps
+import org.ghost.messaging.engine.ExpirySchedule
 import org.ghost.messaging.engine.HeldReplay
 import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.MessagingEngine
@@ -24,6 +26,8 @@ import org.ghost.messaging.engine.ScheduledSteps
 import org.ghost.messaging.engine.SelfContexts
 import org.ghost.messaging.engine.SendStep
 import org.ghost.messaging.engine.SessionSlots
+import org.ghost.messaging.engine.Sweeper
+import org.ghost.messaging.engine.UnreadNotices
 import org.ghost.messaging.port.DmContext
 import org.ghost.messaging.port.EsSlot
 import org.ghost.messaging.port.EsSlots
@@ -346,6 +350,38 @@ class DmDevice(
     internal val scheduledSteps = ScheduledSteps(
         database, crypto, sendStep, establishment, clock, random, contexts,
     )
+    internal val pairKeys = PairKeySteps(envelopes)
+    internal val displayStep = DisplayStep(database, clock)
+
+    /**
+     * The `-wal` truncation of §10.7, wired to the **real** `Checkpoint.truncate` over this
+     * device's executor — not to a stub. Mutants ME-10 ("checkpoint result ignored") and ME-11
+     * ("no checkpoint") live on the other side of this line, and a world that faked it would prove
+     * nothing about either.
+     */
+    val checkpoints = RecordingCheckpoint { org.ghost.storage.Checkpoint.truncate(sql) }
+
+    /** Every wake the actor asked for (§10.7 triggers 1 and 5); null is a cancel. */
+    val wakes = RecordingWake()
+
+    /** Every unread count the notification port was given (§10.6, §10.7 Q19). */
+    val notifications = RecordingNotifications()
+
+    /** Every batch of ids SWEEP handed the media port inside its own transaction (§10.6). */
+    val media = RecordingMedia()
+
+    internal val sweeper = Sweeper(
+        database = database,
+        namespaces = stores.namespaces,
+        envelopes = envelopes,
+        pairKeys = pairKeys,
+        checkpoint = checkpoints,
+        clock = clock,
+        contexts = contexts,
+        media = media,
+    )
+    internal val notices = UnreadNotices { sweeper.unreadCount() }
+    internal val schedule = ExpirySchedule(sweeper, wakes, notices)
     internal val engine: MessagingEngine
     internal val outcomeStep: OutcomeStep
     internal val actor: DmActor
@@ -380,7 +416,7 @@ class DmDevice(
         )
         engine = MessagingEngine(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
-            scheduledSteps, counters, clock, contexts, recognition,
+            scheduledSteps, displayStep, schedule, counters, clock, contexts, recognition,
         )
         outcomeStep = OutcomeStep(database, dmSync, sendStep, clock)
         actor = DmActor(
@@ -393,8 +429,9 @@ class DmDevice(
             outcomeStep = outcomeStep,
             heldReplay = heldReplay,
             scheduledSteps = scheduledSteps,
-            pairKeys = PairKeySteps(database, envelopes, clock),
             contactKeeper = ContactKeeper(database, dmSync, material, relayResolver, clock, contexts),
+            sweeper = sweeper,
+            schedule = schedule,
             ownerMaintenance = { engine.runOwnerMaintenance() },
             // §21.12 point 2's resume, wired to the **step** and not to the facade: the actor
             // calls it from inside a pass, and a facade call would post to the actor's own thread.
@@ -412,6 +449,7 @@ class DmDevice(
         // The world drives the pass directly, so the facade must not post to the actor's thread
         // and wait for it: every test here is single-threaded on purpose, and `DmActorTest` is
         // where the threading contract of §13.7 is checked on its own.
+        engine.setNotificationPort(notifications)
     }
 
     /** The owner's own card, as the other device would scan it. */

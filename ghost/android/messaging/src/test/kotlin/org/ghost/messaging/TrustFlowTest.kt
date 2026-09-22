@@ -259,12 +259,23 @@ class TrustFlowTest {
     }
 
     /**
-     * §6.3's replacement rule (c): a root older than `ROOT_REPLACE_WEEKS` is replaced at the next
-     * user send, acknowledged or not.
+     * §6.3's replacement of an offered root: the same generation while the offer is live, a new one
+     * — `1 + max(root_gen)`, so a peer cannot ignore it — once it is not.
      *
-     * Without it a root acknowledged once is never replaced, and a seizure of either device reads
-     * every pair envelope of that conversation back to its base week. Triggers (a) and (b) — a
-     * restore, a KEYDEC acceptance — hold by construction; this is the one that needs a clock.
+     * Without a replacement at all, a root acknowledged once is never replaced and a seizure of
+     * either device reads every pair envelope of that conversation back to its base week.
+     *
+     * **Which of §6.3's two clocks fires first, and why this test measures the earlier one**
+     * (changed in S9, when SWEEP's erasure half landed). §6.3 gives the offered root's *secret*
+     * two ends: "erased when a pair envelope under its generation opens (acknowledged) **or at
+     * `start(b + 1) + FRESH`, whichever comes first** (a new root is then offered on my next user
+     * message)". `FRESH` is 45 days, so an unacknowledged offer's secret is gone about 7.4 weeks
+     * after its base week — **before** replacement rule (c)'s `ROOT_REPLACE_WEEKS = 13`. Until S9
+     * nothing erased it, so (c) was the only rule that could fire and this test advanced 12 weeks
+     * to show that it had not yet; with the erasure in place, 12 weeks is past the earlier bound
+     * and the test would have measured that instead. It now stays inside both windows and then
+     * crosses both. Rule (c) becomes the earlier of the two when S13 lowers
+     * `ROOT_REPLACE_WEEKS` to 4 (§22.14).
      */
     @Test
     fun aRootOlderThanTheBoundIsReplacedAtTheNextSend() {
@@ -276,19 +287,18 @@ class TrustFlowTest {
             val first = rootGenerations(alice)
             assertEquals("one offered root so far", 1, first.size)
 
-            // Inside the bound: the same generation, whatever the number of sends. The weekly
+            // Inside both bounds: the same generation, whatever the number of sends. The weekly
             // passes are `PairKeySteps`, which ratchets the out key forward — without them the
             // conversation falls to `NO_SEAL_KEY` at the first week boundary and the test would be
             // measuring that instead (§21.3 point 5).
-            weeks(world, 12)
+            weeks(world, 5)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "still inside", null))
             assertEquals(first, rootGenerations(alice))
 
-            // Past it: a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
-            weeks(world, 2)
+            // Past both: a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
+            weeks(world, 9)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "past the bound", null))
             val second = rootGenerations(alice)
-            assertEquals(2, second.size)
             assertEquals(first.max() + 1, second.max())
         }
     }

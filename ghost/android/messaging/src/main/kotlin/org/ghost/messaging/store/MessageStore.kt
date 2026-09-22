@@ -1,5 +1,6 @@
 package org.ghost.messaging.store
 
+import org.ghost.messaging.engine.DmTime
 import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.SyncTransaction
 
@@ -191,6 +192,127 @@ internal class MessageStore {
                 expireAtMinute ?: unreadDeadlineMinute,
             ),
         )
+    }
+
+    /**
+     * The minute the **next live** row becomes deletable, or null when none will (§10.7 trigger 1,
+     * §21.9 rule 1: the actor timer includes "the next `delete_at_minute`").
+     *
+     * It is a read path like any other and carries the §10.7 point 4 bound in its own shape: rows
+     * already past [nowMinute] are excluded, because a wake for a row SWEEP should already have
+     * deleted would be a wake in the past — an alarm loop — rather than the next deadline. A row
+     * with the timer off has `delete_at_minute IS NULL` and never becomes one.
+     */
+    fun nextDeleteAtMinute(sql: SqlExecutor, nowMinute: Long): Long? {
+        var next: Long? = null
+        sql.query(NEXT_DELETE_AT, listOf(nowMinute)) { r -> if (!r.isNull(0)) next = r.long(0) }
+        return next
+    }
+
+    /**
+     * §10.6: one batch of the rows SWEEP deletes, at most [batch] of them, oldest deadline first.
+     *
+     * This is **not** a read path and is registered in `:storage`'s `DmSweepQueries` rather than in
+     * `DmDaoQueries`: it is the expiry enforcement itself, and it is judged by the opposite
+     * contract — it must return exactly the rows the sweep removes and nothing at all once they are
+     * gone. The ids are needed twice, for the delete and for `MediaPort.onMessagesDeleted(tx, ids)`
+     * inside the same transaction (§10.6), and SQLite's `DELETE` carries no `LIMIT` on Android's
+     * build, so the batch bound of §10.6 has to be expressed here.
+     */
+    fun expiredMessages(sql: SqlExecutor, nowMinute: Long, batch: Int): List<ByteArray> {
+        val out = ArrayList<ByteArray>()
+        sql.query(EXPIRED_BATCH, listOf(nowMinute, batch.toLong())) { r -> out += r.blob(0) }
+        return out
+    }
+
+    /** §10.6: the message row goes; reactions, items, ops and pending sends cascade. */
+    fun deleteMessage(tx: SyncTransaction, messageId: ByteArray): Int =
+        tx.sql.execUpdate("DELETE FROM dm_message WHERE message_id = ?", listOf(messageId))
+
+    /**
+     * R-T6 and §10.3: `expire_at_minute` moves **only earlier**, so DISPLAY writes it under a
+     * guard rather than plainly.
+     *
+     * The `dm_message_expiry` trigger aborts an increase, which would take the whole DISPLAY
+     * transaction down; the guard turns a second display of the same message into "nothing
+     * changed". `delete_at_minute` follows its CHECK and is written in the same statement — it is
+     * the one column of the three that may move **later**, because a displayed message's countdown
+     * legitimately outlives the unread cap (ADR-27 point 9, §21.10 point 6).
+     *
+     * Returns how many rows changed. **Zero is not a failure** and the caller does not check it:
+     * the guard matches a NULL `expire_at_minute`, so a row it leaves alone is one that already
+     * carries an earlier minute — which is exactly what the state change that follows needs
+     * (`CHECK (state <> 'read' OR timer_code = 0 OR expire_at_minute IS NOT NULL)`). A second read
+     * here to confirm it would be a read of `dm_message` without the expiry filter, which is what
+     * the DAO lint refuses and rightly: the caller has already read the row **with** the filter, in
+     * this same transaction.
+     */
+    fun lowerExpireAt(tx: SyncTransaction, messageId: ByteArray, expireAtMinute: Long): Int =
+        tx.sql.execUpdate(
+            "UPDATE dm_message SET expire_at_minute = ?, delete_at_minute = ? " +
+                "WHERE message_id = ? AND (expire_at_minute IS NULL OR expire_at_minute > ?)",
+            listOf(expireAtMinute, expireAtMinute, messageId, expireAtMinute),
+        )
+
+    /** §10.6: `dm_seen` tags past their `until_day` (D3's window, §21.10 point 3). */
+    fun deleteSeenTags(tx: SyncTransaction, today: Long): Int =
+        tx.sql.execUpdate("DELETE FROM dm_seen WHERE until_day <= ?", listOf(today))
+
+    /**
+     * §10.6 and R-T5: `dm_pending_send` rows whose item can no longer be stored anywhere.
+     *
+     * The rows of an **expired** message cascade with it; this covers the other shape — an item
+     * whose `fail_after_hour` passed while its message is still live (the timer is off, or longer
+     * than the store window). `DmActor.failExpiredPending` moves those items to `failed` on a
+     * time-triggered pass; SWEEP is the trigger of last resort for a device that only ever sweeps.
+     */
+    fun expiredPendingSends(sql: SqlExecutor, nowSeconds: Long, batch: Int): List<PendingRow> {
+        val out = ArrayList<PendingRow>()
+        sql.query(
+            "SELECT item_id, contact_id, fail_after_hour FROM dm_pending_send " +
+                "WHERE fail_after_hour <= ? ORDER BY fail_after_hour, item_id LIMIT ?",
+            listOf(nowSeconds, batch.toLong()),
+        ) { r -> out += PendingRow(r.blob(0), r.blob(1), r.long(2)) }
+        return out
+    }
+
+    /**
+     * §22.8.5 rule 1: the weeks for which an out pair key must be kept because a **live retryable
+     * item** of this contact could still be re-encrypted under it.
+     *
+     * > Besides `K_{week(now)}` of the newest generation, the sender keeps the out key (generation,
+     * > week) of every earlier week w for which an item of c authored in w is `pending`, `enqueued`
+     * > or `failed` with `deadline_hour > now` (at most 7 days); SWEEP erases it at that deadline.
+     *
+     * The author minute is not a column of `dm_outbound_item` (a CONTROL and a REACTION have no
+     * `dm_message` row of their own to read it from), so the week is derived from the one column
+     * that is: `deadline_hour = ceil_hour(author_minute + min(bucket, 7 d))`, hence
+     * `author_minute ∈ [deadline_hour − 7 d − 1 h, deadline_hour]` and the author week is one of
+     * the (at most three) weeks that interval spans. Keeping that whole interval is a superset of
+     * the rule and costs nothing against P-7: the item itself is gone at its deadline, so the extra
+     * weeks are erased at the same instant the exactly-derived one would have been.
+     */
+    fun retryableItemWeeks(
+        sql: SqlExecutor,
+        contactId: ByteArray,
+        nowSeconds: Long,
+    ): Set<Long> {
+        val weeks = HashSet<Long>()
+        sql.query(
+            "SELECT deadline_hour FROM dm_outbound_item WHERE contact_id = ? " +
+                "AND state IN ('pending', 'enqueued', 'failed') AND deadline_hour > ?",
+            listOf(contactId, nowSeconds),
+        ) { r ->
+            val deadline = r.long(0)
+            val earliest = deadline - RETRY_AUTHOR_SPAN_SECONDS
+            var week = DmTime.week(earliest)
+            val last = DmTime.week(deadline)
+            while (week <= last) {
+                weeks += week
+                week += 1
+            }
+        }
+        return weeks
     }
 
     /** The `dm_message_state` transitions of §13.5, guarded by the state the caller expects. */
@@ -464,11 +586,38 @@ internal class MessageStore {
                 "AND direction = 'out' AND author_minute = ? " +
                 "AND (delete_at_minute IS NULL OR delete_at_minute > ?)"
 
+        /**
+         * The actor timer's and the alarm's next wake (§10.7 trigger 1). A read like any other: it
+         * is over live rows only, so it cannot differ between a swept and an unswept world.
+         */
+        const val NEXT_DELETE_AT: String =
+            "SELECT min(delete_at_minute) FROM dm_message " +
+                "WHERE delete_at_minute IS NOT NULL AND delete_at_minute > ?"
+
+        /**
+         * SWEEP's own batch (§10.6). Registered in `DmSweepQueries`, not in `DmDaoQueries`: it
+         * names the expired rows on purpose, and the lint judges it by the opposite contract.
+         */
+        const val EXPIRED_BATCH: String =
+            "SELECT message_id FROM dm_message WHERE delete_at_minute <= ? " +
+                "ORDER BY delete_at_minute, message_id LIMIT ?"
+
         /** `dm_message.state` for an outgoing row that has not been enqueued yet (§13.5). */
         const val STATE_QUEUED: String = "queued"
 
         /** An incoming row the user has not displayed (§13.5). */
         const val STATE_UNREAD: String = "unread"
+
+        /** An incoming row the user has seen; its countdown started at that display (§10.3). */
+        const val STATE_READ: String = "read"
+
+        /**
+         * How far before its `deadline_hour` an item may have been authored: the 7-day store cap of
+         * R-T4 plus the hour `ceil_hour` may add. Used by [retryableItemWeeks] to bound the author
+         * week without a column for the author minute.
+         */
+        const val RETRY_AUTHOR_SPAN_SECONDS: Long =
+            7 * DmTime.DAY + DmTime.HOUR
 
         /** `dm_outbound_item.state`: waiting for establishment (§21.8 point 1). */
         const val ITEM_PENDING: String = "pending"

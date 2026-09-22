@@ -16,6 +16,7 @@ import org.ghost.messaging.api.MessageKind
 import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.MessageView
 import org.ghost.messaging.api.MessagingStatus
+import org.ghost.messaging.api.NotificationPort
 import org.ghost.messaging.api.RevocationReason
 import org.ghost.messaging.api.SafetyNumberView
 import org.ghost.messaging.api.SendResult
@@ -48,6 +49,10 @@ internal class MessagingEngine(
     private val keyDecision: KeyDecision,
     private val heldReplay: HeldReplay,
     private val scheduledSteps: ScheduledSteps,
+    /** DISPLAY (§7.2, §10.3): the recipient's countdown starts at the first display. */
+    private val displayStep: DisplayStep,
+    /** §7.2's "After commit" column, which DISPLAY owes exactly as a pass does. */
+    private val schedule: ExpirySchedule,
     private val counters: DmCounters,
     private val clock: DmClock,
     private val contexts: SelfContexts,
@@ -168,6 +173,24 @@ internal class MessagingEngine(
             }
             rows.map { row -> view(self, row) }
         }
+    }
+
+    /**
+     * §7.2's DISPLAY row, with the two things it owes after the commit: the notification count and
+     * the rescheduled timer and alarm.
+     *
+     * Both run on the actor thread inside this same call — [DmActor.afterPass] never posts to
+     * itself — so a UI that marks a screenful displayed has, by the time the call returns, a badge
+     * that matches and a wake set to whichever of those messages expires first.
+     */
+    override fun markDisplayed(ids: List<MessageId>): Int = onActor {
+        val displayed = displayStep.markDisplayed(ids.map { it.toByteArray() })
+        if (displayed > 0) schedule.afterCommit()
+        displayed
+    }
+
+    override fun setNotificationPort(port: NotificationPort?) {
+        onActor { schedule.setNotificationPort(port) }
     }
 
     override fun acceptRequest(contact: ContactId): Boolean = onActor {

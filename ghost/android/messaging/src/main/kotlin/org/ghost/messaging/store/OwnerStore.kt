@@ -205,6 +205,54 @@ internal class OwnerStore {
             listOf(supersededDay, supersededDay + RETENTION_DAYS, genId),
         ) == 1
 
+    /**
+     * §10.6 and §5.4 "Erasure": the generations past `delete_after_day`, **except while a live
+     * held row names one**.
+     *
+     * The exception is §5.4's own — "a generation referenced by a live held row is not erased
+     * before that row's `hold_until_minute`" — and §22.13 item 10 left it to this slice because S8
+     * wrote the held rows and S9 writes the sweep. Without the `NOT EXISTS`, a hold that outlives
+     * a generation by two months (the hold bound is ≤ 30 d + 1 h, the generation retention 91 days
+     * past supersession, so the case needs a hold taken near the end of the window) would be
+     * released into `drop(unknown_generation)` for every row that named it — the user's decision
+     * losing exactly the messages it was taken to recover.
+     *
+     * The reference is **code, not schema**: `dm_held.gen_id` carries a range CHECK and no
+     * `REFERENCES` (§22.10 item 1), so this query is the whole of the rule. Held rows past their
+     * own deadline do not count, because the same sweep deletes them — and it deletes them
+     * **first**, so a generation whose last holder expires in this pass is erased in this pass too.
+     */
+    fun erasableGenerations(sql: SqlExecutor, today: Long): List<Long> {
+        val out = ArrayList<Long>()
+        sql.query(
+            "SELECT gen_id FROM olm_prekey_gen g WHERE g.delete_after_day IS NOT NULL " +
+                "AND g.delete_after_day <= ? " +
+                "AND NOT EXISTS (SELECT 1 FROM dm_held h WHERE h.gen_id = g.gen_id) " +
+                "ORDER BY g.gen_id",
+            listOf(today),
+        ) { r -> out += r.long(0) }
+        return out
+    }
+
+    /** §5.4: the row goes and `olm_prekey_used` cascades with it (D2b, §7.6). */
+    fun deleteGeneration(tx: SyncTransaction, genId: Long): Int =
+        tx.sql.execUpdate("DELETE FROM olm_prekey_gen WHERE gen_id = ?", listOf(genId))
+
+    /**
+     * R-T7 (§10.3): `now_e = max(floor_minute(wall), dm_self.expiry_clock_minute)`, and **every
+     * sweep raises the stored half**.
+     *
+     * A wall clock stepped backwards — by the user, by NTP, across a reboot — never delays a
+     * deletion, because the column only moves forward (`dm_self_monotonic` refuses a decrease, so
+     * the guard here is what keeps a backwards step from aborting the whole sweep transaction).
+     * A forward step deletes early: data loss, never a leak, and declared.
+     */
+    fun raiseExpiryClock(tx: SyncTransaction, minute: Long): Boolean =
+        tx.sql.execUpdate(
+            "UPDATE dm_self SET expiry_clock_minute = ? WHERE id = 1 AND expiry_clock_minute < ?",
+            listOf(minute, minute),
+        ) == 1
+
     private fun readGeneration(r: SqlExecutor.Row) = GenerationRow(
         genId = r.long(0),
         bundleWeek = r.long(1),

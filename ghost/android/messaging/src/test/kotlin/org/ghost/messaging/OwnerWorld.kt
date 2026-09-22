@@ -3,15 +3,21 @@ package org.ghost.messaging
 import org.ghost.crypto.bridge.DmCards
 import org.ghost.crypto.bridge.DmRevocations
 import org.ghost.crypto.bridge.DmSessions
+import org.ghost.messaging.api.MediaPort
+import org.ghost.messaging.api.MessageId
+import org.ghost.messaging.api.NotificationPort
 import org.ghost.messaging.engine.ContactMaterial
 import org.ghost.messaging.engine.ContactSteps
+import org.ghost.messaging.engine.DisplayStep
 import org.ghost.messaging.engine.DmCounters
 import org.ghost.messaging.engine.DmSyncPorts
 import org.ghost.messaging.engine.EstablishmentSteps
+import org.ghost.messaging.engine.ExpirySchedule
 import org.ghost.messaging.engine.HeldReplay
 import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.MessagingEngine
 import org.ghost.messaging.engine.OwnerSteps
+import org.ghost.messaging.engine.PairKeySteps
 import org.ghost.messaging.engine.ReceiveStep
 import org.ghost.messaging.engine.RecognitionKeys
 import org.ghost.messaging.engine.RelaySetResolver
@@ -19,11 +25,15 @@ import org.ghost.messaging.engine.ScheduledSteps
 import org.ghost.messaging.engine.SelfContexts
 import org.ghost.messaging.engine.SendStep
 import org.ghost.messaging.engine.SessionSlots
+import org.ghost.messaging.engine.Sweeper
+import org.ghost.messaging.engine.UnreadNotices
+import org.ghost.messaging.port.DmCheckpoint
 import org.ghost.messaging.port.DmClock
 import org.ghost.messaging.port.DmCrypto
 import org.ghost.messaging.port.DmRandom
 import org.ghost.messaging.port.EsSlot
 import org.ghost.messaging.port.EsSlots
+import org.ghost.messaging.port.ExpiryWake
 import org.ghost.messaging.port.KeyWrapper
 import org.ghost.network.OnionAddress
 import org.ghost.storage.JdbcSqlExecutor
@@ -33,6 +43,7 @@ import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.RelayEntry
 import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.SyncDatabase
+import org.ghost.sync.api.SyncTransaction
 import org.ghost.sync.port.PairKey
 import org.ghost.sync.port.RandomSources
 import org.ghost.sync.port.SchedulePurpose
@@ -148,11 +159,31 @@ class OwnerWorld(
         ScheduledSteps(database, crypto, sendStep, establishment, clock, random, contexts)
     }
 
+    internal val displayStep: DisplayStep by lazy { DisplayStep(database, clock) }
+
+    /** The owner world sweeps nothing of its own, but the facade needs the schedule behind it. */
+    internal val sweeper: Sweeper by lazy {
+        Sweeper(
+            database = database,
+            namespaces = stores.namespaces,
+            envelopes = envelopes,
+            pairKeys = PairKeySteps(envelopes),
+            checkpoint = DmCheckpoint { org.ghost.storage.Checkpoint.truncate(sql) },
+            clock = clock,
+            contexts = contexts,
+            media = MediaPort.NONE,
+        )
+    }
+
+    internal val schedule: ExpirySchedule by lazy {
+        ExpirySchedule(sweeper, ExpiryWake.NONE, UnreadNotices { sweeper.unreadCount() })
+    }
+
     /** The facade, wired to this world's steps. No actor: the world is single-threaded already. */
     internal val engine: MessagingEngine by lazy {
         MessagingEngine(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
-            scheduledSteps, counters, clock, contexts, recognition,
+            scheduledSteps, displayStep, schedule, counters, clock, contexts, recognition,
         )
     }
 
@@ -325,6 +356,71 @@ class SequentialRandom(private var counter: Int = 0) : DmRandom {
             block++
         }
         return out
+    }
+}
+
+/**
+ * The wakes the actor asked for (§10.7 triggers 1 and 5): every minute it was given, in order,
+ * with null for a cancel.
+ *
+ * It records rather than schedules, because what the EP suite checks is the **contract** — one
+ * wake per pass, the next due minute, a cancel when nothing is pending — and the platform half is
+ * `ExpiryAlarm`'s, whose arithmetic `ExpiryAlarmSpecTest` checks on its own.
+ */
+class RecordingWake : ExpiryWake {
+    val requested = ArrayList<Long?>()
+
+    override fun wakeAt(wallMinute: Long?) {
+        requested += wallMinute
+    }
+
+    /** The last wake asked for, or null when the last thing asked for was a cancel. */
+    val last: Long? get() = requested.lastOrNull()
+}
+
+/** Every unread count the notification port was given (§10.6, §10.7 Q19). */
+class RecordingNotifications : NotificationPort {
+    val counts = ArrayList<Int>()
+
+    override fun onUnreadChanged(count: Int) {
+        counts += count
+    }
+
+    val last: Int? get() = counts.lastOrNull()
+}
+
+/**
+ * The media port of §10.6, which SWEEP calls **inside** its own transaction. The world records the
+ * ids so a test can assert that they are exactly the messages that then disappeared.
+ */
+class RecordingMedia : MediaPort {
+    val deleted = ArrayList<List<String>>()
+
+    override fun onMessagesDeleted(tx: SyncTransaction, ids: List<MessageId>) {
+        deleted += ids.map { id -> id.toByteArray().joinToString("") { "%02x".format(it) } }
+    }
+
+    val allIds: List<String> get() = deleted.flatten()
+}
+
+/**
+ * The checkpoint port, wired to the real `Checkpoint.truncate` and counting the calls.
+ *
+ * [busy] models the §10.7 case the design names — a reader holds the log through all three retries
+ * — so a test can check that the need is **kept** and retried at the next sweep rather than lost
+ * (mutant ME-10, "checkpoint result ignored").
+ */
+class RecordingCheckpoint(private val real: () -> Boolean) : DmCheckpoint {
+    var calls: Int = 0
+        private set
+
+    /** While true, every call answers false, as a busy reader would. */
+    var busy: Boolean = false
+
+    override fun truncate(): Boolean {
+        calls += 1
+        if (busy) return false
+        return real()
     }
 }
 
