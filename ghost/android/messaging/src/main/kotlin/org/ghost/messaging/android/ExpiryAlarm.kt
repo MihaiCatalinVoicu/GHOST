@@ -22,11 +22,19 @@ import org.ghost.messaging.port.ExpiryWake
  * stub that throws. The EP suite's "alarm contract (non-exported receiver, no extras, one request
  * code, cancel at wipe)" is this class plus the manifest entry `:app` declares (slice S12).
  *
+ * **The spec is what the implementation reads**, not a description beside it (S9 review). Until
+ * that review, [ExpiryAlarm.wakeIn] used two of these fields and built its `PendingIntent` from
+ * the companion constants directly, so a test asserting `immutable`, `extras`, `requestCode`,
+ * `explicitComponent` or `allowWhileIdle` was asserting a data class against itself: switching the
+ * real call to `FLAG_MUTABLE`, adding a `putExtra`, or deriving the request code from the minute
+ * — each of them the leak §10.7 and L7-D7 forbid — left the whole suite green. Every field is now
+ * read by the code that talks to `AlarmManager`.
+ *
  * **Why `ELAPSED_REALTIME_WAKEUP` and not `RTC_WAKEUP`.** The wake has to survive a wall-clock
  * step: R-T7 already makes a backwards step unable to delay a deletion *once a sweep runs*, and an
  * `RTC` alarm set for a minute the user has just moved past would either fire immediately or never.
- * The conversion from the row's wall-clock minute to elapsed realtime happens here, once, and the
- * delay is clamped at zero so a minute already past is a wake as soon as the system allows.
+ * The delay this class is given is already measured against `now_e` (R-T7) by the engine, so the
+ * only conversion left here is to elapsed realtime — no wall clock is read at all.
  *
  * **Why inexact.** `setAndAllowWhileIdle` needs no permission (`SCHEDULE_EXACT_ALARM` would, and
  * T15's allowlist has none), and Doze limits it to about once per nine minutes per app — which is
@@ -38,7 +46,7 @@ internal data class ExpiryAlarmSpec(
     val requestCode: Int,
     /** The alarm clock: elapsed realtime, which no wall-clock step moves. */
     val clockType: Int,
-    /** `SystemClock.elapsedRealtime() + (next − now)`, clamped at the current instant. */
+    /** `SystemClock.elapsedRealtime() + (next − now_e)`, clamped at the current instant. */
     val triggerElapsedMillis: Long,
     /** `setAndAllowWhileIdle`: fires in Doze, about once per nine minutes (L7-D14). */
     val allowWhileIdle: Boolean,
@@ -46,9 +54,20 @@ internal data class ExpiryAlarmSpec(
     val immutable: Boolean,
     /** The receiver is named explicitly, so no other component can be resolved into it. */
     val explicitComponent: String,
-    /** No extras. The alarm table holds the minute and nothing about what expires (L7-D7). */
-    val extras: Int,
+    /**
+     * The extras of the broadcast intent, which are **none**: the alarm table holds the minute and
+     * nothing about what expires (L7-D7).
+     *
+     * It is a map rather than a count so that the field is *built from* rather than *described
+     * beside* the intent — [ExpiryAlarm.pendingIntent] puts exactly these entries and has no other
+     * `putExtra`, so an extra can only be added by adding it here, where the test sees it.
+     */
+    val extras: Map<String, String>,
 ) {
+    /** The `PendingIntent` flags this spec asks for, `FLAG_MUTABLE` being the leak it forbids. */
+    fun pendingIntentFlags(base: Int): Int =
+        base or if (immutable) PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_MUTABLE
+
     companion object {
         /**
          * "GDM1": the one DM alarm of the app. It is fixed because §10.7 says one alarm — a
@@ -66,25 +85,32 @@ internal data class ExpiryAlarmSpec(
         /**
          * §21.10 point 7's computed trigger time.
          *
-         * [wallMinute] is the row's deadline in unix seconds on the minute grid; [nowSeconds] is
-         * the wall clock the engine read it against; [elapsedRealtimeMillis] is the monotonic
-         * clock the alarm is set on. A deadline already past clamps to "now", because an alarm in
-         * the past is either refused or fired at once depending on the API level, and "at once" is
-         * what is wanted.
+         * [delaySeconds] is `next − now_e`, already measured by the engine against the expiry
+         * clock of R-T7 (see [org.ghost.messaging.port.ExpiryWake]); [elapsedRealtimeMillis] is
+         * the monotonic clock the alarm is set on. A delay already past clamps to "now", because
+         * an alarm in the past is either refused or fired at once depending on the API level, and
+         * "at once" is what is wanted.
          */
         fun wanted(
-            wallMinute: Long,
-            nowSeconds: Long,
+            delaySeconds: Long,
             elapsedRealtimeMillis: Long,
         ): ExpiryAlarmSpec = ExpiryAlarmSpec(
             requestCode = REQUEST_CODE,
             clockType = AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            triggerElapsedMillis = elapsedRealtimeMillis + maxOf(0L, wallMinute - nowSeconds) * 1_000L,
+            triggerElapsedMillis = elapsedRealtimeMillis + maxOf(0L, delaySeconds) * 1_000L,
             allowWhileIdle = true,
             immutable = true,
             explicitComponent = RECEIVER,
-            extras = 0,
+            extras = emptyMap(),
         )
+
+        /**
+         * The alarm **as it is identified**, with no trigger time: the request code, the component
+         * and the flags, which is all a cancel needs. It is the same identity a schedule uses, and
+         * that is the point — a cancel that named a different request code or a different
+         * component would leave the standing alarm in the system's table (L7-D7).
+         */
+        fun standing(): ExpiryAlarmSpec = wanted(delaySeconds = 0L, elapsedRealtimeMillis = 0L)
     }
 }
 
@@ -100,43 +126,56 @@ internal data class ExpiryAlarmSpec(
  * unchanged, and the messaging layer may hold this one inexact alarm with no extras. A rooted
  * examiner can read the next expiry minute out of it, which is declared in L7-D7.
  */
-internal class ExpiryAlarm(context: Context, private val clock: () -> Long) : ExpiryWake {
+internal class ExpiryAlarm(context: Context) : ExpiryWake {
     private val app: Context = context.applicationContext
 
     private fun manager(): AlarmManager? = app.getSystemService(AlarmManager::class.java)
 
-    override fun wakeAt(wallMinute: Long?) {
+    override fun wakeIn(delaySeconds: Long?) {
         val alarms = manager() ?: return
-        val intent = pendingIntent()
-        if (wallMinute == null) {
-            // "cancelled when nothing is pending and at wipe" (§10.7). The pending intent is
-            // cancelled too, so nothing of it is left in the system's table.
-            alarms.cancel(intent)
-            intent.cancel()
+        if (delaySeconds == null) {
+            // "cancelled when nothing is pending and at wipe" (§10.7). `FLAG_NO_CREATE` answers
+            // null when there is no alarm to cancel, rather than creating a pending intent purely
+            // in order to cancel it. The pending intent is cancelled too, so nothing of it is left
+            // in the system's table.
+            val standing = pendingIntent(ExpiryAlarmSpec.standing(), PendingIntent.FLAG_NO_CREATE)
+                ?: return
+            alarms.cancel(standing)
+            standing.cancel()
             return
         }
         val spec = ExpiryAlarmSpec.wanted(
-            wallMinute = wallMinute,
-            nowSeconds = clock(),
+            delaySeconds = delaySeconds,
             elapsedRealtimeMillis = SystemClock.elapsedRealtime(),
         )
-        alarms.setAndAllowWhileIdle(spec.clockType, spec.triggerElapsedMillis, intent)
+        val intent = pendingIntent(spec, PendingIntent.FLAG_UPDATE_CURRENT) ?: return
+        if (spec.allowWhileIdle) {
+            alarms.setAndAllowWhileIdle(spec.clockType, spec.triggerElapsedMillis, intent)
+        } else {
+            alarms.set(spec.clockType, spec.triggerElapsedMillis, intent)
+        }
     }
 
     /**
-     * The one pending intent: explicit (a [ComponentName], never an implicit action resolved at
-     * delivery), immutable, no extras, and the fixed request code that makes a second schedule
+     * The one pending intent, **built from [spec] and from nothing else**: explicit (a
+     * [ComponentName], never an implicit action resolved at delivery), immutable, carrying exactly
+     * the spec's extras — which are none — and the fixed request code that makes a second schedule
      * replace the first.
+     *
+     * Every value comes out of the spec so that `ExpiryAlarmSpecTest`'s assertions about the spec
+     * are assertions about this call (S9 review): while these were companion constants read
+     * directly, the test proved only that a data class held the values it had been given.
      */
-    private fun pendingIntent(): PendingIntent {
+    private fun pendingIntent(spec: ExpiryAlarmSpec, flags: Int): PendingIntent? {
         val intent = Intent(ExpiryAlarmSpec.ACTION).setComponent(
-            ComponentName(app.packageName, ExpiryAlarmSpec.RECEIVER),
+            ComponentName(app.packageName, spec.explicitComponent),
         )
+        for ((name, value) in spec.extras) intent.putExtra(name, value)
         return PendingIntent.getBroadcast(
             app,
-            ExpiryAlarmSpec.REQUEST_CODE,
+            spec.requestCode,
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            spec.pendingIntentFlags(flags),
         )
     }
 

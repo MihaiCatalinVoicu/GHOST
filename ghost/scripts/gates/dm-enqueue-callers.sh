@@ -108,6 +108,14 @@
 # never cancel a DM op ("ops run to their outcome or deadline"), mutant **ME-21** is that call
 # being made at expiry, and `cancel` is on `RESTRICTED` while `Sweeper.kt` is not on
 # `ALLOWED_FILES` — so the mutant cannot be written in the file that would want to write it.
+#
+# **The S9 review then wrote it anyway, and this gate passed.** `RECEIVERS` matches the four
+# conventional property *names*, and the alias rule needed an initialiser; a constructor-injected
+# `private val ops: Outbox` matched neither, so `ops.cancel(tx, id)` in `Sweeper.kt` was invisible.
+# The file's own header had always said that "an alias that travels through a field" was unseen —
+# but §22.14 item 9 read that caveat as a corner and it was the main road: `Sweeper.kt` is the one
+# production file that takes a port as a bare constructor property. `RECEIVER_TYPES` closes it by
+# matching the port **types** as well, which a Kotlin declaration must write out.
 # `DisplayStep.kt`, `UnreadNotices.kt`, `PairKeySteps.kt` and the `…messaging.android` alarm files
 # joined the tree in the same slice and are on neither list, because none of them makes a
 # restricted call either.
@@ -130,6 +138,13 @@ REMOVE='remove'
 # A receiver that makes the match a **DM** call rather than any `.put(` on a map. The call sites of
 # this codebase always go through a named port; a call on something else is not one of these.
 RECEIVERS='outbox|registrations|namespaces|capabilities'
+# The **types** of those four ports. A property declared with one of them is a port whatever it is
+# called, which is what closes the hole the S9 review found: the alias rule below needs an
+# initialiser (`val ob = sync.outbox`), so a constructor-injected `private val ops: Outbox` was
+# invisible and `ops.cancel(tx, id)` passed. That is not a hypothetical shape — `Sweeper.kt` is the
+# one production file that takes a port as a bare constructor property rather than through `sync.`,
+# so the evading shape is the shape that file already uses.
+RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities'
 # The scope functions that turn a port into `this`, so a call inside can be bare.
 SCOPES='run|apply'
 # The scope functions that bind the port to a lambda **parameter** instead: the call inside is
@@ -281,6 +296,18 @@ while IFS= read -r file; do
     if [[ "$line" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(:[^=]*)?=[^=]*($RECEIVERS) ]]; then
       alias_alt="${alias_alt:+$alias_alt|}${BASH_REMATCH[2]}"
     fi
+    # The same property declared by its **type** and with no initialiser: a constructor parameter
+    # (`private val ops: Outbox,`) or a field assigned elsewhere. The name is then free, so only the
+    # type identifies the port (S9 review).
+    #
+    # The loop is not decoration: `=~` reports the **first** match of a line, and a whole primary
+    # constructor is one joined line, so a single test would see `ops` and miss the `registry`
+    # beside it. Each round eats the match it consumed.
+    rest="$line"
+    while [[ "$rest" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*($RECEIVER_TYPES)([^A-Za-z0-9_]|$) ]]; do
+      alias_alt="${alias_alt:+$alias_alt|}${BASH_REMATCH[2]}"
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+    done
     if [[ "$line" =~ with[[:space:]]*\([^\)]*($RECEIVERS) ]] ||
        [[ "$line" =~ ($RECEIVERS)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($SCOPES)[[:space:]]*[\{\(] ]]; then
       scoped=1

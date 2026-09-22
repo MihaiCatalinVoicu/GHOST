@@ -549,9 +549,14 @@ internal class MessageStore {
 
     companion object {
         /**
-         * The four reads of `dm_message`, spelled out as constants so the expired-row lint's
+         * The **seven** reads of `dm_message`, spelled out as constants so the expired-row lint's
          * static half sees the table name (an interpolated one it cannot see, §22.10 item 3) and
          * so `DmDaoQueries` can register the **same** string the DAO runs.
+         *
+         * Six are registered in `DmDaoQueries` and judged by the read contract; [EXPIRED_BATCH] is
+         * SWEEP's own and is registered in `DmSweepQueries`, under the mirror of it. The count is
+         * written out because it is the thing that goes stale: S9 added the last two and left this
+         * sentence saying "four".
          */
         /** §13.2 `conversation`, newest first; R-O1's order, reversed for paging. */
         const val CONVERSATION_PAGE: String =

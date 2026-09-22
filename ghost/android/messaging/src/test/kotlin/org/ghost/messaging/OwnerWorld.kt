@@ -601,18 +601,23 @@ class SequentialRandom(private var counter: Int = 0, private val stream: String 
 }
 
 /**
- * The wakes the actor asked for (§10.7 triggers 1 and 5): every minute it was given, in order,
+ * The wakes the actor asked for (§10.7 triggers 1 and 5): every **delay** it was given, in order,
  * with null for a cancel.
  *
  * It records rather than schedules, because what the EP suite checks is the **contract** — one
- * wake per pass, the next due minute, a cancel when nothing is pending — and the platform half is
- * `ExpiryAlarm`'s, whose arithmetic `ExpiryAlarmSpecTest` checks on its own.
+ * wake per pass, the delay to the next due minute, a cancel when nothing is pending — and the
+ * platform half is `ExpiryAlarm`'s, whose arithmetic `ExpiryAlarmSpecTest` checks on its own.
+ *
+ * It records a **delay** since the S9 review: while the port carried an absolute minute, a
+ * recorder like this one could not see the defect the review found, because the conversion that
+ * was wrong — subtracting the wall clock instead of `now_e` (R-T7) — happened on the other side of
+ * it, in code no world ever instantiated.
  */
 class RecordingWake : ExpiryWake {
     val requested = ArrayList<Long?>()
 
-    override fun wakeAt(wallMinute: Long?) {
-        requested += wallMinute
+    override fun wakeIn(delaySeconds: Long?) {
+        requested += delaySeconds
     }
 
     /** The last wake asked for, or null when the last thing asked for was a cancel. */
@@ -670,8 +675,24 @@ class RecordingCheckpoint(private val real: () -> Boolean) : DmCheckpoint {
     /** While true, every call answers false, as a busy reader would. */
     var busy: Boolean = false
 
+    /**
+     * While true, every call raises `SQLITE_FULL`, as the pragma on a full disk would.
+     *
+     * The pragma is a **write**, so it is exactly what fails on the device that most needs the
+     * pages back. The S9 review found that this failure used to discard the counts of a
+     * transaction that had already committed *and* the `checkpoint_due` flag with them, so the
+     * next sweep saw nothing owed and the freed plaintext stayed in the `-wal` for the life of
+     * the process.
+     */
+    var failStorageFull: Boolean = false
+
     override fun truncate(): Boolean {
         calls += 1
+        if (failStorageFull) {
+            throw org.ghost.storage.StorageFullException(
+                IllegalStateException("[SQLITE_FULL] injected at the checkpoint"),
+            )
+        }
         if (busy) return false
         return real()
     }

@@ -71,6 +71,7 @@ internal class ReceiveStep(
     private val sessions = SessionStore()
     private val owner = OwnerStore()
     private val heldRows = HeldStore()
+    private val expiry = ExpiryClock(database, clock)
 
     /** What one blob did. Counts only ever leave through [DmCounters] (T33). */
     enum class Result {
@@ -737,8 +738,10 @@ internal class ReceiveStep(
             }
             DmContent.Kind.REACTION -> {
                 val target = content.body.copyOf(minOf(REACTION_TARGET_BYTES, content.body.size))
+                // The target is read through §10.7 point 4's filter, bound to `now_e` (R-T7): a
+                // reaction must not land on a message this device has already expired.
                 if (target.size == REACTION_TARGET_BYTES &&
-                    messages.message(tx.sql, target, DmTime.floorMinute(now)) != null
+                    messages.message(tx.sql, target, expiry.nowMinute(tx.sql)) != null
                 ) {
                     val grapheme = content.body.copyOfRange(REACTION_TARGET_BYTES, content.body.size)
                     if (grapheme.isEmpty()) {
@@ -762,6 +765,18 @@ internal class ReceiveStep(
         }
         // R-T9 (§10.5): a greater timer version is adopted from **any** message, so a lost
         // TIMER_SET heals implicitly; equal versions take the shorter timer.
+        //
+        // **A version this device could not send again is never adopted** (S9 review). The wire
+        // field is a `u32` and nothing bounded it, so one crafted L0 from an established contact
+        // with `timer_version = 0xFFFF_FFFF` was adopted here, stored, and then read back by the
+        // next send of *any* kind — which re-encodes the conversation's version and narrows it to
+        // a signed 32-bit integer. The throw escaped the facade, and that conversation could never
+        // send again, across restarts. `DmContent.MAX_TIMER_VERSION` is refused at the decoder
+        // now, in both directions; this is the second half, because the value arrives from a peer
+        // and a rule that holds in one place only is a rule waiting for a second caller.
+        // An ignored version changes nothing, exactly as a lower one does, and the message itself
+        // is still stored and shown.
+        if (content.timerVersion > DmContent.MAX_TIMER_VERSION) return
         if (content.timerVersion > conversation.timerVersion) {
             contacts.adoptTimer(
                 tx,
@@ -807,7 +822,11 @@ internal class ReceiveStep(
         // The cap was fixed when the ciphertext arrived — `min(E, consume + bucket + 1 h)` — and a
         // user who takes three weeks to decide a key change must not be shown a one-hour message
         // as if it were new. The row is never written, so the T25 bound needs nothing extra.
-        if (unreadDeadline != null && unreadDeadline <= DmTime.floorMinute(now)) {
+        //
+        // The cap is compared against `now_e` (R-T7), like every other deadline: on the wall clock
+        // a backwards step would insert a message whose cap has already passed, and the next sweep
+        // would delete it again.
+        if (unreadDeadline != null && unreadDeadline <= expiry.nowMinute(tx.sql)) {
             counters.drop(DmCounters.Reason.EXPIRED_WHILE_HELD)
             return
         }

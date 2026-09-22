@@ -32,3 +32,18 @@ internal class OutcomeStep(private val sync: SyncPorts) {
         sync.outbox?.cancel(tx, op)
     }
 }
+
+/**
+ * The fifth shape, added by the S9 review: a port injected as a **constructor property under a
+ * name of the author's choosing**. `RECEIVERS` matched the four conventional names and the alias
+ * rule needed an initialiser (`val ob = sync.outbox`), so neither saw `ops`, and this file could
+ * write mutant ME-21 in full and pass. `Sweeper.kt` is the one production file that takes a port
+ * this way, which is what made the shape worth a fixture rather than a caveat. `RECEIVER_TYPES`
+ * is what sees it: the declaration has to write the type out.
+ */
+internal class SweepStep(private val ops: Outbox, private val registry: Namespaces) {
+    fun sweep(tx: Any, op: Any, ns: Any) {
+        registry.remove(tx, ns)
+        ops.cancel(tx, op)
+    }
+}

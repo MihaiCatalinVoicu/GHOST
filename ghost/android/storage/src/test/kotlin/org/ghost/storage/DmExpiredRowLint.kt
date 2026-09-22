@@ -506,7 +506,7 @@ object DmDaoQueries {
  * that simply exempted a file would exempt whatever that file later grew.
  *
  * So a sweep query is registered here and judged by the **mirror** of the read contract
- * ([DmExpiredRowLint.Outcome.namesExactlyTheExpiredRows]): run against the world that still holds
+ * ([DmExpiredRowLint.Outcome.namesOnlyExpiredRows]): run against the world that still holds
  * the expired rows it must return something, and against the same world after the sweep it must
  * return **nothing**. A UI read smuggled in here would return the live rows in the swept world and
  * fail; a sweep query with the boundary the wrong way round (`<` for `<=`, or the filter on

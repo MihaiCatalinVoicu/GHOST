@@ -21,21 +21,29 @@ package org.ghost.messaging.port
  * two-method port would let a caller schedule without ever cancelling, which is the state a rooted
  * examiner reads an expiry minute out of (L7-D7).
  *
- * **The value is a wall-clock minute, not a delay.** The alarm runs on `ELAPSED_REALTIME_WAKEUP`
- * and the timer on a monotonic clock, and both conversions belong to the implementation that owns
- * that clock (§21.10 point 7: `SystemClock.elapsedRealtime() + (next − now)`). What the engine
- * knows is the minute a row becomes due, which is what it passes.
+ * **The value is a delay, not a wall-clock minute** (corrected by the S9 review). §21.10 point 7
+ * writes the alarm as `SystemClock.elapsedRealtime() + (next − now)`, and the subtraction is the
+ * engine's half, not the implementation's: the `now` of that expression is **`now_e`**, the expiry
+ * clock of R-T7 (`max(floor_minute(wall), dm_self.expiry_clock_minute)`), which only the side
+ * holding the database knows. While the port carried the absolute minute, each implementation
+ * subtracted its own `clock.now` — so on a device whose clock had been stepped back a day, a row
+ * due in an hour was scheduled for 25 hours' time and survived a day past its deadline, which is
+ * precisely what R-T7 and §10.9 point 4 ("a clock stepped back one day does not delay deletion")
+ * forbid. What stays with the implementation is the conversion to *its own* clock: elapsed
+ * realtime for the alarm, the scheduler's own for the timer. Neither needs a wall clock at all,
+ * and neither has one any more.
  */
 fun interface ExpiryWake {
 
     /**
-     * Wake the DM actor at [wallMinute] (unix seconds on the minute grid), or cancel every
-     * outstanding wake when it is null.
+     * Wake the DM actor in [delaySeconds] seconds, or cancel every outstanding wake when it is
+     * null.
      *
-     * A minute already in the past is a wake as soon as possible; implementations do not have to
-     * special-case it, because the pass that follows is idempotent (SWEEP deletes by time).
+     * The value is never negative: a deadline already past is a zero delay, which is a wake as
+     * soon as the platform will run it. The pass that follows is idempotent (SWEEP deletes by
+     * time), so an early or a repeated wake costs nothing.
      */
-    fun wakeAt(wallMinute: Long?)
+    fun wakeIn(delaySeconds: Long?)
 
     companion object {
         /** The port a world with no platform behind it wires: nothing is scheduled, nothing leaks. */

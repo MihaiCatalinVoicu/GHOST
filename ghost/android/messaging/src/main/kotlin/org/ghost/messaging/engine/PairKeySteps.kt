@@ -19,9 +19,15 @@ import org.ghost.sync.api.SyncTransaction
  * from `K_w` and from nothing else — that is what lets §6.3 erase the root on both sides — so a
  * sweep that erased first would destroy the only material the derivation could start from. A
  * recipient that did not run for about 52 days would erase its newest in-key and then have nothing
- * left to ratchet with: every later pair envelope of that conversation would go unrecognised, the
- * conversation would fall to `NO_SEAL_KEY` and re-establish, and RS2's "pair envelopes open after a
- * 60-day absence" would be false.
+ * left to ratchet with, and RS2's "pair envelopes open after a 60-day absence" would be false.
+ *
+ * **What that failure actually looks like**, because the first version of this file described it
+ * wrongly and then arranged for it (S9 review, and see [advance]): not a conversation that "falls
+ * to `NO_SEAL_KEY` and re-establishes" — a recipient has no way to start a re-establishment — but
+ * every later pair envelope of that conversation dropped as `unknown_seal`, silently, until the
+ * *user* happens to send something. There is no second chance and no counter the user sees. A
+ * sweep that cannot ratchet must therefore not erase the seed it would have ratcheted from, and
+ * the way this file keeps that true is by always being able to ratchet.
  *
  * **What erasure buys** is **P-7** and **T34** (§6.3, §21.3 point 6): for an ISO week `w` with
  * `now ≥ start(w + 1) + 45 d`, no key on the device and nothing derivable from either seed opens a
@@ -106,6 +112,23 @@ internal class PairKeySteps(
      * Only the **newest** generation advances: §6.3's "a generation stops advancing (no new week
      * keys) once a pair envelope under a newer generation from c opens", and, on the sending
      * side, "the sender keeps `K_{week(now)}` of the newest generation".
+     *
+     * **It walks the whole gap, in windows** (S9 review). §21.3 point 5 says "`K_w` for every week
+     * up to `week(now)` from the newest stored key", and the first version of this code refused to
+     * ratchet at all once the gap passed eight week-indices — while [eraseIn], in the same
+     * transaction, erased the newest key anyway, because that key really is past
+     * `start(w + 1) + FRESH`. The device was then left with **nothing** of the generation: not
+     * "falls to `NO_SEAL_KEY` and re-establishes", which the comment claimed, but every later pair
+     * envelope of that conversation dropped as `unknown_seal`, silently, until a re-establishment
+     * the recipient cannot trigger. That is exactly defect (3) of CR-13, which §21.3 point 5 was
+     * written to remove, and it fired at a gap of nine — under RS2's own 60-day absence, which
+     * lands on eight or nine depending on the weekday the conversation started.
+     *
+     * The gap is closed in windows of [DmPairing.MAX_WINDOW_WEEKS], because that is what one JNI
+     * call answers; the last key of one window is the base of the next, which is what
+     * [DmPairing.From.WEEK_KEY] exists for. The keys in between are derived, stored and — for all
+     * but the last few weeks — erased again by [eraseIn] in this same transaction, which is the
+     * ratchet's cost and not a residue: nothing of them is ever committed.
      */
     private fun advance(
         tx: SyncTransaction,
@@ -119,40 +142,54 @@ internal class PairKeySteps(
         val newest = rows.filter { it.rootGen == newestGen }.maxByOrNull { it.week } ?: return 0
         if (newest.week >= week) return 0
         if (week - newest.week > MAX_CATCH_UP_WEEKS) {
-            // A device offline for longer than the FRESH window has no usable key of this
-            // generation left: §6.3 erases every `K_w` at `start(w + 1) + FRESH`, so ratcheting
-            // across the gap would produce keys whose weeks are already past their erasure. The
-            // conversation re-establishes at the user's next send (§6.8 rule 4), which is the
-            // declared behaviour of RS2's 60-day absence.
+            // Beyond this the gap is not an absence any more, it is a clock: `now_e` only ever
+            // moves forward (R-T7), so a wall clock set years ahead is stored and stays. Deriving
+            // a key per week of it would be work with no message to open at the end of it, and
+            // every key of the generation is past its erasure however far the ratchet ran. The
+            // conversation re-establishes at the user's next send (§6.8 rule 4); §22.14 records
+            // what the peer's messages do until then.
             return 0
         }
-        val keys = envelopes.pairKeys(
-            contactId = contactId,
-            direction = if (direction == ContactStore.DIRECTION_IN) {
-                DmSeal.PairDirection.IN
-            } else {
-                DmSeal.PairDirection.OUT
-            },
-            rootGen = newest.rootGen,
-            from = DmPairing.From.WEEK_KEY,
-            keyEnv = newest.openEnv,
-            baseWeek = newest.week,
-            fromWeek = newest.week + 1,
-            toWeek = week,
-        )
-        if (keys !is DmPairing.KeysResult.Ok) return 0
-        for (key in keys.weeks) {
-            contacts.putPairKey(
-                tx = tx,
-                contactId = contactId,
-                direction = direction,
-                rootGen = newest.rootGen,
-                week = key.week,
-                recognitionKey = key.recognitionKey,
-                openEnv = key.openEnv,
-            )
+        val pairDirection = if (direction == ContactStore.DIRECTION_IN) {
+            DmSeal.PairDirection.IN
+        } else {
+            DmSeal.PairDirection.OUT
         }
-        return keys.weeks.size
+        var baseWeek = newest.week
+        var keyEnv = newest.openEnv
+        var derived = 0
+        while (baseWeek < week) {
+            val toWeek = minOf(week, baseWeek + DmPairing.MAX_WINDOW_WEEKS)
+            val keys = envelopes.pairKeys(
+                contactId = contactId,
+                direction = pairDirection,
+                rootGen = newest.rootGen,
+                from = DmPairing.From.WEEK_KEY,
+                keyEnv = keyEnv,
+                baseWeek = baseWeek,
+                fromWeek = baseWeek + 1,
+                toWeek = toWeek,
+            )
+            if (keys !is DmPairing.KeysResult.Ok || keys.weeks.isEmpty()) return derived
+            for (key in keys.weeks) {
+                contacts.putPairKey(
+                    tx = tx,
+                    contactId = contactId,
+                    direction = direction,
+                    rootGen = newest.rootGen,
+                    week = key.week,
+                    recognitionKey = key.recognitionKey,
+                    openEnv = key.openEnv,
+                )
+            }
+            derived += keys.weeks.size
+            val last = keys.weeks.last()
+            // A window that did not reach its own end would loop forever on the same base.
+            if (last.week <= baseWeek) return derived
+            baseWeek = last.week
+            keyEnv = last.openEnv
+        }
+        return derived
     }
 
     /**
@@ -236,10 +273,18 @@ internal class PairKeySteps(
 
     companion object {
         /**
-         * How many weeks one pass will ratchet across. `FRESH = 45 d` is between six and seven
-         * weeks, so a key more than eight weeks old has no live successor worth deriving, and the
-         * bound also keeps one pass from walking a device's whole absence.
+         * How many week-indices one pass will ratchet across: **two years**.
+         *
+         * It is not a bound on absence — RS2's 60 days, a year abroad and a phone left in a drawer
+         * are all inside it, and [advance] walks them in windows of
+         * [DmPairing.MAX_WINDOW_WEEKS]. It is a bound on the **clock**: `now_e` only ever moves
+         * forward (R-T7), so a wall clock set to 2099 is stored and never comes back, and without
+         * a bound the ratchet would derive four thousand keys per direction per contact inside one
+         * transaction, on the actor thread, for a week nothing will ever seal under.
+         *
+         * The previous value was 8, which is **below** the 60-day absence RS2 asserts; see
+         * [advance] for what it cost.
          */
-        const val MAX_CATCH_UP_WEEKS: Long = 8
+        const val MAX_CATCH_UP_WEEKS: Long = 104
     }
 }

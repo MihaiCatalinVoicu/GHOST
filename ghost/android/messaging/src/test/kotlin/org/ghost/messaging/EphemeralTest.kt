@@ -291,6 +291,13 @@ class EphemeralTest {
      * The assertion is the **whole** relay-visible projection before and after the sweep, which is
      * wider than the wire on purpose (it covers `outbox_op.outcome` and the `outbox_delivery`
      * rows a cancel fails, which is how `Outbox.cancel` shows at all: it does not delete the op).
+     *
+     * **The other half of §21.10 point 2 is the second part of this test** (added by the S9
+     * review): "ops run to their outcome or deadline" is not only "the sweep does not cancel", it
+     * is also "the outcome still lands afterwards". SWEEP took the `dm_outbound_op` row with the
+     * message, so OUTCOME finds nothing to record — and must still release the operation rather
+     * than leave it in the outbox for ever, which is `OutcomeStep`'s "the release stands and there
+     * is nothing left to record".
      */
     @Test
     fun sweepingAnExpiredMessageCancelsNothingInTheOutbox() {
@@ -313,7 +320,43 @@ class EphemeralTest {
                 before,
                 alice.relayVisible(),
             )
+            assertEquals("SWEEP took the op row with the message", 0, opsOf(alice, id))
+
+            // The relays decide the operation the sweep left alone. It must be released, once.
+            decideEverythingSent(alice)
+            assertTrue("the outcome is released although its row is gone", alice.outcomeStep.run() > 0)
+            assertEquals("and only once", 0, alice.outcomeStep.run())
+            assertEquals(
+                "no DM operation is left undecided",
+                0,
+                count(
+                    alice,
+                    "SELECT count(*) FROM outbox_op o JOIN sync_namespace n " +
+                        "ON n.namespace_id = o.namespace_id " +
+                        "WHERE o.outcome = 'pending' AND n.consumer = 'dm'",
+                ),
+            )
         }
+    }
+
+    /**
+     * What the Phase 7 outbox engine writes when every DM operation is verified: the deliveries
+     * settle first, because `outbox_op_payload` refuses to wipe a ciphertext while any delivery is
+     * still pending ("wiped only after the last possible store").
+     */
+    private fun decideEverythingSent(device: DmDevice) {
+        val hour = device.clock.nowEpochSeconds().let { it - it % 3600 }
+        device.sql.exec(
+            "UPDATE outbox_delivery SET state = 'verified', inflight = 0, copy_hour = ? " +
+                "WHERE state = 'pending' AND operation_id IN (" +
+                "SELECT o.operation_id FROM outbox_op o JOIN sync_namespace n " +
+                "ON n.namespace_id = o.namespace_id WHERE o.outcome = 'pending' AND n.consumer = 'dm')",
+            listOf(hour),
+        )
+        device.sql.exec(
+            "UPDATE outbox_op SET outcome = 'sent', ciphertext = NULL WHERE outcome = 'pending' " +
+                "AND namespace_id IN (SELECT namespace_id FROM sync_namespace WHERE consumer = 'dm')",
+        )
     }
 
     // ------------------------------------------------------------- the physical half
@@ -400,7 +443,11 @@ class EphemeralTest {
 
             val id = idOfText(alice, contactB, CANARY)
             val expireAt = checkNotNull(columnById(alice, id, "expire_at_minute"))
-            assertEquals("the next deadline, which is this message's", expireAt, alice.wakes.last)
+            assertEquals(
+                "the delay to the next deadline, which is this message's",
+                expireAt - alice.clock.now,
+                alice.wakes.last,
+            )
 
             // Past every deadline of the world — the two establishment messages carry the default
             // 7-day timer — so nothing at all is pending and the wake is a cancel.
@@ -412,48 +459,179 @@ class EphemeralTest {
         }
     }
 
+    /**
+     * **R-T7 and §10.9 point 4, on the wake itself**: a clock stepped back one day does not delay
+     * a deletion.
+     *
+     * This is the case the S9 review found open. `Sweeper.nextWake` already answered the right
+     * *minute* — every deadline it considers is compared against `now_e` — but the two
+     * implementations of the port subtracted their own wall clock from it, so a device whose clock
+     * had been moved back a day scheduled a row due in an hour for 25 hours' time and the message
+     * outlived its timer by a day. Nothing in the suite could see it: both worlds record the
+     * minute and never convert it, and `ExpiryTimer` and `ExpiryAlarm` are wired to a process only
+     * from S12. The delay is now measured where `now_e` is known, and this is the assertion that
+     * pins it.
+     */
+    @Test
+    fun aClockSteppedBackDoesNotDelayTheWake() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val (contactB, _) = establishBothWays(world)
+            assertEquals(SendResult.QUEUED, alice.engine.setTimer(contactB, Timer.HOUR_1))
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, CANARY, null))
+            alice.timeTriggeredPass()
+            val expireAt = checkNotNull(
+                columnById(alice, idOfText(alice, contactB, CANARY), "expire_at_minute"),
+            )
+            val honest = checkNotNull(alice.wakes.last)
+
+            // The sweep just above fixed `dm_self.expiry_clock_minute` at this minute. Now the
+            // user — or NTP, or a reboot — moves the wall clock back a day.
+            alice.clock.now -= day
+            alice.timeTriggeredPass()
+
+            assertEquals(
+                "the deadline itself did not move",
+                expireAt,
+                columnById(alice, idOfText(alice, contactB, CANARY), "expire_at_minute"),
+            )
+            assertEquals(
+                "and neither did the delay: a day on the wall clock is not a day of survival",
+                honest,
+                alice.wakes.last,
+            )
+            assertTrue(
+                "a wall-clock subtraction would have asked for a day more",
+                checkNotNull(alice.wakes.last) < day,
+            )
+        }
+    }
+
     // ------------------------------------------------------------ timer versions
 
     /**
-     * R-T9 (§10.5), all three cases in one conversation:
-     *
-     *  - a **greater** version is adopted from any L0, so a lost TIMER_SET heals implicitly;
-     *  - a **lower** version changes nothing, so a replayed or delayed old message cannot lengthen
-     *    the timer;
-     *  - **equal** versions with different codes take the shorter timer (off = ∞).
-     *
-     * The third is the tie-break Signal's `expireTimerVersion` leaves open and RE §8.2 fixes, and
-     * it is what makes two simultaneous changes converge without a round trip.
+     * R-T9's first case (§10.5): a **greater** version is adopted from any L0, so a TIMER_SET
+     * that never arrived heals implicitly at the next ordinary message.
      */
     @Test
-    fun aLostTimerSetHealsAReplayedOneIsIgnoredAndEqualVersionsTakeTheShorter() {
+    fun aLostTimerSetHealsAtTheNextMessage() {
         requireNative()
         DmWorld().use { world ->
             val bob = world.bob
             val (contactB, _) = establishBothWays(world)
 
-            // A greater version, carried by an ordinary message: the TIMER_SET itself never
-            // arrives, and B adopts anyway.
             assertEquals(SendResult.QUEUED, world.alice.engine.setTimer(contactB, Timer.HOUR_1))
             assertEquals(SendResult.QUEUED, world.alice.engine.send(contactB, "after the change", null))
             world.deliver()
             bob.hintPass()
             assertEquals(Timer.HOUR_1.code.toLong(), timerOf(bob))
-            val version = timerVersionOf(bob)
-            assertTrue("a version was adopted", version > 0)
+            assertTrue("a version was adopted", timerVersionOf(bob) > 0)
+        }
+    }
 
-            // An equal version with a shorter code wins; with a longer one it does not.
-            bob.sql.exec("UPDATE dm_conversation SET timer_code = 5")
-            assertEquals(Timer.DAYS_30.code.toLong(), timerOf(bob))
-            assertEquals(SendResult.QUEUED, world.alice.engine.send(contactB, "same version", null))
-            world.deliver()
+    /**
+     * R-T9's second case (§10.5): a **lower** version changes nothing, so a delayed message
+     * cannot lengthen a timer that has already been shortened.
+     *
+     * The S9 review found this case named in a test's title and never executed. It is written
+     * here as the situation that really produces it — two sides acting at once — rather than as a
+     * replay, because a replay is refused one rule earlier by R1's `(namespace, hash)` tombstone
+     * and would prove nothing about R-T9: Alice's message is already in flight, carrying the
+     * version she had, when Bob shortens the timer on his own device. What must not happen is
+     * that her message pushes Bob's conversation back to 7 days.
+     *
+     * The rule is kept **twice** and this test is what shows the path reaches both: `ReceiveStep`
+     * adopts only on a greater or an equal version, and `ContactStore.adoptTimer` writes under
+     * `timer_version <= ?`, which is the invariant `dm_conversation_timer` names. Either one alone
+     * refuses the message below, so a mutant in one of them is masked by the other — that is the
+     * point of having two, and it is why this test fails only when both are broken.
+     */
+    @Test
+    fun aMessageAtAStaleVersionDoesNotLengthenTheTimer() {
+        requireNative()
+        DmWorld().use { world ->
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
+            assertEquals(Timer.DAYS_7.code.toLong(), timerOf(bob))
+
+            // In flight at Alice's version, which is still 0.
+            assertEquals(SendResult.QUEUED, world.alice.engine.send(contactB, "in flight", null))
+            // Bob shortens the timer while it travels: his version is now 1.
+            assertEquals(SendResult.QUEUED, bob.engine.setTimer(contactA, Timer.MIN_5))
+            assertEquals(1L, timerVersionOf(bob))
+
+            world.deliverBetween(world.alice, bob)
             bob.hintPass()
+
             assertEquals(
-                "the shorter timer wins at an equal version",
-                Timer.HOUR_1.code.toLong(),
+                "a lower version changes nothing: the 5-minute timer stands",
+                Timer.MIN_5.code.toLong(),
                 timerOf(bob),
             )
-            assertEquals("and the version did not move", version, timerVersionOf(bob))
+            assertEquals("and the version did not move", 1L, timerVersionOf(bob))
+            assertEquals(
+                "the message itself is still shown — an ignored version is not a dropped message",
+                "in flight",
+                bob.engine.conversation(contactA, 50, null).first { it.text == "in flight" }.text,
+            )
+        }
+    }
+
+    /**
+     * R-T9's third case (§10.5, RE §8.2): **equal** versions with different codes converge on the
+     * **shorter** timer, in one exchange and with no round trip.
+     *
+     * This is the tie-break Signal's `expireTimerVersion` leaves open, and the whole point of it
+     * is two devices acting at the same instant — so the test makes two real `setTimer` calls at
+     * the same version and delivers both, rather than writing one side's column by hand, which is
+     * what it did before the S9 review. Both sides must land on the same code without either of
+     * them sending again.
+     */
+    @Test
+    fun twoSimultaneousTimerSetsConvergeOnTheShorterOne() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
+
+            assertEquals(SendResult.QUEUED, alice.engine.setTimer(contactB, Timer.HOUR_1))
+            assertEquals(SendResult.QUEUED, bob.engine.setTimer(contactA, Timer.DAY_1))
+            assertEquals("the same version on both sides", timerVersionOf(alice), timerVersionOf(bob))
+
+            world.deliver()
+            alice.hintPass()
+            bob.hintPass()
+
+            assertEquals("Alice keeps the shorter one she already had", Timer.HOUR_1.code.toLong(), timerOf(alice))
+            assertEquals("Bob takes the shorter one", Timer.HOUR_1.code.toLong(), timerOf(bob))
+            assertEquals("and neither version moved", timerVersionOf(alice), timerVersionOf(bob))
+        }
+    }
+
+    /**
+     * The same tie-break with **off = ∞** on one side (§10.5): a timer that is off is longer than
+     * every real one, so the side that turned it off adopts, and the side that set a real timer
+     * keeps it. An incoming `off` never wins at an equal version.
+     */
+    @Test
+    fun atAnEqualVersionOffIsLongerThanEveryTimer() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
+
+            assertEquals(SendResult.QUEUED, alice.engine.setTimer(contactB, Timer.OFF))
+            assertEquals(SendResult.QUEUED, bob.engine.setTimer(contactA, Timer.HOUR_1))
+
+            world.deliver()
+            alice.hintPass()
+            bob.hintPass()
+
+            assertEquals("off is ∞, so Alice adopts the hour", Timer.HOUR_1.code.toLong(), timerOf(alice))
+            assertEquals("and Bob keeps it", Timer.HOUR_1.code.toLong(), timerOf(bob))
         }
     }
 

@@ -67,6 +67,7 @@ internal class MessagingEngine(
 
     private val contacts = ContactStore()
     private val messages = MessageStore()
+    private val expiry = ExpiryClock(database, clock)
 
     /**
      * The actor every method posts to. It is set after construction because the actor needs the
@@ -154,8 +155,11 @@ internal class MessagingEngine(
     ): List<MessageView> = onActor {
         val self = contexts.get() ?: return@onActor emptyList()
         val contactId = contact.toByteArray()
-        val nowMinute = DmTime.floorMinute(clock.nowEpochSeconds())
         database.transaction { tx ->
+            // §10.7 point 4's read filter, bound to `now_e` and not to the wall clock (R-T7):
+            // after a backwards clock step the two differ, and the wall-clock bind is the one
+            // that shows rows SWEEP has already decided are gone.
+            val nowMinute = expiry.nowMinute(tx.sql)
             val conversation = contacts.conversation(tx.sql, contactId)
                 ?: return@transaction emptyList()
             val rows = if (before == null) {

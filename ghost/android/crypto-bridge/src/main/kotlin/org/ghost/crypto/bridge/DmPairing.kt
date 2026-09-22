@@ -269,8 +269,19 @@ object DmPairing {
     /** A recognition key is a 32-byte HKDF output (§6.2). */
     private const val RECOGNITION_BYTES = 32
 
+    /**
+     * The widest `toWeek − baseWeek` [keys] will answer, mirroring the crate's own
+     * `PAIR_WEEK_WINDOW_MAX`: FRESH is 45 days and a root is replaced every 13 weeks without PQ-C
+     * (§6.3), so 26 weeks is twice the longest live window and an unbounded one would be an
+     * unbounded loop inside a JNI call.
+     *
+     * A caller with a wider gap to close ratchets in windows of this size, carrying the last key
+     * of one window as the base of the next — which is what [From.WEEK_KEY] exists for.
+     */
+    const val MAX_WINDOW_WEEKS: Long = 26
+
     /** The window `pairKeys` refuses to exceed, mirrored here so a bad count is caught early. */
-    private const val MAX_WEEKS = 27
+    private const val MAX_WEEKS = MAX_WINDOW_WEEKS.toInt() + 1
 
     /** A wrapped 32-byte key is 60 bytes; the bound is generous and only guards the parser. */
     private const val MAX_ENVELOPE = 256

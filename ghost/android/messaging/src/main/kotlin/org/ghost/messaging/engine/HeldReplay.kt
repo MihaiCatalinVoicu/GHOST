@@ -47,6 +47,7 @@ internal class HeldReplay(
 ) {
     private val contacts = ContactStore()
     private val held = HeldStore()
+    private val expiry = ExpiryClock(database, clock)
 
     /** How one replay pass went. Counts only (T3). */
     class Report(val applied: Int, val dropped: Int) {
@@ -79,12 +80,16 @@ internal class HeldReplay(
     fun replay(contactId: ByteArray): Report {
         val self = contexts.get() ?: return Report(0, 0)
         val now = clock.nowEpochSeconds()
-        val nowMinute = DmTime.floorMinute(now)
 
         // The read and the parse happen outside the per-row transactions, like every other step's
         // native work (§7.2's "each step is exactly one transaction", §22.11 item 17): a parse
         // inside the writing transaction would commit half a replay while reporting an error.
-        val rows = database.transaction { tx -> held.heldFor(tx.sql, contactId, nowMinute) }
+        //
+        // `hold_until_minute` is compared against `now_e` (R-T7): a row past its hold is SWEEP's,
+        // and a clock stepped backwards must not hand it back to the replay.
+        val rows = database.transaction { tx ->
+            held.heldFor(tx.sql, contactId, expiry.nowMinute(tx.sql))
+        }
         if (rows.isEmpty()) return Report(0, 0)
         // Null: the library went away mid-parse. Nothing is deleted and nothing is counted — the
         // next pass reads the same rows.

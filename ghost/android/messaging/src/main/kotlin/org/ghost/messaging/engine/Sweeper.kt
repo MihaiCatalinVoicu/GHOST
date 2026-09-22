@@ -149,6 +149,7 @@ internal class Sweeper(
     private val held = HeldStore()
     private val sessions = SessionStore()
     private val owner = OwnerStore()
+    private val expiry = ExpiryClock(database, clock)
 
     /**
      * §10.7: a checkpoint that answered `busy = 1` is **not** forgotten — the need is kept here, in
@@ -170,16 +171,46 @@ internal class Sweeper(
      * transaction back, nothing partial is committed, and the next sweep finds the same rows and
      * tries again. The report then reads as a sweep that deleted nothing, which is true.
      *
+     * The guard covers the **deletion** and the checkpoint separately, because they fail
+     * differently and one of them must not erase the other's answer: see the comment at the
+     * checkpoint below.
+     *
      * Nothing else is caught. A CHECK violation, a trigger abort or a constraint failure is a bug
      * in a rule this file is supposed to keep, and it belongs where it can be seen.
      */
-    fun sweep(): SweepReport = try {
-        sweepOrThrow()
-    } catch (e: StorageFullException) {
-        SweepReport(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, checkpointed = false)
+    fun sweep(): SweepReport {
+        val report = try {
+            deleteOrThrow()
+        } catch (e: StorageFullException) {
+            NOTHING
+        }
+        // After the commit, and outside any transaction: the pragma refuses to run inside one.
+        //
+        // It is **outside** the `catch` above on purpose (found by the S9 review). While the whole
+        // pass was one guarded block, a `SQLITE_FULL` raised by the pragma — which is a write, and
+        // exactly the state a disk-full device is in — discarded the counts of a transaction that
+        // had already committed *and* skipped the `checkpointDue = !truncated` below, so the debt
+        // was lost: the next sweep saw `rows = 0`, ran no pragma, and the freed plaintext pages
+        // stayed in the `-wal` for the life of the process. A failed checkpoint is the same kind
+        // of answer as a busy one and is kept the same way (§10.7, mutant ME-10).
+        val owed = report.rows > 0 || report.prunedKeys > 0 || checkpointDue
+        val truncated = if (owed) {
+            try {
+                checkpoint.truncate()
+            } catch (e: StorageFullException) {
+                false
+            }
+        } else {
+            // Nothing was freed and nothing is owed, so there is nothing to truncate. Running the
+            // pragma anyway would be a write on every pass of an idle device (§2.3's own reason
+            // for making the Phase 7 GC checkpoint conditional).
+            true
+        }
+        checkpointDue = !truncated
+        return report.withCheckpoint(truncated)
     }
 
-    private fun sweepOrThrow(): SweepReport {
+    private fun deleteOrThrow(): SweepReport {
         val nowE = expiryClockMinute()
         val today = DmTime.day(nowE)
         val week = DmTime.week(nowE)
@@ -208,34 +239,41 @@ internal class Sweeper(
             report += last
             batches += 1
         }
-        // After the commit, and outside any transaction: the pragma refuses to run inside one.
-        val truncated = if (report.rows > 0 || report.prunedKeys > 0 || checkpointDue) {
-            checkpoint.truncate()
-        } else {
-            // Nothing was freed and nothing is owed, so there is nothing to truncate. Running the
-            // pragma anyway would be a write on every pass of an idle device (§2.3's own reason
-            // for making the Phase 7 GC checkpoint conditional).
-            true
-        }
-        checkpointDue = !truncated
-        return report.withCheckpoint(truncated)
+        return report
     }
 
     /**
-     * The next minute at which **anything** of this device becomes due: the wake the actor timer
-     * and the alarm are set to (§10.7 triggers 1 and 5, §21.9 rule 1's
-     * `min(next delete_at_minute, t_pub, next due_minute, next week boundary, next EST timer)`).
+     * The next wake of this device: the minute at which **anything** becomes due, and the delay to
+     * it (§10.7 triggers 1 and 5, §21.9 rule 1's `min(next delete_at_minute, t_pub, next
+     * due_minute, next week boundary, next EST timer)`).
      *
      * Null means nothing is pending, which both the timer and the alarm read as "cancel" — and
      * cancelling is a rule rather than tidiness: an alarm left standing is an expiry minute a
      * rooted examiner can read out of the system's alarm table (L7-D7).
      *
+     * **The delay is measured against `now_e`, not against the wall clock**, and it is computed
+     * here because this is the only side that knows `now_e` (R-T7, §10.3). Before the S9 review
+     * the port carried the absolute minute and each wake subtracted its own `clock.now`: a device
+     * whose clock had been stepped back a day then scheduled the sweep a day late, and the
+     * deletion R-T7 exists to protect waited for an unrelated trigger. `Sweeper` already compares
+     * every deadline below against `now_e`, so the subtraction belongs beside the comparison.
+     *
      * `t_pub` and the week boundary are **not** in this minimum; see §22.14's forward note for why
      * and for what the slice that adds them must do.
      */
-    fun nextWakeMinute(): Long? {
-        val nowMinute = expiryClockMinute()
-        return database.transaction { tx ->
+    class Wake(
+        /** The deadline itself, in unix seconds on the minute grid. */
+        val minute: Long,
+        /** `max(0, minute − now_e)`: what the timer sleeps and what the alarm adds to elapsed realtime. */
+        val delaySeconds: Long,
+    ) {
+        override fun toString(): String = "Wake(in ${delaySeconds}s)"
+    }
+
+    fun nextWake(): Wake? {
+        val nowSeconds = expiry.nowSeconds()
+        val nowMinute = DmTime.floorMinute(nowSeconds)
+        val next = database.transaction { tx ->
             listOfNotNull(
                 messages.nextDeleteAtMinute(tx.sql, nowMinute),
                 held.nextHoldDeadline(tx.sql, nowMinute),
@@ -243,8 +281,12 @@ internal class Sweeper(
                 sessions.nextProvisionalErase(tx.sql, nowMinute),
                 contacts.nextFetchDeadline(tx.sql, nowMinute),
             ).minOrNull()
-        }
+        } ?: return null
+        return Wake(next, maxOf(0L, next - nowSeconds))
     }
+
+    /** The deadline half of [nextWake], for a caller that wants the minute and not the delay. */
+    fun nextWakeMinute(): Long? = nextWake()?.minute
 
     /** The live unread count the notification port is given after a commit (§10.6, §10.7). */
     fun unreadCount(): Int {
@@ -253,11 +295,7 @@ internal class Sweeper(
     }
 
     /** R-T7: `now_e = max(floor_minute(wall), dm_self.expiry_clock_minute)`. */
-    private fun expiryClockMinute(): Long {
-        val wall = DmTime.floorMinute(clock.nowEpochSeconds())
-        val stored = database.transaction { tx -> owner.self(tx.sql)?.expiryClockMinute }
-        return maxOf(wall, stored ?: wall)
-    }
+    private fun expiryClockMinute(): Long = expiry.nowMinute()
 
     @Suppress("LongMethod")
     private fun inside(
@@ -397,5 +435,8 @@ internal class Sweeper(
          * the actor thread, which is the thread every facade call waits on (§13.7).
          */
         const val MAX_BATCHES: Int = 20
+
+        /** A pass that deleted nothing: what a full disk leaves behind (§21.12 point 1). */
+        private val NOTHING = SweepReport(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, checkpointed = false)
     }
 }

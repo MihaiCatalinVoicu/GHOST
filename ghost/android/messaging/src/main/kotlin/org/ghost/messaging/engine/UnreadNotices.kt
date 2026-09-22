@@ -76,10 +76,16 @@ internal class ExpirySchedule(
     private val wakes: ExpiryWake,
     private val notices: UnreadNotices,
 ) {
-    /** The count and the two wakes. Null from [Sweeper.nextWakeMinute] cancels them (§10.7). */
+    /**
+     * The count and the two wakes. Null from [Sweeper.nextWake] cancels them (§10.7).
+     *
+     * The wakes are given a **delay** and not a minute, because the subtraction has to happen
+     * against `now_e` (R-T7) and this side is the one that knows it — see
+     * [org.ghost.messaging.port.ExpiryWake] for what a wall-clock subtraction cost.
+     */
     fun afterCommit() {
         notices.publish()
-        wakes.wakeAt(sweeper.nextWakeMinute())
+        wakes.wakeIn(sweeper.nextWake()?.delaySeconds)
     }
 
     /**

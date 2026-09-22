@@ -62,6 +62,19 @@ impl Kind {
 
 /// The largest timer code (§7.1: 0 off, 1 = 5 min, 2 = 1 h, 3 = 1 d, 4 = 7 d, 5 = 30 d).
 pub const MAX_TIMER_CODE: u8 = 5;
+/// The largest `timer_version` this codec will encode or accept (§10.5, R-T9).
+///
+/// The field is four bytes on the wire and the rule that governs it is only "never decreases", so
+/// nothing in §9.1 bounds it — and the S9 review found what that costs. A hostile peer that put
+/// `0xFFFF_FFFF` on one ordinary L0 was adopted by R-T9 ("a greater version is adopted from any
+/// message"), stored, and read back by the **next send of any kind**, which re-encodes the
+/// conversation's version; the Kotlin facade narrows it to a `jint` there, so every send to that
+/// conversation threw, for good, across restarts. One message, one conversation silenced.
+///
+/// The bound is what a `TIMER_SET` must still be able to write after it: a version of exactly
+/// [`MAX_TIMER_VERSION`] leaves room for the `version + 1` of §10.5. It costs nothing real — the
+/// number counts a conversation's timer changes, and two billion of them is not a conversation.
+pub const MAX_TIMER_VERSION: u32 = i32::MAX as u32 - 1;
 /// `flags` bit 0: a quote reference follows.
 pub const FLAG_HAS_QUOTE: u8 = 0x01;
 /// The largest reaction body: the target `message_id` and one grapheme.
@@ -280,6 +293,9 @@ impl DmContent {
         if self.timer_code > MAX_TIMER_CODE {
             return Err(DmCode::NonCanonical);
         }
+        if self.timer_version > MAX_TIMER_VERSION {
+            return Err(DmCode::NonCanonical);
+        }
         check_body(self.kind, &self.body)?;
         check_ext(&self.ext)?;
         if classical_ext_len(&self.ext) > EXT_RESERVE {
@@ -373,6 +389,9 @@ pub fn decode(bytes: &[u8]) -> DmResult<DmContent> {
         return Err(DmCode::NonCanonical);
     }
     let timer_version = reader.u32()?;
+    if timer_version > MAX_TIMER_VERSION {
+        return Err(DmCode::NonCanonical);
+    }
     let flags = reader.u8()?;
     if flags & !FLAG_HAS_QUOTE != 0 {
         return Err(DmCode::NonCanonical);
@@ -655,7 +674,8 @@ mod tests {
         assert_eq!(decode(&bytes).err(), Some(DmCode::NonCanonical));
     }
 
-    /// Offsets of the fixed part of an L0 without a quote: `flags` and `body_len`.
+    /// Offsets of the fixed part of an L0 without a quote: `timer_version`, `flags`, `body_len`.
+    const TIMER_VERSION_OFFSET: usize = 25;
     const FLAGS_OFFSET: usize = 29;
     const BODY_LEN_OFFSET: usize = 30;
 
@@ -689,6 +709,32 @@ mod tests {
         let mut bytes = text().encode().expect("encode");
         bytes[24] = MAX_TIMER_CODE + 1; // timer_code
         assert_eq!(decode(&bytes).err(), Some(DmCode::NonCanonical));
+    }
+
+    /// §10.5 R-T9 and the S9 review: a `timer_version` this device could not re-encode after
+    /// incrementing is refused at the parser, both ways.
+    ///
+    /// Without the bound one crafted L0 from an established contact was adopted by R-T9 and then
+    /// silenced every later send to that conversation, permanently: the next send re-encodes the
+    /// stored version, and the facade narrows it to a signed 32-bit integer.
+    #[test]
+    fn a_timer_version_beyond_the_bound_is_refused_both_ways() {
+        // The bound itself still round-trips, so the refusal is of the value and not of the field.
+        let mut ok = text();
+        ok.timer_version = MAX_TIMER_VERSION;
+        let bytes = ok.encode().expect("encode");
+        assert_eq!(decode(&bytes).expect("decode").timer_version, MAX_TIMER_VERSION);
+
+        let mut over = text();
+        over.timer_version = MAX_TIMER_VERSION + 1;
+        assert_eq!(over.encode().err(), Some(DmCode::NonCanonical));
+
+        // And a peer that writes the bytes by hand is refused at the decoder, which is the side
+        // that faces the network.
+        let mut crafted = text().encode().expect("encode");
+        crafted[TIMER_VERSION_OFFSET..TIMER_VERSION_OFFSET + 4]
+            .copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(decode(&crafted).err(), Some(DmCode::NonCanonical));
     }
 
     #[test]

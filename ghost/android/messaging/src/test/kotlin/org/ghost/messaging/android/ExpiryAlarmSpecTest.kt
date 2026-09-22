@@ -1,6 +1,7 @@
 package org.ghost.messaging.android
 
 import android.app.AlarmManager
+import android.app.PendingIntent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -27,16 +28,15 @@ class ExpiryAlarmSpecTest {
 
     private val minute = 60L
 
-    /** The wall-clock minute a row becomes due, and the two clocks it is converted between. */
-    private val nextMinute = 1_800_003_600L
-    private val now = 1_800_000_000L
+    /** The delay the engine measured against `now_e`, and the monotonic clock it is set on. */
+    private val delay = 3_600L
     private val elapsed = 12_345_678L
 
     @Test
     fun theComputedTriggerTimeIsTheDelayOnTheElapsedRealtimeClock() {
-        val spec = ExpiryAlarmSpec.wanted(nextMinute, now, elapsed)
+        val spec = ExpiryAlarmSpec.wanted(delay, elapsed)
         assertEquals(
-            "SystemClock.elapsedRealtime() + (next - now), in milliseconds",
+            "SystemClock.elapsedRealtime() + (next - now_e), in milliseconds",
             elapsed + 3_600_000L,
             spec.triggerElapsedMillis,
         )
@@ -54,7 +54,7 @@ class ExpiryAlarmSpecTest {
      */
     @Test
     fun aDeadlineAlreadyPastIsAWakeAsSoonAsPossible() {
-        val spec = ExpiryAlarmSpec.wanted(now - 10 * minute, now, elapsed)
+        val spec = ExpiryAlarmSpec.wanted(-10 * minute, elapsed)
         assertEquals(elapsed, spec.triggerElapsedMillis)
     }
 
@@ -65,14 +65,25 @@ class ExpiryAlarmSpecTest {
      * table into a list of this device's conversations; an extra would put the expiry's subject
      * there beside its time; a mutable pending intent would let the system be asked to fill
      * something in; and an implicit intent would let another component be resolved into it.
+     *
+     * **These assertions bind to the real call** since the S9 review: `ExpiryAlarm.pendingIntent`
+     * builds its `Intent` and its `PendingIntent` out of this spec and out of nothing else, and
+     * `wakeIn` chooses `setAndAllowWhileIdle` from [ExpiryAlarmSpec.allowWhileIdle], so a change
+     * at the call site has to come through a change here. Before that they were a data class
+     * asserted against itself: swapping `FLAG_IMMUTABLE` for `FLAG_MUTABLE`, adding a `putExtra`
+     * or passing the minute as the request code each left the whole suite green.
      */
     @Test
     fun oneRequestCodeNoExtrasImmutableAndExplicit() {
-        val spec = ExpiryAlarmSpec.wanted(nextMinute, now, elapsed)
+        val spec = ExpiryAlarmSpec.wanted(delay, elapsed)
         assertEquals(ExpiryAlarmSpec.REQUEST_CODE, spec.requestCode)
         assertEquals("GDM1", String(byteArrayOf(0x47, 0x44, 0x4d, 0x31), Charsets.US_ASCII))
         assertEquals(0x47444d31, ExpiryAlarmSpec.REQUEST_CODE)
-        assertEquals("no extras (L7-D7: the table holds the minute and nothing else)", 0, spec.extras)
+        assertEquals(
+            "no extras (L7-D7: the table holds the minute and nothing else)",
+            emptyMap<String, String>(),
+            spec.extras,
+        )
         assertTrue("FLAG_IMMUTABLE", spec.immutable)
         assertTrue("setAndAllowWhileIdle, which needs no permission", spec.allowWhileIdle)
         assertEquals(
@@ -88,15 +99,39 @@ class ExpiryAlarmSpecTest {
     }
 
     /**
+     * `FLAG_IMMUTABLE` is what [ExpiryAlarmSpec.pendingIntentFlags] adds, and it is the flag the
+     * pending intent is really built with — `PendingIntent.getBroadcast` is the one call and it
+     * takes this value. The base flag (`FLAG_UPDATE_CURRENT` to schedule, `FLAG_NO_CREATE` to
+     * cancel) is kept, so the two uses stay distinguishable.
+     */
+    @Test
+    fun theImmutableFlagIsTheOneThePendingIntentIsBuiltWith() {
+        val spec = ExpiryAlarmSpec.wanted(delay, elapsed)
+        assertEquals(
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            spec.pendingIntentFlags(PendingIntent.FLAG_UPDATE_CURRENT),
+        )
+        assertEquals(
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            spec.pendingIntentFlags(PendingIntent.FLAG_NO_CREATE),
+        )
+        assertEquals(
+            "a spec that stopped being immutable would ask for FLAG_MUTABLE, which §10.7 forbids",
+            PendingIntent.FLAG_MUTABLE,
+            spec.copy(immutable = false).pendingIntentFlags(0),
+        )
+    }
+
+    /**
      * Two wakes for the same minute are the same alarm, and two for different minutes differ in
      * the trigger time alone — which is what makes "reschedule" and "schedule" one operation
      * against one request code.
      */
     @Test
     fun theSpecDiffersOnlyInTheTriggerTime() {
-        val a = ExpiryAlarmSpec.wanted(nextMinute, now, elapsed)
-        val b = ExpiryAlarmSpec.wanted(nextMinute, now, elapsed)
-        val later = ExpiryAlarmSpec.wanted(nextMinute + minute, now, elapsed)
+        val a = ExpiryAlarmSpec.wanted(delay, elapsed)
+        val b = ExpiryAlarmSpec.wanted(delay, elapsed)
+        val later = ExpiryAlarmSpec.wanted(delay + minute, elapsed)
         assertEquals(a, b)
         assertFalse(a == later)
         assertEquals(a, later.copy(triggerElapsedMillis = a.triggerElapsedMillis))

@@ -18,6 +18,18 @@ package org.ghost.crypto.bridge
  */
 object DmContent {
 
+    /**
+     * The largest `timer_version` the codec encodes or accepts (§10.5, R-T9), mirroring
+     * `codec::MAX_TIMER_VERSION`.
+     *
+     * The field is a `u32` on the wire and R-T9 only says it never decreases, so nothing bounded
+     * it until the S9 review: a peer that sent `0xFFFF_FFFF` on one ordinary L0 was adopted, and
+     * the next send of any kind re-encoded the stored version through [Math.toIntExact] and threw
+     * out of the facade — that conversation could never send again. The bound leaves room for the
+     * `version + 1` a local `TIMER_SET` writes on top of it.
+     */
+    const val MAX_TIMER_VERSION: Long = Int.MAX_VALUE - 1L
+
     /** The content kinds of §7.1. `0x05` MEDIA is Phase 11 and is refused. */
     enum class Kind(val wire: Int) {
         /** UTF-8 text. */

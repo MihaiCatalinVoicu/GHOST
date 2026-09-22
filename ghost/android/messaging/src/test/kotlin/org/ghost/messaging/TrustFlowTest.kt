@@ -389,14 +389,84 @@ class TrustFlowTest {
         }
     }
 
+    /**
+     * **RS2 and CR-13 defect (3)**: a recipient that was away for sixty-one days still opens the
+     * pair envelopes that follow.
+     *
+     * §21.3 point 5 exists for exactly this: "SWEEP first derives and stores … `K_w` for every
+     * week up to `week(now)` from the newest stored key, **then** erases keys past
+     * `start(w + 1) + FRESH`, in one transaction". Mutant **MC-21** is the two halves in the wrong
+     * order, and `aRootOlderThanTheBoundIsReplacedAtTheNextSend` catches that one.
+     *
+     * This is the *other* way to lose the key, and the S9 review found it open: the ratchet
+     * refused to run at all once the gap passed eight week-indices, while the erasure ran anyway
+     * and took the newest in-key with it, because that key really is past its own window. What was
+     * left was not "falls to `NO_SEAL_KEY` and re-establishes" — a recipient cannot re-establish —
+     * but every later envelope of the conversation dropped as `unknown_seal`, silently and for
+     * good. The cliff was at nine, and sixty days lands on eight or nine depending only on the
+     * weekday the conversation started, so RS2's own sentence was false for half the calendar.
+     *
+     * Sixty-one days is chosen because it is on the far side of that cliff in this world: with the
+     * cap at eight, Bob's sweep below erases every in-key he has and the last assertion fails.
+     */
+    @Test
+    fun aRecipientBackAfterSixtyDaysStillOpensPairEnvelopes() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, _) = establishBothWays(world)
+            assertTrue("Bob starts with in-keys", pairKeyWeeks(bob, "in").isNotEmpty())
+
+            // Alice stays awake and ratchets; Bob's process is not running at all, which is what
+            // an absence is. Only the clock is shared.
+            repeat(61) {
+                world.advanceTo(alice.clock.now + DmWorld.DAY)
+                alice.timeTriggeredPass()
+            }
+
+            // Bob comes back. One pass, whose first step is SWEEP: derive, then erase.
+            bob.timeTriggeredPass()
+            assertTrue(
+                "the ratchet reached week(now), so the keys of the live weeks are there",
+                pairKeyWeeks(bob, "in").isNotEmpty(),
+            )
+
+            val before = messageCount(bob)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "after the absence", null))
+            world.deliverBetween(alice, bob)
+            bob.hintPass()
+            assertEquals(
+                "the pair envelope opened: ${bob.engine.status().drops}",
+                before + 1,
+                messageCount(bob),
+            )
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private fun pairKeyWeeks(device: DmDevice, direction: String): List<Long> {
+        val out = ArrayList<Long>()
+        device.sql.query(
+            "SELECT week FROM dm_pair_key WHERE direction = ? ORDER BY week",
+            listOf(direction),
+        ) { out += it.long(0) }
+        return out
+    }
+
+    private fun messageCount(device: DmDevice): Int {
+        var count = 0
+        device.sql.query("SELECT count(*) FROM dm_message") { count = it.long(0).toInt() }
+        return count
+    }
 
     /**
      * [count] days, a day at a time, with a time-triggered pass on both devices.
      *
      * A day at a time for the reason [weeks] gives: OWNER-WEEK publishes one bundle per week and a
-     * device that skipped several would hold none valid (§5.4), and `PairKeySteps` ratchets at
-     * most eight weeks per pass.
+     * device that skipped several would hold none valid (§5.4). It is **not** for the pair-key
+     * ratchet any more — see [weeks].
      */
     private fun days(world: DmWorld, count: Int) {
         repeat(count) {
@@ -409,10 +479,10 @@ class TrustFlowTest {
     /**
      * [count] ISO weeks, a week at a time, with a time-triggered pass on both devices.
      *
-     * A week at a time and not one jump, for two reasons that are both the design's: OWNER-WEEK
-     * publishes one bundle per week and a device that skipped several would hold none valid
-     * (§5.4), and `PairKeySteps` ratchets at most eight weeks per pass, because a key older than
-     * that has no live successor left (§21.3 point 5).
+     * A week at a time and not one jump because OWNER-WEEK publishes one bundle per week and a
+     * device that skipped several would hold none valid (§5.4). The **pair-key ratchet** no longer
+     * needs it: §21.3 point 5 derives `K_w` for every week up to `week(now)` whatever the gap, and
+     * `aRecipientBackAfterSixtyDaysStillOpensPairEnvelopes` is the test that walks one.
      */
     private fun weeks(world: DmWorld, count: Int) {
         repeat(count) {

@@ -665,7 +665,8 @@ fi
 # relay-visible step is driven only by what may drive one. Seven single-purpose fixtures — a RECV
 # that registers (the reflex T28 forbids), a store-layer `Namespaces.remove` (§21.12 point 3 makes
 # it SWEEP's), a RECV that hides its three call sites from a line-by-line reader (a receiver on the
-# line above, a local alias, a scope function), a SWEEP that does more than remove a namespace, a
+# line above, a local alias, a scope function, a safe call, a port injected under a name of the
+# author's choosing), a SWEEP that does more than remove a namespace, a
 # RECV that reaches the enqueue through the facade instead (PM-11, PM-30), a RECV that reaches it
 # through a **step object** instead (the S8 review's fourth rule), and a tree whose DM sources make
 # no restricted call at all — plus an empty tree, so each half is proven without the others. Slice
@@ -686,8 +687,8 @@ dmenq_case recv 1 "ReceiveStep.kt:9" "refuses a RECV step that registers a names
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-remove"
 dmenq_case remove 1 "ContactDao.kt:10" "refuses Namespaces.remove from the store layer"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-evasion"
-dmenq_case evasion 4 "ReceiveStep.kt:32" \
-  "sees a call through a line break, a local alias, a scope function and a safe call"
+dmenq_case evasion 6 "ReceiveStep.kt:47" \
+  "sees a call through a line break, an alias, a scope function, a safe call and a typed port"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-sweeper"
 dmenq_case sweeper 1 "Sweeper.kt:11" "lets SWEEP remove a namespace and nothing else"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-trigger"

@@ -346,6 +346,41 @@ class SweepTest {
         assertTrue(third.checkpointed)
     }
 
+    /**
+     * §10.7 and §21.12 point 1 together: a checkpoint that **fails** keeps its debt, and keeps the
+     * deletion's counts with it.
+     *
+     * Found by the S9 review. The whole pass used to sit inside one `catch (StorageFullException)`
+     * — deletion and pragma — and the pragma is a write, so on a full disk it is the call that
+     * fails. The catch then answered "a sweep that deleted nothing", which was a lie about a
+     * transaction that had already committed, and it skipped the `checkpoint_due = !truncated`
+     * below it: the flag stayed false, the next sweep saw `rows = 0` and nothing owed and ran no
+     * pragma at all, and the pages SWEEP had freed — which hold the plaintext this whole step
+     * exists to remove — stayed in the `-wal` for the life of the process. Only R-K1 at the next
+     * open recovered it.
+     *
+     * A failed checkpoint is the same kind of answer as a busy one, and is kept the same way.
+     */
+    @Test
+    fun aCheckpointThatFailsKeepsItsDebtAndTheSweepsCounts() = OwnerWorld().use { world ->
+        world.activate()
+        world.seedConversation()
+        world.seedMessage(id = 0xE1, deleteAt = DmTime.floorMinute(world.clock.now) - minute)
+
+        world.checkpoints.failStorageFull = true
+        val first = world.sweeper.sweep()
+        assertEquals("the row really was deleted, and the report says so", 1, first.messages)
+        assertEquals(0, world.count("SELECT count(*) FROM dm_message"))
+        assertFalse("the log was not truncated", first.checkpointed)
+        assertEquals(1, world.checkpoints.calls)
+
+        world.checkpoints.failStorageFull = false
+        val second = world.sweeper.sweep()
+        assertEquals("nothing was left to delete", 0, second.rows)
+        assertEquals("and the owed checkpoint ran anyway", 2, world.checkpoints.calls)
+        assertTrue(second.checkpointed)
+    }
+
     // --------------------------------------------------------------- a full disk
 
     /**

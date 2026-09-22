@@ -26,7 +26,10 @@ import org.ghost.sync.api.SyncDatabase
  *     unlocked a phone that had been frozen for a day — must not resurrect a message by giving it
  *     a fresh `expire_at_minute` later than the cap it already passed. The read that finds the row
  *     is `MessageStore.message`, which carries the §10.7 point 4 filter, so this guard is the
- *     filter and needs no second condition.
+ *     filter and needs no second condition — bound to **`now_e`** and not to the wall clock (R-T7,
+ *     and the S9 review). The two differ only after a backwards clock step, and then in the
+ *     dangerous direction: `now_e ≥ wall` always, so a wall-clock filter is the more permissive
+ *     one, and it would show — and re-arm — exactly the rows SWEEP has already decided are gone.
  *  2. **Only earlier** (R-T6). `expire_at_minute` is written with a guard, not with a plain
  *     `UPDATE`: the `dm_message_expiry` trigger aborts an increase, and a second display of the
  *     same message a minute later would otherwise abort the whole transaction — so a repeated
@@ -51,6 +54,7 @@ internal class DisplayStep(
     private val clock: DmClock,
 ) {
     private val messages = MessageStore()
+    private val expiry = ExpiryClock(database, clock)
 
     /**
      * Marks [messageIds] displayed. Returns how many rows changed — a count, never a time or an id
@@ -61,9 +65,13 @@ internal class DisplayStep(
      */
     fun markDisplayed(messageIds: List<ByteArray>): Int {
         if (messageIds.isEmpty()) return 0
-        val now = clock.nowEpochSeconds()
-        val nowMinute = DmTime.floorMinute(now)
         return database.transaction { tx ->
+            // `now_e`, read inside the transaction its filter is applied in (R-T7). The countdown
+            // below starts from the same clock: on a device whose wall clock has been stepped
+            // back, `wall + timer` can be a minute the expiry clock has already passed, so a
+            // message opened now would be swept by the very next pass.
+            val now = expiry.nowSeconds(tx.sql)
+            val nowMinute = DmTime.floorMinute(now)
             var displayed = 0
             for (messageId in messageIds) {
                 val row = messages.message(tx.sql, messageId, nowMinute) ?: continue

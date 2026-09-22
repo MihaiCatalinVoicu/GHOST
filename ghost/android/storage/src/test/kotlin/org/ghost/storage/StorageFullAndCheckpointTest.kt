@@ -86,4 +86,53 @@ class StorageFullAndCheckpointTest {
             assertThrows(IllegalStateException::class.java) { db.transaction { Checkpoint.truncate(db) } }
         }
     }
+
+    /**
+     * §10.7's "retry 3 times 100 ms apart", which nothing asserted before the S9 review: the
+     * success path takes the first attempt and never pauses, so lowering [Checkpoint.ATTEMPTS] to
+     * 1 or [Checkpoint.PAUSE_MILLIS] to 0 left the whole suite green.
+     *
+     * The busy path is driven here by a stub, because the answer being pinned is the **shape of
+     * the retry** — how many attempts, how long between them, and that the last attempt is not
+     * followed by a pointless pause. That a real reader holding the log really produces `busy = 1`
+     * is `GcCheckpointDebtTest`'s, over two connections; that the debt is then kept and retried is
+     * `SweepTest`'s.
+     */
+    @Test
+    fun aBusyLogIsRetriedThreeTimesOneHundredMillisecondsApart() {
+        val busy = BusyExecutor()
+        val pauses = ArrayList<Long>()
+        assertFalse("a log held through every attempt answers false", Checkpoint.truncate(busy) { pauses += it })
+        assertEquals("three attempts, the first included", 3, busy.attempts)
+        assertEquals("two pauses: none after the last attempt", listOf(100L, 100L), pauses)
+        assertEquals(3, Checkpoint.ATTEMPTS)
+        assertEquals(100L, Checkpoint.PAUSE_MILLIS)
+    }
+
+    /** A connection whose `wal_checkpoint` always answers `busy = 1`, and counts the asking. */
+    private class BusyExecutor : SqlExecutor {
+        var attempts = 0
+
+        override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) {
+            check(sql == "PRAGMA wal_checkpoint(TRUNCATE)") { "unexpected query: $sql" }
+            attempts += 1
+            onRow(BusyRow)
+        }
+
+        override fun exec(sql: String, args: List<Any?>) = throw UnsupportedOperationException()
+        override fun execUpdate(sql: String, args: List<Any?>): Int = throw UnsupportedOperationException()
+        override fun <T> transaction(block: () -> T): T = throw UnsupportedOperationException()
+        override val inTransaction: Boolean get() = false
+        override var userVersion: Int
+            get() = 0
+            set(_) = throw UnsupportedOperationException()
+    }
+
+    /** `(busy, log, checkpointed)` with `busy = 1`. */
+    private object BusyRow : SqlExecutor.Row {
+        override fun isNull(index: Int): Boolean = false
+        override fun long(index: Int): Long = if (index == 0) 1L else 0L
+        override fun string(index: Int): String = throw UnsupportedOperationException()
+        override fun blob(index: Int): ByteArray = throw UnsupportedOperationException()
+    }
 }

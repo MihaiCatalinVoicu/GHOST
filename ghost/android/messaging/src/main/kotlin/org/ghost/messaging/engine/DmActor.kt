@@ -100,6 +100,7 @@ internal class DmActor(
     private val messages = MessageStore()
     private val sessions = SessionStore()
     private val held = HeldStore()
+    private val expiry = ExpiryClock(database, clock)
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, THREAD_NAME).apply { isDaemon = true }
     }
@@ -188,15 +189,32 @@ internal class DmActor(
      */
     @Suppress("ReturnCount")
     fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
+        var failure: Throwable? = null
         try {
             pass(timeTriggered, deadlineMonotonicMillis)
+        } catch (e: Throwable) {
+            failure = e
+            throw e
         } finally {
             // §7.2's "After commit" column and §10.7 triggers 1 and 5, in a `finally` because they
             // are owed by a pass that ended early as much as by one that ran to the end: a pass
             // that returned at `CRYPTO_UNAVAILABLE` or at the tail deadline has still swept, and
             // an alarm that was not rescheduled is a device that never sweeps again until it is
             // opened by hand.
-            schedule.afterCommit()
+            //
+            // **It must not replace the failure that brought us here** (S9 review).
+            // `afterCommit` opens two transactions of its own, and the states that make a pass
+            // throw — a database closing under a wipe, a full disk, a lock — are exactly the
+            // states that make those two throw as well. A bare `finally` would then report the
+            // second exception and lose the first, which is the one that says what happened. The
+            // schedule's own failure is attached as suppressed instead, and it is raised on its
+            // own only when the pass itself succeeded.
+            try {
+                schedule.afterCommit()
+            } catch (e: Throwable) {
+                if (failure == null) throw e
+                failure.addSuppressed(e)
+            }
         }
     }
 
@@ -262,11 +280,14 @@ internal class DmActor(
      * half, for a crash between the KEYDEC commit and the replay — the decision is taken, the rows
      * are still there, and nothing else would ever look at them again. The predicate is exactly
      * that state: live held rows on a contact that is no longer `changed`.
+     *
+     * `hold_until_minute` is compared against **`now_e`** and not the wall clock (R-T7, §10.3): a
+     * row past its hold belongs to SWEEP, and a clock stepped backwards must not hand it back to
+     * the replay after SWEEP has already decided it is gone.
      */
     private fun replayReleasedHolds() {
-        val nowMinute = DmTime.floorMinute(clock.nowEpochSeconds())
         val contactIds = database.transaction { tx ->
-            held.contactsWithReleasedHolds(tx.sql, nowMinute)
+            held.contactsWithReleasedHolds(tx.sql, expiry.nowMinute(tx.sql))
         }
         for (contactId in contactIds) heldReplay.replay(contactId)
     }
