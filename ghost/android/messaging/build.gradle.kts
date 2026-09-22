@@ -46,7 +46,8 @@ dependencies {
 // `ghost-dm-host` (Phase 9 design §2.7, §15.1): the seal, the ratchet and the KEM decide whether
 // the other device can open what this one sealed, and a fake of them would prove its own
 // arithmetic. The `android` CI job builds the library with
-// `cargo build -p ghost-dm-host --release --locked` and passes `-Dghost.dm.native=<path>`;
+// `cargo build -p ghost-dm-host --release --locked --features provenance` (S11: every seal then
+// asserts T35's key kinds) and passes `-Dghost.dm.native=<path>`;
 // without it `DmWorld.nativeAvailable()` is false and those worlds report themselves skipped,
 // while the owner-side worlds of S6 — which fake the derivations deliberately — still run.
 //
@@ -66,6 +67,13 @@ val harnessProperties = listOf(
     "ghost.dm.seeds",
     "ghost.dm.threads",
     "ghost.dm.report",
+    // S11's privacy worlds (§15.6): the scale (`gate` for N = 600 over 42 days, `off` to skip
+    // them), one seed pair by index or the first n (`all` for the ten pinned ones), and the report
+    // `dm-report-check.sh privacy-*` reads.
+    "ghost.dm.privacy",
+    "ghost.dm.privacy.seed",
+    "ghost.dm.privacy.seeds",
+    "ghost.dm.privacy.report",
 )
 
 tasks.withType<Test>().configureEach {
