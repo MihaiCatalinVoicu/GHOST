@@ -53,6 +53,16 @@ internal class DmNode(
     /** Wraps the envelope port of every boot (native-crash injection and the ME mutants). */
     var decorate: ((DmEnvelopes) -> DmEnvelopes)? = null
 
+    /**
+     * Statement rewriting for this node, re-installed at every boot (the MC and ME mutants of
+     * §15.7, which "live only in `src/test`").
+     *
+     * It is a property of the node and not of the executor, because a mutant has to survive the
+     * reboot a crash run performs: a mutation that healed itself at the first process death would
+     * be detected by nothing but the reboot.
+     */
+    var rewrite: ((String, List<Any?>) -> Pair<String, List<Any?>>)? = null
+
     private var jdbc: JdbcSqlExecutor? = null
     private var faulty: FaultyDmSqlExecutor? = null
     private var current: DmDevice? = null
@@ -105,6 +115,7 @@ internal class DmNode(
         walBytesAfterOpen = walFile.let { if (it.exists()) it.length() else 0L }
         runner.verifyIntegrity()
         val wrapper = FaultyDmSqlExecutor(connection, bus, name)
+        wrapper.rewrite = rewrite
         jdbc = connection
         faulty = wrapper
         current = DmDevice(

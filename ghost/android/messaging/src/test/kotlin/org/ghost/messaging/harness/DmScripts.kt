@@ -32,11 +32,18 @@ internal object DmScripts {
     fun establishBothWays(world: DmCrashWorld, a: String, b: String) {
         val nodeA = world[a]
         val nodeB = world[b]
-        check(nodeA.device.engine.addContact(nodeB.device.card(), CardSource.QR_IN_PERSON) == AddContactResult.ADDED) {
-            "$a could not add $b's card"
-        }
-        val contactB = nodeA.device.engine.contacts().single().id
+        // The ids before and after, because a seeded world is a **chain**: by the time carol adds
+        // dave she already holds bob, so `contacts().single()` is only correct in a two-client
+        // world and silently wrong in every other one.
+        val beforeA = nodeA.device.engine.contacts().map { it.id.toByteArray().toList() }.toSet()
+        check(
+            nodeA.device.engine.addContact(nodeB.device.card(), CardSource.QR_IN_PERSON) ==
+                AddContactResult.ADDED,
+        ) { "$a could not add $b's card" }
+        val contactB = nodeA.device.engine.contacts()
+            .first { it.id.toByteArray().toList() !in beforeA }.id
         check(nodeA.device.engine.send(contactB, "hello", null) == SendResult.QUEUED)
+        val beforeB = nodeB.device.engine.contacts().map { it.id.toByteArray().toList() }.toSet()
         world.pump()
         nodeA.device.timeTriggeredPass()
         // `EST-READY` waits two minutes for a better bundle candidate (§21.7 point 4).
@@ -44,7 +51,8 @@ internal object DmScripts {
         nodeA.device.timeTriggeredPass()
         world.pump()
         nodeB.device.hintPass()
-        val contactA = nodeB.device.engine.contacts().single { it.trust.name == "REQUEST" }.id
+        val contactA = nodeB.device.engine.contacts()
+            .first { it.id.toByteArray().toList() !in beforeB }.id
         check(nodeB.device.engine.acceptRequest(contactA)) { "$b could not accept $a's request" }
         check(nodeB.device.engine.send(contactA, "hi back", null) == SendResult.QUEUED)
         world.pump()

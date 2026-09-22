@@ -53,6 +53,17 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
 
         /** Never serves a `prekeys` namespace's newest blob (SCN-C, PM-31's JD7 variant). */
         WITHHOLD_NEWEST_BUNDLE,
+
+        /**
+         * Stores the blob and tells the sender it failed: RP6's "re-encryption after a wrongly
+         * reported FAILED".
+         *
+         * It is the only way to reach D3 from the outside. Every other duplicate the sender can
+         * produce carries identical bytes and dies at D1's tombstone; a user retry after a FAILED
+         * re-encrypts, so the bytes differ, the hash differs, and the only thing left that says
+         * "this is the same message" is the `dm_seen` tag over its `message_id`.
+         */
+        LIE_FAILED,
     }
 
     var modes: Set<Mode> = emptySet()
@@ -89,6 +100,9 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     /** Ops whose outcome the relay is holding back ([Mode.DELAY_RELEASE]). */
     private val held = HashSet<String>()
 
+    /** Blobs [Mode.WITHHOLD] has already kept back once. */
+    private val withheld = HashSet<String>()
+
     private var sequence = 1L
     private var shuffleCounter = 0
 
@@ -123,12 +137,13 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             val key = operation.hex() + "@" + node.name
             if (!collected.add(key)) continue
             bus.event(DmEventKind.RELAY_BEFORE_SEND, node.name, "store ${operation.hex().take(8)}")
-            val outcome = if (Mode.REFUSE_ONE_SENDER in modes && refusedSender == node.name) {
-                "failed"
-            } else {
-                outcomeFor(operation.hex())
+            val outcome = when {
+                Mode.LIE_FAILED in modes -> "failed"
+                Mode.REFUSE_ONE_SENDER in modes && refusedSender == node.name -> "failed"
+                else -> outcomeFor(operation.hex())
             }
-            if (outcome != "failed") {
+            // LIE_FAILED stores it anyway: that is the whole of the lie.
+            if (outcome != "failed" || Mode.LIE_FAILED in modes) {
                 stored += Stored(
                     namespace, sha256(ciphertext), ciphertext, node.clock.now, ttl, node.name,
                 )
@@ -195,9 +210,14 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         for (blob in candidates) {
             if (blob.storedAt + blob.ttl <= node.clock.now) continue
             val key = blob.namespace.hex() + blob.hash.hex() + "@" + node.name
+            // WITHHOLD keeps each blob back for **one** round and then serves it, and it is
+            // checked before the served set on purpose: a withheld blob that had already been
+            // marked served would never be served at all, which is a lost message rather than a
+            // late one — and the property RO7 is about ("loss 0 with peek ordering and the gap
+            // hold") is about late ones.
+            if (Mode.WITHHOLD in modes && withheld.add(key)) continue
             val fresh = served.add(key)
             if (!fresh && Mode.RESURRECT !in modes && Mode.REPEATS !in modes) continue
-            if (Mode.WITHHOLD in modes && blob === candidates.lastOrNull()) continue
             val bytes = if (Mode.TRUNCATE in modes) flip(blob.ciphertext) else blob.ciphertext
             val namespace = if (Mode.COPY_NAMESPACE in modes) {
                 listening.firstOrNull { it != blob.namespace.hex() }?.let { hexToBytes(it) }

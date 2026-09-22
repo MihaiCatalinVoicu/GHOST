@@ -34,6 +34,15 @@ internal class DmCrashWorld(
     /** Free-form notes a scenario leaves for its own final checks. */
     val notes = HashMap<String, Any>()
 
+    /**
+     * A mutation installed on every node of this world as it is created (§15.7).
+     *
+     * On the world rather than on a node, because a mutant is a change to *the implementation*, and
+     * an implementation that was wrong on one device and right on another would be detected for the
+     * wrong reason. `DmMutantDetectionTest` sets it before the scenario builds its nodes.
+     */
+    var mutation: DmMutants.Mutation? = null
+
     fun node(name: String, branch: Int, identityBranch: Int = branch + 1): DmNode {
         check(name !in byName) { "duplicate node $name" }
         val node = DmNode(
@@ -44,6 +53,10 @@ internal class DmCrashWorld(
             startSeconds = startSeconds,
             identityBranch = identityBranch,
         )
+        mutation?.let {
+            node.rewrite = it.rewrite
+            node.decorate = it.decorate
+        }
         node.boot()
         order += node
         byName[name] = node
@@ -107,6 +120,16 @@ internal class DmCrashWorld(
     /** A hint-triggered pass on every node: outcomes, bundles and the inbox. */
     fun hints() {
         for (node in order) drive { node.device.hintPass() }
+    }
+
+    /** A hint-triggered pass on one node, through the same swallow the actor thread performs. */
+    fun hint(name: String) {
+        drive { this[name].device.hintPass() }
+    }
+
+    /** A time-triggered pass on one node, through the same swallow. */
+    fun pass(name: String) {
+        drive { this[name].device.timeTriggeredPass() }
     }
 
     /**

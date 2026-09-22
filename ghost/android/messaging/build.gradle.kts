@@ -54,6 +54,20 @@ dependencies {
 // result (build caching is on), exactly as `:crypto-bridge` declares it.
 val hostLibrary = providers.systemProperty("ghost.dm.native")
     .orElse(providers.gradleProperty("ghost.dm.native"))
+
+// The S10 exit-gate harness's own knobs (Phase 9 design §15.1 "harness `-D` properties declared as
+// test inputs"; §15.3's gate scale, §15.4's seed count). Without the forwarding they reach the
+// Gradle JVM and not the test JVM, so `-Dghost.dm.crash=full` would silently run the PR scale and
+// the gate would report a number it did not measure — which is the one failure mode a report-checked
+// gate must not have.
+val harnessProperties = listOf(
+    "ghost.dm.crash",
+    "ghost.dm.sample",
+    "ghost.dm.seeds",
+    "ghost.dm.threads",
+    "ghost.dm.report",
+)
+
 tasks.withType<Test>().configureEach {
     inputs.property("ghost.dm.native", hostLibrary.orElse(""))
     hostLibrary.orNull?.let { path ->
@@ -61,5 +75,10 @@ tasks.withType<Test>().configureEach {
         inputs.file(path)
             .withPropertyName("dmHostLibrary")
             .withPathSensitivity(PathSensitivity.NAME_ONLY)
+    }
+    for (name in harnessProperties) {
+        val value = providers.systemProperty(name).orElse(providers.gradleProperty(name))
+        inputs.property(name, value.orElse(""))
+        value.orNull?.let { systemProperty(name, it) }
     }
 }
