@@ -35,6 +35,7 @@ import org.ghost.messaging.port.NativeDmCrypto
 import org.ghost.messaging.port.NativeDmEnvelopes
 import org.ghost.storage.JdbcSqlExecutor
 import org.ghost.storage.MigrationRunner
+import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.RelayEntry
 import org.ghost.sync.api.SyncDatabase
@@ -312,26 +313,70 @@ class DmDevice(
     internal val identityBranch: Int = branch + 1,
     /** A file path for the T25 physical scan, or null for the in-memory default (see [DmWorld]). */
     private val path: String? = null,
+    /**
+     * S10's crash harness: an executor, a clock and a boot index the caller owns (§15.3).
+     *
+     * A reboot is "drop the uncommitted connection, reopen the same file, migrate,
+     * `verifyIntegrity`, R-K1, **build a new client**", and the new client has to be a real
+     * `DmDevice` over the *same* database file, the *same* virtual clock and a *different* random
+     * stream. None of that is expressible while the device opens its own connection in its own
+     * initialiser, so the harness supplies all three and this constructor uses them instead.
+     *
+     * When it is null nothing changes: the device opens, migrates and owns its own connection, and
+     * every world of S6–S9 keeps the byte streams it had (the boot index leaves stream 0 alone).
+     */
+    val harness: HarnessOverride? = null,
 ) : AutoCloseable {
 
-    val sql: JdbcSqlExecutor = JdbcSqlExecutor(path ?: ":memory:").also {
-        MigrationRunner(it).migrate()
-        // A `-wal` file exists only in WAL mode, and it is what §10.9 point 3 scans and what
-        // `checkpointTruncate()` truncates. `GhostDatabase.finishOpen` does this on device.
-        if (path != null) it.query("PRAGMA journal_mode = WAL") { }
+    /** The three things the S10 crash harness owns instead of the device (see [harness]). */
+    class HarnessOverride(
+        val sql: SqlExecutor,
+        val clock: MovableClock,
+        /** 0 for the first boot; later boots draw from their own random stream. */
+        val bootIndex: Int,
+        /**
+         * Wraps the device's `DmEnvelopes` port before anything is wired to it.
+         *
+         * Two things of §15.1 and §15.7 need it and nothing else can give it: the
+         * `SimulatedNativeCrash` "thrown from the `DmNative` port during RECV", and the envelope
+         * mutants, which §15.7 requires to live "only in `src/test`" — so they cannot be a flag on
+         * the production port.
+         */
+        val decorate: ((org.ghost.messaging.port.DmEnvelopes) -> org.ghost.messaging.port.DmEnvelopes)? = null,
+    )
+
+    /** Null when [harness] supplied the executor: the harness closes what it opened. */
+    private val ownExecutor: JdbcSqlExecutor? = if (harness != null) {
+        null
+    } else {
+        JdbcSqlExecutor(path ?: ":memory:").also {
+            MigrationRunner(it).migrate()
+            // A `-wal` file exists only in WAL mode, and it is what §10.9 point 3 scans and what
+            // `checkpointTruncate()` truncates. `GhostDatabase.finishOpen` does this on device.
+            if (path != null) it.query("PRAGMA journal_mode = WAL") { }
+        }
     }
+
+    val sql: SqlExecutor = harness?.sql ?: requireNotNull(ownExecutor)
 
     /** The database file and its write-ahead log, for the physical scan (null in memory). */
     val databaseFile: java.io.File? get() = path?.let { java.io.File(it) }
 
     val walFile: java.io.File? get() = path?.let { java.io.File("$it-wal") }
     val database: SyncDatabase = SyncDatabase(sql)
-    val clock = MovableClock(startSeconds)
+    val clock: MovableClock = harness?.clock ?: MovableClock(startSeconds)
     val stores: SyncStores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
     // One stream per device: see `SequentialRandom`. Two devices sharing a stream produced a
     // `message_id` on one that was the 16-byte prefix of a `seen_key` on the other, which the T25
     // physical scan reads as a message surviving its own deletion.
-    val random = SequentialRandom(branch, "device-$branch-$identityBranch")
+    //
+    // A reboot adds its boot index to the stream for the same reason: the process that comes back
+    // draws fresh entropy on a device, and a stream restarted at counter 0 would hand the second
+    // boot the ids the first one already committed.
+    val random = SequentialRandom(
+        branch,
+        "device-$branch-$identityBranch" + (harness?.bootIndex?.takeIf { it > 0 }?.let { "-b$it" } ?: ""),
+    )
     val wrapper = FakeKeyWrapper()
 
     /** The real DM context: one per device, opened on this device's own MESSAGING branch. */
@@ -354,7 +399,8 @@ class DmDevice(
     }
 
     val crypto = NativeDmCrypto(context)
-    val envelopes = NativeDmEnvelopes(context)
+    val envelopes: org.ghost.messaging.port.DmEnvelopes =
+        NativeDmEnvelopes(context).let { harness?.decorate?.invoke(it) ?: it }
 
     var slots: List<EsSlot>
     private val esSlots = EsSlots { slots }
@@ -560,6 +606,6 @@ class DmDevice(
     override fun close() {
         handle?.let { DmSessions.closeContext(it) }
         actor.close()
-        sql.close()
+        ownExecutor?.close()
     }
 }
