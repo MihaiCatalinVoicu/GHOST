@@ -1,6 +1,6 @@
 GHOST DM privacy gate (Phase 9 design §15.6, §15.7; slice S11)
 scale: gate (N = 600, 42 days), seed pairs 1, STANDARD
-dm privacy world: N=600, 42 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {BUNDLE=274, INTRO=372, PAIR=5013, PROVISIONAL=498}, 118 s [seed 5eed0001]
+dm privacy world: N=600, 42 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {BUNDLE=274, INTRO=372, PAIR=5013, PROVISIONAL=498}, 167 s [seed 5eed0001]
 dm JD1: PASS 0 over 15752; identity dictionary of 330600 entries over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD2: PASS 0 over 15752; 5793 Olm header and bundle key strings over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD3: PASS 0 over 21702; stores and registrations (822 stores into the storer's own bundle namespace, every other into a card's inbox); 1047 (relay, inbox, week) cells [seed 5eed0001]

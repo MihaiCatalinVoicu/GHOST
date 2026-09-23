@@ -193,6 +193,16 @@ dmr_case fail privacy-sdm3-dictionary.txt privacy-pr "rejects S-DM3 whose dictio
 dmr_case fail privacy-world-scale.txt privacy-gate "rejects a PR-scale world line under a gate header"
 dmr_case fail privacy-t35-threw.txt privacy-pr "rejects a T35 line over a seal call that threw"
 dmr_case fail privacy-one-reply-missing.txt privacy-pr "rejects a report without the T34 one-reply variant"
+# Phase 9 S11b (design §22.19): NI-DM2, JD7's WITHHOLD_ALL_BUNDLES variant and twelve mutants. Each
+# negative is the PR positive with one change: a missing line, a twin set that never left pair mode
+# (a message compared with itself), a variant world in which no establishment reached the bound, and
+# S11's mutant count, which no longer names every mutant the registry holds.
+dmr_case fail privacy-ni2-missing.txt privacy-pr "rejects a report without NI-DM2"
+dmr_case fail privacy-ni2-one-state.txt privacy-pr "rejects an NI-DM2 PASS whose twins never left pair mode"
+dmr_case fail privacy-withhold-missing.txt privacy-pr "rejects a report without the JD7 WITHHOLD_ALL_BUNDLES variant"
+dmr_case fail privacy-withhold-unreached.txt privacy-pr "rejects a JD7 withhold variant in which no establishment ran its attempts out"
+dmr_case fail privacy-old-mutant-count.txt privacy-pr "rejects S11's ten-mutant count"
+dmr_case fail privacy-pm4-one-killer.txt privacy-suite "rejects PM-4 detected by JD4 alone"
 # Phase 9 S12 (design §15.9): the emulator report check. `pass/` is a green run on API 29 and 35;
 # every negative case is a copy of it with one change, each a way an emulator run could look green
 # while it proved less: an API level or a suite that never ran, a skipped or missing test, a

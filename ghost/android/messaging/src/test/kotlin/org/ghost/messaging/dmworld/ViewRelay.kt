@@ -76,7 +76,8 @@ internal class StoreCause(
  * **What it does not model, declared in §22.16:** the credential-selection and capability layers of
  * the redeem lane (no token is ever redeemed, so JD3's redemption half and JD8 have no events),
  * send delays (every world here is STANDARD), circuits' open and close minutes, relay refusals and
- * hostile modes.
+ * every hostile mode but one: **WITHHOLD_ALL_BUNDLES** ([withholdBundles]) exists since the S11b
+ * slice for the JD7 variant that bounds the attempts (§21.7 point 6, PM-31; §22.19).
  */
 internal class ViewRelay(private val now: () -> Long) {
 
@@ -107,6 +108,20 @@ internal class ViewRelay(private val now: () -> Long) {
 
     /** Hook for the twin worlds: false keeps a stored blob from one reader (a relay withholding it). */
     var serveFilter: ((reader: Int, from: Int) -> Boolean)? = null
+
+    /**
+     * Hostile mode **WITHHOLD_ALL_BUNDLES** (§15.1's list, §21.7 point 6): every relay answers a
+     * list of a card's bundle namespace by anyone but its owner as if it held nothing, so no
+     * establishment ever gets a candidate and every one runs its three attempt windows out. The
+     * lists themselves are recorded — they are what the JD7 variant bounds — and the blobs a list
+     * would have shown are counted in [bundlesWithheld], so a variant world that withheld nothing
+     * says so.
+     */
+    var withholdBundles: Boolean = false
+
+    /** Bundle blobs a list under [withholdBundles] did not show (a blob counted once per list). */
+    var bundlesWithheld: Int = 0
+        private set
 
     /** Ops that carried no credential at a relay: Phase 7 would have left them `wait_capability`. */
     var storesWithoutCredential: Int = 0
@@ -227,6 +242,7 @@ internal class ViewRelay(private val now: () -> Long) {
         for (namespace in listening) {
             val nsHex = hex(namespace)
             val readerState = if (nsHex in ownNamespaces) null else contactRow(device, contactBundles[nsHex])
+            val withheld = withholdBundles && nsHex !in ownNamespaces && nsHex in contactBundles
             val relays = ArrayList<Long>()
             device.sql.query(
                 "SELECT relay_id FROM namespace_relay WHERE namespace_id = ? ORDER BY relay_id",
@@ -247,12 +263,28 @@ internal class ViewRelay(private val now: () -> Long) {
                     credential = credential,
                     readerState = readerState,
                 )
+                if (withheld) {
+                    bundlesWithheld += stored[slot to nsHex].orEmpty().count { it.storedAt + it.ttl > now() }
+                    continue
+                }
                 for (blob in stored[slot to nsHex].orEmpty()) {
                     if (blob.from == client) continue
                     if (serveFilter?.invoke(client, blob.from) == false) continue
                     if (blob.storedAt + blob.ttl <= now()) continue
                     val key = nsHex + hex(blob.hash)
-                    if (key in fetchedThisRound || (client to key) in fetched) continue
+                    if (key in fetchedThisRound) continue
+                    if ((client to key) in fetched) {
+                        // The read lane fetches a hash the reader holds no row for, and a card's
+                        // bundle namespace is where `Inbox.forgetConsumed` (§21.7 point 2) deletes
+                        // the reader's tombstones so that a reset, a key change or a re-added
+                        // contact can fetch the same live bundle again. The relay's memory of what
+                        // it served this reader must not stand in for the reader's own tombstones
+                        // there (the S11b slice, found by NI-DM2's reset twin, §22.19); everywhere
+                        // else it still does, as in S11.
+                        val forgettable = nsHex !in ownNamespaces && nsHex in contactBundles
+                        if (!forgettable || known(device, namespace, blob.hash)) continue
+                        fetched -= client to key
+                    }
                     val bytes = serveTransform?.invoke(client, blob.from, blob.storedAt, blob.bytes) ?: blob.bytes
                     if (!insert(device, namespace, bytes)) {
                         fetched += client to key
@@ -277,6 +309,16 @@ internal class ViewRelay(private val now: () -> Long) {
             }
         }
         return moved
+    }
+
+    /** Whether the reader holds any inbox row (a fetched blob or a tombstone) for [hash]. */
+    private fun known(device: DmDevice, namespace: ByteArray, hash: ByteArray): Boolean {
+        var exists = false
+        device.sql.query(
+            "SELECT 1 FROM inbox_blob WHERE namespace_id = ? AND blob_hash = ?",
+            listOf(namespace, hash),
+        ) { exists = true }
+        return exists
     }
 
     /** The reader's contact row for the owner of [identityPk], for a failing JD7's message only. */

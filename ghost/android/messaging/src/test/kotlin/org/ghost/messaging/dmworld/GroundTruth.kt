@@ -73,6 +73,37 @@ internal class GroundTruth {
     private val bodyLengthOfL0 = HashMap<Key, Int>()
     private val bodyLengthOfL1 = HashMap<Key, Int>()
 
+    /**
+     * What the engine handed the encoder for one L0, as NI-DM2 needs it to say which message type
+     * and which pending TLVs a blob carried: the kind, the body length, whether a quote reference
+     * was in it, and which root and key TLVs **rode** (the encoder's own answer, [DmContent.Encoded.Ok]).
+     */
+    class Content(
+        val kind: DmContent.Kind,
+        val bodyLength: Int,
+        val quoted: Boolean,
+        val sealRoot: Boolean,
+        val sealRootPq: Boolean,
+        val pqKey: Boolean,
+    ) {
+        /** A root offer rode, in either form (§6.3, §9.4). */
+        val offer: Boolean get() = sealRoot || sealRootPq
+
+        /** The TLVs that rode, for a report line. */
+        val tlvs: String
+            get() = listOfNotNull(
+                "seal_root".takeIf { sealRoot },
+                "seal_root_pq".takeIf { sealRootPq },
+                "pq_key".takeIf { pqKey },
+            ).joinToString("+").ifEmpty { "none" }
+    }
+
+    private val contentOfL0 = HashMap<Key, Content>()
+    private val contentOfL1 = HashMap<Key, Content>()
+
+    /** The content behind every sealed blob, keyed by the blob's SHA-256 (NI-DM2's ground truth). */
+    val contentOfBlob = HashMap<Key, Content>()
+
     /** How many seal **calls** of each mode the world made. */
     val seals = HashMap<String, Int>()
 
@@ -153,12 +184,17 @@ internal class GroundTruth {
         override fun toString(): String = hex(bytes.copyOf(minOf(8, bytes.size)))
     }
 
-    fun recordL0(l0: ByteArray, bodyLength: Int) {
-        bodyLengthOfL0[Key(sha256(l0))] = bodyLength
+    fun recordL0(l0: ByteArray, bodyLength: Int, content: Content? = null) {
+        val key = Key(sha256(l0))
+        bodyLengthOfL0[key] = bodyLength
+        content?.let { contentOfL0[key] = it }
     }
 
     fun recordL1(l0: ByteArray, l1: ByteArray) {
-        bodyLengthOfL0[Key(sha256(l0))]?.let { bodyLengthOfL1[Key(sha256(l1))] = it }
+        val l0Key = Key(sha256(l0))
+        val l1Key = Key(sha256(l1))
+        bodyLengthOfL0[l0Key]?.let { bodyLengthOfL1[l1Key] = it }
+        contentOfL0[l0Key]?.let { contentOfL1[l1Key] = it }
     }
 
     /** The client that sealed each blob. */
@@ -182,6 +218,7 @@ internal class GroundTruth {
         modeOfBlob[blobKey] = mode
         senderOfBlob[blobKey] = sender
         bodyLengthOfL1[Key(sha256(l1))]?.let { bodyLengthOfBlob[blobKey] = it }
+        contentOfL1[Key(sha256(l1))]?.let { contentOfBlob[blobKey] = it }
         ownerOfInbox(namespace)?.let { sessions += sender to it }
     }
 
@@ -287,7 +324,20 @@ internal class RecordingEnvelopes(
             kind, messageId, authorMinute, minuteIndex, timerCode, timerVersion, quoteRef, body,
             contactId, offerRootGen, offerEnv, revocation, sessionReset, pqKey, pqKeyFirst,
         )
-        if (encoded is DmContent.Encoded.Ok) truth.recordL0(encoded.l0, body.size)
+        if (encoded is DmContent.Encoded.Ok) {
+            truth.recordL0(
+                encoded.l0,
+                body.size,
+                GroundTruth.Content(
+                    kind = kind,
+                    bodyLength = body.size,
+                    quoted = quoteRef != null,
+                    sealRoot = encoded.sealRootRode,
+                    sealRootPq = encoded.sealRootPqRode,
+                    pqKey = encoded.pqKeyRode,
+                ),
+            )
+        }
         return encoded
     }
 

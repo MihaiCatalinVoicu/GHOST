@@ -551,10 +551,49 @@ internal class Joins(private val world: PrivacyWorld) {
         }
         val opened = windows.values.sumOf { it.total }
         val most = windows.values.maxOfOrNull { it.most } ?: 0
+        lastJd7Exhausted = windows.values.sumOf { it.exhausted }
         return JoinResult(
             "JD7", n, violations,
             "reads, $bundleReads of them bundle reads inside $opened attempt windows of " +
                 "${world.establishments.size} establishments (at most $most windows for one)",
+        )
+    }
+
+    /** How many establishments the last [jd7] saw use all three attempt windows. */
+    private var lastJd7Exhausted = 0
+
+    /**
+     * **JD7's WITHHOLD_ALL_BUNDLES variant** (§21.7 point 6: "a JD7 variant requires ≤ 3 attempts
+     * and `P_c` list events only inside attempt windows"; PM-31's detector). The world is run with
+     * [PrivacyWorldConfig.withholdAllBundles], so no establishment ever gets a candidate and the
+     * attempt bound is the only thing that ends one; the check is [jd7]'s own, unchanged — every
+     * read of a card's bundle namespace inside one of **at most three** windows of an establishment
+     * the world recorded.
+     *
+     * **What makes it able to fail**, each required here so a variant world that did not exercise
+     * the bound cannot pass: the mode withheld something (a non-zero count of bundle blobs a list
+     * did not show — a world where nobody published would bound nothing), no bundle was fetched
+     * (a GET of a card's bundle namespace means the mode leaked), and at least one establishment
+     * used **all three** windows by the relay view (reads in three distinct windows) — which is the
+     * state in which an engine with no bound makes a fourth attempt that no window covers.
+     */
+    fun jd7Withheld(): JoinResult {
+        val base = jd7()
+        val violations = ArrayList(base.violations)
+        val bundleOwner = world.truth.clients.values.mapNotNull { t -> t.bundleNamespace?.let { hex(it) } }.toSet()
+        val bundleGets = events.count {
+            it.op == ViewOp.GET && hex(it.namespace) in bundleOwner && hex(it.namespace) !in world.ownNamespaces(it.client)
+        }
+        val withheld = world.relay.bundlesWithheld
+        val exhausted = lastJd7Exhausted
+        if (!world.config.withholdAllBundles) violations += "the variant ran on a world without WITHHOLD_ALL_BUNDLES"
+        if (withheld == 0) violations += "the mode withheld no bundle blob: nothing was published to withhold"
+        if (bundleGets > 0) violations += "$bundleGets GETs of a card's bundle namespace: the mode leaked a bundle"
+        if (exhausted == 0) violations += "no establishment used all three attempt windows: the bound was never reached"
+        return JoinResult(
+            "JD7 WITHHOLD_ALL_BUNDLES", base.scanned, violations,
+            "${base.detail}; $exhausted establishments ran all three attempts out, $withheld bundle blobs " +
+                "withheld from lists, $bundleGets bundle GETs",
         )
     }
 
@@ -566,6 +605,10 @@ internal class Joins(private val world: PrivacyWorld) {
         var total = 0
             private set
         var most = 0
+            private set
+
+        /** Establishments whose reads fell in all [MAX_ATTEMPTS] windows (the bound was reached). */
+        var exhausted = 0
             private set
 
         fun accept(t: Long): Boolean {
@@ -587,6 +630,7 @@ internal class Joins(private val world: PrivacyWorld) {
                 attempts++
                 total++
                 most = maxOf(most, attempts)
+                if (attempts == MAX_ATTEMPTS) exhausted++
             }
         }
 

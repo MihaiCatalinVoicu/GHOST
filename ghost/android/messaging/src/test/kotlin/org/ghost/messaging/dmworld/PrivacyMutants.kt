@@ -54,10 +54,13 @@ internal enum class PrivacyCheck(val label: String) {
     JD1("JD1 (SMALL world)"),
     JD2("JD2 (SMALL world)"),
     JD4("JD4 (SMALL world)"),
+    JD5("JD5 (SMALL world)"),
     JD6("JD6 (SMALL world)"),
     JD7("JD7 (SMALL world)"),
+    JD7_WITHHOLD("JD7 WITHHOLD_ALL_BUNDLES (SMALL world)"),
     JD9("JD9 (SMALL world)"),
     NI_DM1("NI-DM1 (twin worlds)"),
+    NI_DM2("NI-DM2 (twin worlds)"),
     NI_DM3("NI-DM3 (twin worlds)"),
     S_DM3("S-DM3 (MEDIUM world, n >= 100)"),
     T34("T34 (seizure world)"),
@@ -65,8 +68,9 @@ internal enum class PrivacyCheck(val label: String) {
 }
 
 /**
- * The privacy mutants this slice registers: ten of §15.7's forty, each with the checks that kill
- * it. §22.16 lists the other thirty by name, with what each needs.
+ * The privacy mutants registered: ten of §15.7's forty from slice S11, and PM-5 and PM-31 from the
+ * S11b slice (with NI-DM2 as PM-4's second killer), each with the checks that kill it. §22.16 lists
+ * what the others need, and §22.19 what S11b changed of that list.
  */
 internal object PrivacyMutants {
 
@@ -185,8 +189,12 @@ internal object PrivacyMutants {
     val PM4 = PrivacyMutant(
         id = "PM-4",
         defeats = "T29 and R-B1: the bucket is a function of the body length only",
-        detectedBy = "JD4, NI-DM2 (§15.7); JD4 here (NI-DM2 is not built, §22.16)",
-        killers = listOf(PrivacyMutant.Killer(PrivacyCheck.JD4, "R-B1 says")),
+        detectedBy = "JD4, NI-DM2 (§15.7); both here (NI-DM2 since §22.19: at 2 221, 14 509 and 15 000 body " +
+            "bytes the TLVs one state carries push its Olm output over a class the others stay under)",
+        killers = listOf(
+            PrivacyMutant.Killer(PrivacyCheck.JD4, "R-B1 says"),
+            PrivacyMutant.Killer(PrivacyCheck.NI_DM2, "differ at body length"),
+        ),
         envelopes = { _, _, native ->
             fun after(l1: ByteArray, overhead: Int): Int = listOf(4096, 16384, 65536).first { l1.size + overhead <= it }
             object : DmEnvelopes by native {
@@ -445,5 +453,58 @@ internal object PrivacyMutants {
         rewrite = { sql, args -> if (sql == BOUND_PROVISIONAL_ERASE) "$sql AND 0" to args else sql to args },
     )
 
-    fun all(): List<PrivacyMutant> = listOf(PM2, PM3, PM4, PM6, PM8, PM13, PM19, PM24, PM36, PM39)
+    /** `OutboxStore.enqueue`'s insert: the TTL is its fifth argument (`blob.ttl.seconds`). */
+    private const val ENQUEUE_OP = "INSERT INTO outbox_op(operation_id, namespace_id, blob_hash, ciphertext, ttl_seconds, "
+
+    /**
+     * **PM-5 — "1 h through day rounding" (§15.7).** Every op's TTL is written as the whole days of
+     * its bucket (`TtlBucket.days × 86 400`, the rounding §10.2 row 7 keeps for day-granular fields
+     * and that the `ttl_bucket_days` relay field applied before D15), so a 5-minute or a 1-hour
+     * conversation's blobs are kept for a day. It is a bucket, so `outbox_op`'s CHECK and a relay
+     * that accepts exact buckets both take it; only a check that knows the timer the users set sees
+     * it. §15.7's other half — "TTL = exact timer seconds" — is refused by that CHECK before any
+     * relay could see it (a crash, not a leak), and is the relay's `rejected_ttl` and the capture
+     * check's, outside this world (§22.19).
+     */
+    val PM5 = PrivacyMutant(
+        id = "PM-5",
+        defeats = "R-T1, T30: the relay TTL is §10.1's table of the timer, 5 min and 1 h at 1 h",
+        detectedBy = "relay rejected_ttl, capture-check, JD5 (§15.7); JD5 here, on the day-rounding half",
+        killers = listOf(PrivacyMutant.Killer(PrivacyCheck.JD5, "stored with TTL 86400; the timer the users set (code")),
+        rewrite = { sql, args ->
+            if (sql.startsWith(ENQUEUE_OP) && (args[4] as Number).toLong() == 3_600L) {
+                sql to args.toMutableList().also { it[4] = 86_400 }
+            } else {
+                sql to args
+            }
+        },
+    )
+
+    /** `ContactStore.setEstablishment`: the one statement that writes `fetch_attempts` forward. */
+    private const val SET_ESTABLISHMENT =
+        "UPDATE dm_contact SET establishment = ?, fetch_attempts = ?, fetch_listen_until_minute = ? WHERE contact_id = ?"
+
+    /**
+     * **PM-31 — unbounded bundle fetch attempts (§21.7).** The attempt counter is written as at most
+     * one, so `EST-START`'s "three attempts" and `EST-END`'s "after the third, unreachable" never
+     * bind: an establishment whose bundle never arrives keeps opening a 15-minute window at every
+     * relay session six hours after the last — the unbounded co-occurrence of `P_c` with session
+     * starts L7-D6 declares bounded at three. Only a world in which the bound is reached shows it:
+     * the JD7 variant under WITHHOLD_ALL_BUNDLES (§21.7 point 6), where no bundle ever arrives.
+     */
+    val PM31 = PrivacyMutant(
+        id = "PM-31",
+        defeats = "§21.7 point 5, L7-D6: at most three attempt windows per establishment",
+        detectedBy = "JD7 variant with WITHHOLD_ALL_BUNDLES (§15.7); here",
+        killers = listOf(PrivacyMutant.Killer(PrivacyCheck.JD7_WITHHOLD, "outside every attempt window")),
+        rewrite = { sql, args ->
+            if (sql == SET_ESTABLISHMENT) {
+                sql.replace("fetch_attempts = ?", "fetch_attempts = min(?, 1)") to args
+            } else {
+                sql to args
+            }
+        },
+    )
+
+    fun all(): List<PrivacyMutant> = listOf(PM2, PM3, PM4, PM5, PM6, PM8, PM13, PM19, PM24, PM31, PM36, PM39)
 }
