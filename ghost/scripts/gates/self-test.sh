@@ -181,6 +181,11 @@ dmr_case fail unkilled-s10b-mutant.txt gate "rejects MC-33 with no line naming w
 dmr_case fail relay-event-denominator.txt gate "rejects timeouts counted over relay events instead of stores"
 dmr_case fail weakened-kill-rule.txt gate "rejects MC-18 killed only fault-free"
 dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K ran no timeout"
+# Phase 9 S10c (design §22.22): the report now carries SCN-C, both positives are real reports of the
+# S10c code, and every negative above was regenerated from them with its one change. One more: a
+# report without SCN-C, which is also the shape of every report before S10c.
+dmr_case fail missing-scn-c.txt gate "rejects a report without SCN-C"
+dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

@@ -1,6 +1,6 @@
 name: messaging-exit-gate
 
-# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10 and S10b): the crash
+# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10, S10b and S10c): the crash
 # enumeration of the implemented SCN-* scenarios and suite cases at **every** event, with the double
 # crashes §15.3 names, the "timeout after apply" run at every store (the relay's after-apply event,
 # the only one at which the fault exists), SCN-J's `SQLITE_FULL` at
@@ -25,19 +25,22 @@ name: messaging-exit-gate
 #
 # Budget. **Measured**, on the owner's Windows workstation (24 logical CPUs; the harness caps its
 # worker threads at 8), each figure one end-to-end run of the commit that last changed the harness
-# (§22.19 item 13): the whole `:messaging` suite in 5 min 26 s at the PR scale, and in 72 min 51 s
-# with exactly the gradle command below — about 59 000 faulted runs (46 423 single crashes, 12 228
-double crashes, 61 timeouts, 305 `SQLITE_FULL` injections) over **fifteen** scenario lines
-# and suite cases (SCN-A, B, D, F, G, H, I, J, K, L, SCN-G's week-boundary retry as SCN-G-week, plus
-# RP6, RP9, CB-reject-replay and EP-read-expiry, which is what `dm-report-check.sh` requires and
-# what the fixtures carry), 128 seeded worlds and the mutants. S10b's
-# two long scenarios dominate it: SCN-H (17 284 events) took 31 minutes and SCN-I (6 620 events,
-# with doubles) 20. **Not measured**: this job, on a runner. The self-hosted runners are not up,
-# so no run of it has been observed. On a 4-vCPU runner the harness runs 4 threads instead of 8,
-# so an **extrapolation** — not a measurement — is about twice the workstation's harness time,
-# roughly 150 minutes, plus the Rust and Gradle builds and whatever the slower cores cost: inside
-# the 240-minute timeout below, but not by a margin anything has shown. §22.19 asks for it to be
-# re-measured on the runner before the timeout is trusted.
+# (§22.22 item 10): the whole `:messaging` suite in about 10 minutes at the PR scale, and in
+# 120 min 54 s with exactly the gradle command below — about 67 400 faulted runs (54 601 single
+# crashes, 12 440 double crashes, 73 timeouts, 308 `SQLITE_FULL` injections) over **sixteen**
+# scenario lines and suite cases (SCN-A, B, C, D, F, G, H, I, J, K, L, SCN-G's week-boundary retry as
+# SCN-G-week, plus RP6, RP9, CB-reject-replay and EP-read-expiry, which is what
+# `dm-report-check.sh` requires and what the fixtures carry), 128 seeded worlds and the mutants.
+# **That figure is an upper one:** the machine was shared with other slices' builds (several other
+# JVMs were running beside the gate when it ended), where S10b's 72 min 51 s (fifteen lines, before
+# S13 merged) was taken on an idle one. SCN-C alone, run on its own at every event, took 12 min 26 s.
+# **Not measured**: this job, on a runner. The self-hosted runners are not up, so no run of it has
+# been observed. On a 4-vCPU runner the harness runs 4 threads instead of 8, so an
+# **extrapolation** — not a measurement — from the idle-machine figure plus SCN-C is about twice
+# the workstation's harness time, roughly 170 minutes, plus the Rust and Gradle builds and whatever
+# the slower cores cost: inside the 240-minute timeout below, by a thinner margin than before, and
+# no run has shown it. §22.22 asks for it to be re-measured on the runner before the timeout is
+# trusted.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:

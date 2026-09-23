@@ -27,11 +27,12 @@
 # fails the check (exit 1); usage errors exit 2.
 #
 # **What this deliberately does not check.** §15.7's own gate line is `dm mutants: 97 run, 97
-# detected` and §15.3's enumeration is every event of twelve scenarios. Slices S10 and S10b
-# implement nine of the twelve and a part of a tenth — SCN-H, whose line covers sixteen weeks of
+# detected` and §15.3's enumeration is every event of twelve scenarios. Slices S10, S10b and S10c
+# implement ten of the twelve and a part of an eleventh — SCN-H, whose line covers sixteen weeks of
 # generations and a late first flight and not its other clauses (§22.19 names them) — plus SCN-G's
 # week-boundary half as a line of its own, four suite cases and eleven mutants, so the numbers
-# pinned here are the numbers a run actually measures.
+# pinned here are the numbers a run actually measures. SCN-E is the scenario still missing; SCN-C
+# (S10c) makes no mutant reachable and adds none (§22.22).
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -151,11 +152,11 @@ case "$kind" in
 esac
 
 
-# The scenarios and suite cases slices S10 and S10b implement (S10b added SCN-H, SCN-I, SCN-K and
-# SCN-G's week-boundary retry as `SCN-G-week`, §22.19). Each must have a crash-class line, and that
-# line must report at least one single crash: an enumeration of zero crash points is a scenario that
-# ran once without faults, which is not a crash enumeration.
-scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
+# The scenarios and suite cases slices S10, S10b and S10c implement (S10b added SCN-H, SCN-I, SCN-K
+# and SCN-G's week-boundary retry as `SCN-G-week`, §22.19; S10c added SCN-C, §22.22). Each must have
+# a crash-class line, and that line must report at least one single crash: an enumeration of zero
+# crash points is a scenario that ran once without faults, which is not a crash enumeration.
+scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
 scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do

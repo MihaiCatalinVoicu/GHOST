@@ -60,7 +60,7 @@ internal object DmReport {
      * singles of every line to equal its events.
      */
     private fun header(): String = buildString {
-        append("GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10 and S10b)\n")
+        append("GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b and S10c)\n")
         append("scale: ")
         append(
             if (DmHarness.sample == 1) {

@@ -452,19 +452,22 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
         // restore never finished was repaired by the oracle instead of failing it.
         world[a].device.engine.send(toB, LIVENESS_A, null)
         world[b].device.engine.send(toA, LIVENESS_B, null)
+        // Each probe is looked for in **the pair's own conversation** (S10c), not in whichever
+        // conversation `contacts()` lists first: SCN-C's bob holds a request of carol's beside
+        // alice's contact, and a first-contact read would look for alice's probe in carol's
+        // conversation half the time. For every scenario before SCN-C the two reads are the same
+        // conversation, because each liveness node holds exactly one contact.
+        val arrivedAtB = { DmScripts.inboundTextsWith(world, b, toA).contains(LIVENESS_A) }
+        val arrivedAtA = { DmScripts.inboundTextsWith(world, a, toB).contains(LIVENESS_B) }
         for (round in 0 until LIVENESS_ROUNDS) {
             world.pump()
             world.passes()
             world.advanceBy(org.ghost.messaging.DmWorld.MINUTE)
-            if (DmScripts.inboundTexts(world, b).contains(LIVENESS_A) &&
-                DmScripts.inboundTexts(world, a).contains(LIVENESS_B)
-            ) {
-                return
-            }
+            if (arrivedAtB() && arrivedAtA()) return
         }
         val missing = buildList {
-            if (!DmScripts.inboundTexts(world, b).contains(LIVENESS_A)) add("$a → $b")
-            if (!DmScripts.inboundTexts(world, a).contains(LIVENESS_B)) add("$b → $a")
+            if (!arrivedAtB()) add("$a → $b")
+            if (!arrivedAtA()) add("$b → $a")
         }
         dmViolation(
             "${scenario.name}: the session is not live after the run — " +

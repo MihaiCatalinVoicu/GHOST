@@ -1,5 +1,6 @@
 package org.ghost.messaging
 
+import org.ghost.crypto.bridge.DmContent
 import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
@@ -28,7 +29,9 @@ import org.junit.Test
  *
  * The session half is here for the same reason: §21.7 point 4 says `EST-READY` builds a session
  * "unless a **usable** session already exists", and a test that only ever runs the first
- * establishment of a conversation cannot tell a usable session from a row.
+ * establishment of a conversation cannot tell a usable session from a row. So is the **spent
+ * budget** of §21.7 point 5 (slice S10c): three empty windows, `unreachable`, and a later send
+ * whose own `EST-START` a process death lost.
  */
 class DmResidueTest {
 
@@ -314,6 +317,97 @@ class DmResidueTest {
                 "the conversation shows both messages",
                 alice.engine.conversation(contactB, 10, null).size >= 2,
             )
+        }
+    }
+
+    // ------------------------------------------------------- the spent budget
+
+    /**
+     * §21.7 point 5 and §13.5: three empty windows make the contact `unreachable` and fail the
+     * waiting message — and a send made **after** that, whose own `EST-START` a process death
+     * lost, is resumed by the next time-triggered pass as the user's retry it was (slice S10c).
+     *
+     * The second half is what SCN-C's crash enumeration found (§22.22). A send and its `EST-START`
+     * are two transactions (§7.3), and `DmActor.flushStranded` is the recovery for a death between
+     * them — but it asked for the establishment without `userRetry`, which `EST-START` refuses
+     * against a spent budget: the contact stayed `unreachable` and the message waited up to seven
+     * days for R-T5 to fail it, unless the user wrote again. The test leaves the message exactly
+     * where that death leaves it, by running `SendStep.send` without the facade's `EST-START`.
+     *
+     * The first half had no test anywhere before S10c: nothing drove an establishment past its
+     * first window.
+     */
+    @Test
+    fun aSendToAnUnreachableContactIsResumedWhenItsEstablishmentWasLost() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            alice.engine.onActivated()
+            // B has not activated, so it has published no bundle and every window A opens is empty.
+            assertEquals(
+                AddContactResult.ADDED,
+                alice.engine.addContact(world.bob.card(), CardSource.QR_IN_PERSON),
+            )
+            val contactB = alice.engine.contacts().single().id
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "into the void", null))
+            for (window in 1..3) {
+                assertEquals(
+                    "window $window is open",
+                    Establishment.FETCHING,
+                    alice.engine.contacts().single().establishment,
+                )
+                assertEquals(1, listeningNamespaces(alice))
+                world.deliver()
+                // Past the window's fifteen minutes: `EST-END`.
+                world.advanceTo(alice.clock.now + 16 * DmWorld.MINUTE)
+                alice.timeTriggeredPass()
+                assertEquals("window $window is closed", 0, listeningNamespaces(alice))
+                if (window < 3) {
+                    // Six hours on, the next window (§21.7 point 5).
+                    world.advanceTo(alice.clock.now + 6 * DmWorld.HOUR + DmWorld.MINUTE)
+                    alice.timeTriggeredPass()
+                }
+            }
+            assertEquals(
+                "the third empty window gives up (§21.7 point 5)",
+                Establishment.UNREACHABLE,
+                alice.engine.contacts().single().establishment,
+            )
+            assertEquals(3, countWhere(alice, "SELECT fetch_attempts FROM dm_contact"))
+            assertEquals(
+                "and fails the message that waited for it",
+                MessageState.FAILED,
+                alice.engine.conversation(contactB, 10, null).single().state,
+            )
+            world.advanceTo(alice.clock.now + 7 * DmWorld.HOUR)
+            alice.timeTriggeredPass()
+            assertEquals("no fourth window without a user action", 0, listeningNamespaces(alice))
+
+            // B comes online and publishes. A writes again, and the process dies between the
+            // send's commit and its `EST-START`: a pending message on an unreachable contact.
+            world.bob.engine.onActivated()
+            val sent = alice.sendStep.send(
+                contactB.toByteArray(), DmContent.Kind.TEXT, "again".toByteArray(), null, null,
+            )
+            assertTrue("the send owes an establishment", sent.establish)
+            assertEquals(Establishment.UNREACHABLE, alice.engine.contacts().single().establishment)
+
+            // The next time-triggered pass resumes it as the user's retry, with a fresh budget.
+            alice.timeTriggeredPass()
+            assertEquals(
+                "the stranded send's establishment is resumed",
+                Establishment.FETCHING,
+                alice.engine.contacts().single().establishment,
+            )
+            assertEquals(1, countWhere(alice, "SELECT fetch_attempts FROM dm_contact"))
+
+            // And it finishes: B's bundle, `EST-READY` two minutes on, the message out.
+            world.deliver()
+            alice.timeTriggeredPass()
+            world.advanceTo(alice.clock.now + 3 * DmWorld.MINUTE)
+            alice.timeTriggeredPass()
+            assertEquals(Establishment.READY, alice.engine.contacts().single().establishment)
+            assertEquals("the resumed message went out", 0, alice.engine.status().pendingSends)
         }
     }
 

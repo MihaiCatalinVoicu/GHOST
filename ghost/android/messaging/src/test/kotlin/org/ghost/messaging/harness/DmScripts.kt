@@ -80,6 +80,18 @@ internal object DmScripts {
     }
 
     /**
+     * The inbound texts of [node]'s conversation with [contact], oldest first (S10c).
+     *
+     * [inboundTexts] reads whichever contact `contacts()` lists first, which is `contact_id` order
+     * and therefore random: right for a device with one contact, and a coin flip for SCN-C's bob,
+     * who holds alice's contact beside carol's request. The liveness oracle reads through this.
+     */
+    fun inboundTextsWith(world: DmCrashWorld, node: String, contact: ContactId): List<String> =
+        world[node].device.engine.conversation(contact, 200, null).reversed()
+            .filter { !it.outgoing }
+            .mapNotNull { it.text }
+
+    /**
      * The inbound texts of **every** conversation of one node, requests included.
      *
      * [inboundTexts] reads the first contact only, which is right for the two-client scenarios it

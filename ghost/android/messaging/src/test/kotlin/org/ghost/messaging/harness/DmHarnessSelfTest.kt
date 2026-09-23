@@ -21,7 +21,9 @@ import org.junit.Test
  *  6. `SQLITE_FULL` really arrives as a `StorageFullException` and not as a death;
  *  7. R-K1 really truncates the log at every open;
  *  8. the "nothing owed" oracle really fails on work left owed or given up — and the no-loss and
- *     liveness oracles, on the same worlds, really do not (S10b review).
+ *     liveness oracles, on the same worlds, really do not (S10b review);
+ *  9. SCN-C's two checks of its own really fail on what they are about: an establishment whose
+ *     attempt budget never runs out, and a relay that stops withholding the newest bundle (S10c).
  *
  * Without 5 in particular the whole enumeration could pass on an engine that writes nothing.
  */
@@ -214,6 +216,87 @@ class DmHarnessSelfTest {
         },
         steps = listOf(body),
     )
+
+    /**
+     * 9: SCN-C's own checks are not vacuous (S10c).
+     *
+     * SCN-C adds two oracles no other scenario has — the spent fetch budget of §21.7 point 5 and
+     * the older generation a withheld newest bundle forces — and both could pass for nothing: a
+     * budget check over a world that never reached its third window, a generation check over a
+     * world in which the relay withheld nothing. So, beside the clean run, two worlds that break
+     * one thing each, and each must fail for the reason it names:
+     *  - an **unbounded budget**: `dm_contact.fetch_attempts` is never written above 1, so
+     *    `EST-END` schedules another window for ever — the behaviour privacy mutant PM-31 names
+     *    (§15.7). A control here, not a registered mutant: PM-31 belongs to S11's privacy registry
+     *    and its JD7 kill, and this only proves the SCN-C check can see it;
+     *  - an **honest relay in part two**: WITHHOLD_NEWEST_BUNDLE is switched off once the budget is
+     *    spent, so the fetchers are served bob's newest bundle and build on his current
+     *    generation, and "the session names the superseded generation" must fail.
+     */
+    @Test
+    fun scnCsBudgetAndGenerationChecksFailOnWhatTheyAreAbout() {
+        requireNative()
+        DmCrashRunner(DmScenarios.scnC()).run(DmRunSpec())
+
+        val unbounded = DmMutants.Mutation(
+            id = "control-unbounded-fetch-budget",
+            defeats = "§21.7 point 5: at most three attempt windows per establishment",
+            detectedBy = "SCN-C's spent-budget check",
+            expect = "ends it unreachable after the third",
+            rewrite = { sql, args ->
+                if (sql.startsWith("UPDATE dm_contact SET establishment = ?, fetch_attempts = ?")) {
+                    Pair(sql, args.toMutableList().also { it[1] = minOf(it[1] as Long, 1L) })
+                } else {
+                    Pair(sql, args)
+                }
+            },
+        )
+        val base = DmScenarios.scnC()
+        val mutated = DmScenario(
+            name = "SCN-C/${unbounded.id}",
+            setup = { world ->
+                world.mutation = unbounded
+                base.setup(world)
+            },
+            steps = base.steps,
+            alwaysChecks = base.alwaysChecks,
+            finalChecks = base.finalChecks,
+            liveness = base.liveness,
+            noLoss = base.noLoss,
+            expectedFailures = base.expectedFailures,
+        )
+        assertFailsWith(mutated, unbounded.expect)
+
+        val honest = DmScenario(
+            name = "SCN-C/honest-relay-in-part-two",
+            setup = base.setup,
+            steps = base.steps.map { s ->
+                if (s.label.startsWith("bob's next weekly publication")) {
+                    step(s.label) { w ->
+                        w.relay.modes = emptySet()
+                        s.body(w)
+                    }
+                } else {
+                    s
+                }
+            },
+            alwaysChecks = base.alwaysChecks,
+            finalChecks = base.finalChecks,
+            liveness = base.liveness,
+            noLoss = base.noLoss,
+            expectedFailures = base.expectedFailures,
+        )
+        assertFailsWith(honest, "not bob's first")
+    }
+
+    private fun assertFailsWith(scenario: DmScenario, expect: String) {
+        val failure = runCatching { DmCrashRunner(scenario).run(DmRunSpec()) }.exceptionOrNull()
+        assertTrue("${scenario.name} passed: the check is vacuous", failure is DmInvariantViolation)
+        assertTrue(
+            "${scenario.name} failed, but not for the reason the check states: ${failure?.message}",
+            failure?.message?.contains(expect) == true,
+        )
+    }
 
     /** 7: R-K1 runs at every open, and the log is empty after it. */
     @Test
