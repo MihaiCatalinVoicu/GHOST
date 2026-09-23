@@ -86,7 +86,10 @@ t2r_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
   if bash "$DIR/t2-report-check.sh" "$T2R/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
   if [ "$got" = "$1" ]; then echo "self-test ok: t2-report-check $4"; else echo "SELF-TEST FAIL: t2-report-check $4 ($got)" >&2; rc=1; fi
 }
-t2r_case pass pass-gate.txt gate "accepts a complete gate report"
+# pass-gate.txt is a measured report, not a made-up one: seed pair 0 at the gate scale after §4.9
+# (Phase 9 design §22.24), its dm_owner_namespaces field included; its scale is the gate's only.
+t2r_case pass pass-gate.txt gate "accepts the measured gate report (seed pair 0, Phase 9 §4.9, §22.24)"
+t2r_case fail pass-gate.txt pr "rejects the measured gate report as the PR variant's"
 t2r_case pass pass-pr.txt pr "accepts a complete PR-variant report"
 t2r_case fail missing-check.txt gate "rejects a report without a check (NI-1d)"
 t2r_case fail failed-check.txt gate "rejects a report with a failed check"
