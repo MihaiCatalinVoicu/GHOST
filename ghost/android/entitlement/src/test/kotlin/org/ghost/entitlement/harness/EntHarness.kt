@@ -21,6 +21,7 @@ import org.ghost.identity.RootEntropy
 import org.ghost.network.EntitlementCrypto
 import org.ghost.network.NetworkException
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.engine.KeyedRandomSources
 import org.ghost.sync.engine.QuietRunScheduler
@@ -315,6 +316,10 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
             val week = Grid.week(now)
             for (need in c.stores.capabilities.needed()) {
                 if (need.reason == CapabilityNeed.Reason.EXPIRING) continue
+                // The premise is the planner's, and the planner never redeems a LOCAL need (Phase 9
+                // design §13.3 item 3): a card holder's own FETCH or DEPOSIT credential is minted
+                // from the card, not bought, so no token can ever meet it. Phase 8 worlds have none.
+                if (need.source == CapabilitySource.LOCAL) continue
                 val onion = c.relayIds.entries.firstOrNull { it.value == need.relay }?.let { w.relays[it.key].address } ?: continue
                 val slots = RedeemPlanner.slotsFor(schedule.summary, onion, week)
                 if (slots.isEmpty()) continue
@@ -365,37 +370,40 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
         }
         val now = w.clock.trueEpochSeconds()
         val week = Grid.week(now)
-        for ((c, ec) in clients) {
-            val held = HashMap<String, String>()
-            c.jdbc.query("SELECT nullifier, state FROM ent_token") { held[Bytes.hex(it.blob(0))] = it.string(1) }
-            for ((n, info) in records.issued) {
-                val present = n in held
-                when (info.kind) {
-                    EntitlementCrypto.KIND_ACCESS -> {
-                        val atRelay = bound(n, info.epoch)
-                        val over = now >= Grid.start(info.epoch + 1) + 3_600
-                        // A token a relay recorded stays reserved for its identical retry (or until GC when its
-                        // pair's need is gone, a drop namespace retired, say); it is never fresh again (R8).
-                        if (atRelay && held[n] == "fresh") violation("a token a relay recorded is fresh again (a reservation was released after the redemption)")
-                        if (!present && !atRelay && n !in records.refused && !over) {
-                            violation("MS-6: an issued token of week ${info.epoch} is neither held, spent nor out of its window")
-                        }
+        // Held by any client of the world: `records.issued` names no client, and a world with more
+        // than one engine (the Phase 9 entitlement world of DM clients, design §15.1 variant (b))
+        // holds each token in exactly one client's database. A single-client world is unchanged.
+        val held = HashMap<String, String>()
+        for ((c, _) in clients) c.jdbc.query("SELECT nullifier, state FROM ent_token") { held[Bytes.hex(it.blob(0))] = it.string(1) }
+        for ((n, info) in records.issued) {
+            val present = n in held
+            when (info.kind) {
+                EntitlementCrypto.KIND_ACCESS -> {
+                    val atRelay = bound(n, info.epoch)
+                    val over = now >= Grid.start(info.epoch + 1) + 3_600
+                    // A token a relay recorded stays reserved for its identical retry (or until GC when its
+                    // pair's need is gone, a drop namespace retired, say); it is never fresh again (R8).
+                    if (atRelay && held[n] == "fresh") violation("a token a relay recorded is fresh again (a reservation was released after the redemption)")
+                    if (!present && !atRelay && n !in records.refused && !over) {
+                        violation("MS-6: an issued token of week ${info.epoch} is neither held, spent nor out of its window")
                     }
-                    EntitlementCrypto.KIND_CREDIT -> {
-                        val over = info.epoch < Grid.creditEpoch(week) - CREDIT_EPOCHS_KEPT
-                        if (!present && !issuer.creditUsed(info.epoch, n) && n !in records.sealed && !over) {
-                            violation("token accounting: an issued CREDIT token of epoch ${info.epoch} is neither held, used at the issuer, sealed into a drop nor out of its window")
-                        }
-                    }
-                    EntitlementCrypto.KIND_INVITE -> {
-                        val over = info.epoch < Grid.inviteEpoch(week) - 1
-                        if (!present && n !in records.embedded && !issuer.inviteUsed(info.epoch, n) && !over) {
-                            violation("token accounting: an issued INVITE token of epoch ${info.epoch} is neither held, in an invite, redeemed at the issuer nor out of its window")
-                        }
-                    }
-                    else -> violation("token accounting: a finalized token of unknown kind ${info.kind}")
                 }
+                EntitlementCrypto.KIND_CREDIT -> {
+                    val over = info.epoch < Grid.creditEpoch(week) - CREDIT_EPOCHS_KEPT
+                    if (!present && !issuer.creditUsed(info.epoch, n) && n !in records.sealed && !over) {
+                        violation("token accounting: an issued CREDIT token of epoch ${info.epoch} is neither held, used at the issuer, sealed into a drop nor out of its window")
+                    }
+                }
+                EntitlementCrypto.KIND_INVITE -> {
+                    val over = info.epoch < Grid.inviteEpoch(week) - 1
+                    if (!present && n !in records.embedded && !issuer.inviteUsed(info.epoch, n) && !over) {
+                        violation("token accounting: an issued INVITE token of epoch ${info.epoch} is neither held, in an invite, redeemed at the issuer nor out of its window")
+                    }
+                }
+                else -> violation("token accounting: a finalized token of unknown kind ${info.kind}")
             }
+        }
+        for ((_, ec) in clients) {
             // T3: nothing the engine emits carries a secret the native layer saw.
             val emitted = listOf(ec.engine.toString(), ec.engine?.status().toString(), ec.engine?.activationState().toString())
             for (text in emitted) {
@@ -478,6 +486,14 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
     private var hold: Pair<Session, RedeemHold>? = null
 
     /**
+     * The K20 hook of Phase 9 design §13.4, as `:app` wires it (`EntitlementWiring.activationHook`):
+     * read by the engine through a supplier at every call, so a world that adds a messaging layer
+     * after [EntWorld.attach] sets it then. Null in every Phase 8 world (no messaging layer), which
+     * is exactly what `EngineDeps` defaults to.
+     */
+    var activationHook: org.ghost.entitlement.api.IdentityActivationHook? = null
+
+    /**
      * [s], whose lanes have finished, stays the client's session (SyncRuntime's `held`): its hold is
      * armed, no lane step yet, before the job's deadline, its transport online, no foreground waiting.
      */
@@ -495,7 +511,10 @@ internal class EntClient(val ent: EntWorld, val c: Client) {
         flowIndex.clear()
         hold = null
         val stores = c.stores
-        val deps = EngineDeps(ent.enginePort, HarnessEntClock(w), SiteRandom(key), identity, HarnessSeal(this, key), userCalls) { c.mode }
+        val deps = EngineDeps(
+            ent.enginePort, HarnessEntClock(w), SiteRandom(key), identity, HarnessSeal(this, key), userCalls,
+            activationHook = { activationHook },
+        ) { c.mode }
         engine = EntitlementEngine(deps) { stores }
         uncommitted.clear()
         c.sql.onCommit += { ent.checkCommit(this) }

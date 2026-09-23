@@ -36,7 +36,9 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
 
     private fun fail(category: String): Nothing = throw NetworkException(category)
 
-    private fun event(kind: EventKind, info: CallInfo): String? {
+    /** [reached]: the request reached the relay (after-apply only; `World.relayObserver` records it). */
+    private fun event(kind: EventKind, info: CallInfo, reached: Boolean = true): String? {
+        owner.w.relayObserver?.invoke(owner.c, kind, info, reached)
         val planned = when (val f = owner.c.bus.event(kind, info)) {
             null -> null
             is Fault.Network -> f.category
@@ -90,7 +92,7 @@ internal class HarnessCalls(private val owner: EntClient) : EntitlementCalls {
         val answer = if (arrives) model.redeem(token, namespace, requestId, w.relayNow(node)) else null
         (answer?.result as? ModelRedeemRelay.Result.Ok)?.let { ent.records.minted[Bytes.hex(it.capability)] = nullifier }
         ent.records.bump()
-        event(EventKind.RELAY_AFTER_APPLY, info)?.let { fail(it) }
+        event(EventKind.RELAY_AFTER_APPLY, info, arrives)?.let { fail(it) }
         if (answer == null || latency > deadlineMillis) fail("timeout")
         if (Math.abs(answer.relayPeriod - Grid.week(w.clock.epochSeconds())) > 1) fail("malformed_response")
         val out = when (val r = answer.result) {

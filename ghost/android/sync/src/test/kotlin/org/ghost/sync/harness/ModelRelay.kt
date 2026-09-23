@@ -512,6 +512,34 @@ internal class ModelRelay(val name: String, key: ByteArray, var maxTtlSeconds: L
 
     fun namespaces(): Set<NamespaceId> = spaces.keys.toSet()
 
+    /**
+     * The quota-ledger scopes (SHA-256 of each capability that authorized a store and has not
+     * expired): what the Phase 9 entitlement world reads to see that every capability-authorized
+     * store was authorized by a capability a redeem relay minted.
+     */
+    fun capabilityScopes(): Set<BlobHash> = ledger.keys.toSet()
+
+    /**
+     * Digest of the key registrations (`bearer_keys`, `serial_use`, the sweep high-water) and the
+     * in-memory deposit ledger, which [digest] leaves out: an extension that registers keys adds it
+     * to its crash digest (`World.extraState`), so two crash points whose worlds differ only
+     * relay-side in a registration or a deposit charge never classify alike.
+     */
+    fun keysDigest(): String {
+        // Keys spelled out: a NamespaceId's toString is redacted.
+        val lines = ArrayList<String>()
+        for ((k, r) in records) {
+            lines += "r|${k.namespace.toByteArray().hex()}|${k.period}|${k.kind}|${k.verifier}|${r.validUntil}|${r.quotaBytes}|${r.serials.joinToString(",")}"
+        }
+        for ((k, v) in serialUse) lines += "s|${k.namespace.toByteArray().hex()}|${k.period}|${k.kind}|${k.serial}|${v.first}|${v.second}"
+        for ((k, v) in deposits) lines += "d|${k.namespace.toByteArray().hex()}|${k.period}|${k.verifier}|${v.first}|${v.second}"
+        lines.sort()
+        lines += "h|$sweepHighWaterMinute|$depositsPrunedThrough"
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(lines.joinToString("\n").toByteArray())
+        return md.digest().hex()
+    }
+
     /** Digest of the whole state (memberships, index, sequences, ledger), for crash-point classification checks. */
     fun digest(): String {
         val md = MessageDigest.getInstance("SHA-256")

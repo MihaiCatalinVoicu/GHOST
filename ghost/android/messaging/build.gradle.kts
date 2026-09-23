@@ -27,6 +27,15 @@ android {
     sourceSets {
         getByName("test") {
             kotlin.srcDir("../storage/src/testShared/kotlin")
+            // The entitlement world of §15.1 variant (b) (`entworld/`): the Phase 7 sync harness
+            // (World, Client, the driver, the relay port, ModelRelay, the invariants and the Runner)
+            // and the Phase 8 `EntHarness` (EntWorld, EntClient, the ModelIssuer, the
+            // ModelRedeemRelays, the harness native layer) as plain source directories, exactly the
+            // pattern `:entitlement` uses for the sync harness. Their own tests do not run here (the
+            // filter below); only the classes are reused, so a DM world drives the **real**
+            // entitlement engine, redeem lane and registration lane instead of a redeem fairy.
+            kotlin.srcDir("../sync/src/test/kotlin")
+            kotlin.srcDir("../entitlement/src/test/kotlin")
         }
         getByName("androidTest") {
             kotlin.srcDir("../crypto-bridge/src/deviceRunner/kotlin")
@@ -52,11 +61,60 @@ dependencies {
     implementation(project(":identity"))
     testImplementation(libs.junit)
     testImplementation(libs.sqlite.jdbc)
+    // **Test only**, and only for the entitlement world of §15.1 variant (b): its clients carry the
+    // real entitlement engine (the Phase 8 `EntHarness` compiled in above), so the unit-test
+    // classpath needs `:entitlement` and the `:network` JNI surface it names. The production graph
+    // keeps §13.1's direction — nothing in `src/main` can see either.
+    testImplementation(project(":entitlement"))
+    testImplementation(project(":network"))
     // The emulator suite (§15.9): JUnit 4 through `DeviceRunner`, and SQLCipher opened the way
     // `:storage` opens it. Every coordinate is one the project already ships or tests with (§16.3).
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.sqlcipher.android)
     androidTestImplementation(libs.androidx.sqlite)
+}
+
+// The entitlement world (§15.1 variant (b)): the sync and entitlement harness sources compiled into
+// this module's unit tests use `:sync` and `:entitlement` internals (SyncEngine, Session, Steps; the
+// entitlement engine's steps and stores), so the unit-test compilation is a friend of both library
+// jars — the same arrangement `:entitlement` has with `:sync`. Their own test classes are excluded:
+// `:sync` and `:entitlement` run them, and running them twice would only double the build.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if (name.startsWith("compile") && name.endsWith("UnitTestKotlin")) {
+        val variant = name.removePrefix("compile").removeSuffix("UnitTestKotlin")
+        val jars = listOf(":sync", ":entitlement").map { friend ->
+            project(friend).layout.buildDirectory.file(
+                "intermediates/compile_library_classes_jar/${variant.lowercase()}/bundleLibCompileToJar$variant/classes.jar",
+            )
+        }
+        jars.forEach { friendPaths.from(it) }
+        // The path is the Android Gradle plugin's intermediate layout, not an API: when a plugin
+        // update moves it, say so instead of failing on every `internal` the harness sources use.
+        val files = jars.map { it.get().asFile }
+        doFirst {
+            val missing = files.filter { !it.exists() }
+            check(missing.isEmpty()) { "the friend jars of the entitlement world are not where the Android Gradle plugin put them before: $missing" }
+        }
+    }
+}
+
+// The exclusion below is by package, so a test of this module's own under either package would be
+// dropped without a word: refused here instead.
+listOf("org/ghost/sync", "org/ghost/entitlement").flatMap { p -> listOf(file("src/test/kotlin/$p"), file("src/test/java/$p")) }
+    .filter { it.exists() }
+    .let { shadowed -> check(shadowed.isEmpty()) { "a :messaging test under a package the unit-test filter excludes would never run: $shadowed" } }
+
+tasks.withType<Test>().configureEach {
+    filter {
+        excludeTestsMatching("org.ghost.sync.*")
+        excludeTestsMatching("org.ghost.entitlement.*")
+    }
+    // `TestKeys` reads the committed test keys by a path relative to the module directory (the same
+    // depth from here as from `:entitlement`): declared as an input, as `:entitlement` declares it,
+    // so a change to the keys re-runs the entitlement-world tests.
+    inputs.file(rootProject.file("../issuer/crates/entitlement/tests/fixtures/test_keys.txt"))
+        .withPropertyName("entitlementTestKeys")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 // The send-and-receive worlds run the **real** DM cryptography through the host build
