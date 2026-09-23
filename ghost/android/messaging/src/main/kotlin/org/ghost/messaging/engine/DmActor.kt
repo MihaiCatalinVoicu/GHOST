@@ -543,6 +543,22 @@ internal class DmActor(
      * caused by something that **arrived**, and nothing here reads the inbox: the set of contacts
      * it visits is a function of local rows that are identical in the two worlds `NoReflexTest`
      * compares. `fetch_attempts` bounds it at three windows, after which `EST-END` fails the items.
+     *
+     * **The continuation is started as the user's retry** (slice S10c; §21.7 point 5, §13.5's
+     * `unreachable → fetching`). Every path that leaves a pending item — a send, a retry, a reset
+     * and a scheduled control — commits it and then asks `EST-START` for an establishment **with**
+     * `userRetry`, in a transaction of its own; a process death between the two is how an item
+     * gets here. For a contact whose three windows were already spent that flag is the whole
+     * difference: without it `EST-START` answered `UNCHANGED` against the spent budget, the
+     * contact stayed `unreachable`, and the item waited for R-T5 to fail it at `fail_after_hour`
+     * — up to seven days — unless the user happened to write to the contact again. The crash
+     * enumeration of SCN-C found it (34 consecutive crash points of one send, §22.23). It lifts no
+     * bound: `EST-END` fails every pending item in the transaction that makes a contact
+     * `unreachable`, so a pending item on one can only have been queued **after** the budget ran
+     * out, by one of the four actions above, each of which would have started a fresh count
+     * itself; and this step visits no `fetching` contact, so it never restarts an establishment
+     * that is still in progress. Each start it makes is followed by at most three windows, after
+     * which `EST-END` fails the item it was for.
      */
     private fun flushStranded(now: Long) {
         val stranded = database.transaction { tx ->
@@ -571,7 +587,7 @@ internal class DmActor(
                     current == null || SessionSlots.isStale(current, now)
                 }
             }
-            if (needsSession) establishment.estStart(contactId)
+            if (needsSession) establishment.estStart(contactId, userRetry = true)
         }
     }
 

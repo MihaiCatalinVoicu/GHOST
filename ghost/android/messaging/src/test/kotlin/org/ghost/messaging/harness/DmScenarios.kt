@@ -10,14 +10,16 @@ import org.ghost.messaging.api.Timer
 import org.ghost.messaging.api.TrustState
 
 /**
- * The named crash scenarios of Phase 9 design §15.3, as far as slices S10 and S10b implement them.
+ * The named crash scenarios of Phase 9 design §15.3, as far as slices S10, S10b and S10c implement
+ * them.
  *
  * Implemented here: **SCN-A** (send), **SCN-B** (receive and reorder), **SCN-D** (key change,
  * including the forged-binding case), **SCN-F** (ephemeral), **SCN-G** (outcomes and resend),
  * **SCN-J** (faults) and **SCN-L** (migration safety), from S10; **SCN-H** (bundle generations,
  * in part), **SCN-I** (restore), **SCN-K** (revocation) and SCN-G's week-boundary retry as
- * `SCN-G-week`, from S10b. SCN-C and SCN-E are not here; §22.15 of the design records what each
- * one still owes and §22.19 what S10b left of the rest.
+ * `SCN-G-week`, from S10b; **SCN-C** (establishment through WITHHOLD_NEWEST_BUNDLE), from S10c.
+ * SCN-E is not here; §22.15 of the design records what it still owes, §22.19 what S10b left of
+ * the rest and §22.23 what S10c left of SCN-C.
  *
  * **Two deviations from §15.3's table, declared.** The scenario texts say "3 relays over 2
  * operators, one refusing" (SCN-A) and similar relay-set shapes elsewhere. The relay set, the
@@ -190,6 +192,720 @@ internal object DmScenarios {
             }
         },
     )
+
+    // ------------------------------------------------------------------ SCN-C establishment
+
+    /**
+     * **SCN-C — establishment under a relay that withholds the newest bundle** (§15.3, §5.5, §21.7;
+     * slice S10c).
+     *
+     * > card → fetch with WITHHOLD_NEWEST_BUNDLE → `sessionOutbound` → intro PreKey messages → the
+     * > recipient's request and accept → provisional reply carrying a root → pair mode on both sides
+     *
+     * Every other scenario runs the establishment in its **unarmed** setup through an honest relay;
+     * this one is the establishment under the enumeration, through a hostile one
+     * ([ModelDmRelay.Mode.WITHHOLD_NEWEST_BUNDLE]: in a bundle namespace the newest bundle is never
+     * listed, every older one is). The mode has two consequences, and the scenario is built so that
+     * the world reaches both.
+     *
+     * **Part one — the bounded fetch-attempt budget (§21.7 point 5).** bob has just activated, so
+     * the one bundle he has published is the newest and nothing is listed. alice scans his card and
+     * writes `c0`: `EST-START` opens a 15-minute window, `EST-END` closes it empty and waits six
+     * hours, and after the **third** window the contact is `unreachable` and `c0` fails. Checked,
+     * in every run, after every window that closes and every one that opens while alice is still
+     * fetching: `c0` still waits — one pending send, its message queued ([stillWaiting]), so a
+     * message that failed with an earlier window, or at an earlier deadline, is seen where it
+     * happened. Checked, in every run, the moment part one is over ([theBudgetIsSpent]):
+     * `unreachable` with three attempts, `c0` FAILED, `P_bob` not listened — and seven hours later
+     * still no fourth window. And, in every run, from the **relay's** side (L7-D6, §21.7 point 6):
+     * alice's listings of `P_bob` fall into at most three windows per establishment, each no longer
+     * than the window itself, each starting at least six hours after the **last** listing of the
+     * one before ([windowViolations]); fault-free, exactly three.
+     *
+     * **Part two — an establishment on a superseded generation.** bob's OWNER-WEEK of the next week
+     * publishes a new bundle and supersedes the first generation; the relay now withholds *that*
+     * one and lists the older, still valid bundle. alice writes `c1` (a send is the user's retry
+     * of §21.7 point 5 and §13.5's `unreachable → fetching`, which resets the budget), fetches the
+     * older bundle, pins, and `sessionOutbound` builds on generation `g1`; `c1` and `c2` are intro
+     * PreKey messages naming it; bob opens them with the superseded generation's secrets (§5.4:
+     * kept until `superseded_day + 91`), holds a request, accepts, and answers `c-ack` —
+     * provisional, since alice's root cannot ride in a PreKey message, and carrying bob's root;
+     * alice answers `c3` in pair mode, bob `c4` in pair mode. carol is the **second fetcher of the
+     * same bundle** — §15.7 names SCN-C "with two fetchers of one bundle" as the case in which
+     * one-time keys would fail the second PreKey message (MC-11) — and her `d1` must open on `g1`
+     * beside alice's first flight.
+     *
+     * **Checked in every run** (`alwaysChecks`), because every user action the case depends on is
+     * done again when a crash interrupted it (below): the spent budget was checked; `c0` never
+     * reached bob, and is FAILED if it is still on alice's screen (the conversation keeps the
+     * default seven-day timer, and bob's next publication falls days after `c0` expires, so its row
+     * is usually gone — §10.6 deletes a FAILED message at its expiry like any other);
+     * the relay-side window bounds of both parts; both fetchers' sessions name `g1` and neither ever
+     * saw a bundle newer than bob's first week (`bundle_week_seen`); bob still holds `g1`,
+     * superseded, and opened exactly two first flights on it; bob's session towards alice sealed a
+     * provisional envelope (`prov_anchor_minute`) and both sides sealed a pair envelope
+     * (`pair_sent`) that the other side opened (`dm_pair_offer.acknowledged`). The flow orders these:
+     * alice seals in pair mode only with an out key from bob's root, and bob's only message before
+     * her `c3` is `c-ack`, so "the provisional reply carried the root" is what the two facts say
+     * together. **Fault-free** (`finalChecks`): exactly three windows in part one and one per fetcher
+     * in part two; the relay kept back exactly the three (bundle, listener) pairs the script makes
+     * it — the first bundle from alice in part one, the second from alice and from carol in part
+     * two; `c1` and `c2` both reached bob's **request**, before he answered, so both were intro.
+     *
+     * **The oracles.** No-loss and liveness (alice ↔ bob) on; "nothing owed" on, with `c0` the one
+     * message allowed to end FAILED — it is the budget's subject.
+     *
+     * **User actions are done again when a crash interrupted them**, S10b's rule, each judged from
+     * what the user can see: a card in the contact list, a message in the conversation, a request
+     * accepted, and each answer only once the message it answers is on screen ([cStage]). A step
+     * redoes only the actions of the steps **before** it, so the fault-free run is the script as
+     * written. Two settle steps end the script, so a crash that costs one of them the last answer
+     * leaves the other to write it. alice writes `c2` only once `c1` **went out** — not merely once
+     * it was written: a send is itself the user action that restarts an establishment, so a `c2`
+     * written beside a stuck `c1` repairs the very stall the enumeration must see. With `c2` gated
+     * on "written", it did exactly that for 34 consecutive crash points of `c1`'s send, and the
+     * engine defect §22.23 records stayed invisible at every one of them.
+     *
+     * **What the model relay stands in for, declared.** "The first relay session start at least
+     * 6 h later" is modelled by jumping the clock to the engine's own decision minute and running a
+     * time-triggered pass **before** the next pump, and every window and fetch round of SCN-C runs
+     * one before its first pump, so a window is closed by the pass a device would run at a session
+     * start and not listed once more by the harness's own ordering. Quiescence pumps first; the
+     * span bound allows its one step. Part one runs **alice's** passes only: bob and carol have
+     * nothing to do in it, and their passes would add crash points on idle devices and nothing else.
+     * **The relay's view is sampled where the script pumps, and nowhere else**: the six-hour gaps
+     * are one clock jump with no relay session in them, so §21.7 point 6's "list events only inside
+     * attempt windows" is observed at the sessions the script runs, not between them. Nothing runs
+     * between them either — no pass, so the engine has no chance to act there — and a restart in
+     * the eleven days before `c1` is caught from the engine's side instead: just before alice
+     * writes `c1`, the contact must still be `unreachable`, not listened, and listed by her not once
+     * since part one ended ([stillGivenUp]).
+     *
+     * **No double crashes** (§15.3 names them for SCN-A, SCN-B, SCN-F and SCN-I) and **no §15.7
+     * mutant**: MC-11 is the mutant §15.7 detects with this scenario, and it needs a native seam —
+     * one-time keys in the bundle — that no statement rewrite, envelope decorator or transaction
+     * split can reach. §22.23 records both.
+     */
+    fun scnC(): DmScenario = DmScenario(
+        name = "SCN-C",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        expectedFailures = setOf(C_LOST),
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            world.node("carol", 0x61)
+            DmScripts.activate(world)
+            world.relay.modes = setOf(ModelDmRelay.Mode.WITHHOLD_NEWEST_BUNDLE)
+            val own = requireNotNull(world["bob"].device.crypto.ownCard(0)) { "bob has no card" }
+            val now = world.nodes().maxOf { it.clock.now }
+            val week = Math.floorDiv(now - DmWorld.WEEK_ORIGIN, DmWorld.WEEK)
+            val nextPublication = weekStart(week + 1) + own.publicationOffsetSeconds
+            // The premise of part two: bob's next publication leaves the first bundle valid long
+            // enough to be fetched (§5.4: until `start(w + 2)`). A fixed function of bob's card,
+            // so this either holds in every run or fails here, loudly, in every run.
+            check(weekStart(week + 2) - nextPublication >= 2 * DmWorld.HOUR) {
+                "SCN-C: bob publishes at ${own.publicationOffsetSeconds} s into the week, too late " +
+                    "for his first bundle to be fetched before it expires"
+            }
+            world.notes[C_WEEK] = week
+            world.notes[C_PART_TWO] = nextPublication
+            world.notes[C_BUNDLE_NS] = own.bundleNamespace.hex()
+            world.notes[C_GENERATION] = currentGeneration(world, "bob") ?: error("bob has no generation")
+        },
+        steps = listOf(
+            step("alice scans bob's card and writes; the first window") { w ->
+                ensurePartOne(w)
+                attemptWindow(w)
+            },
+            step("the second window, six hours on") { w ->
+                ensurePartOne(w)
+                nextDecision(w)
+            },
+            step("the third window") { w ->
+                ensurePartOne(w)
+                nextDecision(w)
+            },
+            step("the budget is spent: unreachable, and no fourth window") { w ->
+                finishPartOne(w)
+                theBudgetIsSpent(w)
+            },
+            cStep("bob's next weekly publication supersedes the first generation", stage = 1),
+            // Two rounds with a pass before the pump: the fetch and `BUNDLE` in the first,
+            // `EST-READY` two minutes later, the flush, and bob's `RECV` in the second.
+            cStep("alice writes again and carol scans bob's card and writes", stage = 2, fetchRounds = 2),
+            cStep("alice's second intro message", stage = 3),
+            cStep("bob accepts alice's request and answers", stage = 4),
+            cStep("alice writes in pair mode", stage = 5),
+            cStep("bob writes in pair mode", stage = 6),
+            cStep("settle", stage = C_STAGES, settle = true),
+            cStep("the settling a crash cost the step above, if it did", stage = C_STAGES, settle = true),
+        ),
+        alwaysChecks = { world ->
+            if (world.notes[C_BUDGET_CHECKED] != true) {
+                dmViolation("SCN-C: part one never reached its end, so the spent budget was never checked")
+            }
+            if (world.notes[C_STILL_GIVEN_UP] != true) {
+                dmViolation("SCN-C: alice never wrote c1 through its check, so no restart before it was ruled out")
+            }
+            if (world.contacts["bob->alice"] == null) {
+                dmViolation("SCN-C: bob never accepted alice's request, so no reply was ever possible")
+            }
+            // `c0` failed with the budget (checked where it happened, [theBudgetIsSpent]) and
+            // nothing may deliver it later. Its row is usually **gone** by now: the conversation
+            // keeps the default seven-day timer, and bob's next publication falls days after that
+            // (§10.6 deletes a FAILED message at its expiry like any other). So what holds in every
+            // run is that it is not on alice's screen in any other state, and not on bob's at all.
+            val lost = DmScripts.outgoingState(world, "alice", C_LOST)
+            if (lost != null && lost != org.ghost.messaging.api.MessageState.FAILED) {
+                dmViolation("SCN-C: $C_LOST is $lost — a spent budget fails the pending items (§21.7 point 5)")
+            }
+            if (C_LOST in DmScripts.everyInboundText(world["bob"])) {
+                dmViolation("SCN-C: bob rendered $C_LOST, which the spent budget had failed")
+            }
+            val partTwo = world.notes[C_PART_TWO] as Long
+            checkWindows(world, "alice", 0L, partTwo, "before bob's second publication")
+            checkWindows(world, "alice", partTwo, Long.MAX_VALUE, "after she wrote again")
+            checkWindows(world, "carol", partTwo, Long.MAX_VALUE, "")
+            val g1 = world.notes[C_GENERATION] as Long
+            val week = world.notes[C_WEEK] as Long
+            for ((node, key) in listOf("alice" to "alice->bob", "carol" to "carol->bob")) {
+                val gen = sessionColumn(world, node, key, "peer_gen_id")
+                if (gen != g1) {
+                    dmViolation(
+                        "SCN-C: $node's session names generation $gen, not bob's first ($g1) — " +
+                            "the newest bundle reached her, or no fetch built a session",
+                    )
+                }
+                val seen = contactColumn(world, node, key, "bundle_week_seen")
+                if (seen != week) {
+                    dmViolation("SCN-C: $node saw a bundle of week $seen; the relay only ever listed week $week's")
+                }
+            }
+            // bob kept the superseded generation and opened both first flights on it (§5.4; the
+            // fallback key is reusable, which is what MC-11's one-time keys would break).
+            val superseded = DmScripts.count(
+                world, "bob",
+                "SELECT count(*) FROM olm_prekey_gen WHERE gen_id = $g1 AND superseded_day IS NOT NULL",
+            )
+            if (superseded != 1L) {
+                dmViolation("SCN-C: bob's first generation is not held as a superseded one ($superseded rows)")
+            }
+            val flights = DmScripts.count(world, "bob", "SELECT count(*) FROM olm_prekey_used WHERE gen_id = $g1")
+            if (flights != 2L) {
+                dmViolation("SCN-C: bob opened $flights first flights on generation $g1, expected alice's and carol's")
+            }
+            // A provisional reply, then pair mode on both sides, each opened by the other side.
+            if (sessionColumn(world, "bob", "bob->alice", "prov_anchor_minute") == null) {
+                dmViolation("SCN-C: bob's session towards alice never sealed a provisional envelope (§6.7)")
+            }
+            for ((node, key) in listOf("alice" to "alice->bob", "bob" to "bob->alice")) {
+                if (sessionColumn(world, node, key, "pair_sent") != 1L) {
+                    dmViolation("SCN-C: $node never sealed a pair envelope on its current session (§6.3)")
+                }
+                val acknowledged = DmScripts.count(
+                    world, node,
+                    "SELECT count(*) FROM dm_pair_offer WHERE acknowledged = 1 " +
+                        "AND contact_id = X'${contactBytes(world, key).hex()}'",
+                )
+                // `acknowledged` on [node]'s own offer: the other side sealed a pair envelope under
+                // the root [node] offered, and [node] opened it (R12, `ReceiveStep.acknowledgeOffer`).
+                if (acknowledged == 0L) {
+                    dmViolation(
+                        "SCN-C: $node never opened a pair envelope the other side sealed under $node's root",
+                    )
+                }
+            }
+        },
+        finalChecks = { world ->
+            val partTwo = world.notes[C_PART_TWO] as Long
+            val windows = listOf(
+                listingWindows(world, "alice", 0L, partTwo).size,
+                listingWindows(world, "alice", partTwo, Long.MAX_VALUE).size,
+                listingWindows(world, "carol", partTwo, Long.MAX_VALUE).size,
+            )
+            if (windows != listOf(3, 1, 1)) {
+                dmViolation(
+                    "SCN-C fault-free: attempt windows (alice before, alice after, carol) were " +
+                        "$windows, expected [3, 1, 1]",
+                )
+            }
+            if (world.relay.withheldNewest != 3) {
+                dmViolation(
+                    "SCN-C fault-free: the relay kept back ${world.relay.withheldNewest} (bundle, " +
+                        "listener) pairs, expected 3 — the first bundle from alice, the second " +
+                        "from alice and from carol",
+                )
+            }
+            @Suppress("UNCHECKED_CAST")
+            val beforeAccept = world.notes[C_BEFORE_ACCEPT] as List<String>?
+            if (beforeAccept == null || !beforeAccept.containsAll(listOf("c1", "c2"))) {
+                dmViolation(
+                    "SCN-C fault-free: bob's request held $beforeAccept when he accepted — c1 and c2 " +
+                        "were not both intro PreKey messages",
+                )
+            }
+            if ("d1" !in DmScripts.everyInboundText(world["bob"])) {
+                dmViolation("SCN-C fault-free: carol's first flight on the same bundle never opened")
+            }
+        },
+    )
+
+    /** The part-one user actions: alice scans bob's card and writes `c0`, each done again if lost. */
+    private fun ensurePartOne(w: DmCrashWorld) {
+        ensureCard(w, "alice", "alice->bob")
+        ensureWritten(w, "alice", "alice->bob", C_LOST)
+    }
+
+    /** [from] scans bob's card, unless its list already holds him — the user's own evidence. */
+    private fun ensureCard(w: DmCrashWorld, from: String, key: String) {
+        if (w.contacts[key] != null) return
+        val engine = w[from].device.engine
+        when (val added = engine.addContact(w["bob"].device.card(), CardSource.QR_IN_PERSON)) {
+            // `ALREADY_KNOWN`: a crash lost only the moment the id was recorded, not the card.
+            AddContactResult.ADDED, AddContactResult.ALREADY_KNOWN ->
+                w.contacts[key] = engine.contacts().single().id
+            else -> dmViolation("SCN-C: $from could not add bob's card: $added")
+        }
+    }
+
+    /** Whether [from]'s conversation under [key] shows [text] as its own message. */
+    private fun written(w: DmCrashWorld, from: String, key: String, text: String): Boolean {
+        val contact = w.contacts[key] ?: return false
+        return w[from].device.engine.conversation(contact, 50, null).any { it.outgoing && it.text == text }
+    }
+
+    /**
+     * [from] writes [text] unless its conversation already shows it: judged from the screen and
+     * never from a note written after the call returned, since a send that committed and died at
+     * its post-commit event never returns (§22.19 item 9). [before] runs just before each attempt
+     * to write it — once in the fault-free run, again after a crash that lost the send — and reads
+     * only the raw connections, so it adds no event.
+     */
+    private fun ensureWritten(w: DmCrashWorld, from: String, key: String, text: String, before: () -> Unit = {}) {
+        val contact = w.contacts[key] ?: return
+        if (written(w, from, key, text)) return
+        before()
+        w[from].device.engine.send(contact, text, null)
+    }
+
+    /**
+     * One SCN-C fetch round: a time-triggered pass **before** the pump, so a window whose end has
+     * passed is closed by the pass a device runs at a relay session start and is not listed once
+     * more by the harness's own ordering; then the pump, the pass it hints, and three minutes —
+     * more than `EST-READY`'s two.
+     */
+    private fun cRound(w: DmCrashWorld) {
+        w.passes()
+        w.pump()
+        w.passes()
+        w.advanceBy(3 * DmWorld.MINUTE)
+    }
+
+    /** One delivery once no window is open: the pump, the pass that consumes what it brought. */
+    private fun deliver(w: DmCrashWorld) {
+        w.pump()
+        w.passes()
+        w.advanceBy(3 * DmWorld.MINUTE)
+    }
+
+    /**
+     * Sixteen minutes of an open window of alice's: two list events eight minutes apart, then her
+     * pass that finds the window's end (`ceil_minute(start + 15 min)`) behind it and runs
+     * `EST-END`. Only alice's passes in part one: bob and carol have nothing to do there, and
+     * their passes would add crash points in SWEEP and KEEPER on idle devices and nothing else.
+     */
+    private fun attemptWindow(w: DmCrashWorld) {
+        repeat(2) {
+            w.pump()
+            w.advanceBy(8 * DmWorld.MINUTE)
+        }
+        w.pass("alice")
+        stillWaiting(w)
+    }
+
+    /**
+     * alice's establishment for bob one decision further, from wherever it stands: an overdue pass
+     * first; then, between windows, the clock to the engine's own decision minute — "the first
+     * relay session start at least 6 h later" (§21.7 point 5) — and the pass that opens the next
+     * window; then the window.
+     */
+    private fun nextDecision(w: DmCrashWorld) {
+        w.pass("alice")
+        stillWaiting(w)
+        val fetch = fetchState(w, "alice", "alice->bob") ?: return
+        if (fetch.establishment != "fetching") return
+        if (!fetch.listening) {
+            val now = w.nodes().maxOf { it.clock.now }
+            val until = fetch.until ?: return
+            if (until > now) w.advanceBy(until - now + DmWorld.MINUTE)
+            w.pass("alice")
+            stillWaiting(w)
+        }
+        attemptWindow(w)
+    }
+
+    /**
+     * §21.7 point 5 from the other end, in every run of part one: while alice is still fetching,
+     * `c0` still waits — its pending send is there and no outgoing message of hers has failed. The
+     * item fails with the **third** empty window, in the transaction that makes the contact
+     * `unreachable`, and at `fail_after_hour` (seven days, R-T5) at the earliest otherwise; part
+     * one lasts twelve and a half hours. Without this, a `c0` failed by the first `EST-END`, or by
+     * a deadline of an hour, was checked only at the end of part one, where it is FAILED either
+     * way. Raw reads only: no event. alice's one conversation in part one is bob's.
+     */
+    private fun stillWaiting(w: DmCrashWorld) {
+        if (w.notes[C_BUDGET_CHECKED] == true) return
+        val fetch = fetchState(w, "alice", "alice->bob") ?: return
+        if (fetch.establishment != "fetching") return
+        val contact = contactBytes(w, "alice->bob").hex()
+        val pending = DmScripts.count(w, "alice", "SELECT count(*) FROM dm_pending_send WHERE contact_id = X'$contact'")
+        val failed = DmScripts.count(
+            w, "alice",
+            "SELECT count(*) FROM dm_message WHERE direction = 'out' AND state = 'failed'",
+        )
+        if (pending != 1L || failed != 0L) {
+            dmViolation(
+                "SCN-C: $C_LOST no longer waits while alice is still fetching, after ${fetch.attempts} " +
+                    "attempt(s) ($pending pending sends, $failed failed messages) — a pending item fails " +
+                    "with the third empty window (§21.7 point 5)",
+            )
+        }
+    }
+
+    /**
+     * Part one driven to its end, however many of its steps a crash cost — and nothing once its
+     * end was checked: `c0` is then FAILED, or already deleted at its expiry, and redoing it would
+     * write a message the user never wrote twice.
+     */
+    private fun finishPartOne(w: DmCrashWorld) {
+        if (w.notes[C_BUDGET_CHECKED] == true) return
+        ensurePartOne(w)
+        for (attempt in 0 until C_MAX_DECISIONS) {
+            val fetch = fetchState(w, "alice", "alice->bob") ?: return
+            if (fetch.establishment != "fetching") return
+            nextDecision(w)
+        }
+    }
+
+    /**
+     * §21.7 point 5, checked the moment part one is over, in every run: three attempts, the contact
+     * `unreachable`, its pending item FAILED, `P_bob` no longer listened — and, seven hours later
+     * (past the six-hour spacing), still no fourth window, from the engine's side and from the
+     * relay's. Done once; later steps call it again and it returns.
+     */
+    private fun theBudgetIsSpent(w: DmCrashWorld) {
+        if (w.notes[C_BUDGET_CHECKED] == true) return
+        val fetch = fetchState(w, "alice", "alice->bob")
+            ?: dmViolation("SCN-C: alice holds no contact for bob at the end of part one")
+        if (fetch.establishment != "unreachable" || fetch.attempts != C_MAX_ATTEMPTS.toLong()) {
+            dmViolation(
+                "SCN-C: after its windows alice's establishment is ${fetch.establishment} with " +
+                    "${fetch.attempts} attempts — §21.7 point 5 ends it unreachable after the third",
+            )
+        }
+        if (fetch.listening) dmViolation("SCN-C: an unreachable contact's bundle namespace is still listened")
+        val lost = DmScripts.outgoingState(w, "alice", C_LOST)
+        if (lost != org.ghost.messaging.api.MessageState.FAILED) {
+            dmViolation("SCN-C: the spent budget left $C_LOST $lost, not FAILED (§21.7 point 5)")
+        }
+        val partTwo = w.notes[C_PART_TWO] as Long
+        val before = listingWindows(w, "alice", 0L, partTwo)
+        val listed = w.relay.bundleListings.size
+        w.advanceBy(7 * DmWorld.HOUR)
+        w.pass("alice")
+        w.pump()
+        w.pass("alice")
+        val after = fetchState(w, "alice", "alice->bob")
+        if (after == null || after.establishment != "unreachable" || after.listening) {
+            dmViolation("SCN-C: a fourth attempt started without a user action (${after?.establishment})")
+        }
+        if (w.relay.bundleListings.size != listed) {
+            dmViolation("SCN-C: bob's bundle namespace was listed after the budget was spent")
+        }
+        if (before.size > C_MAX_ATTEMPTS) {
+            dmViolation("SCN-C: alice listed bob's bundle namespace in ${before.size} windows before the budget ran out")
+        }
+        w.notes[C_LISTED_AT_PROBE] = aliceListings(w)
+        w.notes[C_BUDGET_CHECKED] = true
+    }
+
+    /**
+     * Just before alice writes `c1` — and before each rewrite of it a crash forces — the contact the
+     * budget gave up on is **still** given up on: `unreachable`, `P_bob` not listened, and not one
+     * list event of hers since the check that ended part one. §21.7 point 5 lets only a user action
+     * reopen it, and `c1` is the first.
+     *
+     * The seven-hour probe of [theBudgetIsSpent] alone would pass an engine that reopens an
+     * unreachable contact on its own after longer than that — once a day, say. Its restart would
+     * fall at alice's first pass after the eleven-day jump to bob's publication, her pump would
+     * fetch the older bundle and build the session on `g1` before `c1` existed, and every later
+     * check would still hold: part two's windows are split from part one's by the clock, both
+     * sessions would name `g1`, and `c1` and `c2` would still be intro messages. Raw reads only.
+     */
+    private fun stillGivenUp(w: DmCrashWorld) {
+        val fetch = fetchState(w, "alice", "alice->bob")
+            ?: dmViolation("SCN-C: alice holds no contact for bob before she wrote c1")
+        if (fetch.establishment != "unreachable" || fetch.listening) {
+            dmViolation(
+                "SCN-C: alice's establishment for bob is ${fetch.establishment} " +
+                    "(${if (fetch.listening) "listening" else "not listening"}) before she wrote c1 — " +
+                    "it was reopened without a user action (§21.7 point 5, T28)",
+            )
+        }
+        val since = aliceListings(w) - (w.notes[C_LISTED_AT_PROBE] as Int)
+        if (since != 0) {
+            dmViolation(
+                "SCN-C: alice listed bob's bundle namespace $since time(s) between the end of part " +
+                    "one and c1 — before she wrote c1, without a user action (§21.7 point 5, T28)",
+            )
+        }
+        w.notes[C_STILL_GIVEN_UP] = true
+    }
+
+    /** How many times alice has listed bob's bundle namespace, as the relay recorded it. */
+    private fun aliceListings(w: DmCrashWorld): Int {
+        val namespace = w.notes[C_BUNDLE_NS] as String
+        return w.relay.bundleListings.count { it.node == "alice" && it.namespace == namespace }
+    }
+
+    /**
+     * One step of part two: part one finished and checked (a no-op once done), then every action
+     * of the stages **before** [stage] that a crash may have lost, then this stage's own, then
+     * [fetchRounds] fetch rounds ([cRound]) or one delivery. With [settle], every stage is passed
+     * again around a settled world, so an answer whose trigger arrives while settling is written;
+     * each pass costs no event when there is nothing left to do.
+     */
+    private fun cStep(label: String, stage: Int, fetchRounds: Int = 0, settle: Boolean = false): DmScenario.Step =
+        step(label) { w ->
+            finishPartOne(w)
+            theBudgetIsSpent(w)
+            for (s in 1..stage) cStage(w, s)
+            if (settle) {
+                repeat(C_SETTLE_PASSES) {
+                    untilSettled(w)
+                    for (s in 1..stage) cStage(w, s)
+                }
+                untilSettled(w)
+            } else if (fetchRounds > 0) {
+                repeat(fetchRounds) { cRound(w) }
+            } else {
+                deliver(w)
+            }
+        }
+
+    /** The user actions of part two, by stage; each idempotent and judged from the screen. */
+    private fun cStage(w: DmCrashWorld, stage: Int) {
+        when (stage) {
+            1 -> ensureBobPublished(w)
+            2 -> {
+                ensureWritten(w, "alice", "alice->bob", "c1") { stillGivenUp(w) }
+                ensureCard(w, "carol", "carol->bob")
+                ensureWritten(w, "carol", "carol->bob", "d1")
+            }
+            // alice writes `c2` once she sees `c1` go out — not merely once it is written. The
+            // difference is the point: a send is itself a user action that restarts an
+            // establishment (`userRetry`), so a `c2` written while `c1` is stuck would repair the
+            // very stall this scenario must see, which is how S10b's review found its stranded-send
+            // mutant passing every crash point of SCN-I.
+            3 -> if (DmScripts.outgoingState(w, "alice", "c1") == org.ghost.messaging.api.MessageState.SENT) {
+                ensureWritten(w, "alice", "alice->bob", "c2")
+            }
+            4 -> acceptAliceAndAnswer(w)
+            5 -> {
+                val toBob = w.contacts["alice->bob"] ?: return
+                if ("c-ack" in DmScripts.inboundTextsWith(w, "alice", toBob)) {
+                    ensureWritten(w, "alice", "alice->bob", "c3")
+                }
+            }
+            6 -> {
+                val toAlice = w.contacts["bob->alice"] ?: return
+                if ("c3" in DmScripts.inboundTextsWith(w, "bob", toAlice)) {
+                    ensureWritten(w, "bob", "bob->alice", "c4")
+                }
+            }
+        }
+    }
+
+    /**
+     * bob's weekly publication of the week after his activation: the clock to `t_pub(w + 1)` and
+     * the time-triggered pass OWNER-WEEK runs in (§5.4). Not a user action — any later pass
+     * publishes it — but the part-two steps start from it, so they make sure of it first. Part one
+     * must be over before the jump, and it is: nothing is in flight by then ([untilSettled]).
+     */
+    private fun ensureBobPublished(w: DmCrashWorld) {
+        val next = (w.notes[C_WEEK] as Long) + 1
+        var published = -1L
+        w["bob"].raw.query("SELECT bundle_week FROM dm_self") { if (!it.isNull(0)) published = it.long(0) }
+        if (published >= next) return
+        untilSettled(w)
+        val now = w.nodes().maxOf { it.clock.now }
+        val due = w.notes[C_PART_TWO] as Long
+        if (now < due) w.advanceBy(due - now + DmWorld.MINUTE)
+        w.passes()
+    }
+
+    /**
+     * bob accepts the request that carries alice's messages — the one whose conversation shows
+     * `c1` or `c2`, which is how the user tells two requests apart — and answers `c-ack`. The
+     * acceptance is judged from his contact list and the answer from his conversation.
+     */
+    private fun acceptAliceAndAnswer(w: DmCrashWorld) {
+        val bob = w["bob"].device.engine
+        val fromAlice = bob.contacts().firstOrNull { contact ->
+            bob.conversation(contact.id, 50, null).any { !it.outgoing && (it.text == "c1" || it.text == "c2") }
+        } ?: return
+        if (fromAlice.trust == TrustState.REQUEST) {
+            // What the request held when bob answered it: fault-free, both intro messages.
+            w.notes[C_BEFORE_ACCEPT] = bob.conversation(fromAlice.id, 50, null)
+                .filter { !it.outgoing }.mapNotNull { it.text }
+            if (!bob.acceptRequest(fromAlice.id)) dmViolation("SCN-C: bob could not accept alice's request")
+        }
+        w.contacts["bob->alice"] = fromAlice.id
+        ensureWritten(w, "bob", "bob->alice", "c-ack")
+    }
+
+    /** alice's (or carol's) establishment for bob, read on the raw connection: no event. */
+    private class Fetch(val establishment: String, val attempts: Long, val until: Long?, val listening: Boolean)
+
+    private fun fetchState(w: DmCrashWorld, node: String, key: String): Fetch? {
+        val contact = w.contacts[key] ?: return null
+        var fetch: Fetch? = null
+        w[node].raw.query(
+            "SELECT establishment, fetch_attempts, fetch_listen_until_minute FROM dm_contact " +
+                "WHERE contact_id = ?",
+            listOf(contact.toByteArray()),
+        ) {
+            fetch = Fetch(it.string(0), it.long(1), if (it.isNull(2)) null else it.long(2), false)
+        }
+        val found = fetch ?: return null
+        var listening = false
+        w[node].raw.query(
+            "SELECT listening FROM sync_namespace WHERE lower(hex(namespace_id)) = ?",
+            listOf(w.notes[C_BUNDLE_NS] as String),
+        ) { listening = it.long(0) == 1L }
+        return Fetch(found.establishment, found.attempts, found.until, listening)
+    }
+
+    /**
+     * [node]'s attempt windows **as the relay sees them**: its list events of bob's `P_0` in
+     * [from, to), a new window wherever two are more than an hour apart (windows are fifteen
+     * minutes long and six hours apart, §21.7 point 5).
+     */
+    private fun listingWindows(w: DmCrashWorld, node: String, from: Long, to: Long): List<LongArray> {
+        val namespace = w.notes[C_BUNDLE_NS] as String
+        return listingWindows(
+            w.relay.bundleListings
+                .filter { it.node == node && it.namespace == namespace && it.at >= from && it.at < to }
+                .map { it.at },
+        )
+    }
+
+    /** List event times grouped into windows `[first, last]`: a new one after a gap of over an hour. */
+    internal fun listingWindows(times: List<Long>): List<LongArray> {
+        val out = ArrayList<LongArray>()
+        times.sorted().forEach { at ->
+            val last = out.lastOrNull()
+            if (last != null && at - last[1] <= DmWorld.HOUR) last[1] = at else out += longArrayOf(at, at)
+        }
+        return out
+    }
+
+    /**
+     * The relay-side bound of §21.7 points 5 and 6 over [node]'s listings in [from, to)
+     * ([windowViolations]); the first violation fails the run.
+     */
+    private fun checkWindows(w: DmCrashWorld, node: String, from: Long, to: Long, what: String) {
+        val label = if (what.isEmpty()) node else "$node $what"
+        windowViolations(listingWindows(w, node, from, to), label).firstOrNull()?.let { dmViolation(it) }
+    }
+
+    /**
+     * What the relay can tell about one establishment from the times one fetcher listed a bundle
+     * namespace, grouped by [listingWindows]: at most three windows (§21.7 point 5), none listed for
+     * longer than [C_WINDOW_LISTING_SPAN], and each starting at least six hours after the **last**
+     * listing of the one before. The spacing is measured from that last listing and not from the
+     * window's start, because §21.7 point 5 counts the six hours from the window's close: measured
+     * start to start, a second window five hours and three quarters after the first one closed
+     * passed. A pure function of the times, so `DmHarnessSelfTest` shows each clause can fail.
+     */
+    internal fun windowViolations(windows: List<LongArray>, label: String): List<String> {
+        val out = ArrayList<String>()
+        if (windows.size > C_MAX_ATTEMPTS) {
+            out += "SCN-C: $label listed bob's bundle namespace in ${windows.size} attempt windows — " +
+                "§21.7 point 5 bounds an establishment at $C_MAX_ATTEMPTS"
+        }
+        for (window in windows) {
+            val span = window[1] - window[0]
+            if (span > C_WINDOW_LISTING_SPAN) {
+                out += "SCN-C: $label listed bob's bundle namespace for ${span / 60} minutes in one window"
+            }
+        }
+        for ((a, b) in windows.zipWithNext()) {
+            if (b[0] - a[1] < C_NEXT_ATTEMPT) {
+                out += "SCN-C: $label listed bob's bundle namespace again ${(b[0] - a[1]) / 60} minutes " +
+                    "after the last listing of the window before; §21.7 point 5 spaces attempts at " +
+                    "least six hours after a window closes"
+            }
+        }
+        return out
+    }
+
+    private fun sessionColumn(w: DmCrashWorld, node: String, key: String, column: String): Long? {
+        var out: Long? = null
+        w[node].raw.query(
+            "SELECT $column FROM olm_session WHERE contact_id = ? AND slot = 'current'",
+            listOf(contactBytes(w, key)),
+        ) { if (!it.isNull(0)) out = it.long(0) }
+        return out
+    }
+
+    private fun contactColumn(w: DmCrashWorld, node: String, key: String, column: String): Long? {
+        var out: Long? = null
+        w[node].raw.query(
+            "SELECT $column FROM dm_contact WHERE contact_id = ?",
+            listOf(contactBytes(w, key)),
+        ) { if (!it.isNull(0)) out = it.long(0) }
+        return out
+    }
+
+    private fun weekStart(week: Long): Long = DmWorld.WEEK_ORIGIN + week * DmWorld.WEEK
+
+    /** The message the spent budget fails: SCN-C's one expected failure. */
+    private const val C_LOST: String = "c0"
+
+    /** Part two's stages ([cStage]); the settle steps run all of them. */
+    private const val C_STAGES: Int = 6
+
+    /** §21.7 point 5: three windows per establishment (`EstablishmentSteps.MAX_FETCH_ATTEMPTS`). */
+    private const val C_MAX_ATTEMPTS: Int = 3
+
+    /** Decisions [finishPartOne] may drive: three windows, with one spare for a lost step. */
+    private const val C_MAX_DECISIONS: Int = 4
+
+    /** §21.7 point 5's spacing between attempts, which L7-D6 declares. */
+    private const val C_NEXT_ATTEMPT: Long = 6 * DmWorld.HOUR
+
+    /**
+     * The longest a window may be listed: its fifteen minutes (`FETCH_WINDOW_SECONDS`), the
+     * minute `ceil_minute` can add, and one quiescence step — the runner's quiescence loop pumps
+     * before its pass, so a window whose end falls between two of its steps is listed once more
+     * before the pass that closes it. SCN-C's own rounds run the pass first and never need the
+     * step; the fault-free run lists each window for eight minutes.
+     */
+    private const val C_WINDOW_LISTING_SPAN: Long = 21 * DmWorld.MINUTE
+
+    /** How often a settle step settles the world and passes every stage again. */
+    private const val C_SETTLE_PASSES: Int = 3
+
+    private const val C_WEEK = "cWeek"
+    private const val C_PART_TWO = "cPartTwo"
+    private const val C_BUNDLE_NS = "cBundleNs"
+    private const val C_GENERATION = "cGeneration"
+    private const val C_BUDGET_CHECKED = "cBudgetChecked"
+    private const val C_LISTED_AT_PROBE = "cListedAtProbe"
+    private const val C_STILL_GIVEN_UP = "cStillGivenUp"
+    private const val C_BEFORE_ACCEPT = "cBeforeAccept"
 
     // ------------------------------------------------------------------ SCN-D key change
 
@@ -1752,5 +2468,5 @@ internal object DmScenarios {
 
     /** Every scenario this slice implements, in the order the report prints them. */
     fun all(): List<DmScenario> =
-        listOf(scnA(), scnB(), scnD(), scnF(), scnG(), scnGWeek(), scnH(), scnI(), scnJ(), scnK(), scnL())
+        listOf(scnA(), scnB(), scnC(), scnD(), scnF(), scnG(), scnGWeek(), scnH(), scnI(), scnJ(), scnK(), scnL())
 }

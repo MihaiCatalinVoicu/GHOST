@@ -162,6 +162,16 @@ internal class DmCrashWorld(
         for (node in order) drive { node.device.timeTriggeredPass() }
     }
 
+    /**
+     * A time-triggered pass on **one** node (S10c), through the same swallow the actor thread
+     * performs. For a stretch of a scenario in which only that node has anything to do: SCN-C's
+     * first part is hours of one device's attempt windows while the other two sit idle, and their
+     * passes would only add crash points in SWEEP and KEEPER on devices doing nothing.
+     */
+    fun pass(name: String) {
+        drive { this[name].device.timeTriggeredPass() }
+    }
+
     /** A hint-triggered pass on every node: outcomes, bundles and the inbox. */
     fun hints() {
         for (node in order) drive { node.device.hintPass() }

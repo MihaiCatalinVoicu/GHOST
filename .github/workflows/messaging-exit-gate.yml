@@ -1,6 +1,6 @@
 name: messaging-exit-gate
 
-# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10 and S10b): the crash
+# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10, S10b and S10c): the crash
 # enumeration of the implemented SCN-* scenarios and suite cases at **every** event, with the double
 # crashes §15.3 names, the "timeout after apply" run at every store (the relay's after-apply event,
 # the only one at which the fault exists), SCN-J's `SQLITE_FULL` at
@@ -24,20 +24,24 @@ name: messaging-exit-gate
 # FROM-CACHE and the gate would run nothing.
 #
 # Budget. **Measured**, on the owner's Windows workstation (24 logical CPUs; the harness caps its
-# worker threads at 8), each figure one end-to-end run of the commit that last changed the harness
-# (§22.19 item 13): the whole `:messaging` suite in 5 min 26 s at the PR scale, and in 72 min 51 s
-# with exactly the gradle command below — about 59 000 faulted runs (46 423 single crashes, 12 228
-double crashes, 61 timeouts, 305 `SQLITE_FULL` injections) over **fifteen** scenario lines
-# and suite cases (SCN-A, B, D, F, G, H, I, J, K, L, SCN-G's week-boundary retry as SCN-G-week, plus
-# RP6, RP9, CB-reject-replay and EP-read-expiry, which is what `dm-report-check.sh` requires and
-# what the fixtures carry), 128 seeded worlds and the mutants. S10b's
-# two long scenarios dominate it: SCN-H (17 284 events) took 31 minutes and SCN-I (6 620 events,
-# with doubles) 20. **Not measured**: this job, on a runner. The self-hosted runners are not up,
-# so no run of it has been observed. On a 4-vCPU runner the harness runs 4 threads instead of 8,
-# so an **extrapolation** — not a measurement — is about twice the workstation's harness time,
-# roughly 150 minutes, plus the Rust and Gradle builds and whatever the slower cores cost: inside
-# the 240-minute timeout below, but not by a margin anything has shown. §22.19 asks for it to be
-# re-measured on the runner before the timeout is trusted.
+# worker threads at 8), each figure one end-to-end run with exactly the gradle command below
+# (§22.23 items 10 and 11): about 67 400 faulted runs (54 601 single crashes, 12 440 double
+# crashes, 73 timeouts, 308 `SQLITE_FULL` injections) over **sixteen** scenario lines and suite
+# cases (SCN-A, B, C, D, F, G, H, I, J, K, L, SCN-G's week-boundary retry as SCN-G-week, plus RP6,
+# RP9, CB-reject-replay and EP-read-expiry, which is what `dm-report-check.sh` requires and what the
+# fixtures carry), 128 seeded worlds and the mutants. Two runs of this gate, with byte-identical
+# reports: **120 min 54 s** at S10c's first commit, beside other slices' builds, and **197 min 11 s**
+# at the commit of S10c's review, with no other JVM on the machine at the two points it was looked
+# at. The spread is the machine's, not the code's: SCN-H, 17 410 events in both, took 65 minutes of
+# the second run where S10b's run of 17 284 took 31 (S10b's whole gate, fifteen lines before S13,
+# was 72 min 51 s; nothing recorded how loaded the machine was for it). The PR scale took 9 min
+# 48 s, 11 min 24 s and 17 min 56 s on the same machine. **Not measured**: this job, on a runner.
+# The self-hosted runners are not up, so no run of it has been observed. On a 4-vCPU runner the
+# harness runs 4 threads instead of 8, so an **extrapolation** — not a measurement — is about
+# twice the workstation's harness time: roughly 240 minutes from the first figure and 395 from the
+# second, plus the Rust and Gradle builds and whatever the slower cores cost. The old 240-minute
+# timeout was at or below that on both, so it is 480 minutes now; the figure has to be measured on
+# the runner before any timeout is trusted (§22.23 item 11(f)).
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
@@ -75,7 +79,8 @@ jobs:
   gate:
     name: DM exit gate (crash enumeration at every event, seeded worlds, mutants)
     runs-on: [self-hosted, linux, x64, ghost]
-    timeout-minutes: 240
+    # See "Budget" above: the extrapolation from both measured runs reaches or passes 240 minutes.
+    timeout-minutes: 480
     defaults:
       run:
         shell: bash

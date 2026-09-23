@@ -1,23 +1,24 @@
-GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10 and S10b)
+GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b and S10c)
 scale: gate (every event), seeds 64
-dm crash classes: SCN-A 1520 events, 1520 singles, 1520 doubles, 3 timeouts over 3 stores
-dm crash classes: SCN-K 1829 events, 1829 singles, 0 doubles, 3 timeouts over 3 stores
-dm crash classes: SCN-H 17284 events, 17284 singles, 0 doubles, 22 timeouts over 22 stores
-dm crash classes: SCN-D 4587 events, 4587 singles, 0 doubles, 2 timeouts over 2 stores
-dm crash classes: SCN-L 1209 events, 1209 singles, 0 doubles, 2 timeouts over 2 stores
-dm crash classes: SCN-G-week 2811 events, 2811 singles, 0 doubles, 2 timeouts over 2 stores
-dm storage-full: SCN-J 305 statements injected
-dm crash classes: SCN-G 1947 events, 0 singles, 0 doubles, 4 timeouts over 4 stores
-dm crash classes: SCN-I 6620 events, 6620 singles, 6620 doubles, 7 timeouts over 7 stores
-dm crash classes: SCN-B 1490 events, 1490 singles, 1490 doubles, 6 timeouts over 6 stores
-dm crash classes: SCN-J 1110 events, 1110 singles, 1110 doubles, 1 timeouts over 1 stores
-dm crash classes: SCN-F 1488 events, 1488 singles, 1488 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-A 1550 events, 1550 singles, 1550 doubles, 3 timeouts over 3 stores
+dm crash classes: SCN-K 1857 events, 1857 singles, 0 doubles, 3 timeouts over 3 stores
+dm crash classes: SCN-H 17410 events, 17410 singles, 0 doubles, 22 timeouts over 22 stores
+dm crash classes: SCN-D 4645 events, 4645 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-L 1233 events, 1233 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-G-week 2854 events, 2854 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-C 7578 events, 7578 singles, 0 doubles, 12 timeouts over 12 stores
+dm storage-full: SCN-J 308 statements injected
+dm crash classes: SCN-G 1983 events, 0 singles, 0 doubles, 4 timeouts over 4 stores
+dm crash classes: SCN-I 6720 events, 6720 singles, 6720 doubles, 7 timeouts over 7 stores
+dm crash classes: SCN-B 1522 events, 1522 singles, 1522 doubles, 6 timeouts over 6 stores
+dm crash classes: SCN-J 1132 events, 1132 singles, 1132 doubles, 1 timeouts over 1 stores
+dm crash classes: SCN-F 1516 events, 1516 singles, 1516 doubles, 2 timeouts over 2 stores
 dm seeded worlds: 64 seeds, 0 failures
-dm seeded worlds (faulted): 64 seeds, 30 drew a fault, 0 failures
-dm crash classes: RP6 1440 events, 1440 singles, 0 doubles, 2 timeouts over 2 stores
-dm crash classes: RP9 1164 events, 1164 singles, 0 doubles, 2 timeouts over 2 stores
-dm crash classes: CB-reject-replay 710 events, 710 singles, 0 doubles, 1 timeouts over 1 stores
-dm crash classes: EP-read-expiry 1214 events, 1214 singles, 0 doubles, 2 timeouts over 2 stores
+dm seeded worlds (faulted): 64 seeds, 31 drew a fault, 0 failures
+dm crash classes: RP6 1466 events, 1466 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: RP9 1185 events, 1185 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: CB-reject-replay 712 events, 712 singles, 0 doubles, 1 timeouts over 1 stores
+dm crash classes: EP-read-expiry 1238 events, 1238 singles, 0 doubles, 2 timeouts over 2 stores
 dm suite cases: 4 run, 0 failures
 dm mutants: 11 run, 11 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point

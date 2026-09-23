@@ -60,6 +60,32 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
          * so what D3 buys is that the copy is a *duplicate* and not an error; see `DmMutants.MC5`.
          */
         LIE_FAILED,
+
+        /**
+         * §15.1's **WITHHOLD_NEWEST_BUNDLE** (S10c, SCN-C): in a **bundle** namespace the relay
+         * never lists the newest bundle it holds, and lists every older one as usual.
+         *
+         * "Newest" is the relay's own notion, which is the only one it has: the bundle it stored
+         * **first** most recently — it cannot open a bundle, but it sees when each one arrived, and
+         * a weekly publication is exactly "the latest deposit in `P_0`". A copy of the same bytes
+         * stored again (a publication whose response a timeout lost, re-stored by the Phase 7
+         * retry) is the same bundle and is withheld with it, so the hash, not the deposit, is what
+         * is kept back; without that, a timeout run would have served the newest bundle under its
+         * first deposit while withholding its second.
+         *
+         * A bundle namespace is one the **listener** registered for `PREKEYS`. A real relay tells
+         * the same thing from the credential: every fetcher of a card lists `P_c` under the shared
+         * FETCH read scope (§5.5, §22.8.7), which is a kind no inbox read carries.
+         *
+         * What it costs a fetcher, and what SCN-C measures: while the owner has published only
+         * once, the one bundle there is is the newest and nothing is listed, so the establishment
+         * spends its three windows (§21.7 point 5) and the contact ends `unreachable`; after the
+         * next weekly publication the **older, still valid** bundle is listed, the fetcher builds
+         * on a superseded generation, and the owner must still hold its secrets (§5.4) for the
+         * first flight to open. [withheldNewest] counts what it kept back, so a scenario can assert
+         * the mode did something rather than assume it.
+         */
+        WITHHOLD_NEWEST_BUNDLE,
     }
 
     var modes: Set<Mode> = emptySet()
@@ -207,11 +233,16 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     // ------------------------------------------------------------------ read side
 
     private fun serve(node: DmNode): Int {
-        val listening = HashSet<String>()
-        node.raw.query("SELECT hex(namespace_id) FROM sync_namespace WHERE listening = 1") {
-            listening += it.string(0).lowercase()
-        }
+        val consumers = listeningConsumers(node)
+        val listening = consumers.keys
         if (listening.isEmpty()) return 0
+        val now = node.clock.now
+        // The relay-visible half of §21.7 point 6 ("a listening `P_c` co-occurs with at most three
+        // session starts per establishment"): every round in which a node lists a bundle namespace
+        // is one list event the relay sees, whatever it then serves.
+        for ((namespace, consumer) in consumers) {
+            if (consumer == PREKEYS) bundleListings += BundleListing(node.name, namespace, now)
+        }
         var candidates = stored.filter { it.namespace.hex() in listening && it.from != node.name }
         if (Mode.SHUFFLE in modes) {
             // A deterministic scramble: a world that fails must fail again on the same seed.
@@ -219,9 +250,13 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         }
         var moved = 0
         for (blob in candidates) {
-            if (blob.storedAt + blob.ttl <= node.clock.now) continue
-            if (node.clock.now < blob.notBefore) continue
+            if (blob.storedAt + blob.ttl <= now) continue
+            if (now < blob.notBefore) continue
             val key = blob.namespace.hex() + blob.hash.hex() + "@" + node.name
+            if (withheldAsNewest(blob, consumers, now)) {
+                withheldPairs += key
+                continue
+            }
             // WITHHOLD keeps each blob back for **one** round and then serves it, and it is
             // checked before the served set on purpose: a withheld blob that had already been
             // marked served would never be served at all, which is a lost message rather than a
@@ -291,20 +326,78 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     fun owed(nodes: List<DmNode>, now: Long): Int {
         var owed = 0
         for (node in nodes) {
-            val listening = HashSet<String>()
-            node.raw.query("SELECT hex(namespace_id) FROM sync_namespace WHERE listening = 1") {
-                listening += it.string(0).lowercase()
-            }
+            val consumers = listeningConsumers(node)
             for (blob in stored) {
                 if (blob.from == node.name || blob.storedAt + blob.ttl <= now) continue
                 // A blob held back on purpose is not owed yet: it is the scenario's, not in flight.
                 if (now < blob.notBefore) continue
-                if (blob.namespace.hex() !in listening) continue
+                if (blob.namespace.hex() !in consumers) continue
+                // Nor is the newest bundle WITHHOLD_NEWEST_BUNDLE keeps back: owing it would make
+                // every world that runs the mode look unsettled for as long as anyone listens.
+                if (withheldAsNewest(blob, consumers, now)) continue
                 if ((blob.namespace.hex() + blob.hash.hex() + "@" + node.name) !in served) owed++
             }
         }
         return owed
     }
+
+    /** The namespaces [node] listens on, with the consumer it registered each one for. */
+    private fun listeningConsumers(node: DmNode): Map<String, String> {
+        val out = HashMap<String, String>()
+        node.raw.query("SELECT hex(namespace_id), consumer FROM sync_namespace WHERE listening = 1") {
+            out[it.string(0).lowercase()] = it.string(1)
+        }
+        return out
+    }
+
+    /**
+     * Whether [Mode.WITHHOLD_NEWEST_BUNDLE] keeps [blob] back from a listener whose namespaces are
+     * [consumers]: the mode is on, the listener reads the namespace as a bundle namespace, and
+     * [blob] carries the hash of the live bundle the relay stored first most recently there.
+     */
+    private fun withheldAsNewest(blob: Stored, consumers: Map<String, String>, now: Long): Boolean {
+        if (Mode.WITHHOLD_NEWEST_BUNDLE !in modes) return false
+        val namespace = blob.namespace.hex()
+        if (consumers[namespace] != PREKEYS) return false
+        return blob.hash.contentEquals(newestBundleHash(namespace, now))
+    }
+
+    /**
+     * The hash of the newest live bundle of [namespace]: the one whose **first** deposit is the
+     * latest (see [Mode.WITHHOLD_NEWEST_BUNDLE] for why the first and not the last), or null when
+     * the namespace holds nothing live.
+     */
+    private fun newestBundleHash(namespace: String, now: Long): ByteArray? {
+        val firstStored = LinkedHashMap<String, Pair<Long, ByteArray>>()
+        for (blob in stored) {
+            if (blob.namespace.hex() != namespace || blob.storedAt + blob.ttl <= now) continue
+            firstStored.putIfAbsent(blob.hash.hex(), blob.storedAt to blob.hash)
+        }
+        val latest = firstStored.values.maxOfOrNull { it.first } ?: return null
+        // Ties (two bundles first stored in the same second) go to the later deposit, which is the
+        // later entry in the insertion-ordered map.
+        return firstStored.values.last { it.first == latest }.second
+    }
+
+    /**
+     * One list event of a bundle namespace, as the relay sees it (S10c): which node listed which
+     * `P_c`, and when. Recorded for every listing whether or not a hostile mode is on, because the
+     * attempt budget of §21.7 point 5 is a statement about **when** a fetcher lists, and a relay is
+     * exactly the party that sees it (L7-D6).
+     */
+    class BundleListing(val node: String, val namespace: String, val at: Long)
+
+    /** Every bundle-namespace list event of the world, in order. */
+    val bundleListings = ArrayList<BundleListing>()
+
+    /** `(namespace + hash, node)` pairs [Mode.WITHHOLD_NEWEST_BUNDLE] kept back at least once. */
+    private val withheldPairs = HashSet<String>()
+
+    /**
+     * How many distinct (bundle, listener) pairs [Mode.WITHHOLD_NEWEST_BUNDLE] kept back. Zero
+     * means the mode was on and did nothing, which is what a scenario driving it must refuse.
+     */
+    val withheldNewest: Int get() = withheldPairs.size
 
     /**
      * How many second copies [Mode.REPEATS] put in, and how many of them the recipient's own
@@ -368,6 +461,9 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     private companion object {
         /** §6.7's padding buckets, which `inbox_blob`'s CHECK constraint enforces. */
         val BUCKETS = listOf(1024, 4096, 16384, 65536)
+
+        /** `sync_namespace.consumer` of a bundle namespace (`Consumer.PREKEYS`). */
+        const val PREKEYS: String = "prekeys"
 
         fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
     }

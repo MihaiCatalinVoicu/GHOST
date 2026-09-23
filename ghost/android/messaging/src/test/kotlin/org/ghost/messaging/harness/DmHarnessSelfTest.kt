@@ -21,7 +21,12 @@ import org.junit.Test
  *  6. `SQLITE_FULL` really arrives as a `StorageFullException` and not as a death;
  *  7. R-K1 really truncates the log at every open;
  *  8. the "nothing owed" oracle really fails on work left owed or given up — and the no-loss and
- *     liveness oracles, on the same worlds, really do not (S10b review).
+ *     liveness oracles, on the same worlds, really do not (S10b review);
+ *  9. SCN-C's checks of its own really fail on what they are about, each where the defect is: an
+ *     establishment whose attempt budget never runs out, a relay that stops withholding the newest
+ *     bundle, windows an hour apart, windows of thirty minutes, a message that fails before the
+ *     third window, a contact reopened before any user action — and the relay-side window oracle
+ *     over listings written by hand (S10c and its review).
  *
  * Without 5 in particular the whole enumeration could pass on an engine that writes nothing.
  */
@@ -214,6 +219,222 @@ class DmHarnessSelfTest {
         },
         steps = listOf(body),
     )
+
+    /**
+     * 9: SCN-C's own checks are not vacuous (S10c, and the controls its review asked for).
+     *
+     * SCN-C adds oracles no other scenario has, and each could pass for nothing. So, beside the
+     * clean run, worlds that break one thing each, and each must fail for the reason it names —
+     * and where the point is **which** check sees it, the failure must be that check's and not an
+     * earlier one's:
+     *  - an **unbounded budget**: `dm_contact.fetch_attempts` is never written above 1, so
+     *    `EST-END` schedules another window for ever — the behaviour privacy mutant PM-31 names
+     *    (§15.7). It fails the engine-side spent-budget check, the first SCN-C check it reaches; it
+     *    never reaches the relay-side ones. A control, not a registered mutant: PM-31 is S11's;
+     *  - an **honest relay in part two**: WITHHOLD_NEWEST_BUNDLE is switched off once the budget is
+     *    spent, so the fetchers build on bob's current generation, and "the session names the
+     *    superseded generation" must fail;
+     *  - [scnCsRelaySideWindowChecksFailOnWhatTheyAreAbout] and
+     *    [scnCsWaitingAndGivenUpChecksFailOnWhatTheyAreAbout] carry the rest.
+     */
+    @Test
+    fun scnCsBudgetAndGenerationChecksFailOnWhatTheyAreAbout() {
+        requireNative()
+        DmCrashRunner(DmScenarios.scnC()).run(DmRunSpec())
+
+        val unbounded = scnCControl("control-unbounded-fetch-budget") { _, sql, args ->
+            if (sql.startsWith(SET_ESTABLISHMENT)) {
+                Pair(sql, args.toMutableList().also { it[1] = minOf(it[1] as Long, 1L) })
+            } else {
+                Pair(sql, args)
+            }
+        }
+        assertFailsWith(unbounded, "ends it unreachable after the third")
+
+        val base = DmScenarios.scnC()
+        val honest = scnCVariant(
+            "honest-relay-in-part-two",
+            steps = base.steps.map { s ->
+                if (s.label.startsWith("bob's next weekly publication")) {
+                    step(s.label) { w ->
+                        w.relay.modes = emptySet()
+                        s.body(w)
+                    }
+                } else {
+                    s
+                }
+            },
+        )
+        assertFailsWith(honest, "not bob's first")
+    }
+
+    /**
+     * 9, the relay's side (S10c review): the window checks SCN-C runs over the relay's record of
+     * alice's listings can fail, and each on its own.
+     *
+     * Two engines that break the window's **shape** while everything the engine reports holds —
+     * three windows, `unreachable` after the third, `c0` failed only then, no fourth window seven
+     * hours later — so that nothing but the relay-side check can see them, and each must:
+     *  - **one hour between windows**: `EST-END`'s six hours are written as one. The spacing clause
+     *    must fail — measured from the last listing of a window, so a check that measured start to
+     *    start at six hours would also have caught this one, but not a gap of five and three
+     *    quarters;
+     *  - **thirty-minute windows**: `EST-START`'s fifteen minutes are written as thirty. The span
+     *    clause must fail.
+     *
+     * The count clause has no such engine: an engine that lists a fourth window of an establishment
+     * it reports as three attempts fails an engine-side check first. So the oracle itself is also
+     * run over listing times written by hand: the fault-free shape passes, and a fourth window, a
+     * window listed for 22 minutes, and a window five hours and fifty minutes after the last
+     * listing of the one before — six hours after its first — each fail their own clause.
+     */
+    @Test
+    fun scnCsRelaySideWindowChecksFailOnWhatTheyAreAbout() {
+        val m = DmWorld.MINUTE
+        val h = DmWorld.HOUR
+        // The fault-free shape: two listings eight minutes apart, the next window six hours and
+        // nine minutes after the second.
+        val clean = listOf(0L, 8 * m, 6 * h + 17 * m, 6 * h + 25 * m, 12 * h + 34 * m, 12 * h + 42 * m)
+        assertEquals(emptyList<String>(), DmScenarios.windowViolations(DmScenarios.listingWindows(clean), "alice"))
+        val cases = mapOf(
+            "attempt windows" to clean + listOf(18 * h + 51 * m),
+            "minutes in one window" to listOf(0L, 8 * m, 16 * m, 22 * m),
+            "after the last listing of the window before" to listOf(0L, 10 * m, 6 * h),
+        )
+        for ((clause, times) in cases) {
+            val violations = DmScenarios.windowViolations(DmScenarios.listingWindows(times), "alice")
+            assertEquals("the '$clause' clause, alone: $violations", 1, violations.size)
+            assertTrue("the '$clause' clause: $violations", violations.single().contains(clause))
+        }
+
+        requireNative()
+        val hourApart = scnCControl("control-one-hour-between-windows") { now, sql, args ->
+            val until = args.getOrNull(2) as? Long
+            if (sql.startsWith(SET_ESTABLISHMENT) && args[0] == FETCHING && until != null && until - now() > h) {
+                Pair(sql, args.toMutableList().also { it[2] = until - 5 * h })
+            } else {
+                Pair(sql, args)
+            }
+        }
+        assertFailsWith(hourApart, "after the last listing of the window before")
+
+        val longWindows = scnCControl("control-thirty-minute-windows") { now, sql, args ->
+            val until = args.getOrNull(2) as? Long
+            if (sql.startsWith(SET_ESTABLISHMENT) && args[0] == FETCHING && until != null && until - now() in 1..20 * m) {
+                Pair(sql, args.toMutableList().also { it[2] = until + 15 * m })
+            } else {
+                Pair(sql, args)
+            }
+        }
+        assertFailsWith(longWindows, "minutes in one window")
+    }
+
+    /**
+     * 9, the checks between part one's windows and before `c1` (S10c review): each fails where
+     * the defect happens, not later.
+     *  - **A message that fails early**: `dm_pending_send.fail_after_hour` is written an hour after
+     *    the send instead of seven days, so R-T5 fails `c0` at the pass that opens the second
+     *    window. Checked only at the end of part one, where `c0` is FAILED either way, that passed
+     *    every check; "`c0` still waits while alice is fetching" must fail — the same check an
+     *    `EST-END` that failed the pending items at every close would meet one window earlier.
+     *  - **A contact reopened without a user action**: once bob's publication step is over, the
+     *    control opens a new establishment for alice itself — what an engine that reopened an
+     *    `unreachable` contact on its own, after longer than the seven-hour probe, would have done
+     *    at that pass. Its window fetches the older bundle and builds on `g1` before `c1` exists,
+     *    and every later check holds; the check just before `c1` must fail.
+     */
+    @Test
+    fun scnCsWaitingAndGivenUpChecksFailOnWhatTheyAreAbout() {
+        requireNative()
+        val failsEarly = scnCControl("control-deadline-of-an-hour") { _, sql, args ->
+            if (sql.startsWith("INSERT INTO dm_pending_send")) {
+                Pair(sql, args.toMutableList().also { it[2] = (it[2] as Long) - 7 * DmWorld.DAY + DmWorld.HOUR })
+            } else {
+                Pair(sql, args)
+            }
+        }
+        assertFailsWith(failsEarly, "no longer waits while alice is still fetching")
+
+        val base = DmScenarios.scnC()
+        val reopened = scnCVariant(
+            "reopened-before-c1",
+            steps = base.steps.map { s ->
+                if (s.label.startsWith("bob's next weekly publication")) {
+                    step(s.label) { w ->
+                        s.body(w)
+                        val alice = w["alice"].device
+                        val bob = alice.engine.contacts().single().id
+                        alice.establishment.estStart(bob.toByteArray(), userRetry = true)
+                    }
+                } else {
+                    s
+                }
+            },
+        )
+        assertFailsWith(reopened, "before she wrote c1")
+    }
+
+    /** SCN-C as it is, under [name], with [steps] in place of its own. */
+    private fun scnCVariant(
+        name: String,
+        mutation: DmMutants.Mutation? = null,
+        onSetup: (DmCrashWorld) -> Unit = {},
+        steps: List<DmScenario.Step>? = null,
+    ): DmScenario {
+        val base = DmScenarios.scnC()
+        return DmScenario(
+            name = "SCN-C/$name",
+            setup = { world ->
+                onSetup(world)
+                if (mutation != null) world.mutation = mutation
+                base.setup(world)
+            },
+            steps = steps ?: base.steps,
+            alwaysChecks = base.alwaysChecks,
+            finalChecks = base.finalChecks,
+            liveness = base.liveness,
+            noLoss = base.noLoss,
+            expectedFailures = base.expectedFailures,
+        )
+    }
+
+    /**
+     * SCN-C under a statement rewrite that is a control, not a registered mutant. [rewrite] also
+     * gets the world's clock, since a rewrite that moves a decision minute has to know when "now"
+     * is.
+     */
+    private fun scnCControl(
+        id: String,
+        rewrite: (now: () -> Long, sql: String, args: List<Any?>) -> Pair<String, List<Any?>>,
+    ): DmScenario {
+        var world: DmCrashWorld? = null
+        val now = { requireNotNull(world) { "the control's world is not set up" }.nodes().maxOf { it.clock.now } }
+        val mutation = DmMutants.Mutation(
+            id = id,
+            defeats = "a control of SCN-C's own checks (DmHarnessSelfTest item 9)",
+            detectedBy = "SCN-C",
+            expect = "",
+            rewrite = { sql, args -> rewrite(now, sql, args) },
+        )
+        return scnCVariant(id, mutation = mutation, onSetup = { world = it })
+    }
+
+    private fun assertFailsWith(scenario: DmScenario, expect: String) {
+        val failure = runCatching { DmCrashRunner(scenario).run(DmRunSpec()) }.exceptionOrNull()
+        assertTrue("${scenario.name} passed: the check is vacuous", failure is DmInvariantViolation)
+        assertTrue(
+            "${scenario.name} failed, but not for the reason the check states: ${failure?.message}",
+            failure?.message?.contains(expect) == true,
+        )
+    }
+
+    private companion object {
+        /** `ContactStore.setEstablishment`, the one statement that writes a contact's attempt state. */
+        const val SET_ESTABLISHMENT = "UPDATE dm_contact SET establishment = ?, fetch_attempts = ?"
+
+        /** `dm_contact.establishment` of a contact whose bundle fetch is under way. */
+        const val FETCHING = "fetching"
+    }
 
     /** 7: R-K1 runs at every open, and the log is empty after it. */
     @Test

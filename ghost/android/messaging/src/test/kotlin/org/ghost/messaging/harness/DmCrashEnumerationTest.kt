@@ -4,7 +4,8 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
- * The crash enumeration of Phase 9 design §15.3, over the scenarios slices S10 and S10b implement.
+ * The crash enumeration of Phase 9 design §15.3, over the scenarios slices S10, S10b and S10c
+ * implement.
  *
  * Each test records its scenario's K events, then crashes at every sampled one, reboots, checks
  * the structural invariants at the reboot, runs to quiescence and checks everything again — plus,
@@ -14,11 +15,11 @@ import org.junit.Test
  *
  * **Scale.** `-Dghost.dm.crash=full` runs every event (the `messaging-exit-gate.yml` job); the
  * default samples every [DmHarness.DEFAULT_SAMPLE]-th, which was ~900 runs over S10's seven
- * scenarios and is ~4 200 over the eleven scenario lines since S10b (SCN-H alone is 1 330
- * singles, SCN-I 510 singles and 510 doubles) — about five and a half minutes of the whole
- * `:messaging` suite on the owner's workstation (§22.19 item 13). Sampling is on the event index alone, so a sampled run is a
- * subset of the full one — never a different enumeration. Runs are independent and go through
- * [DmHarness.parallel].
+ * scenarios, ~4 200 over the eleven scenario lines of S10b and is ~4 800 over the twelve since
+ * S10c (SCN-H alone is 1 340 singles, SCN-C 583, SCN-I 517 singles and 517 doubles) — about ten
+ * minutes of the whole `:messaging` suite on the owner's workstation (§22.23 item 10). Sampling
+ * is on the event index alone, so a sampled run is a subset of the full one — never a different
+ * enumeration. Runs are independent and go through [DmHarness.parallel].
  *
  * Every run writes its line into [DmReport], which `scripts/gates/dm-report-check.sh` then refuses
  * to pass on a missing scenario or an empty enumeration.
@@ -37,6 +38,13 @@ class DmCrashEnumerationTest {
     @Test fun scnASend() = enumerate(DmScenarios.scnA())
 
     @Test fun scnBReceive() = enumerate(DmScenarios.scnB())
+
+    /**
+     * S10c: the establishment through a relay that withholds the newest bundle — three empty
+     * windows and `unreachable`, then a fetch of the older bundle, intro, request, provisional
+     * reply and pair mode on both sides, with a second fetcher of the same bundle.
+     */
+    @Test fun scnCEstablishment() = enumerate(DmScenarios.scnC())
 
     @Test fun scnDKeyChange() = enumerate(DmScenarios.scnD())
 

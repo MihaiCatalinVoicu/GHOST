@@ -1,5 +1,6 @@
 package org.ghost.messaging
 
+import org.ghost.crypto.bridge.DmContent
 import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
@@ -28,7 +29,10 @@ import org.junit.Test
  *
  * The session half is here for the same reason: §21.7 point 4 says `EST-READY` builds a session
  * "unless a **usable** session already exists", and a test that only ever runs the first
- * establishment of a conversation cannot tell a usable session from a row.
+ * establishment of a conversation cannot tell a usable session from a row. So is the **attempt
+ * budget** of §21.7 points 2 and 5 (slice S10c and its review): three empty windows, `unreachable`,
+ * a later send whose own `EST-START` a process death lost, sends to a contact that is still
+ * fetching, and each action that reopens an unreachable one.
  */
 class DmResidueTest {
 
@@ -317,7 +321,218 @@ class DmResidueTest {
         }
     }
 
+    // ------------------------------------------------------- the spent budget
+
+    /**
+     * §21.7 point 5 and §13.5: three empty windows make the contact `unreachable` and fail the
+     * waiting message — and a send made **after** that, whose own `EST-START` a process death
+     * lost, is resumed by the next time-triggered pass as the user's retry it was (slice S10c).
+     *
+     * The second half is what SCN-C's crash enumeration found (§22.23). A send and its `EST-START`
+     * are two transactions (§7.3), and `DmActor.flushStranded` is the recovery for a death between
+     * them — but it asked for the establishment without `userRetry`, which `EST-START` refuses
+     * against a spent budget: the contact stayed `unreachable` and the message waited up to seven
+     * days for R-T5 to fail it, unless the user wrote again. The test leaves the message exactly
+     * where that death leaves it, by running `SendStep.send` without the facade's `EST-START`.
+     *
+     * The first half also checks that the message stays **queued** through the first two windows
+     * ([spendTheBudget]): it fails with the third empty window, not with the first.
+     */
+    @Test
+    fun aSendToAnUnreachableContactIsResumedWhenItsEstablishmentWasLost() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val contactB = addWithoutABundle(world)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "into the void", null))
+            spendTheBudget(world)
+            assertEquals(
+                "and fails the message that waited for it",
+                MessageState.FAILED,
+                alice.engine.conversation(contactB, 10, null).single().state,
+            )
+            world.advanceTo(alice.clock.now + 7 * DmWorld.HOUR)
+            alice.timeTriggeredPass()
+            assertEquals("no fourth window without a user action", 0, listeningNamespaces(alice))
+
+            // B comes online and publishes. A writes again, and the process dies between the
+            // send's commit and its `EST-START`: a pending message on an unreachable contact.
+            world.bob.engine.onActivated()
+            val sent = alice.sendStep.send(
+                contactB.toByteArray(), DmContent.Kind.TEXT, "again".toByteArray(), null, null,
+            )
+            assertTrue("the send owes an establishment", sent.establish)
+            assertEquals(Establishment.UNREACHABLE, alice.engine.contacts().single().establishment)
+
+            // The next time-triggered pass resumes it as the user's retry, with a fresh budget.
+            alice.timeTriggeredPass()
+            assertEquals(
+                "the stranded send's establishment is resumed",
+                Establishment.FETCHING,
+                alice.engine.contacts().single().establishment,
+            )
+            assertEquals(1, attempts(alice))
+
+            // And it finishes: B's bundle, `EST-READY` two minutes on, the message out.
+            world.deliver()
+            alice.timeTriggeredPass()
+            world.advanceTo(alice.clock.now + 3 * DmWorld.MINUTE)
+            alice.timeTriggeredPass()
+            assertEquals(Establishment.READY, alice.engine.contacts().single().establishment)
+            assertEquals("the resumed message went out", 0, alice.engine.status().pendingSends)
+        }
+    }
+
+    /**
+     * §21.7 point 2: `EST-START` "sets `fetch_attempts = 1`", so a send to a contact that is still
+     * fetching starts the count again and does not spend it (slice S10c's review).
+     *
+     * Before the review a send to a `fetching` contact wrote the stored count **plus one**, so
+     * three messages written a minute apart to a contact with no bundle yet were attempts one, two
+     * and three of the same open window, and `EST-END` gave up when that one window closed: all
+     * three FAILED a quarter of an hour after they were written, where §21.7 point 5 gives them
+     * three windows six hours apart. Nothing else in the tree sends twice to a contact that is
+     * still fetching — SCN-C writes its second message only once the first went out — so this is
+     * the test of it.
+     */
+    @Test
+    fun sendsToAContactThatIsStillFetchingDoNotSpendItsBudget() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val contactB = addWithoutABundle(world)
+            for (text in listOf("one", "two", "three")) {
+                assertEquals(SendResult.QUEUED, alice.engine.send(contactB, text, null))
+                assertEquals("the send of $text starts the count again", 1, attempts(alice))
+                assertEquals(Establishment.FETCHING, alice.engine.contacts().single().establishment)
+                world.advanceTo(alice.clock.now + DmWorld.MINUTE)
+            }
+            assertEquals(3, alice.engine.status().pendingSends)
+            spendTheBudget(world)
+            assertEquals(
+                "the three messages fail with the third window, not the first",
+                listOf(MessageState.FAILED, MessageState.FAILED, MessageState.FAILED),
+                alice.engine.conversation(contactB, 10, null).map { it.state },
+            )
+        }
+    }
+
+    /**
+     * Each of the four actions that queue an item reopens a contact the three windows gave up on
+     * **at once**, with a fresh count: the user's retry of a FAILED message, a new send, a session
+     * reset, and a due scheduled control (§13.5's `unreachable → fetching`, §21.7 point 5's "the
+     * user may retry").
+     *
+     * Each is checked right after the call that queued the item, before any time-triggered pass:
+     * since slice S10c `DmActor.flushStranded` restarts a stranded item's establishment on the
+     * next pass anyway, so a later check could not tell a caller that passes `userRetry` from one
+     * that leaves the reopening to the recovery. The scheduled control is checked after the pass
+     * that sends it, which is enough for the same reason: that pass runs the recovery **before**
+     * the scheduled step (`DmActor.pass`), so the recovery cannot be what reopened it.
+     */
+    @Test
+    fun everyActionThatQueuesAnItemReopensAnUnreachableContactAtOnce() {
+        requireNative()
+        DmWorld().use { world ->
+            val alice = world.alice
+            val contactB = addWithoutABundle(world)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "into the void", null))
+            spendTheBudget(world)
+
+            val failed = alice.engine.conversation(contactB, 10, null).single()
+            assertEquals(MessageState.FAILED, failed.state)
+            assertEquals(SendResult.QUEUED, alice.engine.retry(failed.id))
+            assertReopened(alice, "the retry of a FAILED message")
+            spendTheBudget(world)
+
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "again", null))
+            assertReopened(alice, "a send")
+            spendTheBudget(world)
+
+            assertEquals(SendResult.QUEUED, alice.engine.resetSession(contactB))
+            assertReopened(alice, "a session reset")
+            spendTheBudget(world)
+
+            assertEquals(1, alice.engine.reconnect(listOf(contactB)))
+            // Past the whole §8.6 spread, so the notice is due at the next pass.
+            world.advanceTo(alice.clock.now + 48 * DmWorld.HOUR + DmWorld.MINUTE)
+            alice.timeTriggeredPass()
+            assertReopened(alice, "a due reconnect notice")
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    /** A adds B's card; B has not activated, so it published no bundle and every window is empty. */
+    private fun addWithoutABundle(world: DmWorld): ContactId {
+        world.alice.engine.onActivated()
+        assertEquals(
+            AddContactResult.ADDED,
+            world.alice.engine.addContact(world.bob.card(), CardSource.QR_IN_PERSON),
+        )
+        return world.alice.engine.contacts().single().id
+    }
+
+    /**
+     * Three empty windows from an open first one (§21.7 point 5): each closes empty, the next opens
+     * six hours on, the count rises by one per window, and the items that wait for them stay
+     * queued until the **third** closes — then the contact is `unreachable` and every one fails.
+     */
+    private fun spendTheBudget(world: DmWorld) {
+        val alice = world.alice
+        val pending = alice.engine.status().pendingSends
+        assertTrue("an establishment that waits for nothing", pending > 0)
+        for (window in 1..3) {
+            assertEquals(
+                "window $window is open",
+                Establishment.FETCHING,
+                alice.engine.contacts().single().establishment,
+            )
+            assertEquals(1, listeningNamespaces(alice))
+            assertEquals("window $window is attempt $window", window, attempts(alice))
+            world.deliver()
+            // Past the window's fifteen minutes: `EST-END`.
+            world.advanceTo(alice.clock.now + 16 * DmWorld.MINUTE)
+            alice.timeTriggeredPass()
+            assertEquals("window $window is closed", 0, listeningNamespaces(alice))
+            if (window < 3) {
+                assertEquals(
+                    "the items still wait after window $window closed empty",
+                    pending,
+                    alice.engine.status().pendingSends,
+                )
+                // Six hours on, the next window (§21.7 point 5); R-T5 runs in the same pass.
+                world.advanceTo(alice.clock.now + 6 * DmWorld.HOUR + DmWorld.MINUTE)
+                alice.timeTriggeredPass()
+                assertEquals(
+                    "the items still wait when window ${window + 1} opens",
+                    pending,
+                    alice.engine.status().pendingSends,
+                )
+            }
+        }
+        assertEquals(
+            "the third empty window gives up (§21.7 point 5)",
+            Establishment.UNREACHABLE,
+            alice.engine.contacts().single().establishment,
+        )
+        assertEquals(3, attempts(alice))
+        assertEquals("and fails what waited for it", 0, alice.engine.status().pendingSends)
+    }
+
+    /** [what] reopened the unreachable contact: `fetching`, a fresh count, `P_B` listened. */
+    private fun assertReopened(alice: DmDevice, what: String) {
+        assertEquals(
+            "$what reopens the contact",
+            Establishment.FETCHING,
+            alice.engine.contacts().single().establishment,
+        )
+        assertEquals("$what starts a fresh count", 1, attempts(alice))
+        assertEquals("$what opens a window", 1, listeningNamespaces(alice))
+    }
+
+    private fun attempts(device: DmDevice): Int = countWhere(device, "SELECT fetch_attempts FROM dm_contact")
+
 
     private companion object {
         const val DAY: Long = 24 * 60 * 60

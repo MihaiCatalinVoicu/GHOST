@@ -75,8 +75,8 @@ internal class DmSeededWorld(val seed: Long) {
                 // The relay turns hostile **after** the establishment, not before. §15.4 puts one
                 // hostile relay in every set, but a relay that withholds the bundle of a device
                 // that has no session yet is testing the establishment's retry budget (SCN-C's
-                // WITHHOLD_NEWEST_BUNDLE, which this slice does not implement), not the traffic —
-                // and it makes every seed's setup fail for the same uninteresting reason.
+                // WITHHOLD_NEWEST_BUNDLE, which slice S10c added and drives in SCN-C alone), not the
+                // traffic — and it makes every seed's setup fail for the same uninteresting reason.
                 world.relay.modes = hostile
             },
             steps = buildList {
