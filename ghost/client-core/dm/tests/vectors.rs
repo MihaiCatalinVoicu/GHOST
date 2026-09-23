@@ -132,7 +132,7 @@ fn dm_derive_vectors() {
     let mut out = Out::new(
         "\
 # GHOST DM derivations, contact card v2 and state wrapping (Phase 9 design faza9-dm.md §3.1, §3.2,\n\
-# §3.3, §6.3, §6.7, §2.5, §22.8.3). Generated and checked by\n\
+# §3.3, §6.3, §6.7, §9.4, §2.5, §22.8.3). Generated and checked by\n\
 # client-core/dm/tests/vectors.rs::dm_derive_vectors; an independent implementation replays it.\n\
 #\n\
 # Conventions\n\
@@ -256,6 +256,88 @@ fn dm_derive_vectors() {
     out.hex(
         "provisional_key_dir_02",
         &derive::derive_provisional_key(&reply_seed, &sb, derive::PROVISIONAL_DIR_TO_RESPONDER),
+    );
+
+    // PQ-C (§9.4, slice S13). The X-Wing half is computed here with libcrux and recorded (`ss`),
+    // so a replayer without ML-KEM — the JDK 17 provider set has none — still checks the whole
+    // derivation from `ss` on: the salt over both identities, the generation, the key and the
+    // ciphertext, and the HKDF over `root_rand || ss`. `pq_root_decapsulated` is the opener's
+    // result through its own seed, which must equal the offerer's.
+    out.section("pq_root");
+    out.line("# salt = SHA-256(\"ghost/v1/dm/pq-root\" || oi_offerer || oi_target || u32_be(peer_gen_id)");
+    out.line("#                || peer_xwing_pk || xwing_ct)");
+    out.line("# root = hkdf(root_rand || ss, salt, \"ghost/v1/dm/pq-root\")");
+    out.line("# oi_offerer generated root_rand and encapsulated (OI_me of §9.4); oi_target decapsulates.");
+    out.text("pq_root_label", "ghost/v1/dm/pq-root");
+    let oi_offerer = [0x31u8; 32];
+    let oi_target = [0x32u8; 32];
+    let peer_seed = KemSecret::from_bytes([0x33; 32]);
+    let peer_public = pq::public_key(&peer_seed).expect("keygen");
+    let peer_gen_id = 0x0a0b_0c0du32;
+    let root_rand = PairRoot::from_bytes([0x34; 32]);
+    let kem_randomness = [0x35u8; pq::ENCAPS_RANDOMNESS_BYTES];
+    let parties = ghost_client_dm::pqroot::PqRootParties {
+        oi_offerer: &oi_offerer,
+        oi_target: &oi_target,
+    };
+    let offered = ghost_client_dm::pqroot::offer_with(
+        &root_rand,
+        &kem_randomness,
+        parties,
+        peer_gen_id,
+        &peer_public,
+        2873,
+        9,
+    )
+    .expect("offer");
+    let (_, ss) = pq::encapsulate_with(&peer_public, &kem_randomness).expect("encaps");
+    out.hex("oi_offerer", &oi_offerer);
+    out.hex("oi_target", &oi_target);
+    out.hex("peer_xwing_seed", peer_seed.as_bytes());
+    out.num("peer_gen_id", u64::from(peer_gen_id));
+    out.hex("peer_xwing_pk", &peer_public);
+    out.hex("kem_randomness", &kem_randomness);
+    out.hex("root_rand", root_rand.as_bytes());
+    out.hex("xwing_ct", &offered.tlv.xwing_ct);
+    out.hex("ss", ss.as_bytes());
+    let salt: [u8; 32] = Sha256::new()
+        .chain_update(b"ghost/v1/dm/pq-root")
+        .chain_update(oi_offerer)
+        .chain_update(oi_target)
+        .chain_update(peer_gen_id.to_be_bytes())
+        .chain_update(&peer_public)
+        .chain_update(&offered.tlv.xwing_ct)
+        .finalize()
+        .into();
+    out.hex("salt", &salt);
+    out.hex("pq_root", offered.root.as_bytes());
+    let opened = ghost_client_dm::pqroot::open(&offered.tlv, peer_gen_id, &peer_seed, parties)
+        .expect("open");
+    assert_eq!(opened.as_bytes(), offered.root.as_bytes());
+    out.hex("pq_root_decapsulated", opened.as_bytes());
+    out.num("base_week", 2873);
+    out.num("root_gen", 9);
+    let tlv = offered.tlv.encode().expect("encode");
+    assert_eq!(tlv.len(), codec::SEAL_ROOT_PQ_BYTES);
+    out.num("seal_root_pq_len", tlv.len() as u64);
+    out.hex("seal_root_pq", &tlv);
+    // The same offer with the roles swapped, so a replayer that gets the order wrong fails on a
+    // recorded value rather than on nothing.
+    let swapped = ghost_client_dm::pqroot::open(
+        &offered.tlv,
+        peer_gen_id,
+        &peer_seed,
+        ghost_client_dm::pqroot::PqRootParties {
+            oi_offerer: &oi_target,
+            oi_target: &oi_offerer,
+        },
+    )
+    .expect("open");
+    assert_ne!(swapped.as_bytes(), offered.root.as_bytes());
+    out.hex("pq_root_roles_swapped", swapped.as_bytes());
+    out.hex(
+        "week_key_2873",
+        derive::derive_pair_base_week_key(&offered.root, 2873).as_bytes(),
     );
 
     out.section("card");

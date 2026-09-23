@@ -219,6 +219,26 @@ pub fn decapsulate(seed: &KemSecret, ciphertext: &[u8]) -> DmResult<KemSecret> {
     Ok(secret)
 }
 
+/// Decapsulation that also returns the generation's own encapsulation key, from **one** seed
+/// expansion: the PQ-C root binds `Q_c` into its salt (§9.4), and the opener must take that key
+/// from its own seed rather than from anything a peer sent. Every error is `NOT_OPEN`, as for
+/// [`decapsulate`].
+pub fn decapsulate_with_public(
+    seed: &KemSecret,
+    ciphertext: &[u8],
+) -> DmResult<(KemSecret, Vec<u8>)> {
+    if ciphertext.len() != CIPHERTEXT_BYTES {
+        return Err(DmCode::NotOpen);
+    }
+    let pair = keygen(seed).map_err(|_| DmCode::NotOpen)?;
+    let mut shared = [0u8; SHARED_SECRET_BYTES];
+    XWing::decaps(&mut shared, ciphertext, &pair.decapsulation)
+        .map_err(|error| decaps_code(&error))?;
+    let secret = KemSecret::from_bytes(shared);
+    shared.zeroize();
+    Ok((secret, pair.public.clone()))
+}
+
 /// Fills `out` from the **OS CSPRNG**, which is what §9.2 requires of the encapsulation randomness
 /// and what keeps §22.8.10 point 7 exact: `SysRng` is `getrandom`'s own reader, so the
 /// custom-backend routing of the `ghost-dm-host` world reaches every byte this crate draws. A

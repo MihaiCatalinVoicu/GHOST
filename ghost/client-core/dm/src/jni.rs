@@ -65,8 +65,8 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
     (13, "decrypt", Availability::Exported),
     (14, "sessionInbound", Availability::Exported),
     (15, "pairKeys", Availability::Exported),
-    (16, "pqRootSeal", Availability::Declared("S13")),
-    (16, "pqRootOpen", Availability::Declared("S13")),
+    (16, "pqRootSeal", Availability::Exported),
+    (16, "pqRootOpen", Availability::Exported),
     (17, "safetyNumber", Availability::Exported),
     (18, "l0Encode", Availability::Exported),
     (18, "l0Decode", Availability::Exported),
@@ -322,6 +322,29 @@ pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
             DmCode::CryptoUnavailable,
         ],
     ),
+    // ---- added by S13 ----
+    // `pqRootSeal`: every encapsulation error is `INVALID_KEY` (§22.8.2 rule 4), and the caller
+    // falls back to the classical `seal_root`.
+    (
+        "pqRootSeal",
+        &[
+            DmCode::NonCanonical,
+            DmCode::InvalidKey,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
+    // `pqRootOpen`: a generation other than the one named, and every decapsulation error, is
+    // `NOT_OPEN` (§22.8.2 rule 4, §22.8.6 rule 3).
+    (
+        "pqRootOpen",
+        &[
+            DmCode::NonCanonical,
+            DmCode::NotOpen,
+            DmCode::StateCorrupt,
+            DmCode::CryptoUnavailable,
+        ],
+    ),
     (
         "chainPosition",
         &[
@@ -485,6 +508,14 @@ pub enum Field {
     IssuedMinute = 0x3c,
     /// A revocation certificate v2's reason code, one byte.
     RevocationReason = 0x3d,
+    // ---- added by S13 ----
+    /// The generation of **mine** a received `seal_root_pq` was encapsulated to, `u32` big-endian
+    /// (§9.4): the row the caller loads for [`pq_root_open`].
+    PeerGenId = 0x3e,
+    /// A received `seal_root_pq` value, 1 166 bytes (§7.1): `root_rand || base_week || root_gen ||
+    /// peer_gen_id || xwing_ct`. `root_rand` alone keys nothing (§9.4), and the L0 it came out of
+    /// was already on the caller's side of the boundary.
+    SealRootPqTlv = 0x3f,
 }
 
 impl Field {
@@ -554,6 +585,8 @@ impl Field {
         Field::Bucket,
         Field::IssuedMinute,
         Field::RevocationReason,
+        Field::PeerGenId,
+        Field::SealRootPqTlv,
     ];
 
     /// The wire tag. The match carries no wildcard, so a tag added to the enumeration without a
@@ -621,6 +654,8 @@ impl Field {
             Field::Bucket => 0x3b,
             Field::IssuedMinute => 0x3c,
             Field::RevocationReason => 0x3d,
+            Field::PeerGenId => 0x3e,
+            Field::SealRootPqTlv => 0x3f,
         }
     }
 }
@@ -1973,6 +2008,159 @@ pub fn pair_offer(
     })
 }
 
+/// The X-Wing seed of a stored generation: the second half of `olm_prekey_gen.secrets_env`
+/// (`f_g(32) || q_g seed(32)`, §13.6), unwrapped under the generation's binding (§22.8.3).
+fn generation_xwing_seed(
+    context: &DmContext,
+    gen_id: u32,
+    fallback_public: &[u8; 32],
+    secrets_env: &[u8],
+) -> Result<KemSecret, DmCode> {
+    let mut secrets = wrap::unwrap(
+        &context.state_key,
+        wrap::WrapName::Generation,
+        &wrap::generation_binding(gen_id, fallback_public),
+        secrets_env,
+    )?;
+    let mut seed = [0u8; 32];
+    let taken = secrets.get(32..64).map(|half| seed.copy_from_slice(half));
+    secrets.zeroize();
+    taken.ok_or(DmCode::StateCorrupt)?;
+    let secret = KemSecret::from_bytes(seed);
+    seed.zeroize();
+    Ok(secret)
+}
+
+/// §2.6 function 16, sealing half (slice S13): `pqRootSeal(h, contactId, rootGen, baseWeek,
+/// peerOlmIdentity, peerGenId, peerXwingPk)`.
+///
+/// The PQ-C form of [`pair_offer`] (§9.4): `root_rand` is drawn here, like every random of the DM
+/// layer (§15.1), encapsulated to the peer's generation key, and the root is
+/// `HKDF(root_rand || ss, salt(OI_me, OI_c, peer_gen_id, Q_c, ct))` with this device as the
+/// offerer. It returns what [`pair_offer`] returns — the root wrapped for `dm_pair_offer.root_env`
+/// and the TLV value wrapped for `offer_env` (1 166 B, so a 1 194-byte envelope, §13.6) — so the
+/// offer row, its in-keys and its re-attachment are the classical ones.
+///
+/// **Deviation from §2.6's row, recorded in §22.18:** the row names a `rootRandEnv` input; there
+/// is no stored `root_rand` to pass (the root is random and drawn in Rust, §3.1, the same reason
+/// S7 added `pairOffer`), and the salt needs the peer's Olm identity and the base week the TLV
+/// carries, so those are inputs instead.
+///
+/// Every encapsulation error — a key whose ML-KEM half fails validation, a low-order X25519 half —
+/// is [`DmCode::InvalidKey`] (§22.8.2 rule 4): the caller falls back to the classical `seal_root`
+/// and deletes the `dm_peer_pq` row.
+#[allow(clippy::too_many_arguments)]
+pub fn pq_root_seal(
+    env: &mut JNIEnv,
+    handle: jlong,
+    contact_id: &JByteArray,
+    root_gen: jint,
+    base_week: jlong,
+    peer_olm_identity: &JByteArray,
+    peer_gen_id: jint,
+    peer_xwing_public: &JByteArray,
+) -> Result<Vec<u8>, DmCode> {
+    let contact_id = fixed::<16>(env, contact_id)?;
+    let root_gen = u16::try_from(root_gen).map_err(|_| DmCode::NonCanonical)?;
+    let base_week = u64::try_from(base_week).map_err(|_| DmCode::NonCanonical)?;
+    let peer_olm_identity = fixed::<32>(env, peer_olm_identity)?;
+    let peer_gen_id = peer_gen_id as u32;
+    let peer_xwing_public = bytes(env, peer_xwing_public)?;
+    with_context(handle, |context| {
+        let own_oi = derive::olm_identity_public(&context.olm_identity);
+        let offer = crate::pqroot::offer(
+            crate::pqroot::PqRootParties {
+                oi_offerer: &own_oi,
+                oi_target: &peer_olm_identity,
+            },
+            peer_gen_id,
+            &peer_xwing_public,
+            base_week,
+            root_gen,
+        )?;
+        let binding = wrap::pair_root_binding(&contact_id, root_gen);
+        let root_env = wrap::wrap(
+            &context.state_key,
+            wrap::WrapName::PairRoot,
+            &binding,
+            offer.root.as_bytes(),
+        )?;
+        let mut tlv = Zeroizing::new(offer.tlv.encode()?);
+        let offer_env = wrap::wrap(
+            &context.state_key,
+            wrap::WrapName::PairOffer,
+            &binding,
+            tlv.as_ref(),
+        );
+        tlv.zeroize();
+        Ok(Reply::ok()
+            .field(Field::PairRootEnv, &root_env)
+            .field(Field::PairOfferEnv, &offer_env?)
+            .into_bytes())
+    })
+}
+
+/// §2.6 function 16, opening half (slice S13): `pqRootOpen(h, contactId, rootGen, genId,
+/// genSecretsEnv, genFallbackPublic, tlv, peerOlmIdentity)`.
+///
+/// `tlv` is the 1 166-byte `seal_root_pq` value [`l0_decode`] returned; its `root_gen` must be
+/// `rootGen` and its `peer_gen_id` must be `genId`, the generation the caller loaded, or the TLV
+/// is [`DmCode::NotOpen`] (§22.8.6 rule 3). The root comes back wrapped exactly as a classical
+/// `seal_root`'s does from `l0Decode` (`dm_pair_offer.root_env`'s binding), so the caller hands it
+/// to [`pair_keys`] and never sees it (R-S6). The peer is the offerer here.
+///
+/// **Deviation from §2.6's row, recorded in §22.18:** the generation's fallback public key and the
+/// peer's Olm identity are inputs too — the first is half of `secrets_env`'s wrap binding
+/// (§22.8.3), the second half of the root's salt.
+#[allow(clippy::too_many_arguments)]
+pub fn pq_root_open(
+    env: &mut JNIEnv,
+    handle: jlong,
+    contact_id: &JByteArray,
+    root_gen: jint,
+    gen_id: jint,
+    gen_secrets_env: &JByteArray,
+    gen_fallback_public: &JByteArray,
+    tlv: &JByteArray,
+    peer_olm_identity: &JByteArray,
+) -> Result<Vec<u8>, DmCode> {
+    let contact_id = fixed::<16>(env, contact_id)?;
+    let root_gen = u16::try_from(root_gen).map_err(|_| DmCode::NonCanonical)?;
+    let gen_id = gen_id as u32;
+    let gen_secrets_env = bytes(env, gen_secrets_env)?;
+    let gen_fallback_public = fixed::<32>(env, gen_fallback_public)?;
+    let tlv = bytes(env, tlv)?;
+    let peer_olm_identity = fixed::<32>(env, peer_olm_identity)?;
+    let parsed = codec::SealRootPq::decode(&tlv)?;
+    if parsed.root_gen != root_gen {
+        return Err(DmCode::NonCanonical);
+    }
+    with_context(handle, |context| {
+        let seed = generation_xwing_seed(context, gen_id, &gen_fallback_public, &gen_secrets_env)?;
+        let own_oi = derive::olm_identity_public(&context.olm_identity);
+        let root = crate::pqroot::open(
+            &parsed,
+            gen_id,
+            &seed,
+            crate::pqroot::PqRootParties {
+                oi_offerer: &peer_olm_identity,
+                oi_target: &own_oi,
+            },
+        )?;
+        let root_env = wrap::wrap(
+            &context.state_key,
+            wrap::WrapName::PairRoot,
+            &wrap::pair_root_binding(&contact_id, root_gen),
+            root.as_bytes(),
+        )?;
+        Ok(Reply::ok()
+            .field(Field::RootGen, &u32::from(parsed.root_gen).to_be_bytes())
+            .field(Field::BaseWeek, &parsed.base_week.to_be_bytes())
+            .field(Field::PairRootEnv, &root_env)
+            .into_bytes())
+    })
+}
+
 /// Function 23 (added by S8): `revocationIssue(h, issuedMinute, reason)` (§8.5).
 ///
 /// The certificate names the identity the context's `ghost1` seed belongs to, so it cannot be
@@ -2126,8 +2314,20 @@ pub fn provisional_keys(
 /// §2.6 function 18: `l0Encode`. The canonical L0 of §7.1, with the TLVs R-C3 allows on a
 /// user-initiated send.
 ///
-/// The `seal_root` TLV arrives **wrapped** (`dm_pair_offer.offer_env`), because its value carries
-/// the 32-byte root: Kotlin holds the offer, never the root.
+/// The root offer arrives **wrapped** (`dm_pair_offer.offer_env`), because its value carries the
+/// root material: Kotlin holds the offer, never the root. Its length says which TLV it is — 42
+/// bytes are a classical `seal_root`, 1 166 a `seal_root_pq` (§9.4, §13.6's `offer_env IN (70,
+/// 1194)`).
+///
+/// **Slice S13 (PQ-C).** A `seal_root_pq` and a `pq_key` are **candidates**, attached by
+/// [`codec::attach_pq_under_slack`] only if they fit the slack of the bucket the body length alone
+/// chose (R-C5), in that order: the offer first, the announcement second. `pq_key` is this
+/// device's generation `pqKeyGenId`, whose X-Wing public key is recomputed here from the stored
+/// seed (`pqKeySecretsEnv`, unwrapped under `pqKeyFallbackPublic`'s binding); an empty
+/// `pqKeySecretsEnv` means "no announcement". The reply's [`Field::TlvFlags`] says which of the
+/// three root and key TLVs rode — [`TLV_FLAG_SEAL_ROOT`], [`TLV_FLAG_SEAL_ROOT_PQ`],
+/// [`TLV_FLAG_PQ_KEY`] — so the caller writes a newly minted PQ offer and
+/// `dm_contact.pq_announced_week` only when their bytes are in the L0 it commits.
 #[allow(clippy::too_many_arguments)]
 pub fn l0_encode(
     env: &mut JNIEnv,
@@ -2145,6 +2345,10 @@ pub fn l0_encode(
     offer_env: &JByteArray,
     revocation: &JByteArray,
     session_reset: jint,
+    pq_key_gen_id: jint,
+    pq_key_week: jlong,
+    pq_key_secrets_env: &JByteArray,
+    pq_key_fallback_public: &JByteArray,
 ) -> Result<Vec<u8>, DmCode> {
     let kind = codec::Kind::from_u8(u8::try_from(kind).map_err(|_| DmCode::NonCanonical)?)
         .ok_or(DmCode::NonCanonical)?;
@@ -2158,13 +2362,29 @@ pub fn l0_encode(
     let contact_id = bytes(env, contact_id)?;
     let offer_env = bytes(env, offer_env)?;
     let revocation = bytes(env, revocation)?;
+    let pq_key_secrets_env = bytes(env, pq_key_secrets_env)?;
+    let pq_key_fallback_public = bytes(env, pq_key_fallback_public)?;
     let quote_ref = match quote.len() {
         0 => None,
         16 => Some(<[u8; 16]>::try_from(quote.as_slice()).map_err(|_| DmCode::NonCanonical)?),
         _ => return Err(DmCode::NonCanonical),
     };
+    // The announcement's generation, when there is one: a `u32` id crossing as an `int`, and a
+    // week that is an ISO-week index.
+    let pq_key = if pq_key_secrets_env.is_empty() {
+        None
+    } else {
+        let fallback: [u8; 32] = pq_key_fallback_public
+            .as_slice()
+            .try_into()
+            .map_err(|_| DmCode::NonCanonical)?;
+        let week = u64::try_from(pq_key_week).map_err(|_| DmCode::NonCanonical)?;
+        Some((pq_key_gen_id as u32, week, fallback))
+    };
     with_context(handle, |context| {
         let mut ext: Vec<codec::Tlv> = Vec::new();
+        // R-C5's candidates, in priority order: the PQ offer, then the announcement.
+        let mut candidates: Vec<codec::Tlv> = Vec::new();
         if !offer_env.is_empty() {
             let contact: [u8; 16] = contact_id
                 .as_slice()
@@ -2177,11 +2397,37 @@ pub fn l0_encode(
                 &wrap::pair_root_binding(&contact, root_gen),
                 &offer_env,
             )?;
-            ext.push(codec::Tlv {
-                tlv_type: codec::TLV_SEAL_ROOT,
+            let tlv_type = match value.len() {
+                codec::SEAL_ROOT_BYTES => codec::TLV_SEAL_ROOT,
+                codec::SEAL_ROOT_PQ_BYTES => codec::TLV_SEAL_ROOT_PQ,
+                _ => {
+                    value.zeroize();
+                    return Err(DmCode::StateCorrupt);
+                }
+            };
+            let tlv = codec::Tlv {
+                tlv_type,
                 value: value.to_vec(),
-            });
+            };
             value.zeroize();
+            if tlv_type == codec::TLV_SEAL_ROOT_PQ {
+                candidates.push(tlv);
+            } else {
+                ext.push(tlv);
+            }
+        }
+        if let Some((gen_id, week, fallback)) = pq_key {
+            let seed = generation_xwing_seed(context, gen_id, &fallback, &pq_key_secrets_env)?;
+            let xwing_pk = pq::public_key(&seed).map_err(|_| DmCode::StateCorrupt)?;
+            candidates.push(codec::Tlv {
+                tlv_type: codec::TLV_PQ_KEY,
+                value: codec::PqKey {
+                    gen_id,
+                    bundle_week: week,
+                    xwing_pk,
+                }
+                .encode()?,
+            });
         }
         if !revocation.is_empty() {
             ext.push(codec::Tlv {
@@ -2198,7 +2444,7 @@ pub fn l0_encode(
         // The registry is ordered by type and the three types above are 0x0001, 0x0003 and
         // 0x0004, so pushing them in that order already satisfies R-C4's "strictly ascending".
         ext.sort_by_key(|tlv| tlv.tlv_type);
-        let content = codec::DmContent {
+        let mut content = codec::DmContent {
             kind,
             message_id,
             author_minute,
@@ -2209,19 +2455,49 @@ pub fn l0_encode(
             body: body.to_vec(),
             ext,
         };
-        // R-B1: the bucket is chosen from the **body length** alone, before encryption, by the
-        // code that owns the rule (§6.6). It crosses with the record so no caller can derive it
-        // from the encoded L0 (mutant ME-22) or from a ciphertext (ME-3).
-        let bucket = content.bucket();
-        let encoded = content.encode();
         body.zeroize();
-        let bucket = u32::try_from(bucket?).map_err(|_| DmCode::Oversize)?;
+        // R-B1: the bucket is chosen from the **body length** alone, before encryption and before
+        // any PQ-C candidate is looked at, by the code that owns the rule (§6.6). It crosses with
+        // the record so no caller can derive it from the encoded L0 (mutant ME-22) or from a
+        // ciphertext (ME-3), and R-C5 attaches into it without moving it (ME-23).
+        let bucket = match content.bucket() {
+            Ok(bucket) => bucket,
+            Err(code) => {
+                content.body.zeroize();
+                return Err(code);
+            }
+        };
+        let attached = match codec::attach_pq_under_slack(&mut content, candidates) {
+            Ok(attached) => attached,
+            Err(code) => {
+                content.body.zeroize();
+                return Err(code);
+            }
+        };
+        let mut flags = 0u8;
+        for tlv in &content.ext {
+            match tlv.tlv_type {
+                codec::TLV_SEAL_ROOT => flags |= TLV_FLAG_SEAL_ROOT,
+                codec::TLV_SEAL_ROOT_PQ if attached.contains(&tlv.tlv_type) => {
+                    flags |= TLV_FLAG_SEAL_ROOT_PQ
+                }
+                codec::TLV_PQ_KEY if attached.contains(&tlv.tlv_type) => flags |= TLV_FLAG_PQ_KEY,
+                _ => {}
+            }
+        }
+        let encoded = content.encode();
+        content.body.zeroize();
+        for tlv in content.ext.iter_mut() {
+            tlv.value.zeroize();
+        }
+        let bucket = u32::try_from(bucket).map_err(|_| DmCode::Oversize)?;
         // The encoded L0 is the plaintext of the message: it leaves as the reply and the copy
         // this frame built is erased with the content behind it.
         let mut encoded = Zeroizing::new(encoded?);
         let reply = Reply::ok()
             .field(Field::L0, encoded.as_ref())
             .field(Field::Bucket, &bucket.to_be_bytes())
+            .field(Field::TlvFlags, &[flags])
             .into_bytes();
         encoded.zeroize();
         Ok(reply)
@@ -2234,14 +2510,29 @@ pub const TLV_FLAG_SEAL_ROOT: u8 = 0b0000_0001;
 pub const TLV_FLAG_SESSION_RESET: u8 = 0b0000_0010;
 /// Bit 2: the L0 carried a revocation certificate v2 (§8.5).
 pub const TLV_FLAG_REVOCATION: u8 = 0b0000_0100;
-/// Bit 3: the L0 carried a PQ-C TLV, which Phase 9 counts and ignores (§9.4, slice S13).
+/// Bit 3: the L0 carried a PQ-C TLV that is **ignored** (slice S13 narrowed the bit, which before
+/// PQ-C meant "any PQ-C TLV"): a `seal_root_pq` beside a classical `seal_root` in the same L0. A
+/// sender following §9.4 never writes both — the PQ form *replaces* the classical one — so the
+/// classical root applies and the PQ one is counted.
 pub const TLV_FLAG_PQ: u8 = 0b0000_1000;
+/// Bit 4 (slice S13): the L0 carried a `seal_root_pq`. The reply adds [`Field::RootGen`],
+/// [`Field::BaseWeek`], [`Field::PeerGenId`] (the generation of mine it was encapsulated to) and
+/// [`Field::SealRootPqTlv`] (the 1 166-byte value, for [`pq_root_open`]).
+pub const TLV_FLAG_SEAL_ROOT_PQ: u8 = 0b0001_0000;
+/// Bit 5 (slice S13): the L0 carried a `pq_key` whose X-Wing key is valid **whole** (§22.8.2 rule
+/// 3). The reply adds [`Field::GenId`], [`Field::BundleWeek`] and [`Field::XwingPublic`].
+pub const TLV_FLAG_PQ_KEY: u8 = 0b0010_0000;
+/// Bit 6 (slice S13): the L0 carried a `pq_key` whose key fails the whole-key validation: ignored
+/// and counted (§22.8.2 rule 3), and the rest of the L0 applies.
+pub const TLV_FLAG_PQ_KEY_INVALID: u8 = 0b0100_0000;
 
 /// §2.6 function 18: `l0Decode(h, contactId, l0)`.
 ///
 /// A `seal_root` comes back as its generation, its base week and the root **wrapped** under
 /// `dm_pair_offer.root_env`'s binding, so the caller can hand it straight to [`pair_keys`] and
-/// never sees the root (§6.3, R-S6).
+/// never sees the root (§6.3, R-S6). A `seal_root_pq` comes back as its generation, base week,
+/// target generation and value (slice S13): its root is not derivable without the generation's
+/// X-Wing seed, which [`pq_root_open`] unwraps, and `root_rand` alone keys nothing (§9.4).
 pub fn l0_decode(
     env: &mut JNIEnv,
     handle: jlong,
@@ -2294,7 +2585,33 @@ pub fn l0_decode(
                     flags |= TLV_FLAG_REVOCATION;
                     reply = reply.field(Field::Revocation, &tlv.value);
                 }
-                codec::TLV_SEAL_ROOT_PQ | codec::TLV_PQ_KEY => flags |= TLV_FLAG_PQ,
+                codec::TLV_SEAL_ROOT_PQ => {
+                    // The TLV list is strictly ascending, so a classical `seal_root` (0x0001) of the
+                    // same L0 was already seen: it wins, and this one is counted and ignored.
+                    if flags & TLV_FLAG_SEAL_ROOT != 0 {
+                        flags |= TLV_FLAG_PQ;
+                        continue;
+                    }
+                    let root = codec::SealRootPq::decode(&tlv.value)?;
+                    flags |= TLV_FLAG_SEAL_ROOT_PQ;
+                    reply = reply
+                        .field(Field::RootGen, &u32::from(root.root_gen).to_be_bytes())
+                        .field(Field::BaseWeek, &root.base_week.to_be_bytes())
+                        .field(Field::PeerGenId, &root.peer_gen_id.to_be_bytes())
+                        .field(Field::SealRootPqTlv, &tlv.value);
+                }
+                codec::TLV_PQ_KEY => match codec::PqKey::decode(&tlv.value) {
+                    Ok(key) => {
+                        flags |= TLV_FLAG_PQ_KEY;
+                        reply = reply
+                            .field(Field::GenId, &key.gen_id.to_be_bytes())
+                            .field(Field::BundleWeek, &key.bundle_week.to_be_bytes())
+                            .field(Field::XwingPublic, &key.xwing_pk);
+                    }
+                    // §22.8.2 rule 3: an in-band key that is not valid whole is ignored and
+                    // counted; the rest of the L0 applies.
+                    Err(_) => flags |= TLV_FLAG_PQ_KEY_INVALID,
+                },
                 // Every other known type is non-critical in Phase 9 and is ignored; an unknown
                 // critical one never reaches here, because `codec::decode` refuses the L0.
                 _ => {}
@@ -2918,6 +3235,10 @@ pub mod entry {
         offer_env: JByteArray<'local>,
         revocation: JByteArray<'local>,
         session_reset: jint,
+        pq_key_gen_id: jint,
+        pq_key_week: jlong,
+        pq_key_secrets_env: JByteArray<'local>,
+        pq_key_fallback_public: JByteArray<'local>,
     ) -> jbyteArray {
         guarded(&mut env, |env| {
             super::l0_encode(
@@ -2936,6 +3257,66 @@ pub mod entry {
                 &offer_env,
                 &revocation,
                 session_reset,
+                pq_key_gen_id,
+                pq_key_week,
+                &pq_key_secrets_env,
+                &pq_key_fallback_public,
+            )
+        })
+    }
+
+    /// `pqRootSeal` (slice S13)
+    #[allow(clippy::too_many_arguments)]
+    pub fn pq_root_seal<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        contact_id: JByteArray<'local>,
+        root_gen: jint,
+        base_week: jlong,
+        peer_olm_identity: JByteArray<'local>,
+        peer_gen_id: jint,
+        peer_xwing_public: JByteArray<'local>,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| {
+            super::pq_root_seal(
+                env,
+                handle,
+                &contact_id,
+                root_gen,
+                base_week,
+                &peer_olm_identity,
+                peer_gen_id,
+                &peer_xwing_public,
+            )
+        })
+    }
+
+    /// `pqRootOpen` (slice S13)
+    #[allow(clippy::too_many_arguments)]
+    pub fn pq_root_open<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        contact_id: JByteArray<'local>,
+        root_gen: jint,
+        gen_id: jint,
+        gen_secrets_env: JByteArray<'local>,
+        gen_fallback_public: JByteArray<'local>,
+        tlv: JByteArray<'local>,
+        peer_olm_identity: JByteArray<'local>,
+    ) -> jbyteArray {
+        guarded(&mut env, |env| {
+            super::pq_root_open(
+                env,
+                handle,
+                &contact_id,
+                root_gen,
+                gen_id,
+                &gen_secrets_env,
+                &gen_fallback_public,
+                &tlv,
+                &peer_olm_identity,
             )
         })
     }
@@ -2990,6 +3371,8 @@ macro_rules! export_jni {
         $crate::export_jni!(@one l1Parse l1_parse);
         $crate::export_jni!(@one l0Encode l0_encode);
         $crate::export_jni!(@one l0Decode l0_decode);
+        $crate::export_jni!(@one pqRootSeal pq_root_seal);
+        $crate::export_jni!(@one pqRootOpen pq_root_open);
     };
     (@one $java:ident $rust:ident) => {
         $crate::paste_export!($java, $rust);
@@ -3473,6 +3856,10 @@ macro_rules! paste_export {
             e: ::jni::objects::JByteArray<'local>,
             f: ::jni::objects::JByteArray<'local>,
             session_reset: ::jni::sys::jint,
+            pq_key_gen_id: ::jni::sys::jint,
+            pq_key_week: ::jni::sys::jlong,
+            g: ::jni::objects::JByteArray<'local>,
+            h: ::jni::objects::JByteArray<'local>,
         ) -> ::jni::sys::jbyteArray {
             $crate::jni::entry::l0_encode(
                 env,
@@ -3491,7 +3878,60 @@ macro_rules! paste_export {
                 e,
                 f,
                 session_reset,
+                pq_key_gen_id,
+                pq_key_week,
+                g,
+                h,
             )
+        }
+    };
+    (pqRootSeal, $rust:ident) => {
+        /// One entry point of the closed JNI surface (design §2.6 function 16, slice S13); the body
+        /// is in [`crate::jni::entry`].
+        #[no_mangle]
+        #[allow(clippy::too_many_arguments)]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_pqRootSeal<'local>(
+            env: ::jni::JNIEnv<'local>,
+            class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            a: ::jni::objects::JByteArray<'local>,
+            root_gen: ::jni::sys::jint,
+            base_week: ::jni::sys::jlong,
+            b: ::jni::objects::JByteArray<'local>,
+            peer_gen_id: ::jni::sys::jint,
+            c: ::jni::objects::JByteArray<'local>,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::pq_root_seal(
+                env,
+                class,
+                handle,
+                a,
+                root_gen,
+                base_week,
+                b,
+                peer_gen_id,
+                c,
+            )
+        }
+    };
+    (pqRootOpen, $rust:ident) => {
+        /// One entry point of the closed JNI surface (design §2.6 function 16, slice S13); the body
+        /// is in [`crate::jni::entry`].
+        #[no_mangle]
+        #[allow(clippy::too_many_arguments)]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmNative_pqRootOpen<'local>(
+            env: ::jni::JNIEnv<'local>,
+            class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            a: ::jni::objects::JByteArray<'local>,
+            root_gen: ::jni::sys::jint,
+            gen_id: ::jni::sys::jint,
+            b: ::jni::objects::JByteArray<'local>,
+            c: ::jni::objects::JByteArray<'local>,
+            d: ::jni::objects::JByteArray<'local>,
+            e: ::jni::objects::JByteArray<'local>,
+        ) -> ::jni::sys::jbyteArray {
+            $crate::jni::entry::pq_root_open(env, class, handle, a, root_gen, gen_id, b, c, d, e)
         }
     };
     (l0Decode, $rust:ident) => {
