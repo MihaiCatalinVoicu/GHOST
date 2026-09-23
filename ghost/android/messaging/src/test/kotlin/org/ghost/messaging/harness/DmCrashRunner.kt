@@ -20,7 +20,9 @@ package org.ghost.messaging.harness
  * which here is the `dm_message` primary key plus the check that no message was rendered twice in
  * one conversation — the post-sweep half of the T25 clause, and the two oracles §15.3 asks for at
  * quiescence: **session liveness** ("one more message each way decrypts") and **no loss** (a
- * message the sender calls `sent` exists on a recipient). What is asserted only in the
+ * message the sender calls `sent` exists on a recipient) — plus a third the S10b review showed
+ * both of them need: **nothing owed and nothing given up** ([DmScenario.nothingOwed]), because
+ * work a crash stranded is neither `SENT` nor visible to a probe. What is asserted only in the
  * **fault-free** run is the scenario's own `finalChecks`, because a scenario that lost its third
  * send to a crash cannot be asked to have delivered it.
  *
@@ -59,18 +61,30 @@ internal class DmScenario(
      */
     val liveness: Pair<String, String>? = null,
     /**
-     * The liveness probe **in turn**: the second node sends only once the first node's probe has
-     * been rendered, instead of both sending in the same round (S10b).
+     * The third oracle at quiescence (S10b review): **nothing is owed and nothing was given up**.
      *
-     * Off everywhere except SCN-I, and it is not a loosening there. After a restore the contact
-     * cannot learn that the restored device exists except from the restored device itself, and
-     * everything it seals before it learns is sealed under the lost device's keys — §8.6's declared
-     * residue, which SCN-I's own `alwaysChecks` assert stays unopenable. A simultaneous probe asks
-     * the contact to answer a device it has not heard from yet, which is asking for that residue
-     * to open. What stays demanded is exactly §15.3's sentence: one more message each way decrypts,
-     * in the order the only party that knows of the restore can start it.
+     * No-loss reads messages marked `SENT` and liveness sends two new ones, and neither sees work a
+     * crash **stranded**: a control item has no `dm_message` row at all, a pending send the engine
+     * never flushes again is not `SENT`, and a probe that is itself a user send re-establishes and
+     * repairs the very stall it was meant to find. The review built exactly that mutant — the
+     * engine's stranded-send recovery doing nothing — and it passed every crash point of SCN-I.
+     * So, at quiescence, before either probe: no pending send, no item waiting to be stored, no
+     * scheduled control, no outbox op the engine has not released, no inbox blob it has not
+     * consumed, no blob the relay still owes a listener, no establishment in progress, no contact
+     * whose sessions have lost their `current` — and no outgoing message or control item that
+     * ended `FAILED` or `INDETERMINATE`, except the texts in [expectedFailures].
+     *
+     * On by default, and no scenario, suite case or seeded world turns it off: all of them passed
+     * it at every event of the gate scale. One whose end state owes work by design would turn it
+     * off here and say why in its own KDoc.
      */
-    val livenessInTurn: Boolean = false,
+    val nothingOwed: Boolean = true,
+    /**
+     * Outgoing texts whose `FAILED` or `INDETERMINATE` state is the scenario's subject (a relay that
+     * refuses, a store left ambiguous), which the [nothingOwed] oracle therefore does not charge to
+     * the engine. A timer change, which has no text, is named [TIMER_ROW].
+     */
+    val expectedFailures: Set<String> = emptySet(),
     /**
      * The no-loss oracle: every message a device has marked `SENT` was rendered by some device.
      *
@@ -97,6 +111,11 @@ internal class DmScenario(
     class Step(val label: String, val body: (DmCrashWorld) -> Unit)
 
     override fun toString(): String = "DmScenario($name)"
+
+    companion object {
+        /** How [expectedFailures] names an outgoing timer change, which has no text. */
+        const val TIMER_ROW: String = "<timer change>"
+    }
 }
 
 internal fun step(label: String, body: (DmCrashWorld) -> Unit): DmScenario.Step =
@@ -165,8 +184,10 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
                     phase == 1 && spec.secondCrashAt == e.index -> DmFault.Crash
                     phase == 0 && spec.storageFullAt == e.index && e.kind.canBeFull ->
                         DmFault.StorageFull
-                    phase == 0 && spec.timeoutAt == e.index && e.kind.relay ->
-                        DmFault.TimeoutAfterApply
+                    // Only where the relay has applied the store and the sender has not heard back:
+                    // anywhere else a "timeout after apply" is a run that injected nothing.
+                    phase == 0 && spec.timeoutAt == e.index &&
+                        e.kind == DmEventKind.RELAY_AFTER_APPLY -> DmFault.TimeoutAfterApply
 
                     else -> null
                 }
@@ -268,6 +289,10 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             // pinning the attempts.
             theRequestedFaultFired(spec, world)
 
+            // At quiescence and before anything else runs a pass or sends: the checks below and the
+            // two probes all move the world, and a probe that is a user send repairs a stall.
+            if (scenario.nothingOwed) nothingIsOwedAndNothingWasGivenUp(world)
+
             world.checkAll("end")
             displayedAtMostOnce(world)
             scenario.alwaysChecks(world)
@@ -322,8 +347,43 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
         }
         if (spec.timeoutAt != null && world.bus.timeouts == 0) {
             dmViolation(
-                "${scenario.name}: the timeout planned at relay event ${spec.timeoutAt} never fired",
+                "${scenario.name}: the timeout planned at store event ${spec.timeoutAt} never fired",
             )
+        }
+    }
+
+    /**
+     * The [DmScenario.nothingOwed] oracle: at quiescence nothing is owed and nothing was given up.
+     *
+     * It runs after the bus is disarmed, so it is no event of the run it checks: the counts are
+     * read on the raw connection, and the given-up texts through the engine's own read path. The
+     * `current`-slot clause is the strict form of the structural one: the structural invariant
+     * allows a contact with sessions and no `current` while an establishment is owed (R-SS0's
+     * window, §22.19 item 7), and at quiescence nothing is owed — so a crash that dropped a
+     * `current` with a pending send beside it, which the relaxed clause could not see, is refused
+     * here.
+     */
+    private fun nothingIsOwedAndNothingWasGivenUp(world: DmCrashWorld) {
+        val now = world.nodes().maxOf { it.clock.now }
+        val relayOwes = world.relay.owed(world.nodes(), now)
+        if (relayOwes != 0) {
+            dmViolation("${scenario.name}: at quiescence the relay still owes $relayOwes blobs to a listener")
+        }
+        for (node in world.nodes()) {
+            for ((what, query) in OWED) {
+                var n = 0L
+                node.raw.query(query) { n = it.long(0) }
+                if (n != 0L) {
+                    dmViolation("${scenario.name}: ${node.name} still owes work at quiescence — $n × $what")
+                }
+            }
+            val gaveUp = DmScripts.abandonedOutgoing(node).filter { it !in scenario.expectedFailures }
+            if (gaveUp.isNotEmpty()) {
+                dmViolation(
+                    "${scenario.name}: ${node.name} gave up on $gaveUp — FAILED or INDETERMINATE " +
+                        "at quiescence, and not the scenario's subject",
+                )
+            }
         }
     }
 
@@ -362,8 +422,10 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
      * §15.3's other oracle at quiescence: "session liveness (one more message each way decrypts)".
      *
      * A crash may lose the step it interrupted; it may not leave the two devices unable to talk. A
-     * broken ratchet, a session slot demoted on one side only, a pending send nobody will ever
-     * flush again — none of them shows up in a structural invariant, and all of them show up here.
+     * broken ratchet or a session slot demoted on one side only shows up in no structural
+     * invariant and shows up here. A pending send nobody will ever flush again does **not** — the
+     * probe is a user send, and a user send flushes and re-establishes — which is why the
+     * [DmScenario.nothingOwed] oracle runs first.
      *
      * The relay is made honest first: a scenario's hostile mode is part of what it was testing, and
      * asking whether the *session* survived through a relay that is still flipping bytes asks two
@@ -383,25 +445,22 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             ?: dmViolation("${scenario.name}: the liveness pair has no contact $a->$b")
         val toA = world.contacts["$b->$a"]
             ?: dmViolation("${scenario.name}: the liveness pair has no contact $b->$a")
+        // Both at once, in every scenario. S10b first let SCN-I's second probe wait for the first
+        // one to arrive, and the review measured what that was: a loosening no run needed (the
+        // simultaneous probe passed every sampled crash point), and one that hid a stalled restore
+        // — the restored device's probe is a user send, which re-establishes, so a run whose
+        // restore never finished was repaired by the oracle instead of failing it.
         world[a].device.engine.send(toB, LIVENESS_A, null)
-        var answered = false
-        if (!scenario.livenessInTurn) {
-            world[b].device.engine.send(toA, LIVENESS_B, null)
-            answered = true
-        }
+        world[b].device.engine.send(toA, LIVENESS_B, null)
         for (round in 0 until LIVENESS_ROUNDS) {
             world.pump()
             world.passes()
             world.advanceBy(org.ghost.messaging.DmWorld.MINUTE)
-            val there = DmScripts.inboundTexts(world, b).contains(LIVENESS_A)
-            if (there && !answered) {
-                // In turn (SCN-I): the answer goes only once the first probe has arrived, and it
-                // then has the rounds that remain.
-                world[b].device.engine.send(toA, LIVENESS_B, null)
-                answered = true
-                continue
+            if (DmScripts.inboundTexts(world, b).contains(LIVENESS_A) &&
+                DmScripts.inboundTexts(world, a).contains(LIVENESS_B)
+            ) {
+                return
             }
-            if (there && DmScripts.inboundTexts(world, a).contains(LIVENESS_B)) return
         }
         val missing = buildList {
             if (!DmScripts.inboundTexts(world, b).contains(LIVENESS_A)) add("$a → $b")
@@ -473,6 +532,25 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
 
         /** How many distinct recovery events the double-crash enumeration walks (§15.3). */
         const val DOUBLE_RECOVERY_POINTS: Long = 7
+
+        /** What the [DmScenario.nothingOwed] oracle counts, each named in its failure message. */
+        val OWED: List<Pair<String, String>> = listOf(
+            "pending sends" to "SELECT count(*) FROM dm_pending_send",
+            "items not yet stored" to
+                "SELECT count(*) FROM dm_outbound_item WHERE state IN ('pending', 'enqueued')",
+            "scheduled controls" to "SELECT count(*) FROM dm_scheduled",
+            "outbox ops the engine has not released" to
+                "SELECT count(*) FROM outbox_op WHERE released = 0",
+            "inbox blobs not consumed" to "SELECT count(*) FROM inbox_blob WHERE state <> 'done'",
+            "establishments in progress" to
+                "SELECT count(*) FROM dm_contact WHERE establishment = 'fetching'",
+            "contacts whose sessions have no 'current' slot" to
+                "SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id " +
+                "HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) = 0)",
+            "control items that ended failed or indeterminate" to
+                "SELECT count(*) FROM dm_outbound_item WHERE control IS NOT NULL " +
+                "AND state IN ('failed', 'indeterminate')",
+        )
     }
 
     private fun nodeOf(death: Error): String = when (death) {
@@ -483,8 +561,8 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
 
     /**
      * The enumeration of §15.3: the recording run, then one crash run per event, then one
-     * "timeout after apply" run per relay event, then (for the four scenarios that ask for it) a
-     * double crash per crash class.
+     * "timeout after apply" run per store, then (for the scenarios that ask for it) a double crash
+     * per crash class.
      *
      * [sample] takes every n-th event instead of every one, so the same enumeration runs at a
      * local scale and at a gate scale; `1` is the gate.
@@ -515,10 +593,15 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             }
             k += sample
         }
-        for ((index, kind) in recorded.kinds.withIndex()) {
-            if (!kind.relay) continue
-            val at = index + 1L
-            if ((at - 1) % sample != 0L) continue
+        // "Timeout after apply" at every **store** — the `RELAY_AFTER_APPLY` event, the only one at
+        // which the fault exists (see [DmFault.TimeoutAfterApply]) — and sampled by the store's
+        // ordinal rather than its event index, so the PR scale times out the first store of every
+        // scenario instead of whichever stores happen to fall on the every-13th grid.
+        val stores = recorded.kinds.withIndex()
+            .filter { it.value == DmEventKind.RELAY_AFTER_APPLY }
+            .map { it.index + 1L }
+        for ((ordinal, at) in stores.withIndex()) {
+            if (ordinal % sample != 0) continue
             tasks += "${scenario.name} timeout@$at" to { run(DmRunSpec(timeoutAt = at)) }
             timeouts++
         }
@@ -530,7 +613,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             singles = singles,
             doubles = doubleRuns,
             timeouts = timeouts,
-            relayEvents = recorded.kinds.count { it.relay },
+            stores = stores.size,
         )
     }
 
@@ -599,19 +682,22 @@ internal class DmScenarioReport(
     val singles: Int,
     val doubles: Int,
     val timeouts: Int,
-    val relayEvents: Int,
+    /** The recording run's stores: its `RELAY_AFTER_APPLY` events, one per store the relay applied. */
+    val stores: Int,
 ) {
     /**
      * The line itself, and the **only** place it is formatted.
      *
      * `DmReport.scenario` built a second, slightly different one and this `toString` was called by
      * nothing — so a slice that edited the wrong one either broke `dm-report-check.sh` or changed
-     * nothing at all, with no way to tell which from reading either file. The relay-event
-     * denominator is part of the line now, because "N timeouts" without it cannot be read: a gate
-     * that reported 0 timeouts over 0 relay events and one that reported 0 over 900 are different
-     * findings.
+     * nothing at all, with no way to tell which from reading either file. The denominator is part
+     * of the line, because "N timeouts" without it cannot be read: a gate that reported 0 timeouts
+     * over 0 stores and one that reported 0 over 300 are different findings. It is **stores**, not
+     * relay events (S10b review): every store raises three relay events and a timeout exists at
+     * one of them, so "21 timeouts over 21 relay events" was seven timeouts and fourteen runs that
+     * injected nothing.
      */
     override fun toString(): String =
         "dm crash classes: $scenario $events events, $singles singles, $doubles doubles, " +
-            "$timeouts timeouts over $relayEvents relay events"
+            "$timeouts timeouts over $stores stores"
 }

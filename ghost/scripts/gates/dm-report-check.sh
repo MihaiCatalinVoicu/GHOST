@@ -28,8 +28,10 @@
 #
 # **What this deliberately does not check.** §15.7's own gate line is `dm mutants: 97 run, 97
 # detected` and §15.3's enumeration is every event of twelve scenarios. Slices S10 and S10b
-# implement ten of the twelve (and SCN-G's week-boundary half as a line of its own), four suite
-# cases and eleven mutants, so the numbers pinned here are the numbers a run actually measures.
+# implement nine of the twelve and a part of a tenth — SCN-H, whose line covers sixteen weeks of
+# generations and a late first flight and not its other clauses (§22.19 names them) — plus SCN-G's
+# week-boundary half as a line of its own, four suite cases and eleven mutants, so the numbers
+# pinned here are the numbers a run actually measures.
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -165,13 +167,16 @@ for scenario in "${scenarios[@]}"; do
   singles="$(printf '%s\n' "$line" | sed -nE 's/.*, ([0-9]+) singles,.*/\1/p')"
   events="$(printf '%s\n' "$line" | sed -nE 's/^dm crash classes: [^ ]+ ([0-9]+) events,.*/\1/p')"
   timeouts="$(printf '%s\n' "$line" | sed -nE 's/.*, ([0-9]+) timeouts over.*/\1/p')"
-  relay="$(printf '%s\n' "$line" | sed -nE 's/.*timeouts over ([0-9]+) relay events$/\1/p')"
+  # The denominator is **stores** — the relay's after-apply events, the one place a "timeout after
+  # apply" exists. It was relay events, three per store, and the gate rule below then pinned a
+  # count in which two runs of every three injected nothing (S10b review).
+  stores="$(printf '%s\n' "$line" | sed -nE 's/.*timeouts over ([0-9]+) stores$/\1/p')"
   [ -n "$singles" ] && [ "$singles" -gt 0 ] 2>/dev/null || bad "$scenario enumerated 0 crash points"
   [ -n "$events" ] && [ "$events" -gt 0 ] 2>/dev/null || bad "$scenario recorded 0 events"
-  # The relay-event denominator: "N timeouts" is unreadable without it, and a scenario whose relay
-  # phases stopped raising events would report 0 timeouts and look sampled rather than broken.
-  if [ -z "$relay" ] || [ "$relay" -le 0 ] 2>/dev/null; then
-    bad "$scenario reported no relay events, so its timeout runs have no denominator"
+  # "N timeouts" is unreadable without its denominator, and a scenario whose relay stopped raising
+  # store events would report 0 timeouts and look sampled rather than broken.
+  if [ -z "$stores" ] || [ "$stores" -le 0 ] 2>/dev/null; then
+    bad "$scenario reported no stores, so its timeout runs have no denominator"
   fi
   [ -n "$timeouts" ] || bad "$scenario has no timeout count"
   timeout_total=$(( timeout_total + ${timeouts:-0} ))
@@ -182,17 +187,20 @@ for scenario in "${scenarios[@]}"; do
     if [ "$singles" != "$events" ]; then
       bad "$scenario sampled: $singles singles over $events events, and the gate crashes at every one"
     fi
-    # And "every relay event also runs as timeout after apply", which at that scale means all of
-    # them. The workflow header sells this run as part of what the gate proves and nothing checked
+    # And "every relay event also runs as timeout after apply", which at that scale means every
+    # store. The workflow header sells this run as part of what the gate proves and nothing checked
     # it: eleven lines reading "0 timeouts" passed.
-    if [ "$timeouts" != "$relay" ]; then
-      bad "$scenario ran $timeouts timeout-after-apply runs over $relay relay events"
+    if [ "$timeouts" != "$stores" ]; then
+      bad "$scenario ran $timeouts timeout-after-apply runs over $stores stores"
     fi
+  else
+    # At the PR scale the stores are sampled by their ordinal, and the first store of every
+    # scenario is on the grid: a line with no timeout is a sampling that stopped reaching it.
+    [ -n "$timeouts" ] && [ "$timeouts" -gt 0 ] 2>/dev/null || bad "$scenario ran no timeout-after-apply run"
   fi
 done
 
-# At the PR scale the relay-event index is sampled too, so a single scenario may legitimately run no
-# timeout at all — but the suite as a whole may not, or the fault is not being injected anywhere.
+# And the suite as a whole, which the per-line rule implies and which stays as its own message.
 if [ "$kind" = pr ] && [ "$timeout_total" -le 0 ] 2>/dev/null; then
   bad "no timeout-after-apply run anywhere in the report"
 fi
@@ -232,8 +240,26 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 # scenario, beside the unmutated scenario crashed at the same points (§22.19).
 grep -qxF 'dm mutants: 11 run, 11 detected' "$report" \
   || bad "the mutant line is not 'dm mutants: 11 run, 11 detected'"
-for mutant in MC-1 MC-5 "MC-7'" MC-10 MC-12 MC-16 MC-18 MC-26 MC-28 MC-33 ME-16; do
-  grep -qE "^dm mutant ${mutant}: detected by .+" "$report" || bad "no detection line for mutant $mutant"
+# Each line ends with the **rule** its kill was held to, written by the test that applied it from
+# the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
+# moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
+# byte-identical (S10b review). So the rule is pinned per mutant: MC-1 killed only under a crash in
+# its split window; S10b's four fault-free **and** at every one of six crash points; the rest
+# fault-free, each beside a clean control.
+rule_ff='fault-free, beside a clean control'
+rule_crash='invisible fault-free, killed under a crash in its split window, beside a clean run at the same point'
+rule_s10b='fault-free and at 6 of 6 crash points, each beside a clean run'
+for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_ff" "MC-10|$rule_ff" "MC-12|$rule_ff" \
+  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
+  "ME-16|$rule_ff"; do
+  mutant="${pair%%|*}"
+  rule="${pair#*|}"
+  line="$(grep -E "^dm mutant ${mutant}: " "$report" | head -1 || true)"
+  if ! printf '%s\n' "$line" | grep -qE "^dm mutant ${mutant}: detected by .+"; then
+    bad "no detection line for mutant $mutant"
+  elif [ "${line##*; kill rule: }" != "$rule" ]; then
+    bad "mutant $mutant was not killed under its rule ($rule)"
+  fi
 done
 if grep -qE '^dm mutant .*NOT DETECTED' "$report"; then
   bad "a registered mutant was not detected by any run"

@@ -8,14 +8,15 @@ import org.junit.Test
  *
  * Each test records its scenario's K events, then crashes at every sampled one, reboots, checks
  * the structural invariants at the reboot, runs to quiescence and checks everything again — plus,
- * at every relay event, the "timeout after apply" run §15.3 asks for, and, for the scenarios that
- * ask for it (SCN-A, B, F, I and J), a double crash whose second lands during recovery.
+ * at every store (the relay's after-apply event, the one at which the fault exists), the "timeout
+ * after apply" run §15.3 asks for, and, for the scenarios that ask for it (SCN-A, B, F, I and J), a
+ * double crash whose second lands during recovery.
  *
  * **Scale.** `-Dghost.dm.crash=full` runs every event (the `messaging-exit-gate.yml` job); the
  * default samples every [DmHarness.DEFAULT_SAMPLE]-th, which was ~900 runs over S10's seven
- * scenarios and is ~4 200 over the eleven scenario lines since S10b (SCN-H alone is 1 329
- * singles, SCN-I 511 singles and 511 doubles) — about eight minutes of the whole `:messaging`
- * suite on the owner's workstation. Sampling is on the event index alone, so a sampled run is a
+ * scenarios and is ~4 200 over the eleven scenario lines since S10b (SCN-H alone is 1 330
+ * singles, SCN-I 510 singles and 510 doubles) — about five and a half minutes of the whole
+ * `:messaging` suite on the owner's workstation (§22.19 item 13). Sampling is on the event index alone, so a sampled run is a
  * subset of the full one — never a different enumeration. Runs are independent and go through
  * [DmHarness.parallel].
  *
@@ -46,7 +47,10 @@ class DmCrashEnumerationTest {
     /** S10b: SCN-G's week-boundary FAILED retry (§22.8.5), as a scenario of its own. */
     @Test fun scnGWeekBoundaryRetry() = enumerate(DmScenarios.scnGWeek())
 
-    /** S10b: fifteen weeks of generations and a late first flight (§22.19 says what is not here). */
+    /**
+     * S10b: sixteen weeks of world time with a publication at every step (not every week) and a
+     * late first flight — SCN-H in part; §22.19 says what is not here.
+     */
     @Test fun scnHBundleGenerations() = enumerate(DmScenarios.scnH())
 
     /** S10b: the restore, with the double crashes §15.3 names for it. */

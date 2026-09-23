@@ -437,6 +437,15 @@ internal object DmStructuralInvariants {
             "SELECT min(due_minute) FROM dm_scheduled WHERE due_minute > ?",
             listOf(after),
         ) { if (!it.isNull(0)) consider(it.long(0)) }
+        // An establishment's next decision (S10b review): the end of an attempt window or the
+        // start of the next attempt six hours later (§21.7 point 5). The "nothing owed" oracle
+        // refuses a world that ends `fetching`, so quiescence has to be able to reach the minute
+        // at which a `fetching` contact is next decided, exactly as it reaches a scheduled one.
+        node.raw.query(
+            "SELECT min(fetch_listen_until_minute) FROM dm_contact WHERE establishment = 'fetching' " +
+                "AND fetch_listen_until_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
         return if (best == Long.MAX_VALUE) null else best
     }
 

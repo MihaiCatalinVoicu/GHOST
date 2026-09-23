@@ -101,7 +101,7 @@ class DmMutantDetectionTest {
         val failure = runCatching {
             DmCrashRunner(mutated(scenario, mutation)).run(DmRunSpec())
         }.exceptionOrNull()
-        assertKilled(mutation, scenario.name, failure)
+        assertKilled(mutation, scenario.name, failure, rule = DmKills.FAULT_FREE)
     }
 
     /**
@@ -144,10 +144,17 @@ class DmMutantDetectionTest {
                 break
             }
         }
-        assertKilled(mutation, "${scenario.name} crash@$killedAt", failure)
+        assertKilled(mutation, "${scenario.name} crash@$killedAt", failure, record = false)
 
         // 3: the same crash point on the unmutated world is green.
         DmCrashRunner(scenario).run(DmRunSpec(crashAt = killedAt))
+        // Recorded only now, with the rule it was held to: the control at the same point passed.
+        DmKills.record(
+            mutation.id,
+            deepMessage(requireNotNull(failure)),
+            "invisible fault-free, killed under a crash in its split window, beside a clean run " +
+                "at the same point",
+        )
     }
 
     /**
@@ -226,6 +233,10 @@ class DmMutantDetectionTest {
             mutation.id,
             "$faultFreeMessage | and under a crash at ${kills.joinToString(", ")} " +
                 "of $events events, each beside a clean run at the same point",
+            // The report prints this, so the rule a kill was held to is in the gate's own
+            // evidence: a kill quietly moved back to the fault-free-only rule changes the line,
+            // and `dm-report-check.sh` pins the line (S10b review).
+            "fault-free and at ${kills.size} of ${points.size} crash points, each beside a clean run",
         )
     }
 
@@ -235,6 +246,7 @@ class DmMutantDetectionTest {
         where: String,
         failure: Throwable?,
         record: Boolean = true,
+        rule: String = DmKills.FAULT_FREE,
     ) {
         assertTrue(
             "${mutation.id} survived $where: the mutant is registered but nothing kills it",
@@ -247,7 +259,7 @@ class DmMutantDetectionTest {
                 "  actual: $message",
             message.contains(mutation.expect),
         )
-        if (record) DmKills.record(mutation.id, message)
+        if (record) DmKills.record(mutation.id, message, rule)
     }
 
     private companion object {
@@ -278,7 +290,8 @@ class DmMutantDetectionTest {
         doubles = false,
         tailRounds = scenario.tailRounds,
         liveness = scenario.liveness,
-        livenessInTurn = scenario.livenessInTurn,
+        nothingOwed = scenario.nothingOwed,
+        expectedFailures = scenario.expectedFailures,
         noLoss = scenario.noLoss,
         declaredLoss = scenario.declaredLoss,
     )

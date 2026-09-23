@@ -2,7 +2,8 @@ name: messaging-exit-gate
 
 # The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10 and S10b): the crash
 # enumeration of the implemented SCN-* scenarios and suite cases at **every** event, with the double
-# crashes §15.3 names, the "timeout after apply" run at every relay event, SCN-J's `SQLITE_FULL` at
+# crashes §15.3 names, the "timeout after apply" run at every store (the relay's after-apply event,
+# the only one at which the fault exists), SCN-J's `SQLITE_FULL` at
 # every write and every commit, the seeded worlds, and every registered mutant killed by its named
 # case.
 #
@@ -12,9 +13,9 @@ name: messaging-exit-gate
 # green tick over nothing. The report check below is the other half of that: it fails the job unless
 # the report carries a line for every scenario, an enumeration that crashed at **every** event of
 # each — singles equal to events, which is what "gate scale" means and what the header alone used
-# to assert — a timeout-after-apply run at every relay event, the double-crash counts, the
-# seeded-world lines, the `SQLITE_FULL` line, and one line per mutant naming what killed it, where
-# "killed" means a run recorded the kill and not that the registry lists the mutant.
+# to assert — a timeout-after-apply run at every store, the double-crash counts, the seeded-world
+# lines, the `SQLITE_FULL` line, and one line per mutant naming what killed it and under which rule,
+# where "killed" means a run recorded the kill and not that the registry lists the mutant.
 #
 # Scale. `-Dghost.dm.crash=full` is what makes the enumeration every-event; without it the harness
 # samples (the PR scale the `android` job of ci.yml already runs as part of `./gradlew build`).
@@ -22,16 +23,21 @@ name: messaging-exit-gate
 # `setup-gradle` restores the local build cache, so an unchanged test task would be restored
 # FROM-CACHE and the gate would run nothing.
 #
-# Budget (measured on the owner's workstation, 8 worker threads): the whole `:messaging` suite is
-# about 8 minutes at the PR scale and a few hours at this one — tens of thousands of crash runs over
-# **fifteen** scenario lines and suite cases (SCN-A, B, D, F, G, H, I, J, K, L, SCN-G's
-# week-boundary retry as SCN-G-week, plus RP6, RP9, CB-reject-replay and EP-read-expiry, which is
-# what `dm-report-check.sh` requires and what the fixtures carry), the `SQLITE_FULL` injections, 128
-# seeded worlds and the mutants. Slice S10b's two long scenarios dominate it: SCN-H is 17 268 events
-# (sixteen virtual weeks), SCN-I 6 631 with double crashes (§22.19, which records what was measured
-# at this scale and where). A 4-vCPU runner is roughly twice that, which is why the timeout is what
-# it is and why §22.19 asks for it to be re-measured on the runner before it is trusted. The
-# self-hosted runners are not up, so no run of this job has been observed.
+# Budget. **Measured**, on the owner's Windows workstation (24 logical CPUs; the harness caps its
+# worker threads at 8), each figure one end-to-end run of the commit that last changed the harness
+# (§22.19 item 13): the whole `:messaging` suite in 5 min 26 s at the PR scale, and in 72 min 51 s
+# with exactly the gradle command below — about 59 000 faulted runs (46 423 single crashes, 12 228
+double crashes, 61 timeouts, 305 `SQLITE_FULL` injections) over **fifteen** scenario lines
+# and suite cases (SCN-A, B, D, F, G, H, I, J, K, L, SCN-G's week-boundary retry as SCN-G-week, plus
+# RP6, RP9, CB-reject-replay and EP-read-expiry, which is what `dm-report-check.sh` requires and
+# what the fixtures carry), 128 seeded worlds and the mutants. S10b's
+# two long scenarios dominate it: SCN-H (17 284 events) took 31 minutes and SCN-I (6 620 events,
+# with doubles) 20. **Not measured**: this job, on a runner. The self-hosted runners are not up,
+# so no run of it has been observed. On a 4-vCPU runner the harness runs 4 threads instead of 8,
+# so an **extrapolation** — not a measurement — is about twice the workstation's harness time,
+# roughly 150 minutes, plus the Rust and Gradle builds and whatever the slower cores cost: inside
+# the 240-minute timeout below, but not by a margin anything has shown. §22.19 asks for it to be
+# re-measured on the runner before the timeout is trusted.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:

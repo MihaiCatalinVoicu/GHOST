@@ -27,17 +27,31 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal object DmKills {
 
-    /** `mutant id -> the failure message the killing run observed`. */
-    private val kills = ConcurrentHashMap<String, String>()
+    /** One recorded kill: what the killing run said, and the rule the kill was held to. */
+    class Kill(val failure: String, val rule: String)
+
+    /** `mutant id -> the kill`. */
+    private val kills = ConcurrentHashMap<String, Kill>()
 
     @Volatile
     private var armed = false
 
-    fun record(id: String, failure: String) {
-        kills[id] = failure
+    /** The rule of every S10 kill but MC-1's: the mutated run fails, the clean control passes. */
+    const val FAULT_FREE: String = "fault-free, beside a clean control"
+
+    /**
+     * Records a kill with [rule], which the report prints (S10b review).
+     *
+     * Until then the line was the registry's `detectedBy` and nothing else, so moving one of S10b's
+     * four kills back from "fault-free and at every crash point tried" to the fault-free-only rule
+     * left the report — and `dm-report-check.sh` — byte-identical. The rule is written by the test
+     * that applied it, from the numbers it measured.
+     */
+    fun record(id: String, failure: String, rule: String) {
+        kills[id] = Kill(failure, rule)
     }
 
-    fun recorded(): Map<String, String> = kills.toMap()
+    fun recorded(): Map<String, Kill> = kills.toMap()
 
     /** Registers the hook that writes the report lines once every test class has finished. */
     @Synchronized
@@ -59,8 +73,9 @@ internal object DmKills {
         val done = recorded()
         DmReport.line("dm mutants: ${registered.size} run, ${done.size} detected")
         for (mutant in registered) {
-            if (mutant.id in done) {
-                DmReport.line("dm mutant ${mutant.id}: detected by ${mutant.detectedBy}")
+            val kill = done[mutant.id]
+            if (kill != null) {
+                DmReport.line("dm mutant ${mutant.id}: detected by ${mutant.detectedBy}; kill rule: ${kill.rule}")
             } else {
                 DmReport.line("dm mutant ${mutant.id}: NOT DETECTED (no run recorded a kill)")
             }

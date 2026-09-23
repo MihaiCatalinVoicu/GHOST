@@ -4,6 +4,7 @@ import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
+import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.SendResult
 
 /**
@@ -109,6 +110,31 @@ internal object DmScripts {
                 .filter { it.outgoing && it.state.name == "SENT" }
                 .mapNotNull { it.text }
         }
+    }
+
+    /**
+     * Every outgoing message this node gave up on: `FAILED` or `INDETERMINATE`, over every
+     * conversation, by text — a timer change, which has none, as [DmScenario.TIMER_ROW].
+     */
+    fun abandonedOutgoing(node: DmNode): List<String> {
+        val device = node.device
+        return device.engine.contacts().flatMap { contact ->
+            device.engine.conversation(contact.id, 200, null)
+                .filter {
+                    it.outgoing &&
+                        (it.state == MessageState.FAILED || it.state == MessageState.INDETERMINATE)
+                }
+                .map { it.text ?: DmScenario.TIMER_ROW }
+        }
+    }
+
+    /** The state of the outgoing message [text] on [node], or null when it has none. */
+    fun outgoingState(world: DmCrashWorld, node: String, text: String): MessageState? {
+        val device = world[node].device
+        return device.engine.contacts().asSequence()
+            .flatMap { device.engine.conversation(it.id, 200, null).asSequence() }
+            .firstOrNull { it.outgoing && it.text == text }
+            ?.state
     }
 
     /** The outbound states of one node's single conversation, oldest first. */

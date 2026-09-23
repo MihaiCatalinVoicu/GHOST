@@ -47,6 +47,9 @@ internal object DmSuiteCases {
         name = "RP6",
         liveness = "alice" to "bob",
         noLoss = true,
+        // The relay's lie makes it FAILED, which is the case's premise; a crash that cost the
+        // retry step leaves it so.
+        expectedFailures = setOf("only once"),
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)

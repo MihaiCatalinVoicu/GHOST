@@ -170,7 +170,7 @@ class DmPoisonTest {
                 "  expected to contain: ${DmMutants.MC12.expect}\n  actual: $message",
             message.contains(DmMutants.MC12.expect),
         )
-        DmKills.record(DmMutants.MC12.id, message)
+        DmKills.record(DmMutants.MC12.id, message, DmKills.FAULT_FREE)
     }
 
     /**
