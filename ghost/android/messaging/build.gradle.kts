@@ -82,15 +82,27 @@ dependencies {
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     if (name.startsWith("compile") && name.endsWith("UnitTestKotlin")) {
         val variant = name.removePrefix("compile").removeSuffix("UnitTestKotlin")
-        for (friend in listOf(":sync", ":entitlement")) {
-            friendPaths.from(
-                project(friend).layout.buildDirectory.file(
-                    "intermediates/compile_library_classes_jar/${variant.lowercase()}/bundleLibCompileToJar$variant/classes.jar",
-                ),
+        val jars = listOf(":sync", ":entitlement").map { friend ->
+            project(friend).layout.buildDirectory.file(
+                "intermediates/compile_library_classes_jar/${variant.lowercase()}/bundleLibCompileToJar$variant/classes.jar",
             )
+        }
+        jars.forEach { friendPaths.from(it) }
+        // The path is the Android Gradle plugin's intermediate layout, not an API: when a plugin
+        // update moves it, say so instead of failing on every `internal` the harness sources use.
+        val files = jars.map { it.get().asFile }
+        doFirst {
+            val missing = files.filter { !it.exists() }
+            check(missing.isEmpty()) { "the friend jars of the entitlement world are not where the Android Gradle plugin put them before: $missing" }
         }
     }
 }
+
+// The exclusion below is by package, so a test of this module's own under either package would be
+// dropped without a word: refused here instead.
+listOf("org/ghost/sync", "org/ghost/entitlement").flatMap { p -> listOf(file("src/test/kotlin/$p"), file("src/test/java/$p")) }
+    .filter { it.exists() }
+    .let { shadowed -> check(shadowed.isEmpty()) { "a :messaging test under a package the unit-test filter excludes would never run: $shadowed" } }
 
 tasks.withType<Test>().configureEach {
     filter {

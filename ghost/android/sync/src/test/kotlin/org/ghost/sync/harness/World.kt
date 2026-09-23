@@ -220,6 +220,16 @@ internal class World(val name: String, val seed: Long, val journal: JournalMode)
     var relayHook: ((Client, EventKind, CallInfo) -> String?)? = null
     var scriptState: Long = 0
 
+    /**
+     * Observes every relay event of every client **first** — before the fault plan and before
+     * [relayHook] — so neither an injected crash, nor a planned network fault, nor a hook a scenario
+     * swaps in hides a call from it. The flag says whether the request reached the relay: false only
+     * at [EventKind.RELAY_AFTER_APPLY] of a request the latency model lost to its deadline. It may
+     * not act or answer (a recorder of what the relays saw, the relay-side view of the Phase 9
+     * entitlement world); null in every Phase 7 and Phase 8 world.
+     */
+    var relayObserver: ((Client, EventKind, CallInfo, Boolean) -> Unit)? = null
+
     /** Ignore the retention-safety check (worlds with a relay that lies about expiry). */
     var retentionCheck: Boolean = true
 
@@ -238,6 +248,12 @@ internal class World(val name: String, val seed: Long, val journal: JournalMode)
 
     /** Runs when a client's sync session starts (an extension's session participant). */
     var onSessionStart: ((Client, org.ghost.sync.engine.Session) -> Unit)? = null
+
+    /**
+     * Runs when a client's session has finished, after the driver's own `onSessionFinished` (which
+     * [foreground] replaces whenever it is called, so an extension cannot keep a hook there).
+     */
+    var onSessionEnd: ((Client, org.ghost.sync.engine.Session) -> Unit)? = null
 
     /** One periodic job of a client: a background session unless one runs (an extension may make it a quiet run). */
     var runJob: (Client) -> Unit = { c -> if (c.session == null) c.startSession(org.ghost.sync.engine.SessionKind.BACKGROUND) }

@@ -74,8 +74,12 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         }
     }
 
-    /** Runs a planned fault or interleaving at [kind]; returns a category to throw, if any. */
-    private fun event(kind: EventKind, info: CallInfo, node: RelayNode, token: ByteArray): String? {
+    /**
+     * Runs a planned fault or interleaving at [kind]; returns a category to throw, if any. [reached]:
+     * the request reached the relay (after-apply only; the world's observer records it).
+     */
+    private fun event(kind: EventKind, info: CallInfo, node: RelayNode, token: ByteArray, reached: Boolean = true): String? {
+        world.relayObserver?.invoke(client, kind, info, reached)
         val planned = when (val f = client.bus.event(kind, info)) {
             null -> null
             is Fault.Network -> f.category
@@ -174,7 +178,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
             // The request reached the relay: from here a copy may exist (OUT-4's "reached after-apply").
             if (arrived) world.records.ambiguous(ns, hash)
             val reply: ModelRelay.Reply<ModelRelay.Receipt>? = if (arrived) applyStore(node, ns, capability, ciphertext, ttlSeconds, hash) else null
-            event(EventKind.RELAY_AFTER_APPLY, info, node, capability)?.let { fail(it) }
+            event(EventKind.RELAY_AFTER_APPLY, info, node, capability, arrived)?.let { fail(it) }
             if (!arrived || node.hostile == Hostile.STALL) fail("timeout")
             if (client.transport.generation != generation) fail("closed")
             val receipt = if (reply == null) fail("timeout") else answer(node, capability, reply)
@@ -225,7 +229,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
         reachability(node)
         val arrived = travel(node, ns, CallKind.GET, deadlineMillis)
-        event(EventKind.RELAY_AFTER_APPLY, info, node, capability)?.let { fail(it) }
+        event(EventKind.RELAY_AFTER_APPLY, info, node, capability, arrived)?.let { fail(it) }
         if (!arrived || node.hostile == Hostile.STALL) fail("timeout")
         val served = answer(node, capability, node.model.get(hash, capability, world.relayNow(node)))
         var data = served.data
@@ -262,7 +266,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
         reachability(node)
         val arrived = travel(node, ns, CallKind.LIST, deadlineMillis)
-        event(EventKind.RELAY_AFTER_APPLY, info, node, capability)?.let { fail(it) }
+        event(EventKind.RELAY_AFTER_APPLY, info, node, capability, arrived)?.let { fail(it) }
         if (!arrived || node.hostile == Hostile.STALL) fail("timeout")
         val page = hostileList(node, ns, capability, cursor, limit)
         // Rust validate_list.
@@ -317,7 +321,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         event(EventKind.RELAY_BEFORE_SEND, info, node, capability)?.let { fail(it) }
         reachability(node)
         val arrived = travel(node, ns, CallKind.CHECK, deadlineMillis)
-        event(EventKind.RELAY_AFTER_APPLY, info, node, capability)?.let { fail(it) }
+        event(EventKind.RELAY_AFTER_APPLY, info, node, capability, arrived)?.let { fail(it) }
         if (!arrived || node.hostile == Hostile.STALL) fail("timeout")
         var held = answer(node, capability, node.model.check(hashes, capability, world.relayNow(node)))
         if (node.hostile == Hostile.WITHHOLD) held = held.filterNot { withheld(it) }
@@ -361,7 +365,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         } else {
             null
         }
-        event(EventKind.RELAY_AFTER_APPLY, info, node, capability)?.let { fail(it) }
+        event(EventKind.RELAY_AFTER_APPLY, info, node, capability, arrived)?.let { fail(it) }
         if (!arrived || node.hostile == Hostile.STALL) fail("timeout")
         val answer = if (reply == null) fail("timeout") else answer(node, capability, reply)
         // The native side refuses any other validity as malformed (TorRelayTransport.decodeRegister).

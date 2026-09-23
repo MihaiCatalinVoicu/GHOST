@@ -8,7 +8,12 @@ import org.ghost.messaging.DmDevice
 import org.ghost.messaging.MovableClock
 import org.ghost.messaging.OwnerWorld
 import org.ghost.messaging.api.ActivationOutcome
+import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.port.EsSlot
+import org.ghost.network.EntitlementCrypto
+import org.ghost.sync.api.BlobHash
+import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.SyncChange
@@ -52,17 +57,25 @@ import org.ghost.sync.engine.SessionKind as SyncKind
  *    (`DepositLedger`, §4.5); a **read** of one's own inbox only because the READ verifier is
  *    registered; a **bundle fetch** only because the FETCH verifier is.
  *
+ * **Checked while the world runs, not only at its end** ([checkCommit], [checkScopes]): after every
+ * commit of every client, every capability row it holds is either a capability a `ModelRedeemRelay`
+ * minted (for a REDEEM namespace, the one it names) or a bearer credential v3 the DM layer derived
+ * (write-kind only as a contact's DEPOSIT credential); and after every store a relay applied, every
+ * capability that relay has charged a store to is one a redeem relay minted. A shortcut that is
+ * installed and replaced again between two checks would have to do so without a single commit.
+ *
  * Nothing in this file installs a capability, runs a registration or moves a blob. What it does is
  * the wiring `:app` does on a device (`MessagingWiring`, `GhostApp`), in the driver's virtual time:
- *  - **the K20 hook** (§13.4): the entitlement engine calls the DM layer's ACTIVATE through
- *    [EntClient.activationHook] after a trial activation or a restore, exactly as
- *    `EntitlementWiring.activationHook = messagingWiring.activationHook` wires it;
+ *  - **the K20 hook** (§13.4): the entitlement engine calls [EntClient.activationHook] after a trial
+ *    activation or a restore; like `MessagingWiring.activationHook` it **posts** the DM layer's
+ *    ACTIVATE (a process action at the same instant, which a crash drops as it drops the wiring
+ *    thread's queue) and returns, and §21.12 point 2's resume covers a post that never ran;
  *  - **the relay-session-start time trigger** (`MessagingWiring.sessionHooks`, §21.9 rule 1): a
  *    time-triggered DM pass when a relay session's transport is READY, posted before the
  *    entitlement participant starts, as the wiring orders it;
  *  - **the consumer tail** (§13.3 item 6): a time-triggered pass after every background session
  *    ends (lanes, redeem hold and transport close first) and after every quiet run, with the job
- *    budget's deadline;
+ *    budget's deadline — through `World.onSessionEnd`, which no scenario's `foreground` replaces;
  *  - **the inbox listener** (§13.7): `INBOX`, `OUTCOMES`, `CAPABILITIES` and `TOPOLOGY` hints post
  *    one coalesced hint pass, as `DmActor.onChange` does;
  *  - **the in-process timer** (§10.7 trigger 1, §21.9 rule 1): one resettable wake at
@@ -70,12 +83,14 @@ import org.ghost.sync.engine.SessionKind as SyncKind
  *  - **a database open** after a reboot is a time trigger (§21.12 point 2).
  * A pass that throws an `Exception` ends and is recorded ([swallowed]), which is what the actor
  * thread does on a device; an `Error` — an injected crash, an invariant violation — is not caught.
+ * A timer that re-arms at once, or a hint that re-posts itself, more than [MAX_AT_ONE_INSTANT] times
+ * at one virtual instant is a violation (an engine that never settles), not a hang.
  *
  * **What is a declared narrowing, not a shortcut** (see §22.23 of the design for the full list):
  *  - the DM context of a client opens from its MESSAGING branch bytes, as every DM world's does,
- *    not from the entitlement identity's root; the context is treated as *closed* (no DM pass runs)
- *    while the entitlement identity does not exist, which is what `MessagingWiring` does with no
- *    stored identity;
+ *    not from the entitlement identity's root, so the K20 hook's *reopen* is not modelled — only its
+ *    ACTIVATE; the context is treated as *closed* (no DM pass runs) while the entitlement identity
+ *    does not exist, which is what `MessagingWiring` does with no stored identity;
  *  - the DM slot table is the entitlement schedule's slots mapped through the client's relay
  *    directory (`DirectoryEsSlots`' rule), fixed for the world: the harness schedule has one slot
  *    table for every week, so a slot-table change (§5.2) is not expressible here;
@@ -94,8 +109,12 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
     /** Exceptions a DM pass threw that a device's actor thread would have swallowed, with their client. */
     val swallowed = ArrayList<String>()
 
-    /** The session-end hook this world installed last (see [ensureFinishHook]). */
-    private var finishHook: ((Client, Session) -> Unit)? = null
+    /**
+     * The every-commit and every-store checks of the class note. On in every world; the one test
+     * that turns it off ([EntDmConversation.fairyAt] without it) shows what the end checks alone
+     * catch.
+     */
+    var checkEveryCommit: Boolean = true
 
     init {
         check(ent.w === w) { "the entitlement world belongs to another sync world" }
@@ -111,6 +130,11 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
             clients[c]?.relaySessionStarted(s)
             start?.invoke(c, s)
         }
+        val end = w.onSessionEnd
+        w.onSessionEnd = { c, s ->
+            end?.invoke(c, s)
+            clients[c]?.sessionFinished(s)
+        }
         val job = w.runJob
         w.runJob = { c ->
             val dm = clients[c]
@@ -118,13 +142,18 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
             job(c)
             dm?.afterJob(quietBefore)
         }
+        check(w.relayObserver == null) { "the relay observer is taken" }
+        w.relayObserver = { c, kind, info, reached -> observe(c, kind, info, reached) }
         // The DM layer, not the Phase 7 oracle, consumes the DM and bundle namespaces: IN-1 over
         // them is this world's own check ([quiescenceProblems]).
         val exempt = w.in1Exempt
         w.in1Exempt = { c, ns -> exempt(c, ns) || clients[c]?.consumesNamespace(ns) == true }
-        // Nothing is added to the crash digest: the DM layer's durable state is the client's own
-        // database, which `Invariants.dump` already reads table by table, and its in-process
-        // counters are not state a reboot keeps.
+        // The relays' key registrations and deposit ledgers join the crash digest (ModelRelay's own
+        // digest leaves them out). The DM layer's durable state is the client's database, which
+        // `Invariants.dump` already reads table by table; its in-process counters are not state a
+        // reboot keeps.
+        val extra = w.extraState
+        w.extraState = { extra() + w.relays.map { "relay-keys ${it.name} ${it.model.keysDigest()}" } }
     }
 
     /**
@@ -155,81 +184,149 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
         }
     }
 
+    // ------------------------------------------------------------------ the relay-side record
+
     /**
-     * One relay call that was **sent** (it passed its before-send event and the reachability check,
-     * so its after-apply event ran), attributed to the client that made it: the raw material of the
-     * relay-side view JD8, SCN-E and the OS suite will read. [client] is ground truth — a relay sees a
-     * circuit, not a name — and every other field is what the relay saw: the operation (`REDEEM`,
-     * `REGISTER`, `STORE`, `LIST`, `GET`, `CHECK`, and `ISSUER` for the issuer), the relay, the
-     * namespace, and the world time in milliseconds once the call's latency ran. A request the latency
-     * model lost to its deadline (`latency / 2 > deadline`) is recorded too, since the harness raises
-     * the after-apply event either way; in a run without such losses (the PoC's) every event reached
-     * the relay, and a check that must exclude them reads the relay model's own effect instead.
+     * One relay event of one call, attributed to the client that made it: the raw material of the
+     * relay-side view JD8, SCN-E and the OS suite will read. [client] is ground truth — a relay sees
+     * a circuit, not a name — and every other field is what the call carried: the [event]
+     * (`RELAY_BEFORE_SEND`: the call was about to leave, nothing applied; `RELAY_AFTER_APPLY`: it got
+     * past the reachability check and its latency ran, and [reached] says whether the request
+     * reached the relay before its deadline), the operation (`REDEEM`, `REGISTER`, `STORE`, `LIST`,
+     * `GET`, `CHECK`, and `ISSUER` for the issuer), the relay, the namespace, the hashes the call
+     * named (a REDEEM's token nullifier, a store's blob), and the times: [atMillis] in world
+     * milliseconds and [relayEpochSeconds] on the relay's own clock — at after-apply, the instant the
+     * relay applied it.
+     *
+     * Recorded through `World.relayObserver`, which the harness calls **first** at every relay event
+     * — before the fault plan and before any scenario hook — so an injected crash or network fault
+     * at after-apply, and a hook a scenario swaps in, hide nothing.
      */
-    class RelayEvent(val client: String, val kind: CallKind, val relay: String, val namespaceHex: String, val atMillis: Long) {
-        override fun toString(): String = "$kind@$relay/${namespaceHex.take(8)} by $client at ${atMillis / 60_000} min"
+    class RelayEvent(
+        val client: String,
+        val event: EventKind,
+        val kind: CallKind,
+        val relay: String,
+        val namespaceHex: String,
+        val hashes: List<String>,
+        val atMillis: Long,
+        val relayEpochSeconds: Long,
+        val reached: Boolean,
+    ) {
+        /** The relay saw this call: its after-apply event, with the request in time. */
+        val seen: Boolean get() = event == EventKind.RELAY_AFTER_APPLY && reached
+
+        override fun toString(): String =
+            "$kind@$relay/${namespaceHex.take(8)} by $client ${event.name.removePrefix("RELAY_").lowercase()}" +
+                (if (event == EventKind.RELAY_AFTER_APPLY && !reached) " (lost)" else "") + " at ${atMillis / 60_000} min"
     }
 
-    /** Every relay call of every client that was sent, in order (see [RelayEvent]). */
+    /** Every relay event of every client (before-send and after-apply), in order (see [RelayEvent]). */
     val relayEvents = ArrayList<RelayEvent>()
 
-    private var viewHook: ((Client, EventKind, CallInfo) -> String?)? = null
+    /** Calls a relay saw, in order: [relayEvents] at after-apply with the request in time. */
+    fun seen(): List<RelayEvent> = relayEvents.filter { it.seen }
 
-    /**
-     * Records [relayEvents] through `World.relayHook`, which every relay call of the harness
-     * (`HarnessRelayPort` for the Phase 7 calls and `RegisterKey`, `HarnessCalls` for `RedeemToken`)
-     * passes at each of its three events. A scenario assigns its own hook while it builds, so the
-     * recorder is wrapped around whatever is installed at every session start: every one of those
-     * calls happens inside a relay session (the redeem lane, the read and work lanes), so none is
-     * made before the wrap. The scenario's hook runs first and its answer is kept; a call that
-     * reached its after-apply event reached the relay whatever the hook then answers.
-     */
-    fun ensureViewHook() {
-        val current = w.relayHook
-        if (current != null && current === viewHook) return
-        val wrapped: (Client, EventKind, CallInfo) -> String? = { c, kind, info ->
-            val category = current?.invoke(c, kind, info)
-            if (kind == EventKind.RELAY_AFTER_APPLY) relayEvents += RelayEvent(c.name, info.kind, info.relay, info.namespace, w.clock.millis)
-            category
+    private fun observe(c: Client, kind: EventKind, info: CallInfo, reached: Boolean) {
+        if (kind == EventKind.RELAY_AFTER_RESPONSE) return
+        val node = w.relays.firstOrNull { it.name == info.relay }
+        val relayNow = node?.let { w.relayNow(it) } ?: w.clock.trueEpochSeconds()
+        relayEvents += RelayEvent(c.name, kind, info.kind, info.relay, info.namespace, info.hashes, w.clock.millis, relayNow, reached)
+        if (info.kind == CallKind.STORE && node != null) {
+            if (kind == EventKind.RELAY_BEFORE_SEND) scopesBefore = node.model.capabilityScopes()
+            if (kind == EventKind.RELAY_AFTER_APPLY && reached) checkScopes(node, scopesBefore)
         }
-        viewHook = wrapped
-        w.relayHook = wrapped
-    }
-
-    /**
-     * The driver keeps one session-end callback, and `World.foreground` replaces it whenever a
-     * scenario schedules a window. So the consumer-tail hook is re-wrapped around whatever is there
-     * at every session start, which is before any session this world could owe a tail can end.
-     */
-    fun ensureFinishHook() {
-        val current = w.driver.onSessionFinished
-        if (current != null && current === finishHook) return
-        val wrapped: (Client, Session) -> Unit = { c, s ->
-            current?.invoke(c, s)
-            clients[c]?.sessionFinished(s)
-        }
-        finishHook = wrapped
-        w.driver.onSessionFinished = wrapped
     }
 
     // ------------------------------------------------------------------ checks
 
+    private var mintedCount = -1
+    private var mintedScopes: Set<BlobHash> = emptySet()
+
+    /** The relay's quota-ledger scopes at the before-send event of the store in flight. */
+    private var scopesBefore: Set<BlobHash> = emptySet()
+
+    /** SHA-256 of every capability a `ModelRedeemRelay` minted (the relay's quota-ledger key). */
+    private fun mintedScopes(): Set<BlobHash> {
+        if (ent.records.minted.size != mintedCount) {
+            mintedScopes = ent.records.minted.keys.map { ModelRelay.sha256(Bytes.unhex(it)) }.toSet()
+            mintedCount = ent.records.minted.size
+        }
+        return mintedScopes
+    }
+
     /**
-     * Unmet quiescence conditions of the DM layer: IN-1 over the namespaces the DM layer consumes
-     * (every live blob an honest relay holds in a listened DM or bundle namespace with a read path,
-     * other than the client's own, has been consumed — its `inbox_blob` row is `done`), and no DM
-     * pass has thrown.
+     * After a client's store [node] applied: a capability the store was charged to that the relay's
+     * quota ledger did not hold before it (its scope, SHA-256 of the token) is one a redeem relay
+     * minted. A deposit is charged to a registration instead and adds no scope; `World.otherWrite`,
+     * which stores straight into the model under a token of its own, is no client's store and is
+     * never read here.
      */
-    fun quiescenceProblems(): List<String> {
+    fun checkScopes(node: RelayNode, before: Set<BlobHash>) {
+        if (!checkEveryCommit) return
+        val minted = mintedScopes()
+        val foreign = node.model.capabilityScopes().count { it !in before && it !in minted }
+        if (foreign > 0) violation("no fairy: ${node.name} charged a client's store to a capability no redeem relay minted")
+    }
+
+    /**
+     * After every commit of [dm]'s client: every `relay_capability` row is a capability a
+     * `ModelRedeemRelay` minted for that row's own REDEEM namespace, or a bearer credential v3 the
+     * DM layer derived for the row's namespace (a write row only as a contact's DEPOSIT
+     * credential). Anything else — a capability `ModelRelay.mint` made, a v1 operator token, a
+     * redeemed capability moved to another namespace — is a harness shortcut or an engine bug.
+     */
+    fun checkCommit(dm: EntDmClient) {
+        if (!checkEveryCommit) return
+        val c = dm.c
+        val sources = HashMap<String, String>()
+        c.jdbc.query("SELECT namespace_id, capability_source FROM sync_namespace") { sources[Bytes.hex(it.blob(0))] = it.string(1) }
+        c.jdbc.query("SELECT namespace_id, kind, token FROM relay_capability") { r ->
+            val ns = Bytes.hex(r.blob(0))
+            val kind = r.string(1)
+            val token = r.blob(2)
+            val credential = ModelRelay.credential(token)
+            if (credential != null) {
+                if (Bytes.hex(credential.namespace.toByteArray()) != ns) violation("${c.name}: a bearer credential installed for another namespace")
+                if (kind == "write" && credential.kind != ModelRelay.KIND_DEPOSIT) violation("${c.name}: a write row holds a bearer credential of kind ${credential.kind}")
+                return@query
+            }
+            if (kind != "write") violation("no fairy: ${c.name} holds a read capability that is no bearer credential v3 (${ns.take(8)})")
+            if (Bytes.hex(token) !in ent.records.minted) {
+                violation("no fairy: ${c.name} holds a write capability for ${ns.take(8)} that no redeem relay minted")
+            }
+            val header = ModelRelay.header(token)
+            if (header == null || Bytes.hex(header.namespace.toByteArray()) != ns) violation("${c.name}: a redeemed capability installed for another namespace")
+            if (sources[ns] != CapabilitySource.REDEEM.name.lowercase()) violation("${c.name}: a redeemed capability on a LOCAL namespace")
+        }
+    }
+
+    /**
+     * Unmet quiescence conditions of the DM layer:
+     *  - IN-1 over the namespaces the DM layer consumes (every live blob an honest relay holds in a
+     *    listened DM or bundle namespace with a read path, other than the client's own, has been
+     *    consumed — its `inbox_blob` row is `done`);
+     *  - **nothing owed and nothing given up**, S10b's oracle (`DmScenario.nothingOwed`), over this
+     *    world's tables: no pending send, no item waiting to be stored, no scheduled control, no DM
+     *    outbox op the engine has not released, no DM inbox blob not consumed, no establishment in
+     *    progress, no contact whose sessions lack a `current` slot, no control item that ended failed
+     *    or indeterminate, and no outgoing message `FAILED` or `INDETERMINATE` outside
+     *    [expectedFailures]. One exemption, the entitlement world's own: an op of an **own**
+     *    namespace of a client the app shows as uncovered (`EntClient.uncovered`: no ACCESS token of
+     *    this week or later, no pack in progress) waits for a purchase, which is the user's, not the
+     *    engine's (the entitlement liveness premise waits for it the same way);
+     *  - the DM side of the premise `EntWorld` skips: no **LOCAL** need waits (a contact's DEPOSIT or
+     *    FETCH credential missing, refused or exhausted), since no token can meet one and only the DM
+     *    layer can — a need that is expiring is not waiting;
+     *  - no DM pass has thrown.
+     */
+    fun quiescenceProblems(expectedFailures: Set<String> = emptySet()): List<String> {
         val out = ArrayList<String>()
         if (swallowed.isNotEmpty()) out += "a DM pass threw: ${swallowed.first()}"
+        val dmConsumers = listOf(Consumer.DM.code, Consumer.PREKEYS.code)
         for ((c, dm) in clients) {
-            val now = w.clock.epochSeconds()
             val listened = ArrayList<ByteArray>()
-            c.jdbc.query(
-                "SELECT namespace_id FROM sync_namespace WHERE listening = 1 AND consumer IN (?1, ?2)",
-                listOf(Consumer.DM.code, Consumer.PREKEYS.code),
-            ) { listened += it.blob(0) }
+            c.jdbc.query("SELECT namespace_id FROM sync_namespace WHERE listening = 1 AND consumer IN (?1, ?2)", dmConsumers) { listened += it.blob(0) }
             val own = w.ops.values.filter { it.client === c }.map { it.namespace to it.hash }.toSet()
             for (ns in listened) {
                 val relays = ArrayList<Long>()
@@ -238,7 +335,7 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
                         "WHERE nr.namespace_id = ?1 AND rd.state = 'active' AND EXISTS (SELECT 1 FROM relay_capability k " +
                         "WHERE k.relay_id = nr.relay_id AND k.namespace_id = nr.namespace_id AND ((k.kind = 'read' AND k.state = 'usable') " +
                         "OR (k.kind = 'write' AND k.state IN ('usable', 'exhausted'))) AND (k.expires_hour IS NULL OR k.expires_hour > ?2))",
-                    listOf(ns, now),
+                    listOf(ns, w.clock.epochSeconds()),
                 ) { relays += it.long(0) }
                 for (relayId in relays) {
                     val node = c.relayIds.entries.firstOrNull { it.value.value == relayId }?.let { w.relays[it.key] } ?: continue
@@ -247,17 +344,12 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
                     for (m in node.model.liveMembers(namespace, w.relayNow(node))) {
                         if ((namespace to m.hash) in own) continue
                         var state: String? = null
-                        c.jdbc.query(
-                            "SELECT state FROM inbox_blob WHERE namespace_id = ?1 AND blob_hash = ?2",
-                            listOf(ns, m.hash.toByteArray()),
-                        ) { state = it.string(0) }
-                        if (state != "done") {
-                            out += "${c.name}: DM IN-1: a live blob on ${node.name} in a listened DM namespace is ${state ?: "not listed"}"
-                        }
+                        c.jdbc.query("SELECT state FROM inbox_blob WHERE namespace_id = ?1 AND blob_hash = ?2", listOf(ns, m.hash.toByteArray())) { state = it.string(0) }
+                        if (state != "done") out += "${c.name}: DM IN-1: a live blob on ${node.name} in a listened DM namespace is ${state ?: "not listed"}"
                     }
                 }
             }
-            dm.quiescenceProblems(out)
+            dm.owedProblems(out, expectedFailures)
         }
         return out
     }
@@ -279,31 +371,28 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
     // ------------------------------------------------------------------ evidence
 
     /**
-     * One `RedeemToken` request as the relay received it (`EntRecords.relayLog`, every byte NI-1
-     * reads): when (world milliseconds), where, for which namespace, and the ACCESS week of the
-     * token presented (−1 for bytes that are no token of the schedule).
+     * One `RedeemToken` request a relay received ([seen] `REDEEM` events): when it arrived, in world
+     * milliseconds ([atMillis]) and on the relay's clock ([relayEpochSeconds], the time the redeem
+     * model was called with), where, by whom, for which namespace, the token's nullifier, and the
+     * ACCESS week of that token (−1 for bytes that are no ACCESS token the world issued).
      */
-    class Redemption(val atMillis: Long, val relay: String, val namespaceHex: String, val week: Long) {
-        /** The relay's true time of arrival, epoch seconds. */
-        val atEpochSeconds: Long get() = World.T0 + atMillis / 1_000
-
-        override fun toString(): String = "redeem@$relay/${namespaceHex.take(8)} w$week at ${atMillis / 60_000} min"
+    class Redemption(
+        val client: String,
+        val atMillis: Long,
+        val relayEpochSeconds: Long,
+        val relay: String,
+        val namespaceHex: String,
+        val nullifier: String,
+        val week: Long,
+    ) {
+        override fun toString(): String = "redeem@$relay/${namespaceHex.take(8)} by $client w$week at ${atMillis / 60_000} min"
     }
 
-    /**
-     * Every redemption request any client of the world sent to a relay, in order (the log is written
-     * after the reachability check and before the latency model decides whether it arrives).
-     */
-    fun redemptions(): List<Redemption> = ent.records.relayLog.mapNotNull { line ->
-        val f = line.split('|')
-        if (f.size < 6 || f[1] != "redeem") return@mapNotNull null
-        val token = Bytes.unhex(f[4])
-        val week = if (token.size == org.ghost.entitlement.harness.TestSchedule.TOKEN_BYTES) {
-            ent.schedule.verify(token, org.ghost.network.EntitlementCrypto.KIND_ACCESS)?.epoch ?: -1
-        } else {
-            -1
-        }
-        Redemption(f[0].removePrefix("t=").toLong(), f[2], f[3], week)
+    /** Every redemption request a relay received, in order of arrival (see [Redemption]). */
+    fun redemptions(): List<Redemption> = seen().filter { it.kind == CallKind.REDEEM }.map { e ->
+        val nullifier = e.hashes.single()
+        val week = ent.records.issued[nullifier]?.takeIf { it.kind == EntitlementCrypto.KIND_ACCESS }?.epoch ?: -1
+        Redemption(e.client, e.atMillis, e.relayEpochSeconds, e.relay, e.namespaceHex, nullifier, week)
     }
 
     override fun toString(): String = "EntDmWorld"
@@ -312,6 +401,9 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
         /** The world's ES slots: four relays over two operators, as every DM world has. */
         const val SLOTS: Int = 4
         const val OPERATORS: Int = 2
+
+        /** Re-arms of the timer, or hint passes, at one virtual instant before it is a finding. */
+        const val MAX_AT_ONE_INSTANT: Int = 256
 
         /**
          * The four slot relays, at the onions and operators `DmDevice` writes into its own relay
@@ -351,6 +443,8 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
     private var timerToken = 0L
     private var zeroTimers = 0
     private var zeroAt = -1L
+    private var hintsHere = 0
+    private var hintsAt = -1L
 
     /** Passes run, by kind (diagnostics for a report line). */
     var timePasses: Long = 0
@@ -369,6 +463,8 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         timerToken++
         zeroTimers = 0
         zeroAt = -1L
+        hintsHere = 0
+        hintsAt = -1L
         sync()
         val built = DmDevice(
             branch = branch,
@@ -380,7 +476,12 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         built.slots = world.esSlots(c)
         device = built
         installListener()
-        ent.activationHook = IdentityActivationHook { restored -> activated(restored) }
+        // Posts and returns, as `MessagingWiring.activationHook` does (its wiring thread): the
+        // engine's call is over before ACTIVATE runs, and a crash in between drops the post.
+        ent.activationHook = IdentityActivationHook { restored ->
+            w.driver.scheduleProcess(w.clock.millis, c, "dm-activate:${c.name}") { activated(restored) }
+        }
+        c.sql.onCommit += { world.checkCommit(this) }
         // §21.12 point 2: a database open is a time trigger.
         if (c.boots > 1) w.driver.scheduleProcess(w.clock.millis, c, "dm-db-open:${c.name}") { timePass() }
     }
@@ -408,13 +509,18 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         hintPending = true
         w.driver.scheduleProcess(w.clock.millis, c, "dm-hint:${c.name}") {
             hintPending = false
+            // A pass that commits a hint every time would post itself for ever at one instant.
+            if (w.clock.millis == hintsAt) hintsHere++ else hintsHere = 1
+            hintsAt = w.clock.millis
+            if (hintsHere > EntDmWorld.MAX_AT_ONE_INSTANT) violation("${c.name}: $hintsHere hint passes at one instant — a pass re-posts its own hint")
             pass(timeTriggered = false, deadline = null)
         }
     }
 
-    /** The K20 hook's body: `reopenAndActivate` on a device, one actor turn, inline. */
+    /** The K20 hook's posted body: ACTIVATE in one actor turn (the reopen is not modelled; see the class note). */
     private fun activated(restored: Boolean) {
         val dev = device ?: return
+        if (!ent.identity.exists) return
         sync()
         activations += if (restored) dev.engine.onRestored() else dev.engine.onActivated()
         armTimer()
@@ -422,8 +528,6 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
 
     /** A relay session started: a time-triggered pass once its transport is READY. */
     fun relaySessionStarted(s: Session) {
-        world.ensureFinishHook()
-        world.ensureViewHook()
         awaitReady(s)
     }
 
@@ -489,7 +593,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         if (delay == 0L) {
             if (w.clock.millis == zeroAt) zeroTimers++ else zeroTimers = 1
             zeroAt = w.clock.millis
-            if (zeroTimers > MAX_ZERO_TIMERS) violation("${c.name}: the DM timer re-armed at once $zeroTimers times without time passing")
+            if (zeroTimers > EntDmWorld.MAX_AT_ONE_INSTANT) violation("${c.name}: the DM timer re-armed at once $zeroTimers times without time passing")
         }
         w.driver.scheduleProcess(w.clock.millis + delay * 1_000, c, "dm-timer:${c.name}") {
             if (token == timerToken) timePass()
@@ -529,15 +633,45 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         return out
     }
 
-    fun quiescenceProblems(out: MutableList<String>) {
-        if (!ent.identity.exists || device == null) return
-        var fetched = 0L
-        c.jdbc.query(
-            "SELECT count(*) FROM inbox_blob b JOIN sync_namespace n ON n.namespace_id = b.namespace_id " +
-                "WHERE b.state = 'fetched' AND n.consumer IN (?1, ?2)",
-            listOf(Consumer.DM.code, Consumer.PREKEYS.code),
-        ) { fetched = it.long(0) }
-        if (fetched > 0) out += "${c.name}: $fetched fetched DM blob(s) not consumed"
+    private fun count(sql: String, args: List<Any?> = emptyList()): Long {
+        var n = 0L
+        c.jdbc.query(sql, args) { n = it.long(0) }
+        return n
+    }
+
+    /** The "nothing owed" and LOCAL-need parts of [EntDmWorld.quiescenceProblems] for this client. */
+    fun owedProblems(out: MutableList<String>, expectedFailures: Set<String>) {
+        val dmConsumers = listOf(Consumer.DM.code, Consumer.PREKEYS.code)
+        val uncovered = ent.uncovered()
+        for ((what, query) in OWED) {
+            val n = count(query, if ("?1" in query) dmConsumers else emptyList())
+            if (n != 0L) out += "${c.name} still owes work at quiescence — $n × $what"
+        }
+        // DM outbox ops: those of an own namespace wait for a purchase while the app shows uncovered.
+        val ownWaiting = count(
+            "SELECT count(*) FROM outbox_op o JOIN dm_own_namespace d ON d.namespace_id = o.namespace_id WHERE o.released = 0",
+        )
+        val otherWaiting = count(
+            "SELECT count(*) FROM outbox_op o JOIN sync_namespace n ON n.namespace_id = o.namespace_id " +
+                "WHERE o.released = 0 AND n.consumer IN (?1, ?2) AND o.namespace_id NOT IN (SELECT namespace_id FROM dm_own_namespace)",
+            dmConsumers,
+        )
+        if (otherWaiting != 0L) out += "${c.name} still owes work at quiescence — $otherWaiting × DM outbox ops the engine has not released"
+        if (ownWaiting != 0L && !uncovered) out += "${c.name} still owes work at quiescence — $ownWaiting × own-namespace outbox ops, with tokens held"
+        if (ent.identity.exists && device != null) {
+            val gaveUp = read { d ->
+                d.engine.contacts().flatMap { contact ->
+                    d.engine.conversation(contact.id, 200, null)
+                        .filter { it.outgoing && (it.state == MessageState.FAILED || it.state == MessageState.INDETERMINATE) }
+                        .map { it.text ?: TIMER_ROW }
+                }
+            }.orEmpty().filter { it !in expectedFailures }
+            if (gaveUp.isNotEmpty()) out += "${c.name} gave up on $gaveUp — FAILED or INDETERMINATE at quiescence"
+        }
+        for (need in c.stores.capabilities.needed()) {
+            if (need.source != CapabilitySource.LOCAL || need.reason == CapabilityNeed.Reason.EXPIRING) continue
+            out += "${c.name}: a LOCAL ${need.kind} need waits (${need.reason}): a contact's credential only the DM layer can supply"
+        }
     }
 
     fun close() {
@@ -550,8 +684,28 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
 
     private companion object {
         const val READY_POLL_MILLIS = 1_000L
-        const val MAX_ZERO_TIMERS = 256
+        const val TIMER_ROW = "<timer change>"
         val HINTS = setOf(SyncChange.INBOX, SyncChange.OUTCOMES, SyncChange.CAPABILITIES, SyncChange.TOPOLOGY)
+
+        /**
+         * S10b's "nothing owed" counts (`DmCrashRunner.OWED`) over this world's tables. The inbox
+         * clause reads the DM consumers only ([?1], [?2]), since the entitlement engine's drop
+         * namespaces are Phase 8's to check; outbox ops are counted apart ([owedProblems]).
+         */
+        val OWED: List<Pair<String, String>> = listOf(
+            "pending sends" to "SELECT count(*) FROM dm_pending_send",
+            "items not yet stored" to "SELECT count(*) FROM dm_outbound_item WHERE state IN ('pending', 'enqueued')",
+            "scheduled controls" to "SELECT count(*) FROM dm_scheduled",
+            "DM inbox blobs not consumed" to
+                "SELECT count(*) FROM inbox_blob b JOIN sync_namespace n ON n.namespace_id = b.namespace_id " +
+                "WHERE b.state <> 'done' AND n.consumer IN (?1, ?2)",
+            "establishments in progress" to "SELECT count(*) FROM dm_contact WHERE establishment = 'fetching'",
+            "contacts whose sessions have no 'current' slot" to
+                "SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id " +
+                "HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) = 0)",
+            "control items that ended failed or indeterminate" to
+                "SELECT count(*) FROM dm_outbound_item WHERE control IS NOT NULL AND state IN ('failed', 'indeterminate')",
+        )
     }
 }
 

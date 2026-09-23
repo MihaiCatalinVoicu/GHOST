@@ -202,6 +202,7 @@ internal class HarnessDriver(private val world: World) {
             if (s.lock.withLock { s.finished } && pending.none { it.session === s } && !world.sessionHold(c, s)) {
                 c.session = null
                 onSessionFinished?.invoke(c, s)
+                world.onSessionEnd?.invoke(c, s)
             }
         }
     }

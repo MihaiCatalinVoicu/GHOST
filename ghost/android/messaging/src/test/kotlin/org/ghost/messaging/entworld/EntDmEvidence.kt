@@ -7,10 +7,11 @@ import org.ghost.sync.harness.ModelRelay
 import org.ghost.sync.harness.RelayNode
 
 /**
- * What an [EntDmWorld] run left behind, read from the **models** and the clients' own tables, never
- * from anything the harness installed: the evidence that a DM world ran on the capability lifecycle
- * and not on a fairy (design §22.23). Every check SCN-E, JD8 and the OS suite will make is a
- * statement about these rows.
+ * What an [EntDmWorld] run left behind at its end, read from the **models** and the clients' own
+ * tables, never from anything the harness installed: the evidence that a DM world ran on the
+ * capability lifecycle and not on a fairy (design §22.23). It complements the checks the world makes
+ * while it runs ([EntDmWorld.checkCommit], [EntDmWorld.checkScopes]); it is the raw material a SCN-E,
+ * JD8 or OS check reads, not those checks.
  *
  * All reads go through the raw connection (`Client.jdbc`), so collecting evidence raises no event.
  */
@@ -53,13 +54,21 @@ internal object EntDmEvidence {
         val state: String,
         /** The relay's `bearer_keys` model holds (namespace, period, kind, verifier). */
         val recorded: Boolean,
-        /** One of the record's serials is the serial of a capability a `ModelRedeemRelay` minted. */
-        val paidByRedemption: Boolean,
+        /**
+         * The weeks of the capabilities whose serials the record accumulated, one entry per serial:
+         * a week for a capability a `ModelRedeemRelay` minted, −1 for any other. A record is credited
+         * by every capability that registered the same verifier (§4.4), so this is how a check tells
+         * which redemption paid for it.
+         */
+        val serialWeeks: List<Long>,
         /** Bytes the relay's deposit ledger charged to this record (DEPOSIT only; §4.5). */
         val depositBytes: Long,
     ) {
+        /** Every serial of the record is a redeemed capability's (and there is at least one). */
+        val paidByRedemption: Boolean get() = serialWeeks.isNotEmpty() && serialWeeks.none { it < 0 }
+
         override fun toString(): String =
-            "reg@$relay/${namespaceHex.take(8)} p$period $kind $state recorded=$recorded paid=$paidByRedemption deposits=$depositBytes"
+            "reg@$relay/${namespaceHex.take(8)} p$period $kind $state recorded=$recorded paidBy=w$serialWeeks deposits=$depositBytes"
     }
 
     private fun node(world: EntDmWorld, dmc: EntDmClient, relayId: Long): RelayNode? =
@@ -95,8 +104,15 @@ internal object EntDmEvidence {
         return n
     }
 
+    /** Serial (hex) → week of every capability a `ModelRedeemRelay` minted. */
+    fun mintedSerialWeeks(world: EntDmWorld): Map<String, Long> = world.ent.records.minted.keys.associate { hex ->
+        val token = Bytes.unhex(hex)
+        val expiry = checkNotNull(ModelRelay.header(token)) { "a minted capability without a header" }.expiry
+        Bytes.hex(ModelRelay.capabilitySerial(token)) to ModelRelay.capabilityWeek(token, expiry, expiry)
+    }
+
     fun registrations(world: EntDmWorld, dmc: EntDmClient): List<Registration> {
-        val minted = world.ent.records.minted.keys.map { Bytes.hex(ModelRelay.capabilitySerial(Bytes.unhex(it))) }.toSet()
+        val minted = mintedSerialWeeks(world)
         val out = ArrayList<Registration>()
         dmc.c.jdbc.query(
             "SELECT relay_id, namespace_id, period_id, kind, verifier, state FROM relay_key_registration ORDER BY relay_id, namespace_id, period_id, kind",
@@ -119,7 +135,7 @@ internal object EntDmEvidence {
                 kind = kind,
                 state = r.string(5),
                 recorded = record != null,
-                paidByRedemption = record?.serials?.any { it in minted } == true,
+                serialWeeks = record?.serials?.map { minted[it] ?: -1L }.orEmpty(),
                 depositBytes = relay?.model?.depositsUsed(NamespaceId(ns), period, verifier) ?: 0,
             )
         }
@@ -136,8 +152,10 @@ internal object EntDmEvidence {
     }
 
     /**
-     * Redemptions by (relay, namespace, week of the token): the distinct tokens spent on each —
-     * T27's "exactly one ACCESS token per (relay, own namespace, week)" is a statement about this.
+     * Redemptions by (relay, namespace, week of the token): the distinct tokens **sent** for each —
+     * every `RedeemToken` request that left a client, whether or not it reached the relay
+     * (`EntRecords.relayLog`, NI-1's record) — so T27's "exactly one ACCESS token per (relay, own
+     * namespace, week)" is read on the stricter side.
      */
     fun tokensPerPair(world: EntDmWorld): Map<Triple<String, String, Long>, Set<String>> {
         val out = LinkedHashMap<Triple<String, String, Long>, MutableSet<String>>()
