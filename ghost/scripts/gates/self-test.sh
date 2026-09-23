@@ -164,6 +164,56 @@ pqm_case fail malformed-expected "rejects an expectation that is neither true no
 pqm_case pass mutant-pass "accepts a mutant generated from its original by a patch"
 pqm_case fail mutant-drift "rejects a mutant patch that no longer applies to its original"
 pqm_case fail mutant-copied "rejects a mutant that is both a copied file and a patch"
+# Phase 9 PQ1/PQ5 (design §15.5, §15.7 PM-32, §22.19): the PQ mutant gate, proven without compiling.
+# A scratch git tree holds one state file; each fixture patch rewrites it, and a fake cargo answers
+# from it. Every negative is a way the gate could pass while a mutant was never killed: a survivor, a
+# kill the header names that did not happen, no header, a patch that no longer applies, a mutant that
+# does not build, a failing run with no failing test, and an unpatched run that fails, skips a named
+# test, ignores one, or has no patch to check at all. The positive also proves the tree is restored.
+PQX="$HARNESS/pq-mutants"
+pqx_case() { # $1 = expect pass|fail, $2 = description, $3 = unpatched mode, then patches as state:kills[,kills]
+  local expect="$1" desc="$2" clean="$3" tmp spec state kills patch got
+  shift 3
+  tmp="$(mktemp -d)"
+  git init -q "$tmp/repo"
+  git -C "$tmp/repo" config core.autocrlf false
+  printf 'clean\n' > "$tmp/repo/state"
+  git -C "$tmp/repo" add state
+  git -C "$tmp/repo" -c user.name=gate -c user.email=gate@self.test -c commit.gpgsign=false commit -q -m clean
+  mkdir "$tmp/mutants"
+  for spec in "$@"; do
+    state="${spec%%:*}"
+    kills="${spec#*:}"
+    patch="$tmp/mutants/$state.patch"
+    {
+      [ -z "$kills" ] || tr ',' '\n' <<<"$kills" | sed 's/^/# kills: /'
+      if [ "$state" = stale ]; then
+        printf -- '--- a/state\n+++ b/state\n@@ -1 +1 @@\n-other\n+kill-a\n'
+      else
+        printf '%s\n' "$state" > "$tmp/repo/state"
+        git -C "$tmp/repo" diff
+        git -C "$tmp/repo" checkout -q -- state
+      fi
+    } > "$patch"
+  done
+  if GHOST_PQ_CARGO="$PQX/fake-cargo.sh" GHOST_PQ_FAKE_STATE="$tmp/repo/state" GHOST_PQ_FAKE_CLEAN="$clean" \
+    GHOST_PQ_MUTANTS_DIR="$tmp/mutants" GHOST_PQ_MUTANTS_REPO="$tmp/repo" \
+    bash "$DIR/pq-mutants.sh" >/dev/null 2>&1; then got=pass; else got=fail; fi
+  if [ "$(tr -d '\r' < "$tmp/repo/state")" != clean ]; then got="$got, tree not restored"; fi
+  if [ "$got" = "$expect" ]; then echo "self-test ok: pq-mutants $desc"; else echo "SELF-TEST FAIL: pq-mutants $desc ($got)" >&2; rc=1; fi
+  rm -rf "$tmp"
+}
+pqx_case pass "accepts mutants each killed by the tests they name" pass "kill-a:t::a" "kill-ab:t::a,t::b"
+pqx_case fail "rejects a mutant that survives" pass "kill-a:t::a" "survive:t::a"
+pqx_case fail "rejects a named kill that did not happen" pass "kill-a:t::a,t::b"
+pqx_case fail "rejects a mutant that names no test" pass "kill-a:"
+pqx_case fail "rejects a patch that no longer applies" pass "stale:t::a"
+pqx_case fail "rejects a mutant that does not build" pass "nobuild:t::a"
+pqx_case fail "rejects a failing run without a failing test" pass "noname:t::a"
+pqx_case fail "rejects an unpatched tree whose PQ tests fail" fail "kill-a:t::a"
+pqx_case fail "rejects a named test the unpatched run did not run" missing "kill-ab:t::a,t::b"
+pqx_case fail "rejects an unpatched run with an ignored test" ignored "kill-a:t::a"
+pqx_case fail "rejects an empty mutant directory" pass
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

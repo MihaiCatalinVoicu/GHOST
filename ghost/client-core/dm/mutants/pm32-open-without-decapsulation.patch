@@ -1,0 +1,36 @@
+# PM-32 (design §15.7): the KEM dropped from the intro layer. The sender still encapsulates, so the
+# envelope still carries a 1 120-byte ciphertext, but both sides key the inner layer from the
+# ciphertext's hash, and the recipient never decapsulates: `k_in = HKDF(T_in, SHA-256(ct))`, a
+# public value. The world works; T35 cannot see it (k_in is never a SealKey, §22.16 item 18).
+# kills: pq_bump::pq1_every_intro_open_of_the_world_decapsulates_exactly_once
+# kills: pq_bump::pq1_k_in_depends_on_the_decapsulated_secret_in_every_intro_open
+# kills: pq_bump::pq1_the_host_assertion_passes_every_open_of_the_world
+# kills: pq_bump::pq5_every_intro_envelope_carries_an_x_wing_ciphertext_whose_secret_keys_its_inner_layer
+# kills: pq_bump::pq5_the_sender_keys_the_inner_layer_with_the_secret_its_ciphertext_carries
+# kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
+diff --git a/ghost/client-core/dm/src/seal.rs b/ghost/client-core/dm/src/seal.rs
+index cbadf5b..ed12307 100644
+--- a/ghost/client-core/dm/src/seal.rs
++++ b/ghost/client-core/dm/src/seal.rs
+@@ -659,7 +659,9 @@ pub fn seal_intro_with(
+         return Err(DmCode::NoFit);
+     }
+     let sender_card = card::parse(sender.card)?;
+-    let (ciphertext, shared) = pq::encapsulate_with(context.gen_public, kem_randomness)?;
++    let (ciphertext, _) = pq::encapsulate_with(context.gen_public, kem_randomness)?;
++    // MUTANT (PM-32): the inner key from the ciphertext's hash; the secret is not used.
++    let shared = KemSecret::from_bytes(Sha256::digest(&ciphertext).into());
+     let transcript = intro_transcript(context, &ciphertext);
+     let inner_key = intro_inner_key(&shared, &transcript);
+     seal_intro_layers(
+@@ -891,7 +893,9 @@ pub(crate) fn open_intro_layer(
+     if context.gen_id != outer.gen_id || context.bucket != outer.bucket {
+         return Err(DmCode::NotOpen);
+     }
+-    let shared = pq::decapsulate(gen_seed, &outer.ciphertext)?;
++    // MUTANT (PM-32): no decapsulation; the inner key from the ciphertext's hash.
++    let _ = gen_seed;
++    let shared = KemSecret::from_bytes(Sha256::digest(&outer.ciphertext).into());
+     let transcript = intro_transcript(context, &outer.ciphertext);
+     let inner_ad = intro_inner_ad(&transcript);
+     let plain = Zeroizing::new(

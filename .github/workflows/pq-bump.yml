@@ -1,0 +1,60 @@
+name: pq-bump
+
+# The PQ bump gate (Phase 9 design RG-5 and §2.8, §15.5 PQ1 and PQ5, §15.7 PM-32; forward notes
+# §22.19). PQ1 and PQ5 themselves are unit tests of ghost-client-dm (client-core/dm/src/pq_bump.rs)
+# and run in ci.yml's `rust` job on every pull request (`cargo test --workspace`). This job proves they
+# still hold PM-32 — "the intro inner layer sealed without the X-Wing KEM", which T35's provenance tags
+# cannot see (§22.16 item 18): scripts/gates/pq-mutants.sh applies each patch of
+# ghost/client-core/dm/mutants/ in turn (PM-32's shapes, a KEM whose secret stops depending on the
+# ciphertext as a broken bump could make it, a second decapsulation per open, a PQ-C root without the
+# KEM secret) and requires the tests the patch names to fail, then reverts it.
+#
+# It runs on every change to the DM crate and to the lock file, which is where a vodozemac or libcrux
+# bump lands (one PR per bump, §2.8), and on demand. It builds only ghost-client-dm's test binary, in
+# debug, once per mutant (50 s in all on the owner's workstation with a warm cache, §22.19).
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ghost/client-core/dm/**"
+      - "ghost/Cargo.lock"
+      - "ghost/scripts/gates/pq-mutants.sh"
+      - "ghost/scripts/gates/common.sh"
+      - ".github/workflows/pq-bump.yml"
+  pull_request:
+    paths:
+      - "ghost/client-core/dm/**"
+      - "ghost/Cargo.lock"
+      - "ghost/scripts/gates/pq-mutants.sh"
+      - "ghost/scripts/gates/common.sh"
+      - ".github/workflows/pq-bump.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pq-mutants:
+    name: PQ1 and PQ5 hold PM-32 (mutant gate)
+    runs-on: [self-hosted, linux, x64, ghost]
+    # Seven debug builds of one crate's test binary and eleven tests each, on a warm cache.
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ghost
+      - name: PQ1 and PQ5 pass, and every mutant fails the tests it names
+        run: bash scripts/gates/pq-mutants.sh
