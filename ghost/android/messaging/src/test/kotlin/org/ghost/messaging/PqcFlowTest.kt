@@ -35,9 +35,13 @@ class PqcFlowTest {
         log: PqLog,
         forceClassical: Boolean = false,
         stripPqKey: Boolean = false,
+        corruptPqKey: Boolean = false,
+        peerGenIdOffset: Long = 0L,
     ): DmWorld {
         val world = DmWorld(
-            decorate = { branch, inner -> PqRecorder(inner, branch, log, forceClassical, stripPqKey) },
+            decorate = { branch, inner ->
+                PqRecorder(inner, branch, log, forceClassical, stripPqKey, corruptPqKey, peerGenIdOffset)
+            },
         )
         log.now = { world.alice.clock.now }
         return world
@@ -216,6 +220,298 @@ class PqcFlowTest {
         }
     }
 
+    // ------------------------------------------------------- the slice S13 review's cases
+
+    /**
+     * **A PQ-C offer with no slack is replaced by a classical one in the same send** (the S13
+     * review's finding 1; §9.4 "otherwise the classical `seal_root` is used and the next periodic
+     * replacement retries", R-C5).
+     *
+     * A's first root offer rides on a 1 500-byte message: 4 KiB, whose slack admits a
+     * `seal_root_pq` only up to a 1 210-byte body. Before the review the PQ-C offer was dropped,
+     * nothing was written, and every later send minted PQ-C again — so with such messages the first
+     * root never reached B, and rule (c) never replaced a root. Now the classical form rides in the
+     * same send, B answers in pair mode at once, the replacement four weeks on happens on a
+     * mid-size message too (classical again), and the one after that, on a short message, is PQ-C.
+     */
+    @Test
+    @Suppress("LongMethod")
+    fun aPqOfferThatDoesNotFitIsReplacedByAClassicalOneInTheSameSend() {
+        requireNative()
+        val log = PqLog()
+        world(log).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val midSize = "x".repeat(1_500)
+            val (contactB, contactA) = establishBothWays(world, firstPairBody = midSize)
+
+            val first = log.offers.filter { it.branch == alice.branch }
+            assertEquals("a PQ-C attempt, then the classical offer that replaced it", 2, first.size)
+            assertNotNull("A held B's bundle key, so PQ-C was tried", first[0].peerGenId)
+            assertNull(first[1].peerGenId)
+            assertEquals("one generation, one offer", first[0].rootGen, first[1].rootGen)
+            val g0 = first[1].rootGen
+            assertEquals("the stored offer is the classical TLV", 70, offerEnvLength(alice, g0))
+            val carried = log.encoded.last { it.branch == alice.branch }
+            assertEquals(midSize.length, carried.bodyLength)
+            assertTrue("the classical offer rode", carried.sealRootRode)
+            assertFalse(carried.sealRootPqRode)
+            assertEquals(1, alice.engine.status().pq["offer_classical_no_slack"])
+
+            // B answers under it in pair mode, at once: no provisional window, no `NO_SEAL_KEY`.
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "under your root", null))
+            assertTrue(log.pairBlobs.any { it.branch == bob.branch && it.rootGen == g0 })
+            world.deliver()
+            alice.hintPass()
+            assertTrue("acknowledged (R12)", offerAcknowledged(alice, g0))
+
+            // Four weeks of B's traffic (A keeps a fresh key of B's), then rule (c) on A's next
+            // send, again a mid-size one: the root is replaced, classically.
+            fourWeeksOfB(world, contactA)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, midSize, null))
+            val second = log.offers.filter { it.branch == alice.branch }.drop(first.size)
+            assertEquals("rule (c) replaced the root: ${second.map { it.peerGenId }}", 2, second.size)
+            assertEquals(g0 + 1, second.last().rootGen)
+            assertNull(second.last().peerGenId)
+            assertEquals(70, offerEnvLength(alice, g0 + 1))
+            assertEquals(2, alice.engine.status().pq["offer_classical_no_slack"])
+            world.deliver()
+            bob.hintPass()
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "under the second root", null))
+            world.deliver()
+            alice.hintPass()
+            assertTrue(offerAcknowledged(alice, g0 + 1))
+
+            // The next replacement, on a short message, is PQ-C: the fallback cost one cycle.
+            fourWeeksOfB(world, contactA)
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "short", null))
+            val third = log.offers.filter { it.branch == alice.branch }.drop(first.size + second.size)
+            assertEquals(1, third.size)
+            assertEquals(g0 + 2, third.single().rootGen)
+            assertNotNull("PQ-C again", third.single().peerGenId)
+            assertEquals(1_194, offerEnvLength(alice, g0 + 2))
+            assertEquals("nothing was dropped", 0, bob.engine.status().drops.values.sum())
+        }
+    }
+
+    /**
+     * **Every generation from the newest acknowledged one keeps advancing** (the S13 review's
+     * finding 2; §6.3 "a generation stops advancing once a pair envelope under a newer generation
+     * from c opens").
+     *
+     * A's acknowledged root g0 is replaced by rule (c) with a PQ-C g1 whose messages are all lost;
+     * at `base_week + 3` §22.8.6 rule 2 replaces the still-unacknowledged g1 with g2, lost too. B
+     * never saw either and keeps sealing under g0. The first version of the S13 rule advanced
+     * only the newest two generations, so from the next week B's envelopes under g0 found no key
+     * on A and were dropped as `unknown_seal`, silently.
+     */
+    @Test
+    @Suppress("LongMethod")
+    fun aGenerationBelowTwoUnacknowledgedOffersKeepsAdvancing() {
+        requireNative()
+        val log = PqLog()
+        world(log).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "ack", null))
+            world.deliver()
+            alice.hintPass()
+            val g0 = log.offers.last { it.branch == alice.branch }.rootGen
+            assertTrue(offerAcknowledged(alice, g0))
+
+            fun week(loseA: Boolean) {
+                world.advanceTo(alice.clock.now + DmWorld.WEEK)
+                alice.timeTriggeredPass()
+                bob.timeTriggeredPass()
+                assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "b", null))
+                world.deliverBetween(bob, alice)
+                alice.hintPass()
+                assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "a", null))
+                if (loseA) {
+                    world.lose(alice, bob)
+                } else {
+                    world.deliverBetween(alice, bob)
+                    bob.hintPass()
+                }
+            }
+            repeat(3) { week(loseA = false) }
+            // Week 4: rule (c) mints g1, PQ-C, and its message is lost; so are weeks 5 and 6.
+            week(loseA = true)
+            val g1 = log.offers.last { it.branch == alice.branch }
+            assertEquals(g0 + 1, g1.rootGen)
+            assertNotNull("g1 is PQ-C", g1.peerGenId)
+            repeat(2) { week(loseA = true) }
+            assertFalse(offerAcknowledged(alice, g1.rootGen))
+            // Week 7 = base_week(g1) + 3: §22.8.6 rule 2 replaces the unacknowledged g1 with g2.
+            week(loseA = true)
+            assertEquals(g0 + 2, log.offers.last { it.branch == alice.branch }.rootGen)
+            val inGenerations = inKeyGenerations(alice)
+            assertEquals("three generations hold in keys", setOf(g0, g0 + 1, g0 + 2), inGenerations)
+
+            // Week 8: the sweep crosses a week boundary with g2 and g1 both unacknowledged.
+            world.advanceTo(alice.clock.now + DmWorld.WEEK)
+            alice.timeTriggeredPass()
+            bob.timeTriggeredPass()
+            val unknownBefore = alice.engine.status().drops["unknown_seal"] ?: 0
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "still under g0", null))
+            assertEquals("B seals under g0", g0, log.pairBlobs.last { it.branch == bob.branch }.rootGen)
+            world.deliverBetween(bob, alice)
+            alice.hintPass()
+            assertTrue(
+                "A opens it: ${alice.engine.status().drops}",
+                alice.engine.conversation(contactB, 50, null).any { it.text == "still under g0" },
+            )
+            assertEquals(unknownBefore, alice.engine.status().drops["unknown_seal"] ?: 0)
+        }
+    }
+
+    /**
+     * **A device that re-establishes announces its key again** (the S13 review's finding 5;
+     * §22.8.6 rule 1 on the contact's side). A resets the session: B takes A's new first flight as
+     * a renewal and deletes every key of A's it held, a responder session naming none. Before the
+     * review A's `pq_announced_week` survived its own `EST-READY`, so A did not announce its
+     * current generation again until the next one, and B's offers to A stayed classical.
+     */
+    @Test
+    fun aDeviceThatReEstablishesAnnouncesItsKeyAgain() {
+        requireNative()
+        val log = PqLog()
+        world(log).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "ack", null))
+            world.deliver()
+            alice.hintPass()
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "with my key", null))
+            world.deliver()
+            bob.hintPass()
+            val current = currentGeneration(alice)
+            assertTrue("B holds A's key: ${peerPq(bob)}", peerPq(bob).any { it.genId == current })
+            assertNotNull(pqAnnouncedWeek(alice))
+
+            assertEquals(SendResult.QUEUED, alice.engine.resetSession(contactB))
+            deliverBundle(world, from = bob, to = alice, again = true)
+            assertNull("A's EST-READY: the key is announced again", pqAnnouncedWeek(alice))
+            world.deliverBetween(alice, bob)
+            bob.hintPass()
+            assertTrue("B's renewal dropped A's keys: ${peerPq(bob)}", peerPq(bob).isEmpty())
+
+            // B answers on the new session, and A's next normal outputs carry its new root and then,
+            // the two not fitting one 4 KiB message, its announcement.
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "after the reset", null))
+            world.deliver()
+            alice.hintPass()
+            repeat(2) { i ->
+                assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "again $i", null))
+                world.deliver()
+                bob.hintPass()
+            }
+            assertEquals(current, currentGeneration(alice))
+            assertTrue(
+                "B holds A's current key again: ${peerPq(bob)}",
+                peerPq(bob).any { it.genId == current && it.source == "in_band" },
+            )
+        }
+    }
+
+    /**
+     * RECV's two PQ-C refusals **at the engine** (the S13 review: they were tested only in the
+     * crate and at the bridge). A `seal_root_pq` naming a generation B never had is
+     * `pq_root_unopenable` (§22.8.6 rule 3) and a `pq_key` whose X25519 half is low-order is
+     * `bad_pq_key` (§22.8.2 rule 3): each is counted and ignored, and the message that carried it
+     * is shown.
+     */
+    @Test
+    fun anUnopenablePqRootAndAnInvalidPqKeyAreCountedAndTheMessageApplies() {
+        requireNative()
+        val log = PqLog()
+        world(log, corruptPqKey = true, peerGenIdOffset = 0x1_0000L).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world, expectNoDrops = false)
+            assertTrue("A's first offer is PQ-C", log.encoded.last { it.branch == alice.branch }.sealRootPqRode)
+            assertEquals(1, bob.engine.status().drops["pq_root_unopenable"])
+            assertTrue(bob.engine.conversation(contactA, 50, null).any { it.text == "pair now" })
+
+            // A's next message: the announcement first (the offer is a re-attachment), corrupted.
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "with a bad key", null))
+            assertTrue(log.encoded.last { it.branch == alice.branch }.pqKeyRode)
+            world.deliver()
+            bob.hintPass()
+            assertEquals(1, bob.engine.status().drops["bad_pq_key"])
+            assertTrue("nothing stored in band: ${peerPq(bob)}", peerPq(bob).none { it.source == "in_band" })
+            assertTrue(bob.engine.conversation(contactA, 50, null).any { it.text == "with a bad key" })
+        }
+    }
+
+    /**
+     * A `seal_root_pq` that cannot be opened **because the DM context is unavailable** is not the
+     * peer's doing (the S13 review's finding 6): it is not counted as `pq_root_unopenable`, RECV
+     * answers `CRYPTO_UNAVAILABLE` like every other unavailable native call, the message itself is
+     * applied, and the root is not lost — A re-attaches the unacknowledged offer, B opens it once the
+     * context is back, and B's next message is sealed under it.
+     */
+    @Test
+    fun aPqRootThatMeetsAClosedContextIsNotCountedAgainstThePeer() {
+        requireNative()
+        val log = PqLog()
+        world(log).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            log.openUnavailable = true
+            val (contactB, contactA) = establishBothWays(world)
+            val g0 = log.offers.last { it.branch == alice.branch }
+            assertNotNull("A's first offer is PQ-C", g0.peerGenId)
+            assertEquals("not the peer's doing", null, bob.engine.status().drops["pq_root_unopenable"])
+            assertTrue(bob.engine.conversation(contactA, 50, null).any { it.text == "pair now" })
+
+            log.openUnavailable = false
+            // The announcement goes first on A's next message (the offer is a re-attachment), and
+            // the offer rides on the one after.
+            repeat(2) { i ->
+                assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "again $i", null))
+                world.deliver()
+                bob.hintPass()
+            }
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "under your root", null))
+            assertEquals(g0.rootGen, log.pairBlobs.last { it.branch == bob.branch }.rootGen)
+            world.deliver()
+            alice.hintPass()
+            assertTrue(offerAcknowledged(alice, g0.rootGen))
+            assertEquals(0, bob.engine.status().drops.values.sum())
+        }
+    }
+
+    /** Four weeks of B's messages to A, each delivered, with both devices' weekly passes. */
+    private fun fourWeeksOfB(world: DmWorld, contactA: ContactId) {
+        repeat(4) {
+            world.advanceTo(world.alice.clock.now + DmWorld.WEEK)
+            world.alice.timeTriggeredPass()
+            world.bob.timeTriggeredPass()
+            assertEquals(SendResult.QUEUED, world.bob.engine.send(contactA, "b$it", null))
+            world.deliver()
+            world.alice.hintPass()
+        }
+    }
+
+    private fun inKeyGenerations(device: DmDevice): Set<Int> {
+        val out = HashSet<Int>()
+        device.sql.query("SELECT DISTINCT root_gen FROM dm_pair_key WHERE direction = 'in'") {
+            out += it.long(0).toInt()
+        }
+        return out
+    }
+
+    private fun currentGeneration(device: DmDevice): Long? {
+        var current: Long? = null
+        device.sql.query("SELECT gen_id FROM olm_prekey_gen WHERE superseded_day IS NULL") {
+            current = it.long(0)
+        }
+        return current
+    }
+
     // ---------------------------------------------------------------- PQ6 helpers
 
     /**
@@ -311,6 +607,14 @@ class PqcFlowTest {
             alice.engine.conversation(contactB, 50, null).any { it.text == "pair again" },
         )
         assertTrue("which acknowledges it on A (R12)", offerAcknowledged(alice, root.rootGen))
+        // No second bundle fetch (the slice S13 review: this was in prose only). A bundle fetch is
+        // an establishment attempt — `EST-START` listening on the contact's bundle namespace — and
+        // neither side has one running, or anything pending that would start one.
+        for (device in listOf(alice, peer)) {
+            assertEquals("${device.branch}: nothing establishing", 0, device.engine.status().establishing)
+            assertEquals("${device.branch}: nothing pending", 0, device.engine.status().pendingSends)
+            assertEquals(Establishment.READY, device.engine.contacts().single().establishment)
+        }
         // And B holds A's current generation key — in band, or from the bundle it fetched for the
         // new session when that is the same generation (then the announcement is not newer, §7.1).
         var current: Long? = null
@@ -350,7 +654,15 @@ class PqcFlowTest {
 
     // ---------------------------------------------------------------- shared helpers
 
-    private fun establishBothWays(world: DmWorld): Pair<ContactId, ContactId> {
+    /**
+     * A scans B, B accepts and answers, and A's first normal output — [firstPairBody], which
+     * carries A's first root offer — reaches B.
+     */
+    private fun establishBothWays(
+        world: DmWorld,
+        firstPairBody: String = "pair now",
+        expectNoDrops: Boolean = true,
+    ): Pair<ContactId, ContactId> {
         world.alice.engine.onActivated()
         world.bob.engine.onActivated()
         assertEquals(
@@ -370,10 +682,10 @@ class PqcFlowTest {
         assertEquals(SendResult.QUEUED, world.bob.engine.send(contactA, "hi back", null))
         world.deliver()
         world.alice.hintPass()
-        assertEquals(SendResult.QUEUED, world.alice.engine.send(contactB, "pair now", null))
+        assertEquals(SendResult.QUEUED, world.alice.engine.send(contactB, firstPairBody, null))
         world.deliver()
         world.bob.hintPass()
-        assertEquals(0, world.bob.engine.status().drops.values.sum())
+        if (expectNoDrops) assertEquals(0, world.bob.engine.status().drops.values.sum())
         return contactB to contactA
     }
 

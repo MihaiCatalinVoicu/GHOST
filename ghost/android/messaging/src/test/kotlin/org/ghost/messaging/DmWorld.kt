@@ -217,6 +217,19 @@ class DmWorld(
     fun deliverTo(to: DmDevice): Int = deliverFrom(if (to === bob) alice else bob, to)
 
     /**
+     * Loses everything [from] has enqueued so far on its way to [to]: a relay that dropped the
+     * blobs (slice S13 review — a PQ-C offer whose message never arrives). Nothing is inserted,
+     * and a later [deliver] does not bring them back. Returns how many were lost.
+     */
+    fun lose(from: DmDevice, to: DmDevice): Int {
+        var lost = 0
+        from.sql.query("SELECT operation_id, namespace_id FROM outbox_op ORDER BY rowid") {
+            if (listens(to, it.blob(1)) && delivered.add(it.blob(0).toList() to to)) lost += 1
+        }
+        return lost
+    }
+
+    /**
      * Re-serves a blob that was already delivered, as a relay that lies about expiry or serves a
      * copy twice would (§7.6's four replay cases). The recipient must consume it and show nothing.
      */
@@ -475,6 +488,7 @@ class DmDevice(
     internal val steps: OwnerSteps
     internal val sendStep = SendStep(
         database, dmSync, envelopes, material, relayResolver, clock, random, contexts,
+        counters = counters,
     )
     internal val establishment = EstablishmentSteps(
         database, dmSync, envelopes, material, relayResolver, clock, contexts,

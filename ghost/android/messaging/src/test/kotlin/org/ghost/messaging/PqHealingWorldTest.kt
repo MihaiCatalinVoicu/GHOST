@@ -33,7 +33,7 @@ import org.junit.Test
  * MESSAGING branch, `ghost1` seed and `session_state_key`, which is what a dump of the device lets
  * anyone call.
  *
- * **The adversary** is the strongest the statement allows. It holds the leak; it is handed
+ * **The adversary** has everything the statement gives it. It holds the leak; it is handed
  * **every L0 either device encodes after t** — all classical secrets, so it reads every Olm
  * message as if X25519 were broken, including every `root_rand`, every classical root and every
  * `pq_key` — and every blob either device stores (the relay archive). What it does **not** get is
@@ -44,7 +44,10 @@ import org.junit.Test
  *  2. the leaked **unacknowledged offers**' roots, ratcheted the same way;
  *  3. every root that travels after t: a classical `seal_root` is in the L0, and a `seal_root_pq`
  *     opens exactly when the generation it names is one the leak contained (the real `pqRootOpen`,
- *     through the leaked context of the device that decapsulates).
+ *     through the leaked context of the device that decapsulates). That branch runs only when such
+ *     an offer exists: with the leak on day [COMPROMISE_DAY] none does (every later `seal_root_pq`
+ *     targets a post-leak generation), so [pq3APqRootToALeakedGenerationDoesNotHeal] moves the
+ *     leak to day [EARLY_COMPROMISE_DAY], just before a replacement, and asserts the branch ran.
  * It then tries **every** derived key on **every** pair envelope stored after t (recognition hint
  * first, then the real `openPair`), in both directions.
  *
@@ -73,7 +76,65 @@ class PqHealingWorldTest {
     @Test
     fun pq3AnAdversaryWithTheLeakOpensNoPairEnvelopeAfterTheHealingCycle() {
         requireNative()
-        val honest = runWorld(forceClassical = false)
+        val honest = runWorld(forceClassical = false, compromiseDay = COMPROMISE_DAY)
+        assertHealed(honest)
+
+        // The control: the same world, never healing. The adversary opens everything, including
+        // every envelope sealed after the honest world's bound.
+        val control = runWorld(forceClassical = true, compromiseDay = COMPROMISE_DAY)
+        val bound = control.compromiseAt + HEALING_BOUND_WEEKS * DmWorld.WEEK
+        // That the control heals nothing is structural — its recorder refuses every PQ-C offer
+        // before recording one — so what this line checks is that SEND **tried** PQ-C and fell
+        // back each time, which is what makes it the production path and not a world without keys.
+        assertTrue("the control refused PQ-C offers (${control.refusedPqOffers})", control.refusedPqOffers > 0)
+        for (direction in control.directions) {
+            val late = direction.all.filter { it.at >= bound }
+            assertTrue("${direction.label}: the control has late envelopes", late.size >= FLOOR)
+            assertEquals("${direction.label}: nothing healed in the control", 0, direction.healed.size)
+            assertEquals(
+                "${direction.label}: the adversary opens every late envelope of the control",
+                late.size,
+                late.count { it in direction.opened },
+            )
+        }
+    }
+
+    /**
+     * **PQ3 with the leak just before a replacement** (the slice S13 review): on day
+     * [EARLY_COMPROMISE_DAY] the next replacement in each direction is a `seal_root_pq` to the key
+     * the peer announced **before** the leak — a generation the leak contains. That offer does not
+     * heal: the adversary opens it with the real `pqRootOpen` through the leaked context and reads
+     * every envelope under it, and healing waits for the replacement after it. This is the
+     * engine-level counterpart of M-6's control `msgPqOld`, and what makes "a generation created
+     * after the leak", not "any PQ root", the healing condition. The day-31 world never exercised
+     * it: every `seal_root_pq` after that leak went to a post-leak generation.
+     */
+    @Test
+    fun pq3APqRootToALeakedGenerationDoesNotHeal() {
+        requireNative()
+        val early = runWorld(forceClassical = false, compromiseDay = EARLY_COMPROMISE_DAY)
+        assertHealed(early)
+        for (direction in early.directions) {
+            assertTrue(
+                "${direction.label}: a PQ-C root to a leaked generation travelled after the leak",
+                direction.pqLeaked.isNotEmpty(),
+            )
+            assertTrue(
+                "${direction.label}: and the adversary opened it with pqRootOpen (${direction.pqOpened})",
+                direction.pqOpened > 0,
+            )
+            val underLeaked = direction.all.filter { it.rootGen in direction.pqLeaked }
+            assertTrue("${direction.label}: envelopes sealed under it", underLeaked.isNotEmpty())
+            assertEquals(
+                "${direction.label}: every one of them opened",
+                underLeaked.size,
+                underLeaked.count { it in direction.opened },
+            )
+        }
+    }
+
+    /** The per-direction assertions of PQ3 (see the class comment). */
+    private fun assertHealed(honest: Outcome) {
         for (direction in honest.directions) {
             val label = direction.label
             assertTrue("$label: healed envelopes exist (${direction.healed.size})", direction.healed.size >= FLOOR)
@@ -105,40 +166,30 @@ class PqHealingWorldTest {
                 direction.all.any { it.at < healedAt && it in direction.opened },
             )
         }
-
-        // The control: the same world, never healing. The adversary opens everything, including
-        // every envelope sealed after the honest world's bound.
-        val control = runWorld(forceClassical = true)
-        val bound = control.compromiseAt + HEALING_BOUND_WEEKS * DmWorld.WEEK
-        for (direction in control.directions) {
-            val late = direction.all.filter { it.at >= bound }
-            assertTrue("${direction.label}: the control has late envelopes", late.size >= FLOOR)
-            assertEquals("${direction.label}: nothing healed in the control", 0, direction.healed.size)
-            assertEquals(
-                "${direction.label}: the adversary opens every late envelope of the control",
-                late.size,
-                late.count { it in direction.opened },
-            )
-        }
     }
 
     // ---------------------------------------------------------------- the world
 
+    @Suppress("LongParameterList")
     private class Direction(
         val label: String,
         val all: List<PqLog.PairBlob>,
         val healed: List<PqLog.PairBlob>,
         val breakable: List<PqLog.PairBlob>,
         val opened: Set<PqLog.PairBlob>,
+        /** Generations offered after the leak as `seal_root_pq` to a generation the leak held. */
+        val pqLeaked: Set<Int>,
+        /** How many post-leak `seal_root_pq` the adversary opened with `pqRootOpen`. */
+        val pqOpened: Int,
     ) {
         val healedSet: Set<PqLog.PairBlob> = healed.toSet()
         val healingAt: Long? = healed.minOfOrNull { it.at }
     }
 
-    private class Outcome(val compromiseAt: Long, val directions: List<Direction>)
+    private class Outcome(val compromiseAt: Long, val directions: List<Direction>, val refusedPqOffers: Int)
 
     @Suppress("LongMethod")
-    private fun runWorld(forceClassical: Boolean): Outcome {
+    private fun runWorld(forceClassical: Boolean, compromiseDay: Int): Outcome {
         val log = PqLog()
         val world = DmWorld(decorate = { branch, inner -> PqRecorder(inner, branch, log, forceClassical) })
         log.now = { world.alice.clock.now }
@@ -153,7 +204,7 @@ class PqHealingWorldTest {
                 world.advanceTo(alice.clock.now + DmWorld.DAY)
                 alice.timeTriggeredPass()
                 bob.timeTriggeredPass()
-                if (day == COMPROMISE_DAY) {
+                if (day == compromiseDay) {
                     compromiseAt = alice.clock.now
                     leakA = Leak.of(alice)
                     leakB = Leak.of(bob)
@@ -170,6 +221,8 @@ class PqHealingWorldTest {
             for (device in listOf(alice, bob)) {
                 val drops = device.engine.status().drops.filterKeys { it != "root_not_newer" }
                 assertEquals("no drop in the world: $drops", 0, drops.values.sum())
+                // The sending side's PQ-C counts (the slice S13 review), for the report.
+                println("dm PQ3 device ${device.branch} (leak day $compromiseDay): pq ${device.engine.status().pq}")
             }
             val finalWeek = DmTime.week(alice.clock.now)
             val a = requireNotNull(leakA)
@@ -178,9 +231,10 @@ class PqHealingWorldTest {
                 return Outcome(
                     compromiseAt = compromiseAt,
                     directions = listOf(
-                    direction("A→B", log, from = a, to = b, alice, compromiseAt, finalWeek),
-                    direction("B→A", log, from = b, to = a, bob, compromiseAt, finalWeek),
+                        direction("A→B", log, from = a, to = b, alice, compromiseAt, finalWeek),
+                        direction("B→A", log, from = b, to = a, bob, compromiseAt, finalWeek),
                     ),
+                    refusedPqOffers = log.refusedPqOffers,
                 )
             } finally {
                 DmSessions.closeContext(a.handle)
@@ -210,7 +264,15 @@ class PqHealingWorldTest {
                 offer.peerGenId !in from.generationIds
         }
         val breakable = blobs - healed.toSet()
-        val keys = Adversary(from, to, log, compromiseAt, finalWeek).keys()
+        // The generations the recipient offered after the leak as a PQ-C root to a generation of
+        // the sender's that the leak held: PQ-C, and still not healed.
+        val pqLeaked = offers.map { it.rootGen }.distinct().filter { gen ->
+            val offer = offerOf(gen)
+            offer != null && offer.at >= compromiseAt && offer.peerGenId != null &&
+                offer.peerGenId in from.generationIds
+        }.toSet()
+        val adversary = Adversary(from, to, log, compromiseAt, finalWeek)
+        val keys = adversary.keys()
         val namespaces = storedNamespaces(sender)
         val opened = LinkedHashSet<PqLog.PairBlob>()
         for (blob in blobs) {
@@ -234,13 +296,14 @@ class PqHealingWorldTest {
                 }
             }
         }
-        val direction = Direction(label, blobs, healed, breakable, opened)
+        val direction = Direction(label, blobs, healed, breakable, opened, pqLeaked, adversary.pqOpened)
         // The report line: what the run measured, whatever the assertions decide.
         println(
             "dm PQ3 $label (forced classical: ${offers.none { it.peerGenId != null }}): " +
                 "${blobs.size} pair envelopes after the leak, ${healed.size} under healed generations " +
                 "(opened ${healed.count { it in opened }}), ${breakable.size} under leaked or classical roots " +
-                "(opened ${breakable.count { it in opened }}), ${keys.size} derived keys; roots offered: " +
+                "(opened ${breakable.count { it in opened }}), ${keys.size} derived keys, " +
+                "${adversary.pqOpened} post-leak PQ-C roots opened with pqRootOpen; roots offered: " +
                 offers.joinToString { offer ->
                     val kind = when (offer.peerGenId) {
                         null -> "classical"
@@ -351,6 +414,10 @@ class PqHealingWorldTest {
         private val compromiseAt: Long,
         private val finalWeek: Long,
     ) {
+        /** Post-leak `seal_root_pq` offers this adversary opened with the real `pqRootOpen`. */
+        var pqOpened: Int = 0
+            private set
+
         fun keys(): List<Key> {
             val out = ArrayList<Key>()
             // 1. The recipient's leaked in keys, each generation ratcheted forward from its newest.
@@ -387,6 +454,7 @@ class PqHealingWorldTest {
                         peerOlmIdentity = from.peerOlmIdentity,
                     )
                     if (opened is DmPairing.PqOpenResult.Ok) {
+                        pqOpened += 1
                         out += ratchet(from, opened.rootGen, DmPairing.From.ROOT, opened.rootEnv, opened.baseWeek, opened.baseWeek)
                     }
                 }
@@ -480,11 +548,21 @@ class PqHealingWorldTest {
         const val DAYS = 84
 
         /**
-         * The leak: in the fifth week, after both roots were replaced once (rule c at four weeks),
-         * so the next replacement is a full cycle away and the healing latency is the worst the
-         * cadence gives rather than the best.
+         * The leak: in the fifth week, five days after both roots were replaced (rule c at four
+         * weeks, on day 26), so the next replacement is about 23 days away and goes to a key
+         * announced after the leak. It is **not** the worst case of the cadence, which is a leak
+         * just after a replacement (§22.18 item 11 says so); the 6-week bound is asserted, not
+         * stressed. (The comment this replaces called it "a full cycle away … the worst the cadence
+         * gives", which the recorded offer days contradicted — the slice S13 review.)
          */
         const val COMPROMISE_DAY = 31
+
+        /**
+         * The leak one or two days before the day-26 replacement: that replacement then goes to a
+         * key the peer announced before the leak, and healing waits for the next one
+         * ([pq3APqRootToALeakedGenerationDoesNotHeal]).
+         */
+        const val EARLY_COMPROMISE_DAY = 24
 
         /** §9.4: "about 5–6 weeks of ordinary two-way use at the default cadence". */
         const val HEALING_BOUND_WEEKS = 6L

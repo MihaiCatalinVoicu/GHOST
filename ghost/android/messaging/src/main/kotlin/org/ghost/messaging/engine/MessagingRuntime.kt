@@ -89,7 +89,9 @@ class MessagingRuntime(
         keyWrapper = contentKeys,
         esSlots = esSlots,
     )
-    private val sendStep = SendStep(database, sync, envelopes, material, relayResolver, clock, random, contexts)
+    private val sendStep = SendStep(
+        database, sync, envelopes, material, relayResolver, clock, random, contexts, counters = counters,
+    )
     private val establishment = EstablishmentSteps(database, sync, envelopes, material, relayResolver, clock, contexts)
     private val bundleStep = BundleStep(envelopes, material, clock, contexts)
     private val contactSteps = ContactSteps(database, crypto, random, contexts, establishment)

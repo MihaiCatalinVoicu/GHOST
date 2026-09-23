@@ -8,7 +8,8 @@
 //!
 //! The slice trait performs no ML-KEM input check, so [`validate_public_key`] calls
 //! `libcrux_ml_kem::mlkem768::validate_public_key` on the first 1 184 bytes itself and adds a
-//! contributory X25519 trial agreement on the last 32 (§22.8.2 rule 3). libcrux **errors** where
+//! canonical-encoding check and a contributory X25519 trial agreement on the last 32 (§22.8.2
+//! rule 3; the encoding check since the slice S13 review). libcrux **errors** where
 //! RustCrypto `x-wing` returns a secret; every such error is typed here (§22.8.2 rule 4):
 //! `INVALID_KEY` on the sealing side, `NOT_OPEN` on the opening side.
 
@@ -126,14 +127,23 @@ pub fn public_key(seed: &KemSecret) -> DmResult<Vec<u8>> {
     Ok(keygen(seed)?.public.clone())
 }
 
-/// A trial X25519 agreement of a fresh random scalar with `point` is contributory: it is not the
-/// all-zero output a low-order or non-canonical point gives (§22.8.2 rule 1).
+/// The scalar of the trial agreement in [`contributory`]: any value, since X25519 clamps it.
+const TRIAL_SCALAR: [u8; 32] = [0x5a; 32];
+
+/// A trial X25519 agreement with `point` is contributory: it is not the all-zero output a
+/// low-order point gives (§22.8.2 rule 1).
+///
+/// **Why a fixed scalar is exact (slice S13 review).** X25519 clamps every scalar to `k = 2^254 +
+/// 8m`, `m < 2^251`, and the ladder answers zero exactly when `[k]P` is the identity or the point
+/// of order 2. The curve group is `Z/8 × Z/ℓ` and the twist's `Z/4 × Z/p'`, with `ℓ ≈ 2^252` and
+/// `p' ≈ 2^253` prime; for `[k]P` to vanish on a point whose order has the large prime factor, `k`
+/// would have to be a multiple of `8ℓ` or `8p'`, both above `2^255 > k`, and "the point of order 2"
+/// would need a 2-power of order 16, which neither group has. So the output is zero **for every
+/// clamped scalar** exactly when the point's order divides 8 (curve) or 4 (twist). The earlier
+/// random scalar decided nothing a constant does not, and it drew on the OS generator — with a
+/// panic if that failed — on paths that parse a peer's bytes (`l0Decode`'s `pq_key`).
 pub fn contributory(point: &[u8; 32]) -> bool {
-    let mut scalar = [0u8; 32];
-    fill_random(&mut scalar);
-    let shared = x25519_dalek::x25519(scalar, *point);
-    scalar.zeroize();
-    shared != [0u8; 32]
+    x25519_dalek::x25519(TRIAL_SCALAR, *point) != [0u8; 32]
 }
 
 /// The Curve25519 field prime `p = 2^255 - 19`, little-endian: the bound a canonical u-coordinate
@@ -162,7 +172,16 @@ pub fn canonical_u_coordinate(point: &[u8; 32]) -> bool {
 }
 
 /// Whole-key validation of a 1 216-byte encapsulation key (§22.8.2 rule 3): the exact length, then
-/// FIPS 203 modulus validation of the ML-KEM half, then a contributory trial on the X25519 half.
+/// FIPS 203 modulus validation of the ML-KEM half, then the X25519 half — a **canonical** encoding
+/// ([`canonical_u_coordinate`]) of a point that is not low-order ([`contributory`]).
+///
+/// The canonical check was added by the slice S13 review. X25519 reduces a non-canonical `u`
+/// (the top bit set, or `p ≤ u < 2^255`) to the point it encodes, so such a key encapsulates —
+/// but the X-Wing combiner and the PQ-C root's salt (§9.4) hash the key's **bytes**, and the key's
+/// owner recomputes the canonical ones from its seed: the two sides would derive different
+/// secrets from one encapsulation, silently. Only the key's owner can publish such a key (keys
+/// built in this crate are canonical), so it is refused here as an invalid key rather than left to
+/// fail as "the peer never opens it".
 pub fn validate_public_key(bytes: &[u8]) -> DmResult<()> {
     if bytes.len() != PUBLIC_KEY_BYTES {
         return Err(DmCode::InvalidKey);
@@ -174,7 +193,7 @@ pub fn validate_public_key(bytes: &[u8]) -> DmResult<()> {
     }
     let mut x25519 = [0u8; 32];
     x25519.copy_from_slice(&bytes[ML_KEM_PUBLIC_KEY_BYTES..]);
-    if !contributory(&x25519) {
+    if !canonical_u_coordinate(&x25519) || !contributory(&x25519) {
         return Err(DmCode::InvalidKey);
     }
     Ok(())
@@ -395,6 +414,59 @@ mod tests {
             bad[ML_KEM_PUBLIC_KEY_BYTES..].copy_from_slice(&point);
             assert_eq!(validate_public_key(&bad).err(), Some(DmCode::InvalidKey));
             assert_eq!(encapsulate(&bad).err(), Some(DmCode::InvalidKey));
+        }
+    }
+
+    /// The slice S13 review: an X25519 half that encodes a valid point non-canonically is refused.
+    /// X25519 itself accepts it — the encapsulation succeeds — but the key's bytes are hashed by
+    /// the combiner and the PQ-C salt, and its owner holds the canonical ones.
+    #[test]
+    fn a_non_canonical_x25519_half_is_refused_although_x25519_accepts_it() {
+        let pair = keygen(&seed(10)).expect("keygen");
+        assert!(validate_public_key(&pair.public).is_ok());
+        // The top bit: the same point to X25519.
+        let mut high = pair.public.clone();
+        high[PUBLIC_KEY_BYTES - 1] |= 0x80;
+        let mut point = [0u8; 32];
+        point.copy_from_slice(&high[ML_KEM_PUBLIC_KEY_BYTES..]);
+        assert!(
+            contributory(&point),
+            "a valid point, only encoded differently"
+        );
+        assert_eq!(validate_public_key(&high).err(), Some(DmCode::InvalidKey));
+        assert_eq!(encapsulate(&high).err(), Some(DmCode::InvalidKey));
+        // `u + p` for a small valid u: 9 is the base point's u, and 9 + p < 2^255.
+        let mut plus_p = pair.public.clone();
+        let mut nine_plus_p = CURVE25519_P;
+        nine_plus_p[0] += 9;
+        plus_p[ML_KEM_PUBLIC_KEY_BYTES..].copy_from_slice(&nine_plus_p);
+        assert!(
+            contributory(&nine_plus_p),
+            "the base point, non-canonically"
+        );
+        assert_eq!(validate_public_key(&plus_p).err(), Some(DmCode::InvalidKey));
+    }
+
+    /// The trial scalar is fixed, and the answer is the same for any clamped scalar (the proof is
+    /// on [`contributory`]): checked here against a spread of random ones.
+    #[test]
+    fn contributory_does_not_depend_on_the_scalar() {
+        let pair = keygen(&seed(11)).expect("keygen");
+        let mut good = [0u8; 32];
+        good.copy_from_slice(&pair.public[ML_KEM_PUBLIC_KEY_BYTES..]);
+        let mut points = low_order_points();
+        points.push(good);
+        for _ in 0..32 {
+            let mut scalar = [0u8; 32];
+            fill_random(&mut scalar);
+            for point in &points {
+                assert_eq!(
+                    x25519_dalek::x25519(scalar, *point) != [0u8; 32],
+                    contributory(point),
+                    "{}",
+                    hex_of(point)
+                );
+            }
         }
     }
 

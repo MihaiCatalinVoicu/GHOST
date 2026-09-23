@@ -128,7 +128,10 @@ class OwnerWorld(
     }
 
     internal val sendStep: SendStep by lazy {
-        SendStep(database, dmSync, envelopes, material, relayResolver, clock, random, contexts)
+        SendStep(
+            database, dmSync, envelopes, material, relayResolver, clock, random, contexts,
+            counters = counters,
+        )
     }
 
     internal val establishment: EstablishmentSteps by lazy {

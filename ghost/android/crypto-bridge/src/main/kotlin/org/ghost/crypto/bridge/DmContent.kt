@@ -181,6 +181,12 @@ object DmContent {
             val sealRootPqRode: Boolean = false,
             /** A `pq_key` is in [l0]. */
             val pqKeyRode: Boolean = false,
+            /**
+             * The `pq_key` candidate could not be built from its stored generation (a row whose
+             * secrets do not unwrap) and was left out; [l0] is the message without it (slice S13
+             * review — before it, the whole encode failed and so did every such send).
+             */
+            val pqKeyDropped: Boolean = false,
         ) : Encoded
 
         /** A field is out of range, or the TLV list is not the shape R-C4 admits. */
@@ -281,6 +287,7 @@ object DmContent {
                     sealRootRode = flags and DM_TLV_SEAL_ROOT != 0,
                     sealRootPqRode = flags and DM_TLV_SEAL_ROOT_PQ != 0,
                     pqKeyRode = flags and DM_TLV_PQ_KEY != 0,
+                    pqKeyDropped = flags and DM_TLV_PQ_KEY_DROPPED != 0,
                 )
             }
             DmCode.NON_CANONICAL -> Encoded.NonCanonical

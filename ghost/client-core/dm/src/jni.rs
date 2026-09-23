@@ -335,7 +335,8 @@ pub const FUNCTION_CODES: &[(&str, &[DmCode])] = &[
         ],
     ),
     // `pqRootOpen`: a generation other than the one named, and every decapsulation error, is
-    // `NOT_OPEN` (§22.8.2 rule 4, §22.8.6 rule 3).
+    // `NOT_OPEN` (§22.8.2 rule 4, §22.8.6 rule 3); a `rootGen` other than the TLV's is the caller's
+    // inconsistency (both come from one `l0Decode`), `NON_CANONICAL`.
     (
         "pqRootOpen",
         &[
@@ -2031,6 +2032,31 @@ fn generation_xwing_seed(
     Ok(secret)
 }
 
+/// The `pq_key` TLV announcing this device's stored generation `gen_id` (§9.4): the X-Wing public
+/// key is recomputed from the generation's own seed, so a caller cannot announce a key it does not
+/// hold. Any failure is the stored row's (`STATE_CORRUPT`), and [`l0_encode`] drops the candidate.
+fn announcement(
+    context: &DmContext,
+    gen_id: u32,
+    bundle_week: u64,
+    fallback_public: &[u8; 32],
+    secrets_env: &[u8],
+) -> Result<codec::Tlv, DmCode> {
+    let seed = generation_xwing_seed(context, gen_id, fallback_public, secrets_env)?;
+    let xwing_pk = pq::public_key(&seed).map_err(|_| DmCode::StateCorrupt)?;
+    let value = codec::PqKey {
+        gen_id,
+        bundle_week,
+        xwing_pk,
+    }
+    .encode()
+    .map_err(|_| DmCode::StateCorrupt)?;
+    Ok(codec::Tlv {
+        tlv_type: codec::TLV_PQ_KEY,
+        value,
+    })
+}
+
 /// §2.6 function 16, sealing half (slice S13): `pqRootSeal(h, contactId, rootGen, baseWeek,
 /// peerOlmIdentity, peerGenId, peerXwingPk)`.
 ///
@@ -2103,9 +2129,11 @@ pub fn pq_root_seal(
 /// §2.6 function 16, opening half (slice S13): `pqRootOpen(h, contactId, rootGen, genId,
 /// genSecretsEnv, genFallbackPublic, tlv, peerOlmIdentity)`.
 ///
-/// `tlv` is the 1 166-byte `seal_root_pq` value [`l0_decode`] returned; its `root_gen` must be
-/// `rootGen` and its `peer_gen_id` must be `genId`, the generation the caller loaded, or the TLV
-/// is [`DmCode::NotOpen`] (§22.8.6 rule 3). The root comes back wrapped exactly as a classical
+/// `tlv` is the 1 166-byte `seal_root_pq` value [`l0_decode`] returned; its `peer_gen_id` must be
+/// `genId`, the generation the caller loaded, or the TLV is [`DmCode::NotOpen`] (§22.8.6 rule 3).
+/// Its `root_gen` must be `rootGen`, which the caller took from the same `l0Decode` reply, so a
+/// mismatch is the caller's inconsistency and [`DmCode::NonCanonical`], never a peer's doing. The
+/// root comes back wrapped exactly as a classical
 /// `seal_root`'s does from `l0Decode` (`dm_pair_offer.root_env`'s binding), so the caller hands it
 /// to [`pair_keys`] and never sees it (R-S6). The peer is the offerer here.
 ///
@@ -2129,6 +2157,8 @@ pub fn pq_root_open(
     let gen_id = gen_id as u32;
     let gen_secrets_env = bytes(env, gen_secrets_env)?;
     let gen_fallback_public = fixed::<32>(env, gen_fallback_public)?;
+    // `root_rand` is in these bytes: `bytes` hands them over `Zeroizing`, and `SealRootPq`'s own
+    // `Drop` erases the parsed copy (slice S13 review).
     let tlv = bytes(env, tlv)?;
     let peer_olm_identity = fixed::<32>(env, peer_olm_identity)?;
     let parsed = codec::SealRootPq::decode(&tlv)?;
@@ -2330,7 +2360,9 @@ pub fn provisional_keys(
 /// `pqKeySecretsEnv` means "no announcement". The reply's [`Field::TlvFlags`] says which of the
 /// three root and key TLVs rode — [`TLV_FLAG_SEAL_ROOT`], [`TLV_FLAG_SEAL_ROOT_PQ`],
 /// [`TLV_FLAG_PQ_KEY`] — so the caller writes a newly minted PQ offer and
-/// `dm_contact.pq_announced_week` only when their bytes are in the L0 it commits.
+/// `dm_contact.pq_announced_week` only when their bytes are in the L0 it commits, and
+/// [`TLV_FLAG_PQ_KEY_DROPPED`] when the announcement could not be built from its stored generation
+/// (the L0 goes out without it; slice S13 review).
 #[allow(clippy::too_many_arguments)]
 pub fn l0_encode(
     env: &mut JNIEnv,
@@ -2420,18 +2452,17 @@ pub fn l0_encode(
                 ext.push(tlv);
             }
         }
+        // The announcement is **optional**, and an optional TLV never blocks the message it would
+        // have ridden on (slice S13 review): a generation row whose secrets do not unwrap or whose
+        // seed does not expand is left out and reported ([`TLV_FLAG_PQ_KEY_DROPPED`]), and the L0
+        // goes out without it. Failing the whole encode instead made every send to every contact
+        // not yet told of this generation answer `CRYPTO_UNAVAILABLE` until the next one.
+        let mut pq_key_dropped = false;
         if let Some((gen_id, week, fallback)) = pq_key {
-            let seed = generation_xwing_seed(context, gen_id, &fallback, &pq_key_secrets_env)?;
-            let xwing_pk = pq::public_key(&seed).map_err(|_| DmCode::StateCorrupt)?;
-            candidates.push(codec::Tlv {
-                tlv_type: codec::TLV_PQ_KEY,
-                value: codec::PqKey {
-                    gen_id,
-                    bundle_week: week,
-                    xwing_pk,
-                }
-                .encode()?,
-            });
+            match announcement(context, gen_id, week, &fallback, &pq_key_secrets_env) {
+                Ok(tlv) => candidates.push(tlv),
+                Err(_) => pq_key_dropped = true,
+            }
         }
         if pq_key_first != 0 {
             candidates.reverse();
@@ -2481,7 +2512,11 @@ pub fn l0_encode(
                 return Err(code);
             }
         };
-        let mut flags = 0u8;
+        let mut flags = if pq_key_dropped {
+            TLV_FLAG_PQ_KEY_DROPPED
+        } else {
+            0u8
+        };
         for tlv in &content.ext {
             match tlv.tlv_type {
                 codec::TLV_SEAL_ROOT => flags |= TLV_FLAG_SEAL_ROOT,
@@ -2532,6 +2567,9 @@ pub const TLV_FLAG_PQ_KEY: u8 = 0b0010_0000;
 /// Bit 6 (slice S13): the L0 carried a `pq_key` whose key fails the whole-key validation: ignored
 /// and counted (§22.8.2 rule 3), and the rest of the L0 applies.
 pub const TLV_FLAG_PQ_KEY_INVALID: u8 = 0b0100_0000;
+/// Bit 7, on an `l0Encode` reply only (slice S13 review): the `pq_key` candidate could not be built
+/// from its stored generation and was left out; the L0 was encoded without it.
+pub const TLV_FLAG_PQ_KEY_DROPPED: u8 = 0b1000_0000;
 
 /// §2.6 function 18: `l0Decode(h, contactId, l0)`.
 ///

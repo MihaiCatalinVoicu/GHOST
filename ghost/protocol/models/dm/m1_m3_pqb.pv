@@ -7,7 +7,8 @@
      1. A's first flight: an intro envelope. The outer layer is keyed by B's card (KIO_B), which a
         card holder has, so the adversary here holds KIO_B (M-1's "the adversary knows KIO"). The
         inner layer is keyed by k_in = HKDF(ss, T_in), ss from an X-Wing encapsulation to B's
-        bundle generation, and carries A's card, reply_seed and the first L1.
+        bundle generation, and carries A's card, binding v3, reply_seed and the first L1 — the four
+        values §9.5 M-1 names.
      2. B's reply: a provisional envelope under K_prov = HKDF(reply_seed, sb, dir), carrying B's
         root (seal_root) in its Olm content.
      3. A's next message: a pair envelope under B's root, carrying A's root.
@@ -18,7 +19,20 @@
 
    PQ-B's induction is visible in the chain: reply_seed is secret only through k_in (KEM), B's root
    only through K_prov (reply_seed), A's root and the pair content only through B's root. Expected
-   results are in expected.txt; outerOnly is the control that the adversary does hold KIO_B. *)
+   results are in expected.txt; outerOnly is the control that the adversary does hold KIO_B.
+
+   What this model does NOT check, stated (the slice S13 review):
+   - binding v3 appears here only as a value whose secrecy M-1 asks for; its authentication is
+     M-2's model (m2_binding.pv);
+   - one session, no replication: the property is about one recorded flow, and a card holder is
+     given KIO_B but does not deposit intros of its own — an active card holder is the
+     authentication question of M-2 and KC13, not HNDL secrecy;
+   - the honest flow completing is checked by three reachability queries (ResponderOpened,
+     InitiatorPaired, ResponderPaired), each expected `false` = reachable: without them a flow that
+     silently stopped would make every secrecy query above vacuously `true`.
+
+   The mutant m1_m3_pqb_mutant_no_kem.pv is generated from this file by
+   m1_m3_pqb_mutant_no_kem.patch (scripts/gates/pq-model.sh), so it cannot drift from it. *)
 
 free c: channel.
 free net: channel [private].
@@ -52,6 +66,7 @@ free dirToInitiator: bitstring.
 free dirToResponder: bitstring.
 
 free cardA: bitstring [private].
+free bindingA: bitstring [private].
 free replySeed: bitstring [private].
 free l1First: bitstring [private].
 free rootB: bitstring [private].
@@ -61,7 +76,13 @@ free msgPair: bitstring [private].
 (* Control: a value sealed under the card-keyed outer layer alone. *)
 free outerOnly: bitstring [private].
 
+(* The honest flow's three steps, for the reachability queries. *)
+event ResponderOpened.
+event InitiatorPaired.
+event ResponderPaired.
+
 query attacker(cardA).
+query attacker(bindingA).
 query attacker(replySeed).
 query attacker(l1First).
 query attacker(rootB).
@@ -69,19 +90,23 @@ query attacker(msgProvisional).
 query attacker(rootA).
 query attacker(msgPair).
 query attacker(outerOnly).
+query event(ResponderOpened).
+query event(InitiatorPaired).
+query event(ResponderPaired).
 
 let Initiator(pkG: kpkey) =
   new r: bitstring;
   new baseKey: bitstring;
   let ct = kct(pkG, r) in
   let tin = (ns, gen0, pkG, ct, oiB) in
-  let inner = seal((cardA, replySeed, l1First), kin(kss(pkG, r), tin)) in
+  let inner = seal((cardA, bindingA, replySeed, l1First), kin(kss(pkG, r), tin)) in
   let outer = seal((gen0, ct, inner), kioB) in
   out(c, (baseKey, outer));
   out(net, (baseKey, outer));
   (* B's provisional reply, opened with the reply_seed A generated *)
   in(net, prov: bitstring);
   let (rB: bitstring, mB: bitstring) = unseal(prov, kprov(replySeed, (oiA, baseKey, oiB), dirToInitiator)) in
+  event InitiatorPaired;
   let pair = seal((rootA, msgPair), kroot(rB)) in
   out(c, pair);
   out(net, pair).
@@ -90,13 +115,15 @@ let Responder(skG: kskey) =
   in(net, (baseKey: bitstring, outer: bitstring));
   let (=gen0, ct: bitstring, inner: bitstring) = unseal(outer, kioB) in
   let tin = (ns, gen0, kpk(skG), ct, oiB) in
-  let (card: bitstring, seed: bitstring, l1: bitstring) = unseal(inner, kin(kdec(skG, ct), tin)) in
+  let (card: bitstring, binding: bitstring, seed: bitstring, l1: bitstring) = unseal(inner, kin(kdec(skG, ct), tin)) in
+  event ResponderOpened;
   let prov = seal((rootB, msgProvisional), kprov(seed, (oiA, baseKey, oiB), dirToInitiator)) in
   out(c, prov);
   out(net, prov);
   (* A's pair envelope under B's root *)
   in(net, pair: bitstring);
   let (rA: bitstring, m: bitstring) = unseal(pair, kroot(rootB)) in
+  event ResponderPaired;
   0.
 
 process

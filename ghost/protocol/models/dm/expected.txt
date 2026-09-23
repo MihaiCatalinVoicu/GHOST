@@ -4,13 +4,24 @@
 #   model | token | expected
 #
 # token: a substring that names exactly one RESULT line of that model's output.
-# expected: `true` — ProVerif proves the property; `false` — ProVerif finds the attack. A control
-# (a query that must fail, or a whole mutant model) is how a model shows it can fail at all.
+# expected: `true` — ProVerif proves the property; `false` — ProVerif finds the attack, or, for a
+# reachability query `event(X)`, finds a trace that executes X. A control (a query that must fail,
+# or a mutant model) is how a model shows it can fail at all; a reachability query is how it shows
+# its honest flow completes, so that a `true` above it is not vacuous.
 # A missing or extra RESULT line, `cannot be proved`, a non-zero exit or a timeout fails the job,
-# and so does a .pv file of the directory that no line lists.
+# and so does a .pv or .patch file of the directory that no line lists.
+#
+# A model named <original>_mutant_<name>.pv is NOT a file: the gate generates it from
+# <original>.pv with <original>_mutant_<name>.patch (GNU patch, no fuzz), so a mutant is always
+# its original plus one mutation, and a patch that no longer applies fails the job.
+#
+# Not modelled here (design §22.18): M-4 (a written argument by §9.5's own table), M-5 (EM-1 is
+# its only mechanised check), M-8 (vectors, differential tests, fuzzing). A green run is M-1, M-2,
+# M-3, M-6 (its step (3) only) and M-7 (its derivation structure only), nothing more.
 
 # M-1 (HNDL secrecy of the intro inner layer, a card holder's view) and M-3 (PQ-B by induction).
 m1_m3_pqb.pv|attacker(cardA[])|true
+m1_m3_pqb.pv|attacker(bindingA[])|true
 m1_m3_pqb.pv|attacker(replySeed[])|true
 m1_m3_pqb.pv|attacker(l1First[])|true
 m1_m3_pqb.pv|attacker(rootB[])|true
@@ -19,9 +30,15 @@ m1_m3_pqb.pv|attacker(rootA[])|true
 m1_m3_pqb.pv|attacker(msgPair[])|true
 # control: the adversary does hold the card-keyed outer layer
 m1_m3_pqb.pv|attacker(outerOnly[])|false
+# reachability: the honest flow completes (B opens the intro, A opens B's reply, B opens A's pair)
+m1_m3_pqb.pv|event(ResponderOpened)|false
+m1_m3_pqb.pv|event(InitiatorPaired)|false
+m1_m3_pqb.pv|event(ResponderPaired)|false
 
-# The same flow with the inner layer keyed without the KEM (PM-32 as a model mutant): all fail.
+# The same flow with the inner layer keyed without the KEM (PM-32 as a model mutant): every
+# secrecy query fails, and the flow still completes.
 m1_m3_pqb_mutant_no_kem.pv|attacker(cardA[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(bindingA[])|false
 m1_m3_pqb_mutant_no_kem.pv|attacker(replySeed[])|false
 m1_m3_pqb_mutant_no_kem.pv|attacker(l1First[])|false
 m1_m3_pqb_mutant_no_kem.pv|attacker(rootB[])|false
@@ -29,27 +46,48 @@ m1_m3_pqb_mutant_no_kem.pv|attacker(msgProvisional[])|false
 m1_m3_pqb_mutant_no_kem.pv|attacker(rootA[])|false
 m1_m3_pqb_mutant_no_kem.pv|attacker(msgPair[])|false
 m1_m3_pqb_mutant_no_kem.pv|attacker(outerOnly[])|false
+m1_m3_pqb_mutant_no_kem.pv|event(ResponderOpened)|false
+m1_m3_pqb_mutant_no_kem.pv|event(InitiatorPaired)|false
+m1_m3_pqb_mutant_no_kem.pv|event(ResponderPaired)|false
 
-# M-2 (binding v3: agreement, KCI with the recipient's full state, no transfer).
+# M-2 (binding v3: agreement with two recipients, KCI with both recipients' full state, no transfer).
 m2_binding.pv|event(Accepted(|true
 # control: an identity whose signing key leaked
 m2_binding.pv|event(AcceptedFromC(|false
+# reachability: an honest binding of A's is accepted
+m2_binding.pv|event(AcceptedHonest)|false
 
-# M-6 (PQ-C healing with a compromise event).
+# The same with neither the namespace nor OI_B signed: a binding for B is accepted by D.
+m2_binding_mutant_unbound_recipient.pv|event(Accepted(|false
+m2_binding_mutant_unbound_recipient.pv|event(AcceptedFromC(|false
+m2_binding_mutant_unbound_recipient.pv|event(AcceptedHonest)|false
+
+# M-6, step (3) of §9.4's healing argument, one direction.
 m6_pqc_healing.pv|attacker(msgHealed[])|true
 m6_pqc_healing.pv|attacker(msgHealedLater[])|true
-# controls: the leak's future, a classical root after t, a PQ root to a leaked generation
+# controls: the week key live at t, a classical root after t, a PQ root to the leaked generation
 m6_pqc_healing.pv|attacker(msgBefore[])|false
 m6_pqc_healing.pv|attacker(msgClassical[])|false
 m6_pqc_healing.pv|attacker(msgPqOld[])|false
+# reachability: A seals under the healed root
+m6_pqc_healing.pv|event(SealedHealed)|false
 
-# M-7 (attribution forward secrecy as key erasure).
-m7_erasure.pv|attacker(kWeekW[])|true
+# M-7 (attribution forward secrecy as key erasure: the derivation structure).
+m7_erasure.pv|attacker(rootW[])|true
 m7_erasure.pv|attacker(msgWeekW[])|true
+m7_erasure.pv|attacker(recogProbe[])|true
 # control: the seizure reads the week still live
 m7_erasure.pv|attacker(msgLive[])|false
 
-# The same world with an invertible ratchet: all fail.
-m7_erasure_mutant_invertible.pv|attacker(kWeekW[])|false
+# An invertible ratchet: week w is reached from the seized later keys (the root stays secret, as
+# kbase is still one-way).
+m7_erasure_mutant_invertible.pv|attacker(rootW[])|true
 m7_erasure_mutant_invertible.pv|attacker(msgWeekW[])|false
+m7_erasure_mutant_invertible.pv|attacker(recogProbe[])|false
 m7_erasure_mutant_invertible.pv|attacker(msgLive[])|false
+
+# A root derived from the seed: week w is reached from the seized seed (rootW is unused).
+m7_erasure_mutant_seed_root.pv|attacker(rootW[])|true
+m7_erasure_mutant_seed_root.pv|attacker(msgWeekW[])|false
+m7_erasure_mutant_seed_root.pv|attacker(recogProbe[])|false
+m7_erasure_mutant_seed_root.pv|attacker(msgLive[])|false

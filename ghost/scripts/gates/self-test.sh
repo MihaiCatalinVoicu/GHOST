@@ -160,6 +160,10 @@ pqm_case fail proverif-error "rejects a ProVerif error"
 pqm_case fail timeout "rejects a model that runs past the timeout"
 pqm_case fail ambiguous-token "rejects a token that names two results"
 pqm_case fail malformed-expected "rejects an expectation that is neither true nor false"
+# The S13 review: mutants are generated from their originals by a patch, never copied.
+pqm_case pass mutant-pass "accepts a mutant generated from its original by a patch"
+pqm_case fail mutant-drift "rejects a mutant patch that no longer applies to its original"
+pqm_case fail mutant-copied "rejects a mutant that is both a copied file and a patch"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

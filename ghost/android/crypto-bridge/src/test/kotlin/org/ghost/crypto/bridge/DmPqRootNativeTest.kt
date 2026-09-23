@@ -353,18 +353,21 @@ class DmPqRootNativeTest {
             assertTrue(flagged.pqKeyInvalid)
             assertEquals("the rest of the L0 applies", "key", String(flagged.body))
 
-            // A wrong generation binding for the candidate is corrupt, never a silent omission.
+            // A candidate whose generation does not unwrap (a wrong binding) is **dropped and
+            // flagged**, never a silent omission and never a failed send (the S13 review: an
+            // optional announcement blocked every message it would have ridden on).
             val wrongBinding = DmContent.PqKeyCandidate(
                 candidate.genId, candidate.bundleWeek, candidate.secretsEnv, ByteArray(32) { 9 },
             )
-            assertEquals(
-                DmContent.Encoded.StateCorrupt,
-                DmContent.encode(
-                    handle = p.a, kind = DmContent.Kind.TEXT, messageId = bytes(1, 16),
-                    authorMinute = 29_010_000L, minuteIndex = 0, timerCode = 4, timerVersion = 0,
-                    quoteRef = null, body = "x".toByteArray(), pqKey = wrongBinding,
-                ),
-            )
+            val dropped = encodeText(p.a, "still sent".toByteArray(), pqKey = wrongBinding)
+            assertTrue("reported", dropped.pqKeyDropped)
+            assertFalse(dropped.pqKeyRode)
+            val without = decode(p.b, p.contactOfA, dropped.l0)
+            assertNull("no announcement in the L0", without.pqKey)
+            assertFalse(without.pqKeyInvalid)
+            assertEquals("the message itself", "still sent", String(without.body))
+            // And a candidate that builds is never reported as dropped.
+            assertFalse(encoded.pqKeyDropped)
         }
     }
 

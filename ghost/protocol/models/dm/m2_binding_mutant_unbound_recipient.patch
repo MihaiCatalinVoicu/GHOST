@@ -1,0 +1,34 @@
+--- m2_binding.pv
++++ m2_binding_mutant_unbound_recipient.pv
+@@ -1,4 +1,5 @@
+-(* GHOST direct messages: binding v3 (design faza9-dm.md §3.4, §6.4, §6.5 step 4; obligation
++(* MUTANT: the namespace and OI_B are NOT signed; the agreement query must FAIL (a transfer).
++   GHOST direct messages: binding v3 (design faza9-dm.md §3.4, §6.4, §6.5 step 4; obligation
+    M-2 of §9.5; slice S13).
+ 
+    Binding v3 is the sender's Ed25519 signature over (label, OI_A, base key, X-Wing ciphertext,
+@@ -78,20 +79,21 @@
+   let ct = kct(pkG, r) in
+   event Bound(spk(sk), oiSender, baseKey, ct, nsR, minute, oiR);
+   out(c, (oiSender, baseKey, ct, minute,
+-          sign((labelBinding, oiSender, baseKey, ct, nsR, minute, oiR), sk))).
++          (* The mutation: neither the namespace nor the recipient is signed. *)
++          sign((labelBinding, oiSender, baseKey, ct, minute), sk))).
+ 
+ (* A recipient with inbox namespace nsR and Olm identity oiR, checking a binding under the pinned
+    identity of the claimed sender (§6.5 step 4). The namespace is the one the blob was deposited
+    in, which the recipient knows; the binding must name it and the recipient. *)
+ let Receiver(pinned: spkey, nsR: bitstring, oiR: bitstring) =
+   in(c, (oiSender: bitstring, baseKey: bitstring, ct: bitstring, minute: bitstring, s: bitstring));
+-  let (=labelBinding, =oiSender, =baseKey, =ct, =nsR, =minute, =oiR) = checksign(s, pinned) in
++  let (=labelBinding, =oiSender, =baseKey, =ct, =minute) = checksign(s, pinned) in
+   event Accepted(pinned, oiSender, baseKey, ct, nsR, minute, oiR);
+   event AcceptedHonest.
+ 
+ let ReceiverFromC(pinned: spkey, nsR: bitstring, oiR: bitstring) =
+   in(c, (oiSender: bitstring, baseKey: bitstring, ct: bitstring, minute: bitstring, s: bitstring));
+-  let (=labelBinding, =oiSender, =baseKey, =ct, =nsR, =minute, =oiR) = checksign(s, pinned) in
++  let (=labelBinding, =oiSender, =baseKey, =ct, =minute) = checksign(s, pinned) in
+   event AcceptedFromC(pinned, oiSender, baseKey, ct, nsR, minute, oiR).
+ 
+ process

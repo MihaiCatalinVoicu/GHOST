@@ -703,9 +703,9 @@ internal class ReceiveStep(
             createdSession = createdSession,
             usedSlot = usedSlot,
         )
-        applyTlvs(tx, contact, content, isPreKey, usedSlot, now)
+        val available = applyTlvs(tx, contact, content, isPreKey, usedSlot, now)
         if (pairRootGen != null) acknowledgeOffer(tx, contact, pairRootGen, now)
-        return Result.APPLIED
+        return if (available) Result.APPLIED else Result.CRYPTO_UNAVAILABLE
     }
 
     // ----------------------------------------------------------------- R11, R12
@@ -905,6 +905,12 @@ internal class ReceiveStep(
      * 3). A `pq_key` becomes the contact's in-band X-Wing key when it is newer than every key
      * stored for the contact, still usable, and arrived on the contact's `current` session — see
      * [applyPqKey]. An invalid one is counted (§22.8.2 rule 3).
+     *
+     * Returns false when the DM context was unavailable for the `seal_root_pq`'s opening (slice
+     * S13 review): that is not the peer's doing and is not counted as `pq_root_unopenable`; the
+     * caller answers `CRYPTO_UNAVAILABLE` like every other unavailable native call of RECV. The
+     * rest of this L0 is applied and commits, as after R8's own `Unavailable`, and the offer is not
+     * lost: it stays unacknowledged at the contact, which re-attaches it until it is.
      */
     @Suppress("ReturnCount", "LongParameterList")
     private fun applyTlvs(
@@ -914,12 +920,12 @@ internal class ReceiveStep(
         isPreKey: Boolean,
         usedSlot: String,
         now: Long,
-    ) {
+    ): Boolean {
         if (content.pqIgnored) counters.drop(DmCounters.Reason.PQ_TLV_IGNORED)
         if (content.pqKeyInvalid) counters.drop(DmCounters.Reason.BAD_PQ_KEY)
         if (content.sessionReset) counters.drop(DmCounters.Reason.SESSION_RENEWED)
         content.revocation?.let { certificate ->
-            if (applyRevocation(tx, contact, certificate)) return
+            if (applyRevocation(tx, contact, certificate)) return true
         }
         content.sealRoot?.let { root ->
             if (isPreKey) {
@@ -928,14 +934,16 @@ internal class ReceiveStep(
                 installOutRoot(tx, contact, root.rootGen, root.baseWeek, root.rootEnv, now)
             }
         }
+        var available = true
         content.sealRootPq?.let { root ->
             if (isPreKey) {
                 counters.drop(DmCounters.Reason.ROOT_IN_PREKEY)
             } else {
-                applyPqRoot(tx, contact, root, now)
+                available = applyPqRoot(tx, contact, root, now)
             }
         }
         content.pqKey?.let { key -> applyPqKey(tx, contact, key, usedSlot, now) }
+        return available
     }
 
     /**
@@ -1013,6 +1021,10 @@ internal class ReceiveStep(
      * ciphertext that does not decapsulate are `pq_root_unopenable` (§22.8.6 rule 3): counted,
      * and the rest of the L0 applies. The contact is the offerer here, so its pinned Olm identity
      * is the first half of the root's salt.
+     *
+     * Returns false only when the DM context is unavailable (see [applyTlvs]); a `NON_CANONICAL`
+     * (a `rootGen` other than the TLV's, which one decode cannot produce) is ignored and counted
+     * with the unopenable ones rather than thrown out of RECV.
      */
     @Suppress("ReturnCount")
     private fun applyPqRoot(
@@ -1020,16 +1032,16 @@ internal class ReceiveStep(
         contact: ContactStore.ContactRow,
         root: DmContent.SealRootPq,
         now: Long,
-    ) {
+    ): Boolean {
         if (!rootMayApply(tx, contact, root.rootGen, root.baseWeek, now)) {
             counters.drop(DmCounters.Reason.ROOT_NOT_NEWER)
-            return
+            return true
         }
         val generation = owner.generations(tx.sql).firstOrNull { it.genId == root.peerGenId }
         val pinned = contact.pinnedIdentity
         if (generation == null || pinned == null) {
             counters.drop(DmCounters.Reason.PQ_ROOT_UNOPENABLE)
-            return
+            return true
         }
         when (
             val opened = envelopes.pqRootOpen(
@@ -1047,9 +1059,11 @@ internal class ReceiveStep(
             DmPairing.PqOpenResult.StateCorrupt -> counters.drop(DmCounters.Reason.STATE_CORRUPT)
             DmPairing.PqOpenResult.NotOpen,
             DmPairing.PqOpenResult.NonCanonical,
-            DmPairing.PqOpenResult.Unavailable,
             -> counters.drop(DmCounters.Reason.PQ_ROOT_UNOPENABLE)
+            // Not the peer's doing (slice S13 review): the caller answers CRYPTO_UNAVAILABLE.
+            DmPairing.PqOpenResult.Unavailable -> return false
         }
+        return true
     }
 
     /**

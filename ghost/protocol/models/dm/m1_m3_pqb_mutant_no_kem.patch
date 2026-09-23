@@ -1,0 +1,28 @@
+--- m1_m3_pqb.pv
++++ m1_m3_pqb_mutant_no_kem.pv
+@@ -1,4 +1,5 @@
+-(* GHOST direct messages: harvest-now-decrypt-later secrecy of the intro inner layer (obligation
++(* MUTANT (PM-32 as a model mutant): k_in WITHOUT the X-Wing secret; every secrecy query must FAIL.
++   GHOST direct messages: harvest-now-decrypt-later secrecy of the intro inner layer (obligation
+    M-1) and PQ-B, the PQ-only transport of seal keys (obligation M-3), design faza9-dm.md §6.4,
+    §6.7, §6.3, §9.3, §9.5; slice S13.
+ 
+@@ -99,7 +100,8 @@
+   new baseKey: bitstring;
+   let ct = kct(pkG, r) in
+   let tin = (ns, gen0, pkG, ct, oiB) in
+-  let inner = seal((cardA, bindingA, replySeed, l1First), kin(kss(pkG, r), tin)) in
++  (* The mutation: k_in without the KEM secret. *)
++  let inner = seal((cardA, bindingA, replySeed, l1First), kin(ct, tin)) in
+   let outer = seal((gen0, ct, inner), kioB) in
+   out(c, (baseKey, outer));
+   out(net, (baseKey, outer));
+@@ -115,7 +117,7 @@
+   in(net, (baseKey: bitstring, outer: bitstring));
+   let (=gen0, ct: bitstring, inner: bitstring) = unseal(outer, kioB) in
+   let tin = (ns, gen0, kpk(skG), ct, oiB) in
+-  let (card: bitstring, binding: bitstring, seed: bitstring, l1: bitstring) = unseal(inner, kin(kdec(skG, ct), tin)) in
++  let (card: bitstring, binding: bitstring, seed: bitstring, l1: bitstring) = unseal(inner, kin(ct, tin)) in
+   event ResponderOpened;
+   let prov = seal((rootB, msgProvisional), kprov(seed, (oiA, baseKey, oiB), dirToInitiator)) in
+   out(c, prov);

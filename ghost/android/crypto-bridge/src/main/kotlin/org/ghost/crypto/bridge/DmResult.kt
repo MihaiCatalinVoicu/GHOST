@@ -328,6 +328,13 @@ const val DM_TLV_PQ_KEY: Int = 0x20
 const val DM_TLV_PQ_KEY_INVALID: Int = 0x40
 
 /**
+ * Bit 7 of [DmField.TLV_FLAGS], on an `l0Encode` reply only (slice S13 review): the `pq_key`
+ * candidate could not be built from its stored generation and was left out — the L0 was encoded
+ * without it, because an optional announcement never blocks the message it would have ridden on.
+ */
+const val DM_TLV_PQ_KEY_DROPPED: Int = 0x80
+
+/**
  * A decoded reply of [DmNative]: a code and the fields that came with it.
  *
  * Decoding is strict — a truncated reply, a length that overruns the array, an unknown tag or a

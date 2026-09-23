@@ -1,0 +1,3 @@
+(* a stand-in original: the fake replays mutant-pass/a.out *)
+let k = one in
+query attacker(secret).

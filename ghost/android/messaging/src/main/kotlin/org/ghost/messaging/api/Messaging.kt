@@ -502,12 +502,20 @@ class MessagingStatus(
     val establishing: Int,
     /** Items stored and waiting for establishment (§5.5). */
     val pendingSends: Int,
+    /**
+     * PQ-C sending events by name since this process started (§9.4; slice S13 review): root offers
+     * that went out classical and why, and `pq_key` announcements deferred or dropped. Counts only,
+     * like [drops]; a conversation that never heals is visible here and nowhere else.
+     */
+    val pq: Map<String, Int> = emptyMap(),
 ) {
     override fun toString(): String =
         "MessagingStatus(drops=${drops.values.sum()}, poisoned=$poisoned, establishing=$establishing)"
 
     internal companion object {
         fun reasonName(reason: DmCounters.Reason): String = reason.name.lowercase()
+
+        fun pqEventName(event: DmCounters.PqEvent): String = event.name.lowercase()
     }
 }
 

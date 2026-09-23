@@ -16,6 +16,7 @@
 
 use crate::result::{DmCode, DmResult};
 use crate::seal::{capacity, EXT_RESERVE, L0_FIXED_BYTES, MAX_BODY_BYTES, O_MAX};
+use zeroize::Zeroize;
 
 /// The only content version Phase 9 writes or accepts.
 pub const CONTENT_VERSION: u8 = 0x01;
@@ -129,6 +130,17 @@ impl core::fmt::Debug for Tlv {
             .field("tlv_type", &format_args!("{:#06x}", self.tlv_type))
             .field("value_len", &self.value.len())
             .finish()
+    }
+}
+
+/// A TLV value is erased when it is dropped (slice S13 review). A `seal_root` value **is** a pair
+/// root and a `seal_root_pq` value carries `root_rand`, and a TLV is copied more often than the
+/// code that builds it can follow: into a decoded record, into the candidates of R-C5, out of a
+/// candidate the slack rule left behind. Erasing at the type, rather than at each call site, is
+/// what makes "every copy" true.
+impl Drop for Tlv {
+    fn drop(&mut self) {
+        self.value.zeroize();
     }
 }
 
@@ -552,6 +564,13 @@ impl core::fmt::Debug for SealRoot {
     }
 }
 
+/// The root is erased with the value that carried it (see [`Tlv`]'s `Drop`).
+impl Drop for SealRoot {
+    fn drop(&mut self) {
+        self.root.zeroize();
+    }
+}
+
 impl SealRoot {
     /// The 42-byte TLV value.
     pub fn encode(&self) -> Vec<u8> {
@@ -604,6 +623,15 @@ impl core::fmt::Debug for SealRootPq {
             .field("peer_gen_id", &self.peer_gen_id)
             .field("xwing_ct_len", &self.xwing_ct.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// `root_rand` is erased on drop (slice S13 review). It keys nothing without the X-Wing secret
+/// (§9.4), but it is half of every PQ root, and a copy that outlives its use is one a later
+/// compromise of the KEM secret would complete.
+impl Drop for SealRootPq {
+    fn drop(&mut self) {
+        self.root_rand.zeroize();
     }
 }
 

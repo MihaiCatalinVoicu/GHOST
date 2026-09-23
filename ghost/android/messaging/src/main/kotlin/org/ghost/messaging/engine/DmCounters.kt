@@ -135,7 +135,38 @@ internal class DmCounters {
         SESSION_RENEWED,
     }
 
+    /**
+     * The **sending** side of PQ-C (§9.4; slice S13 review): what a send did instead of the PQ-C
+     * step it could have taken. None of it moves or drops a blob, so it is not a [Reason]; but a
+     * conversation whose offers stay classical, or whose announcements never ride, heals in no
+     * direction, and before these counts nothing showed it.
+     */
+    enum class PqEvent {
+        /** A root offer went out classical: no fresh X-Wing key of the contact was held (§22.18). */
+        OFFER_CLASSICAL_NO_KEY,
+
+        /**
+         * A root offer went out classical: the crate refused the contact's key at encapsulation
+         * (§22.8.2 rule 4, and the key is deleted) or could not seal the PQ-C form.
+         */
+        OFFER_CLASSICAL_REFUSED,
+
+        /**
+         * A root offer went out classical: the PQ-C form did not fit the slack of the message's
+         * bucket (R-C5), and the classical form replaced it in the same send (§9.4's fallback).
+         */
+        OFFER_CLASSICAL_NO_SLACK,
+
+        /** A `pq_key` was due and did not fit the slack of the message's bucket (R-C5): it waits. */
+        PQ_KEY_DEFERRED,
+
+        /** A `pq_key` could not be built from its stored generation, and the L0 went without it. */
+        PQ_KEY_DROPPED,
+    }
+
     private val drops = EnumMap<Reason, Int>(Reason::class.java)
+
+    private val pqEvents = EnumMap<PqEvent, Int>(PqEvent::class.java)
 
     @Volatile
     private var poisoned: Int = 0
@@ -145,6 +176,20 @@ internal class DmCounters {
     fun drop(reason: Reason) {
         drops[reason] = (drops[reason] ?: 0) + 1
     }
+
+    /** One PQ-C sending event. */
+    @Synchronized
+    fun pq(event: PqEvent) {
+        pqEvents[event] = (pqEvents[event] ?: 0) + 1
+    }
+
+    /** How many times [event] happened since this process started. */
+    @Synchronized
+    fun pqCount(event: PqEvent): Int = pqEvents[event] ?: 0
+
+    /** Every PQ-C sending count, for `status()`. */
+    @Synchronized
+    fun pqSnapshot(): Map<PqEvent, Int> = EnumMap(pqEvents)
 
     /** A blob consumed unprocessed after three process deaths on it (§7.8 R2). */
     @Synchronized

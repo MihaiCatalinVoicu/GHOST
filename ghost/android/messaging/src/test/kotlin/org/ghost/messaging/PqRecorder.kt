@@ -57,8 +57,23 @@ internal class PqLog {
     )
 
     val encoded = ArrayList<Encoded>()
+
+    /**
+     * Every root offer minted **and** encapsulated, in minting order. A PQ-C offer the slack rule
+     * left out is here too, followed by the classical offer of the same generation that replaced it
+     * in the same send (slice S13 review), so "the offer of generation g" is the **last** entry.
+     */
     val offers = ArrayList<Offer>()
     val pairBlobs = ArrayList<PairBlob>()
+
+    /** PQ-C offers the control world refused at the port (`forceClassical`). */
+    var refusedPqOffers: Int = 0
+
+    /**
+     * While set, every `pqRootOpen` answers `Unavailable`, as a closed DM context would (the slice
+     * S13 review: RECV counted that as the peer's `pq_root_unopenable`).
+     */
+    var openUnavailable: Boolean = false
 
     /** Every blob any seal of a device returned, with its size: T29's bucket half. */
     val sealedSizes = ArrayList<Pair<Int, Int>>()
@@ -76,6 +91,18 @@ internal class PqRecorder(
     private val forceClassical: Boolean = false,
     /** PQ4's twin: no `pq_key` candidate ever reaches the codec, so no PQ-C TLV rides at all. */
     private val stripPqKey: Boolean = false,
+    /**
+     * A sender whose announced key is not valid whole (§22.8.2 rule 3; the slice S13 review's
+     * engine-level test of `bad_pq_key`): the X25519 half of every `pq_key` that rode is zeroed in
+     * the L0 before it is sealed — a low-order point, refused on receipt.
+     */
+    private val corruptPqKey: Boolean = false,
+    /**
+     * A sender whose `seal_root_pq` names a generation the peer does not hold (§22.8.6 rule 3; the
+     * review's engine-level test of `pq_root_unopenable`): added to every `peerGenId` it encapsulates
+     * to, so the TLV carries a generation id the peer never had.
+     */
+    private val peerGenIdOffset: Long = 0L,
 ) : DmEnvelopes by inner {
 
     override fun encodeContent(
@@ -96,10 +123,17 @@ internal class PqRecorder(
         pqKeyFirst: Boolean,
     ): DmContent.Encoded {
         val candidate = if (stripPqKey) null else pqKey
-        val encoded = inner.encodeContent(
+        var encoded = inner.encodeContent(
             kind, messageId, authorMinute, minuteIndex, timerCode, timerVersion, quoteRef, body,
             contactId, offerRootGen, offerEnv, revocation, sessionReset, candidate, pqKeyFirst,
         )
+        if (corruptPqKey && encoded is DmContent.Encoded.Ok && encoded.pqKeyRode) {
+            // `pq_key` is the highest TLV type, so its key is the L0's last 1 216 bytes and its
+            // X25519 half the last 32.
+            val l0 = encoded.l0.copyOf()
+            for (i in l0.size - 32 until l0.size) l0[i] = 0
+            encoded = encoded.copy(l0 = l0)
+        }
         if (encoded is DmContent.Encoded.Ok) {
             log.encoded += PqLog.Encoded(
                 branch = branch,
@@ -138,12 +172,30 @@ internal class PqRecorder(
         peerGenId: Long,
         peerXwingPublic: ByteArray,
     ): DmPairing.PqOfferResult {
-        if (forceClassical) return DmPairing.PqOfferResult.InvalidKey
-        val offer = inner.pqRootSeal(contactId, rootGen, baseWeek, peerOlmIdentity, peerGenId, peerXwingPublic)
+        if (forceClassical) {
+            log.refusedPqOffers += 1
+            return DmPairing.PqOfferResult.InvalidKey
+        }
+        val named = (peerGenId + peerGenIdOffset) and 0xffff_ffffL
+        val offer = inner.pqRootSeal(contactId, rootGen, baseWeek, peerOlmIdentity, named, peerXwingPublic)
         if (offer is DmPairing.PqOfferResult.Ok) {
-            log.offers += PqLog.Offer(branch, log.now(), contactId.copyOf(), rootGen, peerGenId)
+            log.offers += PqLog.Offer(branch, log.now(), contactId.copyOf(), rootGen, named)
         }
         return offer
+    }
+
+    @Suppress("LongParameterList")
+    override fun pqRootOpen(
+        contactId: ByteArray,
+        rootGen: Int,
+        genId: Long,
+        genSecretsEnv: ByteArray,
+        genFallbackPublic: ByteArray,
+        tlv: ByteArray,
+        peerOlmIdentity: ByteArray,
+    ): DmPairing.PqOpenResult {
+        if (log.openUnavailable) return DmPairing.PqOpenResult.Unavailable
+        return inner.pqRootOpen(contactId, rootGen, genId, genSecretsEnv, genFallbackPublic, tlv, peerOlmIdentity)
     }
 
     @Suppress("LongParameterList")

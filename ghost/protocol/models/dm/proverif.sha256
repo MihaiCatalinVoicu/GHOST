@@ -1,1 +1,1 @@
-unpinned: the SHA-256 of proverif2.05.tar.gz, verified against the INRIA release page, replaces this line (design faza9-dm.md §22.18)
+unpinned: the SHA-256 of proverif2.05.tar.gz, checked against an independent source (opam-repository's checksum for the release, or a second download over another network), replaces this line (design faza9-dm.md §22.18)

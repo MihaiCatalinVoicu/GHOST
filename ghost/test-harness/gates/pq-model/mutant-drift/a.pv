@@ -1,0 +1,3 @@
+(* a stand-in original: the fake replays mutant-drift/a.out *)
+let k = uno in
+query attacker(secret).

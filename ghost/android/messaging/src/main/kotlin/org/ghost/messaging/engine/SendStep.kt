@@ -63,6 +63,8 @@ internal class SendStep(
     private val random: DmRandom,
     private val contexts: SelfContexts,
     private val slots: SessionSlots = SessionSlots(),
+    /** The PQ-C sending counts of [DmCounters.PqEvent] (slice S13 review); in memory only. */
+    private val counters: DmCounters = DmCounters(),
 ) {
     private val contacts = ContactStore()
     private val messages = MessageStore()
@@ -147,31 +149,32 @@ internal class SendStep(
         }
         plan.refusal?.let { return Sent(it, establish = false) }
         val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
-        val minted = mintOffer(contactId, prepared)
-        val rootGen = prepared.offer?.rootGen ?: minted?.rootGen ?: 0
-        val offerEnv = prepared.offer?.offerEnv ?: minted?.offerEnv ?: EMPTY
 
         val messageId = random.bytes(MESSAGE_ID_BYTES)
-        val encoded = envelopes.encodeContent(
-            kind = kind,
-            messageId = messageId,
-            authorMinute = authorMinute / DmTime.MINUTE,
-            minuteIndex = prepared.minuteIndex,
-            timerCode = prepared.timerCode,
-            timerVersion = prepared.timerVersion,
-            quoteRef = quoteRef,
-            body = body,
-            contactId = contactId,
-            offerRootGen = rootGen,
-            offerEnv = offerEnv,
-            revocation = EMPTY,
-            sessionReset = false,
-            pqKey = prepared.pqKey,
-            // A re-attached offer already rode once: the weekly announcement goes ahead of it, so a
-            // pending offer cannot starve `pq_key` at 4 KiB, where the two never fit together.
-            pqKeyFirst = prepared.offer != null,
-        )
-        val l0 = when (encoded) {
+        val offering = encodeOffering(contactId, prepared) { rootGen, offerEnv ->
+            envelopes.encodeContent(
+                kind = kind,
+                messageId = messageId,
+                authorMinute = authorMinute / DmTime.MINUTE,
+                minuteIndex = prepared.minuteIndex,
+                timerCode = prepared.timerCode,
+                timerVersion = prepared.timerVersion,
+                quoteRef = quoteRef,
+                body = body,
+                contactId = contactId,
+                offerRootGen = rootGen,
+                offerEnv = offerEnv,
+                revocation = EMPTY,
+                sessionReset = false,
+                pqKey = prepared.pqKey,
+                // A re-attached offer already rode once: the weekly announcement goes ahead of it,
+                // so a pending offer cannot starve `pq_key` at 4 KiB, where the two never fit
+                // together.
+                pqKeyFirst = prepared.offer != null,
+            )
+        }
+        val minted = offering.minted
+        val l0 = when (val encoded = offering.encoded) {
             is DmContent.Encoded.Ok -> encoded
             DmContent.Encoded.Oversize -> return Sent(Outcome.TOO_LARGE, establish = false)
             // A record this engine built that the codec refuses is a bug, not an outcome: the
@@ -256,31 +259,32 @@ internal class SendStep(
         }
         plan.refusal?.let { return Sent(it, establish = false) }
         val prepared = plan.prepared ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
-        val minted = mintOffer(contactId, prepared)
-        val rootGen = prepared.offer?.rootGen ?: minted?.rootGen ?: 0
-        val offerEnv = prepared.offer?.offerEnv ?: minted?.offerEnv ?: EMPTY
 
         val messageId = random.bytes(MESSAGE_ID_BYTES)
-        val encoded = envelopes.encodeContent(
-            kind = DmContent.Kind.CONTROL,
-            messageId = messageId,
-            authorMinute = authorMinute / DmTime.MINUTE,
-            minuteIndex = 0,
-            timerCode = prepared.timerCode,
-            timerVersion = prepared.timerVersion,
-            quoteRef = null,
-            body = EMPTY,
-            contactId = contactId,
-            offerRootGen = rootGen,
-            offerEnv = offerEnv,
-            revocation = revocation,
-            sessionReset = sessionReset,
-            pqKey = prepared.pqKey,
-            // A re-attached offer already rode once: the weekly announcement goes ahead of it, so a
-            // pending offer cannot starve `pq_key` at 4 KiB, where the two never fit together.
-            pqKeyFirst = prepared.offer != null,
-        )
-        val l0 = when (encoded) {
+        val offering = encodeOffering(contactId, prepared) { rootGen, offerEnv ->
+            envelopes.encodeContent(
+                kind = DmContent.Kind.CONTROL,
+                messageId = messageId,
+                authorMinute = authorMinute / DmTime.MINUTE,
+                minuteIndex = 0,
+                timerCode = prepared.timerCode,
+                timerVersion = prepared.timerVersion,
+                quoteRef = null,
+                body = EMPTY,
+                contactId = contactId,
+                offerRootGen = rootGen,
+                offerEnv = offerEnv,
+                revocation = revocation,
+                sessionReset = sessionReset,
+                pqKey = prepared.pqKey,
+                // A re-attached offer already rode once: the weekly announcement goes ahead of it,
+                // so a pending offer cannot starve `pq_key` at 4 KiB, where the two never fit
+                // together.
+                pqKeyFirst = prepared.offer != null,
+            )
+        }
+        val minted = offering.minted
+        val l0 = when (val encoded = offering.encoded) {
             is DmContent.Encoded.Ok -> encoded
             DmContent.Encoded.Oversize -> return Sent(Outcome.TOO_LARGE, establish = false)
             DmContent.Encoded.NonCanonical ->
@@ -553,10 +557,13 @@ internal class SendStep(
      * A root offer this send minted and the second transaction has to write: the offer row and the
      * **in** recognition key of its base week (§6.3, rule R-S5).
      *
-     * [pq] says which TLV it is; the second transaction writes it only if that TLV **rode** (a
-     * `seal_root_pq` rides only under the slack rule R-C5, and an offer whose bytes are in no L0
-     * is not an offer). [invalidPqGenId] is the contact's key the crate refused at encapsulation
-     * (§22.8.2 rule 4): the row goes, and this offer is the classical fallback.
+     * [pq] says which TLV it is; the second transaction writes it only if that TLV **rode**. Since
+     * the slice S13 review a PQ-C offer that does not ride is replaced by a classical one before
+     * the commit ([encodeOffering]), so an offer that reaches the commit always rides; the check
+     * stays, because an offer whose bytes are in no L0 must never become the row every later send
+     * re-attaches. [invalidPqGenId] is the contact's key the crate refused at encapsulation
+     * (§22.8.2 rule 4): the row goes, and this offer is the classical fallback. [classical] says
+     * why a classical offer is classical, for the counts of [DmCounters.PqEvent].
      */
     private class MintedOffer(
         val rootGen: Int,
@@ -566,7 +573,11 @@ internal class SendStep(
         val keys: List<DmPairing.WeekKey>,
         val pq: Boolean = false,
         val invalidPqGenId: Int? = null,
+        val classical: DmCounters.PqEvent? = null,
     )
+
+    /** What [encodeOffering] produced: the encoder's answer and the offer the commit writes. */
+    private class Offering(val encoded: DmContent.Encoded, val minted: MintedOffer?)
 
     private class Plan(val refusal: Outcome?, val prepared: Prepared?)
 
@@ -755,7 +766,12 @@ internal class SendStep(
      * that kept the contact and the peer's "a `root_gen` not greater than the stored one is
      * ignored" rule cannot reject it.
      */
-    private fun mintOffer(contactId: ByteArray, prepared: Prepared): MintedOffer? {
+    private fun mintOffer(
+        contactId: ByteArray,
+        prepared: Prepared,
+        /** False for the classical replacement of a PQ-C offer that did not fit ([encodeOffering]). */
+        pqAllowed: Boolean = true,
+    ): MintedOffer? {
         val rootGen = prepared.nextRootGen ?: return null
         // §9.4: the PQ-C form when a fresh key of the contact is held (see `freshPeerKey`). Its
         // root is `HKDF(root_rand || ss, salt(OI_me, OI_c, peer_gen_id, Q_c, ct))`, drawn and
@@ -764,9 +780,14 @@ internal class SendStep(
         var created: DmPairing.Offer? = null
         var pq = false
         var invalidPqGenId: Int? = null
+        var classical: DmCounters.PqEvent? = null
         val target = prepared.pqTarget
         val pinned = prepared.pinned
-        if (target != null && pinned != null) {
+        if (!pqAllowed) {
+            classical = DmCounters.PqEvent.OFFER_CLASSICAL_NO_SLACK
+        } else if (target == null || pinned == null) {
+            classical = DmCounters.PqEvent.OFFER_CLASSICAL_NO_KEY
+        } else {
             when (
                 val sealed = envelopes.pqRootSeal(
                     contactId = contactId,
@@ -782,11 +803,14 @@ internal class SendStep(
                     pq = true
                 }
                 // §22.8.2 rule 4: the classical `seal_root` instead, and the key goes.
-                DmPairing.PqOfferResult.InvalidKey -> invalidPqGenId = target.genId
+                DmPairing.PqOfferResult.InvalidKey -> {
+                    invalidPqGenId = target.genId
+                    classical = DmCounters.PqEvent.OFFER_CLASSICAL_REFUSED
+                }
                 DmPairing.PqOfferResult.NonCanonical,
                 DmPairing.PqOfferResult.StateCorrupt,
                 DmPairing.PqOfferResult.Unavailable,
-                -> Unit
+                -> classical = DmCounters.PqEvent.OFFER_CLASSICAL_REFUSED
             }
         }
         if (created == null) {
@@ -814,7 +838,51 @@ internal class SendStep(
             keys = if (keys is DmPairing.KeysResult.Ok) keys.weeks else emptyList(),
             pq = pq,
             invalidPqGenId = invalidPqGenId,
+            classical = if (pq) null else classical,
         )
+    }
+
+    /**
+     * The L0 of one send, with the root offer it carries (slice S13 review, finding 1).
+     *
+     * [encode] is called with the offer to attach — the re-attached one, a newly minted one, or
+     * none. **A newly minted `seal_root_pq` that the slack rule leaves out is replaced, in this same
+     * send, by a newly minted classical `seal_root`**, and the L0 is encoded again with it. Before
+     * the review the deferred PQ offer was dropped and the next send minted PQ again, so a side
+     * whose messages all fell in the bands with no slack for it (bodies of 1 211 … 2 220 B at
+     * 4 KiB, 13 499 … 14 508 B at 16 KiB) never offered a root while it
+     * held a fresh key of the contact: the **first** root after an establishment never reached the
+     * contact, which sealed provisionally until `NO_SEAL_KEY` re-established it (the churn and the
+     * metadata link CRY-6 and L7-D6 are about), and rule (c)'s 4-week bound on a stolen root
+     * became no bound at all. §9.4's fallback rule — "otherwise the classical `seal_root` is used
+     * and the next periodic replacement retries" — now covers "no slack" exactly as it covers
+     * "no usable key": the classical offer always rides (R-B1 counted its 46 bytes in
+     * `EXT_RESERVE`), is written, and is re-attached until acknowledged, and the next replacement
+     * tries PQ-C again.
+     *
+     * The fit is decided by the crate, which owns R-C5 (ADR-19): the PQ-C offer is minted, offered
+     * to the codec, and replaced only if it did not ride — one wasted encapsulation per such
+     * replacement, not per send, since the classical offer that replaces it is then re-attached.
+     * A classical replacement heals nothing: [DmCounters.PqEvent.OFFER_CLASSICAL_NO_SLACK] counts
+     * it, and the next PQ-C chance is the next replacement (§22.18 records the cost).
+     */
+    private fun encodeOffering(
+        contactId: ByteArray,
+        prepared: Prepared,
+        encode: (rootGen: Int, offerEnv: ByteArray) -> DmContent.Encoded,
+    ): Offering {
+        val minted = mintOffer(contactId, prepared)
+        val first = encode(
+            prepared.offer?.rootGen ?: minted?.rootGen ?: 0,
+            prepared.offer?.offerEnv ?: minted?.offerEnv ?: EMPTY,
+        )
+        if (minted == null || !minted.pq || first !is DmContent.Encoded.Ok || first.sealRootPqRode) {
+            return Offering(first, minted)
+        }
+        // Nothing of the first attempt is kept: no row was written, and its L0 carries no offer.
+        val classical = mintOffer(contactId, prepared, pqAllowed = false)
+            ?: return Offering(first, null)
+        return Offering(encode(classical.rootGen, classical.offerEnv), classical)
     }
 
     /** The offer rows of [mintOffer], written inside the one transaction the send commits. */
@@ -917,19 +985,28 @@ internal class SendStep(
 
                 // The root offer this send attached, written here and nowhere earlier: the L0 that
                 // carries it is in this transaction's item row, so the offer and its bytes commit
-                // together or not at all (§7.2, §6.3). A PQ-C offer is written only if it **rode**:
-                // R-C5 defers a `seal_root_pq` that does not fit the slack of the body's bucket, and
-                // an offer that is in no L0 must not become the row every later send re-attaches
-                // (the next send mints again). A classical `seal_root` always rides: R-B1 counted
-                // its bytes in `EXT_RESERVE`.
+                // together or not at all (§7.2, §6.3). An offer is written only if it **rode**: a
+                // PQ-C one the slack rule left out was already replaced by a classical one
+                // ([encodeOffering]), and a classical `seal_root` always rides (R-B1 counted its
+                // bytes in `EXT_RESERVE`), so this is the guard behind that, not a path.
                 if (minted != null) {
                     minted.invalidPqGenId?.let { contacts.deletePeerPqKey(tx, contactId, it) }
                     val rode = if (minted.pq) l0.sealRootPqRode else l0.sealRootRode
-                    if (rode) writeOffer(tx, contactId, minted)
+                    if (rode) {
+                        writeOffer(tx, contactId, minted)
+                        minted.classical?.let { counters.pq(it) }
+                    }
                 }
                 // §9.4: the generation this announcement named, so the next one waits for the next.
+                // One that was due and did not ride is counted: a sender whose every message leaves
+                // no slack for it (bodies of 1 149 … 2 220 B at 4 KiB) never announces, and the
+                // contact's replacements towards it stay classical (§22.18).
                 if (l0.pqKeyRode) {
                     contacts.setPqAnnouncedWeek(tx, contactId, prepared.pqKey?.bundleWeek)
+                } else if (l0.pqKeyDropped) {
+                    counters.pq(DmCounters.PqEvent.PQ_KEY_DROPPED)
+                } else if (prepared.pqKey != null) {
+                    counters.pq(DmCounters.PqEvent.PQ_KEY_DEFERRED)
                 }
 
                 // S3: the message row (TEXT and TIMER_SET only) and the item row (every kind).
