@@ -77,7 +77,7 @@ internal class StoreCause(
  * the redeem lane (no token is ever redeemed, so JD3's redemption half and JD8 have no events),
  * send delays (every world here is STANDARD), circuits' open and close minutes, relay refusals and
  * every hostile mode but one: **WITHHOLD_ALL_BUNDLES** ([withholdBundles]) exists since the S11b
- * slice for the JD7 variant that bounds the attempts (§21.7 point 6, PM-31; §22.19).
+ * slice for the JD7 variant that bounds the attempts (§21.7 point 6, PM-31; §22.20).
  */
 internal class ViewRelay(private val now: () -> Long) {
 
@@ -94,8 +94,12 @@ internal class ViewRelay(private val now: () -> Long) {
     /** `(slot, namespace hex)` → blobs, in store order. */
     private val stored = HashMap<Pair<Int, String>, MutableList<Stored>>()
 
-    /** `(client, namespace hex + hash hex)` already fetched by that client. */
-    private val fetched = HashSet<Pair<Int, String>>()
+    /**
+     * `(client, namespace hex + stored hash hex)` → the hash of the bytes served to that client for
+     * it (a twin's [serveTransform] may change them). Never a stand-in for the reader's own rows:
+     * [serve] asks the reader whether it still holds a row for that hash.
+     */
+    private val served = HashMap<Pair<Int, String>, ByteArray>()
 
     /** A relay session counter per client: circuits are per session and namespace. */
     private val session = HashMap<Int, Int>()
@@ -113,14 +117,14 @@ internal class ViewRelay(private val now: () -> Long) {
      * Hostile mode **WITHHOLD_ALL_BUNDLES** (§15.1's list, §21.7 point 6): every relay answers a
      * list of a card's bundle namespace by anyone but its owner as if it held nothing, so no
      * establishment ever gets a candidate and every one runs its three attempt windows out. The
-     * lists themselves are recorded — they are what the JD7 variant bounds — and the blobs a list
-     * would have shown are counted in [bundlesWithheld], so a variant world that withheld nothing
-     * says so.
+     * lists themselves are recorded — they are what the JD7 variant bounds — and the lists that
+     * hid at least one live bundle are counted in [bundleListsWithheld], so a variant world that
+     * withheld nothing says so.
      */
     var withholdBundles: Boolean = false
 
-    /** Bundle blobs a list under [withholdBundles] did not show (a blob counted once per list). */
-    var bundlesWithheld: Int = 0
+    /** Lists (one per relay) under [withholdBundles] that answered empty over at least one live bundle. */
+    var bundleListsWithheld: Int = 0
         private set
 
     /** Ops that carried no credential at a relay: Phase 7 would have left them `wait_capability`. */
@@ -248,7 +252,7 @@ internal class ViewRelay(private val now: () -> Long) {
                 "SELECT relay_id FROM namespace_relay WHERE namespace_id = ? ORDER BY relay_id",
                 listOf(namespace),
             ) { relays += it.long(0) }
-            val fetchedThisRound = HashSet<String>()
+            val handledThisRound = HashSet<String>()
             for (relay in relays) {
                 val slot = slotOf[relay] ?: continue
                 val credential = capability(device, relay, namespace, "read")
@@ -264,7 +268,7 @@ internal class ViewRelay(private val now: () -> Long) {
                     readerState = readerState,
                 )
                 if (withheld) {
-                    bundlesWithheld += stored[slot to nsHex].orEmpty().count { it.storedAt + it.ttl > now() }
+                    if (stored[slot to nsHex].orEmpty().any { it.storedAt + it.ttl > now() }) bundleListsWithheld++
                     continue
                 }
                 for (blob in stored[slot to nsHex].orEmpty()) {
@@ -272,26 +276,22 @@ internal class ViewRelay(private val now: () -> Long) {
                     if (serveFilter?.invoke(client, blob.from) == false) continue
                     if (blob.storedAt + blob.ttl <= now()) continue
                     val key = nsHex + hex(blob.hash)
-                    if (key in fetchedThisRound) continue
-                    if ((client to key) in fetched) {
-                        // The read lane fetches a hash the reader holds no row for, and a card's
-                        // bundle namespace is where `Inbox.forgetConsumed` (§21.7 point 2) deletes
-                        // the reader's tombstones so that a reset, a key change or a re-added
-                        // contact can fetch the same live bundle again. The relay's memory of what
-                        // it served this reader must not stand in for the reader's own tombstones
-                        // there (the S11b slice, found by NI-DM2's reset twin, §22.19); everywhere
-                        // else it still does, as in S11.
-                        val forgettable = nsHex !in ownNamespaces && nsHex in contactBundles
-                        if (!forgettable || known(device, namespace, blob.hash)) continue
-                        fetched -= client to key
-                    }
+                    if (!handledThisRound.add(key)) continue
+                    // The read lane fetches a hash the reader holds no row for, and the reader's
+                    // rows are the only memory it has: what the relay once served this reader is
+                    // served again when the reader holds no row for it any more. A card's bundle
+                    // namespace is where that happens by design — `Inbox.forgetConsumed` (§21.7
+                    // point 2) deletes the reader's tombstones so a reset, a key change or a
+                    // re-added contact can fetch the same live bundle again (found by NI-DM2's
+                    // reset twin, §22.20) — and anywhere else it would be a lost tombstone, which
+                    // shows as a second GET of the same hash instead of being hidden by the model.
+                    // The hash looked up is the one of the bytes actually served (a twin's
+                    // [serveTransform] may have changed them).
+                    val before = served[client to key]
+                    if (before != null && known(device, namespace, before)) continue
                     val bytes = serveTransform?.invoke(client, blob.from, blob.storedAt, blob.bytes) ?: blob.bytes
-                    if (!insert(device, namespace, bytes)) {
-                        fetched += client to key
-                        continue
-                    }
-                    fetchedThisRound += key
-                    fetched += client to key
+                    served[client to key] = sha256(bytes)
+                    if (!insert(device, namespace, bytes)) continue
                     events += ViewEvent(
                         op = ViewOp.GET,
                         relaySlot = slot,

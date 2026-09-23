@@ -8,12 +8,15 @@ name: dm-privacy-gate
 # one-reply variant, and the privacy mutants, each killed by its named check against a same-scale
 # control.
 #
-# **What this gate checks, and what it does not** (§22.16 names every deferral, §22.19 what slice
+# **What this gate checks, and what it does not** (§22.16 names every deferral, §22.20 what slice
 # S11b added). It runs JD1–JD7 and JD9 (not JD8, not JD10) and JD7's WITHHOLD_ALL_BUNDLES variant,
 # S-DM3 (not S-DM1, and S-DM2 and S-DM4 are neither measured nor baselined), NI-DM1, NI-DM2 and
 # NI-DM3 (not NI-DM4 … NI-DM7), the T34 seizure world and its one-reply variant (not the Olm half),
 # T35 as far as the provenance tags reach (static tags; the X-Wing inner layer carries none), and
-# twelve of the forty privacy mutants. §16.2 puts the mutants and T34 in
+# twelve of the forty privacy mutants (PM-5 only in its day-rounding half). NI-DM2 passes with **one
+# declared open engine defect** it must reproduce exactly — R-T3 on the pending path, a known P-4
+# leak (§22.20 item 2) — so this gate is green over that leak until the engine is fixed; the
+# report line says so. §16.2 puts the mutants and T34 in
 # `messaging-exit-gate.yml`; this slice runs them here and in the `android` job instead (§22.16).
 # Every world is STANDARD: §15.6's HIGH half needs a privacy-mode parameter the world does not have
 # yet, so a "seed pair" here is one behaviour seed run once. `dm-report-check.sh` pins exactly these

@@ -81,10 +81,15 @@ class DmPrivacyMutantTest {
             } else if (!failure.contains(killer.expect)) {
                 failures += "${mutant.id} failed ${killer.check.label}, but not for the reason its entry names.\n" +
                     "  expected to contain: ${killer.expect}\n  actual: ${failure.take(2_000)}"
+            } else if (killer.refuse != null && failure.contains(killer.refuse)) {
+                // The check failed for the named reason and also because the mutated world did not
+                // reach what the check needs (an NI-DM2 twin that stored nothing): not a kill.
+                failures += "${mutant.id} failed ${killer.check.label}, but its world did not reach what the check " +
+                    "needs.\n  must not contain: ${killer.refuse}\n  actual: ${failure.take(2_000)}"
             } else {
                 PrivacyKills.record(mutant.id, killer.check.label, failure)
                 // The killing failure, in the test's own output: what the check saw, not only that
-                // it failed (§22.19).
+                // it failed (§22.20).
                 println("${mutant.id} killed by ${killer.check.label}: ${failure.take(1_500)}")
             }
         }
@@ -225,7 +230,10 @@ internal object PrivacyKills {
         for (m in registered) {
             val done = kills[m.id].orEmpty()
             if (m in detected) {
-                PrivacyReport.line("dm privacy mutant ${m.id}: detected by ${m.killers.joinToString(", ") { it.check.label }}")
+                PrivacyReport.line(
+                    "dm privacy mutant ${m.id}: detected by ${m.killers.joinToString(", ") { it.check.label }}" +
+                        (m.scope?.let { "; $it" } ?: ""),
+                )
             } else {
                 val missing = m.killers.filter { it.check.label !in done }.joinToString(", ") { it.check.label }
                 PrivacyReport.line("dm privacy mutant ${m.id}: NOT DETECTED by $missing")

@@ -44,29 +44,39 @@ import org.ghost.messaging.api.Timer
  * output crossed 4 KiB under that mutant (intros by their overhead, the others by their TLVs).
  *
  * **What is compared.** At each length, A's stores **into B's inbox** from `t0` to `t0 + 20 min`, as
- * `(op, relay slot, namespace, size, TTL, credential scope)`, must be the same multiset in every
- * twin that has that length. The **minute** is not compared: an intro or a reset is stored when
- * `EST-READY` runs, a couple of minutes after the bundle arrives, and when that is is the relay's
- * choice and declared (§21.7 point 6, L7-D6) — inbound and send timing is NI-DM6's variable. Nor is
- * the rest of the view: the bundle fetch before an intro is establishment traffic (declared, §1.2).
+ * `(op, relay slot, namespace, size, TTL, credential scope)` ([Store]), must be the same multiset in
+ * every gating twin that has that length. The **second** of each store, counted from `t0`, is
+ * compared too among the twins whose state needs **no establishment** (provisional and both pair
+ * states: 51 of the 60 messages), so a send delay that depends on the session state shows. It is
+ * not compared for an intro or a reset: those are stored when `EST-READY` runs, a couple of minutes
+ * after the bundle arrives, and when that is is the relay's choice and declared (§21.7 point 6,
+ * L7-D6) — inbound and send timing across that choice is NI-DM6's variable. Nor is the rest of the
+ * view: the bundle fetch before an intro is establishment traffic (declared, §1.2).
  *
  * **What makes it able to fail.** Each twin must **reach its variable**, by the ground truth the
  * ports recorded, not by what the world meant to do: exactly one distinct blob in the compared
  * stores (M; a second is an extra store the comparison must see), sealed in the state's mode, of the
  * variant's kind and body length, quoted exactly when the variant quotes, and — for the two pair
  * states — with a root offer riding exactly in [State.PAIR_OFFER]. A twin that did not reach its
- * state fails the check rather than being compared, so equal views can never come from twins that
- * were secretly the same. The report line prints which modes, kinds and TLVs M actually carried.
+ * state fails the check and is **not compared** (so a "no store" is never mistaken for a difference
+ * a mutant made, and equal views can never come from twins that were secretly the same). The report
+ * line prints which modes, kinds and TLVs M actually carried.
+ *
+ * **Declared open defects** ([OPEN_DEFECTS]) are the one exception to "every twin gates", and each is
+ * declared as the exact difference it makes, never as "any difference" (see [OpenDefect]).
  */
 internal object NiDm2 {
 
-    /** The session state M is sealed in, the seal mode it must produce, and whether an offer rides. */
-    enum class State(val mode: DmSeal.Mode, val offer: Boolean?) {
-        INTRO(DmSeal.Mode.INTRO, null),
-        PROVISIONAL(DmSeal.Mode.PROVISIONAL, null),
-        PAIR_OFFER(DmSeal.Mode.PAIR, true),
-        PAIR(DmSeal.Mode.PAIR, false),
-        RESET(DmSeal.Mode.INTRO, null),
+    /**
+     * The session state M is sealed in, the seal mode it must produce, whether an offer rides, and
+     * whether reaching it at `t0` takes an establishment (whose timing is the relay's).
+     */
+    enum class State(val mode: DmSeal.Mode, val offer: Boolean?, val establishes: Boolean) {
+        INTRO(DmSeal.Mode.INTRO, null, true),
+        PROVISIONAL(DmSeal.Mode.PROVISIONAL, null, false),
+        PAIR_OFFER(DmSeal.Mode.PAIR, true, false),
+        PAIR(DmSeal.Mode.PAIR, false, false),
+        RESET(DmSeal.Mode.INTRO, null, true),
     }
 
     /** What M is. */
@@ -96,7 +106,7 @@ internal object NiDm2 {
      * The lengths each kind is sent at. An **unquoted empty text is not sent**: the codec accepts
      * one, but `dm_message.body_env`'s CHECK (`length BETWEEN 30 AND 61485`, §13.6) refuses the
      * 29-byte envelope of a one-byte flags field, so `Messaging.send(contact, "", null)` throws a
-     * CHECK abort out of the facade — an engine finding of this slice (§22.19), not a privacy one.
+     * CHECK abort out of the facade — an engine finding of this slice (§22.20), not a privacy one.
      * A quoted empty text carries the 16-byte reference and is stored, so length 0 compares a
      * quoted text, a TIMER_SET and a CONTROL, all bodiless.
      */
@@ -118,12 +128,42 @@ internal object NiDm2 {
     }
 
     /**
-     * Twins that reproduce an **open engine defect** this check found and the S11b slice did not fix
-     * (§22.19), by variant name, with the defect. They are compared apart from the rest: such a twin
-     * must still reach its variable and must still **differ** from the view every other twin at its
-     * length agrees on — the moment it stops differing the defect is fixed and the entry must go, so
-     * the check fails until it does. A declared exception can therefore never turn into a silent
-     * pass, and the report line prints what it reproduced.
+     * One of A's stores into B's inbox as the relay saw it; its second is kept apart ([Slot.seconds]).
+     * The namespace is B's inbox by construction and printed short.
+     */
+    data class Store(val slot: Int, val namespace: String, val size: Int, val ttl: Long, val scope: String?) {
+        override fun toString(): String = "slot $slot size=$size ttl=$ttl scope=$scope"
+    }
+
+    private val STORE_ORDER: Comparator<Store> =
+        compareBy<Store>({ it.slot }, { it.namespace }, { it.size }, { it.ttl }, { it.scope })
+
+    /**
+     * An **open engine defect** a twin reproduces, declared as exactly the difference it makes: at
+     * [length], the twin [variant]'s stores must equal the view every gating twin at that length agrees
+     * on with **one** field changed — every store's TTL [reproducedTtl] where the others store
+     * [gatedTtl] — and every other field (size, relay slot, namespace, credential scope, the number
+     * of stores) equal. Everything else fails the check: the views equal (the defect was fixed and
+     * the entry must go), another TTL (a partial fix, or a new bug on the same path), a difference
+     * in any other field, the other twins no longer storing [gatedTtl], or the twin not having run or
+     * not having reached its variable. So a declaration can neither turn into a silent pass nor
+     * excuse a difference it does not name.
+     */
+    class OpenDefect(
+        val variant: String,
+        val length: Int,
+        val gatedTtl: Long,
+        val reproducedTtl: Long,
+        val what: String,
+    ) {
+        /** The view the defect twin must store, given the gating twins' shared view. */
+        fun expected(consensus: List<Store>): List<Store> = consensus.map { it.copy(ttl = reproducedTtl) }.sortedWith(STORE_ORDER)
+    }
+
+    /**
+     * Twins that reproduce an open engine defect this check found and the S11b slice did not fix
+     * (§22.20 item 2). They are compared apart from the rest, each against its exact declaration
+     * ([OpenDefect]), and the report line prints what each reproduced.
      *
      * **INTRO/TIMER_SET**: a TIMER_SET sent before a session exists waits as a pending item, and
      * `SendStep`'s flush at `EST-READY` (and its FAILED retry) takes the TTL from the L0's timer
@@ -134,9 +174,15 @@ internal object NiDm2 {
      * not run here), a new timer of 1 h makes the flush's deadline check fail the item as expired
      * once an establishment takes more than an hour, where R-T4 gives it seven days.
      */
-    val OPEN_DEFECTS: Map<String, String> = mapOf(
-        "INTRO/TIMER_SET" to "R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, " +
-            "not the larger of the old and the new (§22.19)",
+    val OPEN_DEFECTS: List<OpenDefect> = listOf(
+        OpenDefect(
+            variant = "INTRO/TIMER_SET",
+            length = 0,
+            gatedTtl = 604_800,
+            reproducedTtl = 86_400,
+            what = "R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, " +
+                "not the larger of the old and the new (§22.20)",
+        ),
     )
 
     /** The compared window after `t0`: A's session, `EST-READY` and the flush all fall inside it. */
@@ -146,7 +192,9 @@ internal object NiDm2 {
     class Slot(
         val variant: Variant,
         val length: Int,
-        val view: List<String>,
+        val view: List<Store>,
+        /** The second of each store of [view], counted from `t0`, sorted. */
+        val seconds: List<Long>,
         val blobs: Int,
         val mode: DmSeal.Mode?,
         val content: GroundTruth.Content?,
@@ -167,17 +215,29 @@ internal object NiDm2 {
             }
     }
 
-    class Result(val slots: List<Slot>) {
+    class Result(val slots: List<Slot>, private val declared: List<OpenDefect> = OPEN_DEFECTS) {
+        private fun declaration(s: Slot): OpenDefect? = declared.firstOrNull { it.variant == s.variant.name && it.length == s.length }
+
         /** Twins that did not reach their variable: each makes the check fail. */
         val unreached: List<String>
             get() = slots.mapNotNull { s -> s.unreached?.let { "${s.variant} at ${s.length}: $it" } }
 
-        /** The twins the comparison gates on: every one but the declared open defects'. */
-        private val gating: List<Slot> get() = slots.filter { it.variant.name !in OPEN_DEFECTS }
+        /** The messages the comparison gates on: every one but a declared open defect's. */
+        private val gating: List<Slot> get() = slots.filter { declaration(it) == null }
 
-        /** Per length, the gating twins grouped by their view: more than one group is a difference. */
+        /**
+         * The gating messages actually compared: those whose twin reached its variable. A twin that
+         * did not already fails the check through [unreached]; comparing its (empty or extra) stores
+         * as well would let a twin that never got there pass for a difference in the view.
+         */
+        private val compared: List<Slot> get() = gating.filter { it.unreached == null }
+
+        /** The compared messages whose state needs no establishment: their store seconds gate too. */
+        private val timed: List<Slot> get() = compared.filter { !it.variant.state.establishes }
+
+        /** Per length, the compared twins grouped by their view: more than one group is a difference. */
         val differences: List<String>
-            get() = gating.groupBy { it.length }.toSortedMap().mapNotNull { (length, atLength) ->
+            get() = compared.groupBy { it.length }.toSortedMap().mapNotNull { (length, atLength) ->
                 val groups = atLength.groupBy { it.view }
                 if (groups.size <= 1) {
                     null
@@ -188,32 +248,58 @@ internal object NiDm2 {
                 }
             }
 
-        /**
-         * Each declared open defect's twin against the view every gating twin at its length agrees
-         * on: `reproduced` when it still differs, and a **failure** when it no longer does (the
-         * defect was fixed and [OPEN_DEFECTS] still excuses it) or when there is nothing to
-         * compare it with.
-         */
-        private val defects: List<Pair<Boolean, String>>
-            get() = slots.filter { it.variant.name in OPEN_DEFECTS }.map { s ->
-                val consensus = gating.filter { it.length == s.length }.map { it.view }.distinct()
-                when {
-                    consensus.size != 1 ->
-                        false to "${s.variant} at ${s.length}: no single view of the other twins to compare it with"
-                    consensus.single() == s.view ->
-                        false to "${s.variant} at ${s.length}: the declared open defect no longer reproduces " +
-                            "(its stores equal the other twins'): remove it from NiDm2.OPEN_DEFECTS"
-                    else -> true to "${s.variant} at ${s.length} stores ${summary(s.view)} where the other twins " +
-                        "store ${summary(consensus.single())} — ${OPEN_DEFECTS.getValue(s.variant.name)}"
+        /** Per length, the timed twins grouped by the seconds of their stores after `t0`. */
+        val timing: List<String>
+            get() = timed.groupBy { it.length }.toSortedMap().mapNotNull { (length, atLength) ->
+                val groups = atLength.groupBy { it.seconds }
+                if (groups.size <= 1) {
+                    null
+                } else {
+                    "store seconds after t0 differ at body length $length: " +
+                        groups.entries.joinToString(" vs ") { (seconds, twins) ->
+                            "${twins.joinToString(",") { it.variant.name }} -> $seconds"
+                        }
                 }
             }
 
-        /** Comparisons made: at each length, every gating twin against the first. */
-        val comparisons: Int get() = gating.groupBy { it.length }.values.sumOf { it.size - 1 }
+        /**
+         * Each declared open defect against its declaration: `true` with what it reproduced, or
+         * `false` with why it is not the declared defect any more (see [OpenDefect]).
+         */
+        val defects: List<Pair<Boolean, String>>
+            get() = declared.map { d ->
+                val at = "${d.variant} at ${d.length}"
+                val s = slots.singleOrNull { it.variant.name == d.variant && it.length == d.length }
+                    ?: return@map false to "$at: declared, but no such twin ran"
+                s.unreached?.let { return@map false to "$at: did not reach its variable ($it), so nothing was reproduced" }
+                val consensus = compared.filter { it.length == d.length }.map { it.view }.distinct()
+                if (consensus.size != 1) return@map false to "$at: no single view of the other twins to compare it with"
+                val others = consensus.single()
+                val expected = d.expected(others)
+                when {
+                    others.isEmpty() || others.any { it.ttl != d.gatedTtl } ->
+                        false to "$at: the other twins store ${summary(others)}, not the declared ttl=${d.gatedTtl}: " +
+                            "the declaration no longer describes the world"
+                    s.view == others ->
+                        false to "$at: the declared open defect no longer reproduces (its stores equal the other " +
+                            "twins'): remove it from NiDm2.OPEN_DEFECTS"
+                    s.view != expected ->
+                        false to "$at differs from the other twins otherwise than declared: it stores ${summary(s.view)} " +
+                            "where the declaration expects ${summary(expected)}"
+                    else -> true to "$at stores ttl=${d.reproducedTtl} where the other twins store ttl=${d.gatedTtl}, " +
+                        "every other field equal, at ${s.view.size} relays — ${d.what}"
+                }
+            }
+
+        /** Comparisons made: at each length, every compared twin against the first. */
+        val comparisons: Int get() = compared.groupBy { it.length }.values.sumOf { it.size - 1 }
+
+        /** Comparisons of the store seconds: at each length, every timed twin against the first. */
+        val timedComparisons: Int get() = timed.groupBy { it.length }.values.sumOf { it.size - 1 }
 
         val passed: Boolean
-            get() = unreached.isEmpty() && differences.isEmpty() && defects.all { it.first } && comparisons > 0 &&
-                slots.all { it.view.isNotEmpty() }
+            get() = unreached.isEmpty() && differences.isEmpty() && timing.isEmpty() && defects.all { it.first } &&
+                comparisons > 0 && timedComparisons > 0 && slots.all { it.view.isNotEmpty() }
 
         fun line(): String {
             val lengths = slots.map { it.length }.distinct().sorted()
@@ -222,31 +308,31 @@ internal object NiDm2 {
                 .groupingBy { it }.eachCount().toSortedMap()
             val tlvs = slots.mapNotNull { it.content?.tlvs }.groupingBy { it }.eachCount().toSortedMap()
             val sizes = slots.groupBy { it.length }.toSortedMap()
-                .mapValues { (_, s) -> s.flatMap { sizesOf(it.view) }.toSortedSet().joinToString("/") }
+                .mapValues { (_, s) -> s.flatMap { v -> v.view.map { it.size } }.toSortedSet().joinToString("/") }
             val twins = slots.map { it.variant.name }.distinct()
-            return "dm NI-DM2: ${if (passed) "PASS" else "FAIL"} ${twins.size} twins at ${lengths.size} body lengths " +
-                "(${lengths.joinToString(", ")}): A's stores of M into B's inbox equal at each length over " +
-                "$comparisons comparisons of ${slots.size} messages; M sealed $modes, kinds $kinds, TLVs that rode $tlvs; " +
-                "sizes by length $sizes" +
-                defects.joinToString("") { (reproduced, text) ->
-                    if (reproduced) "; declared open defect reproduced, not gated: $text" else "; $text"
-                } +
-                (if (unreached.isEmpty()) "" else "; twins that did not reach their variable: " + unreached.joinToString("; ")) +
-                (if (differences.isEmpty()) "" else "; " + differences.joinToString("; "))
+            val reproduced = defects.filter { it.first }.map { it.second }
+            val broken = defects.filterNot { it.first }.map { it.second }
+            return buildString {
+                append("dm NI-DM2: ${if (passed) "PASS" else "FAIL"} ${twins.size} twins at ${lengths.size} body lengths ")
+                append("(${lengths.joinToString(", ")}); ${gating.size} of their ${slots.size} messages gate: A's stores ")
+                append("of M into B's inbox equal at each length over $comparisons comparisons, and at the same second ")
+                append("after t0 over $timedComparisons comparisons among the ${timed.size} messages whose state needs no ")
+                append("establishment (an intro's or a reset's store waits for the bundle, whose timing is the relay's, ")
+                append("§21.7 point 6); M sealed $modes, kinds $kinds, TLVs that rode $tlvs; sizes by length $sizes")
+                if (reproduced.isNotEmpty()) {
+                    append("; ${reproduced.size} declared open defect${if (reproduced.size == 1) "" else "s"}, not gated, ")
+                    append("reproduced exactly as declared: ${reproduced.joinToString("; ")}")
+                }
+                if (broken.isNotEmpty()) append("; declared open defect not reproduced as declared: ${broken.joinToString("; ")}")
+                if (unreached.isNotEmpty()) append("; twins that did not reach their variable: ${unreached.joinToString("; ")}")
+                if (differences.isNotEmpty()) append("; ${differences.joinToString("; ")}")
+                if (timing.isNotEmpty()) append("; ${timing.joinToString("; ")}")
+            }
         }
 
-        /** A view as its distinct sizes and TTLs, and how many stores (one per relay of the set). */
-        private fun summary(view: List<String>): String =
-            if (view.isEmpty()) {
-                "no store"
-            } else {
-                view.map { "size=${field(it, "size")} ttl=${field(it, "ttl")}" }.distinct().joinToString(" | ") +
-                    " at ${view.size} relays"
-            }
-
-        private fun field(event: String, name: String): String = event.substringAfter(" $name=").substringBefore(' ')
-
-        private fun sizesOf(view: List<String>): List<String> = view.map { field(it, "size") }
+        /** A view, store by store (relay slot, size, TTL, credential scope). */
+        private fun summary(view: List<Store>): String =
+            if (view.isEmpty()) "no store" else view.joinToString(" | ") + " (${view.size} stores)"
     }
 
     fun run(seed: Long, mutant: PrivacyMutant? = null): Result =
@@ -341,15 +427,21 @@ internal object NiDm2 {
                 inbox != null && inbox.contentEquals(it.namespace)
         }
         val view = stores.map { e ->
-            "STORE slot=${e.relaySlot} ns=${Joins.hex(e.namespace).take(16)} size=${e.bytes?.size} ttl=${e.ttlSeconds} " +
-                "scope=${e.credential?.let { Joins.hex(Joins.sha256(it)).take(12) }}"
-        }.sorted()
+            Store(
+                slot = e.relaySlot,
+                namespace = Joins.hex(e.namespace).take(16),
+                size = e.bytes!!.size,
+                ttl = e.ttlSeconds!!,
+                scope = e.credential?.let { Joins.hex(Joins.sha256(it)).take(12) },
+            )
+        }.sortedWith(STORE_ORDER)
         val blobs = stores.map { GroundTruth.Key(it.blobHash!!) }.distinct()
         val m = blobs.singleOrNull()
         return Slot(
             variant = variant,
             length = LENGTHS[k],
             view = view,
+            seconds = stores.map { it.second - t0 }.sorted(),
             blobs = blobs.size,
             mode = m?.let { world.truth.modeOfBlob[it] },
             content = m?.let { world.truth.contentOfBlob[it] },

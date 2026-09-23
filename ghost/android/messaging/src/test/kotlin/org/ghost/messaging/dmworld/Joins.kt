@@ -365,13 +365,18 @@ internal class Joins(private val world: PrivacyWorld) {
      * **Not here:** the deadline half is checked but cannot fail in this world — the model relay
      * stores every op in the session that enqueued it, and no world has an outage (PM-9's relay-
      * outage world, §22.16) — and the relay-side "membership expiry ≤ the T30 bound" clause, which
-     * needs a relay model with memberships (§22.16).
+     * needs a relay model with memberships (§22.16). **Nor the pending path:** the world sets a
+     * conversation's timer after `EST-READY` ([Plan]'s edges), so a TIMER_SET queued for a session
+     * — the path where the engine takes the new timer's TTL, NI-DM2's declared open defect (§22.20
+     * item 2) — is at most an accident here; the line counts those it saw, and a FAILED item's
+     * retry (the defect's other half) is run by no world.
      */
     fun jd5(): JoinResult {
         val violations = ArrayList<String>()
         var n = 0L
         var texts = 0
         var timerSets = 0
+        var queuedTimerSets = 0
         val inboxes = world.truth.clients.values.mapNotNull { t -> t.inboxNamespace?.let { hex(it) to t.index } }.toMap()
         // When each client first fetched each blob, and what each sender stored into each inbox.
         val firstGet = HashMap<Pair<Int, GroundTruth.Key>, Long>()
@@ -425,6 +430,7 @@ internal class Joins(private val world: PrivacyWorld) {
             }
             changeByMessage[ref]?.let { change ->
                 timerSets++
+                if (change.queued) queuedTimerSets++
                 val want = maxOf(table(change.oldCode), table(change.newCode))
                 if (ttl != want) {
                     violations += "a TIMER_SET from code ${change.oldCode} to ${change.newCode} stored with TTL $ttl, " +
@@ -435,8 +441,10 @@ internal class Joins(private val world: PrivacyWorld) {
         return JoinResult(
             "JD5", n, violations,
             "distinct stores against the §10.1 table: $texts user texts against the timer the users set, " +
-                "$timerSets TIMER_SETs against R-T3's larger bucket; the deadline half cannot fail in a world " +
-                "without outages",
+                "$timerSets TIMER_SETs against R-T3's larger bucket (${timerSets - queuedTimerSets} set over a " +
+                "session, $queuedTimerSets queued for EST-READY's flush: that path is NI-DM2's declared open " +
+                "defect and a FAILED item's retry is run by no world, §22.20); the deadline half cannot fail in a " +
+                "world without outages",
         )
     }
 
@@ -552,6 +560,7 @@ internal class Joins(private val world: PrivacyWorld) {
         val opened = windows.values.sumOf { it.total }
         val most = windows.values.maxOfOrNull { it.most } ?: 0
         lastJd7Exhausted = windows.values.sumOf { it.exhausted }
+        lastJd7Binding = windows.values.sumOf { it.binding() }
         return JoinResult(
             "JD7", n, violations,
             "reads, $bundleReads of them bundle reads inside $opened attempt windows of " +
@@ -559,8 +568,11 @@ internal class Joins(private val world: PrivacyWorld) {
         )
     }
 
-    /** How many establishments the last [jd7] saw use all three attempt windows. */
+    /** How many establishments the last [jd7] saw open their third attempt window. */
     private var lastJd7Exhausted = 0
+
+    /** How many of those the last [jd7] saw followed by a session where a fourth attempt would fall. */
+    private var lastJd7Binding = 0
 
     /**
      * **JD7's WITHHOLD_ALL_BUNDLES variant** (§21.7 point 6: "a JD7 variant requires ≤ 3 attempts
@@ -570,12 +582,20 @@ internal class Joins(private val world: PrivacyWorld) {
      * read of a card's bundle namespace inside one of **at most three** windows of an establishment
      * the world recorded.
      *
-     * **What makes it able to fail**, each required here so a variant world that did not exercise
-     * the bound cannot pass: the mode withheld something (a non-zero count of bundle blobs a list
-     * did not show — a world where nobody published would bound nothing), no bundle was fetched
-     * (a GET of a card's bundle namespace means the mode leaked), and at least one establishment
-     * used **all three** windows by the relay view (reads in three distinct windows) — which is the
-     * state in which an engine with no bound makes a fourth attempt that no window covers.
+     * **What makes it able to fail** — the one requirement that decides whether the bound was put
+     * to the test: at least one establishment whose reads fell in all three windows **and** after
+     * whose third window the reader had a relay session at which an engine with no bound makes a
+     * fourth attempt — at least six hours after the third window closed, before the pair's next
+     * establishment (a new send with no session, which starts a new count) and before the world
+     * ended ([Windows.binding]). Only there does a fourth attempt have somewhere to fall that no
+     * window covers; an establishment that reached its third window in the world's last six hours,
+     * or whose peer was written to again within six hours, bounds nothing.
+     *
+     * Two further requirements guard **the harness**, not the engine, and say so: the relay model
+     * answered at least one bundle list empty over a live bundle (a world in which nobody had
+     * published would withhold nothing), and no GET of a card's bundle namespace happened (the
+     * model's mode skips every such namespace before any GET, so this can fail only if the model's
+     * own bookkeeping and the recorder's disagree).
      */
     fun jd7Withheld(): JoinResult {
         val base = jd7()
@@ -584,21 +604,32 @@ internal class Joins(private val world: PrivacyWorld) {
         val bundleGets = events.count {
             it.op == ViewOp.GET && hex(it.namespace) in bundleOwner && hex(it.namespace) !in world.ownNamespaces(it.client)
         }
-        val withheld = world.relay.bundlesWithheld
+        val withheld = world.relay.bundleListsWithheld
         val exhausted = lastJd7Exhausted
+        val binding = lastJd7Binding
         if (!world.config.withholdAllBundles) violations += "the variant ran on a world without WITHHOLD_ALL_BUNDLES"
-        if (withheld == 0) violations += "the mode withheld no bundle blob: nothing was published to withhold"
-        if (bundleGets > 0) violations += "$bundleGets GETs of a card's bundle namespace: the mode leaked a bundle"
-        if (exhausted == 0) violations += "no establishment used all three attempt windows: the bound was never reached"
+        if (withheld == 0) violations += "the relay model withheld no live bundle from a list: nothing was published to withhold"
+        if (bundleGets > 0) violations += "$bundleGets GETs of a card's bundle namespace: the relay model leaked a bundle"
+        if (binding == 0) {
+            violations += "no establishment reached its third attempt window with a later session where a fourth " +
+                "attempt would fall ($exhausted reached the third): the bound was never put to the test"
+        }
         return JoinResult(
             "JD7 WITHHOLD_ALL_BUNDLES", base.scanned, violations,
-            "${base.detail}; $exhausted establishments ran all three attempts out, $withheld bundle blobs " +
-                "withheld from lists, $bundleGets bundle GETs",
+            "${base.detail}; $exhausted establishments reached their third attempt window, $binding of them " +
+                "followed by a relay session of the reader at least 6 h after it closed and before the pair's next " +
+                "establishment (where an unbounded engine makes a fourth attempt); harness guards: $withheld bundle " +
+                "lists answered empty over a live bundle, $bundleGets bundle GETs",
         )
     }
 
-    /** The attempt windows of one (reader, bundle owner) pair, opened as its reads arrive. */
-    private class Windows(private val establishments: List<PrivacyWorld.Establishment>, private val wakes: java.util.TreeSet<Long>) {
+    /**
+     * The attempt windows of one (reader, bundle owner) pair, opened as its reads arrive: JD7's
+     * oracle of §21.7 points 2 and 5 (at most [MAX_ATTEMPTS] windows of [WINDOW] each, the next at a
+     * relay session at least [NEXT_ATTEMPT] after the previous one closed). [wakes] are the reader's
+     * relay sessions; [establishments] the pair's, sorted by time.
+     */
+    internal class Windows(private val establishments: List<PrivacyWorld.Establishment>, private val wakes: java.util.TreeSet<Long>) {
         private var current: PrivacyWorld.Establishment? = null
         private var attempts = 0
         private var closeWake = Long.MIN_VALUE
@@ -607,9 +638,25 @@ internal class Joins(private val world: PrivacyWorld) {
         var most = 0
             private set
 
-        /** Establishments whose reads fell in all [MAX_ATTEMPTS] windows (the bound was reached). */
+        /** Establishments whose reads opened their [MAX_ATTEMPTS]th window (the bound was reached). */
         var exhausted = 0
             private set
+
+        /** Each exhausted establishment with the session that closed its last window. */
+        private val lastClosed = ArrayList<Pair<PrivacyWorld.Establishment, Long>>()
+
+        /**
+         * The exhausted establishments after which a fourth attempt had somewhere to fall: a relay
+         * session of the reader at least [NEXT_ATTEMPT] after the third window closed, earlier than
+         * the pair's next establishment (which restarts the count). There, an engine with no bound
+         * reads the bundle namespace and no window covers it.
+         */
+        fun binding(): Int = lastClosed.count { (establishment, closed) ->
+            if (closed == Long.MAX_VALUE) return@count false
+            val next = establishments.firstOrNull { it.at > establishment.at }?.at ?: Long.MAX_VALUE
+            val session = wakes.ceiling(closed + NEXT_ATTEMPT) ?: return@count false
+            session < next
+        }
 
         fun accept(t: Long): Boolean {
             val establishment = establishments.lastOrNull { it.at <= t } ?: return false
@@ -630,11 +677,14 @@ internal class Joins(private val world: PrivacyWorld) {
                 attempts++
                 total++
                 most = maxOf(most, attempts)
-                if (attempts == MAX_ATTEMPTS) exhausted++
+                if (attempts == MAX_ATTEMPTS) {
+                    exhausted++
+                    lastClosed += establishment to closeWake
+                }
             }
         }
 
-        private companion object {
+        companion object {
             /** §21.7 point 5: at most three attempts per establishment. */
             const val MAX_ATTEMPTS = 3
 

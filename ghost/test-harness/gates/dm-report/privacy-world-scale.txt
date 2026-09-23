@@ -1,11 +1,11 @@
 GHOST DM privacy gate (Phase 9 design §15.6, §15.7; slice S11)
 scale: gate (N = 600, 42 days), seed pairs 1, STANDARD
-dm privacy world: N=120, 14 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {BUNDLE=274, INTRO=372, PAIR=5013, PROVISIONAL=498}, 167 s [seed 5eed0001]
+dm privacy world: N=120, 14 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {BUNDLE=274, INTRO=372, PAIR=5013, PROVISIONAL=498}, 207 s [seed 5eed0001]
 dm JD1: PASS 0 over 15752; identity dictionary of 330600 entries over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD2: PASS 0 over 15752; 5793 Olm header and bundle key strings over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD3: PASS 0 over 21702; stores and registrations (822 stores into the storer's own bundle namespace, every other into a card's inbox); 1047 (relay, inbox, week) cells [seed 5eed0001]
 dm JD4: PASS 0 over 6157; distinct DM stores, 45 of them with a body in the 16 KiB class [seed 5eed0001]
-dm JD5: PASS 0 over 6157; distinct stores against the §10.1 table: 5740 user texts against the timer the users set, 143 TIMER_SETs against R-T3's larger bucket; the deadline half cannot fail in a world without outages [seed 5eed0001]
+dm JD5: PASS 0 over 6157; distinct stores against the §10.1 table: 5740 user texts against the timer the users set, 143 TIMER_SETs against R-T3's larger bucket (143 set over a session, 0 queued for EST-READY's flush: that path is NI-DM2's declared open defect and a FAILED item's retry is run by no world, §22.20); the deadline half cannot fail in a world without outages [seed 5eed0001]
 dm JD6: PASS 0 over 6157; ops by cause {bundle publication=274, user action=5883}; 5883 user messages, each under one ciphertext; 0 messages a user action created beyond what it was for [seed 5eed0001]
 dm JD7: PASS 0 over 125857; reads, 3808 of them bundle reads inside 369 attempt windows of 369 establishments (at most 1 windows for one) [seed 5eed0001]
 dm JD9: PASS 0 over 147559; relay events (registrations included) over 240 namespaces [seed 5eed0001]
