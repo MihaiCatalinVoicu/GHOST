@@ -4,7 +4,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
- * The crash enumeration of Phase 9 design §15.3, over the scenarios slice S10 implements.
+ * The crash enumeration of Phase 9 design §15.3, over the scenarios slices S10 and S10b implement.
  *
  * Each test records its scenario's K events, then crashes at every sampled one, reboots, checks
  * the structural invariants at the reboot, runs to quiescence and checks everything again — plus,
@@ -41,7 +41,16 @@ class DmCrashEnumerationTest {
 
     @Test fun scnGOutcomes() = enumerate(DmScenarios.scnG())
 
+    /** S10b: SCN-G's week-boundary FAILED retry (§22.8.5), as a scenario of its own. */
+    @Test fun scnGWeekBoundaryRetry() = enumerate(DmScenarios.scnGWeek())
+
+    /** S10b: the restore, with the double crashes §15.3 names for it. */
+    @Test fun scnIRestore() = enumerate(DmScenarios.scnI())
+
     @Test fun scnJFaults() = enumerate(DmScenarios.scnJ())
+
+    /** S10b: the revocation notice, driven to delivery and applied. */
+    @Test fun scnKRevocation() = enumerate(DmScenarios.scnK())
 
     @Test fun scnLMigration() = enumerate(DmScenarios.scnL())
 

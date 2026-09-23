@@ -79,6 +79,23 @@ internal object DmScripts {
     }
 
     /**
+     * The inbound texts of **every** conversation of one node, requests included.
+     *
+     * [inboundTexts] reads the first contact only, which is right for the two-client scenarios it
+     * was written for and wrong for a device that holds a request beside its contact (SCN-I's lost
+     * device, which carol wrote to): the no-loss oracle charged with the lost device's rendering
+     * has to see all of it.
+     */
+    fun everyInboundText(node: DmNode): List<String> {
+        val device = node.device
+        return device.engine.contacts().flatMap { contact ->
+            device.engine.conversation(contact.id, 200, null).reversed()
+                .filter { !it.outgoing }
+                .mapNotNull { it.text }
+        }
+    }
+
+    /**
      * The texts of every outgoing message this node has marked **SENT**, over every conversation.
      *
      * `SENT` is the engine's own statement that the op was released with a `sent` outcome, so it is

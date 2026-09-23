@@ -9,11 +9,15 @@ import org.ghost.messaging.port.DmEnvelopes
  * detects it is not evidence, it is a claim.
  *
  * §15.7's own set is 97 — 40 privacy (S11's), 33 correctness and 24 ephemeral (this slice's 57).
- * Seven are here. The other 50 are listed in §22.15 with the reason each is not, and the gate line
- * this slice writes says **seven**, not fifty-seven, for the same reason `dm-report-check.sh`
- * refuses a PASS on an empty sample: a number a run did not measure is worse than no number. The
- * line is built from the kills the run **recorded** ([DmKills]), never from this registry, so an
- * ignored or deleted kill test lowers the count instead of leaving it standing.
+ * Ten are here: seven from S10, and three from S10b — MC-18 and MC-26, which S10b's SCN-I makes
+ * reachable, and MC-33, which its `SCN-G-week` does. The other 47 are listed in §22.15 and §22.19
+ * with the reason each is not, and the gate line says **ten**, not fifty-seven, for the same reason
+ * `dm-report-check.sh` refuses a PASS on an empty sample: a number a run did not measure is worse
+ * than no number. The line is built from the kills the run **recorded** ([DmKills]), never from
+ * this registry, so an ignored or deleted kill test lowers the count instead of leaving it
+ * standing. **S10b's three are held to a stricter kill than S10's seven**: detected fault-free by
+ * the check their entry names, *and* at crash points spread over the scenario, each beside the
+ * unmutated scenario crashed at the same point ([Mutation.expectUnderCrash]).
  *
  * **What a mutant may be, here.** `:messaging` has no `Steps` seam the way `:sync` does, so a
  * mutation is one of three things: a **statement rewrite** on the device's executor (the same
@@ -44,6 +48,19 @@ internal object DmMutants {
          * same thing because the test compares one against the other.
          */
         val expect: String,
+        /**
+         * What the killing failure says when the mutant runs **under a crash** (S10b).
+         *
+         * A faulted run does not run the scenario's `finalChecks` — a crash may have lost the very
+         * step they assert — so a mutant detected fault-free by a final check is, under a crash,
+         * detected by something else or by nothing. For the mutants S10b registers the kill test
+         * also runs the mutant at crash points spread over the scenario's own events, beside the
+         * unmutated scenario at the same points, and this is the list of messages that count as a
+         * kill there: §15.3's two oracles at quiescence, in the words `DmCrashRunner` writes them,
+         * or a clause of the structural invariants. Empty for the S10 mutants, whose kills are
+         * what they were.
+         */
+        val expectUnderCrash: List<String> = emptyList(),
         val rewrite: ((String, List<Any?>) -> Pair<String, List<Any?>>)? = null,
         val decorate: ((DmEnvelopes) -> DmEnvelopes)? = null,
         /** The transaction-split seam of [FaultyDmSqlExecutor.defer]; only a crash run kills these. */
@@ -262,6 +279,130 @@ internal object DmMutants {
         },
     )
 
-    /** Every mutant this slice registers, in the order the report prints them. */
-    fun all(): List<Mutation> = listOf(MC1, MC5, MC7, MC10, MC12, MC16, ME16)
+    /**
+     * **MC-18 — the out-key floor kept across a renewal** (§21.3 point 2; slice S10b).
+     *
+     * A RECV decryption of a PreKey message that creates a new session under R-SS1 is a *renewal
+     * from c*, and the same transaction deletes every out key for c — so the next root c sends is
+     * accepted whatever its generation. A restore restarts c's `root_gen` at 0; with the floor kept,
+     * the restored device's first root is "not newer" than the lost device's, is dropped, and this
+     * side goes on sealing under a root the restored device no longer has. §15.7 names SCN-I as the
+     * detector and so does this: alice's first pair-mode answer never opens on the restored device.
+     *
+     * **One call site, not the statement.** `ContactStore.deleteOutPairKeys` is also what a new
+     * root (`applyTlvs`), a revocation and a KEYDEC acceptance use, and a rewrite of the statement
+     * alone would have been four mutants in one — the run would no longer say which of them it
+     * detected. So the rewrite fires only when the **caller** is RECV's renewal branch
+     * (`ReceiveStep.decryptAndApply`), read off the stack of the thread that is executing it: the
+     * same statement, the same bytes everywhere else. The stack read is stateless, so one
+     * `Mutation` shared by every node of every parallel run stays correct, which a flag set by the
+     * preceding `olm_prekey_used` insert would not.
+     */
+    val MC18 = Mutation(
+        id = "MC-18",
+        defeats = "§21.3 point 2: a renewal from c deletes every out key for c, so c's next root is accepted",
+        detectedBy = "SCN-I (alice's first pair-mode answer never opens on the restored device)",
+        expect = "pair envelopes from alice did not open on the restored device",
+        // Under a crash the final checks do not run, and what refuses the world is one of §15.3's
+        // two oracles: alice's answer is `SENT` and never rendered (no loss), or — when the crash
+        // left her nothing to answer with before the probe — the probe itself never decrypts.
+        expectUnderCrash = listOf(NO_LOSS_FAILURE, LIVENESS_FAILURE),
+        rewrite = { sql, args ->
+            if (sql == OUT_KEYS_DELETE &&
+                calledFrom("ContactStore", "deleteOutPairKeys", "ReceiveStep", "decryptAndApply")
+            ) {
+                Pair("$OUT_KEYS_DELETE AND 0", args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
+     * **MC-26 — `previous` never retired** (§8.7, §10.6; slice S10b).
+     *
+     * SWEEP deletes a `previous` session at its `retire_day`, 46 days after its demotion; the bound
+     * is what T34 relies on for a retired session's skipped keys (§21.3 point 6). The mutation
+     * makes the one statement that does it match nothing. §15.7 detects it with "CS-8 bound,
+     * structural invariants, T34 retired-session expectation"; here it is the structural half —
+     * [DmStructuralInvariants.retiredSessionsGone], run after the last sweep of every run — over
+     * SCN-I, which is the scenario whose renewal demotes a session and whose last step takes the
+     * world past the day.
+     */
+    val MC26 = Mutation(
+        id = "MC-26",
+        defeats = "§8.7: a 'previous' session is deleted at its retire_day",
+        detectedBy = "SCN-I (the renewal's demoted session outlives its retire_day)",
+        expect = "a 'previous' session past its retire_day after SWEEP",
+        // The clause runs at the end of **every** run, faulted or not, so a crash changes nothing
+        // about which check kills it.
+        expectUnderCrash = listOf("a 'previous' session past its retire_day after SWEEP"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("DELETE FROM olm_session WHERE slot = ? AND retire_day IS NOT NULL")) {
+                Pair("$sql AND 0", args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
+     * **MC-33 — a FAILED retry without the out key kept for its author week** (§22.8.5 rule 1;
+     * slice S10b).
+     *
+     * SWEEP keeps an earlier week's out pair key while a live retryable item of the contact could
+     * still be re-encrypted under it; `MessageStore.retryableItemWeeks` is the query that names
+     * those weeks, and the mutation makes it name none. A user retry keeps its author minute and the
+     * peer's R9 wants the key of that week, so across a week boundary the retry finds no pair key
+     * and re-establishes through a bundle fetch and a PreKey message — the relay-visible event
+     * §22.8.5 forbids. §15.7 detects it with "SCN-G week-boundary retry (a bundle fetch or an
+     * `unknown_seal` drop)", and so does this: `SCN-G-week`'s check that alice's session survived
+     * the retry, which is in its `alwaysChecks` and so runs in faulted runs too.
+     */
+    val MC33 = Mutation(
+        id = "MC-33",
+        defeats = "§22.8.5 rule 1: SWEEP keeps the out key of a week a live retryable item was authored in",
+        detectedBy = "SCN-G-week (the FAILED retry across a week boundary re-establishes the session)",
+        expect = "a FAILED retry across a week boundary re-established the session",
+        expectUnderCrash = listOf("a FAILED retry across a week boundary re-established the session"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("SELECT deadline_hour FROM dm_outbound_item WHERE contact_id = ?")) {
+                Pair("$sql AND 0", args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /** The no-loss oracle's words (`DmCrashRunner.noMessageTheSenderCallsSentIsMissing`). */
+    const val NO_LOSS_FAILURE: String = "marked it sent and no device rendered it"
+
+    /** The liveness oracle's words (`DmCrashRunner.sessionIsStillLive`). */
+    const val LIVENESS_FAILURE: String = "the session is not live after the run"
+
+    /** `ContactStore.deleteOutPairKeys`, verbatim: MC-18 matches the statement exactly. */
+    private const val OUT_KEYS_DELETE = "DELETE FROM dm_pair_key WHERE contact_id = ? AND direction = 'out'"
+
+    /**
+     * True when the current thread is inside [storeMethod] of a class named [storeClass], called
+     * directly from [callerMethod] of a class named [callerClass]. Simple names, because the
+     * packages are the engine's business; the pair is specific enough that no other frame matches.
+     */
+    private fun calledFrom(
+        storeClass: String,
+        storeMethod: String,
+        callerClass: String,
+        callerMethod: String,
+    ): Boolean {
+        val frames = Thread.currentThread().stackTrace
+        val at = frames.indexOfFirst {
+            it.className.substringAfterLast('.') == storeClass && it.methodName == storeMethod
+        }
+        if (at < 0 || at + 1 >= frames.size) return false
+        val caller = frames[at + 1]
+        return caller.className.substringAfterLast('.') == callerClass && caller.methodName == callerMethod
+    }
+
+    /** Every mutant S10 and S10b register, in the order the report prints them. */
+    fun all(): List<Mutation> = listOf(MC1, MC5, MC7, MC10, MC12, MC16, MC18, MC26, MC33, ME16)
 }

@@ -138,6 +138,15 @@ dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeou
 dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
 dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report"
+# Phase 9 S10b (design §22.19): the report now carries SCN-I, SCN-K and SCN-G-week and ten mutants,
+# and every negative above was regenerated from the new positives with its one change. Four more:
+# a report of S10's shape (seven scenarios, seven mutants) — the check must not accept the old
+# evidence as the new — SCN-I without the double crashes §15.3 names for it, a report without
+# SCN-K, and one of S10b's mutants with no line naming its killer.
+dmr_case fail s10-only-gate.txt gate "rejects an S10-shaped report without S10b's scenarios and mutants"
+dmr_case fail no-scn-i-doubles.txt gate "rejects SCN-I without double crashes (§15.3)"
+dmr_case fail missing-scn-k.txt gate "rejects a report without SCN-K"
+dmr_case fail unkilled-s10b-mutant.txt gate "rejects MC-33 with no line naming what kills it"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

@@ -68,6 +68,26 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     var outcomeFor: (String) -> String = { "sent" }
 
     /**
+     * §15.1's **REFUSE_ONE_SENDER** (S10b): every relay refuses the stores of these nodes — the
+     * outcome is `failed` and nothing is stored — while everyone else's go through.
+     *
+     * [outcomeFor] cannot say it: it refuses the **owner's** bundle publication too, and a
+     * publication that ends FAILED costs the owner the whole week (`OwnerSteps.ownerWeek`, §21.8
+     * point 5), so a scenario that wanted only the sender refused would have taken the recipient's
+     * bundle out of the world with it. SCN-H is the case that drives it.
+     */
+    var refusing: Set<String> = emptySet()
+
+    /**
+     * §15.1's **DELAY_RELEASE** (S10b): a blob stored from one of these nodes while its entry is
+     * set is served no earlier than the instant it names — the relay has it, lists nothing, and
+     * releases it later, inside its TTL. SCN-H drives it: a first flight that reaches its recipient
+     * weeks after it was written is the one case in which a generation's retention is what decides
+     * whether it opens.
+     */
+    var releaseNotBefore: Map<String, Long> = emptyMap()
+
+    /**
      * How far past the store the relay claims the blob expires (`InboundBlob.relayExpiryHour`, the
      * **E** of §10.3). 30 days is the honest store-and-forward horizon.
      */
@@ -80,6 +100,8 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         val storedAt: Long,
         val ttl: Long,
         val from: String,
+        /** [releaseNotBefore] at the moment of the store; 0 for every blob of S10. */
+        val notBefore: Long = 0L,
     )
 
     private val stored = ArrayList<Stored>()
@@ -133,11 +155,18 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             // reboot-then-OUTCOME path it exists for.
             if (key in collected) continue
             bus.event(DmEventKind.RELAY_BEFORE_SEND, node.name, "store ${operation.hex().take(8)}")
-            val outcome = if (Mode.LIE_FAILED in modes) "failed" else outcomeFor(operation.hex())
-            // LIE_FAILED stores it anyway: that is the whole of the lie.
-            if (outcome != "failed" || Mode.LIE_FAILED in modes) {
+            val refused = node.name in refusing
+            val outcome = when {
+                refused -> "failed"
+                Mode.LIE_FAILED in modes -> "failed"
+                else -> outcomeFor(operation.hex())
+            }
+            // LIE_FAILED stores it anyway: that is the whole of the lie. A refused sender's store
+            // is not stored by anyone.
+            if (!refused && (outcome != "failed" || Mode.LIE_FAILED in modes)) {
                 stored += Stored(
                     namespace, sha256(ciphertext), ciphertext, node.clock.now, ttl, node.name,
+                    notBefore = releaseNotBefore[node.name] ?: 0L,
                 )
             }
             val applied = bus.event(DmEventKind.RELAY_AFTER_APPLY, node.name, "stored")
@@ -191,6 +220,7 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         var moved = 0
         for (blob in candidates) {
             if (blob.storedAt + blob.ttl <= node.clock.now) continue
+            if (node.clock.now < blob.notBefore) continue
             val key = blob.namespace.hex() + blob.hash.hex() + "@" + node.name
             // WITHHOLD keeps each blob back for **one** round and then serves it, and it is
             // checked before the served set on purpose: a withheld blob that had already been
@@ -249,6 +279,32 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
 
     /** How many blobs the relay is holding. */
     val blobCount: Int get() = stored.size
+
+    /**
+     * How many live blobs the relay still owes a node that listens on their namespace (S10b).
+     *
+     * A scenario that moves the world's clock by weeks at once (SCN-I's retire day) asks this
+     * before it jumps: a blob still owed at the jump would outlive its TTL unserved, which models
+     * a recipient offline for the whole jump — RS2's declared loss, not the scenario's subject. It
+     * reads the listening set on the raw connection and raises no event.
+     */
+    fun owed(nodes: List<DmNode>, now: Long): Int {
+        var owed = 0
+        for (node in nodes) {
+            val listening = HashSet<String>()
+            node.raw.query("SELECT hex(namespace_id) FROM sync_namespace WHERE listening = 1") {
+                listening += it.string(0).lowercase()
+            }
+            for (blob in stored) {
+                if (blob.from == node.name || blob.storedAt + blob.ttl <= now) continue
+                // A blob held back on purpose is not owed yet: it is the scenario's, not in flight.
+                if (now < blob.notBefore) continue
+                if (blob.namespace.hex() !in listening) continue
+                if ((blob.namespace.hex() + blob.hash.hex() + "@" + node.name) !in served) owed++
+            }
+        }
+        return owed
+    }
 
     /**
      * How many second copies [Mode.REPEATS] put in, and how many of them the recipient's own

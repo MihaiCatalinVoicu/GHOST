@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The DM exit-gate report check (Phase 9 design §15.3, §15.4, §15.6, §15.7; slices S10 and S11), built
-# on the `t2-report-check.sh` pattern: **a report is evidence only if something refuses an incomplete
-# one.**
+# The DM exit-gate report check (Phase 9 design §15.3, §15.4, §15.6, §15.7; slices S10, S10b and
+# S11), built on the `t2-report-check.sh` pattern: **a report is evidence only if something refuses
+# an incomplete one.**
 #
 #   dm-report-check.sh <report> gate    the `messaging-exit-gate.yml` run: every implemented crash
 #                                       scenario and suite case with a non-empty enumeration, the
@@ -27,17 +27,17 @@
 # fails the check (exit 1); usage errors exit 2.
 #
 # **What this deliberately does not check.** §15.7's own gate line is `dm mutants: 97 run, 97
-# detected` and §15.3's enumeration is every event of twelve scenarios. Slice S10 implements seven
-# scenarios, four suite cases and seven mutants, so the numbers pinned here are the numbers a run
-# actually measures. Raising them is the next slice's job and is exactly what should fail this
-# script until the tests behind them exist: a gate that asserted the design's numbers while running
-# a subset would pass on evidence nobody produced, which is the one failure mode a report-checked
-# gate must not have. §22.15 of the design lists what is still owed, scenario by scenario and
-# mutant by mutant. The privacy half follows the same rule: it does not require JD8, JD10, NI-DM2,
-# NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the AD-7-with-token line, the
-# EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry clause, T26's model-relay
-# open check or 30 of the 40 privacy mutants, because nothing in this branch produces them; §22.16
-# names each (items 10–15 and 20).
+# detected` and §15.3's enumeration is every event of twelve scenarios. Slices S10 and S10b
+# implement nine of the twelve (and SCN-G's week-boundary half as a line of its own), four suite
+# cases and ten mutants, so the numbers pinned here are the numbers a run actually measures. Raising them is the next slice's job and is exactly what should
+# fail this script until the tests behind them exist: a gate that asserted the design's numbers
+# while running a subset would pass on evidence nobody produced, which is the one failure mode a
+# report-checked gate must not have. §22.15 and §22.19 of the design list what is still owed,
+# scenario by scenario and mutant by mutant. The privacy half follows the same rule: it does not
+# require JD8, JD10, NI-DM2, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
+# AD-7-with-token line, the EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry
+# clause, T26's model-relay open check or 30 of the 40 privacy mutants, because nothing in this
+# branch produces them; §22.16 names each (items 10–15 and 20).
 set -euo pipefail
 
 report="${1:-}"
@@ -148,10 +148,12 @@ case "$kind" in
 esac
 
 
-# The scenarios and suite cases slice S10 implements. Each must have a crash-class line, and that
-# line must report at least one single crash: an enumeration of zero crash points is a scenario that
-# ran once without faults, which is not a crash enumeration.
-scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-J SCN-L RP6 RP9 CB-reject-replay EP-read-expiry)
+# The scenarios and suite cases slices S10 and S10b implement (S10b added SCN-I, SCN-K and SCN-G's
+# week-boundary retry as `SCN-G-week`, §22.19). Each must have a crash-class line, and that line
+# must report at least one single crash: an enumeration of zero crash points is a scenario that ran
+# once without faults, which is not a crash enumeration.
+scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-G-week SCN-I SCN-J SCN-K SCN-L)
+scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
@@ -195,9 +197,9 @@ if [ "$kind" = pr ] && [ "$timeout_total" -le 0 ] 2>/dev/null; then
 fi
 
 # §15.3's doubles: "Double crashes (the second during recovery) for SCN-A, SCN-B, SCN-F and SCN-I."
-# SCN-I is not implemented. SCN-J is here as well as the three §15.3 names, because §15.3's sentence
-# about it is "single and **double** SQL crashes never reach the threshold".
-for scenario in SCN-A SCN-B SCN-F SCN-J; do
+# All four are implemented since S10b. SCN-J is here as well as the four §15.3 names, because §15.3's
+# sentence about it is "single and **double** SQL crashes never reach the threshold".
+for scenario in SCN-A SCN-B SCN-F SCN-I SCN-J; do
   doubles="$(grep -E "^dm crash classes: ${scenario} " "$report" | sed -nE 's/.*, ([0-9]+) doubles,.*/\1/p' || true)"
   [ -n "$doubles" ] && [ "$doubles" -gt 0 ] 2>/dev/null || bad "$scenario ran no double crashes"
 done
@@ -223,8 +225,13 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 # registry, so a mutant whose kill test is ignored or deleted lowers the numerator and prints
 # "NOT DETECTED" — which is what the two rules below then refuse. Before that, `@Ignore` on a kill
 # left this whole block byte-identical and green.
-grep -qxF 'dm mutants: 7 run, 7 detected' "$report" || bad "the mutant line is not 'dm mutants: 7 run, 7 detected'"
-for mutant in MC-1 MC-5 "MC-7'" MC-10 MC-12 MC-16 ME-16; do
+#
+# Ten since S10b: MC-18 and MC-26, which SCN-I makes reachable, and MC-33, which SCN-G-week does;
+# each is killed fault-free and at crash points spread over its scenario, beside the unmutated
+# scenario crashed at the same points (§22.19).
+grep -qxF 'dm mutants: 10 run, 10 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 10 run, 10 detected'"
+for mutant in MC-1 MC-5 "MC-7'" MC-10 MC-12 MC-16 MC-18 MC-26 MC-33 ME-16; do
   grep -qE "^dm mutant ${mutant}: detected by .+" "$report" || bad "no detection line for mutant $mutant"
 done
 if grep -qE '^dm mutant .*NOT DETECTED' "$report"; then

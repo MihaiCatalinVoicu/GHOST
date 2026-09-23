@@ -42,7 +42,7 @@ internal class DmScenario(
     val finalChecks: (DmCrashWorld) -> Unit = {},
     /** Checks that hold in **every** run, including faulted ones. */
     val alwaysChecks: (DmCrashWorld) -> Unit = {},
-    /** §15.3 runs double crashes for SCN-A, SCN-B, SCN-F and SCN-I. */
+    /** §15.3 runs double crashes for SCN-A, SCN-B, SCN-F and SCN-I (SCN-J too; see its KDoc). */
     val doubles: Boolean = false,
     /** Quiescence rounds after the script. */
     val tailRounds: Int = 24,
@@ -52,10 +52,25 @@ internal class DmScenario(
      *
      * Null for SCN-D (the contact is `changed` and a send is refused by design), SCN-G (its last
      * step leaves a relay that refuses everything), RP9 and the CB replay (the contact was
-     * rejected). Those are the scenarios whose subject *is* a refusal, and demanding liveness of
-     * them would be demanding the opposite of what they assert.
+     * rejected), and SCN-K (S10b: the contact is `revoked`, terminal by design). Those are the
+     * scenarios whose subject *is* a refusal, and demanding liveness of them would be demanding
+     * the opposite of what they assert. SCN-K replaces it with its own liveness property — the
+     * revocation took effect, whole, in every run — in its `alwaysChecks`.
      */
     val liveness: Pair<String, String>? = null,
+    /**
+     * The liveness probe **in turn**: the second node sends only once the first node's probe has
+     * been rendered, instead of both sending in the same round (S10b).
+     *
+     * Off everywhere except SCN-I, and it is not a loosening there. After a restore the contact
+     * cannot learn that the restored device exists except from the restored device itself, and
+     * everything it seals before it learns is sealed under the lost device's keys — §8.6's declared
+     * residue, which SCN-I's own `alwaysChecks` assert stays unopenable. A simultaneous probe asks
+     * the contact to answer a device it has not heard from yet, which is asking for that residue
+     * to open. What stays demanded is exactly §15.3's sentence: one more message each way decrypts,
+     * in the order the only party that knows of the restore can start it.
+     */
+    val livenessInTurn: Boolean = false,
     /**
      * The no-loss oracle: every message a device has marked `SENT` was rendered by some device.
      *
@@ -65,6 +80,19 @@ internal class DmScenario(
      * replay (the request was rejected and the contact deleted with it).
      */
     val noLoss: Boolean = false,
+    /**
+     * The texts this run's own semantics drop **by design**, which the no-loss oracle therefore
+     * does not charge to the engine (S10b).
+     *
+     * An opt-out of one message and not of the oracle, and every scenario that uses it says why in
+     * its own KDoc: SCN-K's message from a revoked identity that reaches its contact after the
+     * revocation took effect is §8.5's "drops later blobs", and a message the sender calls `SENT`
+     * and the recipient refuses is exactly what that sentence promises. It is read at the end of
+     * the run, from the world's notes, so a scenario declares a loss only once the run has actually
+     * put the message in the position that makes it one — a declaration made up front would excuse
+     * a message a crash had lost for some other reason.
+     */
+    val declaredLoss: (DmCrashWorld) -> Set<String> = { emptySet() },
 ) {
     class Step(val label: String, val body: (DmCrashWorld) -> Unit)
 
@@ -84,6 +112,13 @@ internal class DmRunSpec(
     val plan: ((DmCrashWorld) -> DmFaultPlan)? = null,
     /** Record every event's kind (the recording run). */
     val record: Boolean = false,
+    /**
+     * Told how many events the armed phase raised, **before** any check runs (S10b).
+     *
+     * A mutated world fails its checks, so its recording run never returns a [DmRunResult]; the
+     * mutant kill rule still needs its event count, to crash it only at points it reaches.
+     */
+    val onArmedEvents: ((Long) -> Unit)? = null,
 )
 
 internal class DmRunResult(
@@ -197,6 +232,11 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
                     onDeath(death)
                 } catch (death: SimulatedNativeCrash) {
                     onDeath(death)
+                } catch (finding: DmInvariantViolation) {
+                    // A check a step makes on its own (EP, SCN-G-week) ends the run here; the
+                    // event count it reached is still what a mutant kill has to crash inside.
+                    spec.onArmedEvents?.invoke(world.bus.count)
+                    throw finding
                 }
             }
 
@@ -216,6 +256,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             }
 
             world.bus.armed = false
+            spec.onArmedEvents?.invoke(world.bus.count)
             // One unarmed settling round, so a run whose last crash landed mid-round is compared at
             // the same place as the recording run.
             world.quiesce(scenario.tailRounds)
@@ -239,6 +280,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             world.passes()
             for (node in world.nodes()) {
                 DmStructuralInvariants.afterSweep(node, node.clock.now, "end")
+                DmStructuralInvariants.retiredSessionsGone(node, node.clock.now, "end")
             }
 
             // The rendering order **before** the liveness sends, so the comparison across runs is
@@ -298,10 +340,15 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
      * this loop's.
      */
     private fun noMessageTheSenderCallsSentIsMissing(world: DmCrashWorld) {
-        val rendered = world.nodes().flatMap { DmScripts.inboundTexts(world, it.name) }.toSet()
+        // Every conversation of every live node, and what a retired node had rendered before it was
+        // lost (SCN-I). The first-contact-only `inboundTexts` was enough while every world was two
+        // clients with one contact each; a device holding a request beside its contact is not.
+        val rendered = world.nodes().flatMap { DmScripts.everyInboundText(it) }.toSet() +
+            world.retiredRendered
+        val declared = scenario.declaredLoss(world)
         for (node in world.nodes()) {
             for (text in DmScripts.sentTexts(world, node.name)) {
-                if (text !in rendered) {
+                if (text !in rendered && text !in declared) {
                     dmViolation(
                         "${scenario.name}: ${node.name} marked it sent and no device rendered it: " +
                             "\"$text\"",
@@ -326,19 +373,35 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
         val (a, b) = pair
         world.relay.modes = emptySet()
         world.relay.outcomeFor = { "sent" }
-        val toB = world.contacts["$a->$b"] ?: return
-        val toA = world.contacts["$b->$a"] ?: return
+        // A missing contact is a failure, not a pass. Every S10 scenario records its pair in the
+        // unfaulted setup, where the two ids always exist, so the `?: return` this replaced never
+        // fired; SCN-I records the restored device's contact in an **armed** step, and a crash
+        // that lost that step would have turned the liveness oracle off for the run without a
+        // word. The scenario re-adds the card when the user's action did not complete (see
+        // `DmScenarios.scnI`), so a missing id here is a world that could not reconnect at all.
+        val toB = world.contacts["$a->$b"]
+            ?: dmViolation("${scenario.name}: the liveness pair has no contact $a->$b")
+        val toA = world.contacts["$b->$a"]
+            ?: dmViolation("${scenario.name}: the liveness pair has no contact $b->$a")
         world[a].device.engine.send(toB, LIVENESS_A, null)
-        world[b].device.engine.send(toA, LIVENESS_B, null)
+        var answered = false
+        if (!scenario.livenessInTurn) {
+            world[b].device.engine.send(toA, LIVENESS_B, null)
+            answered = true
+        }
         for (round in 0 until LIVENESS_ROUNDS) {
             world.pump()
             world.passes()
             world.advanceBy(org.ghost.messaging.DmWorld.MINUTE)
-            if (DmScripts.inboundTexts(world, b).contains(LIVENESS_A) &&
-                DmScripts.inboundTexts(world, a).contains(LIVENESS_B)
-            ) {
-                return
+            val there = DmScripts.inboundTexts(world, b).contains(LIVENESS_A)
+            if (there && !answered) {
+                // In turn (SCN-I): the answer goes only once the first probe has arrived, and it
+                // then has the rounds that remain.
+                world[b].device.engine.send(toA, LIVENESS_B, null)
+                answered = true
+                continue
             }
+            if (there && DmScripts.inboundTexts(world, a).contains(LIVENESS_B)) return
         }
         val missing = buildList {
             if (!DmScripts.inboundTexts(world, b).contains(LIVENESS_A)) add("$a → $b")

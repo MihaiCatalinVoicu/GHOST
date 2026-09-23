@@ -1,9 +1,10 @@
 name: messaging-exit-gate
 
-# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slice S10): the crash enumeration of
-# the implemented SCN-* scenarios and suite cases at **every** event, with the double crashes §15.3
-# names, the "timeout after apply" run at every relay event, SCN-J's `SQLITE_FULL` at every write
-# and every commit, the seeded worlds, and every registered mutant killed by its named case.
+# The DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10 and S10b): the crash
+# enumeration of the implemented SCN-* scenarios and suite cases at **every** event, with the double
+# crashes §15.3 names, the "timeout after apply" run at every relay event, SCN-J's `SQLITE_FULL` at
+# every write and every commit, the seeded worlds, and every registered mutant killed by its named
+# case.
 #
 # It runs the real DM cryptography: the `ghost-dm-host` build of `ghost-client-dm` is built first
 # and passed as `-Dghost.dm.native`, because **without it the DM worlds report themselves skipped
@@ -22,13 +23,14 @@ name: messaging-exit-gate
 # FROM-CACHE and the gate would run nothing.
 #
 # Budget (measured on the owner's workstation, 8 worker threads): the whole `:messaging` suite is
-# about 3 minutes at the PR scale and tens of minutes at this one — tens of thousands of crash runs
-# over **eleven** scenarios and suite cases (seven SCN-* plus RP6, RP9, CB-reject-replay and
-# EP-read-expiry, which is what `dm-report-check.sh` requires and what the fixtures carry), the
-# `SQLITE_FULL` injections, 128 seeded worlds and the mutants. A 4-vCPU runner is roughly twice
-# that, and the timeout leaves room for the two builds on top. The every-event scale has not been
-# run end to end on this branch — the self-hosted runners are not up — so the number here is the
-# PR-scale measurement extrapolated, and §22.15 item 11 says so.
+# about 5 minutes at the PR scale and tens of minutes at this one — tens of thousands of crash runs
+# over **fourteen** scenario lines and suite cases (SCN-A, B, D, F, G, I, J, K, L, SCN-G's
+# week-boundary retry as SCN-G-week, plus RP6, RP9, CB-reject-replay and EP-read-expiry, which is
+# what `dm-report-check.sh` requires and what the fixtures carry), the `SQLITE_FULL` injections, 128
+# seeded worlds and the mutants. SCN-I alone is 6 631 events with double crashes, about a third of
+# the whole enumeration (slice S10b, §22.19). A 4-vCPU runner is roughly twice that, and the timeout
+# leaves room for the two builds on top. The self-hosted runners are not up, so no run of this job
+# has been observed; §22.15 item 11 and §22.19 say which scales were run locally and where.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:

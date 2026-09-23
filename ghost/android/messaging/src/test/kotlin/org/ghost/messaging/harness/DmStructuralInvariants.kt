@@ -225,6 +225,30 @@ internal object DmStructuralInvariants {
     }
 
     /**
+     * §10.6 and §8.7 (S10b): after SWEEP, **no `previous` session is past its `retire_day`**.
+     *
+     * §15.3 checks that every `previous` row *has* a retire day, and nothing checked that the day
+     * is honoured, so mutant MC-26 ("`previous` never retired"; §15.7 names "CS-8 bound, structural
+     * invariants, T34 retired-session expectation") broke no clause at all. The day is the wall
+     * clock's and SWEEP's is `now_e`'s, which is never earlier (R-T7), so this cannot demand more
+     * than the sweep that just ran was obliged to do.
+     *
+     * A separate function from [afterSweep] on purpose: the seeded worlds call that one from their
+     * `alwaysChecks`, which run **before** the runner's last pass, and a retire day crossed by the
+     * quiescence loop's final clock step is owed to the next sweep, not broken by the last one. The
+     * runner calls this after its own pass, the one place both halves hold by construction.
+     */
+    fun retiredSessionsGone(node: DmNode, nowEpochSeconds: Long, where: String) {
+        val label = "${node.name} @ $where"
+        val today = Math.floorDiv(nowEpochSeconds, org.ghost.messaging.DmWorld.DAY)
+        empty(
+            node.raw, label, "a 'previous' session past its retire_day after SWEEP",
+            "SELECT count(*) FROM olm_session WHERE slot = 'previous' AND retire_day IS NOT NULL " +
+                "AND retire_day <= $today",
+        )
+    }
+
+    /**
      * §15.3's "the WAL is 0 bytes", asserted on a node that has **just** been through R-K1 — a
      * reboot the caller already performed.
      *
@@ -337,6 +361,10 @@ internal object DmStructuralInvariants {
                 "blob ${it.string(0)} ${it.string(1)} ${it.long(2)} ${it.long(3)}\n",
             )
         }
+        // A scheduled control that went out is progress, and one still waiting is owed (S10b).
+        node.raw.query(
+            "SELECT hex(sched_id), what, due_minute FROM dm_scheduled ORDER BY sched_id",
+        ) { out.append("sched ${it.string(0)} ${it.string(1)} ${it.long(2)}\n") }
         return out.toString()
     }
 
@@ -376,6 +404,15 @@ internal object DmStructuralInvariants {
         node.raw.query(
             "SELECT min(offer_after_minute) FROM inbox_blob WHERE state <> 'done' " +
                 "AND offer_after_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        // A scheduled control's drawn minute (S10b: SCN-I's reconnect, SCN-K's revocation). It is
+        // owed work in exactly the sense the four above are — a time-triggered pass sends it when
+        // its minute arrives and nothing else will — and until SCN-I and SCN-K no scenario
+        // scheduled one, so nothing noticed that a world whose only remaining work was a notice due
+        // in six hours looked idle and was declared quiescent without it.
+        node.raw.query(
+            "SELECT min(due_minute) FROM dm_scheduled WHERE due_minute > ?",
             listOf(after),
         ) { if (!it.isNull(0)) consider(it.long(0)) }
         return if (best == Long.MAX_VALUE) null else best

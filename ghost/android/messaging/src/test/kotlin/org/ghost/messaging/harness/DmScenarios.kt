@@ -1,18 +1,22 @@
 package org.ghost.messaging.harness
 
 import org.ghost.messaging.DmWorld
+import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
+import org.ghost.messaging.api.ContactId
+import org.ghost.messaging.api.RevocationReason
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.api.Timer
 import org.ghost.messaging.api.TrustState
 
 /**
- * The named crash scenarios of Phase 9 design §15.3, as far as slice S10 implements them.
+ * The named crash scenarios of Phase 9 design §15.3, as far as slices S10 and S10b implement them.
  *
  * Implemented here: **SCN-A** (send), **SCN-B** (receive and reorder), **SCN-D** (key change,
  * including the forged-binding case), **SCN-F** (ephemeral), **SCN-G** (outcomes and resend),
- * **SCN-J** (faults) and **SCN-L** (migration safety). SCN-C, SCN-E, SCN-H, SCN-I and SCN-K are
- * not here; §22.15 of the design records exactly what each one still owes.
+ * **SCN-J** (faults) and **SCN-L** (migration safety), from S10; **SCN-I** (restore) and **SCN-K**
+ * (revocation), from S10b. SCN-C, SCN-E and SCN-H are not here; §22.15 of the design records what
+ * each one still owes and §22.19 what S10b left of it.
  *
  * **Two deviations from §15.3's table, declared.** The scenario texts say "3 relays over 2
  * operators, one refusing" (SCN-A) and similar relay-set shapes elsewhere. The relay set, the
@@ -527,6 +531,117 @@ internal object DmScenarios {
         }
     }
 
+    // ------------------------------------------------------------------ SCN-G's week-boundary retry
+
+    /**
+     * **SCN-G's week-boundary FAILED retry** (§15.3's SCN-G row, §22.8.5 rule 1; slice S10b).
+     *
+     * > a default-timer FAILED retry across a week boundary …: no bundle fetch, no PreKey message,
+     * > displayed once (§22.8.5)
+     *
+     * It is its own scenario rather than more steps of [scnG], so that SCN-G's line and its MC-16
+     * kill stay what S10 measured; the report prints it as `SCN-G-week`.
+     *
+     * Every relay refuses alice's message, so it is FAILED; the ISO week turns and SWEEP runs; the
+     * user retries. A retry keeps its author minute and R9 at the peer requires the pair key's week
+     * to equal the author's week, so the retry is sealable in pair mode only if SWEEP **kept** the
+     * out key of the author's week for the live retryable item — §22.8.5 rule 1, and the whole of
+     * mutant MC-33. Without that key the retry has no pair key, the session has already sealed a
+     * pair envelope so provisional mode is closed to it, and the item falls to `NO_SEAL_KEY`: a
+     * re-establishment through a bundle fetch and a PreKey message, which is exactly the
+     * relay-visible event §22.8.5 exists to avoid. The message is still displayed once — which is
+     * why no-loss and liveness cannot see MC-33, and why the check that does is "alice's session is
+     * the one she had before the week turned", asserted **in every run**: nothing a crash does to
+     * this script can legitimately re-establish the session, since a retry lost to a crash leaves
+     * the item FAILED and a retry that ran seals under the kept key or rolls back whole.
+     *
+     * The user retries again when a crash lost the retry (the message still shows FAILED), and
+     * does it before the item's deadline. Both oracles are on. §15.3's second half of the same
+     * clause — the retry after the peer's `prov_erase_minute` — is not here (§22.19).
+     */
+    fun scnGWeek(): DmScenario = DmScenario(
+        name = "SCN-G-week",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world.notes["sessionBefore"] = currentSessionHex(world, "alice", "alice->bob")
+                ?: error("alice has no session for bob")
+        },
+        steps = listOf(
+            step("every relay refuses the store") { w ->
+                w.relay.outcomeFor = { "failed" }
+                w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "g-week", null)
+                round(w)
+            },
+            step("the ISO week turns and SWEEP runs") { w ->
+                w.relay.outcomeFor = { "sent" }
+                val now = w.nodes().maxOf { it.clock.now }
+                val nextWeek = DmWorld.WEEK_ORIGIN +
+                    (Math.floorDiv(now - DmWorld.WEEK_ORIGIN, DmWorld.WEEK) + 1) * DmWorld.WEEK
+                // An hour into the new week: past the boundary, well inside the item's seven days.
+                w.advanceBy(nextWeek - now + DmWorld.HOUR)
+                round(w)
+            },
+            step("the user retries") { w -> retryTheFailedMessage(w) },
+            step("settle") { w ->
+                retryTheFailedMessage(w)
+                round(w)
+            },
+        ),
+        alwaysChecks = { world ->
+            val now = currentSessionHex(world, "alice", "alice->bob")
+            if (now != world.notes["sessionBefore"]) {
+                dmViolation(
+                    "SCN-G-week: a FAILED retry across a week boundary re-established the session " +
+                        "(§22.8.5 rule 1: no bundle fetch, no PreKey message)",
+                )
+            }
+            val shown = DmScripts.inboundTexts(world, "bob").count { it == "g-week" }
+            if (shown > 1) dmViolation("SCN-G-week: bob displayed the retried message $shown times")
+        },
+        finalChecks = { world ->
+            if (world.notes["retried"] != SendResult.QUEUED) {
+                dmViolation("SCN-G-week fault-free: the retry returned ${world.notes["retried"]}")
+            }
+            val shown = DmScripts.inboundTexts(world, "bob").count { it == "g-week" }
+            if (shown != 1) dmViolation("SCN-G-week fault-free: bob displayed the retry $shown times")
+        },
+    )
+
+    /**
+     * The user's retry of the FAILED message, done again while it still shows FAILED — a retry a
+     * crash interrupted rolled back whole, so the message is FAILED again and the user sees it.
+     *
+     * **The check is here, right after the call returns, and not only at quiescence.** A retry
+     * that found no pair key for its author week demotes `current` in its own transaction (R-SS0)
+     * and asks for an establishment, so the moment the call returns the session is already not the
+     * one it was — which is the whole of §22.8.5's "no bundle fetch, no PreKey message", decided
+     * where it happens. Checked only at the end, the same defect surfaced first as a *different*
+     * failure: the model relay never re-serves a bundle the recipient already consumed once (see
+     * §22.19), so the re-establishment stalled with only a `previous` row and the structural clause
+     * "exactly one `current` whenever any exists" fired instead — a kill for a reason that is the
+     * harness's. Sound in every run: the call either committed its seal, and then nothing else
+     * touched the session in between, or it rolled back whole and the step died with it.
+     */
+    private fun retryTheFailedMessage(w: DmCrashWorld) {
+        val alice = w["alice"].device.engine
+        val failed = alice.conversation(DmScripts.contact(w, "alice", "bob"), 20, null)
+            .firstOrNull { it.text == "g-week" && it.state == org.ghost.messaging.api.MessageState.FAILED }
+            ?: return
+        w.notes["retried"] = alice.retry(failed.id)
+        if (currentSessionHex(w, "alice", "alice->bob") != w.notes["sessionBefore"]) {
+            dmViolation(
+                "SCN-G-week: a FAILED retry across a week boundary re-established the session " +
+                    "(§22.8.5 rule 1: no bundle fetch, no PreKey message)",
+            )
+        }
+        round(w)
+    }
+
     // ------------------------------------------------------------------ SCN-J faults
 
     /**
@@ -596,6 +711,160 @@ internal object DmScenarios {
         },
     )
 
+    // ------------------------------------------------------------------ SCN-K revocation
+
+    /**
+     * **SCN-K — revocation** (§15.3, §8.5; slice S10b).
+     *
+     * > A notifies its revocation (scheduled); B drops the sessions, refuses sending, drops later
+     * > blobs
+     *
+     * alice issues a revocation certificate v2 for her own identity and schedules the notice; it
+     * goes out at its drawn minute inside U[0, 24 h] from a **time-triggered** pass, inside E2E, as
+     * a CONTROL; bob's RECV verifies it under alice's **pinned** key and, in that one transaction,
+     * moves the contact to the terminal `revoked`, deleting its sessions, pair keys, held rows and
+     * scheduled controls and failing its pending sends. A crash anywhere in it must leave all of
+     * that or none of it, and the structural invariant "no session row on a revoked contact" is
+     * what reads the answer at every reboot.
+     *
+     * **The oracles.** **Liveness is off, and has to be:** after a revocation the pair cannot talk
+     * by design, so "one more message each way decrypts" is the opposite of what §8.5 asserts. Its
+     * place is taken by the liveness property of *this* scenario, checked in every run: **the
+     * revocation took effect** — at quiescence bob's contact is `revoked`, nothing of it is left
+     * (sessions, pair keys, held rows, scheduled controls, pending sends) and a send is refused. A
+     * crash that left a notice that never goes out, or a half-applied revocation, fails there.
+     * **No-loss is on**, with one declared loss (`declaredLoss`): alice's `k-after`, and only when
+     * the run actually sent it **after** bob's contact was observed `revoked` — that is §8.5's
+     * "drops later blobs", a message its sender calls `SENT` and its recipient refuses by design.
+     * `k1`, sent before, must be rendered, and in a faulted run bob's own send, when the revocation
+     * has not reached him yet, is an ordinary message and must be rendered too.
+     *
+     * **User actions a crash interrupted are done again**, as in SCN-I: "I lost my phone" is a tap
+     * whose call never returned when a crash lands inside it, and the user taps it again. The redo
+     * is decided from what is visible — a scheduled notice or none — and only before any pass could
+     * have sent the notice, which is what makes it exact (`ensureRevocationNotified`).
+     */
+    fun scnK(): DmScenario = DmScenario(
+        name = "SCN-K",
+        noLoss = true,
+        declaredLoss = { world ->
+            if (world.notes["afterSent"] == true) setOf("k-after") else emptySet()
+        },
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+        },
+        steps = listOf(
+            step("traffic before the revocation") { w ->
+                w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "k1", null)
+                w.pump()
+                w.passes()
+            },
+            step("A issues its revocation and schedules the notice") { w -> ensureRevocationNotified(w) },
+            step("the notice falls due") { w ->
+                ensureRevocationNotified(w)
+                // §8.5's spread is U[0, 24 h]; one control per time-triggered pass.
+                w.advanceBy(25 * DmWorld.HOUR)
+                w.passes()
+                w.pump()
+                w.passes()
+            },
+            step("B refuses to send") { w ->
+                ensureRevocationNotified(w)
+                // Only once the revocation has reached bob: before that his send is an ordinary
+                // message, which a faulted run may legitimately produce and deliver.
+                if (revokedOnBob(w)) {
+                    w.notes["refused"] =
+                        w["bob"].device.engine.send(DmScripts.contact(w, "bob", "alice"), "k-refused", null)
+                }
+            },
+            step("later blobs are dropped") { w ->
+                ensureRevocationNotified(w)
+                if (revokedOnBob(w)) {
+                    w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "k-after", null)
+                    w.notes["afterSent"] = true
+                }
+                w.pump()
+                w.passes()
+            },
+        ),
+        alwaysChecks = { world ->
+            // The liveness property of this scenario: the revocation took effect, whole.
+            if (!revokedOnBob(world)) {
+                dmViolation(
+                    "SCN-K: the revocation never took effect — bob's contact is " +
+                        trustOf(world, "bob", "bob->alice"),
+                )
+            }
+            val contact = contactBytes(world, "bob->alice")
+            for ((what, table) in REVOCATION_RESIDUE) {
+                var left = 0L
+                world["bob"].raw.query(
+                    "SELECT count(*) FROM $table WHERE contact_id = ?",
+                    listOf(contact),
+                ) { left = it.long(0) }
+                if (left != 0L) dmViolation("SCN-K: $left $what left on the revoked contact (§8.5)")
+            }
+            val refused = world["bob"].device.engine.send(DmScripts.contact(world, "bob", "alice"), "never", null)
+            if (refused != SendResult.REVOKED) {
+                dmViolation("SCN-K: a send to a revoked contact returned $refused")
+            }
+            if (world.notes["afterSent"] == true && "k-after" in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("SCN-K: bob rendered a message alice sent after her revocation took effect")
+            }
+        },
+        finalChecks = { world ->
+            if (world.notes["notified"] != 1) {
+                dmViolation("SCN-K fault-free: the notice was scheduled for ${world.notes["notified"]} contacts")
+            }
+            if (world.notes["refused"] != SendResult.REVOKED) {
+                dmViolation("SCN-K fault-free: bob's send after the revocation returned ${world.notes["refused"]}")
+            }
+            if (world.notes["afterSent"] != true) {
+                dmViolation("SCN-K fault-free: the later message was never sent, so its drop proved nothing")
+            }
+            val revoked = world["bob"].device.engine.status().drops["revoked"]
+            if (revoked != 1) dmViolation("SCN-K fault-free: bob counted $revoked revocations")
+        },
+    )
+
+    /**
+     * alice's "I lost my phone", done again when a crash interrupted it.
+     *
+     * Exact because of **when** it runs: every caller runs it before its own first pass, and only
+     * a pass can send the notice and retire its row. So while `notified` is unset — the call never
+     * returned — no pass has run since the call began, and "no scheduled row" means "the schedule
+     * never committed" rather than "it committed and went out". A committed schedule whose return a
+     * crash lost is recognised by its row, and the redo is skipped.
+     */
+    private fun ensureRevocationNotified(w: DmCrashWorld) {
+        if (w.notes["notified"] != null) return
+        val scheduled = DmScripts.count(
+            w, "alice", "SELECT count(*) FROM dm_scheduled WHERE what = 'revocation'",
+        )
+        if (scheduled > 0L) {
+            w.notes["notified"] = scheduled.toInt()
+            return
+        }
+        val alice = w["alice"].device.engine
+        val certificate = alice.issueRevocation(RevocationReason.DEVICE_LOST)
+            ?: dmViolation("SCN-K: alice could not issue a revocation certificate")
+        w.notes["notified"] = alice.notifyContactsOfRevocation(certificate)
+    }
+
+    private fun revokedOnBob(w: DmCrashWorld): Boolean = trustOf(w, "bob", "bob->alice") == "revoked"
+
+    /** §8.5's "sessions, pair keys, held rows and pending sends", and the scheduled controls. */
+    private val REVOCATION_RESIDUE = listOf(
+        "session rows" to "olm_session",
+        "pair keys" to "dm_pair_key",
+        "held rows" to "dm_held",
+        "scheduled controls" to "dm_scheduled",
+        "pending sends" to "dm_pending_send",
+    )
+
     // ------------------------------------------------------------------ SCN-L migration
 
     /**
@@ -654,6 +923,397 @@ internal object DmScenarios {
         },
     )
 
+    // ------------------------------------------------------------------ SCN-I restore
+
+    /**
+     * **SCN-I — restore** (§15.3, §8.6, §21.3; slice S10b).
+     *
+     * > B restores from seed: pre-restore pair, provisional and intro envelopes counted
+     * > (`unknown_seal`, `unknown_generation`), no request created; B re-adds A's card and
+     * > reconnects (a scheduled reset waiting for A's bundle, §21.8); A creates a new session under
+     * > R-SS1 without a key-change warning and drops its out keys for B; later pair envelopes open
+     * > in both directions (§21.3)
+     *
+     * **The world.** alice (A) and bob (B) are established both ways and exchange a pair-sealed
+     * message; carol, a card holder bob never accepted, writes to him once, so bob holds a request
+     * and the relay holds an **intro** envelope built on bob's lost generation. Then bob's phone is
+     * lost — [DmCrashWorld.retire]: the node leaves the world, the relay keeps every blob it had
+     * for bob — and `bob-restored` is built: the **same** MESSAGING branch and `ghost1` seed on a
+     * fresh file, with its own random stream (see [DmNode]'s `streamOffset`). carol's part ends
+     * with the setup and she is retired with bob. All of that is unfaulted setup; the armed phase is
+     * the restore itself.
+     *
+     * **What is checked, and where.** In every run (`alwaysChecks`): the restored device renders
+     * **nothing** authored before the restore (the lost device's pair, provisional and intro
+     * envelopes all reach it through the relay and all stay unopenable), it holds **no request**
+     * (carol's intro names a generation whose secrets were random and are gone), alice's contact is
+     * never `changed` (the same Olm identity is a renewal, not a key change) and she holds nothing.
+     * Fault-free (`finalChecks`): the counts §15.3 names (`unknown_seal` + `unknown_generation` on
+     * the restored device, `session_renewed` on alice), the reconnect's texts in both directions
+     * and — §21.3's "later pair envelopes open in both directions" — `pair_sent` on **both**
+     * current sessions beside the text that was sealed under it.
+     *
+     * **The oracles, both on.** No-loss: every message a device calls `SENT` was rendered — by a
+     * live device, or by the lost one before it was lost ([DmCrashWorld.retiredRendered]). Liveness:
+     * one more message each way between the restored device and alice, **in turn** — the restored
+     * device first (`livenessInTurn`, whose KDoc says why that is §15.3's sentence and not a
+     * loosening of it). alice's two answers are sent **only once alice has renewed** (her current
+     * session is no longer the pre-restore one), for the same reason: a message she sealed before
+     * learning of the restore is sealed under the lost device's keys, which is §8.6's declared
+     * residue and not the engine's loss, and a scenario that sent it anyway would make the no-loss
+     * oracle charge a declared loss to the engine. The conversation's timer is off (set in the
+     * setup, carried to the restored device by R-T9), so the 47 days do not sweep the messages the
+     * oracle reads, and the jump waits for a settled world ([jumpToTheRetireDayOnceSettled]).
+     *
+     * **User actions a crash interrupted are done again.** The restore, the re-added card and the
+     * reconnect are each a user action whose call never returned when a crash lands inside it, and
+     * the user of a phone that died mid-tap does it again: every later step first re-does whichever
+     * of them is visibly missing (`ensureRestoreFlow`). Without that, a crash inside the one
+     * `addContact` of the run would leave nothing for the liveness oracle to probe — which used to
+     * pass silently (`sessionIsStillLive` returned on a missing id) and now fails. What is checked is
+     * that the redo works on whatever the crash left, which is an atomicity property of those three
+     * calls: a half-committed restore, card or schedule that refused the redo would fail here.
+     *
+     * **MC-18 and MC-26.** The renewal's deletion of alice's out keys (§21.3 point 2) is what lets
+     * bob's new root in and what keeps alice from sealing her answer under the lost device's root;
+     * without it the answer never opens (MC-18). The renewal demotes alice's pre-restore session to
+     * `previous`, and the last step takes the world past its `retire_day`, where SWEEP must delete
+     * it (MC-26, checked by [DmStructuralInvariants.retiredSessionsGone] at the end of every run).
+     *
+     * **Not here, and §22.19 names each:** the variant in which A resets from its side after B
+     * published a new bundle, and the three §22.8.4 variants in which B's pre-restore first flight,
+     * PreKey re-sends or normal replies reach A after B's reconnect intro (MC-32's subject, which
+     * §22.15 item 8 records as needing a step seam).
+     */
+    fun scnI(): DmScenario = DmScenario(
+        name = "SCN-I",
+        doubles = true,
+        liveness = RESTORED to "alice",
+        // The restored device speaks first: see `DmScenario.livenessInTurn`.
+        livenessInTurn = true,
+        noLoss = true,
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            world.node("carol", 0x61)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            // The timer off, so the conversation outlives the last step's 47 days: under the
+            // default seven-day timer every message of the scenario — sender's copy and
+            // recipient's — is swept long before the run ends, and the no-loss oracle would then
+            // be checking an empty conversation. R-T9 carries the new version to the restored
+            // device with alice's first answer, so its own later messages are timer-off too.
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.OFF)
+            settle(world)
+            // A pair envelope before the restore: the lost device reads it, the restored one must
+            // not be able to.
+            world["alice"].device.engine.send(DmScripts.contact(world, "alice", "bob"), "i-pre", null)
+            settle(world)
+            check("i-pre" in DmScripts.inboundTexts(world, "bob")) { "the pre-restore pair message never arrived" }
+            // An intro envelope on the lost device's generation: carol scans bob's card and writes.
+            world["carol"].device.engine.addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
+            val toBob = world["carol"].device.engine.contacts().single().id
+            world["carol"].device.engine.send(toBob, "i-carol", null)
+            settle(world)
+            check(world["bob"].device.engine.contacts().any { it.trust == TrustState.REQUEST }) {
+                "carol's intro never reached the device that is about to be lost"
+            }
+            // What the renewal has to replace, recorded before anything is lost.
+            world.notes["aliceSessionBefore"] = currentSessionHex(world, "alice", "alice->bob")
+                ?: error("alice has no session for bob before the restore")
+            world.notes["trustBefore"] = trustOf(world, "alice", "alice->bob") ?: "none"
+            // How the restored device's re-added card is found again after a crash lost the id.
+            world.notes["aliceIdentity"] = identityOf(world, "bob", "bob->alice")
+            // alice's contact for bob is the contact for the restored device too: the identity is
+            // the same, and a restore is exactly the event that must not make it a new one.
+            world.contacts["alice->$RESTORED"] = DmScripts.contact(world, "alice", "bob")
+            world.retire("bob")
+            world.retire("carol")
+            // The same MESSAGING branch and `ghost1` seed on a new file: a restore from the seed.
+            world.node(RESTORED, 0x51, identityBranch = 0x52, streamOffset = RESTORED_STREAM)
+        },
+        steps = listOf(
+            step("B restores from seed") { w ->
+                w[RESTORED].device.engine.onRestored()
+                w.notes["restored"] = true
+                // The relay serves the restored inbox everything it holds for the lost one.
+                w.pump()
+                w.passes()
+            },
+            step("B re-adds A's card") { w -> ensureRestoreFlow(w, reconnect = false) },
+            step("B reconnects") { w -> ensureRestoreFlow(w, reconnect = true) },
+            step("the notice falls due and waits for A's bundle") { w ->
+                ensureRestoreFlow(w, reconnect = true)
+                // §8.6's spread is U[0, 48 h]; the control then finds no session, starts the
+                // establishment and waits for alice's bundle (§21.8) and EST-READY's two minutes.
+                w.advanceBy(49 * DmWorld.HOUR)
+                w.passes()
+                w.pump()
+                w.passes()
+                w.advanceBy(3 * DmWorld.MINUTE)
+                w.passes()
+                w.pump()
+                w.passes()
+            },
+            // Every later step moves the clock a few minutes per round, as time does: a crash that
+            // cost the step above its rounds must not leave EST-READY's two minutes unelapsed until
+            // the 47-day jump fails the waiting control at its deadline. The first version of this
+            // scenario did exactly that at crash@626, and the run then measured the harness.
+            step("A renews and answers on the new session") { w ->
+                ensureRestoreFlow(w, reconnect = true)
+                round(w)
+                round(w)
+                sendOnceRenewed(w, "i-welcome")
+                round(w)
+            },
+            step("B answers, carrying its new root") { w ->
+                ensureRestoreFlow(w, reconnect = true)
+                w[RESTORED].device.engine.send(DmScripts.contact(w, RESTORED, "alice"), "i-back", null)
+                round(w)
+                round(w)
+            },
+            step("A writes in pair mode") { w ->
+                ensureRestoreFlow(w, reconnect = true)
+                round(w)
+                sendOnceRenewed(w, "i-pair")
+                round(w)
+            },
+            step("the world settles and the demoted session reaches its retire day") { w ->
+                ensureRestoreFlow(w, reconnect = true)
+                jumpToTheRetireDayOnceSettled(w)
+            },
+            step("the jump a crash cost the step above, if it did") { w ->
+                ensureRestoreFlow(w, reconnect = true)
+                jumpToTheRetireDayOnceSettled(w)
+            },
+        ),
+        alwaysChecks = { world ->
+            val restored = DmScripts.everyInboundText(world[RESTORED])
+            val stale = restored.filter { it in PRE_RESTORE_TEXTS }
+            if (stale.isNotEmpty()) {
+                dmViolation("SCN-I: the restored device rendered pre-restore content $stale (§8.6)")
+            }
+            if (world[RESTORED].device.engine.contacts().any { it.trust == TrustState.REQUEST }) {
+                dmViolation("SCN-I: a pre-restore intro envelope created a request on the restored device")
+            }
+            if (trustOf(world, "alice", "alice->bob") == "changed") {
+                dmViolation("SCN-I: a restore under the same Olm identity became a key change on alice")
+            }
+            val held = DmScripts.count(world, "alice", "SELECT count(*) FROM dm_held")
+            if (held != 0L) dmViolation("SCN-I: alice holds $held rows after a same-identity restore")
+        },
+        finalChecks = { world ->
+            if (world.notes["jumped"] != true) {
+                dmViolation("SCN-I fault-free: the world never settled, so the retire day was never reached")
+            }
+            val restored = world[RESTORED].device
+            val drops = restored.engine.status().drops
+            val unopenable = (drops["unknown_seal"] ?: 0) + (drops["unknown_generation"] ?: 0)
+            if (unopenable == 0) {
+                dmViolation("SCN-I fault-free: no pre-restore envelope was counted as unopenable: $drops")
+            }
+            val renewed = world["alice"].device.engine.status().drops["session_renewed"]
+            if (renewed != 1) dmViolation("SCN-I fault-free: alice counted $renewed session renewals")
+            if (trustOf(world, "alice", "alice->bob") != world.notes["trustBefore"]) {
+                dmViolation(
+                    "SCN-I fault-free: alice's contact moved from ${world.notes["trustBefore"]} to " +
+                        trustOf(world, "alice", "alice->bob"),
+                )
+            }
+            val onRestored = DmScripts.inboundTexts(world, RESTORED).filter { it.startsWith("i-") }
+            if (onRestored != listOf("i-welcome", "i-pair")) {
+                dmViolation(
+                    "SCN-I: pair envelopes from alice did not open on the restored device — it " +
+                        "rendered $onRestored, expected [i-welcome, i-pair] (§21.3 point 2)",
+                )
+            }
+            if ("i-back" !in DmScripts.inboundTexts(world, "alice")) {
+                dmViolation("SCN-I fault-free: alice never rendered the restored device's answer")
+            }
+            // §21.3's "later pair envelopes open in both directions": a pair envelope was sealed on
+            // each side's current session, and the text sealed under it was rendered above.
+            for ((node, key) in listOf("alice" to "alice->bob", RESTORED to "$RESTORED->alice")) {
+                if (!pairSentOnCurrent(world, node, key)) {
+                    dmViolation("SCN-I fault-free: $node never sealed a pair envelope after the reconnect")
+                }
+            }
+        },
+    )
+
+    /**
+     * The three user actions of a restore, each done again when a crash interrupted it: the restore
+     * itself, the re-added card, and (from the reconnect step on) the reconnect.
+     *
+     * Each is judged from what the **user** can see — the app is restored or it is not, bob is in
+     * the contact list or he is not, a reconnect is scheduled or a session exists or neither — never
+     * from a note a crash could have prevented, except where the note is the only record of a call
+     * that returned. `ALREADY_KNOWN` from a re-added card is a crash that lost only the moment the
+     * id was recorded, and the id is then looked up by the identity the card carries.
+     */
+    private fun ensureRestoreFlow(w: DmCrashWorld, reconnect: Boolean) {
+        val device = w[RESTORED].device
+        // "Restored" is the `dm_self` row, not the card: the card is a pure function of the seed
+        // and `myCard()` answers it before ACTIVATE has run, which is exactly the state a crash
+        // inside `onRestored` leaves.
+        if (DmScripts.count(w, RESTORED, "SELECT count(*) FROM dm_self") == 0L) {
+            device.engine.onRestored()
+        }
+        if (w.contacts["$RESTORED->alice"] == null) {
+            when (val added = device.engine.addContact(w["alice"].device.card(), CardSource.QR_IN_PERSON)) {
+                AddContactResult.ADDED, AddContactResult.ALREADY_KNOWN -> {
+                    w.contacts["$RESTORED->alice"] =
+                        contactByIdentity(w, RESTORED, w.notes["aliceIdentity"] as String)
+                }
+                else -> dmViolation("SCN-I: the restored device could not re-add alice's card: $added")
+            }
+        }
+        if (!reconnect || w.notes["reconnected"] != null) return
+        val contact = DmScripts.contact(w, RESTORED, "alice")
+        val scheduled = DmScripts.count(w, RESTORED, "SELECT count(*) FROM dm_scheduled")
+        val sessions = DmScripts.count(w, RESTORED, "SELECT count(*) FROM olm_session")
+        if (scheduled == 0L && sessions == 0L) {
+            w.notes["reconnected"] = device.engine.reconnect(listOf(contact))
+        } else {
+            w.notes["reconnected"] = scheduled.toInt()
+        }
+    }
+
+    /** alice sends [text] to the restored device, but only once she has renewed (see [scnI]). */
+    private fun sendOnceRenewed(w: DmCrashWorld, text: String) {
+        val now = currentSessionHex(w, "alice", "alice->bob")
+        if (now == null || now == w.notes["aliceSessionBefore"]) return
+        w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), text, null)
+    }
+
+    /**
+     * §8.7: 47 days, once — past the `retire_day` of the session the renewal demoted — but only
+     * over a **settled** world.
+     *
+     * Settled means nothing is in flight: no store an outbox still holds for the relay, no live
+     * blob the relay still owes a listener, no blob an inbox has not consumed, no pending send and
+     * no scheduled control. A jump over anything in flight would model both devices offline for
+     * the 47 days, and the model relay would then do two things the scenario is not about: drop
+     * the owed blob at its TTL (RS2's declared loss, charged by the no-loss oracle to the engine)
+     * and store a held op past its `deadline_hour`, which the Phase 7 engine it stands in for
+     * refuses (R-T4). The first enumeration found the first of them at crash@3264+3: `i-back`
+     * released `sent` a moment before the second death, then expired at the relay across the jump.
+     *
+     * A crash inside the settling rounds loses the jump with the rest of its step, and the next
+     * step — which runs this again — is what makes the jump happen in every single-crash run; the
+     * note is written the moment the clock moves, so a crash in the passes after the jump does not
+     * make the next step jump twice. A world that never settles is not jumped at all, and the
+     * fault-free run asserts it did.
+     */
+    private fun jumpToTheRetireDayOnceSettled(w: DmCrashWorld) {
+        if (w.notes["jumped"] == true) return
+        for (attempt in 0 until SETTLE_ROUNDS) {
+            if (settled(w)) break
+            round(w)
+        }
+        if (!settled(w)) return
+        w.advanceBy(RETIRE_JUMP_SECONDS)
+        w.notes["jumped"] = true
+        w.passes()
+        w.pump()
+        w.passes()
+    }
+
+    /** Nothing in flight anywhere in the world; read on the raw connections, so no event. */
+    private fun settled(w: DmCrashWorld): Boolean {
+        val now = w.nodes().maxOf { it.clock.now }
+        if (w.relay.owed(w.nodes(), now) != 0) return false
+        return w.nodes().all { node ->
+            listOf(
+                "SELECT count(*) FROM outbox_op WHERE outcome = 'pending' AND ciphertext IS NOT NULL",
+                "SELECT count(*) FROM inbox_blob WHERE state <> 'done'",
+                "SELECT count(*) FROM dm_pending_send",
+                "SELECT count(*) FROM dm_scheduled",
+            ).all { query -> DmScripts.count(w, node.name, query) == 0L }
+        }
+    }
+
+    /** At most this many rounds are spent settling before the jump. */
+    private const val SETTLE_ROUNDS: Int = 8
+
+    /** §8.7's `RETIRE_DAYS` (46) and one more. */
+    private const val RETIRE_JUMP_SECONDS: Long = 47 * DmWorld.DAY
+
+    /** One relay round, a pass, three minutes, a pass: EST-READY's wait fits inside one. */
+    private fun round(w: DmCrashWorld) {
+        w.pump()
+        w.passes()
+        w.advanceBy(3 * DmWorld.MINUTE)
+        w.passes()
+    }
+
+    /** One round and the second one EST-READY and a hint pass need, unfaulted (setup only). */
+    private fun settle(world: DmCrashWorld) {
+        repeat(3) {
+            world.pump()
+            world.passes()
+            world.advanceBy(3 * DmWorld.MINUTE)
+        }
+        world.pump()
+        world.passes()
+    }
+
+    private fun contactBytes(w: DmCrashWorld, key: String): ByteArray =
+        requireNotNull(w.contacts[key]) { "no contact $key" }.toByteArray()
+
+    private fun currentSessionHex(w: DmCrashWorld, node: String, key: String): String? {
+        var out: String? = null
+        w[node].raw.query(
+            "SELECT hex(session_id) FROM olm_session WHERE contact_id = ? AND slot = 'current'",
+            listOf(contactBytes(w, key)),
+        ) { out = it.string(0) }
+        return out
+    }
+
+    private fun pairSentOnCurrent(w: DmCrashWorld, node: String, key: String): Boolean {
+        var sent = false
+        w[node].raw.query(
+            "SELECT pair_sent FROM olm_session WHERE contact_id = ? AND slot = 'current'",
+            listOf(contactBytes(w, key)),
+        ) { sent = it.long(0) == 1L }
+        return sent
+    }
+
+    private fun trustOf(w: DmCrashWorld, node: String, key: String): String? {
+        var out: String? = null
+        w[node].raw.query(
+            "SELECT trust_state FROM dm_contact WHERE contact_id = ?",
+            listOf(contactBytes(w, key)),
+        ) { out = it.string(0) }
+        return out
+    }
+
+    private fun identityOf(w: DmCrashWorld, node: String, key: String): String {
+        var out: String? = null
+        w[node].raw.query(
+            "SELECT hex(identity_pk) FROM dm_contact WHERE contact_id = ?",
+            listOf(contactBytes(w, key)),
+        ) { out = it.string(0) }
+        return requireNotNull(out) { "$node has no contact $key" }
+    }
+
+    private fun contactByIdentity(w: DmCrashWorld, node: String, identityHex: String): ContactId {
+        var id: ByteArray? = null
+        w[node].raw.query(
+            "SELECT contact_id FROM dm_contact WHERE hex(identity_pk) = ?",
+            listOf(identityHex),
+        ) { id = it.blob(0) }
+        return ContactId(requireNotNull(id) { "$node has no contact with identity $identityHex" })
+    }
+
+    private const val RESTORED: String = "bob-restored"
+
+    /** The restored node's random stream (see [DmNode]'s `streamOffset`). */
+    private const val RESTORED_STREAM: Int = 1_000
+
+    /** Every text authored before the restore, none of which the restored device may render. */
+    private val PRE_RESTORE_TEXTS = setOf("hello", "hi back", "pair now", "i-pre", "i-carol")
+
     /** Every scenario this slice implements, in the order the report prints them. */
-    fun all(): List<DmScenario> = listOf(scnA(), scnB(), scnD(), scnF(), scnG(), scnJ(), scnL())
+    fun all(): List<DmScenario> =
+        listOf(scnA(), scnB(), scnD(), scnF(), scnG(), scnGWeek(), scnI(), scnJ(), scnK(), scnL())
 }
