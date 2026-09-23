@@ -14,6 +14,13 @@
 //! `androidTest` APK; G-R6 checks it exports the closed list plus that one entry, and that the
 //! shipped `libghost_client_net.so` exports no `DmEquivalence` symbol.
 //!
+//! **One check more, and no symbol** (§15.5 PQ1, §22.19): `ghost-client-dm`'s `pq-spy` feature runs
+//! PQ1 as an assertion around every `openIntro` — exactly one X-Wing decapsulation per open, and the
+//! same open with the decapsulated secret perturbed must be `NOT_OPEN` — so every JVM world opens its
+//! intros under it. A violation is a caught panic, `INTERNAL`; nothing else the surface returns
+//! changes, and the second, perturbed open draws no randomness. `DmPqSpyNativeTest` refuses a host
+//! library built without it.
+//!
 //! This package is **never shipped** and is excluded from the shipped graph, so the client
 //! allowlist and the third-party notices do not see it.
 

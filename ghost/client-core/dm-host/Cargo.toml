@@ -24,9 +24,14 @@ crate-type = ["cdylib"]
 provenance = ["ghost-client-dm/provenance"]
 
 [dependencies]
-# The whole point of this package: the JVM tests run the shipped crate, not a stand-in. The one
-# addition is `test-vectors`, the deterministic equivalence entry point (slice S12): the shipped
-# graph never enables it (G-R2) and G-R6 checks this library exports it and the shipped one does
-# not.
-ghost-client-dm = { path = "../dm", features = ["jni-bridge", "test-vectors"] }
+# The whole point of this package: the JVM tests run the shipped crate, not a stand-in. Two
+# additions, neither in the shipped graph (G-R2):
+#  - `test-vectors`, the deterministic equivalence entry point (slice S12); G-R6 checks this library
+#    exports it and the shipped one does not;
+#  - `pq-spy`, PQ1 as an assertion around every `openIntro` (design §15.5 PQ1, §22.19): exactly one
+#    X-Wing decapsulation per open, and the same open run again with the decapsulated secret
+#    perturbed must be `NOT_OPEN`. It changes no output — a violation is a caught panic, `INTERNAL`
+#    — and adds no symbol, so every JVM world opens its intros under PQ1 and fails on the first
+#    open that breaks it. `DmPqSpyNativeTest` checks the loaded library carries it.
+ghost-client-dm = { path = "../dm", features = ["jni-bridge", "test-vectors", "pq-spy"] }
 jni = { workspace = true }

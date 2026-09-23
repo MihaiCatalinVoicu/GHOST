@@ -661,15 +661,45 @@ pub fn seal_intro_with(
     let sender_card = card::parse(sender.card)?;
     let (ciphertext, shared) = pq::encapsulate_with(context.gen_public, kem_randomness)?;
     let transcript = intro_transcript(context, &ciphertext);
+    let inner_key = intro_inner_key(&shared, &transcript);
+    seal_intro_layers(
+        outer_key,
+        context,
+        sender,
+        sender_card.card_index,
+        l1,
+        salt,
+        &ciphertext,
+        &transcript,
+        &inner_key,
+    )
+}
+
+/// Everything of [`seal_intro_with`] after the KEM: binding v3, the inner layer under `inner_key`
+/// and the card-keyed outer layer. Split out so the `gate`-variant client of PQ5 (the test-only
+/// module `gate` below) builds its envelope through **the same code** and differs from an honest
+/// one only in where `inner_key` came from.
+#[allow(clippy::too_many_arguments)]
+fn seal_intro_layers(
+    outer_key: &SealKey,
+    context: &IntroContext<'_>,
+    sender: &IntroSender<'_>,
+    sender_card_index: u16,
+    l1: &[u8],
+    salt: &[u8; SALT_BYTES],
+    ciphertext: &[u8],
+    transcript: &[u8; 32],
+    inner_key: &[u8; 32],
+) -> DmResult<Vec<u8>> {
     let signature = binding::sign(
         sender.identity_seed,
         &binding::BindingV3 {
             oi_a: sender.oi,
-            card_index_a: sender_card.card_index,
+            card_index_a: sender_card_index,
             recipient_namespace: context.namespace,
             binding_minute: sender.binding_minute,
             gen_id_b: context.gen_id,
-            xwing_ct: &ciphertext,
+            xwing_ct: ciphertext,
             base_key_a: sender.base_key,
             oi_b: context.recipient_oi,
         },
@@ -696,8 +726,8 @@ pub fn seal_intro_with(
     at += 4;
     inner_plain[at..at + l1.len()].copy_from_slice(l1);
 
-    let inner_ad = intro_inner_ad(&transcript);
-    let inner = aead(&intro_inner_key(&shared, &transcript))?
+    let inner_ad = intro_inner_ad(transcript);
+    let inner = aead(inner_key)?
         .encrypt(
             &zero_nonce(),
             Payload {
@@ -709,7 +739,7 @@ pub fn seal_intro_with(
 
     let mut body = Vec::with_capacity(4 + ciphertext.len() + inner.len());
     body.extend_from_slice(&context.gen_id.to_be_bytes());
-    body.extend_from_slice(&ciphertext);
+    body.extend_from_slice(ciphertext);
     body.extend_from_slice(&inner);
     seal_body(
         outer_key,
@@ -920,6 +950,94 @@ pub fn check_generation_fallback_key(
         return Err(DmCode::NonCanonical);
     }
     Ok(())
+}
+
+/// The `gate`-variant client of PQ5 (design §15.5 PQ5, RG-5; §15.7 PM-32; §22.19): an intro
+/// sealer whose inner layer is keyed **without the X-Wing KEM**, which an honest recipient must
+/// refuse. Test builds only.
+///
+/// The envelope is the one [`seal_intro_with`] builds — the same binding v3, inner plaintext,
+/// bucket and card-keyed outer layer, through `seal_intro_layers` — and differs only in where
+/// `k_in` came from, so a refusal can only be the recipient's KEM dependence and never a malformed
+/// envelope. The [`InnerKey::Kem`] control **is** [`seal_intro_with`] and must open, which is what
+/// keeps the refusals from being vacuous.
+#[cfg(test)]
+pub(crate) mod gate {
+    use super::*;
+
+    /// Where the gate-variant client takes the intro inner key from.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum InnerKey {
+        /// Control: the production sealer, [`seal_intro_with`].
+        Kem,
+        /// No encapsulation at all: 1 120 fixed bytes where the ciphertext goes, and `k_in` from an
+        /// all-zero secret, which anybody who reads the transcript computes.
+        NoEncapsulation,
+        /// A real encapsulation whose secret is dropped: `k_in` from an all-zero secret.
+        SecretDropped,
+        /// A real encapsulation, `k_in` from the card-derived outer key: the inner layer is then
+        /// no stronger than the classical outer one.
+        CardKey,
+        /// A real encapsulation, `k_in` from `SHA-256(ct)`: a public value.
+        CiphertextHash,
+    }
+
+    impl InnerKey {
+        /// Every variant that seals the inner layer without the KEM secret.
+        pub(crate) const WITHOUT_KEM: [InnerKey; 4] = [
+            InnerKey::NoEncapsulation,
+            InnerKey::SecretDropped,
+            InnerKey::CardKey,
+            InnerKey::CiphertextHash,
+        ];
+    }
+
+    /// [`seal_intro_with`] with the inner key taken from `variant`.
+    pub(crate) fn seal_intro(
+        variant: InnerKey,
+        outer_key: &SealKey,
+        context: &IntroContext<'_>,
+        sender: &IntroSender<'_>,
+        l1: &[u8],
+        salt: &[u8; SALT_BYTES],
+        kem_randomness: &[u8; pq::ENCAPS_RANDOMNESS_BYTES],
+    ) -> DmResult<Vec<u8>> {
+        if variant == InnerKey::Kem {
+            return seal_intro_with(outer_key, context, sender, l1, salt, kem_randomness);
+        }
+        if !BUCKETS.contains(&context.bucket) {
+            return Err(DmCode::NoFit);
+        }
+        let sender_card = card::parse(sender.card)?;
+        let zero = KemSecret::from_bytes([0u8; 32]);
+        let (ciphertext, secret) = if variant == InnerKey::NoEncapsulation {
+            (vec![0x5a; pq::CIPHERTEXT_BYTES], zero)
+        } else {
+            let (ciphertext, _) = pq::encapsulate_with(context.gen_public, kem_randomness)?;
+            let secret = match variant {
+                InnerKey::CardKey => KemSecret::from_bytes(*outer_key.as_bytes()),
+                InnerKey::CiphertextHash => {
+                    KemSecret::from_bytes(Sha256::digest(&ciphertext).into())
+                }
+                // `Kem` returned above.
+                InnerKey::SecretDropped | InnerKey::NoEncapsulation | InnerKey::Kem => zero,
+            };
+            (ciphertext, secret)
+        };
+        let transcript = intro_transcript(context, &ciphertext);
+        let inner_key = intro_inner_key(&secret, &transcript);
+        seal_intro_layers(
+            outer_key,
+            context,
+            sender,
+            sender_card.card_index,
+            l1,
+            salt,
+            &ciphertext,
+            &transcript,
+            &inner_key,
+        )
+    }
 }
 
 #[cfg(test)]

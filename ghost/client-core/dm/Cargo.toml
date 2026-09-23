@@ -24,6 +24,13 @@ jni-bridge = ["dep:jni"]
 # the JVM tests load and, built for `x86_64-linux-android`, the emulator's test library. G-R2 keeps
 # it out of every shipped graph; G-R6 checks that no shipped library exports its symbol.
 test-vectors = []
+# PQ1's spy (§15.5 PQ1, §22.19): `pq::spy` counts every X-Wing decapsulation and encapsulation per
+# thread and can perturb the next shared secret, and `jni.rs` runs PQ1 as an assertion around every
+# `openIntro` (exactly one decapsulation; `NOT_OPEN` once the secret is perturbed). The crate's own
+# tests get the spy unconditionally; only `ghost-dm-host` enables the feature, so every JVM world
+# opens its intros under the assertion. G-R2 keeps it out of every shipped graph (its allowed list
+# for this crate is `default` and `jni-bridge`).
+pq-spy = []
 
 [[test]]
 name = "equivalence"

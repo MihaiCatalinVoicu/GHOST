@@ -23,7 +23,8 @@ plus the Kotlin `external fun` declarations and, in CI, the exported symbols of 
 `export_jni!()` emits the entry points. `ghost-client-net` invokes it in `jni_bridge.rs` so the
 closed list is visible in the crate that produces `libghost_client_net.so`, and
 `client-core/dm-host` (`ghost-dm-host`, test-only, never built for Android) invokes it so JVM
-tests call exactly the shipped code:
+tests call exactly the shipped code (plus the equivalence entry point and PQ1's assertion around
+`openIntro`, the two test-only features it enables):
 
 ```
 cargo build -p ghost-dm-host --release --locked
@@ -104,6 +105,18 @@ cargo test -p ghost-client-dm
   `GHOST_DM_EM_BUDGET` with either; the nightly `dm-state-models` workflow runs 3 and 3.
 - `tests/xwing_kat.rs`: the X-Wing draft-06 vectors and a differential test against RustCrypto
   `x-wing` 0.1.0 (dev graph only).
+- `src/pq_bump.rs` (unit tests, `cargo test -p ghost-client-dm --lib -- pq1_ pq5_`): **PQ1 and PQ5**
+  of design §15.5 over a scripted world of four devices with real Olm sessions (design §22.19).
+  PQ1 counts the X-Wing decapsulations of every intro open through `pq::spy` (test builds and the
+  `pq-spy` feature only) and perturbs the decapsulated secret of a repeated open, which must then be
+  refused; PQ5, the bump assertion of RG-5, decapsulates every intro envelope's and every
+  `seal_root_pq`'s 1 120-byte ciphertext with RustCrypto `x-wing` and re-derives `k_in` and the root
+  from that secret outside the crate, and has a `gate`-variant client (`seal::gate`, `cfg(test)`)
+  seal the inner layer without the KEM four ways, each refused by the honest recipient. **The mutant
+  gate** `scripts/gates/pq-mutants.sh` (workflow `pq-bump.yml`) applies each patch of `mutants/` —
+  PM-32's shapes and two more — and requires the tests the patch names to fail: PM-32 is what T35's
+  provenance tags cannot see. A patch that no longer applies after an edit is regenerated with the
+  edit, never deleted.
 - `tests/vectors.rs`: generates and checks `protocol/test-vectors/dm_derive.txt`, `dm_seal.txt`,
   `dm_content.txt`, `dm_bundle.txt` and `dm_safety_number.txt`. After a deliberate change, rerun
   with `GHOST_DM_VECTORS_WRITE=1` and review the diff. The files are self-describing

@@ -1777,81 +1777,119 @@ pub fn open_intro(
     let gen_fallback_public = fixed::<32>(env, gen_fallback_public)?;
     let blob = bytes(env, blob)?;
     with_context(handle, |context| {
-        let card_secret = derive::derive_card_secret(&context.messaging, card_index);
-        let outer_key = SealKey::new(
-            derive::derive_card_value(&card_secret, derive::CardLabel::IntroOuter),
-            KeyProvenance::Card(CardSource::InPerson),
-        );
-        let outer = seal::open_intro_outer(&outer_key, &namespace, &blob)?;
-        if outer.gen_id != gen_id {
-            return Err(DmCode::NotOpen);
-        }
-        let mut secrets = wrap::unwrap(
-            &context.state_key,
-            wrap::WrapName::Generation,
-            &wrap::generation_binding(gen_id, &gen_fallback_public),
-            &gen_secrets_env,
-        )?;
-        let mut xwing_seed = [0u8; 32];
-        let taken = secrets
-            .get(32..64)
-            .map(|half| xwing_seed.copy_from_slice(half));
-        secrets.zeroize();
-        taken.ok_or(DmCode::StateCorrupt)?;
-        let gen_secret = KemSecret::from_bytes(xwing_seed);
-        xwing_seed.zeroize();
-        let gen_public = pq::public_key(&gen_secret)?;
-        let own_oi = derive::olm_identity_public(&context.olm_identity);
-        let own_identity_pk =
-            card::build(context.identity_seed.as_bytes(), card_index, &card_secret).identity_pk;
-        let intro_context = seal::IntroContext {
-            namespace: &namespace,
-            bucket: outer.bucket,
-            gen_id,
-            gen_public: &gen_public,
-            recipient_oi: &own_oi,
-            recipient_identity_pk: &own_identity_pk,
-        };
-        let (opened, header) =
-            seal::open_intro_checked(&gen_secret, &intro_context, &outer, &gen_fallback_public)?;
-        let (identity_key, base_key, one_time_key, prekey_session_id, ratchet_key, chain_index) =
-            match header {
-                crate::olm::message::L1Header::PreKey {
-                    identity_key,
-                    base_key,
-                    one_time_key,
-                    session_id,
-                    ratchet_key,
-                    chain_index,
-                } => (
-                    identity_key,
-                    base_key,
-                    one_time_key,
-                    session_id,
-                    ratchet_key,
-                    chain_index,
-                ),
-                crate::olm::message::L1Header::Normal { .. } => return Err(DmCode::NonCanonical),
-            };
-        let reply_seed_env = wrap::wrap(
-            &context.state_key,
-            wrap::WrapName::ReplySeed,
-            &wrap::reply_seed_binding(&prekey_session_id),
-            opened.reply_seed.as_bytes(),
-        )?;
-        Ok(Reply::ok()
-            .field(Field::Card, &opened.sender_card)
-            .field(Field::BindingMinute, &opened.binding_minute.to_be_bytes())
-            .field(Field::ReplySeed, &reply_seed_env)
-            .field(Field::L1, &opened.l1)
-            .field(Field::OlmIdentity, &identity_key)
-            .field(Field::BaseKey, &base_key)
-            .field(Field::OneTimeKey, &one_time_key)
-            .field(Field::SessionId, &prekey_session_id)
-            .field(Field::RatchetKey, &ratchet_key)
-            .field(Field::ChainIndex, &chain_index.to_be_bytes())
-            .into_bytes())
+        intro_open(|| {
+            open_intro_in(
+                context,
+                card_index,
+                &namespace,
+                gen_id,
+                &gen_secrets_env,
+                &gen_fallback_public,
+                &blob,
+            )
+        })
     })
+}
+
+/// PQ1 as an assertion around one intro open, in the host library (`pq-spy`, which only
+/// `ghost-dm-host` enables): exactly one decapsulation, and `NOT_OPEN` once the decapsulated
+/// secret is perturbed (`pq::spy::assert_intro_open`). A violation is a panic, so `INTERNAL`, and
+/// the JVM world that made the call fails.
+#[cfg(feature = "pq-spy")]
+fn intro_open(open: impl Fn() -> Result<Vec<u8>, DmCode>) -> Result<Vec<u8>, DmCode> {
+    pq::spy::assert_intro_open(open)
+}
+
+/// Every shipped build: the open itself, once.
+#[cfg(not(feature = "pq-spy"))]
+fn intro_open(open: impl Fn() -> Result<Vec<u8>, DmCode>) -> Result<Vec<u8>, DmCode> {
+    open()
+}
+
+/// The body of [`open_intro`], with every argument already out of the JVM.
+fn open_intro_in(
+    context: &DmContext,
+    card_index: u16,
+    namespace: &[u8; 32],
+    gen_id: u32,
+    gen_secrets_env: &[u8],
+    gen_fallback_public: &[u8; 32],
+    blob: &[u8],
+) -> Result<Vec<u8>, DmCode> {
+    let card_secret = derive::derive_card_secret(&context.messaging, card_index);
+    let outer_key = SealKey::new(
+        derive::derive_card_value(&card_secret, derive::CardLabel::IntroOuter),
+        KeyProvenance::Card(CardSource::InPerson),
+    );
+    let outer = seal::open_intro_outer(&outer_key, namespace, blob)?;
+    if outer.gen_id != gen_id {
+        return Err(DmCode::NotOpen);
+    }
+    let mut secrets = wrap::unwrap(
+        &context.state_key,
+        wrap::WrapName::Generation,
+        &wrap::generation_binding(gen_id, gen_fallback_public),
+        gen_secrets_env,
+    )?;
+    let mut xwing_seed = [0u8; 32];
+    let taken = secrets
+        .get(32..64)
+        .map(|half| xwing_seed.copy_from_slice(half));
+    secrets.zeroize();
+    taken.ok_or(DmCode::StateCorrupt)?;
+    let gen_secret = KemSecret::from_bytes(xwing_seed);
+    xwing_seed.zeroize();
+    let gen_public = pq::public_key(&gen_secret)?;
+    let own_oi = derive::olm_identity_public(&context.olm_identity);
+    let own_identity_pk =
+        card::build(context.identity_seed.as_bytes(), card_index, &card_secret).identity_pk;
+    let intro_context = seal::IntroContext {
+        namespace,
+        bucket: outer.bucket,
+        gen_id,
+        gen_public: &gen_public,
+        recipient_oi: &own_oi,
+        recipient_identity_pk: &own_identity_pk,
+    };
+    let (opened, header) =
+        seal::open_intro_checked(&gen_secret, &intro_context, &outer, gen_fallback_public)?;
+    let (identity_key, base_key, one_time_key, prekey_session_id, ratchet_key, chain_index) =
+        match header {
+            crate::olm::message::L1Header::PreKey {
+                identity_key,
+                base_key,
+                one_time_key,
+                session_id,
+                ratchet_key,
+                chain_index,
+            } => (
+                identity_key,
+                base_key,
+                one_time_key,
+                session_id,
+                ratchet_key,
+                chain_index,
+            ),
+            crate::olm::message::L1Header::Normal { .. } => return Err(DmCode::NonCanonical),
+        };
+    let reply_seed_env = wrap::wrap(
+        &context.state_key,
+        wrap::WrapName::ReplySeed,
+        &wrap::reply_seed_binding(&prekey_session_id),
+        opened.reply_seed.as_bytes(),
+    )?;
+    Ok(Reply::ok()
+        .field(Field::Card, &opened.sender_card)
+        .field(Field::BindingMinute, &opened.binding_minute.to_be_bytes())
+        .field(Field::ReplySeed, &reply_seed_env)
+        .field(Field::L1, &opened.l1)
+        .field(Field::OlmIdentity, &identity_key)
+        .field(Field::BaseKey, &base_key)
+        .field(Field::OneTimeKey, &one_time_key)
+        .field(Field::SessionId, &prekey_session_id)
+        .field(Field::RatchetKey, &ratchet_key)
+        .field(Field::ChainIndex, &chain_index.to_be_bytes())
+        .into_bytes())
 }
 
 /// [`pair_keys`]'s `fromKind` = 0: the envelope is a **root** (`dm_pair_offer.root_env`) and the

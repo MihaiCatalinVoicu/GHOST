@@ -218,6 +218,8 @@ pub fn encapsulate_with(
     let mut shared = [0u8; SHARED_SECRET_BYTES];
     XWing::encaps(&mut ciphertext, &mut shared, public, randomness)
         .map_err(|error| encaps_code(&error))?;
+    #[cfg(any(test, feature = "pq-spy"))]
+    spy::encapsulated(&mut shared);
     let secret = KemSecret::from_bytes(shared);
     shared.zeroize();
     Ok((ciphertext, secret))
@@ -226,16 +228,7 @@ pub fn encapsulate_with(
 /// Decapsulation from the stored seed. Every error, including a wrong length, is `NOT_OPEN`: a
 /// ciphertext that does not open is a blob that is dropped, never a crash (§22.8.2 rule 4).
 pub fn decapsulate(seed: &KemSecret, ciphertext: &[u8]) -> DmResult<KemSecret> {
-    if ciphertext.len() != CIPHERTEXT_BYTES {
-        return Err(DmCode::NotOpen);
-    }
-    let pair = keygen(seed).map_err(|_| DmCode::NotOpen)?;
-    let mut shared = [0u8; SHARED_SECRET_BYTES];
-    XWing::decaps(&mut shared, ciphertext, &pair.decapsulation)
-        .map_err(|error| decaps_code(&error))?;
-    let secret = KemSecret::from_bytes(shared);
-    shared.zeroize();
-    Ok(secret)
+    decapsulate_expanded(seed, ciphertext).map(|(secret, _)| secret)
 }
 
 /// Decapsulation that also returns the generation's own encapsulation key, from **one** seed
@@ -246,6 +239,16 @@ pub fn decapsulate_with_public(
     seed: &KemSecret,
     ciphertext: &[u8],
 ) -> DmResult<(KemSecret, Vec<u8>)> {
+    let (secret, pair) = decapsulate_expanded(seed, ciphertext)?;
+    Ok((secret, pair.public.clone()))
+}
+
+/// The one decapsulation both public entry points run, and the one place PQ1's spy (`spy`, test
+/// builds only) counts: every call is counted on entry, whatever it returns, and the secret it
+/// hands back is the one the spy may perturb.
+fn decapsulate_expanded(seed: &KemSecret, ciphertext: &[u8]) -> DmResult<(KemSecret, KeyPair)> {
+    #[cfg(any(test, feature = "pq-spy"))]
+    spy::decapsulation_started();
     if ciphertext.len() != CIPHERTEXT_BYTES {
         return Err(DmCode::NotOpen);
     }
@@ -253,9 +256,11 @@ pub fn decapsulate_with_public(
     let mut shared = [0u8; SHARED_SECRET_BYTES];
     XWing::decaps(&mut shared, ciphertext, &pair.decapsulation)
         .map_err(|error| decaps_code(&error))?;
+    #[cfg(any(test, feature = "pq-spy"))]
+    spy::decapsulated(&mut shared);
     let secret = KemSecret::from_bytes(shared);
     shared.zeroize();
-    Ok((secret, pair.public.clone()))
+    Ok((secret, pair))
 }
 
 /// Fills `out` from the **OS CSPRNG**, which is what §9.2 requires of the encapsulation randomness
@@ -271,6 +276,128 @@ pub(crate) fn fill_random(out: &mut [u8]) {
     rand::rngs::SysRng
         .try_fill_bytes(out)
         .expect("the OS CSPRNG is unavailable");
+}
+
+/// PQ1's spy on the KEM boundary (design §15.5 PQ1 and PQ5, RG-5; §22.19). **Test builds only**:
+/// the crate's own tests (`cfg(test)`) and the `pq-spy` feature, which only `ghost-dm-host`
+/// enables; G-R2 refuses the feature in the shipped graph (its allowed list is `default` and
+/// `jni-bridge`).
+///
+/// It counts, per thread, every decapsulation ([`decapsulate`] and [`decapsulate_with_public`] go
+/// through one function) and every successful encapsulation, and it can **perturb** the next
+/// shared secret one of them produces — bit 0 of byte 0 flipped, one-shot. The perturbation is
+/// what makes "`k_in` depends on `ss`" a differential test of the code as it stands rather than a
+/// property of HKDF: the ciphertext, the transcript and every other input stay exactly as they
+/// were, only the secret the KEM handed back changes, so an opener whose key does not depend on
+/// that secret opens the envelope anyway, and one that does refuses it.
+///
+/// The counters are thread-local because a JNI call and a test both run on one thread from the
+/// open to its result, and parallel tests must not see each other's decapsulations; every check
+/// reads a **difference** of the counter around the call it checks.
+#[cfg(any(test, feature = "pq-spy"))]
+pub mod spy {
+    use crate::result::{DmCode, DmResult};
+    use std::cell::Cell;
+
+    thread_local! {
+        static DECAPSULATIONS: Cell<u64> = const { Cell::new(0) };
+        static ENCAPSULATIONS: Cell<u64> = const { Cell::new(0) };
+        static PERTURB_DECAPSULATION: Cell<bool> = const { Cell::new(false) };
+        static PERTURB_ENCAPSULATION: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// The decapsulations this thread has started, successful or not.
+    pub fn decapsulations() -> u64 {
+        DECAPSULATIONS.with(Cell::get)
+    }
+
+    /// The encapsulations this thread has completed.
+    pub fn encapsulations() -> u64 {
+        ENCAPSULATIONS.with(Cell::get)
+    }
+
+    /// Arms a one-shot perturbation of the next shared secret a decapsulation on this thread
+    /// returns.
+    pub fn perturb_next_decapsulation() {
+        PERTURB_DECAPSULATION.with(|armed| armed.set(true));
+    }
+
+    /// Arms a one-shot perturbation of the next shared secret an encapsulation on this thread
+    /// returns: the sender seals under a secret the ciphertext does not carry.
+    pub fn perturb_next_encapsulation() {
+        PERTURB_ENCAPSULATION.with(|armed| armed.set(true));
+    }
+
+    /// Disarms both perturbations and reports whether either was still armed, that is, whether a
+    /// perturbation the caller armed was **not** consumed by a KEM operation.
+    pub fn disarm() -> bool {
+        let decapsulation = PERTURB_DECAPSULATION.with(|armed| armed.replace(false));
+        let encapsulation = PERTURB_ENCAPSULATION.with(|armed| armed.replace(false));
+        decapsulation || encapsulation
+    }
+
+    pub(super) fn decapsulation_started() {
+        DECAPSULATIONS.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(super) fn decapsulated(shared: &mut [u8; super::SHARED_SECRET_BYTES]) {
+        if PERTURB_DECAPSULATION.with(|armed| armed.replace(false)) {
+            shared[0] ^= 1;
+        }
+    }
+
+    pub(super) fn encapsulated(shared: &mut [u8; super::SHARED_SECRET_BYTES]) {
+        ENCAPSULATIONS.with(|count| count.set(count.get() + 1));
+        if PERTURB_ENCAPSULATION.with(|armed| armed.replace(false)) {
+            shared[0] ^= 1;
+        }
+    }
+
+    /// PQ1 as an **assertion** around one intro open (§2.6 function 12 in `ghost-dm-host`): the
+    /// open that succeeds performed exactly one decapsulation, the open that is refused performed
+    /// at most one, and the same open run again with the decapsulated secret perturbed is
+    /// `NOT_OPEN` — `k_in` depends on `ss`. A violation panics with a `PQ1:` message, which the JNI
+    /// guard turns into `INTERNAL`, so every intro open of every JVM world run against the host
+    /// library is checked, and the world fails on the first open that breaks it.
+    ///
+    /// `open` must be repeatable (it is run twice after a success). The second run draws no
+    /// randomness: an intro open reads its randomness only for the `reply_seed` envelope it wraps
+    /// **after** the inner layer has opened, which the perturbed run never reaches, so the seeded
+    /// worlds' random streams are the ones a build without the spy draws.
+    pub fn assert_intro_open<T>(open: impl Fn() -> DmResult<T>) -> DmResult<T> {
+        let before = decapsulations();
+        let result = open();
+        let used = decapsulations() - before;
+        match result {
+            Ok(_) => {
+                assert!(
+                    used == 1,
+                    "PQ1: an intro open that succeeded performed {used} decapsulations, not one"
+                );
+                disarm();
+                perturb_next_decapsulation();
+                let before = decapsulations();
+                let perturbed = open();
+                let used = decapsulations() - before;
+                let unconsumed = disarm();
+                assert!(
+                    used == 1 && !unconsumed,
+                    "PQ1: the perturbed intro open performed {used} decapsulations and left the \
+                     perturbation unconsumed: {unconsumed}"
+                );
+                assert!(
+                    matches!(perturbed, Err(DmCode::NotOpen)),
+                    "PQ1: an intro open succeeded with its decapsulated secret perturbed: k_in does \
+                     not depend on ss"
+                );
+            }
+            Err(_) => assert!(
+                used <= 1,
+                "PQ1: a refused intro open performed {used} decapsulations"
+            ),
+        }
+        result
+    }
 }
 
 /// Every u-coordinate of the 8-torsion subgroup of Curve25519, plus the non-canonical encodings
