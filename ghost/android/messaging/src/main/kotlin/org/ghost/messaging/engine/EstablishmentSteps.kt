@@ -84,13 +84,28 @@ internal class EstablishmentSteps(
      * decided inside it would be a normal return, and a normal return commits what the earlier
      * loop iterations already wrote while reporting an error.
      *
-     * **[userRetry] is the `unreachable → fetching` edge of §13.5.** `fetch_attempts` bounds the
-     * **automatic** continuation at three windows (§21.7 point 5, mutant PM-31), and it is never
-     * reset outside `EST-READY` — so without this parameter a contact that failed three times is
-     * absorbing: every later send stores a pending item, gets `UNCHANGED` here, and the message
-     * expires at `fail_after_hour` with delete-and-re-add the only escape. §21.7 point 5 ends "the
-     * user may retry" and §13.5 draws the edge; this is it. The reset is not a way round the
-     * bound: it takes a new user action, which is exactly what T28 allows to cause a fetch.
+     * **[userRetry] says this call starts an establishment rather than continuing one.** §21.7
+     * point 2's `EST-START` "sets `fetch_attempts = 1`": every caller that has just queued an item
+     * — a send, a retry, a reset, a scheduled control, and `DmActor.flushStranded` for one of
+     * those whose own call a process death lost — passes it, and only the time-triggered
+     * continuation of [dueStep] does not. That continuation is what `fetch_attempts` bounds at
+     * three windows (§21.7 point 5, mutant PM-31). Two things follow.
+     *  - A contact the three windows gave up on is not absorbing: a later send reopens it, the
+     *    `unreachable → fetching` edge §13.5 draws and §21.7 point 5's "the user may retry" names.
+     *    Without it every later send stores a pending item, gets `UNCHANGED` here, and the message
+     *    expires at `fail_after_hour` with delete-and-re-add the only escape.
+     *  - A send to a contact that is **still** fetching starts the count again instead of
+     *    spending it (slice S10c's review). Until then this was `stored + 1` for a fetching
+     *    contact, so a second and a third message written a minute after the first, to a contact
+     *    with no bundle yet, were the second and third attempts: the one 15-minute window then
+     *    open was the whole budget, and `EST-END` made the contact `unreachable` and failed all
+     *    three messages a quarter of an hour after they were written instead of after three
+     *    windows six hours apart.
+     *
+     * Neither is a way round the bound. Each start takes a new action that queued an item, which
+     * is exactly what T28 allows to cause a fetch, and each is followed by at most three windows:
+     * the continuation never resets the count, and `EST-END` fails every pending item in the
+     * transaction that gives up.
      */
     fun estStart(contactId: ByteArray, userRetry: Boolean = false): Result {
         contexts.get() ?: return Result.CRYPTO_UNAVAILABLE
@@ -163,16 +178,12 @@ internal class EstablishmentSteps(
     }
 
     /**
-     * The attempt count this call starts from: zero when the user is retrying a contact the three
-     * automatic windows already gave up on (§13.5's `unreachable → fetching`), and the stored one
-     * otherwise.
+     * The attempt count this call starts from: zero when an action that queued an item starts the
+     * establishment — whatever state the contact is in, `fetching` and `unreachable` included
+     * (§21.7 point 2) — and the stored one for the time-triggered continuation.
      */
     private fun attemptsFor(contact: ContactStore.ContactRow, userRetry: Boolean): Int =
-        if (userRetry && contact.establishment == ContactStore.Establishment.UNREACHABLE) {
-            0
-        } else {
-            contact.fetchAttempts
-        }
+        if (userRetry) 0 else contact.fetchAttempts
 
     // -------------------------------------------------------------- EST-READY
 

@@ -555,8 +555,10 @@ internal class DmActor(
      * enumeration of SCN-C found it (34 consecutive crash points of one send, §22.22). It lifts no
      * bound: `EST-END` fails every pending item in the transaction that makes a contact
      * `unreachable`, so a pending item on one can only have been queued **after** the budget ran
-     * out, by one of the four actions above, each of which would have reset the budget itself; the
-     * flag resets it only for an `unreachable` contact and leaves every other count as stored.
+     * out, by one of the four actions above, each of which would have started a fresh count
+     * itself; and this step visits no `fetching` contact, so it never restarts an establishment
+     * that is still in progress. Each start it makes is followed by at most three windows, after
+     * which `EST-END` fails the item it was for.
      */
     private fun flushStranded(now: Long) {
         val stranded = database.transaction { tx ->

@@ -305,8 +305,10 @@ internal class MessagingEngine(
     ): SendResult {
         val contactId = contact.toByteArray()
         val sent = sendStep.send(contactId, kind, body, quote, timerCode)
-        // `userRetry`: a send is the user action §21.7 point 5 and §13.5 mean by "the user may
-        // retry", so it also reopens a contact the three automatic windows gave up on.
+        // `userRetry`: a send starts an establishment of its own with a fresh count (§21.7 point
+        // 2), so it reopens a contact the three automatic windows gave up on — "the user may
+        // retry", §13.5's `unreachable → fetching` — and does not spend the budget of one that is
+        // still fetching (`EstablishmentSteps.estStart`).
         if (sent.establish) establishment.estStart(contactId, userRetry = true)
         return SendResult.of(sent.outcome)
     }
