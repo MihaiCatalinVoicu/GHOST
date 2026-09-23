@@ -13,9 +13,9 @@ import org.ghost.messaging.port.DmEnvelopes
  * reachable, MC-28, which its SCN-H does, and MC-33, which its `SCN-G-week` does. The other 46 are
  * listed in §22.15 and §22.19 with the reason each is not, and the gate line says **eleven**, not
  * fifty-seven, for the same reason `dm-report-check.sh` refuses a PASS on an empty sample: a
- * number a run did not measure is worse than no number. The line is built from the kills the run **recorded** ([DmKills]), never from
- * this registry, so an ignored or deleted kill test lowers the count instead of leaving it
- * standing. **S10b's four are held to a stricter kill than S10's seven**: detected fault-free by
+ * number a run did not measure is worse than no number. The line is built from the kills the run
+ * **recorded** ([DmKills]), never from this registry, so an ignored or deleted kill test lowers
+ * the count instead of leaving it standing. **S10b's four are held to a stricter kill than S10's seven**: detected fault-free by
  * the check their entry names, *and* at crash points spread over the scenario, each beside the
  * unmutated scenario crashed at the same point ([Mutation.expectUnderCrash]).
  *
@@ -393,7 +393,7 @@ internal object DmMutants {
     val MC28 = Mutation(
         id = "MC-28",
         defeats = "§5.4: a superseded generation is kept until superseded_day + 91",
-        detectedBy = "SCN-H (a generation erased before superseded_day + 91; the late first flight lost)",
+        detectedBy = "SCN-H's retention oracle (a generation erased before superseded_day + 91)",
         expect = "was erased before superseded_day + 91",
         expectUnderCrash = listOf("was erased before superseded_day + 91", NO_LOSS_FAILURE),
         rewrite = { sql, args ->

@@ -13,7 +13,7 @@ dm crash classes: SCN-B 1490 events, 1490 singles, 1490 doubles, 18 timeouts ove
 dm crash classes: SCN-J 1110 events, 1110 singles, 1110 doubles, 3 timeouts over 3 relay events
 dm crash classes: SCN-F 1488 events, 1488 singles, 1488 doubles, 6 timeouts over 6 relay events
 dm seeded worlds: 64 seeds, 0 failures
-dm seeded worlds (faulted): 64 seeds, 21 drew a fault, 0 failures
+dm seeded worlds (faulted): 64 seeds, 30 drew a fault, 0 failures
 dm crash classes: RP6 1440 events, 1440 singles, 0 doubles, 6 timeouts over 6 relay events
 dm crash classes: RP9 1164 events, 1164 singles, 0 doubles, 6 timeouts over 6 relay events
 dm crash classes: CB-reject-replay 710 events, 710 singles, 0 doubles, 3 timeouts over 3 relay events
@@ -28,5 +28,5 @@ dm mutant MC-12: detected by DmPoisonTest (SimulatedNativeCrash on every open of
 dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE)
 dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device)
 dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day)
-dm mutant MC-28: detected by SCN-H (a generation erased before superseded_day + 91; the late first flight lost)
+dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91)
 dm mutant ME-16: detected by EP-read-expiry (an expired row is still readable before SWEEP)

@@ -28,6 +28,6 @@ dm mutant MC-12: detected by DmPoisonTest (SimulatedNativeCrash on every open of
 dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE)
 dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device)
 dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day)
-dm mutant MC-28: detected by SCN-H (a generation erased before superseded_day + 91; the late first flight lost)
+dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91)
 dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session)
 dm mutant ME-16: detected by EP-read-expiry (an expired row is still readable before SWEEP)

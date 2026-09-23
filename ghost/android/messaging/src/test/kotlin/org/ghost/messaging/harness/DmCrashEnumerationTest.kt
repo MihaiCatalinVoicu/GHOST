@@ -8,13 +8,15 @@ import org.junit.Test
  *
  * Each test records its scenario's K events, then crashes at every sampled one, reboots, checks
  * the structural invariants at the reboot, runs to quiescence and checks everything again — plus,
- * at every relay event, the "timeout after apply" run §15.3 asks for, and, for the four scenarios
- * that ask for it, a double crash whose second lands during recovery.
+ * at every relay event, the "timeout after apply" run §15.3 asks for, and, for the scenarios that
+ * ask for it (SCN-A, B, F, I and J), a double crash whose second lands during recovery.
  *
  * **Scale.** `-Dghost.dm.crash=full` runs every event (the `messaging-exit-gate.yml` job); the
- * default samples every [DmHarness.DEFAULT_SAMPLE]-th, which is ~900 runs over the seven scenarios
- * and a few minutes. Sampling is on the event index alone, so a sampled run is a subset of the
- * full one — never a different enumeration. Runs are independent and go through
+ * default samples every [DmHarness.DEFAULT_SAMPLE]-th, which was ~900 runs over S10's seven
+ * scenarios and is ~4 200 over the eleven scenario lines since S10b (SCN-H alone is 1 329
+ * singles, SCN-I 511 singles and 511 doubles) — about eight minutes of the whole `:messaging`
+ * suite on the owner's workstation. Sampling is on the event index alone, so a sampled run is a
+ * subset of the full one — never a different enumeration. Runs are independent and go through
  * [DmHarness.parallel].
  *
  * Every run writes its line into [DmReport], which `scripts/gates/dm-report-check.sh` then refuses

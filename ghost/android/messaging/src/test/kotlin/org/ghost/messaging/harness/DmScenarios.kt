@@ -940,18 +940,18 @@ internal object DmScenarios {
      * > boundary and refused after; a replayed first flight (D2b); a generation kept past its
      * > boundary while a held row references it
      *
-     * **What is here.** Sixteen ISO weeks of bob's OWNER-WEEK: a generation per pass, each superseded
-     * by the next and erased at `superseded_day + 91` (§5.4), never more than fourteen alive. Inside
-     * them, the one case in which a generation's retention decides whether a message opens: a
-     * **late first flight**. alice scans bob's card and writes; every relay refuses her
-     * (REFUSE_ONE_SENDER), so her session exists and bob has never heard of it. Twenty-six days
-     * later she writes again on the same unanswered session — inside `UNACK_MAX`, so it is still a
-     * PreKey message naming the generation she fetched in the first week — and the relay holds it
-     * back for 29 days (DELAY_RELEASE; the conversation's timer is off, so its TTL is 30). It
-     * reaches bob about seven weeks after that generation was superseded: inside the 91 days
-     * (7 + 28 + 45, rounded), fresh (`FRESH(30 d)` is 43 days), and the only thing that can open it
-     * is the superseded generation's secrets. bob gets a request carrying it, accepts, answers, and
-     * the pair is live.
+     * **What is here.** Sixteen ISO weeks of bob's OWNER-WEEK — a new generation at every weekly
+     * publication the world's passes reach, each superseded by the next and erased at
+     * `superseded_day + 91` (§5.4), never more than fourteen alive. Inside them, the one case in
+     * which a generation's retention decides whether a message opens: a **late first flight**.
+     * alice scans bob's card and writes; every relay refuses her (REFUSE_ONE_SENDER), so her
+     * session exists and bob has never heard of it. Twenty-six days later she writes again on the
+     * same unanswered session — inside `UNACK_MAX`, so it is still a PreKey message naming the
+     * generation she fetched in the first week — and the relay holds it back for 28 days
+     * (DELAY_RELEASE; the conversation's timer is off, so its TTL is 30). It reaches bob 40 to 47
+     * days after that generation was superseded: inside the 91 days (7 + 28 + 45, rounded), fresh
+     * (`FRESH(30 d)` is 43 days), and the only thing that can open it is the superseded
+     * generation's secrets. bob gets a request carrying it, accepts, answers, and the pair is live.
      *
      * **The oracles.** No-loss (the late flight is `SENT` and must be rendered) and liveness (alice
      * ↔ bob once bob has accepted). And one of the scenario's own, in every run: **no generation
@@ -968,7 +968,7 @@ internal object DmScenarios {
      * 30-day TTL, and R9's freshness refuses such a message first — the boundary's far side needs a
      * RESURRECTing relay), the replayed first flight (D2b is MC-7′'s, killed in the CB replay), and
      * the generation kept alive by a held row (a key-change hold taken near the end of a
-     * generation's window, which needs SCN-D's device inside this thirteen-week world).
+     * generation's window, which needs SCN-D's device inside this sixteen-week world).
      */
     fun scnH(): DmScenario = DmScenario(
         name = "SCN-H",
