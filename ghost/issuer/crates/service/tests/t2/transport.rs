@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use ghost_client_net::issuer_client::{IssuerError, IssuerRpc};
-use ghost_client_net::namespace_client::RedeemRpc;
+use ghost_client_net::namespace_client::{RedeemRpc, RegisterRpc};
 use ghost_client_net::{OnionAddress, RelayError};
 use ghost_issuer::Issuer;
 use ghost_issuer_api::proto as wire;
@@ -632,6 +632,67 @@ impl RedeemRpc for RelayLink<'_> {
             }
         };
         std::future::ready(out)
+    }
+}
+
+/// `RegisterKey` over the loopback (the `RegisterRpc` the production `register_with` drives; Phase 9
+/// design §4.4, §4.9 point 2): the relay's handler writes exactly one capture event, which the link
+/// records with the call, so the completeness check counts every `register` event.
+impl RegisterRpc for RelayLink<'_> {
+    fn register_key(
+        &mut self,
+        req: rw::RegisterKeyRequest,
+    ) -> impl Future<Output = Result<rw::RegisterKeyResponse, RelayError>> + Send {
+        let r = self.node.relay.register_key_at(req.clone(), self.t);
+        let cap = req
+            .capability
+            .as_ref()
+            .map(|c| c.token.clone())
+            .unwrap_or_default();
+        let request = vec![
+            f("namespace_id", &req.namespace_id),
+            f("verifier", &req.verifier),
+            f("capability", &cap),
+            f("request_id", &req.request_id),
+        ];
+        let ints_req = [("period_id", req.period_id), ("kind", req.kind as u64)];
+        match &r {
+            Ok(resp) => {
+                let mut ints = ints_req.to_vec();
+                ints.push(("result", resp.result as u64));
+                ints.push(("relay_period_id", resp.relay_period_id));
+                ints.push(("relay_minute", resp.relay_minute));
+                ints.push(("valid_until_unix", resp.valid_until_unix));
+                record_relay(
+                    self.rec,
+                    self.node,
+                    self.t,
+                    self.label,
+                    RelayOp::Register,
+                    request,
+                    Vec::new(),
+                    &ints,
+                    0,
+                    self.truth,
+                    false,
+                );
+            }
+            Err(s) => record_relay(
+                self.rec,
+                self.node,
+                self.t,
+                self.label,
+                RelayOp::Register,
+                request,
+                Vec::new(),
+                &ints_req,
+                code(s),
+                self.truth,
+                false,
+            ),
+        }
+        self.answered = true;
+        std::future::ready(r.map_err(RelayError::Rpc))
     }
 }
 

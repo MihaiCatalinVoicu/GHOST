@@ -449,13 +449,26 @@ class EphemeralTest {
                 alice.wakes.last,
             )
 
-            // Past every deadline of the world — the two establishment messages carry the default
-            // 7-day timer — so nothing at all is pending and the wake is a cancel.
+            // Past every message deadline of the world — the two establishment messages carry the
+            // default 7-day timer. One deadline is left: A never opened a pair envelope under its
+            // own root (B never wrote after receiving it), so its `prov_env` goes at
+            // `prov_anchor_minute + 119 d` (§22.8.5 rule 4), and the wake is for that minute.
             world.advanceTo(expireAt + 8 * day)
             alice.timeTriggeredPass()
             assertEquals(0, count(alice, "SELECT count(*) FROM dm_message"))
+            var provErase: Long? = null
+            alice.sql.query("SELECT min(prov_erase_minute) FROM olm_session") { r ->
+                if (!r.isNull(0)) provErase = r.long(0)
+            }
+            val erase = checkNotNull(provErase) { "the anchor bounds A's prov_env" }
+            assertEquals("the one deadline left is prov_env's", erase - alice.clock.now, alice.wakes.last)
+
+            // Past that too: nothing at all is pending and the wake is a cancel.
+            world.advanceTo(erase)
+            alice.timeTriggeredPass()
+            assertEquals(0, count(alice, "SELECT count(*) FROM olm_session WHERE prov_env IS NOT NULL"))
             assertNull("nothing is pending, so the alarm is cancelled", alice.wakes.last)
-            assertTrue("and a wake was asked for on every pass", alice.wakes.requested.size >= 3)
+            assertTrue("and a wake was asked for on every pass", alice.wakes.requested.size >= 4)
         }
     }
 

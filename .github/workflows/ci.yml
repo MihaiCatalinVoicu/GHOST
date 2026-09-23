@@ -246,13 +246,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: 1.98.1
+      # With the `provenance` feature (slice S11, T35): every seal of every DM world asserts the
+      # key kinds §9.3 allows, and the privacy report's T35 line is written only for such a build.
       - name: build ghost-dm-host (the DM host library the JVM tests load)
         working-directory: ghost
         run: |
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
-          cargo build -p ghost-dm-host --release --locked
+          cargo build -p ghost-dm-host --release --locked --features provenance
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       - run: ./gradlew build --no-daemon -Dghost.dm.native="$GHOST_DM_NATIVE"
+      # The PR-scale privacy report (Phase 9 design §15.6, §16.2: "T32 at N = 120 over 14 days" and
+      # the privacy mutants on a small world, slice S11): `./gradlew build` ran the privacy worlds of
+      # `org.ghost.messaging.dmworld`, and the report is evidence only if something refuses an
+      # incomplete one.
+      - name: DM privacy report check (PR scale)
+        run: bash ../scripts/gates/dm-report-check.sh messaging/build/reports/dm/privacy.txt privacy-pr
       # G-R6 (host half, §22.8.10 point 10): the exported DM JNI symbols of the `ghost-dm-host`
       # build the JVM tests just loaded are exactly the closed list of §2.6. The shipped
       # `libghost_client_net.so` is checked in `android-native`, where it is built.

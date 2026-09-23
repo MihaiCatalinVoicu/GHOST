@@ -22,7 +22,7 @@
 //! its invite drew when the inviter started listening, never at a time the read sets (Q31, §19.26).
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use ghost_client_net::entitlement::Product;
 use ghost_client_net::issuer_client::IssuerError;
 use ghost_client_net::issuer_flow;
-use ghost_client_net::namespace_client::redeem_with;
+use ghost_client_net::namespace_client::{redeem_with, register_with};
 use ghost_client_net::{OnionAddress, RelayError};
 use ghost_entitlement::batch::{self, Layout};
 use ghost_entitlement::grid::{invite_epoch, week, week_start};
@@ -57,8 +57,8 @@ use sha2::{Digest, Sha256};
 
 use super::chain::{ChainHandle, T2Chain};
 use super::client::{
-    Cap, ClaimFlow, Client, DropListen, DropOut, HeldCredit, HeldInvite, HeldToken, PState,
-    Purchase, Received, Trial,
+    Cap, ClaimFlow, Client, DmOwner, DropListen, DropOut, HeldCredit, HeldInvite, HeldToken,
+    PState, Purchase, Received, Trial,
 };
 use super::config::{Config, Mutant};
 use super::es;
@@ -574,6 +574,25 @@ impl World {
         for c in 0..self.clients.len() {
             self.truth.clients[c].namespaces = self.clients[c].namespaces.len();
         }
+        // Phase 9 design §4.9 point 3 ("2 per activated client"), counted from the client list
+        // rather than from the activation step that increments "dm owner namespaces": the owners,
+        // and how many of their namespaces a relay ever answered OK for.
+        let owners = self.clients.iter().filter(|cl| cl.dm.is_some()).count() as u64;
+        let registered = self
+            .clients
+            .iter()
+            .map(|cl| {
+                cl.dm_registered
+                    .iter()
+                    .map(|&(_, ns, _, _)| ns)
+                    .collect::<BTreeSet<_>>()
+                    .len() as u64
+            })
+            .sum::<u64>();
+        self.log.counts.insert("dm owners", owners);
+        self.log
+            .counts
+            .insert("dm owner namespaces registered", registered);
         // Completeness: the relays' own count of the calls they handled (one capture event each).
         for node in &self.relays {
             let bytes = std::fs::read(&node.capture_path).unwrap_or_default();
@@ -1403,6 +1422,120 @@ impl World {
             let ns: [u8; 32] = cl.ns_rng.bytes();
             cl.namespaces.push(ns);
         }
+        // Phase 9 design §4.9 point 2: every activated identity registers its DM owner namespaces
+        // `X` and `P` at activation. They are keyed on the namespace seed with labels of their own
+        // (never drawn from `ns_rng`), so the Phase 8 namespace set above is drawn exactly as before
+        // and every client gets exactly two: "a uniform shift, not a new signal" (§4.9 point 4).
+        let idb = cl.id.to_be_bytes();
+        cl.dm = Some(DmOwner {
+            inbox: derive32(cl.ns_seed, &[b"dm-owner-inbox", &idb]),
+            bundle: derive32(cl.ns_seed, &[b"dm-owner-bundle", &idb]),
+        });
+        for _ in 0..2 {
+            self.log.count("dm owner namespaces");
+        }
+    }
+
+    /// The DM owner registrations of one pair (Phase 9 design §4.8 "Registrations the owner keeps"):
+    /// with a usable write capability of week `c`, each kind the namespace needs is registered for
+    /// `c` and `c + 1`, once each, through the production `register_with` and the relay's real
+    /// `register_key_at`. A `WRONG_PERIOD` or a failure is retried at the pair's next step.
+    #[allow(clippy::too_many_arguments)]
+    fn dm_register(
+        &mut self,
+        c: usize,
+        k: u8,
+        ns: [u8; 32],
+        t: u64,
+        run: u64,
+        label: [u8; 32],
+        now_est: i64,
+    ) -> u32 {
+        let Some(dm) = self.clients[c].dm.filter(|d| d.owns(&ns)) else {
+            return 0;
+        };
+        let Some(cap) = self.clients[c]
+            .caps
+            .get(&(k, ns))
+            .filter(|cp| cp.expiry as i64 > now_est)
+            .cloned()
+        else {
+            return 0;
+        };
+        // A v2 capability of week c expires at start(c + 1) + 1 h (F8 §10.3): the relay's own
+        // `capability_week` reads it the same way (§4.4 point 3).
+        let cap_week = week(cap.expiry.saturating_sub(3_601));
+        let slot = self.relays[usize::from(k)].slot;
+        let w = self.clients[c].wall(t).max(0) as u64;
+        let idb = self.clients[c].id.to_be_bytes();
+        let ns_seed = self.clients[c].ns_seed;
+        let mut calls = 0u32;
+        for period in [cap_week, cap_week + 1] {
+            for &kind in dm.kinds(&ns) {
+                let key = (k, ns, period, kind.byte());
+                if self.clients[c].dm_registered.contains(&key) {
+                    continue;
+                }
+                let secret = derive32(
+                    ns_seed,
+                    &[b"dm-owner-secret", &idb, &ns, &[kind.byte(), slot]],
+                );
+                let verifier =
+                    ghost_relay_capability::bearer_verifier(&ghost_relay_api::BearerCredential {
+                        kind,
+                        slot,
+                        namespace: ns,
+                        secret,
+                    });
+                let request_id: [u8; 16] = derive32(
+                    ns_seed,
+                    &[
+                        b"dm-owner-register",
+                        &idb,
+                        &ns,
+                        &[k, kind.byte()],
+                        &period.to_be_bytes(),
+                    ],
+                )[..16]
+                    .try_into()
+                    .unwrap();
+                let truth = self.relay_truth(c, run, 0, t + u64::from(calls));
+                let r = {
+                    let World { relays, rec, .. } = self;
+                    let node = &mut relays[usize::from(k)];
+                    let mut link = RelayLink {
+                        node,
+                        rec,
+                        t: t + u64::from(calls),
+                        label,
+                        truth,
+                        lose_answer: false,
+                        shift_minutes: 0,
+                        answered: false,
+                    };
+                    transport::block_on(register_with(
+                        &mut link,
+                        ns,
+                        cap.token.clone(),
+                        period,
+                        kind,
+                        verifier,
+                        request_id,
+                        w,
+                    ))
+                };
+                calls += 1;
+                match r {
+                    Ok(o) if o.result == rw::RegisterResult::Ok => {
+                        self.clients[c].dm_registered.insert(key);
+                        self.log.count("dm registrations ok");
+                    }
+                    Ok(_) => self.log.count("dm registrations wrong_period"),
+                    Err(_) => self.log.count("dm registrations failed"),
+                }
+            }
+        }
+        calls
     }
 
     /// The trial's `RedeemInvite` (foreground, user-initiated, before any relay traffic).
@@ -3042,6 +3175,12 @@ impl World {
         for ns in self.active_namespaces(c, t) {
             pairs.push((ns, false, 0));
         }
+        // The DM owner namespaces, in every session from activation on (§4.9 point 2): the owner
+        // lists its inbox at every session start (T19) and keeps both registered every week.
+        if let Some(dm) = self.clients[c].dm {
+            pairs.push((dm.inbox, false, 0));
+            pairs.push((dm.bundle, false, 0));
+        }
         let listens: Vec<[u8; 32]> = self.clients[c]
             .drops
             .iter()
@@ -3128,8 +3267,12 @@ impl World {
                 if write_drop && !enqueued {
                     return false;
                 }
+                // A DM owner namespace with a pending registration row and no capability is
+                // treated like outbox work by `Capabilities.needed()`: WRITE MISSING (§4.8, Q31), so
+                // it arms the redeem hold too (§13.4). Without a pending row it is READ MISSING.
                 let needs_write = (write_drop
                     && cl.drop_out.as_ref().is_some_and(|d| d.pending_write(k)))
+                    || cl.dm_pending(k, &ns, week(est.max(0) as u64))
                     || cl
                         .outbox
                         .iter()
@@ -3309,7 +3452,11 @@ impl World {
                 .get(&(k, ns))
                 .is_some_and(|cp| (cp.expiry as i64) > now_est)
         };
+        let dm_pair = self.clients[c].dm.is_some_and(|d| d.owns(&ns));
+        let dm_bundle = self.clients[c].dm.is_some_and(|d| d.bundle == ns);
+        // §4.8, Q31: WRITE MISSING only while a registration row is pending (`Client::dm_pending`).
         let needs_write = drop_write
+            || self.clients[c].dm_pending(k, &ns, week(now_est.max(0) as u64))
             || self.clients[c]
                 .outbox
                 .iter()
@@ -3461,11 +3608,20 @@ impl World {
                 }
             }
         }
+        // §4.8: the registrations of a DM owner pair run once a usable capability exists, in the
+        // same session as the redemption that brought it (the work lane after the redeem lane).
+        if dm_pair && cap_ok(&self.clients[c]) {
+            calls += self.dm_register(c, k, ns, t + u64::from(calls), run, label, now_est);
+        }
         if pass == Pass::Step {
             return calls;
         }
         let t2 = t + u64::from(calls);
         if !cap_ok(&self.clients[c]) {
+            return calls;
+        }
+        // The owner never reads its own bundle namespace (§5.1: `listen = false`).
+        if dm_bundle {
             return calls;
         }
         let cap = self.clients[c].caps[&(k, ns)].token.clone();

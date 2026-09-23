@@ -950,8 +950,9 @@ internal class ReceiveStep(
 
     /**
      * R12 (§7.4, §6.3): a pair envelope that opened under **my** offered generation acknowledges
-     * that offer — the root's secret is erased, and the session's `prov_env` gets its erase
-     * minute (§6.7, §22.8.5 rule 4).
+     * that offer — the root's secret is erased, and the session's `prov_env` erase minute is
+     * brought forward to `pair-open + 45 d` when that is earlier than the `anchor + 119 d` the
+     * anchor already scheduled (§6.7, §22.8.5 rule 4; [SessionStore.boundProvisionalErase]).
      */
     private fun acknowledgeOffer(
         tx: SyncTransaction,
@@ -1143,8 +1144,11 @@ internal class ReceiveStep(
         /** §22.8.5 rule 4: 45 days after a pair envelope under the newest root first opened. */
         const val PROV_ERASE_AFTER_PAIR_SECONDS: Long = 45 * DmTime.DAY
 
-        /** And at the latest `prov_anchor_minute + 119 d` (§22.8.5 rule 5's derivation). */
-        const val PROV_ERASE_MAX_SECONDS: Long = 119 * DmTime.DAY
+        /**
+         * And at the latest `prov_anchor_minute + 119 d` (§22.8.5 rule 5's derivation), which
+         * [SessionStore.boundProvisionalErase] already scheduled when the anchor was set.
+         */
+        const val PROV_ERASE_MAX_SECONDS: Long = SessionStore.PROV_ERASE_MAX_SECONDS
 
         /**
          * How old a root's base week may be. A week key is erased at `start(w + 1) + FRESH`

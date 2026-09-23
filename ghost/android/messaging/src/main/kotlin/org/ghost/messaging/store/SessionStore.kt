@@ -1,5 +1,6 @@
 package org.ghost.messaging.store
 
+import org.ghost.messaging.engine.DmTime
 import org.ghost.storage.SqlExecutor
 import org.ghost.sync.api.SyncTransaction
 
@@ -151,7 +152,10 @@ internal class SessionStore {
         )
     }
 
-    /** `prov_anchor_minute` is write-once (§22.8.5 rule 4). */
+    /**
+     * `prov_anchor_minute` is write-once (§22.8.5 rule 4), and it **bounds** the erase minute at
+     * once ([boundProvisionalErase]).
+     */
     fun setProvisionalAnchor(
         tx: SyncTransaction,
         contactId: ByteArray,
@@ -162,6 +166,29 @@ internal class SessionStore {
             "UPDATE olm_session SET prov_anchor_minute = ? WHERE contact_id = ? AND slot = ? " +
                 "AND prov_anchor_minute IS NULL",
             listOf(minute, contactId, slot),
+        )
+        boundProvisionalErase(tx, contactId, slot)
+    }
+
+    /**
+     * §22.8.5 rule 4's second term: `prov_erase_minute ≤ prov_anchor_minute + 119 d`, scheduled
+     * **when the anchor is set**, not when a pair envelope opens.
+     *
+     * Before slice S11's review the only writer of `prov_erase_minute` was R12's acknowledgement,
+     * which runs when a pair envelope under **my own** offered root opens — so a side whose peer
+     * never wrote again after receiving that root (the one-reply conversation of rule 4 and T34)
+     * kept `prov_env` for as long as the session lived: defect (3) of §22.8.5, the one rule 4
+     * exists to close, and mutant PM-39's behaviour in production. The statement is its own so the
+     * rule has one place: [setProvisionalEraseMinute] only ever lowers the minute, so the
+     * acknowledgement's `min(pair-open + 45 d, anchor + 119 d)` still wins when it is earlier.
+     */
+    fun boundProvisionalErase(tx: SyncTransaction, contactId: ByteArray, slot: String) {
+        tx.sql.exec(
+            "UPDATE olm_session SET prov_erase_minute = prov_anchor_minute + ? " +
+                "WHERE contact_id = ? AND slot = ? AND prov_env IS NOT NULL " +
+                "AND prov_anchor_minute IS NOT NULL " +
+                "AND (prov_erase_minute IS NULL OR prov_erase_minute > prov_anchor_minute + ?)",
+            listOf(PROV_ERASE_MAX_SECONDS, contactId, slot, PROV_ERASE_MAX_SECONDS),
         )
     }
 
@@ -291,5 +318,8 @@ internal class SessionStore {
 
         /** R-SS1: a demoted session is retired 46 days later, past FRESH (§8.2 R-SS4). */
         const val RETIRE_DAYS: Long = 46
+
+        /** §22.8.5 rule 4: `prov_env` goes at the latest `prov_anchor_minute + 119 d` (rule 5). */
+        const val PROV_ERASE_MAX_SECONDS: Long = 119 * DmTime.DAY
     }
 }

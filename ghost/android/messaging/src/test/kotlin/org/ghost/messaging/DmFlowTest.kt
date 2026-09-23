@@ -288,7 +288,71 @@ class DmFlowTest {
         }
     }
 
+    /**
+     * §22.8.5 rule 4 on both sides of a **one-reply** conversation: A's first message, B's
+     * provisional reply carrying B's root, A's pair-sealed answer carrying A's root — and then B
+     * never writes again, so A never opens a pair envelope under **its own** root and never
+     * acknowledges it.
+     *
+     * Each side still erases `prov_env` by `prov_anchor_minute + 119 d`. Before slice S11's review
+     * only the acknowledgement scheduled an erase minute, so A kept its `reply_seed` for as long as
+     * the session lived (defect (3) of §22.8.5, mutant PM-39's behaviour); B, which did open A's
+     * pair envelope, got `pair-open + 45 d`.
+     */
+    @Test
+    fun aSideWhosePeerNeverWritesAgainStillErasesItsProvisionalKey() {
+        requireNative()
+        DmWorld().use { world ->
+            establishBothWays(world)
+            val a = provisional(world.alice)
+            val b = provisional(world.bob)
+            val aAnchor = requireNotNull(a.anchor) { "A's anchor is its first decryption" }
+            val bAnchor = requireNotNull(b.anchor) { "B's anchor is its first provisional seal" }
+            assertTrue("A still holds its reply_seed", a.held)
+            assertEquals(
+                "A never acknowledged its root, so only the anchor bounds its prov_env",
+                aAnchor + 119 * DmWorld.DAY,
+                a.eraseMinute,
+            )
+            val bErase = requireNotNull(b.eraseMinute) { "B acknowledged A's pair envelope" }
+            assertTrue(
+                "B's erase minute is min(pair-open + 45 d, anchor + 119 d)",
+                bErase <= bAnchor + 119 * DmWorld.DAY && bErase < bAnchor + 50 * DmWorld.DAY,
+            )
+
+            // One minute before A's bound nothing goes; at it, the session stays and prov_env goes.
+            world.advanceTo(aAnchor + 119 * DmWorld.DAY - DmWorld.MINUTE)
+            world.alice.timeTriggeredPass()
+            assertTrue("not before the bound", provisional(world.alice).held)
+            world.advanceTo(aAnchor + 119 * DmWorld.DAY)
+            world.alice.timeTriggeredPass()
+            world.bob.timeTriggeredPass()
+            val after = provisional(world.alice)
+            assertTrue("the session itself stays", after.exists)
+            assertTrue("A erased prov_env at anchor + 119 d", !after.held)
+            assertTrue("and B long before", !provisional(world.bob).held)
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private class Provisional(val exists: Boolean, val held: Boolean, val anchor: Long?, val eraseMinute: Long?)
+
+    private fun provisional(device: DmDevice): Provisional {
+        var out = Provisional(false, false, null, null)
+        device.sql.query(
+            "SELECT prov_env IS NOT NULL, prov_anchor_minute, prov_erase_minute FROM olm_session " +
+                "WHERE slot = 'current'",
+        ) { r ->
+            out = Provisional(
+                exists = true,
+                held = r.long(0) == 1L,
+                anchor = if (r.isNull(1)) null else r.long(1),
+                eraseMinute = if (r.isNull(2)) null else r.long(2),
+            )
+        }
+        return out
+    }
 
     private fun activate(world: DmWorld) {
         world.alice.engine.onActivated()

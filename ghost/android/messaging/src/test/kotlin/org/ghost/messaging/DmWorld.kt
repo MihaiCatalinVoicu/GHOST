@@ -326,7 +326,30 @@ class DmDevice(
      * every world of S6–S9 keeps the byte streams it had (the boot index leaves stream 0 alone).
      */
     val harness: HarnessOverride? = null,
+    /**
+     * S11's privacy worlds: explicit key material, because a world of 120 or 600 devices cannot
+     * name its devices by one byte. When null, every derivation below keeps the one-byte `branch`
+     * pattern every world of S6–S10 was built on, byte for byte.
+     */
+    val seeds: DeviceSeeds? = null,
 ) : AutoCloseable {
+
+    /**
+     * The seeds of one device of a large world (Phase 9 design §15.6): the MESSAGING branch, the
+     * `ghost1` Ed25519 seed, the `session_state_key` and the name of the Kotlin random stream. The
+     * privacy world derives all four from its seed and the client's index, so two clients never
+     * share one and a seed pair names one world.
+     */
+    class DeviceSeeds(
+        val messagingBranch: ByteArray,
+        val identitySeed: ByteArray,
+        val sessionStateKey: ByteArray,
+        val randomStream: String,
+    ) {
+        init {
+            require(messagingBranch.size == 32 && identitySeed.size == 32 && sessionStateKey.size == 32)
+        }
+    }
 
     /** The three things the S10 crash harness owns instead of the device (see [harness]). */
     class HarnessOverride(
@@ -343,6 +366,12 @@ class DmDevice(
          * the production port.
          */
         val decorate: ((org.ghost.messaging.port.DmEnvelopes) -> org.ghost.messaging.port.DmEnvelopes)? = null,
+        /**
+         * Wraps the device's `DmCrypto` port (S11): the ground-truth recorder of the privacy world
+         * reads every own card and every contact card's derivations through it, and the privacy
+         * mutant PM-3 (a namespace derived from public identity material) lives on this seam.
+         */
+        val decorateCrypto: ((org.ghost.messaging.port.DmCrypto) -> org.ghost.messaging.port.DmCrypto)? = null,
     )
 
     /** Null when [harness] supplied the executor: the harness closes what it opened. */
@@ -375,22 +404,24 @@ class DmDevice(
     // boot the ids the first one already committed.
     val random = SequentialRandom(
         branch,
-        "device-$branch-$identityBranch" + (harness?.bootIndex?.takeIf { it > 0 }?.let { "-b$it" } ?: ""),
+        (seeds?.randomStream ?: "device-$branch-$identityBranch") +
+            (harness?.bootIndex?.takeIf { it > 0 }?.let { "-b$it" } ?: ""),
     )
     val wrapper = FakeKeyWrapper()
 
     /** The real DM context: one per device, opened on this device's own MESSAGING branch. */
     private val handle: Long? = if (DmWorld.nativeAvailable()) {
         DmSessions.openContext(
-            messagingBranch = ByteArray(32) { branch.toByte() },
-            identitySeed = ByteArray(32) { identityBranch.toByte() },
-            sessionStateKey = ByteArray(32) { (branch + 2).toByte() },
+            messagingBranch = seeds?.messagingBranch ?: ByteArray(32) { branch.toByte() },
+            identitySeed = seeds?.identitySeed ?: ByteArray(32) { identityBranch.toByte() },
+            sessionStateKey = seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() },
         )
     } else {
         null
     }
 
-    private val stateKey: ByteArray = FakeKeyWrapper.PREFIX + ByteArray(32) { (branch + 2).toByte() }
+    private val stateKey: ByteArray =
+        FakeKeyWrapper.PREFIX + (seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() })
 
     private val context = object : DmContext {
         override fun handleOrNull(): Long? = handle
@@ -398,7 +429,8 @@ class DmDevice(
         override fun stateKeyWrapped(): ByteArray? = if (handle != null) stateKey else null
     }
 
-    val crypto = NativeDmCrypto(context)
+    val crypto: org.ghost.messaging.port.DmCrypto =
+        NativeDmCrypto(context).let { harness?.decorateCrypto?.invoke(it) ?: it }
     val envelopes: org.ghost.messaging.port.DmEnvelopes =
         NativeDmEnvelopes(context).let { harness?.decorate?.invoke(it) ?: it }
 

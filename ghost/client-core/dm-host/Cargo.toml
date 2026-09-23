@@ -13,6 +13,14 @@ description = "Test-only host build of the DM JNI surface, so JVM tests call the
 name = "ghost_dm_host"
 crate-type = ["cdylib"]
 
+[features]
+# T35 over the DM worlds (design §14.1 T35, §15.5 PQ2; slice S11): `ghost-client-dm`'s `provenance`
+# feature turns the PQ-B key-provenance assertion of every seal (`provenance::assert_seal`) into a
+# runtime check, so a JVM world run against this build fails on the first seal whose key kind §9.3
+# does not allow. Test builds only: this package is never built for Android, and the shipped
+# `ghost-client-net` does not enable it (G-R2).
+provenance = ["ghost-client-dm/provenance"]
+
 [dependencies]
 # The whole point of this package: the JVM tests run the shipped crate, not a stand-in.
 ghost-client-dm = { path = "../dm", features = ["jni-bridge"] }
