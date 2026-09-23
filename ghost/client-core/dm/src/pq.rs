@@ -294,9 +294,10 @@ pub(crate) fn fill_random(out: &mut [u8]) {
 ///
 /// **Which bit.** A refusal proves the key depends on the bit that was flipped and on nothing
 /// else, so a fixed bit would accept a key read from part of the secret — one byte of it — as long
-/// as the part holds that bit. The caller may name the bit ([`perturb_next_decapsulation_at`]);
-/// otherwise each thread walks all 256 **bytes first**: byte `n mod 32`, bit `(n / 32) mod 8` for
-/// its `n`-th perturbation. Two opens are then enough to refuse a key read from one byte, 32 to
+/// as the part holds that bit. The caller may name the bit
+/// ([`spy::perturb_next_decapsulation_at`]); otherwise each thread walks all 256 bits, **bytes
+/// first**: byte `n mod 32`, bit `(n / 32) mod 8` for its `n`-th perturbation. Two opens are then
+/// enough to refuse a key read from one byte, 32 to
 /// refuse one that leaves any byte out, and 256 cover every bit. The walk is a counter, so it
 /// draws no randomness.
 ///

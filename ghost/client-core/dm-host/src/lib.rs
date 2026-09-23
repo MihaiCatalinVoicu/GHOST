@@ -15,9 +15,9 @@
 //! shipped `libghost_client_net.so` exports no `DmEquivalence` symbol.
 //!
 //! **One check more, and no symbol** (§15.5 PQ1, §22.20): `ghost-client-dm`'s `pq-spy` feature runs
-//! PQ1 as an assertion around every `openIntro` — exactly one X-Wing decapsulation per open, and the
-//! same open with the decapsulated secret perturbed must be `NOT_OPEN` — so every JVM world opens its
-//! intros under it. A violation is a caught panic, `INTERNAL`; nothing else the surface returns
+//! PQ1 as an assertion around every `openIntro` — exactly one X-Wing decapsulation and one inner key
+//! per open, and the same open with one bit of the decapsulated secret flipped must be `NOT_OPEN` —
+//! so every JVM world opens its intros under it. A violation is a caught panic, `INTERNAL`; nothing else the surface returns
 //! changes, and the second, perturbed open draws no randomness. `DmPqSpyNativeTest` refuses a host
 //! library built without it.
 //!

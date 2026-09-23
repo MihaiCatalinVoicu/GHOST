@@ -156,7 +156,8 @@ jobs:
             "$RUNNER_TEMP/native/arm64-v8a/libghost_client_net.so" \
             "$RUNNER_TEMP/native/x86_64/libghost_client_net.so"
       # The emulator's test library (§22.8.10 point 6): the same source, pins and toolchain plus the
-      # `test-vectors` feature, which only `ghost-dm-host` enables; `--test` lets it, and only it,
+      # `test-vectors` and `pq-spy` features, which only `ghost-dm-host` enables (`pq-spy` runs PQ1's
+      # assertion around every openIntro, §22.20, and adds no symbol); `--test` lets it, and only it,
       # export the equivalence entry point.
       - name: build the x86_64 test library (ghost-dm-host with test-vectors) and G-R6 --test on it
         run: |

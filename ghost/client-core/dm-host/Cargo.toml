@@ -19,8 +19,9 @@ crate-type = ["cdylib"]
 # T35 over the DM worlds (design §14.1 T35, §15.5 PQ2; slice S11): `ghost-client-dm`'s `provenance`
 # feature turns the PQ-B key-provenance assertion of every seal (`provenance::assert_seal`) into a
 # runtime check, so a JVM world run against this build fails on the first seal whose key kind §9.3
-# does not allow. Test builds only: this package is never built for Android, and the shipped
-# `ghost-client-net` does not enable it (G-R2).
+# does not allow. Test builds only: this package is never shipped (its one Android build is the
+# emulator's x86_64 test library, dm-emulator.yml, which does not enable this feature), and
+# the shipped `ghost-client-net` does not enable it (G-R2).
 provenance = ["ghost-client-dm/provenance"]
 
 [dependencies]
@@ -29,9 +30,10 @@ provenance = ["ghost-client-dm/provenance"]
 #  - `test-vectors`, the deterministic equivalence entry point (slice S12); G-R6 checks this library
 #    exports it and the shipped one does not;
 #  - `pq-spy`, PQ1 as an assertion around every `openIntro` (design §15.5 PQ1, §22.20): exactly one
-#    X-Wing decapsulation per open, and the same open run again with the decapsulated secret
-#    perturbed must be `NOT_OPEN`. It changes no output — a violation is a caught panic, `INTERNAL`
-#    — and adds no symbol, so every JVM world opens its intros under PQ1 and fails on the first
-#    open that breaks it. `DmPqSpyNativeTest` checks the loaded library carries it.
+#    X-Wing decapsulation and one inner key per open, and the same open run again with one bit of
+#    the decapsulated secret flipped must be `NOT_OPEN`. It changes no output — a violation is a
+#    caught panic, `INTERNAL`, which fails the JVM world that made the call — and adds no symbol,
+#    so every JVM world opens its intros under PQ1. `DmPqSpyNativeTest` checks the loaded library
+#    carries it.
 ghost-client-dm = { path = "../dm", features = ["jni-bridge", "test-vectors", "pq-spy"] }
 jni = { workspace = true }

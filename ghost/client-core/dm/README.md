@@ -22,9 +22,10 @@ plus the Kotlin `external fun` declarations and, in CI, the exported symbols of 
 
 `export_jni!()` emits the entry points. `ghost-client-net` invokes it in `jni_bridge.rs` so the
 closed list is visible in the crate that produces `libghost_client_net.so`, and
-`client-core/dm-host` (`ghost-dm-host`, test-only, never built for Android) invokes it so JVM
-tests call exactly the shipped code (plus the equivalence entry point and PQ1's assertion around
-`openIntro`, the two test-only features it enables):
+`client-core/dm-host` (`ghost-dm-host`, test-only and never shipped; its one Android build is the
+emulator's x86_64 test library, `dm-emulator.yml`) invokes it so JVM tests call exactly the
+shipped code (plus the equivalence entry point and PQ1's assertion around `openIntro`, the two
+test-only features it enables, in the emulator's library too):
 
 ```
 cargo build -p ghost-dm-host --release --locked
@@ -105,16 +106,21 @@ cargo test -p ghost-client-dm
   `GHOST_DM_EM_BUDGET` with either; the nightly `dm-state-models` workflow runs 3 and 3.
 - `tests/xwing_kat.rs`: the X-Wing draft-06 vectors and a differential test against RustCrypto
   `x-wing` 0.1.0 (dev graph only).
-- `src/pq_bump.rs` (unit tests, `cargo test -p ghost-client-dm --lib -- pq1_ pq5_`): **PQ1 and PQ5**
-  of design §15.5 over a scripted world of four devices with real Olm sessions (design §22.20).
-  PQ1 counts the X-Wing decapsulations of every intro open through `pq::spy` (test builds and the
-  `pq-spy` feature only) and perturbs the decapsulated secret of a repeated open, which must then be
-  refused; PQ5, the bump assertion of RG-5, decapsulates every intro envelope's and every
+- `src/pq_bump.rs` (unit tests, `cargo test -p ghost-client-dm --lib --features jni-bridge --
+  pq1_ pq5_ pq_world_`): **PQ1 and PQ5** of design §15.5 over a scripted world of four devices with
+  real Olm sessions (design §22.20). PQ1 counts the X-Wing decapsulations and the inner keys of
+  every intro open through `pq::spy` (test builds and the `pq-spy` feature only) and flips one bit
+  of the decapsulated secret of a repeated open — a bit in every byte in turn — which must then be
+  refused; with `jni-bridge` the same runs through `jni.rs`'s own `openIntro` body, with a negative
+  control. PQ5, the bump assertion of RG-5, decapsulates every intro envelope's and every
   `seal_root_pq`'s 1 120-byte ciphertext with RustCrypto `x-wing` and re-derives `k_in` and the root
   from that secret outside the crate, and has a `gate`-variant client (`seal::gate`, `cfg(test)`)
-  seal the inner layer without the KEM four ways, each refused by the honest recipient. **The mutant
-  gate** `scripts/gates/pq-mutants.sh` (workflow `pq-bump.yml`) applies each patch of `mutants/` —
-  PM-32's shapes and two more — and requires the tests the patch names to fail: PM-32 is what T35's
+  seal the inner layer without the KEM five ways, each refused by the honest recipient — a list of
+  attacker keys, not a proof: a recipient falling back to a key none of them uses is caught only if
+  it tries the KEM key first (PQ1's one inner key per open). **The mutant gate**
+  `scripts/gates/pq-mutants.sh` (workflow `pq-bump.yml`) applies each patch of `mutants/` — PM-32's
+  shapes and the PQ1 and PQ5 ones — and requires the tests the patch names to fail and
+  `pq_world_every_honest_flight_opens_and_every_root_arrives` to pass: PM-32 is what T35's
   provenance tags cannot see. A patch that no longer applies after an edit is regenerated with the
   edit, never deleted.
 - `tests/vectors.rs`: generates and checks `protocol/test-vectors/dm_derive.txt`, `dm_seal.txt`,
