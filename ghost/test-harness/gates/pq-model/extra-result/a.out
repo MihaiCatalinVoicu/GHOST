@@ -1,0 +1,10 @@
+Process 0 (that is, the initial process):
+RESULT not attacker(secret[]) is true.
+RESULT not attacker(control[]) is false.
+RESULT not attacker(newsecret[]) is true.
+--------------------------------------------------------------
+Verification summary:
+
+Query not attacker(secret[]) is true.
+
+Query not attacker(control[]) is false.

@@ -16,6 +16,7 @@
 
 use crate::result::{DmCode, DmResult};
 use crate::seal::{capacity, EXT_RESERVE, L0_FIXED_BYTES, MAX_BODY_BYTES, O_MAX};
+use zeroize::Zeroize;
 
 /// The only content version Phase 9 writes or accepts.
 pub const CONTENT_VERSION: u8 = 0x01;
@@ -132,6 +133,17 @@ impl core::fmt::Debug for Tlv {
     }
 }
 
+/// A TLV value is erased when it is dropped (slice S13 review). A `seal_root` value **is** a pair
+/// root and a `seal_root_pq` value carries `root_rand`, and a TLV is copied more often than the
+/// code that builds it can follow: into a decoded record, into the candidates of R-C5, out of a
+/// candidate the slack rule left behind. Erasing at the type, rather than at each call site, is
+/// what makes "every copy" true.
+impl Drop for Tlv {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
+}
+
 impl Tlv {
     /// True when an implementation that does not know this type must refuse the whole L0.
     pub const fn is_critical(&self) -> bool {
@@ -226,6 +238,14 @@ pub fn classical_ext_len(ext: &[Tlv]) -> usize {
         .sum()
 }
 
+/// The encoded length of the PQ-C TLVs of a list: what R-C5 compares with a bucket's slack.
+pub fn pq_ext_len(ext: &[Tlv]) -> usize {
+    ext.iter()
+        .filter(|tlv| is_pq_tlv(tlv.tlv_type))
+        .map(|tlv| TLV_HEADER_BYTES + tlv.value.len())
+        .sum()
+}
+
 fn check_body(kind: Kind, body: &[u8]) -> DmResult<()> {
     match kind {
         Kind::Text => {
@@ -298,8 +318,21 @@ impl DmContent {
         }
         check_body(self.kind, &self.body)?;
         check_ext(&self.ext)?;
-        if classical_ext_len(&self.ext) > EXT_RESERVE {
+        let classical = classical_ext_len(&self.ext);
+        if classical > EXT_RESERVE {
             return Err(DmCode::NonCanonical);
+        }
+        // R-C5, enforced where the bytes are made (slice S13): a PQ-C TLV rides only in the slack
+        // of the bucket the body length alone chose. Without this a caller could encode an L0 its
+        // own bucket cannot carry — the seal would then answer `NO_FIT`, which R-B1 classes as a
+        // bug — or be tempted to move to a larger bucket, which is mutant ME-23. Every L0 this
+        // function returns fits `capacity(bucket(body))`, whatever TLVs it carries.
+        let pq_len = pq_ext_len(&self.ext);
+        if pq_len > 0 {
+            let bucket = crate::seal::bucket_for_body(self.body.len())?;
+            if !pq_tlv_fits(bucket, self.body.len(), classical, pq_len) {
+                return Err(DmCode::NonCanonical);
+            }
         }
         let ext_len = encoded_ext_len(&self.ext);
         let mut out = Vec::with_capacity(L0_FIXED_BYTES + self.body.len() + ext_len);
@@ -455,6 +488,61 @@ pub fn pq_tlv_fits(
         .is_some_and(|slack| slack >= pq_tlv_bytes)
 }
 
+/// R-C5 applied on the sending side (§7.1, §9.4; slice S13): appends each PQ-C candidate, **in
+/// the order given**, that still fits the slack of the bucket the body length alone chose, and
+/// returns the types that rode.
+///
+/// The bucket is computed **before** any candidate is looked at and is never recomputed, so it is
+/// a function of the body length alone (T29, mutant ME-23); a candidate that does not fit is left
+/// out — deferred to a later user send, never sent on its own (T28). The caller orders the
+/// candidates by priority: SEND puts a pending `seal_root_pq` before `pq_key`, because an offer
+/// re-keys a direction now and an announcement only enables the peer's next offer, and the two
+/// together never fit a 4 KiB message (§7.1 R-C5's example).
+///
+/// A candidate that is not a PQ-C TLV, or whose type the content already carries, is
+/// [`DmCode::NonCanonical`]: the classical TLVs go through `EXT_RESERVE`, which R-B1 already
+/// counted, and R-C4 allows each type once.
+pub fn attach_pq_under_slack(content: &mut DmContent, candidates: Vec<Tlv>) -> DmResult<Vec<u16>> {
+    let bucket = content.bucket()?;
+    let body_len = content.body.len();
+    let classical = classical_ext_len(&content.ext);
+    let mut pq_len = pq_ext_len(&content.ext);
+    let mut attached = Vec::new();
+    for tlv in candidates {
+        if !is_pq_tlv(tlv.tlv_type) || content.ext.iter().any(|t| t.tlv_type == tlv.tlv_type) {
+            return Err(DmCode::NonCanonical);
+        }
+        let bytes = TLV_HEADER_BYTES + tlv.value.len();
+        if pq_candidate_fits(bucket, body_len, classical, pq_len + bytes) {
+            pq_len += bytes;
+            attached.push(tlv.tlv_type);
+            content.ext.push(tlv);
+        }
+    }
+    content.ext.sort_by_key(|tlv| tlv.tlv_type);
+    Ok(attached)
+}
+
+/// Whether PQ-C TLVs of `pq_tlv_bytes` in total may ride: R-C5's slack **and** R-C4's receiver cap
+/// on the whole TLV list.
+///
+/// The second half is not implied by the first (found by slice S13's PQ4 walk): `EXT_RESERVE`
+/// (160) plus both PQ-C TLVs (1 170 + 1 232) is 2 562 bytes, two more than R-C4's `ext_len ≤
+/// 2 560`, and a 16 or 64 KiB message has the slack for all of it. No Phase 9 send carries 160
+/// bytes of classical TLVs beside both PQ ones — a `seal_root_pq` *replaces* `seal_root`, and the
+/// revocation notice with its reset is 110 bytes — but a Phase 13 `card_update` could, and the
+/// receiver would refuse the whole L0. The sender therefore attaches only what the receiver
+/// accepts, and the one deferred TLV rides on a later send.
+pub fn pq_candidate_fits(
+    bucket: usize,
+    body_len: usize,
+    classical_ext_len: usize,
+    pq_tlv_bytes: usize,
+) -> bool {
+    classical_ext_len + pq_tlv_bytes <= MAX_EXT_BYTES
+        && pq_tlv_fits(bucket, body_len, classical_ext_len, pq_tlv_bytes)
+}
+
 /// `seal_root`: the root the sender wants the recipient to use for recipient-to-sender envelopes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SealRoot {
@@ -473,6 +561,13 @@ impl core::fmt::Debug for SealRoot {
             .field("base_week", &self.base_week)
             .field("root_gen", &self.root_gen)
             .finish_non_exhaustive()
+    }
+}
+
+/// The root is erased with the value that carried it (see [`Tlv`]'s `Drop`).
+impl Drop for SealRoot {
+    fn drop(&mut self) {
+        self.root.zeroize();
     }
 }
 
@@ -528,6 +623,15 @@ impl core::fmt::Debug for SealRootPq {
             .field("peer_gen_id", &self.peer_gen_id)
             .field("xwing_ct_len", &self.xwing_ct.len())
             .finish_non_exhaustive()
+    }
+}
+
+/// `root_rand` is erased on drop (slice S13 review). It keys nothing without the X-Wing secret
+/// (§9.4), but it is half of every PQ root, and a copy that outlives its use is one a later
+/// compromise of the KEM secret would complete.
+impl Drop for SealRootPq {
+    fn drop(&mut self) {
+        self.root_rand.zeroize();
     }
 }
 
@@ -1099,9 +1203,10 @@ mod tests {
             match decode(&bytes) {
                 Ok(content) => {
                     // What decodes re-encodes to the same bytes: one encoding per value. A record
-                    // whose classical TLVs exceed the sender reserve is receivable but not
-                    // sendable (§21.11 point 3), so it is the one shape that does not re-encode.
-                    if classical_ext_len(&content.ext) <= EXT_RESERVE {
+                    // whose classical TLVs exceed the sender reserve (§21.11 point 3), or whose
+                    // PQ-C TLVs exceed the slack of its body's bucket (R-C5, slice S13), is
+                    // receivable but not sendable, so those are the shapes that do not re-encode.
+                    if sendable(&content) {
                         assert_eq!(content.encode().expect("re-encode"), bytes);
                     } else {
                         assert_eq!(content.encode().err(), Some(DmCode::NonCanonical));
@@ -1123,6 +1228,252 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Whether a decoded record is one a sender may produce: the two sender-side caps.
+    fn sendable(content: &DmContent) -> bool {
+        let classical = classical_ext_len(&content.ext);
+        if classical > EXT_RESERVE {
+            return false;
+        }
+        let pq = pq_ext_len(&content.ext);
+        pq == 0
+            || crate::seal::bucket_for_body(content.body.len())
+                .is_ok_and(|bucket| pq_tlv_fits(bucket, content.body.len(), classical, pq))
+    }
+
+    fn seal_root_pq_tlv() -> Tlv {
+        Tlv {
+            tlv_type: TLV_SEAL_ROOT_PQ,
+            value: vec![0x51; SEAL_ROOT_PQ_BYTES],
+        }
+    }
+
+    fn pq_key_tlv() -> Tlv {
+        Tlv {
+            tlv_type: TLV_PQ_KEY,
+            value: vec![0x52; PQ_KEY_BYTES],
+        }
+    }
+
+    /// The classical TLV sets a user send can carry (§7.1 R-C3): none, a root offer, the
+    /// revocation notice with its reset, and a full `EXT_RESERVE` — the worst case R-B1 counts.
+    fn classical_sets() -> Vec<Vec<Tlv>> {
+        vec![
+            Vec::new(),
+            vec![Tlv {
+                tlv_type: TLV_SEAL_ROOT,
+                value: vec![1u8; SEAL_ROOT_BYTES],
+            }],
+            vec![
+                Tlv {
+                    tlv_type: TLV_REVOCATION,
+                    value: vec![2u8; REVOCATION_BYTES],
+                },
+                Tlv {
+                    tlv_type: TLV_SESSION_RESET,
+                    value: Vec::new(),
+                },
+            ],
+            vec![Tlv {
+                tlv_type: TLV_CARD_UPDATE,
+                value: vec![3u8; EXT_RESERVE - TLV_HEADER_BYTES],
+            }],
+        ]
+    }
+
+    /// The body lengths PQ4 walks per bucket: every length of the 4 KiB class (it is where the
+    /// slack is tight), and for the larger classes `0 … 64`, a stride, and `[C(B) − 64, C(B)]` —
+    /// the golden-size probe set of §6.6.
+    fn pq4_body_lengths(bucket: usize) -> Vec<usize> {
+        let top = max_body(bucket).min(MAX_BODY_BYTES);
+        if bucket == 4096 {
+            return (0..=top).collect();
+        }
+        let mut out: Vec<usize> = (0..=64).collect();
+        out.extend((65..top.saturating_sub(64)).step_by(509));
+        out.extend(top.saturating_sub(64)..=top);
+        out
+    }
+
+    /// **PQ4** (§15.5, the Rust half; mutant ME-23): slack-rule attachment never changes the
+    /// bucket, never produces an L0 its bucket cannot carry, attaches exactly what fits in the
+    /// priority order given, and leaves out only what would not have fitted.
+    #[test]
+    fn pq4_slack_rule_attachment_never_changes_the_bucket() {
+        let orders: [Vec<Tlv>; 5] = [
+            Vec::new(),
+            vec![seal_root_pq_tlv()],
+            vec![pq_key_tlv()],
+            vec![seal_root_pq_tlv(), pq_key_tlv()],
+            vec![pq_key_tlv(), seal_root_pq_tlv()],
+        ];
+        let mut checked = 0usize;
+        let mut rode = 0usize;
+        let mut deferred = 0usize;
+        // Deferred by R-C4's `ext_len` cap alone, with the slack available: the EXT_RESERVE +
+        // both-PQ case the walk found (see `pq_candidate_fits`).
+        let mut capped = 0usize;
+        for bucket in BUCKETS {
+            for body_len in pq4_body_lengths(bucket) {
+                let expected_bucket = crate::seal::bucket_for_body(body_len).expect("bucket");
+                if expected_bucket != bucket {
+                    continue;
+                }
+                for classical in classical_sets() {
+                    for candidates in &orders {
+                        for quote in [None, Some([4u8; 16])] {
+                            let mut content = text();
+                            content.body = vec![0x41; body_len];
+                            content.quote_ref = quote;
+                            content.ext = classical.clone();
+                            let attached = attach_pq_under_slack(&mut content, candidates.clone())
+                                .expect("attach");
+                            assert_eq!(
+                                content.bucket(),
+                                Ok(bucket),
+                                "the bucket moved at body {body_len}"
+                            );
+                            let encoded = content.encode().unwrap_or_else(|code| {
+                                panic!(
+                                    "an attached L0 must encode: {code:?} at body {body_len}, \
+                                     bucket {bucket}, attached {attached:?}"
+                                )
+                            });
+                            assert!(
+                                encoded.len() <= capacity(bucket),
+                                "|L0| = {} > C({bucket}) at body {body_len}",
+                                encoded.len()
+                            );
+                            // Greedy, in the order given: each candidate rides exactly when it
+                            // fits beside the ones before it that rode.
+                            let class_len = classical_ext_len(&classical);
+                            let mut used = 0usize;
+                            for tlv in candidates {
+                                let bytes = TLV_HEADER_BYTES + tlv.value.len();
+                                let fits = pq_tlv_fits(bucket, body_len, class_len, used + bytes)
+                                    && class_len + used + bytes <= MAX_EXT_BYTES;
+                                if !fits && pq_tlv_fits(bucket, body_len, class_len, used + bytes) {
+                                    capped += 1;
+                                }
+                                assert_eq!(
+                                    attached.contains(&tlv.tlv_type),
+                                    fits,
+                                    "{:#06x} at body {body_len}, bucket {bucket}",
+                                    tlv.tlv_type
+                                );
+                                if fits {
+                                    used += bytes;
+                                    rode += 1;
+                                } else {
+                                    deferred += 1;
+                                }
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Floors, so a loop that skipped everything cannot pass: both outcomes happened.
+        assert!(checked > 20_000, "{checked} cases");
+        assert!(
+            rode > 1_000 && deferred > 1_000,
+            "rode {rode}, deferred {deferred}"
+        );
+        assert!(capped > 0, "the ext_len cap case was never reached");
+    }
+
+    /// PQ4's control (mutant **ME-23**): the obvious wrong implementation — attach every candidate
+    /// and let the bucket follow the L0 — changes the bucket at the design's own boundary, and the
+    /// encoder refuses what it would have produced for the body-length bucket.
+    #[test]
+    fn me_23_a_pq_tlv_that_chose_the_bucket_is_detected() {
+        let mut content = text();
+        content.body = vec![0x41; 1149];
+        content.ext.push(pq_key_tlv());
+        // What the mutant would do: a bucket from the whole L0.
+        let whole = L0_FIXED_BYTES + content.body.len() + PQ_KEY_TLV_BYTES;
+        let mutant_bucket = BUCKETS
+            .into_iter()
+            .find(|b| whole <= capacity(*b))
+            .expect("some bucket");
+        assert_eq!(
+            mutant_bucket, 16384,
+            "the mutant moves this message up a class"
+        );
+        assert_eq!(
+            content.bucket(),
+            Ok(4096),
+            "R-B1 keeps it where its body put it"
+        );
+        assert_eq!(
+            content.encode().err(),
+            Some(DmCode::NonCanonical),
+            "and the encoder refuses a PQ TLV beyond the slack"
+        );
+        // The correct attachment leaves it out, and the record stays in its class.
+        let mut correct = text();
+        correct.body = vec![0x41; 1149];
+        assert!(attach_pq_under_slack(&mut correct, vec![pq_key_tlv()])
+            .expect("attach")
+            .is_empty());
+        assert_eq!(correct.encode().expect("encode").len(), 52 - 16 + 1149);
+    }
+
+    /// The design's two figures of R-C5 through the attachment path itself, with no classical TLV
+    /// pending and no quote.
+    #[test]
+    fn the_slack_rule_boundaries_hold_through_the_attachment() {
+        for (body, tlv, rides) in [
+            (1148usize, pq_key_tlv(), true),
+            (1149, pq_key_tlv(), false),
+            (1210, seal_root_pq_tlv(), true),
+            (1211, seal_root_pq_tlv(), false),
+        ] {
+            let mut content = text();
+            content.body = vec![0x41; body];
+            let tlv_type = tlv.tlv_type;
+            let attached = attach_pq_under_slack(&mut content, vec![tlv]).expect("attach");
+            assert_eq!(attached.contains(&tlv_type), rides, "body {body}");
+        }
+        // Both together never fit at 4 KiB, whatever the body: the first rides, the second waits.
+        let mut empty = text();
+        empty.body.clear();
+        let attached = attach_pq_under_slack(&mut empty, vec![seal_root_pq_tlv(), pq_key_tlv()])
+            .expect("attach");
+        assert_eq!(attached, vec![TLV_SEAL_ROOT_PQ]);
+        // At 16 KiB both ride.
+        let mut large = text();
+        large.body = vec![0x41; max_body(4096) + 1];
+        let attached = attach_pq_under_slack(&mut large, vec![seal_root_pq_tlv(), pq_key_tlv()])
+            .expect("attach");
+        assert_eq!(attached, vec![TLV_SEAL_ROOT_PQ, TLV_PQ_KEY]);
+        assert_eq!(large.bucket(), Ok(16384));
+    }
+
+    /// A classical TLV is not a slack candidate, and a type the record already carries is refused
+    /// rather than doubled (R-C4: each type at most once).
+    #[test]
+    fn the_attachment_refuses_what_is_not_a_pq_candidate() {
+        let mut content = text();
+        assert_eq!(
+            attach_pq_under_slack(
+                &mut content,
+                vec![Tlv {
+                    tlv_type: TLV_SEAL_ROOT,
+                    value: vec![0u8; SEAL_ROOT_BYTES],
+                }],
+            )
+            .err(),
+            Some(DmCode::NonCanonical)
+        );
+        let mut twice = text();
+        twice.ext.push(pq_key_tlv());
+        assert_eq!(
+            attach_pq_under_slack(&mut twice, vec![pq_key_tlv()]).err(),
+            Some(DmCode::NonCanonical)
+        );
     }
 
     /// The TLV value decoders are parsers of their own (§15.2 "every parser"): `seal_root`,

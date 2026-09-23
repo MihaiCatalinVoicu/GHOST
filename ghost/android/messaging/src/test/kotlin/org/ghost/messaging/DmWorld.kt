@@ -80,11 +80,24 @@ class DmWorld(
      * in-memory one does not.
      */
     private val databaseDirectory: java.io.File? = null,
+    /**
+     * Wraps each device's `DmEnvelopes` port, by MESSAGING branch (slice S13): the PQ-C worlds
+     * record what the engine sealed and encoded (the ground truth of PQ3, PQ4 and PQ6) and plant
+     * their control mutant on this seam. Null keeps every world of S6–S12 byte for byte as it was.
+     */
+    private val decorate: ((Int, org.ghost.messaging.port.DmEnvelopes) -> org.ghost.messaging.port.DmEnvelopes)? =
+        null,
 ) : AutoCloseable {
 
     /** The two devices. Distinct MESSAGING branches, so distinct identities and cards. */
-    val alice: DmDevice = DmDevice(0x41, slotCount, operators, startSeconds, path = pathFor(0x41))
-    val bob: DmDevice = DmDevice(0x51, slotCount, operators, startSeconds, path = pathFor(0x51))
+    val alice: DmDevice = DmDevice(
+        0x41, slotCount, operators, startSeconds, path = pathFor(0x41),
+        decorateEnvelopes = decorate?.let { d -> { e: org.ghost.messaging.port.DmEnvelopes -> d(0x41, e) } },
+    )
+    val bob: DmDevice = DmDevice(
+        0x51, slotCount, operators, startSeconds, path = pathFor(0x51),
+        decorateEnvelopes = decorate?.let { d -> { e: org.ghost.messaging.port.DmEnvelopes -> d(0x51, e) } },
+    )
 
     private fun pathFor(branch: Int): String? =
         databaseDirectory?.let { java.io.File(it, "dm-$branch.db").absolutePath }
@@ -135,6 +148,9 @@ class DmWorld(
             operators = of.operators,
             startSeconds = of.clock.now,
             identityBranch = of.identityBranch,
+            decorateEnvelopes = decorate?.let { d ->
+                { e: org.ghost.messaging.port.DmEnvelopes -> d(of.branch, e) }
+            },
         )
         extra += device
         return device
@@ -199,6 +215,19 @@ class DmWorld(
      * be splittable by recipient rather than by round.
      */
     fun deliverTo(to: DmDevice): Int = deliverFrom(if (to === bob) alice else bob, to)
+
+    /**
+     * Loses everything [from] has enqueued so far on its way to [to]: a relay that dropped the
+     * blobs (slice S13 review — a PQ-C offer whose message never arrives). Nothing is inserted,
+     * and a later [deliver] does not bring them back. Returns how many were lost.
+     */
+    fun lose(from: DmDevice, to: DmDevice): Int {
+        var lost = 0
+        from.sql.query("SELECT operation_id, namespace_id FROM outbox_op ORDER BY rowid") {
+            if (listens(to, it.blob(1)) && delivered.add(it.blob(0).toList() to to)) lost += 1
+        }
+        return lost
+    }
 
     /**
      * Re-serves a blob that was already delivered, as a relay that lies about expiry or serves a
@@ -332,6 +361,11 @@ class DmDevice(
      * pattern every world of S6–S10 was built on, byte for byte.
      */
     val seeds: DeviceSeeds? = null,
+    /**
+     * Wraps the `DmEnvelopes` port of a device built without a [harness] (slice S13's PQ-C worlds;
+     * see `DmWorld`'s `decorate`). A harness brings its own decorator, which wins.
+     */
+    decorateEnvelopes: ((org.ghost.messaging.port.DmEnvelopes) -> org.ghost.messaging.port.DmEnvelopes)? = null,
 ) : AutoCloseable {
 
     /**
@@ -432,7 +466,9 @@ class DmDevice(
     val crypto: org.ghost.messaging.port.DmCrypto =
         NativeDmCrypto(context).let { harness?.decorateCrypto?.invoke(it) ?: it }
     val envelopes: org.ghost.messaging.port.DmEnvelopes =
-        NativeDmEnvelopes(context).let { harness?.decorate?.invoke(it) ?: it }
+        NativeDmEnvelopes(context).let {
+            harness?.decorate?.invoke(it) ?: decorateEnvelopes?.invoke(it) ?: it
+        }
 
     var slots: List<EsSlot>
     private val esSlots = EsSlots { slots }
@@ -452,6 +488,7 @@ class DmDevice(
     internal val steps: OwnerSteps
     internal val sendStep = SendStep(
         database, dmSync, envelopes, material, relayResolver, clock, random, contexts,
+        counters = counters,
     )
     internal val establishment = EstablishmentSteps(
         database, dmSync, envelopes, material, relayResolver, clock, contexts,
@@ -573,6 +610,22 @@ class DmDevice(
 
     /** The owner's own card, as the other device would scan it. */
     fun card(): ByteArray = requireNotNull(engine.myCard()) { "myCard" }.card
+
+    /**
+     * A **second** DM context over this device's secrets — its MESSAGING branch, `ghost1` seed and
+     * `session_state_key` — which is what an adversary holding a dump of the device can call (the
+     * PQ3 healing world, slice S13). It shares nothing with the device's own context but those
+     * inputs, so nothing the device does afterwards reaches it. The caller closes it.
+     */
+    fun openLeakedContext(): Long? = if (DmWorld.nativeAvailable()) {
+        DmSessions.openContext(
+            messagingBranch = seeds?.messagingBranch ?: ByteArray(32) { branch.toByte() },
+            identitySeed = seeds?.identitySeed ?: ByteArray(32) { identityBranch.toByte() },
+            sessionStateKey = seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() },
+        )
+    } else {
+        null
+    }
 
     /** A time-triggered pass (§21.9 rule 1): the owner steps, establishment and the inbox. */
     fun timeTriggeredPass() {

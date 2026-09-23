@@ -269,6 +269,15 @@ enum class DmField(val tag: Int) {
 
     /** A revocation certificate v2's reason code, one byte (§8.5). */
     REVOCATION_REASON(0x3d),
+
+    /**
+     * The generation of **this device** a received `seal_root_pq` was encapsulated to, `u32`
+     * big-endian (§9.4, slice S13): the `olm_prekey_gen` row the caller loads for `pqRootOpen`.
+     */
+    PEER_GEN_ID(0x3e),
+
+    /** A received `seal_root_pq` value, 1 166 bytes (§7.1), handed back to `pqRootOpen`. */
+    SEAL_ROOT_PQ_TLV(0x3f),
     ;
 
     companion object {
@@ -294,8 +303,36 @@ const val DM_TLV_SESSION_RESET: Int = 0x02
 /** Bit 2 of [DmField.TLV_FLAGS]: the L0 carried a revocation certificate v2 (§8.5). */
 const val DM_TLV_REVOCATION: Int = 0x04
 
-/** Bit 3 of [DmField.TLV_FLAGS]: the L0 carried a PQ-C TLV, counted and ignored in Phase 9. */
+/**
+ * Bit 3 of [DmField.TLV_FLAGS]: the L0 carried a PQ-C TLV that is **ignored** — a `seal_root_pq`
+ * beside a classical `seal_root` (slice S13 narrowed the bit; §9.4's PQ form replaces the
+ * classical one, so a sender never writes both).
+ */
 const val DM_TLV_PQ: Int = 0x08
+
+/**
+ * Bit 4 of [DmField.TLV_FLAGS] (slice S13): a `seal_root_pq`. On `l0Decode` the reply carries
+ * [DmField.ROOT_GEN], [DmField.BASE_WEEK], [DmField.PEER_GEN_ID] and [DmField.SEAL_ROOT_PQ_TLV]; on
+ * `l0Encode` the bit says the offer **rode** under the slack rule (R-C5).
+ */
+const val DM_TLV_SEAL_ROOT_PQ: Int = 0x10
+
+/**
+ * Bit 5 of [DmField.TLV_FLAGS] (slice S13): a `pq_key` valid whole (§22.8.2 rule 3). On `l0Decode`
+ * the reply carries [DmField.GEN_ID], [DmField.BUNDLE_WEEK] and [DmField.XWING_PUBLIC]; on
+ * `l0Encode` the bit says the announcement **rode**.
+ */
+const val DM_TLV_PQ_KEY: Int = 0x20
+
+/** Bit 6 of [DmField.TLV_FLAGS] (slice S13): a `pq_key` whose key fails validation, ignored. */
+const val DM_TLV_PQ_KEY_INVALID: Int = 0x40
+
+/**
+ * Bit 7 of [DmField.TLV_FLAGS], on an `l0Encode` reply only (slice S13 review): the `pq_key`
+ * candidate could not be built from its stored generation and was left out — the L0 was encoded
+ * without it, because an optional announcement never blocks the message it would have ridden on.
+ */
+const val DM_TLV_PQ_KEY_DROPPED: Int = 0x80
 
 /**
  * A decoded reply of [DmNative]: a code and the fields that came with it.

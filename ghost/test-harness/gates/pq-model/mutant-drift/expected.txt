@@ -1,0 +1,3 @@
+# a mutant generated from its original by a patch
+a.pv|attacker(secret[])|true
+a_mutant_x.pv|attacker(secret[])|false

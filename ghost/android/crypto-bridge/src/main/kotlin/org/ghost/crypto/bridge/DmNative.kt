@@ -326,7 +326,8 @@ object DmNative {
         peerOlmIdentity: ByteArray,
     ): ByteArray?
 
-    // §2.6 function 18.
+    // §2.6 function 18. The last four arguments are slice S13's `pq_key` candidate (an empty
+    // `pqKeySecretsEnv` means none); `offerEnv` may hold a classical or a PQ-C root offer.
     @JvmStatic
     @JvmName("l0Encode")
     @Suppress("LongParameterList")
@@ -345,6 +346,43 @@ object DmNative {
         offerEnv: ByteArray,
         revocation: ByteArray,
         sessionReset: Int,
+        pqKeyGenId: Int,
+        pqKeyWeek: Long,
+        pqKeySecretsEnv: ByteArray,
+        pqKeyFallbackPublic: ByteArray,
+        pqKeyFirst: Int,
+    ): ByteArray?
+
+    // ----------------------------------------------------------------- slice S13
+
+    // §2.6 function 16, sealing half: the PQ-C root this device offers a contact (§9.4).
+    @JvmStatic
+    @JvmName("pqRootSeal")
+    @Suppress("LongParameterList")
+    internal external fun pqRootSeal(
+        handle: Long,
+        contactId: ByteArray,
+        rootGen: Int,
+        baseWeek: Long,
+        peerOlmIdentity: ByteArray,
+        peerGenId: Int,
+        peerXwingPublic: ByteArray,
+    ): ByteArray?
+
+    // §2.6 function 16, opening half: a received `seal_root_pq`, opened with the generation it
+    // names (§9.4, §22.8.6 rule 3).
+    @JvmStatic
+    @JvmName("pqRootOpen")
+    @Suppress("LongParameterList")
+    internal external fun pqRootOpen(
+        handle: Long,
+        contactId: ByteArray,
+        rootGen: Int,
+        genId: Int,
+        genSecretsEnv: ByteArray,
+        genFallbackPublic: ByteArray,
+        tlv: ByteArray,
+        peerOlmIdentity: ByteArray,
     ): ByteArray?
 
     // §2.6 function 18.

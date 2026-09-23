@@ -1,0 +1,4 @@
+# a passing set
+a.pv|attacker(secret[])|true
+a.pv|attacker(control[])|maybe
+b.pv|event(Accepted(|true

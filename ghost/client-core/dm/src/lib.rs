@@ -31,6 +31,7 @@
 //! | [`bundle`] | §5.3, §5.4 bundle v2 |
 //! | [`seal`] | §6 the four seal modes, buckets and recognition |
 //! | [`pq`] | §9.2 the X-Wing wrapper |
+//! | [`pqroot`] | §9.4 PQ-C: the `seal_root_pq` offer and its opening (slice S13) |
 //! | [`codec`] | §7.1 the L0 content codec and the TLV registry |
 //! | [`olm`] | §2.2, §7.9, §8.1 the Olm facade over vodozemac |
 //! | [`safety`] | §8.4 safety number v1 |
@@ -55,6 +56,7 @@ pub mod equivalence;
 pub mod jni;
 pub mod olm;
 pub mod pq;
+pub mod pqroot;
 #[cfg(test)]
 pub(crate) mod property;
 pub mod provenance;

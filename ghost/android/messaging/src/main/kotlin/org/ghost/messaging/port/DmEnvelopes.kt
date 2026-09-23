@@ -147,6 +147,35 @@ interface DmEnvelopes {
     /** Function 22: the random root this device offers a contact for `c → me` (§6.3). */
     fun pairOffer(contactId: ByteArray, rootGen: Int, baseWeek: Long): DmPairing.OfferResult
 
+    /**
+     * §2.6 function 16, sealing half (slice S13): the **PQ-C** root this device offers a contact
+     * for `c → me` (§9.4), encapsulated to the contact's generation [peerGenId] (a `u32`).
+     */
+    @Suppress("LongParameterList")
+    fun pqRootSeal(
+        contactId: ByteArray,
+        rootGen: Int,
+        baseWeek: Long,
+        peerOlmIdentity: ByteArray,
+        peerGenId: Long,
+        peerXwingPublic: ByteArray,
+    ): DmPairing.PqOfferResult
+
+    /**
+     * §2.6 function 16, opening half (slice S13): a received `seal_root_pq`, opened with this
+     * device's generation [genId] — the one the TLV names (§22.8.6 rule 3).
+     */
+    @Suppress("LongParameterList")
+    fun pqRootOpen(
+        contactId: ByteArray,
+        rootGen: Int,
+        genId: Long,
+        genSecretsEnv: ByteArray,
+        genFallbackPublic: ByteArray,
+        tlv: ByteArray,
+        peerOlmIdentity: ByteArray,
+    ): DmPairing.PqOpenResult
+
     /** Function 21: the two provisional keys of one session (§6.7). */
     fun provisionalKeys(
         contactId: ByteArray,
@@ -230,7 +259,14 @@ interface DmEnvelopes {
 
     // ------------------------------------------------------------------- content
 
-    /** §2.6 function 18: the canonical L0 of §7.1, with the bucket R-B1 chose (§6.6). */
+    /**
+     * §2.6 function 18: the canonical L0 of §7.1, with the bucket R-B1 chose (§6.6).
+     *
+     * [offerEnv] is a classical or a PQ-C root offer (its length says which) and [pqKey] this
+     * device's generation to announce; both PQ-C TLVs ride only under the slack rule R-C5 (slice
+     * S13), and [DmContent.Encoded.Ok] says which did. [pqKeyFirst] puts the announcement
+     * ahead of the offer in R-C5's order (SEND sets it for a re-attached offer).
+     */
     @Suppress("LongParameterList")
     fun encodeContent(
         kind: DmContent.Kind,
@@ -246,6 +282,8 @@ interface DmEnvelopes {
         offerEnv: ByteArray,
         revocation: ByteArray,
         sessionReset: Boolean,
+        pqKey: DmContent.PqKeyCandidate?,
+        pqKeyFirst: Boolean,
     ): DmContent.Encoded
 
     /** §2.6 function 18: the fail-closed decode of §7.1 (R-C4). */
@@ -499,6 +537,50 @@ class NativeDmEnvelopes(private val context: DmContext) : DmEnvelopes {
         return DmPairing.offer(handle, contactId, rootGen, baseWeek)
     }
 
+    @Suppress("LongParameterList")
+    override fun pqRootSeal(
+        contactId: ByteArray,
+        rootGen: Int,
+        baseWeek: Long,
+        peerOlmIdentity: ByteArray,
+        peerGenId: Long,
+        peerXwingPublic: ByteArray,
+    ): DmPairing.PqOfferResult {
+        val handle = context.handleOrNull() ?: return DmPairing.PqOfferResult.Unavailable
+        return DmPairing.pqOffer(
+            handle,
+            contactId,
+            rootGen,
+            baseWeek,
+            peerOlmIdentity,
+            peerGenId,
+            peerXwingPublic,
+        )
+    }
+
+    @Suppress("LongParameterList")
+    override fun pqRootOpen(
+        contactId: ByteArray,
+        rootGen: Int,
+        genId: Long,
+        genSecretsEnv: ByteArray,
+        genFallbackPublic: ByteArray,
+        tlv: ByteArray,
+        peerOlmIdentity: ByteArray,
+    ): DmPairing.PqOpenResult {
+        val handle = context.handleOrNull() ?: return DmPairing.PqOpenResult.Unavailable
+        return DmPairing.pqOpen(
+            handle,
+            contactId,
+            rootGen,
+            genId,
+            genSecretsEnv,
+            genFallbackPublic,
+            tlv,
+            peerOlmIdentity,
+        )
+    }
+
     override fun provisionalKeys(
         contactId: ByteArray,
         sessionId: ByteArray,
@@ -606,6 +688,8 @@ class NativeDmEnvelopes(private val context: DmContext) : DmEnvelopes {
         offerEnv: ByteArray,
         revocation: ByteArray,
         sessionReset: Boolean,
+        pqKey: DmContent.PqKeyCandidate?,
+        pqKeyFirst: Boolean,
     ): DmContent.Encoded {
         val handle = context.handleOrNull() ?: return DmContent.Encoded.Unavailable
         return DmContent.encode(
@@ -623,6 +707,8 @@ class NativeDmEnvelopes(private val context: DmContext) : DmEnvelopes {
             offerEnv,
             revocation,
             sessionReset,
+            pqKey,
+            pqKeyFirst,
         )
     }
 

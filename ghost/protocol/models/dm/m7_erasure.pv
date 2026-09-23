@@ -1,0 +1,81 @@
+(* GHOST direct messages: attribution forward secrecy as key erasure (design faza9-dm.md §6.3
+   P-7, §14.1 T34, §21.3 point 6; obligation M-7 of §9.5; slice S13).
+
+   P-7: for an ISO week w with now >= start(w + 1) + 45 d, no key on either device and nothing
+   derivable from either seed opens or recognises a pair-mode envelope of week w. The mechanism is
+   erasure plus one-wayness: a root is random (never derived from a seed) and is erased once K_b
+   exists; K_{w+1} = HKDF(K_w, "pair-next") is one-way; a week key is erased with its recognition
+   key (R-S6) once its window closes. A seizure after that finds only later week keys.
+
+   The model: week w's envelope with its recognition hint (the attribution handle: whoever holds
+   R_sel(K_w) can tell the envelope belongs to this conversation), the six later weeks' keys, and
+   the live week's envelope. Phase 1 is the seizure, which gets EVERYTHING the device still stores
+   for this conversation after week w's erasure (the slice S13 review: the first version handed it
+   the live week key alone) — every later week key K_{w+1} … K_now with its recognition key (the
+   device keeps a week's in keys for 45 days, and Kotlin holds recognition keys in the clear,
+   §2.5) — and the device's seed with what the seed derives (card keys, namespaces; T26), which
+   the first version left out instead of giving it. recogProbe is sealed under week w's
+   recognition key, so "the adversary can recognise week w" is the secrecy query on it.
+
+   What it shows, and what it does not:
+   - it checks the derivation structure: with the root random and erased, the ratchet one-way and
+     nothing of week w derived from the seed, the seizure cannot reach week w;
+   - two mutants, each generated from this file by its .patch, break one of those assumptions and
+     must fail: an invertible ratchet (m7_erasure_mutant_invertible) and a root derived from the
+     seed (m7_erasure_mutant_seed_root);
+   - it does NOT check that the implementation erases, or that roots are random: T34 (S11's
+     privacy world, with a real device seizure) does. Key secrecy stands in for unlinkability (an
+     equivalence property is future work), and the skipped Olm message keys of live sessions (§7.7
+     point 4, pruned at 51 d) and provisional reply seeds (§6.7) are outside it. *)
+
+free c: channel.
+
+type key.
+
+(* K_b = HKDF(root, "pair-epoch" || b), K_{w+1} = HKDF(K_w, "pair-next"), R_sel(K) *)
+fun kbase(bitstring): key.
+fun knext(key): key.
+fun recog(key): key.
+fun hint(key, bitstring): bitstring.
+fun seal(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; unseal(seal(m, k), k) = m.
+(* everything the seed derives: card keys, namespaces, the Olm identity *)
+fun seedkey(bitstring): key.
+
+(* the device's ghost1 seed, handed to the seizure *)
+free seed: bitstring [private].
+(* the random root whose base week is w, erased once K_w existed *)
+free rootW: bitstring [private].
+free msgWeekW: bitstring [private].
+free recogProbe: bitstring [private].
+free msgLive: bitstring [private].
+
+query attacker(rootW).
+query attacker(msgWeekW).
+query attacker(recogProbe).
+query attacker(msgLive).
+
+process
+  new salt: bitstring;
+  new saltLive: bitstring;
+  let kW = kbase(rootW) in
+  let k1 = knext(kW) in
+  let k2 = knext(k1) in
+  let k3 = knext(k2) in
+  let k4 = knext(k3) in
+  let k5 = knext(k4) in
+  let kLive = knext(k5) in
+  (
+    (* week w: the envelope and its recognition hint go to the relay *)
+    out(c, (salt, hint(recog(kW), salt), seal(msgWeekW, kW)))
+  | (* "can recognise week w": whoever derives R_sel(K_w) opens this *)
+    out(c, seal(recogProbe, recog(kW)))
+  | (* six weeks later, under the live week key *)
+    out(c, (saltLive, hint(recog(kLive), saltLive), seal(msgLive, kLive)))
+  | (* the seizure, after week w's keys were erased: every later week key and its recognition
+       key, and the seed with what it derives *)
+    phase 1;
+    out(c, (k1, recog(k1), k2, recog(k2), k3, recog(k3)));
+    out(c, (k4, recog(k4), k5, recog(k5), kLive, recog(kLive)));
+    out(c, (seed, seedkey(seed)))
+  )

@@ -1,0 +1,1 @@
+RESULT event(Accepted(k,x1)) ==> event(Bound(k,x1)) is true.

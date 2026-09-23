@@ -181,6 +181,138 @@ object DmPairing {
         }
     }
 
+    /** The outcome of [pqOffer] (slice S13). */
+    sealed interface PqOfferResult {
+        /**
+         * The root and the 1 166-byte `seal_root_pq` value, both wrapped exactly as a classical
+         * [Offer]'s are: the offer row, its in-keys and its re-attachment are the classical ones.
+         */
+        data class Ok(val offer: Offer) : PqOfferResult
+
+        /** A malformed argument. */
+        data object NonCanonical : PqOfferResult
+
+        /**
+         * The peer's X-Wing key is not valid whole, or encapsulation failed (§22.8.2 rules 3 and
+         * 4): the caller falls back to the classical `seal_root` and deletes the `dm_peer_pq` row.
+         */
+        data object InvalidKey : PqOfferResult
+
+        /** The state key could not wrap the root (§22.8.3). */
+        data object StateCorrupt : PqOfferResult
+
+        /** The native library is missing or the context is closed. */
+        data object Unavailable : PqOfferResult
+    }
+
+    /** The outcome of [pqOpen] (slice S13). */
+    sealed interface PqOpenResult {
+        /** The root, wrapped under `dm_pair_offer.root_env`'s binding, for [keys] (§6.3). */
+        data class Ok(val rootGen: Int, val baseWeek: Long, val rootEnv: ByteArray) : PqOpenResult {
+            override fun toString(): String = "Ok(gen=$rootGen, baseWeek=$baseWeek)"
+        }
+
+        /** A malformed argument, or a TLV whose `root_gen` is not the one named. */
+        data object NonCanonical : PqOpenResult
+
+        /**
+         * The TLV names another generation, or its ciphertext does not decapsulate: ignored and
+         * counted (§22.8.6 rule 3), and the rest of the L0 applies.
+         */
+        data object NotOpen : PqOpenResult
+
+        /** The generation's secrets do not open under their binding (§22.8.3). */
+        data object StateCorrupt : PqOpenResult
+
+        /** The native library is missing or the context is closed. */
+        data object Unavailable : PqOpenResult
+    }
+
+    /**
+     * §2.6 function 16, sealing half (slice S13): the PQ-C root this device offers the contact for
+     * `c → me` (§9.4), encapsulated to the contact's generation [peerGenId] and bound to both Olm
+     * identities, that generation and its key. [peerGenId] is a `u32` carried as a `Long`.
+     */
+    @Suppress("LongParameterList")
+    fun pqOffer(
+        handle: Long,
+        contactId: ByteArray,
+        rootGen: Int,
+        baseWeek: Long,
+        peerOlmIdentity: ByteArray,
+        peerGenId: Long,
+        peerXwingPublic: ByteArray,
+    ): PqOfferResult {
+        if (!DmNative.isAvailable()) return PqOfferResult.Unavailable
+        val result = dmCall {
+            DmNative.pqRootSeal(
+                handle,
+                contactId,
+                rootGen,
+                baseWeek,
+                peerOlmIdentity,
+                peerGenId.toInt(),
+                peerXwingPublic,
+            )
+        }
+        return when (result.code) {
+            DmCode.OK -> PqOfferResult.Ok(
+                Offer(
+                    rootEnv = result.bytes(DmField.PAIR_ROOT_ENV),
+                    offerEnv = result.bytes(DmField.PAIR_OFFER_ENV),
+                ),
+            )
+            DmCode.NON_CANONICAL -> PqOfferResult.NonCanonical
+            DmCode.INVALID_KEY -> PqOfferResult.InvalidKey
+            DmCode.STATE_CORRUPT -> PqOfferResult.StateCorrupt
+            DmCode.CRYPTO_UNAVAILABLE -> PqOfferResult.Unavailable
+            else -> unexpected(result.code, "pqRootSeal")
+        }
+    }
+
+    /**
+     * §2.6 function 16, opening half (slice S13): a received `seal_root_pq` ([DmContent.SealRootPq])
+     * opened with this device's generation [genId], which the caller loaded for the TLV's
+     * `peer_gen_id`. The contact is the offerer here.
+     */
+    @Suppress("LongParameterList")
+    fun pqOpen(
+        handle: Long,
+        contactId: ByteArray,
+        rootGen: Int,
+        genId: Long,
+        genSecretsEnv: ByteArray,
+        genFallbackPublic: ByteArray,
+        tlv: ByteArray,
+        peerOlmIdentity: ByteArray,
+    ): PqOpenResult {
+        if (!DmNative.isAvailable()) return PqOpenResult.Unavailable
+        val result = dmCall {
+            DmNative.pqRootOpen(
+                handle,
+                contactId,
+                rootGen,
+                genId.toInt(),
+                genSecretsEnv,
+                genFallbackPublic,
+                tlv,
+                peerOlmIdentity,
+            )
+        }
+        return when (result.code) {
+            DmCode.OK -> PqOpenResult.Ok(
+                rootGen = result.u32(DmField.ROOT_GEN).toInt(),
+                baseWeek = result.i64(DmField.BASE_WEEK),
+                rootEnv = result.bytes(DmField.PAIR_ROOT_ENV),
+            )
+            DmCode.NON_CANONICAL -> PqOpenResult.NonCanonical
+            DmCode.NOT_OPEN -> PqOpenResult.NotOpen
+            DmCode.STATE_CORRUPT -> PqOpenResult.StateCorrupt
+            DmCode.CRYPTO_UNAVAILABLE -> PqOpenResult.Unavailable
+            else -> unexpected(result.code, "pqRootOpen")
+        }
+    }
+
     /** Function 21 (S7): the two provisional keys of one session (§6.7). */
     fun provisional(
         handle: Long,

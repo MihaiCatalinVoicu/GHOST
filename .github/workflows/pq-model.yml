@@ -1,0 +1,113 @@
+name: pq-model
+
+# The ProVerif model of the DM protocol (Phase 9 design §9.5 "Model in CI", §16.2; slice S13):
+# every model of ghost/protocol/models/dm is run and each query's result compared with
+# expected.txt by ghost/scripts/gates/pq-model.sh — a result other than the expected one,
+# `cannot be proved`, a query or a model nobody decided about, a mutant patch that no longer
+# applies, a ProVerif error or a timeout fails the job.
+#
+# What a green run covers, and no more (design §22.18): M-1 and M-3 (HNDL secrecy of the intro
+# inner layer and PQ-B's induction), M-2 (binding v3 agreement with two recipients), M-6 **step
+# (3) only** of §9.4's healing argument (the rest is the PQ3 world's), and M-7 as the derivation
+# structure of key erasure (T34 checks the erasure itself). Each has a control or a mutant that
+# must fail and, where a flow could stop silently, a reachability query. **M-4 is a written
+# argument and M-5 has no model** (EM-1 is its only mechanised check); M-8 is vectors, differential
+# tests and fuzzing. It complements, and does not replace, the exhaustive state models EM-1 and
+# EM-2 (the `rust` job). ProVerif is a CI tool and is never shipped.
+#
+# ProVerif is built from the INRIA source release, **pinned by version and by SHA-256**: the hash
+# lives in ghost/protocol/models/dm/proverif.sha256 and the job refuses to build anything else.
+# Until that file holds a hash the job fails closed and prints the hash of what it downloaded. As
+# far as this slice knows, INRIA publishes no checksum for the archive, so a pin taken from one
+# download is trust on first use: the owner compares it with an independent source first — the
+# checksum opam-repository records for the same release, or a download over another network
+# (design §22.18 records the owner action). ocaml-nox and patch come from the runner's apt,
+# unpinned; they build and apply, and ship nothing.
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ghost/client-core/dm/**"
+      - "ghost/protocol/models/dm/**"
+      - "ghost/scripts/gates/pq-model.sh"
+      - "ghost/scripts/gates/common.sh"
+      - ".github/workflows/pq-model.yml"
+  pull_request:
+    paths:
+      - "ghost/client-core/dm/**"
+      - "ghost/protocol/models/dm/**"
+      - "ghost/scripts/gates/pq-model.sh"
+      - "ghost/scripts/gates/common.sh"
+      - ".github/workflows/pq-model.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PROVERIF_VERSION: "2.05"
+  PROVERIF_URL: "https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz"
+
+jobs:
+  pq-model:
+    name: ProVerif model (M-1, M-2, M-3, M-6 step 3, M-7 structure; not M-4, M-5)
+    runs-on: [self-hosted, linux, x64, ghost]
+    # Eight models at PQ_MODEL_TIMEOUT (600 s) each is 80 minutes, plus the build: the job limit
+    # sits above that, so a hung model is reported by the gate as a timeout, not cancelled by
+    # GitHub (the slice S13 review).
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build ProVerif (pinned by SHA-256)
+        run: |
+          set -euo pipefail
+          pinned="$(tr -d '[:space:]' < protocol/models/dm/proverif.sha256)"
+          archive="$RUNNER_TEMP/proverif-$PROVERIF_VERSION.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "$PROVERIF_URL"
+          actual="$(sha256sum "$archive" | cut -d' ' -f1)"
+          echo "proverif $PROVERIF_VERSION sha256: $actual"
+          if ! [[ "$pinned" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "protocol/models/dm/proverif.sha256 holds no pinned hash; check $actual against an" \
+              "independent source and commit it (design §22.18)" >&2
+            exit 1
+          fi
+          [ "$actual" = "$pinned" ] || { echo "ProVerif archive hash $actual != pinned $pinned" >&2; exit 1; }
+          missing=""
+          command -v ocamlopt >/dev/null || missing="$missing ocaml-nox"
+          command -v patch >/dev/null || missing="$missing patch"
+          if [ -n "$missing" ]; then
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends $missing
+          fi
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP/proverif$PROVERIF_VERSION" && ./build -nointeract)
+          echo "$RUNNER_TEMP/proverif$PROVERIF_VERSION" >> "$GITHUB_PATH"
+      - name: Run the models against expected.txt
+        env:
+          PQ_MODEL_TIMEOUT: "600"
+        run: |
+          set -o pipefail
+          # A ProVerif that does not run is the gate's to report ("ProVerif exited ..."), per model.
+          # stderr is teed too: the gate's GATE-FAIL lines go there, and the summary shows them.
+          bash scripts/gates/pq-model.sh 2>&1 | tee "$RUNNER_TEMP/pq-model.txt"
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### pq-model (ProVerif $PROVERIF_VERSION)"
+            echo '```'
+            # The status line and every failure the comparison printed. `|| true`: the summary is
+            # evidence, never the verdict — the verdict is the exit status of the step above.
+            grep -E "^(pq-model:|\[pq-model\]|GATE-FAIL)" "$RUNNER_TEMP/pq-model.txt" || true
+            echo '```'
+            echo "Not modelled: M-4 (written argument), M-5 (EM-1 only), M-8 (vectors, fuzzing)."
+            echo "M-6 is §9.4's step (3) only; M-7 is the derivation structure of erasure (design §22.18)."
+          } >> "$GITHUB_STEP_SUMMARY"

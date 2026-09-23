@@ -409,6 +409,7 @@ internal class MessagingEngine(
                 it.establishment == ContactStore.Establishment.FETCHING
             },
             pendingSends = pending,
+            pq = counters.pqSnapshot().mapKeys { (event, _) -> MessagingStatus.pqEventName(event) },
         )
     }
 

@@ -138,6 +138,32 @@ dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeou
 dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
 dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report"
+# Phase 9 S13 (design §9.5, §16.2): the `pq-model` comparison, proven without ProVerif. A fake
+# replays recorded outputs; every negative fixture is a way a model run could look green while it
+# decided nothing: a flipped result, `cannot be proved`, a query removed from a model, a query added
+# to one, a model file nobody runs, a listed model that is gone, a ProVerif error, a timeout, a
+# token that names two results, and an expectation that is neither true nor false.
+PQM="$HARNESS/pq-model"
+pqm_case() { # $1 = expect pass|fail, $2 = fixture directory, $3 = description
+  if PROVERIF="$PQM/fake-proverif.sh" PQ_MODEL_TIMEOUT=1 PQ_MODEL_DIR="$PQM/$2" \
+    bash "$DIR/pq-model.sh" >/dev/null 2>&1; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ]; then echo "self-test ok: pq-model $3"; else echo "SELF-TEST FAIL: pq-model $3 ($got)" >&2; rc=1; fi
+}
+pqm_case pass pass "accepts results that match their expectations"
+pqm_case fail mismatch "rejects a flipped result"
+pqm_case fail unproved "rejects a query ProVerif cannot prove"
+pqm_case fail missing-result "rejects an expected query with no RESULT line"
+pqm_case fail extra-result "rejects a RESULT line no expectation names"
+pqm_case fail unlisted-model "rejects a model file expected.txt does not list"
+pqm_case fail missing-model "rejects a listed model that is not there"
+pqm_case fail proverif-error "rejects a ProVerif error"
+pqm_case fail timeout "rejects a model that runs past the timeout"
+pqm_case fail ambiguous-token "rejects a token that names two results"
+pqm_case fail malformed-expected "rejects an expectation that is neither true nor false"
+# The S13 review: mutants are generated from their originals by a patch, never copied.
+pqm_case pass mutant-pass "accepts a mutant generated from its original by a patch"
+pqm_case fail mutant-drift "rejects a mutant patch that no longer applies to its original"
+pqm_case fail mutant-copied "rejects a mutant that is both a copied file and a patch"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

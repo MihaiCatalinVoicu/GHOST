@@ -300,6 +300,19 @@ internal class EstablishmentSteps(
                             retireDay = null,
                             peerBindMinute = null,
                         )
+                        // §8.6 "new roots follow in both directions" (slice S13): the contact
+                        // will see this session as a renewal from me and drop the out keys my
+                        // roots gave it (§21.3 point 2(a) on its side), so the next send offers
+                        // a new root, unless an unacknowledged one is still waiting to ride. A
+                        // first establishment has no offer rows and changes nothing here.
+                        contacts.supersedeOffers(tx, contactId)
+                        // §22.8.6 rule 1 on the contact's side (the slice S13 review): the renewal
+                        // deletes every key of mine it held — a responder session names no
+                        // generation, so the bundle key goes too — and without this the current
+                        // generation is not announced again until the next one, so every
+                        // replacement the contact makes towards me until then is classical. The
+                        // announcement rides on the first normal output of this session.
+                        contacts.setPqAnnouncedWeek(tx, contactId, null)
                     }
                     // §21.7 point 4: drop the candidate, count, and let the attempt continue —
                     // the contact published a key no session can be built on (§22.8.2 rule 1).

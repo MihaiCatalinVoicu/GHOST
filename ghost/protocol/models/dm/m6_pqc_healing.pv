@@ -1,0 +1,167 @@
+(* GHOST direct messages: PQ-C healing (design faza9-dm.md §9.4 "Healing argument";
+   obligation M-6 of §9.5; slice S13).
+
+   §9.4's argument has four steps: (1) after a leak at t each device publishes a generation whose
+   secrets the adversary lacks; (2) it announces it in band and the peer stores it; (3) the next
+   root replacement is a seal_root_pq encapsulated to that key, and the adversary sees root_rand
+   and ct but not ss, so not the root; (4) once both new roots are acknowledged, neither direction
+   opens. THIS MODEL CHECKS STEP (3) FOR ONE DIRECTION (A -> B), taking (1) and (2) as the setting,
+   and nothing of (4). Steps (1), (2) and "the next replacement goes to that key" are properties of
+   the engine and its cadence (OWNER-WEEK, pq_key, freshPeerKey, ROOT_REPLACE_WEEKS), which the
+   PQ3 world measures with the real code (PqHealingWorldTest, including a leak just before a
+   replacement whose PQ-C offer then goes to a leaked generation and does not heal); the other
+   direction is the same model with the roles swapped. (Recorded as a correction of what the
+   slice first claimed for this file; design §22.18.)
+
+   The claim checked: a passive adversary that reads both devices' complete state at t, records
+   all relay traffic afterwards and owns a quantum computer does not learn the envelopes sealed
+   under a root that B offered after t as a seal_root_pq to a generation A created after t and
+   announced in band — a week later either; and it does learn everything sealed after t under the
+   week key live at t, under a classical root, or under a PQ-C root to the generation the leak
+   contained (the three controls, each expected `false`).
+
+   Modelling choices, each one a statement of the adversary:
+   - "Owns a quantum computer" is X25519 broken and ML-KEM-768 intact. X-Wing is then as strong
+     as its ML-KEM half, so it is an ideal IND-CCA KEM here (kct/kss/kdec); every classical layer
+     is transparent: Olm content, and so every TLV an L0 carries (root_rand, ct, a classical root,
+     a pq_key), is output on the public channel c.
+   - "Passive" is reliable delivery on private channels, one per flow so no receiver can take
+     another flow's message: every protocol message is also copied to c, so the adversary sees all
+     of it, but a receiver only accepts what a peer sent. An active adversary after t is out of
+     scope of §9.4, and would win trivially by encapsulating to the announced key itself.
+   - "Complete state at t", for this direction: A's generation secret live at t, and the pair week
+     key live at t (the root itself was erased when it was acknowledged, §6.3). It is output in
+     phase 1, and everything created afterwards — A's new generation first of all — is created
+     after the leak's outputs, in the same sequence, so it cannot be part of it.
+   - B takes the key it encapsulates to from A's in-band announcement, as SEND takes it
+     from dm_peer_pq; the offer to the leaked generation uses the key B stored before t.
+   - A root keys weeks through kbase and the one-way ratchet knext (§6.3); the pair seal is an
+     ideal AEAD.
+   The reachability query SealedHealed (expected `false` = reachable) shows A really seals under
+   the healed root; without it, a flow that stopped would make the two properties vacuously true. *)
+
+free c: channel.
+free netClassical: channel [private].
+free netPqOld: channel [private].
+free netPqNew: channel [private].
+free netAnnounce: channel [private].
+
+type key.
+type kskey.
+type kpkey.
+
+(* X-Wing with its X25519 half broken: an ideal KEM. *)
+fun kpk(kskey): kpkey.
+fun kct(kpkey, bitstring): bitstring.
+fun kss(kpkey, bitstring): bitstring.
+reduc forall sk: kskey, r: bitstring; kdec(sk, kct(kpk(sk), r)) = kss(kpk(sk), r).
+
+(* root = HKDF(root_rand || ss, salt = SHA-256(label || OI_offerer || OI_target || gen || Q || ct)) *)
+fun pqroot(bitstring, bitstring, bitstring): key.
+(* a classical seal_root: the 32 bytes are the root *)
+fun classicalroot(bitstring): key.
+(* K_b = HKDF(root, "pair-epoch" || b) and K_{w+1} = HKDF(K_w, "pair-next") *)
+fun kbase(key): key.
+fun knext(key): key.
+
+(* the pair seal *)
+fun seal(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; unseal(seal(m, k), k) = m.
+
+free oiA: bitstring.
+free oiB: bitstring.
+free genOld: bitstring.
+free genNew: bitstring.
+free announceNew: bitstring.
+free tagClassical: bitstring.
+free tagPqOld: bitstring.
+free tagPqNew: bitstring.
+
+(* Sealed after t under the week key live at t, a week after the leak. *)
+free msgBefore: bitstring [private].
+(* Sealed after t under a classical root offered after t. *)
+free msgClassical: bitstring [private].
+(* Sealed after t under a PQ-C root encapsulated to the generation the leak contained. *)
+free msgPqOld: bitstring [private].
+(* Sealed after t under a PQ-C root encapsulated to a generation created after t: healed. *)
+free msgHealed: bitstring [private].
+(* The same healed root a week later: the ratchet does not reopen what the root closed. *)
+free msgHealedLater: bitstring [private].
+
+event SealedHealed.
+
+query attacker(msgHealed).
+query attacker(msgHealedLater).
+query attacker(msgBefore).
+query attacker(msgClassical).
+query attacker(msgPqOld).
+query event(SealedHealed).
+
+(* B, the recipient of direction A -> B, offers a root on the flow's channel ch: classical, or PQ-C
+   to A's key pk. *)
+let OfferClassical(ch: channel, tag: bitstring) =
+  new rootBytes: bitstring;
+  out(c, (tag, rootBytes));
+  out(ch, (tag, rootBytes)).
+
+let OfferPq(ch: channel, tag: bitstring, gen: bitstring, pk: kpkey) =
+  new rootRand: bitstring;
+  new r: bitstring;
+  let ct = kct(pk, r) in
+  out(c, (tag, rootRand, gen, ct));
+  out(ch, (tag, rootRand, gen, ct)).
+
+(* B's replacement after t: a PQ-C offer to the key A announced in band (the pq_key B stored). *)
+let OfferPqToAnnounced(ch: channel, tag: bitstring, gen: bitstring) =
+  in(netAnnounce, (=announceNew, =gen, pk: kpkey));
+  OfferPq(ch, tag, gen, pk).
+
+(* A, the sender, installs the root as its out key and seals under it. *)
+let SealClassical(ch: channel, tag: bitstring, msg: bitstring) =
+  in(ch, (=tag, rootBytes: bitstring));
+  out(c, seal(msg, kbase(classicalroot(rootBytes)))).
+
+let SealPq(ch: channel, tag: bitstring, sk: kskey, gen: bitstring, msg: bitstring, later: bitstring) =
+  in(ch, (=tag, rootRand: bitstring, =gen, ct: bitstring));
+  let ss = kdec(sk, ct) in
+  let root = pqroot(rootRand, ss, (oiB, oiA, gen, kpk(sk), ct)) in
+  out(c, seal(msg, kbase(root)));
+  out(c, seal(later, knext(kbase(root)))).
+
+(* The healed flow's sealing, with the reachability event. *)
+let SealHealed(sk: kskey) =
+  in(netPqNew, (=tagPqNew, rootRand: bitstring, =genNew, ct: bitstring));
+  let ss = kdec(sk, ct) in
+  let root = pqroot(rootRand, ss, (oiB, oiA, genNew, kpk(sk), ct)) in
+  event SealedHealed;
+  out(c, seal(msgHealed, kbase(root)));
+  out(c, seal(msgHealedLater, knext(kbase(root)))).
+
+process
+  new skOld: kskey;
+  new rootAtT: bitstring;
+  (
+    (* Before t: A's generation live at t is public (bundle, pq_key); B holds it. *)
+    out(c, kpk(skOld))
+  | (* t: both devices' state for this direction leaks: A's generation secret and the week key
+       live at t. Only then does A create its next generation, announce it in band (the
+       announcement is classical content, so public too) and keep the secret; B offers a PQ-C root
+       to the key it received, and A seals under it. *)
+    phase 1;
+    out(c, skOld);
+    out(c, kbase(classicalroot(rootAtT)));
+    new skNew: kskey;
+    out(c, kpk(skNew));
+    (
+      (* The announcement runs in parallel with its receiver: an output on a private channel
+         waits for an input, so it must not guard the process that takes it. *)
+      out(netAnnounce, (announceNew, genNew, kpk(skNew)))
+    | OfferPqToAnnounced(netPqNew, tagPqNew, genNew)
+    | SealHealed(skNew)
+    )
+  | phase 1; out(c, seal(msgBefore, knext(kbase(classicalroot(rootAtT)))))
+  | phase 1; OfferClassical(netClassical, tagClassical)
+  | phase 1; SealClassical(netClassical, tagClassical, msgClassical)
+  | phase 1; OfferPq(netPqOld, tagPqOld, genOld, kpk(skOld))
+  | phase 1; SealPq(netPqOld, tagPqOld, skOld, genOld, msgPqOld, msgPqOld)
+  )

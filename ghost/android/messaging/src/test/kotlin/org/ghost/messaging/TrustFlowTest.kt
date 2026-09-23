@@ -274,29 +274,42 @@ class TrustFlowTest {
      * nothing erased it, so (c) was the only rule that could fire and this test advanced 12 weeks
      * to show that it had not yet; with the erasure in place, 12 weeks is past the earlier bound
      * and the test would have measured that instead. It now stays inside both windows and then
-     * crosses both. Rule (c) becomes the earlier of the two when S13 lowers
-     * `ROOT_REPLACE_WEEKS` to 4 (§22.14).
+     * crosses both.
+     *
+     * **Slice S13** lowered `ROOT_REPLACE_WEEKS` to 4 (§9.4) and made the first offer a PQ-C one
+     * (A holds B's bundle key), and an **unacknowledged** PQ-C offer is replaced from
+     * `base_week + 3` on (§22.8.6 rule 2, §22.18 item 8) — earlier than rule (c). So the root is
+     * now **acknowledged** first (B answers under it, R12), which is also the case the rule exists
+     * for: an acknowledged root is erased on acknowledgement and replaced by nothing but (c). The
+     * test stays three weeks inside (c) and then crosses it with two more.
      */
     @Test
     fun aRootOlderThanTheBoundIsReplacedAtTheNextSend() {
         requireNative()
         DmWorld().use { world ->
             val alice = world.alice
-            val (contactB, _) = establishBothWays(world)
+            val bob = world.bob
+            val (contactB, contactA) = establishBothWays(world)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "with a root", null))
             val first = rootGenerations(alice)
             assertEquals("one offered root so far", 1, first.size)
+            world.deliver()
+            bob.hintPass()
+            assertEquals(SendResult.QUEUED, bob.engine.send(contactA, "under your root", null))
+            world.deliver()
+            alice.hintPass()
+            assertEquals("B's answer acknowledged the root", listOf(true), acknowledgedOffers(alice))
 
             // Inside both bounds: the same generation, whatever the number of sends. The weekly
             // passes are `PairKeySteps`, which ratchets the out key forward — without them the
             // conversation falls to `NO_SEAL_KEY` at the first week boundary and the test would be
             // measuring that instead (§21.3 point 5).
-            weeks(world, 5)
+            weeks(world, 3)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "still inside", null))
             assertEquals(first, rootGenerations(alice))
 
-            // Past both: a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
-            weeks(world, 9)
+            // Past rule (c): a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
+            weeks(world, 2)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "past the bound", null))
             val second = rootGenerations(alice)
             assertEquals(first.max() + 1, second.max())
@@ -492,6 +505,14 @@ class TrustFlowTest {
         }
     }
 
+
+    private fun acknowledgedOffers(device: DmDevice): List<Boolean> {
+        val out = ArrayList<Boolean>()
+        device.sql.query("SELECT acknowledged FROM dm_pair_offer ORDER BY root_gen") {
+            out += it.long(0) != 0L
+        }
+        return out
+    }
 
     private fun rootGenerations(device: DmDevice): List<Int> {
         val out = ArrayList<Int>()

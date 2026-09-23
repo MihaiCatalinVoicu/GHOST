@@ -166,6 +166,7 @@ class DmFlowTest {
 
             // The relay serves the same bytes again, in the same namespace.
             val blob = lastStore(world.alice)
+            val dropsBefore = world.bob.engine.status().drops.values.sum()
             world.redeliver(world.alice, world.bob, blob.first, blob.second)
             val storesBefore = storeCount(world.bob)
             world.bob.hintPass()
@@ -175,10 +176,22 @@ class DmFlowTest {
                 world.bob.engine.conversation(contactA, 10, null).size,
             )
             assertEquals("and no traffic (T28)", storesBefore, storeCount(world.bob))
-            assertTrue(
-                "it was consumed and counted",
-                world.bob.engine.status().drops.values.sum() > 0,
+            // D1 absorbs it before RECV: the `(namespace, blob_hash)` row of the first delivery is
+            // still there, so the copy is not even offered, and nothing is counted. (Until slice S13
+            // this line asserted a counter had moved, which held only because the sender
+            // re-attached a root offer the recipient already had and RECV counted
+            // `root_not_newer` — a count of the *first* delivery, not of the re-serve; §22.18.)
+            assertEquals(
+                "the re-serve never reached RECV",
+                dropsBefore,
+                world.bob.engine.status().drops.values.sum(),
             )
+            var copies = 0
+            world.bob.sql.query(
+                "SELECT count(*) FROM inbox_blob WHERE namespace_id = ? AND blob_hash = ?",
+                listOf(blob.first, java.security.MessageDigest.getInstance("SHA-256").digest(blob.second)),
+            ) { copies = it.long(0).toInt() }
+            assertEquals("one inbox row for the blob, however often it is served", 1, copies)
         }
     }
 

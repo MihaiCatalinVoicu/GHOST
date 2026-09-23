@@ -12,9 +12,13 @@ package org.ghost.crypto.bridge
  *  - a received `seal_root` comes **out** as the wrapped `dm_pair_offer.root_env`, which the
  *    caller hands to [DmPairing.keys] and never opens (rule R-S6).
  *
- * The TLVs R-C3 allows on a user-initiated send are the only ones [encode] writes; a PQ-C TLV
- * (§9.4, slice S13) is neither written nor acted on, and [Decoded.sawPqTlv] is how a receiver
- * counts one.
+ * The TLVs R-C3 allows on a user-initiated send are the only ones [encode] writes.
+ *
+ * **Slice S13 (PQ-C, §9.4).** [encode] takes a `seal_root_pq` (as the same wrapped `offer_env`,
+ * 1 194 bytes instead of 70) and a `pq_key` ([PqKeyCandidate]) as **candidates** that the crate
+ * attaches only under the slack rule R-C5, and [Encoded.Ok] says which rode; [decode] returns a
+ * received `seal_root_pq` ([Decoded.sealRootPq], opened by [DmPairing.pqOpen]) and `pq_key`
+ * ([Decoded.pqKey], already validated whole).
  */
 object DmContent {
 
@@ -83,8 +87,14 @@ object DmContent {
         val sessionReset: Boolean,
         /** The revocation certificate v2 the message carried, or null (§8.5). */
         val revocation: ByteArray?,
-        /** Whether it carried a PQ-C TLV, which Phase 9 counts and ignores (§9.4). */
-        val sawPqTlv: Boolean,
+        /** The `seal_root_pq` the message carried, or null (§9.4, slice S13). */
+        val sealRootPq: SealRootPq?,
+        /** The `pq_key` the message carried, validated whole, or null (§9.4, §22.8.2 rule 3). */
+        val pqKey: PqKey?,
+        /** A `seal_root_pq` beside a classical `seal_root`: ignored, the classical one applies. */
+        val pqIgnored: Boolean,
+        /** A `pq_key` whose X-Wing key fails validation: ignored and counted (§22.8.2 rule 3). */
+        val pqKeyInvalid: Boolean,
     ) {
         /** Never shows the body: it is the message the user wrote (T3). */
         override fun toString(): String = "Decoded(kind=$kind, bodyLen=${body.size})"
@@ -103,6 +113,52 @@ object DmContent {
     }
 
     /**
+     * A received `seal_root_pq` (§9.4): its root exists only once [DmPairing.pqOpen] decapsulated
+     * [tlv] with this device's generation [peerGenId]; `root_rand` alone keys nothing.
+     */
+    class SealRootPq(
+        /** The generation number, which only increases per contact. */
+        val rootGen: Int,
+        /** The ISO week the root's first week key belongs to. */
+        val baseWeek: Long,
+        /** The generation of **this device** the root was encapsulated to (a `u32`). */
+        val peerGenId: Long,
+        /** The 1 166-byte TLV value, for [DmPairing.pqOpen]. */
+        val tlv: ByteArray,
+    ) {
+        override fun toString(): String = "SealRootPq(gen=$rootGen, baseWeek=$baseWeek)"
+    }
+
+    /** A received `pq_key` (§9.4): the peer's generation and its X-Wing key, valid whole. */
+    class PqKey(
+        /** The peer's generation id (a `u32`). */
+        val genId: Long,
+        /** The ISO week of that generation's bundle: the key is usable until `start(week + 5)`. */
+        val bundleWeek: Long,
+        /** The 1 216-byte X-Wing encapsulation key. */
+        val xwingPublic: ByteArray,
+    ) {
+        override fun toString(): String = "PqKey(week=$bundleWeek)"
+    }
+
+    /**
+     * This device's generation to announce in a `pq_key` (§9.4): the row of `olm_prekey_gen` whose
+     * X-Wing public key the crate recomputes from the wrapped seed.
+     */
+    class PqKeyCandidate(
+        /** `olm_prekey_gen.gen_id` (a `u32`). */
+        val genId: Long,
+        /** `olm_prekey_gen.bundle_week`. */
+        val bundleWeek: Long,
+        /** `olm_prekey_gen.secrets_env`. */
+        val secretsEnv: ByteArray,
+        /** `olm_prekey_gen.fallback_pub`: half of `secrets_env`'s wrap binding (§22.8.3). */
+        val fallbackPublic: ByteArray,
+    ) {
+        override fun toString(): String = "PqKeyCandidate(week=$bundleWeek)"
+    }
+
+    /**
      * The API cap of §6.6 and §12.6: content longer than this is `TOO_LARGE` at the facade, and
      * waits for Phase 11 media. It mirrors the crate's `seal::MAX_BODY_BYTES`, which
      * `DmBucketsTest` pins against the source so the two cannot drift.
@@ -111,8 +167,27 @@ object DmContent {
 
     /** The outcome of [encode]. */
     sealed interface Encoded {
-        /** The canonical L0 bytes and the bucket R-B1 chose from the body length (§6.6). */
-        data class Ok(val l0: ByteArray, val bucket: Int) : Encoded
+        /**
+         * The canonical L0 bytes and the bucket R-B1 chose from the body length (§6.6), and which
+         * of the root and key TLVs **rode** (slice S13): a PQ-C candidate that did not fit the
+         * slack of that bucket (R-C5) is not in [l0], and the caller must not record it as sent.
+         */
+        data class Ok(
+            val l0: ByteArray,
+            val bucket: Int,
+            /** A classical `seal_root` is in [l0]. */
+            val sealRootRode: Boolean = false,
+            /** A `seal_root_pq` is in [l0]. */
+            val sealRootPqRode: Boolean = false,
+            /** A `pq_key` is in [l0]. */
+            val pqKeyRode: Boolean = false,
+            /**
+             * The `pq_key` candidate could not be built from its stored generation (a row whose
+             * secrets do not unwrap) and was left out; [l0] is the message without it (slice S13
+             * review — before it, the whole encode failed and so did every such send).
+             */
+            val pqKeyDropped: Boolean = false,
+        ) : Encoded
 
         /** A field is out of range, or the TLV list is not the shape R-C4 admits. */
         data object NonCanonical : Encoded
@@ -152,9 +227,13 @@ object DmContent {
     /**
      * §2.6 function 18: `l0Encode`.
      *
-     * [offerEnv] and [offerRootGen] attach the `seal_root` of §6.3; [revocation] attaches the
-     * certificate of §8.5; [sessionReset] attaches the reconnect notice of §8.6. All three are
-     * R-C3 TLVs, which ride **only** on a user-initiated or scheduled-user send.
+     * [offerEnv] and [offerRootGen] attach the root offer of §6.3 — a `seal_root`, or, when the
+     * envelope holds the PQ-C form, a `seal_root_pq` under the slack rule; [revocation] attaches
+     * the certificate of §8.5; [sessionReset] attaches the reconnect notice of §8.6; [pqKey]
+     * offers this device's generation key as a `pq_key` under the slack rule (slice S13). [pqKeyFirst]
+     * puts the announcement ahead of the offer in R-C5's priority order: SEND sets it when the
+     * offer is a re-attachment of one that already rode. All of
+     * them are R-C3 TLVs, which ride **only** on a user-initiated or scheduled-user send.
      */
     @Suppress("LongParameterList")
     fun encode(
@@ -172,6 +251,8 @@ object DmContent {
         offerEnv: ByteArray = DM_NO_BYTES,
         revocation: ByteArray = DM_NO_BYTES,
         sessionReset: Boolean = false,
+        pqKey: PqKeyCandidate? = null,
+        pqKeyFirst: Boolean = false,
     ): Encoded {
         if (!DmNative.isAvailable()) return Encoded.Unavailable
         val result = dmCall {
@@ -190,13 +271,25 @@ object DmContent {
                 offerEnv,
                 revocation,
                 if (sessionReset) 1 else 0,
+                pqKey?.genId?.toInt() ?: 0,
+                pqKey?.bundleWeek ?: 0L,
+                pqKey?.secretsEnv ?: DM_NO_BYTES,
+                pqKey?.fallbackPublic ?: DM_NO_BYTES,
+                if (pqKeyFirst) 1 else 0,
             )
         }
         return when (result.code) {
-            DmCode.OK -> Encoded.Ok(
-                l0 = result.bytes(DmField.L0),
-                bucket = result.u32(DmField.BUCKET).toInt(),
-            )
+            DmCode.OK -> {
+                val flags = result.byte(DmField.TLV_FLAGS)
+                Encoded.Ok(
+                    l0 = result.bytes(DmField.L0),
+                    bucket = result.u32(DmField.BUCKET).toInt(),
+                    sealRootRode = flags and DM_TLV_SEAL_ROOT != 0,
+                    sealRootPqRode = flags and DM_TLV_SEAL_ROOT_PQ != 0,
+                    pqKeyRode = flags and DM_TLV_PQ_KEY != 0,
+                    pqKeyDropped = flags and DM_TLV_PQ_KEY_DROPPED != 0,
+                )
+            }
             DmCode.NON_CANONICAL -> Encoded.NonCanonical
             DmCode.OVERSIZE -> Encoded.Oversize
             DmCode.STATE_CORRUPT -> Encoded.StateCorrupt
@@ -240,7 +333,27 @@ object DmContent {
                         } else {
                             null
                         },
-                        sawPqTlv = flags and DM_TLV_PQ != 0,
+                        sealRootPq = if (flags and DM_TLV_SEAL_ROOT_PQ != 0) {
+                            SealRootPq(
+                                rootGen = result.u32(DmField.ROOT_GEN).toInt(),
+                                baseWeek = result.i64(DmField.BASE_WEEK),
+                                peerGenId = result.u32(DmField.PEER_GEN_ID),
+                                tlv = result.bytes(DmField.SEAL_ROOT_PQ_TLV),
+                            )
+                        } else {
+                            null
+                        },
+                        pqKey = if (flags and DM_TLV_PQ_KEY != 0) {
+                            PqKey(
+                                genId = result.u32(DmField.GEN_ID),
+                                bundleWeek = result.i64(DmField.BUNDLE_WEEK),
+                                xwingPublic = result.bytes(DmField.XWING_PUBLIC),
+                            )
+                        } else {
+                            null
+                        },
+                        pqIgnored = flags and DM_TLV_PQ != 0,
+                        pqKeyInvalid = flags and DM_TLV_PQ_KEY_INVALID != 0,
                     ),
                 )
             }

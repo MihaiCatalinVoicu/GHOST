@@ -100,18 +100,66 @@ internal class PairKeySteps(
             ) {
                 continue
             }
-            derived += advance(tx, contact.contactId, ContactStore.DIRECTION_IN, week)
-            derived += advance(tx, contact.contactId, ContactStore.DIRECTION_OUT, week)
+            for (rootGen in advancingInGenerations(tx, contact.contactId)) {
+                derived += advance(tx, contact.contactId, ContactStore.DIRECTION_IN, week, rootGen)
+            }
+            derived += advance(tx, contact.contactId, ContactStore.DIRECTION_OUT, week, null)
         }
         return derived
     }
 
     /**
-     * Ratchets one direction of one contact forward to [week].
+     * The **in** generations that keep ratcheting (§6.3 "Recipient (me)"): every generation from
+     * the newest **acknowledged** one upwards — the newest, and each older one down to and
+     * including the first whose offer is acknowledged.
      *
-     * Only the **newest** generation advances: §6.3's "a generation stops advancing (no new week
-     * keys) once a pair envelope under a newer generation from c opens", and, on the sending
-     * side, "the sender keeps `K_{week(now)}` of the newest generation".
+     * §6.3: "a generation stops advancing (no new week keys) once a pair envelope under a newer
+     * generation from c opens". A generation below an acknowledged one is exactly that, and stops;
+     * every generation at or above the newest acknowledged one may still be the one the contact
+     * seals under, because none newer has opened. Until slice S13 only the newest generation
+     * advanced, so between minting a new offer and the contact's first envelope under it the
+     * contact's envelopes in a new week were dropped as `unknown_seal`.
+     *
+     * **Why not just the newest two (the S13 review).** S13's first version advanced the newest and
+     * the one before it, which is the rule only while at most one offer is unacknowledged. Two can
+     * be: an offer that rode once on a message that was lost, and whose re-attachments were then
+     * deferred or never sent, is replaced at `base_week + 3` by §22.8.6 rule 2 (`pqStale`) while
+     * still unacknowledged — and the contact, which never received either, still seals under the
+     * acknowledged generation below both. The two-generation rule stopped that one at the next
+     * week boundary and dropped every later envelope of the contact, silently. The overlap is
+     * still small: generations above the acknowledged one exist only between a replacement and its
+     * acknowledgement, and each is re-attached until then (R-S5's candidate count assumed two).
+     *
+     * Whether a generation is acknowledged is read from its own `dm_pair_offer` row. A generation
+     * with in keys and **no** row is treated as a stopping point too: SWEEP deletes a row only once
+     * its secrets are gone (acknowledged, or erased unacknowledged at `start(b + 1) + FRESH`, or
+     * discarded by a renewal) and a higher generation exists (§21.3 point 3), so a missing row is
+     * in the common case an acknowledged one, and in the others a root the contact has not used for
+     * at least 45 days or can no longer hold — keeping everything below it advancing would ratchet
+     * keys for nothing, against P-7.
+     */
+    private fun advancingInGenerations(tx: SyncTransaction, contactId: ByteArray): List<Int> {
+        val generations = contacts.pairKeys(tx.sql, contactId, ContactStore.DIRECTION_IN)
+            .map { it.rootGen }
+            .distinct()
+            .sortedDescending()
+        val offers = contacts.pairOffers(tx.sql, contactId).associateBy { it.rootGen }
+        val out = ArrayList<Int>()
+        for (generation in generations) {
+            out += generation
+            val offer = offers[generation]
+            if (offer == null || offer.acknowledged) break
+        }
+        return out
+    }
+
+    /**
+     * Ratchets one generation of one direction of one contact forward to [week].
+     *
+     * Which generations advance is the caller's: on the sending side only the newest ("the
+     * sender keeps `K_{week(now)}` of the newest generation", §6.3), on the receiving side every
+     * generation from the newest acknowledged one upwards ([advancingInGenerations]: §6.3's "a
+     * generation stops advancing once a pair envelope under a newer generation from c opens").
      *
      * **It walks the whole gap, in windows** (S9 review). §21.3 point 5 says "`K_w` for every week
      * up to `week(now)` from the newest stored key", and the first version of this code refused to
@@ -135,10 +183,12 @@ internal class PairKeySteps(
         contactId: ByteArray,
         direction: String,
         week: Long,
+        /** The generation to advance; null for the newest (the sender's rule, §6.3). */
+        generation: Int?,
     ): Int {
         val rows = contacts.pairKeys(tx.sql, contactId, direction)
         if (rows.isEmpty()) return 0
-        val newestGen = rows.maxOf { it.rootGen }
+        val newestGen = generation ?: rows.maxOf { it.rootGen }
         val newest = rows.filter { it.rootGen == newestGen }.maxByOrNull { it.week } ?: return 0
         if (newest.week >= week) return 0
         if (week - newest.week > MAX_CATCH_UP_WEEKS) {

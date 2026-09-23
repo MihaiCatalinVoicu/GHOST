@@ -683,6 +683,107 @@ internal class ContactStore {
         tx.sql.execUpdate("DELETE FROM dm_peer_pq WHERE contact_id = ?", listOf(contactId))
 
     /**
+     * §22.8.6 rule 1 on a **renewal** from the contact (R-SS1 made a new inbound session
+     * `current`): every in-band key goes, and every bundle key except the one [keepGenId] names —
+     * the `peer_gen_id` of the new `current`, which a responder session does not have, so after a
+     * renewal the whole set goes in practice. The contact restored, reset or reconnected, and a
+     * key announced before that is one its new state may not hold: an offer encapsulated to it
+     * could never be opened, and would block pair mode from the contact for up to
+     * `start(b + 1) + 45 d` (CRY-6).
+     */
+    fun deletePeerPqOnRenewal(tx: SyncTransaction, contactId: ByteArray, keepGenId: Int?): Int =
+        if (keepGenId == null) {
+            deletePeerPq(tx, contactId)
+        } else {
+            tx.sql.execUpdate(
+                "DELETE FROM dm_peer_pq WHERE contact_id = ? AND (source = ? OR gen_id <> ?)",
+                listOf(contactId, PQ_SOURCE_IN_BAND, unsigned(keepGenId)),
+            )
+        }
+
+    /**
+     * §22.8.2 rule 4: a key the crate refused at encapsulation (`INVALID_KEY`) is deleted, and the
+     * offer falls back to the classical `seal_root`. Validation happens on receipt already
+     * (§22.8.2 rule 3), so this is the defence behind it, not a path a valid peer reaches.
+     */
+    fun deletePeerPqKey(tx: SyncTransaction, contactId: ByteArray, genId: Int): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM dm_peer_pq WHERE contact_id = ? AND gen_id = ?",
+            listOf(contactId, unsigned(genId)),
+        )
+
+    /**
+     * §22.8.6 rule 1: a renewal from the contact discards this device's **unacknowledged PQ-C**
+     * offers — `root_env` and `offer_env` to NULL, the row and its generation number kept (§21.3
+     * point 3). A PQ offer is the one whose stored TLV is the 1 166-byte `seal_root_pq`
+     * (`offer_env` of 1 194 bytes, §13.6); a classical offer carries no key of the peer's and
+     * stays live. The next send then mints a new offer, classical unless a fresh key of the
+     * contact has arrived since.
+     */
+    fun discardPqOffers(tx: SyncTransaction, contactId: ByteArray): Int = tx.sql.execUpdate(
+        "UPDATE dm_pair_offer SET root_env = NULL, offer_env = NULL " +
+            "WHERE contact_id = ? AND acknowledged = 0 AND length(offer_env) = ?",
+        listOf(contactId, PQ_OFFER_ENV_BYTES.toLong()),
+    )
+
+    /**
+     * §21.3 point 2(b) and §22.8.6 rule 1: the contact's state changed under this device's roots —
+     * a renewal from it, a KEYDEC acceptance, or a new session of this device's own, after which
+     * the contact drops its out keys for this device (§21.3 point 2(a) on its side) — so the next
+     * send must offer a **new** root "unless an unacknowledged one exists".
+     *
+     * An unacknowledged newest offer is left as it is: with its bytes it is re-attached, and
+     * without them (erased, or discarded by §22.8.6 rule 1) the next send mints anyway. An
+     * **acknowledged** newest offer is superseded by a row of the next generation with no root and
+     * no offer bytes — the state an offer is in once SWEEP erased it unacknowledged — which the
+     * planning read of SEND answers with `1 + max(root_gen)`, exactly as it answers an erased
+     * offer. The row is a counter, not a root: nothing derives from it, `dm_pair_offer_root` lets
+     * its NULLs stay NULL, and SWEEP deletes it once a higher generation exists (§21.3 point 3).
+     *
+     * Its `base_week` is the superseded offer's: the row carries no root, so no week key is derived
+     * from it, and the planning read mints on seeing it whatever its week.
+     *
+     * Returns whether a row was inserted. Until slice S13 no path did this, and the engine offered a
+     * new root after **every** acknowledgement instead, which hid the missing rule (§22.18).
+     */
+    fun supersedeOffers(tx: SyncTransaction, contactId: ByteArray): Boolean {
+        val newest = pairOffers(tx.sql, contactId).maxByOrNull { it.rootGen } ?: return false
+        if (!newest.acknowledged) return false
+        val next = newest.rootGen + 1
+        if (next > MAX_ROOT_GEN) return false
+        tx.sql.exec(
+            "INSERT INTO dm_pair_offer(contact_id, root_gen, root_env, offer_env, base_week, acknowledged) " +
+                "VALUES (?, ?, NULL, NULL, ?, 0)",
+            listOf(contactId, next.toLong(), newest.baseWeek),
+        )
+        return true
+    }
+
+    /**
+     * `dm_contact.pq_announced_week` (§9.4): the `bundle_week` of the generation whose `pq_key` this
+     * device last sent the contact — a period index, so the announcement rides on the first
+     * slack-eligible send after each new generation and on no other (at most one per ISO week;
+     * §22.18 records why the index is the generation's week and not the send's). Null before the
+     * first, and again after a renewal or a KEYDEC acceptance, when the contact's device may have
+     * lost it.
+     */
+    fun pqAnnouncedWeek(sql: SqlExecutor, contactId: ByteArray): Long? {
+        var week: Long? = null
+        sql.query(
+            "SELECT pq_announced_week FROM dm_contact WHERE contact_id = ?",
+            listOf(contactId),
+        ) { r -> week = if (r.isNull(0)) null else r.long(0) }
+        return week
+    }
+
+    /** Sets or clears `dm_contact.pq_announced_week` (§9.4). */
+    fun setPqAnnouncedWeek(tx: SyncTransaction, contactId: ByteArray, week: Long?): Int =
+        tx.sql.execUpdate(
+            "UPDATE dm_contact SET pq_announced_week = ? WHERE contact_id = ?",
+            listOf(week, contactId),
+        )
+
+    /**
      * §10.6's "surplus `dm_peer_pq` rows", read through §22.8.6 rule 2: a stored X-Wing key is
      * usable only while `now < start(bundle_week + 5)`, so a row past that week can never be
      * encapsulated to again and is a public key kept for nothing.
@@ -784,6 +885,15 @@ internal class ContactStore {
 
         /** `dm_peer_pq.source` for a key that came out of a bundle (§5.5). */
         const val PQ_SOURCE_BUNDLE: String = "bundle"
+
+        /** `dm_peer_pq.source` for a key the contact announced in a `pq_key` TLV (§9.4). */
+        const val PQ_SOURCE_IN_BAND: String = "in_band"
+
+        /** `dm_pair_offer.offer_env` of a `seal_root_pq` offer: 1 166 + 28 bytes (§13.6). */
+        const val PQ_OFFER_ENV_BYTES: Int = 1_194
+
+        /** `dm_pair_offer.root_gen` is a `u16` (§13.6). */
+        const val MAX_ROOT_GEN: Int = 65_535
 
         /**
          * `gen_id` is a **`u32`** (§13.6: `CHECK (gen_id BETWEEN 0 AND 4294967295)`) and crosses

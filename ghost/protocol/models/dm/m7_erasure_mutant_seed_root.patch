@@ -1,0 +1,27 @@
+--- m7_erasure.pv
++++ m7_erasure_mutant_seed_root.pv
+@@ -1,4 +1,5 @@
+-(* GHOST direct messages: attribution forward secrecy as key erasure (design faza9-dm.md §6.3
++(* MUTANT: the root of week w is derived from the seed; the week-w queries must FAIL.
++   GHOST direct messages: attribution forward secrecy as key erasure (design faza9-dm.md §6.3
+    P-7, §14.1 T34, §21.3 point 6; obligation M-7 of §9.5; slice S13).
+ 
+    P-7: for an ISO week w with now >= start(w + 1) + 45 d, no key on either device and nothing
+@@ -41,6 +42,8 @@
+ reduc forall m: bitstring, k: key; unseal(seal(m, k), k) = m.
+ (* everything the seed derives: card keys, namespaces, the Olm identity *)
+ fun seedkey(bitstring): key.
++(* The mutation: a root derived from the seed. *)
++fun seedroot(bitstring): bitstring.
+ 
+ (* the device's ghost1 seed, handed to the seizure *)
+ free seed: bitstring [private].
+@@ -58,7 +61,7 @@
+ process
+   new salt: bitstring;
+   new saltLive: bitstring;
+-  let kW = kbase(rootW) in
++  let kW = kbase(seedroot(seed)) in
+   let k1 = knext(kW) in
+   let k2 = knext(k1) in
+   let k3 = knext(k2) in

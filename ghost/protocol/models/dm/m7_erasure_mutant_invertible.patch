@@ -1,0 +1,18 @@
+--- m7_erasure.pv
++++ m7_erasure_mutant_invertible.pv
+@@ -1,4 +1,5 @@
+-(* GHOST direct messages: attribution forward secrecy as key erasure (design faza9-dm.md §6.3
++(* MUTANT: the week ratchet can be run backwards; the week-w queries must FAIL.
++   GHOST direct messages: attribution forward secrecy as key erasure (design faza9-dm.md §6.3
+    P-7, §14.1 T34, §21.3 point 6; obligation M-7 of §9.5; slice S13).
+ 
+    P-7: for an ISO week w with now >= start(w + 1) + 45 d, no key on either device and nothing
+@@ -35,6 +36,8 @@
+ (* K_b = HKDF(root, "pair-epoch" || b), K_{w+1} = HKDF(K_w, "pair-next"), R_sel(K) *)
+ fun kbase(bitstring): key.
+ fun knext(key): key.
++(* The mutation: the previous week key is computable from the next one. *)
++reduc forall k: key; kprev(knext(k)) = k.
+ fun recog(key): key.
+ fun hint(key, bitstring): bitstring.
+ fun seal(bitstring, key): bitstring.
