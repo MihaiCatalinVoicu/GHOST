@@ -350,6 +350,7 @@ object DmNative {
         pqKeyWeek: Long,
         pqKeySecretsEnv: ByteArray,
         pqKeyFallbackPublic: ByteArray,
+        pqKeyFirst: Int,
     ): ByteArray?
 
     // ----------------------------------------------------------------- slice S13

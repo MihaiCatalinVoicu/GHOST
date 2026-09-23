@@ -87,8 +87,22 @@ internal class DmCounters {
          */
         ROOT_IN_PREKEY,
 
-        /** A PQ-C TLV: counted and ignored in Phase 9 (§9.4, slice S13). */
+        /**
+         * A PQ-C TLV that is ignored: a `seal_root_pq` beside a classical `seal_root` in one L0,
+         * which no sender following §9.4 writes (the PQ form replaces the classical one; slice S13
+         * narrowed this counter, which before PQ-C counted every PQ-C TLV).
+         */
         PQ_TLV_IGNORED,
+
+        /**
+         * §22.8.6 rule 3: a `seal_root_pq` that does not open — it names a generation this device
+         * does not hold (never had, or erased), or its ciphertext does not decapsulate. Ignored and
+         * counted; the rest of the L0 applies.
+         */
+        PQ_ROOT_UNOPENABLE,
+
+        /** §22.8.2 rule 3: an in-band `pq_key` whose X-Wing key is not valid whole. Ignored. */
+        BAD_PQ_KEY,
 
         /**
          * §8.3: an intro PreKey message under a **new** Olm identity, bound by a signature valid

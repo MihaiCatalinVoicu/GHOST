@@ -13,6 +13,7 @@ import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.ContentCipher
 import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
+import org.ghost.messaging.store.OwnerStore
 import org.ghost.messaging.store.SessionStore
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilitySource
@@ -67,6 +68,7 @@ internal class SendStep(
     private val messages = MessageStore()
     private val sessions = SessionStore()
     private val scheduled = HeldStore()
+    private val owner = OwnerStore()
 
     /** The facade's `send` result (§13.2), plus the two the engine needs internally. */
     enum class Outcome {
@@ -164,6 +166,10 @@ internal class SendStep(
             offerEnv = offerEnv,
             revocation = EMPTY,
             sessionReset = false,
+            pqKey = prepared.pqKey,
+            // A re-attached offer already rode once: the weekly announcement goes ahead of it, so a
+            // pending offer cannot starve `pq_key` at 4 KiB, where the two never fit together.
+            pqKeyFirst = prepared.offer != null,
         )
         val l0 = when (encoded) {
             is DmContent.Encoded.Ok -> encoded
@@ -269,6 +275,10 @@ internal class SendStep(
             offerEnv = offerEnv,
             revocation = revocation,
             sessionReset = sessionReset,
+            pqKey = prepared.pqKey,
+            // A re-attached offer already rode once: the weekly announcement goes ahead of it, so a
+            // pending offer cannot starve `pq_key` at 4 KiB, where the two never fit together.
+            pqKeyFirst = prepared.offer != null,
         )
         val l0 = when (encoded) {
             is DmContent.Encoded.Ok -> encoded
@@ -525,6 +535,15 @@ internal class SendStep(
         val week: Long,
         val set: List<EsSlot>,
         val needCredential: Set<Long>,
+        /**
+         * PQ-C (§9.4, slice S13): the contact's X-Wing key a **new** offer is encapsulated to, or
+         * null for a classical `seal_root` — see [freshPeerKey] for which keys qualify.
+         */
+        val pqTarget: ContactStore.PeerPqRow? = null,
+        /** The contact's pinned Olm identity: half of a PQ-C root's salt (§9.4). */
+        val pinned: ByteArray? = null,
+        /** This device's generation to announce in a `pq_key`, or null (§9.4). */
+        val pqKey: DmContent.PqKeyCandidate? = null,
     )
 
     /** A root offer waiting to ride on the next normal-output send (§6.3, R-C3). */
@@ -533,6 +552,11 @@ internal class SendStep(
     /**
      * A root offer this send minted and the second transaction has to write: the offer row and the
      * **in** recognition key of its base week (§6.3, rule R-S5).
+     *
+     * [pq] says which TLV it is; the second transaction writes it only if that TLV **rode** (a
+     * `seal_root_pq` rides only under the slack rule R-C5, and an offer whose bytes are in no L0
+     * is not an offer). [invalidPqGenId] is the contact's key the crate refused at encapsulation
+     * (§22.8.2 rule 4): the row goes, and this offer is the classical fallback.
      */
     private class MintedOffer(
         val rootGen: Int,
@@ -540,6 +564,8 @@ internal class SendStep(
         val offerEnv: ByteArray,
         val baseWeek: Long,
         val keys: List<DmPairing.WeekKey>,
+        val pq: Boolean = false,
+        val invalidPqGenId: Int? = null,
     )
 
     private class Plan(val refusal: Outcome?, val prepared: Prepared?)
@@ -570,6 +596,8 @@ internal class SendStep(
         // output is one — `acknowledged` is exactly vodozemac's `has_received_message()`.
         var offer: PendingOffer? = null
         var nextRootGen: Int? = null
+        var pqTarget: ContactStore.PeerPqRow? = null
+        var pqKey: DmContent.PqKeyCandidate? = null
         if (createOffer && current != null && current.acknowledged) {
             val offers = contacts.pairOffers(tx.sql, contactId)
             // §6.3's replacement rule (c), added by S8: `week(now) ≥ base_week +
@@ -584,14 +612,28 @@ internal class SendStep(
             // the bound exists to close.
             val newest = offers.maxByOrNull { it.rootGen }
             val expired = newest != null && week >= newest.baseWeek + ROOT_REPLACE_WEEKS
-            val live = if (expired) {
-                null
-            } else {
-                offers.firstOrNull { !it.acknowledged && it.offerEnv != null }
-            }
+            // Slice S13: only the **newest** offer is ever re-attached, and a new one is minted
+            // only when §6.3 asks for one — none yet (a first offer, a restored device), the newest
+            // past `ROOT_REPLACE_WEEKS` (rule c), or the newest unacknowledged with its bytes gone
+            // (erased at `start(b + 1) + FRESH`, discarded by §22.8.6 rule 1, or superseded by a
+            // renewal, a KEYDEC acceptance or a new session of this device — `supersedeOffers`).
+            // Until S13 any send after an acknowledgement minted a new generation, so the root
+            // was replaced on **every round trip**: the 13- and 4-week cadences were never the
+            // cadence, `root_gen` (a `u16`) ran towards exhaustion at one per exchange, and with
+            // PQ-C every exchange cost an encapsulation and put a 1 170-byte offer in front of
+            // the weekly `pq_key`, which it starved at 4 KiB (§22.18).
+            // §22.8.6 rule 2: an unacknowledged PQ-C offer is re-attached only while its target
+            // key is usable, which `freshPeerKey`'s bound guarantees through `base_week + 2`; from
+            // then on a new offer replaces it (PQ to a newer key, else classical).
+            val pqStale = newest != null && !newest.acknowledged &&
+                newest.offerEnv?.size == ContactStore.PQ_OFFER_ENV_BYTES &&
+                week >= newest.baseWeek + PQ_REATTACH_WEEKS
+            val live = newest?.takeIf { !expired && !pqStale && !it.acknowledged && it.offerEnv != null }
+            val mint = newest == null || expired || pqStale ||
+                (!newest.acknowledged && newest.offerEnv == null)
             if (live != null) {
                 offer = PendingOffer(live.rootGen, requireNotNull(live.offerEnv))
-            } else {
+            } else if (mint) {
                 // An unacknowledged offer whose bytes are gone is one this device already erased;
                 // a new generation is what §21.3 point 3 asks for, not a second offer of the same
                 // one. The generation is decided here, but nothing is written: this transaction is
@@ -599,8 +641,37 @@ internal class SendStep(
                 // send that ends `TOO_LARGE`, `NO_REPLICAS` or rolled back must leave no offer and
                 // no recognition key behind.
                 val rootGen = (offers.maxOfOrNull { it.rootGen } ?: -1) + 1
-                if (rootGen <= MAX_ROOT_GEN) nextRootGen = rootGen
+                if (rootGen <= MAX_ROOT_GEN) {
+                    nextRootGen = rootGen
+                    // §9.4: the PQ-C form replaces the classical one whenever a usable key of the
+                    // contact is held; otherwise the classical root, and the next replacement tries
+                    // again.
+                    pqTarget = freshPeerKey(tx, contactId, week)
+                }
             }
+            // §9.4: `pq_key` rides on the first slack-eligible user send to the contact after this
+            // device's current generation changed, and only on a normal output, like every root
+            // TLV (§21.3 point 1). Whether it is slack-eligible is the crate's to say (R-C5); the
+            // period index `dm_contact.pq_announced_week` is written only if it rode.
+            //
+            // **The index is the announced generation's `bundle_week`, not the calendar week of the
+            // send** (a refinement recorded in §22.18). Generations are weekly, so this is still at
+            // most one announcement per ISO week — but a generation published after the week's
+            // first send (OWNER-WEEK runs at `t_pub(w)`, up to seven days into the week, §5.4) is
+            // announced at the next send instead of a week later. The peer mints PQ offers only to
+            // a key of this week or the last (`freshPeerKey`), so a week's lag would turn about
+            // half of all replacements classical and double the healing latency of §9.4.
+            val announced = contacts.pqAnnouncedWeek(tx.sql, contactId)
+            owner.currentGeneration(tx.sql)
+                ?.takeIf { announced == null || announced < it.bundleWeek }
+                ?.let { generation ->
+                    pqKey = DmContent.PqKeyCandidate(
+                        genId = generation.genId,
+                        bundleWeek = generation.bundleWeek,
+                        secretsEnv = generation.secretsEnv,
+                        fallbackPublic = generation.fallbackPublic,
+                    )
+                }
         }
 
         val inboxNs = NamespaceId(namespaces.inbox)
@@ -635,8 +706,40 @@ internal class SendStep(
                 week = week,
                 set = set,
                 needCredential = needCredential,
+                pqTarget = pqTarget,
+                pinned = contact.pinnedIdentity,
+                pqKey = pqKey,
             ),
         )
+    }
+
+    /**
+     * The contact's X-Wing key a **new** PQ-C offer is encapsulated to (§9.4), or null for a
+     * classical `seal_root`: the newest `dm_peer_pq` row whose `bundle_week` is at least
+     * `week(now) − FRESH_KEY_WEEKS` (and not beyond `week(now) + 1`, a bundle's own validity bound).
+     *
+     * **Why "fresh", and not merely "usable" (a narrowing recorded in §22.18).** §22.8.6 rule 2
+     * re-attaches a stored `seal_root_pq` only while its target key is usable, `now <
+     * start(bundle_week + 5)`, but `dm_pair_offer` has no column naming the key an offer was
+     * encapsulated to (schema v5 is closed), so the sender cannot check that rule on re-attachment.
+     * Minting only to a key at most two weeks old makes it hold **by construction**: such a key is
+     * usable until at least `start(base_week + 3)`, and a PQ-C offer is re-attached only through
+     * week `base_week + 2` ([PQ_REATTACH_WEEKS]), after which a new offer replaces it.
+     *
+     * Two weeks and not one because the key a contact last announced is routinely a week behind
+     * the calendar at the moment of a replacement: the replacement rides on this device's first
+     * send of the week, which can precede the contact's first send after its own OWNER-WEEK — and
+     * an owner whose `t_pub` falls in the last gap between its passes publishes only every other
+     * week (§22.18 records that S6 behaviour). The PQ3 world measured both: with one week, half of
+     * the replacements were classical and one direction never healed.
+     */
+    private fun freshPeerKey(
+        tx: SyncTransaction,
+        contactId: ByteArray,
+        week: Long,
+    ): ContactStore.PeerPqRow? = contacts.peerPq(tx.sql, contactId).firstOrNull {
+        it.bundleWeek >= week - FRESH_KEY_WEEKS && it.bundleWeek <= week + 1 &&
+            week < it.bundleWeek + ContactStore.PQ_KEY_WEEKS
     }
 
     /**
@@ -654,8 +757,43 @@ internal class SendStep(
      */
     private fun mintOffer(contactId: ByteArray, prepared: Prepared): MintedOffer? {
         val rootGen = prepared.nextRootGen ?: return null
-        val created = envelopes.pairOffer(contactId, rootGen, prepared.week)
-        if (created !is DmPairing.OfferResult.Ok) return null
+        // §9.4: the PQ-C form when a fresh key of the contact is held (see `freshPeerKey`). Its
+        // root is `HKDF(root_rand || ss, salt(OI_me, OI_c, peer_gen_id, Q_c, ct))`, drawn and
+        // derived in the crate; what comes back has the classical offer's shape, so the offer row,
+        // its in-keys and its re-attachment below are the classical ones.
+        var created: DmPairing.Offer? = null
+        var pq = false
+        var invalidPqGenId: Int? = null
+        val target = prepared.pqTarget
+        val pinned = prepared.pinned
+        if (target != null && pinned != null) {
+            when (
+                val sealed = envelopes.pqRootSeal(
+                    contactId = contactId,
+                    rootGen = rootGen,
+                    baseWeek = prepared.week,
+                    peerOlmIdentity = pinned,
+                    peerGenId = ContactStore.unsigned(target.genId),
+                    peerXwingPublic = target.xwingPublic,
+                )
+            ) {
+                is DmPairing.PqOfferResult.Ok -> {
+                    created = sealed.offer
+                    pq = true
+                }
+                // §22.8.2 rule 4: the classical `seal_root` instead, and the key goes.
+                DmPairing.PqOfferResult.InvalidKey -> invalidPqGenId = target.genId
+                DmPairing.PqOfferResult.NonCanonical,
+                DmPairing.PqOfferResult.StateCorrupt,
+                DmPairing.PqOfferResult.Unavailable,
+                -> Unit
+            }
+        }
+        if (created == null) {
+            val classical = envelopes.pairOffer(contactId, rootGen, prepared.week)
+            if (classical !is DmPairing.OfferResult.Ok) return null
+            created = classical.offer
+        }
         // The **in** key of the base week exists from the moment the root does, so a pair envelope
         // that arrives before the next maintenance pass is recognisable (§6.3, rule R-S5).
         val keys = envelopes.pairKeys(
@@ -663,17 +801,19 @@ internal class SendStep(
             direction = DmSeal.PairDirection.IN,
             rootGen = rootGen,
             from = DmPairing.From.ROOT,
-            keyEnv = created.offer.rootEnv,
+            keyEnv = created.rootEnv,
             baseWeek = prepared.week,
             fromWeek = prepared.week,
             toWeek = prepared.week,
         )
         return MintedOffer(
             rootGen = rootGen,
-            rootEnv = created.offer.rootEnv,
-            offerEnv = created.offer.offerEnv,
+            rootEnv = created.rootEnv,
+            offerEnv = created.offerEnv,
             baseWeek = prepared.week,
             keys = if (keys is DmPairing.KeysResult.Ok) keys.weeks else emptyList(),
+            pq = pq,
+            invalidPqGenId = invalidPqGenId,
         )
     }
 
@@ -777,8 +917,20 @@ internal class SendStep(
 
                 // The root offer this send attached, written here and nowhere earlier: the L0 that
                 // carries it is in this transaction's item row, so the offer and its bytes commit
-                // together or not at all (§7.2, §6.3).
-                minted?.let { writeOffer(tx, contactId, it) }
+                // together or not at all (§7.2, §6.3). A PQ-C offer is written only if it **rode**:
+                // R-C5 defers a `seal_root_pq` that does not fit the slack of the body's bucket, and
+                // an offer that is in no L0 must not become the row every later send re-attaches
+                // (the next send mints again). A classical `seal_root` always rides: R-B1 counted
+                // its bytes in `EXT_RESERVE`.
+                if (minted != null) {
+                    minted.invalidPqGenId?.let { contacts.deletePeerPqKey(tx, contactId, it) }
+                    val rode = if (minted.pq) l0.sealRootPqRode else l0.sealRootRode
+                    if (rode) writeOffer(tx, contactId, minted)
+                }
+                // §9.4: the generation this announcement named, so the next one waits for the next.
+                if (l0.pqKeyRode) {
+                    contacts.setPqAnnouncedWeek(tx, contactId, prepared.pqKey?.bundleWeek)
+                }
 
                 // S3: the message row (TEXT and TIMER_SET only) and the item row (every kind).
                 if (kind == DmContent.Kind.TEXT || kind == DmContent.Kind.TIMER_SET) {
@@ -1282,15 +1434,32 @@ internal class SendStep(
         const val MAX_ROOT_GEN: Int = 65_535
 
         /**
-         * §6.3's `ROOT_REPLACE_WEEKS`: **13** without PQ-C, 4 with it (slice S13, Q49).
+         * §6.3's `ROOT_REPLACE_WEEKS`: 13 without PQ-C, **4 with it** (slice S13, Q49).
          *
          * It bounds a stolen-state window. A pair root opens every pair envelope of its
          * conversation from its base week onwards, so a seizer of either device reads that much of
          * the history whatever the ratchet did; replacing it means the seizure reaches back at
-         * most this far. Q68 asks for one week, and S13's four is the PQ-C cadence — this is the
-         * value §6.3 gives for a client without PQ-C, which Phase 9 ships.
+         * most this far. With PQ-C the replacement is also the **healing** step of §9.4: a root
+         * encapsulated to a generation the adversary never saw is the first one it cannot follow,
+         * so the cadence is the healing latency (about 5–6 weeks of two-way use at 4). Q68's
+         * seven days waits for the V-13 hint benchmark with the extra overlapping generations and
+         * is not adopted here (§22.18).
          */
-        const val ROOT_REPLACE_WEEKS: Long = 13
+        const val ROOT_REPLACE_WEEKS: Long = 4
+
+        /**
+         * How old, in ISO weeks, a contact's X-Wing key may be for a new PQ-C offer to be
+         * encapsulated to it (see `freshPeerKey`; §22.18).
+         */
+        const val FRESH_KEY_WEEKS: Long = 2
+
+        /**
+         * §22.8.6 rule 2: an unacknowledged PQ-C offer is re-attached in weeks `base_week` …
+         * `base_week + PQ_REATTACH_WEEKS − 1` only. A key of `bundle_week ≥ base_week −
+         * FRESH_KEY_WEEKS` is usable while `now < start(bundle_week + 5)`, so through
+         * `base_week + 2` at least: `5 − FRESH_KEY_WEEKS`.
+         */
+        const val PQ_REATTACH_WEEKS: Long = ContactStore.PQ_KEY_WEEKS - FRESH_KEY_WEEKS
 
         /** `dm_outbound_item.state` and `dm_message.state` for a decided-FAILED item (§13.5). */
         const val STATE_FAILED: String = "failed"

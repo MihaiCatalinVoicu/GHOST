@@ -587,6 +587,19 @@ internal class ReceiveStep(
                 // §21.3 point 2: a **renewal from c**. Every out key for c goes, so the next root
                 // TLV from c is accepted whatever its generation.
                 contacts.deleteOutPairKeys(tx, contact.contactId)
+                // §22.8.6 rule 1 (slice S13): c restored, reset or reconnected, so a key it
+                // announced before is one its new state may not hold. Its in-band keys go, and
+                // every bundle key the new `current` does not name — a responder session names
+                // none. This device's unacknowledged PQ-C offers were encapsulated to such keys:
+                // they are discarded (the rows and generation numbers stay), and the next send
+                // mints a classical offer until a fresh `pq_key` from the new session arrives.
+                // And c's new state may lack this device's key: the next send announces it again.
+                contacts.deletePeerPqOnRenewal(tx, contact.contactId, keepGenId = null)
+                contacts.discardPqOffers(tx, contact.contactId)
+                contacts.setPqAnnouncedWeek(tx, contact.contactId, null)
+                // §21.3 point 2(b): "inserts a new offer for c unless an unacknowledged one
+                // exists" — c may have lost the out key my acknowledged root gave it.
+                contacts.supersedeOffers(tx, contact.contactId)
             }
             plaintext = created.plaintext
             usedSlot = slot
@@ -690,7 +703,7 @@ internal class ReceiveStep(
             createdSession = createdSession,
             usedSlot = usedSlot,
         )
-        applyTlvs(tx, contact, content, isPreKey, now)
+        applyTlvs(tx, contact, content, isPreKey, usedSlot, now)
         if (pairRootGen != null) acknowledgeOffer(tx, contact, pairRootGen, now)
         return Result.APPLIED
     }
@@ -886,47 +899,72 @@ internal class ReceiveStep(
      * that has already happened. It is counted so the notice is not silently indistinguishable
      * from its absence.
      *
-     * A PQ-C TLV is counted and ignored (§9.4, slice S13).
+     * **PQ-C (§9.4, slice S13).** A `seal_root_pq` follows the `seal_root` rules — never from a
+     * PreKey message, never a generation not newer than the stored one — and is opened with this
+     * device's generation it names; one that does not open is ignored and counted (§22.8.6 rule
+     * 3). A `pq_key` becomes the contact's in-band X-Wing key when it is newer than every key
+     * stored for the contact, still usable, and arrived on the contact's `current` session — see
+     * [applyPqKey]. An invalid one is counted (§22.8.2 rule 3).
      */
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "LongParameterList")
     private fun applyTlvs(
         tx: SyncTransaction,
         contact: ContactStore.ContactRow,
         content: DmContent.Decoded,
         isPreKey: Boolean,
+        usedSlot: String,
         now: Long,
     ) {
-        if (content.sawPqTlv) counters.drop(DmCounters.Reason.PQ_TLV_IGNORED)
+        if (content.pqIgnored) counters.drop(DmCounters.Reason.PQ_TLV_IGNORED)
+        if (content.pqKeyInvalid) counters.drop(DmCounters.Reason.BAD_PQ_KEY)
         if (content.sessionReset) counters.drop(DmCounters.Reason.SESSION_RENEWED)
         content.revocation?.let { certificate ->
             if (applyRevocation(tx, contact, certificate)) return
         }
-        val root = content.sealRoot ?: return
-        if (isPreKey) {
-            counters.drop(DmCounters.Reason.ROOT_IN_PREKEY)
+        content.sealRoot?.let { root ->
+            if (isPreKey) {
+                counters.drop(DmCounters.Reason.ROOT_IN_PREKEY)
+            } else {
+                installOutRoot(tx, contact, root.rootGen, root.baseWeek, root.rootEnv, now)
+            }
+        }
+        content.sealRootPq?.let { root ->
+            if (isPreKey) {
+                counters.drop(DmCounters.Reason.ROOT_IN_PREKEY)
+            } else {
+                applyPqRoot(tx, contact, root, now)
+            }
+        }
+        content.pqKey?.let { key -> applyPqKey(tx, contact, key, usedSlot, now) }
+    }
+
+    /**
+     * The out key of a received root, classical or PQ-C (§6.3): the rules of `seal_root`, applied
+     * once the root exists and is wrapped.
+     */
+    @Suppress("ReturnCount", "LongParameterList")
+    private fun installOutRoot(
+        tx: SyncTransaction,
+        contact: ContactStore.ContactRow,
+        rootGen: Int,
+        baseWeek: Long,
+        rootEnv: ByteArray,
+        now: Long,
+    ) {
+        if (!rootMayApply(tx, contact, rootGen, baseWeek, now)) {
+            counters.drop(DmCounters.Reason.ROOT_NOT_NEWER)
             return
         }
         val week = DmTime.week(now)
-        val existing = contacts.pairKeys(tx.sql, contact.contactId, ContactStore.DIRECTION_OUT)
-        // §6.3: "a `root_gen` not greater than the stored out generation is ignored".
-        val floor = existing.maxOfOrNull { it.rootGen }
-        if (floor != null && root.rootGen <= floor) {
-            counters.drop(DmCounters.Reason.ROOT_NOT_NEWER)
-            return
-        }
-        if (root.baseWeek > week + 1 || week - root.baseWeek > MAX_ROOT_AGE_WEEKS) {
-            counters.drop(DmCounters.Reason.ROOT_NOT_NEWER)
-            return
-        }
         val keys = envelopes.pairKeys(
             contactId = contact.contactId,
             direction = DmSeal.PairDirection.OUT,
-            rootGen = root.rootGen,
+            rootGen = rootGen,
             from = DmPairing.From.ROOT,
-            keyEnv = root.rootEnv,
-            baseWeek = root.baseWeek,
-            fromWeek = maxOf(root.baseWeek, week),
-            toWeek = maxOf(root.baseWeek, week),
+            keyEnv = rootEnv,
+            baseWeek = baseWeek,
+            fromWeek = maxOf(baseWeek, week),
+            toWeek = maxOf(baseWeek, week),
         )
         if (keys !is DmPairing.KeysResult.Ok) {
             counters.drop(DmCounters.Reason.ROOT_NOT_NEWER)
@@ -940,12 +978,116 @@ internal class ReceiveStep(
                 tx = tx,
                 contactId = contact.contactId,
                 direction = ContactStore.DIRECTION_OUT,
-                rootGen = root.rootGen,
+                rootGen = rootGen,
                 week = key.week,
                 recognitionKey = key.recognitionKey,
                 openEnv = key.openEnv,
             )
         }
+    }
+
+    /**
+     * §6.3: "a `root_gen` not greater than the stored out generation is ignored", and a base week
+     * this side could not have a key for is refused.
+     */
+    private fun rootMayApply(
+        tx: SyncTransaction,
+        contact: ContactStore.ContactRow,
+        rootGen: Int,
+        baseWeek: Long,
+        now: Long,
+    ): Boolean {
+        val week = DmTime.week(now)
+        val floor = contacts.pairKeys(tx.sql, contact.contactId, ContactStore.DIRECTION_OUT)
+            .maxOfOrNull { it.rootGen }
+        if (floor != null && rootGen <= floor) return false
+        return baseWeek <= week + 1 && week - baseWeek <= MAX_ROOT_AGE_WEEKS
+    }
+
+    /**
+     * §9.4 R11: a `seal_root_pq`, opened with this device's generation `peer_gen_id` and then
+     * installed exactly as a classical root is.
+     *
+     * The generation-number rule is checked **first**, so a replayed or superseded offer costs no
+     * decapsulation. A generation this device does not hold — never had, or erased — and a
+     * ciphertext that does not decapsulate are `pq_root_unopenable` (§22.8.6 rule 3): counted,
+     * and the rest of the L0 applies. The contact is the offerer here, so its pinned Olm identity
+     * is the first half of the root's salt.
+     */
+    @Suppress("ReturnCount")
+    private fun applyPqRoot(
+        tx: SyncTransaction,
+        contact: ContactStore.ContactRow,
+        root: DmContent.SealRootPq,
+        now: Long,
+    ) {
+        if (!rootMayApply(tx, contact, root.rootGen, root.baseWeek, now)) {
+            counters.drop(DmCounters.Reason.ROOT_NOT_NEWER)
+            return
+        }
+        val generation = owner.generations(tx.sql).firstOrNull { it.genId == root.peerGenId }
+        val pinned = contact.pinnedIdentity
+        if (generation == null || pinned == null) {
+            counters.drop(DmCounters.Reason.PQ_ROOT_UNOPENABLE)
+            return
+        }
+        when (
+            val opened = envelopes.pqRootOpen(
+                contactId = contact.contactId,
+                rootGen = root.rootGen,
+                genId = generation.genId,
+                genSecretsEnv = generation.secretsEnv,
+                genFallbackPublic = generation.fallbackPublic,
+                tlv = root.tlv,
+                peerOlmIdentity = pinned,
+            )
+        ) {
+            is DmPairing.PqOpenResult.Ok ->
+                installOutRoot(tx, contact, opened.rootGen, opened.baseWeek, opened.rootEnv, now)
+            DmPairing.PqOpenResult.StateCorrupt -> counters.drop(DmCounters.Reason.STATE_CORRUPT)
+            DmPairing.PqOpenResult.NotOpen,
+            DmPairing.PqOpenResult.NonCanonical,
+            DmPairing.PqOpenResult.Unavailable,
+            -> counters.drop(DmCounters.Reason.PQ_ROOT_UNOPENABLE)
+        }
+    }
+
+    /**
+     * §9.4 R11: a `pq_key` (validated whole by the crate, §22.8.2 rule 3) becomes the contact's
+     * in-band X-Wing key (`dm_peer_pq`, source `in_band`) when all of these hold:
+     *  - it arrived on the contact's **`current`** session (after any R-SS2 swap). §22.8.6 rule 1
+     *    uses a PQ offer again "only after a `pq_key` whose `bundle_week` is at least the week of
+     *    the renewal has arrived"; no column records that week, and a key carried by the new
+     *    `current` is by construction one the contact announced from its post-renewal state,
+     *    while one decrypted on the demoted `previous` may predate it;
+     *  - its week is **newer** than every key stored for the contact (§7.1's "if its week is
+     *    newer"), so a re-announcement of a known key and a late older one change nothing;
+     *  - it is **usable**, `week(now) < bundle_week + 5` (§5.4 step 3), and not from a week past
+     *    `week(now) + 1`, a bundle's own validity bound.
+     * Anything else is ignored without a counter: re-announcements are the normal case.
+     * `putPeerPq` keeps the three-row cap (`dm_peer_pq_limit`) by dropping the oldest.
+     */
+    @Suppress("ReturnCount")
+    private fun applyPqKey(
+        tx: SyncTransaction,
+        contact: ContactStore.ContactRow,
+        key: DmContent.PqKey,
+        usedSlot: String,
+        now: Long,
+    ) {
+        if (usedSlot != SessionStore.SLOT_CURRENT) return
+        val week = DmTime.week(now)
+        if (key.bundleWeek > week + 1 || week >= key.bundleWeek + ContactStore.PQ_KEY_WEEKS) return
+        val stored = contacts.peerPq(tx.sql, contact.contactId)
+        if (stored.any { it.bundleWeek >= key.bundleWeek }) return
+        contacts.putPeerPq(
+            tx = tx,
+            contactId = contact.contactId,
+            genId = key.genId.toInt(),
+            bundleWeek = key.bundleWeek,
+            source = ContactStore.PQ_SOURCE_IN_BAND,
+            xwingPublic = key.xwingPublic,
+        )
     }
 
     /**

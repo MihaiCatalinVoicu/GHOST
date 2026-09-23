@@ -1,0 +1,53 @@
+(* GHOST direct messages: attribution forward secrecy as key erasure (design faza9-dm.md §6.3
+   P-7, §14.1 T34, §21.3 point 6; obligation M-7 of §9.5; slice S13).
+
+   P-7: for an ISO week w with now >= start(w + 1) + 45 d, no key on either device and nothing
+   derivable from either seed opens or recognises a pair-mode envelope of week w. The mechanism is
+   erasure plus one-wayness: a root is random (never derived from a seed) and is erased once K_b
+   exists; K_{w+1} = HKDF(K_w, "pair-next") is one-way; a week key is erased with its recognition
+   key (R-S6) once its window closes. A seizure after that finds only later week keys.
+
+   The model: a week-w envelope with its recognition hint (the attribution handle: whoever holds
+   R_sel(K_w) can tell the envelope belongs to this conversation), then the ratchet walks six weeks
+   and the live week's envelope goes out; phase 1 is the seizure, which gets the one week key
+   still stored. The erased week key is a private free name so that its secrecy is the query:
+   whoever cannot derive K_w can neither open nor recognise week w, since R_sel is a one-way
+   function of it. The seed-derived values the seizure also gets (card keys, namespaces) are not
+   inputs to any of these derivations (T26), so they are left out. Expected results are in
+   expected.txt; msgLive is the control that the seizure does read what is still live.
+
+   Declared limits: this is key secrecy standing in for unlinkability (an equivalence property is
+   future work), and the skipped Olm message keys of live sessions (§7.7 point 4, pruned at 51 d)
+   and provisional reply seeds (§6.7) are outside it; the T34 world measures those. *)
+
+free c: channel.
+
+type key.
+
+fun knext(key): key.
+fun recog(key): key.
+fun hint(key, bitstring): bitstring.
+fun seal(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; unseal(seal(m, k), k) = m.
+
+(* K_w of the erased week, derived from a root that is itself erased (random, never seed-derived). *)
+free kWeekW: key [private].
+free msgWeekW: bitstring [private].
+free msgLive: bitstring [private].
+
+query attacker(kWeekW).
+query attacker(msgWeekW).
+query attacker(msgLive).
+
+process
+  new salt: bitstring;
+  new saltLive: bitstring;
+  let kLive = knext(knext(knext(knext(knext(knext(kWeekW)))))) in
+  (
+    (* week w: the envelope and its recognition hint go to the relay *)
+    out(c, (salt, hint(recog(kWeekW), salt), seal(msgWeekW, kWeekW)))
+  | (* six weeks later, under the live week key *)
+    out(c, (saltLive, hint(recog(kLive), saltLive), seal(msgLive, kLive)))
+  | (* the seizure, after week w's key was erased: the live week key is all that is stored *)
+    phase 1; out(c, kLive)
+  )

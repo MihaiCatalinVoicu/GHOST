@@ -1,0 +1,90 @@
+(* GHOST direct messages: binding v3 (design faza9-dm.md §3.4, §6.4, §6.5 step 4; obligation
+   M-2 of §9.5; slice S13).
+
+   Binding v3 is the sender's Ed25519 signature over (label, OI_A, base key, X-Wing ciphertext,
+   namespace, binding minute, OI_B), carried in the intro inner layer. M-2 asks for:
+   - agreement: a recipient that accepts a binding under the pinned identity of A accepts exactly
+     the (OI_A, base key, ct, namespace, minute, OI_B) that A signed;
+   - key-compromise impersonation with the recipient's full state: B's own secrets (its Ed25519
+     key, its generation secret, its card) do not let the adversary produce an accepted binding in
+     A's name;
+   - no transfer across envelopes: the ciphertext and the namespace are in the signed statement,
+     so a binding lifted onto another envelope or into another inbox does not verify.
+
+   Authentication is classical (PQ-R1): the adversary here is the classical Dolev-Yao attacker,
+   active on c, and signatures are ideal. Freshness of the binding minute is RECV's R5 (§21.4) and
+   replays are D2b's (§7.6), so the property is non-injective agreement. The control is a third
+   identity C whose signing key leaks: its bindings are forgeable, and the same query on C fails. *)
+
+free c: channel.
+
+type skey.
+type spkey.
+type kskey.
+type kpkey.
+
+fun spk(skey): spkey.
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, k: skey; checksign(sign(m, k), spk(k)) = m.
+reduc forall m: bitstring, k: skey; getmess(sign(m, k)) = m.
+
+fun kpk(kskey): kpkey.
+fun kct(kpkey, bitstring): bitstring.
+fun kss(kpkey, bitstring): bitstring.
+reduc forall sk: kskey, r: bitstring; kdec(sk, kct(kpk(sk), r)) = kss(kpk(sk), r).
+
+free labelBinding: bitstring.
+free nsB: bitstring.
+free oiA: bitstring.
+free oiB: bitstring.
+free oiC: bitstring.
+
+event Bound(spkey, bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+event Accepted(spkey, bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+event AcceptedFromC(spkey, bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+
+(* M-2: agreement on every field, with B's whole state public. *)
+query k: spkey, x1: bitstring, x2: bitstring, x3: bitstring, x4: bitstring, x5: bitstring, x6: bitstring;
+  event(Accepted(k, x1, x2, x3, x4, x5, x6)) ==> event(Bound(k, x1, x2, x3, x4, x5, x6)).
+
+(* Control: the same agreement for an identity whose signing key leaked. *)
+query k: spkey, x1: bitstring, x2: bitstring, x3: bitstring, x4: bitstring, x5: bitstring, x6: bitstring;
+  event(AcceptedFromC(k, x1, x2, x3, x4, x5, x6)) ==> event(Bound(k, x1, x2, x3, x4, x5, x6)).
+
+(* A sender: a fresh base key, a fresh encapsulation to B's generation, a fresh minute. *)
+let Sender(sk: skey, oiSender: bitstring, pkG: kpkey) =
+  new baseKey: bitstring;
+  new r: bitstring;
+  new minute: bitstring;
+  let ct = kct(pkG, r) in
+  event Bound(spk(sk), oiSender, baseKey, ct, nsB, minute, oiB);
+  out(c, (oiSender, baseKey, ct, nsB, minute,
+          sign((labelBinding, oiSender, baseKey, ct, nsB, minute, oiB), sk))).
+
+(* B, checking a binding under the pinned identity of the claimed sender (§6.5 step 4). *)
+let Receiver(pinned: spkey) =
+  in(c, (oiSender: bitstring, baseKey: bitstring, ct: bitstring, =nsB, minute: bitstring, s: bitstring));
+  let (=labelBinding, =oiSender, =baseKey, =ct, =nsB, =minute, =oiB) = checksign(s, pinned) in
+  event Accepted(pinned, oiSender, baseKey, ct, nsB, minute, oiB).
+
+let ReceiverFromC(pinned: spkey) =
+  in(c, (oiSender: bitstring, baseKey: bitstring, ct: bitstring, =nsB, minute: bitstring, s: bitstring));
+  let (=labelBinding, =oiSender, =baseKey, =ct, =nsB, =minute, =oiB) = checksign(s, pinned) in
+  event AcceptedFromC(pinned, oiSender, baseKey, ct, nsB, minute, oiB).
+
+process
+  new skA: skey;
+  new skB: skey;
+  new skC: skey;
+  new skG: kskey;
+  (
+    out(c, spk(skA)); out(c, spk(skB)); out(c, spk(skC)); out(c, kpk(skG))
+  | (* B's full state: its identity key and its generation secret (KCI) *)
+    out(c, skB); out(c, skG)
+  | (* the control identity's key leaks *)
+    out(c, skC)
+  | !Sender(skA, oiA, kpk(skG))
+  | !Sender(skC, oiC, kpk(skG))
+  | !Receiver(spk(skA))
+  | !ReceiverFromC(spk(skC))
+  )

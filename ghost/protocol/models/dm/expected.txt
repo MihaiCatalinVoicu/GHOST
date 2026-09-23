@@ -1,0 +1,55 @@
+# The expected result of every ProVerif query of protocol/models/dm (design faza9-dm.md §9.5,
+# §16.2 `pq-model`; slice S13). scripts/gates/pq-model.sh runs each model and compares.
+#
+#   model | token | expected
+#
+# token: a substring that names exactly one RESULT line of that model's output.
+# expected: `true` — ProVerif proves the property; `false` — ProVerif finds the attack. A control
+# (a query that must fail, or a whole mutant model) is how a model shows it can fail at all.
+# A missing or extra RESULT line, `cannot be proved`, a non-zero exit or a timeout fails the job,
+# and so does a .pv file of the directory that no line lists.
+
+# M-1 (HNDL secrecy of the intro inner layer, a card holder's view) and M-3 (PQ-B by induction).
+m1_m3_pqb.pv|attacker(cardA[])|true
+m1_m3_pqb.pv|attacker(replySeed[])|true
+m1_m3_pqb.pv|attacker(l1First[])|true
+m1_m3_pqb.pv|attacker(rootB[])|true
+m1_m3_pqb.pv|attacker(msgProvisional[])|true
+m1_m3_pqb.pv|attacker(rootA[])|true
+m1_m3_pqb.pv|attacker(msgPair[])|true
+# control: the adversary does hold the card-keyed outer layer
+m1_m3_pqb.pv|attacker(outerOnly[])|false
+
+# The same flow with the inner layer keyed without the KEM (PM-32 as a model mutant): all fail.
+m1_m3_pqb_mutant_no_kem.pv|attacker(cardA[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(replySeed[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(l1First[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(rootB[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(msgProvisional[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(rootA[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(msgPair[])|false
+m1_m3_pqb_mutant_no_kem.pv|attacker(outerOnly[])|false
+
+# M-2 (binding v3: agreement, KCI with the recipient's full state, no transfer).
+m2_binding.pv|event(Accepted(|true
+# control: an identity whose signing key leaked
+m2_binding.pv|event(AcceptedFromC(|false
+
+# M-6 (PQ-C healing with a compromise event).
+m6_pqc_healing.pv|attacker(msgHealed[])|true
+m6_pqc_healing.pv|attacker(msgHealedLater[])|true
+# controls: the leak's future, a classical root after t, a PQ root to a leaked generation
+m6_pqc_healing.pv|attacker(msgBefore[])|false
+m6_pqc_healing.pv|attacker(msgClassical[])|false
+m6_pqc_healing.pv|attacker(msgPqOld[])|false
+
+# M-7 (attribution forward secrecy as key erasure).
+m7_erasure.pv|attacker(kWeekW[])|true
+m7_erasure.pv|attacker(msgWeekW[])|true
+# control: the seizure reads the week still live
+m7_erasure.pv|attacker(msgLive[])|false
+
+# The same world with an invertible ratchet: all fail.
+m7_erasure_mutant_invertible.pv|attacker(kWeekW[])|false
+m7_erasure_mutant_invertible.pv|attacker(msgWeekW[])|false
+m7_erasure_mutant_invertible.pv|attacker(msgLive[])|false

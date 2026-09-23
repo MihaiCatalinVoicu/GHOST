@@ -217,8 +217,14 @@ internal class KeyDecision(
             // counter a peer compares against, and a repeated number is a root it silently drops.
             contacts.deleteOutPairKeys(tx, contactId)
             contacts.discardOfferSecrets(tx, contactId)
+            // §22.8.6 rule 1 (slice S13): the contact's new device holds none of my roots, so the
+            // next send offers a new one even where the newest was acknowledged by the old device.
+            contacts.supersedeOffers(tx, contactId)
             // §22.8.6 rule 1: no session survives, so no `peer_gen_id` names a live key.
             contacts.deletePeerPq(tx, contactId)
+            // §9.4 (slice S13): the contact's new device has none of this device's in-band keys,
+            // so the next send announces the current generation again.
+            contacts.setPqAnnouncedWeek(tx, contactId, null)
             // A held row of a superseded pending key cannot be replayed under the new pin; HELD
             // would refuse it row by row, and deleting them here keeps the cap honest.
             held.deleteHeldOtherThan(tx, contactId, pending)

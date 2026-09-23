@@ -2321,7 +2321,10 @@ pub fn provisional_keys(
 ///
 /// **Slice S13 (PQ-C).** A `seal_root_pq` and a `pq_key` are **candidates**, attached by
 /// [`codec::attach_pq_under_slack`] only if they fit the slack of the bucket the body length alone
-/// chose (R-C5), in that order: the offer first, the announcement second. `pq_key` is this
+/// chose (R-C5), in the order the caller chooses: the offer first, unless `pqKeyFirst` is set —
+/// SEND sets it when the offer is a **re-attachment** of one that already rode, so a pending
+/// offer cannot starve the weekly announcement at 4 KiB, where the two never fit together, while
+/// a newly minted offer still goes out on its first message. `pq_key` is this
 /// device's generation `pqKeyGenId`, whose X-Wing public key is recomputed here from the stored
 /// seed (`pqKeySecretsEnv`, unwrapped under `pqKeyFallbackPublic`'s binding); an empty
 /// `pqKeySecretsEnv` means "no announcement". The reply's [`Field::TlvFlags`] says which of the
@@ -2349,6 +2352,7 @@ pub fn l0_encode(
     pq_key_week: jlong,
     pq_key_secrets_env: &JByteArray,
     pq_key_fallback_public: &JByteArray,
+    pq_key_first: jint,
 ) -> Result<Vec<u8>, DmCode> {
     let kind = codec::Kind::from_u8(u8::try_from(kind).map_err(|_| DmCode::NonCanonical)?)
         .ok_or(DmCode::NonCanonical)?;
@@ -2383,7 +2387,7 @@ pub fn l0_encode(
     };
     with_context(handle, |context| {
         let mut ext: Vec<codec::Tlv> = Vec::new();
-        // R-C5's candidates, in priority order: the PQ offer, then the announcement.
+        // R-C5's candidates, in the priority order the caller chose (`pqKeyFirst`).
         let mut candidates: Vec<codec::Tlv> = Vec::new();
         if !offer_env.is_empty() {
             let contact: [u8; 16] = contact_id
@@ -2428,6 +2432,9 @@ pub fn l0_encode(
                 }
                 .encode()?,
             });
+        }
+        if pq_key_first != 0 {
+            candidates.reverse();
         }
         if !revocation.is_empty() {
             ext.push(codec::Tlv {
@@ -3239,6 +3246,7 @@ pub mod entry {
         pq_key_week: jlong,
         pq_key_secrets_env: JByteArray<'local>,
         pq_key_fallback_public: JByteArray<'local>,
+        pq_key_first: jint,
     ) -> jbyteArray {
         guarded(&mut env, |env| {
             super::l0_encode(
@@ -3261,6 +3269,7 @@ pub mod entry {
                 pq_key_week,
                 &pq_key_secrets_env,
                 &pq_key_fallback_public,
+                pq_key_first,
             )
         })
     }
@@ -3860,6 +3869,7 @@ macro_rules! paste_export {
             pq_key_week: ::jni::sys::jlong,
             g: ::jni::objects::JByteArray<'local>,
             h: ::jni::objects::JByteArray<'local>,
+            pq_key_first: ::jni::sys::jint,
         ) -> ::jni::sys::jbyteArray {
             $crate::jni::entry::l0_encode(
                 env,
@@ -3882,6 +3892,7 @@ macro_rules! paste_export {
                 pq_key_week,
                 g,
                 h,
+                pq_key_first,
             )
         }
     };

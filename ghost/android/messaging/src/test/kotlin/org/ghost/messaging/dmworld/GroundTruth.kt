@@ -280,10 +280,12 @@ internal class RecordingEnvelopes(
         offerEnv: ByteArray,
         revocation: ByteArray,
         sessionReset: Boolean,
+        pqKey: DmContent.PqKeyCandidate?,
+        pqKeyFirst: Boolean,
     ): DmContent.Encoded {
         val encoded = inner.encodeContent(
             kind, messageId, authorMinute, minuteIndex, timerCode, timerVersion, quoteRef, body,
-            contactId, offerRootGen, offerEnv, revocation, sessionReset,
+            contactId, offerRootGen, offerEnv, revocation, sessionReset, pqKey, pqKeyFirst,
         )
         if (encoded is DmContent.Encoded.Ok) truth.recordL0(encoded.l0, body.size)
         return encoded
@@ -472,6 +474,27 @@ internal class RecordingEnvelopes(
     override fun pairOffer(contactId: ByteArray, rootGen: Int, baseWeek: Long): DmPairing.OfferResult {
         val offer = inner.pairOffer(contactId, rootGen, baseWeek)
         if (offer is DmPairing.OfferResult.Ok) truth.offers[Triple(client, GroundTruth.Key(contactId), rootGen)] = baseWeek
+        return offer
+    }
+
+    /**
+     * A PQ-C offer (§9.4, slice S13) is an offer like the classical one: T34 takes every stored value
+     * as the root of each generation a client offered, and its out-direction control needs the
+     * newest one. Until S13 every offer went through [pairOffer].
+     */
+    @Suppress("LongParameterList")
+    override fun pqRootSeal(
+        contactId: ByteArray,
+        rootGen: Int,
+        baseWeek: Long,
+        peerOlmIdentity: ByteArray,
+        peerGenId: Long,
+        peerXwingPublic: ByteArray,
+    ): DmPairing.PqOfferResult {
+        val offer = inner.pqRootSeal(contactId, rootGen, baseWeek, peerOlmIdentity, peerGenId, peerXwingPublic)
+        if (offer is DmPairing.PqOfferResult.Ok) {
+            truth.offers[Triple(client, GroundTruth.Key(contactId), rootGen)] = baseWeek
+        }
         return offer
     }
 

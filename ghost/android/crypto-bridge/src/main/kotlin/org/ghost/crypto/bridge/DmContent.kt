@@ -224,7 +224,9 @@ object DmContent {
      * [offerEnv] and [offerRootGen] attach the root offer of §6.3 — a `seal_root`, or, when the
      * envelope holds the PQ-C form, a `seal_root_pq` under the slack rule; [revocation] attaches
      * the certificate of §8.5; [sessionReset] attaches the reconnect notice of §8.6; [pqKey]
-     * offers this device's generation key as a `pq_key` under the slack rule (slice S13). All of
+     * offers this device's generation key as a `pq_key` under the slack rule (slice S13). [pqKeyFirst]
+     * puts the announcement ahead of the offer in R-C5's priority order: SEND sets it when the
+     * offer is a re-attachment of one that already rode. All of
      * them are R-C3 TLVs, which ride **only** on a user-initiated or scheduled-user send.
      */
     @Suppress("LongParameterList")
@@ -244,6 +246,7 @@ object DmContent {
         revocation: ByteArray = DM_NO_BYTES,
         sessionReset: Boolean = false,
         pqKey: PqKeyCandidate? = null,
+        pqKeyFirst: Boolean = false,
     ): Encoded {
         if (!DmNative.isAvailable()) return Encoded.Unavailable
         val result = dmCall {
@@ -266,6 +269,7 @@ object DmContent {
                 pqKey?.bundleWeek ?: 0L,
                 pqKey?.secretsEnv ?: DM_NO_BYTES,
                 pqKey?.fallbackPublic ?: DM_NO_BYTES,
+                if (pqKeyFirst) 1 else 0,
             )
         }
         return when (result.code) {

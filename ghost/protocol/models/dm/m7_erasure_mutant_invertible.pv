@@ -1,0 +1,34 @@
+(* Mutant of m7_erasure.pv (obligation M-7; slice S13): the same world with a week ratchet that can
+   be run backwards. Every query must now FAIL (expected.txt): the property of m7_erasure.pv rests
+   on the one-wayness of K_{w+1} = HKDF(K_w, "pair-next"), and a model that still proved it here
+   would be proving nothing about that. *)
+
+free c: channel.
+
+type key.
+
+fun knext(key): key.
+(* The mutation: the previous week key is computable from the next one. *)
+reduc forall k: key; kprev(knext(k)) = k.
+fun recog(key): key.
+fun hint(key, bitstring): bitstring.
+fun seal(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; unseal(seal(m, k), k) = m.
+
+free kWeekW: key [private].
+free msgWeekW: bitstring [private].
+free msgLive: bitstring [private].
+
+query attacker(kWeekW).
+query attacker(msgWeekW).
+query attacker(msgLive).
+
+process
+  new salt: bitstring;
+  new saltLive: bitstring;
+  let kLive = knext(knext(knext(knext(knext(knext(kWeekW)))))) in
+  (
+    out(c, (salt, hint(recog(kWeekW), salt), seal(msgWeekW, kWeekW)))
+  | out(c, (saltLive, hint(recog(kLive), saltLive), seal(msgLive, kLive)))
+  | phase 1; out(c, kLive)
+  )

@@ -274,8 +274,9 @@ class TrustFlowTest {
      * nothing erased it, so (c) was the only rule that could fire and this test advanced 12 weeks
      * to show that it had not yet; with the erasure in place, 12 weeks is past the earlier bound
      * and the test would have measured that instead. It now stays inside both windows and then
-     * crosses both. Rule (c) becomes the earlier of the two when S13 lowers
-     * `ROOT_REPLACE_WEEKS` to 4 (§22.14).
+     * crosses both. **Slice S13** lowered `ROOT_REPLACE_WEEKS` to 4 (§9.4), which makes rule (c)
+     * the earlier of the two: the test now stays three weeks inside it, and the next two weeks
+     * cross it (and only it: 5 weeks is before the 7.4-week erasure).
      */
     @Test
     fun aRootOlderThanTheBoundIsReplacedAtTheNextSend() {
@@ -291,12 +292,12 @@ class TrustFlowTest {
             // passes are `PairKeySteps`, which ratchets the out key forward — without them the
             // conversation falls to `NO_SEAL_KEY` at the first week boundary and the test would be
             // measuring that instead (§21.3 point 5).
-            weeks(world, 5)
+            weeks(world, 3)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "still inside", null))
             assertEquals(first, rootGenerations(alice))
 
-            // Past both: a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
-            weeks(world, 9)
+            // Past rule (c): a new generation, and `1 + max(root_gen)` so a peer cannot ignore it.
+            weeks(world, 2)
             assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "past the bound", null))
             val second = rootGenerations(alice)
             assertEquals(first.max() + 1, second.max())
