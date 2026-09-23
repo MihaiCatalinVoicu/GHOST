@@ -168,8 +168,11 @@ pqm_case fail mutant-copied "rejects a mutant that is both a copied file and a p
 # A scratch git tree holds one state file; each fixture patch rewrites it, and a fake cargo answers
 # from it. Every negative is a way the gate could pass while a mutant was never killed: a survivor, a
 # kill the header names that did not happen, no header, a patch that no longer applies, a mutant that
-# does not build, a failing run with no failing test, and an unpatched run that fails, skips a named
-# test, ignores one, or has no patch to check at all. The positive also proves the tree is restored.
+# does not build, a failing run with no failing test, a mutant that broke the world every test reads
+# (its kills are not its own) or names the world's test as a kill, a revert that fails (the tree is
+# left mutated, so the case expects that too), and an unpatched run that fails, skips a named test,
+# skips the world's test, ignores one, or has no patch to check at all. The positive also proves the
+# tree is restored.
 PQX="$HARNESS/pq-mutants"
 pqx_case() { # $1 = expect pass|fail, $2 = description, $3 = unpatched mode, then patches as state:kills[,kills]
   local expect="$1" desc="$2" clean="$3" tmp spec state kills patch got
@@ -197,7 +200,7 @@ pqx_case() { # $1 = expect pass|fail, $2 = description, $3 = unpatched mode, the
     } > "$patch"
   done
   if GHOST_PQ_CARGO="$PQX/fake-cargo.sh" GHOST_PQ_FAKE_STATE="$tmp/repo/state" GHOST_PQ_FAKE_CLEAN="$clean" \
-    GHOST_PQ_MUTANTS_DIR="$tmp/mutants" GHOST_PQ_MUTANTS_REPO="$tmp/repo" \
+    GHOST_PQ_MUTANTS_DIR="$tmp/mutants" GHOST_PQ_MUTANTS_REPO="$tmp/repo" GHOST_PQ_WORLD=t::w \
     bash "$DIR/pq-mutants.sh" >/dev/null 2>&1; then got=pass; else got=fail; fi
   if [ "$(tr -d '\r' < "$tmp/repo/state")" != clean ]; then got="$got, tree not restored"; fi
   if [ "$got" = "$expect" ]; then echo "self-test ok: pq-mutants $desc"; else echo "SELF-TEST FAIL: pq-mutants $desc ($got)" >&2; rc=1; fi
@@ -214,6 +217,11 @@ pqx_case fail "rejects an unpatched tree whose PQ tests fail" fail "kill-a:t::a"
 pqx_case fail "rejects a named test the unpatched run did not run" missing "kill-ab:t::a,t::b"
 pqx_case fail "rejects an unpatched run with an ignored test" ignored "kill-a:t::a"
 pqx_case fail "rejects an empty mutant directory" pass
+# The review of PQ1/PQ5 (design §22.20 item 9): the shared world, and a revert that fails.
+pqx_case fail "rejects a mutant that breaks the shared world" pass "kill-a:t::a" "break-world:t::a"
+pqx_case fail "rejects a mutant that names the world's test as a kill" pass "kill-a:t::a,t::w"
+pqx_case fail "rejects an unpatched run that did not run the world's test" noworld "kill-a:t::a"
+pqx_case "fail, tree not restored" "fails when a patch cannot be reverted" pass "tamper:t::a"
 # Phase 9 S10b (design §22.19): the report now carries SCN-H, SCN-I, SCN-K and SCN-G-week and eleven
 # mutants, and every negative above was regenerated from the new positives with its one change. Four
 # more:

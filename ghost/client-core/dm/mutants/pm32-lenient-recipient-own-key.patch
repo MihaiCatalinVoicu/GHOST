@@ -1,0 +1,43 @@
+# PM-32 (design §15.7) on the recipient's side, with a fallback key **no gate variant uses**: when
+# the KEM key does not open the inner layer, the recipient retries with a key from its own identity
+# key, a public value. PQ5's gate-variant client never seals under that key, so none of its
+# envelopes opens and PQ5 passes; what refuses it is PQ1's count of one inner key per open, which
+# sees the retry whatever the key (review of PQ1/PQ5, design §22.20).
+# kills: pq_bump::pq1_every_intro_of_the_world_opens_through_the_host_open_intro_body_under_the_assertion
+# kills: pq_bump::pq1_every_intro_open_of_the_world_decapsulates_exactly_once
+# kills: pq_bump::pq1_the_host_assertion_passes_every_open_of_the_world
+diff --git a/ghost/client-core/dm/src/seal.rs b/ghost/client-core/dm/src/seal.rs
+index be2d82d..7097382 100644
+--- a/ghost/client-core/dm/src/seal.rs
++++ b/ghost/client-core/dm/src/seal.rs
+@@ -897,17 +897,20 @@ pub(crate) fn open_intro_layer(
+     let shared = pq::decapsulate(gen_seed, &outer.ciphertext)?;
+     let transcript = intro_transcript(context, &outer.ciphertext);
+     let inner_ad = intro_inner_ad(&transcript);
+-    let plain = Zeroizing::new(
+-        aead(&intro_inner_key(&shared, &transcript))?
+-            .decrypt(
+-                &zero_nonce(),
+-                Payload {
+-                    msg: &outer.inner,
+-                    aad: &inner_ad,
+-                },
+-            )
++    let payload = || Payload {
++        msg: &outer.inner[..],
++        aad: &inner_ad[..],
++    };
++    // MUTANT (PM-32): a lenient recipient whose fallback key no gate variant uses. When the KEM
++    // key does not open the layer, it retries with an inner key from its own identity key, a
++    // public value. Every honest envelope still opens on the first try.
++    let opened = match aead(&intro_inner_key(&shared, &transcript))?.decrypt(&zero_nonce(), payload()) {
++        Ok(plain) => plain,
++        Err(_) => aead(&intro_inner_key(&KemSecret::from_bytes(*context.recipient_identity_pk), &transcript))?
++            .decrypt(&zero_nonce(), payload())
+             .map_err(|_| DmCode::NotOpen)?,
+-    );
++    };
++    let plain = Zeroizing::new(opened);
+     parse_intro_inner(&plain)
+ }
+ 

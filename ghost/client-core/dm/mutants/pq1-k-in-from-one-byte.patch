@@ -1,0 +1,25 @@
+# PQ1 (design §15.5 PQ1): `k_in` from the first byte of the X-Wing secret, on both sides — 8 bits of
+# KEM entropy. Both sides agree and the world works. With the perturbed bit fixed at bit 0 of byte 0
+# the differential passed it, on the JVM too; the spy's walk flips a bit in another byte on the
+# next open, so the host-library assertion and PQ1's per-byte test refuse it, as does PQ5's oracle
+# (review of PQ1/PQ5, design §22.20).
+# kills: pq_bump::pq1_every_intro_of_the_world_opens_through_the_host_open_intro_body_under_the_assertion
+# kills: pq_bump::pq1_k_in_depends_on_the_decapsulated_secret_in_every_intro_open
+# kills: pq_bump::pq1_the_host_assertion_passes_every_open_of_the_world
+# kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
+# kills: pq_bump::pq5_every_intro_envelope_carries_an_x_wing_ciphertext_whose_secret_keys_its_inner_layer
+# kills: pq_bump::pq5_the_sender_keys_the_inner_layer_with_the_secret_its_ciphertext_carries
+diff --git a/ghost/client-core/dm/src/seal.rs b/ghost/client-core/dm/src/seal.rs
+index be2d82d..5aafaac 100644
+--- a/ghost/client-core/dm/src/seal.rs
++++ b/ghost/client-core/dm/src/seal.rs
+@@ -629,7 +629,8 @@ fn intro_inner_key(shared: &KemSecret, transcript: &[u8; 32]) -> Zeroizing<[u8;
+     #[cfg(any(test, feature = "pq-spy"))]
+     pq::spy::inner_key_derived();
+     let mut out = Zeroizing::new([0u8; 32]);
+-    Hkdf::<Sha256>::new(Some(transcript), shared.as_bytes())
++    // MUTANT (PQ1): k_in from the first byte of the X-Wing secret, on both sides.
++    Hkdf::<Sha256>::new(Some(transcript), &shared.as_bytes()[..1])
+         .expand(INTRO_INNER_LABEL, out.as_mut())
+         .expect("HKDF-SHA256 with L = 32 is inside the 255 x 32 byte output limit");
+     out

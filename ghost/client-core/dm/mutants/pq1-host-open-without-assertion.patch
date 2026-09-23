@@ -1,0 +1,37 @@
+# PQ1 in the host library (design §15.5 PQ1, §22.20): `jni.rs`'s openIntro body opens outside the
+# assertion, as a refactor that dropped the wrapper would leave it. Every open still returns what it
+# did, so every positive test passes and every JVM world would run with PQ1 silently off; only the
+# negative control over that body — an open whose key ignores the secret must panic — tells.
+# kills: pq_bump::pq1_the_host_open_intro_body_panics_on_a_key_that_ignores_the_secret
+diff --git a/ghost/client-core/dm/src/jni.rs b/ghost/client-core/dm/src/jni.rs
+index 80bac36..3acf2bf 100644
+--- a/ghost/client-core/dm/src/jni.rs
++++ b/ghost/client-core/dm/src/jni.rs
+@@ -1801,17 +1801,16 @@ fn open_intro_asserted(
+     gen_fallback_public: &[u8; 32],
+     blob: &[u8],
+ ) -> Result<Vec<u8>, DmCode> {
+-    intro_open(|| {
+-        open_intro_in(
+-            context,
+-            card_index,
+-            namespace,
+-            gen_id,
+-            gen_secrets_env,
+-            gen_fallback_public,
+-            blob,
+-        )
+-    })
++    // MUTANT (PQ1): the host library's openIntro body opens outside the assertion.
++    open_intro_in(
++        context,
++        card_index,
++        namespace,
++        gen_id,
++        gen_secrets_env,
++        gen_fallback_public,
++        blob,
++    )
+ }
+ 
+ /// PQ1 as an assertion around one intro open (`pq::spy::assert_intro_open`), in every build that

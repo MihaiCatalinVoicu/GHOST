@@ -2,17 +2,18 @@
 # envelope still carries a 1 120-byte ciphertext, but both sides key the inner layer from the
 # ciphertext's hash, and the recipient never decapsulates: `k_in = HKDF(T_in, SHA-256(ct))`, a
 # public value. The world works; T35 cannot see it (k_in is never a SealKey, §22.16 item 18).
+# kills: pq_bump::pq1_every_intro_of_the_world_opens_through_the_host_open_intro_body_under_the_assertion
 # kills: pq_bump::pq1_every_intro_open_of_the_world_decapsulates_exactly_once
 # kills: pq_bump::pq1_k_in_depends_on_the_decapsulated_secret_in_every_intro_open
 # kills: pq_bump::pq1_the_host_assertion_passes_every_open_of_the_world
+# kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
 # kills: pq_bump::pq5_every_intro_envelope_carries_an_x_wing_ciphertext_whose_secret_keys_its_inner_layer
 # kills: pq_bump::pq5_the_sender_keys_the_inner_layer_with_the_secret_its_ciphertext_carries
-# kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
 diff --git a/ghost/client-core/dm/src/seal.rs b/ghost/client-core/dm/src/seal.rs
-index cbadf5b..ed12307 100644
+index be2d82d..12e79f2 100644
 --- a/ghost/client-core/dm/src/seal.rs
 +++ b/ghost/client-core/dm/src/seal.rs
-@@ -659,7 +659,9 @@ pub fn seal_intro_with(
+@@ -662,7 +662,9 @@ pub fn seal_intro_with(
          return Err(DmCode::NoFit);
      }
      let sender_card = card::parse(sender.card)?;
@@ -23,7 +24,7 @@ index cbadf5b..ed12307 100644
      let transcript = intro_transcript(context, &ciphertext);
      let inner_key = intro_inner_key(&shared, &transcript);
      seal_intro_layers(
-@@ -891,7 +893,9 @@ pub(crate) fn open_intro_layer(
+@@ -894,7 +896,9 @@ pub(crate) fn open_intro_layer(
      if context.gen_id != outer.gen_id || context.bucket != outer.bucket {
          return Err(DmCode::NotOpen);
      }

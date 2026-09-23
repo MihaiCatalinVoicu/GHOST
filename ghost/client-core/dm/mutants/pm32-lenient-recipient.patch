@@ -1,16 +1,17 @@
 # PM-32 (design §15.7) on the recipient's side: a recipient that, when the KEM key does not open
-# the inner layer, retries with a key without the X-Wing secret. Honest senders are unaffected
-# (one decapsulation per open, and a perturbed secret fails both keys), so PQ1 over the honest
-# envelopes and the world pass: only a sender that sealed without the KEM tells. PQ5's gate-variant
-# client is accepted, and so are its envelopes in the two PQ1 tests that open them too.
-# kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
+# the inner layer, retries with a key without the X-Wing secret — the all-zero one, which PQ5's
+# gate-variant client uses. Honest senders are unaffected (one decapsulation per open, and a
+# perturbed secret fails both keys), so only a sender that sealed without the KEM tells: PQ5's gate
+# variant is accepted, and PQ1's one inner key per open refuses the retry on the gate envelopes.
+# kills: pq_bump::pq1_every_intro_of_the_world_opens_through_the_host_open_intro_body_under_the_assertion
 # kills: pq_bump::pq1_every_intro_open_of_the_world_decapsulates_exactly_once
 # kills: pq_bump::pq1_the_host_assertion_passes_every_open_of_the_world
+# kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
 diff --git a/ghost/client-core/dm/src/seal.rs b/ghost/client-core/dm/src/seal.rs
-index cbadf5b..fb52ff2 100644
+index be2d82d..fc015c8 100644
 --- a/ghost/client-core/dm/src/seal.rs
 +++ b/ghost/client-core/dm/src/seal.rs
-@@ -894,17 +894,20 @@ pub(crate) fn open_intro_layer(
+@@ -897,17 +897,20 @@ pub(crate) fn open_intro_layer(
      let shared = pq::decapsulate(gen_seed, &outer.ciphertext)?;
      let transcript = intro_transcript(context, &outer.ciphertext);
      let inner_ad = intro_inner_ad(&transcript);

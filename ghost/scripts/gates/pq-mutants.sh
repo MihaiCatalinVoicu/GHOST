@@ -9,42 +9,62 @@
 # so each of PM-32's shapes is kept as a source patch and run here. Each patch carries, before its
 # diff, one `# kills: <test path>` line per test that must fail with it applied.
 #
+# The tests are built with `jni-bridge`, so `jni.rs`'s own `openIntro` body — the one the host
+# library the JVM worlds load runs, under PQ1's assertion — is compiled and tested here too.
+#
 # For each patch, in the checkout, one at a time:
 #   - it applies exactly (`git apply --check`, no fuzz): a patch that no longer applies is a mutant
 #     nobody runs, and fails the gate until it is regenerated;
 #   - with it applied the test binary builds: a mutant that does not compile kills nothing;
 #   - the PQ tests fail, and every test its header names is among the failures;
-#   - it is reverted before the next one, and on any exit.
-# The unpatched run must pass, 0 failed and 0 ignored, and run every test any header names.
+#   - the shared world's own test (WORLD below) still **passes**: every PQ test reads one scripted
+#     world, and a patch that broke it would fail them all for a reason that is not its own — the
+#     gate would credit it with kills it never earned;
+#   - it is reverted before the next one, and on any exit; a revert that fails stops the gate
+#     with a failure, since every later patch would apply to a mutated tree.
+# The unpatched run must pass, 0 failed and 0 ignored, and run every test any header names and WORLD.
 #
 # It changes files under client-core/dm while it runs (and reverts them): run it in a CI checkout or
 # a clean worktree, never beside an editor saving into the same files.
 # Hooks (scripts/gates/self-test.sh): GHOST_PQ_MUTANTS_DIR (the patches), GHOST_PQ_MUTANTS_REPO (the
-# git work tree they apply to), GHOST_PQ_CARGO (the cargo it runs; a fake in the self-test).
+# git work tree they apply to), GHOST_PQ_CARGO (the cargo it runs; a fake in the self-test),
+# GHOST_PQ_WORLD (the world's test).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 CARGO="${GHOST_PQ_CARGO:-cargo}"
 command -v "$CARGO" >/dev/null || { echo "cargo not found" >&2; exit 2; }
 command -v git >/dev/null || { echo "git not found" >&2; exit 2; }
 DIR="${GHOST_PQ_MUTANTS_DIR:-$GHOST_ROOT/client-core/dm/mutants}"
 REPO="${GHOST_PQ_MUTANTS_REPO:-$(git -C "$GHOST_ROOT" rev-parse --show-toplevel)}"
-FILTERS=(pq1_ pq5_)
+WORLD="${GHOST_PQ_WORLD:-pq_bump::pq_world_every_honest_flight_opens_and_every_root_arrives}"
+FILTERS=(pq1_ pq5_ pq_world_)
 work="$(mktemp -d)"
 applied=""
-restore() {
-  if [ -n "$applied" ]; then
-    git -C "$REPO" apply -R "$applied" \
-      || echo "GATE-FAIL: could not revert $applied; restore the tree by hand" >&2
-    applied=""
+restore() { # reverts the applied patch; a revert that fails is a gate failure
+  [ -n "$applied" ] || return 0
+  local patch="$applied"
+  applied=""
+  if ! git -C "$REPO" apply -R "$patch"; then
+    fail "could not revert $(basename "$patch"); restore the tree by hand"
+    return 1
   fi
 }
-trap 'restore; rm -rf "$work"' EXIT
+on_exit() {
+  local status=$?
+  restore || status=1
+  rm -rf "$work"
+  exit "$status"
+}
+trap on_exit EXIT
+# Every revert inside the loop: on failure, stop here (finish exits 1, FAILURES > 0).
+revert() { restore || finish pq-mutants; }
 cd "$GHOST_ROOT"
 
 run_tests() { # $1 = output file; cargo's status
-  "$CARGO" test -p ghost-client-dm --lib --locked -- "${FILTERS[@]}" 2>&1 | tr -d '\r' >"$1"
+  "$CARGO" test -p ghost-client-dm --lib --locked --features jni-bridge -- "${FILTERS[@]}" 2>&1 \
+    | tr -d '\r' >"$1"
   return "${PIPESTATUS[0]}"
 }
-# libtest prints `test <path> ... FAILED`, or `test <path> - should panic ... FAILED`.
+# libtest prints `test <path> ... ok|FAILED`, or `test <path> - should panic ... ok|FAILED`.
 results() { # $1 = output file, $2 = ok|FAILED
   sed -nE "s/^test ([^ ]+)( - should panic)? \\.\\.\\. $2\$/\\1/p" "$1" | sort -u
 }
@@ -59,6 +79,7 @@ for patch in "${patches[@]}"; do
   declared+="$(sed -nE 's/^# kills: ([A-Za-z0-9_:]+)[[:space:]]*$/\1/p' "$patch")"$'\n'
 done
 declared="$(printf '%s' "$declared" | grep -v '^$' | sort -u || true)"
+has "$declared" "$WORLD" && fail "a mutant names $WORLD, the world every mutant must leave passing"
 
 # The tree as it is: every PQ test passes, none is ignored, and every test a header names ran.
 if ! run_tests "$work/clean"; then
@@ -69,6 +90,7 @@ fi
 grep -qE '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' "$work/clean" \
   || fail "the unpatched run did not pass with 0 ignored: $(grep -E '^test result:' "$work/clean" | head -1)"
 passed="$(results "$work/clean" ok)"
+has "$passed" "$WORLD" || fail "the unpatched run did not run and pass the world's test $WORLD"
 while IFS= read -r test; do
   [ -n "$test" ] || continue
   has "$passed" "$test" || fail "a mutant names $test, which the unpatched run did not run and pass"
@@ -85,28 +107,33 @@ for patch in "${patches[@]}"; do
   fi
   git -C "$REPO" apply "$patch"
   applied="$patch"
-  if ! "$CARGO" test -p ghost-client-dm --lib --locked --no-run >"$work/build" 2>&1; then
+  if ! "$CARGO" test -p ghost-client-dm --lib --locked --features jni-bridge --no-run >"$work/build" 2>&1; then
     fail "$name does not build, so it kills nothing"
     tail -20 "$work/build" >&2
-    restore
+    revert
     continue
   fi
   if run_tests "$work/run"; then
     fail "$name survived: every PQ1 and PQ5 test passed with it applied"
-    restore
+    revert
     continue
   fi
   failed="$(results "$work/run" FAILED)"
   if [ -z "$failed" ]; then
     fail "$name: the run failed without a failing test"
     tail -20 "$work/run" >&2
-    restore
+    revert
+    continue
+  fi
+  if ! has "$(results "$work/run" ok)" "$WORLD"; then
+    fail "$name breaks the shared world ($WORLD did not pass), so its kills say nothing"
+    revert
     continue
   fi
   while IFS= read -r test; do
     has "$failed" "$test" || fail "$name: $test did not fail"
   done <<< "$kills"
   echo "[pq-mutants] $name killed by $(printf '%s\n' "$failed" | grep -c .) test(s): $(printf '%s ' $failed)"
-  restore
+  revert
 done
 finish pq-mutants

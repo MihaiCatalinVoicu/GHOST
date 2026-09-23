@@ -2,15 +2,16 @@
 # and the open decapsulates again. Nothing about secrecy changes and every envelope still opens,
 # so only a count sees it; it is the "decapsulating twice to read it first" §2.6 function 12 rules
 # out, and it doubles the KEM cost of every first flight.
+# kills: pq_bump::pq1_every_intro_of_the_world_opens_through_the_host_open_intro_body_under_the_assertion
 # kills: pq_bump::pq1_every_intro_open_of_the_world_decapsulates_exactly_once
 # kills: pq_bump::pq1_k_in_depends_on_the_decapsulated_secret_in_every_intro_open
 # kills: pq_bump::pq1_the_host_assertion_passes_every_open_of_the_world
 # kills: pq_bump::pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_recipient
 diff --git a/ghost/client-core/dm/src/seal.rs b/ghost/client-core/dm/src/seal.rs
-index cbadf5b..cc6b4b6 100644
+index be2d82d..0525438 100644
 --- a/ghost/client-core/dm/src/seal.rs
 +++ b/ghost/client-core/dm/src/seal.rs
-@@ -854,6 +854,8 @@ pub fn open_intro_checked(
+@@ -857,6 +857,8 @@ pub fn open_intro_checked(
      outer: &IntroOuter,
      generation_fallback_key: &[u8; 32],
  ) -> DmResult<(IntroPlain, crate::olm::message::L1Header)> {

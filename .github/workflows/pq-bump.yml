@@ -1,17 +1,31 @@
 name: pq-bump
 
-# The PQ bump gate (Phase 9 design RG-5 and §2.8, §15.5 PQ1 and PQ5, §15.7 PM-32; forward notes
-# §22.20). PQ1 and PQ5 themselves are unit tests of ghost-client-dm (client-core/dm/src/pq_bump.rs)
-# and run in ci.yml's `rust` job on every pull request (`cargo test --workspace`). This job proves they
-# still hold PM-32 — "the intro inner layer sealed without the X-Wing KEM", which T35's provenance tags
-# cannot see (§22.16 item 18): scripts/gates/pq-mutants.sh applies each patch of
-# ghost/client-core/dm/mutants/ in turn (PM-32's shapes, a KEM whose secret stops depending on the
-# ciphertext as a broken bump could make it, a second decapsulation per open, a PQ-C root without the
-# KEM secret) and requires the tests the patch names to fail, then reverts it.
+# The PQ mutant gate (Phase 9 design §15.5 PQ1 and PQ5, §15.7 PM-32, RG-5 and §2.8; forward notes
+# §22.20). What runs where:
+#  - PQ1 and PQ5 themselves are unit tests of ghost-client-dm (client-core/dm/src/pq_bump.rs). They
+#    run in ci.yml's `rust` job, `cargo test --workspace`, on every pull request and push to main;
+#    the workspace build unifies ghost-client-dm's features with ghost-dm-host's (jni-bridge,
+#    test-vectors, pq-spy), so the tests of jni.rs's own openIntro body run there too. That job,
+#    not this one, is what runs PQ5 when a vodozemac or libcrux bump changes Cargo.lock.
+#  - This job adds the mutant gate: scripts/gates/pq-mutants.sh applies each patch of
+#    ghost/client-core/dm/mutants/ in turn (PM-32's shapes — "the intro inner layer sealed without
+#    the X-Wing KEM", which T35's provenance tags cannot see, §22.16 item 18 — a KEM whose secret
+#    stops depending on the ciphertext as a broken bump could make it, a second decapsulation per
+#    open, k_in from one byte of the secret, openIntro's body outside PQ1's assertion, a PQ-C root
+#    without the KEM secret), requires the tests the patch names to fail and the shared world's own
+#    test to pass, then reverts it. It proves the tests still refuse those shapes against the code
+#    and the library of the commit; it is not a bump check of its own.
+#  - Not here, and not built by the PQ1/PQ5 slice: the rest of §2.8's bump checklist — the
+#    `vendor-tests` job, G-R7 (`dm-golden-lock.sh`), G-R8, the golden pickles of a new version — and
+#    anything that notices that a pin changed. The JVM half of PQ1 (the assertion every openIntro of
+#    the host library runs) runs in ci.yml's `android` job, not here.
 #
-# It runs on every change to the DM crate and to the lock file, which is where a vodozemac or libcrux
-# bump lands (one PR per bump, §2.8), and on demand. It builds only ghost-client-dm's test binary, in
-# debug, once per mutant (50 s in all on the owner's workstation with a warm cache, §22.20).
+# Triggers: every change to the DM crate (where the vodozemac and libcrux pins live) and to the lock
+# file, and on demand. The `pull_request` trigger fires only for changes that arrive as pull
+# requests, and every run needs the self-hosted runners (docs/ci-self-hosted.md), which are not up
+# yet (dm-privacy-gate.yml says the same); until both hold, the gate runs by hand
+# (`bash ghost/scripts/gates/pq-mutants.sh`, §22.20 records each run).
+# It builds only ghost-client-dm's test binary (features `jni-bridge`), in debug, once per mutant.
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
   push:
@@ -42,7 +56,8 @@ jobs:
   pq-mutants:
     name: PQ1 and PQ5 hold PM-32 (mutant gate)
     runs-on: [self-hosted, linux, x64, ghost]
-    # Seven debug builds of one crate's test binary and eleven tests each, on a warm cache.
+    # Eleven debug builds of one crate's test binary (the tree and ten mutants), sixteen PQ tests
+    # each: 121 s on the owner's workstation with a warm cache, a Gradle build running beside it.
     timeout-minutes: 45
     defaults:
       run:
