@@ -14,18 +14,29 @@ import java.io.File
  *
  * The spy is native. `ghost-dm-host` enables `ghost-client-dm`'s `pq-spy` feature, which wraps
  * every `openIntro` in `pq::spy::assert_intro_open`: the open that succeeds must have performed
- * exactly one X-Wing decapsulation, a refused one at most one, and the same open run again with the
- * decapsulated secret perturbed must be `NOT_OPEN`. A violation is a Rust panic, which the JNI
- * guard returns as `INTERNAL` and the facade throws on, so **every intro open of every JVM world
- * run against the host library is under PQ1** — `DmFlowTest`, the privacy worlds, the exit-gate
- * worlds — and fails there on the first open that breaks it. The Rust tests of
- * `client-core/dm/src/pq_bump.rs` show the assertion refusing opens that break it, and PQ1 and
- * PQ5 over a scripted world.
+ * exactly one X-Wing decapsulation and derived exactly one inner key, a refused one at most one of
+ * each, and the same open run again with the decapsulated secret perturbed (every bit of it) must
+ * be `NOT_OPEN`. A violation is a Rust panic, which the JNI guard returns as `INTERNAL` and the
+ * facade throws on (`IllegalStateException`), so **every intro open of every JVM world run against
+ * the host library is under PQ1** — `DmFlowTest`, the privacy worlds, the exit-gate worlds. Where
+ * the exception surfaces depends on the world: one that calls the facade directly stops at the
+ * first open that breaks PQ1; a crash-enumeration world (`DmCrashWorld`) records what its actor
+ * swallowed and fails the run at its end. The panic message itself is not printed (the JNI guard
+ * silences panics and the crate prints nothing): a failure reads "openIntro returned INTERNAL", and
+ * the `PQ1:` message is what `cargo test -p ghost-client-dm --lib --features jni-bridge -- pq1_`
+ * shows for the same shape.
  *
  * What this class adds is the two things only the JVM side can check: that the library the JVM
  * tests load **is** a spy build (a plain build would make every world's PQ1 vacuous), and that
  * intro opens through the real surface pass the assertion at every bucket, for flights of one
  * unacknowledged session and for a re-sent flight, with a refusal before the KEM beside them.
+ *
+ * **No negative control on the JVM.** No input an honest client can send makes the assertion fire,
+ * and the library exports no symbol that could arm one, so nothing here shows a violation reaching
+ * `INTERNAL`. The negative control is on the Rust side, over the same `openIntro` body the host
+ * library runs (`pq_bump.rs`, `pq1_the_host_open_intro_body_panics_on_a_key_that_ignores_the_secret`,
+ * and the `pq-mutants` gate's patches, each of which fails that body); the JVM half was shown once,
+ * by hand, with a PM-32 patch built into the host library (design §22.20).
  *
  * Skipped without `-Dghost.dm.native`, like [DmEnvelopeNativeTest]; once the property is set, a
  * library that does not load, or does not carry the assertion, is a failure.
@@ -76,7 +87,9 @@ class DmPqSpyNativeTest {
         val library = File(path).readBytes()
         for (message in listOf(
             "PQ1: an intro open that succeeded performed ",
+            "PQ1: an intro open that succeeded derived ",
             "PQ1: a refused intro open performed ",
+            "PQ1: a refused intro open derived ",
             "k_in does not depend on ss",
         )) {
             assertTrue(

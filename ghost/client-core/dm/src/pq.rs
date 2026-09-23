@@ -284,12 +284,21 @@ pub(crate) fn fill_random(out: &mut [u8]) {
 /// `jni-bridge`).
 ///
 /// It counts, per thread, every decapsulation ([`decapsulate`] and [`decapsulate_with_public`] go
-/// through one function) and every successful encapsulation, and it can **perturb** the next
-/// shared secret one of them produces — bit 0 of byte 0 flipped, one-shot. The perturbation is
-/// what makes "`k_in` depends on `ss`" a differential test of the code as it stands rather than a
-/// property of HKDF: the ciphertext, the transcript and every other input stay exactly as they
-/// were, only the secret the KEM handed back changes, so an opener whose key does not depend on
-/// that secret opens the envelope anyway, and one that does refuses it.
+/// through one function), every successful encapsulation and every intro inner key `k_in` derived
+/// (`seal::intro_inner_key`, sealing and opening alike), and it can **perturb** the next shared
+/// secret a decapsulation or an encapsulation produces — one bit flipped, one-shot. The
+/// perturbation is what makes "`k_in` depends on `ss`" a differential test of the code as it
+/// stands rather than a property of HKDF: the ciphertext, the transcript and every other input
+/// stay exactly as they were, only the secret the KEM handed back changes, so an opener whose key
+/// does not depend on that secret opens the envelope anyway, and one that does refuses it.
+///
+/// **Which bit.** A refusal proves the key depends on the bit that was flipped and on nothing
+/// else, so a fixed bit would accept a key read from part of the secret — one byte of it — as long
+/// as the part holds that bit. The caller may name the bit ([`perturb_next_decapsulation_at`]);
+/// otherwise each thread walks all 256 **bytes first**: byte `n mod 32`, bit `(n / 32) mod 8` for
+/// its `n`-th perturbation. Two opens are then enough to refuse a key read from one byte, 32 to
+/// refuse one that leaves any byte out, and 256 cover every bit. The walk is a counter, so it
+/// draws no randomness.
 ///
 /// The counters are thread-local because a JNI call and a test both run on one thread from the
 /// open to its result, and parallel tests must not see each other's decapsulations; every check
@@ -299,11 +308,18 @@ pub mod spy {
     use crate::result::{DmCode, DmResult};
     use std::cell::Cell;
 
+    /// The bits of a shared secret, the positions a perturbation can take.
+    pub const SECRET_BITS: u16 = 8 * super::SHARED_SECRET_BYTES as u16;
+
     thread_local! {
         static DECAPSULATIONS: Cell<u64> = const { Cell::new(0) };
         static ENCAPSULATIONS: Cell<u64> = const { Cell::new(0) };
-        static PERTURB_DECAPSULATION: Cell<bool> = const { Cell::new(false) };
-        static PERTURB_ENCAPSULATION: Cell<bool> = const { Cell::new(false) };
+        static INNER_KEYS: Cell<u64> = const { Cell::new(0) };
+        static PERTURBATIONS: Cell<u16> = const { Cell::new(0) };
+        static PERTURB_DECAPSULATION: Cell<Option<u16>> = const { Cell::new(None) };
+        static PERTURB_ENCAPSULATION: Cell<Option<u16>> = const { Cell::new(None) };
+        #[cfg(test)]
+        static NEUTRALISED: Cell<bool> = const { Cell::new(false) };
     }
 
     /// The decapsulations this thread has started, successful or not.
@@ -316,24 +332,76 @@ pub mod spy {
         ENCAPSULATIONS.with(Cell::get)
     }
 
+    /// The intro inner keys `k_in` this thread has derived, sealing or opening.
+    pub fn inner_keys() -> u64 {
+        INNER_KEYS.with(Cell::get)
+    }
+
+    /// The next bit of this thread's walk: byte `n mod 32`, bit `(n / 32) mod 8`.
+    fn next_bit() -> u16 {
+        PERTURBATIONS.with(|count| {
+            let n = count.get();
+            count.set((n + 1) % SECRET_BITS);
+            let bytes = SECRET_BITS / 8;
+            (n % bytes) * 8 + n / bytes
+        })
+    }
+
     /// Arms a one-shot perturbation of the next shared secret a decapsulation on this thread
-    /// returns.
-    pub fn perturb_next_decapsulation() {
-        PERTURB_DECAPSULATION.with(|armed| armed.set(true));
+    /// returns, at the next bit of the thread's walk, and returns that bit.
+    pub fn perturb_next_decapsulation() -> u16 {
+        let bit = next_bit();
+        perturb_next_decapsulation_at(bit);
+        bit
+    }
+
+    /// Arms a one-shot perturbation of the next shared secret a decapsulation on this thread
+    /// returns, at `bit` (`0 .. SECRET_BITS`; bit `b` is bit `b mod 8` of byte `b / 8`).
+    pub fn perturb_next_decapsulation_at(bit: u16) {
+        PERTURB_DECAPSULATION.with(|armed| armed.set(Some(bit % SECRET_BITS)));
     }
 
     /// Arms a one-shot perturbation of the next shared secret an encapsulation on this thread
-    /// returns: the sender seals under a secret the ciphertext does not carry.
-    pub fn perturb_next_encapsulation() {
-        PERTURB_ENCAPSULATION.with(|armed| armed.set(true));
+    /// returns, at the next bit of the thread's walk: the sender seals under a secret the
+    /// ciphertext does not carry.
+    pub fn perturb_next_encapsulation() -> u16 {
+        let bit = next_bit();
+        PERTURB_ENCAPSULATION.with(|armed| armed.set(Some(bit)));
+        bit
     }
 
     /// Disarms both perturbations and reports whether either was still armed, that is, whether a
     /// perturbation the caller armed was **not** consumed by a KEM operation.
     pub fn disarm() -> bool {
-        let decapsulation = PERTURB_DECAPSULATION.with(|armed| armed.replace(false));
-        let encapsulation = PERTURB_ENCAPSULATION.with(|armed| armed.replace(false));
-        decapsulation || encapsulation
+        let decapsulation = PERTURB_DECAPSULATION.with(|armed| armed.replace(None));
+        let encapsulation = PERTURB_ENCAPSULATION.with(|armed| armed.replace(None));
+        decapsulation.is_some() || encapsulation.is_some()
+    }
+
+    /// The crate's own tests only, never the host library: the next perturbation this thread
+    /// consumes is consumed **and changes nothing**, as if the opener's key ignored the secret.
+    /// It is the negative control of the JNI body — an honest open through `jni.rs` must then trip
+    /// the assertion — and no JVM world can reach it.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "jni-bridge"), allow(dead_code))]
+    pub(crate) fn neutralise_next_perturbation() {
+        NEUTRALISED.with(|armed| armed.set(true));
+    }
+
+    #[cfg(test)]
+    fn neutralised() -> bool {
+        NEUTRALISED.with(|armed| armed.replace(false))
+    }
+
+    #[cfg(not(test))]
+    fn neutralised() -> bool {
+        false
+    }
+
+    fn perturb(shared: &mut [u8; super::SHARED_SECRET_BYTES], bit: u16) {
+        if !neutralised() {
+            shared[usize::from(bit / 8)] ^= 1 << (bit % 8);
+        }
     }
 
     pub(super) fn decapsulation_started() {
@@ -341,60 +409,86 @@ pub mod spy {
     }
 
     pub(super) fn decapsulated(shared: &mut [u8; super::SHARED_SECRET_BYTES]) {
-        if PERTURB_DECAPSULATION.with(|armed| armed.replace(false)) {
-            shared[0] ^= 1;
+        if let Some(bit) = PERTURB_DECAPSULATION.with(|armed| armed.replace(None)) {
+            perturb(shared, bit);
         }
     }
 
     pub(super) fn encapsulated(shared: &mut [u8; super::SHARED_SECRET_BYTES]) {
         ENCAPSULATIONS.with(|count| count.set(count.get() + 1));
-        if PERTURB_ENCAPSULATION.with(|armed| armed.replace(false)) {
-            shared[0] ^= 1;
+        if let Some(bit) = PERTURB_ENCAPSULATION.with(|armed| armed.replace(None)) {
+            perturb(shared, bit);
         }
     }
 
+    pub(crate) fn inner_key_derived() {
+        INNER_KEYS.with(|count| count.set(count.get() + 1));
+    }
+
+    /// Runs `open` and returns its result with the decapsulations it started and the inner keys
+    /// it derived on this thread.
+    fn counted<T>(open: impl FnOnce() -> T) -> (T, u64, u64) {
+        let (decapsulations_before, keys_before) = (decapsulations(), inner_keys());
+        let out = open();
+        (
+            out,
+            decapsulations() - decapsulations_before,
+            inner_keys() - keys_before,
+        )
+    }
+
     /// PQ1 as an **assertion** around one intro open (§2.6 function 12 in `ghost-dm-host`): the
-    /// open that succeeds performed exactly one decapsulation, the open that is refused performed
-    /// at most one, and the same open run again with the decapsulated secret perturbed is
-    /// `NOT_OPEN` — `k_in` depends on `ss`. A violation panics with a `PQ1:` message, which the JNI
-    /// guard turns into `INTERNAL`, so every intro open of every JVM world run against the host
-    /// library is checked, and the world fails on the first open that breaks it.
+    /// open that succeeds performed exactly one decapsulation and derived exactly one inner key,
+    /// the open that is refused at most one of each, and the same open run again with the
+    /// decapsulated secret perturbed — one bit, the next of the thread's walk, so the opens of a
+    /// world cover every byte of the secret and then every bit — is `NOT_OPEN`: `k_in` depends
+    /// on `ss`. One inner key per open is what refuses a recipient that **retries** the layer
+    /// under a second key when the first fails, whatever that second key is, as long as it is
+    /// derived where `k_in` is. A violation panics with a `PQ1:` message, which the JNI guard
+    /// turns into `INTERNAL` (the message itself is silenced by `quiet_panics`: the crate prints
+    /// nothing), so every intro open of every JVM world run against the host library is checked.
     ///
     /// `open` must be repeatable (it is run twice after a success). The second run draws no
     /// randomness: an intro open reads its randomness only for the `reply_seed` envelope it wraps
     /// **after** the inner layer has opened, which the perturbed run never reaches, so the seeded
     /// worlds' random streams are the ones a build without the spy draws.
     pub fn assert_intro_open<T>(open: impl Fn() -> DmResult<T>) -> DmResult<T> {
-        let before = decapsulations();
-        let result = open();
-        let used = decapsulations() - before;
+        let (result, used, keys) = counted(&open);
         match result {
             Ok(_) => {
                 assert!(
                     used == 1,
                     "PQ1: an intro open that succeeded performed {used} decapsulations, not one"
                 );
+                assert!(
+                    keys == 1,
+                    "PQ1: an intro open that succeeded derived {keys} inner keys, not one"
+                );
                 disarm();
-                perturb_next_decapsulation();
-                let before = decapsulations();
-                let perturbed = open();
-                let used = decapsulations() - before;
+                let bit = perturb_next_decapsulation();
+                let (perturbed, used, keys) = counted(&open);
                 let unconsumed = disarm();
                 assert!(
-                    used == 1 && !unconsumed,
-                    "PQ1: the perturbed intro open performed {used} decapsulations and left the \
-                     perturbation unconsumed: {unconsumed}"
+                    used == 1 && keys == 1 && !unconsumed,
+                    "PQ1: the perturbed intro open performed {used} decapsulations, derived {keys} \
+                     inner keys and left the perturbation unconsumed: {unconsumed}"
                 );
                 assert!(
                     matches!(perturbed, Err(DmCode::NotOpen)),
-                    "PQ1: an intro open succeeded with its decapsulated secret perturbed: k_in does \
-                     not depend on ss"
+                    "PQ1: an intro open succeeded with bit {bit} of its decapsulated secret \
+                     flipped: k_in does not depend on ss"
                 );
             }
-            Err(_) => assert!(
-                used <= 1,
-                "PQ1: a refused intro open performed {used} decapsulations"
-            ),
+            Err(_) => {
+                assert!(
+                    used <= 1,
+                    "PQ1: a refused intro open performed {used} decapsulations"
+                );
+                assert!(
+                    keys <= 1,
+                    "PQ1: a refused intro open derived {keys} inner keys"
+                );
+            }
         }
         result
     }

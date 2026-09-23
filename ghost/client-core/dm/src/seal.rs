@@ -623,8 +623,11 @@ pub fn intro_transcript(context: &IntroContext<'_>, ciphertext: &[u8]) -> [u8; 3
         .into()
 }
 
-/// `k_in`, wiped when it goes out of scope (§2.4 point 1).
+/// `k_in`, wiped when it goes out of scope (§2.4 point 1). PQ1's spy counts every derivation (test
+/// builds only): an open derives exactly one.
 fn intro_inner_key(shared: &KemSecret, transcript: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    #[cfg(any(test, feature = "pq-spy"))]
+    pq::spy::inner_key_derived();
     let mut out = Zeroizing::new([0u8; 32]);
     Hkdf::<Sha256>::new(Some(transcript), shared.as_bytes())
         .expand(INTRO_INNER_LABEL, out.as_mut())
@@ -961,6 +964,14 @@ pub fn check_generation_fallback_key(
 /// `k_in` came from, so a refusal can only be the recipient's KEM dependence and never a malformed
 /// envelope. The [`InnerKey::Kem`] control **is** [`seal_intro_with`] and must open, which is what
 /// keeps the refusals from being vacuous.
+///
+/// **What it can and cannot refuse.** It is a list of attacker keys, not a proof: a recipient that
+/// falls back to one of these keys is caught, and one that falls back to a key nobody put on the
+/// list — derived from the recipient's own identity key, say — is not, unless it **tries** it after
+/// the KEM key failed, which PQ1's one-inner-key-per-open count refuses whatever the key
+/// (`pq::spy::assert_intro_open`). A recipient that picks a non-KEM key by a condition, without
+/// trying the KEM key first, is caught only when the condition is one a variant here triggers:
+/// [`InnerKey::LowOrderShare`] is the decapsulation error.
 #[cfg(test)]
 pub(crate) mod gate {
     use super::*;
@@ -980,16 +991,29 @@ pub(crate) mod gate {
         CardKey,
         /// A real encapsulation, `k_in` from `SHA-256(ct)`: a public value.
         CiphertextHash,
+        /// A real encapsulation's ML-KEM half with a **low-order X25519 share** in place of its
+        /// own, which the recipient's decapsulation refuses (§22.8.2 rule 5), and `k_in` from an
+        /// all-zero secret: what a recipient that takes a failed decapsulation for a zero secret
+        /// would open. Every other variant carries a ciphertext that decapsulates, so without this
+        /// one the recipient's error path is never reached.
+        LowOrderShare,
     }
 
     impl InnerKey {
         /// Every variant that seals the inner layer without the KEM secret.
-        pub(crate) const WITHOUT_KEM: [InnerKey; 4] = [
+        pub(crate) const WITHOUT_KEM: [InnerKey; 5] = [
             InnerKey::NoEncapsulation,
             InnerKey::SecretDropped,
             InnerKey::CardKey,
             InnerKey::CiphertextHash,
+            InnerKey::LowOrderShare,
         ];
+    }
+
+    /// `k_in` exactly as both sides derive it — counted by PQ1's spy like every derivation — for
+    /// the tests of the assertion's inner-key count.
+    pub(crate) fn inner_key(secret: &KemSecret, transcript: &[u8; 32]) -> [u8; 32] {
+        *intro_inner_key(secret, transcript)
     }
 
     /// [`seal_intro_with`] with the inner key taken from `variant`.
@@ -1013,11 +1037,16 @@ pub(crate) mod gate {
         let (ciphertext, secret) = if variant == InnerKey::NoEncapsulation {
             (vec![0x5a; pq::CIPHERTEXT_BYTES], zero)
         } else {
-            let (ciphertext, _) = pq::encapsulate_with(context.gen_public, kem_randomness)?;
+            let (mut ciphertext, _) = pq::encapsulate_with(context.gen_public, kem_randomness)?;
             let secret = match variant {
                 InnerKey::CardKey => KemSecret::from_bytes(*outer_key.as_bytes()),
                 InnerKey::CiphertextHash => {
                     KemSecret::from_bytes(Sha256::digest(&ciphertext).into())
+                }
+                InnerKey::LowOrderShare => {
+                    let point = pq::low_order_points()[0];
+                    ciphertext[pq::ML_KEM_CIPHERTEXT_BYTES..].copy_from_slice(&point);
+                    zero
                 }
                 // `Kem` returned above.
                 InnerKey::SecretDropped | InnerKey::NoEncapsulation | InnerKey::Kem => zero,

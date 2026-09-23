@@ -1777,33 +1777,104 @@ pub fn open_intro(
     let gen_fallback_public = fixed::<32>(env, gen_fallback_public)?;
     let blob = bytes(env, blob)?;
     with_context(handle, |context| {
-        intro_open(|| {
-            open_intro_in(
-                context,
-                card_index,
-                &namespace,
-                gen_id,
-                &gen_secrets_env,
-                &gen_fallback_public,
-                &blob,
-            )
-        })
+        open_intro_asserted(
+            context,
+            card_index,
+            &namespace,
+            gen_id,
+            &gen_secrets_env,
+            &gen_fallback_public,
+            &blob,
+        )
     })
 }
 
-/// PQ1 as an assertion around one intro open, in the host library (`pq-spy`, which only
-/// `ghost-dm-host` enables): exactly one decapsulation, and `NOT_OPEN` once the decapsulated
-/// secret is perturbed (`pq::spy::assert_intro_open`). A violation is a panic, so `INTERNAL`, and
-/// the JVM world that made the call fails.
-#[cfg(feature = "pq-spy")]
+/// [`open_intro`] once its arguments are out of the JVM and its context is found: the open, under
+/// PQ1's assertion in every build that has the spy ([`intro_open`]). The crate's own tests reach
+/// it through `open_intro_for_test`, so the body the host library runs is the one they check.
+fn open_intro_asserted(
+    context: &DmContext,
+    card_index: u16,
+    namespace: &[u8; 32],
+    gen_id: u32,
+    gen_secrets_env: &[u8],
+    gen_fallback_public: &[u8; 32],
+    blob: &[u8],
+) -> Result<Vec<u8>, DmCode> {
+    intro_open(|| {
+        open_intro_in(
+            context,
+            card_index,
+            namespace,
+            gen_id,
+            gen_secrets_env,
+            gen_fallback_public,
+            blob,
+        )
+    })
+}
+
+/// PQ1 as an assertion around one intro open (`pq::spy::assert_intro_open`), in every build that
+/// has the spy: the host library (`pq-spy`, which only `ghost-dm-host` enables) and the crate's
+/// own tests. Exactly one decapsulation and one inner key, and `NOT_OPEN` once the decapsulated
+/// secret is perturbed; a violation is a panic, so `INTERNAL`, and the JVM world that made the
+/// call fails.
+#[cfg(any(test, feature = "pq-spy"))]
 fn intro_open(open: impl Fn() -> Result<Vec<u8>, DmCode>) -> Result<Vec<u8>, DmCode> {
     pq::spy::assert_intro_open(open)
 }
 
 /// Every shipped build: the open itself, once.
-#[cfg(not(feature = "pq-spy"))]
+#[cfg(not(any(test, feature = "pq-spy")))]
 fn intro_open(open: impl Fn() -> Result<Vec<u8>, DmCode>) -> Result<Vec<u8>, DmCode> {
     open()
+}
+
+/// The crate's own tests (PQ1, `pq_bump.rs`): [`open_intro`]'s body — [`open_intro_asserted`] —
+/// for the device whose MESSAGING branch and `ghost1` seed are given, with its generation's two
+/// secrets wrapped under a state key here as `bundleCreate` wraps them. Only the JVM argument
+/// copies and the context registry are left out.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_intro_for_test(
+    messaging: [u8; 32],
+    identity_seed: [u8; 32],
+    card_index: u16,
+    namespace: &[u8; 32],
+    gen_id: u32,
+    gen_fallback_secret: &[u8; 32],
+    gen_xwing_seed: &[u8; 32],
+    blob: &[u8],
+) -> Result<Vec<u8>, DmCode> {
+    let messaging = MessagingBranch::from_bytes(messaging);
+    let context = DmContext {
+        olm_identity: derive::derive_olm_identity(&messaging),
+        olm_signing: derive::derive_olm_account_signing(&messaging),
+        state_key: StateKey::from_bytes([0x5c; 32]),
+        messaging,
+        identity_seed: IdentitySeed::from_bytes(identity_seed),
+    };
+    let gen_fallback_public =
+        derive::olm_identity_public(&OlmSecret::from_bytes(*gen_fallback_secret));
+    let mut secrets = Vec::with_capacity(64);
+    secrets.extend_from_slice(gen_fallback_secret);
+    secrets.extend_from_slice(gen_xwing_seed);
+    let gen_secrets_env = wrap::wrap(
+        &context.state_key,
+        wrap::WrapName::Generation,
+        &wrap::generation_binding(gen_id, &gen_fallback_public),
+        &secrets,
+    )?;
+    secrets.zeroize();
+    open_intro_asserted(
+        &context,
+        card_index,
+        namespace,
+        gen_id,
+        &gen_secrets_env,
+        &gen_fallback_public,
+        blob,
+    )
 }
 
 /// The body of [`open_intro`], with every argument already out of the JVM.

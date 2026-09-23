@@ -2,12 +2,14 @@
 //! scripted DM world with real Olm sessions, the real seal modes and the real X-Wing wrapper.
 //!
 //! **PQ1**, "every intro open performs exactly one decapsulation and `k_in` depends on `ss`
-//! (spy)": the spy of [`crate::pq::spy`] counts the decapsulations of every open of every intro
-//! envelope of the world, through both public openers, and perturbs the decapsulated secret of a
-//! repeated open, which must then be refused while the ciphertext, the transcript and every other
-//! input are unchanged. The same check runs as an **assertion** around every `openIntro` of the
-//! host library the JVM worlds load (`pq-spy`; `jni.rs`, `pq::spy::assert_intro_open`), and the
-//! tests below also show that assertion refusing opens that break it.
+//! (spy)": the spy of [`crate::pq::spy`] counts the decapsulations and the inner keys of every
+//! open of every intro envelope of the world, through both public openers, and perturbs the
+//! decapsulated secret of a repeated open — one bit, at every byte in turn — which must then be
+//! refused while the ciphertext, the transcript and every other input are unchanged. The same
+//! check runs as an **assertion** around every `openIntro` of the host library the JVM worlds
+//! load (`pq-spy`; `jni.rs`, `pq::spy::assert_intro_open`); the tests below show that assertion
+//! refusing opens that break it, and, with `jni-bridge`, run every envelope of the world through
+//! `jni.rs`'s own `openIntro` body under it, with a negative control.
 //!
 //! **PQ5**, the bump assertion of RG-5: every intro envelope and every `seal_root_pq` of the world
 //! carries a 1 120-byte X-Wing ciphertext, `k_in` depends on `ss`, and a `gate`-variant client
@@ -23,7 +25,13 @@
 //! is never a `SealKey`, so no provenance tag describes the X-Wing-keyed layer: PM-32, "the intro
 //! inner layer sealed without the X-Wing KEM", is not expressible to T35. PM-32's shapes are the
 //! source patches of `client-core/dm/mutants/`; `scripts/gates/pq-mutants.sh` applies each one and
-//! requires the tests its header names to fail.
+//! requires the tests its header names to fail and the world's own test (`pq_world_…`) to pass,
+//! so a patch that broke the shared world is not credited with kills it got by accident.
+//!
+//! **What the gate-variant client cannot refuse.** Its five ways without the KEM are a list, not a
+//! proof: a recipient that falls back to a key none of them uses is refused only if it **tries**
+//! that key after the KEM key failed — PQ1's one inner key per open — and one that picks it by a
+//! condition none of them triggers is not refused at all (`seal::gate`).
 //!
 //! Test builds only: the module is `cfg(test)`, and the gate-variant sealer it drives is
 //! `seal::gate`, which is `cfg(test)` too.
@@ -103,6 +111,9 @@ impl Generation {
 
 /// A device: the secrets `ctxOpen` derives, its card 0 and its generations.
 struct Device {
+    /// The MESSAGING branch `ctxOpen` is handed: what `jni.rs`'s `openIntro` body derives from.
+    #[cfg_attr(not(feature = "jni-bridge"), allow(dead_code))]
+    messaging: [u8; 32],
     identity_seed: [u8; 32],
     olm_identity: OlmSecret,
     olm_signing: OlmSecret,
@@ -122,6 +133,7 @@ impl Device {
         let card_secret = derive::derive_card_secret(&branch, 0);
         let card = card::build(&identity_seed, 0, &card_secret);
         Self {
+            messaging: [byte; 32],
             identity_seed,
             oi: derive::olm_identity_public(&olm_identity),
             olm_identity,
@@ -707,9 +719,12 @@ fn oracle_root(
     root
 }
 
-fn flipped(secret: &[u8; 32]) -> [u8; 32] {
+/// The secret with every bit complemented: the oracle's own formula must not open under it.
+fn complemented(secret: &[u8; 32]) -> [u8; 32] {
     let mut out = *secret;
-    out[0] ^= 1;
+    for byte in out.iter_mut() {
+        *byte = !*byte;
+    }
     out
 }
 
@@ -720,11 +735,24 @@ fn decapsulations_in<T>(f: impl FnOnce() -> T) -> (T, u64) {
     (out, spy::decapsulations() - before)
 }
 
-/// Runs `f` with the next decapsulated secret perturbed, and checks the perturbation was consumed
-/// by exactly one decapsulation.
-fn with_perturbed_secret<T>(label: &str, f: impl FnOnce() -> T) -> T {
+/// Runs `f` and returns its result with the decapsulations it performed and the intro inner keys
+/// it derived on this thread.
+fn counted_in<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
+    let keys = spy::inner_keys();
+    let (out, used) = decapsulations_in(f);
+    (out, used, spy::inner_keys() - keys)
+}
+
+/// Runs `f` with one bit of the next decapsulated secret flipped — `bit`, or the next of the
+/// thread's walk — and checks the perturbation was consumed by exactly one decapsulation.
+fn with_perturbed_secret<T>(label: &str, bit: Option<u16>, f: impl FnOnce() -> T) -> T {
     spy::disarm();
-    spy::perturb_next_decapsulation();
+    match bit {
+        Some(bit) => spy::perturb_next_decapsulation_at(bit),
+        None => {
+            spy::perturb_next_decapsulation();
+        }
+    }
     let (out, used) = decapsulations_in(f);
     assert!(
         !spy::disarm(),
@@ -759,10 +787,19 @@ fn pq1_every_intro_open_of_the_world_decapsulates_exactly_once() {
             intro.label
         );
 
-        let (checked, used) = decapsulations_in(|| world.open_checked(intro, &outer));
+        // One inner key per open, whatever the envelope: none only where the decapsulation itself
+        // refused the ciphertext (the low-order share), since there is no secret to derive from.
+        let keys = if intro.sealed_by == Some(InnerKey::LowOrderShare) {
+            0
+        } else {
+            1
+        };
+        let (checked, used, derived) = counted_in(|| world.open_checked(intro, &outer));
         assert_eq!(used, 1, "{}: open_intro_checked", intro.label);
-        let (inner, used) = decapsulations_in(|| world.open_inner(intro, &outer));
+        assert_eq!(derived, keys, "{}: open_intro_checked's k_in", intro.label);
+        let (inner, used, derived) = counted_in(|| world.open_inner(intro, &outer));
         assert_eq!(used, 1, "{}: open_intro_inner", intro.label);
+        assert_eq!(derived, keys, "{}: open_intro_inner's k_in", intro.label);
         if intro.honest() {
             let (plain, header) = checked.expect("an honest envelope opens");
             assert_eq!(plain.l1, intro.l1, "{}", intro.label);
@@ -779,7 +816,7 @@ fn pq1_every_intro_open_of_the_world_decapsulates_exactly_once() {
         let generation = world.generation_of(intro);
         let mut elsewhere = to.context(intro.generation, outer.bucket);
         elsewhere.gen_id ^= 1;
-        let (refused, used) = decapsulations_in(|| {
+        let (refused, used, derived) = counted_in(|| {
             seal::open_intro_checked(
                 &generation.secret(),
                 &elsewhere,
@@ -789,6 +826,7 @@ fn pq1_every_intro_open_of_the_world_decapsulates_exactly_once() {
         });
         assert_eq!(refused.err(), Some(DmCode::NotOpen));
         assert_eq!(used, 0, "{}: refused before the KEM", intro.label);
+        assert_eq!(derived, 0, "{}: refused before the KEM", intro.label);
     }
     let honest = world.honest().count();
     let refused = world.without_kem().count();
@@ -799,16 +837,20 @@ fn pq1_every_intro_open_of_the_world_decapsulates_exactly_once() {
     assert_eq!(opens, 2 * (honest + refused));
 }
 
-/// PQ1, second half: **`k_in` depends on `ss`**. Every honest envelope opens twice to the same
-/// plaintext (the key is a function of what the open reads), and the same open with nothing
-/// changed but the decapsulated secret — one bit of it, flipped by the spy after the KEM — is
-/// `NOT_OPEN` through both openers. An opener whose inner key came from the ciphertext, the
-/// transcript, the card or a constant would open it anyway.
+/// PQ1, second half: **`k_in` depends on `ss`, every byte of it**. Every honest envelope opens
+/// twice to the same plaintext (the key is a function of what the open reads), and the same open
+/// with nothing changed but one bit of the decapsulated secret — flipped by the spy after the KEM —
+/// is `NOT_OPEN`: through `open_intro_checked` once per **byte** of the secret (bit `i mod 8` of
+/// the byte for the `i`-th envelope, so the ten envelopes cover every bit), and through
+/// `open_intro_inner` at the next bit of the thread's walk. An opener whose inner key came from the
+/// ciphertext, the transcript, the card or a constant would open all of them; one keyed from only
+/// part of the secret — one byte of it (`pq1-k-in-from-one-byte`) — opens every one whose flipped
+/// bit it does not read, which a single fixed bit would never have shown.
 #[test]
 fn pq1_k_in_depends_on_the_decapsulated_secret_in_every_intro_open() {
     let world = world();
     let mut checked = 0;
-    for intro in world.honest() {
+    for (index, intro) in world.honest().enumerate() {
         let outer = world.open_outer(intro).expect("outer");
         let (first, _) = world.open_checked(intro, &outer).expect("open");
         let (second, _) = world.open_checked(intro, &outer).expect("open again");
@@ -819,14 +861,20 @@ fn pq1_k_in_depends_on_the_decapsulated_secret_in_every_intro_open() {
         assert_eq!(first.sender_card, intro.sender_card);
         assert_eq!(first.binding_minute, MINUTE);
 
-        let perturbed = with_perturbed_secret(&intro.label, || world.open_checked(intro, &outer));
-        assert_eq!(
-            perturbed.err(),
-            Some(DmCode::NotOpen),
-            "{}: opened with its decapsulated secret perturbed",
-            intro.label
-        );
-        let perturbed = with_perturbed_secret(&intro.label, || world.open_inner(intro, &outer));
+        for byte in 0..32u16 {
+            let bit = byte * 8 + (index as u16 % 8);
+            let perturbed = with_perturbed_secret(&intro.label, Some(bit), || {
+                world.open_checked(intro, &outer)
+            });
+            assert_eq!(
+                perturbed.err(),
+                Some(DmCode::NotOpen),
+                "{}: opened with bit {bit} of its decapsulated secret flipped",
+                intro.label
+            );
+        }
+        let perturbed =
+            with_perturbed_secret(&intro.label, None, || world.open_inner(intro, &outer));
         assert_eq!(perturbed.err(), Some(DmCode::NotOpen), "{}", intro.label);
         checked += 1;
     }
@@ -875,15 +923,34 @@ fn pq1_the_host_assertion_refuses_an_open_that_decapsulates_twice() {
     });
 }
 
-/// ... an open that decapsulates once but whose result does not depend on the secret panics ...
+/// ... an open that decapsulates once and derives one inner key, but whose result does not depend
+/// on the secret, panics ...
 #[test]
 #[should_panic(expected = "k_in does not depend on ss")]
 fn pq1_the_host_assertion_refuses_an_open_whose_key_ignores_the_secret() {
     let (seed, ct) = encapsulated();
-    let _ = spy::assert_intro_open(|| pq::decapsulate(&seed, &ct).map(|_| ()));
+    let _ = spy::assert_intro_open(|| {
+        pq::decapsulate(&seed, &ct)?;
+        gate::inner_key(&KemSecret::from_bytes([0u8; 32]), &[0u8; 32]);
+        Ok::<(), DmCode>(())
+    });
 }
 
-/// ... and a refused open that decapsulated twice panics as well.
+/// ... an open that tries a second inner key — a lenient recipient's retry, whatever the key —
+/// panics ...
+#[test]
+#[should_panic(expected = "PQ1: an intro open that succeeded derived 2 inner keys")]
+fn pq1_the_host_assertion_refuses_an_open_that_tries_two_inner_keys() {
+    let (seed, ct) = encapsulated();
+    let _ = spy::assert_intro_open(|| {
+        let secret = pq::decapsulate(&seed, &ct)?;
+        gate::inner_key(&secret, &[0u8; 32]);
+        gate::inner_key(&KemSecret::from_bytes([0u8; 32]), &[0u8; 32]);
+        Ok::<(), DmCode>(())
+    });
+}
+
+/// ... a refused open that decapsulated twice panics as well ...
 #[test]
 #[should_panic(expected = "PQ1: a refused intro open performed 2 decapsulations")]
 fn pq1_the_host_assertion_refuses_a_refusal_after_two_decapsulations() {
@@ -895,6 +962,107 @@ fn pq1_the_host_assertion_refuses_a_refusal_after_two_decapsulations() {
     });
 }
 
+/// ... and so does a refusal after two inner keys: the lenient recipient on an envelope that
+/// neither key opens.
+#[test]
+#[should_panic(expected = "PQ1: a refused intro open derived 2 inner keys")]
+fn pq1_the_host_assertion_refuses_a_refusal_after_two_inner_keys() {
+    let (seed, ct) = encapsulated();
+    let _ = spy::assert_intro_open(|| {
+        let secret = pq::decapsulate(&seed, &ct)?;
+        gate::inner_key(&secret, &[0u8; 32]);
+        gate::inner_key(&KemSecret::from_bytes([0u8; 32]), &[0u8; 32]);
+        Err::<(), DmCode>(DmCode::NotOpen)
+    });
+}
+
+/// The reply code of a `jni.rs` reply (its first byte), and whether its fields carry `bytes`.
+#[cfg(feature = "jni-bridge")]
+fn reply_carries(reply: &[u8], bytes: &[u8]) -> (u8, bool) {
+    (
+        reply[0],
+        reply.windows(bytes.len()).any(|window| window == bytes),
+    )
+}
+
+/// `jni.rs`'s own `openIntro` body for the recipient of `intro`, under PQ1's assertion as the host
+/// library runs it (`jni::open_intro_for_test`).
+#[cfg(feature = "jni-bridge")]
+fn open_through_the_host_body(world: &World, intro: &Intro) -> DmResult<Vec<u8>> {
+    let to = world.device(intro.recipient);
+    let generation = world.generation_of(intro);
+    crate::jni::open_intro_for_test(
+        to.messaging,
+        to.identity_seed,
+        0,
+        &to.namespace,
+        generation.gen_id,
+        &generation.fallback_secret,
+        &generation.seed,
+        &intro.blob,
+    )
+}
+
+/// PQ1 through the **host library's own `openIntro` body** (`jni.rs`, the function the JVM worlds
+/// call, with only the JVM argument copies and the context registry left out): every envelope of
+/// the world opens or is refused through it under the assertion, with no panic — the honest ones
+/// reply `OK` with their L1, the gate-variant ones `NOT_OPEN`. Every PM-32 patch that breaks PQ1
+/// on the recipient's side fails here too, which is what shows the JNI body is under the
+/// assertion rather than only the function it wraps.
+#[cfg(feature = "jni-bridge")]
+#[test]
+fn pq1_every_intro_of_the_world_opens_through_the_host_open_intro_body_under_the_assertion() {
+    let world = world();
+    for intro in &world.intros {
+        let reply = open_through_the_host_body(world, intro);
+        if intro.honest() {
+            let (code, carries_l1) =
+                reply_carries(&reply.expect("an honest envelope opens"), &intro.l1);
+            assert_eq!(code, DmCode::Ok.as_u8(), "{}", intro.label);
+            assert!(carries_l1, "{}: the reply carries the L1", intro.label);
+        } else {
+            assert_eq!(reply.err(), Some(DmCode::NotOpen), "{}", intro.label);
+        }
+    }
+}
+
+/// The negative control of the one above: with the spy's next perturbation neutralised — the
+/// perturbed rerun then opens, as it would for an opener whose key ignores the secret — an honest
+/// envelope through the host library's `openIntro` body **panics** with PQ1's message, which is
+/// the `INTERNAL` the JVM sees. A body that ran the open outside the assertion would return `OK`.
+#[cfg(feature = "jni-bridge")]
+#[test]
+#[should_panic(expected = "k_in does not depend on ss")]
+fn pq1_the_host_open_intro_body_panics_on_a_key_that_ignores_the_secret() {
+    let world = world();
+    let intro = world.honest().next().expect("an honest envelope");
+    spy::neutralise_next_perturbation();
+    let _ = open_through_the_host_body(world, intro);
+}
+
+/// The shared world the PQ1 and PQ5 tests read, as a test of its own: every honest flight opened
+/// and was accepted by its recipient's Olm layer while it was scripted (`World::intro`), every root
+/// arrived, and the envelopes are the ones the tests count on. The mutant gate requires it to pass
+/// under every patch (`pq-mutants.sh`), so no patch is credited with kills it got by breaking the
+/// world every test reads.
+#[test]
+fn pq_world_every_honest_flight_opens_and_every_root_arrives() {
+    let world = world();
+    let variants = 1 + InnerKey::WITHOUT_KEM.len();
+    assert_eq!(world.intros.len(), 6 + variants * (BUCKETS.len() + 1));
+    assert_eq!(world.honest().count(), 6 + BUCKETS.len() + 1);
+    assert_eq!(world.roots.len(), 3);
+    for intro in world.honest() {
+        let outer = world.open_outer(intro).expect("outer");
+        assert_eq!(
+            world.open_checked(intro, &outer).expect("opens").0.l1,
+            intro.l1,
+            "{}",
+            intro.label
+        );
+    }
+}
+
 // -------------------------------------------------------------------------------------------
 // PQ5
 // -------------------------------------------------------------------------------------------
@@ -902,8 +1070,8 @@ fn pq1_the_host_assertion_refuses_a_refusal_after_two_decapsulations() {
 /// PQ5 (RG-5), intro half: every intro envelope an honest client of the world sealed carries,
 /// right after `gen_id`, **exactly 1 120 bytes** that RustCrypto `x-wing` decapsulates under the
 /// recipient's seed, and the secret it gets keys the inner layer: the oracle opens it with
-/// `HKDF(T_in, ss)` to the sender's card, binding minute, `reply_seed` and PreKey message. One bit
-/// of that secret and the layer stays shut, and GHOST's opener reads the same plaintext.
+/// `HKDF(T_in, ss)` to the sender's card, binding minute, `reply_seed` and PreKey message. With
+/// that secret complemented the layer stays shut, and GHOST's opener reads the same plaintext.
 #[test]
 fn pq5_every_intro_envelope_carries_an_x_wing_ciphertext_whose_secret_keys_its_inner_layer() {
     let world = world();
@@ -952,7 +1120,7 @@ fn pq5_every_intro_envelope_carries_an_x_wing_ciphertext_whose_secret_keys_its_i
         assert!(plain[236 + l1_len..].iter().all(|byte| *byte == 0));
 
         assert!(
-            oracle_open_inner(&flipped(&secret), &transcript, &outer.inner).is_none(),
+            oracle_open_inner(&complemented(&secret), &transcript, &outer.inner).is_none(),
             "{}: k_in does not depend on ss",
             intro.label
         );
@@ -1025,8 +1193,8 @@ fn pq5_the_sender_keys_the_inner_layer_with_the_secret_its_ciphertext_carries() 
 /// PQ5 (RG-5), PQ-C half: every `seal_root_pq` of the world, as its target decoded it from the L0
 /// it arrived in, is 1 166 bytes whose last **1 120** RustCrypto `x-wing` decapsulates under the
 /// target generation's seed; the §9.4 formula over that secret is the root the offerer keeps and
-/// the one GHOST's opener derives, in exactly one decapsulation. One bit of the secret gives
-/// another root, in the oracle and in GHOST's opener alike.
+/// the one GHOST's opener derives, in exactly one decapsulation. The complemented secret
+/// gives another root, in the oracle and in GHOST's opener alike.
 #[test]
 fn pq5_every_seal_root_pq_carries_an_x_wing_ciphertext_its_root_depends_on() {
     let world = world();
@@ -1069,7 +1237,7 @@ fn pq5_every_seal_root_pq_carries_an_x_wing_ciphertext_its_root_depends_on() {
         assert_ne!(
             oracle_root(
                 &root.value[..32],
-                &flipped(&secret),
+                &complemented(&secret),
                 &offerer.oi,
                 &target.oi,
                 gen_id,
@@ -1095,7 +1263,7 @@ fn pq5_every_seal_root_pq_carries_an_x_wing_ciphertext_its_root_depends_on() {
             "{}",
             root.label
         );
-        let perturbed = with_perturbed_secret(&root.label, || {
+        let perturbed = with_perturbed_secret(&root.label, None, || {
             pqroot::open(&tlv, gen_id, &generation.secret(), parties)
         })
         .expect("no key confirmation: a wrong secret is a wrong root, not a refusal (§9.4)");
@@ -1111,8 +1279,9 @@ fn pq5_every_seal_root_pq_carries_an_x_wing_ciphertext_its_root_depends_on() {
 
 /// PQ5 (RG-5), PM-32 as a bump gate: the gate-variant client G seals intro envelopes to A and B
 /// whose inner layer is keyed **without the KEM** — no encapsulation at all, the secret dropped,
-/// the card key, the ciphertext's hash — at every bucket, and the honest recipient refuses each
-/// one `NOT_OPEN` after exactly one decapsulation, through both openers. Each refused envelope is
+/// the card key, the ciphertext's hash, a low-order share that does not decapsulate — at every
+/// bucket, and the honest recipient refuses each one `NOT_OPEN` after exactly one decapsulation,
+/// through both openers. Each refused envelope is
 /// what it claims to be: its outer layer opens under the recipient's card, it carries 1 120 bytes
 /// where the ciphertext goes, and it **does** open under the non-KEM key it was sealed with, so the
 /// refusal is the KEM dependence and nothing else. G's KEM control, sealed by the same code, opens.
@@ -1166,7 +1335,9 @@ fn pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_rec
         let (_, public) = oracle_decapsulate(&generation.seed, &outer.ciphertext);
         let transcript = oracle_transcript(to, bucket, outer.gen_id, &public, &outer.ciphertext);
         let sealed_under: [u8; 32] = match variant {
-            InnerKey::NoEncapsulation | InnerKey::SecretDropped => [0u8; 32],
+            InnerKey::NoEncapsulation | InnerKey::SecretDropped | InnerKey::LowOrderShare => {
+                [0u8; 32]
+            }
             InnerKey::CardKey => to.intro_key,
             InnerKey::CiphertextHash => Sha256::digest(&outer.ciphertext).into(),
             InnerKey::Kem => unreachable!("handled above"),
@@ -1176,7 +1347,7 @@ fn pq5_a_gate_variant_client_sealing_without_the_kem_is_refused_by_an_honest_rec
         assert_eq!(&plain[1..132], &intro.sender_card[..]);
         refused.insert((variant as u8, intro.recipient, bucket));
     }
-    // Four ways without the KEM, at three buckets to B and one to A; the control at the same four.
+    // Five ways without the KEM, at three buckets to B and one to A; the control at the same four.
     assert_eq!(
         refused.len(),
         InnerKey::WITHOUT_KEM.len() * (BUCKETS.len() + 1)
