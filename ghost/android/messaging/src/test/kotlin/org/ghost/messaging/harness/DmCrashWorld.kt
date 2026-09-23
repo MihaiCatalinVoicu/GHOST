@@ -22,6 +22,9 @@ internal class DmCrashWorld(
     val bus = DmEventBus()
     val relay = ModelDmRelay(bus)
 
+    /** Names of the nodes [retire] took out of the world. */
+    private val retired = HashSet<String>()
+
     /** One temporary directory per world: a reboot must find the same bytes it left. */
     val directory: File = Files.createTempDirectory("ghost-dm-s10-").toFile()
 
@@ -43,15 +46,24 @@ internal class DmCrashWorld(
      */
     var mutation: DmMutants.Mutation? = null
 
-    fun node(name: String, branch: Int, identityBranch: Int = branch + 1): DmNode {
-        check(name !in byName) { "duplicate node $name" }
+    fun node(
+        name: String,
+        branch: Int,
+        identityBranch: Int = branch + 1,
+        streamOffset: Int = 0,
+    ): DmNode {
+        check(name !in byName && name !in retired) { "duplicate node $name" }
         val node = DmNode(
             name = name,
             branch = branch,
             directory = directory,
             bus = bus,
-            startSeconds = startSeconds,
+            // The world's time, not its start: a node added later (SCN-I's restored device) joins
+            // a world whose clocks have moved, and a device's wall clock is the world's. Every node
+            // of S10 is built before the first advance, where the two are the same number.
+            startSeconds = order.maxOfOrNull { it.clock.now } ?: startSeconds,
             identityBranch = identityBranch,
+            streamOffset = streamOffset,
         )
         mutation?.let {
             node.rewrite = it.rewrite
@@ -67,6 +79,38 @@ internal class DmCrashWorld(
     fun nodes(): List<DmNode> = order
 
     operator fun get(name: String): DmNode = requireNotNull(byName[name]) { "no node $name" }
+
+    /**
+     * Every inbound text a **retired** node had rendered at the moment it left the world, over
+     * every one of its conversations.
+     *
+     * The no-loss oracle of [DmCrashRunner] reads it beside the live nodes' own: a message the
+     * sender calls `SENT` that the lost device rendered before it was lost was not lost by the
+     * engine, and without this the oracle would charge SCN-I's restore with every message the old
+     * device ever read.
+     */
+    val retiredRendered = HashSet<String>()
+
+    /**
+     * Takes [name] out of the world for good: a device that is **lost** (SCN-I's "B restores from
+     * seed" — the old phone is gone, not rebooted).
+     *
+     * Its rendered texts are recorded first ([retiredRendered]), then its process dies the way
+     * [DmNode.kill] models a death — nothing flushed, nothing checkpointed — and it is removed from
+     * every round, so no later pump serves it a blob and no later pass runs on it. The relay keeps
+     * whatever it had stored for it, which is the point: those blobs are what the restored device
+     * finds in its inbox. Only a setup may call it: a retirement is not a scenario step a crash
+     * can interrupt, and a node that vanished mid-step would leave a runner that cannot reboot it.
+     */
+    fun retire(name: String) {
+        check(!bus.armed) { "a node is retired in the setup, never in the armed phase" }
+        val node = this[name]
+        retiredRendered += DmScripts.everyInboundText(node)
+        node.close()
+        order.remove(node)
+        byName.remove(name)
+        retired += name
+    }
 
     /** Moves every node's clock forward by the same amount; time never goes back here. */
     fun advanceBy(seconds: Long) {

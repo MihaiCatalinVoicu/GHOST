@@ -4,6 +4,7 @@ import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.ContactId
+import org.ghost.messaging.api.MessageState
 import org.ghost.messaging.api.SendResult
 
 /**
@@ -79,6 +80,23 @@ internal object DmScripts {
     }
 
     /**
+     * The inbound texts of **every** conversation of one node, requests included.
+     *
+     * [inboundTexts] reads the first contact only, which is right for the two-client scenarios it
+     * was written for and wrong for a device that holds a request beside its contact (SCN-I's lost
+     * device, which carol wrote to): the no-loss oracle charged with the lost device's rendering
+     * has to see all of it.
+     */
+    fun everyInboundText(node: DmNode): List<String> {
+        val device = node.device
+        return device.engine.contacts().flatMap { contact ->
+            device.engine.conversation(contact.id, 200, null).reversed()
+                .filter { !it.outgoing }
+                .mapNotNull { it.text }
+        }
+    }
+
+    /**
      * The texts of every outgoing message this node has marked **SENT**, over every conversation.
      *
      * `SENT` is the engine's own statement that the op was released with a `sent` outcome, so it is
@@ -92,6 +110,31 @@ internal object DmScripts {
                 .filter { it.outgoing && it.state.name == "SENT" }
                 .mapNotNull { it.text }
         }
+    }
+
+    /**
+     * Every outgoing message this node gave up on: `FAILED` or `INDETERMINATE`, over every
+     * conversation, by text — a timer change, which has none, as [DmScenario.TIMER_ROW].
+     */
+    fun abandonedOutgoing(node: DmNode): List<String> {
+        val device = node.device
+        return device.engine.contacts().flatMap { contact ->
+            device.engine.conversation(contact.id, 200, null)
+                .filter {
+                    it.outgoing &&
+                        (it.state == MessageState.FAILED || it.state == MessageState.INDETERMINATE)
+                }
+                .map { it.text ?: DmScenario.TIMER_ROW }
+        }
+    }
+
+    /** The state of the outgoing message [text] on [node], or null when it has none. */
+    fun outgoingState(world: DmCrashWorld, node: String, text: String): MessageState? {
+        val device = world[node].device
+        return device.engine.contacts().asSequence()
+            .flatMap { device.engine.conversation(it.id, 200, null).asSequence() }
+            .firstOrNull { it.outgoing && it.text == text }
+            ?.state
     }
 
     /** The outbound states of one node's single conversation, oldest first. */

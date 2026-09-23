@@ -113,8 +113,15 @@ internal sealed class DmFault {
     object NativeCrash : DmFault()
 
     /**
-     * Relay events only: the relay applied the call and the response never arrived (§15.3's
-     * "every relay event also runs as *timeout after apply*").
+     * The relay applied the store and the response never arrived (§15.3's "every relay event also
+     * runs as *timeout after apply*").
+     *
+     * **Only at [DmEventKind.RELAY_AFTER_APPLY]**, the one event at which it means anything: before
+     * the send nothing has been applied yet, and after the response the sender already knows. The
+     * first version planned it at all three relay events and the bus counted it at all three, while
+     * the model relay acted on it at one — so two thirds of the "timeout" runs injected nothing, ran
+     * exactly as the fault-free recording run did, and were still counted and still skipped the
+     * final checks as faulted runs. The bus now refuses it anywhere else.
      */
     object TimeoutAfterApply : DmFault()
 }
@@ -176,7 +183,7 @@ internal class DmEventBus {
     var storageFulls: Int = 0
         private set
 
-    /** How many relay responses the plan dropped after the relay applied them. */
+    /** How many relay responses the plan dropped after the relay applied the store. */
     var timeouts: Int = 0
         private set
 
@@ -255,7 +262,9 @@ internal class DmEventBus {
             }
 
             DmFault.TimeoutAfterApply -> {
-                check(kind.relay) { "a timeout-after-apply was planned at a non-relay event" }
+                check(kind == DmEventKind.RELAY_AFTER_APPLY) {
+                    "a timeout-after-apply was planned at $kind, where the relay cannot act on it"
+                }
                 timeouts++
                 DmFault.TimeoutAfterApply
             }

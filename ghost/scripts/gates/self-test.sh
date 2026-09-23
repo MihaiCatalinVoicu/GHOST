@@ -115,8 +115,8 @@ t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"
 # injected nothing, and a mutant with no line naming what kills it. Five of them are the ways the
 # slice's own review found the report could still claim more than it ran: a **gate** header over a
 # sampled enumeration, a gate that skipped timeout-after-apply runs, a suite with no timeout run
-# anywhere, a scenario with no relay events to run them over, and a mutant the registry counts while
-# no run killed it.
+# anywhere, a scenario with no stores to run them over (relay events, until S10b's review), and a
+# mutant the registry counts while no run killed it.
 DMR="$HARNESS/dm-report"
 dmr_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
   if bash "$DIR/dm-report-check.sh" "$DMR/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
@@ -164,6 +164,23 @@ pqm_case fail malformed-expected "rejects an expectation that is neither true no
 pqm_case pass mutant-pass "accepts a mutant generated from its original by a patch"
 pqm_case fail mutant-drift "rejects a mutant patch that no longer applies to its original"
 pqm_case fail mutant-copied "rejects a mutant that is both a copied file and a patch"
+# Phase 9 S10b (design §22.19): the report now carries SCN-H, SCN-I, SCN-K and SCN-G-week and eleven
+# mutants, and every negative above was regenerated from the new positives with its one change. Four
+# more:
+# a report of S10's shape (seven scenarios, seven mutants) — the check must not accept the old
+# evidence as the new — SCN-I without the double crashes §15.3 names for it, a report without
+# SCN-K, and one of S10b's mutants with no line naming its killer.
+dmr_case fail s10-only-gate.txt gate "rejects an S10-shaped report without S10b's scenarios and mutants"
+dmr_case fail no-scn-i-doubles.txt gate "rejects SCN-I without double crashes (§15.3)"
+dmr_case fail missing-scn-k.txt gate "rejects a report without SCN-K"
+dmr_case fail unkilled-s10b-mutant.txt gate "rejects MC-33 with no line naming what kills it"
+# The review of S10b (design §22.19 item 14): a timeout counted at every relay event, three per
+# store, where only the after-apply one injects anything — the inflated shape the S10b report had;
+# one of S10b's kills held only to the fault-free rule, which the report could not show before the
+# rule was printed on the line; and a PR report with one scenario that ran no timeout at all.
+dmr_case fail relay-event-denominator.txt gate "rejects timeouts counted over relay events instead of stores"
+dmr_case fail weakened-kill-rule.txt gate "rejects MC-18 killed only fault-free"
+dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K ran no timeout"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

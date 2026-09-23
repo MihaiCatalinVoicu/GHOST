@@ -151,9 +151,31 @@ internal object DmStructuralInvariants {
             "SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id HAVING count(*) > 2)",
         )
         empty(
-            sql, label, "a contact with sessions but no 'current' slot",
+            sql, label, "a contact with more than one 'current' slot",
             """SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id
-                                      HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) <> 1)""",
+                                      HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) > 1)""",
+        )
+        // "Exactly one `current` whenever any exists" — **except in R-SS0's re-establishment
+        // window**, which §15.3's clause does not allow for and the engine opens on purpose (S10b,
+        // §22.19). A send that finds its session stale (`UNACK_MAX`) or unable to seal
+        // (`NO_SEAL_KEY`) demotes `current` to `previous` in its own transaction, so that
+        // `EST-READY`'s "unless a usable session already exists" finds the slot empty
+        // (`SendStep`, R-SS0 of §8.2) — and until the establishment builds the replacement the
+        // contact has a `previous` and no `current`. The window is legal while that establishment
+        // is owed: a pending send is waiting for it (and the next time-triggered pass starts it,
+        // which is also the recovery for a crash between the demotion and `EST-START`), or it is
+        // `fetching`, or it gave up (`unreachable`) and the demoted row receives until its
+        // `retire_day`. What stays forbidden is the state no path creates: sessions, no `current`,
+        // and a contact that is `ready` with nothing owed. The first version of this clause fired
+        // on exactly that window in the world of mutant MC-33, and nothing in S10's scenarios ever
+        // re-establishes a session, which is why nobody had seen it.
+        empty(
+            sql, label, "a contact with sessions but no 'current' slot and no establishment owed",
+            """SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id
+                                      HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) = 0) x
+                 WHERE NOT EXISTS (SELECT 1 FROM dm_pending_send p WHERE p.contact_id = x.contact_id)
+                   AND NOT EXISTS (SELECT 1 FROM dm_contact c WHERE c.contact_id = x.contact_id
+                                     AND c.establishment IN ('fetching', 'unreachable'))""",
         )
 
         // Every `previous` row has a `retire_day`.
@@ -221,6 +243,30 @@ internal object DmStructuralInvariants {
             node.raw, label, "a message past its delete_at_minute after SWEEP",
             "SELECT count(*) FROM dm_message WHERE delete_at_minute IS NOT NULL " +
                 "AND delete_at_minute <= $minute",
+        )
+    }
+
+    /**
+     * §10.6 and §8.7 (S10b): after SWEEP, **no `previous` session is past its `retire_day`**.
+     *
+     * §15.3 checks that every `previous` row *has* a retire day, and nothing checked that the day
+     * is honoured, so mutant MC-26 ("`previous` never retired"; §15.7 names "CS-8 bound, structural
+     * invariants, T34 retired-session expectation") broke no clause at all. The day is the wall
+     * clock's and SWEEP's is `now_e`'s, which is never earlier (R-T7), so this cannot demand more
+     * than the sweep that just ran was obliged to do.
+     *
+     * A separate function from [afterSweep] on purpose: the seeded worlds call that one from their
+     * `alwaysChecks`, which run **before** the runner's last pass, and a retire day crossed by the
+     * quiescence loop's final clock step is owed to the next sweep, not broken by the last one. The
+     * runner calls this after its own pass, the one place both halves hold by construction.
+     */
+    fun retiredSessionsGone(node: DmNode, nowEpochSeconds: Long, where: String) {
+        val label = "${node.name} @ $where"
+        val today = Math.floorDiv(nowEpochSeconds, org.ghost.messaging.DmWorld.DAY)
+        empty(
+            node.raw, label, "a 'previous' session past its retire_day after SWEEP",
+            "SELECT count(*) FROM olm_session WHERE slot = 'previous' AND retire_day IS NOT NULL " +
+                "AND retire_day <= $today",
         )
     }
 
@@ -337,6 +383,10 @@ internal object DmStructuralInvariants {
                 "blob ${it.string(0)} ${it.string(1)} ${it.long(2)} ${it.long(3)}\n",
             )
         }
+        // A scheduled control that went out is progress, and one still waiting is owed (S10b).
+        node.raw.query(
+            "SELECT hex(sched_id), what, due_minute FROM dm_scheduled ORDER BY sched_id",
+        ) { out.append("sched ${it.string(0)} ${it.string(1)} ${it.long(2)}\n") }
         return out.toString()
     }
 
@@ -376,6 +426,24 @@ internal object DmStructuralInvariants {
         node.raw.query(
             "SELECT min(offer_after_minute) FROM inbox_blob WHERE state <> 'done' " +
                 "AND offer_after_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        // A scheduled control's drawn minute (S10b: SCN-I's reconnect, SCN-K's revocation). It is
+        // owed work in exactly the sense the four above are — a time-triggered pass sends it when
+        // its minute arrives and nothing else will — and until SCN-I and SCN-K no scenario
+        // scheduled one, so nothing noticed that a world whose only remaining work was a notice due
+        // in six hours looked idle and was declared quiescent without it.
+        node.raw.query(
+            "SELECT min(due_minute) FROM dm_scheduled WHERE due_minute > ?",
+            listOf(after),
+        ) { if (!it.isNull(0)) consider(it.long(0)) }
+        // An establishment's next decision (S10b review): the end of an attempt window or the
+        // start of the next attempt six hours later (§21.7 point 5). The "nothing owed" oracle
+        // refuses a world that ends `fetching`, so quiescence has to be able to reach the minute
+        // at which a `fetching` contact is next decided, exactly as it reaches a scheduled one.
+        node.raw.query(
+            "SELECT min(fetch_listen_until_minute) FROM dm_contact WHERE establishment = 'fetching' " +
+                "AND fetch_listen_until_minute > ?",
             listOf(after),
         ) { if (!it.isNull(0)) consider(it.long(0)) }
         return if (best == Long.MAX_VALUE) null else best
