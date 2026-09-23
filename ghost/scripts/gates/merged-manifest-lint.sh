@@ -12,7 +12,12 @@
 #     declare android:exported explicitly;
 #   - org.ghost.sync.android.SyncJobService is present, not exported and protected by
 #     BIND_JOB_SERVICE (only the system binds it; ADR-20);
-#   - the application keeps allowBackup="false", allows no cleartext traffic and is not debuggable.
+#   - the application keeps allowBackup="false", allows no cleartext traffic and is not debuggable;
+#   - G-DM7 (Phase 9 design §16.1, §10.7, §21.10 point 7; armed by slice S12 in the commit that
+#     declares the receiver, as §22.14 item 16 requires): org.ghost.messaging.android.ExpiryAlarmReceiver,
+#     the receiver of the one inexact DM alarm, is present, declares android:exported="false" and has
+#     no intent filter: only the app's own explicit, immutable PendingIntent may reach it. Phase 9
+#     adds no permission, which the allowlist above already enforces.
 # Usage: merged-manifest-lint.sh [merged AndroidManifest.xml ...]. Default: the :app release merged
 # manifest under android/app/build/intermediates/merged_manifest/release (run :app:assembleRelease
 # first). It needs the build, so CI runs it in the android job, not in run-all.sh. POSIX awk only
@@ -20,6 +25,8 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 SYNC_JOB_SERVICE='org.ghost.sync.android.SyncJobService'
 SYNC_JOB_PERMISSIONS='android.permission.RECEIVE_BOOT_COMPLETED|android.permission.ACCESS_NETWORK_STATE'
+# G-DM7: the receiver of the DM expiry alarm (Phase 9 design §16.1).
+DM_ALARM_RECEIVER='org.ghost.messaging.android.ExpiryAlarmReceiver'
 # Exported components besides the LAUNCHER activity, one "component|required permission|ADR" per
 # entry. Empty: design §11.1 Q7 removed androidx.profileinstaller.ProfileInstallReceiver (exported,
 # protected by DUMP) with tools:node="remove" in the app manifest.
@@ -82,6 +89,12 @@ function end_component() {
     if (cexported != "false") bad(cname ": must declare android:exported=\"false\" (ADR-20)")
     if (cperm != "android.permission.BIND_JOB_SERVICE") bad(cname ": must be protected by android.permission.BIND_JOB_SERVICE (ADR-20)")
   }
+  if (cname == dmrecv) {
+    founddm = 1
+    if (ctype != "receiver") bad(cname ": must be declared as a receiver (G-DM7)")
+    if (cexported != "false") bad(cname ": must declare android:exported=\"false\" (G-DM7)")
+    if (cfilter) bad(cname ": must have no intent filter (G-DM7)")
+  }
   if (cexported == "(absent)" && cfilter) {
     bad(cname ": " ctype " with an intent filter must declare android:exported")
     return
@@ -128,6 +141,7 @@ BEGIN {
 END {
   if (!seen) bad("not an Android manifest")
   if (!foundsync) bad(syncsvc ": missing (the background sync job, ADR-20)")
+  if (!founddm) bad(dmrecv ": missing (the receiver of the DM expiry alarm, G-DM7)")
   n = split(required, req, "|")
   for (i = 1; i <= n; i++) if (!(req[i] in have)) bad("uses-permission missing: " req[i] " (the sync job needs it, ADR-20)")
   if (launchers != 1) bad("expected exactly one exported LAUNCHER activity, found " (launchers + 0))
@@ -151,7 +165,7 @@ for m in ${files[@]+"${files[@]}"}; do
   parsed=0
   while IFS= read -r v; do
     if [ "$v" = "T15M-CHECKED" ]; then parsed=1; else fail "$m: $v"; fi
-  done < <(awk -v perms="$T15_ALLOWED_PERMISSIONS" -v exported="$exported_list" -v syncsvc="$SYNC_JOB_SERVICE" -v required="$SYNC_JOB_PERMISSIONS" "$AWK_PROG" "$m" || true)
+  done < <(awk -v perms="$T15_ALLOWED_PERMISSIONS" -v exported="$exported_list" -v syncsvc="$SYNC_JOB_SERVICE" -v dmrecv="$DM_ALARM_RECEIVER" -v required="$SYNC_JOB_PERMISSIONS" "$AWK_PROG" "$m" || true)
   [ "$parsed" = 1 ] || fail "$m: could not be parsed"
   echo "[merged-manifest-lint] checked $m"
 done

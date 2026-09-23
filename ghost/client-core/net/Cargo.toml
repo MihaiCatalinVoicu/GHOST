@@ -67,3 +67,9 @@ tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
 hex = { workspace = true }
 ed25519-dalek = { workspace = true }
 num-bigint-dig = { workspace = true }
+
+# The host re-store tool of Phase 9 design §15.10 step 4 and §21.13 point 4 (slice S12): a
+# client-core test binary, never part of the shipped library. Its self-test is tests/dm_restore.rs.
+[[example]]
+name = "dm_restore"
+path = "examples/dm_restore/main.rs"

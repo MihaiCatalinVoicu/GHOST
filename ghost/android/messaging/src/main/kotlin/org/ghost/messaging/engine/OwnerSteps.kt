@@ -263,6 +263,34 @@ class OwnerSteps(
         }
     }
 
+    /**
+     * The next instant, in epoch seconds, at which a **time-triggered** pass owes owner work that
+     * no row deadline announces (§21.9 rule 1's `t_pub` and "next week boundary" terms; §22.14 item
+     * 10, added by slice S12): the publication due minute of [ownerWeek] when it is still ahead,
+     * else the next ISO week boundary — where KEEPER and REGROWS move to a new week and, if nothing
+     * was published this week, `t_pub` is not yet due either.
+     *
+     * Only future instants are returned, so a pass that could not publish (no relays this week)
+     * does not schedule itself again at once: that week's publication then waits for the next
+     * trigger, which is the behaviour it had before this wake existed.
+     *
+     * It reads `dm_self.bundle_week` and the card's fixed offset and nothing else (T31, mutants
+     * PM-11 and PM-30): no contact, fetch or message can move it. Null when the DM context is
+     * closed or ACTIVATE has not run. Must run outside a transaction.
+     */
+    fun nextOwnerWakeSeconds(): Long? {
+        val own = ownCard() ?: return null
+        val now = clock.nowEpochSeconds()
+        val week = DmTime.week(now)
+        val self = database.transaction { tx -> store.self(tx.sql) } ?: return null
+        val boundary = DmTime.weekStart(week + 1)
+        // This week is already claimed (published, or an ACTIVATE claimed it, §22.11 item 5): the
+        // next publication is `t_pub(w + 1)`, which is never before the boundary.
+        if (self.bundleWeek != null && self.bundleWeek >= week) return boundary
+        val due = publicationDue(self.bundleWeek, week, own.publicationOffsetSeconds)
+        return if (due > now) minOf(due, boundary) else boundary
+    }
+
     // ----------------------------------------------------------------- KEEPER
 
     /**

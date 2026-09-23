@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The gate variant only (Phase 9 design 15.10, 21.13 points 4 and 7, ADR-34; slice S12): the
+     instrumentation scripts/device/dm-gate.sh drives. The application is the release's own
+     org.ghost.app.GhostApp; the debug key-change hook reaches it through this source set's
+     DmBranch, not through a subclass (S12 review). Never in a release manifest (gate G-DM5 reads
+     the release source sets; T15m reads the merged release manifest). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <instrumentation
+        android:name="org.ghost.app.gate.GateInstrumentation"
+        android:label="GHOST gate"
+        android:targetPackage="${applicationId}" />
+
+</manifest>

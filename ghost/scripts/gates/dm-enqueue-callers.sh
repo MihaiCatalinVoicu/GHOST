@@ -186,7 +186,15 @@ TRIGGERS='runOwnerMaintenance|onActivated|onRestored'
 # write it somewhere. What the rule cannot see is an already-built `() -> Unit` handed on from an
 # allowed file to one that may not have it; `NoReflexTest` is what covers that, since an owner
 # pass publishes a bundle and shows up as a `store` line in the noisy world only.
-TRIGGER_ALLOWED='Messaging.kt MessagingEngine.kt MessagingWiring.kt DmActor.kt'
+#
+# **Slice S12 (2026-09-22)** adds `MessagingRuntime.kt`, deliberately and for one line. Every step
+# of `:messaging` is `internal`, so the stack `:app`'s `MessagingWiring.kt` runs has to be assembled
+# inside the module, by one public class — and that assembly is where the actor's `ownerMaintenance`
+# lambda is bound to `engine.runOwnerMaintenance()`, exactly as `DmDevice` binds it in the test
+# worlds. The lambda is handed to the actor and to nothing else; the file makes no restricted call
+# and drives no step. `MessagingWiring.kt`, on the list since S6, now exists: it is the K20 hook's
+# `onActivated()`/`onRestored()` (§13.4) and nothing more.
+TRIGGER_ALLOWED='Messaging.kt MessagingEngine.kt MessagingWiring.kt MessagingRuntime.kt DmActor.kt'
 
 # **Who may start a relay-visible step** (added by the review of S8, and the same shape as the rule
 # above one frame lower). The third rule closed the facade road into OWNER-WEEK; it left the

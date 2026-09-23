@@ -1,0 +1,4 @@
+INSTRUMENTATION_RESULT: stream=dm-equivalence: 3 cases, 3 identical, control detected
+device tests: 1 run, 0 failed, 0 skipped
+
+INSTRUMENTATION_CODE: -1

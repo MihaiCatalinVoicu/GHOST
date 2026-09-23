@@ -5,11 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Test-only host build of the DM JNI surface, so JVM tests call the real ratchet on Linux and Windows (Phase 9 design faza9-dm.md §2.3, §2.7, §15.1; evidence V-5)"
+description = "Test-only host build of the DM JNI surface, so JVM tests call the real ratchet on Linux and Windows (Phase 9 design faza9-dm.md §2.3, §2.7, §15.1; evidence V-5), and the emulator's equivalence test library (§15.9 item 7)"
 
 [lib]
-# A cdylib the JVM loads with `System.load` through `-Dghost.dm.native=<path>`. Never built for
-# Android: on a device the same code is inside `libghost_client_net.so` (§2.3).
+# A cdylib the JVM loads with `System.load` through `-Dghost.dm.native=<path>`. Never shipped: on a
+# device the same code is inside `libghost_client_net.so` (§2.3). Cross-compiled for
+# `x86_64-linux-android` it is the emulator's **test library** of §15.9 item 7 (§22.8.10 point 6),
+# packaged only in `:crypto-bridge`'s `androidTest` APK.
 name = "ghost_dm_host"
 crate-type = ["cdylib"]
 
@@ -22,6 +24,9 @@ crate-type = ["cdylib"]
 provenance = ["ghost-client-dm/provenance"]
 
 [dependencies]
-# The whole point of this package: the JVM tests run the shipped crate, not a stand-in.
-ghost-client-dm = { path = "../dm", features = ["jni-bridge"] }
+# The whole point of this package: the JVM tests run the shipped crate, not a stand-in. The one
+# addition is `test-vectors`, the deterministic equivalence entry point (slice S12): the shipped
+# graph never enables it (G-R2) and G-R6 checks this library exports it and the shipped one does
+# not.
+ghost-client-dm = { path = "../dm", features = ["jni-bridge", "test-vectors"] }
 jni = { workspace = true }

@@ -853,7 +853,7 @@ pub fn open_intro_checked(
 
 /// The decapsulation and the AEAD open of the inner layer, without any signature check: both
 /// public entry points add their own, and neither returns before they have.
-fn open_intro_layer(
+pub(crate) fn open_intro_layer(
     gen_seed: &KemSecret,
     context: &IntroContext<'_>,
     outer: &IntroOuter,

@@ -1,0 +1,4 @@
+INSTRUMENTATION_RESULT: stream=dm-smoke: release library, one in-process Olm session, no transport
+device tests: 1 run, 0 failed, 0 skipped
+
+INSTRUMENTATION_CODE: -1

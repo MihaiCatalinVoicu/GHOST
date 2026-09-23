@@ -82,7 +82,20 @@ internal class MessagingEngine(
         this.actor = actor
     }
 
-    private fun <T> onActor(body: () -> T): T = actor?.call(body) ?: body()
+    /**
+     * Runs [body] on the actor (§13.7), or inline when no actor is attached (a test world that
+     * drives its passes directly).
+     *
+     * **Not `actor?.call(body) ?: body()`**, which is what this was until slice S12 attached the
+     * first real actor: the Elvis operator reads a `null` *result* as "no actor", so every facade
+     * method that answers null — `myCard()` on a closed context, `safetyNumber` of an unknown
+     * contact, `issueRevocation` that could not issue — ran its body a **second time, on the
+     * caller's thread**, which is exactly the second DM thread §7.9 point 3 forbids.
+     */
+    private fun <T> onActor(body: () -> T): T {
+        val attached = actor ?: return body()
+        return attached.call(body)
+    }
 
     // ------------------------------------------------------------- owner side
 

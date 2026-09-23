@@ -22,12 +22,23 @@
 # `internal` **with** an explicit `@JvmName`, which is the facade rule of §2.6 and §13.1 together
 # with the only way to keep it (Kotlin mangles internal members' JVM names).
 #
-# Usage: dm-jni-surface.sh [<library> ...]
-#   <library>  a built library to read symbols from: the CI `android` job passes the
-#              `ghost-dm-host` build and `android-native` every shipped
-#              `libghost_client_net.so` (§22.8.10 points 6 and 10). Without one the symbol half is
-#              skipped and the source halves still run, so the gate is useful on a host without
-#              the Rust toolchain.
+# **Only `:crypto-bridge` references `DmNative`** (§16.1 G-R6, §21.13 point 7; added by slice S12):
+# no production source set of any other Android module — `src/main`, `src/release`, `src/gate` —
+# names it in code, and inside `:crypto-bridge` only `src/main` and `src/gate` may. `:messaging`
+# reaches the ratchet through the typed facade (`DmSessions`) and nothing else.
+#
+# **The equivalence-test entry point** (§15.9 item 7, §22.8.10 point 6; slice S12) is the one
+# symbol a *test* library adds: `Java_org_ghost_crypto_bridge_DmEquivalence_run`, compiled only with
+# `ghost-client-dm`'s `test-vectors` feature, which only `ghost-dm-host` enables. A library passed
+# as `--test <library>` must export exactly the closed list plus that one symbol; every other
+# library is a shipped one and must export no `DmEquivalence` symbol at all.
+#
+# Usage: dm-jni-surface.sh [[--test] <library> ...]
+#   <library>  a built library to read symbols from: `android-native` passes every shipped
+#              `libghost_client_net.so` (§22.8.10 points 6 and 10); the `android` job, the DM exit
+#              gate and `dm-emulator.yml` pass the `ghost-dm-host` builds with `--test`. Without one
+#              the symbol half is skipped and the source halves still run, so the gate is useful on
+#              a host without the Rust toolchain.
 # Self-test hooks: GHOST_DM_JNI_SOURCE, GHOST_DM_JNI_KOTLIN, GHOST_DM_JNI_SCAN, and
 # GHOST_DM_JNI_NM, which names the symbol reader — the fixtures in
 # `test-harness/gates/dm-jni/nm/` are readers that print an exported list with one symbol too many,
@@ -43,6 +54,11 @@ KOTLIN="${GHOST_DM_JNI_KOTLIN:-$GHOST_ROOT/android/crypto-bridge/src/main/kotlin
 if [ -n "${GHOST_DM_JNI_SOURCE:-}" ]; then SCAN_DEFAULT="$SOURCE"; else SCAN_DEFAULT="$GHOST_ROOT"; fi
 SCAN="${GHOST_DM_JNI_SCAN:-$SCAN_DEFAULT}"
 PREFIX="Java_org_ghost_crypto_bridge_DmNative_"
+# The test libraries' one extra symbol (see the header).
+ENTRY_PREFIX="Java_org_ghost_crypto_bridge_DmEquivalence_"
+ENTRY_NAMES="run"
+# The Android tree the source-set half reads (self-test hook: GHOST_DM_JNI_ANDROID).
+ANDROID_TREE="${GHOST_DM_JNI_ANDROID:-$GHOST_ROOT/android}"
 
 [ -f "$SOURCE" ] || { echo "DM JNI source not found: $SOURCE" >&2; exit 2; }
 [ -f "$KOTLIN" ] || { echo "DmNative.kt not found: $KOTLIN" >&2; exit 2; }
@@ -122,6 +138,32 @@ while read -r name; do
   fail "DmNative does not declare 'external fun $name', which the crate exports"
 done < <(comm -13 "$work/kotlin" "$work/expected")
 
+# Only `:crypto-bridge`'s `main` and `gate` source sets reference `DmNative` (see the header). Code
+# lines only: the design's KDoc across `:messaging` names `DmNative` on purpose.
+if [ -d "$ANDROID_TREE" ]; then
+  refs=()
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      */crypto-bridge/src/main/*|*/crypto-bridge/src/gate/*) continue ;;
+    esac
+    refs+=("$f")
+  done < <(find "$ANDROID_TREE" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+             \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' \) -print 2>/dev/null || true)
+  if [ "${#refs[@]}" -gt 0 ]; then
+    while IFS= read -r v; do
+      [ -n "$v" ] && fail "$v"
+    done < <(awk '
+      { line = $0
+        t = line; sub(/^[ \t]+/, "", t)
+        if (t ~ /^(\*|\/\/|\/\*)/) next
+        sub(/[ \t]\/\/.*$/, "", line)
+        if (line ~ /(^|[^A-Za-z0-9_])DmNative([^A-Za-z0-9_]|$)/)
+          print FILENAME ":" FNR ": references DmNative outside :crypto-bridge src/{main,gate} (G-R6: go through the typed facade)"
+      }' "${refs[@]}")
+  fi
+fi
+
 # The built library, when one was named: its dynamic symbols are exactly the expected set.
 #
 # `nm -D` reads ELF. The CI android job builds the Linux `.so` and this half runs there; the
@@ -142,7 +184,15 @@ if [ -n "${GHOST_DM_JNI_NM:-}" ]; then NM="$GHOST_DM_JNI_NM"
 elif command -v llvm-nm >/dev/null; then NM=llvm-nm
 elif command -v nm >/dev/null; then NM=nm
 else NM=""; fi
+printf '%s\n' $ENTRY_NAMES | sort -u > "$work/entry-expected"
+TEST_LIBRARY=0
 for LIBRARY in "$@"; do
+  if [ "$LIBRARY" = "--test" ]; then
+    TEST_LIBRARY=1
+    continue
+  fi
+  is_test="$TEST_LIBRARY"
+  TEST_LIBRARY=0
   if [ ! -f "$LIBRARY" ]; then
     fail "library not found: $LIBRARY"
   elif [ "$(head -c 4 "$LIBRARY" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
@@ -162,7 +212,27 @@ for LIBRARY in "$@"; do
       [ -n "$name" ] || continue
       fail "$LIBRARY does not export '$name', which the closed list marks Exported"
     done < <(comm -13 "$work/symbols" "$work/expected")
+    # The equivalence-test entry point: exactly its one symbol in a test library, none in a
+    # shipped one (§22.8.10 point 6).
+    grep -oE "${ENTRY_PREFIX}[A-Za-z0-9]+" "$work/nm-out" \
+      | sed -E "s/${ENTRY_PREFIX}//" | sort -u > "$work/entry-symbols" || true
+    if [ "$is_test" = 1 ]; then
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "test library $LIBRARY exports 'DmEquivalence.$name', which is not the test-vectors entry point"
+      done < <(comm -23 "$work/entry-symbols" "$work/entry-expected")
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "test library $LIBRARY does not export the test-vectors entry point 'DmEquivalence.$name'"
+      done < <(comm -13 "$work/entry-symbols" "$work/entry-expected")
+    else
+      while read -r name; do
+        [ -n "$name" ] || continue
+        fail "$LIBRARY exports the test-vectors entry point 'DmEquivalence.$name': a shipped library never carries it"
+      done < "$work/entry-symbols"
+    fi
   fi
 done
+[ "$TEST_LIBRARY" = 0 ] || fail "--test names no library"
 
 finish dm-jni-surface

@@ -12,6 +12,7 @@ import org.ghost.entitlement.port.SessionPort
 import org.ghost.entitlement.port.TokenCryptoPort
 import org.ghost.entitlement.port.UserCallPort
 import org.ghost.identity.IdentityManager
+import org.ghost.network.EntitlementCrypto.ScheduleSummary
 import org.ghost.storage.SqlExecutor
 import org.ghost.storage.queryLong
 import org.ghost.sync.api.PrivacyMode
@@ -60,6 +61,16 @@ class EntitlementWiring(
     )
 
     val entitlement: Entitlement get() = engine
+
+    /**
+     * The Entitlement Schedule the open database accepted, for the DM layer's `EsSlots` (Phase 9
+     * design §13.1, §5.2; slice S12). Opens the acceptance transaction the first time for a
+     * database: never call it inside a transaction ([acceptedScheduleIfKnown] never opens one).
+     */
+    fun acceptedSchedule(): ScheduleSummary? = engine.acceptedSchedule()
+
+    /** [acceptedSchedule] without a transaction: null until the engine accepted it for this database. */
+    fun acceptedScheduleIfKnown(): ScheduleSummary? = engine.acceptedScheduleIfKnown()
 
     val participant: SessionParticipant = EntitlementParticipant(engine)
 

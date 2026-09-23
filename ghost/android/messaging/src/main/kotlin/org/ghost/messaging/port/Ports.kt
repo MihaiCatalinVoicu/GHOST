@@ -48,16 +48,22 @@ interface DmRandom {
  * The schema admits a wrapped key of 40..256 bytes, which is what an AES-GCM wrap of 32 bytes
  * with its IV and tag costs; the port therefore returns bytes, not a fixed length.
  *
- * **Deferred to S12** (§17.1: "App wiring"): `KeystoreContentKeyWrapper` and
- * `KeystoreStateKeyWrapper` of §13.1's `…messaging.android` package. S6 ships the port and an
- * in-memory implementation for the JVM tests, which is the "JVM tests use an in-memory wrapper
- * port" of §13.8.
+ * The device implementations are `KeystoreContentKeyWrapper` and `KeystoreStateKeyWrapper` of
+ * §13.1's `…messaging.android` package (slice S12); the JVM tests use an in-memory implementation,
+ * which is the "JVM tests use an in-memory wrapper port" of §13.8.
  */
 interface KeyWrapper {
     /** Wraps a freshly generated 32-byte device key for `dm_self`. */
     fun wrap(key: ByteArray): ByteArray
 
-    /** Unwraps a stored column back into the 32 bytes the DM context is opened with. */
+    /**
+     * Unwraps a stored column back into the 32 bytes the DM context is opened with.
+     *
+     * Throws [IllegalArgumentException] — and nothing else — when the column does not open here:
+     * a corrupted envelope, a Keystore key a device reset deleted, an authentication-bound key
+     * outside its window. Callers read that as "the key is not available" (`CRYPTO_UNAVAILABLE`),
+     * never as a crash.
+     */
     fun unwrap(wrapped: ByteArray): ByteArray
 }
 

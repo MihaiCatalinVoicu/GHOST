@@ -10,9 +10,11 @@ import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncDatabase
 import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -101,8 +103,17 @@ internal class DmActor(
     private val sessions = SessionStore()
     private val held = HeldStore()
     private val expiry = ExpiryClock(database, clock)
+
+    /**
+     * The actor's own thread, recorded by the thread factory so [call] can tell whether it is
+     * already on it (slice S12). A single-thread executor makes exactly one thread for its whole
+     * life, so the reference never changes once set.
+     */
+    @Volatile
+    private var actorThread: Thread? = null
+
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, THREAD_NAME).apply { isDaemon = true }
+        Thread(runnable, THREAD_NAME).apply { isDaemon = true }.also { actorThread = it }
     }
 
     /** A wake that arrived while a pass was running; coalesced, because hints carry no payload. */
@@ -111,11 +122,120 @@ internal class DmActor(
     /** When a bundle candidate was first stored, so `EST-READY` waits two minutes (§21.7 point 4). */
     private val candidateSince = HashMap<List<Byte>, Long>()
 
-    /** Runs [body] on the actor thread and waits for it: the facade's contract (§13.2). */
-    fun <T> call(body: () -> T): T = executor.submit(Callable(body)).get()
+    /**
+     * Set by [retire] before its final turn is queued: from then on a posted turn — a pass, a
+     * posted lock or unlock — that has not started yet **does nothing** when it reaches the thread
+     * (S12 review). Without it a pass queued by a hint, the in-process timer or the alarm before
+     * the wipe ran after the final turn had cancelled the alarm, and its `afterCommit` put the alarm
+     * back into the system's table (§10.7: "cancelled … at wipe").
+     */
+    @Volatile
+    private var retiring = false
 
-    /** Posts [body] without waiting; used by the listener hand-off, which must not block a lane. */
-    fun post(body: () -> Unit): Future<*> = executor.submit(body)
+    /** Set on the actor thread at the end of [retire]'s final turn: facade calls answer `INTERNAL` after it. */
+    @Volatile
+    private var stopped = false
+
+    /**
+     * Runs [body] on the actor thread and waits for it: the facade's contract (§13.2).
+     *
+     * **On the actor thread itself it runs [body] inline** (found when slice S12 first attached an
+     * actor to a real engine). A time-triggered pass calls `ownerMaintenance`, which the wiring
+     * binds to `Messaging.runOwnerMaintenance()`, and every facade method posts here: submitting to
+     * a single-thread executor from its only thread and then waiting on the future is a deadlock
+     * that stops the actor for the life of the process. Every test world before S12 drove the pass
+     * directly with no actor attached to the engine, so none could reach it.
+     *
+     * **The body's own exception is what the caller sees**, not the executor's
+     * `ExecutionException` wrapper: the facade's contract is that an `INTERNAL` answer is an
+     * `IllegalStateException` (§2.6), and a wrapper would make every caller unwrap it.
+     *
+     * **After [retire]** it throws `IllegalStateException` — the facade's `INTERNAL` — and never the
+     * executor's `RejectedExecutionException`, which no caller of the facade is told to expect (S12
+     * review): a call queued behind the final turn, or made after the executor shut down, has no
+     * context and no database left to answer from.
+     */
+    fun <T> call(body: () -> T): T {
+        if (Thread.currentThread() === actorThread) return body()
+        val future = try {
+            executor.submit(
+                Callable {
+                    check(!stopped) { STOPPED }
+                    body()
+                },
+            )
+        } catch (e: RejectedExecutionException) {
+            throw IllegalStateException(STOPPED, e)
+        }
+        return try {
+            future.get()
+        } catch (e: ExecutionException) {
+            throw e.cause ?: e
+        }
+    }
+
+    /**
+     * Posts [body] without waiting; used by the listener hand-off, which must not block a lane.
+     * Null after [retire]: a hint that arrives while the wiring is tearing the actor down (a wipe) is
+     * dropped rather than thrown into the lane thread that committed it (slice S12). A turn posted
+     * before [retire] that has not started when it begins does nothing (see [retiring]).
+     */
+    fun post(body: () -> Unit): Future<*>? = try {
+        executor.submit {
+            if (!retiring) body()
+        }
+    } catch (e: RejectedExecutionException) {
+        null
+    }
+
+    /**
+     * Stops the actor (§13.7 "Lock and wipe"; S12 review): no posted turn that has not started runs
+     * any more, [finalTurn] runs on the actor thread **after** the pass in flight, if any, has ended,
+     * then the in-memory caches are dropped there — on the thread that uses them — and the executor
+     * shuts down. Returns when all of that is done. Idempotent.
+     *
+     * The order is what makes a wipe final: a pass that was already running can still reschedule
+     * the alarm in its `afterCommit`, but it ends before [finalTurn] — the wiring's context close
+     * and wake cancel — begins, and nothing queued behind it can run a pass again.
+     *
+     * It blocks for as long as that pass takes, so it must not be called on the main thread.
+     */
+    fun retire(finalTurn: () -> Unit) {
+        synchronized(this) {
+            if (retiring) return
+            retiring = true
+        }
+        val last: () -> Unit = {
+            try {
+                finalTurn()
+            } finally {
+                stopped = true
+                peekOrder.clear()
+                candidateSince.clear()
+            }
+        }
+        try {
+            if (Thread.currentThread() === actorThread) {
+                last()
+            } else {
+                val future = try {
+                    executor.submit(last)
+                } catch (e: RejectedExecutionException) {
+                    null
+                }
+                try {
+                    future?.get()
+                } catch (e: ExecutionException) {
+                    // The final turn failed (a database closing under the wipe): the actor stops
+                    // all the same, and what the turn owed is the wiring's to finish (it cancels
+                    // the alarm itself).
+                    Unit
+                }
+            }
+        } finally {
+            executor.shutdown()
+        }
+    }
 
     /**
      * The inbox and outcome listener hand-off (§13.7).
@@ -155,14 +275,21 @@ internal class DmActor(
         require(kind == SessionKind.BACKGROUND || kind == SessionKind.QUIET) {
             "the tail runs in background sessions and quiet runs only (§13.3 item 6)"
         }
-        val future = executor.submit {
+        val future = post {
             // A relay session start is one of §21.9 rule 1's three triggers, and so is its end.
             runPass(timeTriggered = true, deadlineMonotonicMillis = deadlineMonotonicMillis)
-        }
+        } ?: return
         val remaining = deadlineMonotonicMillis - clock.monotonicMillis()
         if (remaining <= 0) return
         try {
             future.get(remaining, TimeUnit.MILLISECONDS)
+        } catch (e: ExecutionException) {
+            // A pass that threw has ended, and that is all it did (§22.15's closing note: the
+            // actor swallows what a pass throws, because the work is owed again at the next
+            // trigger). The tail runs on a sync callback thread whose uncaught exception ends the
+            // process (Phase 7 design §11.2 #11), so reading the future here must not turn the one
+            // pass that failed into a crash the listener-driven passes never cause (slice S12).
+            Unit
         } catch (e: java.util.concurrent.TimeoutException) {
             // The pass keeps going on the actor thread; the job's end does not wait past the
             // deadline, which is the contract `ConsumerTail` states.
@@ -172,7 +299,7 @@ internal class DmActor(
 
     private fun wake(timeTriggered: Boolean) {
         if (!pending.compareAndSet(false, true) && !timeTriggered) return
-        executor.submit {
+        post {
             pending.set(false)
             runPass(timeTriggered, deadlineMonotonicMillis = null)
         }
@@ -482,14 +609,17 @@ internal class DmActor(
         return clock.monotonicMillis() + TAIL_RESERVE_MILLIS >= deadline
     }
 
+    /** [retire] with nothing more to do on the thread. */
     override fun close() {
-        executor.shutdown()
-        peekOrder.clear()
+        retire { }
     }
 
     companion object {
         /** §13.7: the actor's thread name. */
         const val THREAD_NAME: String = "ghost-dm"
+
+        /** The `INTERNAL` answer of a facade call that reached a stopped actor. */
+        private const val STOPPED: String = "the DM actor is stopped"
 
         /** How many bundle blobs one pass claims. */
         const val BUNDLE_CLAIM: Int = 16

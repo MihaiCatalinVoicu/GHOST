@@ -1,0 +1,3 @@
+# compiler: R8
+# fixture: a mapping with no org.ghost. class at all (a build that lost the app): G-DM5 refuses it
+androidx.core.app.CoreComponentFactory -> androidx.core.app.CoreComponentFactory:

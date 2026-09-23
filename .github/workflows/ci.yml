@@ -233,7 +233,7 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
-          packages: ${{ env.ANDROID_PACKAGES }}
+          packages: ${{ env.ANDROID_PACKAGES }} ${{ env.NDK_PACKAGE }}
       - name: validate gradle wrapper checksum
         uses: gradle/actions/wrapper-validation@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
@@ -262,11 +262,13 @@ jobs:
       - name: DM privacy report check (PR scale)
         run: bash ../scripts/gates/dm-report-check.sh messaging/build/reports/dm/privacy.txt privacy-pr
       # G-R6 (host half, §22.8.10 point 10): the exported DM JNI symbols of the `ghost-dm-host`
-      # build the JVM tests just loaded are exactly the closed list of §2.6. The shipped
-      # `libghost_client_net.so` is checked in `android-native`, where it is built.
+      # build the JVM tests just loaded are exactly the closed list of §2.6, plus the one
+      # equivalence-test entry point a test library adds (`--test`, §15.9 item 7; slice S12). The
+      # shipped `libghost_client_net.so` is checked in `android-native`, where it is built, and must
+      # not export that entry point.
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
-        run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
+        run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 10): the Gradle part of the third-party notices and
       # the Gradle licence allowlist (G-L1, G-L2), then the notices asset of the release APK (G-L3).
       - name: licence gates (G-L1 Gradle notices, G-L2 licence allowlist, G-L3 notices in the APK)
@@ -275,8 +277,13 @@ jobs:
           bash ../scripts/gates/license-notices.sh android app/build/licenses/release-runtime-components.txt
           bash ../scripts/gates/apk-notices.sh app/build/outputs/apk/release/app-release-unsigned.apk
       # T15m (Phase 7 design §5.5, ADR-20): what ships is the merged manifest, not the source ones.
-      - name: merged release manifest (permissions, exported components, sync job protection)
+      - name: merged release manifest (permissions, exported components, sync job protection, G-DM7 alarm receiver)
         run: bash ../scripts/gates/merged-manifest-lint.sh
+      # G-DM5 (Phase 9 design §16.1, §22.8.10 point 11; slice S12): R8's release mapping maps every
+      # org.ghost. class to itself (-keepnames) and ships no debug hook, harness, transport seam or
+      # equivalence entry point. `./gradlew build` above assembled the release that wrote it.
+      - name: G-DM5 release mapping (no debug hook, harness or test entry point; GHOST names kept)
+        run: bash ../scripts/gates/apk-no-debug-hooks.sh app/build/outputs/mapping/release/mapping.txt
 
   sync-exit-gate:
     name: sync exit gate (JVM harness, 20000 seeded worlds, double crashes in both journal modes)
@@ -350,7 +357,7 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
-          packages: ${{ env.ANDROID_PACKAGES }}
+          packages: ${{ env.ANDROID_PACKAGES }} ${{ env.NDK_PACKAGE }}
       - run: bash ghost/scripts/gates/reproducible-build.sh "$RUNNER_TEMP/repro" ghost/native-libs.sha256
 
   live-tor:

@@ -18,7 +18,17 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+        // The release smoke test (Phase 9 design §15.9 item 3; slice S12) runs through the
+        // plain-Instrumentation runner of `:crypto-bridge`'s `src/deviceRunner` (§16.3).
+        testInstrumentationRunner = "org.ghost.app.smoke.AppDeviceRunner"
     }
+
+    // `dm-emulator.yml` runs the smoke test against the R8-shrunk release (§15.9 item 3, §21.13
+    // point 5): `-Pghost.smoke.release=true` makes the release the tested build type and signs it
+    // with the build machine's throwaway debug key — in that job only, which uploads nothing (G-L5).
+    // Every other build keeps the unsigned, reproducible release of ADR-07 and tests the debug build.
+    val smokeRelease = providers.gradleProperty("ghost.smoke.release").orNull == "true"
+    testBuildType = if (smokeRelease) "release" else "debug"
 
     buildTypes {
         release {
@@ -26,11 +36,30 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signing is done offline (FR-8.2, ADR-07); CI produces the unsigned, reproducible artifact.
+            // The one exception is the emulator job's smoke run (see `smokeRelease` above).
+            if (smokeRelease) signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
         }
+        // The `gate` build type (Phase 9 design §15.10, §21.13 points 4 and 7, ADR-34; slice S12):
+        // the debug build plus `src/gate` — the debug key-change hook of `:crypto-bridge`, the order
+        // digest export and the instrumentation `scripts/device/dm-gate.sh` drives. Built locally or
+        // in a job that uploads nothing, signed with the build machine's throwaway debug key,
+        // installed only on the gate devices, never distributed (G-L5, ADR-39). Modules without a
+        // `gate` source set of their own resolve to their debug variant.
+        create("gate") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".gate"
+            matchingFallbacks += listOf("debug")
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
+
+    // The release pins the NDK the CI jobs install (Phase 9 design §21.13 point 2; slice S12): the
+    // `android`, `reproducible` and `dm-emulator` jobs install `ndk;30.0.16248370` (ci.yml
+    // NDK_PACKAGE), and AGP strips and packages the prebuilt Tor core with this one.
+    ndkVersion = "30.0.16248370"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -55,6 +84,44 @@ android {
         // breaks independent reproducibility verification (ADR-07).
         includeInApk = false
         includeInBundle = false
+    }
+
+    // `MessagingWiring`'s end-to-end test runs the real DM stack over a real migrated database
+    // (Phase 9 design §13.7; slice S12), through the shared JDBC executor of :storage, :sync and
+    // :messaging (Phase 7 design §1.5).
+    //
+    // `src/gate/digests` is the gate's order digest export (§15.10 steps 2 and 3): compiled into the
+    // `gate` variant and into the JVM tests, which pin its pure half (`OrderDigestsTest`, S12
+    // review) — this AGP creates unit tests for the tested build type only, so a `testGate` source
+    // set would never run. It is under `src/gate/`, so gate G-DM5 and anti-placeholder treat it as
+    // the gate's, and no release source set compiles it.
+    sourceSets {
+        getByName("test") {
+            kotlin.srcDir("../storage/src/testShared/kotlin")
+            kotlin.srcDir("src/gate/digests/kotlin")
+        }
+        getByName("gate") {
+            kotlin.srcDir("src/gate/digests/kotlin")
+        }
+        getByName("androidTest") {
+            kotlin.srcDir("../crypto-bridge/src/deviceRunner/kotlin")
+        }
+    }
+}
+
+// The end-to-end wiring test loads the host build of the DM library, as :messaging's worlds do
+// (Phase 9 design §2.7, §15.1): the `android` CI job passes `-Dghost.dm.native`; without it that
+// test reports itself skipped and the decision tests still run. Declared as a test input so a
+// rebuilt library re-runs the tests instead of reusing a cached result.
+val dmHostLibrary = providers.systemProperty("ghost.dm.native")
+    .orElse(providers.gradleProperty("ghost.dm.native"))
+tasks.withType<Test>().configureEach {
+    inputs.property("ghost.dm.native", dmHostLibrary.orElse(""))
+    dmHostLibrary.orNull?.let { path ->
+        systemProperty("ghost.dm.native", path)
+        inputs.file(path)
+            .withPropertyName("dmHostLibrary")
+            .withPathSensitivity(PathSensitivity.NAME_ONLY)
     }
 }
 
@@ -147,4 +214,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
 
     testImplementation(libs.junit)
+    testImplementation(libs.sqlite.jdbc)
+    androidTestImplementation(libs.junit)
 }

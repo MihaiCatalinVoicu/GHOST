@@ -24,6 +24,12 @@ finish() {
 android_main_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/main/*' -print 2>/dev/null || true
 }
+# The `gate` build type's source sets (Phase 9 design §21.13 point 7, ADR-34; slice S12): never
+# released, but installed on the gate devices and part of the physical exit gate's evidence, so the
+# production-path hygiene gates that say so (anti-placeholder.sh) read them too.
+android_gate_files() {
+  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/gate/*' -print 2>/dev/null || true
+}
 rust_src_files() {
   # test-harness/ is tooling, not the production path (its CLIs may print to the console).
   # Relay and client binary entry points (src/main.rs) print operator-facing constants and
