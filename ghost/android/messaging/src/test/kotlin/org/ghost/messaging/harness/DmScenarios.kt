@@ -14,9 +14,10 @@ import org.ghost.messaging.api.TrustState
  *
  * Implemented here: **SCN-A** (send), **SCN-B** (receive and reorder), **SCN-D** (key change,
  * including the forged-binding case), **SCN-F** (ephemeral), **SCN-G** (outcomes and resend),
- * **SCN-J** (faults) and **SCN-L** (migration safety), from S10; **SCN-I** (restore) and **SCN-K**
- * (revocation), from S10b. SCN-C, SCN-E and SCN-H are not here; §22.15 of the design records what
- * each one still owes and §22.19 what S10b left of it.
+ * **SCN-J** (faults) and **SCN-L** (migration safety), from S10; **SCN-H** (bundle generations,
+ * in part), **SCN-I** (restore), **SCN-K** (revocation) and SCN-G's week-boundary retry as
+ * `SCN-G-week`, from S10b. SCN-C and SCN-E are not here; §22.15 of the design records what each
+ * one still owes and §22.19 what S10b left of the rest.
  *
  * **Two deviations from §15.3's table, declared.** The scenario texts say "3 relays over 2
  * operators, one refusing" (SCN-A) and similar relay-set shapes elsewhere. The relay set, the
@@ -783,8 +784,15 @@ internal object DmScenarios {
             step("later blobs are dropped") { w ->
                 ensureRevocationNotified(w)
                 if (revokedOnBob(w)) {
-                    w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "k-after", null)
+                    // The declaration comes **before** the call, and the gate-scale enumeration is
+                    // what put it there: at crash@1073 the send committed and the process died at
+                    // its post-commit event, so the call never returned, a note written after it
+                    // was never written, and the relay then delivered a `SENT` message bob rightly
+                    // dropped — charged to the engine. What the declaration states is "k-after, if
+                    // it exists, was written after the revocation reached bob", which is decided
+                    // here; a send a crash rolled back leaves nothing for it to excuse.
                     w.notes["afterSent"] = true
+                    w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "k-after", null)
                 }
                 w.pump()
                 w.passes()
@@ -923,6 +931,312 @@ internal object DmScenarios {
         },
     )
 
+    // ------------------------------------------------------------------ SCN-H bundle generations
+
+    /**
+     * **SCN-H — bundle generations** (§15.3, §5.4; slice S10b), in part.
+     *
+     * > weekly publication across 13 weeks; a PreKey message accepted at the 91-day generation
+     * > boundary and refused after; a replayed first flight (D2b); a generation kept past its
+     * > boundary while a held row references it
+     *
+     * **What is here.** Sixteen ISO weeks of bob's OWNER-WEEK: a generation per pass, each superseded
+     * by the next and erased at `superseded_day + 91` (§5.4), never more than fourteen alive. Inside
+     * them, the one case in which a generation's retention decides whether a message opens: a
+     * **late first flight**. alice scans bob's card and writes; every relay refuses her
+     * (REFUSE_ONE_SENDER), so her session exists and bob has never heard of it. Twenty-six days
+     * later she writes again on the same unanswered session — inside `UNACK_MAX`, so it is still a
+     * PreKey message naming the generation she fetched in the first week — and the relay holds it
+     * back for 29 days (DELAY_RELEASE; the conversation's timer is off, so its TTL is 30). It
+     * reaches bob about seven weeks after that generation was superseded: inside the 91 days
+     * (7 + 28 + 45, rounded), fresh (`FRESH(30 d)` is 43 days), and the only thing that can open it
+     * is the superseded generation's secrets. bob gets a request carrying it, accepts, answers, and
+     * the pair is live.
+     *
+     * **The oracles.** No-loss (the late flight is `SENT` and must be rendered) and liveness (alice
+     * ↔ bob once bob has accepted). And one of the scenario's own, in every run: **no generation
+     * disappears before `superseded_day + 91`** — every step observes bob's generations on the raw
+     * connection and a generation gone early is a finding at once, whatever the crash did. That is
+     * mutant MC-28's direct oracle; the late flight is its consequence.
+     *
+     * **User actions a crash interrupted are done again**: the second message, if a crash lost it
+     * (a redo past `UNACK_MAX` re-establishes on a newer generation, which is still correct and
+     * only means that run no longer tests the late one — `finalChecks` pins that the fault-free run
+     * does), and bob's acceptance.
+     *
+     * **Not here, and §22.19 says why:** "refused after" (a relay cannot hold a blob past its
+     * 30-day TTL, and R9's freshness refuses such a message first — the boundary's far side needs a
+     * RESURRECTing relay), the replayed first flight (D2b is MC-7′'s, killed in the CB replay), and
+     * the generation kept alive by a held row (a key-change hold taken near the end of a
+     * generation's window, which needs SCN-D's device inside this thirteen-week world).
+     */
+    fun scnH(): DmScenario = DmScenario(
+        name = "SCN-H",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        tailRounds = 12,
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            val added = world["alice"].device.engine
+                .addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
+            check(added == AddContactResult.ADDED) { "alice could not add bob's card: $added" }
+            world.contacts["alice->bob"] = world["alice"].device.engine.contacts().single().id
+            world.notes["t0"] = world.nodes().maxOf { it.clock.now }
+            world.notes["g"] = currentGeneration(world, "bob") ?: error("bob has no generation")
+            world.notes["generations"] = HashMap<Long, Long?>()
+            observeGenerations(world)
+        },
+        steps = buildList {
+            add(
+                step("alice writes first and every relay refuses her") { w ->
+                    w.relay.refusing = setOf("alice")
+                    val toBob = DmScripts.contact(w, "alice", "bob")
+                    w["alice"].device.engine.setTimer(toBob, Timer.OFF)
+                    w["alice"].device.engine.send(toBob, "h1", null)
+                    repeat(3) { round(w) }
+                    untilSettled(w)
+                },
+            )
+            for (day in listOf(7L, 14L, 21L)) add(generationStep("day $day", day))
+            add(
+                generationStep("alice writes again and the relay holds it for 28 days", 26) { w ->
+                    w.relay.refusing = emptySet()
+                    val now = w.nodes().maxOf { it.clock.now }
+                    w.relay.releaseNotBefore = mapOf("alice" to now + HOLD_SECONDS)
+                    sendTheLateFlight(w)
+                },
+            )
+            for (day in listOf(33L, 40L, 47L)) add(generationStep("day $day", day))
+            add(
+                generationStep("the relay releases the late flight", 54) { w ->
+                    // Six rounds, eighteen minutes: the late flight is chain index 2 of a session
+                    // whose first two messages bob never saw, so §7.7 point 2's gap hold keeps it
+                    // back for its first pass before RECV decides.
+                    repeat(6) { round(w) }
+                    recordTheLateDelivery(w)
+                },
+            )
+            add(generationStep("bob accepts and answers", 55) { w -> acceptAndAnswer(w) })
+            for (day in listOf(69L, 83L, 97L, 111L)) add(generationStep("day $day", day))
+        },
+        alwaysChecks = { world ->
+            // The last observation, after the tail: a generation erased during quiescence is held
+            // to the same rule as one erased in a step.
+            observeGenerations(world)
+        },
+        finalChecks = { world ->
+            if (world.notes["lateGen"] != world.notes["g"]) {
+                dmViolation(
+                    "SCN-H fault-free: alice's session named generation ${world.notes["lateGen"]}, " +
+                        "not the first week's ${world.notes["g"]}, so the late flight tested nothing",
+                )
+            }
+            val age = world.notes["lateAgeDays"] as Long?
+            if (age == null || age < LATE_AGE_DAYS) {
+                dmViolation(
+                    "SCN-H fault-free: the late flight reached bob $age days after its generation " +
+                        "was superseded, not the $LATE_AGE_DAYS or more the case is about",
+                )
+            }
+            if ("h-late" !in DmScripts.everyInboundText(world["bob"])) {
+                dmViolation(
+                    "SCN-H: the late first flight did not open on a generation still inside its 91 days",
+                )
+            }
+            val g = world.notes["g"] as Long
+            val left =
+                DmScripts.count(world, "bob", "SELECT count(*) FROM olm_prekey_gen WHERE gen_id = $g") +
+                DmScripts.count(world, "bob", "SELECT count(*) FROM olm_prekey_used WHERE gen_id = $g")
+            if (left != 0L) dmViolation("SCN-H fault-free: generation $g outlived its 91 days")
+            if ((world.notes["erasures"] as Int? ?: 0) < 1) {
+                dmViolation(
+                    "SCN-H fault-free: no generation was erased in 16 weeks; the retention oracle saw nothing",
+                )
+            }
+            var published = -1L
+            world["bob"].raw.query("SELECT bundle_published_week FROM dm_self") {
+                if (!it.isNull(0)) published = it.long(0)
+            }
+            val week = Math.floorDiv(world["bob"].clock.now - DmWorld.WEEK_ORIGIN, DmWorld.WEEK)
+            if (published != week) {
+                dmViolation("SCN-H fault-free: bob's last publication is of week $published in week $week")
+            }
+        },
+    )
+
+    /**
+     * One step of SCN-H: the retention oracle and the user's redos first, then the world settled
+     * **at the time it is**, then the clock to [day] days after the setup, then [body], a round,
+     * and the world settled again.
+     *
+     * **Why it settles before it moves the clock.** A device runs time-triggered passes all the
+     * time; this world runs them only where a step does, and then jumps a week. Work a crash left
+     * owed — a pending send whose `EST-START` died with the process, an establishment inside
+     * `EST-READY`'s two minutes — would otherwise wait out the jump and reach its R-T5 deadline
+     * there, which models a device switched off for a week and not the crash the run injected. The
+     * enumeration found both at crash@27 (the TIMER_SET's establishment never started, and the redo
+     * of the late flight then failed at its deadline mid-establishment). Settling ([untilSettled])
+     * is a bounded loop of [round]s that ends as soon as nothing is in flight ([settled]) and
+     * costs no event at all when nothing is.
+     */
+    private fun generationStep(
+        label: String,
+        day: Long,
+        body: (DmCrashWorld) -> Unit = {},
+    ): DmScenario.Step = step(label) { w ->
+        observeGenerations(w)
+        // alice's timer change, if a crash lost it: the late flight's 30-day TTL depends on it, and
+        // under the default seven days the relay would drop a held blob long before its release.
+        ensureTimerOff(w)
+        if (day > 26 && !theLateFlightWasWritten(w)) {
+            // A crash lost alice's second message — it is not in her conversation, which is what
+            // she sees — and she writes it again. Stop holding her blobs first: the hold is the
+            // case's, a redo is not the case.
+            w.relay.refusing = emptySet()
+            w.relay.releaseNotBefore = emptyMap()
+            sendTheLateFlight(w)
+        }
+        // bob accepts a request as soon as a step finds one — in the fault-free run that is the
+        // step after the release; in a run whose redo sent the late flight unheld it can be weeks
+        // earlier, and a request is deleted with its message after `REQUEST_DAYS` (§12.3). The
+        // enumeration found that at crash@4889: the redo's request expired unanswered and the
+        // no-loss oracle charged §12.3's own rule to the engine.
+        acceptAndAnswer(w)
+        untilSettled(w)
+        // And again once the world has settled: a redo's late flight is delivered by the settling
+        // itself, and a request left for after the jump would be past its seven days — the
+        // replay of crash@3966 showed exactly that, a request created at day 26 and swept at 33.
+        acceptAndAnswer(w)
+        untilSettled(w)
+        val target = (w.notes["t0"] as Long) + day * DmWorld.DAY
+        val now = w.nodes().maxOf { it.clock.now }
+        if (target > now) w.advanceBy(target - now)
+        body(w)
+        round(w)
+        untilSettled(w)
+    }
+
+    /** Rounds until nothing is in flight ([settled]), at most [SETTLE_ROUNDS]. */
+    private fun untilSettled(w: DmCrashWorld) {
+        for (attempt in 0 until SETTLE_ROUNDS) {
+            if (settled(w)) return
+            round(w)
+        }
+    }
+
+    /**
+     * MC-28's direct oracle: every generation bob has held is either still there or went no
+     * earlier than `superseded_day + 91` (§5.4). Read on the raw connection, so it is no event.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun observeGenerations(w: DmCrashWorld) {
+        val known = w.notes["generations"] as HashMap<Long, Long?>
+        val now = HashMap<Long, Long?>()
+        w["bob"].raw.query("SELECT gen_id, superseded_day FROM olm_prekey_gen") {
+            now[it.long(0)] = if (it.isNull(1)) null else it.long(1)
+        }
+        val today = Math.floorDiv(w["bob"].clock.now, DmWorld.DAY)
+        for ((gen, superseded) in known) {
+            if (gen in now) continue
+            if (superseded == null || today < superseded + GENERATION_RETENTION_DAYS) {
+                dmViolation(
+                    "SCN-H: generation $gen was erased before superseded_day + 91 " +
+                        "(superseded on day $superseded, gone by day $today)",
+                )
+            }
+            w.notes["erasures"] = (w.notes["erasures"] as Int? ?: 0) + 1
+        }
+        known.clear()
+        known.putAll(now)
+    }
+
+    private fun ensureTimerOff(w: DmCrashWorld) {
+        var code = -1L
+        w["alice"].raw.query(
+            "SELECT timer_code FROM dm_conversation WHERE contact_id = ?",
+            listOf(contactBytes(w, "alice->bob")),
+        ) { code = it.long(0) }
+        if (code == 0L) return
+        w["alice"].device.engine.setTimer(DmScripts.contact(w, "alice", "bob"), Timer.OFF)
+    }
+
+    private fun sendTheLateFlight(w: DmCrashWorld) {
+        val alice = w["alice"].device.engine
+        val toBob = DmScripts.contact(w, "alice", "bob")
+        var peerGen: Long? = null
+        w["alice"].raw.query("SELECT peer_gen_id FROM olm_session WHERE slot = 'current'") {
+            if (!it.isNull(0)) peerGen = it.long(0)
+        }
+        w.notes["lateGen"] = peerGen ?: -1L
+        alice.send(toBob, "h-late", null)
+    }
+
+    /**
+     * Whether alice's conversation shows the late flight — the user's own evidence, and not a note
+     * written after the call returned: a send that committed and then died at its post-commit event
+     * never returns, and a note-based redo would write the message a second time.
+     */
+    private fun theLateFlightWasWritten(w: DmCrashWorld): Boolean =
+        w["alice"].device.engine.conversation(DmScripts.contact(w, "alice", "bob"), 50, null)
+            .any { it.outgoing && it.text == "h-late" }
+
+    private fun recordTheLateDelivery(w: DmCrashWorld) {
+        val g = w.notes["g"] as Long
+        var superseded: Long? = null
+        w["bob"].raw.query("SELECT superseded_day FROM olm_prekey_gen WHERE gen_id = $g") {
+            if (!it.isNull(0)) superseded = it.long(0)
+        }
+        val today = Math.floorDiv(w["bob"].clock.now, DmWorld.DAY)
+        val day = superseded ?: return
+        if ("h-late" in DmScripts.everyInboundText(w["bob"])) w.notes["lateAgeDays"] = today - day
+    }
+
+    /** bob accepts alice's request once it is there, and answers; done again if a crash lost it. */
+    private fun acceptAndAnswer(w: DmCrashWorld) {
+        if (w.contacts["bob->alice"] != null) return
+        val bob = w["bob"].device.engine
+        val request = bob.contacts().firstOrNull { it.trust == TrustState.REQUEST }
+        val accepted = bob.contacts().firstOrNull {
+            it.trust == TrustState.UNVERIFIED || it.trust == TrustState.VERIFIED
+        }
+        val contact = when {
+            accepted != null -> accepted.id
+            request != null && bob.acceptRequest(request.id) -> request.id
+            else -> return
+        }
+        w.contacts["bob->alice"] = contact
+        bob.send(contact, "h-ack", null)
+    }
+
+    private fun currentGeneration(w: DmCrashWorld, node: String): Long? {
+        var out: Long? = null
+        w[node].raw.query("SELECT gen_id FROM olm_prekey_gen WHERE superseded_day IS NULL") {
+            out = it.long(0)
+        }
+        return out
+    }
+
+    /** §5.4: `delete_after_day = superseded_day + 91`. */
+    private const val GENERATION_RETENTION_DAYS: Long = 91
+
+    /**
+     * DELAY_RELEASE's hold: 28 days, inside the 30-day TTL of a timer-off message with a day to
+     * spare. The first version held 29 and released the blob at the very second its TTL ran out,
+     * so the relay dropped it instead — the model relay's `storedAt + ttl <= now` is exact, as a
+     * real relay's hour-rounded expiry is not.
+     */
+    private const val HOLD_SECONDS: Long = 28 * DmWorld.DAY
+
+    /**
+     * How long after its generation's supersession the late flight must arrive for the fault-free
+     * run to count: five weeks, which is past any retention that forgot `FRESH` (7 + 28 = 35 days)
+     * and inside the real one. The run reaches 40 to 47 days, depending on whether bob's weekly
+     * pass fell before or after `t_pub` in the week after the setup.
+     */
+    private const val LATE_AGE_DAYS: Long = 35
+
     // ------------------------------------------------------------------ SCN-I restore
 
     /**
@@ -1009,7 +1323,9 @@ internal object DmScenarios {
             // not be able to.
             world["alice"].device.engine.send(DmScripts.contact(world, "alice", "bob"), "i-pre", null)
             settle(world)
-            check("i-pre" in DmScripts.inboundTexts(world, "bob")) { "the pre-restore pair message never arrived" }
+            check("i-pre" in DmScripts.inboundTexts(world, "bob")) {
+                "the pre-restore pair message never arrived"
+            }
             // An intro envelope on the lost device's generation: carol scans bob's card and writes.
             world["carol"].device.engine.addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
             val toBob = world["carol"].device.engine.contacts().single().id
@@ -1315,5 +1631,5 @@ internal object DmScenarios {
 
     /** Every scenario this slice implements, in the order the report prints them. */
     fun all(): List<DmScenario> =
-        listOf(scnA(), scnB(), scnD(), scnF(), scnG(), scnGWeek(), scnI(), scnJ(), scnK(), scnL())
+        listOf(scnA(), scnB(), scnD(), scnF(), scnG(), scnGWeek(), scnH(), scnI(), scnJ(), scnK(), scnL())
 }

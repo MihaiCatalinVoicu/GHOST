@@ -28,12 +28,13 @@
 #
 # **What this deliberately does not check.** §15.7's own gate line is `dm mutants: 97 run, 97
 # detected` and §15.3's enumeration is every event of twelve scenarios. Slices S10 and S10b
-# implement nine of the twelve (and SCN-G's week-boundary half as a line of its own), four suite
-# cases and ten mutants, so the numbers pinned here are the numbers a run actually measures. Raising them is the next slice's job and is exactly what should
-# fail this script until the tests behind them exist: a gate that asserted the design's numbers
-# while running a subset would pass on evidence nobody produced, which is the one failure mode a
-# report-checked gate must not have. §22.15 and §22.19 of the design list what is still owed,
-# scenario by scenario and mutant by mutant. The privacy half follows the same rule: it does not
+# implement ten of the twelve (and SCN-G's week-boundary half as a line of its own), four suite
+# cases and eleven mutants, so the numbers pinned here are the numbers a run actually measures.
+# Raising them is the next slice's job and is exactly what should fail this script until the tests
+# behind them exist: a gate that asserted the design's numbers while running a subset would pass on
+# evidence nobody produced, which is the one failure mode a report-checked gate must not have.
+# §22.15 and §22.19 of the design list what is still owed, scenario by scenario and mutant by
+# mutant. The privacy half follows the same rule: it does not
 # require JD8, JD10, NI-DM2, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
 # AD-7-with-token line, the EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry
 # clause, T26's model-relay open check or 30 of the 40 privacy mutants, because nothing in this
@@ -148,11 +149,11 @@ case "$kind" in
 esac
 
 
-# The scenarios and suite cases slices S10 and S10b implement (S10b added SCN-I, SCN-K and SCN-G's
-# week-boundary retry as `SCN-G-week`, §22.19). Each must have a crash-class line, and that line
-# must report at least one single crash: an enumeration of zero crash points is a scenario that ran
-# once without faults, which is not a crash enumeration.
-scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-G-week SCN-I SCN-J SCN-K SCN-L)
+# The scenarios and suite cases slices S10 and S10b implement (S10b added SCN-H, SCN-I, SCN-K and
+# SCN-G's week-boundary retry as `SCN-G-week`, §22.19). Each must have a crash-class line, and that
+# line must report at least one single crash: an enumeration of zero crash points is a scenario that
+# ran once without faults, which is not a crash enumeration.
+scenarios=(SCN-A SCN-B SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
 scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
@@ -226,12 +227,12 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 # "NOT DETECTED" — which is what the two rules below then refuse. Before that, `@Ignore` on a kill
 # left this whole block byte-identical and green.
 #
-# Ten since S10b: MC-18 and MC-26, which SCN-I makes reachable, and MC-33, which SCN-G-week does;
-# each is killed fault-free and at crash points spread over its scenario, beside the unmutated
-# scenario crashed at the same points (§22.19).
-grep -qxF 'dm mutants: 10 run, 10 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 10 run, 10 detected'"
-for mutant in MC-1 MC-5 "MC-7'" MC-10 MC-12 MC-16 MC-18 MC-26 MC-33 ME-16; do
+# Eleven since S10b: MC-18 and MC-26, which SCN-I makes reachable, MC-28, which SCN-H does, and
+# MC-33, which SCN-G-week does; each is killed fault-free and at crash points spread over its
+# scenario, beside the unmutated scenario crashed at the same points (§22.19).
+grep -qxF 'dm mutants: 11 run, 11 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 11 run, 11 detected'"
+for mutant in MC-1 MC-5 "MC-7'" MC-10 MC-12 MC-16 MC-18 MC-26 MC-28 MC-33 ME-16; do
   grep -qE "^dm mutant ${mutant}: detected by .+" "$report" || bad "no detection line for mutant $mutant"
 done
 if grep -qE '^dm mutant .*NOT DETECTED' "$report"; then

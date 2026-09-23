@@ -50,6 +50,11 @@ class DmMutantDetectionTest {
     fun mc26PreviousNeverRetiredIsDetected() =
         detectFaultFreeAndUnderCrashes(DmMutants.MC26, DmScenarios.scnI())
 
+    /** S10b: SWEEP erases a superseded generation 70 days early. */
+    @Test
+    fun mc28GenerationErasedEarlyIsDetected() =
+        detectFaultFreeAndUnderCrashes(DmMutants.MC28, DmScenarios.scnH())
+
     /** S10b: SWEEP erases the out key a FAILED item of an earlier week still needs. */
     @Test
     fun mc33RetryWithoutTheAuthorWeekKeyIsDetected() =
@@ -63,8 +68,8 @@ class DmMutantDetectionTest {
      * The registry is well formed, and the report's count is armed to be written from the kills.
      *
      * It is deliberately not "57 run, 57 detected". §15.7's set is 97 — 40 privacy, 33 correctness
-     * and 24 ephemeral — and S10 and S10b register ten. A gate that printed the design's number
-     * while running ten would be the one failure a report-checked gate must not have, which is
+     * and 24 ephemeral — and S10 and S10b register eleven. A gate that printed the design's number
+     * while running eleven would be the one failure a report-checked gate must not have, which is
      * why the check script pins this line to the number this suite actually runs — and why the line
      * itself is now written from [DmKills], so that removing a kill lowers it.
      */

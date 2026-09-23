@@ -23,14 +23,15 @@ name: messaging-exit-gate
 # FROM-CACHE and the gate would run nothing.
 #
 # Budget (measured on the owner's workstation, 8 worker threads): the whole `:messaging` suite is
-# about 5 minutes at the PR scale and tens of minutes at this one — tens of thousands of crash runs
-# over **fourteen** scenario lines and suite cases (SCN-A, B, D, F, G, I, J, K, L, SCN-G's
+# about 8 minutes at the PR scale and a few hours at this one — tens of thousands of crash runs over
+# **fifteen** scenario lines and suite cases (SCN-A, B, D, F, G, H, I, J, K, L, SCN-G's
 # week-boundary retry as SCN-G-week, plus RP6, RP9, CB-reject-replay and EP-read-expiry, which is
 # what `dm-report-check.sh` requires and what the fixtures carry), the `SQLITE_FULL` injections, 128
-# seeded worlds and the mutants. SCN-I alone is 6 631 events with double crashes, about a third of
-# the whole enumeration (slice S10b, §22.19). A 4-vCPU runner is roughly twice that, and the timeout
-# leaves room for the two builds on top. The self-hosted runners are not up, so no run of this job
-# has been observed; §22.15 item 11 and §22.19 say which scales were run locally and where.
+# seeded worlds and the mutants. Slice S10b's two long scenarios dominate it: SCN-H is 17 268 events
+# (sixteen virtual weeks), SCN-I 6 631 with double crashes (§22.19, which records what was measured
+# at this scale and where). A 4-vCPU runner is roughly twice that, which is why the timeout is what
+# it is and why §22.19 asks for it to be re-measured on the runner before it is trusted. The
+# self-hosted runners are not up, so no run of this job has been observed.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:

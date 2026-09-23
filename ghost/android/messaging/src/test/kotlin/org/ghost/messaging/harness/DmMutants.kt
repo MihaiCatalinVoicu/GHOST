@@ -9,13 +9,13 @@ import org.ghost.messaging.port.DmEnvelopes
  * detects it is not evidence, it is a claim.
  *
  * §15.7's own set is 97 — 40 privacy (S11's), 33 correctness and 24 ephemeral (this slice's 57).
- * Ten are here: seven from S10, and three from S10b — MC-18 and MC-26, which S10b's SCN-I makes
- * reachable, and MC-33, which its `SCN-G-week` does. The other 47 are listed in §22.15 and §22.19
- * with the reason each is not, and the gate line says **ten**, not fifty-seven, for the same reason
- * `dm-report-check.sh` refuses a PASS on an empty sample: a number a run did not measure is worse
- * than no number. The line is built from the kills the run **recorded** ([DmKills]), never from
+ * Eleven are here: seven from S10, and four from S10b — MC-18 and MC-26, which S10b's SCN-I makes
+ * reachable, MC-28, which its SCN-H does, and MC-33, which its `SCN-G-week` does. The other 46 are
+ * listed in §22.15 and §22.19 with the reason each is not, and the gate line says **eleven**, not
+ * fifty-seven, for the same reason `dm-report-check.sh` refuses a PASS on an empty sample: a
+ * number a run did not measure is worse than no number. The line is built from the kills the run **recorded** ([DmKills]), never from
  * this registry, so an ignored or deleted kill test lowers the count instead of leaving it
- * standing. **S10b's three are held to a stricter kill than S10's seven**: detected fault-free by
+ * standing. **S10b's four are held to a stricter kill than S10's seven**: detected fault-free by
  * the check their entry names, *and* at crash points spread over the scenario, each beside the
  * unmutated scenario crashed at the same point ([Mutation.expectUnderCrash]).
  *
@@ -374,6 +374,37 @@ internal object DmMutants {
         },
     )
 
+    /**
+     * **MC-28 — a generation erased before its reuse tuples' last use window** (§5.4; slice S10b).
+     *
+     * A generation is kept until `superseded_day + 91` — 7 days of validity, 28 of an unanswered
+     * initiator session re-sending PreKey messages that name it, 45 of freshness, and slack —
+     * because the last first flight that can legitimately name it arrives that late, and its
+     * `olm_prekey_used` tuples (D2b) go with it. The mutation erases every generation 70 days
+     * early, at `superseded_day + 21`: a retention that remembered the bundle's own validity and
+     * forgot the rest. §15.7 detects it with "SCN-H boundary replay"; here it is SCN-H, and what
+     * kills it — measured, fault-free and at every crash point the kill test tries — is SCN-H's
+     * retention oracle, which sees the generation gone at the first step after the early erasure,
+     * weeks before the late first flight the generation exists for is released. That flight would
+     * then be `SENT` and never rendered, which the no-loss oracle refuses and `expectUnderCrash`
+     * accepts; no run reaches it, because the retention oracle ends the run first, and §22.19 says
+     * so rather than counting the second half as a kill it did not observe.
+     */
+    val MC28 = Mutation(
+        id = "MC-28",
+        defeats = "§5.4: a superseded generation is kept until superseded_day + 91",
+        detectedBy = "SCN-H (a generation erased before superseded_day + 91; the late first flight lost)",
+        expect = "was erased before superseded_day + 91",
+        expectUnderCrash = listOf("was erased before superseded_day + 91", NO_LOSS_FAILURE),
+        rewrite = { sql, args ->
+            if (sql.startsWith("SELECT gen_id FROM olm_prekey_gen g WHERE g.delete_after_day IS NOT NULL")) {
+                Pair(sql.replace("g.delete_after_day <= ?", "g.delete_after_day - 70 <= ?"), args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
     /** The no-loss oracle's words (`DmCrashRunner.noMessageTheSenderCallsSentIsMissing`). */
     const val NO_LOSS_FAILURE: String = "marked it sent and no device rendered it"
 
@@ -404,5 +435,6 @@ internal object DmMutants {
     }
 
     /** Every mutant S10 and S10b register, in the order the report prints them. */
-    fun all(): List<Mutation> = listOf(MC1, MC5, MC7, MC10, MC12, MC16, MC18, MC26, MC33, ME16)
+    fun all(): List<Mutation> =
+        listOf(MC1, MC5, MC7, MC10, MC12, MC16, MC18, MC26, MC28, MC33, ME16)
 }

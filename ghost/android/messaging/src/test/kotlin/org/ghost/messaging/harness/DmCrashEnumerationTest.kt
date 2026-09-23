@@ -44,6 +44,9 @@ class DmCrashEnumerationTest {
     /** S10b: SCN-G's week-boundary FAILED retry (§22.8.5), as a scenario of its own. */
     @Test fun scnGWeekBoundaryRetry() = enumerate(DmScenarios.scnGWeek())
 
+    /** S10b: fifteen weeks of generations and a late first flight (§22.19 says what is not here). */
+    @Test fun scnHBundleGenerations() = enumerate(DmScenarios.scnH())
+
     /** S10b: the restore, with the double crashes §15.3 names for it. */
     @Test fun scnIRestore() = enumerate(DmScenarios.scnI())
 

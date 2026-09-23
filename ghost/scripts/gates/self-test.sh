@@ -138,8 +138,9 @@ dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeou
 dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
 dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
 dmr_case fail no-such-report.txt gate "rejects a missing report"
-# Phase 9 S10b (design §22.19): the report now carries SCN-I, SCN-K and SCN-G-week and ten mutants,
-# and every negative above was regenerated from the new positives with its one change. Four more:
+# Phase 9 S10b (design §22.19): the report now carries SCN-H, SCN-I, SCN-K and SCN-G-week and eleven
+# mutants, and every negative above was regenerated from the new positives with its one change. Four
+# more:
 # a report of S10's shape (seven scenarios, seven mutants) — the check must not accept the old
 # evidence as the new — SCN-I without the double crashes §15.3 names for it, a report without
 # SCN-K, and one of S10b's mutants with no line naming its killer.

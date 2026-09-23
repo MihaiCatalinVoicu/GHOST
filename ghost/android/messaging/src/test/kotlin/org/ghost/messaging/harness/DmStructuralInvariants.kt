@@ -151,9 +151,31 @@ internal object DmStructuralInvariants {
             "SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id HAVING count(*) > 2)",
         )
         empty(
-            sql, label, "a contact with sessions but no 'current' slot",
+            sql, label, "a contact with more than one 'current' slot",
             """SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id
-                                      HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) <> 1)""",
+                                      HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) > 1)""",
+        )
+        // "Exactly one `current` whenever any exists" — **except in R-SS0's re-establishment
+        // window**, which §15.3's clause does not allow for and the engine opens on purpose (S10b,
+        // §22.19). A send that finds its session stale (`UNACK_MAX`) or unable to seal
+        // (`NO_SEAL_KEY`) demotes `current` to `previous` in its own transaction, so that
+        // `EST-READY`'s "unless a usable session already exists" finds the slot empty
+        // (`SendStep`, R-SS0 of §8.2) — and until the establishment builds the replacement the
+        // contact has a `previous` and no `current`. The window is legal while that establishment
+        // is owed: a pending send is waiting for it (and the next time-triggered pass starts it,
+        // which is also the recovery for a crash between the demotion and `EST-START`), or it is
+        // `fetching`, or it gave up (`unreachable`) and the demoted row receives until its
+        // `retire_day`. What stays forbidden is the state no path creates: sessions, no `current`,
+        // and a contact that is `ready` with nothing owed. The first version of this clause fired
+        // on exactly that window in the world of mutant MC-33, and nothing in S10's scenarios ever
+        // re-establishes a session, which is why nobody had seen it.
+        empty(
+            sql, label, "a contact with sessions but no 'current' slot and no establishment owed",
+            """SELECT count(*) FROM (SELECT contact_id FROM olm_session GROUP BY contact_id
+                                      HAVING sum(CASE WHEN slot = 'current' THEN 1 ELSE 0 END) = 0) x
+                 WHERE NOT EXISTS (SELECT 1 FROM dm_pending_send p WHERE p.contact_id = x.contact_id)
+                   AND NOT EXISTS (SELECT 1 FROM dm_contact c WHERE c.contact_id = x.contact_id
+                                     AND c.establishment IN ('fetching', 'unreachable'))""",
         )
 
         // Every `previous` row has a `retire_day`.
