@@ -1,7 +1,9 @@
 package org.ghost.messaging.dmworld
 
 import org.ghost.crypto.bridge.RelaySets
+import org.ghost.messaging.DmWorld
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.SplittableRandom
@@ -98,5 +100,168 @@ class DmPrivacyCheckSelfTest {
         assertEquals(86_400L, Joins.table(3))
         assertEquals(604_800L, Joins.table(4))
         assertEquals(2_592_000L, Joins.table(5))
+    }
+
+    // ------------------------------------------------------------------ NI-DM2's comparator
+
+    /** One synthetic NI-DM2 message: M reached its variable unless [stores] is empty. */
+    private fun m(
+        state: NiDm2.State,
+        kind: NiDm2.Kind,
+        length: Int = 0,
+        ttl: Long = 604_800,
+        size: Int = 4096,
+        slots: List<Int> = listOf(0, 1, 3),
+        seconds: Long = 60,
+        stores: Boolean = true,
+    ): NiDm2.Slot {
+        val view = if (stores) slots.map { NiDm2.Store(it, "inbox", size, ttl, "scope$it") } else emptyList()
+        val content = GroundTruth.Content(
+            kind = kind.wire,
+            bodyLength = length,
+            quoted = kind.quoted,
+            sealRoot = state.offer == true,
+            sealRootPq = false,
+            pqKey = false,
+        )
+        return NiDm2.Slot(
+            variant = NiDm2.Variant(state, kind),
+            length = length,
+            view = view,
+            seconds = view.map { seconds },
+            blobs = if (stores) 1 else 0,
+            mode = if (stores) state.mode else null,
+            content = if (stores) content else null,
+            action = "synthetic",
+        )
+    }
+
+    /** The gating twins at length 0: two that need no establishment (their seconds gate) and a reset. */
+    private fun gating(ttl: Long = 604_800, seconds: Long = 60): List<NiDm2.Slot> = listOf(
+        m(NiDm2.State.PROVISIONAL, NiDm2.Kind.QUOTED, ttl = ttl, seconds = seconds),
+        m(NiDm2.State.PAIR, NiDm2.Kind.TIMER_SET, ttl = ttl),
+        m(NiDm2.State.RESET, NiDm2.Kind.CONTROL, ttl = ttl, seconds = 400),
+    )
+
+    private val intro = NiDm2.State.INTRO
+    private val timerSet = NiDm2.Kind.TIMER_SET
+
+    @Test
+    fun niDm2PassesADeclaredDefectOnlyWhenItReproducesExactlyAsDeclared() {
+        val exact = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, seconds = 700))
+        assertTrue(exact.line(), exact.passed)
+        assertTrue(
+            exact.line(),
+            exact.line().contains(
+                "; 1 declared open defect, not gated, reproduced exactly as declared: INTRO/TIMER_SET at 0 stores " +
+                    "ttl=86400 where the other twins store ttl=604800, every other field equal, at 3 relays — ",
+            ),
+        )
+        // 3 of 4 messages gate; 2 comparisons of views, 1 of seconds (the reset's are not compared).
+        assertTrue(exact.line(), exact.line().contains("; 3 of their 4 messages gate: "))
+        assertEquals(2, exact.comparisons)
+        assertEquals(1, exact.timedComparisons)
+
+        val fixed = NiDm2.Result(gating() + m(intro, timerSet))
+        assertFalse(fixed.line(), fixed.passed)
+        assertTrue(fixed.line(), fixed.line().contains("no longer reproduces"))
+
+        val partial = NiDm2.Result(gating() + m(intro, timerSet, ttl = 2_592_000))
+        assertFalse(partial.line(), partial.passed)
+        assertTrue(partial.line(), partial.line().contains("otherwise than declared"))
+
+        val size = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, size = 16_384))
+        assertFalse(size.line(), size.passed)
+        assertTrue(size.line(), size.line().contains("otherwise than declared"))
+
+        val relays = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, slots = listOf(0, 1, 2)))
+        assertFalse(relays.line(), relays.passed)
+        assertTrue(relays.line(), relays.line().contains("otherwise than declared"))
+
+        val extra = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, slots = listOf(0, 1, 2, 3)))
+        assertFalse(extra.line(), extra.passed)
+
+        // The other twins no longer store the declared TTL: the declaration describes another world.
+        val moved = NiDm2.Result(gating(ttl = 2_592_000) + m(intro, timerSet, ttl = 86_400))
+        assertFalse(moved.line(), moved.passed)
+        assertTrue(moved.line(), moved.line().contains("not the declared ttl=604800"))
+
+        val missing = NiDm2.Result(gating())
+        assertFalse(missing.line(), missing.passed)
+        assertTrue(missing.line(), missing.line().contains("declared, but no such twin ran"))
+
+        val unreached = NiDm2.Result(gating() + m(intro, timerSet, stores = false))
+        assertFalse(unreached.line(), unreached.passed)
+        assertTrue(unreached.line(), unreached.line().contains("so nothing was reproduced"))
+    }
+
+    @Test
+    fun niDm2FailsOnAGatingDifferenceAndNeverComparesATwinThatDidNotReachItsState() {
+        val split = gating().toMutableList().also { it[1] = m(NiDm2.State.PAIR, NiDm2.Kind.TIMER_SET, ttl = 86_400) }
+        val differs = NiDm2.Result(split + m(intro, timerSet, ttl = 86_400))
+        assertFalse(differs.line(), differs.passed)
+        assertTrue(differs.line(), differs.line().contains("differ at body length 0: "))
+        assertTrue(differs.line(), differs.line().contains("no single view of the other twins"))
+
+        val empty = gating().toMutableList().also { it[0] = m(NiDm2.State.PROVISIONAL, NiDm2.Kind.QUOTED, stores = false) }
+        val notReached = NiDm2.Result(empty + m(intro, timerSet, ttl = 86_400))
+        assertFalse(notReached.line(), notReached.passed)
+        assertTrue(notReached.line(), notReached.line().contains("did not reach their variable"))
+        // The empty twin is not compared: no "no store" view can pass for a difference a mutant made.
+        assertFalse(notReached.line(), notReached.line().contains("differ at body length"))
+    }
+
+    @Test
+    fun niDm2ComparesTheSecondOnlyWhereNoEstablishmentDecidesIt() {
+        // The provisional twin stored a minute later than the pair twin: a state-dependent delay.
+        val late = NiDm2.Result(gating(seconds = 120) + m(intro, timerSet, ttl = 86_400))
+        assertFalse(late.line(), late.passed)
+        assertTrue(late.line(), late.line().contains("store seconds after t0 differ at body length 0"))
+        // The reset's and the intro's seconds (400 and 700 above) never gate.
+        val establishing = NiDm2.Result(gating() + m(intro, timerSet, ttl = 86_400, seconds = 5))
+        assertTrue(establishing.line(), establishing.passed)
+    }
+
+    // ------------------------------------------------------------------ JD7's attempt windows
+
+    private val hour = DmWorld.HOUR
+
+    /** A reader that holds a relay session every hour for [hours] hours. */
+    private fun wakes(hours: Int): java.util.TreeSet<Long> = java.util.TreeSet((0..hours).map { it * hour })
+
+    /** Reads in three windows, six hours apart, after an establishment at 0 (see §21.7 points 2, 5). */
+    private val threeWindows = listOf(10L, 7 * hour + 10, 14 * hour + 10)
+
+    @Test
+    fun jd7sWindowsBoundTheAttemptsAndSayWhenAFourthCouldHaveFallen() {
+        val establishment = PrivacyWorld.Establishment(0, 1, 0)
+        val w = Joins.Windows(listOf(establishment), wakes(72))
+        for (t in threeWindows) assertTrue("read at $t refused", w.accept(t))
+        assertEquals(3, w.total)
+        assertEquals(1, w.exhausted)
+        // The third window closed at the 15-hour session; a session at 21 h exists and no new
+        // establishment came: an unbounded engine's fourth attempt had somewhere to fall.
+        assertEquals(1, w.binding())
+        assertFalse("a fourth attempt was accepted", w.accept(21 * hour + 10))
+    }
+
+    @Test
+    fun jd7sBindingCountRefusesAnExhaustionWithNoRoomForAFourthAttempt() {
+        val establishment = PrivacyWorld.Establishment(0, 1, 0)
+        // The world ends before six hours pass after the third window.
+        val short = Joins.Windows(listOf(establishment), wakes(20))
+        for (t in threeWindows) assertTrue(short.accept(t))
+        assertEquals(1, short.exhausted)
+        assertEquals(0, short.binding())
+        // A new send to the peer (a new establishment) comes before the fourth attempt would.
+        val renewed = Joins.Windows(listOf(establishment, PrivacyWorld.Establishment(0, 1, 18 * hour)), wakes(72))
+        for (t in threeWindows) assertTrue(renewed.accept(t))
+        assertEquals(1, renewed.exhausted)
+        assertEquals(0, renewed.binding())
+        // Two windows only: nothing was exhausted, nothing binds.
+        val two = Joins.Windows(listOf(establishment), wakes(72))
+        for (t in threeWindows.take(2)) assertTrue(two.accept(t))
+        assertEquals(0, two.exhausted)
+        assertEquals(0, two.binding())
     }
 }

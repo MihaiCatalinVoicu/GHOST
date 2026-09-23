@@ -68,7 +68,8 @@ internal enum class PrivacyScale(val clients: Int, val days: Int) {
  *    second band straddling the 4/16 KiB boundary of R-B1 so JD4 and NI-DM2's mutant can bite;
  *  - background relay sessions every 1–4 hours and one-minute foreground passes during sessions.
  *  **Not modelled:** key changes, restores, clock offsets, the ES slot-table change, HIGH mode,
- *  hostile modes and the PQ-C cadence.
+ *  hostile modes but WITHHOLD_ALL_BUNDLES ([PrivacyWorldConfig.withholdAllBundles], a variant world
+ *  of its own, §22.21) and the PQ-C cadence as a behaviour (the engine runs it on its own).
  *
  * Everything is planned from [PrivacyWorldConfig.seed] before the first event runs, so a twin world
  * built from the same seed differs only in what its variant changes. Native randomness is the OS's
@@ -80,7 +81,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     val truth = GroundTruth()
     var now: Long = config.startSeconds
         private set
-    val relay = ViewRelay { now }
+    val relay = ViewRelay { now }.also { it.withholdBundles = config.withholdAllBundles }
 
     /** One client of the world. */
     inner class Client(val index: Int) {
@@ -179,9 +180,20 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
 
     /**
      * JD5's timer truth: each conversation's timer changes as the users made them, from the plan's
-     * `edge.timer` through [userSetTimer], and the message id of each TIMER_SET.
+     * `edge.timer` through [userSetTimer], and the message id of each TIMER_SET. [queued] is true
+     * when the setter held no session with the peer at the change (by the recorder's
+     * [GroundTruth.sessions]), so the TIMER_SET waited as a pending item for `EST-READY`'s flush —
+     * the path of NI-DM2's declared open defect (§22.21 item 2) — instead of being sealed at once.
      */
-    class TimerChange(val setter: Int, val peer: Int, val at: Long, val oldCode: Int, val newCode: Int, val messageId: String?)
+    class TimerChange(
+        val setter: Int,
+        val peer: Int,
+        val at: Long,
+        val oldCode: Int,
+        val newCode: Int,
+        val messageId: String?,
+        val queued: Boolean,
+    )
 
     val timerChanges = ArrayList<TimerChange>()
 
@@ -379,12 +391,12 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         return result
     }
 
-    fun userSend(c: Int, peer: Int, length: Int): SendResult? {
+    fun userSend(c: Int, peer: Int, length: Int, quote: MessageId? = null): SendResult? {
         val contact = contactIdOf(c, peer) ?: return null
         val text = textOf(c, length)
         val at = now
         val establishing = (c to peer) !in truth.sessions
-        val (result, id) = userAction(c, peer, Expect.Text(text)) { clients[c].device.engine.send(contact, text, null) }
+        val (result, id) = userAction(c, peer, Expect.Text(text)) { clients[c].device.engine.send(contact, text, quote) }
         if (establishing) establishments += Establishment(c, peer, at)
         id?.let { userTexts[it] = c to peer }
         count("sends")
@@ -405,7 +417,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         val (result, id) = userAction(c, peer, Expect.TimerSet) { clients[c].device.engine.setTimer(contact, timer) }
         if (establishing) establishments += Establishment(c, peer, at)
         if (result == SendResult.QUEUED && id != null) {
-            timerChanges += TimerChange(c, peer, at, old, timer.code, id)
+            timerChanges += TimerChange(c, peer, at, old, timer.code, id, queued = establishing)
         } else {
             count("timers not queued: $result")
         }
@@ -511,15 +523,27 @@ internal class PrivacyWorldConfig(
     val plan: Plan? = null,
     /** The share of bodies in `[2 221, 3 900]`, R-B1's 16 KiB class, in percent. */
     val longPercent: Int = 1,
+    /**
+     * Hostile mode WITHHOLD_ALL_BUNDLES (§15.6 "hostile modes", §21.7 point 6): no relay shows any
+     * reader a bundle it does not own, so every establishment runs out its attempts (the JD7
+     * variant of §21.7 point 6 and PM-31's detector; §22.21).
+     */
+    val withholdAllBundles: Boolean = false,
 ) {
     companion object {
-        fun of(scale: PrivacyScale, seed: Long, mutant: PrivacyMutant? = null): PrivacyWorldConfig =
+        fun of(
+            scale: PrivacyScale,
+            seed: Long,
+            mutant: PrivacyMutant? = null,
+            withholdAllBundles: Boolean = false,
+        ): PrivacyWorldConfig =
             PrivacyWorldConfig(
                 seed = seed,
                 clients = scale.clients,
                 days = scale.days,
                 mutant = mutant,
                 longPercent = if (scale == PrivacyScale.SMALL) 5 else 1,
+                withholdAllBundles = withholdAllBundles,
             )
     }
 }
@@ -569,6 +593,10 @@ internal class Plan private constructor(
                     world.userAdd(u, v)
                     world.userSend(u, v, 12)
                 },
+                // Ten minutes in, normally after `EST-READY`. A TIMER_SET set before a session
+                // exists would wait for `EST-READY`'s flush, the path of NI-DM2's declared open
+                // defect (§22.21 item 2); JD5 prints how many did, so its line never reads as
+                // covering a path this world does not take.
                 10 to {
                     if (edge.timer != Timer.DAYS_7 && world.trustOf(u, v) != null) {
                         world.userSetTimer(u, v, edge.timer)

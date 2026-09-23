@@ -17,9 +17,10 @@
 #                   non-zero denominator, S-DM3 at PASS with n >= 100, 0 namespaces named by the
 #                   dictionary and an exact control that the statistic rejects, and the T35 line of a
 #                   provenance build with 0 seal calls thrown;
-#   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM3, the T34 seizure
-#                   line with both controls complete, the T34 one-reply line, and the privacy mutant
-#                   count with one detection line per mutant;
+#   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM2 with its fifteen
+#                   (slice S11b), NI-DM3, JD7's WITHHOLD_ALL_BUNDLES variant with the bound reached
+#                   (S11b), the T34 seizure line with both controls complete, the T34 one-reply
+#                   line, and the privacy mutant count with one detection line per mutant;
 #   privacy-pr      both halves in one report at the PR scale (N = 120, 14 days), which is what the
 #                   `android` job of ci.yml writes.
 #
@@ -37,10 +38,13 @@
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
 # §22.15 and §22.19 of the design list what is still owed, scenario by scenario and mutant by
 # mutant. The privacy half follows the same rule: it does not
-# require JD8, JD10, NI-DM2, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
+# require JD8, JD10, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
 # AD-7-with-token line, the EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry
-# clause, T26's model-relay open check or 30 of the 40 privacy mutants, because nothing in this
-# branch produces them; §22.16 names each (items 10–15 and 20).
+# clause, T26's model-relay open check or 28 of the 40 privacy mutants (nor PM-5's exact-seconds
+# half), because nothing in this branch produces them; §22.16 names each (items 10–15 and 20), and
+# §22.21 what slice S11b added (NI-DM2 with its one declared open defect, the JD7
+# WITHHOLD_ALL_BUNDLES variant, PM-5's day-rounding half and PM-31, and NI-DM2 as PM-4's second
+# killer).
 set -euo pipefail
 
 report="${1:-}"
@@ -78,6 +82,10 @@ privacy_worlds() {
     [ "$n" = "$pairs" ] || bad "$join: $n PASS lines over a non-empty sample for $pairs seed pairs"
     if grep -qE "^dm ${join}: FAIL" "$report"; then bad "$join failed"; fi
   done
+  # JD5 says which TIMER_SET path it covered: the pending path (a TIMER_SET queued for EST-READY's
+  # flush) is NI-DM2's declared open defect, and a line without the split would read as covering it.
+  n="$(grep -cE "^dm JD5: PASS 0 over [1-9][0-9]*; .*, [0-9]+ TIMER_SETs against R-T3's larger bucket \([0-9]+ set over a session, [0-9]+ queued for EST-READY's flush: " "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "JD5: $n lines that say which TIMER_SET path they covered for $pairs seed pairs"
   # S-DM3 (gating): PASS, the n >= 100 floor, no namespace of the view named by the dictionary (the
   # only part of the statistic the world decides, §22.16), and the colluders' control exact,
   # non-empty and rejected by the statistic (the interval test can fail when the attacker knows).
@@ -100,6 +108,25 @@ privacy_suite() {
   grep -qE "^dm NI-DM3: PASS k=2 vs k'=4 contacts \(2 idle cards added\): C's view equal over [1-9][0-9]* events from the scan session on, across a week boundary" "$report" \
     || bad "no NI-DM3 PASS with its two idle contacts added, from the scan session on"
   if grep -qE '^dm NI-DM3: FAIL' "$report"; then bad "NI-DM3 failed"; fi
+  # NI-DM2 (the S11b slice, §22.21): the fifteen twins at the eight body lengths, 59 of their 60
+  # messages gating with a non-zero number of comparisons (the stores, and the store second where no
+  # establishment decides it), and M sealed in **every** mode and of **every** kind the twins name —
+  # so a run whose twins never left one state (and so compared a message with itself) cannot pass.
+  # The line must **end** with the one declared open defect, pinned word for word: exactly one, the
+  # TTL of the intro TIMER_SET and nothing else (NiDm2 fails a declared defect that differs in any
+  # other field, or no longer differs), so no second "declared" difference can ride on a PASS and a
+  # partial fix cannot pass as the declared defect.
+  grep -qE "^dm NI-DM2: PASS 15 twins at 8 body lengths \(0, 17, 2220, 2221, 3000, 14508, 14509, 15000\); 59 of their 60 messages gate: A's stores of M into B's inbox equal at each length over [1-9][0-9]* comparisons, and at the same second after t0 over [1-9][0-9]* comparisons among the [1-9][0-9]* messages whose state needs no establishment \(an intro's or a reset's store waits for the bundle, whose timing is the relay's, §21\.7 point 6\); M sealed \{INTRO=[1-9][0-9]*, PAIR=[1-9][0-9]*, PROVISIONAL=[1-9][0-9]*\}, kinds \{CONTROL=[1-9][0-9]*, QUOTED=[1-9][0-9]*, REACTION=[1-9][0-9]*, TEXT=[1-9][0-9]*, TIMER_SET=[1-9][0-9]*\}, TLVs that rode \{[^}]*\}; sizes by length \{[^}]*\}; 1 declared open defect, not gated, reproduced exactly as declared: INTRO/TIMER_SET at 0 stores ttl=86400 where the other twins store ttl=604800, every other field equal, at 3 relays — R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, not the larger of the old and the new \(§22.21\)\$" "$report" \
+    || bad "no NI-DM2 PASS over the fifteen twins at the eight lengths, 59 of 60 messages gating, with M sealed in every mode and of every kind, ending with exactly the one declared open defect (the intro TIMER_SET's TTL)"
+  if grep -qE '^dm NI-DM2: FAIL' "$report"; then bad "NI-DM2 failed"; fi
+  # JD7's WITHHOLD_ALL_BUNDLES variant (§21.7 point 6): no read outside an attempt window, and a world
+  # that put the bound to the test — an establishment that reached its third window with a later
+  # session of the reader where a fourth attempt would fall — plus the two harness guards (bundles
+  # withheld from lists, none fetched), so the variant is never a pass over a world in which the
+  # bound never bound.
+  grep -qE '^dm JD7 WITHHOLD_ALL_BUNDLES: PASS 0 over [1-9][0-9]*; .*; [1-9][0-9]* establishments reached their third attempt window, [1-9][0-9]* of them followed by a relay session of the reader at least 6 h after it closed and before the pair.s next establishment \(where an unbounded engine makes a fourth attempt\); harness guards: [1-9][0-9]* bundle lists answered empty over a live bundle, 0 bundle GETs' "$report" \
+    || bad "no JD7 WITHHOLD_ALL_BUNDLES PASS in which an establishment reached its third window with room for a fourth attempt, with bundles withheld and none fetched"
+  if grep -qE '^dm JD7 WITHHOLD_ALL_BUNDLES: FAIL' "$report"; then bad "the JD7 WITHHOLD_ALL_BUNDLES variant failed"; fi
   # T34: a non-empty expired-week sample with nothing recognised or opened, and **every** control
   # complete — each "N of M" with N = M and M > 0 — so a "0" is never the output of an attempt that
   # does not work (a control of "1 of 515" is refused, not accepted).
@@ -127,10 +154,17 @@ privacy_suite() {
   # The privacy mutants: the count this slice registers, one detection line each, none undetected.
   # Both numbers are written from what the run recorded (`PrivacyKills`): a mutant is "run" when a
   # mutated world ran for every check its entry names, and "detected" when every one killed it.
-  grep -qxF 'dm privacy mutants: 10 run, 10 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 10 run, 10 detected'"
-  for mutant in PM-2 PM-3 PM-4 PM-6 PM-8 PM-13 PM-19 PM-24 PM-36 PM-39; do
+  grep -qxF 'dm privacy mutants: 12 run, 12 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 12 run, 12 detected'"
+  for mutant in PM-2 PM-3 PM-4 PM-5 PM-6 PM-8 PM-13 PM-19 PM-24 PM-31 PM-36 PM-39; do
     grep -qE "^dm privacy mutant ${mutant}: detected by .+" "$report" || bad "no detection line for privacy mutant $mutant"
   done
+  # PM-4 is detected by both checks §15.7 names since S11b (§22.21), and the report must say so.
+  grep -qxF 'dm privacy mutant PM-4: detected by JD4 (SMALL world), NI-DM2 (twin worlds)' "$report" \
+    || bad "PM-4 is not detected by both JD4 and NI-DM2"
+  # PM-5 is half of §15.7's entry (the day rounding; the exact-seconds half is not built), and its
+  # line must say so, so "12 detected" never reads as more than was built.
+  grep -qxF 'dm privacy mutant PM-5: detected by JD5 (SMALL world); the day-rounding half only; the exact-seconds half is not built' "$report" \
+    || bad "PM-5's detection line does not say that only its day-rounding half is built"
   if grep -qE '^dm privacy mutant .*NOT DETECTED' "$report"; then bad "a registered privacy mutant was not detected by every check it names"; fi
 }
 

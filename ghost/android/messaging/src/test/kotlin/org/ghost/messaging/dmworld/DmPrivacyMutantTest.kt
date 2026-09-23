@@ -32,6 +32,8 @@ class DmPrivacyMutantTest {
 
     @Test fun pm4ABucketFromTheOlmLengthIsDetected() = kill(PrivacyMutants.PM4)
 
+    @Test fun pm5ATtlRoundedToDaysIsDetected() = kill(PrivacyMutants.PM5)
+
     @Test fun pm6AResetOnAnUndecryptableBlobIsDetected() = kill(PrivacyMutants.PM6)
 
     @Test fun pm8ARevocationNamespaceIsDetected() = kill(PrivacyMutants.PM8)
@@ -41,6 +43,8 @@ class DmPrivacyMutantTest {
     @Test fun pm19RetainedWeekKeysAreDetected() = kill(PrivacyMutants.PM19)
 
     @Test fun pm24AClientChosenRelaySetIsDetected() = kill(PrivacyMutants.PM24)
+
+    @Test fun pm31UnboundedFetchAttemptsAreDetected() = kill(PrivacyMutants.PM31)
 
     @Test fun pm36RetainedRecognitionKeysAreDetected() = kill(PrivacyMutants.PM36)
 
@@ -77,8 +81,16 @@ class DmPrivacyMutantTest {
             } else if (!failure.contains(killer.expect)) {
                 failures += "${mutant.id} failed ${killer.check.label}, but not for the reason its entry names.\n" +
                     "  expected to contain: ${killer.expect}\n  actual: ${failure.take(2_000)}"
+            } else if (killer.refuse != null && failure.contains(killer.refuse)) {
+                // The check failed for the named reason and also because the mutated world did not
+                // reach what the check needs (an NI-DM2 twin that stored nothing): not a kill.
+                failures += "${mutant.id} failed ${killer.check.label}, but its world did not reach what the check " +
+                    "needs.\n  must not contain: ${killer.refuse}\n  actual: ${failure.take(2_000)}"
             } else {
                 PrivacyKills.record(mutant.id, killer.check.label, failure)
+                // The killing failure, in the test's own output: what the check saw, not only that
+                // it failed (§22.21).
+                println("${mutant.id} killed by ${killer.check.label}: ${failure.take(1_500)}")
             }
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
@@ -111,11 +123,15 @@ internal object Checks {
     private val smallJoins = ConcurrentHashMap<String, Map<PrivacyCheck, JoinResult>>()
 
     fun run(check: PrivacyCheck, mutant: PrivacyMutant?): String? = when (check) {
-        PrivacyCheck.JD1, PrivacyCheck.JD2, PrivacyCheck.JD4, PrivacyCheck.JD6, PrivacyCheck.JD7, PrivacyCheck.JD9 -> {
+        PrivacyCheck.JD1, PrivacyCheck.JD2, PrivacyCheck.JD4, PrivacyCheck.JD5, PrivacyCheck.JD6, PrivacyCheck.JD7,
+        PrivacyCheck.JD9,
+        -> {
             val result = small(mutant).getValue(check)
             if (result.passed) null else result.failureMessage()
         }
+        PrivacyCheck.JD7_WITHHOLD -> withheld(mutant).let { if (it.passed) null else it.failureMessage() }
         PrivacyCheck.NI_DM1 -> NiDm1.run(seed, mutant).let { if (it.passed) null else it.line() }
+        PrivacyCheck.NI_DM2 -> NiDm2.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.NI_DM3 -> NiDm3.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.S_DM3 -> PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.MEDIUM, seed, mutant)).use { world ->
             world.run()
@@ -134,17 +150,35 @@ internal object Checks {
                     PrivacyCheck.JD1 to joins.jd1(),
                     PrivacyCheck.JD2 to joins.jd2(),
                     PrivacyCheck.JD4 to joins.jd4(),
+                    PrivacyCheck.JD5 to joins.jd5(),
                     PrivacyCheck.JD6 to joins.jd6(),
                     PrivacyCheck.JD7 to joins.jd7(),
                     PrivacyCheck.JD9 to joins.jd9(),
                 )
                 // PM-4 lives in R-B1's 16 KiB class, so a control world that drew no body there
-                // could not tell a live JD4 from a dead one.
+                // could not tell a live JD4 from a dead one; PM-5 lives in the 1-hour bucket, so a
+                // control whose users set no 5-minute or 1-hour timer could not tell a live JD5.
                 if (mutant == null) {
                     val boundary = world.truth.bodyLengthOfBlob.values.count { it in 2_221..14_508 }
                     check(boundary > 0) { "the SMALL control drew no body in R-B1's 16 KiB class" }
+                    val hourTexts = world.relay.events.count { e ->
+                        e.op == ViewOp.STORE && e.ttlSeconds == 3_600L &&
+                            e.cause?.messageRef?.let { Joins.hex(it) in world.userTexts } == true
+                    }
+                    check(hourTexts > 0) { "the SMALL control stored no user text in the 1-hour bucket" }
                 }
                 out
+            }
+        }
+
+    /** One WITHHOLD_ALL_BUNDLES SMALL world per mutant (null: the control), for the JD7 variant. */
+    private val withheldJoins = ConcurrentHashMap<String, JoinResult>()
+
+    fun withheld(mutant: PrivacyMutant?): JoinResult =
+        withheldJoins.computeIfAbsent(mutant?.id ?: "control") {
+            PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.SMALL, seed, mutant, withholdAllBundles = true)).use { world ->
+                world.run()
+                Joins(world).jd7Withheld()
             }
         }
 }
@@ -196,7 +230,10 @@ internal object PrivacyKills {
         for (m in registered) {
             val done = kills[m.id].orEmpty()
             if (m in detected) {
-                PrivacyReport.line("dm privacy mutant ${m.id}: detected by ${m.killers.joinToString(", ") { it.check.label }}")
+                PrivacyReport.line(
+                    "dm privacy mutant ${m.id}: detected by ${m.killers.joinToString(", ") { it.check.label }}" +
+                        (m.scope?.let { "; $it" } ?: ""),
+                )
             } else {
                 val missing = m.killers.filter { it.check.label !in done }.joinToString(", ") { it.check.label }
                 PrivacyReport.line("dm privacy mutant ${m.id}: NOT DETECTED by $missing")

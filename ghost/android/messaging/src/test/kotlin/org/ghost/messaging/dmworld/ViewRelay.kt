@@ -76,7 +76,8 @@ internal class StoreCause(
  * **What it does not model, declared in §22.16:** the credential-selection and capability layers of
  * the redeem lane (no token is ever redeemed, so JD3's redemption half and JD8 have no events),
  * send delays (every world here is STANDARD), circuits' open and close minutes, relay refusals and
- * hostile modes.
+ * every hostile mode but one: **WITHHOLD_ALL_BUNDLES** ([withholdBundles]) exists since the S11b
+ * slice for the JD7 variant that bounds the attempts (§21.7 point 6, PM-31; §22.21).
  */
 internal class ViewRelay(private val now: () -> Long) {
 
@@ -93,8 +94,12 @@ internal class ViewRelay(private val now: () -> Long) {
     /** `(slot, namespace hex)` → blobs, in store order. */
     private val stored = HashMap<Pair<Int, String>, MutableList<Stored>>()
 
-    /** `(client, namespace hex + hash hex)` already fetched by that client. */
-    private val fetched = HashSet<Pair<Int, String>>()
+    /**
+     * `(client, namespace hex + stored hash hex)` → the hash of the bytes served to that client for
+     * it (a twin's [serveTransform] may change them). Never a stand-in for the reader's own rows:
+     * [serve] asks the reader whether it still holds a row for that hash.
+     */
+    private val served = HashMap<Pair<Int, String>, ByteArray>()
 
     /** A relay session counter per client: circuits are per session and namespace. */
     private val session = HashMap<Int, Int>()
@@ -107,6 +112,20 @@ internal class ViewRelay(private val now: () -> Long) {
 
     /** Hook for the twin worlds: false keeps a stored blob from one reader (a relay withholding it). */
     var serveFilter: ((reader: Int, from: Int) -> Boolean)? = null
+
+    /**
+     * Hostile mode **WITHHOLD_ALL_BUNDLES** (§15.1's list, §21.7 point 6): every relay answers a
+     * list of a card's bundle namespace by anyone but its owner as if it held nothing, so no
+     * establishment ever gets a candidate and every one runs its three attempt windows out. The
+     * lists themselves are recorded — they are what the JD7 variant bounds — and the lists that
+     * hid at least one live bundle are counted in [bundleListsWithheld], so a variant world that
+     * withheld nothing says so.
+     */
+    var withholdBundles: Boolean = false
+
+    /** Lists (one per relay) under [withholdBundles] that answered empty over at least one live bundle. */
+    var bundleListsWithheld: Int = 0
+        private set
 
     /** Ops that carried no credential at a relay: Phase 7 would have left them `wait_capability`. */
     var storesWithoutCredential: Int = 0
@@ -227,12 +246,13 @@ internal class ViewRelay(private val now: () -> Long) {
         for (namespace in listening) {
             val nsHex = hex(namespace)
             val readerState = if (nsHex in ownNamespaces) null else contactRow(device, contactBundles[nsHex])
+            val withheld = withholdBundles && nsHex !in ownNamespaces && nsHex in contactBundles
             val relays = ArrayList<Long>()
             device.sql.query(
                 "SELECT relay_id FROM namespace_relay WHERE namespace_id = ? ORDER BY relay_id",
                 listOf(namespace),
             ) { relays += it.long(0) }
-            val fetchedThisRound = HashSet<String>()
+            val handledThisRound = HashSet<String>()
             for (relay in relays) {
                 val slot = slotOf[relay] ?: continue
                 val credential = capability(device, relay, namespace, "read")
@@ -247,19 +267,31 @@ internal class ViewRelay(private val now: () -> Long) {
                     credential = credential,
                     readerState = readerState,
                 )
+                if (withheld) {
+                    if (stored[slot to nsHex].orEmpty().any { it.storedAt + it.ttl > now() }) bundleListsWithheld++
+                    continue
+                }
                 for (blob in stored[slot to nsHex].orEmpty()) {
                     if (blob.from == client) continue
                     if (serveFilter?.invoke(client, blob.from) == false) continue
                     if (blob.storedAt + blob.ttl <= now()) continue
                     val key = nsHex + hex(blob.hash)
-                    if (key in fetchedThisRound || (client to key) in fetched) continue
+                    if (!handledThisRound.add(key)) continue
+                    // The read lane fetches a hash the reader holds no row for, and the reader's
+                    // rows are the only memory it has: what the relay once served this reader is
+                    // served again when the reader holds no row for it any more. A card's bundle
+                    // namespace is where that happens by design — `Inbox.forgetConsumed` (§21.7
+                    // point 2) deletes the reader's tombstones so a reset, a key change or a
+                    // re-added contact can fetch the same live bundle again (found by NI-DM2's
+                    // reset twin, §22.21) — and anywhere else it would be a lost tombstone, which
+                    // shows as a second GET of the same hash instead of being hidden by the model.
+                    // The hash looked up is the one of the bytes actually served (a twin's
+                    // [serveTransform] may have changed them).
+                    val before = served[client to key]
+                    if (before != null && known(device, namespace, before)) continue
                     val bytes = serveTransform?.invoke(client, blob.from, blob.storedAt, blob.bytes) ?: blob.bytes
-                    if (!insert(device, namespace, bytes)) {
-                        fetched += client to key
-                        continue
-                    }
-                    fetchedThisRound += key
-                    fetched += client to key
+                    served[client to key] = sha256(bytes)
+                    if (!insert(device, namespace, bytes)) continue
                     events += ViewEvent(
                         op = ViewOp.GET,
                         relaySlot = slot,
@@ -277,6 +309,16 @@ internal class ViewRelay(private val now: () -> Long) {
             }
         }
         return moved
+    }
+
+    /** Whether the reader holds any inbox row (a fetched blob or a tombstone) for [hash]. */
+    private fun known(device: DmDevice, namespace: ByteArray, hash: ByteArray): Boolean {
+        var exists = false
+        device.sql.query(
+            "SELECT 1 FROM inbox_blob WHERE namespace_id = ? AND blob_hash = ?",
+            listOf(namespace, hash),
+        ) { exists = true }
+        return exists
     }
 
     /** The reader's contact row for the owner of [identityPk], for a failing JD7's message only. */

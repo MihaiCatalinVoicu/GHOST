@@ -70,6 +70,29 @@ class DmPrivacyWorldTest {
     }
 
     @Test
+    fun niDm2TypeAndSessionStateLeaveTheSizesUnchanged() {
+        requireNative()
+        val result = NiDm2.run(PrivacySeeds.ALL[0])
+        PrivacyReport.line(result.line())
+        assertTrue(result.line(), result.passed)
+    }
+
+    /**
+     * JD7's WITHHOLD_ALL_BUNDLES variant (§21.7 point 6): scale-independent like the twins, so it
+     * runs once, on a SMALL world whose relays show no reader a bundle it does not own.
+     */
+    @Test
+    fun jd7UnderWithholdAllBundlesTheAttemptsStayBounded() {
+        requireNative()
+        PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.SMALL, PrivacySeeds.ALL[0], withholdAllBundles = true)).use { world ->
+            world.run()
+            val result = Joins(world).jd7Withheld()
+            PrivacyReport.line(result.line() + " (N=${world.config.clients}, ${world.config.days} days)")
+            assertTrue(result.failureMessage(), result.passed)
+        }
+    }
+
+    @Test
     fun niDm3IdleContactsLeaveTheOwnersViewUnchanged() {
         requireNative()
         val result = NiDm3.run(PrivacySeeds.ALL[0])

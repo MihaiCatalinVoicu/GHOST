@@ -1,28 +1,32 @@
 GHOST DM privacy gate (Phase 9 design §15.6, §15.7; slice S11)
 scale: pr (N = 120, 14 days), seed pairs 1, STANDARD
-dm T34: PASS seized c0, c7 at day 70; expired-week pair blobs 297, 0 recognised and 0 opened by retained keys (every stored value: 1920 of 32 bytes, 471 of 60; opening tried on the 143 in-direction ones), 0 recognised by derived keys (seed, cards, 121056 root derivations); control 515 of 515 current in-direction pair blobs recognised and opened, 3 of 3 current-week out-direction recognised; intro 6 of 6 opened, 6 expected (0 generations due for erasure); prov_env 0 retained, 9 due erased, 0 past the rule; provisional blobs 13, 0 of 13 of due sessions opened, day-10 control 13 of 13 opened
-dm privacy world: N=120, 14 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {BUNDLE=274, INTRO=372, PAIR=5013, PROVISIONAL=498}, 118 s [seed 5eed0001]
+dm JD7 WITHHOLD_ALL_BUNDLES: PASS 0 over 8019; reads, 2460 of them bundle reads inside 189 attempt windows of 105 establishments (at most 3 windows for one); 30 establishments reached their third attempt window, 26 of them followed by a relay session of the reader at least 6 h after it closed and before the pair's next establishment (where an unbounded engine makes a fourth attempt); harness guards: 2460 bundle lists answered empty over a live bundle, 0 bundle GETs (N=16, 5 days)
+dm T34: PASS seized c0, c7 at day 70; expired-week pair blobs 297, 0 recognised and 0 opened by retained keys (every stored value: 1552 of 32 bytes, 100 of 60; opening tried on the 143 in-direction ones), 0 recognised by derived keys (seed, cards, 1365 root derivations); control 515 of 515 current in-direction pair blobs recognised and opened, 23 of 23 current-week out-direction recognised; intro 6 of 6 opened, 6 expected (0 generations due for erasure); prov_env 0 retained, 9 due erased, 0 past the rule; provisional blobs 13, 0 of 13 of due sessions opened, day-10 control 13 of 13 opened
+dm privacy world: N=120, 14 days, 360 edges accepted of 369 planned, 5740 user sends, 18471 stores, 119796 lists, 6061 gets, 3231 registrations, seals {BUNDLE=274, INTRO=372, PAIR=5013, PROVISIONAL=498}, 207 s [seed 5eed0001]
 dm JD1: PASS 0 over 15752; identity dictionary of 330600 entries over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD2: PASS 0 over 15752; 5793 Olm header and bundle key strings over 15752 distinct captured byte strings (26116137 bytes) [seed 5eed0001]
 dm JD3: PASS 0 over 21702; stores and registrations (822 stores into the storer's own bundle namespace, every other into a card's inbox); 1047 (relay, inbox, week) cells [seed 5eed0001]
 dm JD4: PASS 0 over 6157; distinct DM stores, 45 of them with a body in the 16 KiB class [seed 5eed0001]
-dm JD5: PASS 0 over 6157; distinct stores against the §10.1 table: 5740 user texts against the timer the users set, 143 TIMER_SETs against R-T3's larger bucket; the deadline half cannot fail in a world without outages [seed 5eed0001]
+dm JD5: PASS 0 over 6157; distinct stores against the §10.1 table: 5740 user texts against the timer the users set, 143 TIMER_SETs against R-T3's larger bucket (143 set over a session, 0 queued for EST-READY's flush: that path is NI-DM2's declared open defect and a FAILED item's retry is run by no world, §22.21); the deadline half cannot fail in a world without outages [seed 5eed0001]
 dm JD6: PASS 0 over 6157; ops by cause {bundle publication=274, user action=5883}; 5883 user messages, each under one ciphertext; 0 messages a user action created beyond what it was for [seed 5eed0001]
 dm JD7: PASS 0 over 125857; reads, 3808 of them bundle reads inside 369 attempt windows of 369 establishments (at most 1 windows for one) [seed 5eed0001]
 dm JD9: PASS 0 over 147559; relay events (registrations included) over 240 namespaces [seed 5eed0001]
 dm S-DM3: PASS K=3 of n=240 namespaces (N=120 identities, 0 named by the dictionary over 240 view namespaces), 99.9% interval [0, 8], p=0.6466; control: 12 colluders' cards map 0 of 0 expected namespaces, 0 correct, K=133 outside the interval (p=5.40e-207) [seed 5eed0001]
 dm T35: PASS provenance build; 6157 seals under the assertion of 6157 seal calls (intro outer 372, pair 5013, provisional 498, bundle 274), 0 threw; PQ-R8 exception (LINK-sourced intro seals, by the world's record of each card): 0 of 372 (372 in person); the tags are static and the X-Wing inner layer carries none (§22.16) [seed 5eed0001]
 dm T34 one-reply: PASS dumped at day 125: 2 of 2 sessions due by prov_anchor_minute + 119 d, 2 of 2 provably held prov_env, 0 keep it (c0 initiator anchor day 0 erased; c1 responder anchor day 0 erased)
+dm NI-DM2: PASS 15 twins at 8 body lengths (0, 17, 2220, 2221, 3000, 14508, 14509, 15000); 59 of their 60 messages gate: A's stores of M into B's inbox equal at each length over 51 comparisons, and at the same second after t0 over 43 comparisons among the 51 messages whose state needs no establishment (an intro's or a reset's store waits for the bundle, whose timing is the relay's, §21.7 point 6); M sealed {INTRO=9, PAIR=34, PROVISIONAL=17}, kinds {CONTROL=1, QUOTED=24, REACTION=3, TEXT=28, TIMER_SET=4}, TLVs that rode {none=13, pq_key=13, seal_root=8, seal_root+pq_key=13, seal_root_pq=5, seal_root_pq+pq_key=8}; sizes by length {0=4096, 17=4096, 2220=4096, 2221=16384, 3000=16384, 14508=16384, 14509=65536, 15000=65536}; 1 declared open defect, not gated, reproduced exactly as declared: INTRO/TIMER_SET at 0 stores ttl=86400 where the other twins store ttl=604800, every other field equal, at 3 relays — R-T3 on the pending path: SendStep's EST-READY flush takes the TTL of the new timer, not the larger of the old and the new (§22.21)
 dm NI-DM3: PASS k=2 vs k'=4 contacts (2 idle cards added): C's view equal over 160 events from the scan session on, across a week boundary
 dm NI-DM1: PASS 4 twins (VALID, MALFORMED, PROBE, REQUEST) equal over 148 events of B's view across a week boundary, each with B's GET of the substituted blob
-dm privacy mutants: 10 run, 10 detected
+dm privacy mutants: 12 run, 12 detected
 dm privacy mutant PM-2: detected by JD6 (SMALL world), NI-DM1 (twin worlds)
 dm privacy mutant PM-3: detected by JD1 (SMALL world), S-DM3 (MEDIUM world, n >= 100)
-dm privacy mutant PM-4: detected by JD4 (SMALL world)
+dm privacy mutant PM-4: detected by JD4 (SMALL world), NI-DM2 (twin worlds)
+dm privacy mutant PM-5: detected by JD5 (SMALL world); the day-rounding half only; the exact-seconds half is not built
 dm privacy mutant PM-6: detected by NI-DM1 (twin worlds)
 dm privacy mutant PM-8: detected by JD7 (SMALL world), NI-DM3 (twin worlds)
 dm privacy mutant PM-13: detected by JD2 (SMALL world), JD1 (SMALL world)
 dm privacy mutant PM-19: detected by T34 (seizure world)
 dm privacy mutant PM-24: detected by JD9 (SMALL world)
+dm privacy mutant PM-31: detected by JD7 WITHHOLD_ALL_BUNDLES (SMALL world)
 dm privacy mutant PM-36: detected by T34 (seizure world)
 dm privacy mutant PM-39: detected by T34 one-reply variant (two clients, 130 days)
