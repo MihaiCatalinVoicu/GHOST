@@ -406,6 +406,18 @@ class DmDevice(
          * mutant PM-3 (a namespace derived from public identity material) lives on this seam.
          */
         val decorateCrypto: ((org.ghost.messaging.port.DmCrypto) -> org.ghost.messaging.port.DmCrypto)? = null,
+        /**
+         * The `SyncStores` the device's sync engine already uses over [sql] (the entitlement world
+         * of §15.1 variant (b), `entworld/`). Production builds the DM stack over the very instance
+         * the sync engine and the entitlement engine share (`MessagingRuntime`: "a second
+         * `SyncStores` over the same file would interleave transactions and never hear a hint"),
+         * and so must a world whose relay traffic is the real Phase 7 engine's: the read lane's
+         * snapshot refreshes on the `CAPABILITIES`/`TOPOLOGY` hints the DM steps commit, the
+         * outbox takes the world's privacy mode, and a registration's request id is the client's
+         * random draw. Null keeps every S10/S11 world byte for byte: the device then builds its
+         * own stores, as before.
+         */
+        val stores: SyncStores? = null,
     )
 
     /** Null when [harness] supplied the executor: the harness closes what it opened. */
@@ -426,9 +438,10 @@ class DmDevice(
     val databaseFile: java.io.File? get() = path?.let { java.io.File(it) }
 
     val walFile: java.io.File? get() = path?.let { java.io.File("$it-wal") }
-    val database: SyncDatabase = SyncDatabase(sql)
+    val database: SyncDatabase = harness?.stores?.database ?: SyncDatabase(sql)
     val clock: MovableClock = harness?.clock ?: MovableClock(startSeconds)
-    val stores: SyncStores = SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
+    val stores: SyncStores =
+        harness?.stores ?: SyncStores(database, clock, FixedRandomSources()) { PrivacyMode.STANDARD }
     // One stream per device: see `SequentialRandom`. Two devices sharing a stream produced a
     // `message_id` on one that was the 16-byte prefix of a `seen_key` on the other, which the T25
     // physical scan reads as a message surviving its own deletion.
