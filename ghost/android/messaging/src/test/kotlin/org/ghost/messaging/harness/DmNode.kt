@@ -39,6 +39,18 @@ internal class DmNode(
     private val operators: Int = 2,
     /** The `ghost1` seed branch: [DmDevice]'s own default of `branch + 1` unless a world needs it. */
     private val identityBranch: Int = branch + 1,
+    /**
+     * Added to the boot index the device's Kotlin random stream is named by (S10b).
+     *
+     * Zero for every ordinary node, which keeps every stream of S10 byte for byte. A **restored**
+     * node (SCN-I) is the same MESSAGING branch and the same `ghost1` seed on a new file, so without
+     * an offset its first boot would draw the lost device's first-boot stream again — the same
+     * `message_id`s and the same `sched_id`s the lost device already spent, and the recipient's D3
+     * tag would drop the restored device's messages as duplicates of the lost one's. That is the
+     * `SequentialRandom` fixture artefact §22.14's closing note already caught once, and a device
+     * that restores draws fresh entropy.
+     */
+    private val streamOffset: Int = 0,
 ) : AutoCloseable {
 
     /** The clock survives a reboot: a device that restarts does not go back in time. */
@@ -133,7 +145,7 @@ internal class DmNode(
             startSeconds = clock.now,
             identityBranch = identityBranch,
             path = path,
-            harness = DmDevice.HarnessOverride(wrapper, clock, boots, decorate),
+            harness = DmDevice.HarnessOverride(wrapper, clock, streamOffset + boots, decorate),
         )
         boots++
     }

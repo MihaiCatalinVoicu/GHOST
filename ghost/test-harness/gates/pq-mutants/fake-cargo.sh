@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The `cargo` of the pq-mutants self-test (scripts/gates/self-test.sh; Phase 9 design §22.19): it
+# The `cargo` of the pq-mutants self-test (scripts/gates/self-test.sh; Phase 9 design §22.20): it
 # answers the two calls scripts/gates/pq-mutants.sh makes from a state file of a scratch git tree,
 # which each mutant patch of the self-test rewrites, so the gate's decisions are proven without
 # compiling anything.

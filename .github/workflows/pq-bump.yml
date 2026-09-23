@@ -1,7 +1,7 @@
 name: pq-bump
 
 # The PQ bump gate (Phase 9 design RG-5 and §2.8, §15.5 PQ1 and PQ5, §15.7 PM-32; forward notes
-# §22.19). PQ1 and PQ5 themselves are unit tests of ghost-client-dm (client-core/dm/src/pq_bump.rs)
+# §22.20). PQ1 and PQ5 themselves are unit tests of ghost-client-dm (client-core/dm/src/pq_bump.rs)
 # and run in ci.yml's `rust` job on every pull request (`cargo test --workspace`). This job proves they
 # still hold PM-32 — "the intro inner layer sealed without the X-Wing KEM", which T35's provenance tags
 # cannot see (§22.16 item 18): scripts/gates/pq-mutants.sh applies each patch of
@@ -11,7 +11,7 @@ name: pq-bump
 #
 # It runs on every change to the DM crate and to the lock file, which is where a vodozemac or libcrux
 # bump lands (one PR per bump, §2.8), and on demand. It builds only ghost-client-dm's test binary, in
-# debug, once per mutant (50 s in all on the owner's workstation with a warm cache, §22.19).
+# debug, once per mutant (50 s in all on the owner's workstation with a warm cache, §22.20).
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
   push:

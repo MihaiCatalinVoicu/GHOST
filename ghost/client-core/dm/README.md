@@ -106,7 +106,7 @@ cargo test -p ghost-client-dm
 - `tests/xwing_kat.rs`: the X-Wing draft-06 vectors and a differential test against RustCrypto
   `x-wing` 0.1.0 (dev graph only).
 - `src/pq_bump.rs` (unit tests, `cargo test -p ghost-client-dm --lib -- pq1_ pq5_`): **PQ1 and PQ5**
-  of design §15.5 over a scripted world of four devices with real Olm sessions (design §22.19).
+  of design §15.5 over a scripted world of four devices with real Olm sessions (design §22.20).
   PQ1 counts the X-Wing decapsulations of every intro open through `pq::spy` (test builds and the
   `pq-spy` feature only) and perturbs the decapsulated secret of a repeated open, which must then be
   refused; PQ5, the bump assertion of RG-5, decapsulates every intro envelope's and every

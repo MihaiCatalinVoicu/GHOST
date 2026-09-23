@@ -1,4 +1,4 @@
-//! PQ1 and PQ5 (design §15.5 "PQ" row; RG-5 and §16.1; §15.7 PM-32; forward notes §22.19), over a
+//! PQ1 and PQ5 (design §15.5 "PQ" row; RG-5 and §16.1; §15.7 PM-32; forward notes §22.20), over a
 //! scripted DM world with real Olm sessions, the real seal modes and the real X-Wing wrapper.
 //!
 //! **PQ1**, "every intro open performs exactly one decapsulation and `k_in` depends on `ss`

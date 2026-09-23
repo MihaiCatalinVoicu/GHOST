@@ -56,7 +56,7 @@ pub mod equivalence;
 pub mod jni;
 pub mod olm;
 pub mod pq;
-/// PQ1 and PQ5 over a scripted world (§15.5, RG-5; §22.19): test builds only.
+/// PQ1 and PQ5 over a scripted world (§15.5, RG-5; §22.20): test builds only.
 #[cfg(test)]
 mod pq_bump;
 pub mod pqroot;

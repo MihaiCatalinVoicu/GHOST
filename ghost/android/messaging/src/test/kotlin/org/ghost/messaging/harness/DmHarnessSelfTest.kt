@@ -19,7 +19,9 @@ import org.junit.Test
  *  4. a reboot really loses the uncommitted ones;
  *  5. the structural-invariant checker really fails on a broken database;
  *  6. `SQLITE_FULL` really arrives as a `StorageFullException` and not as a death;
- *  7. R-K1 really truncates the log at every open.
+ *  7. R-K1 really truncates the log at every open;
+ *  8. the "nothing owed" oracle really fails on work left owed or given up — and the no-loss and
+ *     liveness oracles, on the same worlds, really do not (S10b review).
  *
  * Without 5 in particular the whole enumeration could pass on an engine that writes nothing.
  */
@@ -152,6 +154,66 @@ class DmHarnessSelfTest {
             assertTrue("a full disk was counted as a death", world.bus.injected.isEmpty())
         }
     }
+
+    /**
+     * 8: the "nothing owed" oracle sees what the other two cannot (S10b review).
+     *
+     * Two worlds, each run twice — with the oracle and without it, no-loss and liveness on both
+     * times. In the first, a scheduled reconnect is left due thirty days out, beyond anything
+     * quiescence reaches: the work is owed, and the liveness probe — a user send, which discharges
+     * a scheduled reconnect (§8.6: "skipped if the user sends to that contact earlier") — makes it
+     * vanish, which is the masking by which the review's stranded-send mutant passed every crash
+     * point of SCN-I. In the second, every relay
+     * refuses one message: it ends FAILED, which is not `SENT`, so no-loss has nothing to say. Both
+     * worlds pass without the oracle and fail with it, for the reason it names.
+     */
+    @Test
+    fun theNothingOwedOracleSeesWorkTheOtherOraclesDoNot() {
+        requireNative()
+        val stranded = step("a reconnect scheduled beyond quiescence") { w ->
+            w["alice"].raw.exec(
+                "INSERT INTO dm_scheduled(sched_id, contact_id, what, payload, due_minute) " +
+                    "VALUES (?, ?, 'reconnect', NULL, ?)",
+                listOf(
+                    ByteArray(16) { 9 },
+                    DmScripts.contact(w, "alice", "bob").toByteArray(),
+                    w["alice"].clock.now.let { it - Math.floorMod(it, 60L) } + 30 * DmWorld.DAY,
+                ),
+            )
+        }
+        val refused = step("every relay refuses one message") { w ->
+            w.relay.refusing = setOf("alice")
+            w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), "given up", null)
+            w.pump()
+            w.passes()
+            w.relay.refusing = emptySet()
+        }
+        for ((what, body) in listOf("scheduled controls" to stranded, "gave up on [given up]" to refused)) {
+            DmCrashRunner(controlWorld(body, nothingOwed = false)).run(DmRunSpec())
+            val failure = runCatching {
+                DmCrashRunner(controlWorld(body, nothingOwed = true)).run(DmRunSpec())
+            }.exceptionOrNull()
+            assertTrue("the oracle accepted a world that left work owed: $failure", failure is DmInvariantViolation)
+            assertTrue(
+                "the oracle failed, but not for the reason it states: ${failure?.message}",
+                failure?.message?.contains(what) == true,
+            )
+        }
+    }
+
+    private fun controlWorld(body: DmScenario.Step, nothingOwed: Boolean) = DmScenario(
+        name = "nothing-owed-control",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        nothingOwed = nothingOwed,
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+        },
+        steps = listOf(body),
+    )
 
     /** 7: R-K1 runs at every open, and the log is empty after it. */
     @Test

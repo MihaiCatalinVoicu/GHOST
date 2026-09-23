@@ -278,7 +278,7 @@ pub(crate) fn fill_random(out: &mut [u8]) {
         .expect("the OS CSPRNG is unavailable");
 }
 
-/// PQ1's spy on the KEM boundary (design §15.5 PQ1 and PQ5, RG-5; §22.19). **Test builds only**:
+/// PQ1's spy on the KEM boundary (design §15.5 PQ1 and PQ5, RG-5; §22.20). **Test builds only**:
 /// the crate's own tests (`cfg(test)`) and the `pq-spy` feature, which only `ghost-dm-host`
 /// enables; G-R2 refuses the feature in the shipped graph (its allowed list is `default` and
 /// `jni-bridge`).

@@ -40,6 +40,26 @@ class DmMutantDetectionTest {
     @Test
     fun mc16ResendBeyondTheBoundIsDetected() = detect(DmMutants.MC16, DmScenarios.scnG())
 
+    /** S10b: the renewal of §21.3 point 2 keeps the lost device's out keys. */
+    @Test
+    fun mc18OutKeyFloorKeptAcrossARenewalIsDetected() =
+        detectFaultFreeAndUnderCrashes(DmMutants.MC18, DmScenarios.scnI())
+
+    /** S10b: SWEEP never deletes a `previous` session at its retire day. */
+    @Test
+    fun mc26PreviousNeverRetiredIsDetected() =
+        detectFaultFreeAndUnderCrashes(DmMutants.MC26, DmScenarios.scnI())
+
+    /** S10b: SWEEP erases a superseded generation 70 days early. */
+    @Test
+    fun mc28GenerationErasedEarlyIsDetected() =
+        detectFaultFreeAndUnderCrashes(DmMutants.MC28, DmScenarios.scnH())
+
+    /** S10b: SWEEP erases the out key a FAILED item of an earlier week still needs. */
+    @Test
+    fun mc33RetryWithoutTheAuthorWeekKeyIsDetected() =
+        detectFaultFreeAndUnderCrashes(DmMutants.MC33, DmScenarios.scnGWeek())
+
     @Test
     fun me16ReadPathIgnoresExpiryIsDetected() =
         detect(DmMutants.ME16, DmSuiteCases.epExpiredRowsAreNotReadable())
@@ -48,8 +68,8 @@ class DmMutantDetectionTest {
      * The registry is well formed, and the report's count is armed to be written from the kills.
      *
      * It is deliberately not "57 run, 57 detected". §15.7's set is 97 — 40 privacy, 33 correctness
-     * and 24 ephemeral — and this slice registers seven. A gate that printed the design's number
-     * while running seven would be the one failure a report-checked gate must not have, which is
+     * and 24 ephemeral — and S10 and S10b register eleven. A gate that printed the design's number
+     * while running eleven would be the one failure a report-checked gate must not have, which is
      * why the check script pins this line to the number this suite actually runs — and why the line
      * itself is now written from [DmKills], so that removing a kill lowers it.
      */
@@ -81,7 +101,7 @@ class DmMutantDetectionTest {
         val failure = runCatching {
             DmCrashRunner(mutated(scenario, mutation)).run(DmRunSpec())
         }.exceptionOrNull()
-        assertKilled(mutation, scenario.name, failure)
+        assertKilled(mutation, scenario.name, failure, rule = DmKills.FAULT_FREE)
     }
 
     /**
@@ -124,14 +144,110 @@ class DmMutantDetectionTest {
                 break
             }
         }
-        assertKilled(mutation, "${scenario.name} crash@$killedAt", failure)
+        assertKilled(mutation, "${scenario.name} crash@$killedAt", failure, record = false)
 
         // 3: the same crash point on the unmutated world is green.
         DmCrashRunner(scenario).run(DmRunSpec(crashAt = killedAt))
+        // Recorded only now, with the rule it was held to: the control at the same point passed.
+        DmKills.record(
+            mutation.id,
+            deepMessage(requireNotNull(failure)),
+            "invisible fault-free, killed under a crash in its split window, beside a clean run " +
+                "at the same point",
+        )
+    }
+
+    /**
+     * The kill rule of every mutant S10b registers: detected **fault-free** by the check its entry
+     * names, against the clean control — and then detected again **under crashes**, at crash
+     * points spread over the scenario, each beside the unmutated scenario crashed at the same
+     * point.
+     *
+     * Why the second half. A mutant killed only by a `finalCheck` is killed only in the one run of
+     * an enumeration that injects nothing: every faulted run skips the final checks, because a
+     * crash may have lost the step they assert. So "SCN-X detects it" would be a statement about
+     * one run out of thousands, and whether the other runs could see the defect at all — through
+     * the no-loss and liveness oracles, or the structural invariants — would be unmeasured. Here
+     * it is measured, and the unmutated scenario at the same crash point is the control that makes
+     * each kill a statement about the mutation and not about the crash point (MC-1's rule).
+     *
+     * The points are [CRASH_POINTS] indices spread evenly over the events **both** worlds raise —
+     * the mutated world diverges from the clean one at the mutation's first effect and may raise
+     * fewer events, and a point past its end would never fire and fail the run for a reason that
+     * is the harness's. **Every** point must kill: a mutant that survived a crash point would be a
+     * crash class in which the enumeration cannot see the defect, which is a finding to record and
+     * not a kill to count.
+     */
+    private fun detectFaultFreeAndUnderCrashes(mutation: DmMutants.Mutation, scenario: DmScenario) {
+        requireNative()
+        assertTrue("${mutation.id} names no failure under a crash", mutation.expectUnderCrash.isNotEmpty())
+        // Half 1: fault-free, against the clean control, with the entry's own final-check message.
+        DmCrashRunner(scenario).run(DmRunSpec())
+        val mutant = mutated(scenario, mutation)
+        val faultFree = runCatching { DmCrashRunner(mutant).run(DmRunSpec()) }.exceptionOrNull()
+        assertKilled(mutation, scenario.name, faultFree, record = false)
+        val faultFreeMessage = deepMessage(requireNotNull(faultFree))
+        println("${mutation.id} killed fault-free by ${scenario.name} (clean passed): $faultFreeMessage")
+
+        // Half 2: at crash points both worlds reach.
+        var mutantEvents = 0L
+        runCatching { DmCrashRunner(mutant).run(DmRunSpec(onArmedEvents = { mutantEvents = it })) }
+        assertTrue("${mutation.id}'s world raised no event", mutantEvents > 0)
+        val events = minOf(DmCrashRunner(scenario).record().events, mutantEvents)
+        val points = (1..CRASH_POINTS).map { i -> maxOf(1L, events * i / (CRASH_POINTS + 1)) }.distinct()
+        val tasks = points.flatMap { at ->
+            listOf(
+                "${scenario.name} clean crash@$at" to {
+                    runCatching { DmCrashRunner(scenario).run(DmRunSpec(crashAt = at)) }.exceptionOrNull()
+                },
+                "${scenario.name}/${mutation.id} crash@$at" to {
+                    runCatching { DmCrashRunner(mutant).run(DmRunSpec(crashAt = at)) }.exceptionOrNull()
+                },
+            )
+        }
+        val outcomes = DmHarness.parallel(tasks)
+        val kills = ArrayList<String>()
+        for ((index, at) in points.withIndex()) {
+            val clean = outcomes[2 * index]
+            val mutated = outcomes[2 * index + 1]
+            assertTrue(
+                "the unmutated ${scenario.name} fails at crash@$at, so a kill there proves nothing: " +
+                    clean?.let { deepMessage(it) },
+                clean == null,
+            )
+            assertTrue(
+                "${mutation.id} survived ${scenario.name} crash@$at: the enumeration cannot see it there",
+                mutated is AssertionError,
+            )
+            val message = deepMessage(requireNotNull(mutated))
+            assertTrue(
+                "${mutation.id} failed ${scenario.name} crash@$at, but not for a reason its entry " +
+                    "names.\n  expected one of: ${mutation.expectUnderCrash}\n  actual: $message",
+                mutation.expectUnderCrash.any { message.contains(it) },
+            )
+            // The evidence, in the test's own output: which oracle killed it at which point.
+            println("${mutation.id} killed at ${scenario.name} crash@$at of $events (clean passed): $message")
+            kills += "crash@$at"
+        }
+        DmKills.record(
+            mutation.id,
+            "$faultFreeMessage | and under a crash at ${kills.joinToString(", ")} " +
+                "of $events events, each beside a clean run at the same point",
+            // The report prints this, so the rule a kill was held to is in the gate's own
+            // evidence: a kill quietly moved back to the fault-free-only rule changes the line,
+            // and `dm-report-check.sh` pins the line (S10b review).
+            "fault-free and at ${kills.size} of ${points.size} crash points, each beside a clean run",
+        )
     }
 
     /** One kill: an assertion failure, carrying the message the mutant's entry names, recorded. */
-    private fun assertKilled(mutation: DmMutants.Mutation, where: String, failure: Throwable?) {
+    private fun assertKilled(
+        mutation: DmMutants.Mutation,
+        where: String,
+        failure: Throwable?,
+        record: Boolean = true,
+        rule: String = DmKills.FAULT_FREE,
+    ) {
         assertTrue(
             "${mutation.id} survived $where: the mutant is registered but nothing kills it",
             failure is AssertionError,
@@ -143,7 +259,12 @@ class DmMutantDetectionTest {
                 "  actual: $message",
             message.contains(mutation.expect),
         )
-        DmKills.record(mutation.id, message)
+        if (record) DmKills.record(mutation.id, message, rule)
+    }
+
+    private companion object {
+        /** How many crash points the S10b kill rule spreads over a scenario. */
+        const val CRASH_POINTS: Int = 6
     }
 
     /** Every message on the cause chain: `DmHarness.parallel` and JUnit both wrap. */
@@ -169,6 +290,9 @@ class DmMutantDetectionTest {
         doubles = false,
         tailRounds = scenario.tailRounds,
         liveness = scenario.liveness,
+        nothingOwed = scenario.nothingOwed,
+        expectedFailures = scenario.expectedFailures,
         noLoss = scenario.noLoss,
+        declaredLoss = scenario.declaredLoss,
     )
 }

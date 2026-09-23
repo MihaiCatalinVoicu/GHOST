@@ -952,7 +952,7 @@ pub fn check_generation_fallback_key(
     Ok(())
 }
 
-/// The `gate`-variant client of PQ5 (design §15.5 PQ5, RG-5; §15.7 PM-32; §22.19): an intro
+/// The `gate`-variant client of PQ5 (design §15.5 PQ5, RG-5; §15.7 PM-32; §22.20): an intro
 /// sealer whose inner layer is keyed **without the X-Wing KEM**, which an honest recipient must
 /// refuse. Test builds only.
 ///

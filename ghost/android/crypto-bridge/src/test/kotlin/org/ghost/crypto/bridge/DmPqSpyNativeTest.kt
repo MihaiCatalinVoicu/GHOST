@@ -9,7 +9,7 @@ import org.junit.Test
 import java.io.File
 
 /**
- * PQ1 on the JVM (Phase 9 design §15.5 PQ1, §22.19): "every intro open performs exactly one
+ * PQ1 on the JVM (Phase 9 design §15.5 PQ1, §22.20): "every intro open performs exactly one
  * decapsulation and `k_in` depends on `ss` (spy)".
  *
  * The spy is native. `ghost-dm-host` enables `ghost-client-dm`'s `pq-spy` feature, which wraps

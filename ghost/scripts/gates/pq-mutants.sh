@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate (Phase 9 design §15.5 PQ1 and PQ5, RG-5, §15.7 PM-32; forward notes §22.19): the PQ1 and PQ5
+# Gate (Phase 9 design §15.5 PQ1 and PQ5, RG-5, §15.7 PM-32; forward notes §22.20): the PQ1 and PQ5
 # tests of `ghost-client-dm` (`client-core/dm/src/pq_bump.rs`) pass on the tree, and every mutant of
 # `client-core/dm/mutants/` makes the tests it names fail.
 #
