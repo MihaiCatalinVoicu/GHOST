@@ -8,7 +8,7 @@
 
 ## Decizie
 - La activare, clientul primește și N invite tokens (tip distinct, aceeași emitere blind).
-- Payload invitație: `version`, `invite_token`, `referral_commitment`, `nonce`, `expiry`, semnătură cu cheie de invitație efemeră; opțional contact card criptat pentru invitat.
+- Payload invitație: `version`, `invite_token`, `referral_commitment`, `nonce`, `expiry`, semnătură cu cheie de invitație efemeră; opțional contact card criptat pentru invitat. *(Notă, Faza 9: cardul de contact opțional din invitație e amânat în Faza 13, ADR-30′; Invitația v2 a Fazei 8 nu îl poartă.)*
 - Redeem la issuer: doar token + nullifier. Eligibilitatea inviter-ului = token valid, verificat offline.
 - Deep link exclusiv `ghost://invite/<payload>`; niciun host web; QR recomandat.
 - Rămân: parser strict, respingere expirat/rejucat/revocat, mod genesis explicit.

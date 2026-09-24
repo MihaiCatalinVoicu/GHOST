@@ -44,7 +44,7 @@
 | IN-2 (no duplicate) | Each `(namespace, hash)` is marked consumed at most once (UNIQUE plus trigger), and the consumer never sees its own blobs. Tombstone retention (§2.3) is derived so that **no honest relay can list the hash again** after the tombstone is deleted. |
 | IN-3 (cursor safety) | A stored cursor never passes a hash that is not durably recorded locally. |
 
-**Boundary.** IN-2 holds against honest relays and for memberships created by one op's store window. The protocol layer (libsignal counters, MLS epoch and generation) remains responsible for four cases, and Phases 9 and 10 must keep replay protection:
+**Boundary.** IN-2 holds against honest relays and for memberships created by one op's store window. The protocol layer (Olm session counters, MLS epoch and generation; "libsignal counters" until the Phase 9 revision of 2026-09-16) remains responsible for four cases, and Phases 9 and 10 must keep replay protection:
 
 - replays by a relay that lies about expiry or re-serves expired blobs;
 - a consumer resending the same bytes as a new op long after the first (§9);

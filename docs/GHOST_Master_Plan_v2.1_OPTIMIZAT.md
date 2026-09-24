@@ -60,7 +60,7 @@ Toate observațiile provin din citirea codului sursă, nu din rularea lui.
 | `crypto/MediaEncryption.kt` | Cheia AES este returnată **lângă ciphertext** (`EncryptedMedia.key`); `encryptKey`/`decryptKey` fac XOR cu octeți aleatori (ireversibil); o singură cheie per instanță pentru toate fișierele | §7.4 pașii 1 și 6 |
 | `crypto/KeyManager.kt` | `deriveSessionKey` returnează random (nu Diffie-Hellman); coduri de invitație aleatorii, fără semnătură/expirare; chei doar în memorie, fără Keystore | FR-1.5, FR-1.7 |
 | `crypto/SignalCryptoBridge.kt`, `crypto/Web3CryptoBridge.kt` | Cheia privată Signal derivată din **semnătură EIP-712 + adresă Ethereum**; „HKDF” = SHA-256 peste concatenare; `derivePublicKeyFromPrivateKey` = XOR cu `0x42`; `verifyEip712Signature` = `return true` | §7.1 pasul 2 (interzis explicit), CP-09 |
-| `crypto/SignalDoubleRatchet.kt` | `SignalProtocolStore.isTrustedIdentity` returnează mereu `true` (MITM trivial); `registrationId` = 1; toate ID-urile de prekey = 1; store în memorie → pierdere sesiune la restart și reutilizare de chei | §7.2 („atomic state”, „identity-key change warnings”), FR-4.5 |
+| `crypto/SignalDoubleRatchet.kt` | `SignalProtocolStore.isTrustedIdentity` returnează mereu `true` (MITM trivial); `registrationId` = 1; toate ID-urile de prekey = 1; store în memorie → pierdere sesiune la restart și reutilizare de chei | §7.2 („atomic state”, „identity-key change warnings”), FR-4.6 (avertismentul blocant la schimbarea cheii; erată 2026-09-24, era FR-4.5) și FR-4.5 (starea sesiunilor doar în stocare locală criptată, pentru store-ul în memorie) |
 | `service/RelayService.kt`, `StorageService.kt`, `PaymentService.kt` | Toate operațiile returnează succes simulat; `checkUserPaymentStatus` = mereu activ; fișiere scrise **necriptat** în `filesDir` | FR-4.4, FR-7.2, DoD |
 | `service/ForumService.kt` | ID-uri `thread_${System.currentTimeMillis()}` (scurgere de timp), autor `"currentUser"` | §7.4 pasul 5 (content-addressed), FR-3.4 |
 | `AndroidManifest.xml` | `android:allowBackup="true"`, fără `dataExtractionRules`, fără Network Security Config | FR-7.9, §8.1 |
@@ -103,7 +103,7 @@ Codul existent nu conține nicio componentă reutilizabilă pe drumul de produc�
 
 - Principiile CP-01…CP-10, matricea de garanții ca formă, stadiile de release (§3.1), regula de măsurare a NFR-urilor, Definition of Done, Production security gate, registrul de riscuri.
 - Ierarhia de chei (§7.1): 256 biți entropie → BIP39 24 cuvinte → HKDF cu etichete de domeniu → ramuri separate.
-- DM prin libsignal oficial (`libsignal-client` + `libsignal-android`, aceeași versiune); forum prin OpenMLS (RFC 9420); media cu cheie de fișier aleatoare, AEAD per chunk, fragmentare la 64 KiB, hash pe blob exact.
+- DM prin Olm din vodozemac, versiune fixată, în `client-core` (`ghost-client-dm`), cu stratul post-cuantic al GHOST (ADR-35, ADR-36; revizia din 2026-09-16: fără libsignal); forum prin OpenMLS (RFC 9420); media cu cheie de fișier aleatoare, AEAD per chunk, fragmentare la 64 KiB, hash pe blob exact.
 - Relay blind content-addressed, capabilități, TTL 90 zile, gossip autentificat, fără logare IP; SQLCipher cu cheie învelită în Keystore; excluderi de backup; update semnat cu anti-rollback.
 - Roluri separate pentru operator, runbook-uri, contact de securitate, SBOM, rollout în trepte.
 
@@ -122,11 +122,11 @@ Codul existent nu conține nicio componentă reutilizabilă pe drumul de produc�
 | G9 | SDK-uri terțe și telemetrie | „privacy-preserving crash telemetry” permis (NFR-11) | Orice SDK de crash/analytics este un canal de exfiltrare | ADR-06: zero SDK terț; crash log local, trimis manual, prin Tor |
 | G10 | Padding | P1 (FR-2.5) | Corelarea dimensiunilor este cel mai ieftin atac asupra relay-urilor blind | ADR-09: P0 |
 | G11 | Read receipts / delivery status | Cerute (FR-4.3); doar typing este off by default | Scurgere de activitate către corespondent | ADR-08: opționale, off în high-privacy |
-| G12 | Distribuție APK | HTTPS/IPFS (§12.2) | Gateway/CDN vede IP + versiune; niciun canal auditabil independent | ADR-07: onion mirror + repo F-Droid/Accrescent, build reproductibil, open-source |
+| G12 | Distribuție APK | HTTPS/IPFS (§12.2) | Gateway/CDN vede IP + versiune; niciun canal auditabil independent | ADR-07, revizuit de ADR-37: onion mirror + Accrescent + depozit propriu în format F-Droid (opțional), build reproductibil; fără open-source și fără depozitul principal F-Droid |
 | G13 | Timestamps | „authenticated client timestamp” (FR-3.4) | Fingerprint de fus orar/ceas | ADR-08: rotunjire la minut |
 | G14 | Deep links | „deep link and QR” (FR-1.5) | Un link https deschis fără app duce invitația la un server web | ADR-05: doar schema `ghost://` + QR |
 | G15 | Logging | Politica există (§11.1), dar fără impunere în cod | Regresie sigură în timp | ADR-10: lint/CI interzice `Log.*`/`println` în `src/main` |
-| G16 | Open source | Nu este cerut | Afirmațiile nu pot fi verificate de utilizatori (CP-10) | ADR-07 |
+| G16 | Open source | Nu este cerut | Afirmațiile nu pot fi verificate de utilizatori (CP-10) | ADR-07, revizuit de ADR-37 (sursă închisă); compensat de ADR-38 (planificat, Fazele 14–15); reziduu declarat (LIMITE L-SRC) |
 | G17 | Cenzură / ISP | Nespecificat | ISP vede utilizarea Tor | ADR-01: bridges (obfs4/snowflake) P1 |
 | G18 | Pattern de sync | Fără jitter, fără izolare circuite | Corelare temporală între canale ale aceluiași client | ADR-09 |
 | G19 | Referral | Corect identificat ca risc, dar rezolvat prin ZK complex | Complexitate = risc de implementare (R-03) | ADR-02: referral commitment în cererea blind; plafon 10% prin construcție |
@@ -199,7 +199,9 @@ Derivat din ADR-02. Ramura `wallet` din ierarhia de chei rămâne **rezervată**
 
 ### ADR-07 — Open-source, build reproductibil, distribuție verificabilă
 
-**Decizie.** Clientul, relay-ul și issuer-ul sunt publicate open-source (licența — decizie de produs; AGPL pentru server/issuer și MIT sau GPL pentru client sunt opțiuni uzuale). CI produce APK **reproductibil**: două medii independente trebuie să obțină același hash înainte de semnare. Distribuție: (a) manifest semnat + APK prin **onion mirror** (§12.2 păstrat, IPFS eliminat ca sursă primară), (b) **repo F-Droid propriu** semnat și/sau **Accrescent**. Verificarea semnăturii și anti-rollback rămân obligatorii (FR-7.5). Fără open-source, CP-10 („verifiable claims”) nu poate fi îndeplinit pentru utilizator.
+**Decizie.** Clientul, relay-ul și issuer-ul sunt publicate open-source (licența — decizie de produs; AGPL pentru server/issuer și MIT sau GPL pentru client sunt opțiuni uzuale). CI produce APK **reproductibil**: două medii independente trebuie să obțină același hash înainte de semnare. Distribuție: (a) manifest semnat + APK prin **onion mirror** (§12.2 păstrat, IPFS eliminat ca sursă primară), (b) **repo F-Droid propriu** semnat și/sau **Accrescent**. Verificarea semnăturii și anti-rollback rămân obligatorii (FR-7.5). CP-10 se va îndeplini prin dovezi publicate: rapoarte de audit, atestări de build ale auditorului, jurnalul de transparență binară, specificația, vectorii și modelele, pe care le poate verifica oricine; comportamentul binarului livrat e atestat doar de auditorii numiți și de jurnal, iar kitul black-box verifică doar ce se vede din exterior (nu P-1 … P-8 și nici T1 la relee); verificarea de către utilizator a corespondenței sursă–binar nu e disponibilă și e declarată (ADR-38, LIMITE L-SRC). Aceste dovezi sunt **planificate** (Fazele 14–15): azi nu există niciuna, deci azi CP-10 nu permite nicio afirmație.
+
+**Revizuire (2026-09-16, ADR-37 și ADR-38; decizia proprietarului).** Distribuția e cu sursă închisă: prima frază (open-source) și ținta „depozitul principal F-Droid” sunt înlocuite de ADR-37 (licență proprietară, conformitatea licențelor terților), iar verificabilitatea fără sursă publică e ADR-38. Build-ul reproductibil (T12), manifestul semnat, mirror-ul onion și anti-rollback rămân.
 
 ### ADR-08 — Igienă de endpoint (completări P0 la §4.7)
 
@@ -228,7 +230,7 @@ Padding pe bucket-uri devine P0 (FR-2.5). Jitter randomizat la sync; fetch în l
 
 ### ADR-12 — Post-quantum
 
-Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt expuse de libsignal; pentru MLS se adoptă suita hibridă a OpenMLS când e stabilă; niciun KEM standalone „de bifat”.
+Păstrat din §7.5: DM: plicul GHOST folosește X-Wing (X25519 + ML-KEM-768) pentru primul contact și transportă doar sub chei post-cuantice cheile de sigilare; ratchet-ul Olm rămâne clasic; reîmprospătare PQ rară a rădăcinilor (ADR-36, care modifică clauza DM a ADR-12; implementat în Faza 9, nevalidat până la rularea modelului formal și revizia criptografică externă, deci fără nicio afirmație în UI, CP-10); pentru MLS se adoptă suita hibridă a OpenMLS când e stabilă; niciun KEM standalone „de bifat”.
 
 ---
 
@@ -272,9 +274,9 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | FR-7.12 (nou) | IME incognito flag; fără link previews; notificări fără conținut când e blocat | P0 |
 | FR-7.13 (nou) | Auto-lock + PIN de aplicație; duress wipe | P0 / P2 |
 | FR-7.14 (nou) | Protecția ecranului și a textului: FLAG_SECURE pe toate ferestrele, fără opțiune de dezactivare; mesajele nu se pot selecta, copia sau partaja; câmpuri sensibile marcate pentru accesibilitate (API 34+); clipboard sensibil cu ștergere automată (ADR-27) | P0 |
-| FR-7.15 (nou) | Mesaje efemere: timer în conținutul criptat, per conversație și per canal, implicit 7 zile în DM; ștergere locală completă; TTL pe relee ≤ timer, cu treaptă nouă de 1 h; media „vezi o singură dată” P1 (ADR-27) | P0 |
-| FR-8.9 (nou) | Client, relay și issuer open-source; build reproductibil verificat de două medii independente înainte de semnare | P0 |
-| FR-8.10 (nou) | Distribuție prin onion mirror + repo F-Droid/Accrescent; IPFS gateway eliminat ca sursă primară | P0 |
+| FR-7.15 (nou) | Mesaje efemere: timer în conținutul criptat, per conversație și per canal, implicit 7 zile în DM; ștergere locală completă; TTL pe relee = cea mai mică treaptă ≥ timer (ADR-27 punctul 11): 5 min și 1 h → 1 h; 1 zi → 1 zi; 7 zile → 7 zile; 30 de zile și dezactivat → 30 de zile; fiecare mesaj are termen de stocare (ADR-32); media „vezi o singură dată” P1 (ADR-27) | P0 |
+| FR-8.9 (nou) | Client, relay și issuer: sursă proprietară, accesibilă auditorilor; build reproductibil verificat înainte de semnare de două medii independente, dintre care unul aparține unui auditor extern care publică atestarea (ADR-37, ADR-38) | P0 |
+| FR-8.10 (nou) | Distribuție prin onion mirror + Accrescent + depozit propriu în format F-Droid (opțional); depozitul principal F-Droid nu e o țintă (ADR-37); IPFS gateway eliminat ca sursă primară | P0 |
 | FR-8.11 (nou) | Crash reporting fără SDK: local, criptat, trimis manual după scrubbing, prin Tor | P0 |
 | NFR-1 / NFR-2 | Recalibrate pentru Tor: DM p95 < 5 s; post sync p95 < 8 s (măsurate, nu presupuse) | — |
 | NFR-4 | APK < 80 MiB universal (include Arti) | — |
@@ -293,7 +295,7 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 1. **Gates de confidențialitate înaintea codului de produs**: CI-ul care interzice placeholder-e, dependențe neaprobate și logging există înainte de prima linie din `ghost/android/app`. Este lecția directă a auditului din §1.
 2. **Două piste paralele** de la început: Android (identitate, storage, sync, protocoale) și Rust (relay + onion services, Tor client, issuer). Pista Rust nu depinde de UI.
 3. **Harness-ul „relay capture”** rulează din Faza 5 pe fiecare PR, nu ca „review” la finalul unei faze.
-4. Nimic on-chain și niciun portofel în P0 → calea critică se scurtează și auditul extern acoperă doar: mobil, integrare libsignal/OpenMLS, relay, issuer/blind signatures, supply chain.
+4. Nimic on-chain și niciun portofel în P0 → calea critică se scurtează și auditul extern acoperă doar: mobil, integrarea vodozemac și a stratului PQ DM, OpenMLS, relay, issuer/blind signatures, supply chain.
 
 ### 6.2 Fazele v2.1
 
@@ -308,13 +310,13 @@ Păstrat din §7.5: DM folosesc PQXDH și ratchet-ul post-quantum așa cum sunt 
 | 6 | Client Tor (Arti) + modul `network`: fail-closed, isolation per canal, padding, capability client | Android + Rust | 2–4 s | 5 | zero clearnet/DNS la Tor oprit; latență măsurată pe 2 dispozitive |
 | 7 | Sync engine: outbox/inbox idempotent, WorkManager, cursors opace, jitter, retry | Android | 3–4 s | 4, 6 | offline/reconnect/process-death fără pierderi sau duplicate |
 | 8 | Entitlement issuer (Rust): blind signatures, `monero-wallet-rpc` view-only, invite tokens, referral ledger, payout în loturi; client `entitlement` | Rust + Android | 3–5 s | 1 (paralel cu 5–7) | teste negative: reuse, expirat, forjat, perioadă greșită; **test de unlinkability** (jurnalul issuer-ului nu se poate uni cu nullifier-ele relay-urilor); T2 verde, inclusiv adversarul issuer compromis + observator Monero și sume uniforme (FR-6′.7) |
-| 9 | DM cu libsignal: publicare prekeys prin relay, sesiuni, safety number, PQ mode, mesaje efemere implicit 7 zile (timer în conținutul criptat, ștergere locală completă, TTL pe relee ≤ timer cu treaptă nouă de 1 h; ADR-27) | Android | 5–7 s | 3, 7 | 2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochează; T25 verde |
+| 9 | DM cu Olm (vodozemac): publicarea generațiilor de chei prin relay, sesiuni, safety number, strat PQ hibrid (ADR-35, ADR-36), mesaje efemere implicit 7 zile (timer în conținutul criptat, ștergere locală completă, TTL pe relee = cea mai mică treaptă ≥ timer (ADR-27 punctul 11): 5 min și 1 h → 1 h; 1 zi → 1 zi; 7 zile → 7 zile; 30 de zile și dezactivat → 30 de zile; fiecare mesaj are termen de stocare (ADR-32); ADR-27) | Android | 5–7 s | 3, 7 | 2 dispozitive fizice: reorder/restart/replay; schimbare de cheie blochează; T25 verde |
 | 10 | Forum cu OpenMLS: bridge Rust→Android, canale, epoch, history policy, pseudonime, reveal opt-in, mesaje efemere per canal (politica canalului; ADR-27) | Android + Rust | 6–9 s | 3, 7 (suprapunere cu 9 după definirea envelope-ului) | 20 clienți add/remove/resync; membru scos nu decriptează epoch-uri noi; T25 și în canale |
 | 11 | Media: AEAD per chunk 256 KiB, fragmentare 64 KiB, strip metadata, Media3 fără cache plaintext, media efemeră și „vezi o singură dată” (P1; ADR-27) | Android | 3–4 s | 7 (paralel cu 10) | corruption/resume; EXIF-zero; no-plaintext-cache |
 | 12 | Hardening metadate: tuning jitter/batch, bridges (P1), review independent al capturii de metadate | toți | 2–3 s | 6, 7, 10 | review semnat; capture ⊆ set permis |
 | 13 | UX de producție: Compose, high-privacy mode, disclosures aliniate la §4, accesibilitate, stări offline/eroare, protecția ecranului și a textului (FLAG_SECURE permanent, mesaje fără selecție sau copiere, câmpuri sensibile pentru accesibilitate, clipboard sensibil cu ștergere automată; ADR-27) | Android | 4–6 s | 9, 10, 11 | usability pe călătoriile P0 (invite → identitate → plată → DM/canal/media → update); T10 și T24 verzi |
 | 14 | Distribuție: semnare offline/HSM, manifest, anti-rollback, onion mirror, repo F-Droid/Accrescent, build reproductibil din două medii | infra | 3–4 s | 1 (paralel) | tamper/downgrade/rotation drill; hash identic din două medii |
-| 15 | Hardening + audit extern + retest: mobil, libsignal/MLS integration, relay, issuer/blind sig, supply chain | extern | 6–8 s | 9–14 | 0 Critical/High deschise |
+| 15 | Hardening + audit extern + retest: mobil, integrarea vodozemac și a stratului PQ DM, OpenMLS, relay, issuer/blind sig, supply chain | extern | 6–8 s | 9–14 | 0 Critical/High deschise |
 | 16 | Private alpha (20–50 testeri, relay-uri staging, plăți testnet/stagenet Monero) | toți | 3–4 s | 15 | 2 săptămâni stabile; recovery verificat |
 | 17 | Controlled beta (200–500 utilizatori, trezorerie limitată, SLO-uri) | toți | 4–8 s | 16 | 30 zile stabile; reconciliere XMR |
 | 18 | RC și lansare: Go/No-Go, rollout 5/25/50/100, rollback | toți | 1–2 s | 17 | aprobare semnată (Appendix C) |
@@ -349,7 +351,7 @@ ghost/
 ├── android/
 │   ├── app/              # Compose UI, DI, navigare
 │   ├── identity/         # entropie, BIP39, HKDF, Keystore, invitații, pseudonime
-│   ├── crypto-bridge/    # wrappers subțiri libsignal / OpenMLS (JNI/UniFFI)
+│   ├── crypto-bridge/    # învelișul JNI peste `ghost-client-dm` (Olm, X-Wing) / OpenMLS
 │   ├── messaging/        # DM + MLS orchestration, envelope, replay/idempotency
 │   ├── storage/          # sqlcipher-android, migrații, repositories, cache criptat
 │   ├── sync/             # WorkManager, outbox/inbox, cursors, jitter
@@ -370,7 +372,7 @@ ghost/
 
 ## 7. Limitele oneste ale lui „100%”
 
-CP-10 și FR-8.7 interzic afirmațiile care depășesc matricea de garanții. Sintagma „100% privat” **nu poate apărea** în marketing sau UI. Formulare compatibilă: „Operatorul nu poate citi conținutul, nu vă cunoaște identitatea, adresa IP sau plata. Vedeți exact ce poate observa fiecare parte în matricea de garanții.” Ce rămâne în afara oricărui plan:
+CP-10 și FR-8.7 interzic afirmațiile care depășesc matricea de garanții. Sintagma „100% privat” **nu poate apărea** în marketing sau UI. O frază ca „Operatorul nu poate citi conținutul, nu vă cunoaște identitatea, adresa IP sau plata” apare doar lângă reziduul L-SRC și numește atestările pe care se sprijină (jurnalul de transparență, build-ul reprodus de auditor); nu se folosește înainte ca porțile de lansare din ADR-38 să existe. Garanțiile față de operator sunt valabile doar pentru build-ul publicat în jurnal (AD-V; revizia din 2026-09-16, sursă închisă). Ce rămâne în afara oricărui plan:
 
 - **Dispozitivul compromis** (malware, root ostil, tastatură terță, captură de ecran): în afara scopului (§1.2). Mitigări: Keystore, FLAG_SECURE, IME flag, avertismente.
 - **Adversar global pasiv** și atacuri de corelare pe Tor la nivel statal: Tor oferă rezistență, nu imunitate; padding-ul și jitter-ul reduc, nu elimină.
@@ -434,6 +436,8 @@ Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice
 - **Inbox DM**: envelope-uri fără câmp de expeditor (sealed sender: identitatea expeditorului trăiește doar în ciphertext-ul libsignal), depuse într-un namespace de inbox al destinatarului; citirea cu un token derivat din identitatea destinatarului.
 - Relay-ul nu învață niciodată *cine*: doar *ce namespace* a avut activitate și *când*, la granularitatea permisă.
 
+*Notă (Faza 9, 2026-09-16):* punctele „Prekeys DM” și „Inbox DM” de mai sus sunt înlocuite de ADR-30′ (propus, aplicat în Faza 9): bundle-uri sigilate într-un namespace derivat din cardul de contact, citibile doar de deținătorii cardului, nu după `ghost1`; inbox-uri cu namespace static derivat din secretul cardului; scrierea în inbox cu o cheie de depunere comună tuturor expeditorilor, înregistrată de proprietar prin `RegisterKey`, nu cu capabilitatea fiecărui expeditor; citirea cu o cheie de citire derivată din seed; plicul DM e sigilat de GHOST, cu identitatea expeditorului doar în interior (ADR-31′). Capabilitatea de citire partajată a canalelor (D11) rămâne pentru Faza 10.
+
 ## Anexa C — Invarianți de confidențialitate testați automat (rulează pe fiecare PR)
 
 | ID | Test | Eșuează dacă |
@@ -441,7 +445,7 @@ Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice
 | T1 | Relay capture: relay instrumentat înregistrează tot ce poate observa | apare IP, identitate, plaintext, dimensiune nepadată, câmp de expeditor |
 | T2 | Unlinkability issuer ↔ relay: se încearcă join-ul jurnalelor; adversarul deține simultan issuer-ul compromis (inclusiv fluxul Monero văzut prin view key: intrări, sume, momente) și o poziție pasivă pe rețeaua Monero (momente de mempool și de bloc) | există orice cheie comună sau corelație peste pragul statistic; sumele facturilor unei epoci nu sunt toate egale cu prețul public (FR-6′.7); evenimentul de plată XMR se poate lega de token-urile emise sau de traficul relay al unui client peste scurgerea declarată |
 | T3 | Log scrub: secrete-canar injectate (seed, chei, capabilități, ID-uri) | orice canar apare în log/telemetrie/crash report |
-| T4 | Backup/device transfer inspection | seed, cheie DB, stare libsignal/MLS sau cache decriptat în arhivă |
+| T4 | Backup/device transfer inspection | seed, cheie DB, stare Olm/MLS sau cache decriptat în arhivă |
 | T5 | Strip metadata: imagine cu GPS și video cu locație | ieșirea decriptată conține EXIF/XMP/atomi de locație |
 | T6 | Fail-closed: Tor oprit / indisponibil | orice conexiune clearnet sau interogare DNS |
 | T7 | Allowlist dependențe | orice grup Maven/crate din afara Anexei D |
@@ -457,9 +461,9 @@ Proprietăți verificate prin teste (Anexa C, T2): jurnalul issuer-ului (invoice
 
 ## Anexa D — Allowlist / denylist de dependențe (client Android)
 
-**Permise** (grupuri): `androidx.*` (fără `androidx.ads`, fără `androidx.credentials` legate de GMS), `org.jetbrains.kotlin*`, `org.jetbrains.kotlinx.*`, `com.google.android.material` (bibliotecă UI, fără GMS), `org.signal:libsignal-client`, `org.signal:libsignal-android`, `net.zetetic:sqlcipher-android`, `androidx.media3`, bindings Arti/OpenMLS produse în monorepo, biblioteci Privacy Pass / RFC 9474 aprobate prin ADR.
+**Permise** (grupuri): `androidx.*` (fără `androidx.ads`, fără `androidx.credentials` legate de GMS), `org.jetbrains.kotlin*`, `org.jetbrains.kotlinx.*`, `com.google.android.material` (bibliotecă UI, fără GMS), `net.zetetic:sqlcipher-android`, `androidx.media3`, bindings Arti/OpenMLS produse în monorepo, biblioteci Privacy Pass / RFC 9474 aprobate prin ADR. Rust (biblioteca nativă a clientului): în plus `vodozemac`, `libcrux-*` (ADR-35, ADR-36), la versiuni exacte; lista completă e `ghost/client-core/rust-dependency-allowlist.txt` (G-R1). `org.signal:libsignal-client` și `org.signal:libsignal-android` au fost scoase (revizia din 2026-09-16, ADR-37).
 
-**Interzise**: `com.google.firebase.*`, `com.google.android.gms.*`, `com.facebook.*`, `io.sentry.*`, `com.bugsnag.*`, `com.mixpanel.*`, `com.amplitude.*`, `com.segment.*`, `com.adjust.*`, `com.appsflyer.*`, `org.web3j.*` (P0), `com.squareup.okhttp3` (dacă nu este forțat prin SOCKS-ul Arti și aprobat prin ADR), orice `*-analytics`, `*-crash*`, `*-ads*`. Rust: `cargo deny` cu licențe și surse aprobate.
+**Interzise**: `org.signal` (ADR-37: familia libsignal e AGPL-3.0; în `dependency-denylist.txt`, iar crate-urile ei, cu nume exacte, în `deny.toml`), `com.google.firebase.*`, `com.google.android.gms.*`, `com.facebook.*`, `io.sentry.*`, `com.bugsnag.*`, `com.mixpanel.*`, `com.amplitude.*`, `com.segment.*`, `com.adjust.*`, `com.appsflyer.*`, `org.web3j.*` (P0), `com.squareup.okhttp3` (dacă nu este forțat prin SOCKS-ul Arti și aprobat prin ADR), orice `*-analytics`, `*-crash*`, `*-ads*`. Rust: `cargo deny` cu licențe și surse aprobate.
 
 ## Anexa E — Decizie per fișier legacy
 
