@@ -9,11 +9,12 @@ name: dm-privacy-gate
 # control.
 #
 # **What this gate checks, and what it does not** (§22.16 names every deferral, §22.21 what slice
-# S11b added). It runs JD1–JD7 and JD9 (not JD8, not JD10) and JD7's WITHHOLD_ALL_BUNDLES variant,
-# S-DM3 (not S-DM1, and S-DM2 and S-DM4 are neither measured nor baselined), NI-DM1, NI-DM2 and
+# S11b added, §22.26 what the JD8 slice added). It runs JD1–JD7 and JD9 on the privacy world, JD8
+# on the entitlement world's twins with the narrowings below (not JD10), JD7's WITHHOLD_ALL_BUNDLES
+# variant, S-DM3 (not S-DM1, and S-DM2 and S-DM4 are neither measured nor baselined), NI-DM1, NI-DM2 and
 # NI-DM3 (not NI-DM4 … NI-DM7), the T34 seizure world and its one-reply variant (not the Olm half),
 # T35 as far as the provenance tags reach (static tags; the X-Wing inner layer carries none), and
-# twelve of the forty privacy mutants (PM-5 only in its day-rounding half). NI-DM2 passes with **one
+# fifteen of the forty privacy mutants (PM-5 and PM-26 only in part). NI-DM2 passes with **one
 # declared open engine defect** it must reproduce exactly — R-T3 on the pending path, a known P-4
 # leak (§22.21 item 2) — so this gate is green over that leak until the engine is fixed; the
 # report line says so. §16.2 puts the mutants and T34 in
@@ -21,6 +22,25 @@ name: dm-privacy-gate
 # Every world is STANDARD: §15.6's HIGH half needs a privacy-mode parameter the world does not have
 # yet, so a "seed pair" here is one behaviour seed run once. `dm-report-check.sh` pins exactly these
 # lines, so a report that claimed more than this would fail it.
+#
+# **JD8** (§22.26) runs in the suite job, not in the privacy world: its twins are the entitlement
+# world's (§22.22; five clients with the real redeem lane and the real registration lane), where
+# redemptions and registrations are real, and it kills PM-1, PM-1b and PM-26 (the later-weeks half)
+# there, and two timing leaks by its timing clause alone. It is scale-independent, so the matrix job
+# does not run it. **What JD8 leaves out**, each declared in §22.26 items 3, 10 and 14: T27's
+# **minute is compared for registrations only** — a redemption is compared by the relay session it
+# ran in, because the harness hands the twins their random draws in call order and cannot test a
+# redemption's minute; **one seed, 4 contacts (not §13.4's 30), STANDARD only** (HIGH mode is not in
+# the harness); the trace ends at `start(2976) + 3 h`, so the second renewal is in neither twin; the
+# active twin adds contacts by QR, accepts, writes and receives texts and holds one unreachable
+# contact — no rejection, deletion, key change, reset, restore or invite, so a leak only those
+# trigger passes; and **no LOCAL write need exists in either twin**, so the one engine path the review
+# found by which a contact's refused or exhausted DEPOSIT credential decides whether a background
+# session is held open to its redeem lane's first step (§22.26 item 14: `RedeemHold.pendingWriteNeeds`
+# counts LOCAL needs) is not exercised: if a session length that depends on DM state is a leak, this
+# gate is green over it. Measured locally (beside other builds): 30–40 s per twin world; `DmJd8Test` 243–279 s
+# for its four twin pairs (the report's run, the control with the every-commit check off, the two
+# timing leaks), and about 60 s per mutant pair in `DmPrivacyMutantTest`.
 #
 # It runs the real DM cryptography, built **with the `provenance` feature** so every seal asserts
 # T35's key kinds: the report's T35 line is written only when the loaded library carries those
@@ -128,13 +148,15 @@ jobs:
           retention-days: 3
 
   suite:
-    name: NI-DM1, NI-DM2 and NI-DM3 twins, the JD7 withhold variant, the T34 seizure worlds and the privacy mutants
+    name: NI-DM1, NI-DM2 and NI-DM3 twins, the JD7 withhold variant, the T34 seizure worlds, JD8 and the privacy mutants
     runs-on: [self-hosted, linux, x64, ghost]
-    # Measured locally (owner's workstation, one test JVM): 304 s for the mutants and their
-    # controls, 1–3 minutes for the seizure world, 27 minutes in all beside another session's test
-    # run; after the review, 169 s for the ten mutants and about a minute for the seizure world, its
-    # one-reply variant and the two twins. Every world is single-threaded, so a 4-vCPU runner is not
-    # much slower than that.
+    # Measured locally (owner's workstation, one test JVM, beside other worktrees' builds), in the
+    # whole `:messaging` suite after the JD8 review (§22.26 item 12): 650 s for the fifteen mutants
+    # and their controls (the three JD8 kills about 60 s each), 245 s for `DmJd8Test`'s four twin
+    # pairs, 496 s for `DmPrivacyWorldTest`'s seven tests (six of them in this job). S11's first
+    # figures were 304 s, then 169 s, for its ten mutants. Every world is single-threaded, so a
+    # 4-vCPU runner is not much slower than that; the 90-minute timeout leaves room for about twice
+    # these figures.
     timeout-minutes: 90
     defaults:
       run:
@@ -169,7 +191,7 @@ jobs:
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
-      - name: NI-DM1, NI-DM2, NI-DM3, JD7 under WITHHOLD_ALL_BUNDLES, T34, its one-reply variant and the privacy mutants
+      - name: NI-DM1, NI-DM2, NI-DM3, JD7 under WITHHOLD_ALL_BUNDLES, T34, its one-reply variant, JD8 and the privacy mutants
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.niDm1InboundContentLeavesTheRecipientsViewUnchanged' \
@@ -178,6 +200,8 @@ jobs:
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.jd7UnderWithholdAllBundlesTheAttemptsStayBounded' \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.t34TheSeizureOpensNothingOfAnExpiredWeek' \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.t34OneReplyBothSidesEraseTheirProvisionalKey' \
+            --tests 'org.ghost.messaging.dmworld.DmJd8Test' \
+            --tests 'org.ghost.messaging.entworld.Jd8SelfTest' \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyMutantTest' \
             -Dghost.dm.native="$GHOST_DM_NATIVE"
       - name: job summary and report check

@@ -418,6 +418,16 @@ class DmDevice(
          * own stores, as before.
          */
         val stores: SyncStores? = null,
+        /**
+         * Wraps the `Capabilities` and `Namespaces` ports the DM steps (SEND, EST-START, the
+         * contact KEEPER, RECV) reach the sync stores through — **not** the owner steps' own ports,
+         * and not the stores the sync and entitlement engines use. The privacy mutant PM-1 of the
+         * entitlement world (a contact inbox bought with the sender's own tokens instead of written
+         * with the card's DEPOSIT credential, `dmworld/PrivacyMutants.kt`) lives on this seam, which
+         * §15.7 requires to be only in `src/test`. Null keeps every world byte for byte.
+         */
+        val decorateCapabilities: ((org.ghost.sync.api.Capabilities) -> org.ghost.sync.api.Capabilities)? = null,
+        val decorateNamespaces: ((org.ghost.sync.api.Namespaces) -> org.ghost.sync.api.Namespaces)? = null,
     )
 
     /** Null when [harness] supplied the executor: the harness closes what it opened. */
@@ -491,8 +501,8 @@ class DmDevice(
     internal val counters = DmCounters()
     private val relayResolver = RelaySetResolver(esSlots)
     private val dmSync = DmSyncPorts(
-        stores.namespaces,
-        stores.capabilities,
+        stores.namespaces.let { harness?.decorateNamespaces?.invoke(it) ?: it },
+        stores.capabilities.let { harness?.decorateCapabilities?.invoke(it) ?: it },
         stores.registrations,
         stores.outbox,
         stores.inbox,

@@ -110,11 +110,21 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
     val swallowed = ArrayList<String>()
 
     /**
-     * The every-commit and every-store checks of the class note. On in every world; the one test
-     * that turns it off ([EntDmConversation.fairyAt] without it) shows what the end checks alone
-     * catch.
+     * The every-commit and every-store checks of the class note. On in every world but two kinds:
+     * the test that turns it off ([EntDmConversation.fairyAt] without it) to show what the end
+     * checks alone catch, and JD8's mutated twins and the control they are held against
+     * (`EntDmJd8.kt`, §22.26), where it would stop PM-1b's world before JD8 could compare it — the
+     * report's own JD8 run keeps it on, and `DmJd8Test` asserts both runs saw the same relay calls.
      */
     var checkEveryCommit: Boolean = true
+
+    /**
+     * Decorators of the DM steps' `Capabilities` and `Namespaces` ports, applied at every boot of
+     * every client (`DmDevice.HarnessOverride`): null in every world but a privacy mutant's (JD8's
+     * PM-1, `EntDmJd8.kt`). Set before the first [attach].
+     */
+    var decorateCapabilities: ((org.ghost.sync.api.Capabilities) -> org.ghost.sync.api.Capabilities)? = null
+    var decorateNamespaces: ((org.ghost.sync.api.Namespaces) -> org.ghost.sync.api.Namespaces)? = null
 
     init {
         check(ent.w === w) { "the entitlement world belongs to another sync world" }
@@ -525,7 +535,10 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             slotCount = EntDmWorld.SLOTS,
             operators = EntDmWorld.OPERATORS,
             startSeconds = clock.now,
-            harness = DmDevice.HarnessOverride(c.sql, clock, c.boots - 1, stores = c.stores),
+            harness = DmDevice.HarnessOverride(
+                c.sql, clock, c.boots - 1, stores = c.stores,
+                decorateCapabilities = world.decorateCapabilities, decorateNamespaces = world.decorateNamespaces,
+            ),
         )
         built.slots = world.esSlots(c)
         device = built

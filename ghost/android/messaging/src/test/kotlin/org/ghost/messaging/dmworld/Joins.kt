@@ -170,7 +170,9 @@ internal class ByteDictionary {
 
 /**
  * The exact joins JD1, JD2, JD3, JD4, JD5, JD6, JD7 and JD9 of Phase 9 design §15.6 over a finished
- * [PrivacyWorld]. JD8 and JD10 are not here; §22.16 says why.
+ * [PrivacyWorld]. JD8 and JD10 are not here: JD10 is deferred (§22.16 item 10), and JD8 runs on
+ * the entitlement world's twins, which have the real redeem lane this world lacks (`entworld/
+ * EntDmJd8.kt`, §22.26).
  *
  * **Every oracle is the world's or the recorder's, never the engine's own record of the property
  * checked**: JD5's timers come from the users' timer changes and the relay view, JD6's user actions
