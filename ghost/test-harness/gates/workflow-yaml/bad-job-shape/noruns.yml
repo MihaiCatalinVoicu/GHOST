@@ -1,0 +1,8 @@
+name: fixture-job-without-runner
+on:
+  push:
+    branches: [main]
+jobs:
+  demo:
+    steps:
+      - run: echo hello

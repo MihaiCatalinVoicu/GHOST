@@ -20,6 +20,25 @@ expect_fail() {
 for g in anti-placeholder no-logging manifest-lint dependency-allowlist; do
   expect_fail "$g" "$HARNESS/negative"
 done
+# workflow-yaml: a workflow that is not valid YAML never starts (the DM exit gate missed three merges to
+# main that way). The good fixture must pass, and each negative must fail **for the reason it names**,
+# so a missing parser can never stand in for a rejection. `bad-comment` is the real defect: a wrapped
+# comment line that lost its `#`.
+wfy_case() { # $1 = expect pass|fail, $2 = fixture directory, $3 = expected text ("" for pass), $4 = description
+  local out got
+  if out="$(GHOST_WORKFLOWS_DIR="$HARNESS/workflow-yaml/$2" bash "$DIR/workflow-yaml.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ] && { [ -z "$3" ] || grep -qF "$3" <<<"$out"; }; then
+    echo "self-test ok: workflow-yaml $4"
+  else
+    echo "SELF-TEST FAIL: workflow-yaml $4 ($got)" >&2; printf '%s\n' "$out" | tail -2 >&2; rc=1
+  fi
+}
+wfy_case pass good "" "accepts a valid workflow"
+wfy_case fail bad-comment "unparseable" "rejects a comment line that lost its # (the defect that stopped messaging-exit-gate)"
+wfy_case fail bad-no-jobs "no jobs" "rejects a workflow with no jobs"
+wfy_case fail bad-job-shape "has neither runs-on nor uses" "rejects a job with no runner"
+wfy_case fail bad-step "has neither uses nor run" "rejects a step that does nothing"
+wfy_case fail empty "no workflow file found" "refuses a directory with no workflow (a gate that scans nothing passes)"
 # Phase 9 §21.13 point 7 (slice S12): anti-placeholder reads the `gate` source sets. The fixture holds
 # a gate source and nothing else, so only that reading can fail it.
 expect_fail anti-placeholder "$HARNESS/negative-gate-placeholder"

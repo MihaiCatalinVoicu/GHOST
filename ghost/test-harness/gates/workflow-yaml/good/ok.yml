@@ -1,0 +1,12 @@
+name: fixture-good
+
+# A workflow that parses and has the shape GitHub needs: a trigger, a job with a runner, steps.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello

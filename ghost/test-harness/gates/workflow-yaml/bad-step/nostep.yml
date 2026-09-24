@@ -1,0 +1,9 @@
+name: fixture-step-without-action
+on:
+  push:
+    branches: [main]
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: a step that does nothing

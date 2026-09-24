@@ -1,0 +1,4 @@
+name: fixture-no-jobs
+on:
+  push:
+    branches: [main]
