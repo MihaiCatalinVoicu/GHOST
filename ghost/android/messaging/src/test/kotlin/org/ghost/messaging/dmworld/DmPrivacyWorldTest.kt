@@ -7,8 +7,9 @@ import org.junit.Test
 
 /**
  * T32 over the privacy world (Phase 9 design §14.1 T32, §15.6): the exact joins this slice builds,
- * S-DM3, and the world's own shape, at the scale `-Dghost.dm.privacy` selects (PR: N = 120 over 14
- * days; gate: N = 600 over 42 days) for every pinned seed `-Dghost.dm.privacy.seeds` selects.
+ * S-DM3, S-DM1 (gating) with S-DM2 and S-DM4 (reported, §22.30), and the world's own shape, at the
+ * scale `-Dghost.dm.privacy` selects (PR: N = 120 over 14 days; gate: N = 600 over 42 days) for
+ * every pinned seed `-Dghost.dm.privacy.seeds` selects.
  *
  * Every line it writes to the privacy report carries its denominator, and every check fails on an
  * empty sample: a join over no stores, or a statistic under its floor, is a failure here and in
@@ -51,6 +52,16 @@ class DmPrivacyWorldTest {
                 val sdm3 = Sdm3.run(world, seed)
                 PrivacyReport.line(sdm3.line() + " $tag")
                 if (!sdm3.passed) failures += "$tag ${sdm3.failureMessage()}"
+                // S-DM1 (gating), S-DM2 and S-DM4 (reported against the recorded baselines, which
+                // dm-report-check.sh holds): the conversation-edge attackers on the full view and on
+                // LD's (§22.30).
+                val edge = EdgeStatistics.Views(world, pairCap = EdgeStatistics.PAIR_CAP)
+                val whole = EdgeStatistics.Views(world, window = world.end - world.config.startSeconds, pairCap = EdgeStatistics.PAIR_CAP)
+                val sdm1 = EdgeStatistics.sdm1(edge, seed, whole)
+                PrivacyReport.line(sdm1.line() + " $tag")
+                if (!sdm1.passed) failures += "$tag ${sdm1.line()}"
+                PrivacyReport.line(EdgeStatistics.sdm2(edge, whole, world, EdgeBaselines.sdm2(scale, seed)).line() + " $tag")
+                PrivacyReport.line(EdgeStatistics.sdm4(edge, world, seed, EdgeBaselines.sdm4(scale, seed)).line() + " $tag")
                 // A plain host build writes NOT RUN, which only the report check refuses (a local
                 // run without the provenance build still passes here); a provenance build's FAIL fails.
                 val t35 = T35.run(world)
