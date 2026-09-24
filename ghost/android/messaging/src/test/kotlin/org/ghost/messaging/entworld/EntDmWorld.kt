@@ -116,6 +116,14 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
      */
     var checkEveryCommit: Boolean = true
 
+    /**
+     * Decorators of the DM steps' `Capabilities` and `Namespaces` ports, applied at every boot of
+     * every client (`DmDevice.HarnessOverride`): null in every world but a privacy mutant's (JD8's
+     * PM-1, `EntDmJd8.kt`). Set before the first [attach].
+     */
+    var decorateCapabilities: ((org.ghost.sync.api.Capabilities) -> org.ghost.sync.api.Capabilities)? = null
+    var decorateNamespaces: ((org.ghost.sync.api.Namespaces) -> org.ghost.sync.api.Namespaces)? = null
+
     init {
         check(ent.w === w) { "the entitlement world belongs to another sync world" }
         val boot = w.onBoot
@@ -471,7 +479,10 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             slotCount = EntDmWorld.SLOTS,
             operators = EntDmWorld.OPERATORS,
             startSeconds = clock.now,
-            harness = DmDevice.HarnessOverride(c.sql, clock, c.boots - 1, stores = c.stores),
+            harness = DmDevice.HarnessOverride(
+                c.sql, clock, c.boots - 1, stores = c.stores,
+                decorateCapabilities = world.decorateCapabilities, decorateNamespaces = world.decorateNamespaces,
+            ),
         )
         built.slots = world.esSlots(c)
         device = built

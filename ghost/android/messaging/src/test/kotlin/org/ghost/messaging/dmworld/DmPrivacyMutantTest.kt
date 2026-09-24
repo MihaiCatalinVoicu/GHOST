@@ -26,6 +26,12 @@ class DmPrivacyMutantTest {
         assumeTrue("-Dghost.dm.privacy=off: the privacy worlds are skipped", PrivacyScale.enabled)
     }
 
+    @Test fun pm1ASenderBoughtContactInboxIsDetected() = kill(PrivacyMutants.PM1)
+
+    @Test fun pm1bARedeemedLocalNeedIsDetected() = kill(PrivacyMutants.PM1B)
+
+    @Test fun pm26RegistrationsOnAnInboundDepositAreDetected() = kill(PrivacyMutants.PM26)
+
     @Test fun pm2AnAutomaticReceiptIsDetected() = kill(PrivacyMutants.PM2)
 
     @Test fun pm3APublicNamespaceIsDetected() = kill(PrivacyMutants.PM3)
@@ -61,7 +67,12 @@ class DmPrivacyMutantTest {
             assertTrue(
                 "${mutant.id} mutates nothing",
                 mutant.envelopes != null || mutant.crypto != null || mutant.rewrite != null ||
-                    mutant.configure != null || mutant.afterWake != null || mutant.afterAdd != null,
+                    mutant.configure != null || mutant.afterWake != null || mutant.afterAdd != null || mutant.entWorld != null,
+            )
+            // A JD8 kill needs the entitlement-world half, and only a JD8 kill reads it.
+            assertEquals(
+                "${mutant.id}: an entitlement-world half without a JD8 killer, or the other way round",
+                mutant.entWorld != null, mutant.killers.any { it.check == PrivacyCheck.JD8 },
             )
         }
         PrivacyKills.arm()
@@ -133,6 +144,12 @@ internal object Checks {
         PrivacyCheck.NI_DM1 -> NiDm1.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.NI_DM2 -> NiDm2.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.NI_DM3 -> NiDm3.run(seed, mutant).let { if (it.passed) null else it.line() }
+        // The entitlement world's twins (§22.24): the control is the report's run of `DmJd8Test`
+        // (the every-commit check on); a mutated pair runs with that read-only check off, which would
+        // otherwise stop PM-1b's world at the commit that installs its capability (`Jd8Twin`).
+        PrivacyCheck.JD8 -> org.ghost.messaging.entworld.Jd8.run(
+            seed, mutant?.id ?: DmJd8Test.CONTROL, mutant?.let { requireNotNull(it.entWorld) { "${it.id} has no entitlement-world half" } },
+        ).let { if (it.passed) null else it.line() }
         PrivacyCheck.S_DM3 -> PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.MEDIUM, seed, mutant)).use { world ->
             world.run()
             Sdm3.run(world, seed).let { if (it.passed) null else it.line() }

@@ -20,7 +20,8 @@
 #   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM2 with its fifteen
 #                   (slice S11b), NI-DM3, JD7's WITHHOLD_ALL_BUNDLES variant with the bound reached
 #                   (S11b), the T34 seizure line with both controls complete, the T34 one-reply
-#                   line, and the privacy mutant count with one detection line per mutant;
+#                   line, JD8 over the entitlement world's twins (§22.24), and the privacy mutant
+#                   count with one detection line per mutant;
 #   privacy-pr      both halves in one report at the PR scale (N = 120, 14 days), which is what the
 #                   `android` job of ci.yml writes.
 #
@@ -39,13 +40,14 @@
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
 # §22.15 and §22.19 of the design list what is still owed, scenario by scenario and mutant by
 # mutant. The privacy half follows the same rule: it does not
-# require JD8, JD10, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
+# require JD10, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
 # AD-7-with-token line, the EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry
-# clause, T26's model-relay open check or 28 of the 40 privacy mutants (nor PM-5's exact-seconds
-# half), because nothing in this branch produces them; §22.16 names each (items 10–15 and 20), and
-# §22.21 what slice S11b added (NI-DM2 with its one declared open defect, the JD7
-# WITHHOLD_ALL_BUNDLES variant, PM-5's day-rounding half and PM-31, and NI-DM2 as PM-4's second
-# killer).
+# clause, T26's model-relay open check or 25 of the 40 privacy mutants (nor PM-5's exact-seconds
+# half, nor PM-26's current-week half), because nothing in this branch produces them; §22.16 names
+# each (items 10–15 and 20), §22.21 what slice S11b added (NI-DM2 with its one declared open
+# defect, the JD7 WITHHOLD_ALL_BUNDLES variant, PM-5's day-rounding half and PM-31, and NI-DM2 as
+# PM-4's second killer), and §22.24 what the JD8 slice added (JD8 over the entitlement world's
+# twins, and PM-1, PM-1b and PM-26's later-weeks half, each killed by it).
 set -euo pipefail
 
 report="${1:-}"
@@ -152,13 +154,44 @@ privacy_suite() {
   grep -qE '^dm T34 one-reply: PASS dumped at day 125: 2 of 2 sessions due by prov_anchor_minute \+ 119 d, 2 of 2 provably held prov_env, 0 keep it' "$report" \
     || bad "no T34 one-reply PASS with both sessions due and erased"
   if grep -qE '^dm T34 one-reply: FAIL' "$report"; then bad "the T34 one-reply variant failed"; fi
+  # --- JD8 over the entitlement world's twins (the JD8 slice, §22.24) --------------------------------
+  # Exactly one line, a PASS of the one twin shape the test builds (0 vs 4 contacts, four token
+  # holders compared, dave holding none), ending with its last clause (a FAIL appends its problems
+  # after it). What a PASS must carry, so it cannot be a comparison of nothing or of one world with
+  # itself: a non-zero number of calls, each client's redemptions and registrations non-zero and
+  # summing to it, and as many paired calls as calls; both token weeks and all three registration
+  # periods; the active twin with its four contacts, texts delivered, relay calls on contacts'
+  # namespaces and LOCAL needs its planner skipped (PM-1b's path), dave's establishment not ready; the
+  # idle twin with no contact and no such call; no call by dave in either; and T27's minute declared
+  # measured and not compared, with its measurement — the declaration is pinned word for word, so a
+  # line that claimed the minute compared would not pass (it is not comparable here, §22.24).
+  jd8="$(grep -E '^dm JD8: ' "$report" || true)"
+  if [ -z "$jd8" ] || [ "$(printf '%s\n' "$jd8" | wc -l)" -ne 1 ]; then
+    bad "not exactly one JD8 line"
+  elif ! printf '%s\n' "$jd8" | grep -qE "^dm JD8: PASS twins of 0 vs 4 contacts \(5 clients of the entitlement world: 3 contacts reachable, 1 who holds no token\), to start\(2976\) \+ 3 h: redemptions and registrations of 4 clients equal as \(kind, relay, namespace, week or period, key kind\) multisets over [1-9][0-9]* calls \(alice [1-9][0-9]*\+[1-9][0-9]*, bob [1-9][0-9]*\+[1-9][0-9]*, carol [1-9][0-9]*\+[1-9][0-9]*, erin [1-9][0-9]*\+[1-9][0-9]* redeem\+register\), every one on an own namespace; each covers token weeks \{2975, 2976\} and periods \{2975, 2976, 2977\}; the twins differ in DM activity: active alice 4 contacts, [1-9][0-9]* texts delivered, [1-9][0-9]* relay calls on contacts' namespaces, a LOCAL need skipped [1-9][0-9]* times by alice's planner \(dave (UNREACHABLE|FETCHING)\); idle 0 contacts, 0 such calls; dave \(no token\) 0 and 0 calls; T27's minute measured, not compared \(DM work moves the redeem lane's steps, §22\.24\): [0-9]+ of [1-9][0-9]* pairs in the same minute, [0-9]+ at the same millisecond, [0-9]+ after a message in their relay session \([0-9]+ redemptions, [0-9]+ registrations\)\$"; then
+    bad "no JD8 PASS over the entitlement world's twins that compared the calls of all four token holders, with twins that differ in DM activity, the minute declared not compared, and nothing appended"
+  else
+    calls="$(printf '%s\n' "$jd8" | sed -nE 's/.* multisets over ([0-9]+) calls .*/\1/p')"
+    sum="$(printf '%s\n' "$jd8" | sed -nE 's/.*\(alice ([0-9]+)\+([0-9]+), bob ([0-9]+)\+([0-9]+), carol ([0-9]+)\+([0-9]+), erin ([0-9]+)\+([0-9]+) redeem\+register\).*/\1+\2+\3+\4+\5+\6+\7+\8/p')"
+    pairs="$(printf '%s\n' "$jd8" | sed -nE 's/.*: [0-9]+ of ([0-9]+) pairs in the same minute, .*/\1/p')"
+    [ "$(( sum ))" = "$calls" ] || bad "JD8's per-client calls ($sum) do not sum to its $calls calls"
+    [ "$pairs" = "$calls" ] || bad "JD8 paired $pairs of its $calls calls"
+  fi
+  if grep -qE '^dm JD8: FAIL' "$report"; then bad "JD8 failed"; fi
+  # --- end of JD8 ------------------------------------------------------------------------------------
   # The privacy mutants: the count this slice registers, one detection line each, none undetected.
   # Both numbers are written from what the run recorded (`PrivacyKills`): a mutant is "run" when a
   # mutated world ran for every check its entry names, and "detected" when every one killed it.
-  grep -qxF 'dm privacy mutants: 12 run, 12 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 12 run, 12 detected'"
-  for mutant in PM-2 PM-3 PM-4 PM-5 PM-6 PM-8 PM-13 PM-19 PM-24 PM-31 PM-36 PM-39; do
+  grep -qxF 'dm privacy mutants: 15 run, 15 detected' "$report" || bad "the privacy mutant line is not 'dm privacy mutants: 15 run, 15 detected'"
+  for mutant in PM-1 PM-1b PM-2 PM-3 PM-4 PM-5 PM-6 PM-8 PM-13 PM-19 PM-24 PM-26 PM-31 PM-36 PM-39; do
     grep -qE "^dm privacy mutant ${mutant}: detected by .+" "$report" || bad "no detection line for privacy mutant $mutant"
   done
+  # PM-1, PM-1b and PM-26 are killed by JD8 in the entitlement world (§22.24), and PM-26's line must
+  # say that only its later-weeks half is built.
+  grep -qxF 'dm privacy mutant PM-1: detected by JD8 (entitlement twin worlds)' "$report" || bad "PM-1 is not detected by JD8"
+  grep -qxF 'dm privacy mutant PM-1b: detected by JD8 (entitlement twin worlds)' "$report" || bad "PM-1b is not detected by JD8"
+  grep -qxF "dm privacy mutant PM-26: detected by JD8 (entitlement twin worlds); the rows of later weeks only; a mutant that also held back the current week's rows would deliver nothing" "$report" \
+    || bad "PM-26 is not detected by JD8, or its line does not say that only its later-weeks half is built"
   # PM-4 is detected by both checks §15.7 names since S11b (§22.21), and the report must say so.
   grep -qxF 'dm privacy mutant PM-4: detected by JD4 (SMALL world), NI-DM2 (twin worlds)' "$report" \
     || bad "PM-4 is not detected by both JD4 and NI-DM2"

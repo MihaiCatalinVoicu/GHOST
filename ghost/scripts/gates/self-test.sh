@@ -294,6 +294,22 @@ dmr_case fail privacy-ni2-defect-partial.txt privacy-pr "rejects an NI-DM2 decla
 dmr_case fail privacy-withhold-no-room.txt privacy-pr "rejects a JD7 withhold variant with no session where a fourth attempt would fall"
 dmr_case fail privacy-pm5-whole.txt privacy-pr "rejects a PM-5 line that does not say only its day-rounding half is built"
 dmr_case fail privacy-jd5-no-split.txt privacy-pr "rejects a JD5 line that does not say which TIMER_SET path it covered"
+# Phase 9 JD8 slice (design §22.24): JD8 over the entitlement world's twins, and PM-1, PM-1b and
+# PM-26 killed by it. Every privacy fixture above was regenerated from this slice's real PR report
+# with its one change (the regeneration reproduced all thirty of S11b's fixtures byte for byte from
+# S11b's positive first). Each negative below is a way a JD8 line could look like a comparison while
+# it compared nothing, compared a world with itself, or hid a difference.
+dmr_case fail privacy-jd8-missing.txt privacy-pr "rejects a report without JD8"
+dmr_case fail privacy-jd8-fail.txt privacy-pr "rejects a JD8 that failed"
+dmr_case fail privacy-jd8-nothing.txt privacy-pr "rejects a JD8 PASS that compared no call"
+dmr_case fail privacy-jd8-short-pairs.txt privacy-pr "rejects a JD8 PASS that paired fewer calls than it compared"
+dmr_case fail privacy-jd8-timing-claimed.txt privacy-pr "rejects a JD8 PASS that claims T27's minute compared (it is not comparable here)"
+dmr_case fail privacy-jd8-no-activity.txt privacy-pr "rejects a JD8 PASS whose active twin had no DM activity"
+dmr_case fail privacy-jd8-idle-traffic.txt privacy-pr "rejects a JD8 PASS whose idle twin had DM traffic"
+dmr_case fail privacy-jd8-dave.txt privacy-pr "rejects a JD8 PASS in which the client without tokens made calls"
+dmr_case fail privacy-jd8-appended.txt privacy-pr "rejects a JD8 PASS with a difference appended"
+dmr_case fail privacy-s11b-mutant-count.txt privacy-pr "rejects S11b's twelve-mutant count"
+dmr_case fail privacy-pm26-whole.txt privacy-pr "rejects a PM-26 line that does not say only its later-weeks half is built"
 # Phase 9 S12 (design §15.9): the emulator report check. `pass/` is a green run on API 29 and 35;
 # every negative case is a copy of it with one change, each a way an emulator run could look green
 # while it proved less: an API level or a suite that never ran, a skipped or missing test, a
