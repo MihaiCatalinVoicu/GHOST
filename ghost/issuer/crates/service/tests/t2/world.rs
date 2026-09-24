@@ -4244,19 +4244,26 @@ impl Background {
     }
 }
 
-/// The key of a relay session's client randomness (its order of pairs, its lane waits and offsets,
-/// its circuit labels): the session's READY time and whether a background job runs it. The real
-/// client draws them afresh for every session, so the key only decides which session of one twin
-/// world meets which numbers of the other. It was the session's run number, which counts every
-/// earlier foreground, job and minute sync: in a twin where one earlier minute sync is missing (a
-/// payment screen that opened at another foreground, F8 §19.11) every later session met other
-/// numbers, and the drop writes of NI-1d's seed pairs 4, 5 and 9 moved with them (Phase 9 design
-/// §22.28). Keyed on its time, a session both worlds hold at the same moment draws the same
-/// numbers, and a session only one world holds still differs. The world's schedule starts one
-/// client's jobs at least 15 minutes apart and, within a day, its foregrounds at least 120 s after
-/// the previous one ended (a minute sync comes 60 s into its foreground), so two of its sessions
-/// of one kind are practically never READY in the same second; two that were would share their
-/// draws and nothing else (the run stays each session's identity in the ground truth).
+/// The key of a relay session's client randomness in the world (its order of pairs, its lane waits
+/// and offsets, its circuit labels): the session's READY time and whether a background job runs it.
+/// The real client draws the redeem lane's waits from `SecureRandom` (`RedeemLane.firstWait`,
+/// `nextWait`), and a background session's offsets, which order its pairs, as an HMAC under a key
+/// drawn for the process and never shown, indexed by the process's count of background jobs
+/// (`SyncEngine.startSession`, `PairSchedule.backgroundTime`, `KeyedRandomSources.schedule`). A
+/// relay sees neither the key nor the count, so it cannot tell which numbers a session met; that
+/// secrecy, not fresh draws, is why the key here only decides which session of one twin world meets
+/// which numbers of the other. It was the session's run number, which counts every earlier
+/// foreground, job and minute sync: in a twin where one earlier minute sync is missing (a payment
+/// screen that opened at another foreground, F8 §19.11) every later session met other numbers, and
+/// the drop writes of NI-1d's seed pairs 4, 5 and 9 moved with them (Phase 9 design §22.28). Keyed
+/// on its time, a session both worlds hold at the same moment draws the same numbers, and a session
+/// only one world holds still differs. One client's jobs start at least 15 minutes apart, and
+/// within one day's schedule its foregrounds start at least 120 s after the previous one ended (a
+/// minute sync comes 60 s into its foreground); the schedules of two days can overlap across the
+/// UTC day boundary, so two sessions of one kind can, rarely, be READY in the same second. Two that
+/// were would share their draws, circuit labels included, which makes them more linkable in the
+/// world than in the client (an error on the conservative side); the run stays each session's
+/// identity in the ground truth.
 fn session_key(ready: u64, background: bool) -> u64 {
     (ready << 1) | u64::from(background)
 }
