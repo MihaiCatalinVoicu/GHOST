@@ -247,35 +247,66 @@ fi
 # with each client armed in turn. Its crash coverage is SAMPLED, not every event — a run of about
 # 1.6 million events of alice costs about a minute, and the classified enumeration that would make
 # every event affordable needs deterministic native randomness this tree does not have (§22.22 item
-# 7) — so its lines are `dm crash sample:` lines and say so in their own words, and the every-event
-# rule above is never applied to them nor may one of them pass as a `dm crash classes:` line. What
-# is held here: every line present, a non-empty sample over a non-empty recording, the sample
-# stratified over the script's phases at the scale's density (one point per phase on a PR, eight in
-# the gate), and at least one timeout-after-apply run over a non-zero number of the armed client's
-# stores.
-for subject in "SCN-E bob" "SCN-E alice" "SCN-E/LOSE_KEYS bob" "SCN-E/LOSE_KEYS alice"; do
+# 7) — so its lines are `dm crash sample:` lines and say so in their own words, the header says the
+# scale line is not theirs, and the every-event rule above is never applied to them nor may one of
+# them pass as a `dm crash classes:` line. What is held here, per line: a non-empty recording; the
+# number of phases the script has (six for OFFLINE, three for LOSE_KEYS — the review found a line
+# of one phase accepted, §22.25 item 14); exactly the scale's density per phase (one on a PR, eight
+# in the gate) and singles = density × phases; and the store faults per phase — each picked store
+# run once as a timeout and once as a crash after apply, and in every phase exactly min(density,
+# that phase's stores) of them (one on a PR, three in the gate), summing to the line's totals.
+grep -qxF 'coverage: the scale is the density of the dm crash classes lines; the dm crash sample lines (SCN-E) are sampled, not every event' "$report" \
+  || bad "the header does not say that its scale is not the SCN-E lines', which are sampled"
+per_phase=1
+stores_per_phase=1
+if [ "$kind" = gate ]; then
+  per_phase=8
+  stores_per_phase=3
+fi
+for pair in "SCN-E bob|6" "SCN-E alice|6" "SCN-E/LOSE_KEYS bob|3" "SCN-E/LOSE_KEYS alice|3"; do
+  subject="${pair%%|*}"
+  want_phases="${pair#*|}"
   line="$(grep -E "^dm crash sample: ${subject} " "$report" | head -1 || true)"
   if [ -z "$line" ]; then
     bad "no crash-sample line for $subject"
     continue
   fi
-  events="$(printf '%s\n' "$line" | sed -nE 's/^dm crash sample: [^ ]+ [a-z]+ ([0-9]+) events,.*/\1/p')"
-  singles="$(printf '%s\n' "$line" | sed -nE 's/.* events, ([0-9]+) singles over [0-9]+ phases,.*/\1/p')"
-  phases="$(printf '%s\n' "$line" | sed -nE 's/.* singles over ([0-9]+) phases,.*/\1/p')"
-  timeouts="$(printf '%s\n' "$line" | sed -nE 's/.* phases, ([0-9]+) timeouts over [0-9]+ stores(;.*)?$/\1/p')"
-  stores="$(printf '%s\n' "$line" | sed -nE 's/.* timeouts over ([0-9]+) stores(;.*)?$/\1/p')"
-  [ -n "$events" ] && [ "$events" -gt 0 ] 2>/dev/null || bad "$subject recorded 0 events"
-  [ -n "$phases" ] && [ "$phases" -gt 0 ] 2>/dev/null || bad "$subject names no phase to sample"
-  [ -n "$singles" ] && [ "$singles" -gt 0 ] 2>/dev/null || bad "$subject sampled 0 crash points"
-  [ -n "$stores" ] && [ "$stores" -gt 0 ] 2>/dev/null || bad "$subject reported no stores, so its timeout runs have no denominator"
-  [ -n "$timeouts" ] && [ "$timeouts" -gt 0 ] 2>/dev/null || bad "$subject ran no timeout-after-apply run"
-  per_phase=1
-  [ "$kind" = gate ] && per_phase=8
-  if [ -n "$singles" ] && [ -n "$phases" ] && [ "$singles" -lt $(( per_phase * phases )) ] 2>/dev/null; then
-    bad "$subject sampled $singles crash points over $phases phases, fewer than $per_phase per phase at the $kind scale"
+  if ! printf '%s\n' "$line" | grep -qE "^dm crash sample: ${subject} [0-9]+ events, [0-9]+ singles over [0-9]+ phases \\([0-9]+ per phase\\), [0-9]+ timeouts and [0-9]+ crashes after apply at [0-9]+ of [0-9]+ stores \\(per phase [0-9]+/[0-9]+( [0-9]+/[0-9]+)*\\); sampled, not every event\$"; then
+    bad "$subject's line is not of the sample form, or does not say that its enumeration is sampled, not every event"
+    continue
   fi
-  printf '%s\n' "$line" | grep -qE '; sampled, not every event$' \
-    || bad "$subject's line does not say that its enumeration is sampled, not every event"
+  events="$(printf '%s\n' "$line" | sed -nE 's/^dm crash sample: [^ ]+ [a-z]+ ([0-9]+) events,.*/\1/p')"
+  singles="$(printf '%s\n' "$line" | sed -nE 's/.* events, ([0-9]+) singles over .*/\1/p')"
+  phases="$(printf '%s\n' "$line" | sed -nE 's/.* singles over ([0-9]+) phases .*/\1/p')"
+  printed="$(printf '%s\n' "$line" | sed -nE 's/.* phases \(([0-9]+) per phase\).*/\1/p')"
+  timeouts="$(printf '%s\n' "$line" | sed -nE 's/.* per phase\), ([0-9]+) timeouts and .*/\1/p')"
+  crashes="$(printf '%s\n' "$line" | sed -nE 's/.* timeouts and ([0-9]+) crashes after apply .*/\1/p')"
+  faulted="$(printf '%s\n' "$line" | sed -nE 's/.* crashes after apply at ([0-9]+) of [0-9]+ stores .*/\1/p')"
+  stores="$(printf '%s\n' "$line" | sed -nE 's/.* crashes after apply at [0-9]+ of ([0-9]+) stores .*/\1/p')"
+  split="$(printf '%s\n' "$line" | sed -nE 's/.* stores \(per phase ([0-9/ ]+)\); sampled, not every event$/\1/p')"
+  [ "$events" -gt 0 ] 2>/dev/null || bad "$subject recorded 0 events"
+  [ "$phases" = "$want_phases" ] || bad "$subject sampled over $phases phases, and its script has $want_phases"
+  [ "$printed" = "$per_phase" ] || bad "$subject sampled $printed crash points per phase, and the $kind scale samples $per_phase"
+  [ "$singles" = "$(( per_phase * want_phases ))" ] || bad "$subject sampled $singles crash points, not $per_phase in each of $want_phases phases"
+  [ "$stores" -gt 0 ] 2>/dev/null || bad "$subject reported no stores, so its store faults have no denominator"
+  [ "$faulted" -gt 0 ] 2>/dev/null || bad "$subject faulted no store"
+  [ "$timeouts" = "$faulted" ] || bad "$subject ran $timeouts timeouts at $faulted faulted stores"
+  [ "$crashes" = "$faulted" ] || bad "$subject ran $crashes crashes after apply at $faulted faulted stores"
+  n=0
+  sum_faulted=0
+  sum_stores=0
+  for part in $split; do
+    got="${part%%/*}"
+    of="${part#*/}"
+    want=$(( of < stores_per_phase ? of : stores_per_phase ))
+    [ "$got" = "$want" ] || bad "$subject faulted $got of the $of stores of its phase $(( n + 1 )), and the $kind scale faults $want"
+    n=$(( n + 1 ))
+    sum_faulted=$(( sum_faulted + got ))
+    sum_stores=$(( sum_stores + of ))
+  done
+  [ "$n" = "$want_phases" ] || bad "$subject's store faults are split over $n phases, and its script has $want_phases"
+  [ "$sum_faulted" = "$faulted" ] && [ "$sum_stores" = "$stores" ] \
+    || bad "$subject's per-phase store faults ($split) do not add up to $faulted of $stores"
 done
 if grep -qE '^dm crash classes: SCN-E' "$report"; then
   bad "an SCN-E line claims the every-event enumeration it does not run (§22.25)"
@@ -314,7 +345,9 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 # Eleven since S10b: MC-18 and MC-26, which SCN-I makes reachable, MC-28, which SCN-H does, and
 # MC-33, which SCN-G-week does; each is killed fault-free and at crash points spread over its
 # scenario, beside the unmutated scenario crashed at the same points (§22.19). Thirteen since SCN-E
-# (§22.25): MC-14 and MC-15, which SCN-E/LOSE_KEYS makes reachable, under the same rule.
+# (§22.25): MC-14 and MC-15, which SCN-E/LOSE_KEYS makes reachable, under the same rule with its
+# crash points in the window where the mutant acts — from the loss to the fault-free failure — and
+# not over the whole run, where the review found them all in the establishment (§22.25 item 14).
 grep -qxF 'dm mutants: 13 run, 13 detected' "$report" \
   || bad "the mutant line is not 'dm mutants: 13 run, 13 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
@@ -326,8 +359,9 @@ grep -qxF 'dm mutants: 13 run, 13 detected' "$report" \
 rule_ff='fault-free, beside a clean control'
 rule_crash='invisible fault-free, killed under a crash in its split window, beside a clean run at the same point'
 rule_s10b='fault-free and at 6 of 6 crash points, each beside a clean run'
+rule_scne='fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_ff" "MC-10|$rule_ff" "MC-12|$rule_ff" \
-  "MC-14|$rule_s10b" "MC-15|$rule_s10b" \
+  "MC-14|$rule_scne" "MC-15|$rule_scne" \
   "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
   "ME-16|$rule_ff"; do
   mutant="${pair%%|*}"

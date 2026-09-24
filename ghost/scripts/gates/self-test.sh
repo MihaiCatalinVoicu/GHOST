@@ -247,10 +247,14 @@ dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K 
 dmr_case fail missing-scn-c.txt gate "rejects a report without SCN-C"
 dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C"
 # Phase 9 SCN-E (design §22.25): the report now carries SCN-E's four `dm crash sample:` lines — its
-# crash coverage is sampled, not every event — and thirteen mutants; the positives were replaced by
-# real reports of the SCN-E code and every negative above except `s10-only-gate.txt` was regenerated
-# from them with its one change. Eight more, each a way an SCN-E report could claim more than its
-# run did: no SCN-E at all (every report before it), at either scale; a line that does not say it is
+# crash coverage is sampled, not every event — and thirteen mutants. `pass-pr.txt` is a real report
+# of the SCN-E code; `pass-gate.txt` is **assembled** (§22.25 items 13 and 14: main's gate report of
+# the S10c code with the SCN-E-alone gate-scale lines and this slice's mutant lines put in, because
+# the whole gate was not run on this code) — the review found this comment calling both "real
+# reports". Every negative above except `s10-only-gate.txt` was regenerated from the positives with
+# its one change by a script that, run first on the previous positives, reproduced the previous
+# negatives byte for byte. Eight more, each a way an SCN-E report could claim more than its run
+# did: no SCN-E at all (every report before it), at either scale; a line that does not say it is
 # sampled; a line in the every-event form; a gate report whose sample has the PR density; a line
 # with no timeout run; MC-15 held only to the fault-free rule; and the eleven-mutant count.
 dmr_case fail missing-scn-e.txt gate "rejects a report without SCN-E"
@@ -261,6 +265,16 @@ dmr_case fail scn-e-pr-density-gate.txt gate "rejects a gate report whose SCN-E 
 dmr_case fail scn-e-no-timeout.txt pr "rejects an SCN-E line with no timeout run"
 dmr_case fail scn-e-weakened-kill-rule.txt gate "rejects MC-15 killed only fault-free"
 dmr_case fail scn-e-old-mutant-count.txt gate "rejects the eleven-mutant report of the slices before SCN-E"
+# The review of SCN-E (design §22.25 item 14): an SCN-E line collapsed to one phase (the review's
+# "8 singles over 1 phases", which the check accepted); a gate line whose store faults have the PR
+# density; a line whose stores were timed out but never crashed after apply; MC-15 held to the
+# whole-run crash points the review found all in the establishment; and a header that does not say
+# its "every event" is not the SCN-E lines'.
+dmr_case fail scn-e-one-phase.txt gate "rejects an SCN-E line sampled over fewer phases than its script has"
+dmr_case fail scn-e-gate-store-density.txt gate "rejects a gate SCN-E line whose store faults have the PR density"
+dmr_case fail scn-e-no-store-crash.txt gate "rejects an SCN-E line with no crash after apply at its stores"
+dmr_case fail scn-e-old-kill-window.txt gate "rejects MC-15 killed at crash points outside the window where it acts"
+dmr_case fail scn-e-no-coverage-note.txt gate "rejects a header that does not say the SCN-E lines are sampled"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

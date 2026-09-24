@@ -18,7 +18,8 @@ import org.ghost.messaging.port.DmEnvelopes
  * **recorded** ([DmKills]), never from this registry, so an ignored or deleted kill test lowers
  * the count instead of leaving it standing. **S10b's four and SCN-E's two are held to a stricter
  * kill than S10's seven**: detected fault-free by the check their entry names, *and* at crash points
- * spread over the scenario, each beside the unmutated scenario crashed at the same point
+ * — spread over the scenario for S10b's, over the window from the loss to the fault-free failure
+ * for SCN-E's (§22.25 item 14) — each beside the unmutated scenario crashed at the same point
  * ([Mutation.expectUnderCrash]).
  *
  * **What a mutant may be, here.** `:messaging` has no `Steps` seam the way `:sync` does, so a
@@ -455,18 +456,22 @@ internal object DmMutants {
      * the trigger §15.7 names: KEEPER's contact half on every `CAPABILITIES` hint, and a refusal
      * commits exactly such a hint. The refused delivery is then due again within the session that
      * was refused, and the relay decides how many times it is refused. §15.7 detects it with "SCN-E
-     * bound on refused stores per session"; what detects it here is SCN-E's rule on refused stores
-     * as the engine implements the bound (`StoreView`, at the store that breaks it) — a deposit is
-     * refused again under a credential put again only after a time-triggered pass, a user action or
-     * a reboot of the sender —
-     * because the per-session count §21.2 point 7 states is not met by the real engine either
-     * (§22.25), in SCN-E/LOSE_KEYS, where alice's deposit at the relay that lost its keys is refused
-     * until bob has healed.
+     * bound on refused stores per session"; what detects it here is SCN-E's rule on re-puts as the
+     * engine implements the bound (`CredentialWatch`, at the commit of the re-put): a refused
+     * credential is re-put only inside a time-triggered pass or a user send, the trigger read from
+     * what the wiring **scheduled** and never from a pass's own flag — so the same defect reached
+     * through a time-flagged pass on every hint fails as well (`ScnE.Control.TIME_PASS_ON_EVERY_HINT`,
+     * the review's second path, §22.25 item 14) — and behind it the relay-side rule (`StoreView`):
+     * a deposit refused again under a credential put again needs a time trigger, a user send or a
+     * reboot of the sender in between. The per-session count §21.2 point 7 states is not what
+     * detects it because the real engine does not meet it either (§22.25 item 4). In
+     * SCN-E/LOSE_KEYS, where alice's deposit at the relay that lost its keys is refused until bob
+     * has healed.
      */
     val MC15 = Mutation(
         id = "MC-15",
         defeats = "§21.2 point 7: a refused credential is re-put by the device's own schedule, never on the relay's answer",
-        detectedBy = "SCN-E/LOSE_KEYS (a deposit refused again under a credential put again with no time-triggered pass, user action or reboot of the sender in between)",
+        detectedBy = "SCN-E/LOSE_KEYS (a refused deposit credential re-put in a process no time trigger, user send or boot of the sender started)",
         expect = "the relay's refusal itself made it retry (§21.2 point 7)",
         expectUnderCrash = listOf("the relay's refusal itself made it retry (§21.2 point 7)"),
         hintKeeper = true,

@@ -60,7 +60,7 @@ internal object DmReport {
      * singles of every line to equal its events.
      */
     private fun header(): String = buildString {
-        append("GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b and S10c)\n")
+        append("GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b, S10c and SCN-E)\n")
         append("scale: ")
         append(
             if (DmHarness.sample == 1) {
@@ -70,5 +70,9 @@ internal object DmReport {
             },
         )
         append(", seeds ${DmHarness.seeds}\n")
+        // The scale line is the `dm crash classes:` lines' density. SCN-E's lines are sampled at
+        // every scale (§22.25 item 8), and the header says so, so "every event" is never read as
+        // covering them (the review, §22.25 item 14).
+        append("coverage: the scale is the density of the dm crash classes lines; the dm crash sample lines (SCN-E) are sampled, not every event\n")
     }
 }

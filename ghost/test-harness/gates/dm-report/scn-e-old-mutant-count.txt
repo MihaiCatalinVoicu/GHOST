@@ -1,9 +1,10 @@
-GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b and S10c)
+GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b, S10c and SCN-E)
 scale: gate (every event), seeds 64
-dm crash sample: SCN-E/LOSE_KEYS bob 75464 events, 24 singles over 3 phases, 3 timeouts over 6 stores; sampled, not every event
-dm crash sample: SCN-E/LOSE_KEYS alice 79463 events, 24 singles over 3 phases, 6 timeouts over 16 stores; sampled, not every event
-dm crash sample: SCN-E bob 640923 events, 40 singles over 5 phases, 9 timeouts over 12 stores; sampled, not every event
-dm crash sample: SCN-E alice 1562068 events, 40 singles over 5 phases, 12 timeouts over 1920 stores; sampled, not every event
+coverage: the scale is the density of the dm crash classes lines; the dm crash sample lines (SCN-E) are sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS bob 75464 events, 24 singles over 3 phases (8 per phase), 3 timeouts and 3 crashes after apply at 3 of 6 stores (per phase 3/6 0/0 0/0); sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS alice 79463 events, 24 singles over 3 phases (8 per phase), 6 timeouts and 6 crashes after apply at 6 of 16 stores (per phase 3/12 3/4 0/0); sampled, not every event
+dm crash sample: SCN-E bob 643795 events, 48 singles over 6 phases (8 per phase), 9 timeouts and 9 crashes after apply at 9 of 12 stores (per phase 3/6 0/0 0/0 0/0 3/3 3/3); sampled, not every event
+dm crash sample: SCN-E alice 1569272 events, 48 singles over 6 phases (8 per phase), 15 timeouts and 15 crashes after apply at 15 of 1923 stores (per phase 3/12 3/6 3/6 3/1890 3/9 0/0); sampled, not every event
 dm crash classes: SCN-A 1550 events, 1550 singles, 1550 doubles, 3 timeouts over 3 stores
 dm crash classes: SCN-K 1857 events, 1857 singles, 0 doubles, 3 timeouts over 3 stores
 dm crash classes: SCN-H 17410 events, 17410 singles, 0 doubles, 22 timeouts over 22 stores

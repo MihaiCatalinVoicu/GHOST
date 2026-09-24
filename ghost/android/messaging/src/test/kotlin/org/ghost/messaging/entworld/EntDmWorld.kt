@@ -452,6 +452,60 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
     var hintPasses: Long = 0
         private set
 
+    /**
+     * What started the code this client is running **now**, set by the wiring at the place that
+     * schedules it — never by [pass] — so a pass cannot claim a trigger it was not given (SCN-E's
+     * rule on re-puts, §22.25; the review found that a rule counting passes by their own
+     * `timeTriggered` flag let "a time pass on every `CAPABILITIES` hint" through). Null in a
+     * process no trigger of this wiring started: a sync lane, an entitlement job, a scenario's own
+     * process.
+     */
+    enum class Trigger(val timeTriggered: Boolean) {
+        /** §21.9 rule 1: the relay session start, once its transport is READY. */
+        SESSION_START(true),
+
+        /** §13.3 item 6: the consumer tail after a background session (`DmActor.consumerTail`). */
+        CONSUMER_TAIL(true),
+
+        /** §13.3 item 6: the tail after a quiet run. */
+        QUIET_TAIL(true),
+
+        /** §21.9 rule 1: the actor's timer. */
+        TIMER(true),
+
+        /** §21.9 rule 1, §21.12 point 2: a database open. */
+        DB_OPEN(true),
+
+        /** `DmActor.onChange`: an inbox, outcome, capability or topology hint. */
+        HINT(false),
+
+        /** The K20 hook's posted ACTIVATE. */
+        ACTIVATE(false),
+
+        /** A facade call the user makes ([user]). */
+        USER(false),
+    }
+
+    var trigger: Trigger? = null
+        private set
+
+    /** How often each trigger started work on this client (harness ground truth, never the relay's). */
+    val triggers: MutableMap<Trigger, Long> = java.util.EnumMap(Trigger::class.java)
+
+    /** The time-triggered starts of [triggers]: session starts, tails, timers and database opens. */
+    val timeTriggers: Long get() = triggers.filterKeys { it.timeTriggered }.values.sum()
+
+    private fun <T> under(t: Trigger, block: () -> T): T {
+        val outer = trigger
+        trigger = t
+        triggers.merge(t, 1L, Long::plus)
+        try {
+            return block()
+        } finally {
+            trigger = outer
+        }
+    }
+
     /** What the K20 hook's ACTIVATE answered, in order. */
     val activations = ArrayList<ActivationOutcome>()
 
@@ -483,7 +537,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         }
         c.sql.onCommit += { world.checkCommit(this) }
         // §21.12 point 2: a database open is a time trigger.
-        if (c.boots > 1) w.driver.scheduleProcess(w.clock.millis, c, "dm-db-open:${c.name}") { timePass() }
+        if (c.boots > 1) w.driver.scheduleProcess(w.clock.millis, c, "dm-db-open:${c.name}") { under(Trigger.DB_OPEN) { timePass() } }
     }
 
     fun sync() {
@@ -521,14 +575,14 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             if (w.clock.millis == hintsAt) hintsHere++ else hintsHere = 1
             hintsAt = w.clock.millis
             if (hintsHere > EntDmWorld.MAX_AT_ONE_INSTANT) violation("${c.name}: $hintsHere hint passes at one instant — a pass re-posts its own hint")
-            pass(timeTriggered = false, deadline = null)
+            under(Trigger.HINT) { pass(timeTriggered = false, deadline = null) }
         }
     }
 
     /** The K20 hook's posted body: ACTIVATE in one actor turn (the reopen is not modelled; see the class note). */
-    private fun activated(restored: Boolean) {
-        val dev = device ?: return
-        if (!ent.identity.exists) return
+    private fun activated(restored: Boolean) = under(Trigger.ACTIVATE) {
+        val dev = device ?: return@under
+        if (!ent.identity.exists) return@under
         sync()
         activations += if (restored) dev.engine.onRestored() else dev.engine.onActivated()
         armTimer()
@@ -546,7 +600,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
                 if (!s.isFinished()) awaitReady(s)
                 return@scheduleProcess
             }
-            timePass()
+            under(Trigger.SESSION_START) { timePass() }
         }
     }
 
@@ -555,7 +609,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         if (s.kind != SyncKind.BACKGROUND) return
         val policy = c.spec.policy
         val deadline = s.startedAt + policy.jobBudgetMillis - policy.consumerTailReserveMillis
-        w.driver.scheduleProcess(w.clock.millis, c, "dm-consumer-tail:${c.name}") { timePass(deadline) }
+        w.driver.scheduleProcess(w.clock.millis, c, "dm-consumer-tail:${c.name}") { under(Trigger.CONSUMER_TAIL) { timePass(deadline) } }
     }
 
     /** After a periodic job: a quiet run that ran owes the consumer tail too (§13.3 item 6). */
@@ -564,9 +618,10 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         val started = ent.quietRuns.last()[0]
         val policy = c.spec.policy
         val deadline = started + policy.jobBudgetMillis - policy.consumerTailReserveMillis
-        w.driver.scheduleProcess(w.clock.millis, c, "dm-quiet-tail:${c.name}") { timePass(deadline) }
+        w.driver.scheduleProcess(w.clock.millis, c, "dm-quiet-tail:${c.name}") { under(Trigger.QUIET_TAIL) { timePass(deadline) } }
     }
 
+    /** A time-triggered pass; the caller has set [trigger] (a pass run under none is attributed to none). */
     fun timePass(deadline: Long? = null) = pass(timeTriggered = true, deadline = deadline)
 
     private fun pass(timeTriggered: Boolean, deadline: Long?) {
@@ -604,7 +659,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             if (zeroTimers > EntDmWorld.MAX_AT_ONE_INSTANT) violation("${c.name}: the DM timer re-armed at once $zeroTimers times without time passing")
         }
         w.driver.scheduleProcess(w.clock.millis + delay * 1_000, c, "dm-timer:${c.name}") {
-            if (token == timerToken) timePass()
+            if (token == timerToken) under(Trigger.TIMER) { timePass() }
         }
     }
 
@@ -613,10 +668,10 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
      * null while there is no identity (the app shows onboarding, not the conversation list). The
      * timer is re-armed after it, as the actor's `afterCommit` would.
      */
-    fun <T> user(block: (DmDevice) -> T): T? {
-        val out = read(block) ?: return null
+    fun <T> user(block: (DmDevice) -> T): T? = under(Trigger.USER) {
+        val out = read(block) ?: return@under null
         armTimer()
-        return out
+        out
     }
 
     /** A read of the facade (contacts, a conversation) for a check: no timer is touched. */
