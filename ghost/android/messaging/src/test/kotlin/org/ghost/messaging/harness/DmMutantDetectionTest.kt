@@ -254,27 +254,36 @@ class DmMutantDetectionTest {
     }
 
     /**
-     * The kill rule of the suite cases of §22.27: S10b's — detected **fault-free** by the check the
-     * entry names, beside the clean control, and at [CRASH_POINTS] crash points each beside the
-     * unmutated scenario crashed at the same point — with the crash points where the mutant
-     * **acts**, as SCN-E's review asked of its own (§22.25 item 14): spread over the window from the
-     * event the scenario records in the note [mark] — the step the mutant can first change, read
-     * from the mutated fault-free run — to the last event both worlds reach.
+     * The kill rule of the suite cases of §22.27, as its review corrected it: S10b's — detected
+     * **fault-free** by the check the entry names, beside the clean control, and at [CRASH_POINTS]
+     * crash points each beside the unmutated scenario crashed at the same point — with every crash
+     * point **inside the transaction the mutant first changes**.
      *
-     * Why the window. S10b's points are spread over every event of the scenario, and a point before
-     * the mutant's first effect is a crash that precedes the defect: the reboot happens, the run goes
-     * on, and the defect then happens in an unfaulted stretch — a statement about the scenario's
-     * recovery, not about the defect under a crash. MC-21 acts at the recipient's first SWEEP after a
-     * 60-day absence, 3 838 events into RS2's 10 792, so S10b's spread would have put two of its six
-     * points before it; MC-24 acts at the recipient's first pass after the second identity wrote,
-     * event 451 of KC12, and its mutated run fails 88 events later, so S10b's spread over the 539
-     * events both worlds reach would have put five of six in the second device's write, before it.
+     * That transaction is measured, not guessed. The scenario writes a note, [mark], at the step
+     * where the mutant can first change anything (from the bus's own count, so the note is an event
+     * index); the rewriting executor records, for every transaction in which the mutation's rewrite
+     * changed a statement, the span from that statement's event to the transaction's last event —
+     * its post-commit event, or the statement it reached before it rolled back
+     * ([DmEventBus.rewrittenSpans]); and the window is the first such span after the mark in the
+     * mutated fault-free run. The points are spread over it, both ends included, and a window of
+     * [CRASH_POINTS] events or fewer is crashed at every one of its events.
      *
-     * The mark is written by the scenario at the start of that step, from the bus's own count, and
-     * the prefix up to it is the same in both worlds: neither rewrite changes which statements run
-     * before its first effect (MC-21's changes the text of SWEEP's reads, whose result is unchanged
-     * while no key is past its window; MC-24's the text of a read that finds no row until the
-     * request exists and the second identity writes).
+     * Why not the window from the mark to the end of the run, which the first version used. The
+     * review measured it: MC-21's only effect is the recipient's first SWEEP after the absence,
+     * which committed some 900 events before the first of its six points, so every one of them was
+     * the fault-free kill with an unrelated reboot after it; and MC-24's mark is the start of the
+     * recipient's pass, so four of its six points fell in that pass's sweep, outcome and inbox
+     * peek, before the rewritten read — the crash preceded the defect and the defect then ran
+     * unfaulted, which is the statement about recovery this rule exists to avoid (SCN-E's review,
+     * §22.25 item 14(e)). A point inside the changed transaction interrupts the defect itself: the
+     * transaction rolls back (or, at its post-commit event, has committed and the caller never
+     * hears), the node reboots, and the mutated step runs again from what the crash left.
+     *
+     * The prefix up to the window is the same in both worlds: the rewrites change no statement's
+     * result before it (MC-21's changes the text of SWEEP's reads, whose result is unchanged while no
+     * key is past its window; MC-24's the text of a read that finds no request until the second
+     * identity writes), so the clean scenario crashed at the same index is at the same place until
+     * the mutated statement, and inside its own copy of the changed transaction after it.
      */
     private fun detectFaultFreeAndWhereItActs(mutation: DmMutants.Mutation, scenario: DmScenario, mark: String) {
         requireNative()
@@ -282,39 +291,48 @@ class DmMutantDetectionTest {
         // Half 1: fault-free, against the clean control, with the entry's own message.
         val cleanEvents = DmCrashRunner(scenario).run(DmRunSpec()).events
         val mutant = mutated(scenario, mutation)
-        var mutantEvents = 0L
-        var from: Long? = null
+        var armed: DmArmedPhase? = null
         val faultFree = runCatching {
-            DmCrashRunner(mutant).run(
-                DmRunSpec(onArmedEvents = { mutantEvents = it }, onNotes = { from = it[mark] as Long? }),
-            )
+            DmCrashRunner(mutant).run(DmRunSpec(onArmed = { armed = it }))
         }.exceptionOrNull()
         assertKilled(mutation, scenario.name, faultFree, record = false)
         val faultFreeMessage = deepMessage(requireNotNull(faultFree))
-        val start = requireNotNull(from) { "${mutation.id}'s world never reached the step ${scenario.name} marks ($mark)" }
-        val end = minOf(cleanEvents, mutantEvents)
+        val phase = requireNotNull(armed) { "${mutation.id}'s world never reached the end of its armed phase" }
+        val markAt = requireNotNull(phase.notes[mark] as Long?) {
+            "${mutation.id}'s world never reached the step ${scenario.name} marks ($mark)"
+        }
+        val window = requireNotNull(phase.rewrittenSpans.firstOrNull { it.first > markAt }) {
+            "${mutation.id}'s rewrite changed no statement after ${scenario.name}'s mark at event $markAt"
+        }
         assertTrue(
-            "${mutation.id} failed at event $mutantEvents, before the window it acts in opens at $start",
-            end > start + CRASH_POINTS,
+            "${mutation.id}'s window $window reaches past the clean run's $cleanEvents events",
+            window.last <= cleanEvents,
         )
         println(
             "${mutation.id} killed fault-free by ${scenario.name} (clean passed, $cleanEvents events) at event " +
-                "$mutantEvents, the window opening at $start: $faultFreeMessage",
+                "${phase.events}; mark at $markAt, the first transaction it changes spans events " +
+                "${window.first}..${window.last}: $faultFreeMessage",
         )
 
-        // Half 2: at crash points spread over (start, end], each beside the clean scenario.
-        val points = (1..CRASH_POINTS).map { i -> start + maxOf(1L, (end - start) * i / (CRASH_POINTS + 1)) }.distinct()
-        val tasks = points.flatMap { at ->
+        // Half 2: at crash points spread over the changed transaction, each beside the clean scenario.
+        val width = window.last - window.first
+        val points = if (width + 1 <= CRASH_POINTS) {
+            window.toList()
+        } else {
+            (0 until CRASH_POINTS).map { i -> window.first + width * i / (CRASH_POINTS - 1) }.distinct()
+        }
+        val tasks: List<Pair<String, () -> Pair<Throwable?, DmArmedPhase?>>> = points.flatMap { at ->
             listOf(
                 "${scenario.name} clean crash@$at" to {
-                    runCatching { DmCrashRunner(scenario).run(DmRunSpec(crashAt = at)) }.exceptionOrNull() to 1
+                    val failure = runCatching { DmCrashRunner(scenario).run(DmRunSpec(crashAt = at)) }.exceptionOrNull()
+                    failure to null
                 },
                 "${scenario.name}/${mutation.id} crash@$at" to {
-                    var injected = -1
+                    var mutatedPhase: DmArmedPhase? = null
                     val failure = runCatching {
-                        DmCrashRunner(mutant).run(DmRunSpec(crashAt = at, onInjected = { injected = it }))
+                        DmCrashRunner(mutant).run(DmRunSpec(crashAt = at, onArmed = { mutatedPhase = it }))
                     }.exceptionOrNull()
-                    failure to injected
+                    failure to mutatedPhase
                 },
             )
         }
@@ -322,9 +340,10 @@ class DmMutantDetectionTest {
         val kills = ArrayList<String>()
         for ((index, at) in points.withIndex()) {
             val (clean, _) = outcomes[2 * index]
-            val (mutated, injected) = outcomes[2 * index + 1]
-            // The clean run passing means its crash fired: the runner refuses a run whose planned
-            // crash never did (`theRequestedFaultFired`).
+            val (mutated, mutatedPhase) = outcomes[2 * index + 1]
+            // The clean run passing means its crash fired and rebooted: the runner refuses a run
+            // whose planned crash never did (`theRequestedFaultFired`) or whose crash reached no
+            // reboot.
             assertTrue(
                 "the unmutated ${scenario.name} fails at crash@$at, so a kill there proves nothing: " +
                     clean?.let { deepMessage(it) },
@@ -334,29 +353,32 @@ class DmMutantDetectionTest {
                 "${mutation.id} survived ${scenario.name} crash@$at: the enumeration cannot see it there",
                 mutated is AssertionError,
             )
-            // And the mutated run really crashed before the check that killed it (SCN-E's rule): a
-            // run that failed before its crash point is the fault-free kill again.
-            assertEquals(
-                "${mutation.id}'s run at crash@$at failed without its crash having fired",
-                1,
-                injected,
-            )
+            // And the mutated run really **died** before the check that killed it: its crash was
+            // injected and reached a reboot. Counting injections alone accepted a crash that
+            // `DmActor.runPass` had absorbed into a pass's exception (the review's crash@526 of
+            // MC-24): injected, never rebooted, and the kill was the fault-free kill again.
+            val phaseAt = requireNotNull(mutatedPhase) { "${mutation.id}'s run at crash@$at never ended its armed phase" }
+            assertEquals("${mutation.id}'s run at crash@$at: crashes injected", 1, phaseAt.injected)
+            assertEquals("${mutation.id}'s run at crash@$at: crashes that reached a reboot", 1, phaseAt.reboots)
             val message = deepMessage(requireNotNull(mutated))
             assertTrue(
                 "${mutation.id} failed ${scenario.name} crash@$at, but not for a reason its entry " +
                     "names.\n  expected one of: ${mutation.expectUnderCrash}\n  actual: $message",
                 mutation.expectUnderCrash.any { message.contains(it) },
             )
-            println("${mutation.id} killed at ${scenario.name} crash@$at of the window ($start, $end] (clean passed): $message")
+            println(
+                "${mutation.id} killed at ${scenario.name} crash@$at, inside the transaction it first changes " +
+                    "(${window.first}..${window.last}; clean passed): $message",
+            )
             kills += "crash@$at"
         }
         DmKills.record(
             mutation.id,
-            "$faultFreeMessage | and under a crash at ${kills.joinToString(", ")}, in the window " +
-                "($start, $end] from the step it first changes to the end of the run, each beside a clean " +
-                "run at the same point",
-            "fault-free and at ${kills.size} of ${points.size} crash points between the step it first " +
-                "changes and the end of the run, each beside a clean run",
+            "$faultFreeMessage | and under a crash at ${kills.joinToString(", ")}, inside the transaction " +
+                "it first changes after ${scenario.name}'s mark (events ${window.first}..${window.last}), " +
+                "each beside a clean run at the same point",
+            "fault-free and at ${kills.size} of ${points.size} crash points inside the transaction it first " +
+                "changes, each beside a clean run",
         )
     }
 

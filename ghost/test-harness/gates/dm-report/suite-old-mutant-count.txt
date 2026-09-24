@@ -25,7 +25,7 @@ dm crash classes: RP9 1185 events, 1185 singles, 0 doubles, 2 timeouts over 2 st
 dm crash classes: CB-reject-replay 712 events, 712 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-read-expiry 1238 events, 1238 singles, 0 doubles, 2 timeouts over 2 stores
 dm crash classes: KC12 4903 events, 4903 singles, 0 doubles, 3 timeouts over 3 stores
-dm crash classes: RS2 10792 events, 10792 singles, 0 doubles, 9 timeouts over 9 stores
+dm crash classes: RS2 11053 events, 11053 singles, 0 doubles, 10 timeouts over 10 stores
 dm crash classes: RP7 2193 events, 2193 singles, 0 doubles, 2 timeouts over 2 stores
 dm suite cases: 7 run, 0 failures
 dm mutants: 13 run, 13 detected

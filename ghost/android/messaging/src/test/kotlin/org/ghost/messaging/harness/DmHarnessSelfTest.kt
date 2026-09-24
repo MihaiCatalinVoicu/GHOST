@@ -27,9 +27,15 @@ import org.junit.Test
  *     bundle, windows an hour apart, windows of thirty minutes, a message that fails before the
  *     third window, a contact reopened before any user action — and the relay-side window oracle
  *     over listings written by hand (S10c and its review);
- * 10. KC12's, RS2's and RP7's checks that no registered mutant reaches really fail on what they
- *     are about: a request accepted before the second identity's flight, a second device that is
- *     someone else, a relay that honours no TTL, and an L0 dated in the key's own week (§22.27).
+ * 10. seven of KC12's, RS2's and RP7's checks really fail on what they are about, each on a world
+ *     that breaks one thing: a request accepted before the second identity's flight (the trust
+ *     check), a second device that is someone else (the contact count), a request row written to
+ *     between the setup and the drop (the fault-free "no state change"), a relay that honours no
+ *     TTL (the measured loss), an absence of sixty days (the ratchet gap), an in-key of an open
+ *     window deleted (every week up to `week(now)`), and an L0 dated in the key's own week (the
+ *     render check) — §22.27 and its review, which also lists the checks that have no control;
+ * 11. an injected crash reaches the runner even when a pass that had already thrown carries it as
+ *     a *suppressed* exception (`DmActor.runPass`'s `finally`; §22.27's review).
  *
  * Without 5 in particular the whole enumeration could pass on an engine that writes nothing.
  */
@@ -420,6 +426,36 @@ class DmHarnessSelfTest {
         )
         assertFailsWith(acceptedFirst, "the second identity moved it")
 
+        // KC12's fault-free "no state change", which reads every row of bob's DM state and not a
+        // fixed list of fields (§22.27's review): the request's `request_until_day` moved between the
+        // setup and the drop — the review's own mutant, a second identity keeping a request alive —
+        // must fail it. The write is the harness's, raw, in the second device's step.
+        assertFailsWith(
+            DmScenario(
+                name = "KC12/request-extended",
+                setup = kc12.setup,
+                steps = kc12.steps.map { s ->
+                    if (s.label.startsWith("alice's second device writes")) {
+                        step(s.label) { w ->
+                            s.body(w)
+                            w["bob"].raw.exec(
+                                "UPDATE dm_contact SET request_until_day = request_until_day + 30 WHERE trust_state = 'request'",
+                                emptyList(),
+                            )
+                        }
+                    } else {
+                        s
+                    }
+                },
+                alwaysChecks = kc12.alwaysChecks,
+                finalChecks = kc12.finalChecks,
+                liveness = kc12.liveness,
+                noLoss = kc12.noLoss,
+                declaredLoss = kc12.declaredLoss,
+            ),
+            "changed his state",
+        )
+
         val someoneElse = DmSuiteCases.kc12ARequestSendingTwoIdentities(secondIdentityBranch = 0x72)
         assertFailsWith(
             DmScenario(
@@ -451,6 +487,41 @@ class DmHarnessSelfTest {
                 declaredLoss = rs2.declaredLoss,
             ),
             "expire unserved",
+        )
+
+        // RS2's ratchet gap: sixty days from this world's Wednesday start is a gap of eight
+        // week-indices, where S9's defect (the catch-up cap at eight) is invisible — the review set
+        // the cap back and RS2 passed. The case refuses to run there.
+        assertFailsWith(DmSuiteCases.rs2AClientOfflineSixtyDays(absenceDays = 60), "not the 9 that clear")
+
+        // RS2's "K_w for every week up to week(now)": an in-key of a week whose window is still open,
+        // deleted raw after the return, must fail it (the review's mutant kept only the newest
+        // derived week and passed the return-week check alone).
+        assertFailsWith(
+            DmScenario(
+                name = "RS2/open-week-key-deleted",
+                setup = rs2.setup,
+                steps = rs2.steps.map { s ->
+                    if (s.label == "bob answers") {
+                        step(s.label) { w ->
+                            s.body(w)
+                            w["bob"].raw.exec(
+                                "DELETE FROM dm_pair_key WHERE direction = 'in' AND week = " +
+                                    "(SELECT max(week) - 1 FROM dm_pair_key WHERE direction = 'in')",
+                                emptyList(),
+                            )
+                        }
+                    } else {
+                        s
+                    }
+                },
+                alwaysChecks = rs2.alwaysChecks,
+                finalChecks = rs2.finalChecks,
+                liveness = rs2.liveness,
+                noLoss = rs2.noLoss,
+                declaredLoss = rs2.declaredLoss,
+            ),
+            "whose window is still open",
         )
 
         // RP7's render check, which no registered mutant reaches (MC-9 is out of every mechanism's
@@ -522,6 +593,57 @@ class DmHarnessSelfTest {
 
         /** `dm_contact.establishment` of a contact whose bundle fetch is under way. */
         const val FETCHING = "fetching"
+    }
+
+    /**
+     * 11: a crash injected into a pass's `afterCommit`, after the pass itself threw, still kills the
+     * process (§22.27's review).
+     *
+     * `DmActor.runPass` attaches whatever `schedule.afterCommit()` throws to the pass's own exception
+     * as *suppressed*, and the world's swallow of that exception used to take the death with it: the
+     * review found five crash points of a mutated KC12 at which the crash was injected and nothing
+     * rebooted. Here the pass is made to throw at its first statement (the statement the executor
+     * runs is replaced by one naming no column there is), the crash is planned at the first event
+     * after it — which `afterCommit` raises — and the death must come out of the world's pass, with
+     * the pass's own exception still recorded.
+     */
+    @Test
+    fun aCrashAttachedToAPassThatThrewStillKillsTheProcess() {
+        requireNative()
+        DmCrashWorld("self-test-absorbed-crash").use { world ->
+            val node = world.node("alice", 0x41)
+            node.device.engine.onActivated()
+            world.advanceBy(DmWorld.HOUR)
+            node.device.timeTriggeredPass()
+            var failedAt: Long? = null
+            node.sql.rewrite = { sql, args ->
+                if (failedAt == null && world.bus.armed) {
+                    failedAt = world.bus.count
+                    Pair("SELECT no_such_column FROM dm_self", emptyList())
+                } else {
+                    Pair(sql, args)
+                }
+            }
+            world.bus.plan = DmFaultPlan { e ->
+                val at = failedAt
+                if (at != null && e.index > at && world.bus.injected.isEmpty()) DmFault.Crash else null
+            }
+            world.bus.armed = true
+            world.advanceBy(DmWorld.HOUR)
+            val death = runCatching { world.pass("alice") }.exceptionOrNull()
+            world.bus.armed = false
+            assertTrue("the pass never threw: the control is vacuous", failedAt != null)
+            assertEquals("the crash was never injected: the control is vacuous", 1, world.bus.injected.size)
+            assertTrue(
+                "the crash injected after the pass threw was absorbed: $death; swallowed ${world.swallowed}",
+                death is SimulatedDmCrash && death === world.bus.injected.single(),
+            )
+            assertEquals("the pass's own exception is not recorded", 1, world.swallowed.size)
+            assertTrue(
+                "the death did not come from the pass's suppressed exceptions: the control is vacuous",
+                world.swallowed.single().suppressed.any { it === death },
+            )
+        }
     }
 
     /** 7: R-K1 runs at every open, and the log is empty after it. */

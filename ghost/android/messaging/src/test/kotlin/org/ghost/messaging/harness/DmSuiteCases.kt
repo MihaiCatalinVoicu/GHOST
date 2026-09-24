@@ -31,9 +31,10 @@ import org.ghost.messaging.port.DmEnvelopes
  * Three more since the suite cases of §22.27. Two are each the only case that kills the mutant it
  * makes reachable: **KC12** (a requester sending two identities: no crash, no state change) kills
  * MC-24, and **RS2** (a client offline 60 days: pair envelopes open after the absence) kills
- * MC-21. The third, **RP7** (an old L0 re-sealed under a later week key), has no registered
- * mutant — §15.7's MC-9 is out of every mechanism's reach — and its check is shown able to fail
- * by a control in `DmHarnessSelfTest` instead.
+ * MC-21. The third, **RP7** (an old L0 re-sealed under a later week key — built narrower, as a
+ * back-dated L0 sealed by its sender, which its KDoc declares), has no registered mutant — §15.7's
+ * MC-9 is out of every mechanism's reach — and its check is shown able to fail by a control in
+ * `DmHarnessSelfTest` instead.
  *
  * The rest of RO, RS, RP, KC, CB, RE, EP, OS and RK is not here. §22.15 lists them by sub-case,
  * and §22.27 says which of them were looked at for this slice and why they stayed out.
@@ -318,19 +319,29 @@ internal object DmSuiteCases {
      *
      * **Checked in every run** (raw reads, so no check is an event of the run it checks): **no
      * crash** — no pass of any device threw, and a throw that carries the schema's own "illegal trust
-     * transition" is named as what it is, the `request → changed` attempt of mutant MC-24; **no state
-     * change** — bob holds one contact for alice's identity, never `changed`, never with a pending
-     * identity, still pinned to her first Olm identity, and no held row; and bob never rendered the
-     * second identity's message. **Fault-free:** after bob's pass took the second first flight the
-     * contact was still a `request` pinned to the first identity, the drop was counted as
-     * `request_key_mismatch` (exactly one) with nothing poisoned, the second identity's message was
-     * `SENT` — so it did reach bob — and bob accepted.
+     * transition" is named as what it is, the `request → changed` attempt of mutant MC-24; **the
+     * parts of "no state change" that hold whatever a crash interrupted** — bob holds one contact for
+     * alice's identity, never `changed`, never with a pending identity, still pinned to her first
+     * Olm identity, and no held row; and bob never rendered the second identity's message.
+     * **Fault-free:** **no state change, whole** — every row of bob's DM state that a contact's
+     * messages can touch ([KC12_STATE_TABLES]: the contact row with every column, its conversation,
+     * messages, held rows, dedup tags, pair keys and offers, PQ keys, sessions, reuse tuples,
+     * outbound items, pending sends, scheduled controls and bundle candidates) is byte for byte what
+     * it was at the end of the setup, right after the pass that took the second identity's first
+     * flight (only the inbox's own bookkeeping, the outbox, the counters and `dm_self` are outside
+     * it) — the review showed that the fixed list above lets a pass that extends the request's
+     * `request_until_day` or moves its `card_index` through; the contact was still a `request`
+     * pinned to the first identity, the drop was counted as `request_key_mismatch` (exactly one)
+     * with nothing poisoned, the second identity's message was `SENT` — so it did reach bob — and
+     * bob accepted.
      *
      * **The oracles, all three on.** No-loss, with one declared loss: the second identity's message
-     * is `SENT` and dropped **by design** (§21.4 point 5) — the declaration excuses that one text,
-     * and every fate of it other than "dropped while a request" is refused elsewhere (held: the
-     * trust check; rendered: the render check; stranded: "nothing owed"), and the fault-free run
-     * measures the drop itself. Liveness: alice ↔ bob, once bob has accepted. Nothing owed.
+     * is `SENT` and dropped **by design** (§21.4 point 5), declared only once the run has put it
+     * there — bob's decision found it written, `SENT`, owed by no relay and consumed while the
+     * contact was still a request ([DmScenario.declaredLoss]'s rule) — and every fate of it other
+     * than "dropped while a request" is refused elsewhere (held: the trust check; rendered: the
+     * render check; stranded: "nothing owed"), and the fault-free run measures the drop itself.
+     * Liveness: alice ↔ bob, once bob has accepted. Nothing owed.
      *
      * **The user actions the case depends on are done again when a crash interrupted them**
      * (§22.19 item 6's rule), each judged from rows read raw: the second device's write (its
@@ -341,8 +352,10 @@ internal object DmSuiteCases {
      * consumed, and a world in which it never is fails with that message rather than testing the
      * other case. bob's welcome and alice's answer are not redone (S10's rule).
      *
-     * **The window mutant MC-24 acts in** opens at bob's first pass after the second device wrote:
-     * the step records its event count ([KC12_MARK]) for the kill rule of §22.27.
+     * **The mark MC-24's kill starts from** is bob's first pass after the second device wrote: the
+     * step records its event count ([KC12_MARK]), and the kill rule of §22.27 crashes the mutant
+     * inside the first transaction after it that the mutation changes — the RECV of the second
+     * identity's first flight.
      */
     fun kc12ARequestSendingTwoIdentities(
         /**
@@ -354,7 +367,7 @@ internal object DmSuiteCases {
         name = "KC12",
         liveness = "alice" to "bob",
         noLoss = true,
-        declaredLoss = { setOf(KC12_SECOND_TEXT) },
+        declaredLoss = { world -> if (world.notes[KC12_DROPPED_AS_REQUEST] == true) setOf(KC12_SECOND_TEXT) else emptySet() },
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -383,6 +396,8 @@ internal object DmSuiteCases {
             world.notes[KC12_PINNED] = requireNotNull(pinnedHex(world, "bob", "bob->alice")) {
                 "bob's request pins no identity"
             }
+            // bob's whole DM state as the request left it, for the fault-free "no state change".
+            world.notes[KC12_STATE] = stateOf(world, "bob", KC12_STATE_TABLES)
         },
         steps = listOf(
             step("alice's second device writes under the same identity") { w ->
@@ -394,8 +409,8 @@ internal object DmSuiteCases {
                 w.pump()
             },
             step("bob's device takes it while the request is undecided") { w ->
-                // The first pass of bob's that can take the second identity's first flight: where
-                // the window MC-24 acts in opens (the kill rule of §22.27).
+                // The first pass of bob's that can take the second identity's first flight: the
+                // mark MC-24's kill looks for its first changed transaction after (§22.27).
                 w.notes.putIfAbsent(KC12_MARK, w.bus.count)
                 ensureSecondIdentityWritten(w)
                 w.pump()
@@ -405,6 +420,10 @@ internal object DmSuiteCases {
                     pinnedHex(w, "bob", "bob->alice") == w.notes[KC12_PINNED]
                 w.notes[KC12_MISMATCHES] =
                     w["bob"].device.engine.status().drops["request_key_mismatch"] ?: 0
+                @Suppress("UNCHECKED_CAST")
+                val before = w.notes[KC12_STATE] as Map<String, List<String>>
+                val after = stateOf(w, "bob", KC12_STATE_TABLES)
+                w.notes[KC12_STATE_CHANGED] = KC12_STATE_TABLES.filter { before[it] != after[it] }
             },
             step("bob accepts alice's request and answers") { w ->
                 ensureAccepted(w)
@@ -446,6 +465,14 @@ internal object DmSuiteCases {
             }
         },
         finalChecks = { world ->
+            val changed = world.notes[KC12_STATE_CHANGED] as? List<*>
+                ?: dmViolation("KC12 fault-free: bob's pass that took the second identity's first flight never ran")
+            if (changed.isNotEmpty()) {
+                dmViolation(
+                    "KC12 fault-free: bob's pass that took the second identity's first flight changed his " +
+                        "state — rows of $changed differ from the setup's (§21.4 point 5: no state change)",
+                )
+            }
             if (world.notes[KC12_STILL_REQUEST] != true) {
                 dmViolation(
                     "KC12 fault-free: after bob's pass took the second identity's first flight his " +
@@ -522,6 +549,10 @@ internal object DmSuiteCases {
             w.hint("bob")
         }
         noPassThrew(w)
+        // The run has now put the second identity's message where it is lost by design: written,
+        // `SENT`, owed by no relay and consumed by bob while his contact was still a request. The
+        // declaration of the loss is made here and nowhere earlier ([DmScenario.declaredLoss]).
+        w.notes[KC12_DROPPED_AS_REQUEST] = true
         w["bob"].device.engine.acceptRequest(DmScripts.contact(w, "bob", "alice"))
     }
 
@@ -565,33 +596,51 @@ internal object DmSuiteCases {
      * > RS2 a client offline 60 days (blobs past TTL lost and declared, no duplicates, sessions
      * > usable or reset by the user; pair envelopes open after the absence, §21.3 point 5)
      *
-     * alice and bob talk in pair mode with the conversation's timer off (so the 60 days sweep no
+     * alice and bob talk in pair mode with the conversation's timer off (so the absence sweeps no
      * message the oracles read, and a stored blob waits its 30 days at the relay). Then bob's phone
-     * is **off** — no pass and no relay session of his for 60 days; only the clock, which is the
+     * is **off** — no pass and no relay session of his for **61** days; only the clock, which is the
      * world's, moves — while alice's is on: a pass and a relay session of hers every five days, so
      * her pair keys ratchet week by week as a phone in use does. alice writes into the absence at
-     * once; the relay stores it for its 30-day TTL and it is gone long before bob is back. bob comes
-     * back: his first pass is SWEEP, which must **ratchet** his in-keys from the newest one he holds —
-     * nine weeks old and past its own window — to the week he is in, **then** erase. alice writes
-     * again, sealed under that week's key; bob answers. `TrustFlowTest.aRecipientBackAfterSixtyDays
+     * once; the relay stores it for its 30-day TTL and it is gone long before bob is back. She writes
+     * again on day 40, which the relay still holds when bob returns and which is sealed under a week
+     * key whose window is still open then. bob comes back: his first pass is SWEEP, which must
+     * **ratchet** his in-keys from the newest one he holds — **nine week-indices** behind the week he
+     * returns in, and past its own window — to that week, keeping every key whose window is still
+     * open, **then** erase. The day-40 message opens under its week's key; alice writes again, sealed
+     * under the return week's key; bob answers. `TrustFlowTest.aRecipientBackAfterSixtyDays
      * StillOpensPairEnvelopes` is the ratchet half outside the enumeration; this is RS2 whole, under
      * every crash point, with the runner's three oracles.
      *
-     * **Checked in every run** (raw reads): the absence began and ended, and lasted the 60 days;
-     * and bob holds an in-key of the generation the conversation was sealed under before the
-     * absence **for the week he came back in** — derived by his first SWEEP after the return and
-     * kept for 45 days, so a crash anywhere cannot take it away, and without the ratchet-before-
-     * erasure order nothing can put it there (mutant MC-21). **Fault-free:** the message written into
-     * the absence is `SENT`, never rendered, and the relay let it expire unserved (measured, not
-     * assumed: exactly one blob); the message after the absence is rendered by bob and the answer by
-     * alice; bob dropped nothing as `unknown_seal`; neither device listed a bundle namespace from the
-     * moment the absence began, and both kept the `current` session they had — so what opened was a
-     * **pair envelope of the old conversation**, not a re-establishment ("sessions usable").
+     * **Why 61 days and not 60** (§22.27's review). The world starts on a Wednesday, and 60 days from
+     * there is a gap of **eight** week-indices, where the engine with S9's defect — the catch-up cap
+     * at eight weeks, §22.14 item 15(d), the regression this case exists to catch — is byte for byte
+     * the clean one: the review set the cap back to eight and RS2 passed, fault-free and at every
+     * crash point. Sixty-one days is nine, the far side of that cliff, as `TrustFlowTest` chose; and
+     * the gap is a check (below), not a comment, so a later change to the world's start cannot move
+     * the case back under the cliff without failing it. §15.5's "offline 60 days" is met: the
+     * absence is at least 60 days.
+     *
+     * **Checked in every run** (raw reads): the absence began and ended, lasted the 61 days, and put
+     * the return at least nine week-indices past bob's newest in-key; bob holds an in-key of the
+     * generation the conversation was sealed under before the absence **for the week he came back
+     * in** — derived by his first SWEEP after the return and kept for 45 days, so a crash anywhere
+     * cannot take it away, and without the ratchet-before-erasure order nothing can put it there
+     * (mutant MC-21); and **for every week in between whose window is still open** at the check's
+     * own `now_e` (§21.3 point 5: "`K_w` for every week up to `week(now)`") — a key no sweep could
+     * have erased yet, so its absence is a ratchet that stored too little (the review's mutant kept
+     * only the newest derived week and passed the return-week check alone). **Fault-free:** the
+     * message written into the absence is `SENT`, never rendered, and the relay let it expire
+     * unserved (measured, not assumed: exactly one blob); the day-40 message, the message after the
+     * absence and the answer are rendered ("blobs past TTL lost", and the ones within it delivered);
+     * bob dropped nothing as `unknown_seal`; neither device listed a bundle namespace from the moment
+     * the absence began, and both kept the `current` session they had — so what opened was a **pair
+     * envelope of the old conversation**, not a re-establishment ("sessions usable").
      *
      * **The oracles, all three on.** No-loss, with one declared loss: the message written into the
      * absence — "blobs past TTL lost and declared", RS2's own words — declared before the send is
-     * called (§22.19 item 9's rule) and measured fault-free as above. CS-2 ("no duplicates") is the
-     * runner's. Liveness: alice ↔ bob after the return ("sessions usable"). Nothing owed.
+     * called (§22.19 item 9's rule) and measured fault-free as above; the day-40 message is not
+     * declared, so a run in which it is `SENT` and never rendered fails. CS-2 ("no duplicates") is
+     * the runner's. Liveness: alice ↔ bob after the return ("sessions usable"). Nothing owed.
      *
      * **Time is idempotent here, not a step's side effect**: every step moves the clock **to** its
      * point of the absence rather than **by** an amount, so a crash that cost one step its clock
@@ -600,10 +649,14 @@ internal object DmSuiteCases {
      * the 60 days whatever was lost. alice's two messages and bob's answer are not redone (S10's
      * rule; the checks are written for either outcome).
      *
-     * **The window mutant MC-21 acts in** opens at bob's return, before his first pass: the step
-     * records its event count ([RS2_MARK]) for the kill rule of §22.27.
+     * **The mark MC-21's kill starts from** is bob's return, before his first pass: the step records
+     * its event count ([RS2_MARK]), and the kill rule of §22.27 crashes the mutant inside the first
+     * transaction after it that the mutation changes — bob's first SWEEP after the absence.
      */
-    fun rs2AClientOfflineSixtyDays(): DmScenario = DmScenario(
+    fun rs2AClientOfflineSixtyDays(
+        /** The absence in days: [RS2_ABSENCE_DAYS] in the case, sixty only in `DmHarnessSelfTest`'s control of the gap check. */
+        absenceDays: Long = RS2_ABSENCE_DAYS,
+    ): DmScenario = DmScenario(
         name = "RS2",
         liveness = "alice" to "bob",
         noLoss = true,
@@ -614,12 +667,17 @@ internal object DmSuiteCases {
             DmScripts.activate(world)
             DmScripts.establishBothWays(world, "alice", "bob")
             // The timer off: under the default seven days every message of the scenario is swept
-            // long before the 60 days are over, and a TTL of 30 days is what makes the message
+            // long before the absence is over, and a TTL of 30 days is what makes the message
             // written into the absence outlive nothing (SCN-I and SCN-E do the same).
             world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.OFF)
+            world.notes[RS2_ABSENCE] = absenceDays * DmWorld.DAY
             settle(world)
-            world.notes[RS2_GENERATION] = requireNotNull(acknowledgedInGeneration(world)) {
+            val generation = requireNotNull(acknowledgedInGeneration(world)) {
                 "bob holds no in-key of an acknowledged generation after the establishment"
+            }
+            world.notes[RS2_GENERATION] = generation
+            world.notes[RS2_NEWEST_WEEK] = requireNotNull(newestInKeyWeek(world, generation)) {
+                "bob holds no in-key of generation $generation"
             }
             world.notes[RS2_SESSIONS] = listOf(
                 currentSessionHex(world, "alice", "alice->bob"),
@@ -638,14 +696,23 @@ internal object DmSuiteCases {
                 },
             )
             for (k in 1 until RS2_ABSENCE_STEPS) {
+                val day = k * RS2_STEP_DAYS
                 add(
-                    step("alice alone, day ${k * RS2_STEP_DAYS}") { w ->
-                        advanceTo(w, (w.notes[RS2_AWAY] as Long) + k * RS2_STEP_DAYS * DmWorld.DAY)
+                    step("alice alone, day $day") { w ->
+                        advanceTo(w, (w.notes[RS2_AWAY] as Long) + day * DmWorld.DAY)
+                        if (day == RS2_MID_DAY) {
+                            // A message the absence must not lose: stored for 30 days from here, so
+                            // still held when bob returns on day 61, and sealed under this week's
+                            // key, whose window is still open then. Her pass first, so the key of
+                            // this week exists (SEND seals under the author week's key, rule 2).
+                            w.pass("alice")
+                            w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), RS2_MID, null)
+                        }
                         aliceAlone(w)
                     },
                 )
             }
-            add(step("bob's phone comes back after sixty days") { w -> ensureBack(w) })
+            add(step("bob's phone comes back after sixty-one days") { w -> ensureBack(w) })
             add(
                 step("alice writes after the absence") { w ->
                     ensureBack(w)
@@ -668,17 +735,40 @@ internal object DmSuiteCases {
             val away = world.notes[RS2_AWAY] as? Long ?: dmViolation("RS2: bob's absence never began")
             val back = world.notes[RS2_BACK] as? Long
                 ?: dmViolation("RS2: bob never came back, so nothing after the absence was tested")
-            if (back - away < RS2_ABSENCE_SECONDS) {
-                dmViolation("RS2: bob was away ${(back - away) / DmWorld.DAY} days, not ${RS2_ABSENCE_SECONDS / DmWorld.DAY}")
+            val absence = world.notes[RS2_ABSENCE] as Long
+            if (back - away < absence) {
+                dmViolation("RS2: bob was away ${(back - away) / DmWorld.DAY} days, not ${absence / DmWorld.DAY}")
             }
             val generation = world.notes[RS2_GENERATION] as Int
+            val newest = world.notes[RS2_NEWEST_WEEK] as Long
             val week = DmTime.week(back)
+            if (week - newest < RS2_MIN_GAP_WEEKS) {
+                dmViolation(
+                    "RS2: bob came back in week $week, ${week - newest} week-indices after his newest in-key " +
+                        "(week $newest) — not the $RS2_MIN_GAP_WEEKS that clear S9's catch-up cap of eight " +
+                        "(§22.14 item 15(d)), so the absence tests nothing that cap broke",
+                )
+            }
             if (!holdsInKey(world, generation, week)) {
                 dmViolation(
                     "RS2: after ${(back - away) / DmWorld.DAY} days away bob holds no in-key of generation " +
                         "$generation for week $week, the week he came back in — the ratchet did not run " +
                         "before the erasure (§21.3 point 5, CR-13)",
                 )
+            }
+            // Every week in between whose window is still open at bob's own `now_e` now: no sweep
+            // can have erased it (a sweep erases K_w only at `now_e >= start(w + 1) + FRESH`, and
+            // `now_e` never goes back), and the return's sweep had to derive it.
+            val nowE = expiryClockOf(world, "bob")
+            for (w in (newest + 1) until week) {
+                if (nowE >= DmTime.weekStart(w + 1) + DmTimers.FRESH_SECONDS) continue
+                if (!holdsInKey(world, generation, w)) {
+                    dmViolation(
+                        "RS2: bob holds no in-key of generation $generation for week $w, whose window is " +
+                            "still open — SWEEP did not keep K_w for every week up to week(now) " +
+                            "(§21.3 point 5)",
+                    )
+                }
             }
         },
         finalChecks = { world ->
@@ -692,6 +782,9 @@ internal object DmSuiteCases {
             val expired = world.relay.expiredUnserved(world["bob"], now)
             if (expired != 1) {
                 dmViolation("RS2 fault-free: the relay let $expired of alice's blobs expire unserved to bob, expected the one written into the absence")
+            }
+            if (RS2_MID !in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("RS2 fault-free: bob never rendered alice's day-$RS2_MID_DAY message, which the relay still held when he returned")
             }
             if (RS2_AFTER !in DmScripts.inboundTexts(world, "bob")) {
                 dmViolation("RS2 fault-free: bob never rendered alice's message after the absence (§21.3 point 5)")
@@ -719,9 +812,9 @@ internal object DmSuiteCases {
     /** bob's return, done again by every later step until it happened: judged from the note written the moment the clock reached it. */
     private fun ensureBack(w: DmCrashWorld) {
         if (w.notes[RS2_BACK] != null) return
-        advanceTo(w, (w.notes[RS2_AWAY] as Long) + RS2_ABSENCE_SECONDS)
+        advanceTo(w, (w.notes[RS2_AWAY] as Long) + (w.notes[RS2_ABSENCE] as Long))
         w.notes[RS2_BACK] = now(w)
-        // The window MC-21 acts in opens here: bob's first pass after the return is its SWEEP.
+        // MC-21's mark: bob's first pass after the return is its SWEEP, the transaction it changes.
         w.notes.putIfAbsent(RS2_MARK, w.bus.count)
         // A phone that starts again runs a time-triggered pass (a database open, §21.9 rule 1)
         // before it opens a relay session.
@@ -752,6 +845,26 @@ internal object DmSuiteCases {
         return generation
     }
 
+    /** The newest week of bob's in-keys of [generation]; raw. */
+    private fun newestInKeyWeek(w: DmCrashWorld, generation: Int): Long? {
+        var week: Long? = null
+        w["bob"].raw.query(
+            "SELECT max(week) FROM dm_pair_key WHERE contact_id = ? AND direction = 'in' AND root_gen = ?",
+            listOf(contactBytes(w, "bob->alice"), generation.toLong()),
+        ) { if (!it.isNull(0)) week = it.long(0) }
+        return week
+    }
+
+    /**
+     * [node]'s `now_e` as its sweep computes it (R-T7): `max(floor_minute(wall), expiry_clock_minute)`,
+     * in seconds; raw.
+     */
+    private fun expiryClockOf(w: DmCrashWorld, node: String): Long {
+        var stored = 0L
+        w[node].raw.query("SELECT expiry_clock_minute FROM dm_self") { stored = it.long(0) }
+        return maxOf(DmTime.floorMinute(w[node].clock.now), stored)
+    }
+
     private fun holdsInKey(w: DmCrashWorld, generation: Int, week: Long): Boolean =
         rawCount(
             w, "bob",
@@ -766,20 +879,32 @@ internal object DmSuiteCases {
      * **RP7 — an old L0 re-sealed under a later week key** (§15.5 RP, §7.6 binding B1; the suite
      * cases of §22.27).
      *
-     * > Binding B1 (§7.6): in pair mode the author's own week must be the key's week, so an old L0
-     * > cannot be re-sealed under a later week key.
+     * §7.6's table, row B1: "pair mode: `week(author_minute)` = the key's week (R9)", which defeats
+     * "an old L0 re-sealed under a later week key".
      *
-     * Only a holder of the pair key and the Olm session can seal anything under a pair key, so the
-     * party RP7 is about is a **sender** — a modified client, or anyone holding a sender's state —
-     * that puts an L0 dated in an earlier ISO week inside an envelope sealed under this week's key.
-     * alice's device is given exactly that: a `DmEnvelopes` decorator (installed in the unfaulted
-     * setup, re-installed at every boot, like `DmPoisonTest`'s) that encodes one message's L0 with an
-     * author minute in the ISO week **before** the one alice's row and the key are of, and changes
-     * nothing else — the message id is fresh, so D3 has nothing to match, and the minute is days old,
-     * inside the bucket's freshness, so R9's age bound passes: **B1 is the only thing between bob and
-     * the message**. bob must drop it (`stale`) with nothing rendered and nothing sent, and the
-     * conversation must go on — the Olm step was taken, and R8 commits the session state whatever R9
-     * and B1 decide (§7.4), so the next message is one chain index on and opens.
+     * **What is built is narrower than §15.5's sentence, and says so** (§22.27's review). Sealing
+     * under a pair key needs only the key and an L1's bytes (`sealPair` takes `openEnv` and `l1`,
+     * nothing of the Olm session), so the literal RP7 party is anyone holding `K_w` and `K_{w+1}` —
+     * a seized recipient, or the sender itself — who opens an undelivered week-`w` envelope and
+     * re-seals its L1 under `K_{w+1}`. What is built is the **sender-side construction**: alice's
+     * device is given a `DmEnvelopes` decorator (installed in the unfaulted setup, re-installed at
+     * every boot, like `DmPoisonTest`'s) that encodes one **fresh** message's L0 with an author
+     * minute in the ISO week **before** the one alice's row and the key are of, and changes nothing
+     * else: SEND picks the pair key by the row's author minute (rule 2), so the envelope is sealed
+     * under this week's key around a back-dated L0 with a new message id. At bob, up to and
+     * including the moment B1 decides, the two are the same input — a pair envelope under `K_{w+1}`
+     * whose L1 is the next chain index of the session and whose L0 is dated in week `w` — and the
+     * message id is new to him in both (the literal case's original never arrived), so D3 has
+     * nothing to match; the minute is days old, inside the bucket's freshness, so R9's age bound
+     * passes: **B1 is the only thing between bob and the message**. What the literal case has and
+     * this one does not is what follows the refusal: R8 has consumed the old message key, so the
+     * genuine week-`w` envelope, when it is released, no longer decrypts, and the sender's own next
+     * message was replaced. That half is **not built** (a `sealPair` decorator re-sealing the L1 of
+     * a message the relay held back across the week boundary is constructible with the model
+     * relay's `releaseNotBefore`; §22.27 item 8 names it). bob must drop the back-dated message
+     * (`stale`) with nothing rendered and nothing sent, and the conversation must go on — the Olm
+     * step was taken, and R8 commits the session state whatever R9 and B1 decide (§7.4), so the next
+     * message is one chain index on and opens.
      *
      * **Checked in every run:** bob never renders the old-dated message. **Fault-free:** it was
      * `SENT` (so it did reach bob), its L0 was dated in the week before its key's and inside R9's
@@ -787,7 +912,9 @@ internal object DmSuiteCases {
      * drop, and the next message was rendered.
      *
      * **The oracles, all three on.** No-loss, with one declared loss: the old-dated message, dropped
-     * by design (B1); the fault-free run measures the drop. Liveness: alice ↔ bob. Nothing owed.
+     * by design (B1), declared only once the decorator has actually back-dated its L0 in the run
+     * ([DmScenario.declaredLoss]'s rule); the fault-free run measures the drop. Liveness: alice ↔
+     * bob. Nothing owed.
      *
      * **No mutant is registered with it, and §22.27 says why:** §15.7's RP7 killer is MC-9 ("no
      * freshness check"), and B1 and R9 are Kotlin comparisons in `ReceiveStep.decryptAndApply` over
@@ -804,7 +931,7 @@ internal object DmSuiteCases {
         name = "RP7",
         liveness = "alice" to "bob",
         noLoss = true,
-        declaredLoss = { setOf(RP7_OLD) },
+        declaredLoss = { world -> if (world.notes[RP7_DATED] != null) setOf(RP7_OLD) else emptySet() },
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -975,6 +1102,23 @@ internal object DmSuiteCases {
         return out
     }
 
+    /**
+     * Every row of each of [tables] on [node], every column `quote()`d, sorted; raw, so no event.
+     * The columns are read from the schema itself, so a column a later migration adds is compared
+     * too.
+     */
+    fun stateOf(w: DmCrashWorld, node: String, tables: List<String>): Map<String, List<String>> =
+        tables.associateWith { table ->
+            val columns = ArrayList<String>()
+            w[node].raw.query("PRAGMA table_info($table)") { columns += it.string(1) }
+            check(columns.isNotEmpty()) { "no table $table" }
+            val rows = ArrayList<String>()
+            w[node].raw.query(
+                "SELECT " + columns.joinToString(" || ',' || ") { "quote(\"$it\")" } + " FROM $table",
+            ) { rows += it.string(0) }
+            rows.sorted()
+        }
+
     private fun currentSessionHex(w: DmCrashWorld, node: String, key: String): String? {
         var out: String? = null
         w[node].raw.query(
@@ -992,29 +1136,60 @@ internal object DmSuiteCases {
     private const val KC12_PINNED: String = "kc12Pinned"
     private const val KC12_STILL_REQUEST: String = "kc12StillRequest"
     private const val KC12_MISMATCHES: String = "kc12Mismatches"
+    private const val KC12_STATE: String = "kc12State"
+    private const val KC12_STATE_CHANGED: String = "kc12StateChanged"
+    private const val KC12_DROPPED_AS_REQUEST: String = "kc12DroppedAsRequest"
 
-    /** The note KC12 writes the event count into where MC-24's window opens (§22.27). */
+    /**
+     * The tables of bob's DM state KC12's fault-free "no state change" compares, every row with every
+     * column: everything a contact's messages can write, and nothing that moves on its own in a pass
+     * that drops a blob — the inbox's bookkeeping (`inbox_blob`, `inbox_source`), the outbox
+     * (`outbox_*`, `dm_outbound_op`), the drop counters and `dm_self` (its expiry clock rises at
+     * every sweep) are outside it.
+     */
+    val KC12_STATE_TABLES: List<String> = listOf(
+        "dm_contact", "dm_conversation", "dm_message", "dm_held", "dm_seen", "dm_pair_key",
+        "dm_pair_offer", "dm_peer_pq", "olm_session", "olm_prekey_used", "dm_outbound_item",
+        "dm_pending_send", "dm_scheduled", "dm_bundle_candidate",
+    )
+
+    /** The note KC12 writes the event count into at the step MC-24 can first change (§22.27). */
     const val KC12_MARK: String = "kc12Mark"
 
     /** How many rounds bob's decision waits for the second identity's first flight. */
     private const val KC12_DRAIN_ROUNDS: Int = 8
 
     private const val RS2_LOST: String = "rs2-away"
+    private const val RS2_MID: String = "rs2-day40"
     private const val RS2_AFTER: String = "rs2-after"
     private const val RS2_ANSWER: String = "rs2-answer"
     private const val RS2_AWAY: String = "rs2Away"
     private const val RS2_AWAY_SENT: String = "rs2AwaySent"
     private const val RS2_BACK: String = "rs2Back"
     private const val RS2_GENERATION: String = "rs2Generation"
+    private const val RS2_NEWEST_WEEK: String = "rs2NewestWeek"
     private const val RS2_SESSIONS: String = "rs2Sessions"
 
-    /** The note RS2 writes the event count into where MC-21's window opens (§22.27). */
+    /** The note RS2 writes the event count into at the step MC-21 can first change (§22.27). */
     const val RS2_MARK: String = "rs2Mark"
 
-    /** RS2's 60 days, and the five-day relay sessions of alice's that fill them. */
-    private const val RS2_ABSENCE_SECONDS: Long = 60 * DmWorld.DAY
+    /**
+     * RS2's absence — 61 days, the far side of S9's cliff from this world's Wednesday start (see
+     * the case's KDoc) — and the five-day relay sessions of alice's that fill it.
+     */
+    const val RS2_ABSENCE_DAYS: Long = 61
+    private const val RS2_ABSENCE: String = "rs2Absence"
     private const val RS2_STEP_DAYS: Long = 5
     private const val RS2_ABSENCE_STEPS: Int = 12
+
+    /** The day of the absence alice writes the message it must not lose (inside the 30-day TTL at the return). */
+    private const val RS2_MID_DAY: Long = 40
+
+    /**
+     * The gap, in week-indices, from bob's newest in-key to the week he returns in that RS2 must
+     * reach: nine, one past the catch-up cap of eight S9's defect had (§22.14 item 15(d)).
+     */
+    private const val RS2_MIN_GAP_WEEKS: Long = 9
 
     /** Rounds after a send: five of three minutes, past §7.7 point 2's twelve-minute gap hold. */
     private const val RS2_GAP_ROUNDS: Int = 5

@@ -66,8 +66,34 @@ internal class FaultyDmSqlExecutor(
     /** True while the held-back statements are being replayed, so the predicate does not re-hold them. */
     private var replaying = false
 
-    private fun rewritten(sql: String, args: List<Any?>): Pair<String, List<Any?>> =
-        rewrite?.invoke(sql, args) ?: Pair(sql, args)
+    /**
+     * The event index of the first statement of the open transaction whose text or arguments
+     * [rewrite] changed, or null when none has (see [DmEventBus.rewrittenSpans]).
+     */
+    private var rewrittenFrom: Long? = null
+
+    /**
+     * The statement [rewrite] makes of this one. Called right after the statement's own event was
+     * raised, so the bus's count is that event's index.
+     */
+    private fun rewritten(sql: String, args: List<Any?>): Pair<String, List<Any?>> {
+        val out = rewrite?.invoke(sql, args) ?: return Pair(sql, args)
+        if (bus.armed && (out.first != sql || out.second != args)) {
+            if (delegate.inTransaction) {
+                if (rewrittenFrom == null) rewrittenFrom = bus.count
+            } else {
+                bus.rewrittenSpans += bus.count..bus.count
+            }
+        }
+        return out
+    }
+
+    /** Closes the open transaction's span, at the last event it raised. */
+    private fun closeRewrittenSpan() {
+        val from = rewrittenFrom ?: return
+        rewrittenFrom = null
+        if (bus.armed) bus.rewrittenSpans += from..bus.count
+    }
 
     /** True when this statement is to be held back for the second transaction. */
     private fun held(sql: String): Boolean =
@@ -108,25 +134,40 @@ internal class FaultyDmSqlExecutor(
     }
 
     override fun <T> transaction(block: () -> T): T {
-        val result = delegate.transaction {
-            val r = block()
-            // Inside the block, so a crash here unwinds through `JdbcSqlExecutor.transaction`'s
-            // own `catch` and the connection is rolled back — the committed state a process death
-            // mid-transaction leaves.
-            fire(DmEventKind.PRE_COMMIT, "commit")
-            r
+        rewrittenFrom = null
+        val result = try {
+            delegate.transaction {
+                val r = block()
+                // Inside the block, so a crash here unwinds through `JdbcSqlExecutor.transaction`'s
+                // own `catch` and the connection is rolled back — the committed state a process
+                // death mid-transaction leaves.
+                fire(DmEventKind.PRE_COMMIT, "commit")
+                r
+            }
+        } catch (e: Throwable) {
+            // Rolled back: a span the rewrite opened ends at the last statement it reached.
+            closeRewrittenSpan()
+            throw e
         }
         // After the commit: the caller never learns it succeeded, which is the other half of the
         // window §7.8 is about.
         if (deferred.isEmpty()) {
-            fire(DmEventKind.POST_COMMIT, "commit")
+            try {
+                fire(DmEventKind.POST_COMMIT, "commit")
+            } finally {
+                closeRewrittenSpan()
+            }
             return result
         }
         // A split transaction (see [defer]). The window opens **before** the post-commit event,
         // because a crash there is already past the first commit and already loses the second half.
         bus.inSplitWindow = true
         try {
-            fire(DmEventKind.POST_COMMIT, "commit")
+            try {
+                fire(DmEventKind.POST_COMMIT, "commit")
+            } finally {
+                closeRewrittenSpan()
+            }
             replayDeferred()
         } finally {
             bus.inSplitWindow = false

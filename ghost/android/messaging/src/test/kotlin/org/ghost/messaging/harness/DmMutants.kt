@@ -23,9 +23,9 @@ import org.ghost.messaging.port.DmEnvelopes
  * the count instead of leaving it standing. **S10b's four, SCN-E's two and §22.27's two are held
  * to a stricter kill than S10's seven**: detected fault-free by the check their entry names, *and*
  * at crash points — spread over the scenario for S10b's, over the window from the loss to the
- * fault-free failure for SCN-E's (§22.25 item 14), over the window from the step the mutant first
- * changes to the end of the run for §22.27's — each beside the unmutated scenario crashed at the
- * same point ([Mutation.expectUnderCrash]).
+ * fault-free failure for SCN-E's (§22.25 item 14), inside the transaction the mutant first changes
+ * for §22.27's (as its review corrected the rule) — each beside the unmutated scenario crashed at
+ * the same point ([Mutation.expectUnderCrash]).
  *
  * **What a mutant may be, here.** `:messaging` has no `Steps` seam the way `:sync` does, so a
  * mutation is one of three things: a **statement rewrite** on the device's executor (the same
@@ -383,15 +383,23 @@ internal object DmMutants {
      *
      * §15.7 detects it with RS2, and so does this: RS2's check that the recipient holds, for the week
      * it came back in, an in-key of the generation the conversation was sealed under before the
-     * absence — in every run — and behind it the no-loss oracle (the peer's pair-sealed message
-     * `SENT` and never opened) and the liveness probe.
+     * absence — in every run, fault-free and under every crash point of the kill. That check is the
+     * **only** one any run of the kill reached, and so the only message its crash half accepts: the
+     * no-loss oracle and the liveness probe would refuse the same world (the peer's pair-sealed
+     * messages `SENT` and never opened), but the runner reads a scenario's own checks before either
+     * oracle, and a claim that they stand "behind" the kill was never exercised (§22.27's review).
+     *
+     * What it changes, measured: only the recipient's first SWEEP after the absence (every earlier
+     * sweep reads the same rows through the rewritten text, since no key is past its window yet, and
+     * every later one finds nothing left to differ on). That transaction is where the kill crashes
+     * it (`DmMutantDetectionTest.detectFaultFreeAndWhereItActs`).
      */
     val MC21 = Mutation(
         id = "MC-21",
         defeats = "§21.3 point 5: SWEEP ratchets every live in-generation to week(now) before it erases the keys past their window",
-        detectedBy = "RS2 (after a 60-day absence the recipient holds no in-key of the conversation's generation for the week it came back)",
+        detectedBy = "RS2 (after a 61-day absence the recipient holds no in-key of the conversation's generation for the week it came back)",
         expect = "the ratchet did not run before the erasure",
-        expectUnderCrash = listOf("the ratchet did not run before the erasure", NO_LOSS_FAILURE, LIVENESS_FAILURE),
+        expectUnderCrash = listOf("the ratchet did not run before the erasure"),
         rewriteOn = { clock ->
             { sql, args ->
                 if (sql == PAIR_KEYS_SELECT && args.getOrNull(1) == "in" &&

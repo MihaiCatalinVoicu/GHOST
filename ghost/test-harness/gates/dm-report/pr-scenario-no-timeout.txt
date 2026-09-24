@@ -25,7 +25,7 @@ dm crash classes: RP9 1185 events, 92 singles, 0 doubles, 1 timeouts over 2 stor
 dm crash classes: CB-reject-replay 712 events, 55 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-read-expiry 1238 events, 96 singles, 0 doubles, 1 timeouts over 2 stores
 dm crash classes: KC12 4903 events, 378 singles, 0 doubles, 1 timeouts over 3 stores
-dm crash classes: RS2 10792 events, 831 singles, 0 doubles, 1 timeouts over 9 stores
+dm crash classes: RS2 11053 events, 851 singles, 0 doubles, 1 timeouts over 10 stores
 dm crash classes: RP7 2193 events, 169 singles, 0 doubles, 1 timeouts over 2 stores
 dm suite cases: 7 run, 0 failures
 dm mutants: 15 run, 15 detected
@@ -38,8 +38,8 @@ dm mutant MC-14: detected by SCN-E/LOSE_KEYS (6 h after the loss the relay still
 dm mutant MC-15: detected by SCN-E/LOSE_KEYS (a refused deposit credential re-put in a process no time trigger, user send or boot of the sender started); kill rule: fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run
 dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE); kill rule: fault-free, beside a clean control
 dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
-dm mutant MC-21: detected by RS2 (after a 60-day absence the recipient holds no in-key of the conversation's generation for the week it came back); kill rule: fault-free and at 6 of 6 crash points between the step it first changes and the end of the run, each beside a clean run
-dm mutant MC-24: detected by KC12 (the recipient's RECV throws on every offer of the second identity's first flight); kill rule: fault-free and at 6 of 6 crash points between the step it first changes and the end of the run, each beside a clean run
+dm mutant MC-21: detected by RS2 (after a 61-day absence the recipient holds no in-key of the conversation's generation for the week it came back); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
+dm mutant MC-24: detected by KC12 (the recipient's RECV throws on every offer of the second identity's first flight); kill rule: fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run
 dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run

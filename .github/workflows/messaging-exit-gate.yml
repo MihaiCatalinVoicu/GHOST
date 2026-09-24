@@ -29,11 +29,12 @@ name: messaging-exit-gate
 # not been run (§22.25 items 13 and 14(k)), so the figures below are the gate before SCN-E.
 #
 # The suite cases of §22.27 add three `dm crash classes:` lines, enumerated at every event like the
-# others — KC12 4 903 events, RS2 10 792 and RP7 2 193 — and two mutants, MC-21 and MC-24.
+# others — KC12 4 903 events, RS2 11 053 and RP7 2 193 — and two mutants, MC-21 and MC-24.
 # Measured at this scale on the workstation below, `DmSuiteTest` alone (the seven suite cases,
-# `-Dghost.dm.crash=full`, beside the PR-scale run of the whole suite): 75 min 16 s, the enumeration
-# test 69 min 17 s of it — 22 489 single-crash runs and 21 timeout-after-apply runs, all green. The
-# whole gate with them has not been run either (§22.27 item 10).
+# `-Dghost.dm.crash=full`, beside the PR-scale run of the whole suite), on the code after the
+# slice's review: 51 min 13 s, the enumeration test 47 min 35 s of it — 22 750 single-crash runs and
+# 22 timeout-after-apply runs, all green (§22.27 item 11(k); the first version, with RS2 at 10 792
+# events, took 75 min 16 s under a heavier load). The whole gate with them has not been run either.
 #
 # Scale. `-Dghost.dm.crash=full` is what makes the enumeration every-event; without it the harness
 # samples (the PR scale the `android` job of ci.yml already runs as part of `./gradlew build`).
