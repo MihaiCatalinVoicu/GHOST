@@ -206,6 +206,21 @@ internal class DmEventBus {
     val vulnerable = ArrayList<Long>()
 
     /**
+     * Where a mutation's statement rewrite **acted**, one span per transaction (§22.27's review):
+     * from the event of the first statement of that transaction whose text or arguments the rewrite
+     * changed, to the last event the transaction raised — its post-commit event when it committed,
+     * the last statement it reached when it rolled back. A rewritten statement outside a
+     * transaction is a span of one event. Nothing in an unmutated world ever adds one.
+     *
+     * A mutant kill that puts its crash points "where the mutant acts" reads the first span after
+     * the scenario's mark from the mutated fault-free run: the window is the transaction the mutant
+     * first changes, and a crash there interrupts the defect itself rather than preceding it or
+     * following its commit — which is what the review measured of the marks alone (the six points
+     * of MC-21 all fell after its only effect had committed, and four of MC-24's before it began).
+     */
+    val rewrittenSpans = ArrayList<LongRange>()
+
+    /**
      * The node a crash has just killed, from the moment the [Error] is thrown until the runner has
      * rebooted it — and every **write** it performed in between.
      *

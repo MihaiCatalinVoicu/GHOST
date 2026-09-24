@@ -324,6 +324,26 @@ dmr_case fail scn-e-gate-store-density.txt gate "rejects a gate SCN-E line whose
 dmr_case fail scn-e-no-store-crash.txt gate "rejects an SCN-E line with no crash after apply at its stores"
 dmr_case fail scn-e-old-kill-window.txt gate "rejects MC-15 killed at crash points outside the window where it acts"
 dmr_case fail scn-e-no-coverage-note.txt gate "rejects a header that does not say the SCN-E lines are sampled"
+# Phase 9 suite cases (design §22.27): the report now carries KC12, RS2 and RP7 as crash-class lines,
+# the suite line pinned at seven cases, and fifteen mutants, MC-21 and MC-24 held to the rule of the
+# transaction each first changes (six crash points spread over MC-21's, both events of MC-24's; the
+# review's correction, §22.27 item 11). `pass-pr.txt` is a real report of the reviewed code;
+# `pass-gate.txt` is assembled (§22.27 item 11(k)). Every negative above except `s10-only-gate.txt`
+# was regenerated from the reviewed positives by replacing, in each, exactly the lines the positives
+# changed (RS2's line and the MC-21 and MC-24 lines), each one's own change kept and checked to be
+# its only difference from its positive. Eight more, each a way a report could claim more than was
+# run: no KC12, no RS2 (at the PR scale), no RP7, the thirteen-mutant report of the slices before it,
+# MC-21 held only to the fault-free rule, MC-24 held to crash points spread over the whole run, and
+# (the review's) the four-case suite line of the slices before, and MC-21 held to the first version's
+# window — from the mark to the end of the run, which put all six points after its only commit.
+dmr_case fail missing-kc12.txt gate "rejects a report without KC12"
+dmr_case fail missing-rs2-pr.txt pr "rejects a PR-scale report without RS2"
+dmr_case fail missing-rp7.txt gate "rejects a report without RP7"
+dmr_case fail suite-old-mutant-count.txt gate "rejects the thirteen-mutant report of the slices before §22.27"
+dmr_case fail mc21-weakened-kill-rule.txt gate "rejects MC-21 killed only fault-free"
+dmr_case fail mc24-whole-run-kill-rule.txt gate "rejects MC-24 killed at crash points over the whole run"
+dmr_case fail suite-old-case-count.txt gate "rejects the four-case suite line of the slices before §22.27"
+dmr_case fail mc21-first-window-rule.txt gate "rejects MC-21 held to the first version's window (mark to end of run)"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

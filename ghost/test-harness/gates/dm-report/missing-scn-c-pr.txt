@@ -1,4 +1,4 @@
-GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b, S10c and SCN-E)
+GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10, S10b, S10c, SCN-E and the suite cases of §22.27)
 scale: pr (every 13th event), seeds 8
 coverage: the scale is the density of the dm crash classes lines; the dm crash sample lines (SCN-E) are sampled, not every event
 dm crash sample: SCN-E/LOSE_KEYS bob 75464 events, 3 singles over 3 phases (1 per phase), 1 timeouts and 1 crashes after apply at 1 of 6 stores (per phase 1/6 0/0 0/0); sampled, not every event
@@ -23,8 +23,11 @@ dm crash classes: RP6 1466 events, 113 singles, 0 doubles, 1 timeouts over 2 sto
 dm crash classes: RP9 1185 events, 92 singles, 0 doubles, 1 timeouts over 2 stores
 dm crash classes: CB-reject-replay 712 events, 55 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-read-expiry 1238 events, 96 singles, 0 doubles, 1 timeouts over 2 stores
-dm suite cases: 4 run, 0 failures
-dm mutants: 13 run, 13 detected
+dm crash classes: KC12 4903 events, 378 singles, 0 doubles, 1 timeouts over 3 stores
+dm crash classes: RS2 11053 events, 851 singles, 0 doubles, 1 timeouts over 10 stores
+dm crash classes: RP7 2193 events, 169 singles, 0 doubles, 1 timeouts over 2 stores
+dm suite cases: 7 run, 0 failures
+dm mutants: 15 run, 15 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
 dm mutant MC-5: detected by RP6's retry, refused by the dm_message replace guard before D3's own check; kill rule: fault-free, beside a clean control
 dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears); kill rule: fault-free, beside a clean control
@@ -34,6 +37,8 @@ dm mutant MC-14: detected by SCN-E/LOSE_KEYS (6 h after the loss the relay still
 dm mutant MC-15: detected by SCN-E/LOSE_KEYS (a refused deposit credential re-put in a process no time trigger, user send or boot of the sender started); kill rule: fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run
 dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE); kill rule: fault-free, beside a clean control
 dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-21: detected by RS2 (after a 61-day absence the recipient holds no in-key of the conversation's generation for the week it came back); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
+dm mutant MC-24: detected by KC12 (the recipient's RECV throws on every offer of the second identity's first flight); kill rule: fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run
 dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run

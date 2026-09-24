@@ -15,7 +15,10 @@ import java.nio.file.Files
  */
 internal class DmCrashWorld(
     val name: String,
-    /** The world's virtual start: a Tuesday deep inside the Phase 8 grid, as every DM world uses. */
+    /**
+     * The world's virtual start: a Wednesday deep inside the Phase 8 grid, as every DM world uses
+     * (`WEEK_ORIGIN` is a Monday, so ISO week 2 870 starts on one and this is two days into it).
+     */
     val startSeconds: Long = DmWorld.WEEK_ORIGIN + 2_870 * DmWorld.WEEK + 2 * DmWorld.DAY,
 ) : AutoCloseable {
 
@@ -66,7 +69,9 @@ internal class DmCrashWorld(
             streamOffset = streamOffset,
         )
         mutation?.let {
-            node.rewrite = it.rewrite
+            // A rewrite that reads the device's own clock (MC-21, §22.27) is bound to this node's
+            // clock here, once: the clock survives every reboot, so the bound rewrite does too.
+            node.rewrite = it.rewriteOn?.invoke(node.clock) ?: it.rewrite
             node.decorate = it.decorate
             node.defer = it.defer
         }
@@ -149,12 +154,39 @@ internal class DmCrashWorld(
      */
     val swallowed = ArrayList<Throwable>()
 
+    /**
+     * **A process death is never swallowed, even when it arrives attached to an exception** (§22.27's
+     * review). `DmActor.runPass` runs `schedule.afterCommit()` in a `finally` and, when the pass has
+     * already thrown, attaches whatever `afterCommit` throws to the pass's exception as *suppressed*
+     * rather than letting it replace it (the S9 review's rule, right for a device). So a crash
+     * injected into `afterCommit` after a pass that threw came out of the pass inside an
+     * `Exception`, this `catch` recorded the exception, and the death never reached the runner:
+     * no reboot, `deadNode` left set, and the run went on with the "dead" device alive — the review
+     * measured it at five crash points of a mutated KC12. The exception is still recorded (the pass
+     * did throw before the process died), and the death is then rethrown, as a process death
+     * overrides everything else the pass was doing.
+     */
     private fun drive(body: () -> Unit) {
         try {
             body()
         } catch (e: Exception) {
             swallowed += e
+            injectedDeathIn(e)?.let { throw it }
         }
+    }
+
+    /** An injected death anywhere under [thrown] — its causes and what they suppressed — or null. */
+    private fun injectedDeathIn(thrown: Throwable): Error? {
+        val seen = HashSet<Throwable>()
+        val queue = ArrayDeque<Throwable>().apply { add(thrown) }
+        while (queue.isNotEmpty()) {
+            val t = queue.removeFirst()
+            if (!seen.add(t)) continue
+            if (t is SimulatedDmCrash || t is SimulatedNativeCrash) return t as Error
+            t.cause?.let { queue.add(it) }
+            queue.addAll(t.suppressed)
+        }
+        return null
     }
 
     /** A time-triggered actor pass on every node (§21.9 rule 1). */

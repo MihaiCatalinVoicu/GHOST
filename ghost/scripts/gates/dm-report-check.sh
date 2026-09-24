@@ -38,7 +38,9 @@
 # adds none (§22.23). SCN-E (§22.25) is the twelfth, on the entitlement world, and its crash
 # coverage is **sampled, not every event**: its lines are `dm crash sample:` lines, held to their own
 # rules below and never to the every-event rule of the `dm crash classes:` lines; it adds MC-14 and
-# MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25).
+# MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25). The suite cases of §22.27
+# add three functional-suite sub-cases under the enumeration, KC12, RS2 and RP7, and the two mutants
+# the first two make reachable, MC-21 and MC-24: fifteen (RP7's MC-9 needs a seam, §22.27).
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -254,7 +256,8 @@ esac
 # a crash-class line, and that line must report at least one single crash: an enumeration of zero
 # crash points is a scenario that ran once without faults, which is not a crash enumeration.
 scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
-scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry)
+# §15.5's sub-cases under the enumeration: S10's four, and KC12, RS2 and RP7 since §22.27.
+scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
@@ -391,8 +394,9 @@ seeds="$(grep -E '^dm seeded worlds: [0-9]+ seeds, 0 failures$' "$report" | sed 
 drew="$(grep -E '^dm seeded worlds \(faulted\): [0-9]+ seeds, [0-9]+ drew a fault, 0 failures$' "$report" | sed -nE 's/.*, ([0-9]+) drew a fault.*/\1/p' || true)"
 [ -n "$drew" ] && [ "$drew" -gt 0 ] 2>/dev/null || bad "no faulted seeded-world line, or no seed drew a fault"
 
-# §15.5's suite cases.
-grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no suite-case line, or 0 cases"
+# §15.5's suite cases: seven since §22.27 — S10's four and KC12, RS2 and RP7. Pinned, not "at least
+# one" (§22.27's review): a report of the four cases before this slice passed the old rule.
+grep -qxF 'dm suite cases: 7 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 7 run, 0 failures'"
 
 # §15.7's mutants: the count, and one line per mutant naming the case that kills it. A registered
 # mutant with no named killer is not registered, it is a claim (§15.7, `Mutants.kt`, `t2_mutants.rs`).
@@ -408,8 +412,14 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 # (§22.25): MC-14 and MC-15, which SCN-E/LOSE_KEYS makes reachable, under the same rule with its
 # crash points in the window where the mutant acts — from the loss to the fault-free failure — and
 # not over the whole run, where the review found them all in the establishment (§22.25 item 14).
-grep -qxF 'dm mutants: 13 run, 13 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 13 run, 13 detected'"
+# Fifteen since the suite cases of §22.27: MC-21, which RS2 makes reachable, and MC-24, which KC12
+# does, each killed fault-free and at six crash points inside the transaction the mutant first
+# changes after the scenario's mark — measured from the mutated run, from its first rewritten
+# statement to the transaction's last event. The first version spread the points from the mark to
+# the end of the run, and its review found MC-21's all after the mutant's only commit and five of
+# MC-24's before its first rewritten read (§22.27 item 11).
+grep -qxF 'dm mutants: 15 run, 15 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 15 run, 15 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -420,9 +430,16 @@ rule_ff='fault-free, beside a clean control'
 rule_crash='invisible fault-free, killed under a crash in its split window, beside a clean run at the same point'
 rule_s10b='fault-free and at 6 of 6 crash points, each beside a clean run'
 rule_scne='fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run'
+# §22.27's two, inside the transaction each first changes: MC-21's (the recipient's first SWEEP after
+# the absence) spans 46 events and takes six points spread over it; MC-24's (the RECV of the second
+# identity's first flight) spans two — the rewritten read and the statement the schema refuses — and
+# is crashed at both, every event it has.
+rule_mc21='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+rule_mc24='fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_ff" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
-  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
+  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
+  "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
   "ME-16|$rule_ff"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"

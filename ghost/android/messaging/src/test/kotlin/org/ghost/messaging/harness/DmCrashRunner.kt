@@ -138,6 +138,27 @@ internal class DmRunSpec(
      * mutant kill rule still needs its event count, to crash it only at points it reaches.
      */
     val onArmedEvents: ((Long) -> Unit)? = null,
+    /**
+     * Told what the armed phase did, at the same moment as [onArmedEvents] (the suite cases of
+     * §22.27 and their review). A mutated world fails its checks and never returns a [DmRunResult],
+     * so what a mutant kill needs has to leave the run here: the scenario's notes (the mark where
+     * the mutant can first act), where the mutation's rewrite acted, and how many crashes were
+     * injected **and how many reached a reboot** — a kill at a crash point counts only if the crash
+     * really killed a process before the check that failed the run.
+     */
+    val onArmed: ((DmArmedPhase) -> Unit)? = null,
+)
+
+/** What one run's armed phase did, for [DmRunSpec.onArmed]. */
+internal class DmArmedPhase(
+    val events: Long,
+    val notes: Map<String, Any>,
+    /** Crashes the bus threw. */
+    val injected: Int,
+    /** Crashes that reached the runner and rebooted their node. */
+    val reboots: Int,
+    /** [DmEventBus.rewrittenSpans], in order. */
+    val rewrittenSpans: List<LongRange>,
 )
 
 internal class DmRunResult(
@@ -194,6 +215,18 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             }
             if (spec.record) world.bus.onEvent = { kinds += it.kind }
             world.bus.armed = true
+            val armedEnd = {
+                spec.onArmedEvents?.invoke(world.bus.count)
+                spec.onArmed?.invoke(
+                    DmArmedPhase(
+                        events = world.bus.count,
+                        notes = world.notes.toMap(),
+                        injected = world.bus.injected.size,
+                        reboots = reboots,
+                        rewrittenSpans = world.bus.rewrittenSpans.toList(),
+                    ),
+                )
+            }
 
             val onDeath: (Error) -> Unit = { death ->
                 val node = nodeOf(death)
@@ -256,7 +289,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
                 } catch (finding: DmInvariantViolation) {
                     // A check a step makes on its own (EP, SCN-G-week) ends the run here; the
                     // event count it reached is still what a mutant kill has to crash inside.
-                    spec.onArmedEvents?.invoke(world.bus.count)
+                    armedEnd()
                     throw finding
                 }
             }
@@ -277,7 +310,19 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             }
 
             world.bus.armed = false
-            spec.onArmedEvents?.invoke(world.bus.count)
+            armedEnd()
+            // Every crash the bus threw reached this loop and rebooted its node (§22.27's review).
+            // A death that something absorbed — `DmActor.runPass` attaching it as suppressed to a
+            // pass that had already thrown was one — leaves a "dead" device running and a run
+            // that injected a crash and tested none; the `:sync` runner has had the same check
+            // since Phase 7 ("an injected crash did not reach the top level").
+            if (reboots != world.bus.injected.size || world.bus.deadNode != null) {
+                dmViolation(
+                    "${scenario.name}: ${world.bus.injected.size} crashes were injected and $reboots reached " +
+                        "a reboot (the node still dead: ${world.bus.deadNode}) — an injected crash was " +
+                        "absorbed: ${world.bus.injected.joinToString { it.message ?: "" }}",
+                )
+            }
             // One unarmed settling round, so a run whose last crash landed mid-round is compared at
             // the same place as the recording run.
             world.quiesce(scenario.tailRounds)
