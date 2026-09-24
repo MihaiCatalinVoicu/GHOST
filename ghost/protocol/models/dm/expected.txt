@@ -63,31 +63,31 @@ m2_binding_mutant_unbound_recipient.pv|event(AcceptedFromC(|false
 m2_binding_mutant_unbound_recipient.pv|event(AcceptedHonest)|false
 
 # M-6, step (3) of §9.4's healing argument, one direction.
-m6_pqc_healing.pv|attacker(msgHealed[])|true
-m6_pqc_healing.pv|attacker(msgHealedLater[])|true
+m6_pqc_healing.pv|attacker_p1(msgHealed[])|true
+m6_pqc_healing.pv|attacker_p1(msgHealedLater[])|true
 # controls: the week key live at t, a classical root after t, a PQ root to the leaked generation
-m6_pqc_healing.pv|attacker(msgBefore[])|false
-m6_pqc_healing.pv|attacker(msgClassical[])|false
-m6_pqc_healing.pv|attacker(msgPqOld[])|false
+m6_pqc_healing.pv|attacker_p1(msgBefore[])|false
+m6_pqc_healing.pv|attacker_p1(msgClassical[])|false
+m6_pqc_healing.pv|attacker_p1(msgPqOld[])|false
 # reachability: A seals under the healed root
 m6_pqc_healing.pv|event(SealedHealed)|false
 
 # M-7 (attribution forward secrecy as key erasure: the derivation structure).
-m7_erasure.pv|attacker(rootW[])|true
-m7_erasure.pv|attacker(msgWeekW[])|true
-m7_erasure.pv|attacker(recogProbe[])|true
+m7_erasure.pv|attacker_p1(rootW[])|true
+m7_erasure.pv|attacker_p1(msgWeekW[])|true
+m7_erasure.pv|attacker_p1(recogProbe[])|true
 # control: the seizure reads the week still live
-m7_erasure.pv|attacker(msgLive[])|false
+m7_erasure.pv|attacker_p1(msgLive[])|false
 
 # An invertible ratchet: week w is reached from the seized later keys (the root stays secret, as
 # kbase is still one-way).
-m7_erasure_mutant_invertible.pv|attacker(rootW[])|true
-m7_erasure_mutant_invertible.pv|attacker(msgWeekW[])|false
-m7_erasure_mutant_invertible.pv|attacker(recogProbe[])|false
-m7_erasure_mutant_invertible.pv|attacker(msgLive[])|false
+m7_erasure_mutant_invertible.pv|attacker_p1(rootW[])|true
+m7_erasure_mutant_invertible.pv|attacker_p1(msgWeekW[])|false
+m7_erasure_mutant_invertible.pv|attacker_p1(recogProbe[])|false
+m7_erasure_mutant_invertible.pv|attacker_p1(msgLive[])|false
 
 # A root derived from the seed: week w is reached from the seized seed (rootW is unused).
-m7_erasure_mutant_seed_root.pv|attacker(rootW[])|true
-m7_erasure_mutant_seed_root.pv|attacker(msgWeekW[])|false
-m7_erasure_mutant_seed_root.pv|attacker(recogProbe[])|false
-m7_erasure_mutant_seed_root.pv|attacker(msgLive[])|false
+m7_erasure_mutant_seed_root.pv|attacker_p1(rootW[])|true
+m7_erasure_mutant_seed_root.pv|attacker_p1(msgWeekW[])|false
+m7_erasure_mutant_seed_root.pv|attacker_p1(recogProbe[])|false
+m7_erasure_mutant_seed_root.pv|attacker_p1(msgLive[])|false

@@ -7,9 +7,12 @@ shows the model can fail and did not; and where the honest flow could stop silen
 make every secrecy query above it vacuously `true` — a **reachability query** (`query event(X)`,
 expected `false`, i.e. reachable) shows that it completes.
 
-**None of these models has been run yet** (design §22.18): ProVerif was not available where they
-were written, and the job fails closed until the owner pins the release's SHA-256. They were
-checked by reading them against the design; the first real run is the real test.
+**First real run: 2026-09-24** (design §22.31). ProVerif 2.05, built from the pinned release in a
+Debian container: 48 queries in 8 models, every one matching `expected.txt`. The run found two
+defects of the models' text, not of their claims (a `phase 1;` nested inside another in `m6`, and
+the `attacker_p1(...)` spelling ProVerif prints for phase-1 facts in `expected.txt`), fixed in the
+same change; the secrecy results, controls, mutants and reachability queries were right as
+written. What a green run covers is unchanged (below).
 
 | Model | Obligation (§9.5) | What it checks | Control, mutant, reachability |
 |---|---|---|---|

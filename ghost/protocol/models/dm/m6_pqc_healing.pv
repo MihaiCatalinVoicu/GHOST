@@ -147,21 +147,26 @@ process
        live at t. Only then does A create its next generation, announce it in band (the
        announcement is classical content, so public too) and keep the secret; B offers a PQ-C root
        to the key it received, and A seals under it. *)
-    phase 1;
-    out(c, skOld);
-    out(c, kbase(classicalroot(rootAtT)));
-    new skNew: kskey;
-    out(c, kpk(skNew));
-    (
-      (* The announcement runs in parallel with its receiver: an output on a private channel
-         waits for an input, so it must not guard the process that takes it. *)
-      out(netAnnounce, (announceNew, genNew, kpk(skNew)))
-    | OfferPqToAnnounced(netPqNew, tagPqNew, genNew)
-    | SealHealed(skNew)
+    (* Every branch that starts a phase is parenthesised: `phase 1; P | Q` reads as
+       `phase 1; (P | Q)` in ProVerif, so an unparenthesised second `phase 1;` sits inside the first
+       and is refused ("phases should be in increasing order") — the first real run of this model
+       failed on exactly that. *)
+    ( phase 1;
+      out(c, skOld);
+      out(c, kbase(classicalroot(rootAtT)));
+      new skNew: kskey;
+      out(c, kpk(skNew));
+      (
+        (* The announcement runs in parallel with its receiver: an output on a private channel
+           waits for an input, so it must not guard the process that takes it. *)
+        out(netAnnounce, (announceNew, genNew, kpk(skNew)))
+      | OfferPqToAnnounced(netPqNew, tagPqNew, genNew)
+      | SealHealed(skNew)
+      )
     )
-  | phase 1; out(c, seal(msgBefore, knext(kbase(classicalroot(rootAtT)))))
-  | phase 1; OfferClassical(netClassical, tagClassical)
-  | phase 1; SealClassical(netClassical, tagClassical, msgClassical)
-  | phase 1; OfferPq(netPqOld, tagPqOld, genOld, kpk(skOld))
-  | phase 1; SealPq(netPqOld, tagPqOld, skOld, genOld, msgPqOld, msgPqOld)
+  | ( phase 1; out(c, seal(msgBefore, knext(kbase(classicalroot(rootAtT))))) )
+  | ( phase 1; OfferClassical(netClassical, tagClassical) )
+  | ( phase 1; SealClassical(netClassical, tagClassical, msgClassical) )
+  | ( phase 1; OfferPq(netPqOld, tagPqOld, genOld, kpk(skOld)) )
+  | ( phase 1; SealPq(netPqOld, tagPqOld, skOld, genOld, msgPqOld, msgPqOld) )
   )
