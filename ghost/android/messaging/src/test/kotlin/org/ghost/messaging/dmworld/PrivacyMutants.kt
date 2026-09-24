@@ -47,6 +47,12 @@ internal class PrivacyMutant(
      * report's detection line, so a count of detected mutants never reads as more than was built.
      */
     val scope: String? = null,
+    /**
+     * The mutant's half in the **entitlement world** (`entworld/EntDmJd8.kt`, §22.26): a statement
+     * rewrite on every client's shared executor or a decorator of the DM steps' sync ports. Only
+     * the JD8 twin worlds read it; a privacy world never does.
+     */
+    val entWorld: org.ghost.messaging.entworld.EntMutation? = null,
 ) {
     /**
      * A named check, the substring its failure message must contain, and — where a failure can
@@ -71,15 +77,17 @@ internal enum class PrivacyCheck(val label: String) {
     NI_DM1("NI-DM1 (twin worlds)"),
     NI_DM2("NI-DM2 (twin worlds)"),
     NI_DM3("NI-DM3 (twin worlds)"),
+    JD8("JD8 (entitlement twin worlds)"),
     S_DM3("S-DM3 (MEDIUM world, n >= 100)"),
     T34("T34 (seizure world)"),
     T34_ONE_REPLY("T34 one-reply variant (two clients, 130 days)"),
 }
 
 /**
- * The privacy mutants registered: ten of §15.7's forty from slice S11, and PM-5 and PM-31 from the
- * S11b slice (with NI-DM2 as PM-4's second killer), each with the checks that kill it. §22.16 lists
- * what the others need, and §22.21 what S11b changed of that list.
+ * The privacy mutants registered: ten of §15.7's forty from slice S11, PM-5 and PM-31 from the
+ * S11b slice (with NI-DM2 as PM-4's second killer), and PM-1, PM-1b and PM-26 — killed by JD8 in the
+ * entitlement world's twins (§22.26) — each with the checks that kill it. §22.16 lists what the
+ * others need, §22.21 what S11b changed of that list, and §22.26 what JD8 changed of it.
  */
 internal object PrivacyMutants {
 
@@ -524,5 +532,130 @@ internal object PrivacyMutants {
         },
     )
 
-    fun all(): List<PrivacyMutant> = listOf(PM2, PM3, PM4, PM5, PM6, PM8, PM13, PM19, PM24, PM31, PM36, PM39)
+    // ------------------------------------------------------------------ the entitlement world (§22.26)
+
+    /**
+     * A JD8 kill: extra calls in the active twin (the twin with the DM activity), refused when the
+     * twins did not reach their variable — a world that stopped, a text never delivered, an idle
+     * twin with DM traffic — since JD8 then compared nothing the mutant decided.
+     */
+    private val JD8_KILL = PrivacyMutant.Killer(PrivacyCheck.JD8, "calls only in the active twin", refuse = "did not reach their variable")
+
+    /**
+     * **PM-1 — a per-sender token-bought write capability for a contact inbox (Annex B literal).**
+     * The sender no longer writes to a contact's inbox with the DEPOSIT credential its card yields
+     * (§4.3, §21.2): the DM steps register the contact's inbox as a namespace whose write access is
+     * **redeemed** (`CapabilitySource.REDEEM`, not `LOCAL`) and install no DEPOSIT credential, so the
+     * inbox has outbox work and no write token, the planner redeems one of the sender's own ACCESS
+     * tokens for it at every relay of its set, and the deposits go out under that capability — which
+     * the relay accepts, so every message still arrives. It lives on the DM steps' sync ports
+     * (`DmDevice.HarnessOverride.decorateNamespaces`/`decorateCapabilities`): the owner's own
+     * namespaces and the engines' stores are untouched.
+     */
+    val PM1 = PrivacyMutant(
+        id = "PM-1",
+        defeats = "P-2, T27: no honest client redeems for a namespace it does not own; a sender deposits with the card's credential",
+        detectedBy = "JD3, JD8, NI-DM3 (§15.7); JD8 here — the privacy world, where JD3 and NI-DM3 run, has no redeem lane (§22.26)",
+        killers = listOf(JD8_KILL),
+        entWorld = org.ghost.messaging.entworld.EntMutation(
+            decorateNamespaces = { real ->
+                object : org.ghost.sync.api.Namespaces by real {
+                    override fun register(
+                        tx: org.ghost.sync.api.SyncTransaction,
+                        namespace: NamespaceId,
+                        consumer: Consumer,
+                        relays: Set<org.ghost.sync.api.RelayId>,
+                        listen: Boolean,
+                        sendDelay: org.ghost.sync.api.SendDelay,
+                        capabilitySource: CapabilitySource,
+                    ) {
+                        // A contact's inbox: registered write-only, by SEND S7 and the contact KEEPER.
+                        val contactInbox = consumer == Consumer.DM && !listen && capabilitySource == CapabilitySource.LOCAL
+                        real.register(tx, namespace, consumer, relays, listen, sendDelay, if (contactInbox) CapabilitySource.REDEEM else capabilitySource)
+                    }
+                }
+            },
+            decorateCapabilities = { real ->
+                object : org.ghost.sync.api.Capabilities by real {
+                    override fun put(
+                        tx: org.ghost.sync.api.SyncTransaction,
+                        relay: org.ghost.sync.api.RelayId,
+                        namespace: NamespaceId,
+                        kind: org.ghost.sync.api.CapabilityKind,
+                        token: ByteArray,
+                        expiresAtEpochSeconds: Long?,
+                    ) {
+                        val deposit = org.ghost.sync.harness.ModelRelay.credential(token)?.kind == org.ghost.sync.harness.ModelRelay.KIND_DEPOSIT
+                        if (kind == org.ghost.sync.api.CapabilityKind.WRITE && deposit) return
+                        real.put(tx, relay, namespace, kind, token, expiresAtEpochSeconds)
+                    }
+                }
+            },
+        ),
+    )
+
+    /** The four statements of `CapabilityStore.needed` select the need's source as this column. */
+    private const val NEED_SOURCE = "n.capability_source FROM"
+
+    /**
+     * **PM-1b — the planner redeems a LOCAL need.** Every need reaches the redeem planner as a
+     * REDEEM one: the source column of the four statements `Capabilities.needed()` runs is read as
+     * `'redeem'`. In production code the planner's LOCAL line (`RedeemPlanner.plan`: "a LOCAL need
+     * is decided before anything else") is the only reader of a need's source, so this is that
+     * line deleted, reached through the planner's input because the engine has no seam in its code.
+     * A LOCAL need exists where a card holder's own credential is refused: alice's FETCH credential
+     * for the bundle of dave, who holds no token and registered nothing (`Jd8Twin`), so the planner
+     * redeems alice's own tokens for dave's bundle namespace. The entitlement world's every-commit
+     * check catches that capability at its commit too ("a redeemed capability on a LOCAL
+     * namespace"), which is why JD8's mutated worlds run with that check off (`Jd8Twin`).
+     */
+    val PM1B = PrivacyMutant(
+        id = "PM-1b",
+        defeats = "§13.4, T27: the planner never redeems a LOCAL need (DM breadth costs no token)",
+        detectedBy = "JD8, planner test (§15.7); JD8 here — `RedeemPlannerTest` hands the planner a LOCAL need directly, " +
+            "so the mutation of the needs it reads is JD8's alone",
+        killers = listOf(JD8_KILL),
+        entWorld = org.ghost.messaging.entworld.EntMutation(
+            rewrite = { _ ->
+                { sql, args -> if (sql.startsWith("SELECT") && NEED_SOURCE in sql) sql.replace(NEED_SOURCE, "'redeem' FROM") to args else sql to args }
+            },
+        ),
+    )
+
+    /** `RegistrationStore.keep`'s look-up of the row it would insert. */
+    private const val KEEP_LOOKUP =
+        "SELECT verifier, inflight FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 AND period_id = ?3 AND kind = ?4"
+
+    /**
+     * **PM-26 — owner registrations created on the first inbound deposit instead of from the
+     * capabilities and the week.** REGROWS inserts a row of a period **after the current week** —
+     * the `c + 1` rows of §4.8, and `c` when the capability was redeemed early — only once a deposit
+     * has reached the owner's own inbox (an `inbox_blob` row of it): `keep`'s look-up answers "a row
+     * with its call in flight" until then, so `keep` inserts nothing. The current week's rows are
+     * left alone, which is the half built: a mutant that waited for a deposit before those too would
+     * deliver nothing at all, since the relay stores no deposit into an inbox with no DEPOSIT
+     * registration (§4.5), and would never see a first deposit.
+     */
+    val PM26 = PrivacyMutant(
+        id = "PM-26",
+        defeats = "§4.8, T27: the owner's registrations follow its capabilities and the week, never its inbound traffic",
+        detectedBy = "JD8, NI-DM1 (§15.7); JD8 here",
+        scope = "the rows of later weeks only; a mutant that also held back the current week's rows would deliver nothing",
+        killers = listOf(JD8_KILL),
+        entWorld = org.ghost.messaging.entworld.EntMutation(
+            rewrite = { w ->
+                { sql, args ->
+                    val later = sql == KEEP_LOOKUP && (args[2] as Number).toLong() > org.ghost.sync.harness.ModelRelay.week(w.clock.epochSeconds())
+                    if (later) {
+                        "$sql UNION ALL SELECT zeroblob(32), 1 WHERE NOT EXISTS ($sql) AND NOT EXISTS (SELECT 1 FROM inbox_blob b " +
+                            "JOIN dm_own_namespace d ON d.namespace_id = b.namespace_id WHERE d.role = 'inbox')" to args
+                    } else {
+                        sql to args
+                    }
+                }
+            },
+        ),
+    )
+
+    fun all(): List<PrivacyMutant> = listOf(PM1, PM1B, PM2, PM3, PM4, PM5, PM6, PM8, PM13, PM19, PM24, PM26, PM31, PM36, PM39)
 }

@@ -69,6 +69,12 @@ internal class CallInfo(
     val namespace: String,
     /** Hex of the op's blob hash for a store, of each hash for get/check. */
     val hashes: List<String>,
+    /**
+     * A `RegisterKey`'s period and key kind code (`KeyKind.code`), exactly as the port hands them
+     * to the model relay; null for every other call. Read by the entitlement world's JD8 (Phase 9
+     * design §22.26), which compares registrations by the week they name.
+     */
+    val registration: Pair<Long, Int>? = null,
 ) {
     override fun toString(): String = "CallInfo($kind, $relay)"
 }

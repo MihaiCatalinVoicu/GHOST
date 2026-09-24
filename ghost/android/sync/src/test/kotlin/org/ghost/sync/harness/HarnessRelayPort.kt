@@ -120,7 +120,15 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         if (op == ModelRelay.Companion.Op.STORE && header.kind != ModelRelay.KIND_WRITE) fail("invalid_argument")
     }
 
-    private fun begin(kind: CallKind, relay: OnionAddress, ns: NamespaceId, limit: Int, deadlineMillis: Int, hashes: List<BlobHash>): Pair<RelayNode, CallInfo> {
+    private fun begin(
+        kind: CallKind,
+        relay: OnionAddress,
+        ns: NamespaceId,
+        limit: Int,
+        deadlineMillis: Int,
+        hashes: List<BlobHash>,
+        registration: Pair<Long, Int>? = null,
+    ): Pair<RelayNode, CallInfo> {
         require(deadlineMillis in 1..60_000) { "deadline out of range" }
         val item = world.driver.currentItemId ?: violation("a relay call outside any lane item")
         val node = world.node(relay)
@@ -129,7 +137,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         val key = listOf<Any>(client.name, node.name, item, kind)
         world.records.callsPerItem[key] = (world.records.callsPerItem[key] ?: 0) + 1
         world.pruneRelays()
-        return Pair(node, CallInfo(kind, node.name, ns.toByteArray().hex(), hashes.map { it.toByteArray().hex() }))
+        return Pair(node, CallInfo(kind, node.name, ns.toByteArray().hex(), hashes.map { it.toByteArray().hex() }, registration))
     }
 
     /** Latency of the call; true if the request reached the relay before the deadline. */
@@ -348,7 +356,7 @@ internal class HarnessRelayPort(private val client: Client) : RelayPort {
         requestId: ByteArray,
         deadlineMillis: Int,
     ): RegisterAnswer {
-        val (node, info) = begin(CallKind.REGISTER, relay, ns, 0, deadlineMillis, emptyList())
+        val (node, info) = begin(CallKind.REGISTER, relay, ns, 0, deadlineMillis, emptyList(), periodId to kind.code)
         opIdCanary(ns.toByteArray(), capability, verifier, requestId)
         // The Kotlin argument checks of TorRelayTransport.registerKey, before any I/O.
         require(verifier.size == 32 && requestId.size == 16) { "verifier 32, request id 16 bytes" }
