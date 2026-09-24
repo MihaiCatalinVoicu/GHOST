@@ -226,10 +226,32 @@ class DeviceGateSuite {
     fun theOneAlarmIsScheduledAndCancelled() {
         val alarm = ExpiryAlarm(context)
         alarm.wakeIn(3_600L)
-        assertTrue("the alarm is in the system table", dumpsysAlarm().contains(ACTION))
+        assertTrue("the alarm is in the system's pending alarms", pendingAlarms().contains(ACTION))
         alarm.wakeIn(null)
-        assertFalse("§10.7: cancelled when nothing is pending and at wipe", dumpsysAlarm().contains(ACTION))
+        assertFalse("§10.7: cancelled when nothing is pending and at wipe", pendingAlarms().contains(ACTION))
         DeviceRunner.report("dm-device: alarm scheduled and cancelled")
+    }
+
+    /**
+     * The **pending** section of `dumpsys alarm`, not the whole dump (first emulator run, design
+     * §22.32): on API 35 the dump also keeps a "Removal history" whose snapshot of a cancelled alarm
+     * carries its tag (`*walarm*:<action>`, "Reason=alarm_cancelled"), so a scan of the whole text
+     * found the action after a successful cancel and failed on API 35 while passing on API 29. The
+     * section is "Pending alarm batches: N" on API 29 and "N pending alarms:" on API 35, and it runs
+     * to the next two-space-indented header. A dump without either is a failure, not an empty
+     * section; and the scheduled half above must find the alarm in it.
+     */
+    private fun pendingAlarms(): String {
+        val lines = dumpsysAlarm().lines()
+        val header = Regex("^  (Pending alarm batches: \\d+|\\d+ pending alarms:)\\s*$")
+        val start = lines.indexOfFirst { header.matches(it) }
+        check(start >= 0) { "dumpsys alarm has no pending-alarm section" }
+        val section = StringBuilder()
+        for (line in lines.drop(start + 1)) {
+            if (line.startsWith("  ") && !line.startsWith("   ") && line.isNotBlank()) break
+            section.append(line).append('\n')
+        }
+        return section.toString()
     }
 
     @Test
