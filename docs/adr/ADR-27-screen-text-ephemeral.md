@@ -5,7 +5,7 @@
 | Status | **Aprobat** 2026-09-13 (proprietar proiect, la cererea lui, după discuția despre limitele reziduale); de implementat în Fazele 9, 10, 11 și 13 |
 | Sursă | Cererea proprietarului din 2026-09-13; LIMITE L1 („mesaje efemere implicit”) și §3.2; ADR-08 |
 | Completează | ADR-08 (FLAG_SECURE și ștergerea clipboard-ului devin reguli detaliate); spec FR-7.8 (ecrane sensibile și clipboard) și FR-4.4 (mesaje efemere, implicit active); plan §6.2 rândurile Fazelor 9, 10, 11 și 13; invariantul T10 (extins) și invarianții noi T24 și T25 |
-| Modifică | Setul de trepte TTL observabile de relee (`ttl_bucket` în `allowed-observables.json`): se adaugă treapta de 1 oră. Schimbarea se face în Faza 9, odată cu codul din relay și client |
+| Modifică | Setul de trepte TTL observabile de relee (`ttl_bucket` în `allowed-observables.json`): se adaugă treapta de 1 oră. Schimbarea se face în Faza 9, odată cu codul din relay și client. *Erată (Faza 9, design `docs/design/faza9-dm.md` Anexa B.1):* câmpul observat se numea `ttl_bucket_days` (nu `ttl_bucket`) și a devenit `ttl_bucket_seconds` (ADR-32; `allowed-observables.json` versiunea 2) |
 
 ## Context
 Două limite reziduale nu pot fi eliminate de nicio aplicație: un membru rău-intenționat poate păstra ce vede, iar un dispozitiv compromis sau confiscat arată tot ce conține. Se pot însă reduce mult scurgerile accidentale și ocazionale (screenshot-uri, aplicații care citesc ecranul sau clipboard-ul) și cantitatea de istoric expusă. ADR-08 prevedea deja FLAG_SECURE și ștergerea clipboard-ului, iar LIMITE L1 prevedea mesaje efemere implicit, dar fără reguli precise și fără teste. Acest ADR le face normative.

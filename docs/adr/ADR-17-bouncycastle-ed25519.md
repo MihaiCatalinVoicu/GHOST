@@ -19,3 +19,6 @@ Modulul `identity` folosește API-ul lightweight BouncyCastle (`org.bouncycastle
 
 ## Consecințe
 (+) determinism și interoperabilitate RFC 8032; (−) +~6 MB în APK înainte de minificare (R8 păstrează doar clasele folosite); dependența intră în audit (Faza 15).
+
+## Notă (Faza 9, 2026-09-16)
+A doua implementare Ed25519 (`ed25519-dalek` 2.2.0) intră în `ghost-client-dm`, în biblioteca nativă, ca singurul semnatar și singurul verificator al celor patru artefacte X-21: cardul de contact v2, bundle-ul v2, legătura v3 și certificatul de revocare v2 (ADR-35); identitatea `ghost1` și modulul `identity` rămân pe BouncyCastle. Semnăturile sunt identice între cele două implementări (64 din 64 de vectori, S0′ V-14), verificarea nu: BouncyCastle verifică ecuația cu cofactor și diferă de `verify_strict` pe 33 din 53 de vectori-limită, deci Kotlin nu verifică niciodată aceste artefacte.

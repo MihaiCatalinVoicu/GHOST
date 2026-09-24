@@ -8,14 +8,14 @@ Toate ADR-urile de mai jos au fost aprobate de proprietarul proiectului pe 2026-
 | [ADR-02](ADR-02-blind-entitlement-monero.md) | Entitlement blind-signed; rail P0 = Monero; fără blockchain în P0 |
 | [ADR-03](ADR-03-no-integrated-wallet.md) | Fără portofel integrat în P0 |
 | [ADR-04](ADR-04-per-channel-pseudonyms.md) | Pseudonim derivat per canal |
-| [ADR-05](ADR-05-blind-invite-tokens.md) | Invitații prin token-uri blind |
+| [ADR-05](ADR-05-blind-invite-tokens.md) | Invitații prin token-uri blind (cardul de contact opțional din invitație: amânat în Faza 13, ADR-30′) |
 | [ADR-06](ADR-06-no-third-party-sdks.md) | Zero SDK-uri terțe; allowlist dependențe |
 | [ADR-07](ADR-07-open-source-reproducible.md) | Open-source, build reproductibil, distribuție verificabilă (revizuit parțial de ADR-37 și ADR-38 la 2026-09-16: sursă închisă) |
 | [ADR-08](ADR-08-endpoint-hygiene.md) | Igienă de endpoint |
 | [ADR-09](ADR-09-traffic-metadata-p0.md) | Metadate de trafic ca P0 |
 | [ADR-10](ADR-10-legacy-quarantine-monorepo-gates.md) | Carantină legacy, monorepo, git, gates |
 | [ADR-11](ADR-11-independent-relay-operators.md) | Independența operatorilor de relay |
-| [ADR-12](ADR-12-post-quantum.md) | Post-quantum |
+| [ADR-12](ADR-12-post-quantum.md) | Post-quantum (clauza DM modificată de ADR-36 la 2026-09-16) |
 
 Un ADR nou primește următorul număr, status „Propus”, și se leagă de cerința FR/NFR pe care o modifică.
 
@@ -27,7 +27,7 @@ Un ADR nou primește următorul număr, status „Propus”, și se leagă de ce
 | [ADR-14](ADR-14-key-attestation-recovery.md) | Atestare hardware a cheilor și recuperare după compromitere |
 | [ADR-15](ADR-15-traffic-shaping.md) | Traffic shaping: polling constant, trimitere întârziată, bucketizare |
 | [ADR-16](ADR-16-censorship-resistance.md) | Rezistență la cenzură: bridges, WebTunnel, mod auto |
-| [ADR-17](ADR-17-bouncycastle-ed25519.md) | Ed25519 prin BouncyCastle pentru identitate (aprobat) |
+| [ADR-17](ADR-17-bouncycastle-ed25519.md) | Ed25519 prin BouncyCastle pentru identitate (aprobat; a doua implementare Ed25519, `ed25519-dalek`, în `ghost-client-dm`: ADR-35) |
 | [ADR-18](ADR-18-redb-relay-storage.md) | Stocare relay pe redb în loc de RocksDB (aprobat) |
 | [ADR-19](ADR-19-rust-client-core.md) | Nucleu de client în Rust expus prin JNI (aprobat) |
 | [ADR-20](ADR-20-sync-jobscheduler.md) | Sincronizare: JobScheduler în loc de WorkManager, program per (relay, namespace), reziduuri declarate (aprobat 2026-09-12, cu valorile implicite Q1–Q7) |
@@ -47,7 +47,7 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 
 ## Propuse (aplicate în Faza 9)
 
-Propuse 2026-09-16 și aplicate în Faza 9 (design `docs/design/faza9-dm.md`, cu corecturile normative §21, §22 și §22.8, care au prioritate), ca ADR-17 … ADR-26 înaintea aprobării lor. Revizia din 2026-09-16 urmează decizia proprietarului: fără libsignal (licența AGPL-3.0 e inacceptabilă) și distribuție cu sursă închisă. Valorile implicite ale întrebărilor proprietarului (§19; Q4 cere aprobarea acestor ADR-uri) se aplică dacă proprietarul nu obiectează; consemnarea lor este în `docs/design/faza9-s0-hygiene.md`. ADR-30′ … ADR-34′ sunt schițele rundei 9 modificate de revizie (marcate ′); ADR-32 a rămas neschimbat.
+Propuse 2026-09-16 și aplicate în Faza 9 (design `docs/design/faza9-dm.md`, cu corecturile normative §21, §22 și §22.8, care au prioritate), ca ADR-17 … ADR-26 înaintea aprobării lor. Revizia din 2026-09-16 urmează decizia proprietarului: fără libsignal (licența AGPL-3.0 e inacceptabilă) și distribuție cu sursă închisă. Valorile implicite ale întrebărilor proprietarului (§19; Q4 cere aprobarea acestor ADR-uri) se aplică dacă proprietarul nu obiectează; consemnarea lor este în `docs/design/faza9-s0-hygiene.md`. ADR-30′ … ADR-34′ sunt schițele rundei 9 modificate de revizie (marcate ′); ADR-32 a rămas neschimbat. Fișierele (și nota de revizuire a ADR-07) au fost depuse în slice-ul S0′ (2026-09-16); notele ADR-05, ADR-12 și ADR-17, aici și în fișierele lor, în S14 (2026-09-24). „Aplicate” înseamnă implementate în cod; **Faza 9 nu e închisă** (`docs/STATUS.md`), iar ADR-36 descrie un design a cărui validare (modelul formal, revizia externă) nu s-a făcut încă.
 
 | ADR | Titlu |
 |---|---|
