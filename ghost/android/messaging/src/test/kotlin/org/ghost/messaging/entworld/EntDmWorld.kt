@@ -110,9 +110,11 @@ internal class EntDmWorld(val w: World, val ent: EntWorld) {
     val swallowed = ArrayList<String>()
 
     /**
-     * The every-commit and every-store checks of the class note. On in every world; the one test
-     * that turns it off ([EntDmConversation.fairyAt] without it) shows what the end checks alone
-     * catch.
+     * The every-commit and every-store checks of the class note. On in every world but two kinds:
+     * the test that turns it off ([EntDmConversation.fairyAt] without it) to show what the end
+     * checks alone catch, and JD8's mutated twins and the control they are held against
+     * (`EntDmJd8.kt`, §22.26), where it would stop PM-1b's world before JD8 could compare it — the
+     * report's own JD8 run keeps it on, and `DmJd8Test` asserts both runs saw the same relay calls.
      */
     var checkEveryCommit: Boolean = true
 

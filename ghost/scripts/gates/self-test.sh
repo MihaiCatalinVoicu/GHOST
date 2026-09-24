@@ -372,21 +372,44 @@ dmr_case fail privacy-ni2-defect-partial.txt privacy-pr "rejects an NI-DM2 decla
 dmr_case fail privacy-withhold-no-room.txt privacy-pr "rejects a JD7 withhold variant with no session where a fourth attempt would fall"
 dmr_case fail privacy-pm5-whole.txt privacy-pr "rejects a PM-5 line that does not say only its day-rounding half is built"
 dmr_case fail privacy-jd5-no-split.txt privacy-pr "rejects a JD5 line that does not say which TIMER_SET path it covered"
-# Phase 9 JD8 slice (design §22.26): JD8 over the entitlement world's twins, and PM-1, PM-1b and
-# PM-26 killed by it. Every privacy fixture above was regenerated from this slice's real PR report
-# with its one change (the regeneration reproduced all thirty of S11b's fixtures byte for byte from
-# S11b's positive first). Each negative below is a way a JD8 line could look like a comparison while
-# it compared nothing, compared a world with itself, or hid a difference.
+# Phase 9 JD8 slice (design §22.26): JD8 over the entitlement world's twins, the control its kills
+# are held against, the two timing leaks its timing clause must catch, and PM-1, PM-1b and PM-26
+# killed by it. Every privacy fixture above was regenerated from this slice's real PR report of the
+# merged code with its one change (the regeneration first reproduced all thirty of S11b's fixtures
+# byte for byte from S11b's positive). Each negative below changes one clause of one line, so each
+# trips one rule of the check and nothing else (§22.26 item 13(i)): a way a JD8 line could look like
+# a comparison while it compared nothing, compared a world with itself, hid a difference or a moved
+# call, or claimed a time the harness cannot test.
 dmr_case fail privacy-jd8-missing.txt privacy-pr "rejects a report without JD8"
-dmr_case fail privacy-jd8-fail.txt privacy-pr "rejects a JD8 that failed"
+dmr_case fail privacy-jd8-fail.txt privacy-pr "rejects a JD8 that failed (a FAIL line as JD8 writes it)"
+dmr_case fail privacy-jd8-appended.txt privacy-pr "rejects a JD8 PASS with a difference appended"
 dmr_case fail privacy-jd8-nothing.txt privacy-pr "rejects a JD8 PASS that compared no call"
+dmr_case fail privacy-jd8-bad-sum.txt privacy-pr "rejects a JD8 PASS whose per-client calls do not sum to its total"
 dmr_case fail privacy-jd8-short-pairs.txt privacy-pr "rejects a JD8 PASS that paired fewer calls than it compared"
-dmr_case fail privacy-jd8-timing-claimed.txt privacy-pr "rejects a JD8 PASS that claims T27's minute compared (it is not comparable here)"
-dmr_case fail privacy-jd8-no-activity.txt privacy-pr "rejects a JD8 PASS whose active twin had no DM activity"
+dmr_case fail privacy-jd8-register-moved.txt privacy-pr "rejects a JD8 PASS with a registration at another minute"
+dmr_case fail privacy-jd8-redeem-other-session.txt privacy-pr "rejects a JD8 PASS with a redemption in another relay session"
+dmr_case fail privacy-jd8-register-pairs.txt privacy-pr "rejects a JD8 PASS whose registration pairs are not its registrations"
+dmr_case fail privacy-jd8-redeem-pairs.txt privacy-pr "rejects a JD8 PASS whose redemption pairs are not its redemptions"
+dmr_case fail privacy-jd8-timing-claimed.txt privacy-pr "rejects a JD8 PASS that claims the redemption minute compared (the harness cannot test it)"
+dmr_case fail privacy-jd8-untimed.txt privacy-pr "rejects the first version's JD8 line, which compared no time (0 of 186 pairs in the same minute)"
+dmr_case fail privacy-jd8-three-contacts.txt privacy-pr "rejects a JD8 PASS whose active twin held 3 contacts"
+dmr_case fail privacy-jd8-no-deliveries.txt privacy-pr "rejects a JD8 PASS whose active twin delivered no text"
+dmr_case fail privacy-jd8-no-dm-calls.txt privacy-pr "rejects a JD8 PASS whose active twin made no call on a contact's namespace"
+dmr_case fail privacy-jd8-no-local-skip.txt privacy-pr "rejects a JD8 PASS in which alice's planner skipped no LOCAL need"
+dmr_case fail privacy-jd8-dave-ready.txt privacy-pr "rejects a JD8 PASS in which alice's establishment with dave completed"
+dmr_case fail privacy-jd8-idle-contact.txt privacy-pr "rejects a JD8 PASS whose idle twin held a contact"
 dmr_case fail privacy-jd8-idle-traffic.txt privacy-pr "rejects a JD8 PASS whose idle twin had DM traffic"
 dmr_case fail privacy-jd8-dave.txt privacy-pr "rejects a JD8 PASS in which the client without tokens made calls"
-dmr_case fail privacy-jd8-appended.txt privacy-pr "rejects a JD8 PASS with a difference appended"
+dmr_case fail privacy-jd8-not-own.txt privacy-pr "rejects a JD8 PASS that does not say every call was on an own namespace"
+dmr_case fail privacy-jd8-one-week.txt privacy-pr "rejects a JD8 PASS that covers one token week"
+dmr_case fail privacy-jd8-no-renewal-period.txt privacy-pr "rejects a JD8 PASS without the renewal's registration period"
+dmr_case fail privacy-jd8-control-missing.txt privacy-pr "rejects a report without the JD8 control"
+dmr_case fail privacy-jd8-control-fail.txt privacy-pr "rejects a JD8 control that failed"
+dmr_case fail privacy-jd8-control-other-run.txt privacy-pr "rejects a JD8 control that saw other calls than the report's run"
+dmr_case fail privacy-jd8-leaks-missing.txt privacy-pr "rejects a report without the JD8 timing leaks"
+dmr_case fail privacy-jd8-leaks-one.txt privacy-pr "rejects a JD8 timing clause that detected one leak of two"
 dmr_case fail privacy-s11b-mutant-count.txt privacy-pr "rejects S11b's twelve-mutant count"
+dmr_case fail privacy-mutant-count-only.txt privacy-pr "rejects a privacy mutant count other than the one pinned, every detection line kept"
 dmr_case fail privacy-pm26-whole.txt privacy-pr "rejects a PM-26 line that does not say only its later-weeks half is built"
 # Phase 9 S12 (design §15.9): the emulator report check. `pass/` is a green run on API 29 and 35;
 # every negative case is a copy of it with one change, each a way an emulator run could look green

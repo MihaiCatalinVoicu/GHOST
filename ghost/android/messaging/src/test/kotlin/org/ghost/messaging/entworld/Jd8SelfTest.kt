@@ -13,24 +13,36 @@ import org.junit.Test
  * pair that agrees passes, and each way a trace can depend on DM activity — an extra call in either
  * twin, a call on a namespace the client does not own — fails for its own reason, as does each way
  * the comparison could be vacuous: twins that did not reach their variable, a trace that does not
- * cover the week, a planner that met no LOCAL need, a client who holds no token making calls. T27's
- * minute is reported and not compared (`Jd8`'s note), and a case shows that it is counted and does
- * not decide. The kills of `DmPrivacyMutantTest` show the same checks failing on real worlds; this
- * shows the arithmetic under them.
+ * cover the week, a planner that met no LOCAL need, a client who holds no token making calls — and
+ * each way a call's time can move: a registration at another minute fails, a redemption in another
+ * relay session fails, a redemption at another minute of the same session is counted and does not
+ * decide (`Jd8`'s note: the harness cannot test a redemption's minute). The kills of
+ * `DmPrivacyMutantTest` and the timing leaks of `DmJd8Test` show the same checks failing on real
+ * worlds; this shows the arithmetic under them.
  */
 class Jd8SelfTest {
 
     private val w0 = EntDmScenario.WEEK0
 
-    /** A trace that covers the week: two redemptions (weeks w0, w0 + 1) and a registration of each period. */
-    private fun trace(client: String, ns: String, offsetMinutes: Long = 0, exposedAt: Int = -1): List<Jd8.Call> {
+    /**
+     * A trace that covers the week: two redemptions (weeks w0, w0 + 1) and a registration of each
+     * period, each in the session that started at the quarter hour before it.
+     */
+    private fun trace(client: String, ns: String, exposedAt: Int = -1): List<Jd8.Call> {
         val calls = ArrayList<Jd8.Call>()
-        fun at(m: Long) = (m + offsetMinutes) * MINUTE + 1_234
-        calls += Jd8.Call(client, CallKind.REDEEM, "S0", ns, w0, null, at(2))
-        calls += Jd8.Call(client, CallKind.REDEEM, "S0", ns, w0 + 1, null, at(2_800))
-        for ((i, p) in listOf(w0, w0 + 1, w0 + 2).withIndex()) calls += Jd8.Call(client, CallKind.REGISTER, "S0", ns, p, "deposit", at(30L + 3_000 * i))
-        return calls.mapIndexed { i, c -> if (i == exposedAt) Jd8.Call(c.client, c.kind, c.relay, c.namespaceHex, c.period, c.keyKind, c.atMillis, exposed = true) else c }
+        fun at(m: Long) = m * MINUTE + 1_234
+        calls += call(client, CallKind.REDEEM, ns, w0, null, at(2))
+        calls += call(client, CallKind.REDEEM, ns, w0 + 1, null, at(2_806))
+        for ((i, p) in listOf(w0, w0 + 1, w0 + 2).withIndex()) calls += call(client, CallKind.REGISTER, ns, p, "deposit", at(30L + 3_000 * i))
+        return calls.mapIndexed { i, c -> if (i == exposedAt) moved(c, 0, exposed = true) else c }
     }
+
+    private fun call(client: String, kind: CallKind, ns: String, period: Long, keyKind: String?, atMillis: Long): Jd8.Call =
+        Jd8.Call(client, kind, "S0", ns, period, keyKind, atMillis, session = atMillis / (15 * MINUTE) * (15 * MINUTE))
+
+    /** [c] [by] ms later, in [session] (its own by default), exposed or not. */
+    private fun moved(c: Jd8.Call, by: Long, session: Long? = c.session, exposed: Boolean = c.exposed): Jd8.Call =
+        Jd8.Call(c.client, c.kind, c.relay, c.namespaceHex, c.period, c.keyKind, c.atMillis + by, exposed, session)
 
     private fun ns(client: String): String = client.padEnd(64, '0').map { if (it in '0'..'9' || it in 'a'..'f') it else 'e' }.joinToString("")
 
@@ -77,8 +89,10 @@ class Jd8SelfTest {
         assertTrue(
             r.line(),
             r.line().endsWith(
-                "; T27's minute measured, not compared (DM work moves the redeem lane's steps, §22.26): 20 of 20 pairs in the same " +
-                    "minute, 20 at the same millisecond, 1 after a message in their relay session (1 redemptions, 0 registrations)",
+                "; T27's time compared: registrations to the minute (12 of 12 pairs in the same minute), redemptions to their " +
+                    "relay session (8 of 8 pairs in the same session; the harness cannot test their minute, §22.26: 8 of 8 in the " +
+                    "same minute); 20 of 20 pairs at the same millisecond, 1 after a message in their relay session (1 redemptions, " +
+                    "0 registrations)",
             ),
         )
     }
@@ -110,20 +124,63 @@ class Jd8SelfTest {
     }
 
     @Test
-    fun theMinuteIsCountedAndDoesNotDecide() {
+    fun aRegistrationAtAnotherMinuteFails() {
         val active = activeCalls().toMutableMap()
         val carol = active.getValue("carol")
-        active["carol"] = carol.mapIndexed { i, c -> if (i == 2) Jd8.Call(c.client, c.kind, c.relay, c.namespaceHex, c.period, c.keyKind, c.atMillis + 40_000) else c }
+        active["carol"] = carol.mapIndexed { i, c -> if (i == 2) moved(c, 40_000) else c }
         val sameMinute = result(active = active)
-        assertTrue(sameMinute.line(), sameMinute.passed)
+        assertTrue("40 s later, in the same minute: ${sameMinute.line()}", sameMinute.passed)
         assertEquals(20, sameMinute.timing.sameMinute)
         assertEquals(19, sameMinute.timing.sameMillis)
-        active["carol"] = carol.mapIndexed { i, c -> if (i == 2) Jd8.Call(c.client, c.kind, c.relay, c.namespaceHex, c.period, c.keyKind, c.atMillis + MINUTE) else c }
-        val moved = result(active = active)
-        assertTrue("a call a minute later is measured, not a failure: ${moved.line()}", moved.passed)
-        assertTrue(moved.line(), moved.line().contains(": 19 of 20 pairs in the same minute, 19 at the same millisecond,"))
-        assertEquals(listOf("carol REGISTER S0 ${ns("carol").take(16)} p$w0 deposit at minute 30 idle, 31 active"), moved.timing.moved)
-        // And no message before any call: reported, not a failure either.
+        active["carol"] = carol.mapIndexed { i, c -> if (i == 2) moved(c, MINUTE) else c }
+        val later = result(active = active)
+        assertFalse("a registration a minute later: ${later.line()}", later.passed)
+        assertTrue(later.line(), later.line().contains("registrations to the minute (11 of 12 pairs in the same minute)"))
+        assertTrue(
+            later.line(),
+            later.line().contains("; 1 registrations at another minute in the active twin (first: carol REGISTER S0 ${ns("carol").take(16)} p$w0 deposit at minute 30 idle, 31 active)"),
+        )
+        // Only the timing clause: nothing else differs, so this is not a count difference.
+        assertTrue(later.line(), later.differences.isEmpty() && later.unreached.isEmpty() && later.coverage.isEmpty())
+        // A registration a minute earlier fails as well.
+        active["carol"] = carol.mapIndexed { i, c -> if (i == 2) moved(c, -MINUTE) else c }
+        assertFalse(result(active = active).passed)
+    }
+
+    @Test
+    fun aRedemptionIsComparedByItsRelaySession() {
+        val active = activeCalls().toMutableMap()
+        val bob = active.getValue("bob")
+        // Two minutes later in the same session: its minute is counted, not compared.
+        active["bob"] = bob.mapIndexed { i, c -> if (i == 1) moved(c, 2 * MINUTE) else c }
+        val sameSession = result(active = active)
+        assertTrue("a redemption at another minute of its session: ${sameSession.line()}", sameSession.passed)
+        assertTrue(
+            sameSession.line(),
+            sameSession.line().contains("(8 of 8 pairs in the same session; the harness cannot test their minute, §22.26: 7 of 8 in the same minute)"),
+        )
+        assertEquals(listOf("bob REDEEM S0 ${ns("bob").take(16)} p${w0 + 1} at minute 2806 idle, 2808 active"), sameSession.timing.moved)
+        // In the next session: a failure.
+        active["bob"] = bob.mapIndexed { i, c -> if (i == 1) moved(c, 15 * MINUTE, session = c.session!! + 15 * MINUTE) else c }
+        val nextSession = result(active = active)
+        assertFalse(nextSession.line(), nextSession.passed)
+        assertTrue(nextSession.line(), nextSession.line().contains("(7 of 8 pairs in the same session;"))
+        assertTrue(
+            nextSession.line(),
+            nextSession.line().contains(
+                "; 1 redemptions in another relay session in the active twin (first: bob REDEEM S0 ${ns("bob").take(16)} p${w0 + 1} at minute 2806 " +
+                    "in the session of minute 2805 idle, 2821 in the session of minute 2820 active)",
+            ),
+        )
+        assertTrue(nextSession.line(), nextSession.differences.isEmpty() && nextSession.unreached.isEmpty() && nextSession.coverage.isEmpty())
+        // At the same millisecond but outside any session in both twins: not "the same session".
+        val idle = idleCalls().toMutableMap()
+        idle["bob"] = idle.getValue("bob").mapIndexed { i, c -> if (i == 1) moved(c, 0, session = null) else c }
+        active["bob"] = bob.mapIndexed { i, c -> if (i == 1) moved(c, 0, session = null) else c }
+        val none = result(idle, active)
+        assertFalse(none.line(), none.passed)
+        assertTrue(none.line(), none.line().contains("in the session of minute none idle"))
+        // And no message before any call: reported, not a failure.
         val unexposed = result(active = idleCalls())
         assertTrue(unexposed.line(), unexposed.passed)
         assertTrue(unexposed.line(), unexposed.line().contains(", 0 after a message in their relay session (0 redemptions, 0 registrations)"))

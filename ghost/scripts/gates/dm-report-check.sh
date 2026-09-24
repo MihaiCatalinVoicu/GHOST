@@ -20,8 +20,9 @@
 #   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM2 with its fifteen
 #                   (slice S11b), NI-DM3, JD7's WITHHOLD_ALL_BUNDLES variant with the bound reached
 #                   (S11b), the T34 seizure line with both controls complete, the T34 one-reply
-#                   line, JD8 over the entitlement world's twins (§22.26), and the privacy mutant
-#                   count with one detection line per mutant;
+#                   line, JD8 over the entitlement world's twins with its control and its two
+#                   timing leaks (§22.26), and the privacy mutant count with one detection line per
+#                   mutant;
 #   privacy-pr      both halves in one report at the PR scale (N = 120, 14 days), which is what the
 #                   `android` job of ci.yml writes.
 #
@@ -45,8 +46,9 @@
 # mutant. The privacy half follows the same rule: it does not
 # require JD10, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
 # AD-7-with-token line, the EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry
-# clause, T26's model-relay open check or 25 of the 40 privacy mutants (nor PM-5's exact-seconds
-# half, nor PM-26's current-week half), because nothing in this branch produces them; §22.16 names
+# clause, T26's model-relay open check, JD8's redemption minute (not testable in this harness,
+# §22.26 item 3) or 25 of the 40 privacy mutants (nor PM-5's exact-seconds half, nor PM-26's
+# current-week half), because nothing in this branch produces them; §22.16 names
 # each (items 10–15 and 20), §22.21 what slice S11b added (NI-DM2 with its one declared open
 # defect, the JD7 WITHHOLD_ALL_BUNDLES variant, PM-5's day-rounding half and PM-31, and NI-DM2 as
 # PM-4's second killer), and §22.26 what the JD8 slice added (JD8 over the entitlement world's
@@ -160,27 +162,52 @@ privacy_suite() {
   # --- JD8 over the entitlement world's twins (the JD8 slice, §22.26) --------------------------------
   # Exactly one line, a PASS of the one twin shape the test builds (0 vs 4 contacts, four token
   # holders compared, dave holding none), ending with its last clause (a FAIL appends its problems
-  # after it). What a PASS must carry, so it cannot be a comparison of nothing or of one world with
-  # itself: a non-zero number of calls, each client's redemptions and registrations non-zero and
-  # summing to it, and as many paired calls as calls; both token weeks and all three registration
-  # periods; the active twin with its four contacts, texts delivered, relay calls on contacts'
-  # namespaces and LOCAL needs its planner skipped (PM-1b's path), dave's establishment not ready; the
-  # idle twin with no contact and no such call; no call by dave in either; and T27's minute declared
-  # measured and not compared, with its measurement — the declaration is pinned word for word, so a
-  # line that claimed the minute compared would not pass (it is not comparable here, §22.26).
+  # after it, and is refused as a FAIL). What a PASS must carry, so it cannot be a comparison of
+  # nothing or of one world with itself: a non-zero number of calls, each client's redemptions and
+  # registrations non-zero and summing to it; both token weeks and all three registration periods;
+  # the active twin with its four contacts, texts delivered, relay calls on contacts' namespaces and
+  # LOCAL needs its planner skipped (PM-1b's path), dave's establishment not ready; the idle twin with
+  # no contact and no such call; no call by dave in either. And T27's time, compared: **every**
+  # registration pair in the same minute and **every** redemption pair in the same relay session, the
+  # pairs being exactly the registrations and the redemptions the line counts, and every call paired;
+  # the redemption minute is declared not testable here, word for word, with its measurement beside
+  # it (§22.26 item 3), so a line that dropped the timing clause, or claimed the redemption minute
+  # compared, does not pass.
   jd8="$(grep -E '^dm JD8: ' "$report" || true)"
   if [ -z "$jd8" ] || [ "$(printf '%s\n' "$jd8" | wc -l)" -ne 1 ]; then
     bad "not exactly one JD8 line"
-  elif ! printf '%s\n' "$jd8" | grep -qE "^dm JD8: PASS twins of 0 vs 4 contacts \(5 clients of the entitlement world: 3 contacts reachable, 1 who holds no token\), to start\(2976\) \+ 3 h: redemptions and registrations of 4 clients equal as \(kind, relay, namespace, week or period, key kind\) multisets over [1-9][0-9]* calls \(alice [1-9][0-9]*\+[1-9][0-9]*, bob [1-9][0-9]*\+[1-9][0-9]*, carol [1-9][0-9]*\+[1-9][0-9]*, erin [1-9][0-9]*\+[1-9][0-9]* redeem\+register\), every one on an own namespace; each covers token weeks \{2975, 2976\} and periods \{2975, 2976, 2977\}; the twins differ in DM activity: active alice 4 contacts, [1-9][0-9]* texts delivered, [1-9][0-9]* relay calls on contacts' namespaces, a LOCAL need skipped [1-9][0-9]* times by alice's planner \(dave (UNREACHABLE|FETCHING)\); idle 0 contacts, 0 such calls; dave \(no token\) 0 and 0 calls; T27's minute measured, not compared \(DM work moves the redeem lane's steps, §22\.24\): [0-9]+ of [1-9][0-9]* pairs in the same minute, [0-9]+ at the same millisecond, [0-9]+ after a message in their relay session \([0-9]+ redemptions, [0-9]+ registrations\)\$"; then
-    bad "no JD8 PASS over the entitlement world's twins that compared the calls of all four token holders, with twins that differ in DM activity, the minute declared not compared, and nothing appended"
+  elif printf '%s\n' "$jd8" | grep -qE '^dm JD8: FAIL'; then
+    bad "JD8 failed"
+  elif ! printf '%s\n' "$jd8" | grep -qE "^dm JD8: PASS twins of 0 vs 4 contacts \(5 clients of the entitlement world: 3 contacts reachable, 1 who holds no token\), to start\(2976\) \+ 3 h: redemptions and registrations of 4 clients equal as \(kind, relay, namespace, week or period, key kind\) multisets over [1-9][0-9]* calls \(alice [1-9][0-9]*\+[1-9][0-9]*, bob [1-9][0-9]*\+[1-9][0-9]*, carol [1-9][0-9]*\+[1-9][0-9]*, erin [1-9][0-9]*\+[1-9][0-9]* redeem\+register\), every one on an own namespace; each covers token weeks \{2975, 2976\} and periods \{2975, 2976, 2977\}; the twins differ in DM activity: active alice 4 contacts, [1-9][0-9]* texts delivered, [1-9][0-9]* relay calls on contacts' namespaces, a LOCAL need skipped [1-9][0-9]* times by alice's planner \(dave (UNREACHABLE|FETCHING)\); idle 0 contacts, 0 such calls; dave \(no token\) 0 and 0 calls; T27's time compared: registrations to the minute \([0-9]+ of [1-9][0-9]* pairs in the same minute\), redemptions to their relay session \([0-9]+ of [1-9][0-9]* pairs in the same session; the harness cannot test their minute, §22\.26: [0-9]+ of [1-9][0-9]* in the same minute\); [0-9]+ of [1-9][0-9]* pairs at the same millisecond, [0-9]+ after a message in their relay session \([0-9]+ redemptions, [0-9]+ registrations\)\$"; then
+    bad "no JD8 PASS over the entitlement world's twins that compared the calls of all four token holders and their times, with twins that differ in DM activity, and nothing appended"
   else
     calls="$(printf '%s\n' "$jd8" | sed -nE 's/.* multisets over ([0-9]+) calls .*/\1/p')"
     sum="$(printf '%s\n' "$jd8" | sed -nE 's/.*\(alice ([0-9]+)\+([0-9]+), bob ([0-9]+)\+([0-9]+), carol ([0-9]+)\+([0-9]+), erin ([0-9]+)\+([0-9]+) redeem\+register\).*/\1+\2+\3+\4+\5+\6+\7+\8/p')"
-    pairs="$(printf '%s\n' "$jd8" | sed -nE 's/.*: [0-9]+ of ([0-9]+) pairs in the same minute, .*/\1/p')"
+    redeemed="$(printf '%s\n' "$jd8" | sed -nE 's/.*\(alice ([0-9]+)\+[0-9]+, bob ([0-9]+)\+[0-9]+, carol ([0-9]+)\+[0-9]+, erin ([0-9]+)\+[0-9]+ redeem\+register\).*/\1+\2+\3+\4/p')"
+    registered="$(printf '%s\n' "$jd8" | sed -nE 's/.*\(alice [0-9]+\+([0-9]+), bob [0-9]+\+([0-9]+), carol [0-9]+\+([0-9]+), erin [0-9]+\+([0-9]+) redeem\+register\).*/\1+\2+\3+\4/p')"
+    read -r reg_same reg_pairs <<<"$(printf '%s\n' "$jd8" | sed -nE 's/.*registrations to the minute \(([0-9]+) of ([0-9]+) pairs.*/\1 \2/p')"
+    read -r red_same red_pairs <<<"$(printf '%s\n' "$jd8" | sed -nE 's/.*redemptions to their relay session \(([0-9]+) of ([0-9]+) pairs in the same session.*/\1 \2/p')"
+    pairs="$(printf '%s\n' "$jd8" | sed -nE 's/.*; [0-9]+ of ([0-9]+) pairs at the same millisecond, .*/\1/p')"
     [ "$(( sum ))" = "$calls" ] || bad "JD8's per-client calls ($sum) do not sum to its $calls calls"
     [ "$pairs" = "$calls" ] || bad "JD8 paired $pairs of its $calls calls"
+    [ "$reg_pairs" = "$(( registered ))" ] || bad "JD8's timing clause paired $reg_pairs registrations of the $(( registered )) it counts"
+    [ "$red_pairs" = "$(( redeemed ))" ] || bad "JD8's timing clause paired $red_pairs redemptions of the $(( redeemed )) it counts"
+    [ "$reg_same" = "$reg_pairs" ] || bad "JD8 passed with $reg_same of $reg_pairs registration pairs in the same minute"
+    [ "$red_same" = "$red_pairs" ] || bad "JD8 passed with $red_same of $red_pairs redemption pairs in the same relay session"
   fi
-  if grep -qE '^dm JD8: FAIL' "$report"; then bad "JD8 failed"; fi
+  # The control every JD8 kill and timing leak is held against runs with the entitlement world's
+  # every-commit check off (it would stop PM-1b's world first, §22.26): it must have seen the report's
+  # run call for call, at the same milliseconds, and passed JD8.
+  if [ "$(grep -cE '^dm JD8 control: ' "$report" || true)" -ne 1 ] \
+    || ! grep -qE "^dm JD8 control: PASS the twins with the every-commit check off, the configuration every JD8 kill and timing leak runs in, saw the same [1-9][0-9]* and [1-9][0-9]* relay calls \(idle, active\) at the same milliseconds as the report's run, and JD8 passed on them\$" "$report"; then
+    bad "no JD8 control PASS: the twins every JD8 kill is held against did not see the report's run call for call, or failed JD8"
+  fi
+  # The timing clause can fail: two leaks that keep every count equal and move calls by the DM
+  # traffic a client received, each detected by the timing clause alone (§22.26).
+  if [ "$(grep -cE '^dm JD8 timing leaks: ' "$report" || true)" -ne 1 ] \
+    || ! grep -qE "^dm JD8 timing leaks: PASS 2 of 2 detected by the timing clause alone, every count equal in both twins: a renewal that waits for inbound traffic \([1-9][0-9]* redemptions in another relay session, [0-9]+ registrations at another minute, of [1-9][0-9]* pairs\), later-week registrations that wait for inbound traffic or the week's last 10 h \([1-9][0-9]* registrations at another minute, [0-9]+ redemptions in another relay session, of [1-9][0-9]* pairs\)\$" "$report"; then
+    bad "no JD8 timing-leak PASS: the timing clause did not detect both leaks on its own"
+  fi
   # --- end of JD8 ------------------------------------------------------------------------------------
   # The privacy mutants: the count this slice registers, one detection line each, none undetected.
   # Both numbers are written from what the run recorded (`PrivacyKills`): a mutant is "run" when a
@@ -199,7 +226,7 @@ privacy_suite() {
   grep -qxF 'dm privacy mutant PM-4: detected by JD4 (SMALL world), NI-DM2 (twin worlds)' "$report" \
     || bad "PM-4 is not detected by both JD4 and NI-DM2"
   # PM-5 is half of §15.7's entry (the day rounding; the exact-seconds half is not built), and its
-  # line must say so, so "12 detected" never reads as more than was built.
+  # line must say so, so the detected count never reads as more than was built.
   grep -qxF 'dm privacy mutant PM-5: detected by JD5 (SMALL world); the day-rounding half only; the exact-seconds half is not built' "$report" \
     || bad "PM-5's detection line does not say that only its day-rounding half is built"
   if grep -qE '^dm privacy mutant .*NOT DETECTED' "$report"; then bad "a registered privacy mutant was not detected by every check it names"; fi

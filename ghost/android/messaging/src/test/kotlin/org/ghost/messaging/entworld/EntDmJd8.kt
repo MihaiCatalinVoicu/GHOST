@@ -13,10 +13,10 @@ import org.ghost.messaging.api.TrustState
 import org.ghost.network.EntitlementCrypto
 import org.ghost.sync.api.Capabilities
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.Namespaces
 import org.ghost.sync.harness.CallInfo
 import org.ghost.sync.harness.CallKind
-import org.ghost.sync.harness.Client
 import org.ghost.sync.harness.ClientSpec
 import org.ghost.sync.harness.EventKind
 import org.ghost.sync.harness.Invariants
@@ -27,15 +27,17 @@ import org.ghost.sync.harness.World.Companion.HOUR
 import org.ghost.sync.harness.World.Companion.MINUTE
 import org.ghost.sync.harness.foreground
 import org.ghost.sync.harness.jobs
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A mutation of the JD8 twin worlds: the entitlement-world half of a privacy mutant
- * (`dmworld/PrivacyMutants.kt`), implemented only in `src/test` as §15.7 requires. [rewrite] is a
- * statement rewrite on **every** client's executor — the one connection the sync engine, the
- * entitlement engine and the DM layer share — built per world, so it may read the world's clock;
- * [decorateCapabilities] and [decorateNamespaces] wrap the DM steps' own sync ports
- * (`DmDevice.HarnessOverride`), never the owner steps' and never the engines'.
+ * (`dmworld/PrivacyMutants.kt`) or one of JD8's own timing-leak controls ([Jd8TimingLeaks]),
+ * implemented only in `src/test` as §15.7 requires. [rewrite] is a statement rewrite on **every**
+ * client's executor — the one connection the sync engine, the entitlement engine and the DM layer
+ * share — built per world, so it may read the world's clock; [decorateCapabilities] and
+ * [decorateNamespaces] wrap the DM steps' own sync ports (`DmDevice.HarnessOverride`), never the
+ * owner steps' and never the engines'.
  */
 internal class EntMutation(
     val rewrite: ((World) -> (String, List<Any?>) -> Pair<String, List<Any?>>)? = null,
@@ -56,14 +58,16 @@ internal class EntMutation(
  * real entitlement engine (trial through the real issuer lane, the redeem lane against one
  * `ModelRedeemRelay` per ES slot) and the real DM stack over the same database, on four slot
  * relays. alice (armed), bob, carol and erin activate a trial at 1, 3, 5 and 7 minutes; dave is a
- * client **who never bought access** (`genesis`: his identity exists, he holds no token, so his
- * DM layer activates, publishes a card and registers nothing). Periodic jobs every 15 minutes carry
- * the lanes of all five, and every client has the **same foreground sessions in both twins** — the
- * user opens the app at the same minutes whether or not it writes. The world starts on the Friday
- * of access week 2975 at 08:00 and ends at `start(2976) + 3 h`, so each trace holds the first
+ * client **who never bought access** (`genesis`: his identity exists, he holds no token; his DM
+ * layer activates and has a card alice can scan in person, but he registers nothing, so his bundle
+ * and inbox namespaces have no registration at any relay). Periodic jobs every 15 minutes carry the
+ * lanes of all five, and every client has the **same foreground sessions in both twins** — the user
+ * opens the app at the same minutes whether or not it writes. The world starts on the Friday of
+ * access week 2975 at 08:00 and ends at `start(2976) + 3 h`, so each trace holds the first
  * redemptions (week 2975), the Friday capability's `c` and `c + 1` registrations, the renewal with
  * week-2976 tokens at the planner's EXPIRING PRF time on Sunday, and the renewal's `c + 1` rows
- * (week 2977): the week is part of what is compared.
+ * (week 2977): the week is part of what is compared. The second renewal (week-2977 tokens) falls
+ * after the horizon and is in neither trace.
  *
  * **The twins differ in exactly one thing, the DM activity.** In the [active] twin alice scans the
  * cards of bob, carol, erin and dave in person at 6 h and writes to each; the three who can be
@@ -75,24 +79,27 @@ internal class EntMutation(
  * windows out, because his bundle namespace has no FETCH registration: the relays refuse alice's
  * credential, so alice holds a **LOCAL need** — the need §13.4's planner must never redeem (PM-1b).
  * In the idle twin nobody adds anybody and nobody writes; the foreground sessions in which the
- * active twin's users write are opened in the idle twin too.
+ * active twin's users write are opened in the idle twin too. The active twin has no rejected or
+ * deleted contact, no key change, reset, restore or invite: a leak only those trigger is not in it.
  *
  * **What is recorded.** The world's relay record (`EntDmWorld.relayEvents`, through
  * `World.relayObserver`, which the harness calls first at every relay event) gives every `REDEEM`
  * and `REGISTER` a relay saw, with the relay, the namespace and the world time; a `REDEEM`'s token
  * week is the issued token's (`EntRecords.issued`). A `RegisterKey` also names a period and a key
- * kind, which the record does not carry: they are read at the call's after-apply event from the
- * client's one `relay_key_registration` row of that (relay, namespace) whose lease is in flight
- * (`inflight = 1`; the lease transaction committed before the call and the result transaction
- * runs after it) — the arguments the call carried — and a call where that is not exactly one row is
- * counted ([Twin.unresolved]) and fails JD8.
+ * kind: they are the arguments the harness's relay port handed the model relay
+ * (`CallInfo.registration`), not anything the client's tables say; an after-apply `REGISTER` event
+ * without them is counted ([unresolved]) and fails JD8. Every event also gets the relay **session**
+ * it was made in, identified by the world time the session started ([sessionStartOf]): the jobs and
+ * the foreground schedule are the same in both twins, so the same session starts at the same time
+ * in both, and a renewal redeemed in another session of the other twin is a call the DM activity
+ * moved.
  *
  * [everyCommit]: the entitlement world's every-commit check (`EntDmWorld.checkCommit`), on in the
- * report's run, which is also the control the JD8 kills are held against; the mutated worlds of
- * `DmPrivacyMutantTest` run with it off, because it stops PM-1b's world at the commit that installs
- * the capability ("alice: a redeemed capability on a LOCAL namespace", measured) before JD8 could
- * look. It is read-only, so a world runs the same with it on until the moment it would throw: the
- * control twins run with it off gave the same 186 calls at the same milliseconds (measured, §22.26).
+ * report's run (`DmJd8Test`); the mutated worlds of `DmPrivacyMutantTest` and of the timing-leak
+ * controls run with it off, because it stops PM-1b's world at the commit that installs the
+ * capability ("alice: a redeemed capability on a LOCAL namespace", measured) before JD8 could look.
+ * Their control is the same twins with the check off, and `DmJd8Test` asserts that control saw
+ * every relay call of the report's run at the same millisecond (§22.26).
  */
 internal class Jd8Twin(
     val active: Boolean,
@@ -115,10 +122,18 @@ internal class Jd8Twin(
     /** Every text a user wrote, as (from, to, text), in order. */
     val written = ArrayList<Triple<String, String, String>>()
 
-    /** `RegisterKey` arguments the record does not carry: index in `dm.relayEvents` → (period, kind). */
+    /** `RegisterKey` arguments the relay record does not carry: index in `dm.relayEvents` → (period, kind). */
     val registrationKeys = HashMap<Int, Pair<Long, String>>()
     var unresolved = 0
         private set
+
+    /** Relay session of every recorded event (index in `dm.relayEvents` → session number, for [Jd8.Call.exposed]). */
+    val sessionOf = HashMap<Int, Int>()
+
+    /** World time at which the session of every recorded event started (index in `dm.relayEvents` → ms). */
+    val sessionStartOf = HashMap<Int, Long>()
+    private val sessions = java.util.IdentityHashMap<org.ghost.sync.engine.Session, Int>()
+    private val sessionStarts = java.util.IdentityHashMap<org.ghost.sync.engine.Session, Long>()
 
     /** A generous trial, so a mutant that spends tokens on contacts does not starve the owner's own renewals. */
     override fun config(): EntConfig = configured(EntConfig(trialPerSlot = TRIAL_PER_SLOT))
@@ -144,6 +159,12 @@ internal class Jd8Twin(
         erinDm = client("erin", armed = false, genesis = false, ERIN_BRANCH)
         daveDm = client("dave", armed = false, genesis = true, DAVE_BRANCH)
 
+        // The start time of every session, recorded before the DM and entitlement hooks run at it.
+        val started = w.onSessionStart
+        w.onSessionStart = { c, s ->
+            sessionStarts[s] = w.clock.millis
+            started?.invoke(c, s)
+        }
         // The registration arguments and the relay session of every event, read after
         // EntDmWorld's recorder appended the event.
         val recorder = w.relayObserver
@@ -152,8 +173,11 @@ internal class Jd8Twin(
             // EntDmWorld records before-send and after-apply events only.
             if (kind == EventKind.RELAY_AFTER_RESPONSE) return@observer
             val index = dm.relayEvents.size - 1
-            c.session?.let { s -> sessionOf[index] = sessions.getOrPut(s) { sessions.size } }
-            if (kind == EventKind.RELAY_AFTER_APPLY && reached && info.kind == CallKind.REGISTER) registration(w, c, info, index)
+            c.session?.let { s ->
+                sessionOf[index] = sessions.getOrPut(s) { sessions.size }
+                sessionStarts[s]?.let { sessionStartOf[index] = it }
+            }
+            if (kind == EventKind.RELAY_AFTER_APPLY && reached && info.kind == CallKind.REGISTER) registration(info, index)
         }
 
         // Identical in both twins: the trials, the jobs, and the user's foreground sessions.
@@ -170,24 +194,17 @@ internal class Jd8Twin(
         w.endMillis = END
     }
 
-    /** Relay session of every recorded event (index in `dm.relayEvents` → session number). */
-    val sessionOf = HashMap<Int, Int>()
-    private val sessions = java.util.IdentityHashMap<org.ghost.sync.engine.Session, Int>()
-
     /** Sunday's peer at hour [h]: bob, carol and erin in turn. */
     private fun sundayPeer(h: Int): EntDmClient = reachable[h % reachable.size]
 
-    private fun registration(w: World, c: Client, info: CallInfo, index: Int) {
-        val node = w.relays.single { it.name == info.relay }
-        val relayId = c.relayIds[node.index]?.value
-        val rows = ArrayList<Pair<Long, String>>()
-        if (relayId != null) {
-            c.jdbc.query(
-                "SELECT period_id, kind FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 AND inflight = 1",
-                listOf(relayId, hexBytes(info.namespace)),
-            ) { rows += it.long(0) to it.string(1) }
+    /** The period and key kind the harness's relay port handed the model relay for this `RegisterKey`. */
+    private fun registration(info: CallInfo, index: Int) {
+        val (period, code) = info.registration ?: run {
+            unresolved++
+            return
         }
-        if (rows.size == 1) registrationKeys[index] = rows.single() else unresolved++
+        val kind = KeyKind.entries.firstOrNull { it.code == code }?.name?.lowercase()
+        if (kind == null) unresolved++ else registrationKeys[index] = period to kind
     }
 
     /** The active twin's user actions, each inside a foreground session both twins have. */
@@ -302,8 +319,6 @@ internal class Jd8Twin(
             .map { it to it + 40 * MINUTE }
         val PEER_FOREGROUNDS: List<Pair<Long, Long>> = listOf(8 * HOUR, 9 * HOUR, 10 * HOUR, 31 * HOUR, BOUNDARY + 2 * HOUR)
             .map { it to it + 30 * MINUTE }
-
-        fun hexBytes(hex: String): ByteArray = ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
     }
 }
 
@@ -313,24 +328,21 @@ internal class Jd8Twin(
  * **Compared, per client who holds tokens** (alice, bob, carol and erin; dave, who holds none, must
  * have an empty trace in both twins): the multiset of the `REDEEM` and `REGISTER` calls relays saw,
  * each as `(kind, relay, namespace, token week or registration period, key kind)` — T27's count,
- * relay and namespace, and §15.6's week — which must be **equal** across the twins; and, in each
- * twin, every one of those calls on a namespace the client **owns** (the first half of §15.6's
- * sentence, and JD3's redeem-and-register clause). A failure prints the two multiset differences by
- * client, so the twin that holds the extra calls names the mutant.
- *
- * **T27's minute is measured and not compared** (§22.22 item 8 asked for the measurement, §22.26
- * records it). Each call of a key is paired with the same key's call of the other twin, in time
- * order, and the line reports how many pairs fall in the same minute and at the same millisecond,
- * and how many of the active twin's calls came after a message in their own relay session
- * ([Call.exposed]) — but a PASS does not require them equal, because they are not, in this world:
- * on three seeds the pairs agreed at the minute 186 of 186, 182 of 182 and 184 of 186 times. The
- * redeem lane waits between its steps with draws the harness hands out per call site in order
- * (`SiteRandom`), and DM work that holds a session open runs more lane steps (measured on the third
- * seed: alice's lane drew 927 waits in the active twin, 925 in the idle one), so every later wait,
- * and the step at which a renewal comes due, moves — two of alice's renewals by 17 s and 52 s,
- * across a minute. No registration came after a message in its session on any of the three seeds:
- * each runs in the first maintenance pass of a session, before that session's stores and fetches
- * (`WorkItem.Pass`, "registrations first"). The pairs a run moved are printed by `DmJd8Test`.
+ * relay and namespace, and §15.6's week — which must be **equal** across the twins; in each twin,
+ * every one of those calls on a namespace the client **owns** (the first half of §15.6's sentence,
+ * and JD3's redeem-and-register clause); and **the time of each call**, pairing each call of a key
+ * with the same key's call of the other twin in time order:
+ *  - a **registration** must fall in the **same minute** in both twins (T27's "minute"); and
+ *  - a **redemption** must run in the **same relay session** in both twins (the session identified
+ *    by its start time, [Jd8Twin]). Its minute is measured and reported, not compared: the
+ *    harness's randomness is handed out per call site in call order (`SiteRandom`), so a session
+ *    that DM work holds open for more redeem-lane steps shifts every later draw of that lane, and
+ *    the step at which a due renewal is redeemed moves inside the session (measured on the third
+ *    seed: two of alice's renewals 17 s and 52 s earlier, each across a minute, §22.26 item 3). That
+ *    is a property of how the twins share their randomness, which a device does not have; the
+ *    harness cannot test a redemption's minute, and the session is the finest time it can.
+ * A failure prints the multiset differences by client, so the twin that holds the extra calls names
+ * the mutant, and the calls the timing clause refused.
  *
  * **What makes it able to fail, and what keeps it from passing vacuously.** The twins must reach
  * their variable, or JD8 fails without comparing: the active twin's alice holds her four contacts,
@@ -338,12 +350,12 @@ internal class Jd8Twin(
  * calls on its contacts' namespaces, dave's establishment did not complete, and every twin world ran
  * to its horizon with its end checks (structural invariants, `EntWorld.structural`, no DM pass
  * threw); the idle twin's clients hold no contact and made no such call; every `RegisterKey` had its
- * arguments read. Each compared trace must be non-empty and cover the week — token weeks 2975 and
- * 2976 and registration periods 2975, 2976 and 2977 — so a comparison over nothing, or over a world
- * that never renewed, fails; and alice's planner must have skipped a LOCAL need in the active twin,
- * so the path PM-1b mutates was taken. `Jd8SelfTest` holds the comparator to known answers, and the
- * mutants PM-1, PM-1b and PM-26 (`dmworld/PrivacyMutants.kt`) show it fails on a trace that depends
- * on DM activity.
+ * arguments. Each compared trace must be non-empty and cover the week — token weeks 2975 and 2976 and
+ * registration periods 2975, 2976 and 2977 — so a comparison over nothing, or over a world that never
+ * renewed, fails; and alice's planner must have skipped a LOCAL need in the active twin, so the path
+ * PM-1b mutates was taken. `Jd8SelfTest` holds the comparator to known answers; the mutants PM-1,
+ * PM-1b and PM-26 (`dmworld/PrivacyMutants.kt`) show it fails on a trace whose counts depend on DM
+ * activity, and the two [Jd8TimingLeaks] on traces whose counts do not and whose times do.
  */
 internal object Jd8 {
 
@@ -363,6 +375,8 @@ internal object Jd8 {
          * have moved (so true only in the active twin).
          */
         val exposed: Boolean = false,
+        /** World time at which the relay session the call was made in started; null outside a session. */
+        val session: Long? = null,
     ) {
         val key: String get() = "$kind $relay ${namespaceHex.take(16)} p$period${keyKind?.let { " $it" } ?: ""}"
 
@@ -387,11 +401,16 @@ internal object Jd8 {
         val daveEstablishment: Establishment?,
         /** Decisions of alice's planner that skipped a need of a LOCAL namespace (`Counters.LOCAL_SKIPPED`). */
         val localSkipped: Long,
-        /** `REGISTER` calls whose (period, kind) could not be read (JD8 fails on any). */
+        /** `REGISTER` calls whose (period, kind) the relay port did not hand over (JD8 fails on any). */
         val unresolved: Int,
         /** The world threw, or its end checks failed. */
         val failure: String?,
         val millis: Long,
+        /** Every call a relay saw (all kinds, every client), as (client, kind, relay, namespace, ms): count and SHA-256. */
+        val seenCount: Int = 0,
+        val seenDigest: String = "",
+        /** The calls relays saw from dave, who holds no token, by kind. */
+        val daveSeen: Map<CallKind, Int> = emptyMap(),
     )
 
     class Result(val idle: Twin, val active: Twin) {
@@ -415,11 +434,15 @@ internal object Jd8 {
                 // that is the mutant's doing, not a world that missed its variable.
                 (if (active.localSkipped > 0) emptyList() else listOf("alice's planner skipped no LOCAL need in the active twin"))
 
-        /** Measured, reported, not compared (see [Jd8]'s note). */
+        /** The paired calls' times (see [Jd8]'s note): registrations to the minute, redemptions to the session. */
         val timing: Timing get() = timing(idle, active, compared)
 
         val passed: Boolean
-            get() = unreached.isEmpty() && differences.isEmpty() && foreign.isEmpty() && coverage.isEmpty() && timing.pairs > 0
+            get() {
+                val t = timing
+                return unreached.isEmpty() && differences.isEmpty() && foreign.isEmpty() && coverage.isEmpty() && t.pairs > 0 &&
+                    t.registrationsMoved.isEmpty() && t.redemptionsOtherSession.isEmpty()
+            }
 
         fun line(): String {
             val total = compared.sumOf { idle.calls[it].orEmpty().size }
@@ -428,43 +451,63 @@ internal object Jd8 {
                 "$name ${calls.count { it.kind == CallKind.REDEEM }}+${calls.count { it.kind == CallKind.REGISTER }}"
             }
             val t = timing
+            val ok = passed
             // A FAIL line says what was compared, not what a PASS would have shown.
-            val head = "dm JD8: ${if (passed) "PASS" else "FAIL"} twins of 0 vs ${active.contacts["alice"] ?: 0} contacts " +
+            val head = "dm JD8: ${if (ok) "PASS" else "FAIL"} twins of 0 vs ${active.contacts["alice"] ?: 0} contacts " +
                 "($WORLD_SHAPE), to start(${WEEK0 + 1}) + 3 h: redemptions and registrations of ${compared.size} clients " +
-                "${if (passed) "equal" else "compared"} as (kind, relay, namespace, week or period, key kind) multisets over $total calls " +
+                "${if (ok) "equal" else "compared"} as (kind, relay, namespace, week or period, key kind) multisets over $total calls " +
                 "($perClient redeem+register)" +
-                (if (passed) ", every one on an own namespace" else "; own namespaces checked") +
-                "; each ${if (passed) "covers" else "must cover"} token weeks {$WEEK0, ${WEEK0 + 1}} and periods {$WEEK0, ${WEEK0 + 1}, ${WEEK0 + 2}}"
+                (if (ok) ", every one on an own namespace" else "; own namespaces checked") +
+                "; each ${if (ok) "covers" else "must cover"} token weeks {$WEEK0, ${WEEK0 + 1}} and periods {$WEEK0, ${WEEK0 + 1}, ${WEEK0 + 2}}"
             val reach = "; the twins differ in DM activity: active alice ${active.contacts["alice"] ?: 0} contacts, " +
                 "${active.delivered} texts delivered, ${active.foreignDmCalls.values.sum()} relay calls on contacts' namespaces, " +
                 "a LOCAL need skipped ${active.localSkipped} times by alice's planner (dave ${active.daveEstablishment}); " +
                 "idle ${idle.contacts.values.sum()} contacts, ${idle.foreignDmCalls.values.sum()} such calls; " +
                 "dave (no token) ${idle.calls["dave"].orEmpty().size} and ${active.calls["dave"].orEmpty().size} calls"
-            val time = "; T27's minute measured, not compared (DM work moves the redeem lane's steps, §22.26): " +
-                "${t.sameMinute} of ${t.pairs} pairs in the same minute, ${t.sameMillis} at the same millisecond, " +
-                "${t.exposed} after a message in their relay session (${t.exposedRedeem} redemptions, ${t.exposed - t.exposedRedeem} registrations)"
+            val time = "; T27's time compared: registrations to the minute (${t.registrationsSameMinute} of ${t.registrations} pairs " +
+                "in the same minute), redemptions to their relay session (${t.redemptionsSameSession} of ${t.redemptions} pairs in the " +
+                "same session; the harness cannot test their minute, §22.26: ${t.redemptionsSameMinute} of ${t.redemptions} in the same " +
+                "minute); ${t.sameMillis} of ${t.pairs} pairs at the same millisecond, ${t.exposed} after a message in their relay " +
+                "session (${t.exposedRedeem} redemptions, ${t.exposed - t.exposedRedeem} registrations)"
             val problems = buildList {
                 if (unreached.isNotEmpty()) add("the twins did not reach their variable: ${unreached.joinToString("; ")}")
                 addAll(differences)
                 if (foreign.isNotEmpty()) add("names a namespace it does not own: ${foreign.take(6).joinToString("; ")}")
                 if (coverage.isNotEmpty()) add("coverage: ${coverage.take(6).joinToString("; ")}")
                 if (t.pairs == 0) add("no paired call: compared nothing")
+                if (t.registrationsMoved.isNotEmpty()) {
+                    add("${t.registrationsMoved.size} registrations at another minute in the active twin (first: ${t.registrationsMoved.take(3).joinToString("; ")})")
+                }
+                if (t.redemptionsOtherSession.isNotEmpty()) {
+                    add(
+                        "${t.redemptionsOtherSession.size} redemptions in another relay session in the active twin " +
+                            "(first: ${t.redemptionsOtherSession.take(3).joinToString("; ")})",
+                    )
+                }
             }
             return head + reach + time + (if (problems.isEmpty()) "" else "; " + problems.joinToString("; "))
         }
     }
-
 
     /** The paired-call timing of the two twins (see [Jd8]'s note). */
     class Timing(
         val pairs: Int,
         val sameMinute: Int,
         val sameMillis: Int,
+        val registrations: Int,
+        val registrationsSameMinute: Int,
+        val redemptions: Int,
+        val redemptionsSameSession: Int,
+        val redemptionsSameMinute: Int,
         /** Pairs whose active call was [Call.exposed], and of those the redemptions. */
         val exposed: Int,
         val exposedRedeem: Int,
-        /** Pairs at different minutes, as lines. */
+        /** Pairs at different minutes (either kind), as lines. */
         val moved: List<String>,
+        /** Registration pairs at different minutes: each fails JD8. */
+        val registrationsMoved: List<String>,
+        /** Redemption pairs in different relay sessions (or outside one): each fails JD8. */
+        val redemptionsOtherSession: List<String>,
     )
 
     const val WORLD_SHAPE: String = "5 clients of the entitlement world: 3 contacts reachable, 1 who holds no token"
@@ -526,61 +569,84 @@ internal object Jd8 {
         return if (n == 0) emptyList() else listOf("${if (twin.active) "active" else "idle"} dave, who holds no token, made $n calls")
     }
 
+    /** The calls of each key of [clients], idle and active, paired in time order. */
+    private fun pairs(idle: Twin, active: Twin, clients: List<String>): List<Triple<String, Call, Call>> {
+        val out = ArrayList<Triple<String, Call, Call>>()
+        for (name in clients) {
+            val a = idle.calls[name].orEmpty().groupBy { it.key }
+            val b = active.calls[name].orEmpty().groupBy { it.key }
+            for ((key, left) in a) {
+                for ((x, y) in left.sortedBy { it.atMillis }.zip(b[key].orEmpty().sortedBy { it.atMillis })) out += Triple(name, x, y)
+            }
+        }
+        return out
+    }
+
+    private fun sameSession(x: Call, y: Call): Boolean = x.session != null && x.session == y.session
+
+    private fun minuteOf(ms: Long?): String = ms?.let { "${it / MINUTE}" } ?: "none"
+
     /**
      * Each call of a key paired with the same key's call of the other twin, in time order: how many
-     * pairs, how many in the same minute and millisecond, how many active calls came after a
-     * message in their session, and every pair that fell at another minute.
+     * pairs, how many in the same minute and millisecond, registrations at another minute and
+     * redemptions in another session (each a failure), how many active calls came after a message in
+     * their session, and every pair that fell at another minute.
      */
     fun timing(idle: Twin, active: Twin, clients: List<String>): Timing {
         var pairs = 0
         var sameMinute = 0
         var sameMillis = 0
+        var registrations = 0
+        var registrationsSameMinute = 0
+        var redemptions = 0
+        var redemptionsSameSession = 0
+        var redemptionsSameMinute = 0
         var exposed = 0
         var exposedRedeem = 0
         val moved = ArrayList<String>()
-        for (name in clients) {
-            val a = idle.calls[name].orEmpty().groupBy { it.key }
-            val b = active.calls[name].orEmpty().groupBy { it.key }
-            for ((key, left) in a) {
-                val right = b[key].orEmpty()
-                for ((x, y) in left.sortedBy { it.atMillis }.zip(right.sortedBy { it.atMillis })) {
-                    pairs++
-                    if (x.atMillis == y.atMillis) sameMillis++
-                    if (x.atMillis / MINUTE == y.atMillis / MINUTE) {
-                        sameMinute++
-                    } else {
-                        moved += "$name $key at minute ${x.atMillis / MINUTE} idle, ${y.atMillis / MINUTE} active"
-                    }
-                    if (y.exposed) {
-                        exposed++
-                        if (y.kind == CallKind.REDEEM) exposedRedeem++
-                    }
+        val registrationsMoved = ArrayList<String>()
+        val redemptionsOtherSession = ArrayList<String>()
+        for ((name, x, y) in pairs(idle, active, clients)) {
+            pairs++
+            val minute = x.atMillis / MINUTE == y.atMillis / MINUTE
+            val where = "$name ${x.key} at minute ${x.atMillis / MINUTE} idle, ${y.atMillis / MINUTE} active"
+            if (x.atMillis == y.atMillis) sameMillis++
+            if (minute) sameMinute++ else moved += where
+            if (x.kind == CallKind.REGISTER) {
+                registrations++
+                if (minute) registrationsSameMinute++ else registrationsMoved += where
+            } else {
+                redemptions++
+                if (minute) redemptionsSameMinute++
+                if (sameSession(x, y)) {
+                    redemptionsSameSession++
+                } else {
+                    redemptionsOtherSession += "$name ${x.key} at minute ${x.atMillis / MINUTE} in the session of minute ${minuteOf(x.session)} idle, " +
+                        "${y.atMillis / MINUTE} in the session of minute ${minuteOf(y.session)} active"
                 }
             }
+            if (y.exposed) {
+                exposed++
+                if (y.kind == CallKind.REDEEM) exposedRedeem++
+            }
         }
-        return Timing(pairs, sameMinute, sameMillis, exposed, exposedRedeem, moved)
+        return Timing(
+            pairs, sameMinute, sameMillis, registrations, registrationsSameMinute, redemptions, redemptionsSameSession,
+            redemptionsSameMinute, exposed, exposedRedeem, moved, registrationsMoved, redemptionsOtherSession,
+        )
     }
 
-
     /**
-     * Every paired call whose time differs between the twins, as a line for the test's output:
-     * client, key, the two times (minute of the world and the millisecond remainder) and the
-     * difference — the measurement behind the line's timing clause.
+     * Every paired call whose time or session differs between the twins, or that came after a
+     * message, as a line for the test's output: client, key, the two times (minute of the world and
+     * the millisecond remainder), the two sessions and the difference — the measurement behind the
+     * line's timing clause.
      */
-    fun timingDetail(result: Result): List<String> {
-        val out = ArrayList<String>()
-        for (name in result.compared) {
-            val a = result.idle.calls[name].orEmpty().groupBy { it.key }
-            val b = result.active.calls[name].orEmpty().groupBy { it.key }
-            for ((key, left) in a) {
-                for ((x, y) in left.sortedBy { it.atMillis }.zip(b[key].orEmpty().sortedBy { it.atMillis })) {
-                    if (x.atMillis == y.atMillis && !y.exposed) continue
-                    out += "${if (y.exposed) "after a message: " else ""}$name $key idle ${x.atMillis / MINUTE} min +${x.atMillis % MINUTE} ms, active ${y.atMillis / MINUTE} min " +
-                        "+${y.atMillis % MINUTE} ms, Δ ${(y.atMillis - x.atMillis) / 1_000.0} s"
-                }
-            }
-        }
-        return out
+    fun timingDetail(result: Result): List<String> = pairs(result.idle, result.active, result.compared).mapNotNull { (name, x, y) ->
+        if (x.atMillis == y.atMillis && !y.exposed && x.session == y.session) return@mapNotNull null
+        "${if (y.exposed) "after a message: " else ""}$name ${x.key} idle ${x.atMillis / MINUTE} min +${x.atMillis % MINUTE} ms " +
+            "(session of minute ${minuteOf(x.session)}), active ${y.atMillis / MINUTE} min +${y.atMillis % MINUTE} ms " +
+            "(session of minute ${minuteOf(y.session)}), Δ ${(y.atMillis - x.atMillis) / 1_000.0} s"
     }
 
     /** The calls of [a] that [b] lacks, as multisets. */
@@ -610,18 +676,19 @@ internal object Jd8 {
 
     // ------------------------------------------------------------------ running the twins
 
-    /** The control of this JVM (the report's run, every-commit check on), computed once. */
+    /** Twin pairs computed in this JVM, by seed, label and whether the every-commit check ran. */
     private val cache = ConcurrentHashMap<String, Result>()
 
     /**
-     * JD8 over a twin pair of [seed]: the control ([mutation] null, the every-commit check on) or a
-     * mutated pair (the check off; see [Jd8Twin]). Cached per [label].
+     * JD8 over a twin pair of [seed]: unmutated ([mutation] null) or mutated, with the entitlement
+     * world's every-commit check on or off (see [Jd8Twin]). Cached per seed, [label] and [everyCommit].
      */
-    fun run(seed: Long, label: String, mutation: EntMutation?): Result = cache.computeIfAbsent(label) {
-        Result(twin(seed, false, mutation), twin(seed, true, mutation))
-    }
+    fun run(seed: Long, label: String, mutation: EntMutation?, everyCommit: Boolean): Result =
+        cache.computeIfAbsent("${java.lang.Long.toHexString(seed)}|$label|$everyCommit") {
+            Result(twin(seed, false, mutation, everyCommit), twin(seed, true, mutation, everyCommit))
+        }
 
-    fun twin(seed: Long, active: Boolean, mutation: EntMutation?, everyCommit: Boolean = mutation == null): Twin {
+    fun twin(seed: Long, active: Boolean, mutation: EntMutation?, everyCommit: Boolean): Twin {
         val s = Jd8Twin(active, mutation, everyCommit)
         val started = System.nanoTime()
         World(s.name, seed, JournalMode.WAL).use { w ->
@@ -643,14 +710,14 @@ internal object Jd8 {
                 if (!built) {
                     return Twin(active, emptyMap(), emptyMap(), emptyMap(), emptyMap(), emptyList(), 0, null, 0, 0, failure, 0)
                 }
-                return collect(s, w, failure, (System.nanoTime() - started) / 1_000_000)
+                return collect(s, failure, (System.nanoTime() - started) / 1_000_000)
             } finally {
                 runCatching { s.dm.close() }
             }
         }
     }
 
-    private fun collect(s: Jd8Twin, w: World, failure: String?, millis: Long): Twin {
+    private fun collect(s: Jd8Twin, failure: String?, millis: Long): Twin {
         val world = s.dm
         val own = s.all.associate { dmc -> dmc.c.name to dmc.ownNamespaces().values.map(::hexOf).toSet() }
         // Each client's DM and bundle namespaces it registered and does not own (its contacts'), and its own inbox.
@@ -669,19 +736,28 @@ internal object Jd8 {
         val calls = LinkedHashMap<String, MutableList<Call>>()
         for (dmc in s.all) calls[dmc.c.name] = ArrayList()
         val moved = HashSet<Pair<String, Int>>()
+        val digest = MessageDigest.getInstance("SHA-256")
+        var seenCount = 0
+        val daveSeen = sortedMapOf<CallKind, Int>()
         for ((i, e) in world.relayEvents.withIndex()) {
             if (!e.seen) continue
+            seenCount++
+            // Not the hashes: a stored blob's is its ciphertext's, and the DM cryptography draws the
+            // OS's randomness (§22.21 item 13), so two runs of one world store different bytes.
+            digest.update("${e.client}|${e.kind}|${e.relay}|${e.namespaceHex}|${e.atMillis}\n".toByteArray())
+            if (e.client == s.daveDm.c.name) daveSeen[e.kind] = (daveSeen[e.kind] ?: 0) + 1
             val session = s.sessionOf[i]
             if (session != null && traffic(e)) moved += e.client to session
             val exposed = session != null && (e.client to session) in moved
+            val start = s.sessionStartOf[i]
             val call = when (e.kind) {
                 CallKind.REDEEM -> {
                     val week = world.ent.records.issued[e.hashes.single()]?.takeIf { it.kind == EntitlementCrypto.KIND_ACCESS }?.epoch ?: -1
-                    Call(e.client, e.kind, e.relay, e.namespaceHex, week, null, e.atMillis, exposed)
+                    Call(e.client, e.kind, e.relay, e.namespaceHex, week, null, e.atMillis, exposed, start)
                 }
                 CallKind.REGISTER -> {
                     val (period, kind) = s.registrationKeys[i] ?: (-1L to "?")
-                    Call(e.client, e.kind, e.relay, e.namespaceHex, period, kind, e.atMillis, exposed)
+                    Call(e.client, e.kind, e.relay, e.namespaceHex, period, kind, e.atMillis, exposed, start)
                 }
                 else -> null
             } ?: continue
@@ -711,6 +787,75 @@ internal object Jd8 {
         }
         val dave = s.contactIds["dave"]?.let { id -> s.aliceDm.read { d -> d.engine.contacts().singleOrNull { it.id == id }?.establishment } }
         val localSkipped = s.alice.engine?.counter(Counters.LOCAL_SKIPPED) ?: 0
-        return Twin(s.active, calls, own, foreign, contacts, undelivered, delivered, dave, localSkipped, s.unresolved, failure, millis)
+        val hex = digest.digest().joinToString("") { "%02x".format(it) }
+        return Twin(
+            s.active, calls, own, foreign, contacts, undelivered, delivered, dave, localSkipped, s.unresolved, failure, millis,
+            seenCount, hex, daveSeen,
+        )
     }
+}
+
+/**
+ * **JD8's timing-leak controls**: two mutations of the entitlement world that keep every count of
+ * every trace equal between the twins — so JD8's multiset half cannot see them — and move calls by
+ * what the DM layer received. The adversarial review of the JD8 slice built both and showed the
+ * first version of JD8, which reported the timing and did not compare it, passing each (§22.26
+ * item 13); `DmJd8Test` shows JD8's timing clause failing each, and nothing else failing. They are
+ * controls of the check, not §15.7 mutants, and are not in the privacy mutant count.
+ */
+internal object Jd8TimingLeaks {
+
+    /** `CapabilityStore.needed`'s first statement, at the column that makes a capability EXPIRING. */
+    private const val NEEDED_EXPIRY = "c.expires_hour, n.capability_source FROM relay_capability c"
+
+    /** A deposit has reached the client's own inbox (an `inbox_blob` row of it). */
+    private const val INBOUND =
+        "EXISTS (SELECT 1 FROM inbox_blob b JOIN dm_own_namespace d ON d.namespace_id = b.namespace_id WHERE d.role = 'inbox')"
+
+    /**
+     * **A renewal that waits for inbound traffic.** An own write capability reads, to the planner and
+     * the redeem hold, as expiring 10 h later than it does until a deposit has reached the owner's
+     * own inbox: an idle client renews 10 h later than one that receives messages. The renewals and
+     * their `c + 1` registrations still happen, in the same numbers, before the horizon.
+     */
+    val RENEWAL_WAITS_FOR_TRAFFIC = EntMutation(
+        rewrite = { _ ->
+            { sql, args ->
+                if (sql.startsWith("SELECT c.relay_id, c.namespace_id, c.kind, c.state, ") && NEEDED_EXPIRY in sql) {
+                    sql.replace(
+                        NEEDED_EXPIRY,
+                        "CASE WHEN c.kind = 'write' AND c.namespace_id IN (SELECT namespace_id FROM dm_own_namespace) AND NOT $INBOUND " +
+                            "THEN c.expires_hour + 36000 ELSE c.expires_hour END, n.capability_source FROM relay_capability c",
+                    ) to args
+                } else {
+                    sql to args
+                }
+            }
+        },
+    )
+
+    /** `RegistrationStore.keep`'s look-up of the row it would insert. */
+    private const val KEEP_LOOKUP =
+        "SELECT verifier, inflight FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 AND period_id = ?3 AND kind = ?4"
+
+    /**
+     * **Later-week registrations that wait for inbound traffic, with a fallback inside the horizon**
+     * (PM-26 made count-preserving): REGROWS inserts a row of a period after the current week only
+     * once a deposit has reached the owner's own inbox, or in the last 10 h of the week, whichever
+     * comes first; an idle client registers the same rows, later.
+     */
+    val REGISTRATION_WAITS_FOR_TRAFFIC = EntMutation(
+        rewrite = { w ->
+            { sql, args ->
+                val now = w.clock.epochSeconds()
+                val week = ModelRelay.week(now)
+                val later = sql == KEEP_LOOKUP && (args[2] as Number).toLong() > week && now < ModelRelay.weekStart(week + 1) - 10 * 3_600
+                if (later) {
+                    "$sql UNION ALL SELECT zeroblob(32), 1 WHERE NOT EXISTS ($sql) AND NOT $INBOUND" to args
+                } else {
+                    sql to args
+                }
+            }
+        },
+    )
 }
