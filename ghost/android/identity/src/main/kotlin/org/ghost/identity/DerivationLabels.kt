@@ -15,7 +15,7 @@ object DerivationLabels {
     /** Ed25519 identity signing key; public identity = z-base-32 hash prefixed `ghost1` (FR-1.3). */
     const val IDENTITY: String = PREFIX + "identity"
 
-    /** Messaging branch: seeds the libsignal identity key pair (§7.2). */
+    /** Messaging branch: seeds the DM keys (Olm identity, cards, read secrets; ADR-35). */
     const val MESSAGING: String = PREFIX + "messaging"
 
     /** Reserved for an optional on-chain rail (ADR-03). Defined so a later rail needs no seed migration. */

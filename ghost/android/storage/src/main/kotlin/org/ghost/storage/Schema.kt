@@ -76,7 +76,7 @@ private object OutboxObjects {
 /**
  * Versioned schema (spec v2.0 §8, amended by ADR-04 pseudonyms, ADR-05 invite nonces, ADR-14
  * revocations). Rules enforced here rather than in application code:
- *  - protocol state (libsignal, OpenMLS) lives in dedicated tables as opaque serialized records;
+ *  - protocol state (Olm, OpenMLS) lives in dedicated tables as opaque serialized records;
  *  - every content column is a ciphertext envelope; no plaintext content column exists;
  *  - author/sent times are stored at minute granularity (`*_minute`, ADR-08);
  *  - foreign keys and uniqueness guard conversation/channel/message integrity (§8.1);
