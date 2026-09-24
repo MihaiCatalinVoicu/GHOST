@@ -72,6 +72,9 @@ dependencies {
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.sqlcipher.android)
     androidTestImplementation(libs.androidx.sqlite)
+    // `DeviceWorld.onion` computes the v3 checksum with the SHA3 `:network`'s `OnionAddress` checks
+    // it with (Bouncy Castle, already shipped): Android has no "SHA3-256" `MessageDigest`.
+    androidTestImplementation(libs.bouncycastle.bcprov)
 }
 
 // The entitlement world (§15.1 variant (b)): the sync and entitlement harness sources compiled into

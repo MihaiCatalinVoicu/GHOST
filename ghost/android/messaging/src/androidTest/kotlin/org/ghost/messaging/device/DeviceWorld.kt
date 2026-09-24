@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+import org.bouncycastle.crypto.digests.SHA3Digest
 import org.ghost.identity.RootEntropy
 import org.ghost.messaging.android.KeystoreContentKeyWrapper
 import org.ghost.messaging.android.KeystoreStateKeyWrapper
@@ -74,7 +75,17 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
 
     /** One device: its database file, its stores, its DM stack and its identity. */
     inner class Device(name: String, seedByte: Int) : AutoCloseable {
-        val file: File = File(context.noBackupFilesDir, "dm-gate-$tag-$name.db")
+        private val fileName = "dm-gate-$tag-$name.db"
+
+        /**
+         * The database file **SQLCipher has open**, read back from the connection — not a path
+         * this class assumes. The first version assumed `noBackupFilesDir`, which the helper's
+         * `noBackupDirectory(true)` asks for and SQLCipher's `SupportOpenHelperFactory` ignores:
+         * the file is `getDatabasePath(name)`, under `databases/` (first emulator run, design
+         * §22.32). So SCN-F measured the `-wal` of a file that did not exist — 0 bytes, whatever the
+         * sweep did — and the leftovers of an earlier run were never deleted.
+         */
+        val file: File
         val sql: SqlExecutor
         private val helper: SupportSQLiteOpenHelper
         val database: SyncDatabase
@@ -88,10 +99,19 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
         val keys: DmKeys
         val runtime: MessagingRuntime
 
+        /**
+         * Every checkpoint SWEEP asked for through its port (the only caller of `DmCheckpoint`),
+         * with the answer and the -wal's length **right after** `Checkpoint.truncate` returned, on
+         * the actor thread, before any later step of the pass wrote again. That instant is the one
+         * §10.9 point 3's "the WAL is 0 bytes" is about (SCN-F; design §22.32).
+         */
+        val checkpoints: MutableList<CheckpointSeen> = java.util.Collections.synchronizedList(ArrayList())
+
         init {
-            for (suffix in listOf("", "-wal", "-shm", "-journal")) File(file.path + suffix).delete()
+            deleteDatabase(context, fileName)
             System.loadLibrary("sqlcipher")
-            helper = openHelper(context, file.name, ByteArray(32) { (seedByte * 3 + it).toByte() }, Schema.CURRENT_VERSION, Schema.migrations)
+            helper = openHelper(context, fileName, ByteArray(32) { (seedByte * 3 + it).toByte() }, Schema.CURRENT_VERSION, Schema.migrations)
+            file = File(requireNotNull(helper.writableDatabase.path) { "the open database has a file" })
             sql = SupportSqlExecutor(helper.writableDatabase)
             finishOpen(sql)
             database = SyncDatabase(sql)
@@ -116,7 +136,11 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
                 clock = clock,
                 random = SecureDmRandom,
                 alarm = ExpiryWake.NONE,
-                checkpoint = DmCheckpoint { Checkpoint.truncate(sql) },
+                // The production line, `Checkpoint.truncate(sql)`, and a record of the -wal's length
+                // the moment it returns (see [checkpoints]).
+                checkpoint = DmCheckpoint {
+                    Checkpoint.truncate(sql).also { truncated -> checkpoints += CheckpointSeen(truncated, walFile.length()) }
+                },
             )
             stores.inbox.setListener(runtime.listener)
         }
@@ -161,6 +185,9 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
             helper.close()
         }
     }
+
+    /** One checkpoint SWEEP ran: its answer, and the -wal's length the moment it returned. */
+    data class CheckpointSeen(val truncated: Boolean, val walBytes: Long)
 
     /** Advances the shared clock (and the monotonic one, as time passing does). */
     fun advance(seconds: Long) {
@@ -238,9 +265,20 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
         }
 
         /**
+         * Deletes database [name] and its `-wal`, `-shm` and `-journal` where SQLCipher's helper
+         * puts it: `getDatabasePath(name)` (`databases/`), whatever `noBackupDirectory` says.
+         */
+        fun deleteDatabase(context: Context, name: String) {
+            val main = context.getDatabasePath(name)
+            for (suffix in listOf("", "-wal", "-shm", "-journal")) File(main.path + suffix).delete()
+        }
+
+        /**
          * A SQLCipher helper opened the way `GhostDatabase.open` opens the app's one database — the
          * connection pragmas in `onConfigure`, the migrations inside the helper's transaction — under
-         * a file name of the test's, because two devices share this process.
+         * a file name of the test's, because two devices share this process. Like
+         * `GhostDatabase`'s, its file is in `databases/`: SQLCipher 4.19.0's factory ignores
+         * `noBackupDirectory(true)` (design §22.32 records it for the app's database).
          */
         fun openHelper(
             context: Context,
@@ -278,13 +316,20 @@ class DeviceWorld(private val context: Context, private val tag: String) : AutoC
             MigrationRunner(sql).verifyIntegrity()
         }
 
+        /**
+         * A valid v3 onion address for relay [seed]. The checksum is SHA3-256 through Bouncy
+         * Castle's `SHA3Digest`, the digest `OnionAddress.parse` itself checks it with: Android's
+         * providers have no `MessageDigest` "SHA3-256" (the JVM's has), and the first emulator run
+         * failed every test of this suite in its setup on it (design §22.32).
+         */
         fun onion(seed: Int): OnionAddress {
             val publicKey = ByteArray(32) { (seed * 13 + it * 5 + 1).toByte() }
-            val md = MessageDigest.getInstance("SHA3-256")
-            md.update(".onion checksum".toByteArray(Charsets.US_ASCII))
-            md.update(publicKey)
+            val prefix = ".onion checksum".toByteArray(Charsets.US_ASCII)
+            val md = SHA3Digest(256)
+            md.update(prefix, 0, prefix.size)
+            md.update(publicKey, 0, publicKey.size)
             md.update(3.toByte())
-            val checksum = md.digest()
+            val checksum = ByteArray(32).also { md.doFinal(it, 0) }
             val raw = publicKey + byteArrayOf(checksum[0], checksum[1], 3)
             return OnionAddress.parse(base32(raw) + ".onion:443")
         }
