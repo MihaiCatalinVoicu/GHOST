@@ -1,7 +1,6 @@
 package org.ghost.messaging.dmworld
 
 import org.ghost.messaging.DmWorld
-import java.security.MessageDigest
 
 /**
  * One request of a relay view as the edge attackers of S-DM1 and S-DM2 read it (Phase 9 design
@@ -31,8 +30,6 @@ internal class EdgeEvent(
     val cluster: Int,
     /** `X` (a card's inbox), `P` (a card's bundle namespace) or `?`. */
     val role: Char,
-    /** An opaque circuit id: one per (client, namespace, relay session) in this model (§4.3). */
-    val circuit: Long,
     /** Full view: the stored or served byte length; LD: its size bucket. */
     val size: Int,
     /** Full view: the TTL as stored; LD: its bucket (§10.1). 0 when the op has none. */
@@ -55,10 +52,10 @@ internal class EdgeEvent(
  *
  * **LD, exactly** (what §1.2 lets through, with §21.11 point 1's additions), per event of the record:
  *  - a STORE into a card's **inbox** by anyone but its owner (a deposit): op, relay, namespace, exact
- *    second and order, circuit, **size bucket**, **TTL bucket**, and the equality class of its bytes
- *    (a relay knows which of its stored items a later GET serves, and §21.11 declares the identical
- *    hash of an identical-bytes resend); the credential is the inbox's one static deposit scope per
- *    relay, a function of fields already here, so it adds nothing and is dropped;
+ *    second and order, **size bucket**, **TTL bucket**, and the equality class of its bytes (a relay
+ *    knows which of its stored items a later GET serves, and §21.11 declares the identical hash of
+ *    an identical-bytes resend); the credential is the inbox's one static deposit scope per relay, a
+ *    function of fields already here, so it adds nothing and is dropped;
  *  - a STORE into a card's **bundle** namespace by its owner (a publication), the same fields;
  *  - a LIST or GET of a client's **own** namespace, and a REGISTER of it (with its period and key
  *    kind; the verifier is dropped);
@@ -69,7 +66,18 @@ internal class EdgeEvent(
  * not the registrar's, a bundle read beyond the bound — is **outside LD**: it is in the full view
  * and not in LD's. Fields LD drops: bytes, exact sizes and TTLs, credentials, verifiers.
  *
- * **The full view** is every event with every field ([ViewEvent] minus the ground truth: the
+ * **Which bundle reads are LD is decided by ground truth** — the establishments the world recorded —
+ * not by anything in the relay record. In an honest engine every bundle read is an establishment's,
+ * so nothing turns on it; in one that also reads bundles outside every window, LD keeps the reads
+ * that fall in a window (mostly contacts') and drops the rest, so the LD attacker holds a selection
+ * no relay could make, and the one-sided comparison can understate what the full view adds (§22.30
+ * item 4 (f)). Such an engine fails JD7 exactly.
+ *
+ * **Circuits are in neither view.** The model relay names a circuit by (client, namespace, relay
+ * session) whatever the engine does (`ViewRelay.circuit`), so it carries nothing the engine chose,
+ * and circuit isolation (T21) is not tested here.
+ *
+ * **The full view** is every event with every other field ([ViewEvent] minus the ground truth: the
  * client, the cause, the deadline and the diagnostic reader state are never copied).
  */
 internal class EdgeViews(
@@ -77,8 +85,14 @@ internal class EdgeViews(
     /** The clustering oracle: namespace hex → (owner, role). */
     val clusters: Map<String, Pair<Int, Char>>,
     establishments: List<PrivacyWorld.Establishment>,
+    /**
+     * Which events **outside LD** the full view keeps, by their index in the record (all of them but
+     * in the controls' thinned views, which measure how few such events the comparison still sees).
+     */
+    keepOutside: (Int) -> Boolean = { true },
 ) {
-    constructor(world: PrivacyWorld) : this(world.relay.events, clustersOf(world), world.establishments)
+    constructor(world: PrivacyWorld, keepOutside: (Int) -> Boolean = { true }) :
+        this(world.relay.events, clustersOf(world), world.establishments, keepOutside)
 
     val full: List<EdgeEvent>
     val ld: List<EdgeEvent>
@@ -109,12 +123,6 @@ internal class EdgeViews(
             val own = owner == e.client
             val bytes = e.bytes
             val blob = bytes?.let { b -> blobClass.getOrPut(GroundTruth.Key(ViewRelay.sha256(b))) { blobClass.size } } ?: -1
-            val circuit = opaque(e.circuit)
-            fullOut += EdgeEvent(
-                op = e.op, slot = e.relaySlot, second = e.second, seq = seq, namespace = ns, cluster = owner, role = role,
-                circuit = circuit, size = bytes?.size ?: 0, ttl = e.ttlSeconds ?: 0, blob = blob, bytes = bytes,
-                credential = e.credential, verifier = e.verifier, period = e.period ?: -1, keyKind = e.keyKind,
-            )
             val category: String? = when (e.op) {
                 ViewOp.STORE -> when {
                     role == 'X' && !own -> null
@@ -136,17 +144,22 @@ internal class EdgeViews(
                 }
                 ViewOp.REGISTER -> if (own) null else "a registration of a namespace not the registrar's"
             }
+            if (category != null && !keepOutside(seq)) continue
+            fullOut += EdgeEvent(
+                op = e.op, slot = e.relaySlot, second = e.second, seq = seq, namespace = ns, cluster = owner, role = role,
+                size = bytes?.size ?: 0, ttl = e.ttlSeconds ?: 0, blob = blob, bytes = bytes,
+                credential = e.credential, verifier = e.verifier, period = e.period ?: -1, keyKind = e.keyKind,
+            )
             if (category != null) {
                 outside.merge(category, 1, Int::plus)
                 continue
             }
-            // LD's circuit grouping and byte equality are **within a namespace** (§21.11: the requests
-            // of one client per circuit in a session, T21's per-namespace circuits; the identical hash
-            // of an identical-bytes resend): a circuit or a blob shared by two namespaces is not
-            // declared, and its LD ids are kept apart by the namespace.
+            // LD's byte equality is **within a namespace** (§21.11: the identical hash of an
+            // identical-bytes resend): a blob shared by two namespaces is not declared, and its LD
+            // ids are kept apart by the namespace.
             ldOut += EdgeEvent(
                 op = e.op, slot = e.relaySlot, second = e.second, seq = seq, namespace = ns, cluster = owner, role = role,
-                circuit = opaque(e.circuit + "/" + ns), size = bytes?.let { sizeBucket(it.size) } ?: 0,
+                size = bytes?.let { sizeBucket(it.size) } ?: 0,
                 ttl = e.ttlSeconds?.let { ttlBucket(it) } ?: 0,
                 blob = bytes?.let { b -> ldBlobClass.getOrPut(ns + "/" + hex(ViewRelay.sha256(b))) { ldBlobClass.size } } ?: -1,
                 bytes = null, credential = null, verifier = null, period = e.period ?: -1, keyKind = e.keyKind,
@@ -170,19 +183,13 @@ internal class EdgeViews(
 
         fun hex(bytes: ByteArray): String = Joins.hex(bytes)
 
-        /** An opaque 64-bit id: a relay sees a circuit, not the client and namespace this model names it by. */
-        fun opaque(label: String): Long {
-            val d = MessageDigest.getInstance("SHA-256").digest(label.toByteArray(Charsets.UTF_8))
-            var v = 0L
-            for (i in 0 until 8) v = (v shl 8) or (d[i].toLong() and 0xff)
-            return v
-        }
-
         /** R-B1's size classes; anything else rounds up (LD carries the class, never the length). */
         fun sizeBucket(length: Int): Int = listOf(4_096, 16_384, 65_536).firstOrNull { length <= it } ?: 65_536
 
-        /** §10.1's TTL buckets; anything else rounds up to one (LD carries the bucket). */
-        fun ttlBucket(ttl: Long): Long =
-            listOf(DmWorld.HOUR, DmWorld.DAY, 7 * DmWorld.DAY, 30 * DmWorld.DAY).firstOrNull { ttl <= it } ?: 30 * DmWorld.DAY
+        /** §10.1's TTL buckets (D15: 1 h, 1 d, 7 d, 30 d and 90 d, which JD5 accepts too). */
+        val TTL_BUCKETS: List<Long> = listOf(DmWorld.HOUR, DmWorld.DAY, 7 * DmWorld.DAY, 30 * DmWorld.DAY, 90 * DmWorld.DAY)
+
+        /** The smallest §10.1 bucket at least [ttl]; anything above the largest is the largest (LD carries the bucket). */
+        fun ttlBucket(ttl: Long): Long = TTL_BUCKETS.firstOrNull { ttl <= it } ?: TTL_BUCKETS.last()
     }
 }

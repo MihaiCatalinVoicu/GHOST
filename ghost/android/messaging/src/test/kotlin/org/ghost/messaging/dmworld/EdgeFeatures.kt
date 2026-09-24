@@ -18,6 +18,11 @@ package org.ghost.messaging.dmworld
  * client's **own** requests are the lists and gets of its inbox, the registrations of either of its
  * namespaces and the stores into its bundle namespace (its publications); its **inbound** requests
  * are the stores into its inbox (deposits) and the reads of its bundle namespace by others (fetches).
+ *
+ * **Labels.** A conversation's pair is positive in **every** window, including the windows before
+ * it exists and those in which it exchanges nothing, so most positive units are all zero in both
+ * views: a windowed AUC measures how many of a conversation's windows show it, not how well an
+ * active conversation is linked (§22.30 item 4 (b)).
  */
 internal object EdgeFeatures {
 
@@ -35,7 +40,6 @@ internal object EdgeFeatures {
         "shared byte windows",
         "shared credentials",
         "shared verifiers",
-        "shared circuits",
         "shared blobs",
         "co-read unknown namespaces",
     )
@@ -52,9 +56,8 @@ internal object EdgeFeatures {
     const val BYTES = 9
     const val CREDENTIALS = 10
     const val VERIFIERS = 11
-    const val CIRCUITS = 12
-    const val BLOBS = 13
-    const val UNKNOWN = 14
+    const val BLOBS = 12
+    const val UNKNOWN = 13
 
     /** The reply-survival horizons: 5 minutes, 30 minutes, 2 hours. */
     private val TAUS = doubleArrayOf(300.0, 1_800.0, 7_200.0)
@@ -63,8 +66,22 @@ internal object EdgeFeatures {
     private const val NEAR = 60L
     private const val FAR = 600L
 
-    /** The byte windows compared across namespaces: 8 bytes at every 16th offset. */
-    const val BYTE_STRIDE: Int = 16
+    /**
+     * The byte windows compared across namespaces: [BYTE_WINDOW] bytes at **every** offset of every
+     * distinct stored or served byte string, so any run of at least 8 equal bytes on two clients'
+     * namespaces is seen, at any offset in either (the first version read every 16th offset only,
+     * and a 16-byte tag at offset 4 passed it, §22.30 item 12). A run of 7 bytes or fewer is not: at
+     * the PR world's ~26 million byte positions a 6-byte value repeats by chance about once, an
+     * 8-byte one with probability ~10⁻⁵.
+     */
+    const val BYTE_WINDOW: Int = 8
+
+    /**
+     * The byte windows are counted in this many passes, each over the values whose hash falls in
+     * one partition, so the map of one pass holds a sixteenth of the view's windows (the test JVM
+     * has Gradle's default heap).
+     */
+    private const val BYTE_PASSES: Int = 16
 
     /**
      * One view's units: [rows] = windows × pairs, row `w * pairs.size + p` for window `w` and pair
@@ -134,24 +151,17 @@ internal object EdgeFeatures {
         }
         for (w in 0 until windows) timing(w, perWindow[w], unknownAt[w], window, ::add)
 
-        // The structure the full view's fields carry across two clients' namespaces.
+        // The structure the full view's fields carry across two clients' namespaces. Circuits are not
+        // among them: the model relay names a circuit by (client, namespace, relay session) whatever
+        // the engine does (`ViewRelay.circuit`), so a circuit shared by two namespaces cannot occur
+        // here and a count of them would measure the harness (§22.30 item 12).
         val structure = LinkedHashMap<String, Int>()
-        structure["byte windows"] = shared(view, windowOf = ::windowOf) { e, emit ->
-            val b = e.bytes ?: return@shared
-            var o = 0
-            while (o + 8 <= b.size) {
-                var v = 0L
-                for (k in 0 until 8) v = (v shl 8) or (b[o + k].toLong() and 0xff)
-                emit(v)
-                o += BYTE_STRIDE
-            }
-        }.also { it.forEach { (w, a, b) -> add(w, a, b, BYTES) } }.size
+        structure["byte windows"] = sharedByteWindows(view, ::windowOf)
+            .also { it.forEach { (w, a, b) -> add(w, a, b, BYTES) } }.size
         structure["credentials"] = shared(view, windowOf = ::windowOf) { e, emit -> e.credential?.let { emit(fold(it)) } }
             .also { it.forEach { (w, a, b) -> add(w, a, b, CREDENTIALS) } }.size
         structure["verifiers"] = shared(view, windowOf = ::windowOf) { e, emit -> e.verifier?.let { emit(fold(it)) } }
             .also { it.forEach { (w, a, b) -> add(w, a, b, VERIFIERS) } }.size
-        structure["circuits"] = shared(view, windowOf = ::windowOf) { e, emit -> emit(e.circuit) }
-            .also { it.forEach { (w, a, b) -> add(w, a, b, CIRCUITS) } }.size
         structure["blobs"] = shared(view, windowOf = ::windowOf) { e, emit -> if (e.blob >= 0) emit(e.blob.toLong()) }
             .also { it.forEach { (w, a, b) -> add(w, a, b, BLOBS) } }.size
 
@@ -275,9 +285,9 @@ internal object EdgeFeatures {
         windowOf: (Long) -> Int,
         values: (EdgeEvent, (Long) -> Unit) -> Unit,
     ): List<Triple<Int, Int, Int>> {
-        // Pass 1, in primitive memory (the PR world's bytes alone are some 1.6 million windows): each
-        // value's first owner, or MULTI once a second owner shows it. Pass 2 collects the owners and
-        // first window of the MULTI values only, which the honest world has none of.
+        // Pass 1, in primitive memory: each value's first owner, or MULTI once a second owner shows
+        // it. Pass 2 collects the owners and first window of the MULTI values only, which the honest
+        // world has none of.
         val first = LongIntMap()
         for (e in view) {
             if (e.cluster < 0) continue
@@ -302,6 +312,61 @@ internal object EdgeFeatures {
         for ((v, clients) in owners) {
             val l = clients.sorted()
             for (i in l.indices) for (j in i + 1 until l.size) out += Triple(firstWindow.getValue(v), l[i], l[j])
+        }
+        return out
+    }
+
+    /**
+     * The 8-byte values at every offset of the view's stored and served bytes that appear on the
+     * namespaces of more than one client, as [shared] gives them: (first window, a, b) per pair of
+     * clients per distinct value. Each distinct byte string is read once (by its blob class, with
+     * every client whose namespace carries it and the window it first appears in), and the values
+     * are counted in [BYTE_PASSES] passes by a hash of the value, so no pass holds more than its
+     * share of the ~26 million values of the PR world.
+     */
+    private fun sharedByteWindows(view: List<EdgeEvent>, windowOf: (Long) -> Int): List<Triple<Int, Int, Int>> {
+        class Blob(val bytes: ByteArray, val window: Int) {
+            val owners = java.util.TreeSet<Int>()
+        }
+        val blobs = LinkedHashMap<Int, Blob>()
+        for (e in view) {
+            if (e.cluster < 0) continue
+            val bytes = e.bytes ?: continue
+            blobs.getOrPut(e.blob) { Blob(bytes, windowOf(e.second)) }.owners += e.cluster
+        }
+        val list = blobs.values.toList()
+        fun windows(bytes: ByteArray, pass: Int, emit: (Long) -> Unit) {
+            var v = 0L
+            for (i in bytes.indices) {
+                v = (v shl 8) or (bytes[i].toLong() and 0xff)
+                if (i >= BYTE_WINDOW - 1 && (EdgeMath.mix(v) and (BYTE_PASSES - 1)) == pass) emit(v)
+            }
+        }
+        val out = ArrayList<Triple<Int, Int, Int>>()
+        for (pass in 0 until BYTE_PASSES) {
+            val first = LongIntMap()
+            for (blob in list) {
+                val owner = if (blob.owners.size > 1) MULTI else blob.owners.first()
+                windows(blob.bytes, pass) { v ->
+                    val seen = first.get(v)
+                    if (seen == LongIntMap.ABSENT) first.put(v, owner) else if (seen != owner && seen != MULTI) first.put(v, MULTI)
+                }
+            }
+            if (!first.anyValue(MULTI)) continue
+            val owners = HashMap<Long, MutableSet<Int>>()
+            val firstWindow = HashMap<Long, Int>()
+            for (blob in list) {
+                windows(blob.bytes, pass) { v ->
+                    if (first.get(v) == MULTI) {
+                        owners.getOrPut(v) { java.util.TreeSet() } += blob.owners
+                        firstWindow.merge(v, blob.window, ::minOf)
+                    }
+                }
+            }
+            for ((v, clients) in owners) {
+                val l = clients.toList()
+                for (i in l.indices) for (j in i + 1 until l.size) out += Triple(firstWindow.getValue(v), l[i], l[j])
+            }
         }
         return out
     }

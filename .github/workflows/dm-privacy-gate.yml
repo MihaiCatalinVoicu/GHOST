@@ -11,9 +11,10 @@ name: dm-privacy-gate
 # **What this gate checks, and what it does not** (§22.16 names every deferral, §22.21 what slice
 # S11b added, §22.26 what the JD8 slice added). It runs JD1–JD7 and JD9 on the privacy world, JD8
 # on the entitlement world's twins with the narrowings below (not JD10), JD7's WITHHOLD_ALL_BUNDLES
-# variant, S-DM3, S-DM1 (gating) with S-DM2 and S-DM4 (reported; their baselines are one PR-scale
-# run of seed 5eed0001, so this gate's worlds have none and say so, §22.30), NI-DM1, NI-DM2 and
-# NI-DM3 (not NI-DM4 … NI-DM7), the T34 seizure world and its one-reply variant (not the Olm half),
+# variant, S-DM3, S-DM1 (gating) with S-DM2 and S-DM4 (reported; their baselines, and the +0.02
+# rule on them, are one PR-scale run of seed 5eed0001, so this gate's worlds have none and say so,
+# §22.30; S-DM1's exact half sees repeated byte runs of 8 bytes or more, not shorter), NI-DM1,
+# NI-DM2 and NI-DM3 (not NI-DM4 … NI-DM7), the T34 seizure world and its one-reply variant (not the Olm half),
 # T35 as far as the provenance tags reach (static tags; the X-Wing inner layer carries none), and
 # fifteen of the forty privacy mutants (PM-5 and PM-26 only in part). NI-DM2 passes with **one
 # declared open engine defect** it must reproduce exactly — R-T3 on the pending path, a known P-4
@@ -157,10 +158,11 @@ jobs:
     # pairs, 496 s for `DmPrivacyWorldTest`'s seven tests (six of them in this job). S11's first
     # figures were 304 s, then 169 s, for its ten mutants. Every world is single-threaded, so a
     # 4-vCPU runner is not much slower than that; the 90-minute timeout leaves room for about twice
-    # these figures. The statistics slice (§22.30 item 11) adds `DmEdgeStatisticsTest`: 167 s for its
-    # four MEDIUM worlds, measured in a run whose machine was shared with other worktrees' builds so
-    # heavily that this job's tests took about 84 minutes there (the mutants 3 384 s, `DmJd8Test`
-    # 945 s); on a runner of its own the job is the figures above plus about three minutes.
+    # these figures. The statistics slice (§22.30 item 11) adds `DmEdgeStatisticsTest`: 144 s for its
+    # four MEDIUM worlds, the joins on two of them and four thinned copies of the open window, in a
+    # run of the privacy tests that took 24 minutes of Gradle wall time (the mutants 575 s,
+    # `DmJd8Test` 259 s; the slice's first run, with other worktrees' builds loading the machine far
+    # more, took two hours); the job is the figures above plus about three minutes.
     timeout-minutes: 90
     defaults:
       run:

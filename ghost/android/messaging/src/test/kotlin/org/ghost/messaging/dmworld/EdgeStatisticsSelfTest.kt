@@ -11,8 +11,10 @@ import java.util.SplittableRandom
  * The arithmetic of S-DM1, S-DM2 and S-DM4 held to known answers, with no native library and no
  * world ([EdgeMath]), and the view projection and features of the edge attackers held to hand-built
  * views ([EdgeViews], [EdgeFeatures]). The permutation test is shown to **reject** a planted
- * difference and **not** to reject equal scorers, and its smallest p is α itself, so a check that
- * reads `p ≤ α` can fail (§22.30).
+ * difference — also a small one among rows tied at zero, as the edge attack's are — **not** to
+ * reject equal scorers, and to hold its level on continuous and on zero-heavy null worlds; its
+ * smallest p is α itself, so a check that reads `p ≤ α` can fail. The exact half is shown to see an
+ * 8-byte run at every offset of either blob (§22.30).
  */
 class EdgeStatisticsSelfTest {
 
@@ -82,6 +84,40 @@ class EdgeStatisticsSelfTest {
             Math.sqrt(-2 * Math.log(1 - rnd.nextDouble())) * Math.cos(2 * Math.PI * rnd.nextDouble())
     }
 
+    /**
+     * Synthetic (window, pair) rows shaped like the edge attack's: [groups] pairs over [strata]
+     * windows, 20 % positive pairs, and a count score that is **zero in most rows** — a positive pair
+     * is active in a window with probability 0.15, a negative one with 0.03, at 1–3 — so most rows of
+     * both views tie at 0. The full view adds 1 to an active-or-not positive row with probability
+     * [leak]; [noise] adds, independently in each view, 1 to any row with that probability (two
+     * equally informative views that are not identical); [extra] adds 1–2 to any row of the full view
+     * alone with that probability, whatever its label (events that link nothing).
+     */
+    private class ZeroHeavy(groups: Int, strata: Int, seed: Long, leak: Double, noise: Double = 0.0, extra: Double = 0.0) {
+        val n = groups * strata
+        val labels = BooleanArray(n)
+        val stratum = IntArray(n)
+        val group = IntArray(n)
+        val full = DoubleArray(n)
+        val ld = DoubleArray(n)
+
+        init {
+            val rnd = SplittableRandom(seed)
+            val positive = BooleanArray(groups) { rnd.nextInt(5) == 0 }
+            var i = 0
+            for (s in 0 until strata) for (g in 0 until groups) {
+                labels[i] = positive[g]
+                stratum[i] = s
+                group[i] = g
+                val base = if (rnd.nextDouble() < (if (positive[g]) 0.15 else 0.03)) 1.0 + rnd.nextInt(3) else 0.0
+                ld[i] = base + (if (rnd.nextDouble() < noise) 1.0 else 0.0)
+                full[i] = base + (if (rnd.nextDouble() < noise) 1.0 else 0.0) + (if (positive[g] && rnd.nextDouble() < leak) 1.0 else 0.0) +
+                    (if (rnd.nextDouble() < extra) 1.0 + rnd.nextInt(2) else 0.0)
+                i++
+            }
+        }
+    }
+
     @Test
     fun thePermutationTestRejectsAPlantedDifference() {
         val d = Synthetic(groups = 300, strata = 4, seed = 1, fullSignal = 2.0, ldSignal = 0.5)
@@ -95,7 +131,7 @@ class EdgeStatisticsSelfTest {
     @Test
     fun thePermutationTestDoesNotRejectEqualScorers() {
         val d = Synthetic(groups = 300, strata = 4, seed = 2, fullSignal = 1.0, ldSignal = 1.0)
-        // Identical scores: every swap is the identity, every permuted difference is the observed 0.
+        // Identical scores: every component is 0, so every permuted difference is the observed 0.
         val same = EdgeMath.pairedPermutationTest(d.ld, d.ld.copyOf(), d.labels, d.stratum, d.group, seed = 7)
         assertEquals(0.0, same.difference, 1e-12)
         assertEquals(1.0, same.p, 1e-12)
@@ -103,21 +139,57 @@ class EdgeStatisticsSelfTest {
         // Worse full scores never reject (one-sided).
         val worse = Synthetic(groups = 300, strata = 4, seed = 3, fullSignal = 0.0, ldSignal = 2.0)
         assertFalse(EdgeMath.pairedPermutationTest(worse.full, worse.ld, worse.labels, worse.stratum, worse.group, seed = 7).rejects)
+        // A monotone map of either view's scores changes nothing: each view is compared with itself
+        // (so two fitted models on different scales are compared as they rank, not as they score).
+        val shifted = DoubleArray(d.full.size) { 3 * d.full[it] + 100 }
+        val a = EdgeMath.pairedPermutationTest(d.full, d.ld, d.labels, d.stratum, d.group, seed = 7)
+        val b = EdgeMath.pairedPermutationTest(shifted, d.ld, d.labels, d.stratum, d.group, seed = 7)
+        assertEquals(a.difference, b.difference, 1e-12)
+        assertEquals(a.exceeded, b.exceeded)
     }
 
     @Test
     fun thePermutationTestHoldsItsLevelUnderTheNull() {
-        // Two equally informative, independently noisy scorers, 200 worlds, 99 permutations each: the
-        // share of p ≤ 0.05 must be near 0.05 (at most 0.10 here, 20 of 200), and a false alarm at
-        // 0.001 would need p = 0.01 with these B, which the loose bound already covers.
-        var rejections = 0
+        // Two equally informative, independently noisy scorers, 200 worlds, 99 permutations each —
+        // continuous scores, scores tied at zero in most rows as the edge attack's are, and a full
+        // view with extra events on rows of both labels: the share of p ≤ 0.05 must be near 0.05 (at
+        // most 0.10 here, 20 of 200). The zero-heavy case is the one the first version was never held
+        // to (§22.30 item 12): a port of its per-view ranks rejected none of 200 such worlds, measured
+        // while this was written, so it was far below its level.
+        var gaussian = 0
+        var zeros = 0
+        var unlabelled = 0
         for (seed in 0 until 200) {
             val d = Synthetic(groups = 120, strata = 3, seed = 1_000L + seed, fullSignal = 1.0, ldSignal = 1.0)
             val t = EdgeMath.pairedPermutationTest(d.full, d.ld, d.labels, d.stratum, d.group, seed = seed.toLong(), permutations = 99)
-            if (t.difference > 0 && t.p <= 0.05) rejections++
+            if (t.difference > 0 && t.p <= 0.05) gaussian++
+            val z = ZeroHeavy(groups = 300, strata = 4, seed = 5_000L + seed, leak = 0.0, noise = 0.02)
+            val u = EdgeMath.pairedPermutationTest(z.full, z.ld, z.labels, z.stratum, z.group, seed = seed.toLong(), permutations = 99)
+            if (u.difference > 0 && u.p <= 0.05) zeros++
+            val e = ZeroHeavy(groups = 300, strata = 4, seed = 9_000L + seed, leak = 0.0, extra = 0.3)
+            val v = EdgeMath.pairedPermutationTest(e.full, e.ld, e.labels, e.stratum, e.group, seed = seed.toLong(), permutations = 99)
+            if (v.difference > 0 && v.p <= 0.05) unlabelled++
         }
-        assertTrue("$rejections of 200 null worlds rejected at 0.05", rejections <= 20)
-        assertTrue("$rejections of 200: the test never rejects at all, so it cannot fail", rejections > 0)
+        assertTrue("$gaussian of 200 continuous null worlds rejected at 0.05", gaussian in 1..20)
+        assertTrue("$zeros of 200 zero-heavy null worlds rejected at 0.05", zeros in 1..20)
+        assertTrue("$unlabelled of 200 worlds with label-blind extra events rejected at 0.05", unlabelled <= 20)
+    }
+
+    @Test
+    fun thePermutationTestRejectsALeakAmongRowsTiedAtZero() {
+        // 1 540 pairs over 8 windows, as the MEDIUM controls: the full view adds one event to a
+        // positive pair's window with probability 0.1, about +0.04 of AUC. It is rejected at α; a
+        // port of the first version, which ranked each view on its own, gave p ≈ 0.035 on three such
+        // worlds while this was written (§22.30 item 12).
+        val d = ZeroHeavy(groups = 1_540, strata = 8, seed = 42, leak = 0.1)
+        val t = EdgeMath.pairedPermutationTest(d.full, d.ld, d.labels, d.stratum, d.group, seed = 7)
+        assertTrue("the leak is small: ${t.difference}", t.difference in 0.01..0.06)
+        assertTrue("a leak among tied rows must reject: diff ${t.difference}, p ${t.p}", t.rejects)
+        // The same leak with extra events on rows of both labels in the full view as well (the open
+        // fetch window adds co-occurrence to most non-conversations too): still rejected.
+        val e = ZeroHeavy(groups = 1_540, strata = 8, seed = 43, leak = 0.5, extra = 0.2)
+        val u = EdgeMath.pairedPermutationTest(e.full, e.ld, e.labels, e.stratum, e.group, seed = 7)
+        assertTrue("a leak beside label-blind events must reject: diff ${u.difference}, p ${u.p}", u.difference > 0 && u.rejects)
     }
 
     @Test
@@ -251,11 +323,45 @@ class EdgeStatisticsSelfTest {
         val tagged = bytes(2, prefix = bytes(1).copyOf(16))
         val v = EdgeViews(honest(reply = tagged), clusters, establishments)
         val full = features(v.full)
-        assertEquals(1, full.structure["byte windows"])
+        // A 16-byte run holds nine 8-byte windows.
+        assertEquals(9, full.structure["byte windows"])
         assertTrue(full.x[0][EdgeFeatures.BYTES] > 0)
         val ld = features(v.ld)
         assertEquals(0, ld.structure["byte windows"])
         assertEquals(0.0, ld.x[0][EdgeFeatures.BYTES], 0.0)
+    }
+
+    /** The reply of [honest] with [length] bytes of the first message, from offset [from], written at offset [to]. */
+    private fun sharedRun(length: Int, from: Int, to: Int): Int {
+        val reply = bytes(2)
+        val first = bytes(1)
+        first.copyInto(reply, destinationOffset = to, startIndex = from, endIndex = from + length)
+        // The bytes around the run differ, so the shared run is exactly [length] long (by chance
+        // one in 128 would be longer).
+        reply[to - 1] = (first[from - 1].toInt() xor 0xff).toByte()
+        reply[to + length] = (first[from + length].toInt() xor 0xff).toByte()
+        return features(EdgeViews(honest(reply = reply), clusters, establishments).full).structure.getValue("byte windows")
+    }
+
+    @Test
+    fun theExactHalfSeesAnEightByteRunAtAnyOffsetInEitherBlob() {
+        // The first version read 8 bytes at every 16th offset, so a 16-byte tag at offset 4 in both
+        // blobs passed it, and an 8-byte one was seen at 1 offset in 16 (§22.30 item 12). Every offset
+        // of the run in each blob, independently, for runs of 8 and 16 bytes: seen, as its windows.
+        for (length in listOf(8, 16)) for (from in 0 until 16) for (to in 0 until 16) {
+            assertEquals("a run of $length bytes from offset $from at offset $to", length - 7, sharedRun(length, from + 100, to + 200))
+        }
+        // Declared blind spot: a run shorter than a window is not seen.
+        assertEquals(0, sharedRun(7, 105, 213))
+    }
+
+    @Test
+    fun ldCarriesEveryTtlBucketOfSection10() {
+        // §10.1's five buckets map to themselves — the first version folded 90 d into 30 d — and
+        // anything between rounds up.
+        for (bucket in listOf(3_600L, 86_400L, 604_800L, 2_592_000L, 7_776_000L)) assertEquals(bucket, EdgeViews.ttlBucket(bucket))
+        assertEquals(3_600L, EdgeViews.ttlBucket(300L))
+        assertEquals(7_776_000L, EdgeViews.ttlBucket(2_592_001L))
     }
 
     @Test

@@ -2,7 +2,8 @@ package org.ghost.messaging.dmworld
 
 /**
  * The recorded baselines of S-DM2 and S-DM4 (Phase 9 design §15.6: "the report check fails on a
- * regression above the recorded baseline + 0.02"; §22.30).
+ * regression above the recorded baseline + 0.02"; §16.1: "S-DM2/S-DM4 within baseline + 0.02";
+ * §22.30).
  *
  * **What they are a baseline of, exactly:** one run of one world — the PR scale (N = 120 over 14
  * days), seed 5eed0001, STANDARD, on the owner's workstation, 2026-09-24. Nothing else has been
@@ -25,7 +26,7 @@ internal object EdgeBaselines {
     private const val SDM2_PR_SEED1: Double = 0.5611
     private const val SDM2_7D_PR_SEED1: Double = 0.5615
 
-    /** S-DM4: the within-inbox and the cross-inbox mutual information, in bits. */
+    /** S-DM4: the within-inbox and the cross-inbox mutual information, in bits (each held to + 0.02). */
     private const val SDM4_WITHIN_PR_SEED1: Double = 0.8769
     private const val SDM4_PAIRING_PR_SEED1: Double = 0.0029
 

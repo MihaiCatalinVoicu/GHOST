@@ -413,29 +413,47 @@ dmr_case fail privacy-mutant-count-only.txt privacy-pr "rejects a privacy mutant
 dmr_case fail privacy-pm26-whole.txt privacy-pr "rejects a PM-26 line that does not say only its later-weeks half is built"
 # Phase 9 statistics slice (design §22.30): S-DM1 (gating), S-DM2 and S-DM4 (reported against the
 # baselines recorded from one PR-scale run of seed 5eed0001) and the controls that must move them.
-# Every privacy fixture above was regenerated from this slice's real PR report with its one change
-# (the regeneration first reproduced all sixty-one privacy fixtures byte for byte from the JD8
-# slice's positive). Each negative below changes one clause of one line, so it trips one rule.
+# Every privacy fixture above was regenerated from this slice's real PR report with the keyed change
+# it made to the previous positive (the regeneration first reproduced each of them byte for byte from
+# the previous positive), except `privacy-world-scale.txt`, which now changes its world line only
+# (the first regeneration also left it the PR baselines, so it failed three rules, §22.30 item 12).
+# Each negative below is one edit of one line that trips one rule; where the line's own arithmetic
+# ties numbers together, the edit keeps them tied (a raised AUC raises the strongest with it, a
+# rejected difference is its AUCs' difference), so the rule tripped is the one named and not the
+# consistency rules, which have negatives of their own.
 dmr_case fail privacy-sdm1-missing.txt privacy-pr "rejects a report without S-DM1"
 dmr_case fail privacy-sdm1-fail.txt privacy-pr "rejects an S-DM1 that failed (the open-fetch-window control's real FAIL line)"
-dmr_case fail privacy-sdm1-floor.txt privacy-pr "rejects S-DM1 under the n >= 100 floor"
+dmr_case fail privacy-sdm1-floor.txt privacy-pr "rejects S-DM1 over fewer than 100 conversations"
+dmr_case fail privacy-sdm1-floor-pairs.txt privacy-pr "rejects S-DM1 over fewer than 100 pairs"
 dmr_case fail privacy-sdm1-structure.txt privacy-pr "rejects an S-DM1 PASS whose exact half found the full view's bytes on two clients' namespaces"
 dmr_case fail privacy-sdm1-rejected.txt privacy-pr "rejects an S-DM1 PASS carrying a positive difference at p = 0.001"
-dmr_case fail privacy-sdm1-permutations.txt privacy-pr "rejects an S-DM1 run with fewer permutations and a looser alpha than the design's"
+dmr_case fail privacy-sdm1-permutations.txt privacy-pr "rejects an S-DM1 run with fewer permutations than the design's"
+dmr_case fail privacy-sdm1-alpha.txt privacy-pr "rejects an S-DM1 run at a looser alpha than the design's"
 dmr_case fail privacy-sdm1-unmeasured.txt privacy-pr "rejects an S-DM1 PASS with an attacker that measured nothing"
+dmr_case fail privacy-sdm1-diff.txt privacy-pr "rejects an S-DM1 line whose printed difference is not its AUCs' difference"
 dmr_case fail privacy-sdm2-missing.txt privacy-pr "rejects a report without S-DM2"
 dmr_case fail privacy-sdm2-regression.txt privacy-pr "rejects an S-DM2 LD AUC above the recorded baseline + 0.02"
+dmr_case fail privacy-sdm2-strongest.txt privacy-pr "rejects an S-DM2 line whose strongest is not the largest of its AUCs"
 dmr_case fail privacy-sdm2-baseline-moved.txt privacy-pr "rejects an S-DM2 line that prints another baseline than the recorded one"
 dmr_case fail privacy-sdm2-class-regression.txt privacy-pr "rejects an S-DM2 7 d class 0.03 above its recorded baseline"
-dmr_case fail privacy-sdm2-floor.txt privacy-pr "rejects S-DM2 under the n >= 100 floor"
+dmr_case fail privacy-sdm2-floor.txt privacy-pr "rejects S-DM2 over fewer than 100 conversations"
+dmr_case fail privacy-sdm2-floor-pairs.txt privacy-pr "rejects S-DM2 over fewer than 100 pairs"
+dmr_case fail privacy-sdm2-gate-baseline.txt privacy-gate "rejects a gate-scale S-DM2 that claims the PR world's baseline"
 dmr_case fail privacy-sdm4-missing.txt privacy-pr "rejects a report without S-DM4"
 dmr_case fail privacy-sdm4-floor.txt privacy-pr "rejects S-DM4 over fewer than 100 deposits"
-dmr_case fail privacy-sdm2-gate-baseline.txt privacy-gate "rejects a gate-scale S-DM2 that claims the PR world's baseline"
+dmr_case fail privacy-sdm4-floor-pairs.txt privacy-pr "rejects S-DM4 over fewer than 100 pairs"
+dmr_case fail privacy-sdm4-regression.txt privacy-pr "rejects an S-DM4 within-inbox value above the recorded baseline + 0.02 (§16.1)"
+dmr_case fail privacy-sdm4-pairing-regression.txt privacy-pr "rejects an S-DM4 cross-inbox value above the recorded baseline + 0.02 (§16.1)"
+dmr_case fail privacy-sdm4-baseline-moved.txt privacy-pr "rejects an S-DM4 line that prints another baseline than the recorded one"
+dmr_case fail privacy-sdm4-gate-baseline.txt privacy-gate "rejects a gate-scale S-DM4 that claims the PR world's baseline"
 dmr_case fail privacy-sdm-controls-missing.txt privacy-pr "rejects a report without the S-DM1 controls"
 dmr_case fail privacy-sdm-controls-control.txt privacy-pr "rejects controls whose unmutated world failed S-DM1"
 dmr_case fail privacy-sdm-controls-open.txt privacy-pr "rejects controls in which the open fetch window was not flagged by the comparison"
+dmr_case fail privacy-sdm-controls-jd7.txt privacy-pr "rejects controls in which JD7 did not fail on the open fetch window"
 dmr_case fail privacy-sdm-controls-open-sdm2.txt privacy-pr "rejects controls in which the open fetch window raised S-DM2 by no more than the 0.02 allowance"
+dmr_case fail privacy-sdm-controls-delta.txt privacy-pr "rejects controls whose printed S-DM2 rise is not the difference of their AUCs"
 dmr_case fail privacy-sdm-controls-tag.txt privacy-pr "rejects controls in which the conversation tag was not flagged by the exact half"
+dmr_case fail privacy-sdm-controls-tag-zero.txt privacy-pr "rejects controls whose exact half found 0 shared byte windows under the tag"
 dmr_case fail privacy-sdm-controls-pm2.txt privacy-pr "rejects controls in which PM-2, a leak inside LD's categories, was flagged by S-DM1"
 # Phase 9 S12 (design §15.9): the emulator report check. `pass/` is a green run on API 29 and 35;
 # every negative case is a copy of it with one change, each a way an emulator run could look green

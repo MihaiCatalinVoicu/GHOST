@@ -4,10 +4,11 @@ import java.util.SplittableRandom
 
 /**
  * The arithmetic of S-DM1, S-DM2 and S-DM4 (Phase 9 design §15.6 "Statistics"), with no world in
- * it: the rank AUC, its stratified form, the paired permutation test of an AUC difference, a
- * cross-fitted logistic regression and plug-in mutual information. `EdgeStatisticsSelfTest` holds
- * each of them to known answers — including a permutation test that **must reject** a planted
- * difference and must not reject a null one — without a native library.
+ * it: the rank AUC, its stratified form, the paired permutation test of an AUC difference (a sign
+ * flip of each candidate pair's DeLong placement difference), a cross-fitted logistic regression and
+ * plug-in mutual information. `EdgeStatisticsSelfTest` holds each of them to known answers —
+ * including a test that **must reject** a planted difference, also among rows that are mostly tied
+ * at zero, and must hold its level on null ones — without a native library.
  */
 internal object EdgeMath {
 
@@ -17,7 +18,11 @@ internal object EdgeMath {
     /**
      * §15.6: α = 0.001. With 999 permutations the smallest attainable p is 1/1000 = α, so the test
      * rejects when **no** permuted statistic reaches the observed one — `p ≤ α`, never `p < α`,
-     * which with this B could never reject (the class of defect R-17 exists for).
+     * which with this B could never reject (the class of defect R-17 exists for; §16.1's "p ≥ 0.001"
+     * is read as "passes when p > α", §22.30 item 12). What that costs: a leak whose exact p is α is
+     * rejected with probability about 0.999^999 ≈ 0.37, so the verdict on a leak near the threshold
+     * depends on the permutation stream; a leak far beyond it (every permuted statistic far below
+     * the observed one) does not.
      */
     const val ALPHA: Double = 0.001
 
@@ -107,8 +112,8 @@ internal object EdgeMath {
     // ------------------------------------------------------------------- the permutation test
 
     /**
-     * The outcome of [pairedPermutationTest]: the observed stratified AUCs and their difference,
-     * how many permuted differences reached it, and `p = (1 + exceeded) / (1 + B)` (the T2 rule,
+     * The outcome of [pairedPermutationTest]: the observed stratified AUCs and their difference, how
+     * many permuted statistics reached it, and `p = (1 + exceeded) / (1 + B)` (the T2 rule,
      * `stats.rs`).
      */
     class Permutation(
@@ -126,13 +131,36 @@ internal object EdgeMath {
 
     /**
      * The stratified, paired permutation test of §15.6 for `AUC(full) − AUC(LD)` (one-sided: is the
-     * full view's attacker better?). Each scorer's values are replaced by their mid-ranks **within
-     * each stratum**, so the two are on one scale and exchangeable under H0 (the full view carries no
-     * edge information LD does not); a permutation then swaps the two rank vectors of a **group** —
-     * every row of one candidate pair, over all strata at once, so a pair's rows, which are not
-     * independent, move together — with probability ½, and recomputes the stratified difference.
-     * The rows of one stratum are compared only with each other (the "stratified" of §15.6: in the
-     * edge attack a stratum is one observation window). Deterministic in [seed].
+     * full view's attacker better?), H0 being that it is not: the two AUCs are equal. The rows of one
+     * stratum are compared only with each other (the "stratified" of §15.6: in the edge attack a
+     * stratum is one observation window), and a **group** — every row of one candidate pair, over all
+     * strata — is the unit that is permuted, since a pair's rows are not independent.
+     *
+     * **How.** Each view's scores are compared only with that view's own, through DeLong's
+     * **placement counts** within each stratum — a positive row's count of the stratum's negatives it
+     * outranks, a negative row's count of the positives that outrank it, ties one half — and a pair's
+     * rows are summed into one component `ψ_g = Σ (full count − LD count)`. The observed statistic is
+     * the stratified difference itself, `Σ_g ψ_g / (2 Σ_s P_s N_s)` (each comparison is counted once
+     * from each side). A permutation flips the sign of each pair's component with probability ½ and
+     * takes `Σ_g ±ψ_g / Σ_s P_s N_s`, whose spread is the pair-clustered DeLong variance of the
+     * difference: the placements of the positives and those of the negatives each carry the whole
+     * difference, so the flipped sum is not halved (halved, the null is half as wide and a port
+     * rejected about a fifth of null worlds at 0.05, measured while this was written). Where the two
+     * views give the same scores every component is 0 and p = 1 exactly. Deterministic in [seed].
+     *
+     * **Why this form** (§22.30 item 12). The first version replaced each view's scores by their
+     * mid-ranks within the stratum **separately** and swapped a pair's two rank vectors. Where most
+     * rows are all zero and a leak changes how many are not, the zero rows then carry different
+     * mid-ranks in the two views, every swap turns zero-against-zero ties into strict comparisons, and
+     * the null spreads far beyond anything the observed difference reaches: a port rejected none of
+     * 200 zero-heavy null worlds at 0.05 and missed leaks at z ≈ 7. Ranking both views **together**
+     * (a swap of raw scores) repairs that for a scorer that is one function of either view, but its
+     * null is "the two views' scores are exchangeable", not "the AUCs are equal": a leak that also
+     * adds events to non-conversations — the open fetch window adds co-occurrence to 1 352 of the
+     * MEDIUM control's 1 402 negative pairs — widens its null to twice this test's (z 3.4 against 7.1
+     * for the co-occurrence attacker on that world, one permuted statistic in 999 at the observed).
+     * And it does not apply to the logistic attacker at all, whose two fits share no scale. This test
+     * needs neither: it compares each view's ranking with itself, for fixed and fitted scorers alike.
      */
     fun pairedPermutationTest(
         full: DoubleArray,
@@ -145,71 +173,68 @@ internal object EdgeMath {
     ): Permutation {
         require(full.size == ld.size && full.size == labels.size && full.size == strata.size && full.size == groups.size)
         val index = Strata(strata)
-        val rf = IntArray(full.size)
-        val rl = IntArray(full.size)
-        for (s in 0 until index.count) {
-            val rows = index.rows(s)
-            val a = midRanks2(DoubleArray(rows.size) { full[rows[it]] })
-            val b = midRanks2(DoubleArray(rows.size) { ld[rows[it]] })
-            for (k in rows.indices) {
-                rf[rows[k]] = a[k]
-                rl[rows[k]] = b[k]
-            }
-        }
+        val cf = DoubleArray(full.size)
+        val cl = DoubleArray(full.size)
+        val den = placementCounts(full, labels, index, cf)
+        placementCounts(ld, labels, index, cl)
         val groupCount = (groups.maxOrNull() ?: -1) + 1
-        // The loop below runs B times over every row: its buffers are allocated once.
-        var largest = 0
-        for (s in 0 until index.count) largest = maxOf(largest, index.rows(s).size)
-        val posF = LongArray(2 * largest + 2)
-        val negF = LongArray(2 * largest + 2)
-        val posL = LongArray(2 * largest + 2)
-        val negL = LongArray(2 * largest + 2)
-        fun statistic(swap: BooleanArray?): Double {
-            var nf = 0.0
-            var nl = 0.0
-            var den = 0.0
-            for (s in 0 until index.count) {
-                val rows = index.rows(s)
-                val top = 2 * rows.size + 1
-                java.util.Arrays.fill(posF, 0, top + 1, 0L)
-                java.util.Arrays.fill(negF, 0, top + 1, 0L)
-                java.util.Arrays.fill(posL, 0, top + 1, 0L)
-                java.util.Arrays.fill(negL, 0, top + 1, 0L)
-                var p = 0L
-                var q = 0L
-                for (r in rows) {
-                    val swapped = swap != null && swap[groups[r]]
-                    val a = if (swapped) rl[r] else rf[r]
-                    val b = if (swapped) rf[r] else rl[r]
-                    if (labels[r]) { posF[a]++; posL[b]++; p++ } else { negF[a]++; negL[b]++; q++ }
-                }
-                if (p == 0L || q == 0L) continue
-                var belowF = 0L
-                var belowL = 0L
-                for (v in 0..top) {
-                    if (posF[v] != 0L) nf += posF[v] * (belowF + 0.5 * negF[v])
-                    if (posL[v] != 0L) nl += posL[v] * (belowL + 0.5 * negL[v])
-                    belowF += negF[v]
-                    belowL += negL[v]
-                }
-                den += p.toDouble() * q
-            }
-            return if (den == 0.0) Double.NaN else (nf - nl) / den
-        }
-        val observed = statistic(null)
+        val psi = DoubleArray(groupCount)
+        for (r in full.indices) psi[groups[r]] += cf[r] - cl[r]
+        val aucFull = stratifiedAuc(full, labels, strata)
+        val aucLd = stratifiedAuc(ld, labels, strata)
+        if (den == 0.0) return Permutation(aucFull, aucLd, permutations, permutations)
+        var total = 0.0
+        for (v in psi) total += v
+        val observed = total / (2 * den)
+        check(Math.abs(observed - (aucFull - aucLd)) < 1e-9) { "placement sum $observed is not the AUC difference ${aucFull - aucLd}" }
         val rnd = SplittableRandom(seed)
         var exceeded = 0
-        val swap = BooleanArray(groupCount)
         repeat(permutations) {
-            for (g in 0 until groupCount) swap[g] = rnd.nextBoolean()
-            if (statistic(swap) >= observed - 1e-12) exceeded++
+            var s = 0.0
+            for (g in 0 until groupCount) if (rnd.nextBoolean()) s += psi[g] else s -= psi[g]
+            if (s / den >= observed - 1e-12) exceeded++
         }
-        return Permutation(
-            aucFull = stratifiedAuc(full, labels, strata),
-            aucLd = stratifiedAuc(ld, labels, strata),
-            exceeded = exceeded,
-            permutations = permutations,
-        )
+        return Permutation(aucFull, aucLd, exceeded, permutations)
+    }
+
+    /**
+     * DeLong's placement counts of [x] within each stratum of [index], into [out]: for a positive
+     * row the stratum's negatives below it plus half those tied, for a negative row the positives
+     * above it plus half those tied (0 in a stratum with no positive or no negative). Returns
+     * `Σ_s P_s N_s`.
+     */
+    private fun placementCounts(x: DoubleArray, labels: BooleanArray, index: Strata, out: DoubleArray): Double {
+        var den = 0.0
+        for (s in 0 until index.count) {
+            val rows = index.rows(s)
+            var p = 0
+            var q = 0
+            for (r in rows) if (labels[r]) p++ else q++
+            if (p == 0 || q == 0) {
+                for (r in rows) out[r] = 0.0
+                continue
+            }
+            den += p.toDouble() * q
+            val order = rows.sortedBy { x[it] }
+            var negBelow = 0
+            var posBelow = 0
+            var i = 0
+            while (i < order.size) {
+                var j = i
+                while (j + 1 < order.size && x[order[j + 1]] == x[order[i]]) j++
+                var tiePos = 0
+                var tieNeg = 0
+                for (k in i..j) if (labels[order[k]]) tiePos++ else tieNeg++
+                for (k in i..j) {
+                    val r = order[k]
+                    out[r] = if (labels[r]) negBelow + 0.5 * tieNeg else (p - posBelow - tiePos) + 0.5 * tiePos
+                }
+                negBelow += tieNeg
+                posBelow += tiePos
+                i = j + 1
+            }
+        }
+        return den
     }
 
     // ------------------------------------------------------------------ logistic regression

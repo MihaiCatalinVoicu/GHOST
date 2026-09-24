@@ -17,10 +17,12 @@ import org.ghost.messaging.DmWorld
  *    the structure of the full view's own fields included, cross-fitted over five folds of pairs.
  *
  * **S-DM1**: for each attacker, `AUC(full) − AUC(LD)` by the stratified paired permutation test of
- * [EdgeMath.pairedPermutationTest] (999 permutations, α = 0.001, strata = the observation windows,
- * a permutation swaps a pair's two score vectors); it **fails** when any of the three rejects, when
- * the full view's fields carry any value across two clients' namespaces (its exact half), or below
- * the floor (n ≥ 100 pairs and 100 conversations, F8 §19.24 point 6).
+ * [EdgeMath.pairedPermutationTest] (999 permutations, α = 0.001, strata = the observation windows, a
+ * permutation flips the sign of a pair's placement difference). It **fails** when any of the three
+ * rejects — no correction for three: the family's false-alarm rate is at most 0.003, and on a world
+ * whose two views give equal features every p is exactly 1 — when the full view's fields carry any
+ * value across two clients' namespaces (its exact half), or below the floor (n ≥ 100 pairs and 100
+ * conversations, F8 §19.24 point 6).
  */
 internal object EdgeStatistics {
 
@@ -46,8 +48,13 @@ internal object EdgeStatistics {
     val MEMBERS: List<String> = listOf("co-occurrence+lag", "reply-timing", "logistic")
 
     /** Both views of one world, featurised; computed once and shared by the three statistics. */
-    class Views(world: PrivacyWorld, val window: Long = WINDOW_SECONDS, pairCap: Int = Int.MAX_VALUE) {
-        val views = EdgeViews(world)
+    class Views(
+        world: PrivacyWorld,
+        val window: Long = WINDOW_SECONDS,
+        pairCap: Int = Int.MAX_VALUE,
+        keepOutside: (Int) -> Boolean = { true },
+    ) {
+        val views = EdgeViews(world, keepOutside)
         val edges: Set<Long> = world.acceptedEdges.map { (u, v) -> EdgeFeatures.key(u, v) }.toSet()
         val pairs: List<IntArray> = pairsOf(world, edges, pairCap)
         val start = world.config.startSeconds
@@ -108,8 +115,8 @@ internal object EdgeStatistics {
 
         fun line(): String =
             "dm S-DM1: ${if (passed) "PASS" else "FAIL"} full view vs LD over $windows windows of $windowHours h " +
-                "(n=$pairs pairs, $edges conversations; stratified paired permutation test, " +
-                "${EdgeMath.PERMUTATIONS} permutations, alpha=${EdgeMath.ALPHA}): " +
+                "(n=$pairs pairs, $edges conversations; stratified paired permutation test of each pair's placement " +
+                "difference, ${EdgeMath.PERMUTATIONS} sign flips, alpha=${EdgeMath.ALPHA}): " +
                 MEMBERS.indices.joinToString(", ") { i ->
                     val t = tests[i]
                     "${MEMBERS[i]} AUC full ${f4(t.aucFull)} LD ${f4(t.aucLd)} (diff ${sign(t.difference)}, p=${f3(t.p)})"
@@ -117,7 +124,8 @@ internal object EdgeStatistics {
                 "; features differ between the views on $differing of $rows units; LD view $ldEvents of $fullEvents events (${outsideLd.values.sum()} outside LD's categories" +
                 (if (outsideLd.isEmpty()) "" else ": " + outsideLd.entries.joinToString(", ") { "${it.value} ${it.key}" }) +
                 "; bytes, exact sizes and TTLs, credentials and verifiers dropped); full-view-only structure across two " +
-                "clients' namespaces: " + structure.entries.joinToString(", ") { "${it.value} ${it.key}" } +
+                "clients' namespaces (8-byte windows at every offset of the stored and served bytes, credentials, verifiers, " +
+                "blobs): " + structure.entries.joinToString(", ") { "${it.value} ${it.key}" } +
                 "; whole run as one window: " +
                 MEMBERS.indices.joinToString(", ") { i -> "${MEMBERS[i]} full ${f4(wholeRun[i].first)} LD ${f4(wholeRun[i].second)}" } +
                 (if (flagged.isEmpty()) "" else " (FLAGGED by ${flagged.joinToString()})") +
@@ -125,6 +133,9 @@ internal object EdgeStatistics {
                 (if (floorMet) "" else " (below the n >= $FLOOR floor)") +
                 (if (measured) "" else " (NOTHING COMPARED)")
     }
+
+    /** The index of the logistic attacker in [MEMBERS] (fitted on each view; the others are fixed scores). */
+    const val LOGISTIC: Int = 2
 
     fun sdm1(views: Views, seed: Long, whole: Views? = null): Sdm1 {
         val tests = MEMBERS.indices.map { i ->
@@ -240,13 +251,15 @@ internal object EdgeStatistics {
         return Sdm2(views.pairs.size, views.edgesScored, views.ld.windows, views.window / DmWorld.HOUR, ld, wholeRun, classes, baseline)
     }
 
+    /** The classes a conversation's timer can land in (§10.1: a DM never uses the 90 d bucket). */
     private val TTL_LABELS = listOf("1 h", "1 d", "7 d", "30 d")
 
     private fun ttlLabel(ttl: Long): String = when (EdgeViews.ttlBucket(ttl)) {
         DmWorld.HOUR -> "1 h"
         DmWorld.DAY -> "1 d"
         7 * DmWorld.DAY -> "7 d"
-        else -> "30 d"
+        30 * DmWorld.DAY -> "30 d"
+        else -> error("a conversation timer of TTL $ttl is in no DM class")
     }
 
     /**
@@ -346,8 +359,13 @@ internal object EdgeStatistics {
                 "in $inboxes inboxes (permutation null ${"%.4f".format(withinNull)}, p=${"%.3f".format(p(withinExceeded))}); " +
                 "cross-inbox pairing I(the two inboxes' shared non-default TTL bucket; conversation) = ${"%.4f".format(pairing)} " +
                 "bits over $pairs pairs (permutation null ${"%.4f".format(pairingNull)}, p=${"%.3f".format(p(pairingExceeded))}); " +
-                (baseline?.let { (w, q) -> "baseline ${"%.4f".format(w)} and ${"%.4f".format(q)} bits ($baselineWhat)" }
-                    ?: NO_BASELINE) +
+                (
+                    baseline?.let { (w, q) ->
+                        val within = this.within <= w + REGRESSION && pairing <= q + REGRESSION
+                        "baseline ${"%.4f".format(w)} and ${"%.4f".format(q)} bits ($baselineWhat): " +
+                            "${if (within) "within" else "ABOVE"} baseline + $REGRESSION"
+                    } ?: NO_BASELINE
+                    ) +
                 (if (floorMet) "" else " (below the n >= $FLOOR floor)")
     }
 
@@ -357,11 +375,19 @@ internal object EdgeStatistics {
      * non-default bucket says about whether they converse (the cross-inbox pairing). Plug-in mutual
      * information, each beside a permutation null (the TTL buckets shuffled within each inbox; the
      * conversation labels shuffled over the pairs), 999 permutations each. The conversation of a
-     * deposit is its sender (ground truth, the label being measured against).
+     * deposit is its sender (ground truth, the label being measured against). Held to the recorded
+     * baseline + 0.02 bits by §16.1's rule, where one is recorded.
+     *
+     * **What it does not separate** (§22.30 item 7). It measures each deposit's bucket, not the
+     * TTL-bucket **sequence** §15.6 names. The pairing null shuffles the labels over all pairs, which
+     * keeps no degree: inboxes of busy clients receive more buckets and busy clients converse more,
+     * so its p says the shared bucket and the label are not independent, not that a TTL residue
+     * beyond degree and volume exists. And a plug-in estimate grows with the deposits behind it, so
+     * two worlds' values are compared by their excess over their own nulls, not by the raw numbers.
      */
     fun sdm4(views: Views, world: PrivacyWorld, seed: Long, recorded: Pair<Pair<Double, Double>, String>?): Sdm4 {
         val owner = views.views.clusters
-        val ttlIndex = listOf(DmWorld.HOUR, DmWorld.DAY, 7 * DmWorld.DAY, 30 * DmWorld.DAY)
+        val ttlIndex = EdgeViews.TTL_BUCKETS
         val xs = ArrayList<Int>()
         val ys = ArrayList<Int>()
         val gs = ArrayList<Int>()
