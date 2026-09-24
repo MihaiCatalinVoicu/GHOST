@@ -6,9 +6,15 @@ import androidx.sqlite.db.SupportSQLiteOpenHelper
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 /**
- * Opens the encrypted local database (SQLCipher over androidx.sqlite) in the no-backup directory,
- * runs migrations and applies the hardening pragmas. The key comes from [DatabaseKeyProvider] and
- * is zeroized after SQLCipher has derived its own state from it.
+ * Opens the encrypted local database (SQLCipher over androidx.sqlite), runs migrations and applies
+ * the hardening pragmas. The key comes from [DatabaseKeyProvider] and is zeroized after SQLCipher
+ * has derived its own state from it.
+ *
+ * **Where the file is.** The configuration asks for the no-backup directory, and SQLCipher 4.19.0's
+ * `SupportOpenHelperFactory` ignores that request: the file is `getDatabasePath(FILE_NAME)`, under
+ * `databases/` (observed on the first emulator run with this exact configuration, Phase 9 design
+ * §22.32, which records the question for the owner). Backup exclusion rests on the manifest's
+ * backup and data-extraction rules, which exclude the `database` domain.
  *
  * Open sequence (SQLCipher `SQLiteOpenHelper`):
  *  1. [OpenCallback.onConfigure] applies [Schema.connectionPragmas] on the connection;

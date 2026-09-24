@@ -25,7 +25,11 @@ import org.junit.Test
  * **Every member it calls must survive R8 in the release**, because nothing keeps a member for a
  * test: `DmNative.isAvailable`, the `DmSessions` functions and the result getters used below all have
  * production callers and are listed in the release `mapping.txt` (checked against the S12 build;
- * `usage.txt` is where a removed one would appear).
+ * `usage.txt` is where a removed one would appear). **The same holds for the Kotlin standard
+ * library** (first emulator run, design §22.32): AGP maps this APK's calls into it onto the
+ * release's shrunk, renamed copy, so a stdlib function the release never calls is not there. The
+ * first run died in `AppDeviceRunner.<init>` on `listOf(element)`; this file and `DeviceRunner`
+ * call only JDK, Android, JUnit and kept `org.ghost` members, and inline stdlib functions.
  */
 class ReleaseSmokeTest {
 
@@ -76,5 +80,9 @@ class ReleaseSmokeTest {
     }
 }
 
-/** The `:app` device suite: the release smoke test (§15.9 item 3). */
-class AppDeviceRunner : DeviceRunner(listOf(ReleaseSmokeTest::class.java))
+/**
+ * The `:app` device suite: the release smoke test (§15.9 item 3). `Collections.singletonList`, not
+ * `listOf`: the shrunk release has no `listOf(element)` for this test APK to call (DeviceRunner's
+ * class note, design §22.32).
+ */
+class AppDeviceRunner : DeviceRunner(java.util.Collections.singletonList(ReleaseSmokeTest::class.java))

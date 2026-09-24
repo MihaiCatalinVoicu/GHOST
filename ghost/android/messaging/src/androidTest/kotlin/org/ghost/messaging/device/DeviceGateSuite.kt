@@ -23,7 +23,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.io.File
 import java.security.MessageDigest
 
 /**
@@ -110,7 +109,9 @@ class DeviceGateSuite {
     fun aV3DatabaseMigratesToV5OnSqlcipher() {
         System.loadLibrary("sqlcipher")
         val name = "dm-gate-migration.db"
-        for (suffix in listOf("", "-wal", "-shm", "-journal")) File(context.noBackupFilesDir, name + suffix).delete()
+        // Where SQLCipher's helper really puts it (`databases/`, DeviceWorld.Device.file): a
+        // leftover v5 file of an earlier run made the v3 open fail with "Can't downgrade".
+        DeviceWorld.deleteDatabase(context, name)
         val key = ByteArray(32) { 0x33 }
         val v3 = DeviceWorld.openHelper(context, name, key.copyOf(), 3, Schema.migrations.filter { it.version <= 3 })
         val sql3 = SupportSqlExecutor(v3.writableDatabase)
@@ -132,15 +133,28 @@ class DeviceGateSuite {
         DeviceRunner.report("dm-device: sqlcipher v3 -> v4 -> v5 ok")
     }
 
+    /**
+     * The next minute of the shared clock, before a send that must render after the ones before
+     * it. §7.7 R-O1 orders a conversation by `(sort_minute, minute_index, message_id)`, and
+     * "within one minute the two directions interleave by index and id, not by causality": a reply
+     * written in the minute of the message it answers renders before or after it by its random
+     * `message_id`. The first emulator run failed SCN-A and SCN-B on exactly that — the product
+     * ordered by the rule, the test expected causality inside one minute (design §22.32). Each
+     * causally later send therefore takes a later minute, and the full order stays asserted.
+     */
+    private fun nextMinute() = world.advance(DeviceWorld.MINUTE)
+
     @Test
     fun scnA() {
         val (contactB, contactA) = introduce()
         val (a, b) = world.alice to world.bob
         assertEquals(listOf("hi back", "hello"), texts(a.messaging, contactB))
         // Pair mode both ways (§6.3).
+        nextMinute()
         assertEquals(SendResult.QUEUED, a.messaging.send(contactB, "pair now", null))
         world.deliver()
         b.hintPass()
+        nextMinute()
         assertEquals(SendResult.QUEUED, b.messaging.send(contactA, "and back", null))
         world.deliver()
         a.hintPass()
@@ -155,8 +169,10 @@ class DeviceGateSuite {
         val (contactB, contactA) = introduce()
         val (a, b) = world.alice to world.bob
         for (i in 1..6) {
+            // m1 in the next minute too: in the minute of "hi back" it would interleave with it
+            // by id (§7.7; see nextMinute).
+            nextMinute()
             assertEquals(SendResult.QUEUED, a.messaging.send(contactB, "m$i", null))
-            world.advance(DeviceWorld.MINUTE)
         }
         val random = java.util.Random(0x5c4b)
         var rounds = 0
@@ -185,9 +201,24 @@ class DeviceGateSuite {
         assertEquals(1, shown.size)
         assertEquals(1, b.messaging.markDisplayed(shown.map { it.id }))
         world.advance(6 * DeviceWorld.MINUTE)
+        // The -wal of the file SQLCipher has open, which exists (a missing file's length is 0 too,
+        // which is how the first version passed over a path the database was not at, §22.32) and
+        // holds the frames of everything since the open: the truncation below is not vacuous.
+        assertTrue("the open database's -wal exists: ${b.walFile}", b.walFile.isFile)
+        assertTrue("the -wal holds frames before the sweep", b.walFile.length() > 0L)
+        val before = b.checkpoints.size
         b.timePass()
         assertTrue("the expired message is gone", texts(b.messaging, contactA).none { it == "ephemeral" })
-        assertEquals("§10.7: the -wal is truncated after the sweep", 0L, b.walFile.length())
+        // §10.9 point 3's "the WAL is 0 bytes" is about the instant after SWEEP's TRUNCATE: the rest
+        // of the pass writes to the log again (the owner steps, measured on the first emulator run:
+        // one page each of `relay_capability` and `relay_key_registration`, 8 272 bytes), which is
+        // why the JVM's EphemeralTest drives SWEEP alone. Here the pass is the real one and the
+        // checkpoint port records the -wal length the moment the real `Checkpoint.truncate`
+        // returns on the real SQLCipher connection (DeviceWorld.Device.checkpoints; §22.32).
+        val swept = b.checkpoints.subList(before, b.checkpoints.size).toList()
+        assertTrue("SWEEP ran its checkpoint after deleting (ME-11)", swept.isNotEmpty())
+        assertTrue("the checkpoint truncated, busy = 0 (ME-10)", swept.last().truncated)
+        assertEquals("§10.7: the -wal is 0 bytes after SWEEP's TRUNCATE", 0L, swept.last().walBytes)
         DeviceRunner.report("dm-device: SCN-F five-minute timer swept, WAL 0 bytes")
     }
 
@@ -195,10 +226,32 @@ class DeviceGateSuite {
     fun theOneAlarmIsScheduledAndCancelled() {
         val alarm = ExpiryAlarm(context)
         alarm.wakeIn(3_600L)
-        assertTrue("the alarm is in the system table", dumpsysAlarm().contains(ACTION))
+        assertTrue("the alarm is in the system's pending alarms", pendingAlarms().contains(ACTION))
         alarm.wakeIn(null)
-        assertFalse("§10.7: cancelled when nothing is pending and at wipe", dumpsysAlarm().contains(ACTION))
+        assertFalse("§10.7: cancelled when nothing is pending and at wipe", pendingAlarms().contains(ACTION))
         DeviceRunner.report("dm-device: alarm scheduled and cancelled")
+    }
+
+    /**
+     * The **pending** section of `dumpsys alarm`, not the whole dump (first emulator run, design
+     * §22.32): on API 35 the dump also keeps a "Removal history" whose snapshot of a cancelled alarm
+     * carries its tag (`*walarm*:<action>`, "Reason=alarm_cancelled"), so a scan of the whole text
+     * found the action after a successful cancel and failed on API 35 while passing on API 29. The
+     * section is "Pending alarm batches: N" on API 29 and "N pending alarms:" on API 35, and it runs
+     * to the next two-space-indented header. A dump without either is a failure, not an empty
+     * section; and the scheduled half above must find the alarm in it.
+     */
+    private fun pendingAlarms(): String {
+        val lines = dumpsysAlarm().lines()
+        val header = Regex("^  (Pending alarm batches: \\d+|\\d+ pending alarms:)\\s*$")
+        val start = lines.indexOfFirst { header.matches(it) }
+        check(start >= 0) { "dumpsys alarm has no pending-alarm section" }
+        val section = StringBuilder()
+        for (line in lines.drop(start + 1)) {
+            if (line.startsWith("  ") && !line.startsWith("   ") && line.isNotBlank()) break
+            section.append(line).append('\n')
+        }
+        return section.toString()
     }
 
     @Test
@@ -231,7 +284,18 @@ class DeviceGateSuite {
         assertTrue(a.messaging.acknowledgeKeyChange(contactB))
         assertTrue("released once, after the decision", texts(a.messaging, contactB).count { it == "after the change" } == 1)
 
-        val log = shell("logcat -d")
+        // The scan must read this process's log, or "no canary" is true of an empty read (the first
+        // emulator run found two such vacuous device checks, §22.32): a marker logged here, after
+        // the whole scenario, has to be in the dump the canaries are looked for in.
+        val marker = "ghost-device-gate-logcat-marker-" + java.util.UUID.randomUUID()
+        android.util.Log.i("GhostDeviceGate", marker)
+        var log = shell("logcat -d")
+        for (attempt in 1..20) {
+            if (log.contains(marker)) break
+            Thread.sleep(100)
+            log = shell("logcat -d")
+        }
+        assertTrue("the logcat dump holds this process's lines (a marker logged just before it)", log.contains(marker))
         val canaries = listOf(
             hex(world.alice.root().deriveBranch(org.ghost.identity.DerivationLabels.MESSAGING)),
             hex(world.bob.root().deriveBranch(org.ghost.identity.DerivationLabels.MESSAGING)),
