@@ -20,6 +20,25 @@ expect_fail() {
 for g in anti-placeholder no-logging manifest-lint dependency-allowlist; do
   expect_fail "$g" "$HARNESS/negative"
 done
+# workflow-yaml: a workflow that is not valid YAML never starts (the DM exit gate missed three merges to
+# main that way). The good fixture must pass, and each negative must fail **for the reason it names**,
+# so a missing parser can never stand in for a rejection. `bad-comment` is the real defect: a wrapped
+# comment line that lost its `#`.
+wfy_case() { # $1 = expect pass|fail, $2 = fixture directory, $3 = expected text ("" for pass), $4 = description
+  local out got
+  if out="$(GHOST_WORKFLOWS_DIR="$HARNESS/workflow-yaml/$2" bash "$DIR/workflow-yaml.sh" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ] && { [ -z "$3" ] || grep -qF "$3" <<<"$out"; }; then
+    echo "self-test ok: workflow-yaml $4"
+  else
+    echo "SELF-TEST FAIL: workflow-yaml $4 ($got)" >&2; printf '%s\n' "$out" | tail -2 >&2; rc=1
+  fi
+}
+wfy_case pass good "" "accepts a valid workflow"
+wfy_case fail bad-comment "unparseable" "rejects a comment line that lost its # (the defect that stopped messaging-exit-gate)"
+wfy_case fail bad-no-jobs "no jobs" "rejects a workflow with no jobs"
+wfy_case fail bad-job-shape "has neither runs-on nor uses" "rejects a job with no runner"
+wfy_case fail bad-step "has neither uses nor run" "rejects a step that does nothing"
+wfy_case fail empty "no workflow file found" "refuses a directory with no workflow (a gate that scans nothing passes)"
 # Phase 9 §21.13 point 7 (slice S12): anti-placeholder reads the `gate` source sets. The fixture holds
 # a gate source and nothing else, so only that reading can fail it.
 expect_fail anti-placeholder "$HARNESS/negative-gate-placeholder"
@@ -82,32 +101,62 @@ fi
 # Phase 8 T2 (design §13.4, §13.6, §19.31): the report check accepts only a complete PASS report of
 # the right scale (A1, the FR-6′.7 amount uniformity, included), and all 26 privacy mutants detected.
 T2R="$HARNESS/t2-report"
-t2r_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
-  if bash "$DIR/t2-report-check.sh" "$T2R/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
-  if [ "$got" = "$1" ]; then echo "self-test ok: t2-report-check $4"; else echo "SELF-TEST FAIL: t2-report-check $4 ($got)" >&2; rc=1; fi
+# A negative case names the T2-REPORT-FAIL text it must fail with ($5): a fixture that fails for
+# another reason (a second, unintended change) does not show the requirement it names (Phase 9
+# design §22.24 item 10).
+t2r_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description, $5 = the failure text (fail only)
+  local err fails
+  if err="$(bash "$DIR/t2-report-check.sh" "$T2R/$2" "$3" 2>&1 >/dev/null)"; then got=pass; else got=fail; fi
+  fails="$(grep -E '^T2-REPORT-FAIL: ' <<<"$err" || true)"
+  if [ "$got" != "$1" ]; then
+    echo "SELF-TEST FAIL: t2-report-check $4 ($got)" >&2; rc=1
+  elif [ "$1" = fail ] && { [ -z "${5:-}" ] || ! grep -qF -- "$5" <<<"$fails"; }; then
+    echo "SELF-TEST FAIL: t2-report-check $4 (failed, but not with \"${5:-<no failure text named>}\")" >&2; rc=1
+  else
+    echo "self-test ok: t2-report-check $4"
+  fi
 }
-t2r_case pass pass-gate.txt gate "accepts a complete gate report"
+# base-gate.txt is the made-up gate report ("PASS fixture" lines) every negative gate fixture below
+# was made from: each is one change from it (a line removed, replaced or, for a failed check, the
+# check's line and the result line), and the base itself passes — so each negative fails for the one
+# requirement it names. pass-gate.txt is a measured report, not a made-up one: seed pair 0 at the
+# gate scale after §4.9 (Phase 9 design §22.24), its dm_owner_namespaces field included; its scale
+# is the gate's only.
+t2r_case pass base-gate.txt gate "accepts the made-up base every negative gate fixture is one change from"
+t2r_case pass pass-gate.txt gate "accepts the measured gate report (seed pair 0, Phase 9 §4.9, §22.24)"
+t2r_case fail pass-gate.txt pr "rejects the measured gate report as the PR variant's" "the report is not of the pr scale"
 t2r_case pass pass-pr.txt pr "accepts a complete PR-variant report"
-t2r_case fail missing-check.txt gate "rejects a report without a check (NI-1d)"
-t2r_case fail failed-check.txt gate "rejects a report with a failed check"
-t2r_case fail wrong-scale.txt gate "rejects a PR-scale report as the gate's"
-t2r_case fail vacuous.txt gate "rejects a check that passed on an empty sample (S3d, n=0)"
-t2r_case fail missing-e30.txt gate "rejects a report without the E30 redeem-hold line"
-t2r_case fail vacuous-e30.txt gate "rejects an E30 line that measured no held session"
-t2r_case fail vacuous-reads.txt gate "rejects an NI-2 line whose twin moved no drop read by an hour"
-t2r_case fail exempt-twin.txt gate "rejects an NI-2 line that compared an inviter only before a horizon (no exemption, §19.29)"
-t2r_case fail no-such-report.txt gate "rejects a missing report"
-t2r_case fail missing-a1.txt gate "rejects a report without the A1 amount-uniformity line (FR-6′.7, §19.31)"
-t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet transfer"
+t2r_case fail missing-check.txt gate "rejects a report without a check (NI-1d)" "no PASS line for NI-1d"
+t2r_case fail failed-check.txt gate "rejects a report with a failed check" "S1 failed"
+t2r_case fail wrong-scale.txt gate "rejects a PR-scale report as the gate's" "the report is not of the gate scale"
+t2r_case fail vacuous.txt gate "rejects a check that passed on an empty sample (S3d, n=0)" "a check passed on an empty sample"
+t2r_case fail missing-e30.txt gate "rejects a report without the E30 redeem-hold line" "no E30 line"
+t2r_case fail vacuous-e30.txt gate "rejects an E30 line that measured no held session" "E30 measured no held session"
+t2r_case fail vacuous-reads.txt gate "rejects an NI-2 line whose twin moved no drop read by an hour" "NI-2 or NI-3 passed with no drop read moved by an hour or more"
+t2r_case fail exempt-twin.txt gate "rejects an NI-2 line that compared an inviter only before a horizon (no exemption, §19.29)" "NI-2 passed without identical views and no exemption"
+t2r_case fail no-such-report.txt gate "rejects a missing report" "no report at"
+t2r_case fail missing-a1.txt gate "rejects a report without the A1 amount-uniformity line (FR-6′.7, §19.31)" "no PASS line for A1"
+t2r_case fail vacuous-a1.txt gate "rejects an A1 line that checked no wallet transfer" "A1 passed with no XMR invoice answer or no wallet transfer"
 # Phase 9 design §4.9 point 3 (slice S11): the population line names the DM owner namespaces, and a
 # world whose relays answered none of their registrations OK did not model them.
-t2r_case fail missing-dm-namespaces.txt gate "rejects a population line without dm_owner_namespaces (Phase 9 §4.9)"
-t2r_case fail vacuous-dm-registrations.txt gate "rejects DM owner namespaces with no registration answered OK"
-t2r_case fail failed-dm-registrations.txt gate "rejects DM registrations the loopback failed"
-t2r_case fail dm-namespaces-per-owner.txt gate "rejects DM owner namespaces that are not two per activated client"
+t2r_case fail missing-dm-namespaces.txt gate "rejects a population line without dm_owner_namespaces (Phase 9 §4.9)" "the population line names no dm_owner_namespaces"
+t2r_case fail vacuous-dm-registrations.txt gate "rejects DM owner namespaces with no registration answered OK" "DM owner namespaces with no registration answered OK"
+t2r_case fail failed-dm-registrations.txt gate "rejects DM registrations the loopback failed" "14 DM registrations failed on the loopback"
+t2r_case fail dm-namespaces-per-owner.txt gate "rejects DM owner namespaces that are not two per activated client" "not two per activated client"
+# "One change from the base": every negative gate fixture differs from base-gate.txt in at most two
+# lines (diff's `<` and `>` lines, a replaced line counting twice).
+for neg in missing-check failed-check wrong-scale vacuous missing-e30 vacuous-e30 vacuous-reads exempt-twin \
+  missing-a1 vacuous-a1 missing-dm-namespaces vacuous-dm-registrations failed-dm-registrations dm-namespaces-per-owner; do
+  changed="$(diff "$T2R/base-gate.txt" "$T2R/$neg.txt" | grep -cE '^[<>]' || true)"
+  if [ "$changed" -ge 1 ] && [ "$changed" -le 4 ]; then
+    echo "self-test ok: t2-report fixture $neg.txt is one change from base-gate.txt ($changed diff lines)"
+  else
+    echo "SELF-TEST FAIL: t2-report fixture $neg.txt is not one change from base-gate.txt ($changed diff lines)" >&2; rc=1
+  fi
+done
 t2r_case pass mutants-ok.txt mutants "accepts 26 detected mutants"
 t2r_case pass mutants-interleaved.txt mutants "accepts a detected mutant whose ok line another test's output ran into"
-t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants"
+t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants" "25 of 26 mutants detected"
 # Phase 9 S10 (design §15.3, §15.4, §15.6, §15.7): the DM exit-gate report check accepts only a
 # complete report of the right scale. Every negative fixture is a way the report could look complete
 # while the run measured nothing — a scenario missing, an enumeration of zero crash points, a
@@ -246,6 +295,35 @@ dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K 
 # shape of every report before S10c.
 dmr_case fail missing-scn-c.txt gate "rejects a report without SCN-C"
 dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C"
+# Phase 9 SCN-E (design §22.25): the report now carries SCN-E's four `dm crash sample:` lines — its
+# crash coverage is sampled, not every event — and thirteen mutants. `pass-pr.txt` is a real report
+# of the SCN-E code; `pass-gate.txt` is **assembled** (§22.25 items 13 and 14: main's gate report of
+# the S10c code with the SCN-E-alone gate-scale lines and this slice's mutant lines put in, because
+# the whole gate was not run on this code) — the review found this comment calling both "real
+# reports". Every negative above except `s10-only-gate.txt` was regenerated from the positives with
+# its one change by a script that, run first on the previous positives, reproduced the previous
+# negatives byte for byte. Eight more, each a way an SCN-E report could claim more than its run
+# did: no SCN-E at all (every report before it), at either scale; a line that does not say it is
+# sampled; a line in the every-event form; a gate report whose sample has the PR density; a line
+# with no timeout run; MC-15 held only to the fault-free rule; and the eleven-mutant count.
+dmr_case fail missing-scn-e.txt gate "rejects a report without SCN-E"
+dmr_case fail missing-scn-e-pr.txt pr "rejects a PR-scale report without SCN-E"
+dmr_case fail scn-e-not-said-sampled.txt gate "rejects an SCN-E line that does not say it is sampled"
+dmr_case fail scn-e-as-crash-classes.txt gate "rejects an SCN-E line that claims every event"
+dmr_case fail scn-e-pr-density-gate.txt gate "rejects a gate report whose SCN-E sample has the PR density"
+dmr_case fail scn-e-no-timeout.txt pr "rejects an SCN-E line with no timeout run"
+dmr_case fail scn-e-weakened-kill-rule.txt gate "rejects MC-15 killed only fault-free"
+dmr_case fail scn-e-old-mutant-count.txt gate "rejects the eleven-mutant report of the slices before SCN-E"
+# The review of SCN-E (design §22.25 item 14): an SCN-E line collapsed to one phase (the review's
+# "8 singles over 1 phases", which the check accepted); a gate line whose store faults have the PR
+# density; a line whose stores were timed out but never crashed after apply; MC-15 held to the
+# whole-run crash points the review found all in the establishment; and a header that does not say
+# its "every event" is not the SCN-E lines'.
+dmr_case fail scn-e-one-phase.txt gate "rejects an SCN-E line sampled over fewer phases than its script has"
+dmr_case fail scn-e-gate-store-density.txt gate "rejects a gate SCN-E line whose store faults have the PR density"
+dmr_case fail scn-e-no-store-crash.txt gate "rejects an SCN-E line with no crash after apply at its stores"
+dmr_case fail scn-e-old-kill-window.txt gate "rejects MC-15 killed at crash points outside the window where it acts"
+dmr_case fail scn-e-no-coverage-note.txt gate "rejects a header that does not say the SCN-E lines are sampled"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the
@@ -294,7 +372,7 @@ dmr_case fail privacy-ni2-defect-partial.txt privacy-pr "rejects an NI-DM2 decla
 dmr_case fail privacy-withhold-no-room.txt privacy-pr "rejects a JD7 withhold variant with no session where a fourth attempt would fall"
 dmr_case fail privacy-pm5-whole.txt privacy-pr "rejects a PM-5 line that does not say only its day-rounding half is built"
 dmr_case fail privacy-jd5-no-split.txt privacy-pr "rejects a JD5 line that does not say which TIMER_SET path it covered"
-# Phase 9 JD8 slice (design §22.24): JD8 over the entitlement world's twins, and PM-1, PM-1b and
+# Phase 9 JD8 slice (design §22.26): JD8 over the entitlement world's twins, and PM-1, PM-1b and
 # PM-26 killed by it. Every privacy fixture above was regenerated from this slice's real PR report
 # with its one change (the regeneration reproduced all thirty of S11b's fixtures byte for byte from
 # S11b's positive first). Each negative below is a way a JD8 line could look like a comparison while

@@ -144,7 +144,7 @@ internal object Checks {
         PrivacyCheck.NI_DM1 -> NiDm1.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.NI_DM2 -> NiDm2.run(seed, mutant).let { if (it.passed) null else it.line() }
         PrivacyCheck.NI_DM3 -> NiDm3.run(seed, mutant).let { if (it.passed) null else it.line() }
-        // The entitlement world's twins (§22.24): the control is the report's run of `DmJd8Test`
+        // The entitlement world's twins (§22.26): the control is the report's run of `DmJd8Test`
         // (the every-commit check on); a mutated pair runs with that read-only check off, which would
         // otherwise stop PM-1b's world at the commit that installs its capability (`Jd8Twin`).
         PrivacyCheck.JD8 -> org.ghost.messaging.entworld.Jd8.run(

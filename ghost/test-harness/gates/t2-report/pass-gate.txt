@@ -1,32 +1,38 @@
-T2 variant t2-gate-0: N = 2000 packs, 84 days, seeds 0x1/0x2, mutant None
-population: PASS fixture, dm_owner_namespaces 600 (2 per activated client: 300 owners, 600 namespaces registered at a relay; 1782 registrations ok, 0 wrong_period, 0 failed)
-J1: PASS fixture
-J2: PASS fixture
-J3: PASS fixture
-J4: PASS fixture
-J5: PASS fixture
-J6: PASS fixture
-J7: PASS fixture
-J8: PASS fixture
-J9: PASS fixture
-J10: PASS fixture
-T2b: PASS fixture
-T2c: PASS fixture
-completeness: PASS fixture
-A1: PASS fixture
-S1: PASS fixture
-S2: PASS fixture
-S3a: PASS fixture
-S3b: PASS fixture
-S3d: PASS fixture
-S4: PASS fixture
-S4 lying issuer: PASS fixture
-J9 lying issuer: PASS fixture
-NI-1: PASS fixture
-NI-1 across cells: PASS fixture
-NI-2: PASS fixture, no exemption
-NI-3: PASS fixture, no exemption
-NI-1d: PASS fixture
-S3c (reported, declared L5): fixture
-E30 (reported, declared residue, Q29 redeem hold): 1200 background sessions, 400 armed by a pending write need, 90 held past their lanes (hold median 12 s, p90 25 s, max 31 s; 20 held steps redeemed nothing, 75 redemptions in held steps); 300 unarmed sessions ended before their lane step
+T2 variant t2-gate-0: N = 2000 packs, 84 days, seeds 0x74320001/0x74320002, mutant None
+world t2-gate-0-train: 7008 s; window packs signed 2368 (invoices 2400, renewals started 1496, resumes 37, credits packs 138, claims 27), trials 723, warm-up packs 2539, need-triggered starts 93, drops 423, credits received 399 (refreshes due at the first time 0, at the second 0, at their cut 0; dropped after their cut 0), credits refreshed 92, issuer calls 14441, relay calls 7523487
+world t2-gate-0-test: 6918 s; window packs signed 2361 (invoices 2399, renewals started 1504, resumes 39, credits packs 141, claims 28), trials 724, warm-up packs 2496, need-triggered starts 94, drops 405, credits received 383 (refreshes due at the first time 0, at the second 0, at their cut 0; dropped after their cut 0), credits refreshed 79, issuer calls 14443, relay calls 7464594
+population: PASS window packs signed 2361 (N = 2000, ±30 %), need-triggered starts 94 (5 % of N: 100), renewals started 1504, invitee first packs 627, resumes 39, trials 724, credits packs 141, claims 28, dm_owner_namespaces 1866 (2 per activated client: 933 owners, 1822 namespaces registered at a relay; 116092 registrations ok, 0 wrong_period, 0 failed)
+E30 (reported, declared residue, Q29 redeem hold): 561454 background sessions, 362048 armed by a pending write need, 64337 held past their lanes (hold median 15 s, p90 27 s, max 57 s; 63381 held steps redeemed nothing, 15201 redemptions in held steps); 335 unarmed sessions ended before their lane step; 496782 stepped while their lane events ran (875699 redeem steps in all)
+J1: PASS 0 hits
+J2: PASS 0 hits
+J3: PASS 0 hits
+J4: PASS 0 hits
+J5: PASS (c: every blind signature under its position's ES key) 0 hits
+J6: PASS 0 hits
+J7: PASS 0 hits
+J8: PASS 0 hits (871 WRONG_PERIOD redemptions of devices more than 24 h off, which the clipped relay-facing clock corrects only to within a day, §19.23 point 2: reported; identical retries refused a period, counted: 700; refusals whose answer never reached the client, reported and not counted, §19.27: 7)
+J9: PASS 0 hits (quiet runs independent of due work: 902 of 7346 automatic BlindSign calls served by the first job run at or after their due minute, q = 1/8, p = 0.72)
+J10: PASS 0 hits
+T2b: PASS 0 hits
+T2c: PASS 0 hits (0 credits re-presented after a credits-pack flow that recorded no invoice, unanswered or WRONG_PERIOD, §19.23 point 2, §19.27; 122 credits or invite tokens re-presented by a WRONG_PERIOD re-prepare of the same purchase, trial or revocation within its cap, §19.27)
+completeness: PASS issuer view 14443 of 14443 requests received (counted at the handlers' entry), relay views 7464594 of 7464594 capture events, redemptions 198271 of 198271 tokens presented, 0 ground-truth nullifiers in no relay view
+A1: PASS 4840 XMR invoice answers (4840 invoices, 5 of 5 price epochs quoted one amount), 141 credits-paid answers, 54 answers naming no invoice; 4825 wallet transfers to invoice subaddresses (0 exempted as documented user under- or overpayments and top-ups; 0 to no invoice's subaddress, crediting none); client-core refused 0 invoice answers as malformed_response, 0 purchases failed with ISSUER_MISMATCH: every amount the ES pack price of its invoice's price epoch
+join search: 2991072 distinct values, 7464594 relay calls, 283.6 s
+S1: PASS n=2258 argmax full 0.090 declared 0.110 lift -0.020 (n10=57, n01=102, p=1.00e0); Hungarian full 0.109 declared 0.111 (p=7.14e-1); 780 candidates per invoice
+S2: PASS n=2178 max-T 2.09 (jacobi(B) x redemptions b..b+4), permuted maxima at or above it 493 of 999 (p=0.494)
+S3a: PASS co-presence at automatic issuer calls: n=13052 true 0.0000 max permuted 0.0084 p=1.000
+S3b: PASS session start/end within [-120 s, +30 s]: n=13052 true 0.0005 max permuted 0.0211 p=1.000
+S3c (reported, declared L5): quiet-gap rate true 0.988 other 0.915: 0.11 bits per call, 0.30 bits per invoice
+S3d: PASS payment co-presence (screen payments): n=3326 true 0.0009 max permuted 0.0105 p=1.000
+S4: PASS declared-leak top-1 accuracy 0.106 over 2209 XMR packs of non-genesis clients (bound 0.25)
+NI-1: PASS 3 relay views (7464594 calls) and 156 relay database snapshots identical; 4839 finalizations moved inside their activation-slot cell, 0 clients with one pushed across a cell boundary compared before it
+NI-1 across cells: PASS 218 flows moved (245 finalized differently, the others displaced by their extra attempts); every client's relay calls identical before the earlier activation cell
+NI-2: PASS issuer view (14443 calls) identical modulo blinded and signature bytes and wallet view (3164594 calls) identical, no exemption; 403 received credits read in both worlds, 402 of them at another time (379 by an hour or more), each due at the time its invite drew
+NI-3: PASS issuer view (2358 calls) identical and wallet view (2604602 calls) identical, no exemption; 3 received credits read in both worlds, 3 of them at another time (3 by an hour or more), each due at the time its invite drew
+NI-1d: PASS 14 drop writes identical (time, relay, length)
+S4 lying issuer: PASS declared-leak top-1 accuracy 0.086 over 257 XMR packs when the issuer lies AWAITING_CONFIRMATIONS until the last attempt (bound 0.25)
+J9 lying issuer: PASS 0 hits
+signature cache: test family 810723 hits / 1096462 signed
+variant t2-gate-0 took 14642 s
+
 T2 RESULT: PASS

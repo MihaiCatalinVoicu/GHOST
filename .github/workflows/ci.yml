@@ -258,7 +258,7 @@ jobs:
       # The PR-scale privacy report (Phase 9 design §15.6, §16.2: "T32 at N = 120 over 14 days" and
       # the privacy mutants on a small world, slice S11): `./gradlew build` ran the privacy worlds of
       # `org.ghost.messaging.dmworld`, and the report is evidence only if something refuses an
-      # incomplete one. Since the JD8 slice (§22.24) that includes `DmJd8Test`'s JD8 line over the
+      # incomplete one. Since the JD8 slice (§22.26) that includes `DmJd8Test`'s JD8 line over the
       # entitlement world's twins and the three mutants it kills, which `privacy-pr` requires.
       - name: DM privacy report check (PR scale)
         run: bash ../scripts/gates/dm-report-check.sh messaging/build/reports/dm/privacy.txt privacy-pr

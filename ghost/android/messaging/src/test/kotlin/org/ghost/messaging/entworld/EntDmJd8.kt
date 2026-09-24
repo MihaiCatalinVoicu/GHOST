@@ -92,7 +92,7 @@ internal class EntMutation(
  * `DmPrivacyMutantTest` run with it off, because it stops PM-1b's world at the commit that installs
  * the capability ("alice: a redeemed capability on a LOCAL namespace", measured) before JD8 could
  * look. It is read-only, so a world runs the same with it on until the moment it would throw: the
- * control twins run with it off gave the same 186 calls at the same milliseconds (measured, §22.24).
+ * control twins run with it off gave the same 186 calls at the same milliseconds (measured, §22.26).
  */
 internal class Jd8Twin(
     val active: Boolean,
@@ -318,7 +318,7 @@ internal class Jd8Twin(
  * sentence, and JD3's redeem-and-register clause). A failure prints the two multiset differences by
  * client, so the twin that holds the extra calls names the mutant.
  *
- * **T27's minute is measured and not compared** (§22.22 item 8 asked for the measurement, §22.24
+ * **T27's minute is measured and not compared** (§22.22 item 8 asked for the measurement, §22.26
  * records it). Each call of a key is paired with the same key's call of the other twin, in time
  * order, and the line reports how many pairs fall in the same minute and at the same millisecond,
  * and how many of the active twin's calls came after a message in their own relay session
@@ -440,7 +440,7 @@ internal object Jd8 {
                 "a LOCAL need skipped ${active.localSkipped} times by alice's planner (dave ${active.daveEstablishment}); " +
                 "idle ${idle.contacts.values.sum()} contacts, ${idle.foreignDmCalls.values.sum()} such calls; " +
                 "dave (no token) ${idle.calls["dave"].orEmpty().size} and ${active.calls["dave"].orEmpty().size} calls"
-            val time = "; T27's minute measured, not compared (DM work moves the redeem lane's steps, §22.24): " +
+            val time = "; T27's minute measured, not compared (DM work moves the redeem lane's steps, §22.26): " +
                 "${t.sameMinute} of ${t.pairs} pairs in the same minute, ${t.sameMillis} at the same millisecond, " +
                 "${t.exposed} after a message in their relay session (${t.exposedRedeem} redemptions, ${t.exposed - t.exposedRedeem} registrations)"
             val problems = buildList {

@@ -22,7 +22,7 @@ name: dm-privacy-gate
 # yet, so a "seed pair" here is one behaviour seed run once. `dm-report-check.sh` pins exactly these
 # lines, so a report that claimed more than this would fail it.
 #
-# **JD8** (§22.24) runs in the suite job, not in the privacy world: its twins are the entitlement
+# **JD8** (§22.26) runs in the suite job, not in the privacy world: its twins are the entitlement
 # world's (§22.22; five clients with the real redeem lane and the real registration lane, 0 vs 4
 # contacts, to `start(2976) + 3 h`), where redemptions and registrations are real, and it kills PM-1,
 # PM-1b and PM-26 (the later-weeks half) there. It is scale-independent, so the matrix job does not

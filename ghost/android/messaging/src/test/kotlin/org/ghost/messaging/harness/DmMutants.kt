@@ -9,15 +9,18 @@ import org.ghost.messaging.port.DmEnvelopes
  * detects it is not evidence, it is a claim.
  *
  * §15.7's own set is 97 — 40 privacy (S11's), 33 correctness and 24 ephemeral (this slice's 57).
- * Eleven are here: seven from S10, and four from S10b — MC-18 and MC-26, which S10b's SCN-I makes
- * reachable, MC-28, which its SCN-H does, and MC-33, which its `SCN-G-week` does. The other 46 are
- * listed in §22.15 and §22.19 with the reason each is not, and the gate line says **eleven**, not
- * fifty-seven, for the same reason `dm-report-check.sh` refuses a PASS on an empty sample: a
+ * Thirteen are here: seven from S10, four from S10b — MC-18 and MC-26, which S10b's SCN-I makes
+ * reachable, MC-28, which its SCN-H does, and MC-33, which its `SCN-G-week` does — and two from
+ * SCN-E (§22.25), MC-14 and MC-15, killed on the entitlement world by `entworld.ScnETest`. The other
+ * 44 are listed in §22.15, §22.19 and §22.25 with the reason each is not, and the gate line says
+ * **thirteen**, not fifty-seven, for the same reason `dm-report-check.sh` refuses a PASS on an empty sample: a
  * number a run did not measure is worse than no number. The line is built from the kills the run
  * **recorded** ([DmKills]), never from this registry, so an ignored or deleted kill test lowers
- * the count instead of leaving it standing. **S10b's four are held to a stricter kill than S10's seven**: detected fault-free by
- * the check their entry names, *and* at crash points spread over the scenario, each beside the
- * unmutated scenario crashed at the same point ([Mutation.expectUnderCrash]).
+ * the count instead of leaving it standing. **S10b's four and SCN-E's two are held to a stricter
+ * kill than S10's seven**: detected fault-free by the check their entry names, *and* at crash points
+ * — spread over the scenario for S10b's, over the window from the loss to the fault-free failure
+ * for SCN-E's (§22.25 item 14) — each beside the unmutated scenario crashed at the same point
+ * ([Mutation.expectUnderCrash]).
  *
  * **What a mutant may be, here.** `:messaging` has no `Steps` seam the way `:sync` does, so a
  * mutation is one of three things: a **statement rewrite** on the device's executor (the same
@@ -26,11 +29,13 @@ import org.ghost.messaging.port.DmEnvelopes
  * statement back into a second transaction. The third is new in this slice's review and is what
  * makes MC-1 reachable; §22.15 item 8 had recorded it as out of reach of the first two, and it is.
  * That is what decides which of §15.7's 57 are reachable here, and §22.15 says so per mutant
- * rather than in general.
+ * rather than in general. SCN-E adds a fourth, a **trigger substitution** in the entitlement
+ * world's wiring ([Mutation.hintKeeper], MC-15), and it is the only one that changes *when* a
+ * production step runs rather than what a statement or a port does.
  */
 internal object DmMutants {
 
-    /** One substitution in the armed world. Exactly one of the three mechanisms is set. */
+    /** One substitution in the armed world. Exactly one of the four mechanisms is set. */
     class Mutation(
         val id: String,
         /** The property §15.7 says this mutant defeats, in its own words. */
@@ -67,6 +72,15 @@ internal object DmMutants {
         val defer: ((String) -> Boolean)? = null,
         /** True when the mutant is invisible without a crash, so its kill runs the enumeration. */
         val needsACrash: Boolean = false,
+        /**
+         * A **trigger substitution** in the entitlement world's wiring (SCN-E, §22.25): the contact
+         * half of KEEPER — the production `ContactKeeper` — runs on every `CAPABILITIES` hint instead
+         * of on time-triggered passes only. A fourth mechanism beside the rewrite, the decorator and
+         * the split, and the only one here that moves *when* a production step runs: the wiring is
+         * the one piece of the DM runtime a harness owns (`EntDmClient`, a copy of `MessagingWiring`'s
+         * decisions, §22.22 item 6(g)). Only `ScnE` reads it.
+         */
+        val hintKeeper: Boolean = false,
     ) {
         override fun toString(): String = id
     }
@@ -405,6 +419,70 @@ internal object DmMutants {
         },
     )
 
+    /**
+     * **MC-14 — registration rows not re-armed after a rejected own READ credential** (§4.8's
+     * healing rule, §21.2 point 8; SCN-E, §22.25).
+     *
+     * A relay that lost its `keys.redb` refuses the owner's READ credential; KEEPER then sends every
+     * `done` row of `(relay, X_0)` from this week on back to pending and re-puts the credential in
+     * the same transaction (`OwnerSteps.readCredentialAction`, `HEAL_AND_PUT`), and the work lane
+     * registers them again. The mutation makes the one statement that finds those rows
+     * (`RegistrationStore.rearm`'s `SELECT`) match nothing: the credential is still re-put, so reads
+     * are refused again at once, but no row goes back to pending — the relay never holds the
+     * owner's registrations again until a later week's rows are registered for the first time.
+     * §15.7 detects it with "SCN-E LOSE_KEYS variant", and so does this: SCN-E/LOSE_KEYS's healing
+     * check, six hours after the loss, which is in every run.
+     */
+    val MC14 = Mutation(
+        id = "MC-14",
+        defeats = "§4.8, §21.2 point 8: a refused own READ credential re-arms the pair's done registration rows",
+        detectedBy = "SCN-E/LOSE_KEYS (6 h after the loss the relay still holds none of the owner's inbox registrations)",
+        expect = "(the healing rule, §4.8)",
+        expectUnderCrash = listOf("(the healing rule, §4.8)"),
+        rewrite = { sql, args ->
+            if (sql == REARM_SELECT) Pair("$REARM_SELECT_HEAD AND 0 ORDER BY period_id, kind", args) else Pair(sql, args)
+        },
+    )
+
+    /**
+     * **MC-15 — a refused LOCAL credential re-put on every `CAPABILITIES` hint** (§21.2 point 7;
+     * SCN-E, §22.25).
+     *
+     * A relay that refuses a contact's DEPOSIT credential leaves the row `rejected`, and the contact
+     * KEEPER re-puts it as a new generation — which re-arms every parked delivery — at most once per
+     * time-triggered pass, so the relay's answer never decides when the sender tries again (§21.2
+     * point 7 says "once per relay session start"; §22.25 item 4 records that the engine's bound is
+     * per time-triggered pass). The mutation is
+     * the trigger §15.7 names: KEEPER's contact half on every `CAPABILITIES` hint, and a refusal
+     * commits exactly such a hint. The refused delivery is then due again within the session that
+     * was refused, and the relay decides how many times it is refused. §15.7 detects it with "SCN-E
+     * bound on refused stores per session"; what detects it here is SCN-E's rule on re-puts as the
+     * engine implements the bound (`CredentialWatch`, at the commit of the re-put): a refused
+     * credential is re-put only inside a time-triggered pass or a user send, the trigger read from
+     * what the wiring **scheduled** and never from a pass's own flag — so the same defect reached
+     * through a time-flagged pass on every hint fails as well (`ScnE.Control.TIME_PASS_ON_EVERY_HINT`,
+     * the review's second path, §22.25 item 14) — and behind it the relay-side rule (`StoreView`):
+     * a deposit refused again under a credential put again needs a time trigger, a user send or a
+     * reboot of the sender in between. The per-session count §21.2 point 7 states is not what
+     * detects it because the real engine does not meet it either (§22.25 item 4). In
+     * SCN-E/LOSE_KEYS, where alice's deposit at the relay that lost its keys is refused until bob
+     * has healed.
+     */
+    val MC15 = Mutation(
+        id = "MC-15",
+        defeats = "§21.2 point 7: a refused credential is re-put by the device's own schedule, never on the relay's answer",
+        detectedBy = "SCN-E/LOSE_KEYS (a refused deposit credential re-put in a process no time trigger, user send or boot of the sender started)",
+        expect = "the relay's refusal itself made it retry (§21.2 point 7)",
+        expectUnderCrash = listOf("the relay's refusal itself made it retry (§21.2 point 7)"),
+        hintKeeper = true,
+    )
+
+    /** `RegistrationStore.rearm`'s row query, verbatim: MC-14 matches it exactly. */
+    private const val REARM_SELECT_HEAD =
+        "SELECT period_id, kind FROM relay_key_registration WHERE relay_id = ?1 AND namespace_id = ?2 " +
+            "AND period_id >= ?3 AND state = 'done'"
+    private const val REARM_SELECT = "$REARM_SELECT_HEAD ORDER BY period_id, kind"
+
     /** The no-loss oracle's words (`DmCrashRunner.noMessageTheSenderCallsSentIsMissing`). */
     const val NO_LOSS_FAILURE: String = "marked it sent and no device rendered it"
 
@@ -434,7 +512,7 @@ internal object DmMutants {
         return caller.className.substringAfterLast('.') == callerClass && caller.methodName == callerMethod
     }
 
-    /** Every mutant S10 and S10b register, in the order the report prints them. */
+    /** Every mutant S10, S10b and SCN-E (§22.25) register, in the order the report prints them. */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC16, MC18, MC26, MC28, MC33, ME16)
+        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC26, MC28, MC33, ME16)
 }

@@ -77,7 +77,7 @@ class Jd8SelfTest {
         assertTrue(
             r.line(),
             r.line().endsWith(
-                "; T27's minute measured, not compared (DM work moves the redeem lane's steps, §22.24): 20 of 20 pairs in the same " +
+                "; T27's minute measured, not compared (DM work moves the redeem lane's steps, §22.26): 20 of 20 pairs in the same " +
                     "minute, 20 at the same millisecond, 1 after a message in their relay session (1 redemptions, 0 registrations)",
             ),
         )

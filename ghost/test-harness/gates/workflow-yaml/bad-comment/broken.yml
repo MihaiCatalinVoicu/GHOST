@@ -1,0 +1,16 @@
+name: fixture-broken-comment
+
+# This is the defect that kept messaging-exit-gate.yml from ever running for three merges: a header
+# comment wrapped onto a second line that lost its `#`, so the second line is a bare scalar where
+# YAML expects a key.
+# Budget: about 59 000 faulted runs (46 423 single crashes, 12 228
+double crashes, 61 timeouts) over fifteen scenario lines.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello

@@ -11,7 +11,7 @@ import org.junit.Test
  * EntDmJd8.kt`): a client's redemptions and registrations, as relays saw them, are the same — in
  * count, relay, namespace and week — with 0 and with 4 contacts and 95 texts, and every one is on a
  * namespace the client owns; T27's minute is measured and reported, not compared (`Jd8`'s note,
- * §22.24), and the pairs this run moved are printed. The line goes to the privacy report, which
+ * §22.26), and the pairs this run moved are printed. The line goes to the privacy report, which
  * `dm-report-check.sh privacy-suite` and `privacy-pr` require.
  *
  * Scale-independent, like the twins of `DmPrivacyWorldTest`: one twin pair of the first pinned seed.

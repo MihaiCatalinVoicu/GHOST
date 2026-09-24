@@ -48,7 +48,7 @@ internal class PrivacyMutant(
      */
     val scope: String? = null,
     /**
-     * The mutant's half in the **entitlement world** (`entworld/EntDmJd8.kt`, §22.24): a statement
+     * The mutant's half in the **entitlement world** (`entworld/EntDmJd8.kt`, §22.26): a statement
      * rewrite on every client's shared executor or a decorator of the DM steps' sync ports. Only
      * the JD8 twin worlds read it; a privacy world never does.
      */
@@ -86,8 +86,8 @@ internal enum class PrivacyCheck(val label: String) {
 /**
  * The privacy mutants registered: ten of §15.7's forty from slice S11, PM-5 and PM-31 from the
  * S11b slice (with NI-DM2 as PM-4's second killer), and PM-1, PM-1b and PM-26 — killed by JD8 in the
- * entitlement world's twins (§22.24) — each with the checks that kill it. §22.16 lists what the
- * others need, §22.21 what S11b changed of that list, and §22.24 what JD8 changed of it.
+ * entitlement world's twins (§22.26) — each with the checks that kill it. §22.16 lists what the
+ * others need, §22.21 what S11b changed of that list, and §22.26 what JD8 changed of it.
  */
 internal object PrivacyMutants {
 
@@ -532,7 +532,7 @@ internal object PrivacyMutants {
         },
     )
 
-    // ------------------------------------------------------------------ the entitlement world (§22.24)
+    // ------------------------------------------------------------------ the entitlement world (§22.26)
 
     /**
      * A JD8 kill: extra calls in the active twin (the twin with the DM activity), refused when the
@@ -555,7 +555,7 @@ internal object PrivacyMutants {
     val PM1 = PrivacyMutant(
         id = "PM-1",
         defeats = "P-2, T27: no honest client redeems for a namespace it does not own; a sender deposits with the card's credential",
-        detectedBy = "JD3, JD8, NI-DM3 (§15.7); JD8 here — the privacy world, where JD3 and NI-DM3 run, has no redeem lane (§22.24)",
+        detectedBy = "JD3, JD8, NI-DM3 (§15.7); JD8 here — the privacy world, where JD3 and NI-DM3 run, has no redeem lane (§22.26)",
         killers = listOf(JD8_KILL),
         entWorld = org.ghost.messaging.entworld.EntMutation(
             decorateNamespaces = { real ->

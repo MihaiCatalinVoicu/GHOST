@@ -15,7 +15,9 @@ rc=0
 # it reads the DM modules' production sources as text and needs no SDK either.
 # apk-no-debug-hooks (G-DM5, Phase 9 design §16.1; slice S12) runs its source-set half here; the CI
 # android job runs it again with the release build's R8 mapping.txt, which adds the mapping half.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks; do
+# workflow-yaml parses every .github/workflow file: a workflow that is not valid YAML never starts, and
+# nothing else in this list reads one (slice note: the DM exit gate did not run on three merges).
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc
