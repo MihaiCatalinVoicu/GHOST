@@ -3106,36 +3106,36 @@ impl World {
     }
 
     /// The wait from READY to the redeem lane's first step of a session, U[0, 30 s]
-    /// (`RedeemLane.firstWait`): client randomness of the run.
-    fn lane_first_wait(&self, c: usize, run: u64) -> u64 {
+    /// (`RedeemLane.firstWait`): client randomness of the session ([`session_key`]).
+    fn lane_first_wait(&self, c: usize, session: u64) -> u64 {
         let key = derive32(
             self.cfg.seeds.sched,
             &[b"lane-step", &self.clients[c].id.to_be_bytes()],
         );
-        (prf_unit(&key, &run.to_be_bytes()) * 30.0) as u64
+        (prf_unit(&key, &session.to_be_bytes()) * 30.0) as u64
     }
 
     /// The wait after redeem step `step` of a session, 60 s ± 50 % (`RedeemLane.nextWait`): client
-    /// randomness of the run and step.
-    fn lane_next_wait(&self, c: usize, run: u64, step: u32) -> u64 {
+    /// randomness of the session ([`session_key`]) and step.
+    fn lane_next_wait(&self, c: usize, session: u64, step: u32) -> u64 {
         let key = derive32(
             self.cfg.seeds.sched,
             &[b"lane-step", &self.clients[c].id.to_be_bytes()],
         );
         let u = prf_unit(
             &key,
-            &[&run.to_be_bytes()[..], &step.to_be_bytes()].concat(),
+            &[&session.to_be_bytes()[..], &step.to_be_bytes()].concat(),
         );
         (60.0 * (0.5 + u)) as u64
     }
 
-    /// The lane event of pair (`ns`, relay `k`) in background session `run` of client `c`,
-    /// READY + 90 s·u (`PairSchedule.backgroundTime`): client randomness keyed on the pair, never
-    /// on another pair or on activity (T19).
-    fn background_offset(&self, c: usize, run: u64, ns: &[u8; 32], k: u8) -> u64 {
+    /// The lane event of pair (`ns`, relay `k`) in background session `session` ([`session_key`])
+    /// of client `c`, READY + 90 s·u (`PairSchedule.backgroundTime`): client randomness keyed on
+    /// the pair, never on another pair or on activity (T19).
+    fn background_offset(&self, c: usize, session: u64, ns: &[u8; 32], k: u8) -> u64 {
         let u = prf_unit(
             &self.clients[c].circuit_key,
-            &[&b"background-offset"[..], &run.to_be_bytes(), ns, &[k]].concat(),
+            &[&b"background-offset"[..], &session.to_be_bytes(), ns, &[k]].concat(),
         );
         (u * BACKGROUND_WINDOW as f64) as u64
     }
@@ -3201,14 +3201,17 @@ impl World {
         if let Some(d) = self.clients[c].drop_out.as_ref().filter(|d| !d.done) {
             pairs.push((d.ns, true, 2));
         }
-        // A client-random order of pairs (circuit key, run).
+        // The session's client randomness (its order of pairs, lane waits and offsets, circuit
+        // labels) is keyed on the session, not on its run number (`session_key`).
+        let sk = session_key(t, background);
+        // A client-random order of pairs (circuit key, session).
         let key = self.clients[c].circuit_key;
         // (order key, namespace, drop write, pair tag, relay)
         type Ordered = ([u8; 32], [u8; 32], bool, u8, u8);
         let mut order: Vec<Ordered> = Vec::new();
         for (ns, write, tag) in pairs {
             for k in 0..3u8 {
-                let h = derive32(0, &[&key, &run.to_be_bytes(), &ns, &[k]]);
+                let h = derive32(0, &[&key, &sk.to_be_bytes(), &ns, &[k]]);
                 order.push((h, ns, write, tag, k));
             }
         }
@@ -3236,6 +3239,7 @@ impl World {
                     ns,
                     tc,
                     run,
+                    sk,
                     write_drop,
                     tag == 1,
                     &mut refused,
@@ -3290,9 +3294,9 @@ impl World {
                             .get(&(k, ns))
                             .is_some_and(|cp| cp.expiry as i64 > est)
                 })
-                .map(|(i, &(_, ns, _, _, k))| (t + self.background_offset(c, run, &ns, k), i))
+                .map(|(i, &(_, ns, _, _, k))| (t + self.background_offset(c, sk, &ns, k), i))
                 .collect();
-            let mut session = Background::new(t, events, self.lane_first_wait(c, run), armed);
+            let mut session = Background::new(t, events, self.lane_first_wait(c, sk), armed);
             self.log.count("background sessions");
             if armed {
                 self.log.count("background sessions armed");
@@ -3307,6 +3311,7 @@ impl World {
                             ns,
                             at,
                             run,
+                            sk,
                             write_drop,
                             tag == 1,
                             &mut refused,
@@ -3332,6 +3337,7 @@ impl World {
                                 ns,
                                 ts,
                                 run,
+                                sk,
                                 write_drop,
                                 tag == 1,
                                 &mut step_refused,
@@ -3350,7 +3356,7 @@ impl World {
                             self.log
                                 .count("background sessions stepped while their lanes ran");
                         }
-                        let wait = self.lane_next_wait(c, run, session.steps);
+                        let wait = self.lane_next_wait(c, sk, session.steps);
                         session.step_done(calls - before, wait);
                     }
                     Next::End { stepped, .. } => {
@@ -3415,7 +3421,9 @@ impl World {
         }
     }
 
-    /// One pair of a session: the redeem lane's part, then the sync (`pass` selects them).
+    /// One pair of a session: the redeem lane's part, then the sync (`pass` selects them). `run`
+    /// is the session's run (ground truth); its circuit label is keyed on `session`
+    /// ([`session_key`]).
     #[allow(clippy::too_many_arguments)]
     fn pair_step(
         &mut self,
@@ -3424,6 +3432,7 @@ impl World {
         ns: [u8; 32],
         t: u64,
         run: u64,
+        session: u64,
         drop_write: bool,
         listen: bool,
         refused: &mut [bool; 3],
@@ -3431,7 +3440,10 @@ impl World {
     ) -> u32 {
         let mut calls = 0;
         let label = transport::label(
-            &derive32(0, &[&self.clients[c].circuit_key, &run.to_be_bytes(), &ns]),
+            &derive32(
+                0,
+                &[&self.clients[c].circuit_key, &session.to_be_bytes(), &ns],
+            ),
             &self.relays[usize::from(k)].onion,
         );
         let w = self.clients[c].wall(t);
@@ -3930,9 +3942,20 @@ impl World {
                     .unwrap()
             }
         };
+        // The network's 5 % of redeem answers lost after processing (F8 §13.4 "Faults"), drawn from
+        // the call as the network carries it (the client, the relay, the namespace and the second
+        // it is sent), never from the client's history: the request id encodes its redemption
+        // count, which a twin that moves an earlier purchase changes, and a fault keyed on it met
+        // the twin with another network (Phase 9 design §22.28, seed pair 1's NI-1d).
         let lose = prf_unit(
             &derive32(self.cfg.seeds.fault, &[b"redeem-timeout"]),
-            &request_id,
+            &[
+                &self.clients[c].id.to_be_bytes()[..],
+                &[k],
+                &ns,
+                &t.to_be_bytes(),
+            ]
+            .concat(),
         ) < 0.05;
         let w = self.clients[c].wall(t);
         let shift = self.shift_for(c);
@@ -4219,6 +4242,23 @@ impl Background {
         self.steps += 1;
         self.step_at += u64::from(calls) + wait;
     }
+}
+
+/// The key of a relay session's client randomness (its order of pairs, its lane waits and offsets,
+/// its circuit labels): the session's READY time and whether a background job runs it. The real
+/// client draws them afresh for every session, so the key only decides which session of one twin
+/// world meets which numbers of the other. It was the session's run number, which counts every
+/// earlier foreground, job and minute sync: in a twin where one earlier minute sync is missing (a
+/// payment screen that opened at another foreground, F8 §19.11) every later session met other
+/// numbers, and the drop writes of NI-1d's seed pairs 4, 5 and 9 moved with them (Phase 9 design
+/// §22.28). Keyed on its time, a session both worlds hold at the same moment draws the same
+/// numbers, and a session only one world holds still differs. The world's schedule starts one
+/// client's jobs at least 15 minutes apart and, within a day, its foregrounds at least 120 s after
+/// the previous one ended (a minute sync comes 60 s into its foreground), so two of its sessions
+/// of one kind are practically never READY in the same second; two that were would share their
+/// draws and nothing else (the run stays each session's identity in the ground truth).
+fn session_key(ready: u64, background: bool) -> u64 {
+    (ready << 1) | u64::from(background)
 }
 
 /// The need of a (relay, namespace) pair as `CapabilityStore.needed` computes it at device time
