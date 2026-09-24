@@ -1,0 +1,36 @@
+GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b and S10c)
+scale: pr (every 13th event), seeds 8
+dm crash classes: SCN-A 1550 events, 120 singles, 120 doubles, 1 timeouts over 3 stores
+dm crash classes: SCN-K 1857 events, 143 singles, 0 doubles, 1 timeouts over 3 stores
+dm crash classes: SCN-H 17410 events, 1340 singles, 0 doubles, 2 timeouts over 22 stores
+dm crash classes: SCN-D 4645 events, 358 singles, 0 doubles, 1 timeouts over 2 stores
+dm crash classes: SCN-L 1233 events, 95 singles, 0 doubles, 1 timeouts over 2 stores
+dm crash classes: SCN-G-week 2854 events, 220 singles, 0 doubles, 1 timeouts over 2 stores
+dm crash classes: SCN-C 7578 events, 583 singles, 0 doubles, 1 timeouts over 12 stores
+dm storage-full: SCN-J 16 statements injected
+dm crash classes: SCN-G 1983 events, 153 singles, 0 doubles, 1 timeouts over 4 stores
+dm crash classes: SCN-I 6720 events, 517 singles, 517 doubles, 1 timeouts over 7 stores
+dm crash classes: SCN-B 1522 events, 118 singles, 118 doubles, 1 timeouts over 6 stores
+dm crash classes: SCN-J 1132 events, 88 singles, 88 doubles, 1 timeouts over 1 stores
+dm crash classes: SCN-F 1516 events, 117 singles, 117 doubles, 1 timeouts over 2 stores
+dm seeded worlds: 8 seeds, 0 failures
+dm seeded worlds (faulted): 8 seeds, 3 drew a fault, 0 failures
+dm crash classes: RP6 1466 events, 113 singles, 0 doubles, 1 timeouts over 2 stores
+dm crash classes: RP9 1185 events, 92 singles, 0 doubles, 1 timeouts over 2 stores
+dm crash classes: CB-reject-replay 712 events, 55 singles, 0 doubles, 1 timeouts over 1 stores
+dm crash classes: EP-read-expiry 1238 events, 96 singles, 0 doubles, 1 timeouts over 2 stores
+dm suite cases: 4 run, 0 failures
+dm mutants: 13 run, 13 detected
+dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
+dm mutant MC-5: detected by RP6's retry, refused by the dm_message replace guard before D3's own check; kill rule: fault-free, beside a clean control
+dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears); kill rule: fault-free, beside a clean control
+dm mutant MC-10: detected by SCN-B (six messages reordered across the relay set); kill rule: fault-free, beside a clean control
+dm mutant MC-12: detected by DmPoisonTest (SimulatedNativeCrash on every open of one blob); kill rule: fault-free, beside a clean control
+dm mutant MC-14: detected by SCN-E/LOSE_KEYS (6 h after the loss the relay still holds none of the owner's inbox registrations); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-15: detected by SCN-E/LOSE_KEYS (a deposit refused again under a credential put again with no time-triggered pass, user action or reboot of the sender in between); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE); kill rule: fault-free, beside a clean control
+dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant ME-16: detected by EP-read-expiry (an expired row is still readable before SWEEP); kill rule: fault-free, beside a clean control

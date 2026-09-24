@@ -17,6 +17,15 @@ name: messaging-exit-gate
 # lines, the `SQLITE_FULL` line, and one line per mutant naming what killed it and under which rule,
 # where "killed" means a run recorded the kill and not that the registry lists the mutant.
 #
+# SCN-E (§22.25) is the one exception to "every event", and the report says so: it runs on the
+# entitlement world (the real redeem and registration lanes, about 1.6 million events of alice over
+# 25 days, about a minute a run), and its crash coverage is SAMPLED — eight points per phase of its
+# script in this gate, with each client armed in turn — on `dm crash sample:` lines that
+# `dm-report-check.sh` holds to their own rules and never to the every-event one. Measured alone at
+# this scale on the workstation below (SCN-E's five tests, `-Dghost.dm.crash=full`): 22 min 50 s
+# and 26 min 26 s in two runs, beside other slices' builds; the whole gate with SCN-E in it has not
+# been run (§22.25 item 13), so the figures below are the gate before SCN-E.
+#
 # Scale. `-Dghost.dm.crash=full` is what makes the enumeration every-event; without it the harness
 # samples (the PR scale the `android` job of ci.yml already runs as part of `./gradlew build`).
 # `--rerun` is required for the same reason `sync-exit-gate` requires it: build caching is on and
@@ -53,6 +62,10 @@ on:
       - "ghost/android/crypto-bridge/**"
       - "ghost/android/storage/**"
       - "ghost/android/sync/**"
+      # SCN-E's entitlement world (§22.22, §22.25) runs the real `:entitlement` engine over the
+      # `:network` port, so a change to either reaches its lines in the report.
+      - "ghost/android/entitlement/**"
+      - "ghost/android/network/**"
       # `:messaging` depends on `:identity` for `ZBase32` (the `ghost://contact/` link of §3.3), so
       # a change there reaches every world this gate runs and has to trigger it on a PR too.
       - "ghost/android/identity/**"

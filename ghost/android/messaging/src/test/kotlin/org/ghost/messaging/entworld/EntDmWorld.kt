@@ -501,8 +501,16 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         c.stores.inbox.setListener { changes ->
             if (SyncChange.INBOX in changes || SyncChange.OUTCOMES in changes) client.oracle.requestDrain()
             if (changes.any { it in HINTS }) hint()
+            onHint?.invoke(this, changes)
         }
     }
+
+    /**
+     * Extra work a scenario hangs on the listener hint, after the wiring's own: null in every world
+     * but a mutated one — SCN-E's MC-15, whose trigger substitution runs the contact KEEPER on every
+     * `CAPABILITIES` hint (§22.25). A field of the client, not of the process, so it survives a reboot.
+     */
+    var onHint: ((EntDmClient, Set<SyncChange>) -> Unit)? = null
 
     private fun hint() {
         if (hintPending) return

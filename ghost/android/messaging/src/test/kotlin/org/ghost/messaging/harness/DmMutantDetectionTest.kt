@@ -17,9 +17,10 @@ import org.junit.Test
  * scenario states: `Mutation.expect` is that message, and asserting it is what caught MC-5 being
  * killed by the `dm_message` replace guard rather than by the check its registry line named.
  *
- * MC-12 is killed in `DmPoisonTest`, which is where the native-crash loop lives. Every kill, here
- * and there, records itself in [DmKills], and the report's `dm mutants:` lines are written from
- * that record — not from the registry — so an ignored kill lowers the count.
+ * MC-12 is killed in `DmPoisonTest`, which is where the native-crash loop lives, and MC-14 and MC-15
+ * in `entworld.ScnETest`, on SCN-E's entitlement world (§22.25). Every kill, here and there, records
+ * itself in [DmKills], and the report's `dm mutants:` lines are written from that record — not from
+ * the registry — so an ignored kill lowers the count.
  */
 class DmMutantDetectionTest {
 
@@ -80,8 +81,8 @@ class DmMutantDetectionTest {
         assertTrue("the registry is empty", registered.isNotEmpty())
         for (mutant in registered) {
             assertTrue(
-                "${mutant.id} has no rewrite, no decorator and no split: it mutates nothing",
-                mutant.rewrite != null || mutant.decorate != null || mutant.defer != null,
+                "${mutant.id} has no rewrite, no decorator, no split and no trigger substitution: it mutates nothing",
+                mutant.rewrite != null || mutant.decorate != null || mutant.defer != null || mutant.hintKeeper,
             )
             assertTrue("${mutant.id} names no property", mutant.defeats.isNotBlank())
             assertTrue("${mutant.id} names no detecting case", mutant.detectedBy.isNotBlank())

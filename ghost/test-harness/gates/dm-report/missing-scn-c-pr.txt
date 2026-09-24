@@ -1,5 +1,9 @@
 GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.7; slices S10, S10b and S10c)
 scale: pr (every 13th event), seeds 8
+dm crash sample: SCN-E/LOSE_KEYS bob 75464 events, 3 singles over 3 phases, 1 timeouts over 6 stores; sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS alice 79463 events, 3 singles over 3 phases, 2 timeouts over 16 stores; sampled, not every event
+dm crash sample: SCN-E bob 640923 events, 5 singles over 5 phases, 3 timeouts over 12 stores; sampled, not every event
+dm crash sample: SCN-E alice 1562068 events, 5 singles over 5 phases, 4 timeouts over 1920 stores; sampled, not every event
 dm crash classes: SCN-A 1550 events, 120 singles, 120 doubles, 1 timeouts over 3 stores
 dm crash classes: SCN-K 1857 events, 143 singles, 0 doubles, 1 timeouts over 3 stores
 dm crash classes: SCN-H 17410 events, 1340 singles, 0 doubles, 2 timeouts over 22 stores
@@ -19,12 +23,14 @@ dm crash classes: RP9 1185 events, 92 singles, 0 doubles, 1 timeouts over 2 stor
 dm crash classes: CB-reject-replay 712 events, 55 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-read-expiry 1238 events, 96 singles, 0 doubles, 1 timeouts over 2 stores
 dm suite cases: 4 run, 0 failures
-dm mutants: 11 run, 11 detected
+dm mutants: 13 run, 13 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
 dm mutant MC-5: detected by RP6's retry, refused by the dm_message replace guard before D3's own check; kill rule: fault-free, beside a clean control
 dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears); kill rule: fault-free, beside a clean control
 dm mutant MC-10: detected by SCN-B (six messages reordered across the relay set); kill rule: fault-free, beside a clean control
 dm mutant MC-12: detected by DmPoisonTest (SimulatedNativeCrash on every open of one blob); kill rule: fault-free, beside a clean control
+dm mutant MC-14: detected by SCN-E/LOSE_KEYS (6 h after the loss the relay still holds none of the owner's inbox registrations); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-15: detected by SCN-E/LOSE_KEYS (a deposit refused again under a credential put again with no time-triggered pass, user action or reboot of the sender in between); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE); kill rule: fault-free, beside a clean control
 dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run

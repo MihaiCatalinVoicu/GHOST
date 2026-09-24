@@ -246,6 +246,21 @@ dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K 
 # shape of every report before S10c.
 dmr_case fail missing-scn-c.txt gate "rejects a report without SCN-C"
 dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C"
+# Phase 9 SCN-E (design §22.25): the report now carries SCN-E's four `dm crash sample:` lines — its
+# crash coverage is sampled, not every event — and thirteen mutants; the positives were replaced by
+# real reports of the SCN-E code and every negative above except `s10-only-gate.txt` was regenerated
+# from them with its one change. Eight more, each a way an SCN-E report could claim more than its
+# run did: no SCN-E at all (every report before it), at either scale; a line that does not say it is
+# sampled; a line in the every-event form; a gate report whose sample has the PR density; a line
+# with no timeout run; MC-15 held only to the fault-free rule; and the eleven-mutant count.
+dmr_case fail missing-scn-e.txt gate "rejects a report without SCN-E"
+dmr_case fail missing-scn-e-pr.txt pr "rejects a PR-scale report without SCN-E"
+dmr_case fail scn-e-not-said-sampled.txt gate "rejects an SCN-E line that does not say it is sampled"
+dmr_case fail scn-e-as-crash-classes.txt gate "rejects an SCN-E line that claims every event"
+dmr_case fail scn-e-pr-density-gate.txt gate "rejects a gate report whose SCN-E sample has the PR density"
+dmr_case fail scn-e-no-timeout.txt pr "rejects an SCN-E line with no timeout run"
+dmr_case fail scn-e-weakened-kill-rule.txt gate "rejects MC-15 killed only fault-free"
+dmr_case fail scn-e-old-mutant-count.txt gate "rejects the eleven-mutant report of the slices before SCN-E"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

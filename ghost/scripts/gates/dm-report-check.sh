@@ -32,8 +32,11 @@
 # implement ten of the twelve and a part of an eleventh — SCN-H, whose line covers sixteen weeks of
 # generations and a late first flight and not its other clauses (§22.19 names them) — plus SCN-G's
 # week-boundary half as a line of its own, four suite cases and eleven mutants, so the numbers
-# pinned here are the numbers a run actually measures. SCN-E is the scenario still missing; SCN-C
-# (S10c) makes no mutant reachable and adds none (§22.23).
+# pinned here are the numbers a run actually measures. SCN-C (S10c) makes no mutant reachable and
+# adds none (§22.23). SCN-E (§22.25) is the twelfth, on the entitlement world, and its crash
+# coverage is **sampled, not every event**: its lines are `dm crash sample:` lines, held to their own
+# rules below and never to the every-event rule of the `dm crash classes:` lines; it adds MC-14 and
+# MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25).
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -240,6 +243,44 @@ if [ "$kind" = pr ] && [ "$timeout_total" -le 0 ] 2>/dev/null; then
   bad "no timeout-after-apply run anywhere in the report"
 fi
 
+# SCN-E (§22.25): the offline recipient and its LOSE_KEYS variant, on the entitlement world, each run
+# with each client armed in turn. Its crash coverage is SAMPLED, not every event — a run of about
+# 1.6 million events of alice costs about a minute, and the classified enumeration that would make
+# every event affordable needs deterministic native randomness this tree does not have (§22.22 item
+# 7) — so its lines are `dm crash sample:` lines and say so in their own words, and the every-event
+# rule above is never applied to them nor may one of them pass as a `dm crash classes:` line. What
+# is held here: every line present, a non-empty sample over a non-empty recording, the sample
+# stratified over the script's phases at the scale's density (one point per phase on a PR, eight in
+# the gate), and at least one timeout-after-apply run over a non-zero number of the armed client's
+# stores.
+for subject in "SCN-E bob" "SCN-E alice" "SCN-E/LOSE_KEYS bob" "SCN-E/LOSE_KEYS alice"; do
+  line="$(grep -E "^dm crash sample: ${subject} " "$report" | head -1 || true)"
+  if [ -z "$line" ]; then
+    bad "no crash-sample line for $subject"
+    continue
+  fi
+  events="$(printf '%s\n' "$line" | sed -nE 's/^dm crash sample: [^ ]+ [a-z]+ ([0-9]+) events,.*/\1/p')"
+  singles="$(printf '%s\n' "$line" | sed -nE 's/.* events, ([0-9]+) singles over [0-9]+ phases,.*/\1/p')"
+  phases="$(printf '%s\n' "$line" | sed -nE 's/.* singles over ([0-9]+) phases,.*/\1/p')"
+  timeouts="$(printf '%s\n' "$line" | sed -nE 's/.* phases, ([0-9]+) timeouts over [0-9]+ stores(;.*)?$/\1/p')"
+  stores="$(printf '%s\n' "$line" | sed -nE 's/.* timeouts over ([0-9]+) stores(;.*)?$/\1/p')"
+  [ -n "$events" ] && [ "$events" -gt 0 ] 2>/dev/null || bad "$subject recorded 0 events"
+  [ -n "$phases" ] && [ "$phases" -gt 0 ] 2>/dev/null || bad "$subject names no phase to sample"
+  [ -n "$singles" ] && [ "$singles" -gt 0 ] 2>/dev/null || bad "$subject sampled 0 crash points"
+  [ -n "$stores" ] && [ "$stores" -gt 0 ] 2>/dev/null || bad "$subject reported no stores, so its timeout runs have no denominator"
+  [ -n "$timeouts" ] && [ "$timeouts" -gt 0 ] 2>/dev/null || bad "$subject ran no timeout-after-apply run"
+  per_phase=1
+  [ "$kind" = gate ] && per_phase=8
+  if [ -n "$singles" ] && [ -n "$phases" ] && [ "$singles" -lt $(( per_phase * phases )) ] 2>/dev/null; then
+    bad "$subject sampled $singles crash points over $phases phases, fewer than $per_phase per phase at the $kind scale"
+  fi
+  printf '%s\n' "$line" | grep -qE '; sampled, not every event$' \
+    || bad "$subject's line does not say that its enumeration is sampled, not every event"
+done
+if grep -qE '^dm crash classes: SCN-E' "$report"; then
+  bad "an SCN-E line claims the every-event enumeration it does not run (§22.25)"
+fi
+
 # §15.3's doubles: "Double crashes (the second during recovery) for SCN-A, SCN-B, SCN-F and SCN-I."
 # All four are implemented since S10b. SCN-J is here as well as the four §15.3 names, because §15.3's
 # sentence about it is "single and **double** SQL crashes never reach the threshold".
@@ -272,9 +313,10 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 #
 # Eleven since S10b: MC-18 and MC-26, which SCN-I makes reachable, MC-28, which SCN-H does, and
 # MC-33, which SCN-G-week does; each is killed fault-free and at crash points spread over its
-# scenario, beside the unmutated scenario crashed at the same points (§22.19).
-grep -qxF 'dm mutants: 11 run, 11 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 11 run, 11 detected'"
+# scenario, beside the unmutated scenario crashed at the same points (§22.19). Thirteen since SCN-E
+# (§22.25): MC-14 and MC-15, which SCN-E/LOSE_KEYS makes reachable, under the same rule.
+grep -qxF 'dm mutants: 13 run, 13 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 13 run, 13 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -285,6 +327,7 @@ rule_ff='fault-free, beside a clean control'
 rule_crash='invisible fault-free, killed under a crash in its split window, beside a clean run at the same point'
 rule_s10b='fault-free and at 6 of 6 crash points, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_ff" "MC-10|$rule_ff" "MC-12|$rule_ff" \
+  "MC-14|$rule_s10b" "MC-15|$rule_s10b" \
   "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
   "ME-16|$rule_ff"; do
   mutant="${pair%%|*}"
