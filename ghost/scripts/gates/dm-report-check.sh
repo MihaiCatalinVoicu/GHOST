@@ -15,14 +15,17 @@
 #   privacy-gate    one matrix job's worlds at the gate scale (N = 600, 42 days): per seed pair the
 #                   world line of that scale, JD1–JD7 and JD9 (not JD8, not JD10) at `PASS 0` over a
 #                   non-zero denominator, S-DM3 at PASS with n >= 100, 0 namespaces named by the
-#                   dictionary and an exact control that the statistic rejects, and the T35 line of a
-#                   provenance build with 0 seal calls thrown;
+#                   dictionary and an exact control that the statistic rejects, the T35 line of a
+#                   provenance build with 0 seal calls thrown, and (§22.30) S-DM1 at PASS with its
+#                   exact half clean, S-DM2 and S-DM4 within their recorded baselines + 0.02 where
+#                   one is recorded (§16.1) and saying they have none where none is, each over
+#                   n >= 100, every derived number of their lines recomputed here;
 #   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM2 with its fifteen
 #                   (slice S11b), NI-DM3, JD7's WITHHOLD_ALL_BUNDLES variant with the bound reached
 #                   (S11b), the T34 seizure line with both controls complete, the T34 one-reply
 #                   line, JD8 over the entitlement world's twins with its control and its two
-#                   timing leaks (§22.26), and the privacy mutant count with one detection line per
-#                   mutant;
+#                   timing leaks (§22.26), the controls that must move S-DM1 and S-DM2 (§22.30),
+#                   and the privacy mutant count with one detection line per mutant;
 #   privacy-pr      both halves in one report at the PR scale (N = 120, 14 days), which is what the
 #                   `android` job of ci.yml writes.
 #
@@ -46,15 +49,19 @@
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
 # §22.15 and §22.19 of the design list what is still owed, scenario by scenario and mutant by
 # mutant. The privacy half follows the same rule: it does not
-# require JD10, NI-DM4 … NI-DM7, S-DM1, S-DM2, S-DM4 and their recorded baselines, the
-# AD-7-with-token line, the EM-1/EM-2 lines, the `pq-model` status line, JD5's membership-expiry
-# clause, T26's model-relay open check, JD8's redemption minute (not testable in this harness,
-# §22.26 item 3) or 25 of the 40 privacy mutants (nor PM-5's exact-seconds half, nor PM-26's
+# require JD10, NI-DM4 … NI-DM7, a baseline of S-DM2 or S-DM4 at any scale or seed but the one
+# measured (the PR world of seed 5eed0001, §22.30), S-DM2 per mode (HIGH is not built), a baseline
+# or a rule for S-DM2's rounds to single out (reported only), S-DM4 over TTL-bucket sequences (it
+# measures each deposit, §22.30 item 7), the AD-7-with-token line, the EM-1/EM-2 lines, the
+# `pq-model` status line, JD5's membership-expiry clause, T26's model-relay open check, circuit
+# isolation (the model relay makes the circuits, §22.30 item 12), JD8's redemption minute (not
+# testable in this harness, §22.26 item 3) or 25 of the 40 privacy mutants (nor PM-5's exact-seconds half, nor PM-26's
 # current-week half), because nothing in this branch produces them; §22.16 names
 # each (items 10–15 and 20), §22.21 what slice S11b added (NI-DM2 with its one declared open
 # defect, the JD7 WITHHOLD_ALL_BUNDLES variant, PM-5's day-rounding half and PM-31, and NI-DM2 as
-# PM-4's second killer), and §22.26 what the JD8 slice added (JD8 over the entitlement world's
-# twins, and PM-1, PM-1b and PM-26's later-weeks half, each killed by it).
+# PM-4's second killer), §22.26 what the JD8 slice added (JD8 over the entitlement world's
+# twins, and PM-1, PM-1b and PM-26's later-weeks half, each killed by it), and §22.30 what the
+# statistics slice added (S-DM1, S-DM2 and S-DM4 with their controls and recorded baselines).
 set -euo pipefail
 
 report="${1:-}"
@@ -107,6 +114,127 @@ privacy_worlds() {
   n="$(grep -cE '^dm T35: PASS provenance build; [1-9][0-9]* seals under the assertion of [1-9][0-9]* seal calls \(.*\), 0 threw; PQ-R8 exception ' "$report" || true)"
   [ "$n" = "$pairs" ] || bad "T35: $n PASS lines of a provenance build with 0 seal calls thrown for $pairs seed pairs"
   if grep -qE '^dm T35: (FAIL|NOT RUN)' "$report"; then bad "T35 did not run on a provenance build, or failed"; fi
+  privacy_edge_statistics "$1" "$pairs"
+}
+
+# --- S-DM1, S-DM2 and S-DM4 (§15.6 "Statistics"; the statistics slice, §22.30) -----------------------
+# The recorded baselines of S-DM2 and S-DM4: **one run of one seed at the PR scale** (N = 120, 14 days,
+# seed 5eed0001, STANDARD, the owner's workstation, 2026-09-24) — a baseline of that world and nothing
+# else. The gate scale (N = 600, 42 days) has never run in this project, so it has no baseline and its
+# lines must say so; the first gate run records one (§22.30).
+SDM2_BASELINE_PR_SEED1="0.5611"
+SDM2_7D_BASELINE_PR_SEED1="0.5615"
+SDM4_WITHIN_BASELINE_PR_SEED1="0.8769"
+SDM4_PAIRING_BASELINE_PR_SEED1="0.0029"
+SDM_BASELINE_WHAT='PR scale, seed 5eed0001, one run, recorded 2026-09-24'
+SDM_NO_BASELINE='no baseline recorded for this scale and seed (only the PR world of seed 5eed0001 has been measured, §22.30)'
+# `within a b` succeeds when the number a is at most the number b + 0.02 (§15.6, §16.1); an empty a fails.
+sdm_within() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a != "" && a + 0 <= b + 0.02 + 1e-9) }'; }
+privacy_edge_statistics() {
+  local scale pairs="$2" n line seed auc base class7 aucs strongest within pairing
+  case "$1" in pr*) scale=pr ;; *) scale=gate ;; esac
+  # S-DM1 (gating): per seed pair a PASS of the full view against LD by the stratified paired
+  # permutation test with the design's parameters (999 permutations, alpha = 0.001), n >= 100 pairs
+  # and conversations, all three attackers measured (an AUC, never n/a), and the exact half clean —
+  # no value of the full view's own fields on the namespaces of two clients.
+  n="$(grep -cE "^dm S-DM1: PASS full view vs LD over [1-9][0-9]* windows of [1-9][0-9]* h \(n=[1-9][0-9]{2,} pairs, [1-9][0-9]{2,} conversations; stratified paired permutation test of each pair's placement difference, 999 sign flips, alpha=0\.001\): co-occurrence\+lag AUC full [0-9.]+ LD [0-9.]+ \(diff [-+][0-9.]+, p=[0-9.]+\), reply-timing AUC full [0-9.]+ LD [0-9.]+ \(diff [-+][0-9.]+, p=[0-9.]+\), logistic AUC full [0-9.]+ LD [0-9.]+ \(diff [-+][0-9.]+, p=[0-9.]+\); features differ between the views on [0-9]+ of [1-9][0-9]* units; LD view [0-9]+ of [1-9][0-9]* events \([0-9]+ outside LD's categories[^)]*; bytes, exact sizes and TTLs, credentials and verifiers dropped\); full-view-only structure across two clients' namespaces \(8-byte windows at every offset of the stored and served bytes, credentials, verifiers, blobs\): 0 byte windows, 0 credentials, 0 verifiers, 0 blobs; whole run as one window: " "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "S-DM1: $n PASS lines with n >= 100, the design's test parameters, three measured attackers and a clean exact half for $pairs seed pairs"
+  if grep -qE '^dm S-DM1: FAIL' "$report"; then bad "S-DM1 failed: the full view gave an attacker more than LD, its fields linked two clients, or it fell below its floor"; fi
+  # A PASS never carries a rejection: a positive difference at p <= alpha is a FAIL whatever the verdict says.
+  if grep -E '^dm S-DM1: PASS' "$report" | grep -oE 'diff \+[0-9.]+, p=[0-9.]+' | awk -F'p=' '{ if ($2 + 0 <= 0.001) bad = 1 } END { exit !bad }'; then
+    bad "an S-DM1 PASS carries a positive difference at p <= 0.001"
+  fi
+  # Every printed difference is its line's full AUC minus its LD AUC (each printed to 4 places), so
+  # the rule above reads the difference the line measured, not a number written beside it.
+  if grep -E '^dm S-DM1: ' "$report" | grep -oE 'AUC full [0-9.]+ LD [0-9.]+ \(diff [-+][0-9.]+,' \
+    | awk '{ d = $7; sub(/,$/, "", d); if ((($3 - $5) - d) > 0.00015 + 1e-9 || (d - ($3 - $5)) > 0.00015 + 1e-9) bad = 1 } END { exit !bad }'; then
+    bad "an S-DM1 line prints a difference that is not its full AUC minus its LD AUC"
+  fi
+  # S-DM2 (reported): per seed pair its line with n >= 100, a strongest that is the largest of its
+  # three LD AUCs, and, where a baseline is recorded, that largest AUC at most the recorded baseline
+  # + 0.02 (§15.6), compared with the baseline pinned **here**, not with the one the line prints —
+  # which must be the same number.
+  n="$(grep -cE "^dm S-DM2: REPORTED LD attacker, STANDARD only \(HIGH mode is not built\), over [1-9][0-9]* windows of [1-9][0-9]* h \(n=[1-9][0-9]{2,} pairs, [1-9][0-9]{2,} conversations\): co-occurrence\+lag AUC [0-9.]+, reply-timing AUC [0-9.]+, logistic AUC [0-9.]+, strongest [0-9.]+; " "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "S-DM2: $n lines with n >= 100 and three measured LD attackers for $pairs seed pairs"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    seed="$(printf '%s\n' "$line" | sed -nE 's/.* \[seed ([0-9a-f]+)\]$/\1/p')"
+    aucs="$(printf '%s\n' "$line" | sed -nE 's/.*\): co-occurrence\+lag AUC ([0-9.]+), reply-timing AUC ([0-9.]+), logistic AUC ([0-9.]+), strongest ([0-9.]+); .*/\1 \2 \3 \4/p')"
+    auc="$(printf '%s\n' "$aucs" | awk 'NF == 4 { m = $1; if ($2 > m) m = $2; if ($3 > m) m = $3; print m }')"
+    strongest="$(printf '%s\n' "$aucs" | awk 'NF == 4 { print $4 }')"
+    awk -v a="$auc" -v s="$strongest" 'BEGIN { exit !(a != "" && s != "" && a + 0 == s + 0) }' \
+      || bad "S-DM2 [seed $seed] prints a strongest ${strongest:-?} that is not the largest of its three LD AUCs (${auc:-?})"
+    if [ "$scale" = pr ] && [ "$seed" = 5eed0001 ]; then
+      base="$SDM2_BASELINE_PR_SEED1"
+      printf '%s\n' "$line" | grep -qF "; baseline strongest $base and 7 d class $SDM2_7D_BASELINE_PR_SEED1 ($SDM_BASELINE_WHAT): " \
+        || bad "S-DM2 [seed $seed] does not print the recorded baselines $base and 7 d class $SDM2_7D_BASELINE_PR_SEED1"
+      sdm_within "$auc" "$base" \
+        || bad "S-DM2 [seed $seed] regressed: the strongest LD attacker's AUC ${auc:-?} is above the recorded baseline $base + 0.02"
+      # The one TTL class the recorded run held 100 conversations of (the others are reported only).
+      class7="$(printf '%s\n' "$line" | sed -nE 's/.*; 7 d \([0-9]+ conversations\) ([0-9.]+), .*/\1/p')"
+      sdm_within "$class7" "$SDM2_7D_BASELINE_PR_SEED1" \
+        || bad "S-DM2 [seed $seed] regressed in the 7 d class: ${class7:-no value above the floor} against the recorded $SDM2_7D_BASELINE_PR_SEED1 + 0.02"
+    else
+      printf '%s\n' "$line" | grep -qF "; $SDM_NO_BASELINE" \
+        || bad "S-DM2 [seed $seed] claims a baseline this scale and seed do not have"
+    fi
+  done <<<"$(grep -E '^dm S-DM2: ' "$report" || true)"
+  # S-DM4 (reported): per seed pair its line over >= 100 deposits and >= 100 pairs, each beside its
+  # permutation null, and, where a baseline is recorded, both values at most the recorded ones + 0.02
+  # bits (§16.1: "S-DM2/S-DM4 within baseline + 0.02"), compared with the numbers pinned here.
+  n="$(grep -cE "^dm S-DM4: REPORTED I\(TTL bucket; conversation \| inbox\) = [0-9.]+ bits over [1-9][0-9]{2,} deposits in [1-9][0-9]* inboxes \(permutation null [0-9.]+, p=[0-9.]+\); cross-inbox pairing I\(the two inboxes' shared non-default TTL bucket; conversation\) = [0-9.]+ bits over [1-9][0-9]{2,} pairs \(permutation null [0-9.]+, p=[0-9.]+\); " "$report" || true)"
+  [ "$n" = "$pairs" ] || bad "S-DM4: $n lines over >= 100 deposits and pairs, each beside its null, for $pairs seed pairs"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    seed="$(printf '%s\n' "$line" | sed -nE 's/.* \[seed ([0-9a-f]+)\]$/\1/p')"
+    if [ "$scale" = pr ] && [ "$seed" = 5eed0001 ]; then
+      printf '%s\n' "$line" | grep -qF "; baseline $SDM4_WITHIN_BASELINE_PR_SEED1 and $SDM4_PAIRING_BASELINE_PR_SEED1 bits ($SDM_BASELINE_WHAT): " \
+        || bad "S-DM4 [seed $seed] does not print the recorded baselines $SDM4_WITHIN_BASELINE_PR_SEED1 and $SDM4_PAIRING_BASELINE_PR_SEED1 bits"
+      within="$(printf '%s\n' "$line" | sed -nE 's/^dm S-DM4: REPORTED I\(TTL bucket; conversation \| inbox\) = ([0-9.]+) bits .*/\1/p')"
+      pairing="$(printf '%s\n' "$line" | sed -nE 's/.*; cross-inbox pairing I\(the two inboxes. shared non-default TTL bucket; conversation\) = ([0-9.]+) bits .*/\1/p')"
+      sdm_within "$within" "$SDM4_WITHIN_BASELINE_PR_SEED1" \
+        || bad "S-DM4 [seed $seed] regressed: the within-inbox information ${within:-?} bits is above the recorded $SDM4_WITHIN_BASELINE_PR_SEED1 + 0.02"
+      sdm_within "$pairing" "$SDM4_PAIRING_BASELINE_PR_SEED1" \
+        || bad "S-DM4 [seed $seed] regressed: the cross-inbox pairing ${pairing:-?} bits is above the recorded $SDM4_PAIRING_BASELINE_PR_SEED1 + 0.02"
+    else
+      printf '%s\n' "$line" | grep -qF "; $SDM_NO_BASELINE" || bad "S-DM4 [seed $seed] claims a baseline this scale and seed do not have"
+    fi
+  done <<<"$(grep -E '^dm S-DM4: ' "$report" || true)"
+}
+
+# The controls of S-DM1 and S-DM2 (§22.30): exactly one line, a PASS on MEDIUM worlds against their
+# same-scale control, in which the control passes S-DM1; the fetch window left open is flagged by the
+# comparison (the co-occurrence and the logistic attacker, each at p = 0.001), fails JD7 (its exact
+# killer), and raises S-DM2's strongest LD attacker over this scale's control by more than the 0.02
+# allowance — the rise recomputed here from the two AUCs the line prints — so S-DM1's comparison is
+# shown to fail on a leak, and S-DM2's allowance to be exceeded by one at MEDIUM (at the PR scale the
+# same leak stays inside the pinned rule, measured once, §22.30 item 5); a conversation tag in the
+# envelope bytes is flagged by the exact half; and PM-2, a leak inside LD's categories, is not an
+# S-DM1 leak, with what it does to
+# S-DM2 and S-DM4 printed as measured (not required: its exact detectors are JD6 and NI-DM1). The
+# comparison on thinned copies of the open window, the joins on the tag's world and the control's
+# undecryptable blobs are printed as measured and not required.
+privacy_edge_controls() {
+  local line from to delta
+  line="$(grep -E '^dm S-DM1 controls: ' "$report" || true)"
+  if [ -z "$line" ] || [ "$(printf '%s\n' "$line" | wc -l)" -ne 1 ]; then
+    bad "not exactly one S-DM1 controls line"
+    return
+  fi
+  local t='\(co-occurrence\+lag diff [-+][0-9.]+ p=[0-9.]+, logistic diff [-+][0-9.]+ p=[0-9.]+\)'
+  local thin="[0-9.]+ % \\([0-9]+ reads\\) (not flagged|flagged) $t"
+  if ! printf '%s\n' "$line" | grep -qE "^dm S-DM1 controls: PASS MEDIUM worlds \(N=56, 2 days, seed 5eed0001, n=[1-9][0-9]{2,} pairs, [1-9][0-9]{2,} conversations in the control\), each against the same-scale control: the control passes S-DM1 \(co-occurrence\+lag diff [-+][0-9.]+ p=[0-9.]+, logistic diff [-+][0-9.]+ p=[0-9.]+; [0-9]+ undecryptable blobs, the only thing PM-6's reflex acts on\); the fetch window left open is flagged by the comparison \(co-occurrence\+lag diff \+[0-9.]+ p=0\.001, logistic diff \+[0-9.]+ p=0\.001; [1-9][0-9]* events outside LD\), fails JD7 \([1-9][0-9]* reads outside every attempt window\), measured, not required, with only a share of those reads kept in the full view: $thin(; $thin)*, and raises S-DM2's strongest LD attacker's AUC over this scale's control from [0-9.]+ to [0-9.]+ \(\+[0-9.]+, allowance 0\.02: its later reads that fall where a second or third attempt window could open are LD, L7-D6\); a conversation tag of [1-9][0-9]* bytes at offset [0-9]+ of the envelope bytes is flagged by the exact half \([1-9][0-9]* shared byte windows\), (by none of JD1-JD7 and JD9|BY [A-Z0-9/]+ TOO) and (not by the comparison, which cannot see it here \(logistic diff [-+][0-9.]+ p=[0-9.]+: LD's session co-occurrence already names every message's sender, §22\.30\)|by the comparison too \(logistic diff [-+][0-9.]+ p=[0-9.]+\)); PM-2 is not an S-DM1 leak \(logistic diff [-+][0-9.]+ p=[0-9.]+\); measured, not required: it moves S-DM2's strongest LD attacker's AUC by [-+][0-9.]+ \((beyond the allowance|inside the allowance: S-DM2 does not see it; JD6 and NI-DM1 do)\) and S-DM4's within-inbox information from [0-9.]+ bits \(null [0-9.]+, p=[0-9.]+\) to [0-9.]+ bits \(null [0-9.]+, p=[0-9.]+\)\$"; then
+    bad "no S-DM1 controls PASS in which the control passed, the open fetch window was flagged by the comparison, failed JD7 and raised S-DM2, the conversation tag was flagged by the exact half, and PM-2 was no S-DM1 leak"
+    return
+  fi
+  # The rise is read from the two AUCs, and the printed one must be their difference.
+  from="$(printf '%s\n' "$line" | sed -nE "s/.* attacker's AUC over this scale's control from ([0-9.]+) to ([0-9.]+) \(\+([0-9.]+), allowance .*/\1/p")"
+  to="$(printf '%s\n' "$line" | sed -nE "s/.* attacker's AUC over this scale's control from ([0-9.]+) to ([0-9.]+) \(\+([0-9.]+), allowance .*/\2/p")"
+  delta="$(printf '%s\n' "$line" | sed -nE "s/.* attacker's AUC over this scale's control from ([0-9.]+) to ([0-9.]+) \(\+([0-9.]+), allowance .*/\3/p")"
+  awk -v a="$from" -v b="$to" -v d="$delta" 'BEGIN { exit !(a != "" && b != "" && d != "" && ((b - a) - d) <= 0.00015 + 1e-9 && (d - (b - a)) <= 0.00015 + 1e-9) }' \
+    || bad "the S-DM1 controls print a rise of S-DM2 (+${delta:-?}) that is not the difference of the AUCs they print (${from:-?} to ${to:-?})"
+  awk -v a="$from" -v b="$to" 'BEGIN { exit !(a != "" && b != "" && b - a > 0.02) }' \
+    || bad "the S-DM1 controls' open fetch window raised S-DM2 from ${from:-?} to ${to:-?}, not more than the 0.02 allowance"
 }
 
 # The scale-independent half: the twins, the seizure world and the mutants.
@@ -211,6 +339,7 @@ privacy_suite() {
     bad "no JD8 timing-leak PASS: the timing clause did not detect both leaks on its own"
   fi
   # --- end of JD8 ------------------------------------------------------------------------------------
+  privacy_edge_controls
   # The privacy mutants: the count this slice registers, one detection line each, none undetected.
   # Both numbers are written from what the run recorded (`PrivacyKills`): a mutant is "run" when a
   # mutated world ran for every check its entry names, and "detected" when every one killed it.

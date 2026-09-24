@@ -11,8 +11,10 @@ name: dm-privacy-gate
 # **What this gate checks, and what it does not** (§22.16 names every deferral, §22.21 what slice
 # S11b added, §22.26 what the JD8 slice added). It runs JD1–JD7 and JD9 on the privacy world, JD8
 # on the entitlement world's twins with the narrowings below (not JD10), JD7's WITHHOLD_ALL_BUNDLES
-# variant, S-DM3 (not S-DM1, and S-DM2 and S-DM4 are neither measured nor baselined), NI-DM1, NI-DM2 and
-# NI-DM3 (not NI-DM4 … NI-DM7), the T34 seizure world and its one-reply variant (not the Olm half),
+# variant, S-DM3, S-DM1 (gating) with S-DM2 and S-DM4 (reported; their baselines, and the +0.02
+# rule on them, are one PR-scale run of seed 5eed0001, so this gate's worlds have none and say so,
+# §22.30; S-DM1's exact half sees repeated byte runs of 8 bytes or more, not shorter), NI-DM1,
+# NI-DM2 and NI-DM3 (not NI-DM4 … NI-DM7), the T34 seizure world and its one-reply variant (not the Olm half),
 # T35 as far as the provenance tags reach (static tags; the X-Wing inner layer carries none), and
 # fifteen of the forty privacy mutants (PM-5 and PM-26 only in part). NI-DM2 passes with **one
 # declared open engine defect** it must reproduce exactly — R-T3 on the pending path, a known P-4
@@ -120,7 +122,7 @@ jobs:
         run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
       # --rerun: build caching is on and setup-gradle restores the local build cache, so an
       # unchanged test task would be restored FROM-CACHE and the gate would run nothing.
-      - name: the privacy world, its joins, S-DM3 and T35
+      - name: the privacy world, its joins, S-DM3, S-DM1, S-DM2, S-DM4 and T35
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.t32JoinsAndSdm3HoldOverThePrivacyWorld' \
@@ -151,7 +153,7 @@ jobs:
           retention-days: 3
 
   suite:
-    name: NI-DM1, NI-DM2 and NI-DM3 twins, the JD7 withhold variant, the T34 seizure worlds, JD8 and the privacy mutants
+    name: NI-DM1, NI-DM2 and NI-DM3 twins, the JD7 withhold variant, the T34 seizure worlds, JD8, the privacy mutants and the S-DM1 controls
     runs-on: [self-hosted, linux, x64, ghost]
     # Measured locally (owner's workstation, one test JVM, beside other worktrees' builds), in the
     # whole `:messaging` suite after the JD8 review (§22.26 item 12): 650 s for the fifteen mutants
@@ -159,7 +161,11 @@ jobs:
     # pairs, 496 s for `DmPrivacyWorldTest`'s seven tests (six of them in this job). S11's first
     # figures were 304 s, then 169 s, for its ten mutants. Every world is single-threaded, so a
     # 4-vCPU runner is not much slower than that; the 90-minute timeout leaves room for about twice
-    # these figures.
+    # these figures. The statistics slice (§22.30 item 11) adds `DmEdgeStatisticsTest`: 144 s for its
+    # four MEDIUM worlds, the joins on two of them and four thinned copies of the open window, in a
+    # run of the privacy tests that took 24 minutes of Gradle wall time (the mutants 575 s,
+    # `DmJd8Test` 259 s; the slice's first run, with other worktrees' builds loading the machine far
+    # more, took two hours); the job is the figures above plus about three minutes.
     timeout-minutes: 90
     defaults:
       run:
@@ -197,7 +203,7 @@ jobs:
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
-      - name: NI-DM1, NI-DM2, NI-DM3, JD7 under WITHHOLD_ALL_BUNDLES, T34, its one-reply variant, JD8 and the privacy mutants
+      - name: NI-DM1, NI-DM2, NI-DM3, JD7 under WITHHOLD_ALL_BUNDLES, T34, its one-reply variant, JD8, the privacy mutants and the S-DM1 controls
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.niDm1InboundContentLeavesTheRecipientsViewUnchanged' \
@@ -209,6 +215,8 @@ jobs:
             --tests 'org.ghost.messaging.dmworld.DmJd8Test' \
             --tests 'org.ghost.messaging.entworld.Jd8SelfTest' \
             --tests 'org.ghost.messaging.dmworld.DmPrivacyMutantTest' \
+            --tests 'org.ghost.messaging.dmworld.DmEdgeStatisticsTest' \
+            --tests 'org.ghost.messaging.dmworld.EdgeStatisticsSelfTest' \
             -Dghost.dm.native="$GHOST_DM_NATIVE"
       - name: job summary and report check
         if: always()
