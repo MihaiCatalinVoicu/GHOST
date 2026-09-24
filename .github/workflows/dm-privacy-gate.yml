@@ -112,9 +112,12 @@ jobs:
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
+      # `--test`: the host build also exports the equivalence-test entry point (design 15.9 item 7, slice
+      # S12), and only that. Without the flag this step failed and the gate never reached its world
+      # (slice S11 wrote this workflow beside S12; each was right alone, and the merge was the defect).
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
-        run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
+        run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
       # --rerun: build caching is on and setup-gradle restores the local build cache, so an
       # unchanged test task would be restored FROM-CACHE and the gate would run nothing.
       - name: the privacy world, its joins, S-DM3 and T35
@@ -188,9 +191,12 @@ jobs:
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
+      # `--test`: the host build also exports the equivalence-test entry point (design 15.9 item 7, slice
+      # S12), and only that. Without the flag this step failed and the gate never reached its world
+      # (slice S11 wrote this workflow beside S12; each was right alone, and the merge was the defect).
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
-        run: bash scripts/gates/dm-jni-surface.sh "$GHOST_DM_NATIVE"
+        run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
       - name: NI-DM1, NI-DM2, NI-DM3, JD7 under WITHHOLD_ALL_BUNDLES, T34, its one-reply variant, JD8 and the privacy mutants
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \
