@@ -18,8 +18,9 @@ import java.util.concurrent.ConcurrentHashMap
  * and the report lines are written from the recorded set at the end of the JVM. A mutant nothing
  * killed has no line and is not counted, whatever the registry says.
  *
- * **Why the end of the JVM.** The kills live in two test classes — `DmMutantDetectionTest` and
- * `DmPoisonTest`, because MC-12's is the native-crash loop — and JUnit gives no ordering across
+ * **Why the end of the JVM.** The kills live in three test classes — `DmMutantDetectionTest`,
+ * `DmPoisonTest`, because MC-12's is the native-crash loop, and `entworld.ScnETest`, because MC-14's
+ * and MC-15's run on SCN-E's entitlement world (§22.25) — and JUnit gives no ordering across
  * classes. A shutdown hook is the one place that runs after both. It is armed by
  * `DmMutantDetectionTest.theRegistryAndTheKillsAgree`, which is also what asserts the registry is
  * well formed; if *that* test is skipped or removed the lines are absent altogether and the check

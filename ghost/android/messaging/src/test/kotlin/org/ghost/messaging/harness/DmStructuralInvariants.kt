@@ -47,9 +47,15 @@ internal object DmStructuralInvariants {
      *
      * [where] names the moment ("reboot 3", "end") and goes into every failure message.
      */
-    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) {
-        val sql = node.raw
-        val label = "${node.name} @ $where"
+    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) =
+        check(node.raw, node.name, where, heavy, settled)
+
+    /**
+     * The same clauses over a raw connection and a client's name: the entitlement world's clients
+     * (SCN-E, §22.25), whose databases are Phase 7 harness clients and not [DmNode]s.
+     */
+    fun check(sql: JdbcSqlExecutor, name: String, where: String, heavy: Boolean = true, settled: Boolean = true) {
+        val label = "$name @ $where"
 
         if (heavy) {
             var integrity = "missing"
@@ -236,11 +242,15 @@ internal object DmStructuralInvariants {
      * actor pass writes after SWEEP anyway, so a log measured at the end of a pass is measuring the
      * pass, not the sweep. §15.3 says "after SWEEP **and R-K1**", and R-K1 happens at an open.
      */
-    fun afterSweep(node: DmNode, nowEpochSeconds: Long, where: String) {
-        val label = "${node.name} @ $where"
+    fun afterSweep(node: DmNode, nowEpochSeconds: Long, where: String) =
+        afterSweep(node.raw, node.name, nowEpochSeconds, where)
+
+    /** [afterSweep] over a raw connection and a client's name (the entitlement world, SCN-E). */
+    fun afterSweep(sql: JdbcSqlExecutor, name: String, nowEpochSeconds: Long, where: String) {
+        val label = "$name @ $where"
         val minute = nowEpochSeconds - Math.floorMod(nowEpochSeconds, 60L)
         empty(
-            node.raw, label, "a message past its delete_at_minute after SWEEP",
+            sql, label, "a message past its delete_at_minute after SWEEP",
             "SELECT count(*) FROM dm_message WHERE delete_at_minute IS NOT NULL " +
                 "AND delete_at_minute <= $minute",
         )
@@ -260,11 +270,15 @@ internal object DmStructuralInvariants {
      * quiescence loop's final clock step is owed to the next sweep, not broken by the last one. The
      * runner calls this after its own pass, the one place both halves hold by construction.
      */
-    fun retiredSessionsGone(node: DmNode, nowEpochSeconds: Long, where: String) {
-        val label = "${node.name} @ $where"
+    fun retiredSessionsGone(node: DmNode, nowEpochSeconds: Long, where: String) =
+        retiredSessionsGone(node.raw, node.name, nowEpochSeconds, where)
+
+    /** [retiredSessionsGone] over a raw connection and a client's name (the entitlement world, SCN-E). */
+    fun retiredSessionsGone(sql: JdbcSqlExecutor, name: String, nowEpochSeconds: Long, where: String) {
+        val label = "$name @ $where"
         val today = Math.floorDiv(nowEpochSeconds, org.ghost.messaging.DmWorld.DAY)
         empty(
-            node.raw, label, "a 'previous' session past its retire_day after SWEEP",
+            sql, label, "a 'previous' session past its retire_day after SWEEP",
             "SELECT count(*) FROM olm_session WHERE slot = 'previous' AND retire_day IS NOT NULL " +
                 "AND retire_day <= $today",
         )
