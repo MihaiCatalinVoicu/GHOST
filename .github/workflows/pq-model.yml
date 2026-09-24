@@ -17,12 +17,10 @@ name: pq-model
 #
 # ProVerif is built from the INRIA source release, **pinned by version and by SHA-256**: the hash
 # lives in ghost/protocol/models/dm/proverif.sha256 and the job refuses to build anything else.
-# Until that file holds a hash the job fails closed and prints the hash of what it downloaded. As
-# far as this slice knows, INRIA publishes no checksum for the archive, so a pin taken from one
-# download is trust on first use: the owner compares it with an independent source first — the
-# checksum opam-repository records for the same release, or a download over another network
-# (design §22.18 records the owner action). ocaml-nox and patch come from the runner's apt,
-# unpinned; they build and apply, and ship nothing.
+# The pinned hash is the one opam-repository records independently for proverif 2.05
+# (packages/proverif/proverif.2.05/opam, sha256=4871f53c…ceabc4), compared on 2026-09-24 with the
+# archive INRIA serves (design §22.31). ocaml-nox and patch come from the runner's apt, unpinned;
+# they build and apply, and ship nothing.
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
   push:
