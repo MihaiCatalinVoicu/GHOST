@@ -27,6 +27,15 @@ import java.util.Collections
  *
  * It is compiled into `androidTest` APKs only (`src/deviceRunner` is an `androidTest` source
  * directory of the modules that use it), never into a release source set (gate G-DM5).
+ *
+ * **No Kotlin standard-library function here, and none in a runner of a release test APK**
+ * (found on the first emulator run, design §22.32). `:app`'s smoke test runs against the R8-shrunk
+ * release: AGP leaves the Kotlin standard library out of that test APK, because the tested app
+ * carries it, and maps the test's references through the app's `mapping.txt` — so a call resolves
+ * against the app's *shrunk* copy. `listOf(x)`, `plus` and `joinToString`, which the first version
+ * called, have no caller in the release, R8 removed them, and the instrumentation died with
+ * `NoSuchMethodError` in `AppDeviceRunner.<init>` before any test ran. Only JDK and Android calls
+ * (and inline functions, which leave no call) are safe in this file.
  */
 abstract class DeviceRunner(private val classes: List<Class<*>>) : Instrumentation() {
 
@@ -58,11 +67,14 @@ abstract class DeviceRunner(private val classes: List<Class<*>>) : Instrumentati
         val result = core.run(*classes.toTypedArray())
         val skipped = result.ignoreCount + result.assumptionFailureCount
         val summary = "device tests: ${result.runCount} run, ${result.failureCount} failed, $skipped skipped"
+        // JDK calls only, no Kotlin collection function (see the class note): in the release smoke
+        // test this code runs against the R8-shrunk app's copy of the Kotlin standard library.
+        val stream = StringBuilder()
+        for (line in ArrayList<String>(reports)) stream.append(line).append('\n')
+        for (line in ArrayList<String>(failures)) stream.append(line).append('\n')
+        stream.append(summary).append('\n')
         val out = Bundle()
-        out.putString(
-            "stream",
-            (reports + failures + summary).joinToString(separator = "\n", postfix = "\n"),
-        )
+        out.putString("stream", stream.toString())
         val ok = result.runCount > 0 && result.failureCount == 0 && skipped == 0
         finish(if (ok) Activity.RESULT_OK else Activity.RESULT_CANCELED, out)
     }
