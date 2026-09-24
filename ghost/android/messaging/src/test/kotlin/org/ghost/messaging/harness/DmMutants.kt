@@ -1,5 +1,8 @@
 package org.ghost.messaging.harness
 
+import org.ghost.messaging.MovableClock
+import org.ghost.messaging.engine.DmTime
+import org.ghost.messaging.engine.DmTimers
 import org.ghost.messaging.port.DmEnvelopes
 
 /**
@@ -9,18 +12,20 @@ import org.ghost.messaging.port.DmEnvelopes
  * detects it is not evidence, it is a claim.
  *
  * §15.7's own set is 97 — 40 privacy (S11's), 33 correctness and 24 ephemeral (this slice's 57).
- * Thirteen are here: seven from S10, four from S10b — MC-18 and MC-26, which S10b's SCN-I makes
- * reachable, MC-28, which its SCN-H does, and MC-33, which its `SCN-G-week` does — and two from
- * SCN-E (§22.25), MC-14 and MC-15, killed on the entitlement world by `entworld.ScnETest`. The other
- * 44 are listed in §22.15, §22.19 and §22.25 with the reason each is not, and the gate line says
- * **thirteen**, not fifty-seven, for the same reason `dm-report-check.sh` refuses a PASS on an empty sample: a
+ * Fifteen are here: seven from S10, four from S10b — MC-18 and MC-26, which S10b's SCN-I makes
+ * reachable, MC-28, which its SCN-H does, and MC-33, which its `SCN-G-week` does — two from
+ * SCN-E (§22.25), MC-14 and MC-15, killed on the entitlement world by `entworld.ScnETest`, and two
+ * from the suite cases of §22.27, MC-21 and MC-24, which RS2 and KC12 make reachable. The other
+ * 42 are listed in §22.15, §22.19, §22.25 and §22.27 with the reason each is not, and the gate line
+ * says **fifteen**, not fifty-seven, for the same reason `dm-report-check.sh` refuses a PASS on an empty sample: a
  * number a run did not measure is worse than no number. The line is built from the kills the run
  * **recorded** ([DmKills]), never from this registry, so an ignored or deleted kill test lowers
- * the count instead of leaving it standing. **S10b's four and SCN-E's two are held to a stricter
- * kill than S10's seven**: detected fault-free by the check their entry names, *and* at crash points
- * — spread over the scenario for S10b's, over the window from the loss to the fault-free failure
- * for SCN-E's (§22.25 item 14) — each beside the unmutated scenario crashed at the same point
- * ([Mutation.expectUnderCrash]).
+ * the count instead of leaving it standing. **S10b's four, SCN-E's two and §22.27's two are held
+ * to a stricter kill than S10's seven**: detected fault-free by the check their entry names, *and*
+ * at crash points — spread over the scenario for S10b's, over the window from the loss to the
+ * fault-free failure for SCN-E's (§22.25 item 14), over the window from the step the mutant first
+ * changes to the end of the run for §22.27's — each beside the unmutated scenario crashed at the
+ * same point ([Mutation.expectUnderCrash]).
  *
  * **What a mutant may be, here.** `:messaging` has no `Steps` seam the way `:sync` does, so a
  * mutation is one of three things: a **statement rewrite** on the device's executor (the same
@@ -31,11 +36,16 @@ import org.ghost.messaging.port.DmEnvelopes
  * That is what decides which of §15.7's 57 are reachable here, and §22.15 says so per mutant
  * rather than in general. SCN-E adds a fourth, a **trigger substitution** in the entitlement
  * world's wiring ([Mutation.hintKeeper], MC-15), and it is the only one that changes *when* a
- * production step runs rather than what a statement or a port does.
+ * production step runs rather than what a statement or a port does. §22.27's MC-21 is a statement
+ * rewrite that also reads the device's clock ([Mutation.rewriteOn]) — the first mechanism, given
+ * the one input SWEEP's erasure bound needs that no statement argument carries.
  */
 internal object DmMutants {
 
-    /** One substitution in the armed world. Exactly one of the four mechanisms is set. */
+    /**
+     * One substitution in the armed world. Exactly one of the mechanisms is set: a rewrite (plain
+     * or bound to the device's clock), a decorator, a split or a trigger substitution.
+     */
     class Mutation(
         val id: String,
         /** The property §15.7 says this mutant defeats, in its own words. */
@@ -67,6 +77,16 @@ internal object DmMutants {
          */
         val expectUnderCrash: List<String> = emptyList(),
         val rewrite: ((String, List<Any?>) -> Pair<String, List<Any?>>)? = null,
+        /**
+         * A **statement rewrite that reads the device's own clock** (§22.27, MC-21): the same
+         * mechanism as [rewrite], bound to one node's clock when the node is built
+         * (`DmCrashWorld.node`). A rewrite sees a statement and its arguments and nothing else, and
+         * SWEEP's erasure bound is a comparison with `now_e`, which no argument of the statement
+         * MC-21 changes carries; the clock is the device's wall clock, the half of `now_e` that is
+         * not in the database (the other half, `dm_self.expiry_clock_minute`, is read in the
+         * rewritten SQL itself). Only the crash world installs it.
+         */
+        val rewriteOn: ((MovableClock) -> ((String, List<Any?>) -> Pair<String, List<Any?>>))? = null,
         val decorate: ((DmEnvelopes) -> DmEnvelopes)? = null,
         /** The transaction-split seam of [FaultyDmSqlExecutor.defer]; only a crash run kills these. */
         val defer: ((String) -> Boolean)? = null,
@@ -333,6 +353,110 @@ internal object DmMutants {
     )
 
     /**
+     * **MC-21 — pair keys erased before ratcheting forward** (§21.3 point 5, CR-13; the suite cases
+     * of §22.27).
+     *
+     * > SWEEP first derives and stores, for every live in-generation, `K_w` for every week up to
+     * > `week(now)` from the newest stored key, then erases keys past `start(w + 1) + FRESH`, in one
+     * > transaction.
+     *
+     * `K_{w+1}` is derived from `K_w` and from nothing else, so a sweep that erased first would
+     * destroy the only material the derivation starts from: a recipient that did not run for about
+     * 52 days erases its newest in-key and has nothing left to ratchet, and every later pair envelope
+     * of the conversation is dropped as `unknown_seal` (`PairKeySteps`' own header says so, and names
+     * this mutant as the order of the two calls inside `sweep`).
+     *
+     * **The mechanism: a statement rewrite, scoped to the ratchet's call sites and bound to the
+     * device's clock ([rewriteOn]).** A rewrite cannot move a statement, but it can make the
+     * ratchet's own read see exactly what an erasure that ran first would have left: the two
+     * `dm_pair_key` reads of `PairKeySteps.advance` and `advancingInGenerations`, for the **in**
+     * direction, are given `PairKeySteps.eraseIn`'s own survival condition — a row survives while
+     * `now_e < start(week + 1) + FRESH` — with `now_e` as `Sweeper` computes it (R-T7:
+     * `max(floor_minute(wall), dm_self.expiry_clock_minute)`, the wall half from the device's clock,
+     * the stored half read in the SQL). The ratchet then derives from what would have survived an
+     * erasure, `eraseIn` erases the rest as it always does, and the transaction commits exactly the
+     * state "erase, then ratchet" commits. The same statement from anywhere else — `eraseIn`,
+     * `eraseOut`, SEND, RECV — is untouched, and so is the **out** direction: §21.3 point 5 is a rule
+     * about in-generations, and the out keys' window is a different rule (§22.8.5 rule 1, whose
+     * mutant is MC-33) — erasing them first would lose the sender's key at every week boundary, a
+     * different and much louder defect.
+     *
+     * §15.7 detects it with RS2, and so does this: RS2's check that the recipient holds, for the week
+     * it came back in, an in-key of the generation the conversation was sealed under before the
+     * absence — in every run — and behind it the no-loss oracle (the peer's pair-sealed message
+     * `SENT` and never opened) and the liveness probe.
+     */
+    val MC21 = Mutation(
+        id = "MC-21",
+        defeats = "§21.3 point 5: SWEEP ratchets every live in-generation to week(now) before it erases the keys past their window",
+        detectedBy = "RS2 (after a 60-day absence the recipient holds no in-key of the conversation's generation for the week it came back)",
+        expect = "the ratchet did not run before the erasure",
+        expectUnderCrash = listOf("the ratchet did not run before the erasure", NO_LOSS_FAILURE, LIVENESS_FAILURE),
+        rewriteOn = { clock ->
+            { sql, args ->
+                if (sql == PAIR_KEYS_SELECT && args.getOrNull(1) == "in" &&
+                    (
+                        calledFrom("ContactStore", "pairKeys", "PairKeySteps", "advance") ||
+                            calledFrom("ContactStore", "pairKeys", "PairKeySteps", "advancingInGenerations")
+                        )
+                ) {
+                    Pair(PAIR_KEYS_SELECT_AFTER_ERASURE, args + DmTime.floorMinute(clock.now))
+                } else {
+                    Pair(sql, args)
+                }
+            }
+        },
+    )
+
+    /**
+     * **MC-24 — `request → changed` attempted** (§21.4 point 5, CR-05; the suite cases of §22.27).
+     *
+     * > For `trust_state = request`, a PreKey L1 with `OI′ ≠ pinned` under a valid binding is
+     * > `drop(request_key_mismatch)` with no state change; a `request → changed` transition does not
+     * > exist. … a trigger or CHECK abort inside a DM transaction is a bug, never an expected path.
+     *
+     * Round 9's defect (3) of §21.4: a requester that sent a second Olm identity drove the key-change
+     * path on a contact that was still a request, the schema's `dm_contact_trust` trigger refused
+     * the transition, and the untyped abort ended RECV at every offer of the blob — "crashed the
+     * process three times per blob" — until the poison guard consumed it.
+     *
+     * **The mechanism: a statement rewrite scoped to one call site.** The pre-check is Kotlin
+     * (`ReceiveStep.intro`, `contact.trust == REQUEST`), and what it reads is the contact row
+     * `ContactStore.contactByIdentity` returns. The rewrite reports a `request` row's trust as
+     * `unverified` — **only** when the caller is `ReceiveStep.intro`, read off the stack as MC-18
+     * does — so the pre-check never sees a request there and the engine goes on to §8.3's hold,
+     * whose `setChanged` is the `request → changed` attempt. Nothing else reads a request's trust on
+     * that path: the blocked/revoked and `changed` branches are unaffected by the substitution, a
+     * brand-new requester is created (and read back) by another statement, and every other caller
+     * of the same query — the user's `addContact`, KEYDEC — is untouched.
+     *
+     * §15.7 detects it with KC12, and so does this: KC12's "no crash" check, which reads what the
+     * recipient's passes threw and names the trigger's own words, in every run.
+     */
+    val MC24 = Mutation(
+        id = "MC-24",
+        defeats = "§21.4 point 5: a request that sends a second Olm identity is dropped; request → changed is never attempted",
+        detectedBy = "KC12 (the recipient's RECV throws on every offer of the second identity's first flight)",
+        expect = "attempted request → changed",
+        expectUnderCrash = listOf("attempted request → changed"),
+        rewrite = { sql, args ->
+            if (sql == CONTACT_BY_IDENTITY &&
+                calledFrom("ContactStore", "contactByIdentity", "ReceiveStep", "intro")
+            ) {
+                Pair(
+                    CONTACT_BY_IDENTITY.replace(
+                        " trust_state,",
+                        " CASE trust_state WHEN 'request' THEN 'unverified' ELSE trust_state END,",
+                    ),
+                    args,
+                )
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
      * **MC-26 — `previous` never retired** (§8.7, §10.6; slice S10b).
      *
      * SWEEP deletes a `previous` session at its `retire_day`, 46 days after its demotion; the bound
@@ -492,6 +616,30 @@ internal object DmMutants {
     /** `ContactStore.deleteOutPairKeys`, verbatim: MC-18 matches the statement exactly. */
     private const val OUT_KEYS_DELETE = "DELETE FROM dm_pair_key WHERE contact_id = ? AND direction = 'out'"
 
+    /** `ContactStore.pairKeys`, verbatim: MC-21 matches the statement exactly. */
+    private const val PAIR_KEYS_SELECT =
+        "SELECT direction, root_gen, week, recog_key, open_env FROM dm_pair_key " +
+            "WHERE contact_id = ? AND direction = ? ORDER BY root_gen DESC, week DESC"
+
+    /**
+     * [PAIR_KEYS_SELECT] with `PairKeySteps.eraseIn`'s survival condition added: a row is kept while
+     * `now_e < start(week + 1) + FRESH`, where `now_e = max(floor_minute(wall), expiry_clock_minute)`
+     * (R-T7) and the third `?` is the wall half. `DmTime.weekStart(w)` is `WEEK_ORIGIN + WEEK * w`.
+     */
+    private val PAIR_KEYS_SELECT_AFTER_ERASURE =
+        "SELECT direction, root_gen, week, recog_key, open_env FROM dm_pair_key " +
+            "WHERE contact_id = ? AND direction = ? " +
+            "AND max(?, coalesce((SELECT expiry_clock_minute FROM dm_self), 0)) < " +
+            "${DmTime.WEEK_ORIGIN} + ${DmTime.WEEK} * (week + 1) + ${DmTimers.FRESH_SECONDS} " +
+            "ORDER BY root_gen DESC, week DESC"
+
+    /** `ContactStore.contactByIdentity`'s statement (through `contactBy`), verbatim: MC-24 matches it exactly. */
+    private const val CONTACT_BY_IDENTITY =
+        "SELECT contact_id, identity_pk, card_env, card_index, pinned_identity, pending_identity, " +
+            "bundle_week_seen, trust_state, source, establishment, fetch_attempts, " +
+            "fetch_listen_until_minute, reset_needed, request_until_day, verified_fp " +
+            "FROM dm_contact WHERE identity_pk = ?"
+
     /**
      * True when the current thread is inside [storeMethod] of a class named [storeClass], called
      * directly from [callerMethod] of a class named [callerClass]. Simple names, because the
@@ -512,7 +660,10 @@ internal object DmMutants {
         return caller.className.substringAfterLast('.') == callerClass && caller.methodName == callerMethod
     }
 
-    /** Every mutant S10, S10b and SCN-E (§22.25) register, in the order the report prints them. */
+    /**
+     * Every mutant S10, S10b, SCN-E (§22.25) and the suite cases of §22.27 register, in the order the
+     * report prints them.
+     */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC26, MC28, MC33, ME16)
+        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC21, MC24, MC26, MC28, MC33, ME16)
 }

@@ -26,7 +26,10 @@ import org.junit.Test
  *     establishment whose attempt budget never runs out, a relay that stops withholding the newest
  *     bundle, windows an hour apart, windows of thirty minutes, a message that fails before the
  *     third window, a contact reopened before any user action — and the relay-side window oracle
- *     over listings written by hand (S10c and its review).
+ *     over listings written by hand (S10c and its review);
+ * 10. KC12's, RS2's and RP7's checks that no registered mutant reaches really fail on what they
+ *     are about: a request accepted before the second identity's flight, a second device that is
+ *     someone else, a relay that honours no TTL, and an L0 dated in the key's own week (§22.27).
  *
  * Without 5 in particular the whole enumeration could pass on an engine that writes nothing.
  */
@@ -372,6 +375,91 @@ class DmHarnessSelfTest {
             },
         )
         assertFailsWith(reopened, "before she wrote c1")
+    }
+
+    /**
+     * 10: the checks of KC12, RS2 and RP7 that no registered mutant reaches are not vacuous either
+     * (§22.27). MC-24 is killed by KC12's "no crash" check and MC-21 by RS2's in-key check; what
+     * follows are the others, each failing for the reason it names on a world that breaks one thing:
+     *  - **KC12, the decision taken before the flight arrives**: bob accepts alice's request first,
+     *    so the second identity's first flight is a key change of an accepted contact — §8.3's hold,
+     *    correct for the engine and SCN-D's subject — and "no state change" must fail on it;
+     *  - **KC12, a second device that is someone else**: another `ghost1` identity writes instead of
+     *    alice's second device, so bob gets a second request, and the one-contact check must fail;
+     *  - **RS2, a relay that honours no TTL**: the message written into the absence is still held
+     *    when bob comes back, so it is served — and refused, since bob's first sweep erased the
+     *    week key that sealed it — and the measurement of the declared loss ("the relay let it
+     *    expire unserved") must fail: the declaration excuses a loss at the relay and nothing else;
+     *  - **RP7, the L0 dated in the key's own week**: the sender's decorator dates the message a
+     *    minute earlier instead of a week, binding B1 lets it through, and the render check must
+     *    fail — RP7 has no registered mutant (MC-9 is out of reach), so this is what shows its one
+     *    check reads the rendering at all.
+     */
+    @Test
+    fun kc12Rs2AndRp7ChecksFailOnWhatTheyAreAbout() {
+        requireNative()
+        val kc12 = DmSuiteCases.kc12ARequestSendingTwoIdentities()
+        val acceptedFirst = DmScenario(
+            name = "KC12/accepted-before-the-flight",
+            setup = kc12.setup,
+            steps = kc12.steps.map { s ->
+                if (s.label.startsWith("bob's device takes it")) {
+                    step(s.label) { w ->
+                        w["bob"].device.engine.acceptRequest(requireNotNull(w.contacts["bob->alice"]))
+                        s.body(w)
+                    }
+                } else {
+                    s
+                }
+            },
+            alwaysChecks = kc12.alwaysChecks,
+            finalChecks = kc12.finalChecks,
+            liveness = kc12.liveness,
+            noLoss = kc12.noLoss,
+            declaredLoss = kc12.declaredLoss,
+        )
+        assertFailsWith(acceptedFirst, "the second identity moved it")
+
+        val someoneElse = DmSuiteCases.kc12ARequestSendingTwoIdentities(secondIdentityBranch = 0x72)
+        assertFailsWith(
+            DmScenario(
+                name = "KC12/someone-else",
+                setup = someoneElse.setup,
+                steps = someoneElse.steps,
+                alwaysChecks = someoneElse.alwaysChecks,
+                finalChecks = someoneElse.finalChecks,
+                liveness = someoneElse.liveness,
+                noLoss = someoneElse.noLoss,
+                declaredLoss = someoneElse.declaredLoss,
+            ),
+            "bob holds 2 contacts",
+        )
+
+        val rs2 = DmSuiteCases.rs2AClientOfflineSixtyDays()
+        assertFailsWith(
+            DmScenario(
+                name = "RS2/no-ttl",
+                setup = { world ->
+                    world.relay.honoursTtl = false
+                    rs2.setup(world)
+                },
+                steps = rs2.steps,
+                alwaysChecks = rs2.alwaysChecks,
+                finalChecks = rs2.finalChecks,
+                liveness = rs2.liveness,
+                noLoss = rs2.noLoss,
+                declaredLoss = rs2.declaredLoss,
+            ),
+            "expire unserved",
+        )
+
+        // RP7's render check, which no registered mutant reaches (MC-9 is out of every mechanism's
+        // reach, §22.27): the sender's L0 dated a minute earlier in the key's **own** week, which
+        // binding B1 lets through, must fail it.
+        assertFailsWith(
+            DmSuiteCases.rp7AnOldL0ResealedUnderALaterWeekKey(sameWeek = true),
+            "bob rendered an L0 dated in another week",
+        )
     }
 
     /** SCN-C as it is, under [name], with [steps] in place of its own. */

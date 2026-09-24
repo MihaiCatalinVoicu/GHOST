@@ -138,6 +138,21 @@ internal class DmRunSpec(
      * mutant kill rule still needs its event count, to crash it only at points it reaches.
      */
     val onArmedEvents: ((Long) -> Unit)? = null,
+    /**
+     * Told the scenario's notes at the same moment as [onArmedEvents] (the suite cases of §22.27).
+     *
+     * A mutant kill that spreads its crash points over the window where the mutant **acts** needs
+     * the event at which that window opens, and the scenario is what knows it — it writes the event
+     * count into a note when it reaches the step the mutant can first change. A mutated world fails
+     * its checks and never returns a [DmRunResult], so the note has to leave the run here.
+     */
+    val onNotes: ((Map<String, Any>) -> Unit)? = null,
+    /**
+     * Told how many faults the bus injected, at the same moment (§22.27): a mutant kill at a crash
+     * point counts only if the crash really fired before the check that killed the run, and a run
+     * that fails in a step never reaches [DmCrashRunner]'s own "the requested fault fired" check.
+     */
+    val onInjected: ((Int) -> Unit)? = null,
 )
 
 internal class DmRunResult(
@@ -257,6 +272,8 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
                     // A check a step makes on its own (EP, SCN-G-week) ends the run here; the
                     // event count it reached is still what a mutant kill has to crash inside.
                     spec.onArmedEvents?.invoke(world.bus.count)
+                    spec.onNotes?.invoke(world.notes.toMap())
+                    spec.onInjected?.invoke(world.bus.injected.size)
                     throw finding
                 }
             }
@@ -278,6 +295,8 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
 
             world.bus.armed = false
             spec.onArmedEvents?.invoke(world.bus.count)
+            spec.onNotes?.invoke(world.notes.toMap())
+            spec.onInjected?.invoke(world.bus.injected.size)
             // One unarmed settling round, so a run whose last crash landed mid-round is compared at
             // the same place as the recording run.
             world.quiesce(scenario.tailRounds)

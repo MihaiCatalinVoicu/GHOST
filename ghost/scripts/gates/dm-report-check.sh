@@ -36,7 +36,9 @@
 # adds none (§22.23). SCN-E (§22.25) is the twelfth, on the entitlement world, and its crash
 # coverage is **sampled, not every event**: its lines are `dm crash sample:` lines, held to their own
 # rules below and never to the every-event rule of the `dm crash classes:` lines; it adds MC-14 and
-# MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25).
+# MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25). The suite cases of §22.27
+# add three functional-suite sub-cases under the enumeration, KC12, RS2 and RP7, and the two mutants
+# the first two make reachable, MC-21 and MC-24: fifteen (RP7's MC-9 needs a seam, §22.27).
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -194,7 +196,8 @@ esac
 # a crash-class line, and that line must report at least one single crash: an enumeration of zero
 # crash points is a scenario that ran once without faults, which is not a crash enumeration.
 scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
-scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry)
+# §15.5's sub-cases under the enumeration: S10's four, and KC12, RS2 and RP7 since §22.27.
+scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
@@ -348,8 +351,11 @@ grep -qE '^dm suite cases: [1-9][0-9]* run, 0 failures$' "$report" || bad "no su
 # (§22.25): MC-14 and MC-15, which SCN-E/LOSE_KEYS makes reachable, under the same rule with its
 # crash points in the window where the mutant acts — from the loss to the fault-free failure — and
 # not over the whole run, where the review found them all in the establishment (§22.25 item 14).
-grep -qxF 'dm mutants: 13 run, 13 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 13 run, 13 detected'"
+# Fifteen since the suite cases of §22.27: MC-21, which RS2 makes reachable, and MC-24, which KC12
+# does, each killed fault-free and at six crash points spread over the window from the step the
+# mutant first changes to the end of the run — SCN-E's rule, with the scenario's own mark.
+grep -qxF 'dm mutants: 15 run, 15 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 15 run, 15 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -360,9 +366,11 @@ rule_ff='fault-free, beside a clean control'
 rule_crash='invisible fault-free, killed under a crash in its split window, beside a clean run at the same point'
 rule_s10b='fault-free and at 6 of 6 crash points, each beside a clean run'
 rule_scne='fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run'
+rule_window='fault-free and at 6 of 6 crash points between the step it first changes and the end of the run, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_ff" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
-  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
+  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-21|$rule_window" "MC-24|$rule_window" \
+  "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
   "ME-16|$rule_ff"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"

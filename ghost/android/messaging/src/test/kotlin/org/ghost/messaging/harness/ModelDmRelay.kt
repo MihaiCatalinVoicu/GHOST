@@ -119,6 +119,14 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
      */
     var expirySeconds: Long = 30 * DmWorld.DAY
 
+    /**
+     * False: the relay keeps and serves every blob past its TTL (§22.27). A **control** only —
+     * `DmHarnessSelfTest` item 10 turns it off to show that RS2's measurement of its declared loss
+     * ("blobs past TTL lost") can fail; no scenario runs with it off. §15.1's LONG_EXPIRY, the
+     * hostile mode it resembles, is not implemented (§22.15 item 4).
+     */
+    var honoursTtl: Boolean = true
+
     private class Stored(
         val namespace: ByteArray,
         val hash: ByteArray,
@@ -250,7 +258,7 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         }
         var moved = 0
         for (blob in candidates) {
-            if (blob.storedAt + blob.ttl <= now) continue
+            if (honoursTtl && blob.storedAt + blob.ttl <= now) continue
             if (now < blob.notBefore) continue
             val key = blob.namespace.hex() + blob.hash.hex() + "@" + node.name
             if (withheldAsNewest(blob, consumers, now)) {
@@ -328,7 +336,7 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
         for (node in nodes) {
             val consumers = listeningConsumers(node)
             for (blob in stored) {
-                if (blob.from == node.name || blob.storedAt + blob.ttl <= now) continue
+                if (blob.from == node.name || (honoursTtl && blob.storedAt + blob.ttl <= now)) continue
                 // A blob held back on purpose is not owed yet: it is the scenario's, not in flight.
                 if (now < blob.notBefore) continue
                 if (blob.namespace.hex() !in consumers) continue
@@ -339,6 +347,26 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
             }
         }
         return owed
+    }
+
+    /**
+     * How many blobs of another node, in a namespace [node] listens on, the relay let expire at
+     * their TTL without ever serving them to [node] (the suite cases of §22.27).
+     *
+     * RS2's "blobs past TTL lost and declared": a message written into a recipient's absence and
+     * stored with a TTL shorter than the absence is gone at the relay before the recipient returns.
+     * The scenario declares that loss to the no-loss oracle; this is what **measures** it, so the
+     * declaration is never the only thing that says the message was lost at the relay and not by
+     * the engine. Raw state only, no event.
+     */
+    fun expiredUnserved(node: DmNode, now: Long): Int {
+        val consumers = listeningConsumers(node)
+        return stored.count { blob ->
+            blob.from != node.name &&
+                blob.namespace.hex() in consumers &&
+                blob.storedAt + blob.ttl <= now &&
+                (blob.namespace.hex() + blob.hash.hex() + "@" + node.name) !in served
+        }
     }
 
     /** The namespaces [node] listens on, with the consumer it registered each one for. */

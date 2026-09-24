@@ -1,5 +1,6 @@
 package org.ghost.messaging.harness
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -65,12 +66,22 @@ class DmMutantDetectionTest {
     fun me16ReadPathIgnoresExpiryIsDetected() =
         detect(DmMutants.ME16, DmSuiteCases.epExpiredRowsAreNotReadable())
 
+    /** §22.27: SWEEP erases a recipient's in-keys before it ratchets them forward. */
+    @Test
+    fun mc21PairKeysErasedBeforeTheRatchetIsDetected() =
+        detectFaultFreeAndWhereItActs(DmMutants.MC21, DmSuiteCases.rs2AClientOfflineSixtyDays(), DmSuiteCases.RS2_MARK)
+
+    /** §22.27: RECV attempts `request → changed` for a request's second identity. */
+    @Test
+    fun mc24RequestToChangedAttemptedIsDetected() =
+        detectFaultFreeAndWhereItActs(DmMutants.MC24, DmSuiteCases.kc12ARequestSendingTwoIdentities(), DmSuiteCases.KC12_MARK)
+
     /**
      * The registry is well formed, and the report's count is armed to be written from the kills.
      *
      * It is deliberately not "57 run, 57 detected". §15.7's set is 97 — 40 privacy, 33 correctness
-     * and 24 ephemeral — and S10 and S10b register eleven. A gate that printed the design's number
-     * while running eleven would be the one failure a report-checked gate must not have, which is
+     * and 24 ephemeral — and the slices so far register fifteen (§22.27). A gate that printed the
+     * design's number while running fifteen would be the one failure a report-checked gate must not have, which is
      * why the check script pins this line to the number this suite actually runs — and why the line
      * itself is now written from [DmKills], so that removing a kill lowers it.
      */
@@ -82,7 +93,8 @@ class DmMutantDetectionTest {
         for (mutant in registered) {
             assertTrue(
                 "${mutant.id} has no rewrite, no decorator, no split and no trigger substitution: it mutates nothing",
-                mutant.rewrite != null || mutant.decorate != null || mutant.defer != null || mutant.hintKeeper,
+                mutant.rewrite != null || mutant.rewriteOn != null || mutant.decorate != null ||
+                    mutant.defer != null || mutant.hintKeeper,
             )
             assertTrue("${mutant.id} names no property", mutant.defeats.isNotBlank())
             assertTrue("${mutant.id} names no detecting case", mutant.detectedBy.isNotBlank())
@@ -238,6 +250,113 @@ class DmMutantDetectionTest {
             // evidence: a kill quietly moved back to the fault-free-only rule changes the line,
             // and `dm-report-check.sh` pins the line (S10b review).
             "fault-free and at ${kills.size} of ${points.size} crash points, each beside a clean run",
+        )
+    }
+
+    /**
+     * The kill rule of the suite cases of §22.27: S10b's — detected **fault-free** by the check the
+     * entry names, beside the clean control, and at [CRASH_POINTS] crash points each beside the
+     * unmutated scenario crashed at the same point — with the crash points where the mutant
+     * **acts**, as SCN-E's review asked of its own (§22.25 item 14): spread over the window from the
+     * event the scenario records in the note [mark] — the step the mutant can first change, read
+     * from the mutated fault-free run — to the last event both worlds reach.
+     *
+     * Why the window. S10b's points are spread over every event of the scenario, and a point before
+     * the mutant's first effect is a crash that precedes the defect: the reboot happens, the run goes
+     * on, and the defect then happens in an unfaulted stretch — a statement about the scenario's
+     * recovery, not about the defect under a crash. MC-21 acts at the recipient's first SWEEP after a
+     * 60-day absence, 3 838 events into RS2's 10 792, so S10b's spread would have put two of its six
+     * points before it; MC-24 acts at the recipient's first pass after the second identity wrote,
+     * event 451 of KC12, and its mutated run fails 88 events later, so S10b's spread over the 539
+     * events both worlds reach would have put five of six in the second device's write, before it.
+     *
+     * The mark is written by the scenario at the start of that step, from the bus's own count, and
+     * the prefix up to it is the same in both worlds: neither rewrite changes which statements run
+     * before its first effect (MC-21's changes the text of SWEEP's reads, whose result is unchanged
+     * while no key is past its window; MC-24's the text of a read that finds no row until the
+     * request exists and the second identity writes).
+     */
+    private fun detectFaultFreeAndWhereItActs(mutation: DmMutants.Mutation, scenario: DmScenario, mark: String) {
+        requireNative()
+        assertTrue("${mutation.id} names no failure under a crash", mutation.expectUnderCrash.isNotEmpty())
+        // Half 1: fault-free, against the clean control, with the entry's own message.
+        val cleanEvents = DmCrashRunner(scenario).run(DmRunSpec()).events
+        val mutant = mutated(scenario, mutation)
+        var mutantEvents = 0L
+        var from: Long? = null
+        val faultFree = runCatching {
+            DmCrashRunner(mutant).run(
+                DmRunSpec(onArmedEvents = { mutantEvents = it }, onNotes = { from = it[mark] as Long? }),
+            )
+        }.exceptionOrNull()
+        assertKilled(mutation, scenario.name, faultFree, record = false)
+        val faultFreeMessage = deepMessage(requireNotNull(faultFree))
+        val start = requireNotNull(from) { "${mutation.id}'s world never reached the step ${scenario.name} marks ($mark)" }
+        val end = minOf(cleanEvents, mutantEvents)
+        assertTrue(
+            "${mutation.id} failed at event $mutantEvents, before the window it acts in opens at $start",
+            end > start + CRASH_POINTS,
+        )
+        println(
+            "${mutation.id} killed fault-free by ${scenario.name} (clean passed, $cleanEvents events) at event " +
+                "$mutantEvents, the window opening at $start: $faultFreeMessage",
+        )
+
+        // Half 2: at crash points spread over (start, end], each beside the clean scenario.
+        val points = (1..CRASH_POINTS).map { i -> start + maxOf(1L, (end - start) * i / (CRASH_POINTS + 1)) }.distinct()
+        val tasks = points.flatMap { at ->
+            listOf(
+                "${scenario.name} clean crash@$at" to {
+                    runCatching { DmCrashRunner(scenario).run(DmRunSpec(crashAt = at)) }.exceptionOrNull() to 1
+                },
+                "${scenario.name}/${mutation.id} crash@$at" to {
+                    var injected = -1
+                    val failure = runCatching {
+                        DmCrashRunner(mutant).run(DmRunSpec(crashAt = at, onInjected = { injected = it }))
+                    }.exceptionOrNull()
+                    failure to injected
+                },
+            )
+        }
+        val outcomes = DmHarness.parallel(tasks)
+        val kills = ArrayList<String>()
+        for ((index, at) in points.withIndex()) {
+            val (clean, _) = outcomes[2 * index]
+            val (mutated, injected) = outcomes[2 * index + 1]
+            // The clean run passing means its crash fired: the runner refuses a run whose planned
+            // crash never did (`theRequestedFaultFired`).
+            assertTrue(
+                "the unmutated ${scenario.name} fails at crash@$at, so a kill there proves nothing: " +
+                    clean?.let { deepMessage(it) },
+                clean == null,
+            )
+            assertTrue(
+                "${mutation.id} survived ${scenario.name} crash@$at: the enumeration cannot see it there",
+                mutated is AssertionError,
+            )
+            // And the mutated run really crashed before the check that killed it (SCN-E's rule): a
+            // run that failed before its crash point is the fault-free kill again.
+            assertEquals(
+                "${mutation.id}'s run at crash@$at failed without its crash having fired",
+                1,
+                injected,
+            )
+            val message = deepMessage(requireNotNull(mutated))
+            assertTrue(
+                "${mutation.id} failed ${scenario.name} crash@$at, but not for a reason its entry " +
+                    "names.\n  expected one of: ${mutation.expectUnderCrash}\n  actual: $message",
+                mutation.expectUnderCrash.any { message.contains(it) },
+            )
+            println("${mutation.id} killed at ${scenario.name} crash@$at of the window ($start, $end] (clean passed): $message")
+            kills += "crash@$at"
+        }
+        DmKills.record(
+            mutation.id,
+            "$faultFreeMessage | and under a crash at ${kills.joinToString(", ")}, in the window " +
+                "($start, $end] from the step it first changes to the end of the run, each beside a clean " +
+                "run at the same point",
+            "fault-free and at ${kills.size} of ${points.size} crash points between the step it first " +
+                "changes and the end of the run, each beside a clean run",
         )
     }
 

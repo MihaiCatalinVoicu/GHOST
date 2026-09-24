@@ -66,7 +66,9 @@ internal class DmCrashWorld(
             streamOffset = streamOffset,
         )
         mutation?.let {
-            node.rewrite = it.rewrite
+            // A rewrite that reads the device's own clock (MC-21, §22.27) is bound to this node's
+            // clock here, once: the clock survives every reboot, so the bound rewrite does too.
+            node.rewrite = it.rewriteOn?.invoke(node.clock) ?: it.rewrite
             node.decorate = it.decorate
             node.defer = it.defer
         }
