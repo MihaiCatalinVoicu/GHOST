@@ -22,6 +22,7 @@ use crate::pq;
 use crate::result::{DmCode, DmResult};
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
+use zeroize::Zeroizing;
 
 /// Length of a wrap nonce.
 pub const NONCE_BYTES: usize = 12;
@@ -195,12 +196,16 @@ pub fn wrap(key: &StateKey, name: WrapName, binding: &[u8], plaintext: &[u8]) ->
 }
 
 /// Opens an envelope under its name and binding. Anything else is [`DmCode::StateCorrupt`].
+///
+/// The plaintext is a session state, a root, a seed or a key, so it comes back **erased on drop**
+/// (phase review CRY-P9-04): a caller that leaves by an error path — a `?` on the next unwrap, a
+/// failed decode — no longer drops a copy of it unerased.
 pub fn unwrap(
     key: &StateKey,
     name: WrapName,
     binding: &[u8],
     envelope: &[u8],
-) -> DmResult<Vec<u8>> {
+) -> DmResult<Zeroizing<Vec<u8>>> {
     if envelope.len() < ENVELOPE_OVERHEAD {
         return Err(DmCode::StateCorrupt);
     }
@@ -215,6 +220,7 @@ pub fn unwrap(
                 aad: &ad,
             },
         )
+        .map(Zeroizing::new)
         .map_err(|_| DmCode::StateCorrupt)
 }
 
@@ -236,7 +242,7 @@ mod tests {
         let envelope = wrap(&key(), WrapName::OlmSession, &binding, &plaintext).expect("wrap");
         assert_eq!(envelope.len(), plaintext.len() + ENVELOPE_OVERHEAD);
         assert_eq!(
-            unwrap(&key(), WrapName::OlmSession, &binding, &envelope).expect("unwrap"),
+            *unwrap(&key(), WrapName::OlmSession, &binding, &envelope).expect("unwrap"),
             plaintext
         );
     }
@@ -275,7 +281,8 @@ mod tests {
                 &reply_seed_binding(&SESSION),
                 &envelope
             )
-            .expect("unwrap"),
+            .expect("unwrap")
+            .as_slice(),
             b"reply seed"
         );
     }

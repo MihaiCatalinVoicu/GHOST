@@ -675,6 +675,16 @@ impl Reply {
     }
 
     fn field(mut self, tag: Field, value: &[u8]) -> Self {
+        // A reply carries L0 plaintexts and bearer secrets (`ownReadSecret`, `cardDerive`), so it
+        // grows by hand: the old buffer is erased before it is freed, where a plain `push` would
+        // leave a partial copy behind at every reallocation (phase review CRY-P9-04).
+        let needed = self.0.len() + 5 + value.len();
+        if needed > self.0.capacity() {
+            let mut grown = Vec::with_capacity(needed.max(2 * self.0.capacity()));
+            grown.extend_from_slice(&self.0);
+            self.0.zeroize();
+            self.0 = grown;
+        }
         self.0.push(tag.tag());
         let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
         self.0.extend_from_slice(&len.to_be_bytes());
@@ -786,11 +796,13 @@ fn guarded(
     body: impl FnOnce(&mut JNIEnv) -> Result<Vec<u8>, DmCode>,
 ) -> jbyteArray {
     quiet_panics();
-    let reply = match catch_unwind(AssertUnwindSafe(|| body(env))) {
+    // Erased once the Java array holds its copy (phase review CRY-P9-04): the reply of `decrypt`,
+    // `sessionInbound` and `l0Decode` is a plaintext, and `ownReadSecret`'s a bearer secret.
+    let reply = Zeroizing::new(match catch_unwind(AssertUnwindSafe(|| body(env))) {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(code)) => code_only(code),
         Err(_) => code_only(DmCode::Internal),
-    };
+    });
     match env.byte_array_from_slice(&reply) {
         Ok(array) => array.into_raw(),
         Err(_) => std::ptr::null_mut(),
@@ -2719,7 +2731,7 @@ pub fn l0_decode(
 ) -> Result<Vec<u8>, DmCode> {
     let contact_id = fixed::<16>(env, contact_id)?;
     let l0 = bytes(env, l0)?;
-    let content = codec::decode(&l0)?;
+    let content = ErasedContent(codec::decode(&l0)?);
     // R-B1 again, from the **body length** of the record that just decoded: a caller re-sealing a
     // stored L0 (a pending send flushed at `EST-READY`, a FAILED item retried) needs the bucket
     // the original send chose, and computing it in Kotlin would be mutants ME-22 and ME-3.
@@ -2797,6 +2809,28 @@ pub fn l0_decode(
         }
         Ok(reply.field(Field::TlvFlags, &[flags]).into_bytes())
     })
+}
+
+/// A decoded L0 whose body and extension values are erased on drop (phase review CRY-P9-04).
+/// `DmContent` has no `Drop` — its callers move fields out of it — so `l0Decode`'s copies of the
+/// message body and of a `seal_root`'s root were freed unerased, where `l0Encode` erases its own.
+struct ErasedContent(codec::DmContent);
+
+impl Drop for ErasedContent {
+    fn drop(&mut self) {
+        self.0.body.zeroize();
+        for tlv in &mut self.0.ext {
+            tlv.value.zeroize();
+        }
+    }
+}
+
+impl core::ops::Deref for ErasedContent {
+    type Target = codec::DmContent;
+
+    fn deref(&self) -> &codec::DmContent {
+        &self.0
+    }
 }
 
 /// §2.6 function 19: `chainPosition(h, contactId, sessionId, stateEnv, ratchetKey)`. Writes

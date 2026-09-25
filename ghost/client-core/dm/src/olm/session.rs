@@ -29,7 +29,7 @@ use crate::derive::{OlmSecret, ReplySeed, SECRET_BYTES};
 use crate::olm::account::{self, AccountSecrets};
 use crate::olm::message::{self, L1Header, SESSION_ID_BYTES};
 use crate::olm::pickle::{self, ChainPosition, SkippedKey};
-use crate::olm::state::{SessionState, Sidecar};
+use crate::olm::state::{SessionState, Sidecar, SESSION_STATE_MAX};
 use crate::pq;
 use crate::result::{DmCode, DmResult};
 use vodozemac::olm::{Session, SessionConfig, SessionPickle};
@@ -125,9 +125,16 @@ fn load(state: &[u8]) -> DmResult<(Session, Sidecar)> {
 
 /// Serialises a session and its reconciled sidecar into the plaintext of `state_env`, zeroising
 /// the intermediate pickle for the same reason.
+///
+/// The pickle is written into **one buffer sized for the largest state** (phase review
+/// CRY-P9-04). `serde_json::to_vec` starts at 128 bytes and doubles, and every growth step freed
+/// a partial copy of the pickle — the current root key and chain keys, in JSON — unerased; a
+/// probe found six such blocks after one `encrypt` on a 4.4 KB state. A state above the bound is
+/// `OVERSIZE` at [`SessionState::encode`] whatever happens here.
 fn store(session: &Session, previous: &Sidecar, today: u32) -> DmResult<Vec<u8>> {
-    let pickle = serde_json::to_vec(&session.pickle()).map_err(|_| DmCode::StateCorrupt)?;
-    let mut state = SessionState::build(previous, pickle, today)?;
+    let mut pickle = Zeroizing::new(Vec::with_capacity(SESSION_STATE_MAX));
+    serde_json::to_writer(&mut *pickle, &session.pickle()).map_err(|_| DmCode::StateCorrupt)?;
+    let mut state = SessionState::build(previous, core::mem::take(&mut *pickle), today)?;
     let encoded = state.encode();
     state.zeroize_pickle();
     encoded

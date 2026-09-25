@@ -407,7 +407,7 @@ fn dispatch(case_kind: u8, f: &mut Fields<'_>) -> DmResult<Vec<Vec<u8>>> {
             let nonce = f.fixed::<{ wrap::NONCE_BYTES }>()?;
             let envelope = wrap::wrap_with_nonce(&key, name, binding, plaintext, &nonce)?;
             let opened = wrap::unwrap(&key, name, binding, &envelope)?;
-            Ok(vec![envelope, opened])
+            Ok(vec![envelope, opened.to_vec()])
         }
         kind::OLM_DECRYPT => {
             let state = f.next()?;

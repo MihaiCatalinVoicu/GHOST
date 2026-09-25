@@ -202,9 +202,15 @@ impl core::fmt::Debug for SessionState {
 impl SessionState {
     /// Builds a state for a pickle, reconciling `previous`'s days into it (the store path of every
     /// state-writing call).
-    pub fn build(previous: &Sidecar, pickle: Vec<u8>, today: u32) -> DmResult<Self> {
-        let sidecar = Sidecar::reconcile(previous, &pickle, today)?;
-        Ok(Self { pickle, sidecar })
+    pub fn build(previous: &Sidecar, mut pickle: Vec<u8>, today: u32) -> DmResult<Self> {
+        match Sidecar::reconcile(previous, &pickle, today) {
+            Ok(sidecar) => Ok(Self { pickle, sidecar }),
+            Err(code) => {
+                // The pickle is the session's keys in the clear (phase review CRY-P9-04).
+                pickle.zeroize();
+                Err(code)
+            }
+        }
     }
 
     /// The bytes that go inside the wrapped envelope.
@@ -246,11 +252,13 @@ impl SessionState {
         let end = LENGTH_PREFIX
             .checked_add(length)
             .ok_or(DmCode::StateCorrupt)?;
+        // The sidecar first: a state whose sidecar does not parse is refused before the pickle —
+        // the session's keys in the clear — is copied out of it (phase review CRY-P9-04).
+        let sidecar = Sidecar::decode(bytes.get(end..).ok_or(DmCode::StateCorrupt)?)?;
         let pickle = bytes
             .get(LENGTH_PREFIX..end)
             .ok_or(DmCode::StateCorrupt)?
             .to_vec();
-        let sidecar = Sidecar::decode(bytes.get(end..).ok_or(DmCode::StateCorrupt)?)?;
         Ok(Self { pickle, sidecar })
     }
 }
