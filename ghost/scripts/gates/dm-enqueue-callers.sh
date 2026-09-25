@@ -254,9 +254,11 @@ step_allowed() { # $1 = basename
 
 # The production sources of the two modules that drive the DM engine. `find` at any depth, like
 # dm-no-fts.sh: a nested module must not go unscanned while the others satisfy the vacuity floor.
+# `src/release` too: it ships beside `src/main` (Phase 9 review GATES-2).
 dm_caller_files() {
   find "$GHOST_ROOT/android/messaging" "$GHOST_ROOT/android/app" \
-    -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/main/*' -print 2>/dev/null || true
+    -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+    \( -path '*/src/main/*' -o -path '*/src/release/*' \) -print 2>/dev/null || true
 }
 
 # `<first line number>:<text>`, with every continuation line (one that begins with `.`) folded into

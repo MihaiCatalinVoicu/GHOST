@@ -39,6 +39,16 @@ wfy_case fail bad-no-jobs "no jobs" "rejects a workflow with no jobs"
 wfy_case fail bad-job-shape "has neither runs-on nor uses" "rejects a job with no runner"
 wfy_case fail bad-step "has neither uses nor run" "rejects a step that does nothing"
 wfy_case fail empty "no workflow file found" "refuses a directory with no workflow (a gate that scans nothing passes)"
+# Phase 9 review GATES-2: the release-only source set ships beside `src/main`, and five gates read
+# only `src/main`. One fixture file there breaks all five; each must name it.
+for g in no-logging kotlin-clearnet anti-placeholder dm-enqueue-callers dm-no-fts; do
+  rel_out="$(GHOST_ROOT="$HARNESS/negative-release-source-set" bash "$DIR/$g.sh" 2>&1 || true)"
+  if grep -q '^GATE-FAIL' <<<"$rel_out" && grep -qF "src/release/kotlin/org/ghost/app/ReleaseOnly.kt" <<<"$rel_out"; then
+    echo "self-test ok: $g reads the release-only source set"
+  else
+    echo "SELF-TEST FAIL: $g does not report the release-only source set's violations" >&2; rc=1
+  fi
+done
 # Phase 9 §21.13 point 7 (slice S12): anti-placeholder reads the `gate` source sets. The fixture holds
 # a gate source and nothing else, so only that reading can fail it.
 expect_fail anti-placeholder "$HARNESS/negative-gate-placeholder"

@@ -1,0 +1,14 @@
+# Clearnet guard for the DM crate (T6, ADR-19; Phase 9 review GATES-2). `ghost-client-dm` is linked
+# into the shipped `libghost_client_net.so`, but clippy reads the `clippy.toml` nearest each crate's
+# own manifest, so the bans of `client-core/net/clippy.toml` never reached this crate (the review
+# added `TcpStream::connect` here and clippy stayed clean). The crate does no I/O at all (README);
+# this keeps the part of that rule clippy can see. Only `std` paths: the crate depends on no async
+# runtime or HTTP client, and a path clippy cannot resolve is ignored silently. The same `std` paths
+# are proven to fire by the net crate's negative fixture (scripts/gates/clippy-clearnet-fixture.sh).
+disallowed-methods = [
+    { path = "std::net::TcpStream::connect", reason = "the DM crate does no I/O: no sockets" },
+    { path = "std::net::TcpStream::connect_timeout", reason = "the DM crate does no I/O: no sockets" },
+    { path = "std::net::TcpListener::bind", reason = "the DM crate does no I/O: no sockets" },
+    { path = "std::net::UdpSocket::bind", reason = "the DM crate does no I/O: no sockets" },
+    { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "system DNS leaks destinations" },
+]
