@@ -87,6 +87,12 @@ internal class PeekOrder(
         val seen = HashSet<List<Byte>>(peeked.size)
         for (blob in peeked) seen += keyOf(blob)
         firstSeen.keys.retainAll(seen)
+        // A wall clock stepped **back** restarts a hold from the new time (phase review ENG-8).
+        // `now − first_seen` was negative until the clock came back to where it had been, so a
+        // step of a day held a gap for a day where §7.7 point 2 promises at most 12 minutes. The
+        // wall clock and not the monotonic one, because `first_seen` is a wall time by design and
+        // every world of the harness moves the wall clock; a restart costs at most one more hold.
+        firstSeen.replaceAll { _, since -> minOf(since, now) }
 
         val examined = database.transaction { tx -> examine(tx.sql, self, peeked) }
         val unordered = ArrayList<PeekedBlob>()
