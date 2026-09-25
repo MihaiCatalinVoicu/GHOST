@@ -70,6 +70,7 @@ class TwoThreadSyncDatabaseTest {
     fun concurrentLaneAndConsumerTransactionsNeverInterleave() {
         val dir = Files.createTempDirectory("ghost-two-threads").toFile()
         val jdbc = JdbcSqlExecutor(File(dir, "sync.db").absolutePath)
+        val threads = ArrayList<Thread>()
         try {
             MigrationRunner(jdbc).migrate()
             MigrationRunner(jdbc).verifyIntegrity()
@@ -117,10 +118,20 @@ class TwoThreadSyncDatabaseTest {
                     failure.compareAndSet(null, t)
                 }
             }, "consumer")
+            threads += lane
+            threads += consumer
             lane.start()
             consumer.start()
-            lane.join(120_000)
-            consumer.join(120_000)
+            lane.join(JOIN_MILLIS)
+            consumer.join(JOIN_MILLIS)
+            // Phase 9 review GATES-6: a thread still running at the join's timeout — a loaded
+            // runner, not an interleaving — surfaced as the transaction-count assertion below, and
+            // the finally closed the database under it. It is its own failure now, and the database
+            // is closed only once both threads are gone.
+            val alive = listOf(lane, consumer).filter { it.isAlive }.map { it.name }
+            if (alive.isNotEmpty()) {
+                throw AssertionError("the threads did not finish within $JOIN_MILLIS ms: $alive (a timeout, not an interleaving)")
+            }
             failure.get()?.let { throw AssertionError("a thread failed", it) }
             assertEquals(null, sql.violation.get())
             assertTrue(sql.transactions.get() >= rounds * 6)
@@ -136,8 +147,16 @@ class TwoThreadSyncDatabaseTest {
             assertTrue(leased >= rounds)
             assertEquals(rounds.toLong(), consumed)
         } finally {
-            jdbc.close()
-            dir.deleteRecursively()
+            // Never under a live thread: a timed-out one keeps the database it is still using.
+            if (threads.none { it.isAlive }) {
+                jdbc.close()
+                dir.deleteRecursively()
+            }
         }
+    }
+
+    private companion object {
+        /** How long each thread may take; generous, because the exit gate shares its runner. */
+        const val JOIN_MILLIS: Long = 600_000
     }
 }

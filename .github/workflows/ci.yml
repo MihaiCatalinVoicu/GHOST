@@ -1,7 +1,11 @@
 name: ci
 
-# GHOST CI (ADR-10). Every job is a gate: a red job blocks merge. Jobs never receive signing
-# material (TB-6); release signing is offline (FR-8.2).
+# GHOST CI (ADR-10). Every job is a gate — but nothing on GitHub enforces it (Phase 9 review
+# GATES-4): GitHub Free offers no branch protection or rulesets for this private repository, no
+# pull request is opened and pushes go straight to main, so a red job blocks nothing by itself. A
+# merge is judged by the runs of the pushed commit (`gh run list`, read after the push) and by the
+# local verification docs/ci-self-hosted.md describes. Jobs never receive signing material (TB-6);
+# release signing is offline (FR-8.2).
 # Supply chain (FR-8.1): every action is pinned by full commit SHA (the comment names the tag it
 # was resolved from); Rust builds use --locked; cargo-ndk is pinned in scripts/build-native.sh and
 # protoc (a build tool of the relay and of the native library) in scripts/install-protoc.sh.
@@ -264,6 +268,13 @@ jobs:
       # `privacy-pr` requires.
       - name: DM privacy report check (PR scale)
         run: bash ../scripts/gates/dm-report-check.sh messaging/build/reports/dm/privacy.txt privacy-pr
+      # The PR-scale DM report (Phase 9 design §15.4, §16.2; Phase 9 review GATES-1): the same
+      # `./gradlew build` writes `report.txt` — the `dm mutants:` line, each mutant's kill, the crash
+      # classes, the seeded worlds and the suite cases — and nothing read it: a kill test deleted or
+      # @Ignore'd left the JUnit run green and only this file saying so. `pr` is the kind the
+      # workflow header of messaging-exit-gate.yml and §15.4 say runs here.
+      - name: DM report check (PR scale)
+        run: bash ../scripts/gates/dm-report-check.sh messaging/build/reports/dm/report.txt pr
       # G-R6 (host half, §22.8.10 point 10): the exported DM JNI symbols of the `ghost-dm-host`
       # build the JVM tests just loaded are exactly the closed list of §2.6, plus the one
       # equivalence-test entry point a test library adds (`--test`, §15.9 item 7; slice S12). The
