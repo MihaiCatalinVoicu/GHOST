@@ -5,6 +5,19 @@ import org.junit.Test
 
 /** RFC 5869 Appendix A test vectors (SHA-256 cases 1–3). */
 class HkdfTest {
+    /** Phase 9 review A-1: expand leaves the caller's PRK and info untouched while erasing its own copies. */
+    @Test
+    fun deriveKeepsItsInputsAndMatchesExtractThenExpand() {
+        val ikm = ByteArray(32) { (it + 1).toByte() }
+        val info = "label".toByteArray()
+        val prk = Hkdf.extract(null, ikm)
+        val prkCopy = prk.copyOf()
+        val expanded = Hkdf.expand(prk, info, 80)
+        org.junit.Assert.assertArrayEquals("expand must not touch the PRK it is given", prkCopy, prk)
+        org.junit.Assert.assertArrayEquals(expanded, Hkdf.derive(ikm, null, info, 80))
+        org.junit.Assert.assertArrayEquals("label".toByteArray(), info)
+    }
+
     private fun hex(s: String): ByteArray = s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
     private fun ByteArray.hex(): String = joinToString("") { "%02x".format(it) }
 

@@ -7,6 +7,11 @@ import javax.crypto.spec.SecretKeySpec
  * HKDF-SHA-256 (RFC 5869) on top of the platform HMAC. Every long-lived GHOST key branch is
  * `Hkdf.derive(ikm = rootEntropy, salt = null, info = label, length)` (spec v2.0 §7.1 step 3).
  * Test vectors: RFC 5869 Appendix A, cases 1–3.
+ *
+ * **The intermediate values are erased** (Phase 9 review A-1): [derive]'s PRK is
+ * HKDF-Extract(root) — equivalent to the root, since `expand(PRK, label)` gives every branch — and
+ * each `T(i)` block is key material. What this cannot erase is the platform's own copy:
+ * `SecretKeySpec` clones its key and the `Mac` provider keeps key state, neither clearable here.
  */
 object Hkdf {
     private const val HASH_LEN = 32
@@ -23,19 +28,35 @@ object Hkdf {
         var previous = ByteArray(0)
         var written = 0
         var counter = 1
-        while (written < length) {
-            val block = hmac(prk, previous + info + byteArrayOf(counter.toByte()))
-            val take = minOf(block.size, length - written)
-            block.copyInto(out, written, 0, take)
-            written += take
-            previous = block
-            counter++
+        try {
+            while (written < length) {
+                val input = previous + info + byteArrayOf(counter.toByte())
+                val block = try {
+                    hmac(prk, input)
+                } finally {
+                    input.fill(0)
+                }
+                val take = minOf(block.size, length - written)
+                block.copyInto(out, written, 0, take)
+                written += take
+                previous.fill(0)
+                previous = block
+                counter++
+            }
+        } finally {
+            previous.fill(0)
         }
         return out
     }
 
-    fun derive(ikm: ByteArray, salt: ByteArray?, info: ByteArray, length: Int): ByteArray =
-        expand(extract(salt, ikm), info, length)
+    fun derive(ikm: ByteArray, salt: ByteArray?, info: ByteArray, length: Int): ByteArray {
+        val prk = extract(salt, ikm)
+        try {
+            return expand(prk, info, length)
+        } finally {
+            prk.fill(0)
+        }
+    }
 
     private fun hmac(key: ByteArray, data: ByteArray): ByteArray {
         val mac = Mac.getInstance(HMAC)

@@ -27,6 +27,22 @@ private class JvmAesGcmWrapper : SecretWrapper {
 }
 
 class IdentityManagerTest {
+    /** Phase 9 review A-1: the plaintext the wrapper unwrapped is the root, and is erased. */
+    @Test
+    fun unlockErasesTheUnwrappedRoot() {
+        val inner = JvmAesGcmWrapper()
+        var unwrapped: ByteArray? = null
+        val recording = object : SecretWrapper {
+            override fun wrap(plaintext: ByteArray): ByteArray = inner.wrap(plaintext)
+            override fun unwrap(envelope: ByteArray): ByteArray = inner.unwrap(envelope).also { unwrapped = it }
+        }
+        val mgr = IdentityManager(recording, InMemoryWrappedSecretStore())
+        val created = mgr.create(IdentityManager.Activation.Genesis(policyAcknowledged = true))
+        assertEquals(created.identity, mgr.unlock().publicIdentity())
+        val buffer = requireNotNull(unwrapped)
+        assertTrue("the unwrap buffer still holds the root", buffer.all { it == 0.toByte() })
+    }
+
     @Test
     fun createThenUnlockGivesSameIdentity() {
         val store = InMemoryWrappedSecretStore()

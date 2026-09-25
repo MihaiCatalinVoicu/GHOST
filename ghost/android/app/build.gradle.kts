@@ -74,6 +74,8 @@ android {
     packaging {
         // Reproducibility: drop build-host metadata that varies between machines.
         resources.excludes += setOf("META-INF/*.version", "META-INF/DEPENDENCIES", "kotlin/**")
+        // Phase 9 review A-6: kotlinx-coroutines' JVM debug agent, a resource ART never runs.
+        resources.excludes += "DebugProbesKt.bin"
         // The Tor core is already stripped by cargo; AGP must not re-strip it, so the packaged
         // bytes equal the reviewed build recorded in native-libs.sha256 (reproducible-build gate).
         jniLibs.keepDebugSymbols += "**/libghost_client_net.so"
