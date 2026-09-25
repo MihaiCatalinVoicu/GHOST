@@ -543,6 +543,14 @@ class DmDevice(
     /** Every wake the actor asked for (§10.7 triggers 1 and 5); null is a cancel. */
     val wakes = RecordingWake()
 
+    /**
+     * Every wake the **in-process actor timer** was asked for: the row deadlines [wakes] gets plus
+     * the next `EST-READY` (phase review MD-3), wired as `MessagingRuntime` wires it. The owner's
+     * term is left out here: it reads the database, and the crash enumeration counts every read.
+     * It records; the world still drives every pass itself.
+     */
+    val timerWakes = RecordingWake()
+
     /** Every unread count the notification port was given (§10.6, §10.7 Q19). */
     val notifications = RecordingNotifications()
 
@@ -560,7 +568,13 @@ class DmDevice(
         media = media,
     )
     internal val notices = UnreadNotices { sweeper.unreadCount() }
-    internal val schedule = ExpirySchedule(sweeper, wakes, notices)
+    internal val schedule = ExpirySchedule(
+        sweeper = sweeper,
+        wakes = wakes,
+        notices = notices,
+        timer = timerWakes,
+        establishmentDelay = { actor.nextReadySeconds() },
+    )
     internal val engine: MessagingEngine
     internal val outcomeStep: OutcomeStep
     internal val actor: DmActor
@@ -650,9 +664,21 @@ class DmDevice(
         null
     }
 
-    /** A time-triggered pass (§21.9 rule 1): the owner steps, establishment and the inbox. */
+    /**
+     * A time-triggered pass (§21.9 rule 1): the owner steps, establishment and the inbox. It stands
+     * for a **relay session start**, the trigger that may also open a bundle-fetch attempt.
+     */
     fun timeTriggeredPass() {
         actor.runPass(timeTriggered = true, deadlineMonotonicMillis = null)
+    }
+
+    /**
+     * A time-triggered pass that is **not** a relay session start: the alarm, the in-process timer
+     * or a database open (phase review MD-2). It runs every time-triggered step except the next
+     * bundle-fetch attempt, which §21.7 point 5 opens at a session start only.
+     */
+    fun alarmPass() {
+        actor.runPass(timeTriggered = true, deadlineMonotonicMillis = null, sessionStart = false)
     }
 
     /** A hint-triggered pass: outcomes, bundles and the inbox, and nothing time-triggered. */

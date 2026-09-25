@@ -91,6 +91,12 @@ internal class ExpirySchedule(
     private val timer: ExpiryWake = ExpiryWake.NONE,
     /** Seconds until the next owner wake, or null (see [timer]). */
     private val ownerDelay: () -> Long? = { null },
+    /**
+     * Seconds until the next `EST-READY` a bundle candidate waits for, or null: the "next EST
+     * timer" of §21.9 rule 1 ([DmActor.nextReadySeconds], phase review MD-3). The actor timer
+     * only, like [ownerDelay]: it is a moment of establishment, not of deletion.
+     */
+    private val establishmentDelay: () -> Long? = { null },
 ) {
     /**
      * The count and the wakes. Null from [Sweeper.nextWake] cancels them (§10.7).
@@ -103,7 +109,9 @@ internal class ExpirySchedule(
         notices.publish()
         val rows = sweeper.nextWake()?.delaySeconds
         wakes.wakeIn(rows)
-        if (timer !== ExpiryWake.NONE) timer.wakeIn(listOfNotNull(rows, ownerDelay()).minOrNull())
+        if (timer !== ExpiryWake.NONE) {
+            timer.wakeIn(listOfNotNull(rows, ownerDelay(), establishmentDelay()).minOrNull())
+        }
     }
 
     /**

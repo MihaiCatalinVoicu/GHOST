@@ -76,7 +76,11 @@ class MessagingWiringTest {
         override val listener: SyncListener = SyncListener { changes += it; log += "$tag.hint" }
         override val consumerTail: ConsumerTail = ConsumerTail { kind, _ -> log += "$tag.tail:$kind" }
 
-        override fun onTimeTrigger() {
+        /** The kind of every time trigger, in order: true for a relay session start. */
+        val sessionStarts = ArrayList<Boolean>()
+
+        override fun onTimeTrigger(sessionStart: Boolean) {
+            sessionStarts += sessionStart
             log += "$tag.timeTrigger"
         }
 
@@ -251,6 +255,27 @@ class MessagingWiringTest {
         w.onVisible()
         assertEquals(listOf("primeSchedule", "whenStoresOpen", "primeSchedule"), log)
         assertEquals(1, built.size)
+    }
+
+    /**
+     * Phase review MD-2: only a relay session start is a session start. It is the one trigger that
+     * may open the next bundle-fetch attempt (§21.7 point 5), so the alarm and the database open
+     * must not claim to be one.
+     */
+    @Test
+    fun onlyARelaySessionStartIsASessionStart() {
+        openStores = newDatabase().stores
+        val w = wiring()
+        w.onProcessStart(keyExists = true)
+        w.onRelaySessionStart()
+        w.onAlarm()
+        w.onRelaySessionStart()
+        assertEquals(1, built.size)
+        assertEquals(
+            "the database open, then a session start, the alarm and a session start",
+            listOf(false, true, false, true),
+            built.single().sessionStarts,
+        )
     }
 
     @Test

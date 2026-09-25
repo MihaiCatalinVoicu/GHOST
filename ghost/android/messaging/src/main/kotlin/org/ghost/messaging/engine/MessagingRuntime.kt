@@ -130,6 +130,7 @@ class MessagingRuntime(
         notices = notices,
         timer = timer,
         ownerDelay = { steps.nextOwnerWakeSeconds()?.let { maxOf(0L, it - clock.nowEpochSeconds()) } },
+        establishmentDelay = { boundActor?.nextReadySeconds() },
     )
 
     private val engine = MessagingEngine(
@@ -184,9 +185,12 @@ class MessagingRuntime(
     val consumerTail: ConsumerTail =
         ConsumerTail { kind: SessionKind, deadline: Long -> actor.consumerTail(kind, deadline) }
 
-    /** A relay session start, a database open, the alarm, or the timer (§21.9 rule 1). Posts. */
-    fun onTimeTrigger() {
-        actor.onTimeTrigger()
+    /**
+     * A relay session start, a database open, the alarm, or the timer (§21.9 rule 1). Posts.
+     * [sessionStart] is true for the first alone (see [DmActor.onTimeTrigger]).
+     */
+    fun onTimeTrigger(sessionStart: Boolean = false) {
+        actor.onTimeTrigger(sessionStart)
     }
 
     /** One hint, as the listener would deliver it; for a caller that holds a [SyncChange] alone. */
