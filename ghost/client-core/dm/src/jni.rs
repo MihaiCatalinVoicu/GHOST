@@ -706,8 +706,26 @@ struct DmContext {
     identity_seed: IdentitySeed,
 }
 
-fn registry() -> &'static Mutex<HashMap<i64, DmContext>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<i64, DmContext>>> = OnceLock::new();
+/// One registry entry: the context **behind a pointer** (phase review CRY-P9-02).
+///
+/// The registry held the context by value, so its secrets lived in the hash table's own buckets.
+/// `HashMap::remove` moves an entry out bit for bit and marks the bucket empty without clearing
+/// it: `ctxClose` zeroised the moved copy and left the MESSAGING branch, the `ghost1` seed,
+/// `session_state_key` and the Olm identity in the table for the life of the process (a growing
+/// table frees its old allocation unerased the same way). With the context boxed, a bucket holds
+/// only the pointer; the context itself never moves, and dropping the box runs every field's
+/// `ZeroizeOnDrop` in place before the allocation is freed.
+type ContextSlot = Box<DmContext>;
+
+/// The registry: handle to context.
+type Registry = HashMap<i64, ContextSlot>;
+
+fn new_slot(context: DmContext) -> ContextSlot {
+    Box::new(context)
+}
+
+fn registry() -> &'static Mutex<Registry> {
+    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -720,7 +738,7 @@ fn registry() -> &'static Mutex<HashMap<i64, DmContext>> {
 /// forbids, and a context that lock and wipe can never close or zeroise (§2.5). The map itself
 /// cannot be left half-written by such a panic — the body receives `&DmContext` and inserts and
 /// removes happen with no user code under the guard — so the recovered contents are sound.
-fn registry_lock() -> MutexGuard<'static, HashMap<i64, DmContext>> {
+fn registry_lock() -> MutexGuard<'static, Registry> {
     registry().lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -732,8 +750,13 @@ fn next_handle() -> i64 {
 /// Registers a context and returns its handle.
 fn insert_context(context: DmContext) -> i64 {
     let handle = next_handle();
-    registry_lock().insert(handle, context);
+    registry_lock().insert(handle, new_slot(context));
     handle
+}
+
+/// Removes a context; dropping its slot zeroises it (§2.5). False for a closed or foreign handle.
+fn remove_context(registry: &mut Registry, handle: i64) -> bool {
+    registry.remove(&handle).is_some()
 }
 
 /// Runs `body` with the named context, or reports [`DmCode::CryptoUnavailable`] for a closed or
@@ -831,11 +854,12 @@ pub fn ctx_open(
 }
 
 /// §2.6 function 1: `ctxClose(handle)`. Zeroising is the `Zeroize` drop of the held secrets — the
-/// four of them, the `ghost1` seed included; a second close is [`DmCode::CryptoUnavailable`],
-/// never a crash.
+/// four of them, the `ghost1` seed included — **in place**, because the context is boxed
+/// ([`ContextSlot`]); a second close is [`DmCode::CryptoUnavailable`], never a crash.
 pub fn ctx_close(handle: jlong) -> Result<Vec<u8>, DmCode> {
-    let removed = registry_lock().remove(&handle);
-    removed.ok_or(DmCode::CryptoUnavailable)?;
+    if !remove_context(&mut registry_lock(), handle) {
+        return Err(DmCode::CryptoUnavailable);
+    }
     Ok(Reply::ok().into_bytes())
 }
 
@@ -4232,6 +4256,32 @@ mod tests {
         zeroises_on_drop::<StateKey>();
         zeroises_on_drop::<MessagingBranch>();
         zeroises_on_drop::<IdentitySeed>();
+    }
+
+    /// Phase review CRY-P9-02: the registry's table never holds a context's bytes, only a pointer
+    /// to them. The trait bound above was the only check, and it held while the table kept every
+    /// secret: `HashMap::remove` moved the context out and left the bucket's bytes as they were,
+    /// and the reviewer's probe read the MESSAGING branch, the `ghost1` seed, `session_state_key`
+    /// and the Olm identity back from the bucket after `ctxClose`. The crate forbids `unsafe`, so
+    /// the bucket cannot be read back here; what the test pins is the shape that makes the residue
+    /// impossible — an entry the size of a pointer, which cannot hold a 32-byte secret — and that
+    /// a close empties the entry and a second close finds nothing.
+    #[test]
+    fn a_closed_context_leaves_no_secret_in_the_registry_table() {
+        assert_eq!(
+            std::mem::size_of::<ContextSlot>(),
+            std::mem::size_of::<usize>(),
+            "a registry entry must be a pointer to the context, never the context itself"
+        );
+        assert!(std::mem::size_of::<DmContext>() >= 5 * 32);
+        let mut registry = Registry::new();
+        registry.insert(7, new_slot(test_context()));
+        assert!(remove_context(&mut registry, 7));
+        assert!(registry.is_empty());
+        assert!(
+            !remove_context(&mut registry, 7),
+            "a second close finds nothing"
+        );
     }
 
     /// §2.7 ("never to a crash loop") and §2.5 ("lock and wipe call it"): a caught panic — the
