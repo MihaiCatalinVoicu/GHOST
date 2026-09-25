@@ -93,6 +93,15 @@ if grep -qF 'ExpiryAlarmReceiver: missing' <<<"$(bash "$DIR/merged-manifest-lint
 else
   echo "SELF-TEST FAIL: merged-manifest-lint does not report a missing DM alarm receiver" >&2; rc=1
 fi
+# ADR-06, FR-7.11 (Phase 9 review A-3): an androidx.startup initializer that is not allowlisted is
+# one line — emoji2's, which called Google Play Services' font provider at every UI start.
+startup_out="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/startup/AndroidManifest.xml" 2>&1 || true)"
+startup_hits="$(grep -c '^GATE-FAIL' <<<"$startup_out" || true)"
+if [ "$startup_hits" = "1" ] && grep -qF 'androidx.startup initializer not allowlisted: androidx.emoji2.text.EmojiCompatInitializer' <<<"$startup_out"; then
+  echo "self-test ok: merged-manifest-lint reports a startup initializer that is not allowlisted (A-3)"
+else
+  echo "SELF-TEST FAIL: merged-manifest-lint reported $startup_hits of 1 startup-initializer violation" >&2; rc=1
+fi
 if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifest.xml" >/dev/null 2>&1; then
   echo "self-test ok: merged-manifest-lint accepts the Phase 7 merged release manifest"
 else
