@@ -142,8 +142,25 @@ internal class ContactSteps(
                 requestUntilDay = null,
             )
             store.insertConversation(tx, conversationId, contactId)
+            forgetOrphans(tx, card)
             AddResult.ADDED
         }
+    }
+
+    /**
+     * The `dm_orphan_namespace` rows of a card that is live again (phase review ENG-7).
+     *
+     * A card deleted while its namespaces still had ops left rows that SWEEP discharges once those
+     * ops end. Added again before then, the same card derives the same namespaces: without this,
+     * the next sweep after the old ops ended removed the **new** contact's inbox and bundle
+     * namespaces — an open fetch window among them.
+     */
+    private fun forgetOrphans(tx: SyncTransaction, card: ByteArray) {
+        val derived = crypto.deriveCard(card, ORPHAN_SLOT)
+        if (derived !is DmCards.DeriveResult.Ok) return
+        store.deleteOrphan(tx, derived.values.inboxNamespace)
+        store.deleteOrphan(tx, derived.values.bundleNamespace)
+        derived.values.clearSecrets()
     }
 
     /**
@@ -176,7 +193,7 @@ internal class ContactSteps(
      * allowed from (§8.2 rule 6). Nothing is sent, and the requester cannot tell (T28).
      */
     fun acceptRequest(contactId: ByteArray): RequestResult =
-        moveRequest(contactId, ContactStore.Trust.UNVERIFIED)
+        moveRequest(contactId, ContactStore.Trust.UNVERIFIED, forget = contexts.get())
 
     /**
      * §12.3: `blockRequest` keeps the identity, so later requests from it are dropped at `RECV`
@@ -216,7 +233,16 @@ internal class ContactSteps(
         }
     }
 
-    private fun moveRequest(contactId: ByteArray, to: ContactStore.Trust): RequestResult =
+    /**
+     * [forget], when given, is the context that opens the request's card so an accepted request
+     * forgets the orphan rows its card left, as [addContact] does (phase review ENG-7). It is
+     * resolved before the transaction opens, like [block]'s.
+     */
+    private fun moveRequest(
+        contactId: ByteArray,
+        to: ContactStore.Trust,
+        forget: SelfContext? = null,
+    ): RequestResult =
         database.transaction { tx ->
             val row = store.contact(tx.sql, contactId)
                 ?: return@transaction RequestResult.NOT_A_REQUEST
@@ -224,6 +250,9 @@ internal class ContactSteps(
                 return@transaction RequestResult.NOT_A_REQUEST
             }
             store.setTrust(tx, contactId, to)
+            if (forget != null) {
+                row.cardEnv?.let { forget.content.open(it, contactId) }?.let { forgetOrphans(tx, it) }
+            }
             RequestResult.DONE
         }
 
