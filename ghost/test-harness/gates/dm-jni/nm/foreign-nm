@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6, negative case (Phase 9 review GATES-3): the closed list plus a JNI
+# entry point of **another class** of the same package — a library built from a tree that exported
+# a debugging dump as `DmDebug` instead of `DmNative`, which the list, named by class, never saw.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmDebug_exportSessionState\n' 8192

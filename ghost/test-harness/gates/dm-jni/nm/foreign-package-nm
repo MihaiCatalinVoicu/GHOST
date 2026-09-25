@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6, negative case (Phase 9 review GATES-3): the closed list plus a JNI
+# entry point under **another package** — a DM function exported straight to `:messaging`.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_messaging_engine_Shortcut_decrypt\n' 8192

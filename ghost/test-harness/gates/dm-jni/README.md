@@ -40,3 +40,17 @@ library.
 - `android-ref/` is an Android tree whose `:messaging` production source imports and calls
   `DmNative` directly; the source-set half (only `:crypto-bridge` `src/{main,gate}` may) reports
   the import and the call, not the comment.
+
+## Phase 9 review additions (GATES-3)
+
+Every half of the gate used to name one class, `DmNative`, so a DM entry point exported under any
+other class passed all of them. Now only `DmNative` (the closed list), `DmEquivalence.run` and the
+network surface's three classes may carry a JNI entry point or a native declaration.
+
+- `foreign/foreign-export.rs`: a `#[unsafe(no_mangle)]` entry point
+  `Java_org_ghost_crypto_bridge_DmDebug_exportSessionState` — the source half refuses it.
+- `nm/foreign-nm` and `nm/foreign-package-nm`: the closed list plus a symbol of another class
+  (`DmDebug`) and of another package (`org.ghost.messaging`) — the symbol half refuses each.
+  `nm/exact-nm` now prints a network-surface symbol beside the list, which the gate accepts.
+- `android-native/`: a Kotlin `external fun` in a second `:crypto-bridge` class and a Java
+  `native` method in `:messaging` — exactly two lines, the comment that says "native" not one.

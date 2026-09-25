@@ -1082,6 +1082,26 @@ if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --tes
 else
   echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry point" >&2; rc=1
 fi
+# Phase 9 review GATES-3: every half named one class, `DmNative`. A JNI entry point of another
+# class or package — in the workspace's sources, in a built library — and a native method in any
+# other production Android class are refused now; the network surface's three classes are not.
+expect_fail_msg "dm-jni-surface rejects a JNI entry point of another class in the workspace" \
+  "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_DmDebug_exportSessionState'" \
+  env GHOST_DM_JNI_SCAN="$DM_JNI/foreign" bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a library exporting a JNI symbol of another class" \
+  "exports the JNI symbol 'Java_org_ghost_crypto_bridge_DmDebug_exportSessionState'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/foreign-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a library exporting a JNI symbol of another package" \
+  "exports the JNI symbol 'Java_org_ghost_messaging_engine_Shortcut_decrypt'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/foreign-package-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+jni_native_out="$(env GHOST_DM_JNI_ANDROID="$DM_JNI/android-native" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$jni_native_out" || true)" = "2" ] \
+   && grep -qF "DmDebug.kt:9: declares a native method outside DmNative" <<<"$jni_native_out" \
+   && grep -qF "Leak.java:6: declares a native method outside DmNative" <<<"$jni_native_out"; then
+  echo "self-test ok: dm-jni-surface reports native methods outside DmNative and the network classes (Kotlin and Java)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface does not report exactly the two native declarations of android-native/" >&2; rc=1
+fi
 jni_ref_out="$(env GHOST_DM_JNI_ANDROID="$DM_JNI/android-ref" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
 if [ "$(grep -c '^GATE-FAIL' <<<"$jni_ref_out" || true)" = "2" ] && grep -qF "Shortcut.kt:8: references DmNative outside" <<<"$jni_ref_out"; then
   echo "self-test ok: dm-jni-surface reports DmNative referenced outside :crypto-bridge (code, not prose)"

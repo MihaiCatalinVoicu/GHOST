@@ -27,6 +27,15 @@
 # names it in code, and inside `:crypto-bridge` only `src/main` and `src/gate` may. `:messaging`
 # reaches the ratchet through the typed facade (`DmSessions`) and nothing else.
 #
+# **No other JNI entry point, under any class name** (Phase 9 review GATES-3). The checks above
+# name one class, `DmNative`: an entry point exported as `Java_org_ghost_crypto_bridge_DmDebug_…`
+# (or under any other package), an `external fun` in another Android class, and a library exporting
+# either passed every half. So the workspace's Rust sources, every production Android source set and
+# every library read here may carry a JNI entry point only of `DmNative` (the closed list),
+# `DmEquivalence.run` (test libraries and `src/equivalence` only) or the three classes of the
+# network surface (`OTHER_JNI_CLASSES`: Phases 6 and 8, not DM). A new class is a change to this
+# list, which is what makes it arrive deliberately.
+#
 # **The equivalence-test entry point** (§15.9 item 7, §22.8.10 point 6; slice S12) is the one
 # symbol a *test* library adds: `Java_org_ghost_crypto_bridge_DmEquivalence_run`, compiled only with
 # `ghost-client-dm`'s `test-vectors` feature, which only `ghost-dm-host` enables. A library passed
@@ -57,6 +66,18 @@ PREFIX="Java_org_ghost_crypto_bridge_DmNative_"
 # The test libraries' one extra symbol (see the header).
 ENTRY_PREFIX="Java_org_ghost_crypto_bridge_DmEquivalence_"
 ENTRY_NAMES="run"
+# The other classes a GHOST library may export JNI entry points for (see the header): the network
+# surface of `ghost-client-net`, whose files are `android/network/src/main/…/<class>.kt`.
+OTHER_JNI_CLASSES="TorRelayTransport TorIssuerTransport EntitlementCrypto"
+OTHER_JNI_PREFIX="Java_org_ghost_network_"
+# A JNI symbol is allowed when it is `DmNative`'s, `DmEquivalence`'s (decided by the halves below)
+# or one of the network classes'. Prints the symbols of stdin that are none of these.
+foreign_jni() {
+  local classes
+  classes="$(printf '%s|' $OTHER_JNI_CLASSES)"
+  classes="${classes%|}"
+  grep -vE "^(${PREFIX}|${ENTRY_PREFIX}|${OTHER_JNI_PREFIX}(${classes})_)" || true
+}
 # The Android tree the source-set half reads (self-test hook: GHOST_DM_JNI_ANDROID).
 ANDROID_TREE="${GHOST_DM_JNI_ANDROID:-$GHOST_ROOT/android}"
 
@@ -105,6 +126,21 @@ while read -r name; do
   fail "'$name' is emitted but not marked Exported on the closed list"
 done < <(comm -13 "$work/expected" "$work/emitted")
 
+# Every other JNI entry point of the scan root, under any class (GATES-3): `pub extern "system" fn
+# Java_…` whatever attributes precede it, and an `export_name` that spells one.
+{
+  if [ -d "$SCAN" ]; then
+    find "$SCAN" -name '*.rs' "${prune[@]}" -exec \
+      grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' {} + || true
+  else
+    grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' "$SCAN" "$SOURCE" || true
+  fi
+} | grep -oE 'Java_[A-Za-z0-9_]+' | sort -u | foreign_jni > "$work/foreign-source"
+while read -r symbol; do
+  [ -n "$symbol" ] || continue
+  fail "the workspace exports the JNI entry point '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
+done < "$work/foreign-source"
+
 # Kotlin declares exactly the exported names, and declares them `internal` with an explicit
 # `@JvmName`: `:messaging` must go through the typed facade (§2.6, §13.1), and Kotlin mangles an
 # internal member's JVM name (`ctxClose` -> `ctxClose$crypto_bridge`), which no JNI symbol matches.
@@ -137,6 +173,33 @@ while read -r name; do
   [ -n "$name" ] || continue
   fail "DmNative does not declare 'external fun $name', which the crate exports"
 done < <(comm -13 "$work/kotlin" "$work/expected")
+
+# No other native declaration in a production source set (GATES-3): an `external fun` (Kotlin) or a
+# `native` method (Java) anywhere but DmNative.kt and the network classes' own files. Without it a
+# second class in `:crypto-bridge` — `DmDebug.exportSessionState` — needed no closed-list entry and
+# was not `DmNative` for the reference rule below, so `:messaging` could call it directly.
+if [ -d "$ANDROID_TREE" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+      */crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt) continue ;;
+    esac
+    allowed=0
+    for class in $OTHER_JNI_CLASSES; do
+      case "$f" in */network/src/main/kotlin/org/ghost/network/"$class".kt) allowed=1 ;; esac
+    done
+    [ "$allowed" = 1 ] && continue
+    while IFS= read -r v; do
+      [ -n "$v" ] && fail "$v"
+    done < <(awk '
+      { t = $0; sub(/^[ \t]+/, "", t)
+        if (t ~ /^(\*|\/\/|\/\*)/) next
+        if ($0 ~ /(^|[^A-Za-z0-9_])external[ \t]+fun[ \t]/ || (FILENAME ~ /\.java$/ && $0 ~ /(^|[ \t])native[ \t]/))
+          print FILENAME ":" FNR ": declares a native method outside DmNative and the network classes (G-R6)"
+      }' "$f")
+  done < <(find "$ANDROID_TREE" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+             \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' \) -print 2>/dev/null || true)
+fi
 
 # Only `:crypto-bridge`'s `main` and `gate` source sets reference `DmNative` (see the header). Code
 # lines only: the design's KDoc across `:messaging` names `DmNative` on purpose.
@@ -212,6 +275,12 @@ for LIBRARY in "$@"; do
       [ -n "$name" ] || continue
       fail "$LIBRARY does not export '$name', which the closed list marks Exported"
     done < <(comm -13 "$work/symbols" "$work/expected")
+    # Any other JNI symbol of the library, under any class (GATES-3).
+    grep -oE 'Java_[A-Za-z0-9_]+' "$work/nm-out" | sort -u | foreign_jni > "$work/foreign-symbols"
+    while read -r symbol; do
+      [ -n "$symbol" ] || continue
+      fail "$LIBRARY exports the JNI symbol '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
+    done < "$work/foreign-symbols"
     # The equivalence-test entry point: exactly its one symbol in a test library, none in a
     # shipped one (§22.8.10 point 6).
     grep -oE "${ENTRY_PREFIX}[A-Za-z0-9]+" "$work/nm-out" \

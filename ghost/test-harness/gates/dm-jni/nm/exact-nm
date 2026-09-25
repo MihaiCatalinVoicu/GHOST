@@ -14,6 +14,7 @@ while read -r name; do
   address=$((address + 16))
 done < <(grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::Exported\)' "$source" \
   | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
-# A library exports more than the DM surface; the gate must ignore everything else.
-printf '%016x T Java_org_ghost_client_net_NativeBridge_start\n' "$((address + 16))"
+# A library exports more than the DM surface: the network classes' entry points, which the gate
+# allows by class (Phase 9 review GATES-3), and symbols that are not JNI at all, which it ignores.
+printf '%016x T Java_org_ghost_network_TorRelayTransport_nativeCreate\n' "$((address + 16))"
 printf '%016x T rust_eh_personality\n' "$((address + 32))"
