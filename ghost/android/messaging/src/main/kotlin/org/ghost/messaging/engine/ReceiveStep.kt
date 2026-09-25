@@ -715,9 +715,10 @@ internal class ReceiveStep(
             createdSession = createdSession,
             usedSlot = usedSlot,
         )
-        // An id another row already holds (see [insertIncoming]) is a duplicate: the message is
-        // dropped whole, its TLVs and its timer version with it, as R10 drops one.
-        if (!applied) return dropped(DmCounters.Reason.DUPLICATE)
+        // An id another row already holds (see [insertIncoming]): the message is dropped whole, its
+        // TLVs and its timer version with it, as R10 drops a duplicate — under its own reason, so a
+        // D3 that stopped working is not hidden by this layer (mutant MC-5).
+        if (!applied) return dropped(DmCounters.Reason.ID_TAKEN)
         val available = applyTlvs(tx, contact, content, isPreKey, usedSlot, now)
         if (pairRootGen != null) acknowledgeOffer(tx, contact, pairRootGen, now)
         return if (available) Result.APPLIED else Result.CRYPTO_UNAVAILABLE

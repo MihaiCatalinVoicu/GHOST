@@ -58,6 +58,13 @@ internal object DmSuiteCases {
      * a pass. The `seen > 1` check stays, because it is the property CS-2 states and a future
      * schema without that trigger would need it; §22.15 item 14 records that no run exercises it
      * today.
+     *
+     * **Since the phase review (ENG-3)** RECV no longer reaches the guard: a peer could re-use an
+     * id on purpose and abort three passes per blob, so the row is written by an insert that selects
+     * nothing when the id is taken and the message is dropped as `id_taken`. A copy that D3 lets
+     * through is therefore dropped quietly too, and the check that kills MC-5 is the one below: no
+     * copy RP6 retries may reach the message row at all (`id_taken` stays 0), which is D3's own
+     * property — with the tag written, the copy is a `duplicate` at R10.
      */
     fun rp6ReEncryptionAfterAWronglyReportedFailure(): DmScenario = DmScenario(
         name = "RP6",
@@ -96,6 +103,13 @@ internal object DmSuiteCases {
             val seen = DmScripts.inboundTexts(world, "bob").count { it == "only once" }
             if (seen > 1) {
                 dmViolation("RP6: bob rendered the retried message $seen times (D3 is off)")
+            }
+            // Phase review ENG-3: a copy D3 did not drop now reaches the message row, which drops
+            // it quietly as `id_taken` where the replace guard used to abort the pass. The copy
+            // RP6 retries must never get that far: D3's tag over its `message_id` drops it first.
+            val taken = world["bob"].device.engine.status().drops["id_taken"] ?: 0
+            if (taken > 0) {
+                dmViolation("RP6: the retried copy passed D3 and reached the message row, which already held its id")
             }
         },
         finalChecks = { world ->

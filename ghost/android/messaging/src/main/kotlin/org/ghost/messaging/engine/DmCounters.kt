@@ -56,6 +56,16 @@ internal class DmCounters {
         /** The message key is gone, or D3 already held this `message_id` (D2a, D3). */
         DUPLICATE,
 
+        /**
+         * A TEXT or TIMER_SET whose `message_id` another `dm_message` row already holds, which D3
+         * did not know (phase review ENG-1, ENG-3): a contact re-using this device's own outgoing id,
+         * a second card identity re-using an id another contact sent (the D3 tag is keyed by
+         * contact), or — with D3 missing — a re-encrypted copy of a message this device already has.
+         * It used to be the `dm_message` replace guard's abort; it is a drop now, and kept apart from
+         * [DUPLICATE] so a D3 that stopped working still shows (mutant MC-5, RP6).
+         */
+        ID_TAKEN,
+
         /** A replayed first flight of a live generation (D2b, §7.6). */
         REPLAY,
 

@@ -81,8 +81,8 @@ class PhaseReviewRegressionTest {
     /**
      * ENG-3: an unquoted empty TEXT from a contact made `RECV` throw a CHECK abort (`body_env`
      * 30 …) on three passes, then R2 consumed it as poison; one that re-used this device's own
-     * outgoing id threw the `dm_message_no_replace` trigger. Both are dropped now — bad content and
-     * a duplicate — in the first pass, which throws nothing, and poison counts nothing.
+     * outgoing id threw the `dm_message_no_replace` trigger. Both are dropped now — as bad content
+     * and as `id_taken` — in the first pass, which throws nothing, and poison counts nothing.
      */
     @Test
     fun aPeerCannotMakeRecvThrowWithAnEmptyTextOrAReusedId() {
@@ -105,7 +105,7 @@ class PhaseReviewRegressionTest {
             world.deliver()
             bob.hintPass()
             assertEquals(0, fetched(bob))
-            assertEquals(1, bob.engine.status().drops["duplicate"])
+            assertEquals(1, bob.engine.status().drops["id_taken"])
             assertEquals(
                 "the own row the id named is untouched",
                 1,
