@@ -71,6 +71,7 @@ internal class SendStep(
     private val sessions = SessionStore()
     private val scheduled = HeldStore()
     private val owner = OwnerStore()
+    private val expiry = ExpiryClock(database, clock)
 
     /** The facade's `send` result (§13.2), plus the two the engine needs internally. */
     enum class Outcome {
@@ -104,6 +105,12 @@ internal class SendStep(
         /** No such contact, or no conversation for it. */
         UNKNOWN_CONTACT,
 
+        /**
+         * A reaction whose target is not a live message of the contact's conversation (phase
+         * review ENG-4): gone, expired, or never there. §7.4.1 applies the same filter on receipt.
+         */
+        UNKNOWN_TARGET,
+
         /** A user retry past the original deadline (§7.5). */
         DEADLINE_PASSED,
     }
@@ -131,6 +138,12 @@ internal class SendStep(
     ): Sent {
         val self = contexts.get() ?: return Sent(Outcome.CRYPTO_UNAVAILABLE, establish = false)
         if (body.size > DmContent.MAX_BODY_BYTES) return Sent(Outcome.TOO_LARGE, establish = false)
+        // §7.1: a grapheme is at most 32 bytes. The codec refuses a longer one as non-canonical,
+        // which this function treated as its own bug and threw out of the facade (phase review
+        // ENG-4); it is the caller's input, and the answer is the one a long text gets.
+        if (kind == DmContent.Kind.REACTION && body.size > REACTION_TARGET_BYTES + MAX_GRAPHEME_BYTES) {
+            return Sent(Outcome.TOO_LARGE, establish = false)
+        }
         val now = clock.nowEpochSeconds()
         val authorMinute = DmTime.floorMinute(now)
 
@@ -963,6 +976,19 @@ internal class SendStep(
 
         return try {
             database.transaction { tx ->
+                // A reaction's target is read under §10.7's filter in the transaction that writes
+                // the reaction (phase review ENG-4), as `RECV` reads it (§7.4.1): a message SWEEP
+                // deleted between the render and the tap — or an id that was never a message of
+                // this conversation — was a foreign-key abort thrown out of the facade. It is
+                // checked before anything below writes, so a refused reaction changes nothing.
+                if (kind == DmContent.Kind.REACTION) {
+                    val target = messages.message(tx.sql, reactionTarget(body), expiry.nowMinute(tx.sql))
+                    if (target == null ||
+                        !target.conversationId.contentEquals(prepared.conversation.conversationId)
+                    ) {
+                        return@transaction Sent(Outcome.UNKNOWN_TARGET, false)
+                    }
+                }
                 // The scheduled row this send discharges, retired **first** and inside this
                 // transaction (§8.5, §8.6, and the S7 RESEND precedent). It goes whatever the rest
                 // of the transaction decides, including a refusal below: a contact blocked between
@@ -1027,7 +1053,14 @@ internal class SendStep(
                             null
                         },
                         state = MessageStore.STATE_QUEUED,
-                        expireAtMinute = DmTimers.senderExpireMinute(now, prepared.timerCode),
+                        // From `now_e`, as `DisplayStep` starts a countdown (R-T7, phase review
+                        // ENG-6): after a backward clock step `wall + timer` can be a minute the
+                        // expiry clock has already passed, and the own message was swept by the
+                        // next pass while its copy still went out.
+                        expireAtMinute = DmTimers.senderExpireMinute(
+                            maxOf(now, expiry.nowSeconds(tx.sql)),
+                            prepared.timerCode,
+                        ),
                         unreadDeadlineMinute = null,
                     )
                 }
@@ -1040,16 +1073,20 @@ internal class SendStep(
                     )
                 }
                 if (kind == DmContent.Kind.REACTION) {
-                    messages.putReaction(
-                        tx = tx,
-                        targetId = reactionTarget(body),
-                        fromSelf = true,
-                        graphemeEnv = self.content.seal(
-                            bodyNonce,
-                            reactionTarget(body),
-                            body.copyOfRange(REACTION_TARGET_BYTES, body.size),
-                        ),
-                    )
+                    val grapheme = body.copyOfRange(REACTION_TARGET_BYTES, body.size)
+                    if (grapheme.isEmpty()) {
+                        // §7.1 and §7.4.1: "an empty grapheme removes it". The removal was sealed
+                        // like a reaction, and its 28-byte envelope failed `grapheme_env`'s CHECK
+                        // (29 …) on every call (phase review ENG-4); RECV already deleted.
+                        messages.deleteReaction(tx, reactionTarget(body), fromSelf = true)
+                    } else {
+                        messages.putReaction(
+                            tx = tx,
+                            targetId = reactionTarget(body),
+                            fromSelf = true,
+                            graphemeEnv = self.content.seal(bodyNonce, reactionTarget(body), grapheme),
+                        )
+                    }
                 }
                 messages.insertItem(
                     tx = tx,
@@ -1506,6 +1543,9 @@ internal class SendStep(
 
         /** A REACTION body starts with the target's `message_id` (§7.1). */
         const val REACTION_TARGET_BYTES: Int = 16
+
+        /** §7.1: a reaction's grapheme is at most 32 bytes (the crate's `MAX_REACTION_BODY_BYTES` − 16). */
+        const val MAX_GRAPHEME_BYTES: Int = 32
 
         /** `dm_pair_offer.root_gen` is a `u16` (§13.6). */
         const val MAX_ROOT_GEN: Int = 65_535
