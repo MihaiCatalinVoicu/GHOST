@@ -195,6 +195,54 @@ internal class MessageStore {
     }
 
     /**
+     * An **incoming** row, inserted only when no row — live or expired and not yet swept — already
+     * holds [messageId]; false when one does (phase review ENG-1, ENG-3).
+     *
+     * The id is the peer's to choose. A contact that re-used this device's own outgoing id, or a
+     * second card identity that re-used an id another contact already sent (the D3 tag is keyed
+     * by contact, so it lets both through), made [insertMessage] hit the `dm_message_no_replace`
+     * guard: a trigger abort inside `RECV` — which §21.4 rule 5 calls a bug — that rolled the pass
+     * back three times until R2 consumed the blob as poison, and inside `HELD` stopped every pass
+     * until the hold expired. The existence test is part of the **write** statement, so it reads
+     * no row into a view (§10.7 point 4's filter is about what a read shows; this shows nothing)
+     * and the guard never fires: an insert that selects no row inserts nothing.
+     */
+    @Suppress("LongParameterList")
+    fun insertIncomingIfAbsent(
+        tx: SyncTransaction,
+        messageId: ByteArray,
+        conversationId: ByteArray,
+        kind: Int,
+        authorMinute: Long,
+        sortMinute: Long,
+        minuteIndex: Int,
+        timerCode: Int,
+        bodyEnv: ByteArray?,
+        unreadDeadlineMinute: Long?,
+    ): Boolean =
+        tx.sql.execUpdate(
+            "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, " +
+                "sort_minute, minute_index, timer_code, body_env, state, expire_at_minute, " +
+                "unread_deadline_minute, delete_at_minute) " +
+                "SELECT ?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ? " +
+                "WHERE NOT EXISTS (SELECT 1 FROM dm_message WHERE message_id = ?)",
+            listOf(
+                messageId,
+                conversationId,
+                kind.toLong(),
+                authorMinute,
+                sortMinute,
+                minuteIndex.toLong(),
+                timerCode.toLong(),
+                bodyEnv,
+                STATE_UNREAD,
+                unreadDeadlineMinute,
+                unreadDeadlineMinute,
+                messageId,
+            ),
+        ) == 1
+
+    /**
      * The minute the **next live** row becomes deletable, or null when none will (§10.7 trigger 1,
      * §21.9 rule 1: the actor timer includes "the next `delete_at_minute`").
      *

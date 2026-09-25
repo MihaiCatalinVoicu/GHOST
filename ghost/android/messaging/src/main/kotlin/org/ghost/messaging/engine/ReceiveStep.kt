@@ -647,6 +647,18 @@ internal class ReceiveStep(
             -> return dropped(DmCounters.Reason.BAD_CONTENT)
             DmContent.DecodeResult.StateCorrupt -> return dropped(DmCounters.Reason.STATE_CORRUPT)
         }
+        // **An unquoted empty TEXT is content this device cannot store** (phase review ENG-1,
+        // ENG-3). The codec accepts it — `check_body` bounds only length and UTF-8 — and its
+        // one-byte stored body seals to 29 bytes, which `dm_message.body_env`'s CHECK (30 …) refuses:
+        // a peer's L0 turned into a constraint abort inside `RECV` (three aborted passes, then R2's
+        // poison count) and inside `HELD` (every pass aborted until the hold expired). §21.4 rule 5
+        // calls such an abort a bug, so the content is refused here, as bad content, before any
+        // effect of it. A **quoted** empty text is stored (its reference makes it 45 bytes) and is
+        // not touched. Whether an empty text should exist at all is the facade question §22.21
+        // item 3 left to the owner; this rule only stops a peer from crashing the receiver with it.
+        if (content.kind == DmContent.Kind.TEXT && content.quoteRef == null && content.body.isEmpty()) {
+            return dropped(DmCounters.Reason.BAD_CONTENT)
+        }
 
         // R9: freshness (§7.6, §21.10 points 3 and 5), measured from when the ciphertext arrived.
         val authorSeconds = content.authorMinute * DmTime.MINUTE
@@ -692,7 +704,7 @@ internal class ReceiveStep(
             if (swapped) usedSlot = SessionStore.SLOT_CURRENT
         }
 
-        apply(
+        val applied = apply(
             tx = tx,
             self = self,
             contact = contact,
@@ -703,6 +715,9 @@ internal class ReceiveStep(
             createdSession = createdSession,
             usedSlot = usedSlot,
         )
+        // An id another row already holds (see [insertIncoming]) is a duplicate: the message is
+        // dropped whole, its TLVs and its timer version with it, as R10 drops one.
+        if (!applied) return dropped(DmCounters.Reason.DUPLICATE)
         val available = applyTlvs(tx, contact, content, isPreKey, usedSlot, now)
         if (pairRootGen != null) acknowledgeOffer(tx, contact, pairRootGen, now)
         return if (available) Result.APPLIED else Result.CRYPTO_UNAVAILABLE
@@ -710,7 +725,8 @@ internal class ReceiveStep(
 
     // ----------------------------------------------------------------- R11, R12
 
-    @Suppress("LongParameterList")
+    /** False when the message's id is already taken by another row, and nothing was applied. */
+    @Suppress("LongParameterList", "ReturnCount")
     private fun apply(
         tx: SyncTransaction,
         self: SelfContext,
@@ -721,8 +737,8 @@ internal class ReceiveStep(
         now: Long,
         createdSession: Boolean,
         usedSlot: String,
-    ) {
-        val conversation = contacts.conversation(tx.sql, contact.contactId) ?: return
+    ): Boolean {
+        val conversation = contacts.conversation(tx.sql, contact.contactId) ?: return true
         // §22.8.5 rule 4: an initiator session's anchor is its **first decryption**, which is its
         // acknowledgement; a responder's is its first provisional seal (SEND's).
         if (!createdSession) {
@@ -738,16 +754,20 @@ internal class ReceiveStep(
             }
         }
         when (content.kind) {
-            DmContent.Kind.TEXT -> insertIncoming(
-                tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
-                body = content.body,
-            )
+            DmContent.Kind.TEXT -> {
+                val inserted = insertIncoming(
+                    tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
+                    body = content.body,
+                )
+                if (!inserted) return false
+            }
             DmContent.Kind.TIMER_SET -> {
                 // ADR-27 C.8: a timer change is shown to both sides, as a row with no body.
-                insertIncoming(
+                val inserted = insertIncoming(
                     tx, self, conversation, content, relayExpiryHour, arrivalSeconds, now,
                     body = null,
                 )
+                if (!inserted) return false
             }
             DmContent.Kind.REACTION -> {
                 val target = content.body.copyOf(minOf(REACTION_TARGET_BYTES, content.body.size))
@@ -789,7 +809,7 @@ internal class ReceiveStep(
         // and a rule that holds in one place only is a rule waiting for a second caller.
         // An ignored version changes nothing, exactly as a lower one does, and the message itself
         // is still stored and shown.
-        if (content.timerVersion > DmContent.MAX_TIMER_VERSION) return
+        if (content.timerVersion > DmContent.MAX_TIMER_VERSION) return true
         if (content.timerVersion > conversation.timerVersion) {
             contacts.adoptTimer(
                 tx,
@@ -812,8 +832,14 @@ internal class ReceiveStep(
                 content.timerVersion,
             )
         }
+        return true
     }
 
+    /**
+     * The row of an incoming TEXT or TIMER_SET. False only when another row already holds the
+     * message's id (phase review ENG-1, ENG-3: [MessageStore.insertIncomingIfAbsent]); a message
+     * past its unread cap is counted and not inserted, and that is still true — it was applied.
+     */
     @Suppress("LongParameterList")
     private fun insertIncoming(
         tx: SyncTransaction,
@@ -824,7 +850,7 @@ internal class ReceiveStep(
         arrivalSeconds: Long,
         now: Long,
         body: ByteArray?,
-    ) {
+    ): Boolean {
         val authorSeconds = content.authorMinute * DmTime.MINUTE
         val unreadDeadline = DmTimers.unreadDeadlineMinute(
             consumeSeconds = arrivalSeconds,
@@ -841,13 +867,12 @@ internal class ReceiveStep(
         // would delete it again.
         if (unreadDeadline != null && unreadDeadline <= expiry.nowMinute(tx.sql)) {
             counters.drop(DmCounters.Reason.EXPIRED_WHILE_HELD)
-            return
+            return true
         }
-        messages.insertMessage(
+        return messages.insertIncomingIfAbsent(
             tx = tx,
             messageId = content.messageId,
             conversationId = conversation.conversationId,
-            outgoing = false,
             kind = content.kind.wire,
             authorMinute = authorSeconds,
             // R-O1: `min(author_minute, receive_minute)`, which stops a peer with a future clock
@@ -864,8 +889,6 @@ internal class ReceiveStep(
                     quotedBody(content.quoteRef, it),
                 )
             },
-            state = MessageStore.STATE_UNREAD,
-            expireAtMinute = null,
             unreadDeadlineMinute = unreadDeadline,
         )
     }
