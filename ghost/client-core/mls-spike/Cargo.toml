@@ -1,0 +1,46 @@
+# Phase 10 slice S0 evidence tooling (design docs/design/faza10-forum.md §14 row S0, checks V10-1 … V10-14).
+# Evidence: docs/design/faza10-s0-evidence.md.
+#
+# EVIDENCE TOOLING, NOT PRODUCT CODE. This virtual workspace is not a member of the ghost workspace
+# (its own [workspace] and Cargo.lock, the precedent of client-core/dm-spike), so the product lock,
+# client-core/rust-dependency-allowlist.txt, rust-crypto-pins.txt and `cargo deny` of the ghost
+# workspace are untouched. Nothing here is linked into a shipped or host library; the Android size
+# measurement (V10-3) goes through the temporary patch size-probe/size-probe.patch, applied and
+# reverted by scripts/v10-03-size-build.sh.
+#
+#   core/  ghost-mls-spike      GhostKv (the value-semantics storage adapter of §3.4), the provider
+#                               composition of §3.3, the pseudonym signer, GHOST's extensions and AAD
+#                               formats (§5.3, §5.4, §19.2) and the measurement harness
+#   kat/   ghost-mls-spike-kat  the RFC 9420 passive-client replay through GhostKv (V10-12); the only
+#                               crate that enables openmls/test-utils (G-M2's rule for
+#                               ghost-client-mls-kat), built only with `-p ghost-mls-spike-kat`
+[workspace]
+resolver = "2"
+members = ["core", "kat"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+license = "LicenseRef-GHOST-Proprietary"
+
+[workspace.dependencies]
+# The pins of design §3.2, exactly.
+openmls = { version = "=0.9.0", default-features = false }
+openmls_traits = { version = "=0.6.0", default-features = false }
+openmls_libcrux_crypto = { version = "=0.4.0", default-features = false }
+# The versions the ghost workspace already carries (ghost/Cargo.lock).
+ed25519-dalek = "=2.2.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+sha2 = "=0.11.0"
+hkdf = "=0.13.0"
+hex = "=0.4.3"
+# In the OpenMLS graph already (rayon is a normal dependency of openmls; design §3.6).
+rayon = "=1.12.0"
+tls_codec = { version = "=0.5.0", features = ["derive", "serde", "mls"] }
+
+[profile.release]
+strip = "symbols"

@@ -1,0 +1,155 @@
+//! V10-8: `GhostBootstrap` (0xF0A3) passed through `CommitBuilder::create_group_info_with_extensions`
+//! reaches the GroupInfo inside the Welcome, the joiner reads it, and the committer's GroupInfo
+//! signature authenticates it (design §5.4, §19.16).
+
+use ghost_mls_spike::ext::{self, CommitAad};
+use ghost_mls_spike::harness::*;
+use openmls::prelude::*;
+
+/// The joiner, its join result (the bootstrap it read), the bootstrap sent, the commit.
+type Probe = (Device, Result<Option<Vec<u8>>, String>, Vec<u8>, CommitOut);
+
+fn add_with_bootstrap(w: &mut World, corrupt_nth: u32) -> Probe {
+    let ch = w.channel;
+    let day = w.day;
+    let mut j = Device::new(99, day);
+    let kp = j.key_package(ch, 1, day, 0).unwrap();
+    let kp = w.members[0].parse_key_package(&kp).unwrap();
+    let e = w.members[0].epoch(ch);
+    let boot = ext::bootstrap(3, e + 1, &[0xab; 32]);
+    let spec = CommitSpec {
+        adds: vec![kp],
+        aad: CommitAad {
+            commit_minute: day * 1440,
+            ..Default::default()
+        },
+        refresh_epoch: Some(e),
+        force_path: true,
+        group_info_extensions: vec![Extension::Unknown(
+            ext::EXT_BOOTSTRAP,
+            UnknownExtension(boot.clone()),
+        )],
+        ..Default::default()
+    };
+    w.members[0].signer.corrupt_nth.set(corrupt_nth);
+    let out = w.members[0]
+        .commit(ch, &spec)
+        .expect("commit with bootstrap");
+    w.members[0].signer.corrupt_nth.set(0);
+    let r = j.join(ch, out.welcome.as_ref().unwrap(), true);
+    (j, r, boot, out)
+}
+
+#[test]
+fn v10_08_bootstrap_in_welcome_group_info() {
+    let day = host_day();
+    let mut w = World::build(4, 3, day);
+    let ch = w.channel;
+
+    let (mut j, r, boot, out) = add_with_bootstrap(&mut w, 0);
+    let got = r
+        .expect("join succeeds")
+        .expect("GhostBootstrap present in the Welcome's GroupInfo");
+    assert_eq!(got, boot);
+    println!(
+        "V10-8 bootstrap: {} B extension in the Welcome's GroupInfo; Welcome {} B; commit {} B; exported GroupInfo also built: {} ({} B)",
+        got.len(),
+        out.welcome.as_ref().unwrap().len(),
+        out.commit.len(),
+        out.group_info_exported.is_some(),
+        out.group_info_exported.as_ref().map_or(0, Vec::len)
+    );
+    for m in w.members.iter_mut().skip(1) {
+        m.receive(ch, &out.commit).unwrap();
+    }
+    w.members[0].merge_own(ch).unwrap();
+    assert_eq!(
+        j.authenticator(ch),
+        w.members[0].authenticator(ch),
+        "the joiner is in the group"
+    );
+
+    // Authentication: a Welcome whose GroupInfo signature is wrong is refused by the joiner. The
+    // committer's signer is made to corrupt one of the signatures of the next commit; the probe
+    // finds which one is the Welcome's GroupInfo by the joiner's result.
+    for n in 1..=4u32 {
+        let before = w.members[0].rows.clone();
+        let (_, r, _, out) = add_with_bootstrap(&mut w, n);
+        println!(
+            "V10-8 corrupt signature #{n} of the commit: joiner -> {:?}",
+            r.as_ref().map(|b| b.as_ref().map(Vec::len))
+        );
+        if n == 1 {
+            // The update-path leaf signature: receivers refuse the commit as well.
+            let v = w.members[1].validate(ch, &out.commit);
+            println!(
+                "V10-8   (#1) member validation of that commit -> {:?}",
+                v.as_ref().map(|x| x.0.kind).map_err(|e| e.clone())
+            );
+        }
+        w.members[0].rows = before; // drop the pending commit
+    }
+
+    // Reading the extension before `build()` gives an *unverified* value (OpenMLS's own label).
+    println!("V10-8 read path: ProcessedWelcome::unverified_group_info().extensions() before JoinBuilder::build(); build() verifies the GroupInfo signature");
+    let _ = &mut j;
+}
+
+#[test]
+fn v10_08_default_commit_builds_an_exported_group_info() {
+    let day = host_day();
+    let mut w = World::build(3, 2, day);
+    let e = w.members[0].epoch(w.channel);
+    let spec = CommitSpec {
+        refresh_epoch: Some(e),
+        force_path: true,
+        ..Default::default()
+    };
+    let a = w.members[0].commit(w.channel, &spec).unwrap();
+    w.members[0].clear_own(w.channel).unwrap();
+    let spec2 = CommitSpec {
+        no_exported_group_info: true,
+        ..spec
+    };
+    let b = w.members[0].commit(w.channel, &spec2).unwrap();
+    println!(
+        "V10-8 self-update at 3 members: exported GroupInfo with the ratchet tree built by default: {} ({} B); with create_group_info(false): {}",
+        a.group_info_exported.is_some(),
+        a.group_info_exported.as_ref().map_or(0, Vec::len),
+        b.group_info_exported.is_some()
+    );
+}
+
+#[test]
+fn v10_08_bootstrap_without_an_exported_group_info() {
+    // create_group_info_with_extensions() turns the exported GroupInfo on (with ExternalPub);
+    // create_group_info(false) afterwards must keep the bootstrap in the Welcome's GroupInfo.
+    let day = host_day();
+    let mut w = World::build(3, 2, day);
+    let ch = w.channel;
+    let mut j = Device::new(77, day);
+    let kp = j.key_package(ch, 1, day, 0).unwrap();
+    let kp = w.members[0].parse_key_package(&kp).unwrap();
+    let e = w.members[0].epoch(ch);
+    let boot = ext::bootstrap(1, e + 1, &[0xcd; 32]);
+    let spec = CommitSpec {
+        adds: vec![kp],
+        refresh_epoch: Some(e),
+        force_path: true,
+        group_info_extensions: vec![Extension::Unknown(
+            ext::EXT_BOOTSTRAP,
+            UnknownExtension(boot.clone()),
+        )],
+        no_exported_group_info: true,
+        ..Default::default()
+    };
+    let out = w.members[0].commit(ch, &spec).unwrap();
+    let got = j.join(ch, out.welcome.as_ref().unwrap(), true).unwrap();
+    println!(
+        "V10-8 bootstrap with create_group_info(false): exported GroupInfo {}; bootstrap in the Welcome {}",
+        out.group_info_exported.is_some(),
+        got.as_deref() == Some(&boot[..])
+    );
+    assert!(out.group_info_exported.is_none());
+    assert_eq!(got.as_deref(), Some(&boot[..]));
+}
