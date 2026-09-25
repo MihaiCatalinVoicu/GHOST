@@ -60,7 +60,7 @@ class ApiTypesTest {
         val values = listOf<Any>(
             op, ns, hash, RelayId(7),
             OutboundBlob(op, ns, canaryCiphertext, TtlBucket.DAYS_7),
-            OutboundOutcome(op, ns, Outcome.INDETERMINATE, 123L),
+            OutboundOutcome(op, ns, Outcome.INDETERMINATE, 123L, TtlBucket.DAYS_7),
             OutboxProgress(1, 0, 2, null),
             InboundBlob(ns, hash, canaryCiphertext, 3_600L, 1),
             PeekedBlob(ns, hash, canaryCiphertext, 3_600L),

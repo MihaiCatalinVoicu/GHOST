@@ -34,12 +34,17 @@ sealed interface EnqueueResult {
  * A decided, not yet released outcome. [resendNotAfterEpochSeconds] is set for
  * [Outcome.INDETERMINATE] only: the identical bytes may be enqueued again as a new operation
  * (after release) until this time, the earliest possible copy's hour + TTL − σ (design §11.2 #6).
+ *
+ * [ttl] is the operation's own TTL bucket, the one its copies were stored under. An identical-bytes
+ * resend repeats it (Phase 9 design §10.2 row 6): the resend bound above, the receipt bounds and a
+ * relay's existing copy are all computed from it (Phase 9 review ENG-5).
  */
 class OutboundOutcome(
     val operationId: OperationId,
     val namespace: NamespaceId,
     val outcome: Outcome,
     val resendNotAfterEpochSeconds: Long?,
+    val ttl: TtlBucket,
 ) {
     override fun toString(): String = "OutboundOutcome($outcome)"
 }
