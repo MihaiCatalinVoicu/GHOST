@@ -163,7 +163,11 @@ fn stored_state(state: DmResult<Vec<u8>>) -> DmResult<Vec<u8>> {
 /// Olm's 3DH to the peer's identity and fallback key with a fresh base key.
 ///
 /// A malformed or non-contributory peer key is [`DmCode::InvalidKey`] (§22.8.2 rule 1): the
-/// contact published a key no session can be built on, which is a refusal, not a crash.
+/// contact published a key no session can be built on, which is a refusal, not a crash. So is a
+/// **non-canonical encoding** of a good point (phase review CRY-P9-01): vodozemac keeps the bytes
+/// verbatim, every PreKey message of the session would carry them, and `message::canonical_keys`
+/// refuses such a message on both sides. `bundle::parse` refuses it first; this is the second
+/// line, for a caller that did not come through a bundle.
 pub fn session_outbound(
     identity: &OlmSecret,
     signing_seed: &OlmSecret,
@@ -171,7 +175,11 @@ pub fn session_outbound(
     peer_fallback: &[u8; 32],
     today: u32,
 ) -> DmResult<Outbound> {
-    if !pq::contributory(peer_identity) || !pq::contributory(peer_fallback) {
+    if !pq::contributory(peer_identity)
+        || !pq::contributory(peer_fallback)
+        || !pq::canonical_u_coordinate(peer_identity)
+        || !pq::canonical_u_coordinate(peer_fallback)
+    {
         return Err(DmCode::InvalidKey);
     }
     let secrets = AccountSecrets::identity(identity, signing_seed);
@@ -849,6 +857,55 @@ mod tests {
         );
         assert_eq!(
             session_outbound(&a.identity, &a.signing, &b.identity_public, &[0u8; 32], 5).err(),
+            Some(DmCode::InvalidKey)
+        );
+    }
+
+    /// Phase review CRY-P9-01: the top bit set on a good peer key is the same point to X25519 and
+    /// other bytes to everything that hashes or compares them. The session would be built, and
+    /// every PreKey message it produced would be refused by `header` on this side and by
+    /// `session_inbound` on the other, so the key is refused here instead.
+    #[test]
+    fn a_non_canonical_peer_key_is_invalid_key() {
+        let a = party(21);
+        let b = party(22);
+        let (_, b_fallback_public) = fallback(23);
+        assert!(
+            session_outbound(
+                &a.identity,
+                &a.signing,
+                &b.identity_public,
+                &b_fallback_public,
+                5
+            )
+            .is_ok(),
+            "the control builds a session"
+        );
+        let mut high_fallback = b_fallback_public;
+        high_fallback[31] |= 0x80;
+        assert!(pq::contributory(&high_fallback));
+        assert_eq!(
+            session_outbound(
+                &a.identity,
+                &a.signing,
+                &b.identity_public,
+                &high_fallback,
+                5
+            )
+            .err(),
+            Some(DmCode::InvalidKey)
+        );
+        let mut high_identity = b.identity_public;
+        high_identity[31] |= 0x80;
+        assert_eq!(
+            session_outbound(
+                &a.identity,
+                &a.signing,
+                &high_identity,
+                &b_fallback_public,
+                5
+            )
+            .err(),
             Some(DmCode::InvalidKey)
         );
     }
