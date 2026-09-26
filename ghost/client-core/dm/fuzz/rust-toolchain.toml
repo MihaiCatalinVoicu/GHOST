@@ -1,0 +1,7 @@
+# cargo-fuzz needs a nightly compiler (`-Zsanitizer=address`, SanitizerCoverage). The date is pinned
+# so a nightly job is reproducible and a compiler change is its own reviewed commit (Phase 9 design
+# §16.2 `dm-fuzz`, §22.8.10 point 9, §22.35). This file applies to this directory only: the
+# workspace above keeps its own 1.98.1 toolchain.
+[toolchain]
+channel = "nightly-2026-09-25"
+profile = "minimal"

@@ -1,0 +1,11 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2735193302
+INFO:       30 files found in corpus/card
+#352988	NEW    cov: 1219 ft: 2553 corp: 124/19Kb lim: 300 exec/s: 16044 rss: 183Mb L: 228/228 MS: 1 ChangeBinInt-
+#503141	DONE   cov: 1221 ft: 2562 corp: 128/19Kb lim: 300 exec/s: 16230 rss: 237Mb
+Done 503141 runs in 31 second(s)
+stat::number_of_executed_units: 503141
+stat::average_exec_per_sec:     16230
+stat::new_units_added:          195
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              237
