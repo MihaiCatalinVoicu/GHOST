@@ -110,8 +110,14 @@ jobs:
           count ' DETECTED: ' 17 "detected mutants"
           count '^NI-K ' 3 "NI-K lines"
           exit "$fail"
+      # A failed test's message and stack trace in the job summary, and an upload the artifact quota
+      # refuses never turns the job red: evidence, not a gate (Phase 9 design §22.33).
+      - name: failed tests (job summary)
+        if: failure()
+        run: bash ../scripts/ci/junit-failures.sh entitlement/build/test-results/testDebugUnitTest >> "$GITHUB_STEP_SUMMARY"
       - name: upload the harness report and the test results
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: entitlement-exit-gate-${{ matrix.shard }}

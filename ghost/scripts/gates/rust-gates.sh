@@ -14,6 +14,11 @@ if command -v cargo-deny >/dev/null; then cargo deny check || fail "cargo deny";
 bash "$GATES_DIR/rust-client-allowlist.sh" || fail "rust-client-allowlist"
 bash "$GATES_DIR/rust-feature-policy.sh" || fail "rust-feature-policy"
 bash "$GATES_DIR/rust-crypto-pins.sh" || fail "rust-crypto-pins"
+# The S0′ gate slice (Phase 9 design §16.1, §22.33): G-R4's graph half, G-R7 (against HEAD~1 unless
+# GHOST_GOLDEN_BASE names another base) and G-R8. G-R3 needs a build's outputs: the CI jobs run it.
+bash "$GATES_DIR/dm-rust-no-logging.sh" || fail "dm-rust-no-logging"
+bash "$GATES_DIR/dm-golden-lock.sh" || fail "dm-golden-lock"
+bash "$GATES_DIR/dm-vendored-clock-log.sh" || fail "dm-vendored-clock-log"
 # Licence gates (ADR-37; Phase 9 design §2.10.2): notices of the shipped Rust graphs (G-L1), source
 # headers (G-R5), MPL-2.0 sources and their bundle (G-L4).
 bash "$GATES_DIR/license-notices.sh" rust || fail "license-notices (rust)"

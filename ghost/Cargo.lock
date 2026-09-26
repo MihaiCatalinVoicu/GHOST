@@ -2033,6 +2033,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost-vendored-scan"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

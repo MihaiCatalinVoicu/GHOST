@@ -800,6 +800,12 @@ npb_case private-apk fail "artifact 'app-release-unsigned' uploads binaries and 
 npb_case private-handoff-unconsumed fail "hand-off artifact 'ghost-client-net-jniLibs': no job of this workflow downloads it" ""
 npb_case no-retention fail "artifact 'gate-report' sets no retention-days (1 to 7)" ""
 npb_case release-publish fail "publishes outside the repository (gh release upload)" ""
+# The native hand-off through the Actions cache (Phase 9 design §22.33): allowed while private, under
+# this run's key, restored by a job of the workflow; refused public, under a fixed key, or unrestored.
+npb_case positive-private-cache pass "[no-public-binaries] OK" ""
+npb_case public-cache-handoff fail "a cache saves binaries (APK, AAR, .so, jniLibs or an image) while the repository is not declared private" ""
+npb_case private-cache-key fail "a cache saves binaries under key 'ghost-client-net-jniLibs-latest', which is not this run's hand-off" ""
+npb_case private-cache-unrestored fail "no job of this workflow restores it" ""
 npb_case event-mismatch pass "[no-public-binaries] OK" ""
 npb_case event-mismatch fail "the event payload says the repository is public; scripts/gates/repository-visibility.txt declares it private" "$NPB/event-mismatch/event.json"
 npb_case no-declaration fail "scripts/gates/repository-visibility.txt missing" ""
@@ -1182,6 +1188,143 @@ else
   echo "SELF-TEST FAIL: dm-enqueue-callers rejects the real DM engine" >&2; rc=1
 fi
 
+# The S0′ gate slice (Phase 9 design §16.1, §22.33). Each fixture holds one kind of violation and
+# says how many, so a gate that reported everything, or nothing but the first hit, is caught too.
+#
+# G-DM1 (T28, ADR-20): the DM modules name no network package, socket or HTTP class and no coroutine.
+# `imports` holds five package imports (two of them also a class name) in `:messaging`, an HTTP client
+# in `:crypto-bridge`, decoys that must not match, and a test source that must not be read; `bare` a
+# wildcard import and the bare class on a later line; `gate-set` the `gate` build type's source set;
+# `vacuous` a tree without `:crypto-bridge`.
+dmnet_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/negative-dm-network-$1" bash "$DIR/messaging-no-network.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF "$3" <<<"$out"; then
+    echo "self-test ok: messaging-no-network $4"
+  else
+    echo "SELF-TEST FAIL: messaging-no-network $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail messaging-no-network "$HARNESS/negative-dm-network-imports"
+dmnet_case imports 9 "NetworkedStep.kt:6:import org.ghost.network" \
+  "reports every network package and class import and no decoy or test source"
+expect_fail messaging-no-network "$HARNESS/negative-dm-network-bare"
+dmnet_case bare 2 "Wildcard.kt:8:" "reports a wildcard import and the bare class that uses it"
+expect_fail messaging-no-network "$HARNESS/negative-dm-network-gate-set"
+dmnet_case gate-set 1 "src/gate/kotlin/org/ghost/crypto/bridge/gate/GateProbe.kt:5:" "reads the gate build type's source set"
+expect_fail messaging-no-network "$HARNESS/negative-dm-network-vacuous"
+dmnet_case vacuous 1 "android/crypto-bridge/src/main: missing" "refuses a tree without a DM module"
+if bash "$DIR/messaging-no-network.sh" >/dev/null 2>&1; then
+  echo "self-test ok: messaging-no-network accepts the real DM modules"
+else
+  echo "SELF-TEST FAIL: messaging-no-network rejects the real DM modules" >&2; rc=1
+fi
+
+# G-DM4 (§13.6 REPLACE guards): DM SQL never replaces a row. `messaging` holds the four forms in a DM
+# store — one built with a template, one split over two literals — beside comments, a KDoc, a string
+# holding `//`, a quote character, the `replace()` function, `INSERT OR IGNORE` and `DO NOTHING`, none
+# of which may count; `schema` a constraint conflict clause and a template-built REPLACE inside
+# migration 5, an upsert on a DM table in a later migration, and a pre-DM REPLACE and a sync upsert
+# that are not DM SQL; `vacuous` a tree whose DM store holds no SQL and whose schema lost its markers.
+dmrep_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/negative-dm-replace-$1" bash "$DIR/dm-no-replace.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF "$3" <<<"$out"; then
+    echo "self-test ok: dm-no-replace $4"
+  else
+    echo "SELF-TEST FAIL: dm-no-replace $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-messaging"
+dmrep_case messaging 5 "ReplacingStore.kt:23: ON CONFLICT ... DO UPDATE" \
+  "reports every REPLACE form in a DM store, split and templated ones included, and no comment or decoy"
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-schema"
+dmrep_case schema 3 "Schema.kt:27: OR REPLACE, REPLACE INTO" \
+  "reads migration 5 and later DM migrations, and not the pre-DM or sync SQL"
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-vacuous"
+dmrep_case vacuous 2 "no SQL string found (the gate would pass vacuously)" \
+  "refuses a DM store without SQL and a schema without its migration 5 markers"
+if bash "$DIR/dm-no-replace.sh" >/dev/null 2>&1; then
+  echo "self-test ok: dm-no-replace accepts the real DM SQL"
+else
+  echo "SELF-TEST FAIL: dm-no-replace rejects the real DM SQL" >&2; rc=1
+fi
+
+# sync-no-catch-all over the DM modules (§16.1 last rows): catch-alls in `:messaging`, in
+# `:crypto-bridge` and in its `gate` source set, an allowlisted clause found more often than allowed,
+# and a fixture allowlist with a stale entry, an entry outside the DM modules and a malformed one
+# (8); a tree whose DM modules moved away (2). negative-sync and negative-sync-no-entitlement above
+# carry clean DM modules, so their counts are unchanged.
+syncdm_case() { # $1 = fixture, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/$1" bash "$DIR/sync-no-catch-all.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF "$3" <<<"$out"; then
+    echo "self-test ok: sync-no-catch-all $4"
+  else
+    echo "SELF-TEST FAIL: sync-no-catch-all $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail sync-no-catch-all "$HARNESS/negative-sync-dm"
+syncdm_case negative-sync-dm 8 "DmNative.kt:13: catch (e: UnsatisfiedLinkError) (catch-all in a DM module: 2 found, the allowlist permits 1" \
+  "reports DM catch-alls, an allowlist exceeded, and a stale, foreign and malformed allowlist entry"
+expect_fail sync-no-catch-all "$HARNESS/negative-sync-dm-vacuous"
+syncdm_case negative-sync-dm-vacuous 2 "android/crypto-bridge/src/main: missing" "refuses a tree whose DM modules moved away"
+if bash "$DIR/sync-no-catch-all.sh" >/dev/null 2>&1; then
+  echo "self-test ok: sync-no-catch-all accepts the real sync, entitlement and DM modules"
+else
+  echo "SELF-TEST FAIL: sync-no-catch-all rejects the real sources" >&2; rc=1
+fi
+
+# G-R3 (ADR-36): the portable-libcrux detector over build outputs. A host build's JSON stream
+# (portable with a decoy package, SIMD on all three packages, one package missing) and a cargo-ndk
+# profile directory (portable with a decoy, SIMD in both directive syntaxes, a stale second run, no
+# libcrux at all). It reads files only, so it runs here; the CI jobs run it on their real builds.
+LCX="$HARNESS/libcrux-portable"
+lcx_case() { # $1 = expect pass|fail, $2 = expected violation count, $3 = expected text, $4 = description, rest = args
+  local want="$1" count="$2" text="$3" desc="$4" out got hits
+  shift 4
+  if out="$(bash "$DIR/libcrux-portable.sh" "$@" 2>&1)"; then got=pass; else got=fail; fi
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$got" = "$want" ] && [ "$hits" = "$count" ] && grep -qF "$text" <<<"$out"; then
+    echo "self-test ok: libcrux-portable $desc"
+  else
+    echo "SELF-TEST FAIL: libcrux-portable $desc ($got, $hits of $count violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+lcx_case pass 0 "[libcrux-portable] OK" "accepts a portable host build and ignores a longer package name" --json "$LCX/portable.json"
+lcx_case fail 3 "libcrux-intrinsics enabled SIMD code" "rejects SIMD cfgs in a host build" --json "$LCX/simd.json"
+lcx_case fail 1 "no build-script-executed message of libcrux-intrinsics" "refuses a host build without one of the packages" --json "$LCX/missing.json"
+lcx_case pass 0 "[libcrux-portable] OK" "accepts a portable cargo-ndk profile directory" --target-dir "$LCX/dir-portable"
+lcx_case fail 2 "libcrux-sha3-0123456789abcdef/output:1:cargo::rustc-cfg" "rejects SIMD cfgs in both directive syntaxes" --target-dir "$LCX/dir-simd"
+lcx_case fail 1 "a stale run the libcrux clean did not remove" "refuses two build script runs of one package" --target-dir "$LCX/dir-stale"
+lcx_case fail 3 "no build script output of libcrux-ml-kem" "refuses a directory with no libcrux build" --target-dir "$LCX/dir-empty"
+lcx_case fail 2 "dir-simd" "checks every build it is given" --json "$LCX/portable.json" --target-dir "$LCX/dir-simd"
+
+# G-R7 (c) (§2.9, V-9): the shipped library carries Olm's KDF labels and none of the HPKE strings
+# the linker drops. Byte files stand in for stripped libraries (test-harness/gates/dm-golden/).
+DMG="$HARNESS/dm-golden"
+dmg_lib_case() { # $1 = expect pass|fail, $2 = expected violation count, $3 = expected text, $4 = description, $5 = file
+  local out got hits
+  if out="$(bash "$DIR/dm-golden-lock.sh" --library "$DMG/$5" 2>&1)"; then got=pass; else got=fail; fi
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$got" = "$1" ] && [ "$hits" = "$2" ] && grep -qF "$3" <<<"$out"; then
+    echo "self-test ok: dm-golden-lock $4"
+  else
+    echo "SELF-TEST FAIL: dm-golden-lock $4 ($got, $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+dmg_lib_case pass 0 "[dm-golden-lock] OK" "accepts a library with Olm and without HPKE" hpke-dropped.bin
+dmg_lib_case fail 2 "contains 'HPKE-v1'" "rejects a library the linker left HPKE in" hpke-linked.bin
+dmg_lib_case fail 2 "does not contain 'OLM_KEYS'" "refuses a library with no Olm code" no-olm.bin
+
 # G-DM5 (Phase 9 design §16.1, §21.13 points 5 and 7; slice S12): each source tree and each mapping
 # fixture reports exactly its own violations, the positive mapping passes, and the real tree passes.
 DMH="$HARNESS/dm-hooks"
@@ -1295,6 +1438,97 @@ if command -v cargo >/dev/null; then
     "ghost-client-dm (all): ed25519-dalek resolves to [2.2.0 3.0.0], pinned 2.2.0" \
     env GHOST_CRYPTO_PINS="$tmp" bash "$DIR/rust-crypto-pins.sh"
   rm -f "$tmp"
+  # G-R7 (§2.8, §15.2 items 2 and 4, §22.33): the pin rule. Base and current locks are mutated copies
+  # of the real one: a vodozemac bump whose previous goldens are gone, two vodozemac versions at once,
+  # a pin without its golden directory and an unreadable base fail; the first pin is exempt; and a
+  # libcrux change runs the drills (goldens, UpgradeTest, the encoder check, PQ5), which must pass.
+  tmp="$(mktemp)"
+  awk 'prev == "name = \"vodozemac\"" && $0 == "version = \"0.11.0\"" {$0 = "version = \"0.10.0\""} {print; prev = $0}' \
+    "$DIR/../../Cargo.lock" > "$tmp"
+  expect_fail_msg "dm-golden-lock rejects a vodozemac bump that dropped the previous goldens" \
+    "vodozemac 0.10.0 -> 0.11.0: the previous pin's goldens" \
+    env GHOST_GOLDEN_NO_TESTS=1 GHOST_GOLDEN_BASE_LOCK="$tmp" bash "$DIR/dm-golden-lock.sh"
+  awk '{print} $0 == "name = \"vodozemac\"" && !done {getline v; print "version = \"0.10.0\""; print ""; print "[[package]]"; print "name = \"vodozemac\""; print v; done = 1}' \
+    "$DIR/../../Cargo.lock" > "$tmp"
+  expect_fail_msg "dm-golden-lock rejects two vodozemac versions in one lock" \
+    "the lock holds several vodozemac versions" \
+    env GHOST_GOLDEN_NO_TESTS=1 GHOST_GOLDEN_LOCK="$tmp" bash "$DIR/dm-golden-lock.sh" --base none
+  dmg_empty="$(mktemp -d)"
+  expect_fail_msg "dm-golden-lock rejects a pin without its golden directory" \
+    "vodozemac-0.11.0/olm-session.txt is missing" \
+    env GHOST_GOLDEN_NO_TESTS=1 GHOST_GOLDEN_DIR="$dmg_empty" bash "$DIR/dm-golden-lock.sh" --base none
+  rmdir "$dmg_empty"
+  expect_fail_msg "dm-golden-lock fails closed on an unreadable base" \
+    "cannot read Cargo.lock at the base 'no-such-revision'" \
+    env GHOST_GOLDEN_NO_TESTS=1 bash "$DIR/dm-golden-lock.sh" --base no-such-revision
+  if out="$(GHOST_GOLDEN_NO_TESTS=1 bash "$DIR/dm-golden-lock.sh" --base none 2>&1)" && grep -qF "first pin, exempt" <<<"$out"; then
+    echo "self-test ok: dm-golden-lock exempts the first pin"
+  else
+    echo "SELF-TEST FAIL: dm-golden-lock does not exempt the first pin" >&2; printf '%s\n' "$out" | tail -3 >&2; rc=1
+  fi
+  awk 'prev == "name = \"libcrux-kem\"" && $0 == "version = \"0.0.9\"" {$0 = "version = \"0.0.8\""} {print; prev = $0}' \
+    "$DIR/../../Cargo.lock" > "$tmp"
+  if out="$(GHOST_GOLDEN_BASE_LOCK="$tmp" bash "$DIR/dm-golden-lock.sh" 2>&1)" && grep -qF "bump drills: 4 golden tests" <<<"$out"; then
+    echo "self-test ok: dm-golden-lock runs and passes the drills at a libcrux change"
+  else
+    echo "SELF-TEST FAIL: dm-golden-lock did not run and pass the drills at a libcrux change" >&2; printf '%s\n' "$out" | tail -3 >&2; rc=1
+  fi
+  rm -f "$tmp"
+  # G-R4, graph half (Phase 9 design §16.1, §22.33): each clause fails on its own. A crate the graph
+  # really holds added to the forbidden list (both graphs report it), `jni` removed from log's allowed
+  # dependents, a required package the graph does not hold, a failing query, and a function name the
+  # graph's sources really call added to the logger-installing list (the source scan reads them).
+  expect_fail_msg "dm-rust-no-logging rejects a forbidden crate in the DM graph" \
+    "ghost-client-dm without jni-bridge links 'zeroize'" \
+    env GHOST_DMLOG_FORBID_EXTRA=zeroize bash "$DIR/dm-rust-no-logging.sh"
+  expect_fail_msg "dm-rust-no-logging rejects log reached through anything but jni" \
+    "'jni' depends on log directly in ghost-client-dm's graph" \
+    env GHOST_DMLOG_LOG_VIA=none bash "$DIR/dm-rust-no-logging.sh"
+  expect_fail_msg "dm-rust-no-logging refuses a graph without the Olm library" \
+    "vodozemac-no-such-crate is not in ghost-client-dm's graph" \
+    env GHOST_DMLOG_REQUIRED=vodozemac-no-such-crate bash "$DIR/dm-rust-no-logging.sh"
+  expect_fail_msg "dm-rust-no-logging fails when its cargo query fails" \
+    "GATE-FAIL: cargo tree" \
+    env GHOST_DMLOG_BAD_SPEC=ghost-client-dm bash "$DIR/dm-rust-no-logging.sh"
+  expect_fail_msg "dm-rust-no-logging reads the graph's sources for a logger" \
+    "src/pq.rs:203:pub fn encapsulate(" \
+    env GHOST_DMLOG_INSTALLER=encapsulate bash "$DIR/dm-rust-no-logging.sh"
+  if bash "$DIR/dm-rust-no-logging.sh" >/dev/null 2>&1; then
+    echo "self-test ok: dm-rust-no-logging accepts the real DM graph"
+  else
+    echo "SELF-TEST FAIL: dm-rust-no-logging rejects the real DM graph" >&2; rc=1
+  fi
+  # G-R8 (§22.8.10 point 4): the baseline equals the scan. A site removed from a copy of the baseline
+  # is unjustified, a site added to it is stale, a site stripped of its reason or left as UNJUSTIFIED
+  # fails, and so does a line of no known kind.
+  tmp="$(mktemp)"
+  g8="$DIR/dm-vendored-clock-log.baseline"
+  grep -v '^site serde_core@1.0.229 src/crate_root.rs:77 std::net network' "$g8" > "$tmp"
+  expect_fail_msg "dm-vendored-clock-log rejects a site missing from the baseline" \
+    "unjustified: site serde_core@1.0.229 src/crate_root.rs:77 std::net network [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/dm-vendored-clock-log.sh"
+  { cat "$g8"; echo "site vodozemac@0.11.0 src/lib.rs:1 SystemTime clock-log [lib]  # fixture: a site the scan does not find"; } > "$tmp"
+  expect_fail_msg "dm-vendored-clock-log rejects a stale baseline entry" \
+    "stale: site vodozemac@0.11.0 src/lib.rs:1 SystemTime clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/dm-vendored-clock-log.sh"
+  sed 's#^\(site rand@0.10.2 src/distr/uniform_other.rs:15 time:: clock-log \[lib\]\)  \# .*$#\1#' "$g8" > "$tmp"
+  expect_fail_msg "dm-vendored-clock-log rejects a site without its reason" \
+    "no justification for: site rand@0.10.2 src/distr/uniform_other.rs:15 time:: clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/dm-vendored-clock-log.sh"
+  sed 's#^\(site rand@0.10.2 src/distr/uniform_other.rs:15 time:: clock-log \[lib\]\)  \# .*$#\1  \# UNJUSTIFIED#' "$g8" > "$tmp"
+  expect_fail_msg "dm-vendored-clock-log rejects an entry left UNJUSTIFIED" \
+    "no justification for: site rand@0.10.2" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/dm-vendored-clock-log.sh"
+  { cat "$g8"; echo "sites rand@0.10.2 everywhere"; } > "$tmp"
+  expect_fail_msg "dm-vendored-clock-log rejects a line of no known kind" \
+    "not a site, directive, note or crate line: sites rand@0.10.2 everywhere" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/dm-vendored-clock-log.sh"
+  rm -f "$tmp"
+  if bash "$DIR/dm-vendored-clock-log.sh" >/dev/null 2>&1; then
+    echo "self-test ok: dm-vendored-clock-log accepts the real graph against its baseline"
+  else
+    echo "SELF-TEST FAIL: dm-vendored-clock-log rejects the real graph" >&2; rc=1
+  fi
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate
   # of each banned name; its lock file must fail with a [banned] diagnostic naming that crate and the

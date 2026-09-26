@@ -1,0 +1,75 @@
+name: vendor-tests
+
+# vodozemac's own test suite at the pinned version (Phase 9 design §15.2 item 1, §16.2; S0′'s V-12,
+# which could not run on the S0′ host; the S0′ gate slice, §22.33, moved the script to
+# ghost/scripts/ci/vendor-tests.sh and added this job). The crates.io package is checked against its
+# SHA-256, extracted, and tested with its own lock file — default features, then --all-features —
+# which builds libolm through olm-sys (CMake and a C++ compiler, both on the ghost-runner image,
+# docs/ci-self-hosted.md §2.1). Nothing of that graph reaches a product graph: the package's dev-
+# dependencies exist only in the work directory. The advisories of its lock are checked with the
+# cargo-deny the rust job pins; its licences are not, because the graph is never distributed.
+#
+# What this job does not run, declared in §22.33: libcrux's own crate test suites. The X-Wing (draft-06,
+# draft-10) and ML-KEM-768 known-answer tests and the differential X-Wing test against RustCrypto's
+# `x-wing` are `ghost-client-dm`'s own tests (tests/xwing_kat.rs, tests/vectors.rs), run by ci.yml's
+# rust job on every change.
+#
+# Nightly, and on a change that can move the pin: the lock, the DM crate's manifest, the script, this
+# file. A bump to a version the script has no SHA-256 for fails here until the sum is added (§2.8: a
+# bump is its own reviewed pull request).
+#
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  schedule:
+    - cron: "37 1 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "ghost/Cargo.lock"
+      - "ghost/client-core/dm/Cargo.toml"
+      - "ghost/scripts/ci/vendor-tests.sh"
+      - ".github/workflows/vendor-tests.yml"
+  pull_request:
+    paths:
+      - "ghost/Cargo.lock"
+      - "ghost/client-core/dm/Cargo.toml"
+      - "ghost/scripts/ci/vendor-tests.sh"
+      - ".github/workflows/vendor-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  vodozemac:
+    name: vodozemac test suite at the pinned version (default and all features)
+    runs-on: [self-hosted, linux, x64, ghost]
+    # Measured on a 4-vCPU container (S0′ gate slice): see §22.33 for the time of one run; twice
+    # that and the libolm build leave the budget below.
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: the pinned vodozemac version (Cargo.lock)
+        id: pin
+        run: |
+          version="$(awk '$0 == "name = \"vodozemac\"" { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)"
+          [ "$(grep -c . <<< "$version")" = 1 ] || { echo "::error::expected one vodozemac version in Cargo.lock, found: $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: vodozemac's own tests (default features, then --all-features)
+        run: bash scripts/ci/vendor-tests.sh "${{ steps.pin.outputs.version }}" "$RUNNER_TEMP/vendor"
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: advisories of the package's own dev-dependency lock (cargo-deny)
+        run: cargo deny --manifest-path "$RUNNER_TEMP/vendor/vodozemac-${{ steps.pin.outputs.version }}/Cargo.toml" check advisories

@@ -167,4 +167,15 @@ tasks.withType<Test>().configureEach {
         inputs.property(name, value.orElse(""))
         value.orNull?.let { systemProperty(name, it) }
     }
+    // The test JVM's heap (Phase 9 design §22.33). Without it Gradle's default of 512 MB applies, and
+    // the privacy world at the gate scale (N = 600 over 42 days) outgrows it: its first nightly run
+    // (2026-09-25) failed on all ten seed pairs with a bare `java.sql.SQLException` out of
+    // `world.run()`, and the local reproduction spent its time in full collections with the old
+    // generation 99 % full — the relay's retained blobs and the recorded view are held for the joins
+    // at the end. 2 GB is what `:sync` and `:entitlement` give their harnesses and covers every world
+    // at the PR scale; `dm-privacy-gate.yml` raises it with `-Dghost.dm.heap` for the gate scale.
+    maxHeapSize = providers.systemProperty("ghost.dm.heap")
+        .orElse(providers.gradleProperty("ghost.dm.heap"))
+        .orElse("2g")
+        .get()
 }

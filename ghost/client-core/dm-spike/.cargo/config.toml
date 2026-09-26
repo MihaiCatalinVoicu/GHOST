@@ -1,5 +1,0 @@
-# Portable-only libcrux (design §2.3, Q55, gate G-R3): the proofs cover the portable ML-KEM and
-# SHA-3 code; NEON has none and RUSTSEC-2025-0133 was an unverified aarch64 path.
-[env]
-LIBCRUX_DISABLE_SIMD128 = "1"
-LIBCRUX_DISABLE_SIMD256 = "1"

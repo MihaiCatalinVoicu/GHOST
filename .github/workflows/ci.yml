@@ -11,8 +11,10 @@ name: ci
 # job starts from actions/checkout's cleaned workspace and a runner temp directory the runner empties,
 # and keeps nothing it needs elsewhere. Self-hosted runners are allowed only while the repository is
 # private. Uploads (gate G-L5, scripts/gates/no-public-binaries.sh; ADR-39): no binary is ever published;
-# the only binary upload is the internal native hand-off below, kept 1 day; a gate's evidence (text
-# reports) is kept 3 days.
+# the internal native hand-off below goes through the Actions cache of the run (Phase 9 design §22.33:
+# from 2026-09-20 the artifact storage quota failed every upload, so the job that uploaded the hand-off
+# went red and the android and reproducible jobs were skipped on every run); a gate's evidence (text
+# reports) is kept 3 days when an upload succeeds, and an upload that fails never decides a job.
 on:
   push:
     branches: [main]
@@ -79,7 +81,16 @@ jobs:
           bash scripts/install-protoc.sh "$RUNNER_TEMP/protoc"
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
+      # G-R3 (Phase 9 design §16.1, §22.33): every client build is preceded by the libcrux clean — the
+      # three build scripts do not re-run when LIBCRUX_DISABLE_SIMD* change, and rust-cache restores
+      # target/ — and the host test build's cargo messages are read before any test runs.
+      - name: libcrux clean (G-R3)
+        run: cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: workspace test build, portable libcrux only (G-R3)
+        run: |
+          cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/test-build.json"
+          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/test-build.json"
       - run: cargo test --workspace --locked
       # Design §19.17 point 2: the issuer crash suite (I-A … I-H, double crashes) runs in the
       # release profile; a debug build lists its tests as ignored.
@@ -121,6 +132,23 @@ jobs:
         run: bash scripts/gates/rust-feature-policy.sh
       - name: Rust crypto version pins per graph (rsa, crypto-bigint, blind-rsa-signatures, num-bigint-dig, ring)
         run: bash scripts/gates/rust-crypto-pins.sh
+      # The S0′ gate slice (Phase 9 design §16.1, §22.33): G-R4's graph half (no logging crate in the DM
+      # graph; log only through jni; nothing installs a logger), G-R7 (a vodozemac or libcrux change
+      # keeps the previous goldens and runs UpgradeTest, the encoder check and PQ5; the base is the pull
+      # request's base or the push's previous head, a new branch's all-zero `before` falling back to
+      # HEAD~1) and G-R8 (the clock, logging and network sites of the shipped DM graph equal their
+      # justified baseline).
+      - name: DM graph gates (G-R4 no logging crate, G-R7 golden lock, G-R8 vendored clock and logging sites)
+        env:
+          GOLDEN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          bash scripts/gates/dm-rust-no-logging.sh
+          if [ -n "$GOLDEN_BASE" ] && [ "$GOLDEN_BASE" != 0000000000000000000000000000000000000000 ]; then
+            bash scripts/gates/dm-golden-lock.sh --base "$GOLDEN_BASE"
+          else
+            bash scripts/gates/dm-golden-lock.sh
+          fi
+          bash scripts/gates/dm-vendored-clock-log.sh
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 points 2, 3, 10): the licence gates that need the Rust
       # toolchain and the published sources: the notices of every shipped Rust graph, compared with the
       # committed ghost/licenses/THIRD_PARTY_NOTICES-*.txt (G-L1), the licence declarations of the shipped
@@ -147,6 +175,10 @@ jobs:
   android-native:
     name: android native libs (two same-path builds, identical hashes, no build paths)
     runs-on: [self-hosted, linux, x64, ghost]
+    # The sums of the checked libraries: the android and reproducible jobs verify the hand-off they
+    # restore against them, so a cache entry of another attempt or a damaged one cannot stand in.
+    outputs:
+      sums: ${{ steps.sums.outputs.sums }}
     defaults:
       run:
         shell: bash
@@ -200,18 +232,40 @@ jobs:
           bash scripts/gates/dm-jni-surface.sh \
             "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
             "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
-      # Internal hand-off (Phase 9 design §22.8.9 point 3, private repository only): the android and
-      # reproducible jobs of this run download it. One day is enough: they start when a runner is free
-      # (a full run took 1 h 55 min on the four self-hosted runners, docs/ci-self-hosted.md §8). A run
-      # left queued for longer fails at the download, closed; re-run all its jobs, which rebuilds it.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      # G-R3 (Phase 9 design §16.1, §22.33): cargo-ndk prints no cargo messages, so the detector reads
+      # the build-script outputs of the second build, which ran in a removed-then-recreated target
+      # directory after build-native.sh's libcrux clean: exactly one output per package and triple.
+      - name: G-R3 portable libcrux in both shipped triples
+        run: |
+          bash scripts/gates/libcrux-portable.sh \
+            --target-dir target/android-native/aarch64-linux-android/release \
+            --target-dir target/android-native/x86_64-linux-android/release
+      # G-R7 (c) (§2.9, V-9): the shipped libraries hold Olm's KDF labels and none of the strings of the
+      # HPKE code the linker drops; if a bump makes it keep them, the audit scope must be re-decided.
+      - name: G-R7 (c) the linker still drops hpke
+        run: |
+          bash scripts/gates/dm-golden-lock.sh --library \
+            "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
+            "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
+      - name: record the checked sums
+        id: sums
+        run: |
+          {
+            echo 'sums<<GHOST_SUMS_EOF'
+            cat native-libs.sha256
+            echo 'GHOST_SUMS_EOF'
+          } >> "$GITHUB_OUTPUT"
+      # Internal hand-off (Phase 9 design §22.8.9 point 3 and §22.33, private repository only): the
+      # android and reproducible jobs of this run restore it from the Actions cache, whose storage is
+      # not the artifact quota that stopped every upload from 2026-09-20. The key carries the run, so no
+      # other run can restore it (G-L5 requires that), and the consumers check it against `sums`.
+      - name: hand the checked libraries to the android and reproducible jobs (Actions cache of this run)
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          name: ghost-client-net-jniLibs
           path: |
             ghost/android/network/src/main/jniLibs
             ghost/native-libs.sha256
-          if-no-files-found: error
-          retention-days: 1
+          key: ghost-client-net-jniLibs-${{ github.run_id }}-${{ github.run_attempt }}
 
   android:
     name: android (build with the native Tor core, unit tests, lint, dependency verification)
@@ -223,10 +277,25 @@ jobs:
         working-directory: ghost/android
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      # The libraries android-native built twice and checked. `restore-keys` lets a re-run of this job
+      # alone take the entry of the attempt that built them; the next step checks it is that one.
+      - name: the libraries android-native checked (Actions cache of this run)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          name: ghost-client-net-jniLibs
-          path: ghost
+          path: |
+            ghost/android/network/src/main/jniLibs
+            ghost/native-libs.sha256
+          key: ghost-client-net-jniLibs-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ghost-client-net-jniLibs-${{ github.run_id }}-
+          fail-on-cache-miss: true
+      - name: the restored libraries are the ones android-native checked
+        working-directory: ghost
+        env:
+          SUMS: ${{ needs.android-native.outputs.sums }}
+        run: |
+          printf '%s\n' "$SUMS" > "$RUNNER_TEMP/expected.sha256"
+          diff "$RUNNER_TEMP/expected.sha256" native-libs.sha256
+          (cd android/network/src/main/jniLibs && sha256sum -c "$RUNNER_TEMP/expected.sha256")
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
@@ -248,13 +317,20 @@ jobs:
           toolchain: 1.98.1
       # With the `provenance` feature (slice S11, T35): every seal of every DM world asserts the
       # key kinds §9.3 allows, and the privacy report's T35 line is written only for such a build.
+      # G-R3 (§22.33): the host library the JVM tests load is a client build too; its cargo messages
+      # are read like the rust job's.
       - name: build ghost-dm-host (the DM host library the JVM tests load)
         working-directory: ghost
         run: |
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
-          cargo build -p ghost-dm-host --release --locked --features provenance
+          cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       - run: ./gradlew build --no-daemon -Dghost.dm.native="$GHOST_DM_NATIVE"
+      # A failed test's message and stack trace in the job summary: the test reports are not uploaded.
+      - name: failed tests (job summary)
+        if: failure()
+        run: bash ../scripts/ci/junit-failures.sh */build/test-results/testDebugUnitTest >> "$GITHUB_STEP_SUMMARY"
       # The PR-scale privacy report (Phase 9 design §15.6, §16.2: "T32 at N = 120 over 14 days" and
       # the privacy mutants on a small world, slice S11): `./gradlew build` ran the privacy worlds of
       # `org.ghost.messaging.dmworld`, and the report is evidence only if something refuses an
@@ -335,8 +411,13 @@ jobs:
             if ! grep -Eq "$line" "$report" 2>/dev/null; then echo "::error::sync harness report: no line matching $line"; fail=1; fi
           done
           exit "$fail"
+      - name: failed tests (job summary)
+        if: failure()
+        run: bash ../scripts/ci/junit-failures.sh sync/build/test-results/testDebugUnitTest >> "$GITHUB_STEP_SUMMARY"
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the test reports
         if: failure()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sync-exit-gate-reports
@@ -350,10 +431,23 @@ jobs:
     needs: [android-native, android]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: the libraries android-native checked (Actions cache of this run)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          name: ghost-client-net-jniLibs
-          path: ghost
+          path: |
+            ghost/android/network/src/main/jniLibs
+            ghost/native-libs.sha256
+          key: ghost-client-net-jniLibs-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ghost-client-net-jniLibs-${{ github.run_id }}-
+          fail-on-cache-miss: true
+      - name: the restored libraries are the ones android-native checked
+        working-directory: ghost
+        env:
+          SUMS: ${{ needs.android-native.outputs.sums }}
+        run: |
+          printf '%s\n' "$SUMS" > "$RUNNER_TEMP/expected.sha256"
+          diff "$RUNNER_TEMP/expected.sha256" native-libs.sha256
+          (cd android/network/src/main/jniLibs && sha256sum -c "$RUNNER_TEMP/expected.sha256")
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin

@@ -18,6 +18,10 @@ a well-formed workflow, so each fails only for its own reason.
 | private-handoff-unconsumed | fail | `no job of this workflow downloads it` |
 | no-retention | fail | `sets no retention-days (1 to 7)` (a report upload) |
 | release-publish | fail | `publishes outside the repository (gh release upload)` |
+| positive-private-cache | pass | private; the native hand-off through the Actions cache: `actions/cache/save` under a key that starts with the hand-off name and carries `github.run_id`, restored by a later job (Phase 9 design §22.33) |
+| public-cache-handoff | fail | `a cache saves binaries (APK, AAR, .so, jniLibs or an image) while the repository is not declared private` |
+| private-cache-key | fail | `which is not this run's hand-off` (a binary cache under a fixed key, which any later run could restore) |
+| private-cache-unrestored | fail | `no job of this workflow restores it` |
 | event-mismatch | pass without the event; fail with it | `the event payload says the repository is public` |
 | no-declaration | fail | `repository-visibility.txt missing` |
 

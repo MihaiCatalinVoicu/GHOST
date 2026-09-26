@@ -131,10 +131,14 @@ jobs:
       # The same host build the `android` job of ci.yml makes, for the same reason (§2.7, §15.1,
       # evidence V-5): every world of this gate runs the real ratchet, the real seal and the real
       # X-Wing through the closed JNI surface.
+      # G-R3 (Phase 9 design §16.1, §22.33): a client build too — cleaned first, its cargo messages
+      # read by the portable-libcrux detector before the library is loaded.
       - name: build ghost-dm-host (the DM host library the JVM tests load)
         working-directory: ghost
         run: |
-          cargo build -p ghost-dm-host --release --locked
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo build -p ghost-dm-host --release --locked --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       # G-R6 (host half, §22.8.10 point 10): the library this gate is about to load exports exactly
       # the closed list of §2.6, checked before it is loaded rather than after. `--test`: the host
@@ -165,8 +169,15 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           bash ../scripts/gates/dm-report-check.sh "$report" gate
+      # A failed test's message and stack trace in the job summary (Phase 9 design §22.33): when the
+      # upload below is refused, the job log alone said `java.sql.SQLException at …:33` and no more.
+      - name: failed tests (job summary)
+        if: failure()
+        run: bash ../scripts/ci/junit-failures.sh messaging/build/test-results/testDebugUnitTest >> "$GITHUB_STEP_SUMMARY"
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the report and the test reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: messaging-exit-gate

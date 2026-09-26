@@ -1,0 +1,2 @@
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-sha3@0.0.10","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/target/release/build/libcrux-sha3-bc7ac8e1f2a3b4c5/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-ml-kem@0.0.10","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/target/release/build/libcrux-ml-kem-b1c2d3e4f5a6b7c8/out"}

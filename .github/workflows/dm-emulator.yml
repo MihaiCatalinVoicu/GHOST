@@ -173,21 +173,17 @@ jobs:
           cargo build -p ghost-dm-host --release --locked
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
           bash scripts/gates/dm-jni-surface.sh --test "$PWD/target/release/libghost_dm_host.so"
-      # G-R3's rule (§16.1, V-6) on the four builds above: no build-script output of the three
-      # libcrux packages turns on a SIMD backend. Inline until `libcrux-portable.sh` exists.
-      - name: portable libcrux on every build (G-R3 rule)
+      # G-R3 (§16.1, V-6; `libcrux-portable.sh` since the S0′ gate slice, §22.33, which replaced the
+      # inline loop this step held) on the four builds above: exactly one build-script output of each
+      # of the three libcrux packages per build (each build was preceded by the libcrux clean), and
+      # none of them turns on a SIMD backend.
+      - name: portable libcrux on every build (G-R3)
         run: |
-          bad=0
-          for dir in target/android-native/aarch64-linux-android/release target/android-native/x86_64-linux-android/release \
-                     target/dm-test-jni/x86_64-linux-android/release target/release; do
-            for pkg in libcrux-ml-kem libcrux-sha3 libcrux-intrinsics; do
-              outputs=("$dir"/build/"$pkg"-*/output)
-              if [ ! -f "${outputs[0]}" ]; then echo "G-R3: no build-script output of $pkg under $dir"; bad=1; continue; fi
-              if grep -hE 'cargo:rustc-cfg=feature="simd(128|256)"' "${outputs[@]}"; then echo "G-R3: $pkg is not portable under $dir"; bad=1; fi
-            done
-          done
-          [ "$bad" = 0 ] && echo "G-R3: portable libcrux on the shipped, test and host builds"
-          exit "$bad"
+          bash scripts/gates/libcrux-portable.sh \
+            --target-dir target/android-native/aarch64-linux-android/release \
+            --target-dir target/android-native/x86_64-linux-android/release \
+            --target-dir target/dm-test-jni/x86_64-linux-android/release \
+            --target-dir target/release
       # The host half of the equivalence test: every case through JNI on ghost-dm-host, recorded
       # as build/dm-equivalence/dm_equivalence_host.txt with this commit in its header. `--rerun`:
       # build caching is on, and a restored result would record nothing.
@@ -241,8 +237,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           bash scripts/gates/dm-emulator-check.sh "$RUNNER_TEMP/dm-emulator" ${{ matrix.api }}
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the text outputs
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dm-emulator-api${{ matrix.api }}

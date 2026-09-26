@@ -104,8 +104,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           bash scripts/gates/t2-report-check.sh "$report" gate
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: t2-exit-gate-${{ matrix.seed }}
@@ -117,6 +119,7 @@ jobs:
         run: tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/t2-views.tar.gz" t2-views
       - name: upload the complete views
         if: always() && github.event_name == 'workflow_dispatch' && inputs.export_views
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: t2-views-${{ matrix.seed }}
@@ -164,8 +167,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           bash scripts/gates/t2-report-check.sh "$report" mutants
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: t2-mutants

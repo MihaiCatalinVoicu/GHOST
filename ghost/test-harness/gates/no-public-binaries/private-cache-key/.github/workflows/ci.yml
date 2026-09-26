@@ -1,0 +1,29 @@
+name: ci
+on: [push]
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: build the native libraries
+        run: echo build
+      - name: hand the checked libraries on (Actions cache, this run only)
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ghost/android/network/src/main/jniLibs
+            ghost/native-libs.sha256
+          key: ghost-client-net-jniLibs-latest
+  android:
+    needs: native
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ghost/android/network/src/main/jniLibs
+            ghost/native-libs.sha256
+          key: ghost-client-net-jniLibs-latest
+          restore-keys: ghost-client-net-jniLibs-${{ github.run_id }}-
+          fail-on-cache-miss: true
+      - name: gate
+        run: echo gate

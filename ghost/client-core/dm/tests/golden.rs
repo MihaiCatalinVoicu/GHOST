@@ -55,10 +55,17 @@ struct Golden(BTreeMap<String, String>);
 
 impl Golden {
     fn read() -> Self {
-        let text = std::fs::read_to_string(golden_path()).unwrap_or_else(|_| {
+        Self::read_from(&golden_dir())
+    }
+
+    /// Reads the golden file of one pin's directory: the current pin's, or, for [`upgrade`]'s
+    /// drill, a previous pin's that a bump keeps until the drill has run against it (§2.8).
+    fn read_from(dir: &std::path::Path) -> Self {
+        let path = dir.join("olm-session.txt");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!(
                 "{} is missing; regenerate with GHOST_DM_GOLDEN_WRITE=1",
-                golden_path().display()
+                path.display()
             )
         });
         let mut map = BTreeMap::new();
@@ -290,6 +297,12 @@ fn golden_pickles_load_and_both_sides_continue() {
         VODOZEMAC_VERSION,
         "the golden directory belongs to another pin"
     );
+    load_and_continue(&golden);
+}
+
+/// The drill itself, over any pin's golden: the responder decrypts every held message, the
+/// initiator the reply it never read, and one more message goes each way on the loaded state.
+fn load_and_continue(golden: &Golden) {
     let today = u32::try_from(golden.number("today")).expect("day");
 
     // The responder decrypts every message it had skipped, in any order.
@@ -366,7 +379,11 @@ fn golden_pickles_load_and_both_sides_continue() {
 /// G-R7 pins `chainPosition`'s outputs per pin: every recorded chain, and an unknown key.
 #[test]
 fn golden_chain_positions_are_pinned() {
-    let golden = golden();
+    chain_positions(&golden());
+}
+
+/// `chainPosition` over a golden's responder state equals the positions that golden recorded.
+fn chain_positions(golden: &Golden) {
     let responder = golden.bytes("responder_state");
     let mut index = 0;
     while golden
@@ -396,7 +413,14 @@ fn golden_chain_positions_are_pinned() {
 /// the pruned pickle itself loads and continues (R-41's mitigation, drilled in V-15).
 #[test]
 fn golden_prune_outputs_are_pinned_and_the_pruned_state_continues() {
-    let golden = golden();
+    prune_outputs(&golden(), true);
+}
+
+/// `sessionPrune` over a golden's responder state: nothing before the age bound, the recorded
+/// count at it, and the committed pruned state loads and continues. `same_pin` also holds the
+/// pruned bytes to the recorded ones — a previous pin's pruned pickle, written by that pin's
+/// serializer, is loaded and continued but not compared byte for byte with the new pin's output.
+fn prune_outputs(golden: &Golden, same_pin: bool) {
     let responder = golden.bytes("responder_state");
     let prune_day = u32::try_from(golden.number("prune_day")).expect("day");
 
@@ -415,11 +439,13 @@ fn golden_prune_outputs_are_pinned_and_the_pruned_state_continues() {
     // The pinned output itself, byte for byte: `pickle::prune` round-trips the document through
     // `serde_json::Value`, so the pruned pickle's key order is the map's, not the library's, and a
     // change in either — or in the sidecar beside it — is a pin change (§2.1, §2.6, G-R7).
-    assert_eq!(
-        pruned,
-        golden.bytes("responder_state_pruned"),
-        "the pruned state is not the pinned one"
-    );
+    if same_pin {
+        assert_eq!(
+            pruned,
+            golden.bytes("responder_state_pruned"),
+            "the pruned state is not the pinned one"
+        );
+    }
     let state = SessionState::decode(&pruned).expect("state");
     assert!(state.sidecar.is_empty());
     assert!(pickle::skipped_keys(&state.pickle)
@@ -439,4 +465,54 @@ fn golden_prune_outputs_are_pinned_and_the_pruned_state_continues() {
         prune_day,
     )
     .expect("the peer reads a message from a pruned session");
+}
+
+/// Every pin's golden directory under `tests/golden/`, as (version, directory).
+fn golden_dirs() -> Vec<(String, PathBuf)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden");
+    let mut dirs: Vec<(String, PathBuf)> = std::fs::read_dir(&root)
+        .expect("tests/golden")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.to_string();
+            let version = name.strip_prefix("vodozemac-")?.to_string();
+            Some((version, path))
+        })
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+/// `UpgradeTest` (design §15.2 item 2, §2.8; gate G-R7, S0′ gate slice §22.33): the goldens of
+/// **every previous pin** still committed load with the **current** pin, both sides continue, the
+/// chain positions that pin recorded are the ones the current pin reads, and the previous pin's
+/// **pruned** pickle loads and continues (R-41's mitigation, V-15). A bump keeps the previous
+/// directory until this has run against it; `dm-golden-lock.sh` refuses a bump that dropped it. At
+/// the first pin there is no previous directory, and the test checks only that each directory is
+/// the version its name says and that the current pin's is among them (G-R7's first-pin exemption).
+#[test]
+fn upgrade_every_previous_pin_loads_with_the_current_pin() {
+    let dirs = golden_dirs();
+    assert!(
+        dirs.iter().any(|(version, _)| version == VODOZEMAC_VERSION),
+        "no golden directory for the current pin {VODOZEMAC_VERSION}"
+    );
+    for (version, dir) in &dirs {
+        let golden = Golden::read_from(dir);
+        assert_eq!(
+            golden.text("version"),
+            version,
+            "{} holds another pin's golden",
+            dir.display()
+        );
+        if version == VODOZEMAC_VERSION {
+            continue;
+        }
+        load_and_continue(&golden);
+        chain_positions(&golden);
+        prune_outputs(&golden, false);
+    }
 }

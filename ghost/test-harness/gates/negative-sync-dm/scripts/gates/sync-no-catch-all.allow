@@ -1,0 +1,5 @@
+# Fixture allowlist: one good entry, one stale, one outside the DM modules, one malformed.
+android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt|catch (e: UnsatisfiedLinkError)|1|fixture: one allowed
+android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmFacade.kt|catch (e: UnsatisfiedLinkError)|1|fixture: stale, the file holds none
+android/sync/src/main/kotlin/org/ghost/sync/ok/Clean.kt|catch (e: Throwable)|1|fixture: the sync engine takes no exception
+android/messaging/src/main/kotlin/org/ghost/messaging/bad/SwallowingStep.kt|catch (e: Exception)|0|fixture: malformed, a count of zero

@@ -11,6 +11,14 @@
 #     container image (.img, .qcow2, .iso, .vhdx, .oci). While the repository is public, no workflow
 #     uploads one. While it is private, the only binary uploads allowed are the internal native
 #     hand-offs named in HANDOFFS, with `retention-days: 1`, downloaded by a job of the same workflow.
+#   - The same holds for the Actions cache (Phase 9 design §22.33: the native hand-off moved there
+#     when the artifact storage quota stopped every upload): a step that saves a cache
+#     (`actions/cache/save`, or `actions/cache`, which saves in its post step) with a binary path is
+#     allowed only while the repository is private (a pull request's workflow can restore what the
+#     base branch cached, and in a public repository that includes a fork's), only under a key that
+#     starts with a HANDOFFS name and carries `github.run_id` (the entry is this run's hand-off, no
+#     other run restores it), and only when a job of the same workflow restores that key
+#     (`actions/cache/restore`).
 #   - No workflow publishes anything: GitHub releases and release assets, GitHub Pages, container
 #     registry pushes, Gradle or Cargo publication (release signing and distribution are offline,
 #     FR-8.2, ADR-07).
@@ -72,7 +80,7 @@ for my $file (sort glob("$ENV{REPO_ROOT}/.github/workflows/*.{yml,yaml}")) {
   close $fh;
   chomp @lines;
   s/\r$// for @lines;
-  my (@steps, %downloads);
+  my (@steps, %downloads, %restores, @caches);
   for my $i (0 .. $#lines) {
     my $l = $lines[$i];
     next if $l =~ /^\s*#/;
@@ -95,8 +103,10 @@ for my $file (sort glob("$ENV{REPO_ROOT}/.github/workflows/*.{yml,yaml}")) {
     my @body = @lines[$from .. $to];
     my $uses = join("\n", grep { !/^\s*#/ } @body);
     my $kind = $uses =~ /^\s*(?:-\s+)?uses:\s*actions\/upload-artifact@/m ? "upload"
-             : $uses =~ /^\s*(?:-\s+)?uses:\s*actions\/download-artifact@/m ? "download" : next;
-    my ($name, $retention, @paths, $with_indent, $in_path, $path_indent);
+             : $uses =~ /^\s*(?:-\s+)?uses:\s*actions\/download-artifact@/m ? "download"
+             : $uses =~ /^\s*(?:-\s+)?uses:\s*actions\/cache(?:\/save)?@/m ? "cache-save"
+             : $uses =~ /^\s*(?:-\s+)?uses:\s*actions\/cache\/restore@/m ? "cache-restore" : next;
+    my ($name, $retention, @paths, $with_indent, $in_path, $path_indent, $key, @restore_keys);
     for my $k (0 .. $#body) {
       my $l = $body[$k];
       next if $l =~ /^\s*(?:#|$)/;
@@ -108,6 +118,8 @@ for my $file (sort glob("$ENV{REPO_ROOT}/.github/workflows/*.{yml,yaml}")) {
       if ($in_path && $ind > $path_indent) { (my $p = $l) =~ s/^\s+//; push @paths, $p; next }
       $in_path = 0;
       if ($l =~ /^(\s*)name:\s*(.*?)\s*$/) { ($name = $2) =~ s/^["\x27]|["\x27]$//g; next }
+      if ($l =~ /^\s*key:\s*(.*?)\s*$/) { ($key = $1) =~ s/^["\x27]|["\x27]$//g; next }
+      if ($l =~ /^\s*restore-keys:\s*(.*?)\s*$/) { (my $k = $1) =~ s/^["\x27]|["\x27]$//g; push @restore_keys, $k if $k ne "" && $k !~ /^[|>]/; next }
       if ($l =~ /^\s*retention-days:\s*(.*?)\s*$/) { $retention = [$1, $from + $k + 1]; next }
       if ($l =~ /^(\s*)path:\s*(.*?)\s*$/) {
         my ($pi, $v) = (length $1, $2);
@@ -115,7 +127,25 @@ for my $file (sort glob("$ENV{REPO_ROOT}/.github/workflows/*.{yml,yaml}")) {
       }
     }
     if ($kind eq "download") { $downloads{$name} = 1 if defined $name; next }
+    if ($kind eq "cache-restore") { $restores{$_} = 1 for grep { defined } ($key, @restore_keys); next }
+    if ($kind eq "cache-save") { push @caches, { line => $from + 1, key => $key // "", paths => \@paths }; next }
     push @uploads, { line => $from + 1, name => $name // "", retention => $retention, paths => \@paths };
+  }
+  for my $c (@caches) {
+    my $where = "$rel:$c->{line}";
+    next unless grep { $_ =~ $binary } @{ $c->{paths} };
+    if ($visibility ne "private") {
+      print "$where: a cache saves binaries (APK, AAR, .so, jniLibs or an image) while the repository is not declared private\n";
+      next;
+    }
+    my ($handoff) = grep { index($c->{key}, "$_-") == 0 } keys %handoff;
+    if (!$handoff || $c->{key} !~ /\$\{\{\s*github\.run_id\s*\}\}/) {
+      print "$where: a cache saves binaries under key \x27$c->{key}\x27, which is not this run\x27s hand-off (a HANDOFFS name, then github.run_id)\n";
+      next;
+    }
+    my ($prefix) = $c->{key} =~ /^(.*?\$\{\{\s*github\.run_id\s*\}\})/;
+    print "$where: hand-off cache \x27$c->{key}\x27: no job of this workflow restores it\n"
+      unless grep { index($_, $prefix) == 0 } keys %restores;
   }
   for my $u (@uploads) {
     my $where = "$rel:$u->{line}";

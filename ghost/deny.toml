@@ -34,11 +34,10 @@ ignore = [
     # S0-6 point 4, recorded 2026-09-19). `proc-macro-error2` is unmaintained and is reached only as
     # proc-macro-error2 2.0.1 <- hax-lib-macros 0.3.7 (proc-macro) <- hax-lib 0.3.7 <- libcrux-intrinsics,
     # libcrux-ml-kem, libcrux-secrets: build-time code, nothing of it is linked into the shipped library.
-    # It was the only cargo-deny failure over the DM graph (licenses ok, bans ok, sources ok). The libcrux
-    # crates are not in this workspace yet - the S0' spike (ghost/client-core/dm-spike) has its own
-    # [workspace] and Cargo.lock - so the entry has no effect until ghost-client-dm lands in S4a, and
-    # cargo-deny prints warning[advisory-not-detected] for it until then. That warning is the expected
-    # state, not a defect: it disappears when the libcrux graph enters this workspace.
+    # It was the only cargo-deny failure over the DM graph (licenses ok, bans ok, sources ok). S0' measured
+    # it on its spike (ghost/client-core/dm-spike, its own [workspace] and Cargo.lock, deleted by the S0'
+    # gate slice, design §22.33); the libcrux graph entered this workspace with ghost-client-dm in S4a,
+    # where the entry now applies.
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 (unmaintained) reached only through the hax-lib-macros proc-macro of the libcrux graph: build-time code, nothing linked; re-review at every libcrux or hax-lib bump (ADR-36, design faza9-dm.md §16.3, V-6)" },
 ]
 

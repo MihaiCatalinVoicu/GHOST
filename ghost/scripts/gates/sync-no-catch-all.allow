@@ -1,0 +1,10 @@
+# The DM modules' deliberate catches of an Error type or Throwable (sync-no-catch-all.sh; Phase 9
+# design §16.1, §22.33). One line per (file, clause as matched, whitespace squashed): the exact count
+# in that file and why nothing is swallowed. A clause found more often fails every occurrence; an
+# entry found fewer times than it says is stale and fails. Only android/messaging and
+# android/crypto-bridge may appear here: the sync engine and its participant take no exception.
+#
+# path|clause|count|reason
+android/messaging/src/main/kotlin/org/ghost/messaging/engine/DmActor.kt|catch (e: Throwable)|2|runPass records the pass's failure and rethrows it; around schedule.afterCommit() the schedule's own failure is rethrown when the pass succeeded and attached as suppressed to the pass's failure when it did not (S9 review) - nothing is swallowed, an injected crash still reaches the top level
+android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt|catch (e: UnsatisfiedLinkError)|1|design 2.7: a native library that does not load is DmCode.CRYPTO_UNAVAILABLE, reported through isAvailable() and loadFailure(), never an Error escaping into :messaging
+android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmFacade.kt|catch (e: UnsatisfiedLinkError)|1|design 2.7: a library that disappeared between the availability check and the call is DmResult.unavailable() (CRYPTO_UNAVAILABLE); only this one Error type is caught, so an injected crash passes through

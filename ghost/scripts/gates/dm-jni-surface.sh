@@ -78,7 +78,7 @@ grep 'Availability::Exported' "$work/entries" \
 # Rust source of the scan root, so an entry point written by hand somewhere else is caught too.
 prune=(-not -path '*/target/*')
 if [ -z "${GHOST_DM_JNI_SCAN:-}" ]; then
-  prune+=(-not -path '*/test-harness/*' -not -path '*/dm-spike/*')
+  prune+=(-not -path '*/test-harness/*')
 fi
 {
   grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SOURCE" || true

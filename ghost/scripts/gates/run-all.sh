@@ -17,7 +17,12 @@ rc=0
 # android job runs it again with the release build's R8 mapping.txt, which adds the mapping half.
 # workflow-yaml parses every .github/workflow file: a workflow that is not valid YAML never starts, and
 # nothing else in this list reads one (slice note: the DM exit gate did not run on three merges).
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml; do
+# The S0′ gate slice (Phase 9 design §16.1, §22.33) adds the source-only DM gates: messaging-no-network
+# (G-DM1) and dm-no-replace (G-DM4); sync-no-catch-all now reads the DM modules too. Its build-dependent
+# gates run where the build is: libcrux-portable (G-R3) after the native and host builds in their CI
+# jobs, dm-rust-no-logging (G-R4), dm-golden-lock (G-R7) and dm-vendored-clock-log (G-R8) in the rust
+# job and in rust-gates.sh.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

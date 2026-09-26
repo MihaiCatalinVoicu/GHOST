@@ -1,0 +1,23 @@
+[package]
+publish = false
+name = "ghost-vendored-scan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Gate G-R8: clock, logging, printing and network sites in the compiled library code of the shipped ghost-client-dm graph (Phase 9 design §16.1 G-R8, §22.8.10 point 4); test tooling, never linked into a shipped library"
+
+# The scanner of S0′'s V-8 (client-core/dm-spike/examples/g_r8_scan.rs), moved into the workspace by
+# the S0′ gate slice (design §22.33) so fmt, clippy, cargo-deny and the lock cover it. The versions are
+# the ones the lock already carries (proc-macro dependencies of the workspace); `span-locations` gives
+# line numbers outside a proc-macro. `cargo build -p ghost-client-net` (build-native.sh) does not
+# select this package, so its features never reach the shipped library's build.
+[dependencies]
+syn = { version = "=2.0.119", features = ["full", "visit-mut"] }
+proc-macro2 = { version = "=1.0.107", features = ["span-locations"] }
+quote = "=1.0.47"
+serde_json = { workspace = true }
+
+[[bin]]
+name = "vendored-scan"
+path = "src/main.rs"

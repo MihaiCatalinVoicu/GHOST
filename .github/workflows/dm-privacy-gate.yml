@@ -50,11 +50,17 @@ name: dm-privacy-gate
 # every world reports itself skipped rather than failing (`DmWorld.nativeAvailable()`), which the
 # report check turns into a failure: no world line, no PASS.
 #
-# Budget. Not measured at this scale: the PR-scale world (N = 120, 14 days) took 158–249 s on the
-# owner's workstation, and the gate world is 5x the clients over 3x the days, so the matrix job's
-# timeout assumes about an hour per seed and leaves room for superlinear growth (every client is an
-# in-memory SQLite database). The self-hosted runners are not up, so no run of this file has
-# executed end to end; §22.16 says so.
+# Budget and memory (§22.33 item 3). The first nightly run (2026-09-25, on `d9ff300`) failed on all
+# ten seed pairs after 27–42 minutes: the test JVM had Gradle's default heap of 512 MB, which the gate
+# world outgrows. Measured since on seed pair 0 at this scale (a 4-vCPU container, beside other
+# builds): 49 minutes for the test step, the world itself 40 (2415 s) and its joins, S-DM3, S-DM1/2/4
+# and T35 the rest; the live heap grows linearly to about 1.2 GB by the world's end and peaks near
+# 2.8 GB (measured by a full collection) in the statistics, and a 6 GB cap passed with that one full
+# collection. So the worlds step passes `-Dghost.dm.heap=6g`, and at most three seed pairs run at once:
+# each job holds about 9 GB at its end (the test heap, about 2 GB outside it — 600 in-memory SQLite
+# databases and their threads — and the Gradle daemon), and the runners share one WSL VM of about
+# 47 GB with Docker Desktop (docs/ci-self-hosted.md §7). The timeout keeps a wide margin over the
+# measured hour.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
@@ -80,6 +86,8 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
+      # Memory, not runners, bounds this: see "Budget and memory" above.
+      max-parallel: 3
       matrix:
         # §15.6: 10 seed pairs nightly; a dispatch runs the first.
         seed: ${{ fromJSON(github.event_name == 'schedule' && '[0,1,2,3,4,5,6,7,8,9]' || '[0]') }}
@@ -112,7 +120,8 @@ jobs:
         working-directory: ghost
         run: |
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
-          cargo build -p ghost-dm-host --release --locked --features provenance
+          cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       # `--test`: the host build also exports the equivalence-test entry point (design 15.9 item 7, slice
       # S12), and only that. Without the flag this step failed and the gate never reached its world
@@ -128,7 +137,8 @@ jobs:
             --tests 'org.ghost.messaging.dmworld.DmPrivacyWorldTest.t32JoinsAndSdm3HoldOverThePrivacyWorld' \
             -Dghost.dm.native="$GHOST_DM_NATIVE" \
             -Dghost.dm.privacy=gate \
-            -Dghost.dm.privacy.seed=${{ matrix.seed }}
+            -Dghost.dm.privacy.seed=${{ matrix.seed }} \
+            -Dghost.dm.heap=6g
       - name: job summary and report check
         if: always()
         run: |
@@ -141,8 +151,15 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           bash ../scripts/gates/dm-report-check.sh "$report" privacy-gate
+      # A failed test's message and stack trace in the job summary (Phase 9 design §22.33): when the
+      # upload below is refused, the job log alone said `java.sql.SQLException at …:33` and no more.
+      - name: failed tests (job summary)
+        if: failure()
+        run: bash ../scripts/ci/junit-failures.sh messaging/build/test-results/testDebugUnitTest >> "$GITHUB_STEP_SUMMARY"
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the report and the test reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dm-privacy-gate-${{ matrix.seed }}
@@ -195,7 +212,8 @@ jobs:
         working-directory: ghost
         run: |
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
-          cargo build -p ghost-dm-host --release --locked --features provenance
+          cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       # `--test`: the host build also exports the equivalence-test entry point (design 15.9 item 7, slice
       # S12), and only that. Without the flag this step failed and the gate never reached its world
@@ -230,8 +248,15 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           bash ../scripts/gates/dm-report-check.sh "$report" privacy-suite
+      # A failed test's message and stack trace in the job summary (Phase 9 design §22.33): when the
+      # upload below is refused, the job log alone said `java.sql.SQLException at …:33` and no more.
+      - name: failed tests (job summary)
+        if: failure()
+        run: bash ../scripts/ci/junit-failures.sh messaging/build/test-results/testDebugUnitTest >> "$GITHUB_STEP_SUMMARY"
+      # Evidence, not a gate: an upload the artifact quota refuses must not turn the job red (§22.33).
       - name: upload the report and the test reports
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dm-privacy-gate-suite
