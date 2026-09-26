@@ -51,6 +51,23 @@
             android:name="androidx.profileinstaller.ProfileInstallReceiver"
             tools:ignore="MissingClass"
             tools:node="remove" />
+
+        <!-- ADR-06, FR-7.11 (Phase 9 review A-3): no call to Google Play services. Compose brings in
+             emoji2, whose androidx.startup initializer asks the system font provider (on most
+             phones a Google Play services component) for the emoji font 500 ms after the first
+             resume: a Binder call that tells Google the app started with UI. The initializer is removed;
+             EmojiCompat stays unconfigured and text renders with the platform's own emoji font.
+             merged-manifest-lint.sh allowlists the startup initializers that remain. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:ignore="MissingClass"
+                tools:node="remove" />
+        </provider>
     </application>
 
 </manifest>

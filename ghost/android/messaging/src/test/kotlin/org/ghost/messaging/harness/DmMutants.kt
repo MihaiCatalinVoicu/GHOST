@@ -156,12 +156,19 @@ internal object DmMutants {
      * as stated — what is true is that D3 is the only thing that makes the copy a *duplicate*
      * rather than an error. The [expect] string is what pins the difference, and §22.15 item 14
      * records it, including that the CS-2 half of the oracle is therefore still unexercised.
+     *
+     * **Since the phase review (ENG-3) the fifth layer drops instead of aborting.** A peer could
+     * reach the same guard on purpose — re-using an id — and every such blob aborted three passes,
+     * so RECV now writes the row with an insert that selects nothing when the id is taken and drops
+     * the message as `id_taken`, a reason of its own. The replace guard's abort no longer kills this
+     * mutant; RP6's check that no copy it retries ever reaches the message row does, which is D3's
+     * own property at last: with the tag written, the copy is a `duplicate` at R10.
      */
     val MC5 = Mutation(
         id = "MC-5",
         defeats = "D3: the dm_seen tag makes a re-encrypted copy of a message a duplicate",
-        detectedBy = "RP6's retry, refused by the dm_message replace guard before D3's own check",
-        expect = "dm_message rows are never replaced",
+        detectedBy = "RP6's retry, which D3's absence lets reach the message row (counted id_taken)",
+        expect = "the retried copy passed D3 and reached the message row",
         // The tag written is a random one, so the insert still **succeeds** and the real tag is
         // never recorded. Suppressing the statement outright would be the opposite mutant:
         // `markSeen` reports "new" by `execUpdate(...) == 1`, so a statement that changes no row

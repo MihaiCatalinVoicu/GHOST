@@ -53,10 +53,21 @@ class IdentityManager(
         return root
     }
 
-    /** Unwraps the persisted root entropy; requires the Keystore key (and user auth if configured). */
+    /**
+     * Unwraps the persisted root entropy; requires the Keystore key (and user auth if configured).
+     *
+     * The unwrapped plaintext is the root itself: [RootEntropy.fromRaw] copies it, and the buffer
+     * the wrapper returned is erased here, as [persist] erases its own (Phase 9 review A-1; before
+     * it, every DM context open left one copy of the root in the heap, unerased).
+     */
     fun unlock(): RootEntropy {
         val envelope = store.read(ENVELOPE_NAME) ?: throw IllegalStateException("no identity on this device")
-        return RootEntropy.fromRaw(wrapper.unwrap(envelope))
+        val raw = wrapper.unwrap(envelope)
+        try {
+            return RootEntropy.fromRaw(raw)
+        } finally {
+            raw.fill(0)
+        }
     }
 
     /** Local wipe of the wrapped seed (device revocation flow, ADR-14; best-effort on flash, §8.1). */

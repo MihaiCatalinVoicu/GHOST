@@ -13,5 +13,12 @@
   fails on everything is caught too.
 - `dm-receiver/AndroidManifest.xml` is the positive file with that receiver exported and given an
   intent filter: G-DM7 reports both, and T15m reports the unlisted export — exactly 3 lines.
+- `startup/AndroidManifest.xml` is the positive file with emoji2's `EmojiCompatInitializer` back
+  under `androidx.startup.InitializationProvider`, as the release shipped it until the Phase 9
+  review (A-3): the startup-initializer rule reports it — exactly 1 line.
+
+The positive file carries the startup initializers the release keeps since that review
+(`ProcessLifecycleInitializer`, `ProfileInstallerInitializer`); emoji2's is removed by the app
+manifest.
 
 Nothing here is compiled or shipped.

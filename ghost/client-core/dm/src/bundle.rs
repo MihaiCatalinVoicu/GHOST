@@ -120,6 +120,16 @@ pub fn build(identity_seed: &[u8; 32], fields: &BundleFields<'_>) -> DmResult<Ve
 /// The X-Wing key is validated whole (§22.8.2 rule 3), so a contact that published a low-order
 /// X25519 half or an out-of-range ML-KEM half is `INVALID_KEY` and its candidate is dropped rather
 /// than failing later inside the time-triggered `EST-READY`.
+///
+/// **The Olm identity and the fallback key must be canonical encodings too** (phase review
+/// CRY-P9-01). Their points are fine to X25519 whatever the top bit says, so `sessionOutbound`
+/// used to build a session on `F | 2^255` — but vodozemac carries the bytes verbatim into every
+/// PreKey message, and [`crate::olm::message`]'s `canonical_keys` refuses such a message on both
+/// sides: `sealIntro` then answered `NON_CANONICAL` on every send to that contact, which the
+/// engine treats as its own bug and throws on every time-triggered pass. The Olm identity is
+/// pinned and compared byte for byte (§22.9 item 13), so its encoding is refused here as well.
+/// Keys this crate builds are canonical, so only the bundle's owner can publish either form, and
+/// it is the same `INVALID_KEY` the S13 review gave the X-Wing half: the candidate is dropped.
 pub fn parse(plain: &[u8]) -> DmResult<Bundle> {
     if plain.len() != BUNDLE_PLAIN_BYTES {
         return Err(DmCode::NonCanonical);
@@ -137,6 +147,9 @@ pub fn parse(plain: &[u8]) -> DmResult<Bundle> {
     olm_identity.copy_from_slice(&plain[OFFSET_OI..OFFSET_FALLBACK]);
     let mut fallback_key = [0u8; 32];
     fallback_key.copy_from_slice(&plain[OFFSET_FALLBACK..OFFSET_XWING]);
+    if !pq::canonical_u_coordinate(&olm_identity) || !pq::canonical_u_coordinate(&fallback_key) {
+        return Err(DmCode::InvalidKey);
+    }
     let mut week = [0u8; 8];
     week.copy_from_slice(&plain[OFFSET_WEEK..OFFSET_RANK]);
     Ok(Bundle {
@@ -204,6 +217,9 @@ mod tests {
 
     const IDENTITY_SEED: [u8; 32] = [0xa1; 32];
     const NAMESPACE: [u8; 32] = [0xa2; 32];
+    /// Canonical encodings: the top byte is below `0x7f` (CRY-P9-01).
+    const OLM_IDENTITY: [u8; 32] = [0x25; 32];
+    const FALLBACK_KEY: [u8; 32] = [0x26; 32];
 
     fn bundle_key() -> SealKey {
         SealKey::new([0xa3; 32], KeyProvenance::Card(CardSource::InPerson))
@@ -218,8 +234,8 @@ mod tests {
                 bundle_week: 2_870,
                 bundle_rank: 0,
                 gen_id: 0x1234_5678,
-                olm_identity: &[0xa5; 32],
-                fallback_key: &[0xa6; 32],
+                olm_identity: &OLM_IDENTITY,
+                fallback_key: &FALLBACK_KEY,
                 xwing_public: &xwing,
             },
         )
@@ -298,13 +314,64 @@ mod tests {
                 bundle_week: 2_870,
                 bundle_rank: 0,
                 gen_id: 1,
-                olm_identity: &[0xa5; 32],
-                fallback_key: &[0xa6; 32],
+                olm_identity: &OLM_IDENTITY,
+                fallback_key: &FALLBACK_KEY,
                 xwing_public: &bad_key,
             },
         )
         .expect("build");
         assert_eq!(parse(&plain).err(), Some(DmCode::InvalidKey));
+    }
+
+    /// Phase review CRY-P9-01: a signed bundle whose Olm identity or fallback key has the top bit
+    /// set (the same point to X25519, other bytes to every hash and pin) is `INVALID_KEY` at the
+    /// parser, so `EST-READY` drops the candidate instead of building a session whose every
+    /// PreKey message `sealIntro` refuses. So is `p` itself and anything above it.
+    #[test]
+    fn a_non_canonical_olm_identity_or_fallback_key_is_refused_at_parse() {
+        let xwing = pq::public_key(&KemSecret::from_bytes([0xa4; 32])).expect("keygen");
+        let build_with = |olm_identity: &[u8; 32], fallback_key: &[u8; 32]| {
+            build(
+                &IDENTITY_SEED,
+                &BundleFields {
+                    card_index: 0,
+                    bundle_week: 2_870,
+                    bundle_rank: 0,
+                    gen_id: 7,
+                    olm_identity,
+                    fallback_key,
+                    xwing_public: &xwing,
+                },
+            )
+            .expect("build signs whatever it is given")
+        };
+        assert!(
+            parse(&build_with(&OLM_IDENTITY, &FALLBACK_KEY)).is_ok(),
+            "the control parses"
+        );
+        let mut high = FALLBACK_KEY;
+        high[31] |= 0x80;
+        assert!(
+            pq::contributory(&high),
+            "the variant is still a usable point to X25519"
+        );
+        assert_eq!(
+            parse(&build_with(&OLM_IDENTITY, &high)).err(),
+            Some(DmCode::InvalidKey),
+            "fallback key | 2^255"
+        );
+        let mut high_oi = OLM_IDENTITY;
+        high_oi[31] |= 0x80;
+        assert_eq!(
+            parse(&build_with(&high_oi, &FALLBACK_KEY)).err(),
+            Some(DmCode::InvalidKey),
+            "Olm identity | 2^255"
+        );
+        assert_eq!(
+            parse(&build_with(&OLM_IDENTITY, &pq::CURVE25519_P)).err(),
+            Some(DmCode::InvalidKey),
+            "the fallback key p"
+        );
     }
 
     #[test]

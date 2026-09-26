@@ -18,6 +18,12 @@
 #     the receiver of the one inexact DM alarm, is present, declares android:exported="false" and has
 #     no intent filter: only the app's own explicit, immutable PendingIntent may reach it. Phase 9
 #     adds no permission, which the allowlist above already enforces.
+#   - androidx.startup initializers (ADR-06, FR-7.11; Phase 9 review A-3): every <meta-data> with
+#     android:value="androidx.startup" under androidx.startup.InitializationProvider names an
+#     initializer on STARTUP_INITIALIZERS below. An initializer runs in every process start with no
+#     call site in GHOST's code, so a library update can add one silently; emoji2's
+#     EmojiCompatInitializer asked Google Play Services' font provider for a font at every UI start
+#     and shipped unnoticed from Phase 7 until the Phase 9 review.
 # Usage: merged-manifest-lint.sh [merged AndroidManifest.xml ...]. Default: the :app release merged
 # manifest under android/app/build/intermediates/merged_manifest/release (run :app:assembleRelease
 # first). It needs the build, so CI runs it in the android job, not in run-all.sh. POSIX awk only
@@ -31,6 +37,10 @@ DM_ALARM_RECEIVER='org.ghost.messaging.android.ExpiryAlarmReceiver'
 # entry. Empty: design §11.1 Q7 removed androidx.profileinstaller.ProfileInstallReceiver (exported,
 # protected by DUMP) with tools:node="remove" in the app manifest.
 MERGED_EXPORTED=()
+# The androidx.startup initializers the release may keep, "|"-separated. ProcessLifecycleInitializer
+# is lifecycle bookkeeping inside the process; ProfileInstallerInitializer writes the ART profile
+# to the app's own storage. Neither makes a call outside the process.
+STARTUP_INITIALIZERS='androidx.lifecycle.ProcessLifecycleInitializer|androidx.profileinstaller.ProfileInstallerInitializer'
 
 # Reads the manifest as a stream of tags (RS="<"), skipping comments and declarations. Prints one
 # line per violation, then T15M-CHECKED, so a parser failure cannot pass as a clean manifest.
@@ -73,6 +83,10 @@ function open_tag(name, tag,    pn) {
     if (attr(tag, "android:name") == "android.intent.action.MAIN") fmain = 1
   } else if (incomp && name == "category") {
     if (attr(tag, "android:name") == "android.intent.category.LAUNCHER") flaunch = 1
+  } else if (incomp && name == "meta-data" && cname == "androidx.startup.InitializationProvider") {
+    if (attr(tag, "android:value") == "androidx.startup" && !(attr(tag, "android:name") in allowedinit)) {
+      bad("androidx.startup initializer not allowlisted: " attr(tag, "android:name") " (ADR-06, FR-7.11)")
+    }
   }
 }
 function close_tag(name) {
@@ -116,6 +130,8 @@ BEGIN {
   for (i = 1; i <= n; i++) allowedperm[parts[i]] = 1
   n = split(exported, entries, ";")
   for (i = 1; i <= n; i++) if (entries[i] != "") { split(entries[i], f, "|"); allowedexp[f[1]] = f[2] }
+  n = split(initializers, parts, "|")
+  for (i = 1; i <= n; i++) allowedinit[parts[i]] = 1
 }
 {
   rec = $0
@@ -165,7 +181,7 @@ for m in ${files[@]+"${files[@]}"}; do
   parsed=0
   while IFS= read -r v; do
     if [ "$v" = "T15M-CHECKED" ]; then parsed=1; else fail "$m: $v"; fi
-  done < <(awk -v perms="$T15_ALLOWED_PERMISSIONS" -v exported="$exported_list" -v syncsvc="$SYNC_JOB_SERVICE" -v dmrecv="$DM_ALARM_RECEIVER" -v required="$SYNC_JOB_PERMISSIONS" "$AWK_PROG" "$m" || true)
+  done < <(awk -v perms="$T15_ALLOWED_PERMISSIONS" -v exported="$exported_list" -v syncsvc="$SYNC_JOB_SERVICE" -v dmrecv="$DM_ALARM_RECEIVER" -v required="$SYNC_JOB_PERMISSIONS" -v initializers="$STARTUP_INITIALIZERS" "$AWK_PROG" "$m" || true)
   [ "$parsed" = 1 ] || fail "$m: could not be parsed"
   echo "[merged-manifest-lint] checked $m"
 done

@@ -16,6 +16,7 @@ import org.ghost.sync.api.RelayId
 import org.ghost.sync.api.SendDelay
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncTransaction
+import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.store.RetentionPolicy.SKEW_SECONDS
 import org.ghost.sync.store.RetentionPolicy.STORE_WINDOW_SECONDS
 import org.ghost.sync.store.Sql.DUE_CLAMP_SECONDS
@@ -702,7 +703,7 @@ internal class OutboxStore(private val capabilities: CapabilityStore) {
             } else {
                 null
             }
-            OutboundOutcome(OperationId(row.blob(0)), NamespaceId(row.blob(1)), outcome, resend)
+            OutboundOutcome(OperationId(row.blob(0)), NamespaceId(row.blob(1)), outcome, resend, TtlBucket.ofSeconds(row.long(3)))
         }
     }
 

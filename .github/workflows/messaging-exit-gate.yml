@@ -54,13 +54,28 @@ name: messaging-exit-gate
 # at. The spread is the machine's, not the code's: SCN-H, 17 410 events in both, took 65 minutes of
 # the second run where S10b's run of 17 284 took 31 (S10b's whole gate, fifteen lines before S13,
 # was 72 min 51 s; nothing recorded how loaded the machine was for it). The PR scale took 9 min
-# 48 s, 11 min 24 s and 17 min 56 s on the same machine. **Not measured**: this job, on a runner.
-# The self-hosted runners are not up, so no run of it has been observed. On a 4-vCPU runner the
+# 48 s, 11 min 24 s and 17 min 56 s on the same machine. **Not measured** when this was written:
+# this job, on a runner (what the runners showed since is below). On a 4-vCPU runner the
 # harness runs 4 threads instead of 8, so an **extrapolation** — not a measurement — is about
 # twice the workstation's harness time: roughly 240 minutes from the first figure and 395 from the
 # second, plus the Rust and Gradle builds and whatever the slower cores cost. The old 240-minute
 # timeout was at or below that on both, so it is 480 minutes now; the figure has to be measured on
 # the runner before any timeout is trusted (§22.23 item 11(f)).
+#
+# **Observed on the runners** (Phase 9 review GATES-1). Two runs passed the harness before SCN-E and
+# the suite cases landed (b918242 in 5 h 47 min, 4b343e3 in 4 h 07 min; both jobs then failed at the
+# artifact upload). The next three — 35965999870 and 35977131413 on 7f33d4c, 35983745567 on f21f534 —
+# were cancelled at the 480-minute limit, three copies of this job overlapping on the four runners of
+# one laptop from 10:40 to 14:55 on 2026-09-24. Then, on d9ff300 (read after the review, design
+# §22.33 item 1), the whole gate with SCN-E and the suite cases finished twice and passed the harness
+# and the report check, red only at the artifact upload: push run 36092262408 (harness step 5 h 15 min)
+# and nightly 36116534377 (job 4 h 25 min), overlapping by 12 minutes. `concurrency` below keeps one
+# run per trigger kind at a time (a newer push waits, and replaces a push already waiting); sharding
+# the job, as `entitlement-exit-gate` is sharded, is the owner's call (design §22.34).
+#
+# Heap. The test JVM's heap is `-Dghost.dm.heap`, default 2 GB (`messaging/build.gradle.kts`, design
+# §22.33 item 3); every run above had Gradle's default of 512 MB, which this gate's crash enumeration
+# fitted and the gate-scale privacy world did not. This gate passes no heap and takes the default.
 #
 # Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
 on:
@@ -89,6 +104,13 @@ on:
 
 permissions:
   contents: read
+
+# One run per trigger kind at a time (see "Observed on the runners"): overlapping 8-hour copies of
+# this job on the shared runners were cancelled at the job limit. Not cancel-in-progress: a run that
+# has started finishes, and the newest waiting push is the one that runs next.
+concurrency:
+  group: messaging-exit-gate-${{ github.event_name }}
+  cancel-in-progress: false
 
 defaults:
   run:

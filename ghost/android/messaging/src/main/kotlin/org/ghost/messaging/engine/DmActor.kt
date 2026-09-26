@@ -5,7 +5,10 @@ import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.HeldStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.messaging.store.SessionStore
+import org.ghost.storage.StorageFullException
+import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncDatabase
@@ -121,6 +124,33 @@ internal class DmActor(
 
     /** When a bundle candidate was first stored, so `EST-READY` waits two minutes (§21.7 point 4). */
     private val candidateSince = HashMap<List<Byte>, Long>()
+
+    /**
+     * Seconds until the first `EST-READY` a stored candidate waits for, or null: §21.9 rule 1's
+     * "next EST timer" in the actor timer's minimum (phase review MD-3). Without it nothing woke
+     * the actor at candidate + 2 min — in a foreground session the relay session had started
+     * already — and the first message went out at the fetch window's end, about 15 minutes after
+     * the send. A candidate already due is left to the pass that is due anyway, so a candidate a
+     * pass could not use never turns into a wake loop. **Actor thread only**, like every reader of
+     * [candidateSince]: [ExpirySchedule.afterCommit] runs there.
+     */
+    fun nextReadySeconds(): Long? {
+        if (candidateSince.isEmpty()) return null
+        val now = clock.nowEpochSeconds()
+        return candidateSince.values
+            .map { it + EstablishmentSteps.READY_DELAY_SECONDS - now }
+            .filter { it > 0 }
+            .minOrNull()
+    }
+
+    /**
+     * §21.12 point 1's **storage-full latch** (phase review ENG-2): the blobs whose `RECV` or
+     * `BUNDLE` transaction rolled back on a full disk and whose `Inbox.defer` could not be written
+     * either. While it is not empty no `DM` or `PREKEYS` blob is claimed; each claim step first
+     * writes the deferrals it owes, and the first one that commits opens it again. In memory,
+     * like the offer counter's reason to exist: a process death is exactly what R2 counts.
+     */
+    private val owedDefers = ArrayList<Pair<NamespaceId, BlobHash>>()
 
     /**
      * Set by [retire] before its final turn is queued: from then on a posted turn — a pass, a
@@ -254,9 +284,16 @@ internal class DmActor(
     /**
      * A relay session start, a database open or the actor timer: the three triggers §21.9 rule 1
      * gives the time-triggered steps.
+     *
+     * [sessionStart] says which of them it is (phase review MD-2). Every time-triggered step runs
+     * on each, except one: the next **attempt** of a bundle fetch, which §21.7 point 5 opens "at
+     * the first relay session start at least 6 h later". Opened by the alarm or the in-process
+     * timer instead, an attempt's 15-minute window could open and close with no relay session to
+     * list `P_c` in it, and three such windows made a contact unreachable and failed its first
+     * message about 13 hours after the send, whatever its 7-day deadline.
      */
-    fun onTimeTrigger() {
-        wake(timeTriggered = true)
+    fun onTimeTrigger(sessionStart: Boolean = false) {
+        wake(timeTriggered = true, sessionStart = sessionStart)
     }
 
     /**
@@ -276,8 +313,14 @@ internal class DmActor(
             "the tail runs in background sessions and quiet runs only (§13.3 item 6)"
         }
         val future = post {
-            // A relay session start is one of §21.9 rule 1's three triggers, and so is its end.
-            runPass(timeTriggered = true, deadlineMonotonicMillis = deadlineMonotonicMillis)
+            // A relay session start is one of §21.9 rule 1's three triggers, and so is its end —
+            // but the end is not a **start**: a fetch attempt opened here would wait for a session
+            // that may begin after its window closed (phase review MD-2).
+            runPass(
+                timeTriggered = true,
+                deadlineMonotonicMillis = deadlineMonotonicMillis,
+                sessionStart = false,
+            )
         } ?: return
         val remaining = deadlineMonotonicMillis - clock.monotonicMillis()
         if (remaining <= 0) return
@@ -297,11 +340,11 @@ internal class DmActor(
         }
     }
 
-    private fun wake(timeTriggered: Boolean) {
+    private fun wake(timeTriggered: Boolean, sessionStart: Boolean = false) {
         if (!pending.compareAndSet(false, true) && !timeTriggered) return
         post {
             pending.set(false)
-            runPass(timeTriggered, deadlineMonotonicMillis = null)
+            runPass(timeTriggered, deadlineMonotonicMillis = null, sessionStart = sessionStart)
         }
     }
 
@@ -315,10 +358,19 @@ internal class DmActor(
      * created.
      */
     @Suppress("ReturnCount")
-    fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
+    fun runPass(
+        timeTriggered: Boolean,
+        deadlineMonotonicMillis: Long?,
+        /**
+         * Whether the trigger was a relay session start ([onTimeTrigger]). A caller that drives
+         * passes itself — the worlds of the test harness — gets the old reading by default: every
+         * time-triggered pass it runs stands for a session start.
+         */
+        sessionStart: Boolean = timeTriggered,
+    ) {
         var failure: Throwable? = null
         try {
-            pass(timeTriggered, deadlineMonotonicMillis)
+            pass(timeTriggered, deadlineMonotonicMillis, sessionStart)
         } catch (e: Throwable) {
             failure = e
             throw e
@@ -346,7 +398,7 @@ internal class DmActor(
     }
 
     @Suppress("ReturnCount")
-    private fun pass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?) {
+    private fun pass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {
         // SWEEP first (§13.7's pass order). It runs before the activation check and before every
         // other step, because it is the one step that needs nothing to be true: a device whose DM
         // context is locked, whose identity is half-activated or whose native library is missing
@@ -391,7 +443,7 @@ internal class DmActor(
             // The pair-key ratchet is no longer here: §21.3 point 5 puts it inside SWEEP, in the
             // same transaction as the erasure it must precede (mutant MC-21), and SWEEP is the
             // first step of every pass above.
-            runEstablishment()
+            runEstablishment(sessionStart)
             // §21.9 rule 1 names "due scheduled controls" among the time-triggered steps, and this
             // is the whole of PM-30 for them: a card holder must not be able to deposit a probe
             // during this device's session and watch a reconnect or revocation notice follow.
@@ -429,12 +481,57 @@ internal class DmActor(
      * rolled back (§7.8).
      */
     private fun consumeInbox(deadlineMonotonicMillis: Long?) {
+        if (!storageLatchOpen()) return
         for (peeked in peekOrder.order()) {
             if (outOfTime(deadlineMonotonicMillis)) return
             val blob = sync.inbox.claimOne(Consumer.DM, peeked.namespace, peeked.hash) ?: continue
-            val result = receiveStep.receive(blob)
+            val result = try {
+                receiveStep.receive(blob)
+            } catch (e: StorageFullException) {
+                // §21.12 point 1 and §7.8's "disk full" row. The claim committed its offer counter
+                // and the RECV transaction rolled back: without this the blob is poison at its
+                // fourth offer, and the message is lost although nothing died (phase review ENG-2).
+                deferAfterStorageFull(blob.namespace, blob.hash)
+                return
+            }
             if (result == ReceiveStep.Result.CRYPTO_UNAVAILABLE) return
         }
+    }
+
+    /**
+     * §21.12 point 1: "a RECV or BUNDLE transaction that rolls back with `StorageFullException` is
+     * followed by `Inbox.defer(ns, hash, 60 s)` in its own transaction, which resets the counter
+     * … and if that also fails an in-memory storage-full latch stops DM claims until a write
+     * transaction succeeds". A re-offer time is local: nothing reaches a relay (T28).
+     */
+    private fun deferAfterStorageFull(namespace: NamespaceId, hash: BlobHash) {
+        try {
+            database.transaction { tx ->
+                sync.inbox.defer(tx, namespace, hash, STORAGE_FULL_DEFER_SECONDS)
+            }
+        } catch (e: StorageFullException) {
+            owedDefers += namespace to hash
+        }
+    }
+
+    /**
+     * Whether blobs may be claimed: true once every deferral [owedDefers] holds has been written.
+     * Each is retried here, before any claim, so the latch stays shut exactly as long as a write
+     * fails.
+     */
+    private fun storageLatchOpen(): Boolean {
+        while (owedDefers.isNotEmpty()) {
+            val (namespace, hash) = owedDefers.first()
+            try {
+                database.transaction { tx ->
+                    sync.inbox.defer(tx, namespace, hash, STORAGE_FULL_DEFER_SECONDS)
+                }
+            } catch (e: StorageFullException) {
+                return false
+            }
+            owedDefers.removeAt(0)
+        }
+        return true
     }
 
     /**
@@ -445,23 +542,33 @@ internal class DmActor(
      * namespace un-removable at `EST-END`.
      */
     private fun claimBundles() {
+        if (!storageLatchOpen()) return
         val owners = bundleOwners()
-        if (owners.isEmpty()) {
-            // Nothing is establishing, so nothing may arrive; a stale row is consumed all the
-            // same, because `Namespaces.remove` answers false while one is left (§21.7 point 5).
-            for (blob in sync.inbox.claim(Consumer.PREKEYS, BUNDLE_CLAIM)) {
-                database.transaction { tx -> sync.inbox.markConsumed(tx, blob.namespace, blob.hash) }
-            }
-            return
-        }
-        for (blob in sync.inbox.claim(Consumer.PREKEYS, BUNDLE_CLAIM)) {
-            val contactId = owners[blob.namespace.toByteArray().toList()]
-            database.transaction { tx ->
-                if (!sync.inbox.markConsumed(tx, blob.namespace, blob.hash)) return@transaction
-                if (contactId == null) return@transaction
-                if (bundleStep.bundle(tx, contactId, blob.ciphertext)) {
-                    candidateSince.putIfAbsent(contactId.toList(), clock.nowEpochSeconds())
+        val claimed = sync.inbox.claim(Consumer.PREKEYS, BUNDLE_CLAIM)
+        for ((index, blob) in claimed.withIndex()) {
+            try {
+                if (owners.isEmpty()) {
+                    // Nothing is establishing, so nothing may arrive; a stale row is consumed all
+                    // the same, because `Namespaces.remove` answers false while one is left
+                    // (§21.7 point 5).
+                    database.transaction { tx -> sync.inbox.markConsumed(tx, blob.namespace, blob.hash) }
+                    continue
                 }
+                val contactId = owners[blob.namespace.toByteArray().toList()]
+                database.transaction { tx ->
+                    if (!sync.inbox.markConsumed(tx, blob.namespace, blob.hash)) return@transaction
+                    if (contactId == null) return@transaction
+                    if (bundleStep.bundle(tx, contactId, blob.ciphertext)) {
+                        candidateSince.putIfAbsent(contactId.toList(), clock.nowEpochSeconds())
+                    }
+                }
+            } catch (e: StorageFullException) {
+                // §21.12 point 1, for BUNDLE (phase review ENG-2): this blob and every later one of
+                // the claim had its offer counted, and none of them will fit either.
+                for (rest in claimed.subList(index, claimed.size)) {
+                    deferAfterStorageFull(rest.namespace, rest.hash)
+                }
+                return
             }
         }
     }
@@ -488,7 +595,7 @@ internal class DmActor(
      * is what §21.7 point 4 says. `EST-START` and `EST-END` are decided by
      * [EstablishmentSteps.dueStep] from the stored decision minute and `P_c`'s listening flag.
      */
-    private fun runEstablishment() {
+    private fun runEstablishment(sessionStart: Boolean) {
         val now = clock.nowEpochSeconds()
         val fetching = database.transaction { tx -> contacts.fetching(tx.sql) }
         for (contact in fetching) {
@@ -517,7 +624,8 @@ internal class DmActor(
                         establishment.estEnd(contact.contactId)
                     }
                 }
-                EstablishmentSteps.Due.START -> establishment.estStart(contact.contactId)
+                // §21.7 point 5: the next attempt opens at a relay session start only (MD-2).
+                EstablishmentSteps.Due.START -> if (sessionStart) establishment.estStart(contact.contactId)
                 EstablishmentSteps.Due.NONE -> Unit
             }
         }
@@ -642,5 +750,8 @@ internal class DmActor(
 
         /** §21.12 point 1: the tail stops claiming with fewer than two seconds left. */
         const val TAIL_RESERVE_MILLIS: Long = 2_000
+
+        /** §21.12 point 1: a blob whose `RECV` or `BUNDLE` hit a full disk is re-offered after 60 s. */
+        const val STORAGE_FULL_DEFER_SECONDS: Int = 60
     }
 }

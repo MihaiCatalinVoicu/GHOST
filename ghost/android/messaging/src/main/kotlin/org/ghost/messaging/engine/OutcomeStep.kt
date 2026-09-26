@@ -1,7 +1,6 @@
 package org.ghost.messaging.engine
 
 import org.ghost.messaging.port.DmClock
-import org.ghost.messaging.store.ContactStore
 import org.ghost.messaging.store.MessageStore
 import org.ghost.messaging.store.OwnerStore
 import org.ghost.sync.api.Consumer
@@ -37,7 +36,6 @@ internal class OutcomeStep(
     private val sendStep: SendStep,
     private val clock: DmClock,
 ) {
-    private val contacts = ContactStore()
     private val messages = MessageStore()
     private val owner = OwnerStore()
 
@@ -88,13 +86,12 @@ internal class OutcomeStep(
                         previousOperationId = op.operationId,
                         namespace = outcome.namespace.toByteArray(),
                         blob = requireNotNull(blob),
-                        // The identical bytes go out under the conversation's **current** bucket:
-                        // the relay TTL is a bucket, not the timer (§10.2), and a resend is one
-                        // op's lifetime, not a second message's.
-                        ttl = DmTimers.bucketOf(
-                            contacts.conversation(tx.sql, item.contactId)?.timerCode
-                                ?: DmTimers.TIMER_DEFAULT,
-                        ),
+                        // §10.2 row 6: "the Phase 7 identical-bytes resend repeats the op's own
+                        // TTL". It used to take the conversation's **current** bucket, so a 7-day
+                        // TEXT resent after the timer was turned off sat at relays for 30 days
+                        // (past §10.1's bound), and a TIMER_SET that shortened the timer lost
+                        // R-T3's larger bucket on its resend (phase review ENG-5).
+                        ttl = outcome.ttl,
                         deadlineHour = op.deadlineHour,
                         itemId = itemId,
                         resendCount = op.resendCount,

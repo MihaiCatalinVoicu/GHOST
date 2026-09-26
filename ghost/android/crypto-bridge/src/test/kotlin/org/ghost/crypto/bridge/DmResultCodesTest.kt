@@ -219,6 +219,18 @@ class DmResultCodesTest {
         assertNull(result.bytesOrNull(DmField.STATE))
     }
 
+    /** Phase 9 review A-1: the native reply is erased once its fields are copied out. */
+    @Test
+    fun theReplyIsErasedOnceDecoded() {
+        val reply = byteArrayOf(
+            0x00, // OK
+            0x02, 0, 0, 0, 3, 7, 8, 9, // STATE = 07 08 09
+        )
+        val result = DmResult.decode(reply)
+        assertTrue(byteArrayOf(7, 8, 9).contentEquals(result.bytes(DmField.STATE)))
+        assertTrue("the reply buffer still holds its fields", reply.all { it == 0.toByte() })
+    }
+
     @Test
     fun aCodeOnlyReplyDecodes() {
         val result = DmResult.decode(byteArrayOf(DmCode.DUPLICATE_OR_LOST.wire.toByte()))

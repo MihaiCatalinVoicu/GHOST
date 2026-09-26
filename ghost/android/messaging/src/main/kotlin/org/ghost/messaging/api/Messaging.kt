@@ -117,7 +117,11 @@ interface Messaging {
     /** §7.3: one text message. The result is the send's, not the delivery's (D10, FR-4.3). */
     fun send(contact: ContactId, text: String, quote: MessageId?): SendResult
 
-    /** §7.1: a reaction to a message of the same conversation; an empty grapheme removes it. */
+    /**
+     * §7.1: a reaction to a message of the same conversation; an empty grapheme removes it. A
+     * grapheme over 32 bytes is [SendResult.TOO_LARGE]; a target that is not a live message of the
+     * conversation is [SendResult.UNKNOWN].
+     */
     fun react(contact: ContactId, target: MessageId, grapheme: String?): SendResult
 
     /** §10.5: the conversation timer, as a TIMER_SET message both sides see (ADR-27 C.8). */
@@ -461,7 +465,7 @@ enum class SendResult {
     STORAGE_FULL,
     CRYPTO_UNAVAILABLE,
 
-    /** No such contact, or no message to retry. */
+    /** No such contact, no message to retry, or no live message of the conversation to react to. */
     UNKNOWN,
 
     /** A retry past the original deadline (§7.5). */
@@ -480,6 +484,7 @@ enum class SendResult {
             SendStep.Outcome.STORAGE_FULL -> STORAGE_FULL
             SendStep.Outcome.CRYPTO_UNAVAILABLE -> CRYPTO_UNAVAILABLE
             SendStep.Outcome.UNKNOWN_CONTACT -> UNKNOWN
+            SendStep.Outcome.UNKNOWN_TARGET -> UNKNOWN
             SendStep.Outcome.DEADLINE_PASSED -> DEADLINE_PASSED
         }
     }

@@ -20,9 +20,14 @@ finish() {
   if [ "$FAILURES" -gt 0 ]; then echo "[$name] FAILED with $FAILURES violation(s)" >&2; exit 1; fi
   echo "[$name] OK"
 }
-# Source trees that are on the production path. Test sources are excluded on purpose.
+# Source trees that are on the production path. Test sources are excluded on purpose. `src/release`
+# is compiled into the release APK beside `src/main` (slice S12's `DmBranch.kt`; apk-no-debug-hooks.sh
+# and dm-jni-surface.sh already read it), so every gate that reads the production path reads it too
+# (Phase 9 review GATES-2: no-logging, kotlin-clearnet, anti-placeholder and dm-no-fts read
+# `src/main` alone, and a file in `src/release` passed all four).
 android_main_files() {
-  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/main/*' -print 2>/dev/null || true
+  find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+    \( -path '*/src/main/*' -o -path '*/src/release/*' \) -print 2>/dev/null || true
 }
 # The `gate` build type's source sets (Phase 9 design §21.13 point 7, ADR-34; slice S12): never
 # released, but installed on the gate devices and part of the physical exit gate's evidence, so the

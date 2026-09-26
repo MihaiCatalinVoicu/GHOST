@@ -155,6 +155,12 @@ val harnessProperties = listOf(
 )
 
 tasks.withType<Test>().configureEach {
+    // Phase 9 review GATES-7: the DM reports (`build/reports/dm/report.txt`, `privacy.txt`) are
+    // written by the tests as a side effect, not declared outputs, so a test task restored
+    // FROM-CACHE wrote none and the `android` job's report checks failed on a missing file. The
+    // gate workflows pass `--rerun` for this reason; `./gradlew build` does not. A task whose
+    // evidence is a side effect is never taken from the cache.
+    outputs.cacheIf("the DM reports are a side effect of the run, not a cached output") { false }
     inputs.property("ghost.dm.native", hostLibrary.orElse(""))
     hostLibrary.orNull?.let { path ->
         systemProperty("ghost.dm.native", path)

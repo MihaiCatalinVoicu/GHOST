@@ -388,11 +388,24 @@ class DmResult private constructor(
          *
          * A `null` array — the native side could not allocate the reply — and any malformed reply
          * decode to a code, never to an exception, so the caller's `when` stays exhaustive.
+         *
+         * [reply] is **erased** once its fields are copied out (Phase 9 review A-1): it is the
+         * native call's own array and nothing else reads it, and it can hold an L0 plaintext, the
+         * own card's `card_secret_0` or the read secrets, which the decoded copies' owners already
+         * zeroise and the reply kept.
          */
         fun decode(reply: ByteArray?): DmResult {
             if (reply == null || reply.isEmpty()) {
                 return DmResult(DmCode.INTERNAL, emptyMap())
             }
+            try {
+                return decodeFields(reply)
+            } finally {
+                reply.fill(0)
+            }
+        }
+
+        private fun decodeFields(reply: ByteArray): DmResult {
             val code = DmCode.fromWire(reply[0].toInt())
                 ?: return DmResult(DmCode.STATE_CORRUPT, emptyMap())
             val fields = LinkedHashMap<DmField, ByteArray>()

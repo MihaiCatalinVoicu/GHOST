@@ -39,6 +39,16 @@ wfy_case fail bad-no-jobs "no jobs" "rejects a workflow with no jobs"
 wfy_case fail bad-job-shape "has neither runs-on nor uses" "rejects a job with no runner"
 wfy_case fail bad-step "has neither uses nor run" "rejects a step that does nothing"
 wfy_case fail empty "no workflow file found" "refuses a directory with no workflow (a gate that scans nothing passes)"
+# Phase 9 review GATES-2: the release-only source set ships beside `src/main`, and five gates read
+# only `src/main`. One fixture file there breaks all five; each must name it.
+for g in no-logging kotlin-clearnet anti-placeholder dm-enqueue-callers dm-no-fts; do
+  rel_out="$(GHOST_ROOT="$HARNESS/negative-release-source-set" bash "$DIR/$g.sh" 2>&1 || true)"
+  if grep -q '^GATE-FAIL' <<<"$rel_out" && grep -qF "src/release/kotlin/org/ghost/app/ReleaseOnly.kt" <<<"$rel_out"; then
+    echo "self-test ok: $g reads the release-only source set"
+  else
+    echo "SELF-TEST FAIL: $g does not report the release-only source set's violations" >&2; rc=1
+  fi
+done
 # Phase 9 §21.13 point 7 (slice S12): anti-placeholder reads the `gate` source sets. The fixture holds
 # a gate source and nothing else, so only that reading can fail it.
 expect_fail anti-placeholder "$HARNESS/negative-gate-placeholder"
@@ -92,6 +102,15 @@ if grep -qF 'ExpiryAlarmReceiver: missing' <<<"$(bash "$DIR/merged-manifest-lint
   echo "self-test ok: merged-manifest-lint reports a missing DM alarm receiver (G-DM7)"
 else
   echo "SELF-TEST FAIL: merged-manifest-lint does not report a missing DM alarm receiver" >&2; rc=1
+fi
+# ADR-06, FR-7.11 (Phase 9 review A-3): an androidx.startup initializer that is not allowlisted is
+# one line — emoji2's, which called Google Play Services' font provider at every UI start.
+startup_out="$(bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/startup/AndroidManifest.xml" 2>&1 || true)"
+startup_hits="$(grep -c '^GATE-FAIL' <<<"$startup_out" || true)"
+if [ "$startup_hits" = "1" ] && grep -qF 'androidx.startup initializer not allowlisted: androidx.emoji2.text.EmojiCompatInitializer' <<<"$startup_out"; then
+  echo "self-test ok: merged-manifest-lint reports a startup initializer that is not allowlisted (A-3)"
+else
+  echo "SELF-TEST FAIL: merged-manifest-lint reported $startup_hits of 1 startup-initializer violation" >&2; rc=1
 fi
 if bash "$DIR/merged-manifest-lint.sh" "$MERGED_FIXTURES/positive/AndroidManifest.xml" >/dev/null 2>&1; then
   echo "self-test ok: merged-manifest-lint accepts the Phase 7 merged release manifest"
@@ -1078,6 +1097,26 @@ if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --tes
   echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry point"
 else
   echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry point" >&2; rc=1
+fi
+# Phase 9 review GATES-3: every half named one class, `DmNative`. A JNI entry point of another
+# class or package — in the workspace's sources, in a built library — and a native method in any
+# other production Android class are refused now; the network surface's three classes are not.
+expect_fail_msg "dm-jni-surface rejects a JNI entry point of another class in the workspace" \
+  "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_DmDebug_exportSessionState'" \
+  env GHOST_DM_JNI_SCAN="$DM_JNI/foreign" bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a library exporting a JNI symbol of another class" \
+  "exports the JNI symbol 'Java_org_ghost_crypto_bridge_DmDebug_exportSessionState'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/foreign-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a library exporting a JNI symbol of another package" \
+  "exports the JNI symbol 'Java_org_ghost_messaging_engine_Shortcut_decrypt'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/foreign-package-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+jni_native_out="$(env GHOST_DM_JNI_ANDROID="$DM_JNI/android-native" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$jni_native_out" || true)" = "2" ] \
+   && grep -qF "DmDebug.kt:9: declares a native method outside DmNative" <<<"$jni_native_out" \
+   && grep -qF "Leak.java:6: declares a native method outside DmNative" <<<"$jni_native_out"; then
+  echo "self-test ok: dm-jni-surface reports native methods outside DmNative and the network classes (Kotlin and Java)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface does not report exactly the two native declarations of android-native/" >&2; rc=1
 fi
 jni_ref_out="$(env GHOST_DM_JNI_ANDROID="$DM_JNI/android-ref" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
 if [ "$(grep -c '^GATE-FAIL' <<<"$jni_ref_out" || true)" = "2" ] && grep -qF "Shortcut.kt:8: references DmNative outside" <<<"$jni_ref_out"; then

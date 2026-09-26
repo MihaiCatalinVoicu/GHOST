@@ -31,8 +31,11 @@ internal interface DmStack : AutoCloseable {
     val listener: SyncListener
     val consumerTail: ConsumerTail
 
-    /** Posts a time-triggered pass (§21.9 rule 1). */
-    fun onTimeTrigger()
+    /**
+     * Posts a time-triggered pass (§21.9 rule 1). [sessionStart] is true for a relay session start
+     * alone: the one trigger that may open the next bundle-fetch attempt (§21.7 point 5).
+     */
+    fun onTimeTrigger(sessionStart: Boolean = false)
 
     /** Posts: the context reopened from [root] in one actor turn, if [wanted] still holds there. */
     fun open(root: () -> RootEntropy?, wanted: () -> Boolean)
@@ -61,7 +64,7 @@ internal class RuntimeStack(private val runtime: MessagingRuntime) : DmStack {
     override val listener: SyncListener get() = runtime.listener
     override val consumerTail: ConsumerTail get() = runtime.consumerTail
 
-    override fun onTimeTrigger() = runtime.onTimeTrigger()
+    override fun onTimeTrigger(sessionStart: Boolean) = runtime.onTimeTrigger(sessionStart)
 
     override fun open(root: () -> RootEntropy?, wanted: () -> Boolean) = runtime.requestUnlock(root, wanted)
 
@@ -265,7 +268,7 @@ internal class MessagingWiring(
 
     /** A relay session is READY (§21.9 rule 1's "relay session start"). Posts; never blocks the session. */
     fun onRelaySessionStart() {
-        ensureStack()?.onTimeTrigger()
+        ensureStack()?.onTimeTrigger(sessionStart = true)
     }
 
     /**

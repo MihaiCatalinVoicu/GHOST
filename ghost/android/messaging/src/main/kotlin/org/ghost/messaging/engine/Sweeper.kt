@@ -357,9 +357,18 @@ internal class Sweeper(
         val peerPqRows = contacts.deleteStalePeerPq(tx, week)
 
         // 10. Orphaned namespaces (§21.12 point 3). The one restricted call this file may make.
+        //
+        // A row whose namespace `:sync` does not hold at all is discharged as well (phase review
+        // ENG-7). `remove` answers false both for "ops or fetched rows are left" and for "unknown
+        // namespace", and only the first is a reason to wait: block, delete and a rejected or
+        // blocked request record both of a card's namespaces whether or not anything registered
+        // them — a contact deleted before it sent or fetched, a request, a responder that never
+        // fetched the initiator's bundle — so those rows were kept for ever, where L7-D7 bounds
+        // them at 7 days, and each is an HKDF output of the deleted card.
         var namespaceRows = 0
         for (namespace in contacts.orphans(tx.sql)) {
-            if (namespaces.remove(tx, NamespaceId(namespace))) {
+            val id = NamespaceId(namespace)
+            if (namespaces.listening(tx, id) == null || namespaces.remove(tx, id)) {
                 contacts.deleteOrphan(tx, namespace)
                 namespaceRows += 1
             }
