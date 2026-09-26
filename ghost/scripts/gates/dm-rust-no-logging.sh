@@ -32,6 +32,9 @@
 # logger-installing calls searched for.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
+# cargo tree's text is parsed below: plain output whatever the job exports (CARGO_TERM_COLOR=always
+# colours the `(*)` markers into a pipe; see dm-vendored-clock-log.sh).
+export CARGO_TERM_COLOR=never
 cd "$GHOST_ROOT"
 err="$(mktemp)"
 trap 'rm -f "$err"' EXIT

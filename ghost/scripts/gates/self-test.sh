@@ -1464,6 +1464,16 @@ dmg_lib_case() { # $1 = expect pass|fail, $2 = expected violation count, $3 = ex
 dmg_lib_case pass 0 "[dm-golden-lock] OK" "accepts a library with Olm and without HPKE" hpke-dropped.bin
 dmg_lib_case fail 2 "contains 'HPKE-v1'" "rejects a library the linker left HPKE in" hpke-linked.bin
 dmg_lib_case fail 2 "does not contain 'OLM_KEYS'" "refuses a library with no Olm code" no-olm.bin
+# `--library` is the whole of its mode and reads no git base: the `android-native` job's checkout is
+# shallow, and the first CI run fell through to the pin rule after "OK" (design §22.33 item 18). A
+# base that cannot be read must not matter; with a full clone the fall-through passed unnoticed.
+if dmg_out="$(env GHOST_GOLDEN_BASE=no-such-revision bash "$DIR/dm-golden-lock.sh" --library "$DMG/hpke-dropped.bin" 2>&1)" \
+   && [ "$(grep -c '^GATE-FAIL' <<<"$dmg_out" || true)" = 0 ]; then
+  echo "self-test ok: dm-golden-lock --library stops at the library check and reads no base"
+else
+  echo "SELF-TEST FAIL: dm-golden-lock --library went on to the pin rule" >&2
+  printf '%s\n' "$dmg_out" | tail -3 >&2; rc=1
+fi
 
 # G-DM5 (Phase 9 design §16.1, §21.13 points 5 and 7; slice S12): each source tree and each mapping
 # fixture reports exactly its own violations, the positive mapping passes, and the real tree passes.
@@ -1668,6 +1678,14 @@ if command -v cargo >/dev/null; then
     echo "self-test ok: dm-vendored-clock-log accepts the real graph against its baseline"
   else
     echo "SELF-TEST FAIL: dm-vendored-clock-log rejects the real graph" >&2; rc=1
+  fi
+  # The CI rust job exports CARGO_TERM_COLOR=always, under which cargo colours `cargo tree`'s `(*)`
+  # markers into a pipe; the gate asks for plain output itself. Before it did, the runner's scan lost a
+  # feature to the escape codes and reported a baseline note stale (run 36233077404, §22.33 item 18).
+  if env CARGO_TERM_COLOR=always bash "$DIR/dm-vendored-clock-log.sh" >/dev/null 2>&1; then
+    echo "self-test ok: dm-vendored-clock-log accepts the real graph under CARGO_TERM_COLOR=always"
+  else
+    echo "SELF-TEST FAIL: dm-vendored-clock-log fails under CARGO_TERM_COLOR=always" >&2; rc=1
   fi
   # G-R8's token list (§22.33 item 16): the standard streams and the Unix sockets. Each scanner fixture
   # is copied into a throwaway crate of its own (no manifest is committed under test-harness) and

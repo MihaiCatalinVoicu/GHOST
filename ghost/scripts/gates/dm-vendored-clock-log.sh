@@ -39,6 +39,13 @@
 # GHOST_G_R8_TRIPLES replaces the triple list.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
+# cargo's output is parsed here, so it must be plain. With CARGO_TERM_COLOR=always, which the CI
+# rust-toolchain action exports, `cargo tree` colours its `(*)` marker into the pipe; the ` (*)`
+# suffix was then not stripped from the features column, a package's last line listed
+# `macros<escape codes>` instead of `macros`, and hax-lib's `#[cfg(feature = "macros")] mod
+# proc_macros` was pruned — the runner reported its note stale (run 36233077404, design §22.33
+# item 18) while every uncoloured run passed.
+export CARGO_TERM_COLOR=never
 cd "$GHOST_ROOT"
 BASELINE="${GHOST_G_R8_BASELINE:-$GATES_DIR/dm-vendored-clock-log.baseline}"
 TRIPLES="${GHOST_G_R8_TRIPLES:-aarch64-linux-android x86_64-linux-android}"

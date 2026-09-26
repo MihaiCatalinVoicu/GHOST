@@ -34,6 +34,9 @@
 # GHOST_GOLDEN_BASE_LOCK=<file> reads the base's lock from a file instead of git; GHOST_GOLDEN_DIR=<dir>
 # replaces `client-core/dm/tests/golden`; GHOST_GOLDEN_NO_TESTS=1 skips the cargo test list and runs.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+# The test output of the drills is parsed below: plain whatever the job exports (the CI rust job
+# exports CARGO_TERM_COLOR=always; see dm-vendored-clock-log.sh for what colour did to a parse).
+export CARGO_TERM_COLOR=never
 cd "$GHOST_ROOT"
 
 usage() { echo "usage: dm-golden-lock.sh [--base <rev>|none] | --library <libghost_client_net.so>..." >&2; exit 2; }
@@ -58,6 +61,10 @@ if [ "${#libraries[@]}" -gt 0 ]; then
     done
   done
   finish dm-golden-lock
+  # `finish` exits only on a failure: the library check is the whole of this mode, and the pin rule
+  # below needs the git history the `android-native` job's shallow checkout does not have (its first
+  # run, 36233077404, fell through to it and failed "the repository is shallow" after "OK").
+  exit 0
 fi
 
 # Versions of one package name in a Cargo.lock text: `name version` lines.
