@@ -100,7 +100,10 @@ dirs="$(GRAPH="$keys" perl -MJSON::PP -e '
   local $/; my $m = JSON::PP->new->decode(<STDIN>);
   for my $p (@{ $m->{packages} }) {
     next unless $want{"$p->{name} $p->{version}"};
-    (my $dir = $p->{manifest_path}) =~ s{/Cargo\.toml$}{};
+    # On Windows cargo writes the path with backslashes; a directory not found here would fail
+    # every package as having no source (the gate first ran on Windows at the integration).
+    (my $dir = $p->{manifest_path}) =~ tr{\\}{/};
+    $dir =~ s{/Cargo\.toml$}{};
     print "$p->{name} $p->{version} $dir\n";
   }' <<< "$meta")"
 scanned=0
