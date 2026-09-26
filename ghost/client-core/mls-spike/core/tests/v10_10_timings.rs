@@ -39,6 +39,12 @@ fn timed<F: FnMut()>(mut f: F) -> Vec<u128> {
 }
 
 fn run(n: usize, populated: bool) {
+    run_kept(n, populated, Some(2));
+}
+
+/// `keep`: the past epochs the measured members keep (`sweepPast`); `None` keeps all of them (the
+/// first run's setting: after a populate, about 20 at 20 members; review finding H6).
+fn run_kept(n: usize, populated: bool, keep: Option<usize>) {
     let day = host_day();
     let t = Instant::now();
     let mut w = World::build(n, n - 1, day);
@@ -46,7 +52,11 @@ fn run(n: usize, populated: bool) {
         w.populate();
     }
     let ch = w.channel;
-    let shape = if populated { "populated" } else { "blank" };
+    let shape = match (populated, keep) {
+        (true, Some(_)) => "populated".to_string(),
+        (false, Some(_)) => "blank".to_string(),
+        (p, None) => format!("{} (no sweep)", if p { "populated" } else { "blank" }),
+    };
     println!(
         "V10-10 world n={n} {shape} built in {:.1} s",
         t.elapsed().as_secs_f64()
@@ -64,9 +74,12 @@ fn run(n: usize, populated: bool) {
         w.members[1].receive(ch, &out.commit).unwrap();
         w.members[0].merge_own(ch).unwrap();
     }
-    // Retention as §8.3 would leave it in a quiet channel: 2 past epochs at both measured members.
-    w.members[0].sweep_past(ch, 2).unwrap();
-    w.members[1].sweep_past(ch, 2).unwrap();
+    // Retention as §8.3 would leave it in a quiet channel: 2 past epochs at both measured members
+    // (or, with `keep = None`, whatever the history left).
+    if let Some(k) = keep {
+        w.members[0].sweep_past(ch, k).unwrap();
+        w.members[1].sweep_past(ch, k).unwrap();
+    }
     w.members[1].wrap_key = Some([0x42; 32]);
     w.members[0].wrap_key = Some([0x42; 32]);
     let tag = |s: &str| format!("n={n} {shape} {s}");
@@ -199,6 +212,18 @@ fn v10_10_timings_20() {
     let _ = ghost_mls_spike::pin_rayon_single_worker();
     run(20, false);
     run(20, true);
+}
+
+/// Review finding H6: the first host run had no retention sweep, so its 20-member populated rows
+/// ran with the ~20 past epochs the populate leaves, and came out up to 6.8 times slower. The same
+/// world with and without the sweep, twice alternately, on the same (loaded) host.
+#[test]
+fn v10_10_retention_effect_20_populated() {
+    let _ = ghost_mls_spike::pin_rayon_single_worker();
+    for _ in 0..2 {
+        run_kept(20, true, None);
+        run_kept(20, true, Some(2));
+    }
 }
 
 #[test]

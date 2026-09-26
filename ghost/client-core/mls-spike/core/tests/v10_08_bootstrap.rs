@@ -95,6 +95,212 @@ fn v10_08_bootstrap_in_welcome_group_info() {
     let _ = &mut j;
 }
 
+/// The committers digest an invite would carry (the review-pass anchor, S0-15 in the design's §5.9):
+/// `SHA-256("ghost/v1/ch/committers" ‖ channel_id ‖ u8(k) ‖ committers)` over the context's list.
+fn committers_digest(channel: &[u8; 32], committers: &[[u8; 32]]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let k = u8::try_from(committers.len()).expect("at most 8 committers");
+    let mut h = Sha256::new();
+    h.update(b"ghost/v1/ch/committers");
+    h.update(channel);
+    h.update([k]);
+    for c in committers {
+        h.update(c);
+    }
+    h.finalize().into()
+}
+
+/// What `welcomeJoin` can learn about a Welcome after `JoinBuilder::build()` verified its GroupInfo
+/// signature: the `GhostChannelContext` of the group it describes and the signature key of the
+/// leaf that signed its GroupInfo. Runs as a dry call, so nothing is written.
+fn inspect_welcome(
+    j: &mut Device,
+    ch: [u8; 32],
+    welcome: &[u8],
+) -> Result<(ext::ChannelContext, [u8; 32]), String> {
+    use openmls::prelude::tls_codec::Deserialize as _;
+    j.dry_call(&ch, |p, _| {
+        let m = MlsMessageIn::tls_deserialize_exact(welcome).map_err(|e| format!("{e:?}"))?;
+        let w = match m.extract() {
+            MlsMessageBodyIn::Welcome(w) => w,
+            _ => return Err("not a welcome".to_string()),
+        };
+        let pw = ProcessedWelcome::new_from_welcome(p, &join_config(), w)
+            .map_err(|e| format!("{e:?}"))?;
+        let staged = JoinBuilder::new(p, pw)
+            .skip_lifetime_validation()
+            .build()
+            .map_err(|e| format!("{e:?}"))?;
+        let ctx = staged
+            .group_context()
+            .extensions()
+            .unknown(ext::EXT_CHANNEL_CONTEXT)
+            .and_then(|u| ext::ChannelContext::decode(&u.0))
+            .ok_or("no GhostChannelContext")?;
+        let signer: [u8; 32] = staged
+            .welcome_sender()
+            .map_err(|e| format!("{e:?}"))?
+            .signature_key()
+            .as_slice()
+            .try_into()
+            .map_err(|_| "signature key length")?;
+        Ok::<_, String>((ctx, signer))
+    })
+    .map(|(v, _)| v)
+}
+
+/// Review finding I1: the GroupInfo signature authenticates the Welcome only to a signer the
+/// Welcome's own ratchet tree supplies. Any holder of the generation's join key can open a join
+/// request (mode 0x12), create its own group with `group_id = channel_id` and a well-formed
+/// `GhostChannelContext`, add the joiner's KeyPackage and deposit the Welcome (mode 0x13): OpenMLS
+/// accepts it, and a join that is applied consumes the KeyPackage, so the real Welcome then fails.
+/// The anchor of the corrected S0-9 (the invite's digest of the committers at issue, and the
+/// GroupInfo signer among them) refuses it before anything is written.
+#[test]
+fn v10_08_forged_welcome_and_the_committer_anchor() {
+    let day = host_day();
+    let mut w = World::build(4, 3, day);
+    let ch = w.channel;
+    let owner_pk = w.members[0].pk;
+    // The invite carries the digest of the committers when it was issued (here: the owner).
+    let anchor = committers_digest(&ch, &[owner_pk]);
+    let anchor_check = |ctx: &ext::ChannelContext, signer: &[u8; 32]| -> Result<(), &'static str> {
+        if ctx.channel_id != ch {
+            return Err("channel_id");
+        }
+        if committers_digest(&ch, &ctx.committers) != anchor {
+            return Err("committers digest differs from the invite's");
+        }
+        if !ctx.committers.contains(signer) {
+            return Err("GroupInfo signer is not a committer");
+        }
+        Ok(())
+    };
+    // The joiner's KeyPackage, as its join request carries it under JK_g.
+    let mut j = Device::new(99, day);
+    let kp_bytes = j.key_package(ch, 1, day, 0).unwrap();
+
+    // Two forgeries by a holder of JK_g who is not a committer: (a) a context naming itself as
+    // committer; (b) a context copying the real committers list (so the digest matches) while the
+    // forger signs the GroupInfo with its own leaf.
+    let mut forged = Vec::new();
+    for (tag, copy_committers) in [
+        ("own committers list", false),
+        ("copied committers list", true),
+    ] {
+        let mut atk = Device::new(66, day);
+        let mut ctx = ext::ChannelContext::initial(ch, atk.pk, 0);
+        if copy_committers {
+            ctx.committers = vec![owner_pk];
+            ctx.funders = vec![owner_pk];
+        }
+        atk.create_group(ch, &ctx).unwrap();
+        let kp = atk.parse_key_package(&kp_bytes).unwrap();
+        let e = atk.epoch(ch);
+        // A bootstrap naming a newer generation (only the GroupInfo signature "authenticates" it).
+        let boot = ext::bootstrap(9, e + 1, &[0xee; 32]);
+        let out = atk
+            .commit(
+                ch,
+                &CommitSpec {
+                    adds: vec![kp],
+                    aad: CommitAad {
+                        commit_minute: day * 1440,
+                        ..Default::default()
+                    },
+                    refresh_epoch: Some(e),
+                    force_path: true,
+                    group_info_extensions: vec![Extension::Unknown(
+                        ext::EXT_BOOTSTRAP,
+                        UnknownExtension(boot),
+                    )],
+                    no_exported_group_info: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let welcome = out.welcome.unwrap();
+        let seen = inspect_welcome(&mut j, ch, &welcome);
+        let (ctx_seen, signer) = seen.clone().expect("OpenMLS accepts the forged Welcome");
+        let verdict = anchor_check(&ctx_seen, &signer);
+        println!(
+            "V10-8 forged Welcome ({tag}): OpenMLS JoinBuilder::build -> accepted (GroupInfo verified under the forger's own leaf); channel_id matches {}; anchor -> {:?}",
+            ctx_seen.channel_id == ch,
+            verdict
+        );
+        assert!(verdict.is_err(), "the anchor refuses a forged Welcome");
+        forged.push(welcome);
+    }
+
+    // Without the anchor the join is applied: the KeyPackage is consumed by the forgery.
+    let kp_rows = |d: &Device| {
+        d.rows
+            .keys()
+            .filter(|(s, k)| {
+                *s == ghost_mls_spike::kv::Scope::Global && k.starts_with(b"KeyPackage\0")
+            })
+            .count()
+    };
+    let mut j2 = Device::new(98, day);
+    j2.rows = j.rows.clone();
+    let before = kp_rows(&j2);
+    let applied = j2.join(ch, &forged[0], true);
+    println!(
+        "V10-8 forged Welcome applied without the anchor -> {:?} (the joiner now posts into the forger's group); KeyPackage rows {before} -> {}",
+        applied.as_ref().map(|_| "joined"),
+        kp_rows(&j2)
+    );
+    assert!(applied.is_ok());
+    assert_eq!(
+        (before, kp_rows(&j2)),
+        (1, 0),
+        "the forgery consumed the KeyPackage"
+    );
+    // The anchor refused both forgeries in dry calls: the joiner's KeyPackage is intact.
+    assert_eq!(kp_rows(&j), 1);
+
+    // The real committer admits the same KeyPackage.
+    let kp = w.members[0].parse_key_package(&kp_bytes).unwrap();
+    let e = w.members[0].epoch(ch);
+    let out = w
+        .commit_and_merge(
+            0,
+            &CommitSpec {
+                adds: vec![kp],
+                aad: CommitAad {
+                    commit_minute: day * 1440,
+                    ..Default::default()
+                },
+                refresh_epoch: Some(e),
+                force_path: true,
+                no_exported_group_info: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let real = out.welcome.unwrap();
+    // The joiner that applied the forgery can no longer join the real channel.
+    let after_forgery = j2.join(ch, &real, true);
+    println!(
+        "V10-8 the real Welcome after an applied forgery -> {:?}",
+        after_forgery
+            .as_ref()
+            .map(|_| "joined")
+            .map_err(|e| e.chars().take(120).collect::<String>())
+    );
+    assert!(
+        after_forgery.is_err(),
+        "the forgery consumed the KeyPackage"
+    );
+    // With the anchor the forgeries were refused in dry calls: the real Welcome passes the anchor
+    // and joins.
+    let (ctx_real, signer_real) = inspect_welcome(&mut j, ch, &real).unwrap();
+    assert_eq!(anchor_check(&ctx_real, &signer_real), Ok(()));
+    j.join(ch, &real, true).expect("the real Welcome joins");
+    assert_eq!(j.authenticator(ch), w.members[0].authenticator(ch));
+    println!("V10-8 the real Welcome with the anchor: signer = the owner (a committer), digest equal -> joined, epoch authenticator equal to the owner's");
+}
+
 #[test]
 fn v10_08_default_commit_builds_an_exported_group_info() {
     let day = host_day();

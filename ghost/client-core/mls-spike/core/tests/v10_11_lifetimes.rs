@@ -41,11 +41,20 @@ fn v10_11_world_range_on_the_host_clock() {
         let mut j = Device::new(1, d);
         let kp = j.key_package(ch, 1, d, 0).unwrap();
         let r = committer.parse_key_package(&kp);
+        let off = d as i64 - host as i64;
+        let got = r.map(|_| "accepted".to_string()).unwrap_or_else(|e| e);
         println!(
-            "V10-11 KeyPackage made on virtual day host{:+} (lifetime [d−4, d+80]): committer's KeyPackageIn::validate -> {}",
-            d as i64 - host as i64,
-            r.map(|_| "accepted".to_string()).unwrap_or_else(|e| e)
+            "V10-11 KeyPackage made on virtual day host{off:+} (lifetime [d−4, d+80]): committer's KeyPackageIn::validate -> {got}"
         );
+        // §12.1's range: accepted from host − 79 to host + 4, whatever the hour of the host day.
+        match off {
+            -79..=4 => assert_eq!(got, "accepted", "host{off:+}"),
+            o if o < -79 => assert!(got.contains("LifetimeError(Expired"), "host{off:+}: {got}"),
+            _ => assert!(
+                got.contains("LifetimeError(NotValidYet"),
+                "host{off:+}: {got}"
+            ),
+        }
     }
 }
 
@@ -94,11 +103,15 @@ fn v10_11_received_add_lifetime_failure_and_ordering() {
     // Before expiry: the valid commit validates; the corrupted ones are refused for their defect.
     let r = w.members[1].validate(ch, &good.commit).map(|x| x.0.kind);
     println!("V10-11 before expiry: valid Add commit -> {r:?}");
+    assert_eq!(r, Ok("commit"));
     for (n, c) in &bad_sig {
-        println!(
-            "V10-11 before expiry: signature #{n} corrupted -> {:?}",
-            w.members[1].validate(ch, c).map(|x| x.0.kind)
-        );
+        let got = w.members[1].validate(ch, c).map(|x| x.0.kind);
+        println!("V10-11 before expiry: signature #{n} corrupted -> {got:?}");
+        let e = got.unwrap_err();
+        match n {
+            1 => assert!(e.contains("UpdatePathError(SignatureError"), "{e}"),
+            _ => assert!(e.contains("InvalidSignature"), "{e}"),
+        }
     }
     std::thread::sleep(Duration::from_secs(5));
     let r = w.members[1].validate(ch, &good.commit);
@@ -106,11 +119,21 @@ fn v10_11_received_add_lifetime_failure_and_ordering() {
         "V10-11 after expiry: valid Add commit -> {:?}",
         r.as_ref().map(|x| x.0.kind)
     );
+    let expired = r.map(|x| x.0.kind).unwrap_err();
+    assert!(
+        expired.contains("KeyPackageVerifyError(LifetimeError(Expired"),
+        "{expired}"
+    );
     for (n, c) in &bad_sig {
-        println!(
-            "V10-11 after expiry: signature #{n} corrupted AND expired KeyPackage -> {:?}",
-            w.members[1].validate(ch, c).map(|x| x.0.kind)
-        );
+        let got = w.members[1].validate(ch, c).map(|x| x.0.kind);
+        println!("V10-11 after expiry: signature #{n} corrupted AND expired KeyPackage -> {got:?}");
+        let e = got.unwrap_err();
+        match n {
+            // The lifetime refusal masks the corrupted update-path signature (S0-12).
+            1 => assert!(e.contains("LifetimeError(Expired"), "{e}"),
+            // The framed-content signature is checked before the KeyPackages.
+            _ => assert!(e.contains("InvalidSignature"), "{e}"),
+        }
     }
 
     // (c) Not yet valid (the receiver's clock behind the committer's): lifetime starting in 1 h.
@@ -119,10 +142,9 @@ fn v10_11_received_add_lifetime_failure_and_ordering() {
     let kp_future = j2
         .key_package_with(ch, 1, Lifetime::init(t + 3600, t + 7200), day, 0, 0)
         .unwrap();
-    println!(
-        "V10-11 committer parse of a KeyPackage valid only from now+1 h -> {:?}",
-        w.members[0].parse_key_package(&kp_future).map(|_| ())
-    );
+    let future = w.members[0].parse_key_package(&kp_future).map(|_| ());
+    println!("V10-11 committer parse of a KeyPackage valid only from now+1 h -> {future:?}");
+    assert!(future.unwrap_err().contains("LifetimeError(NotValidYet"));
 
     // (d) OpenMLS never checks the span: a 100-year lifetime is accepted.
     let mut j3 = Device::new(12, day);
@@ -141,21 +163,19 @@ fn v10_11_received_add_lifetime_failure_and_ordering() {
         "V10-11 KeyPackage with a 100-year lifetime -> committer parse {:?}",
         parsed.as_ref().map(|_| "accepted")
     );
-    if let Ok(kp) = parsed {
-        let e = w.members[0].epoch(ch);
-        let s = CommitSpec {
-            adds: vec![kp],
-            refresh_epoch: Some(e),
-            force_path: true,
-            ..Default::default()
-        };
-        let c = w.members[0].commit(ch, &s).unwrap();
-        println!(
-            "V10-11   its Add commit at a receiver -> {:?}",
-            w.members[1].validate(ch, &c.commit).map(|x| x.0.kind)
-        );
-        w.members[0].clear_own(ch).unwrap();
-    }
+    let kp = parsed.expect("OpenMLS never checks the lifetime span");
+    let e = w.members[0].epoch(ch);
+    let s = CommitSpec {
+        adds: vec![kp],
+        refresh_epoch: Some(e),
+        force_path: true,
+        ..Default::default()
+    };
+    let c = w.members[0].commit(ch, &s).unwrap();
+    let at_receiver = w.members[1].validate(ch, &c.commit).map(|x| x.0.kind);
+    println!("V10-11   its Add commit at a receiver -> {at_receiver:?}");
+    assert_eq!(at_receiver, Ok("commit"));
+    w.members[0].clear_own(ch).unwrap();
 }
 
 #[test]
@@ -203,17 +223,20 @@ fn v10_11_join_with_an_expired_leaf() {
     let strict = late.join(ch, &welcome, false);
     late.rows = saved;
     let skip = late.join(ch, &welcome, true);
+    let strict = strict.map(|_| "joined");
+    let skip = skip.map(|_| "joined");
     println!(
-        "V10-11 join over a tree with an expired never-updated leaf: default JoinBuilder -> {:?}",
-        strict.map(|_| "joined")
+        "V10-11 join over a tree with an expired never-updated leaf: default JoinBuilder -> {strict:?}"
     );
-    println!(
-        "V10-11 join over the same Welcome with skip_lifetime_validation() -> {:?}",
-        skip.map(|_| "joined")
-    );
+    println!("V10-11 join over the same Welcome with skip_lifetime_validation() -> {skip:?}");
+    assert!(strict
+        .unwrap_err()
+        .contains("LeafNodeValidation(Lifetime(Expired"));
+    assert_eq!(skip, Ok("joined"));
     // And the existing members process that commit (the expired leaf is not re-validated).
+    let existing = w.members[1].validate(ch, &out.commit).map(|x| x.0.kind);
     println!(
-        "V10-11 existing member processes the commit whose tree holds the expired leaf -> {:?}",
-        w.members[1].validate(ch, &out.commit).map(|x| x.0.kind)
+        "V10-11 existing member processes the commit whose tree holds the expired leaf -> {existing:?}"
     );
+    assert_eq!(existing, Ok("commit"));
 }

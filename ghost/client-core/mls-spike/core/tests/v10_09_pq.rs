@@ -13,14 +13,22 @@ use ghost_mls_spike::seal;
 use openmls::prelude::*;
 use openmls_traits::crypto::OpenMlsCrypto;
 
-fn probe_suite(code: u16) {
+fn probe_suite(code: u16) -> Vec<(usize, usize, bool)> {
     let s = Ciphersuite::try_from(code).expect("suite known with the pq feature");
     let crypto = openmls_libcrux_crypto::CryptoProvider::new().unwrap();
     let listed = crypto.supported_ciphersuites().contains(&s);
     let supports = crypto.supports(s);
-    println!("V10-9 suite 0x{code:04x} {s:?}: listed by the provider {listed}, supports() -> {supports:?}");
+    // All three code points name the same HPKE KEM in openmls_traits 0.6.0 (types.rs:788-794),
+    // and the provider's `supports()` checks the AEAD, signature and hash, never the KEM
+    // (crypto.rs:64-86): "supported" and "works" below are one implementation with itself.
+    println!(
+        "V10-9 suite 0x{code:04x} {s:?}: HPKE KEM {:?}; listed by the provider {listed}, supports() -> {supports:?}",
+        s.hpke_kem_algorithm()
+    );
+    assert_eq!(s.hpke_kem_algorithm(), HpkeKemType::XWingKemDraft6);
+    let mut results = Vec::new();
     if supports.is_err() {
-        return;
+        return results;
     }
     SUITE_OVERRIDE.store(code, Ordering::Relaxed);
     let day = host_day();
@@ -97,19 +105,29 @@ fn probe_suite(code: u16) {
             )
         });
         match r {
-            Ok((kp, sizes, e2e)) => println!(
-                "V10-9 0x{code:04x} n={n}: KeyPackage {kp} B; {}; end to end {e2e}",
-                sizes.join("; ")
-            ),
+            Ok((kp, sizes, e2e)) => {
+                println!(
+                    "V10-9 0x{code:04x} n={n}: KeyPackage {kp} B; {}; end to end {e2e}",
+                    sizes.join("; ")
+                );
+                results.push((n, kp, e2e));
+            }
             Err(_) => println!("V10-9 0x{code:04x} n={n}: PANICKED (see output above)"),
         }
     }
     SUITE_OVERRIDE.store(0, Ordering::Relaxed);
+    results
 }
 
 #[test]
 fn v10_09_pq_suites_with_libcrux() {
     for code in [0x004Du16, 0x004F, 0x004E] {
-        probe_suite(code);
+        let r = probe_suite(code);
+        // Both member counts ran end to end, with the 2 765-byte X-Wing KeyPackage.
+        assert_eq!(r.len(), 2, "0x{code:04x}");
+        for (n, kp, e2e) in r {
+            assert!(e2e, "0x{code:04x} n={n}");
+            assert_eq!(kp, 2765, "0x{code:04x}");
+        }
     }
 }

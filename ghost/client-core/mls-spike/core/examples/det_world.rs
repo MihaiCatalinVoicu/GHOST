@@ -37,8 +37,23 @@ fn main() {
     let h = |b: &[u8]| hex(&Sha256::digest(b)[..8]);
     println!("rayon threads: {pool}");
 
-    // A fixed virtual day, so nothing depends on the host clock except OpenMLS's own stamps.
-    let day = 20_720;
+    // A fixed virtual day, so nothing depends on the host clock except OpenMLS's own stamps. Day
+    // 20 720 (2026-09-24) reproduces the evidence's hashes; OpenMLS checks KeyPackage lifetimes
+    // ([d − 4, d + 80]) against the host clock, so that day works only until 2026-12-12 (review
+    // finding H12). GHOST_SPIKE_DAY sets another; outside §12.1's window the probe refuses to run.
+    let day: u32 = std::env::var("GHOST_SPIKE_DAY")
+        .ok()
+        .map(|d| d.parse().expect("GHOST_SPIKE_DAY: a UTC day number"))
+        .unwrap_or(20_720);
+    let host = host_day();
+    if day + 79 < host || day > host + 3 {
+        eprintln!(
+            "virtual day {day} is outside the host window [{} … {}] of design §12.1; set GHOST_SPIKE_DAY",
+            host - 79,
+            host + 3
+        );
+        std::process::exit(2);
+    }
     let mut w = World::build(8, 7, day);
     let ch = w.channel;
     println!("channel {}", hex(&ch[..8]));
