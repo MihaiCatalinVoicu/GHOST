@@ -18,7 +18,9 @@
 # The graphs are read for every target (`--target all`), so a platform-only edge counts too.
 #
 # The source half of G-R4 — no `println!`, `eprintln!`, `dbg!`, `log::` or `tracing::` in the crate's
-# own sources — is `no-logging.sh`, which reads every `client-core` source already. What the linked
+# own sources, and since the evasion review of these gates (design §22.33 item 16) no standard stream
+# handle either (`writeln!(std::io::stderr(), …)` names no print macro) — is `no-logging.sh`, which
+# reads every `client-core` source already. What the linked
 # code of the *other* crates of the graph contains (jni's 23 `log::` sites, the re-exports of
 # `serde_core`) is G-R8's (`dm-vendored-clock-log.sh`), against its justified baseline.
 #

@@ -1,0 +1,27 @@
+# G-DM3, Kotlin half (scripts/gates/dm-derivation-inputs.sh; Phase 9 design §16.1, §3.1, T26;
+# §22.33 item 17). The default applied pending the owner's word: a motivated allowlist of exactly the
+# sites the tree holds at the integration of 2026-09-26, so any new site fails until it is reviewed
+# and listed here. Dedicated key types for these inputs are the later fix. Only android/messaging,
+# android/crypto-bridge and android/app may appear.
+#
+# site|<path>|<the call as written; whitespace is ignored>|<times in the file>|<provenance: a declaration the file must hold>|<why the key input may be a raw ByteArray>
+# label|<path>|<the literal>|<times in the file>|-|<what it labels>
+#
+# The three HMAC sites the S0′ gate slice named (§22.33 item 13):
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|SecretKeySpec(recognitionKey, "HmacSHA256")|1|fun hint(recognitionKey: ByteArray|the §6.2 hint, keyed by R_sel: a recognition key the native side derives from a card and returns (§3.2: it recognises and never opens, R-S6), never identity material
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/RelaySets.kt|SecretKeySpec(namespace, "HmacSHA256")|1|fun order(namespace: ByteArray|the §5.2 relay-set order, keyed by the namespace it orders relays for (relay sets are set(ns, w)); a namespace is derived from a card or the seed and is relay-visible already
+site|android/messaging/src/main/kotlin/org/ghost/messaging/engine/ReceiveStep.kt|SecretKeySpec(key, "HmacSHA256")|1|val key = self.seenKey|the §7.6 dm_seen tag, keyed by the random seen key the native context returns; the tag stays in the local database and never reaches a relay
+# The gate build type's hook, which the same rule reads (the `gate` source set ships on gate devices):
+site|android/crypto-bridge/src/gate/kotlin/org/ghost/crypto/bridge/gate/GateKeyChange.kt|SecretKeySpec(branch, "HmacSHA256")|1|fun alternateBranch(branch: ByteArray)|the §15.1 key-change hook, keyed by the MESSAGING branch m itself; gate build type only, never in a release (G-DM5)
+# Cipher keys: a text gate cannot tell a MAC key from a cipher key once the algorithm is a constant.
+site|android/messaging/src/main/kotlin/org/ghost/messaging/store/ContentCipher.kt|SecretKeySpec(key, "ChaCha20")|2|private val key: ByteArray|not a derivation: the random content key (§3.2, random and never derived) sealing and opening local rows with ChaCha20-Poly1305
+#
+# The DM labels of these modules:
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|ghost/v1/dm-hint|1|-|the §6.2 hint label, fed to the recognition-key HMAC above
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/RelaySets.kt|ghost/v1/dm/slot-order|1|-|the §5.2 slot-order label, fed to the namespace-keyed HMAC above
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/CredentialV3.kt|ghost/v1/read-verifier|1|-|the §4.3 domain label of SHA-256(label, slot, namespace, secret) over a read credential; its secret is seed-derived in Rust, no identity material
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/CredentialV3.kt|ghost/v1/deposit-verifier|1|-|the §4.3 domain label of the deposit verifier; its secret is card-derived in Rust, no identity material
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/CredentialV3.kt|ghost/v1/fetch-verifier|1|-|the §4.3 domain label of the fetch verifier; its secret is card-derived in Rust, no identity material
+label|android/messaging/src/main/kotlin/org/ghost/messaging/android/KeystoreKeyWrappers.kt|ghost/v1/dm/wrap/content-key|1|-|associated data of the Keystore wrap of the content key (§13.8), not a derivation input
+label|android/messaging/src/main/kotlin/org/ghost/messaging/android/KeystoreKeyWrappers.kt|ghost/v1/dm/wrap/state-key|1|-|associated data of the Keystore wrap of session_state_key (§13.8), not a derivation input
+label|android/crypto-bridge/src/gate/kotlin/org/ghost/crypto/bridge/gate/GateKeyChange.kt|ghost/v1/gate/key-change|1|-|the input of the gate hook's HMAC above; gate build type only

@@ -13,6 +13,20 @@
 #   `INSERT OR REPLACE`), `ON CONFLICT REPLACE` (the conflict clause of a column or table constraint)
 #   and the upsert `ON CONFLICT (…) DO UPDATE`. `INSERT OR IGNORE`, `ON CONFLICT DO NOTHING` and the
 #   SQL function `replace(x, y, z)` are not conflict resolution by replacement and pass.
+# Refused too since the evasion review of this gate (§22.33 item 16): a conflict clause held apart
+#   from its statement — `REPLACE` or `DO UPDATE` in a literal of its own (`val verb = "REPLACE"`),
+#   or `INSERT OR` / `UPDATE OR` / `ON CONFLICT (…) [DO]` followed by a value or a template instead of
+#   the words — and, in the code of `:messaging` and `:crypto-bridge` (comments and strings blanked,
+#   `source-text.pl`), the Android conflict-algorithm APIs `insertWithOnConflict`,
+#   `updateWithOnConflict`, `replaceOrThrow`, `CONFLICT_REPLACE`, `OnConflictStrategy.REPLACE` and
+#   the `ContentValues` they all take: their algorithm is an int, and `insertWithOnConflict(…, 5)` is
+#   a REPLACE no literal shows. DM rows are written as SQL text, which is what this gate reads.
+# What a text gate cannot see: a statement assembled from values it cannot read (a clause whose
+#   words come from a constant of another file, a `StringBuilder`, a char array), a conflict
+#   algorithm passed to an executor this gate does not know, and `SQLiteDatabase.replace(table,
+#   column, null)` — named like `String.replace`, and with no `ContentValues` it can insert only a row
+#   whose one named column is NULL. Those are the reviewer's; the `*_no_replace` guards still refuse
+#   every REPLACE at run time.
 #
 # What counts as DM SQL. Only **string literals** are read — SQL lives in literals, and prose about
 # a REPLACE in a comment or a KDoc (the guards' own documentation needs to name what they refuse)
@@ -38,8 +52,9 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 GHOST_ROOT="$(cd "$GHOST_ROOT" && pwd)"
 
-report="$(GHOST_ROOT="$GHOST_ROOT" perl -e '
+report="$(GHOST_ROOT="$GHOST_ROOT" GATES_DIR="$GATES_DIR" perl -e '
 use strict; use warnings;
+require "$ENV{GATES_DIR}/source-text.pl";
 my $root = $ENV{GHOST_ROOT};
 my $schema_rel = "android/storage/src/main/kotlin/org/ghost/storage/Schema.kt";
 my @forms = (
@@ -48,6 +63,22 @@ my @forms = (
   [qr/\bON\s+CONFLICT\s+REPLACE\b/i, "ON CONFLICT REPLACE"],
   [qr/\bON\s+CONFLICT\b[^;]*?\bDO\s+UPDATE\b/is, "ON CONFLICT ... DO UPDATE"],
 );
+# A conflict clause held apart from its statement (§22.33 item 16): the keyword in a literal of its
+# own (`val verb = "REPLACE"`, `val action = "DO UPDATE SET …"`), or the place of the algorithm or
+# the action filled by a value or a template (`"INSERT OR " + verb`, `"ON CONFLICT(a) ${action}"`).
+# Read only where no form above matched, so a statement written whole is named once, as before.
+my @apart = (
+  [qr/\bREPLACE\b(?!\s*\()/i, "REPLACE held apart from its statement"],
+  [qr/\bDO\s+UPDATE\b/i, "DO UPDATE held apart from its ON CONFLICT"],
+);
+my @valued = (
+  [qr/\b(?:INSERT|UPDATE)\s+OR\s*(?:\$|\z)/i, "OR followed by a value"],
+  [qr/\bON\s+CONFLICT\b(?:\s*\([^()]*\))?\s*(?:DO\s*)?(?:\$|\z)/i, "ON CONFLICT followed by a value"],
+);
+# The Android conflict-algorithm APIs, read in the code of the DM modules (§22.33 item 16): their algorithm
+# is an int (`insertWithOnConflict(…, 5)` is CONFLICT_REPLACE) no literal shows, so they are refused
+# whole, with `ContentValues`, the row type every one of them (and `SQLiteDatabase.replace`) takes.
+my $api = qr/\b(?:insertWithOnConflict|updateWithOnConflict|replaceOrThrow|CONFLICT_REPLACE|ContentValues)\b|\bOnConflictStrategy\s*\.\s*REPLACE\b/;
 my $sqlish = qr/\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE)\b/i;
 
 # Returns the literal groups of one source as [first line, text, per-character line numbers].
@@ -145,13 +176,33 @@ sub check {
   my ($start, $text, $lines) = @$g;
   (my $plain = $text) =~ s/\$\{/  /g;
   $plain =~ s/\}/ /g;
-  my (%names, @order);
+  my (%names, @order, @spans);
+  my $name_it = sub {
+    my ($line, $name) = @_;
+    push @order, $line unless $names{$line};
+    push @{ $names{$line} }, $name unless grep { $_ eq $name } @{ $names{$line} || [] };
+  };
   for my $f (@forms) {
     my ($re, $name) = @$f;
     while ($plain =~ /$re/g) {
-      my $line = $lines->[$-[0]];
-      push @order, $line unless $names{$line};
-      push @{ $names{$line} }, $name unless grep { $_ eq $name } @{ $names{$line} || [] };
+      push @spans, [$-[0], $+[0]];
+      $name_it->($lines->[$-[0]], $name);
+    }
+  }
+  my $covered = sub { my ($at) = @_; for (@spans) { return 1 if $at >= $_->[0] && $at < $_->[1] } return 0 };
+  for my $f (@apart) {
+    my ($re, $name) = @$f;
+    while ($plain =~ /$re/g) {
+      next if $covered->($-[0]) || $names{ $lines->[$-[0]] };
+      $name_it->($lines->[$-[0]], $name);
+    }
+  }
+  for my $f (@valued) {
+    my ($re, $name) = @$f;
+    while ($text =~ /$re/g) {
+      my $at = $-[0] < @$lines ? $-[0] : $#$lines;
+      next if $names{ $lines->[$at] };
+      $name_it->($lines->[$at], $name);
     }
   }
   for my $line (@order) {
@@ -172,6 +223,16 @@ for my $main (@mains) {
       (my $rel = $file) =~ s{^\Q$root\E/}{};
       open my $fh, "<", $file or do { print "VIOLATION $rel: unreadable\n"; next };
       local $/; my $src = <$fh>; close $fh;
+      if ($dm_module{$module}) {
+        (my $unix = $src) =~ s/\r\n/\n/g;
+        my (undef, $code) = views($unix, $rel =~ /\.java$/ ? "java" : "kotlin");
+        my %api_line;
+        while ($code =~ /$api/g) {
+          my $n = line_of(\$code, $-[0]);
+          next if $api_line{$n}++;
+          print "VIOLATION $rel:$n: ", squash($&), " in a DM module (G-DM4: DM rows are written as SQL text this gate reads; a conflict-algorithm API takes its REPLACE as an int, 5, that no literal shows)\n";
+        }
+      }
       my ($from, $to) = (0, 0);
       if ($rel eq $schema_rel) {
         my @l = split /\n/, $src, -1;

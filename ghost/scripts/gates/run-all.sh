@@ -22,7 +22,9 @@ rc=0
 # gates run where the build is: libcrux-portable (G-R3) after the native and host builds in their CI
 # jobs, dm-rust-no-logging (G-R4), dm-golden-lock (G-R7) and dm-vendored-clock-log (G-R8) in the rust
 # job and in rust-gates.sh.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace; do
+# dm-derivation-inputs is G-DM3's Kotlin half (design §22.33 item 17: the motivated allowlist, the
+# default pending the owner's word); its Rust half is a unit test of ghost-client-dm, run by cargo test.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

@@ -11,8 +11,18 @@
 # g-r8-baseline.txt, 2026-09-16, measured on the ghost-dm-probe graph): the production graph holds the
 # same 39 sites, none added and none gone; the 112 crates, 143 directives and 2 notes are new lines,
 # each reviewed here. vodozemac, hpke, matrix-pickle and every libcrux crate: no site.
+#
+# Extended 2026-09-26 at the integration (design §22.33 item 16, the evasion review of the S0′ gates):
+# the scanner also lists the standard stream handles (`stdout`, `stderr`, `Stdout`, `Stderr`,
+# `StdoutLock`, `StderrLock` — `writeln!(std::io::stderr(), …)` names no print macro) and the Unix
+# socket types (`UnixStream`, `UnixListener`, `UnixDatagram` — `std::os::unix::net` is not `std::net`
+# to a token scan). The production graph holds 4 such sites, all build-time, none linked: 43 in all.
 
 # Sites (clock, logging, printing, network):
+site either@1.18.0 src/lib.rs:1798 stdout clock-log [build-time]  # `#[test] fn read_write` of either's own tests (a `#[test]` item, not a cfg(test) module, so the scan keeps it); either is a build-time dependency here, never linked
+site proc-macro-crate@3.5.0 src/lib.rs:246 stdout clock-log [build-time]  # a local variable named stdout holding the captured output of `cargo locate-project` (Command::output), not a stream handle; dependency of a proc-macro, never linked
+site proc-macro-crate@3.5.0 src/lib.rs:252 stdout clock-log [build-time]  # the same local variable (the captured output of `cargo locate-project`), not a stream handle; never linked
+site proc-macro-crate@3.5.0 src/lib.rs:254 stdout clock-log [build-time]  # the same local variable (the captured output of `cargo locate-project`), not a stream handle; never linked
 site jni@0.21.1 src/wrapper/java_vm/vm.rs:9 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
 site jni@0.21.1 src/wrapper/jnienv.rs:9 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
 site jni@0.21.1 src/wrapper/macros.rs:107 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)

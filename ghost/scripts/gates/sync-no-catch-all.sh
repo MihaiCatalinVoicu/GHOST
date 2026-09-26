@@ -20,38 +20,117 @@
 # every occurrence, an entry whose clause is found fewer times than it says is stale and fails, and
 # the allowlist can name nothing outside the two DM modules. Both DM modules' `src/main` must exist
 # and `android/messaging/src/main` must hold sources.
+#
+# **How the sources are read** (§22.33 item 16, the evasion review of this gate). Each file is one
+# string (`source-text.pl`) with its comments and string contents blanked and Kotlin backtick quoting
+# removed, and every pattern allows any whitespace, newlines included, between its tokens: a
+# `catch (` whose parameter is on the next line, a comment inside the parentheses, an annotation on
+# the parameter (`catch (@Suppress("…") e: Exception)`), a trailing comma, a quoted name, and a type
+# qualified by any package or written across lines (`java` / `.lang.Throwable`) are all the clause
+# they spell. A clause is reported at the line it starts on, as matched with its whitespace squashed
+# (so the allowlist names it as one line). Every Android production source set is also read for a
+# **type alias or an import alias** of a catch-all type (`typealias Oops = Throwable`, `import
+# java.lang.Exception as Oops`): the catch that names the alias would otherwise pass unseen.
+#
+# What a text gate cannot see: a catch-all reached through a type the patterns do not name (a
+# library's own `…Throwable` subclass hierarchy, a generic helper declared outside Android production
+# code that catches for its caller), and a JVM error swallowed without a catch (a `finally` that
+# returns, an executor that drops a task's exception). Those are the reviewer's and the crash
+# harness's, which injects errors and asserts they arrive.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+command -v perl >/dev/null || { echo "perl not found" >&2; exit 2; }
 SYNC_MAIN="$GHOST_ROOT/android/sync/src/main"
 ENTITLEMENT_MAIN="$GHOST_ROOT/android/entitlement/src/main"
 ALLOW="$GHOST_ROOT/scripts/gates/sync-no-catch-all.allow"
-# Kotlin: catch (e: Throwable) / catch (_: java.lang.Exception) / catch (e: kotlin.Error) / catch (e: AssertionError) ...
-KT_CATCH='catch\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*((kotlin|java\.lang)\.)?(Throwable|Exception|RuntimeException|[A-Za-z0-9_]*Error)\s*\)'
-# Java: catch (Throwable t) / catch (final Exception e) / multi-catch naming one of them.
-JAVA_CATCH='catch\s*\(\s*(final\s+)?([A-Za-z0-9_.]+\s*\|\s*)*((java\.lang)\.)?(Throwable|Exception|RuntimeException|[A-Za-z0-9_]*Error)(\s*\|\s*[A-Za-z0-9_.]+)*\s+[A-Za-z_][A-Za-z0-9_]*\s*\)'
-# Kotlin Result helpers that catch every Throwable, and handlers that outlive an error.
-OTHER='\brunCatching\b|\.getOrElse\s*\{|\.recoverCatching\b|setDefaultUncaughtExceptionHandler|setUncaughtExceptionHandler'
-# Scans every Kotlin and Java source under $1; prints the number of files scanned.
-scan() {
-  local root="$1" n=0 f hits line
-  if [ -d "$root" ]; then
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      n=$((n + 1))
-      hits="$(grep -nP -- "$KT_CATCH|$JAVA_CATCH|$OTHER" "$f" || true)"
-      [ -z "$hits" ] || while IFS= read -r line; do fail "$f:$line (catch-all in the sync engine or its participant)"; done <<< "$hits"
-    done < <(find "$root" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null)
+
+# One line per file to read: `<area> <path>`. `sync` and `entitlement` take no exception, `dm` is
+# read against the allowlist, `alias` (every other Android production source) only for aliases.
+list_files() {
+  local area dir set module
+  for area in sync entitlement; do
+    dir="$GHOST_ROOT/android/$area/src/main"
+    [ -d "$dir" ] && find "$dir" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | sort | sed "s|^|$area |"
+  done
+  for module in messaging crypto-bridge; do
+    for set in main gate debug release; do
+      dir="$GHOST_ROOT/android/$module/src/$set"
+      [ -d "$dir" ] && find "$dir" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | sort | sed "s|^|dm |"
+    done
+  done
+  if [ -d "$GHOST_ROOT/android" ]; then
+    find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+      \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' -o -path '*/src/debug/*' \) -print 2>/dev/null \
+      | grep -vE '/android/(sync|entitlement|messaging|crypto-bridge)/src/' | sort | sed 's|^|alias |' || true
   fi
-  SCANNED=$n
+  return 0
 }
-SCANNED=0
-scan "$SYNC_MAIN"
-[ "$SCANNED" -gt 0 ] || fail "$SYNC_MAIN: no sources found (the gate would pass vacuously)"
+
+out="$(list_files | GHOST_ROOT="$GHOST_ROOT" GATES_DIR="$GATES_DIR" perl -e '
+use strict; use warnings;
+require "$ENV{GATES_DIR}/source-text.pl";
+my $root = $ENV{GHOST_ROOT};
+my $dot = qr/\s*\.\s*/;
+# A catch-all type: Throwable, Exception, RuntimeException or any *Error, unqualified or qualified by
+# any package (kotlin.Error, java.lang.Exception, java.io.IOError), a qualifier written across lines too.
+my $type = qr/(?:[A-Za-z_]\w*$dot)*(?:Throwable|Exception|RuntimeException|\w*Error)\b(?!$dot\w)/;
+my $annotation = qr/@[A-Za-z_][\w.]*(?:\s*\([^()]*\))?\s*/;
+# Kotlin: catch (e: Throwable), with annotations, a trailing comma, newlines anywhere.
+my $kt = qr/\bcatch\s*\(\s*(?:$annotation)*[A-Za-z_]\w*\s*:\s*$type\s*(?:,\s*)?\)/;
+# Java: catch (Throwable t) / catch (final Exception e) / a multi-catch naming one of them.
+my $java = qr/\bcatch\s*\(\s*(?:final\s+)?(?:$annotation)*(?:[\w.]+\s*\|\s*)*$type(?:\s*\|\s*[\w.]+)*\s+[A-Za-z_]\w*\s*\)/;
+# Kotlin Result helpers that catch every Throwable, and handlers that outlive an error.
+my $other = qr/\brunCatching\b|\.\s*getOrElse\s*\{|\.\s*recoverCatching\b|\bsetDefaultUncaughtExceptionHandler\b|\bsetUncaughtExceptionHandler\b/;
+my $alias = qr/\btypealias\s+[A-Za-z_]\w*(?:\s*<[^<>=]*>)?\s*=\s*$type|\bimport\s+$type\s+as\s+[A-Za-z_]\w*/;
+my %scanned;
+while (my $entry = <STDIN>) {
+  chomp $entry;
+  my ($area, $file) = split / /, $entry, 2;
+  next unless defined $file && length $file;
+  (my $rel = $file) =~ s{^\Q$root\E/}{};
+  $scanned{$area}++ if $area ne "dm" || $rel =~ m{/src/main/};
+  my $text = read_text($file);
+  my @lines = split /\n/, $text, -1;
+  my (undef, $code) = views($text, $file =~ /\.java$/ ? "java" : "kotlin");
+  while ($code =~ /$alias/g) {
+    my $n = line_of(\$code, $-[0]);
+    print "ALIAS\t$rel:$n: " . squash($&) . "\n";
+  }
+  next if $area eq "alias";
+  my %line_seen;
+  while ($code =~ /$kt|$java|$other/g) {
+    my ($from, $clause) = ($-[0], squash($&));
+    my $n = line_of(\$code, $from);
+    if ($area eq "dm") { print "DM\t$rel\t$n\t$clause\n"; next; }
+    next if $line_seen{$n}++;
+    my $shown = $clause =~ /\n/ || $lines[$n - 1] !~ /\Q$clause\E/ ? $clause : $lines[$n - 1];
+    print "STRICT\t$rel:$n:$shown\n";
+  }
+}
+print "SCANNED\t$_ $scanned{$_}\n" for sort keys %scanned;
+')" || { echo "sync-no-catch-all: the scanner stopped" >&2; exit 2; }
+
+declare -A allowed=() found=() where=() scanned=()
+while IFS= read -r line; do
+  kind="${line%%$'\t'*}"
+  rest="${line#*$'\t'}"
+  case "$kind" in
+    STRICT) fail "$GHOST_ROOT/$rest (catch-all in the sync engine or its participant)" ;;
+    ALIAS) fail "$GHOST_ROOT/$rest (an alias of a catch-all type: a catch that names it would pass this gate unseen)" ;;
+    DM)
+      IFS=$'\t' read -r rel at clause <<< "$rest"
+      key="$rel|$clause"
+      found["$key"]=$(( ${found["$key"]:-0} + 1 ))
+      where["$key"]="${where["$key"]:-}$rel:$at "
+      ;;
+    SCANNED) scanned["${rest% *}"]="${rest##* }" ;;
+  esac
+done <<< "$out"
+
+[ "${scanned[sync]:-0}" -gt 0 ] || fail "$SYNC_MAIN: no sources found (the gate would pass vacuously)"
 [ -d "$ENTITLEMENT_MAIN" ] || fail "$ENTITLEMENT_MAIN: missing (the gate would pass vacuously)"
-scan "$ENTITLEMENT_MAIN"
 
 # The DM modules, against the allowlist. Every hit is keyed by (path relative to GHOST_ROOT, the
 # clause as matched with its whitespace squashed); the allowlist gives each key its exact count.
-declare -A allowed=() found=() where=()
 if [ -f "$ALLOW" ]; then
   n=0
   while IFS= read -r entry; do
@@ -70,26 +149,10 @@ if [ -f "$ALLOW" ]; then
 fi
 for module in messaging crypto-bridge; do
   [ -d "$GHOST_ROOT/android/$module/src/main" ] || fail "$GHOST_ROOT/android/$module/src/main: missing (the gate would pass vacuously)"
-  SCANNED=0
-  for set in main gate debug release; do
-    dir="$GHOST_ROOT/android/$module/src/$set"
-    [ -d "$dir" ] || continue
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      [ "$set" = main ] && SCANNED=$((SCANNED + 1))
-      rel="${f#"$GHOST_ROOT"/}"
-      hits="$(grep -noP -- "$KT_CATCH|$JAVA_CATCH|$OTHER" "$f" || true)"
-      [ -n "$hits" ] || continue
-      while IFS= read -r hit; do
-        clause="$(sed -E 's/[[:space:]]+/ /g' <<< "${hit#*:}")"
-        key="$rel|$clause"
-        found["$key"]=$(( ${found["$key"]:-0} + 1 ))
-        where["$key"]="${where["$key"]:-}$rel:${hit%%:*} "
-      done <<< "$hits"
-    done < <(find "$dir" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | sort)
-  done
-  [ "$module" != messaging ] || [ "$SCANNED" -gt 0 ] || fail "$GHOST_ROOT/android/messaging/src/main: no sources found (the gate would pass vacuously)"
 done
+[ ! -d "$GHOST_ROOT/android/messaging/src/main" ] \
+  || [ -n "$(find "$GHOST_ROOT/android/messaging/src/main" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | head -n 1)" ] \
+  || fail "$GHOST_ROOT/android/messaging/src/main: no sources found (the gate would pass vacuously)"
 for key in "${!found[@]}"; do
   want="${allowed["$key"]:-0}"
   if [ "${found["$key"]}" -gt "$want" ]; then

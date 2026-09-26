@@ -6,9 +6,11 @@
 //!
 //! **T26 (relay-blind addressing).** No derivation takes a public key, a `ghost1` string or a
 //! safety number as its key input. The gate's Rust half is the type system: every `derive_*`
-//! function below takes one of the newtypes of this module as its key input, and
+//! function below takes one of the newtypes of this module as its key input,
 //! `derivation_key_inputs_are_typed` pins each signature, so a `&[u8]` overload cannot be added
-//! without failing the build.
+//! without failing the build, and `every_derive_function_is_enumerated_and_keyed_by_a_typed_secret`
+//! reads the crate's sources for every `derive_*` function, so one added without a pin fails too
+//! (G-DM3, design §22.33 item 17; the Kotlin half is `scripts/gates/dm-derivation-inputs.sh`).
 
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
@@ -428,6 +430,202 @@ mod tests {
     /// The signature of `derive_pq_root`, named so the pin above stays one line.
     type DerivePqRoot =
         fn(&PairRoot, &KemSecret, &[u8; 32], &[u8; 32], u32, &[u8], &[u8]) -> PairRoot;
+
+    /// The names [`derivation_key_inputs_are_typed`] pins, in one list the enumeration below
+    /// compares with the sources.
+    const PINNED_DERIVATIONS: [&str; 12] = [
+        "derive_bundle_namespace",
+        "derive_card_secret",
+        "derive_card_value",
+        "derive_inbox_namespace",
+        "derive_inbox_read_secret",
+        "derive_olm_account_signing",
+        "derive_olm_identity",
+        "derive_pair_base_week_key",
+        "derive_pair_next_week_key",
+        "derive_pq_root",
+        "derive_provisional_key",
+        "derive_schedule_key",
+    ];
+
+    /// The key-input types T26 allows: the seed branch, a card secret, a pair root or week key, a
+    /// reply seed, an X-Wing secret. Never a public key, a `ghost1` string or a safety number.
+    const TYPED_KEY_INPUTS: [&str; 6] = [
+        "&MessagingBranch",
+        "&CardSecret",
+        "&PairRoot",
+        "&PairWeekKey",
+        "&ReplySeed",
+        "&KemSecret",
+    ];
+
+    /// Every `fn derive_…` declared in `text`, with the type of its first parameter as written
+    /// (whitespace removed): `(name, type)`. Prose is skipped only as whole `//` lines, so a
+    /// declaration is never missed and a mention elsewhere can only add a name (which then fails).
+    /// `fn` may be followed by any whitespace, generics may precede the parameter list, and a
+    /// declaration with no parameter list is recorded with an empty type, which no pin accepts.
+    fn derivations_in(text: &str) -> Vec<(String, String)> {
+        let code: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bytes = code.as_bytes();
+        let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        // Built at run time, so this file's own source does not hold the text it looks for.
+        let marker = ["derive", "_"].concat();
+        let mut found = Vec::new();
+        let mut from = 0;
+        while let Some(at) = code[from..].find(&marker).map(|i| from + i) {
+            from = at + marker.len();
+            // `fn` + whitespace right before, and `fn` itself a whole word.
+            let before = code[..at].trim_end_matches([' ', '\t', '\n', '\r']);
+            if before.len() == at
+                || !before.ends_with("fn")
+                || (before.len() > 2 && ident(bytes[before.len() - 3]))
+                || (at > 0 && ident(bytes[at - 1]))
+            {
+                continue;
+            }
+            let name: String = code[at..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let mut rest = code[at + name.len()..].trim_start();
+            if let Some(generics) = rest.strip_prefix('<') {
+                let mut depth = 1usize;
+                let mut end = generics.len();
+                for (i, c) in generics.char_indices() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rest = generics[end..].trim_start();
+            }
+            let first = rest.strip_prefix('(').map(|params| {
+                let mut depth = 0i32;
+                let mut end = params.len();
+                for (i, c) in params.char_indices() {
+                    match c {
+                        '(' | '[' | '<' => depth += 1,
+                        ']' | '>' => depth -= 1,
+                        ')' if depth == 0 => {
+                            end = i;
+                            break;
+                        }
+                        ')' => depth -= 1,
+                        ',' if depth == 0 => {
+                            end = i;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                params[..end]
+                    .split_once(':')
+                    .map(|(_, ty)| ty.split_whitespace().collect::<String>())
+                    .unwrap_or_default()
+            });
+            found.push((name, first.unwrap_or_default()));
+        }
+        found
+    }
+
+    /// [`derivations_in`] over every `.rs` file of the crate's `src/`.
+    fn derivations_in_sources() -> std::collections::BTreeMap<String, String> {
+        fn walk(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("src is readable") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    walk(&path, files);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let mut found = std::collections::BTreeMap::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("a source file is readable");
+            for (name, first) in derivations_in(&text) {
+                let previous = found.insert(name.clone(), first);
+                assert!(previous.is_none(), "{name} is declared twice in src/");
+            }
+        }
+        found
+    }
+
+    /// The Rust half of gate G-DM3 (T26), **enumerated** (design §22.33 item 17). The test above
+    /// pins the signatures it names; this one reads every `fn derive_…` in the crate's sources and
+    /// requires the set to be exactly those names, each keyed by a typed secret. A `derive_*`
+    /// function added anywhere in `src/` — one keyed by `&[u8]` or a public key included — fails
+    /// here even though no pin mentions it.
+    #[test]
+    fn every_derive_function_is_enumerated_and_keyed_by_a_typed_secret() {
+        let found = derivations_in_sources();
+        let names: Vec<&str> = found.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            PINNED_DERIVATIONS.to_vec(),
+            "every derive_* function of the crate is pinned in derivation_key_inputs_are_typed"
+        );
+        for (name, first) in &found {
+            assert!(
+                TYPED_KEY_INPUTS.contains(&first.as_str()),
+                "{name} takes `{first}` as its key input; T26 allows only {TYPED_KEY_INPUTS:?}"
+            );
+        }
+    }
+
+    /// The reader above is not vacuous and not evadable by layout: it finds a declaration split
+    /// over lines, with extra whitespace, with generics or without a parameter list; it skips
+    /// prose; it reports the first parameter's type as written.
+    #[test]
+    fn the_derive_enumeration_reads_what_it_claims() {
+        let found = derivations_in_sources();
+        assert_eq!(
+            found.get("derive_inbox_read_secret").map(String::as_str),
+            Some("&MessagingBranch"),
+            "a signature whose parameters start on the next line is read"
+        );
+        assert_eq!(
+            found.get("derive_pq_root").map(String::as_str),
+            Some("&PairRoot")
+        );
+        let d = ["derive", "_"].concat();
+        let samples = [
+            format!("pub fn  {d}a(key: &[u8]) {{}}"),
+            format!("fn\t{d}b<K: AsRef<[u8]>>(key: K) {{}}"),
+            format!("pub(crate) fn\n{d}c(\n    m: &MessagingBranch,\n) {{}}"),
+            format!("fn {d}d {{}}"),
+            format!("// fn {d}e(x: &[u8]) is prose\nfn {d}f(r: &PairRoot) {{}}"),
+            format!("fn every_{d}g(x: &[u8]) {{}} fn x{d}h() {{}}"),
+        ];
+        let read: Vec<(String, String)> = samples.iter().flat_map(|s| derivations_in(s)).collect();
+        let expect = |n: &str, t: &str| (format!("{d}{n}"), t.to_owned());
+        assert_eq!(
+            read,
+            vec![
+                expect("a", "&[u8]"),
+                expect("b", "K"),
+                expect("c", "&MessagingBranch"),
+                expect("d", ""),
+                expect("f", "&PairRoot"),
+            ]
+        );
+    }
 
     /// §5.4: the offset is a **fixed** function of the card's schedule key, inside one week, on a
     /// minute boundary, and it depends on nothing else. Two consecutive publications are then

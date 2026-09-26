@@ -1,0 +1,6 @@
+# Fixture allowlist (G-DM3 negative-rules).
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Twice.kt|SecretKeySpec(namespace, "HmacSHA256")|1|fun order(namespace: ByteArray|fixture: allowed once
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Renamed.kt|SecretKeySpec(key, "HmacSHA256")|1|val key = self.seenKey|fixture: pinned to the seen key
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Gone.kt|SecretKeySpec(gone, "HmacSHA256")|1|fun gone(gone: ByteArray|fixture: a site the tree no longer has
+site|android/sync/src/main/kotlin/org/ghost/sync/MovedLabel.kt|SecretKeySpec(x, "HmacSHA256")|1|val x|fixture: outside the DM modules
+site|android/messaging/src/main/kotlin/org/ghost/messaging/NewLabel.kt|SecretKeySpec(y, "HmacSHA256")|one|val y|fixture: a count that is not a number

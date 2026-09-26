@@ -1320,6 +1320,102 @@ else
   echo "SELF-TEST FAIL: sync-no-catch-all rejects the real sources" >&2; rc=1
 fi
 
+# The evasion review of the S0′ gates (Phase 9 design §22.33 item 16). Each negative fixture holds, one
+# per file, the violations the line-by-line gates passed, each on the line its README names; each
+# near-miss fixture holds what the whole-file reading must still accept. One case per evasion, so a
+# gate that stops seeing one is named, and the exact total, so a gate that reports too much is too.
+EVASION_OUT=""
+evasion_count() { # $1 = gate, $2 = fixture under test-harness/gates, $3 = expected violation count
+  local hits
+  EVASION_OUT="$(GHOST_ROOT="$HARNESS/$2" bash "$DIR/$1.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$EVASION_OUT" || true)"
+  if [ "$hits" = "$3" ]; then
+    echo "self-test ok: $1 reports exactly $3 violation(s) in $2"
+  else
+    echo "SELF-TEST FAIL: $1 reported $hits of $3 violations in $2" >&2
+    printf '%s\n' "$EVASION_OUT" | tail -5 >&2; rc=1
+  fi
+}
+evasion_named() { # $1 = gate, $2 = expected text of one violation, $3 = description (reads EVASION_OUT)
+  if grep -qF -- "$2" <<<"$EVASION_OUT"; then
+    echo "self-test ok: $1 $3"
+  else
+    echo "SELF-TEST FAIL: $1 $3: no violation reads '$2'" >&2; rc=1
+  fi
+}
+near_misses() { # $1 = gate, $2 = fixture under test-harness/gates
+  if GHOST_ROOT="$HARNESS/$2" bash "$DIR/$1.sh" >/dev/null 2>&1; then
+    echo "self-test ok: $1 accepts the near misses of $2"
+  else
+    echo "SELF-TEST FAIL: $1 rejects the near misses of $2" >&2; rc=1
+  fi
+}
+# G-DM1: the coroutine modifier in every shape, and package names across lines, comments and quotes.
+EV_KT="android/messaging/src/main/kotlin/org/ghost/messaging/evasion"
+evasion_count messaging-no-network negative-dm-network-evasions 8
+evasion_named messaging-no-network "$EV_KT/SuspendFun.kt:4:" "reports a suspend fun"
+evasion_named messaging-no-network "$EV_KT/SuspendFunctionType.kt:5:" "reports a suspending function type with a receiver"
+evasion_named messaging-no-network "$EV_KT/SuspendSplit.kt:5:" "reports suspend split from fun across a line"
+evasion_named messaging-no-network "$EV_KT/SplitQualifiedName.kt:5:" "reports a package name written across lines"
+evasion_named messaging-no-network "$EV_KT/SplitImport.kt:3:" "reports an import written across lines"
+evasion_named messaging-no-network "$EV_KT/QuotedName.kt:5:" "reports a backtick-quoted package name"
+evasion_named messaging-no-network "$EV_KT/CommentInName.kt:5:" "reports a package name split by a comment"
+evasion_named messaging-no-network "$EV_KT/StdlibCoroutines.kt:3:" "reports the standard library's coroutine package"
+near_misses messaging-no-network positive-dm-network-near-misses
+# sync-no-catch-all: a catch clause in every layout, and aliases of a catch-all type.
+evasion_count sync-no-catch-all negative-sync-dm-evasions 9
+evasion_named sync-no-catch-all "android/sync/src/main/kotlin/org/ghost/sync/evasion/SplitCatch.kt:6:catch ( e: Throwable )" "reports a catch split across lines in the sync engine"
+evasion_named sync-no-catch-all "$EV_KT/CommentInCatch.kt:5: catch (e: Throwable)" "reports a comment inside the catch"
+evasion_named sync-no-catch-all "$EV_KT/AnnotatedCatch.kt:5: catch (@Suppress(" "reports an annotated catch parameter"
+evasion_named sync-no-catch-all "$EV_KT/TrailingComma.kt:5: catch (e: Exception,)" "reports a trailing comma in the catch"
+evasion_named sync-no-catch-all "$EV_KT/QuotedCatch.kt:5: catch ( e : Exception)" "reports a backtick-quoted catch parameter"
+evasion_named sync-no-catch-all "$EV_KT/SplitType.kt:5: catch (e: java .lang.Throwable)" "reports a catch type written across lines"
+evasion_named sync-no-catch-all "$EV_KT/TypeAlias.kt:4: typealias Oops = Throwable" "reports a type alias of Throwable"
+evasion_named sync-no-catch-all "$EV_KT/ImportAlias.kt:3: import java.lang.Exception as Oops" "reports an import alias of Exception"
+evasion_named sync-no-catch-all "android/messaging/src/main/java/org/ghost/messaging/evasion/SplitJava.java:5: catch (Throwable t)" "reports a Java catch split across lines"
+near_misses sync-no-catch-all positive-sync-dm-near-misses
+# G-DM4: the conflict-algorithm APIs, and a conflict clause held apart from its statement.
+evasion_count dm-no-replace negative-dm-replace-evasions 9
+evasion_named dm-no-replace "$EV_KT/InsertWithOnConflictFive.kt:6: insertWithOnConflict in a DM module" "reports insertWithOnConflict(…, 5)"
+evasion_named dm-no-replace "$EV_KT/ConflictReplaceConstant.kt:5: CONFLICT_REPLACE in a DM module" "reports the CONFLICT_REPLACE constant"
+evasion_named dm-no-replace "$EV_KT/ReplaceOrThrow.kt:6: replaceOrThrow in a DM module" "reports replaceOrThrow"
+evasion_named dm-no-replace "$EV_KT/ContentValuesRow.kt:5: ContentValues in a DM module" "reports ContentValues"
+evasion_named dm-no-replace "$EV_KT/VerbInAValue.kt:5: REPLACE held apart from its statement" "reports REPLACE in a literal of its own"
+evasion_named dm-no-replace "$EV_KT/OrFollowedByValue.kt:5: OR followed by a value" "reports INSERT OR followed by a value"
+evasion_named dm-no-replace "$EV_KT/ActionInAValue.kt:5: DO UPDATE held apart from its ON CONFLICT" "reports DO UPDATE in a literal of its own"
+evasion_named dm-no-replace "$EV_KT/ConflictFollowedByValue.kt:6: ON CONFLICT followed by a value" "reports ON CONFLICT followed by a value"
+evasion_named dm-no-replace "$EV_KT/TemplateVerb.kt:5: OR followed by a value" "reports the algorithm as a template"
+near_misses dm-no-replace positive-dm-replace-near-misses
+# G-R4's source half (no-logging): a standard stream without a print macro.
+evasion_count no-logging negative-rust-std-streams 1
+evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
+near_misses no-logging positive-rust-std-streams
+# G-DM3's Kotlin half (§22.33 item 17): the split-call evasion, one violation per rule, the allowlist's
+# own checks, and a positive with a listed site and a seed branch both written across lines.
+near_misses dm-derivation-inputs dm-derivation/positive
+evasion_count dm-derivation-inputs dm-derivation/negative-split-call 1
+evasion_named dm-derivation-inputs "Leak.kt:11: SecretKeySpec( identityPublicKey, \"HmacSHA256\") is not on G-DM3's allowlist" \
+  "reports an HMAC keyed by a public key, its call split across lines"
+evasion_count dm-derivation-inputs dm-derivation/negative-rules 13
+evasion_named dm-derivation-inputs "HkdfSite.kt:7: Hkdf.derive(ikm = cardPublicKey" "reports an unlisted KDF site"
+evasion_named dm-derivation-inputs "RootFromRaw.kt:8: RootEntropy.fromRaw(publicKey) is not on" "reports a seed built from raw bytes"
+evasion_named dm-derivation-inputs "BranchFromString.kt:7: deriveBranch called with something other than one DerivationLabels constant" "reports a seed branch under a String label"
+evasion_named dm-derivation-inputs "LabelOutsideBranch.kt:7: a DerivationLabels constant outside RootEntropy.deriveBranch" "reports a seed label outside deriveBranch"
+evasion_named dm-derivation-inputs "ExtensionBranch.kt:4: deriveBranch declared outside RootEntropy" "reports a second deriveBranch declaration"
+evasion_named dm-derivation-inputs "NewLabel.kt:5: \"ghost/v1/dm/new-thing\": a DM label that is not on" "reports an unlisted DM label"
+evasion_named dm-derivation-inputs "MovedLabel.kt:5: \"ghost/v1/dm/moved-here\": a DM label outside the DM modules" "reports a DM label outside the DM modules"
+evasion_named dm-derivation-inputs "Twice.kt:10: SecretKeySpec(namespace, \"HmacSHA256\") found 2 times, the allowlist permits 1" "reports the first copy of a call allowed once"
+evasion_named dm-derivation-inputs "Twice.kt:14: SecretKeySpec(namespace, \"HmacSHA256\") found 2 times" "reports the second copy too"
+evasion_named dm-derivation-inputs "Renamed.kt:11: SecretKeySpec(key, \"HmacSHA256\"), but the file no longer holds the declaration" "reports a listed call whose key changed source"
+evasion_named dm-derivation-inputs "stale site android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Gone.kt" "reports a stale allowlist entry"
+evasion_named dm-derivation-inputs "dm-derivation-inputs.allow:5: android/sync/src/main/kotlin/org/ghost/sync/MovedLabel.kt is outside the DM modules" "refuses an allowlist entry outside the DM modules"
+evasion_named dm-derivation-inputs "dm-derivation-inputs.allow:6: malformed entry" "refuses a malformed allowlist entry"
+if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
+  echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
+else
+  echo "SELF-TEST FAIL: dm-derivation-inputs rejects the real DM modules" >&2; rc=1
+fi
+
 # G-R3 (ADR-36): the portable-libcrux detector over build outputs. A host build's JSON stream
 # (portable with a decoy package, SIMD on all three packages, one package missing) and a cargo-ndk
 # profile directory (portable with a decoy, SIMD in both directive syntaxes, a stale second run, no
@@ -1568,6 +1664,39 @@ if command -v cargo >/dev/null; then
   else
     echo "SELF-TEST FAIL: dm-vendored-clock-log rejects the real graph" >&2; rc=1
   fi
+  # G-R8's token list (§22.33 item 16): the standard streams and the Unix sockets. Each scanner fixture
+  # is copied into a throwaway crate of its own (no manifest is committed under test-harness) and
+  # scanned for aarch64-linux-android: streams.rs and unix-socket.rs give exactly their one site,
+  # clean.rs none. The scanner is the one the gate above built.
+  scanner="${CARGO_TARGET_DIR:-$DIR/../../target}/release/vendored-scan"
+  [ -x "$scanner" ] || [ ! -x "$scanner.exe" ] || scanner="$scanner.exe"
+  scan_tmp="$(mktemp -d)"
+  vs_case() { # $1 = fixture name, $2 = the expected site line ("" for none)
+    local fx="$1" want="$2" crate="fixture-$1" out sites
+    mkdir -p "$scan_tmp/$fx/src"
+    cp "$HARNESS/vendored-scan/$fx.rs" "$scan_tmp/$fx/src/lib.rs"
+    printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\n\n[workspace]\n' "$crate" > "$scan_tmp/$fx/Cargo.toml"
+    printf '%s v0.1.0\n' "$crate" > "$scan_tmp/$fx/tree.txt"
+    printf '%s v0.1.0|\n' "$crate" > "$scan_tmp/$fx/features.txt"
+    if ! out="$("$scanner" "$scan_tmp/$fx/Cargo.toml" aarch64-linux-android "$scan_tmp/$fx/tree.txt" \
+        "$scan_tmp/$fx/features.txt" "$scan_tmp/$fx/tree.txt" 2>&1)"; then
+      echo "SELF-TEST FAIL: the G-R8 scanner stopped on $fx.rs: $(tail -n 1 <<<"$out")" >&2; rc=1; return
+    fi
+    sites="$(grep '^site ' <<<"$out" | sed -E 's/ \| .*$//' || true)"
+    if [ "$sites" = "$want" ]; then
+      echo "self-test ok: the G-R8 scanner lists ${want:-no site} for $fx.rs"
+    else
+      echo "SELF-TEST FAIL: the G-R8 scanner lists [$sites] for $fx.rs, not [$want]" >&2; rc=1
+    fi
+  }
+  if [ -x "$scanner" ]; then
+    vs_case streams "site fixture-streams@0.1.0 src/lib.rs:6 stderr clock-log [lib]"
+    vs_case unix-socket "site fixture-unix-socket@0.1.0 src/lib.rs:5 UnixStream network [lib]"
+    vs_case clean ""
+  else
+    echo "SELF-TEST FAIL: the G-R8 scanner was not built at $scanner" >&2; rc=1
+  fi
+  rm -rf "$scan_tmp"
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate
   # of each banned name; its lock file must fail with a [banned] diagnostic naming that crate and the

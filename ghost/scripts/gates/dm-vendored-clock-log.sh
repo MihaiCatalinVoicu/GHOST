@@ -16,8 +16,11 @@
 # architectures; unknown predicates kept), `mod` declarations followed (`#[path]`, `cfg_attr` path),
 # macro invocations and `macro_rules!` bodies included, comments excluded. Patterns: `SystemTime`,
 # `Instant::now`, `std::time`, `chrono`, `time::`, `log::`, `tracing::`, `println!`, `eprintln!`,
-# `dbg!`, `print!`, `eprint!` (clock-log) and `std::net`, `TcpStream`, `TcpListener`, `UdpSocket`,
-# `ToSocketAddrs` (network). `cargo:` directives of the packages' build scripts are listed
+# `dbg!`, `print!`, `eprint!`, and since the evasion review (design §22.33 item 16) the standard
+# stream handles `stdout`, `stderr`, `Stdout`, `Stderr`, `StdoutLock`, `StderrLock` (clock-log:
+# `writeln!(std::io::stderr(), …)` names no print macro); `std::net`, `TcpStream`, `TcpListener`,
+# `UdpSocket`, `ToSocketAddrs`, and `UnixStream`, `UnixListener`, `UnixDatagram` (network:
+# `std::os::unix::net` is not `std::net` to a token scan). `cargo:` directives of the packages' build scripts are listed
 # separately (`directive` lines: a new `rustc-link-lib` is C code reaching the library), and every
 # package scanned is listed (`crate` lines: the graph the sites are complete for). A token scan
 # counts names, not calls, so a re-export needs a justification like a call does.
@@ -50,7 +53,9 @@ run() { # a command whose failure fails the gate with its stderr shown
   fi
 }
 run cargo build --locked -q --release -p ghost-vendored-scan
-SCANNER="$GHOST_ROOT/target/release/vendored-scan"
+# Where cargo put it: CARGO_TARGET_DIR when set (a private target directory), `.exe` on Windows.
+SCANNER="${CARGO_TARGET_DIR:-$GHOST_ROOT/target}/release/vendored-scan"
+[ -x "$SCANNER" ] || [ ! -x "$SCANNER.exe" ] || SCANNER="$SCANNER.exe"
 [ -x "$SCANNER" ] || { fail "the scanner was not built at $SCANNER"; finish dm-vendored-clock-log; }
 
 for triple in $TRIPLES; do

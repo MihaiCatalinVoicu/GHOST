@@ -33,6 +33,34 @@ while IFS= read -r f; do
   hits="$(grep -nP -- "$regex|$RS_LOG_REGEX" "$f" || true)"
   [ -z "$hits" ] || while IFS= read -r line; do fail "$f:$line"; done <<< "$hits"
 done < <(rust_src_files)
+# Phase 9 (design §16.1 G-R4, §22.33 item 16, the evasion review of the S0′ gates): the print macros
+# are not the only way to the process's standard output and error. `writeln!(std::io::stderr(), …)`,
+# `std::io::stdout().write_all(…)` and a `use std::io::{stderr, Write}` reach the same file
+# descriptors without any name the macro list above knows, and `write!` itself is legitimate (to a
+# `Formatter`, a `Vec<u8>`). So no production Rust source names a standard stream handle at all —
+# `stdout`, `stderr`, `Stdout`, `Stderr`, `StdoutLock`, `StderrLock` — read in code only (comments and
+# string contents blanked by `source-text.pl`, one string per file, so no line break hides it). The
+# operator report module takes no exemption here: it prints with its two macros only. What a text
+# gate cannot see: a descriptor opened another way (`libc::write(2, …)`, a `File` on `/dev/stderr`
+# or `/proc/self/fd/2`); the DM crate forbids `unsafe`, and G-R8 lists the vendored sites.
+while IFS= read -r v; do
+  [ -n "$v" ] && fail "$v"
+done < <(rust_src_files | GATES_DIR="$GATES_DIR" perl -e '
+use strict; use warnings;
+require "$ENV{GATES_DIR}/source-text.pl";
+while (my $file = <STDIN>) {
+  chomp $file;
+  next unless length $file;
+  my $text = read_text($file);
+  my (undef, $code) = views($text, "rust");
+  my %seen;
+  while ($code =~ /\b(?:stdout|stderr|Stdout|Stderr|StdoutLock|StderrLock)\b/g) {
+    my $n = line_of(\$code, $-[0]);
+    next if $seen{$n}++;
+    my @l = split /\n/, $text, -1;
+    print "$file:$n:$l[$n - 1] (a standard output or error handle: the print macros without their names)\n";
+  }
+}')
 while IFS= read -r m; do
   [ -n "$m" ] || continue
   hits="$(grep -nE -- "$LOG_DEPENDENCY_REGEX" "$m" || true)"

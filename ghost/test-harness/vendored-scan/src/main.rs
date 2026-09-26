@@ -1,8 +1,9 @@
 //! Gate G-R8's scanner (design §16.1 G-R8, §22.8.10 point 4; S0′'s V-8 prototype, moved out of
 //! `client-core/dm-spike` by the S0′ gate slice, §22.33, with its logic unchanged so the baseline
-//! means what V-8 measured): lists clock, logging, printing and network sites in the compiled
-//! library code of every crate of a package's normal dependency graph for one shipped Android
-//! triple.
+//! means what V-8 measured; its token list extended at the integration by the standard stream
+//! handles and the Unix sockets, §22.33 item 16): lists clock, logging, printing and network
+//! sites in the compiled library code of every crate of a package's normal dependency graph for
+//! one shipped Android triple.
 //!
 //! Compiled library code: the `lib` target's module tree only (no `build.rs`, tests, benches or
 //! examples), after removing every item, impl item, statement, arm and field whose `#[cfg]`
@@ -236,6 +237,14 @@ const CLOCK_LOG: &[(&str, &[&str])] = &[
     ("dbg!", &["dbg", "!"]),
     ("print!", &["print", "!"]),
     ("eprint!", &["eprint", "!"]),
+    // The standard streams without the print macros (design §22.33 item 16, the evasion review):
+    // `writeln!(std::io::stderr(), …)` and `std::io::stdout().write_all(…)` name no macro above.
+    ("stdout", &["stdout"]),
+    ("stderr", &["stderr"]),
+    ("Stdout", &["Stdout"]),
+    ("Stderr", &["Stderr"]),
+    ("StdoutLock", &["StdoutLock"]),
+    ("StderrLock", &["StderrLock"]),
 ];
 const NETWORK: &[(&str, &[&str])] = &[
     ("std::net", &["std", "::", "net"]),
@@ -243,6 +252,10 @@ const NETWORK: &[(&str, &[&str])] = &[
     ("TcpListener", &["TcpListener"]),
     ("UdpSocket", &["UdpSocket"]),
     ("ToSocketAddrs", &["ToSocketAddrs"]),
+    // `std::os::unix::net` is not `std::net` to a token scan (§22.33 item 16).
+    ("UnixStream", &["UnixStream"]),
+    ("UnixListener", &["UnixListener"]),
+    ("UnixDatagram", &["UnixDatagram"]),
 ];
 
 fn flatten(stream: TokenStream, out: &mut Vec<(String, usize)>) {
