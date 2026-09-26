@@ -212,8 +212,13 @@ dmr_case fail no-such-report.txt gate "rejects a missing report"
 # to one, a model file nobody runs, a listed model that is gone, a ProVerif error, a timeout, a
 # token that names two results, and an expectation that is neither true nor false.
 PQM="$HARNESS/pq-model"
+# The time limit per model: generous for every case (a fake that replays a file must never be cut off
+# by a loaded machine's process start, which made the two "accepts" cases fail under load, and a
+# negative must fail for its own reason, not for a timeout), except the timeout case itself, whose
+# limit (PQM_TIMEOUT=1) stays below the 3 seconds its fake sleeps (`timeout/b.sleep`), so it overruns
+# on any machine.
 pqm_case() { # $1 = expect pass|fail, $2 = fixture directory, $3 = description
-  if PROVERIF="$PQM/fake-proverif.sh" PQ_MODEL_TIMEOUT=1 PQ_MODEL_DIR="$PQM/$2" \
+  if PROVERIF="$PQM/fake-proverif.sh" PQ_MODEL_TIMEOUT="${PQM_TIMEOUT:-300}" PQ_MODEL_DIR="$PQM/$2" \
     bash "$DIR/pq-model.sh" >/dev/null 2>&1; then got=pass; else got=fail; fi
   if [ "$got" = "$1" ]; then echo "self-test ok: pq-model $3"; else echo "SELF-TEST FAIL: pq-model $3 ($got)" >&2; rc=1; fi
 }
@@ -225,7 +230,7 @@ pqm_case fail extra-result "rejects a RESULT line no expectation names"
 pqm_case fail unlisted-model "rejects a model file expected.txt does not list"
 pqm_case fail missing-model "rejects a listed model that is not there"
 pqm_case fail proverif-error "rejects a ProVerif error"
-pqm_case fail timeout "rejects a model that runs past the timeout"
+PQM_TIMEOUT=1 pqm_case fail timeout "rejects a model that runs past the timeout"
 pqm_case fail ambiguous-token "rejects a token that names two results"
 pqm_case fail malformed-expected "rejects an expectation that is neither true nor false"
 # The S13 review: mutants are generated from their originals by a patch, never copied.
