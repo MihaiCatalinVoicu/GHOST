@@ -45,9 +45,11 @@ while [ "$#" -gt 0 ]; do
     --json)
       [ -f "$src" ] || { fail "$src: no such build output"; continue; }
       for pkg in "${PACKAGES[@]}"; do
-        # The package id is `registry+…#libcrux-ml-kem@0.0.10` (cargo 1.77+); the name is matched
-        # exactly, so libcrux-ml-kem never matches a longer name.
-        lines="$(grep -F '"reason":"build-script-executed"' "$src" | grep -E "#$pkg@[0-9]" || true)"
+        # The package id is `registry+…#libcrux-ml-kem@0.0.10` (cargo 1.77+), or, for a workspace
+        # path package whose directory bears its name, `path+file:///…/libcrux-ml-kem#0.0.10`
+        # (upstream's layout, which vendor-tests.sh builds for the libcrux suites, §22.35); the name
+        # is matched exactly, so libcrux-ml-kem never matches a longer name.
+        lines="$(grep -F '"reason":"build-script-executed"' "$src" | grep -E "(#$pkg@|/$pkg#)[0-9]" || true)"
         if [ -z "$lines" ]; then
           fail "$src: no build-script-executed message of $pkg (the check would pass vacuously)"
           continue

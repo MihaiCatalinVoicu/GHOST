@@ -9,9 +9,17 @@ name: vendor-tests
 # dependencies exist only in the work directory. The advisories of its lock are checked with the
 # cargo-deny the rust job pins; its licences are not, because the graph is never distributed.
 #
-# What this job does not run, declared in §22.33: libcrux's own crate test suites. The X-Wing (draft-06,
+# The `libcrux` job (§22.35; §22.33 had declared it not run) runs the own suites of the libcrux crates
+# the ghost lock pins, all of them in `ghost-client-dm`'s graph: the packages are checked against the
+# lock's checksums; the suites run in upstream's workspace at the commit `libcrux-ml-kem` was cut from,
+# after the script has made that workspace hold the published code of every pinned crate (the packages
+# do not ship the suites of libcrux-kem, libcrux-ml-kem's KATs or one of libcrux-sha3's, and the rest
+# need unpublished workspace crates); on toolchain 1.98.1 with the shipped build's
+# LIBCRUX_DISABLE_SIMD128=1 and LIBCRUX_DISABLE_SIMD256=1, G-R3 reading the test build. A failing
+# suite, or one that runs zero tests, fails the job (scripts/ci/vendor-tests.sh libcrux; the decision
+# has fixtures in test-harness/gates/vendor-tests/ and self-test cases). The X-Wing (draft-06,
 # draft-10) and ML-KEM-768 known-answer tests and the differential X-Wing test against RustCrypto's
-# `x-wing` are `ghost-client-dm`'s own tests (tests/xwing_kat.rs, tests/vectors.rs), run by ci.yml's
+# `x-wing` stay `ghost-client-dm`'s own tests (tests/xwing_kat.rs, tests/vectors.rs), run by ci.yml's
 # rust job on every change.
 #
 # Nightly, and on a change that can move the pin: the lock, the DM crate's manifest, the script, this
@@ -73,3 +81,33 @@ jobs:
           tool: cargo-deny@0.20.2
       - name: advisories of the package's own dev-dependency lock (cargo-deny)
         run: cargo deny --manifest-path "$RUNNER_TEMP/vendor/vodozemac-${{ steps.pin.outputs.version }}/Cargo.toml" check advisories
+
+  libcrux:
+    name: libcrux crates' own suites at the pinned versions (portable build)
+    runs-on: [self-hosted, linux, x64, ghost]
+    # Measured on a 4-vCPU container beside other work (§22.35): see there for one run; the budget
+    # leaves room for a cold cargo cache.
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: the libcrux suites (upstream at the commit libcrux-ml-kem was cut from, holding the published code; SIMD off)
+        run: |
+          set -o pipefail
+          bash scripts/ci/vendor-tests.sh libcrux "$RUNNER_TEMP/libcrux" | tee "$RUNNER_TEMP/libcrux-summary.txt"
+      - name: job summary
+        if: always()
+        run: |
+          {
+            echo "## libcrux suites (portable build)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/libcrux-summary.txt" 2>/dev/null || echo "no summary: the run did not start"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

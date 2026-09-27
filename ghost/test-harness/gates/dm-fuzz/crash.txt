@@ -1,0 +1,14 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2735193302
+INFO:       30 files found in corpus/card
+#352988	NEW    cov: 1219 ft: 2553 corp: 124/19Kb lim: 300 exec/s: 16044 rss: 183Mb L: 228/228 MS: 1 ChangeBinInt-
+#503141	DONE   cov: 1221 ft: 2562 corp: 128/19Kb lim: 300 exec/s: 16230 rss: 237Mb
+
+thread '<unnamed>' panicked at fuzz_targets/card.rs:24:17:
+assertion `left == right` failed: a card that parses re-encodes to its bytes
+==48112== ERROR: libFuzzer: deadly signal
+SUMMARY: libFuzzer: deadly signal
+MS: 2 ChangeByte-CopyPart-; base unit: 3f7a
+artifact_prefix='artifacts/card/'; Test unit written to artifacts/card/crash-5d41402abc4b2a76b9719d911017c592
+stat::number_of_executed_units: 88121
+stat::average_exec_per_sec:     15020

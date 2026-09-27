@@ -1,0 +1,4 @@
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189","target":{"name":"libc"}}
+{"reason":"build-script-executed","package_id":"path+file:///work/upstream/crates/algorithms/sha3#libcrux-sha3@0.0.10","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/work/upstream/target/debug/build/libcrux-sha3-bc7ac8e1f2a3b4c5/out"}
+{"reason":"build-script-executed","package_id":"path+file:///work/upstream/libcrux-ml-kem#0.0.10","linked_libs":[],"linked_paths":[],"cfgs":["feature=\"simd256\""],"env":[],"out_dir":"/work/upstream/target/debug/build/libcrux-ml-kem-b1c2d3e4f5a6b7c8/out"}
+{"reason":"build-script-executed","package_id":"path+file:///work/upstream/crates/utils/intrinsics#libcrux-intrinsics@0.0.8","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/work/upstream/target/debug/build/libcrux-intrinsics-a1b2c3d4e5f6a7b8/out"}

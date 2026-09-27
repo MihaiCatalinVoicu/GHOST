@@ -1446,6 +1446,8 @@ lcx_case fail 2 "libcrux-sha3-0123456789abcdef/output:1:cargo::rustc-cfg" "rejec
 lcx_case fail 1 "a stale run the libcrux clean did not remove" "refuses two build script runs of one package" --target-dir "$LCX/dir-stale"
 lcx_case fail 3 "no build script output of libcrux-ml-kem" "refuses a directory with no libcrux build" --target-dir "$LCX/dir-empty"
 lcx_case fail 2 "dir-simd" "checks every build it is given" --json "$LCX/portable.json" --target-dir "$LCX/dir-simd"
+lcx_case pass 0 "[libcrux-portable] OK" "accepts workspace path package ids (upstream's layout, §22.35)" --json "$LCX/portable-path.json"
+lcx_case fail 1 "libcrux-ml-kem enabled SIMD code" "rejects SIMD cfgs under a path package id" --json "$LCX/simd-path.json"
 
 # G-R7 (c) (§2.9, V-9): the shipped library carries Olm's KDF labels and none of the HPKE strings
 # the linker drops. Byte files stand in for stripped libraries (test-harness/gates/dm-golden/).
@@ -1474,6 +1476,34 @@ else
   echo "SELF-TEST FAIL: dm-golden-lock --library went on to the pin rule" >&2
   printf '%s\n' "$dmg_out" | tail -3 >&2; rc=1
 fi
+
+# dm-fuzz and the libcrux suites (Phase 9 design §16.2 `dm-fuzz` and `vendor-tests`, §22.35): the
+# decisions the nightly jobs apply to a libFuzzer run and to a crate's own `cargo test` suite, over
+# logs with one failure each (test-harness/gates/dm-fuzz/, test-harness/gates/vendor-tests/).
+FUZZV="$HARNESS/dm-fuzz"
+verdict_case() { # $1 = script, $2 = flag, $3 = expect pass|fail, $4 = expected verdict, $5 = description, $6 = log, $7 = exit code
+  local out got
+  if out="$(bash "$DIR/../ci/$1" "$2" "$6" "$7" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$3" ] && [ "$out" = "$4" ]; then
+    echo "self-test ok: $1 $5"
+  else
+    echo "SELF-TEST FAIL: $1 $5 ($got: $out)" >&2; rc=1
+  fi
+}
+verdict_case dm-fuzz.sh --verdict pass "PASS 503141" "accepts a clean run" "$FUZZV/pass.txt" 0
+verdict_case dm-fuzz.sh --verdict fail "FAIL exit 1" "rejects a clean log from a run that exited non-zero" "$FUZZV/pass.txt" 1
+verdict_case dm-fuzz.sh --verdict fail "FAIL crash" "rejects a panic (deadly signal)" "$FUZZV/crash.txt" 1
+verdict_case dm-fuzz.sh --verdict fail "FAIL crash" "rejects an AddressSanitizer report" "$FUZZV/asan.txt" 1
+verdict_case dm-fuzz.sh --verdict fail "FAIL timeout" "rejects a timeout" "$FUZZV/timeout.txt" 70
+verdict_case dm-fuzz.sh --verdict fail "FAIL out-of-memory" "rejects an out-of-memory" "$FUZZV/oom.txt" 71
+verdict_case dm-fuzz.sh --verdict fail "FAIL zero executions" "rejects a run that executed nothing" "$FUZZV/zero.txt" 0
+verdict_case dm-fuzz.sh --verdict fail "FAIL no statistics (the run did not finish: exit 137)" "rejects a run killed before its statistics" "$FUZZV/truncated.txt" 137
+VTV="$HARNESS/vendor-tests"
+verdict_case vendor-tests.sh --suite-verdict pass "PASS 3" "accepts a suite and sums its binaries and doc-tests" "$VTV/suite-pass.txt" 0
+verdict_case vendor-tests.sh --suite-verdict fail "FAIL exit 101" "rejects a passing log from a run that exited non-zero" "$VTV/suite-pass.txt" 101
+verdict_case vendor-tests.sh --suite-verdict fail "FAIL a test failed" "rejects a failed test" "$VTV/suite-failed.txt" 101
+verdict_case vendor-tests.sh --suite-verdict fail "FAIL zero tests ran" "rejects a suite that runs no test" "$VTV/suite-zero.txt" 0
+verdict_case vendor-tests.sh --suite-verdict fail "FAIL the suite did not build" "rejects a suite that does not build" "$VTV/suite-build-error.txt" 101
 
 # G-DM5 (Phase 9 design §16.1, §21.13 points 5 and 7; slice S12): each source tree and each mapping
 # fixture reports exactly its own violations, the positive mapping passes, and the real tree passes.

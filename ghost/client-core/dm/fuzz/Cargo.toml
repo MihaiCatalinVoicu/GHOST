@@ -1,0 +1,75 @@
+# The `dm-fuzz` targets of `ghost-client-dm` (Phase 9 design §16.2 `dm-fuzz`, §9.5 M-8, §16.3,
+# §22.8.10 point 9 = IMPL-12, §22.35): card, bundle, intro inner layer, L0, TLVs, Olm message parsing.
+#
+# Excluded from the main workspace (its own `[workspace]` below and its own Cargo.lock, seeded from
+# ghost/Cargo.lock so every shared crate resolves to the version the shipped graph pins), so neither
+# the shipped build nor ghost/Cargo.lock changes. `libfuzzer-sys` (a C++ build of libFuzzer) exists
+# only here, a CI-only dependency (§16.3, ADR-36); cargo-deny checks this lock in the nightly job.
+# The toolchain is the dated nightly of rust-toolchain.toml, which cargo-fuzz needs for
+# `-Zsanitizer=address` and SanitizerCoverage.
+[package]
+name = "ghost-client-dm-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "LicenseRef-GHOST-Proprietary"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+ghost-client-dm = { path = ".." }
+# The sealing half of the envelope and of the intro inner layer, at the DM crate's own pins: the
+# fixture seals attacker-chosen plaintext the way the crate does (src/lib.rs).
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+hkdf = "=0.13.0"
+sha2 = "0.11.0"
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "card"
+path = "fuzz_targets/card.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "intro_inner"
+path = "fuzz_targets/intro_inner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "l0"
+path = "fuzz_targets/l0.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tlvs"
+path = "fuzz_targets/tlvs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "olm_message"
+path = "fuzz_targets/olm_message.rs"
+test = false
+doc = false
+bench = false

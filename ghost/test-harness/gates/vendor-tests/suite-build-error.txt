@@ -1,0 +1,4 @@
+   Compiling libcrux-ml-kem v0.0.10 (/work/upstream/libcrux-ml-kem)
+error[E0432]: unresolved import `libcrux_kats::acvp`
+ --> libcrux-ml-kem/tests/acvp.rs:3:5
+error: could not compile `libcrux-ml-kem` (test "acvp") due to 1 previous error

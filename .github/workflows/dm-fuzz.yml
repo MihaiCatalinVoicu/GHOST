@@ -1,0 +1,120 @@
+name: dm-fuzz
+
+# The DM fuzz targets (Phase 9 design §16.2 `dm-fuzz`, §9.5 M-8, §16.3, §22.8.10 point 9 = IMPL-12;
+# built by §22.35): cargo-fuzz targets for the contact card, the bundle, the intro inner layer, L0,
+# the TLVs and Olm message parsing (client-core/dm/fuzz, excluded from the workspace with its own
+# lock), each run for a fixed time from its committed seeds, on the dated nightly that crate's
+# rust-toolchain.toml pins, with AddressSanitizer and debug assertions. scripts/ci/dm-fuzz.sh fails
+# the job on a crash, a timeout, an out-of-memory, or a target that executed nothing or printed no
+# statistics; its decision has fixtures (test-harness/gates/dm-fuzz/) and self-test cases.
+#
+# Nightly and on demand only: a fuzzing budget is not a pull-request check. A finding is fixed in
+# ghost-client-dm with a regression test and its reproducer committed next to the target's seeds,
+# never suppressed (§22.35).
+#
+# Budget: 600 s per target nightly, 6 targets, one after the other (one core each; measured rates
+# in §22.35 range from about 1 400 exec/s for the intro inner layer, one X-Wing decapsulation per
+# input, to about 300 000 for L0). A dispatch can choose up to 1 200 s per target inside the timeout.
+#
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+# cargo-fuzz is built from its crates.io package, checked against the SHA-256 below (the crates.io
+# index checksum of that version) before anything of it runs; libfuzzer-sys and every other
+# dependency of the fuzz crate is pinned by checksum in client-core/dm/fuzz/Cargo.lock, whose
+# advisories and bans cargo-deny checks with the repository's deny.toml (its licences are not
+# checked: the fuzz crate is never distributed, as in vendor-tests.yml).
+on:
+  schedule:
+    - cron: "43 2 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "seconds per target (1 to 1200)"
+        default: "600"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_FUZZ_VERSION: "0.13.2"
+  CARGO_FUZZ_SHA256: "5acfd01930e49823e58c30dd8012d3338a620377d7c7d4cc140ca4b2169400e2"
+
+jobs:
+  fuzz:
+    name: dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)
+    runs-on: [self-hosted, linux, x64, ghost]
+    # Six targets at the dispatch maximum of 1 200 s is two hours; the build, the nightly and
+    # cargo-fuzz add about ten minutes.
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The workspace toolchain, for cargo-deny's `cargo metadata` from ghost/ (its rust-toolchain.toml).
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: the per-target budget
+        id: budget
+        env:
+          SECONDS_INPUT: ${{ inputs.seconds || '600' }}
+        run: |
+          case "$SECONDS_INPUT" in '' | *[!0-9]*) echo "::error::seconds per target: an integer"; exit 1 ;; esac
+          [ "$SECONDS_INPUT" -ge 1 ] && [ "$SECONDS_INPUT" -le 1200 ] || { echo "::error::seconds per target: 1 to 1200"; exit 1; }
+          echo "seconds=$SECONDS_INPUT" >> "$GITHUB_OUTPUT"
+      - name: the dated nightly of client-core/dm/fuzz/rust-toolchain.toml
+        id: nightly
+        run: |
+          channel="$(sed -nE 's/^channel = "(nightly-[0-9]{4}-[0-9]{2}-[0-9]{2})"$/\1/p' client-core/dm/fuzz/rust-toolchain.toml)"
+          [ -n "$channel" ] || { echo "::error::client-core/dm/fuzz/rust-toolchain.toml pins no dated nightly"; exit 1; }
+          rustup toolchain install "$channel" --profile minimal
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: cargo-fuzz from its checked crates.io package
+        env:
+          CHANNEL: ${{ steps.nightly.outputs.channel }}
+        run: |
+          crate="$RUNNER_TEMP/cargo-fuzz-$CARGO_FUZZ_VERSION.crate"
+          curl -sSfLo "$crate" "https://static.crates.io/crates/cargo-fuzz/cargo-fuzz-$CARGO_FUZZ_VERSION.crate"
+          echo "$CARGO_FUZZ_SHA256  $crate" | sha256sum -c -
+          tar -xzf "$crate" -C "$RUNNER_TEMP"
+          cargo "+$CHANNEL" install --locked --path "$RUNNER_TEMP/cargo-fuzz-$CARGO_FUZZ_VERSION" --root "$RUNNER_TEMP/cargo-fuzz"
+          echo "$RUNNER_TEMP/cargo-fuzz/bin" >> "$GITHUB_PATH"
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: advisories and bans of the fuzz crate's lock (cargo-deny, §22.8.10 point 9)
+        run: cargo deny --manifest-path client-core/dm/fuzz/Cargo.toml check advisories bans
+      - name: every target for its budget (fails on a crash, timeout, OOM or zero executions)
+        env:
+          SECONDS_PER_TARGET: ${{ steps.budget.outputs.seconds }}
+        run: |
+          set -o pipefail
+          bash scripts/ci/dm-fuzz.sh "$SECONDS_PER_TARGET" "$RUNNER_TEMP/dm-fuzz" | tee "$RUNNER_TEMP/dm-fuzz-summary.txt"
+      - name: job summary
+        if: always()
+        run: |
+          {
+            echo "## dm-fuzz (${{ steps.nightly.outputs.channel }}, ${{ steps.budget.outputs.seconds }} s per target)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/dm-fuzz-summary.txt" 2>/dev/null || echo "no summary: the run did not start"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      # Evidence, not a gate: a refused upload (the artifact quota, §22.33) must not turn the job red.
+      # A failing input is also named in the job log, and it is committed with its fix.
+      - name: upload the logs and any failing input
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dm-fuzz
+          path: |
+            ${{ runner.temp }}/dm-fuzz/*.log
+            ${{ runner.temp }}/dm-fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 3

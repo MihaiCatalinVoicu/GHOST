@@ -1,0 +1,9 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2735193302
+INFO:       30 files found in corpus/card
+Done 0 runs in 31 second(s)
+stat::number_of_executed_units: 0
+stat::average_exec_per_sec:     16230
+stat::new_units_added:          195
+stat::slowest_unit_time_sec:    0
+stat::peak_rss_mb:              237

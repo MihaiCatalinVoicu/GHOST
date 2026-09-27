@@ -1,0 +1,10 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2735193302
+INFO:       30 files found in corpus/card
+#352988	NEW    cov: 1219 ft: 2553 corp: 124/19Kb lim: 300 exec/s: 16044 rss: 183Mb L: 228/228 MS: 1 ChangeBinInt-
+#503141	DONE   cov: 1221 ft: 2562 corp: 128/19Kb lim: 300 exec/s: 16230 rss: 237Mb
+=================================================================
+==48113==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000011 at pc 0x55d4 bp 0x7ffd sp 0x7ffd
+READ of size 1 at 0x602000000011 thread T0
+SUMMARY: AddressSanitizer: heap-buffer-overflow (/fuzz/target/card+0x55d4)
+stat::number_of_executed_units: 1201
