@@ -1,0 +1,204 @@
+diff --git a/ghost/Cargo.toml b/ghost/Cargo.toml
+index a281882..d3ffe3b 100644
+--- a/ghost/Cargo.toml
++++ b/ghost/Cargo.toml
+@@ -11,6 +11,7 @@ members = [
+     # Issuer crates (Phase 8 design §5.1): inside rust_src_files, so every gate scans them.
+     "issuer/crates/*",
+     "client-core/net",
++    "client-core/mls-probe",
+     # DM cryptography (Phase 9 design §2.3): a workspace member so cargo-deny, the licence gates
+     # and the Rust gates cover it. The S0' spike client-core/dm-spike stays outside the workspace.
+     "client-core/dm",
+@@ -93,3 +94,7 @@ opt-level = 3
+ [profile.release]
+ # Native client libraries ship in the APK (NFR-4): strip symbols, keep panics unwinding for JNI safety.
+ strip = "symbols"
++
++# Phase 10 S0 V10-1 probe (temporary): the forbidden sqlite-provider of openmls stubbed out.
++[patch.crates-io]
++openmls_sqlite_storage = { path = "client-core/mls-probe/stub-openmls-sqlite-storage" }
+diff --git a/ghost/client-core/mls-probe/Cargo.toml b/ghost/client-core/mls-probe/Cargo.toml
+new file mode 100644
+index 0000000..9737f33
+--- /dev/null
++++ b/ghost/client-core/mls-probe/Cargo.toml
+@@ -0,0 +1,31 @@
++# TEMPORARY Phase 10 S0 size probe (V10-1, V10-3, V10-7): linked into ghost-client-net only while
++# client-core/mls-spike/size-probe/size-probe.patch is applied. Never committed to the workspace.
++# It compiles the spike's adapter, provider, extensions and channel harness (by #[path]) so the
++# linker keeps what ghost-client-mls would keep.
++[package]
++publish = false
++name = "ghost-mls-probe"
++version.workspace = true
++edition.workspace = true
++license.workspace = true
++rust-version.workspace = true
++
++[features]
++default = []
++# The OpenMLS stack (off: the probe links only its JNI export).
++mls = ["dep:openmls", "dep:openmls_traits", "dep:openmls_libcrux_crypto", "dep:ed25519-dalek", "dep:serde", "dep:serde_json", "dep:chacha20poly1305", "dep:sha2", "dep:rayon", "dep:tls_codec"]
++# Q2 evidence only: OpenMLS's X-Wing suites (forbidden in shipped graphs, design §3.2).
++pq = ["mls", "openmls/draft-ietf-mls-pq-ciphersuites", "openmls_traits/draft-ietf-mls-pq-ciphersuites", "openmls_libcrux_crypto/draft-ietf-mls-pq-ciphersuites"]
++
++[dependencies]
++jni = { workspace = true }
++openmls = { version = "=0.9.0", default-features = false, optional = true }
++openmls_traits = { version = "=0.6.0", default-features = false, optional = true }
++openmls_libcrux_crypto = { version = "=0.4.0", default-features = false, optional = true }
++ed25519-dalek = { workspace = true, optional = true }
++serde = { workspace = true, optional = true }
++serde_json = { workspace = true, optional = true }
++chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"], optional = true }
++sha2 = { workspace = true, optional = true }
++rayon = { version = "=1.12.0", optional = true }
++tls_codec = { version = "=0.5.0", features = ["derive", "serde", "mls"], optional = true }
+diff --git a/ghost/client-core/mls-probe/src/lib.rs b/ghost/client-core/mls-probe/src/lib.rs
+new file mode 100644
+index 0000000..e265ace
+--- /dev/null
++++ b/ghost/client-core/mls-probe/src/lib.rs
+@@ -0,0 +1,76 @@
++//! Temporary Phase 10 S0 size probe: compiles the spike's GhostKv, provider, extensions and channel
++//! harness and runs one small channel through every operation ghost-client-mls will call, so the
++//! linker keeps what the real crate would keep. Evidence tooling, not product code.
++
++pub use jni;
++
++#[cfg(feature = "mls")]
++#[path = "../../mls-spike/core/src/codec.rs"]
++pub mod codec;
++#[cfg(feature = "mls")]
++#[path = "../../mls-spike/core/src/ext.rs"]
++pub mod ext;
++#[cfg(feature = "mls")]
++#[path = "../../mls-spike/core/src/harness.rs"]
++pub mod harness;
++#[cfg(feature = "mls")]
++#[path = "../../mls-spike/core/src/kv.rs"]
++pub mod kv;
++#[cfg(feature = "mls")]
++#[path = "../../mls-spike/core/src/provider.rs"]
++pub mod provider;
++#[cfg(feature = "mls")]
++#[path = "../../mls-spike/core/src/seal.rs"]
++pub mod seal;
++
++/// Create, admit two joiners, post, self-update, remove, add, export, sweep: returns the owner's
++/// epoch authenticator (empty on any failure).
++#[cfg(feature = "mls")]
++pub fn probe_mls(input: &[u8]) -> Vec<u8> {
++    use harness::*;
++    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
++    let day = host_day();
++    let mut w = World::build(3, 2, day);
++    let ch = w.channel;
++    let Ok(m) = w.members[1].encrypt(ch, 1, input) else { return Vec::new() };
++    if w.members[0].receive(ch, &m).is_err() || w.members[2].receive(ch, &m).is_err() {
++        return Vec::new();
++    }
++    if w.self_update(2).is_err() {
++        return Vec::new();
++    }
++    let leaf = w.members[1].leaf_index(ch);
++    if w.remove(0, leaf).is_err() || w.add_one(0).is_err() {
++        return Vec::new();
++    }
++    let _ = w.members[0].export(ch, "ghost/v1/ch/epoch");
++    if w.members[0].sweep_past(ch, 1).is_err() {
++        return Vec::new();
++    }
++    #[cfg(feature = "pq")]
++    {
++        let _ = openmls::prelude::Ciphersuite::MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519;
++    }
++    w.members[0].authenticator(ch)
++}
++
++#[cfg(not(feature = "mls"))]
++pub fn probe_mls(_input: &[u8]) -> Vec<u8> {
++    Vec::new()
++}
++
++#[macro_export]
++macro_rules! export_jni {
++    () => {
++        #[no_mangle]
++        pub extern "system" fn Java_org_ghost_crypto_bridge_MlsNative_probeMls(
++            mut env: $crate::jni::JNIEnv,
++            _class: $crate::jni::objects::JClass,
++            input: $crate::jni::objects::JByteArray,
++        ) -> $crate::jni::sys::jbyteArray {
++            let bytes = env.convert_byte_array(&input).unwrap_or_default();
++            let out = $crate::probe_mls(&bytes);
++            env.byte_array_from_slice(&out).map(|a| a.into_raw()).unwrap_or(std::ptr::null_mut())
++        }
++    };
++}
+diff --git a/ghost/client-core/mls-probe/stub-openmls-sqlite-storage/Cargo.toml b/ghost/client-core/mls-probe/stub-openmls-sqlite-storage/Cargo.toml
+new file mode 100644
+index 0000000..f5c472a
+--- /dev/null
++++ b/ghost/client-core/mls-probe/stub-openmls-sqlite-storage/Cargo.toml
+@@ -0,0 +1,18 @@
++# TEMPORARY V10-1 probe: an empty stand-in for openmls's optional openmls_sqlite_storage 0.3.0, so
++# the ghost lock resolves (its rusqlite 0.37 -> libsqlite3-sys 0.35 conflicts with Arti's 0.37 on
++# links = "sqlite3"). The sqlite-provider feature is forbidden (design §3.2), so nothing uses it.
++[package]
++name = "openmls_sqlite_storage"
++version = "0.3.0"
++edition = "2021"
++publish = false
++license = "MIT"
++
++[features]
++draft-ietf-mls-pq-ciphersuites = []
++extensions-draft = []
++virtual-clients-draft = []
++test-utils = []
++
++[lib]
++path = "src/lib.rs"
+diff --git a/ghost/client-core/mls-probe/stub-openmls-sqlite-storage/src/lib.rs b/ghost/client-core/mls-probe/stub-openmls-sqlite-storage/src/lib.rs
+new file mode 100644
+index 0000000..3a5c097
+--- /dev/null
++++ b/ghost/client-core/mls-probe/stub-openmls-sqlite-storage/src/lib.rs
+@@ -0,0 +1 @@
++//! Empty (V10-1 probe).
+diff --git a/ghost/client-core/net/Cargo.toml b/ghost/client-core/net/Cargo.toml
+index f3b43ca..2ca7eba 100644
+--- a/ghost/client-core/net/Cargo.toml
++++ b/ghost/client-core/net/Cargo.toml
+@@ -14,6 +14,8 @@ crate-type = ["lib", "cdylib"]
+ # DM cryptography (Phase 9 design §2.3, D2): one Rust runtime in the APK, so the DM crate is
+ # linked into this cdylib and its JNI surface is exported from `libghost_client_net.so`.
+ ghost-client-dm = { path = "../dm", features = ["jni-bridge"] }
++# Phase 10 S0 size probe (temporary, mls-spike/size-probe/size-probe.patch).
++ghost-mls-probe = { path = "../mls-probe" }
+ ghost-relay-api = { path = "../../relay/crates/api" }
+ # Entitlement formats, the ES verifier and seed-derived blinding (ADR-22): workspace crates on
+ # packages the library already links (rust-dependency-allowlist.txt).
+@@ -48,6 +50,9 @@ jni-bridge = ["dep:jni"]
+ # Negative fixture for clippy.toml (scripts/gates/clippy-clearnet-fixture.sh). Never enabled in
+ # a build; rust-feature-policy.sh fails if it is.
+ clippy-fixture = []
++# Phase 10 S0 size probe variants (temporary).
++mls-probe = ["ghost-mls-probe/mls"]
++mls-probe-pq = ["ghost-mls-probe/pq"]
+ 
+ [dev-dependencies]
+ tokio-stream = { workspace = true }
+diff --git a/ghost/client-core/net/src/jni_bridge.rs b/ghost/client-core/net/src/jni_bridge.rs
+index 812d40e..6cbc156 100644
+--- a/ghost/client-core/net/src/jni_bridge.rs
++++ b/ghost/client-core/net/src/jni_bridge.rs
+@@ -1173,3 +1173,6 @@ mod tests {
+         drop(h);
+     }
+ }
++
++// Phase 10 S0 size probe (temporary, mls-spike/size-probe/size-probe.patch).
++ghost_mls_probe::export_jni!();

@@ -1,0 +1,21 @@
+# Phase 10 S0 evidence tooling (not product code): the RFC 9420 passive-client replay through
+# GhostKv (V10-12). The only crate of this workspace that enables openmls/test-utils, which exposes
+# `KeyPackageBundle::new` for injecting the vectors' private keys (design §12.2).
+[package]
+name = "ghost-mls-spike-kat"
+description = "Phase 10 S0 evidence: the MLS WG passive-client vectors replayed through GhostKv (not shipped)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+ghost-mls-spike = { path = "../core" }
+openmls = { workspace = true, features = ["test-utils"] }
+openmls_traits = { workspace = true }
+openmls_libcrux_crypto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true, features = ["serde"] }
+rayon = { workspace = true }
