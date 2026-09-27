@@ -314,6 +314,31 @@ internal object DmMutants {
     )
 
     /**
+     * **ME-17 — a wall-clock back step delays deletion** (R-T7, §10.3, §10.9 item 4; built by
+     * §22.38). The expiry clock `dm_self.expiry_clock_minute` reads as 0 in the one statement that
+     * reads it (`OwnerStore.self`), so `now_e = max(wall, 0)` is the wall clock for every deadline:
+     * a device whose clock stepped back keeps rows past the minute its sweeps had already reached.
+     * The column itself is untouched — SWEEP raises it with `... WHERE expiry_clock_minute < ?`,
+     * which a smaller `now_e` never matches, so no guard fires and the mutant is seen only by what it
+     * delays.
+     */
+    val ME17 = Mutation(
+        id = "ME-17",
+        defeats = "R-T7: every deadline is measured against now_e = max(wall, expiry_clock_minute)",
+        detectedBy = "EP-clock-back (a message whose unread cap lies between the stepped-back wall clock and the " +
+            "expiry clock is deleted by the sweep that follows its RECV, §10.9 item 4)",
+        expect = "past their delete_at_minute on the expiry clock",
+        expectUnderCrash = listOf("past their delete_at_minute on the expiry clock"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("SELECT card_index, seen_key, content_key_wrapped") && sql.contains(" FROM dm_self")) {
+                Pair(sql.replace("expiry_clock_minute, accept_after_minute", "0, accept_after_minute"), args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
      * **MC-10 — arrival-order display.** The conversation page is ordered by the row identity
      * instead of §7.7's `(sort_minute, minute_index)`.
      *
@@ -777,5 +802,5 @@ internal object DmMutants {
      * report prints them.
      */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME11, ME16)
+        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME11, ME16, ME17)
 }

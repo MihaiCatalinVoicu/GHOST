@@ -35,6 +35,16 @@ class DmMutantDetectionTest {
     fun mc5D3OffIsDetected() = detect(DmMutants.MC5, DmSuiteCases.rp6ReEncryptionAfterAWronglyReportedFailure())
 
     @Test
+    fun me17AWallClockBackStepIsDetected() {
+        // ME-17 (R-T7, §10.9 item 4; §22.38): fault-free by EP-clock-back's check, and at crash
+        // points inside the first transaction its rewrite changes after the mark, each beside the
+        // clean case at the same point.
+        detectFaultFreeAndWhereItActs(
+            DmMutants.ME17, DmSuiteCases.epClockSteppedBackDoesNotDelayDeletion(), DmSuiteCases.EP_CLOCK_MARK,
+        )
+    }
+
+    @Test
     fun me11NoCheckpointIsDetected() {
         // ME-11 (§10.7, §10.9 item 3; §22.38): fault-free by the standing clause, and at every event
         // of the window it acts in — the first checkpoint after EP-sweep-log's mark, one statement

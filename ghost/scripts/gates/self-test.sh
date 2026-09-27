@@ -401,6 +401,14 @@ dmr_case fail missing-ep-sweep-log.txt gate "rejects a report without EP-sweep-l
 dmr_case fail suite-eleven-case-count.txt gate "rejects the eleven-case suite line of §22.37"
 dmr_case fail suite-sixteen-mutant-count.txt gate "rejects the sixteen-mutant report of §22.37"
 dmr_case fail me11-weakened-kill-rule.txt gate "rejects ME-11 killed only fault-free"
+# §22.38, group 2: EP-clock-back under the enumeration, thirteen suite cases, eighteen mutants, and
+# ME-17 held to the window rule. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no EP-clock-back line, the twelve-case suite line of group 1,
+# its seventeen-mutant line, and ME-17 held to the fault-free rule alone.
+dmr_case fail missing-ep-clock-back.txt gate "rejects a report without EP-clock-back"
+dmr_case fail suite-twelve-case-count.txt gate "rejects the twelve-case suite line of §22.38's group 1"
+dmr_case fail suite-seventeen-mutant-count.txt gate "rejects the seventeen-mutant report of §22.38's group 1"
+dmr_case fail me17-weakened-kill-rule.txt gate "rejects ME-17 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

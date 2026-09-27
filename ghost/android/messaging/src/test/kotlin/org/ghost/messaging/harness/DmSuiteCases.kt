@@ -1190,6 +1190,15 @@ internal object DmSuiteCases {
 
     /** The note EP-sweep-log writes at its first step: ME-11's window starts after it. */
     const val EP_LOG_MARK: String = "epLogMark"
+
+    /** The note EP-clock-back writes at its first step: ME-17's window starts after it. */
+    const val EP_CLOCK_MARK: String = "epClockMark"
+    private const val EP_CLOCK_TEXT: String = "ep-clock-back"
+    private const val EP_CLOCK_SEEN: String = "epClockSeen"
+    private const val EP_CLOCK_AHEAD: String = "epClockAhead"
+    private const val EP_CLOCK_BACK: String = "epClockBack"
+    private const val EP_CLOCK_SENT: String = "epClockSent"
+    private const val EP_CLOCK_CORRECTED: String = "epClockCorrected"
     private const val EP_LOG_MEASURED: String = "epLogMeasured"
     private const val EP_LOG_FIRST: String = "ep-log-first"
     private const val EP_LOG_SECOND: String = "ep-log-second"
@@ -1758,6 +1767,112 @@ internal object DmSuiteCases {
         w.passes()
     }
 
+    /**
+     * **EP — a clock stepped back one day does not delay deletion** (§10.9 item 4, R-T7, §10.3;
+     * §15.5 EP, "a clock step back"; built by §22.38).
+     *
+     * alice and bob in pair mode with a five-minute timer. bob's device clock steps back one day
+     * after his sweeps have raised the expiry clock (`dm_self.expiry_clock_minute`, R-T7) to the
+     * true time. alice writes; bob's RECV stamps the unread cap from **his** clock —
+     * `min(E, consume + bucket + 1 h)`, consume being the stepped-back arrival — so the row's
+     * `delete_at_minute` lies **between** his wall clock and the expiry clock he already reached.
+     * R-T7 measures every deadline against `now_e = max(wall, expiry_clock_minute)`, so the sweep
+     * that follows the RECV deletes it; an engine that measured against the wall clock would keep
+     * it for the hour the wall needs to catch up — mutant ME-17. The check reads the expiry clock
+     * **raw**, so it is the true `now_e` whatever the engine read. §22.27 item 8 thought this case
+     * needed the model relay's own clock (a relay expiry in the recipient's past); the consume term
+     * of the cap puts the deadline there on its own, and the relay is left as it is (§22.38).
+     *
+     * After the check bob's clock is corrected, so the liveness probes carry ordinary deadlines.
+     *
+     * **Checked in the steps** (a crash in one leaves the next to take the message, sweep and check
+     * again, with bob still a day behind): after bob's passes, no message of his has a
+     * `delete_at_minute` at or before the true `now_e`. **Fault-free:** bob's clock was stepped
+     * back after his expiry clock reached the true time, and the message reached him (a `dm_seen`
+     * tag was written) and is gone. **Oracles:** no-loss with the message declared (it expires on
+     * arrival by design), liveness alice ↔ bob, nothing owed.
+     */
+    fun epClockSteppedBackDoesNotDelayDeletion(): DmScenario = DmScenario(
+        name = "EP-clock-back",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.MIN_5)
+            world.pump()
+            world.passes()
+            world.notes[EP_CLOCK_SEEN] = rawCount(world, "bob", "SELECT count(*) FROM dm_seen")
+        },
+        steps = listOf(
+            step("bob's clock steps back one day") { w ->
+                w.notes.putIfAbsent(EP_CLOCK_MARK, w.bus.count)
+                epClockStepBack(w)
+            },
+            step("alice's five-minute message reaches bob, and bob sweeps") { w ->
+                epClockStepBack(w)
+                epClockDeliverAndCheck(w)
+            },
+            step("bob's passes once more, and the check again") { w ->
+                epClockStepBack(w)
+                epClockDeliverAndCheck(w)
+            },
+            step("bob's clock is corrected") { w ->
+                if (w.notes[EP_CLOCK_BACK] == true && w.notes[EP_CLOCK_CORRECTED] != true) {
+                    w["bob"].clock.now += DmWorld.DAY
+                    w.notes[EP_CLOCK_CORRECTED] = true
+                }
+            },
+        ),
+        finalChecks = { world ->
+            if (world.notes[EP_CLOCK_AHEAD] != true) {
+                dmViolation("EP-clock-back: bob's expiry clock had not reached the true time when his clock stepped back")
+            }
+            val seen = rawCount(world, "bob", "SELECT count(*) FROM dm_seen") - (world.notes[EP_CLOCK_SEEN] as Long)
+            if (seen < 1L) dmViolation("EP-clock-back: the message never reached bob, so its deletion proved nothing")
+            if (EP_CLOCK_TEXT in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("EP-clock-back: the message is still at bob")
+            }
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { setOf(EP_CLOCK_TEXT) },
+    )
+
+    /** bob's clock one day back, once, after checking his expiry clock stands at the true time. */
+    private fun epClockStepBack(w: DmCrashWorld) {
+        if (w.notes[EP_CLOCK_BACK] == true) return
+        val trueMinute = DmTime.floorMinute(w["bob"].clock.now)
+        var stored = 0L
+        w["bob"].raw.query("SELECT expiry_clock_minute FROM dm_self WHERE id = 1") { stored = it.long(0) }
+        w.notes[EP_CLOCK_AHEAD] = stored >= trueMinute - DmWorld.HOUR
+        w["bob"].clock.now -= DmWorld.DAY
+        w.notes[EP_CLOCK_BACK] = true
+    }
+
+    /** The message, written if missing and carried with no clock advance; then bob's passes and the check. */
+    private fun epClockDeliverAndCheck(w: DmCrashWorld) {
+        if (DmScripts.outgoingState(w, "alice", EP_CLOCK_TEXT) == null && w.notes[EP_CLOCK_SENT] != true) {
+            w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), EP_CLOCK_TEXT, null)
+            w.notes[EP_CLOCK_SENT] = true
+        }
+        w.pump()
+        w.passes()
+        w.pump()
+        w.passes()
+        var stored = 0L
+        w["bob"].raw.query("SELECT expiry_clock_minute FROM dm_self WHERE id = 1") { stored = it.long(0) }
+        val nowE = maxOf(DmTime.floorMinute(w["bob"].clock.now), stored)
+        val late = rawCount(
+            w, "bob",
+            "SELECT count(*) FROM dm_message WHERE delete_at_minute IS NOT NULL AND delete_at_minute <= ?",
+            listOf(nowE),
+        )
+        if (late != 0L) {
+            dmViolation("EP-clock-back: bob kept $late messages past their delete_at_minute on the expiry clock after SWEEP (R-T7, §10.9 item 4)")
+        }
+    }
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -1771,5 +1886,6 @@ internal object DmSuiteCases {
         rp11APreKeyMessageOfAReplacedSession(),
         kc5bAGenuineBindingReplayed(),
         epSweepTruncatesTheLog(),
+        epClockSteppedBackDoesNotDelayDeletion(),
     )
 }
