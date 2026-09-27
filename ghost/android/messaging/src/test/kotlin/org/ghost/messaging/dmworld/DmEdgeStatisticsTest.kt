@@ -20,7 +20,9 @@ import org.junit.Test
  *    declares three) — S-DM2's strongest LD attacker must rise above this scale's control by more
  *    than the 0.02 allowance. That is S-DM2's allowance exceeded at MEDIUM against a MEDIUM control;
  *    the report check's rule pins a PR-scale baseline, and the same leak run once on the PR world
- *    (outside this test) stays inside it, +0.0084 (§22.30 item 5);
+ *    (outside this test) stays inside it — on production's triggers +0.0075 over the strongest
+ *    attacker's baseline and +0.0073 over the 7 d class's (§22.36 item 12 (h); +0.0084 on the old
+ *    cadence, §22.30 item 5) — while S-DM1 and JD7 fail on it;
  *  - **a conversation tag in the envelope bytes** ([EdgeLeaks.CONVERSATION_TAG]): a link through
  *    bytes only. S-DM1's exact half must flag it; what its comparison did, and which exact joins
  *    fail on its world, are reported (declared: the comparison cannot show a leak that needs a message

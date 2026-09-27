@@ -65,22 +65,30 @@ import org.ghost.sync.engine.SessionKind as SyncKind
  * installed and replaced again between two checks would have to do so without a single commit.
  *
  * Nothing in this file installs a capability, runs a registration or moves a blob. What it does is
- * the wiring `:app` does on a device (`MessagingWiring`, `GhostApp`), in the driver's virtual time:
+ * the wiring `:app` does on a device (`MessagingWiring`, `GhostApp`), in the driver's virtual time,
+ * and every DM pass runs through the production entry points `MessagingRuntime` exposes
+ * ([DmDevice.Wiring]; phase review MD-2 and MD-3, design §22.36) — the world picks the moment of a
+ * trigger, never a pass's flags:
  *  - **the K20 hook** (§13.4): the entitlement engine calls [EntClient.activationHook] after a trial
  *    activation or a restore; like `MessagingWiring.activationHook` it **posts** the DM layer's
  *    ACTIVATE (a process action at the same instant, which a crash drops as it drops the wiring
  *    thread's queue) and returns, and §21.12 point 2's resume covers a post that never ran;
- *  - **the relay-session-start time trigger** (`MessagingWiring.sessionHooks`, §21.9 rule 1): a
- *    time-triggered DM pass when a relay session's transport is READY, posted before the
- *    entitlement participant starts, as the wiring orders it;
- *  - **the consumer tail** (§13.3 item 6): a time-triggered pass after every background session
+ *  - **the relay session start** (`MessagingWiring.sessionHooks` → `onRelaySessionStart`, §21.9
+ *    rule 1): `DmActor.onTimeTrigger(sessionStart = true)` when a relay session's transport is READY,
+ *    posted before the entitlement participant starts, as the wiring orders it — the one trigger
+ *    that may also open a later bundle-fetch attempt (§21.7 point 5);
+ *  - **the consumer tail** (§13.3 item 6): `DmActor.consumerTail` after every background session
  *    ends (lanes, redeem hold and transport close first) and after every quiet run, with the job
  *    budget's deadline — through `World.onSessionEnd`, which no scenario's `foreground` replaces;
- *  - **the inbox listener** (§13.7): `INBOX`, `OUTCOMES`, `CAPABILITIES` and `TOPOLOGY` hints post
- *    one coalesced hint pass, as `DmActor.onChange` does;
- *  - **the in-process timer** (§10.7 trigger 1, §21.9 rule 1): one resettable wake at
- *    `min(row deadlines, owner wake)`, which is `MessagingRuntime`'s `ExpirySchedule` arrangement;
- *  - **a database open** after a reboot is a time trigger (§21.12 point 2).
+ *  - **the inbox listener** (§13.7): `INBOX`, `OUTCOMES`, `CAPABILITIES` and `TOPOLOGY` hints handed
+ *    to `MessagingRuntime.listener`, which posts one coalesced hint pass, `DmActor.onChange`'s;
+ *  - **the in-process timer** (§10.7 trigger 1, §21.9 rule 1): the production `ExpiryTimer`, armed by
+ *    `MessagingRuntime`'s own schedule (the row deadlines, the owner's wake and the next
+ *    `EST-READY`) — until §22.36 this file computed `min(row deadlines, owner wake)` itself and never
+ *    got MD-3's `EST-READY` term;
+ *  - **the alarm** (§10.7 trigger 5): `ExpiryAlarm`'s one inexact wake at the row deadlines,
+ *    `MessagingWiring.onAlarm` when it is due;
+ *  - **a database open** after a reboot is a time trigger (§21.12 point 2), no session start.
  * A pass that throws an `Exception` ends and is recorded ([swallowed]), which is what the actor
  * thread does on a device; an `Error` — an injected crash, an invariant violation — is not caught.
  * A timer that re-arms at once, or a hint that re-posts itself, more than [MAX_AT_ONE_INSTANT] times
@@ -95,8 +103,10 @@ import org.ghost.sync.engine.SessionKind as SyncKind
  *    directory (`DirectoryEsSlots`' rule), fixed for the world: the harness schedule has one slot
  *    table for every week, so a slot-table change (§5.2) is not expressible here;
  *  - the "process" of a client lives from one crash to the next, so the in-process timer fires
- *    between jobs as if the app were alive; a device whose process the OS killed between jobs keeps
- *    only the session-start, database-open and alarm triggers.
+ *    between jobs as if the app were alive (the cached-app freezer is not modelled here; the privacy
+ *    world models it, §22.36); a device whose process the OS killed between jobs keeps only the
+ *    session-start, database-open and alarm triggers. The alarm does not outlive a crash here: the
+ *    new process's database open arms it again.
  *
  * The relays are four ES slots over two operators, at the onions and operator ids every DM world
  * uses (`OwnerWorld.onion`), so `DmDevice`'s own relay directory rows and the entitlement schedule's
@@ -450,7 +460,11 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
     fun d(): DmDevice = checkNotNull(device) { "${c.name} has no DM device" }
 
     private var hintPending = false
+
+    /** The hints committed since the last hand-off to the actor (the coalesced post of `DmActor.onChange`). */
+    private val pendingHints = LinkedHashSet<SyncChange>()
     private var timerToken = 0L
+    private var alarmToken = 0L
     private var zeroTimers = 0
     private var zeroAt = -1L
     private var hintsHere = 0
@@ -482,6 +496,9 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
 
         /** §21.9 rule 1: the actor's timer. */
         TIMER(true),
+
+        /** §10.7 trigger 5: the one inexact alarm (`MessagingWiring.onAlarm`). */
+        ALARM(true),
 
         /** §21.9 rule 1, §21.12 point 2: a database open. */
         DB_OPEN(true),
@@ -524,7 +541,9 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         device?.close()
         device = null
         hintPending = false
+        pendingHints.clear()
         timerToken++
+        alarmToken++
         zeroTimers = 0
         zeroAt = -1L
         hintsHere = 0
@@ -538,6 +557,16 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             harness = DmDevice.HarnessOverride(
                 c.sql, clock, c.boots - 1, stores = c.stores,
                 decorateCapabilities = world.decorateCapabilities, decorateNamespaces = world.decorateNamespaces,
+                wiring = DmDevice.Wiring(
+                    timer = ::scheduleTimer,
+                    alarm = org.ghost.messaging.port.ExpiryWake { delay -> setAlarm(delay) },
+                    // What the actor thread does with a pass that threw: an `Exception` ends the pass
+                    // and is recorded; an `Error` (an injected crash) ends the process.
+                    failed = { t ->
+                        if (t is Error) throw t
+                        world.swallowed += "${c.name}: ${t.javaClass.simpleName}: ${t.message}"
+                    },
+                ),
             ),
         )
         built.slots = world.esSlots(c)
@@ -549,8 +578,10 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             w.driver.scheduleProcess(w.clock.millis, c, "dm-activate:${c.name}") { activated(restored) }
         }
         c.sql.onCommit += { world.checkCommit(this) }
-        // §21.12 point 2: a database open is a time trigger.
-        if (c.boots > 1) w.driver.scheduleProcess(w.clock.millis, c, "dm-db-open:${c.name}") { under(Trigger.DB_OPEN) { timePass() } }
+        // §21.12 point 2: a database open is a time trigger (`MessagingWiring.ensureStack`'s), no session start.
+        if (c.boots > 1) {
+            w.driver.scheduleProcess(w.clock.millis, c, "dm-db-open:${c.name}") { under(Trigger.DB_OPEN) { time { it.databaseOpen() } } }
+        }
     }
 
     fun sync() {
@@ -561,13 +592,14 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
     /**
      * The one listener slot of the client's `SyncDatabase`: the Phase 7 oracle's drain (the rule
      * `Client.boot` installs, for namespaces a scenario registered through `Client.namespace`) and
-     * the DM actor's hint (`DmActor.onChange`).
+     * the DM actor's hint (`MessagingRuntime.listener`, handed over by a process of its own: the
+     * listener posts on a device, and the committing thread goes on).
      */
     private fun installListener() {
         val client = c
         c.stores.inbox.setListener { changes ->
             if (SyncChange.INBOX in changes || SyncChange.OUTCOMES in changes) client.oracle.requestDrain()
-            if (changes.any { it in HINTS }) hint()
+            if (changes.any { it in HINTS }) hint(changes)
             onHint?.invoke(this, changes)
         }
     }
@@ -579,16 +611,19 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
      */
     var onHint: ((EntDmClient, Set<SyncChange>) -> Unit)? = null
 
-    private fun hint() {
+    private fun hint(changes: Set<SyncChange>) {
+        pendingHints += changes.filter { it in HINTS }
         if (hintPending) return
         hintPending = true
         w.driver.scheduleProcess(w.clock.millis, c, "dm-hint:${c.name}") {
             hintPending = false
+            val handed = pendingHints.toSet()
+            pendingHints.clear()
             // A pass that commits a hint every time would post itself for ever at one instant.
             if (w.clock.millis == hintsAt) hintsHere++ else hintsHere = 1
             hintsAt = w.clock.millis
             if (hintsHere > EntDmWorld.MAX_AT_ONE_INSTANT) violation("${c.name}: $hintsHere hint passes at one instant — a pass re-posts its own hint")
-            under(Trigger.HINT) { pass(timeTriggered = false, deadline = null) }
+            under(Trigger.HINT) { enter(time = false) { it.deliver(handed) } }
         }
     }
 
@@ -598,10 +633,9 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         if (!ent.identity.exists) return@under
         sync()
         activations += if (restored) dev.engine.onRestored() else dev.engine.onActivated()
-        armTimer()
     }
 
-    /** A relay session started: a time-triggered pass once its transport is READY. */
+    /** A relay session started: `MessagingWiring.onRelaySessionStart` once its transport is READY. */
     fun relaySessionStarted(s: Session) {
         awaitReady(s)
     }
@@ -613,7 +647,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
                 if (!s.isFinished()) awaitReady(s)
                 return@scheduleProcess
             }
-            under(Trigger.SESSION_START) { timePass() }
+            under(Trigger.SESSION_START) { time { it.relaySessionStart() } }
         }
     }
 
@@ -622,7 +656,9 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         if (s.kind != SyncKind.BACKGROUND) return
         val policy = c.spec.policy
         val deadline = s.startedAt + policy.jobBudgetMillis - policy.consumerTailReserveMillis
-        w.driver.scheduleProcess(w.clock.millis, c, "dm-consumer-tail:${c.name}") { under(Trigger.CONSUMER_TAIL) { timePass(deadline) } }
+        w.driver.scheduleProcess(w.clock.millis, c, "dm-consumer-tail:${c.name}") {
+            under(Trigger.CONSUMER_TAIL) { time { it.consumerTail.run(org.ghost.sync.api.SessionKind.BACKGROUND, deadline) } }
+        }
     }
 
     /** After a periodic job: a quiet run that ran owes the consumer tail too (§13.3 item 6). */
@@ -631,39 +667,42 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         val started = ent.quietRuns.last()[0]
         val policy = c.spec.policy
         val deadline = started + policy.jobBudgetMillis - policy.consumerTailReserveMillis
-        w.driver.scheduleProcess(w.clock.millis, c, "dm-quiet-tail:${c.name}") { under(Trigger.QUIET_TAIL) { timePass(deadline) } }
-    }
-
-    /** A time-triggered pass; the caller has set [trigger] (a pass run under none is attributed to none). */
-    fun timePass(deadline: Long? = null) = pass(timeTriggered = true, deadline = deadline)
-
-    private fun pass(timeTriggered: Boolean, deadline: Long?) {
-        val dev = device ?: return
-        // No stored identity, no DM context (MessagingWiring): the actor would sweep nothing and
-        // return at `CRYPTO_UNAVAILABLE`.
-        if (!ent.identity.exists) return
-        sync()
-        try {
-            dev.actor.runPass(timeTriggered, deadline)
-        } catch (e: Exception) {
-            world.swallowed += "${c.name}: ${e.javaClass.simpleName}: ${e.message}"
+        w.driver.scheduleProcess(w.clock.millis, c, "dm-quiet-tail:${c.name}") {
+            under(Trigger.QUIET_TAIL) { time { it.consumerTail.run(org.ghost.sync.api.SessionKind.QUIET, deadline) } }
         }
-        if (timeTriggered) timePasses++ else hintPasses++
-        armTimer()
     }
 
     /**
-     * `MessagingRuntime`'s timer: one resettable wake at `min(row deadlines, owner wake)`. A
-     * later arm replaces an earlier one, exactly as `ExpiryTimer.wakeIn` cancels the pending wake.
+     * A time trigger that is no relay session start (`DmActor.onTimeTrigger()`, as the alarm and a
+     * database open give it); the caller has set [trigger] (a pass run under none is attributed to
+     * none — SCN-E's negative control posts one on every `CAPABILITIES` hint).
      */
-    private fun armTimer() {
+    fun timePass() = time { it.databaseOpen() }
+
+    /** A time trigger handed to the actor through [body], one of the production entry points. */
+    private fun time(body: (DmDevice) -> Unit) = enter(time = true, body)
+
+    /**
+     * Hands a trigger to the running process's actor ([body], a production entry point; its turns
+     * run here, [DmDevice.Wiring]). No stored identity, no DM context (`MessagingWiring`): the actor
+     * would sweep nothing and return at `CRYPTO_UNAVAILABLE`, so nothing is handed over.
+     */
+    private fun enter(time: Boolean, body: (DmDevice) -> Unit) {
         val dev = device ?: return
         if (!ent.identity.exists) return
         sync()
-        val rows = dev.sweeper.nextWake()?.delaySeconds
-        val owner = dev.steps.nextOwnerWakeSeconds()?.let { maxOf(0L, it - clock.nowEpochSeconds()) }
+        body(dev)
+        if (time) timePasses++ else hintPasses++
+    }
+
+    /**
+     * `ExpiryTimer`'s scheduler (the production timer of [DmDevice.Wiring], armed by
+     * `MessagingRuntime`'s schedule): its one wake as a process of the client [delay] seconds on. The
+     * timer cancels the pending wake before it arms another, as `wakeIn` does; a process that crashed
+     * takes its timer with it ([boot]).
+     */
+    private fun scheduleTimer(delay: Long, task: () -> Unit): () -> Unit {
         val token = ++timerToken
-        val delay = listOfNotNull(rows, owner).minOrNull() ?: return
         // A wake that is due at once, again and again at one instant, is an engine that never
         // settles; on a device it would spin the actor. A finding, not a hang.
         if (delay == 0L) {
@@ -672,20 +711,29 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
             if (zeroTimers > EntDmWorld.MAX_AT_ONE_INSTANT) violation("${c.name}: the DM timer re-armed at once $zeroTimers times without time passing")
         }
         w.driver.scheduleProcess(w.clock.millis + delay * 1_000, c, "dm-timer:${c.name}") {
-            if (token == timerToken) under(Trigger.TIMER) { timePass() }
+            if (token == timerToken) under(Trigger.TIMER) { enter(time = true) { task() } }
+        }
+        return { if (token == timerToken) timerToken++ }
+    }
+
+    /**
+     * `ExpiryAlarm`: the one inexact alarm, each call replacing the last; when it is due,
+     * `MessagingWiring.onAlarm`. The alarm is not carried over a crash here (see the class note).
+     */
+    private fun setAlarm(delay: Long?) {
+        val token = ++alarmToken
+        if (delay == null) return
+        w.driver.scheduleProcess(w.clock.millis + delay * 1_000, c, "dm-alarm:${c.name}") {
+            if (token == alarmToken) under(Trigger.ALARM) { time { it.alarmFired() } }
         }
     }
 
     /**
      * A user action on the facade (§13.2): inline, as a facade call with no actor attached runs;
      * null while there is no identity (the app shows onboarding, not the conversation list). The
-     * timer is re-armed after it, as the actor's `afterCommit` would.
+     * hints its commits make reach the actor through the listener, whose pass re-arms the wakes.
      */
-    fun <T> user(block: (DmDevice) -> T): T? = under(Trigger.USER) {
-        val out = read(block) ?: return@under null
-        armTimer()
-        out
-    }
+    fun <T> user(block: (DmDevice) -> T): T? = under(Trigger.USER) { read(block) }
 
     /** A read of the facade (contacts, a conversation) for a check: no timer is touched. */
     fun <T> read(block: (DmDevice) -> T): T? {
@@ -754,6 +802,7 @@ internal class EntDmClient(val world: EntDmWorld, val ent: EntClient, val branch
         device?.close()
         device = null
         timerToken++
+        alarmToken++
     }
 
     override fun toString(): String = "EntDmClient(${c.name})"

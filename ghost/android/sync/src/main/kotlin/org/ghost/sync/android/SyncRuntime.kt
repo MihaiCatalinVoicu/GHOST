@@ -11,6 +11,7 @@ import org.ghost.sync.api.SyncCounts
 import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.api.SyncStatus
 import org.ghost.sync.api.TransportStatus
+import org.ghost.sync.engine.JobFate
 import org.ghost.sync.engine.QuietRunScheduler
 import org.ghost.sync.engine.RedeemHold
 import org.ghost.sync.engine.Session
@@ -465,7 +466,10 @@ internal class SyncRuntime(
         // Every job draws, whatever becomes of it: the n-th job of the process gets the n-th draw.
         val quietDraw = schedule.quiet(jobIndex++)
         if (ticket.stopped) return
-        if (wantForeground || busy() || wiped || halted) {
+        // The job's fate is one pure decision (JobFate), which the Phase 9 privacy world makes too.
+        val p = participant
+        val fate = JobFate.of(occupied = wantForeground || busy() || wiped || halted, quietDraw = quietDraw, participant = p != null)
+        if (fate == JobFate.RETURN) {
             ticket.finish()
             return
         }
@@ -474,8 +478,7 @@ internal class SyncRuntime(
             ticket.finish()
             return
         }
-        val p = participant
-        if (quietDraw && p != null) {
+        if (fate == JobFate.QUIET_RUN && p != null) {
             startQuiet(e, ticket, p)
             return
         }

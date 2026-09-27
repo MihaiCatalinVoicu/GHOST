@@ -42,6 +42,12 @@ class DmPrivacyWorldTest {
                         "${byOp[ViewOp.GET] ?: 0} gets, ${byOp[ViewOp.REGISTER] ?: 0} registrations, " +
                         "seals ${world.truth.seals.toSortedMap()}, ${"%.0f".format(seconds)} s $tag",
                 )
+                // The production trigger mix the world ran (§22.36), for the test's output.
+                println(
+                    "$tag DM triggers ${world.triggers}; EST-STARTs by attempt and trigger " +
+                        "${world.fetchStarts.groupingBy { "${it.attempt}/${it.trigger}" }.eachCount().toSortedMap()}; " +
+                        "behaviour ${world.counters}",
+                )
                 if (world.acceptedEdges.isEmpty() || sends == 0) failures += "$tag: the world did nothing"
                 val joins = Joins(world)
                 for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9())) {
@@ -97,6 +103,10 @@ class DmPrivacyWorldTest {
         requireNative()
         PrivacyWorld(PrivacyWorldConfig.of(PrivacyScale.SMALL, PrivacySeeds.ALL[0], withholdAllBundles = true)).use { world ->
             world.run()
+            // The trigger mix of the one world with later attempts (the review of §22.36: it ran no
+            // actor-timer wake before the timer went first at an equal deadline), for the test's output.
+            println("JD7 WITHHOLD_ALL_BUNDLES: DM triggers ${world.triggers}; EST-STARTs by attempt and trigger " +
+                "${world.fetchStarts.groupingBy { "${it.attempt}/${it.trigger}" }.eachCount().toSortedMap()}")
             val result = Joins(world).jd7Withheld()
             PrivacyReport.line(result.line() + " (N=${world.config.clients}, ${world.config.days} days)")
             assertTrue(result.failureMessage(), result.passed)
