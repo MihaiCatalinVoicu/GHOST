@@ -607,8 +607,11 @@ grep -qxF 'dm suite cases: 13 run, 0 failures' "$report" || bad "the suite-case 
 # policy (`ContentFreshness`, whose production rule is the three comparisons RECV wrote inline).
 # Twenty-one since §22.38's group 4: MC-17 (the outbox rebuild loses a rowid or a trigger) and ME-9
 # (the expiry trigger never created), which SCN-L-v3's migration on the bus makes reachable.
-grep -qxF 'dm mutants: 21 run, 21 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 21 run, 21 detected'"
+# Twenty-two since §22.38's group 5: ME-24 (session state stored unwrapped), a native hook per DM
+# context under `test-vectors`, killed by the standing clause that every stored session state opens
+# under the device's state key.
+grep -qxF 'dm mutants: 22 run, 22 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 22 run, 22 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -651,11 +654,15 @@ rule_mc9='fault-free and at 6 of 6 crash points inside the transaction it first 
 # re-created). ME-9: six points from the trigger migration 5 no longer creates to its end (83..111).
 rule_mc17='its rowid half fault-free and at 6 of 6 crash points inside the transaction it first changes; its trigger half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run'
 rule_me9='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# Group 5's: ME-24 at six points spread over the transaction that stores SCN-C's first session — the
+# first statement the hook acts at after the mark (its world issues the clean world's statements, so
+# the window is named by the statement, not found by a departure) — events 3361..3377.
+rule_me24='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-9|$rule_mc9" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
   "MC-16|$rule_ff" "MC-17|$rule_mc17" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
   "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
-  "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17"; do
+  "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17" "ME-24|$rule_me24"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"
   line="$(grep -E "^dm mutant ${mutant}: " "$report" | head -1 || true)"

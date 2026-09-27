@@ -9,9 +9,10 @@
 //! comparison of two implementations.
 //!
 //! **The symbols more** (slice S12, §22.8.10 point 6): `DmEquivalence.run`, the deterministic
-//! case runner of `ghost_client_dm::equivalence`, and — since §22.37 — `DmEquivalence.bindingHooks`,
-//! the per-context switch of MC-20's mutant and KC5b's replayed binding (`ghost_client_dm::binding::
-//! hooks`), both behind the `test-vectors` feature. Built for `x86_64-linux-android` this library is
+//! case runner of `ghost_client_dm::equivalence`, since §22.37 `DmEquivalence.bindingHooks`, the
+//! per-context switch of MC-20's mutant and KC5b's replayed binding (`ghost_client_dm::binding::
+//! hooks`), and since §22.38 `DmEquivalence.stateWrapHook`, the per-context switch of ME-24's
+//! mutant (`ghost_client_dm::wrap::hooks`), all behind the `test-vectors` feature. Built for `x86_64-linux-android` this library is
 //! the emulator's test library, packaged only in the `androidTest` APK; G-R6 checks it exports the
 //! closed list plus exactly those entries, and that the shipped `libghost_client_net.so` exports no
 //! `DmEquivalence` symbol.

@@ -47,6 +47,17 @@ object DmEquivalence {
     @JvmName("bindingHooks")
     external fun bindingHooks(handle: Long, omit: Int, perturb: Int): Boolean
 
+    /**
+     * ME-24's state-wrap hook of the DM context [handle] (design §15.7 ME-24, §22.38;
+     * `ghost_client_dm::wrap::hooks`): the third test-vectors entry point, in the test libraries
+     * only like [run]. [unwrapped] true has the context store its Olm session states **unwrapped**
+     * and read them back as stored, so a mutated world still runs its ratchet and only what
+     * `olm_session.state_env` holds differs; false wraps them again. Always true.
+     */
+    @JvmStatic
+    @JvmName("stateWrapHook")
+    external fun stateWrapHook(handle: Long, unwrapped: Boolean): Boolean
+
     /** [bindingHooks]: no field. */
     const val BINDING_NONE: Int = 0
 

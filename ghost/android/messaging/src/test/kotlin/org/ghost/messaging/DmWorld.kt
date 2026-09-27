@@ -532,6 +532,14 @@ class DmDevice(
     )
     val wrapper = FakeKeyWrapper()
 
+    /**
+     * A copy of the `session_state_key` the DM context is opened with: what the crash worlds'
+     * standing clause opens every stored session state under (§2.5, mutant ME-24, design §22.38).
+     * A copy taken **before** the context opens, because `DmSessions.openContext` erases the array
+     * it is handed; the two expressions below are the ones every world has always run.
+     */
+    internal val sessionStateKey: ByteArray = (seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() }).copyOf()
+
     /** The real DM context: one per device, opened on this device's own MESSAGING branch. */
     private val handle: Long? = if (DmWorld.nativeAvailable()) {
         DmSessions.openContext(

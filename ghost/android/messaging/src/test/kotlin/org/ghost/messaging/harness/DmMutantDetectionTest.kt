@@ -68,6 +68,15 @@ class DmMutantDetectionTest {
     }
 
     @Test
+    fun me24SessionStateStoredUnwrappedIsDetected() {
+        // ME-24 (§2.5; §22.38): the native hook stores every session state in the clear. Fault-free
+        // by the standing clause that every stored state opens under the device's state key, and at
+        // crash points inside the transaction that stores SCN-C's first session — the first
+        // statement it acts at after the mark — each beside the clean SCN-C at the same point.
+        detectFaultFreeAndWhereItActs(DmMutants.ME24, DmScenarios.scnC(), DmScenarios.C_MARK)
+    }
+
+    @Test
     fun me17AWallClockBackStepIsDetected() {
         // ME-17 (R-T7, §10.9 item 4; §22.38): fault-free by EP-clock-back's check, and at crash
         // points inside the first transaction its rewrite changes after the mark, each beside the
@@ -194,7 +203,8 @@ class DmMutantDetectionTest {
                     "hook: it mutates nothing",
                 mutant.rewrite != null || mutant.rewriteOn != null || mutant.decorate != null ||
                     mutant.defer != null || mutant.deferUpdate != null || mutant.hintKeeper ||
-                    mutant.bindingOmit != DmEquivalence.BINDING_NONE || mutant.freshness != null,
+                    mutant.bindingOmit != DmEquivalence.BINDING_NONE || mutant.freshness != null ||
+                    mutant.stateUnwrapped,
             )
             assertTrue("${mutant.id} names no property", mutant.defeats.isNotBlank())
             assertTrue("${mutant.id} names no detecting case", mutant.detectedBy.isNotBlank())
@@ -514,6 +524,11 @@ class DmMutantDetectionTest {
      * clean one ([DmEventBus.actsFrom]) is the window — the transaction the mutant first changes, by
      * construction, with the same prefix in both worlds up to its departure. The departure must come
      * after [mark].
+     *
+     * **A mutant that changes only bytes a statement writes** (ME-24: the session state stored in
+     * the clear, §22.38) issues the clean world's statements, so its world never departs; it names
+     * the statements it acts at ([DmMutants.Mutation.actsAt]), and the window is the transaction of
+     * the first of them after [mark] — with both worlds checked equal event for event up to it.
      */
     private fun proveWhereItActs(mutation: DmMutants.Mutation, scenario: DmScenario, mark: String): WhereItActs {
         requireNative()
@@ -527,8 +542,21 @@ class DmMutantDetectionTest {
         if (native) {
             val mutantTrace = ArrayList<String>()
             runCatching { DmCrashRunner(traced(mutant, mutantTrace)).run(DmRunSpec()) }
-            val first = (0 until minOf(cleanTrace.size, mutantTrace.size)).firstOrNull { cleanTrace[it] != mutantTrace[it] }
-            departsAt = requireNotNull(first) { "${mutation.id}'s world never departs from the clean ${scenario.name}" } + 1L
+            val acts = mutation.actsAt
+            departsAt = if (acts == null) {
+                val first = (0 until minOf(cleanTrace.size, mutantTrace.size)).firstOrNull { cleanTrace[it] != mutantTrace[it] }
+                requireNotNull(first) { "${mutation.id}'s world never departs from the clean ${scenario.name}" } + 1L
+            } else {
+                // A mutant that changes only the bytes a statement writes (ME-24) issues the clean
+                // world's statements: the window is the transaction of the first statement it acts
+                // at, and the two worlds must be the same event for event up to it.
+                val at = mutantTrace.indexOfFirst { acts(it.split(' ', limit = 3).getOrElse(2) { "" }) }
+                require(at >= 0) { "${mutation.id} never reached a statement it acts at in ${scenario.name}" }
+                require(cleanTrace.size > at && cleanTrace.subList(0, at + 1) == mutantTrace.subList(0, at + 1)) {
+                    "${mutation.id}'s world departs from the clean ${scenario.name} before the statement it acts at"
+                }
+                at + 1L
+            }
         }
         var armed: DmArmedPhase? = null
         val faultFree = runCatching {
@@ -553,7 +581,8 @@ class DmMutantDetectionTest {
         )
         println(
             "${mutation.id} killed fault-free by ${scenario.name} (clean passed, $cleanEvents events) at event " +
-                "${phase.events}; mark at $markAt, ${departsAt?.let { "departs from the clean run at $it, " } ?: ""}" +
+                "${phase.events}; mark at $markAt, " +
+                (departsAt?.let { if (mutation.actsAt != null) "first acts at $it, " else "departs from the clean run at $it, " } ?: "") +
                 "the first transaction it changes spans events ${window.first}..${window.last}: $faultFreeMessage",
         )
 
@@ -675,6 +704,7 @@ class DmMutantDetectionTest {
         expectedFailures = scenario.expectedFailures,
         noLoss = scenario.noLoss,
         declaredLoss = scenario.declaredLoss,
+        unarmedTail = scenario.unarmedTail,
     )
 
     /**
@@ -700,5 +730,6 @@ class DmMutantDetectionTest {
         expectedFailures = scenario.expectedFailures,
         noLoss = scenario.noLoss,
         declaredLoss = scenario.declaredLoss,
+        unarmedTail = scenario.unarmedTail,
     )
 }

@@ -119,6 +119,7 @@ internal class DmCrashWorld(
             node.deferUpdate = it.deferUpdate
             node.bindingOmit = it.bindingOmit
             node.freshness = it.freshness
+            node.stateUnwrapped = it.stateUnwrapped
         }
     }
 

@@ -424,6 +424,13 @@ dmr_case fail missing-scn-l-v3.txt gate "rejects a report without SCN-L-v3"
 dmr_case fail suite-nineteen-mutant-count.txt gate "rejects the nineteen-mutant report of §22.38's group 3"
 dmr_case fail mc17-one-half.txt gate "rejects MC-17 killed for one of its two halves"
 dmr_case fail me9-weakened-kill-rule.txt gate "rejects ME-9 killed only fault-free"
+# §22.38, group 5: ME-24, a native hook per DM context, killed by the standing clause that every stored
+# session state opens under the device's state key — no new case, so thirteen suite cases and
+# twenty-two mutants. Positives and every negative regenerated as for group 1. Two more, each a
+# positive with one violation: the twenty-one-mutant line of group 4, and ME-24 held to the
+# fault-free rule alone.
+dmr_case fail suite-twentyone-mutant-count.txt gate "rejects the twenty-one-mutant report of §22.38's group 4"
+dmr_case fail me24-weakened-kill-rule.txt gate "rejects ME-24 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the
@@ -1176,6 +1183,12 @@ expect_fail_msg "dm-jni-surface rejects the binding hooks in a shipped library (
 expect_fail_msg "dm-jni-surface rejects a test library without the binding hooks (§22.37)" \
   "does not export the test-vectors entry point 'DmEquivalence.bindingHooks'" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-run-only-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects the state-wrap hook in a shipped library (§22.38)" \
+  "exports the test-vectors entry point 'DmEquivalence.stateWrapHook': a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/state-hook-only-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the state-wrap hook (§22.38)" \
+  "does not export the test-vectors entry point 'DmEquivalence.stateWrapHook'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-no-state-hook-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
 if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf" >/dev/null 2>&1; then
   echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry points"
 else

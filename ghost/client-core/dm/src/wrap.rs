@@ -190,6 +190,10 @@ pub fn wrap_with_nonce(
 
 /// Wraps a value with a fresh random nonce.
 pub fn wrap(key: &StateKey, name: WrapName, binding: &[u8], plaintext: &[u8]) -> DmResult<Vec<u8>> {
+    #[cfg(feature = "test-vectors")]
+    if name == WrapName::OlmSession && hooks::unwrapped() {
+        return Ok(plaintext.to_vec());
+    }
     let mut nonce = [0u8; NONCE_BYTES];
     pq::fill_random(&mut nonce);
     wrap_with_nonce(key, name, binding, plaintext, &nonce)
@@ -206,6 +210,10 @@ pub fn unwrap(
     binding: &[u8],
     envelope: &[u8],
 ) -> DmResult<Zeroizing<Vec<u8>>> {
+    #[cfg(feature = "test-vectors")]
+    if name == WrapName::OlmSession && hooks::unwrapped() {
+        return Ok(Zeroizing::new(envelope.to_vec()));
+    }
     if envelope.len() < ENVELOPE_OVERHEAD {
         return Err(DmCode::StateCorrupt);
     }
@@ -222,6 +230,70 @@ pub fn unwrap(
         )
         .map(Zeroizing::new)
         .map_err(|_| DmCode::StateCorrupt)
+}
+
+/// ME-24 over the JVM crash worlds (design §15.7 ME-24, §22.38): test builds only — `test-vectors`,
+/// which only `ghost-dm-host` enables (G-R2 keeps it out of every shipped graph, G-R6 keeps its JNI
+/// symbol out of every shipped library).
+///
+/// One hook per DM context, set by `DmEquivalence.stateWrapHook(handle, unwrapped)`: the mutant
+/// "session state stored unwrapped". [`wrap`] hands an Olm session state back as it is, and
+/// [`unwrap`] takes the stored bytes as that state — both, so a mutated world still runs its
+/// ratchet and only what it stores differs: `olm_session.state_env` holds the pickle and its
+/// sidecar in the clear. Every other envelope, and every call outside a context, is untouched.
+///
+/// Keyed by context handle and active on the calling thread for one context call only ([`scope`],
+/// from `with_context` beside `binding::hooks`), so parallel worlds in one JVM never see one
+/// another's hook.
+#[cfg(feature = "test-vectors")]
+pub mod hooks {
+    use std::cell::Cell;
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock, PoisonError};
+
+    thread_local! {
+        /// Whether the context call running on this thread stores its session states unwrapped.
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn registry() -> &'static Mutex<HashSet<i64>> {
+        static HOOKS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+        HOOKS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    /// Sets or clears the hook of the context `handle`.
+    pub fn set(handle: i64, unwrapped: bool) {
+        let mut hooks = registry().lock().unwrap_or_else(PoisonError::into_inner);
+        if unwrapped {
+            hooks.insert(handle);
+        } else {
+            hooks.remove(&handle);
+        }
+    }
+
+    /// Runs `body` with the hook of `handle` active on this thread, and the previous state back
+    /// after it, a caught panic included. Its caller is `jni.rs`'s context scope, so a
+    /// `test-vectors` build without `jni-bridge` compiles it unused outside the tests.
+    #[cfg_attr(not(feature = "jni-bridge"), allow(dead_code))]
+    pub(crate) fn scope<T>(handle: i64, body: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ACTIVE.with(|active| active.set(self.0));
+            }
+        }
+        let on = registry()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&handle);
+        let _restore = Restore(ACTIVE.with(|active| active.replace(on)));
+        body()
+    }
+
+    /// Whether the running context call stores its session states unwrapped.
+    pub(crate) fn unwrapped() -> bool {
+        ACTIVE.with(Cell::get)
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +426,36 @@ mod tests {
         let count = names.len();
         names.dedup();
         assert_eq!(names.len(), count);
+    }
+
+    #[cfg(feature = "test-vectors")]
+    #[test]
+    fn the_me24_hook_stores_session_states_unwrapped_in_its_own_context_only() {
+        let binding = olm_session_binding(&[7u8; 16], &SESSION);
+        let state: &[u8] = b"a session state";
+        let wrapped = |envelope: &[u8]| envelope.len() == state.len() + ENVELOPE_OVERHEAD;
+        hooks::set(41, true);
+        let raw =
+            hooks::scope(41, || wrap(&key(), WrapName::OlmSession, &binding, state)).expect("wrap");
+        assert_eq!(raw, state);
+        let opened = hooks::scope(41, || unwrap(&key(), WrapName::OlmSession, &binding, &raw))
+            .expect("unwrap");
+        assert_eq!(opened.as_slice(), state);
+        // Every other envelope of the hooked context is wrapped as ever.
+        let seed =
+            hooks::scope(41, || wrap(&key(), WrapName::ReplySeed, &binding, state)).expect("wrap");
+        assert!(wrapped(&seed));
+        // Another context, and a call outside any, see no hook.
+        let other =
+            hooks::scope(42, || wrap(&key(), WrapName::OlmSession, &binding, state)).expect("wrap");
+        assert!(wrapped(&other));
+        assert!(wrapped(
+            &wrap(&key(), WrapName::OlmSession, &binding, state).expect("wrap")
+        ));
+        hooks::set(41, false);
+        let cleared =
+            hooks::scope(41, || wrap(&key(), WrapName::OlmSession, &binding, state)).expect("wrap");
+        assert!(wrapped(&cleared));
     }
 
     #[test]

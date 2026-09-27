@@ -159,7 +159,9 @@ pub mod hooks {
     }
 
     /// Runs `body` with the hooks of `handle` active on this thread, and the previous ones back
-    /// after it, a caught panic included.
+    /// after it, a caught panic included. Its caller is `jni.rs`'s context scope, so a
+    /// `test-vectors` build without `jni-bridge` compiles it unused.
+    #[cfg_attr(not(feature = "jni-bridge"), allow(dead_code))]
     pub(crate) fn scope<T>(handle: i64, body: impl FnOnce() -> T) -> T {
         struct Restore((u8, u8));
         impl Drop for Restore {

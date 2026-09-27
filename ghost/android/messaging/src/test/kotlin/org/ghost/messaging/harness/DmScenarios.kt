@@ -316,6 +316,7 @@ internal object DmScenarios {
         },
         steps = listOf(
             step("alice scans bob's card and writes; the first window") { w ->
+                w.notes.putIfAbsent(C_MARK, w.bus.count)
                 ensurePartOne(w)
                 attemptWindow(w)
             },
@@ -907,6 +908,9 @@ internal object DmScenarios {
     private const val C_LISTED_AT_PROBE = "cListedAtProbe"
     private const val C_STILL_GIVEN_UP = "cStillGivenUp"
     private const val C_BEFORE_ACCEPT = "cBeforeAccept"
+
+    /** The note SCN-C writes at its first step: no session exists before it, so ME-24's window follows it. */
+    const val C_MARK: String = "cMark"
 
     // ------------------------------------------------------------------ SCN-D key change
 

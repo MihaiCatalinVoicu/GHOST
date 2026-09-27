@@ -1,0 +1,60 @@
+GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10, S10b, S10c, SCN-E and the suite cases of §22.27 and §22.37)
+scale: gate (every event), seeds 64
+coverage: the scale is the density of the dm crash classes lines; the dm crash sample lines (SCN-E) are sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS bob 75464 events, 24 singles over 3 phases (8 per phase), 3 timeouts and 3 crashes after apply at 3 of 6 stores (per phase 3/6 0/0 0/0); sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS alice 79463 events, 24 singles over 3 phases (8 per phase), 6 timeouts and 6 crashes after apply at 6 of 16 stores (per phase 3/12 3/4 0/0); sampled, not every event
+dm crash sample: SCN-E bob 643795 events, 48 singles over 6 phases (8 per phase), 9 timeouts and 9 crashes after apply at 9 of 12 stores (per phase 3/6 0/0 0/0 0/0 3/3 3/3); sampled, not every event
+dm crash sample: SCN-E alice 1569272 events, 48 singles over 6 phases (8 per phase), 15 timeouts and 15 crashes after apply at 15 of 1923 stores (per phase 3/12 3/6 3/6 3/1890 3/9 0/0); sampled, not every event
+dm crash classes: SCN-A 1550 events, 1550 singles, 1550 doubles, 3 timeouts over 3 stores
+dm crash classes: SCN-K 1857 events, 1857 singles, 0 doubles, 3 timeouts over 3 stores
+dm crash classes: SCN-H 17410 events, 17410 singles, 0 doubles, 22 timeouts over 22 stores
+dm crash classes: SCN-D 4645 events, 4645 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-L 1233 events, 1233 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-G-week 2854 events, 2854 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: SCN-C 7578 events, 7578 singles, 0 doubles, 12 timeouts over 12 stores
+dm storage-full: SCN-J 308 statements injected
+dm crash classes: SCN-G 1983 events, 1983 singles, 0 doubles, 4 timeouts over 4 stores
+dm crash classes: SCN-I 6720 events, 6720 singles, 6720 doubles, 7 timeouts over 7 stores
+dm crash classes: SCN-B 1522 events, 1522 singles, 1522 doubles, 6 timeouts over 6 stores
+dm crash classes: SCN-J 1132 events, 1132 singles, 1132 doubles, 1 timeouts over 1 stores
+dm crash classes: SCN-F 1516 events, 1516 singles, 1516 doubles, 2 timeouts over 2 stores
+dm seeded worlds: 64 seeds, 0 failures
+dm seeded worlds (faulted): 64 seeds, 31 drew a fault, 0 failures
+dm crash classes: RP6 1466 events, 1466 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: RP9 1185 events, 1185 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: CB-reject-replay 712 events, 712 singles, 0 doubles, 1 timeouts over 1 stores
+dm crash classes: EP-read-expiry 1238 events, 1238 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: KC12 4903 events, 4903 singles, 0 doubles, 3 timeouts over 3 stores
+dm crash classes: RS2 11053 events, 11053 singles, 0 doubles, 10 timeouts over 10 stores
+dm crash classes: RP7 2193 events, 2193 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: RP5 3138 events, 3138 singles, 0 doubles, 4 timeouts over 4 stores
+dm crash classes: RP4 2404 events, 2404 singles, 0 doubles, 3 timeouts over 3 stores
+dm crash classes: RP11 3341 events, 3341 singles, 0 doubles, 5 timeouts over 5 stores
+dm crash classes: KC5b 2547 events, 2547 singles, 0 doubles, 6 timeouts over 6 stores
+dm crash classes: EP-sweep-log 2240 events, 2240 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: EP-clock-back 1879 events, 1879 singles, 0 doubles, 1 timeouts over 1 stores
+dm crash classes: SCN-L-v3 1156 events, 1156 singles, 0 doubles, 2 timeouts over 2 stores
+dm suite cases: 13 run, 0 failures
+dm mutants: 21 run, 21 detected
+dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
+dm mutant MC-5: detected by RP6's retry, which D3's absence lets reach the message row (counted id_taken); kill rule: fault-free, beside a clean control
+dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears), RP4 (the session bob reset comes back) and RP5, fault-free and under a crash in the transaction that writes the tuple; its second half (the tuple written outside the RECV transaction) by RP5 under a crash in its split window; kill rule: its first half fault-free by 3 cases and at 6 of 6 crash points inside the transaction it first changes; its second half at 3 of 3 crash points of its split window; each beside a clean run
+dm mutant MC-9: detected by RP7 (an L0 of last week re-sealed under this week's key is rendered); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
+dm mutant MC-10: detected by SCN-B (six messages reordered across the relay set); kill rule: fault-free, beside a clean control
+dm mutant MC-12: detected by DmPoisonTest (SimulatedNativeCrash on every open of one blob); kill rule: fault-free, beside a clean control
+dm mutant MC-14: detected by SCN-E/LOSE_KEYS (6 h after the loss the relay still holds none of the owner's inbox registrations); kill rule: fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run
+dm mutant MC-15: detected by SCN-E/LOSE_KEYS (a refused deposit credential re-put in a process no time trigger, user send or boot of the sender started); kill rule: fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run
+dm mutant MC-16: detected by SCN-G (the ambiguous store never reaches INDETERMINATE); kill rule: fault-free, beside a clean control
+dm mutant MC-17: detected by SCN-L-v3 (the v3 file's Phase 7 rows at their rowids after the migrations; the open path's trigger set); kill rule: its rowid half fault-free and at 6 of 6 crash points inside the transaction it first changes; its trigger half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run
+dm mutant MC-18: detected by SCN-I (alice's first pair-mode answer never opens on the restored device); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-20: detected by KC5b (a genuine binding replayed with another namespace, a stale minute, another ciphertext or another base key: no state change), each omission by its own replay; kill rule: each of its 4 omissions fault-free and at 5 of 5 crash points inside the transaction it first changes, by its own replay, each beside a clean run
+dm mutant MC-21: detected by RS2 (after a 61-day absence the recipient holds no in-key of the conversation's generation for the week it came back); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
+dm mutant MC-24: detected by KC12 (the recipient's RECV throws on every offer of the second identity's first flight); kill rule: fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run
+dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant ME-9: detected by SCN-L-v3 (the open path refuses a file without dm_message_expiry); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
+dm mutant ME-11: detected by EP-sweep-log (the log is 0 bytes right after every checkpoint the device reports done, §10.9 item 3); kill rule: fault-free and at 1 of 1 crash points inside the transaction it first changes, each beside a clean run
+dm mutant ME-16: detected by EP-read-expiry (an expired row is still readable before SWEEP); kill rule: fault-free, beside a clean control
+dm mutant ME-17: detected by EP-clock-back (a message whose unread cap lies between the stepped-back wall clock and the expiry clock is deleted by the sweep that follows its RECV, §10.9 item 4); kill rule: fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run
+dm mutant ME-24: detected by SCN-C (the standing clause: every stored session state opens under the device's state key); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run

@@ -136,6 +136,13 @@ internal class DmNode(
      */
     var afterMigrations: ((JdbcSqlExecutor) -> Unit)? = null
 
+    /**
+     * ME-24's hook (`DmEquivalence.stateWrapHook`, §22.38): the context stores its Olm session
+     * states unwrapped. It lives on the native DM context, which dies with the process, so [boot]
+     * re-installs it, before any call that could read a state the last process stored.
+     */
+    var stateUnwrapped: Boolean = false
+
     /** Whether the running context carries hooks, so a node that never had any never calls in. */
     private var bindingHooksOn = false
 
@@ -230,6 +237,10 @@ internal class DmNode(
         )
         bindingHooksOn = false
         installBindingHooks()
+        if (stateUnwrapped) {
+            val handle = requireNotNull(device.nativeHandle) { "$name has no DM context to hook" }
+            check(DmEquivalence.stateWrapHook(handle, true)) { "$name: the host library refused the state-wrap hook" }
+        }
         boots++
     }
 

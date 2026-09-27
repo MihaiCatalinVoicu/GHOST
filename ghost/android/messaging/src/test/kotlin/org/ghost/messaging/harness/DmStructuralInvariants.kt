@@ -50,6 +50,46 @@ internal object DmStructuralInvariants {
     fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) {
         check(node.raw, node.name, where, heavy, settled)
         checkpointsTruncatedTheLog(node, where)
+        sessionStatesAreWrapped(node, where)
+    }
+
+    /**
+     * §2.5 and R-S6 — the logical half of T3's and T25's scans (§15.7 ME-24, §22.38): every Olm
+     * session state in the file is an envelope that opens under the device's `session_state_key`
+     * with its own binding, ChaCha20-Poly1305 over `nonce(12) ‖ ciphertext ‖ tag(16)` with the
+     * associated data `ghost/v1/wrap/olm-session ‖ contact_id ‖ session_id` (`wrap.rs`), so the
+     * pickle and its sidecar — the session's keys — never sit in the file in the clear. Opened here
+     * on the JVM, independently of the native code that wrapped it.
+     */
+    fun sessionStatesAreWrapped(node: DmNode, where: String) {
+        val key = node.device.sessionStateKey
+        node.raw.query("SELECT contact_id, session_id, state_env FROM olm_session") { r ->
+            if (!opensAsASessionState(key, r.blob(0), r.blob(1), r.blob(2))) {
+                dmViolation(
+                    "${node.name} @ $where: a stored session state does not open under the device's state key " +
+                        "(§2.5; the session's keys are in the file in the clear)",
+                )
+            }
+        }
+    }
+
+    private val WRAP_AD_PREFIX = "ghost/v1/wrap/olm-session".toByteArray(Charsets.US_ASCII)
+
+    private fun opensAsASessionState(key: ByteArray, contactId: ByteArray, sessionId: ByteArray, env: ByteArray): Boolean {
+        if (env.size < 12 + 16) return false
+        val cipher = org.bouncycastle.crypto.modes.ChaCha20Poly1305()
+        cipher.init(
+            false,
+            org.bouncycastle.crypto.params.AEADParameters(
+                org.bouncycastle.crypto.params.KeyParameter(key), 128, env.copyOfRange(0, 12),
+                WRAP_AD_PREFIX + contactId + sessionId,
+            ),
+        )
+        val out = ByteArray(cipher.getOutputSize(env.size - 12))
+        return runCatching {
+            val n = cipher.processBytes(env, 12, env.size - 12, out, 0)
+            cipher.doFinal(out, n)
+        }.isSuccess
     }
 
     /**

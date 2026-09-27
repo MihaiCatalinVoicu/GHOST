@@ -498,12 +498,20 @@ pub mod jni_entry {
             JNI_FALSE
         }
     }
+
+    /// `DmEquivalence.stateWrapHook`: ME-24's hook of one DM context (`crate::wrap::hooks`, design
+    /// §22.38) — its session states stored unwrapped, or wrapped again.
+    pub fn state_wrap_hook(handle: jlong, unwrapped: jboolean) -> jboolean {
+        crate::wrap::hooks::set(handle, unwrapped != JNI_FALSE);
+        JNI_TRUE
+    }
 }
 
 /// Emits the **test-vectors entry points** of §22.8.10 point 6 in the invoking crate, exported by
 /// the test libraries only (G-R6 checks they are there in them and nowhere else):
-/// `Java_org_ghost_crypto_bridge_DmEquivalence_run` (slice S12) and, since §22.37,
-/// `Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks`, MC-20 and KC5b's switch.
+/// `Java_org_ghost_crypto_bridge_DmEquivalence_run` (slice S12), since §22.37
+/// `Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks`, MC-20 and KC5b's switch, and since
+/// §22.38 `Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook`, ME-24's.
 #[cfg(feature = "jni-bridge")]
 #[macro_export]
 macro_rules! export_equivalence_jni {
@@ -529,6 +537,17 @@ macro_rules! export_equivalence_jni {
             perturb: ::jni::sys::jint,
         ) -> ::jni::sys::jboolean {
             $crate::equivalence::jni_entry::binding_hooks(handle, omit, perturb)
+        }
+
+        /// ME-24's state-wrap hook of one DM context (design §22.38); test libraries only.
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook<'local>(
+            _env: ::jni::JNIEnv<'local>,
+            _class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            unwrapped: ::jni::sys::jboolean,
+        ) -> ::jni::sys::jboolean {
+            $crate::equivalence::jni_entry::state_wrap_hook(handle, unwrapped)
         }
     };
 }

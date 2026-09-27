@@ -111,6 +111,18 @@ internal object DmMutants {
         /** True when the mutant is invisible without a crash, so its kill runs the enumeration. */
         val needsACrash: Boolean = false,
         /**
+         * A **native hook** of the state wrap (§22.38): every context of the world stores its Olm
+         * session states unwrapped (`DmEquivalence.stateWrapHook`). ME-24 only.
+         */
+        val stateUnwrapped: Boolean = false,
+        /**
+         * For a mutant that changes only the **bytes** a statement writes — its world issues the same
+         * statements, so no trace ever departs (§22.37's window of a native mutant has no event to
+         * find): the statements it acts at, by their label. Its window is the transaction of the
+         * first one after the scenario's mark. ME-24 only.
+         */
+        val actsAt: ((String) -> Boolean)? = null,
+        /**
          * A **trigger substitution** in the entitlement world's wiring (SCN-E, §22.25): the contact
          * half of KEEPER — the production `ContactKeeper` — runs on every `CAPABILITIES` hint instead
          * of on time-triggered passes only. A fourth mechanism beside the rewrite, the decorator and
@@ -314,6 +326,26 @@ internal object DmMutants {
         rewrite = { sql, args ->
             if (sql.startsWith("CREATE TRIGGER dm_message_expiry")) Pair("SELECT 1", emptyList()) else Pair(sql, args)
         },
+    )
+
+    /**
+     * **ME-24 — session state stored unwrapped** (§2.5, R-S6; built by §22.38). A native hook under
+     * `test-vectors` (`ghost_client_dm::wrap::hooks`, per DM context, like MC-20's): the context
+     * stores every Olm session state as it is and reads it back as stored, so the world's ratchet
+     * still runs and what differs is only what `olm_session.state_env` holds — the pickle and its
+     * sidecar, the session's keys, in the clear. §15.7 names T3's and T25's physical scans for
+     * exported root-key canaries; what kills it here is their logical half, the standing clause
+     * that every stored state opens under the device's state key
+     * (`DmStructuralInvariants.sessionStatesAreWrapped`). The physical canary scan is not built.
+     */
+    val ME24 = Mutation(
+        id = "ME-24",
+        defeats = "§2.5: every Olm session state is stored wrapped under session_state_key with its own binding",
+        detectedBy = "SCN-C (the standing clause: every stored session state opens under the device's state key)",
+        expect = "a stored session state does not open under the device's state key",
+        expectUnderCrash = listOf("a stored session state does not open under the device's state key"),
+        stateUnwrapped = true,
+        actsAt = { label -> label.startsWith("INSERT INTO olm_session(") || label.startsWith("UPDATE olm_session SET state_env") },
     )
 
     /**
@@ -888,6 +920,6 @@ internal object DmMutants {
     fun all(): List<Mutation> =
         listOf(
             MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC33,
-            ME9, ME11, ME16, ME17,
+            ME9, ME11, ME16, ME17, ME24,
         )
 }
