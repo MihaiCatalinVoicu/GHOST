@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4); **ADR-27 punctul 11 rămâne neschimbat** |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4); **ADR-27 punctul 11 rămâne neschimbat** |
 | Sursă | Design Faza 9 (`docs/design/faza9-dm.md`: §10), R-envelope §8, R-privacy §3.9 |
 | Modifică | `allowed-observables.json` (`ttl_bucket_seconds` în locul `ttl_bucket_days`); relay-ul (acceptă doar treptele exacte); `client-core` (refuză în loc să rotunjească; limită superioară a expirării la confirmare); `relay_semantics.txt`; INVARIANTS T20 (o alarmă inexactă permisă) și formularea T25; plan §6.2 rândul 9 („TTL pe relee ≤ timer” se citește ca ADR-27 punctul 11, erată); regulile ferestrei Fazei 7 pentru TTL sub 2σ (re-derivate) |
 

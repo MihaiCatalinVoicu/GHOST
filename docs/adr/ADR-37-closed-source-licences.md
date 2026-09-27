@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (distribuția cu sursă închisă e decizia proprietarului din 2026-09-16; textul ADR e în așteptarea deciziei proprietarului, Q4) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; distribuția cu sursă închisă e decizia proprietarului din 2026-09-16; textul ADR aprobat pe Q4) |
 | Sursă | R-license §0–§7, §10; design Faza 9 (`docs/design/faza9-dm.md`) §2.10, §22 |
 | Înlocuiește | ADR-29 (retras); din ADR-07, clauza „Client, relay și issuer sunt open-source” și ținta „repo F-Droid” în sensul depozitului principal F-Droid |
 | Modifică | FR-8.9, prima jumătate (plan:276); FR-8.10 (plan:277); plan:202; G12 (plan:125); G16 (plan:129); Anexa D (plan:460); `ghost/Cargo.toml:22` (licența crate-urilor); `ghost/deny.toml` (comentariul de la `:37-38`, interdicții nominale); `libs.versions.toml:18,39`; `dependency-allowlist.txt:12`; `dependency-denylist.txt`; CI (încărcări de artefacte) |

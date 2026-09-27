@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4; rescris la revizia din aceeași zi); selecția sesiunilor și numărul de siguranță sunt **excepții CP-09**, cu model, vectori și revizie externă |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4; rescris la revizia din aceeași zi); selecția sesiunilor și numărul de siguranță sunt **excepții CP-09**, cu model, vectori și revizie externă |
 | Sursă | Design Faza 9 (`docs/design/faza9-dm.md`: §3.4, §7, §8, §12.3–§12.4, §13.6, §13.8, §22), R-spec K1, K3, K15–K17, R-libs, R-delta |
 | Modifică | THREAT_MODEL S12 și LIMITE L1 (citarea FR-4.6; revocarea prin inbox-urile contactelor, nu într-un namespace de identitate); `RevocationCertificate` (v2, timp la minut, doar prin E2E); `Schema.kt` (tabelele DM v1 înlocuite); ADR-14 (după restaurare numărul de siguranță rămâne același) |
 

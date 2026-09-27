@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4; rescris la revizia din aceeași zi); **excepție CP-09** (construcție a proiectului din primitive standard); revizia criptografică externă este condiție de lansare (ADR-36) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4; rescris la revizia din aceeași zi); **excepție CP-09** (construcție a proiectului din primitive standard); revizia criptografică externă este condiție de lansare (ADR-36) |
 | Sursă | Design Faza 9 (`docs/design/faza9-dm.md`: §6, §7, §22), R-envelope, R-privacy F3, F4, F9, R-libs, R-pq |
 | Modifică | Idiomul Fazei 7 (padding, apoi biblioteca de sesiune; F7:1395-1398); ADR-08 (nicio confirmare în Faza 9); INVARIANTS T9, T13. Abaterea din runda 9 de la ADR-19 și ADR-20 punctul 8 (sigiliul în Kotlin) se retrage: sigiliul, codecul și padding-ul sunt în Rust |
 

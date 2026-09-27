@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4) |
 | Sursă | Decizia proprietarului din 2026-09-16; cercetările R-libs, R-pq, R-license, R-delta; verdictul de alegere al rundei 9b; design Faza 9 (`docs/design/faza9-dm.md`) §2, §7.7, §7.9, §8, §22 |
 | Înlocuiește | ADR-28 (retras) |
 | Modifică | FR-2.1 și prima frază din spec §7.2 („artefactele oficiale libsignal” devine „Olm din vodozemac, versiune fixată”; interdicția unui Double Ratchet propriu și a reimplementării primitivelor rămâne), glosarul spec („DM”), spec Anexa A (rândul DM); planul §2 (plan:106), arborele de module (plan:352), §6.2 rândul 9 (plan:311) și rândul 15 (plan:317, domeniul auditului); Anexa D (plan:460: se scot `org.signal:*`, se adaugă `vodozemac` și `libcrux-*`); ADR-19 (crate nou `ghost-client-dm`; sigiliul DM revine în Rust); ADR-17 (a doua implementare Ed25519, `ed25519-dalek`, pentru carduri, bundle-uri, legături și revocări v2); THREAT_MODEL A1 |
