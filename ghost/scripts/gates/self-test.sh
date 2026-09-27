@@ -431,6 +431,14 @@ dmr_case fail me9-weakened-kill-rule.txt gate "rejects ME-9 killed only fault-fr
 # fault-free rule alone.
 dmr_case fail suite-twentyone-mutant-count.txt gate "rejects the twenty-one-mutant report of §22.38's group 4"
 dmr_case fail me24-weakened-kill-rule.txt gate "rejects ME-24 killed only fault-free"
+# §22.38, group 6: RO-prune under the enumeration, and MC-30 killed there, both halves — fourteen suite
+# cases and twenty-three mutants. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no RO-prune line, the thirteen-case suite line of group 5, its
+# twenty-two-mutant line, and MC-30 held to one half's rule.
+dmr_case fail missing-ro-prune.txt gate "rejects a report without RO-prune"
+dmr_case fail suite-thirteen-case-count.txt gate "rejects the thirteen-case suite line of §22.38's group 5"
+dmr_case fail suite-twentytwo-mutant-count.txt gate "rejects the twenty-two-mutant report of §22.38's group 5"
+dmr_case fail mc30-one-half.txt gate "rejects MC-30 killed for one of its two halves"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the
@@ -1189,6 +1197,12 @@ expect_fail_msg "dm-jni-surface rejects the state-wrap hook in a shipped library
 expect_fail_msg "dm-jni-surface rejects a test library without the state-wrap hook (§22.38)" \
   "does not export the test-vectors entry point 'DmEquivalence.stateWrapHook'" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-no-state-hook-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects the sidecar-log hook in a shipped library (§22.38)" \
+  "exports the test-vectors entry point 'DmEquivalence.sidecarLogHook': a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/sidecar-hook-only-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the sidecar-log hook (§22.38)" \
+  "does not export the test-vectors entry point 'DmEquivalence.sidecarLogHook'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-no-sidecar-hook-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
 if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf" >/dev/null 2>&1; then
   echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry points"
 else

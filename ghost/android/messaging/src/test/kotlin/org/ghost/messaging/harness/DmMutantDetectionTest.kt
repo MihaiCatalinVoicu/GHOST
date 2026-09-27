@@ -68,6 +68,25 @@ class DmMutantDetectionTest {
     }
 
     @Test
+    fun mc30SkippedKeysNotPrunedOrTheSidecarKeptAsALogIsDetected() {
+        // MC-30, both halves (§7.7 point 4; §22.38): the prune not done, and the sidecar kept as a
+        // log. Each fault-free by RO-prune and at crash points inside the transaction it first
+        // changes after the day-52 mark — the prune's SWEEP: where the first half's world departs
+        // from the clean one, and where the second half first writes a state — each beside the clean
+        // RO-prune at the same point. One §15.7 id, recorded once, and only when both halves are
+        // killed.
+        val prune = proveWhereItActs(DmMutants.MC30, DmSuiteCases.roPruneASkippedKeyAtItsAgeBound(), DmSuiteCases.RO_PRUNE_MARK)
+        val log = proveWhereItActs(DmMutants.MC30_LOG, DmSuiteCases.roPruneASkippedKeyAtItsAgeBound(), DmSuiteCases.RO_PRUNE_MARK)
+        DmKills.record(
+            DmMutants.MC30.id,
+            "its prune half: ${prune.detail("RO-prune")} | its sidecar half: ${log.detail("RO-prune")}",
+            "its prune half fault-free and at ${prune.kills.size} of ${prune.points} crash points inside the " +
+                "transaction it first changes; its sidecar half fault-free and at ${log.kills.size} of " +
+                "${log.points} crash points inside the transaction it first changes; each beside a clean run",
+        )
+    }
+
+    @Test
     fun me24SessionStateStoredUnwrappedIsDetected() {
         // ME-24 (§2.5; §22.38): the native hook stores every session state in the clear. Fault-free
         // by the standing clause that every stored state opens under the device's state key, and at
@@ -204,7 +223,7 @@ class DmMutantDetectionTest {
                 mutant.rewrite != null || mutant.rewriteOn != null || mutant.decorate != null ||
                     mutant.defer != null || mutant.deferUpdate != null || mutant.hintKeeper ||
                     mutant.bindingOmit != DmEquivalence.BINDING_NONE || mutant.freshness != null ||
-                    mutant.stateUnwrapped,
+                    mutant.stateUnwrapped || mutant.sidecarLog,
             )
             assertTrue("${mutant.id} names no property", mutant.defeats.isNotBlank())
             assertTrue("${mutant.id} names no detecting case", mutant.detectedBy.isNotBlank())
@@ -541,17 +560,25 @@ class DmMutantDetectionTest {
         var departsAt: Long? = null
         if (native) {
             val mutantTrace = ArrayList<String>()
-            runCatching { DmCrashRunner(traced(mutant, mutantTrace)).run(DmRunSpec()) }
+            var tracedPhase: DmArmedPhase? = null
+            runCatching { DmCrashRunner(traced(mutant, mutantTrace)).run(DmRunSpec(onArmed = { tracedPhase = it })) }
             val acts = mutation.actsAt
             departsAt = if (acts == null) {
                 val first = (0 until minOf(cleanTrace.size, mutantTrace.size)).firstOrNull { cleanTrace[it] != mutantTrace[it] }
                 requireNotNull(first) { "${mutation.id}'s world never departs from the clean ${scenario.name}" } + 1L
             } else {
-                // A mutant that changes only the bytes a statement writes (ME-24) issues the clean
-                // world's statements: the window is the transaction of the first statement it acts
-                // at, and the two worlds must be the same event for event up to it.
-                val at = mutantTrace.indexOfFirst { acts(it.split(' ', limit = 3).getOrElse(2) { "" }) }
-                require(at >= 0) { "${mutation.id} never reached a statement it acts at in ${scenario.name}" }
+                // A mutant that changes only the bytes a statement writes (ME-24, MC-30's sidecar)
+                // issues the clean world's statements: the window is the transaction of the first
+                // statement it acts at **after the mark** (trace entry i is event i + 1, and the mark
+                // is the count of events before it), and the two worlds must be the same event for
+                // event up to it.
+                val tracedMark = requireNotNull(tracedPhase?.notes?.get(mark) as Long?) {
+                    "${mutation.id}'s traced world never reached the step ${scenario.name} marks ($mark)"
+                }
+                val at = (tracedMark.toInt() until mutantTrace.size).firstOrNull {
+                    acts(mutantTrace[it].split(' ', limit = 3).getOrElse(2) { "" })
+                } ?: -1
+                require(at >= 0) { "${mutation.id} never reached a statement it acts at in ${scenario.name} after its mark" }
                 require(cleanTrace.size > at && cleanTrace.subList(0, at + 1) == mutantTrace.subList(0, at + 1)) {
                     "${mutation.id}'s world departs from the clean ${scenario.name} before the statement it acts at"
                 }

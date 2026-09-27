@@ -33,8 +33,9 @@ dm crash classes: KC5b 2547 events, 2547 singles, 0 doubles, 6 timeouts over 6 s
 dm crash classes: EP-sweep-log 2240 events, 2240 singles, 0 doubles, 2 timeouts over 2 stores
 dm crash classes: EP-clock-back 1879 events, 1879 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: SCN-L-v3 1156 events, 1156 singles, 0 doubles, 2 timeouts over 2 stores
-dm suite cases: 13 run, 0 failures
-dm mutants: 22 run, 22 detected
+dm crash classes: RO-prune 8682 events, 8682 singles, 0 doubles, 8 timeouts over 8 stores
+dm suite cases: 14 run, 0 failures
+dm mutants: 23 run, 23 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
 dm mutant MC-5: detected by RP6's retry, which D3's absence lets reach the message row (counted id_taken); kill rule: fault-free, beside a clean control
 dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears), RP4 (the session bob reset comes back) and RP5, fault-free and under a crash in the transaction that writes the tuple; its second half (the tuple written outside the RECV transaction) by RP5 under a crash in its split window; kill rule: its first half fault-free by 3 cases and at 6 of 6 crash points inside the transaction it first changes; its second half at 3 of 3 crash points of its split window; each beside a clean run
@@ -51,6 +52,7 @@ dm mutant MC-21: detected by RS2 (after a 61-day absence the recipient holds no 
 dm mutant MC-24: detected by KC12 (the recipient's RECV throws on every offer of the second identity's first flight); kill rule: fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run
 dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its retire_day); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant MC-30: detected by RO-prune (the age clause after SWEEP; the sidecar projection clause); kill rule: its prune half fault-free and at 6 of 6 crash points inside the transaction it first changes; its sidecar half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run
 dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant ME-9: detected by SCN-L-v3 (the open path refuses a file without dm_message_expiry); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
 dm mutant ME-11: detected by EP-sweep-log (the log is 0 bytes right after every checkpoint the device reports done, §10.9 item 3); kill rule: fault-free and at 1 of 1 crash points inside the transaction it first changes, each beside a clean run

@@ -50,47 +50,62 @@ internal object DmStructuralInvariants {
     fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) {
         check(node.raw, node.name, where, heavy, settled)
         checkpointsTruncatedTheLog(node, where)
-        sessionStatesAreWrapped(node, where)
+        sessionStates(node, where)
     }
 
     /**
-     * §2.5 and R-S6 — the logical half of T3's and T25's scans (§15.7 ME-24, §22.38): every Olm
-     * session state in the file is an envelope that opens under the device's `session_state_key`
-     * with its own binding, ChaCha20-Poly1305 over `nonce(12) ‖ ciphertext ‖ tag(16)` with the
-     * associated data `ghost/v1/wrap/olm-session ‖ contact_id ‖ session_id` (`wrap.rs`), so the
-     * pickle and its sidecar — the session's keys — never sit in the file in the clear. Opened here
-     * on the JVM, independently of the native code that wrapped it.
+     * Over every stored Olm session, opened on the JVM independently of the native code that wrote
+     * it ([DmSessionStates], design §22.38):
+     * - **wrapped** (§2.5, R-S6) — the logical half of T3's and T25's scans, mutant ME-24: every state
+     *   is an envelope that opens under the device's `session_state_key` with its own binding, so
+     *   the pickle and its sidecar — the session's keys — never sit in the file in the clear;
+     * - **the sidecar is a projection** (§7.7 point 4) — RO6's projection assertion, mutant MC-30's
+     *   second half: every first-seen sidecar holds exactly the skipped keys its pickle holds, so a
+     *   key the pickle no longer has (used, evicted by the library, or pruned) leaves no entry.
      */
-    fun sessionStatesAreWrapped(node: DmNode, where: String) {
-        val key = node.device.sessionStateKey
-        node.raw.query("SELECT contact_id, session_id, state_env FROM olm_session") { r ->
-            if (!opensAsASessionState(key, r.blob(0), r.blob(1), r.blob(2))) {
+    fun sessionStates(node: DmNode, where: String) {
+        for (session in DmSessionStates.all(node, where)) {
+            val pickle = session.pickleKeys.toSet()
+            val sidecar = session.sidecar.keys
+            if (pickle != sidecar) {
                 dmViolation(
-                    "${node.name} @ $where: a stored session state does not open under the device's state key " +
-                        "(§2.5; the session's keys are in the file in the clear)",
+                    "${node.name} @ $where: a session's first-seen sidecar is not the projection of its pickle " +
+                        "(§7.7 point 4): it lists ${sidecar - pickle} the pickle does not hold and misses ${pickle - sidecar}",
                 )
             }
         }
     }
 
-    private val WRAP_AD_PREFIX = "ghost/v1/wrap/olm-session".toByteArray(Charsets.US_ASCII)
-
-    private fun opensAsASessionState(key: ByteArray, contactId: ByteArray, sessionId: ByteArray, env: ByteArray): Boolean {
-        if (env.size < 12 + 16) return false
-        val cipher = org.bouncycastle.crypto.modes.ChaCha20Poly1305()
-        cipher.init(
-            false,
-            org.bouncycastle.crypto.params.AEADParameters(
-                org.bouncycastle.crypto.params.KeyParameter(key), 128, env.copyOfRange(0, 12),
-                WRAP_AD_PREFIX + contactId + sessionId,
-            ),
-        )
-        val out = ByteArray(cipher.getOutputSize(env.size - 12))
-        return runCatching {
-            val n = cipher.processBytes(env, 12, env.size - 12, out, 0)
-            cipher.doFinal(out, n)
-        }.isSuccess
+    /**
+     * §7.7 point 4's age bound **after SWEEP** (the T34 age case; mutant MC-30's first half, design
+     * §22.38): no live session holds a skipped key first seen `SKIPPED_KEY_MAX_AGE_DAYS` (51, `FRESH +
+     * 2σ`) or more days before the day SWEEP measures by — `now_e`'s (R-T7), which the sweep that just
+     * ran stored as the expiry clock. Only keys the pickle holds count: an entry for a key the pickle
+     * no longer has is [sessionStates]' finding. Called by the runner after its own last pass, like
+     * [retiredSessionsGone].
+     */
+    fun skippedKeysPruned(node: DmNode, where: String) {
+        var expiryClock = 0L
+        node.raw.query("SELECT expiry_clock_minute FROM dm_self WHERE id = 1") { expiryClock = it.long(0) }
+        val now = node.clock.now
+        val nowE = maxOf(now - Math.floorMod(now, 60L), expiryClock)
+        val today = Math.floorDiv(nowE, org.ghost.messaging.DmWorld.DAY)
+        for (session in DmSessionStates.all(node, where)) {
+            for (key in session.pickleKeys) {
+                val day = session.sidecar[key] ?: continue
+                if (today >= day + SKIPPED_KEY_MAX_AGE_DAYS) {
+                    dmViolation(
+                        "${node.name} @ $where: a session still holds the skipped key $key first seen on day $day, " +
+                            "${today - day} days before day $today — past FRESH + 2σ ($SKIPPED_KEY_MAX_AGE_DAYS days, " +
+                            "§7.7 point 4)",
+                    )
+                }
+            }
+        }
     }
+
+    /** `ghost_client_dm::olm::session::SKIPPED_KEY_MAX_AGE_DAYS`: `FRESH + 2σ` in days (§7.7 point 4, V-15). */
+    const val SKIPPED_KEY_MAX_AGE_DAYS: Long = 51
 
     /**
      * §10.9 item 3, "sweep, then assert … the WAL is 0 bytes" (§22.38): every checkpoint the

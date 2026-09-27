@@ -120,6 +120,7 @@ internal class DmCrashWorld(
             node.bindingOmit = it.bindingOmit
             node.freshness = it.freshness
             node.stateUnwrapped = it.stateUnwrapped
+            node.sidecarLog = it.sidecarLog
         }
     }
 

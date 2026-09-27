@@ -143,6 +143,12 @@ internal class DmNode(
      */
     var stateUnwrapped: Boolean = false
 
+    /**
+     * MC-30's second hook (`DmEquivalence.sidecarLogHook`, §22.38): the context keeps its sessions'
+     * first-seen sidecars as insert-only logs. Re-installed at every boot like [stateUnwrapped].
+     */
+    var sidecarLog: Boolean = false
+
     /** Whether the running context carries hooks, so a node that never had any never calls in. */
     private var bindingHooksOn = false
 
@@ -240,6 +246,10 @@ internal class DmNode(
         if (stateUnwrapped) {
             val handle = requireNotNull(device.nativeHandle) { "$name has no DM context to hook" }
             check(DmEquivalence.stateWrapHook(handle, true)) { "$name: the host library refused the state-wrap hook" }
+        }
+        if (sidecarLog) {
+            val handle = requireNotNull(device.nativeHandle) { "$name has no DM context to hook" }
+            check(DmEquivalence.sidecarLogHook(handle, true)) { "$name: the host library refused the sidecar-log hook" }
         }
         boots++
     }

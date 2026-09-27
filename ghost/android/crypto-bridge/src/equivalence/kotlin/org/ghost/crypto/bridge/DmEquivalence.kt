@@ -58,6 +58,17 @@ object DmEquivalence {
     @JvmName("stateWrapHook")
     external fun stateWrapHook(handle: Long, unwrapped: Boolean): Boolean
 
+    /**
+     * MC-30's sidecar-log hook of the DM context [handle] (design §15.7 MC-30, §22.38;
+     * `ghost_client_dm::olm::state::hooks`): the fourth test-vectors entry point, in the test
+     * libraries only like [run]. [on] true has the context keep every session's first-seen sidecar as
+     * an insert-only **log** — an entry outlives the key the pickle no longer holds — instead of the
+     * projection §7.7 point 4 rebuilds at every store; false rebuilds projections again. Always true.
+     */
+    @JvmStatic
+    @JvmName("sidecarLogHook")
+    external fun sidecarLogHook(handle: Long, on: Boolean): Boolean
+
     /** [bindingHooks]: no field. */
     const val BINDING_NONE: Int = 0
 

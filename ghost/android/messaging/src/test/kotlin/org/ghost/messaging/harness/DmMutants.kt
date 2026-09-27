@@ -116,6 +116,12 @@ internal object DmMutants {
          */
         val stateUnwrapped: Boolean = false,
         /**
+         * A **native hook** of the sidecar (§22.38): every context of the world keeps its sessions'
+         * first-seen sidecars as insert-only logs (`DmEquivalence.sidecarLogHook`). MC-30's second
+         * half only.
+         */
+        val sidecarLog: Boolean = false,
+        /**
          * For a mutant that changes only the **bytes** a statement writes — its world issues the same
          * statements, so no trace ever departs (§22.37's window of a native mutant has no event to
          * find): the statements it acts at, by their label. Its window is the transaction of the
@@ -412,6 +418,53 @@ internal object DmMutants {
             after == null || authorSeconds >= after
         },
     )
+
+    /**
+     * **MC-30 — skipped keys not pruned at `FRESH + 2σ`** (§7.7 point 4, V-15; built by §22.38), its
+     * first half. A `DmEnvelopes` decorator: SWEEP's `sessionPrune` removes nothing — the call reports
+     * no key removed and the stored state is left as it was — so a skipped key outlives its 51 days.
+     * One §15.7 id, two halves: this one is the entry registered below, and the kill runs both
+     * ([MC30_LOG]). RO-prune kills it by the age clause after SWEEP
+     * (`DmStructuralInvariants.skippedKeysPruned`).
+     */
+    val MC30 = Mutation(
+        id = "MC-30",
+        defeats = "§7.7 point 4: skipped keys are pruned at FRESH + 2σ, and the first-seen sidecar is the projection " +
+            "of the pickle rebuilt at every store",
+        detectedBy = "RO-prune (the age clause after SWEEP; the sidecar projection clause)",
+        expect = "past FRESH + 2σ (51 days, §7.7 point 4)",
+        expectUnderCrash = listOf("past FRESH + 2σ (51 days, §7.7 point 4)"),
+        decorate = { real -> NoPrune(real) },
+    )
+
+    /**
+     * MC-30's second half: the first-seen sidecar kept as an insert-only **log** instead of the
+     * projection rebuilt at every store — a native hook under `test-vectors` (`olm::state::hooks`, per
+     * DM context), so a key the pickle no longer holds keeps its entry for good. RO-prune's prune is
+     * where that first shows: the key goes from the pickle, its entry stays, and the standing
+     * projection clause refuses the state. The world issues the clean world's statements, so its
+     * window is named by the statement it acts at ([actsAt]): the first session state written after
+     * the mark, the prune's.
+     */
+    val MC30_LOG = Mutation(
+        id = "MC-30",
+        defeats = MC30.defeats,
+        detectedBy = "RO-prune (the sidecar projection clause, at the prune)",
+        expect = "is not the projection of its pickle (§7.7 point 4)",
+        expectUnderCrash = listOf("is not the projection of its pickle (§7.7 point 4)"),
+        sidecarLog = true,
+        actsAt = { label -> label.startsWith("INSERT INTO olm_session(") || label.startsWith("UPDATE olm_session SET state_env") },
+    )
+
+    /** MC-30's decorator: every `sessionPrune` reports that it removed nothing and leaves the state as it was. */
+    private class NoPrune(private val real: org.ghost.messaging.port.DmEnvelopes) : org.ghost.messaging.port.DmEnvelopes by real {
+        override fun prune(
+            contactId: ByteArray,
+            slot: org.ghost.crypto.bridge.DmSessions.StoredSlot,
+            today: Int,
+        ): org.ghost.crypto.bridge.DmSessions.Pruned =
+            org.ghost.crypto.bridge.DmSessions.Pruned.Ok(slot.stateEnv, 0)
+    }
 
     /**
      * **MC-10 — arrival-order display.** The conversation page is ordered by the row identity
@@ -919,7 +972,7 @@ internal object DmMutants {
      */
     fun all(): List<Mutation> =
         listOf(
-            MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC33,
+            MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC30, MC33,
             ME9, ME11, ME16, ME17, ME24,
         )
 }

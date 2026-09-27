@@ -1199,6 +1199,24 @@ internal object DmSuiteCases {
 
     /** The note EP-clock-back writes at its first step: ME-17's window starts after it. */
     const val EP_CLOCK_MARK: String = "epClockMark"
+
+    /** The note RO-prune writes at its day-fifty-two step: MC-30's windows start after it. */
+    const val RO_PRUNE_MARK: String = "roPruneMark"
+    private const val RO_PRUNE_LOST = "ro-lost"
+    private const val RO_PRUNE_NEXT = "ro-next"
+    private const val RO_PRUNE_HELD = "roPruneHeld"
+    private const val RO_PRUNE_START = "roPruneStart"
+    private const val RO_PRUNE_HELD_AT_49 = "roPruneHeldAt49"
+
+    /** Past the thirty-day TTL of a timer-off message: the relay expires it unserved. */
+    private const val RO_PRUNE_HOLD: Long = 40 * DmWorld.DAY
+
+    /**
+     * The days of sweeps before the key's age bound, about ten apart. The last is the check that the
+     * key is still held: day 49, so that it is under 51 days old even when the day it was first seen
+     * and the day the steps count from straddle a midnight.
+     */
+    private val RO_PRUNE_DAYS: List<Long> = listOf(10L, 20L, 30L, 40L, 49L)
     private const val EP_CLOCK_TEXT: String = "ep-clock-back"
     private const val EP_CLOCK_SEEN: String = "epClockSeen"
     private const val EP_CLOCK_AHEAD: String = "epClockAhead"
@@ -1879,6 +1897,108 @@ internal object DmSuiteCases {
         }
     }
 
+    /**
+     * **RO-prune — a skipped key is erased at `FRESH + 2σ`** (§7.7 point 4, V-15; the T34 age case in
+     * a crash world; design §22.38).
+     *
+     * alice writes [RO_PRUNE_LOST] into a relay that holds it past its thirty-day TTL — stored, alice
+     * told so, and expired unserved: a declared loss — and then [RO_PRUNE_NEXT], which arrives. bob
+     * decrypts it one chain index ahead, after §7.7 point 2's gap hold, and his session keeps the
+     * skipped key of the lost message, its first-seen day in the sidecar. Then about fifty days of
+     * sweeps pass: on day forty-nine the key is still held — recorded, so the case shows that the key
+     * it is about exists — and on day fifty-two SWEEP must have erased it. What holds it to that are two standing
+     * clauses: the age bound after the runner's last pass (`DmStructuralInvariants.skippedKeysPruned`)
+     * and the sidecar's projection at every check (`DmStructuralInvariants.sessionStates`).
+     *
+     * **Every later step first clears the relay's hold, and the first of them finishes what a crash
+     * cut short** — a store, a fetch, the gap hold — in five rounds, inside every message's
+     * freshness, as a device that is online would. The enumeration found why: a crash at `ro-next`'s
+     * commit left its delivery to the end of the run, fifty-two days on, where R9 rightly refused it
+     * and the no-loss oracle charged the loss to the engine. One crash per run, so only the first
+     * step can leave anything undone. The sends are not redone (S10's rule): a run whose crash lost
+     * [RO_PRUNE_NEXT] skips no key, and the clauses then hold trivially; the fault-free run is what
+     * shows the key existed.
+     *
+     * **Mutants.** MC-30, both halves: the prune not done (a `DmEnvelopes` decorator) and the sidecar
+     * kept as an insert-only log (a native hook); each window starts at [RO_PRUNE_MARK], the
+     * day-fifty-two step, whose sweep is the prune.
+     *
+     * **The oracles, all three on.** No-loss with [RO_PRUNE_LOST] declared once it was written into
+     * the hold; liveness alice ↔ bob; nothing owed.
+     */
+    fun roPruneASkippedKeyAtItsAgeBound(): DmScenario = DmScenario(
+        name = "RO-prune",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { world -> if (world.notes[RO_PRUNE_HELD] == true) setOf(RO_PRUNE_LOST) else emptySet() },
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            // The timer off: the key is about fifty-two days, and under the default seven-day timer
+            // every message of the conversation would be swept long before (RS2 does the same).
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.OFF)
+            settle(world)
+        },
+        steps = buildList {
+            add(
+                step("alice writes into a relay that holds it past its TTL, then a message that arrives") { w ->
+                    w.relay.releaseNotBefore = mapOf("alice" to now(w) + RO_PRUNE_HOLD)
+                    // Declared before the call (§22.19 item 9), as RS2 declares its lost message.
+                    w.notes[RO_PRUNE_HELD] = true
+                    w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), RO_PRUNE_LOST, null)
+                    round(w)
+                    w.relay.releaseNotBefore = emptyMap()
+                    w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), RO_PRUNE_NEXT, null)
+                    // §7.7 point 2's gap hold: the held message never arrives, so this one waits.
+                    repeat(RS2_GAP_ROUNDS) { round(w) }
+                },
+            )
+            for (day in RO_PRUNE_DAYS) {
+                add(
+                    step("day $day of the skipped key") { w ->
+                        w.relay.releaseNotBefore = emptyMap()
+                        // What a crash cut short in the first step — a store, a fetch, the gap hold
+                        // — is finished here, inside every message's freshness, as a device that is
+                        // online finishes it. Only here: one crash per run, and a crash in a later
+                        // step leaves nothing of the first one undone.
+                        if (day == RO_PRUNE_DAYS.first()) repeat(RS2_GAP_ROUNDS) { round(w) }
+                        w.notes.putIfAbsent(RO_PRUNE_START, now(w))
+                        advanceTo(w, (w.notes[RO_PRUNE_START] as Long) + day * DmWorld.DAY)
+                        w.passes()
+                        if (day == RO_PRUNE_DAYS.last()) {
+                            w.notes[RO_PRUNE_HELD_AT_49] = DmSessionStates.all(w["bob"], "RO-prune day $day")
+                                .flatMap { s -> s.pickleKeys.map { it to s.sidecar[it] } }
+                        }
+                    },
+                )
+            }
+            add(
+                step("day 52: the key is past FRESH + 2σ") { w ->
+                    w.relay.releaseNotBefore = emptyMap()
+                    w.notes.putIfAbsent(RO_PRUNE_START, now(w))
+                    w.notes.putIfAbsent(RO_PRUNE_MARK, w.bus.count)
+                    advanceTo(w, (w.notes[RO_PRUNE_START] as Long) + 52 * DmWorld.DAY)
+                    w.passes()
+                },
+            )
+        },
+        finalChecks = { world ->
+            if (RO_PRUNE_NEXT !in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("RO-prune fault-free: bob never rendered $RO_PRUNE_NEXT, so no key was skipped")
+            }
+            @Suppress("UNCHECKED_CAST")
+            val held = world.notes[RO_PRUNE_HELD_AT_49] as? List<Pair<DmSessionStates.Key, Long?>>
+                ?: dmViolation("RO-prune fault-free: day forty-nine was never reached")
+            // Exactly the one key the lost message left, with its first-seen day: without it the
+            // age clause had nothing to prune and proved nothing.
+            if (held.size != 1 || held.single().second == null) {
+                dmViolation("RO-prune fault-free: on day forty-nine bob held $held, not exactly the one skipped key with its day")
+            }
+        },
+    )
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -1893,5 +2013,6 @@ internal object DmSuiteCases {
         kc5bAGenuineBindingReplayed(),
         epSweepTruncatesTheLog(),
         epClockSteppedBackDoesNotDelayDeletion(),
+        roPruneASkippedKeyAtItsAgeBound(),
     )
 }

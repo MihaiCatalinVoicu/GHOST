@@ -368,6 +368,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             for (node in world.nodes()) {
                 DmStructuralInvariants.afterSweep(node, node.clock.now, "end")
                 DmStructuralInvariants.retiredSessionsGone(node, node.clock.now, "end")
+                DmStructuralInvariants.skippedKeysPruned(node, "end")
             }
 
             // The rendering order **before** the liveness sends, so the comparison across runs is

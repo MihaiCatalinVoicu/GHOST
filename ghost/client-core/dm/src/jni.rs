@@ -790,12 +790,14 @@ fn in_hook_scope<T>(_handle: jlong, body: impl FnOnce() -> T) -> T {
     body()
 }
 
-/// A test build: the call with MC-20 and KC5b's binding hooks (`binding::hooks`, §22.37) and ME-24's
-/// state-wrap hook (`wrap::hooks`, §22.38) of this context active on this thread — none unless a
-/// JVM world set them on this handle.
+/// A test build: the call with MC-20 and KC5b's binding hooks (`binding::hooks`, §22.37), ME-24's
+/// state-wrap hook (`wrap::hooks`) and MC-30's sidecar-log hook (`olm::state::hooks`, §22.38) of
+/// this context active on this thread — none unless a JVM world set them on this handle.
 #[cfg(feature = "test-vectors")]
 fn in_hook_scope<T>(handle: jlong, body: impl FnOnce() -> T) -> T {
-    crate::binding::hooks::scope(handle, || crate::wrap::hooks::scope(handle, body))
+    crate::binding::hooks::scope(handle, || {
+        crate::wrap::hooks::scope(handle, || crate::olm::state::hooks::scope(handle, body))
+    })
 }
 
 pub(crate) fn quiet_panics() {
