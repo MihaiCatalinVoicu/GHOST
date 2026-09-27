@@ -447,6 +447,14 @@ dmr_case fail missing-ep-store-after-expiry.txt gate "rejects a report without E
 dmr_case fail suite-fourteen-case-count.txt gate "rejects the fourteen-case suite line of §22.38's group 6"
 dmr_case fail suite-twentythree-mutant-count.txt gate "rejects the twenty-three-mutant report of §22.38's group 6"
 dmr_case fail me20-weakened-kill-rule.txt gate "rejects ME-20 killed only fault-free"
+# §22.38, group 8: EP-sender-ahead under the enumeration, and ME-19 killed there — sixteen suite cases
+# and twenty-five mutants. Positives and every negative regenerated as for group 1. Four more, each a
+# positive with one violation: no EP-sender-ahead line, the fifteen-case suite line of group 7, its
+# twenty-four-mutant line, and ME-19 held to the fault-free rule alone.
+dmr_case fail missing-ep-sender-ahead.txt gate "rejects a report without EP-sender-ahead"
+dmr_case fail suite-fifteen-case-count.txt gate "rejects the fifteen-case suite line of §22.38's group 7"
+dmr_case fail suite-twentyfour-mutant-count.txt gate "rejects the twenty-four-mutant report of §22.38's group 7"
+dmr_case fail me19-weakened-kill-rule.txt gate "rejects ME-19 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

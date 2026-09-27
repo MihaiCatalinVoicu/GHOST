@@ -1203,6 +1203,15 @@ internal object DmSuiteCases {
     /** The note RO-prune writes at its day-fifty-two step: MC-30's windows start after it. */
     /** EP-store-after-expiry's second step: the sweep that deletes the message while its op is in flight (ME-20). */
     const val EP_LATE_MARK: String = "epLateMark"
+    /** EP-sender-ahead's first step: bob's RECV of the message written five days ahead (ME-19). */
+    const val EP_AHEAD_MARK: String = "epAheadMark"
+    private const val EP_AHEAD: String = "ep-ahead"
+    private const val EP_AHEAD_PAST: String = "epAheadPast"
+    private const val EP_AHEAD_SENT_AT: String = "epAheadSentAt"
+    private const val EP_AHEAD_DATED: String = "epAheadDated"
+
+    /** How far ahead alice's clock runs: five days, inside R9's `2σ` of six. */
+    private const val EP_AHEAD_SECONDS: Long = 5 * DmWorld.DAY
     private const val EP_LATE: String = "ep-late"
     private const val EP_LATE_WRITTEN: String = "epLateWritten"
     private const val EP_LATE_EXPIRED: String = "epLateExpired"
@@ -2147,6 +2156,163 @@ internal object DmSuiteCases {
         if (gone && pending) w.notes[EP_LATE_IN_FLIGHT] = true
     }
 
+    /**
+     * **EP — a sender clock five days ahead does not extend the unread deadline** (C-11, §10.3;
+     * §15.5 EP, "a sender clock 5 days ahead does not extend the unread deadline (ME-19)"; design
+     * §22.38).
+     *
+     * alice and bob in pair mode with a five-minute timer, from the first hour of an ISO week. alice's
+     * clock runs five days ahead when she writes, and what bob sees of a sender's clock is exactly
+     * one thing: the author minute her content carries, five days in his future — inside R9's `2σ`
+     * (six days), and still the week of the pair key that seals it, so binding B1 takes it
+     * ([AheadDatedL0] dates it, as RP7's [OldDatedL0] dates its L0 back). Every device's clock stays
+     * the world's on purpose: the model relay has no clock of its own and measures a blob's TTL on
+     * the fetching device's, so a device five days ahead would find the other side's one-hour blobs
+     * expired — the first version of this case moved alice's clock and lost bob's liveness probe
+     * that way, a harness artifact and not the engine's. bob's unread cap must be
+     * `min(E, consume + bucket + 1 h)` from **his** arrival (§10.3, C-11): content says nothing
+     * about how long a message may be kept. An engine that took `author + bucket` would keep the
+     * unread message five days longer — mutant ME-19.
+     *
+     * **Checked in the steps and at the end of every run** ([capsFromTheRecipientsClock]): no
+     * incoming message at bob carries an unread cap later than his own `now_e` plus its bucket, an
+     * hour and a minute. **Every step first finishes what a crash cut short** — the send (a user
+     * retry, never once the clock has moved), its delivery — and only the last moves the clock.
+     * **Fault-free:** the message was dated five days ahead, it reached bob, and the sweep past
+     * `consume + bucket + 1 h` deleted it. **Oracles:** no-loss with the message declared (it
+     * expires unread by design), liveness alice ↔ bob, nothing owed.
+     *
+     * **Mutant ME-19**: a rewrite of RECV's incoming insert whose cap is `author + bucket + 1 h`; its
+     * window is bob's RECV of the message after [EP_AHEAD_MARK].
+     */
+    fun epSenderClockAhead(): DmScenario = DmScenario(
+        name = "EP-sender-ahead",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.MIN_5)
+            settle(world)
+            // The first hour of the next ISO week, so that five days ahead is the same week (B1).
+            advanceTo(world, DmTime.weekStart(DmTime.week(now(world)) + 1) + DmWorld.HOUR)
+            settle(world)
+            val alice = world["alice"]
+            alice.decorate = { real -> AheadDatedL0(real, EP_AHEAD.toByteArray(Charsets.UTF_8), world) }
+            alice.reboot()
+            DmStructuralInvariants.check(alice, "EP-sender-ahead setup reboot")
+        },
+        steps = listOf(
+            step("alice writes with her clock five days ahead; the message reaches bob") { w ->
+                w.notes.putIfAbsent(EP_AHEAD_MARK, w.bus.count)
+                epAheadDeliver(w)
+            },
+            step("what a crash cut short: the message reaches bob") { w -> epAheadDeliver(w) },
+            step("past bob's own unread cap, bob sweeps") { w ->
+                if (w.notes[EP_AHEAD_PAST] != true) {
+                    w.advanceBy(2 * DmWorld.HOUR + DmWorld.MINUTE)
+                    w.notes[EP_AHEAD_PAST] = true
+                }
+                w.pump()
+                w.passes()
+                capsFromTheRecipientsClock(w, "bob")
+            },
+        ),
+        alwaysChecks = { world -> capsFromTheRecipientsClock(world, "bob") },
+        finalChecks = { world ->
+            val dated = world.notes[EP_AHEAD_DATED] as? Long
+                ?: dmViolation("EP-sender-ahead fault-free: the decorator never dated the message")
+            val sent = world.notes[EP_AHEAD_SENT_AT] as Long
+            if (dated - sent != EP_AHEAD_SECONDS) {
+                dmViolation("EP-sender-ahead fault-free: the message was dated ${dated - sent} s ahead, not five days")
+            }
+            if (world.notes["arrived-$EP_AHEAD"] != true) dmViolation("EP-sender-ahead: '$EP_AHEAD' never reached bob")
+            if (EP_AHEAD in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("EP-sender-ahead: '$EP_AHEAD' is still at bob past his own unread cap and a sweep")
+            }
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { setOf(EP_AHEAD) },
+    )
+
+    /**
+     * alice's device with its clock five days ahead, as bob sees it: the author minute of the
+     * message whose body is [text], [EP_AHEAD_SECONDS] later than her own. It changes one argument
+     * of one call, like RP7's [OldDatedL0], and records the minutes for the fault-free checks.
+     */
+    private class AheadDatedL0(
+        private val real: DmEnvelopes,
+        private val text: ByteArray,
+        private val world: DmCrashWorld,
+    ) : DmEnvelopes by real {
+        override fun encodeContent(
+            kind: DmContent.Kind,
+            messageId: ByteArray,
+            authorMinute: Long,
+            minuteIndex: Int,
+            timerCode: Int,
+            timerVersion: Long,
+            quoteRef: ByteArray?,
+            body: ByteArray,
+            contactId: ByteArray,
+            offerRootGen: Int,
+            offerEnv: ByteArray,
+            revocation: ByteArray,
+            sessionReset: Boolean,
+            pqKey: DmContent.PqKeyCandidate?,
+            pqKeyFirst: Boolean,
+        ): DmContent.Encoded {
+            var minute = authorMinute
+            if (kind == DmContent.Kind.TEXT && body.contentEquals(text)) {
+                minute = authorMinute + EP_AHEAD_SECONDS / DmTime.MINUTE
+                world.notes[EP_AHEAD_SENT_AT] = authorMinute * DmTime.MINUTE
+                world.notes[EP_AHEAD_DATED] = minute * DmTime.MINUTE
+            }
+            return real.encodeContent(
+                kind, messageId, minute, minuteIndex, timerCode, timerVersion, quoteRef, body,
+                contactId, offerRootGen, offerEnv, revocation, sessionReset, pqKey, pqKeyFirst,
+            )
+        }
+    }
+
+    /** [EP_AHEAD], written if no row of it exists and the clock has not moved, carried to bob, and bob's caps checked. */
+    private fun epAheadDeliver(w: DmCrashWorld) {
+        if (w.notes[EP_AHEAD_PAST] != true && w.notes["arrived-$EP_AHEAD"] != true &&
+            DmScripts.outgoingState(w, "alice", EP_AHEAD) == null
+        ) {
+            w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), EP_AHEAD, null)
+        }
+        w.pump()
+        w.passes()
+        w.pump()
+        w.passes()
+        if (EP_AHEAD in DmScripts.inboundTexts(w, "bob")) w.notes["arrived-$EP_AHEAD"] = true
+        capsFromTheRecipientsClock(w, "bob")
+    }
+
+    /**
+     * No incoming message at [node] carries an unread cap later than [node]'s own `now_e` plus its
+     * bucket, an hour and a minute (C-11, §10.3): the cap is `ceil_minute(min(E, consume + bucket +
+     * 1 h))` with `consume` an arrival on the recipient's clock, never later than now, and `now_e`
+     * is at least the wall clock's minute.
+     */
+    private fun capsFromTheRecipientsClock(w: DmCrashWorld, node: String) {
+        val nowE = expiryClockOf(w, node)
+        w[node].raw.query(
+            "SELECT timer_code, unread_deadline_minute FROM dm_message " +
+                "WHERE direction = 'in' AND unread_deadline_minute IS NOT NULL",
+        ) { r ->
+            val bound = nowE + DmTimers.bucketOf(r.long(0).toInt()).seconds.toLong() + DmWorld.HOUR + DmWorld.MINUTE
+            if (r.long(1) > bound) {
+                dmViolation(
+                    "EP-sender-ahead: $node holds an unread message capped at ${r.long(1)}, past its own now_e $nowE " +
+                        "plus its bucket, an hour and a minute — the cap came from the sender's clock (C-11, §10.3)",
+                )
+            }
+        }
+    }
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -2163,5 +2329,6 @@ internal object DmSuiteCases {
         epClockSteppedBackDoesNotDelayDeletion(),
         roPruneASkippedKeyAtItsAgeBound(),
         epStoreAfterExpiry(),
+        epSenderClockAhead(),
     )
 }

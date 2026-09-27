@@ -96,6 +96,15 @@ class DmMutantDetectionTest {
     }
 
     @Test
+    fun me19UnreadDeadlineFromTheAuthorIsDetected() {
+        // ME-19 (C-11, §10.3; §22.38): the cap from the author time, killed by EP-sender-ahead's
+        // check that no cap lies past the recipient's own clock — fault-free, and at crash points
+        // inside the transaction its rewrite first changes after the mark (bob's RECV of the message
+        // written five days ahead), each beside the clean case at the same point.
+        detectFaultFreeAndWhereItActs(DmMutants.ME19, DmSuiteCases.epSenderClockAhead(), DmSuiteCases.EP_AHEAD_MARK)
+    }
+
+    @Test
     fun me20RetainedBlobSurvivingItsMessageIsDetected() {
         // ME-20 (§7.5 "Retained blob", §21.10 point 2, T25; §22.38): alice's schema without the op's
         // foreign key, killed by the standing clause that no retained blob outlives its message —
@@ -216,7 +225,7 @@ class DmMutantDetectionTest {
      * The registry is well formed, and the report's count is armed to be written from the kills.
      *
      * It is deliberately not "57 run, 57 detected". §15.7's set is 97 — 40 privacy, 33 correctness
-     * and 24 ephemeral — and the slices so far register twenty-four (§22.38). A gate that printed the
+     * and 24 ephemeral — and the slices so far register twenty-five (§22.38). A gate that printed the
      * design's number while running fewer would be the one failure a report-checked gate must not have, which is
      * why the check script pins this line to the number this suite actually runs — and why the line
      * itself is now written from [DmKills], so that removing a kill lowers it.
