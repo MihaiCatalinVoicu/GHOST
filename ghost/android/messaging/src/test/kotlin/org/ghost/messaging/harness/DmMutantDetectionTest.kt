@@ -36,37 +36,50 @@ class DmMutantDetectionTest {
 
     @Test
     fun mc20BindingCoverageIsDetected() {
-        // MC-20 (§21.4 point 1; §22.37): each of the four omissions, fault-free, by KC5b's replay
-        // of its own field — each beside the clean KC5b, which refuses all four. One §15.7 id,
-        // recorded once, and only when every omission is killed.
-        val kills = DmMutants.MC20_OMISSIONS.map { detectFaultFree(it, DmSuiteCases.kc5bAGenuineBindingReplayed()) }
+        // MC-20 (§21.4 point 1; §22.37): each of the four omissions by KC5b's replay of its own field,
+        // fault-free and at crash points inside the transaction it first changes — bob's first RECV of
+        // the replay whose binding it lets verify, measured as where its world first departs from the
+        // clean one — each beside the clean KC5b, which refuses all four, at the same point. One §15.7
+        // id, recorded once, and only when every omission is killed.
+        val proofs = DmMutants.MC20_OMISSIONS.map { omission ->
+            proveWhereItActs(
+                omission,
+                DmSuiteCases.kc5bAGenuineBindingReplayed(),
+                DmSuiteCases.kc5bMark(omission.bindingOmit),
+            )
+        }
+        val counts = proofs.map { "${it.kills.size} of ${it.points}" }.distinct()
         DmKills.record(
             DmMutants.MC20.id,
-            kills.joinToString(" | "),
-            "fault-free, each of its ${kills.size} omissions by its own replay, each beside a clean run",
+            proofs.joinToString(" | ") { it.detail("KC5b") },
+            "each of its ${proofs.size} omissions fault-free and at ${counts.joinToString("/")} crash points " +
+                "inside the transaction it first changes, by its own replay, each beside a clean run",
         )
     }
 
     @Test
     fun mc7D2bOffIsDetected() {
         // MC-7′, both halves (§15.7: "D2b not enforced, or written outside the RECV transaction";
-        // §22.37). The first — the tuple never matches — fault-free by the CB replay and by RP4, whose
-        // own property it breaks (the session bob reset comes back); the second — the tuple split
-        // out of the RECV transaction, which no fault-free run can see — by RP5 at every crash
-        // point of its split window, each beside a clean run. One §15.7 id, recorded once, and only
+        // §22.37). The first — the tuple never matches — fault-free by the CB replay, by RP4, whose own
+        // property it breaks (the session bob reset comes back), and by RP5, and under a crash inside
+        // the RECV transaction that writes the tuple (RP5, §22.27's rule); the second — the tuple
+        // split out of the RECV transaction, which no fault-free run can see — by RP5 at every crash
+        // point of its split window. Each beside a clean run. One §15.7 id, recorded once, and only
         // when both halves are killed.
         val first = detectFaultFree(DmMutants.MC7, DmSuiteCases.cbRejectedRequestStaysRejected())
         val byRp4 = detectFaultFree(
             DmMutants.MC7, DmSuiteCases.rp4FirstFlightOfAResetSession(), expect = "RP4: bob holds the session he reset again",
         )
+        val acts = proveWhereItActs(DmMutants.MC7, DmSuiteCases.rp5PreKeyReplayAcrossARestart(), DmSuiteCases.RP5_MARK)
         val (second, points) = detectAtEveryPointOfItsSplitWindow(
             DmMutants.MC7_SPLIT, DmSuiteCases.rp5PreKeyReplayAcrossARestart(),
         )
         DmKills.record(
             DmMutants.MC7.id,
-            "$first | $byRp4 | its second half: $second",
-            "fault-free by two cases (its first half) and, its second half, at $points of $points crash " +
-                "points of its split window, each beside a clean run",
+            "$first | $byRp4 | ${acts.detail("RP5")} | its second half: $second",
+            "its first half fault-free by 3 cases and at ${acts.kills.size} of ${acts.points} crash points inside " +
+                "the transaction it first changes; its second half at $points of $points crash points of its " +
+                "split window; each beside a clean run",
         )
     }
 
@@ -420,14 +433,55 @@ class DmMutantDetectionTest {
      * the mutated statement, and inside its own copy of the changed transaction after it.
      */
     private fun detectFaultFreeAndWhereItActs(mutation: DmMutants.Mutation, scenario: DmScenario, mark: String) {
+        val acts = proveWhereItActs(mutation, scenario, mark)
+        DmKills.record(
+            mutation.id,
+            acts.detail(scenario.name),
+            "fault-free and at ${acts.kills.size} of ${acts.points} crash points inside the transaction it first " +
+                "changes, each beside a clean run",
+        )
+    }
+
+    /** What [proveWhereItActs] measured: the fault-free kill, the window, and the kills inside it. */
+    private class WhereItActs(val faultFree: String, val window: LongRange, val kills: List<String>, val points: Int) {
+        fun detail(scenario: String): String =
+            "$faultFree | and under a crash at ${kills.joinToString(", ")}, inside the transaction it first " +
+                "changes after $scenario's mark (events ${window.first}..${window.last}), each beside a clean " +
+                "run at the same point"
+    }
+
+    /**
+     * [detectFaultFreeAndWhereItActs]'s rule, without the recording, so a §15.7 id proven in parts
+     * (MC-7′'s two halves, MC-20's four omissions; §22.37) records once.
+     *
+     * **A native mutant** (no rewrite: MC-20 changes binding v3 inside the crate, which raises no
+     * event) has no rewritten statement to show its transaction, and a statement text cannot stand
+     * in for one: the first version marked the RECV that **admits** the replay, and a trace found the
+     * worlds had parted long before it — a replay behind refused ones waits in §7.7's gap hold after
+     * its binding verified. So the window is **measured**: both fault-free runs are traced event by
+     * event, and the transaction raising the first event at which the mutated world departs from the
+     * clean one ([DmEventBus.actsFrom]) is the window — the transaction the mutant first changes, by
+     * construction, with the same prefix in both worlds up to its departure. The departure must come
+     * after [mark].
+     */
+    private fun proveWhereItActs(mutation: DmMutants.Mutation, scenario: DmScenario, mark: String): WhereItActs {
         requireNative()
         assertTrue("${mutation.id} names no failure under a crash", mutation.expectUnderCrash.isNotEmpty())
+        val native = mutation.rewrite == null && mutation.rewriteOn == null
         // Half 1: fault-free, against the clean control, with the entry's own message.
-        val cleanEvents = DmCrashRunner(scenario).run(DmRunSpec()).events
+        val cleanTrace = ArrayList<String>()
+        val cleanEvents = DmCrashRunner(if (native) traced(scenario, cleanTrace) else scenario).run(DmRunSpec()).events
         val mutant = mutated(scenario, mutation)
+        var departsAt: Long? = null
+        if (native) {
+            val mutantTrace = ArrayList<String>()
+            runCatching { DmCrashRunner(traced(mutant, mutantTrace)).run(DmRunSpec()) }
+            val first = (0 until minOf(cleanTrace.size, mutantTrace.size)).firstOrNull { cleanTrace[it] != mutantTrace[it] }
+            departsAt = requireNotNull(first) { "${mutation.id}'s world never departs from the clean ${scenario.name}" } + 1L
+        }
         var armed: DmArmedPhase? = null
         val faultFree = runCatching {
-            DmCrashRunner(mutant).run(DmRunSpec(onArmed = { armed = it }))
+            DmCrashRunner(departsAt?.let { actingFrom(mutant, it) } ?: mutant).run(DmRunSpec(onArmed = { armed = it }))
         }.exceptionOrNull()
         assertKilled(mutation, scenario.name, faultFree, record = false)
         val faultFreeMessage = deepMessage(requireNotNull(faultFree))
@@ -436,7 +490,11 @@ class DmMutantDetectionTest {
             "${mutation.id}'s world never reached the step ${scenario.name} marks ($mark)"
         }
         val window = requireNotNull(phase.rewrittenSpans.firstOrNull { it.first > markAt }) {
-            "${mutation.id}'s rewrite changed no statement after ${scenario.name}'s mark at event $markAt"
+            if (native) {
+                "${mutation.id} departs from the clean ${scenario.name} at event $departsAt, not after its mark at $markAt"
+            } else {
+                "${mutation.id}'s rewrite changed no statement after ${scenario.name}'s mark at event $markAt"
+            }
         }
         assertTrue(
             "${mutation.id}'s window $window reaches past the clean run's $cleanEvents events",
@@ -444,8 +502,8 @@ class DmMutantDetectionTest {
         )
         println(
             "${mutation.id} killed fault-free by ${scenario.name} (clean passed, $cleanEvents events) at event " +
-                "${phase.events}; mark at $markAt, the first transaction it changes spans events " +
-                "${window.first}..${window.last}: $faultFreeMessage",
+                "${phase.events}; mark at $markAt, ${departsAt?.let { "departs from the clean run at $it, " } ?: ""}" +
+                "the first transaction it changes spans events ${window.first}..${window.last}: $faultFreeMessage",
         )
 
         // Half 2: at crash points spread over the changed transaction, each beside the clean scenario.
@@ -506,14 +564,7 @@ class DmMutantDetectionTest {
             )
             kills += "crash@$at"
         }
-        DmKills.record(
-            mutation.id,
-            "$faultFreeMessage | and under a crash at ${kills.joinToString(", ")}, inside the transaction " +
-                "it first changes after ${scenario.name}'s mark (events ${window.first}..${window.last}), " +
-                "each beside a clean run at the same point",
-            "fault-free and at ${kills.size} of ${points.size} crash points inside the transaction it first " +
-                "changes, each beside a clean run",
-        )
+        return WhereItActs(faultFreeMessage, window, kills, points.size)
     }
 
     /** One kill: an assertion failure, carrying the message the mutant's entry names, recorded. */
@@ -547,6 +598,33 @@ class DmMutantDetectionTest {
     /** Every message on the cause chain: `DmHarness.parallel` and JUnit both wrap. */
     private fun deepMessage(failure: Throwable): String =
         generateSequence(failure) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
+
+    /** [scenario] with every armed event of its world appended to [out] as "node kind label" (§22.37). */
+    private fun traced(scenario: DmScenario, out: MutableList<String>): DmScenario = rewired(scenario) { world ->
+        scenario.setup(world)
+        world.bus.onEvent = { e -> if (world.bus.armed) out += "${e.node} ${e.kind} ${e.detail}" }
+    }
+
+    /** [scenario] with the transaction raising event [at] recorded as where its mutant acted ([DmEventBus.actsFrom]). */
+    private fun actingFrom(scenario: DmScenario, at: Long): DmScenario = rewired(scenario) { world ->
+        scenario.setup(world)
+        world.bus.actsFrom = at
+    }
+
+    private fun rewired(scenario: DmScenario, setup: (DmCrashWorld) -> Unit): DmScenario = DmScenario(
+        name = scenario.name,
+        setup = setup,
+        steps = scenario.steps,
+        finalChecks = scenario.finalChecks,
+        alwaysChecks = scenario.alwaysChecks,
+        doubles = scenario.doubles,
+        tailRounds = scenario.tailRounds,
+        liveness = scenario.liveness,
+        nothingOwed = scenario.nothingOwed,
+        expectedFailures = scenario.expectedFailures,
+        noLoss = scenario.noLoss,
+        declaredLoss = scenario.declaredLoss,
+    )
 
     /**
      * The same scenario with the mutation installed on every node of its world.

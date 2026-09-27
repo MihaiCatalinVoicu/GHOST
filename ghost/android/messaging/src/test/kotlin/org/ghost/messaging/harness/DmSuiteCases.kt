@@ -1627,6 +1627,7 @@ internal object DmSuiteCases {
         },
         steps = KC5B_REPLAYS.map { (field, label) ->
             step("an intro whose binding names another $label reaches bob") { w ->
+                w.notes.putIfAbsent(kc5bMark(field), w.bus.count)
                 w["alice"].bindingPerturb = field
                 w["alice"].installBindingHooks()
                 rpDeliver(w, "alice", "bob", kc5bText(label), "KC5b")
@@ -1672,6 +1673,9 @@ internal object DmSuiteCases {
     )
 
     private fun kc5bText(label: String): String = "kc5b-" + label.replace(' ', '-')
+
+    /** The note KC5b writes at the start of the step that replays [field]: MC-20's window starts after it. */
+    fun kc5bMark(field: Int): String = "kc5bMark$field"
 
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),

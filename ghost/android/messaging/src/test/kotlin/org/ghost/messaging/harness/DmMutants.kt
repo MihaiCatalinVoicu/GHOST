@@ -211,10 +211,15 @@ internal object DmMutants {
     val MC7 = Mutation(
         id = "MC-7'",
         defeats = "D2b: a replayed first flight never builds a second session",
-        detectedBy = "the rejected-request replay of §12.3 (a second request appears) and RP4 (the session " +
-            "bob reset comes back); its second half (the tuple written outside the RECV transaction) by RP5 " +
-            "under a crash in its split window",
+        detectedBy = "the rejected-request replay of §12.3 (a second request appears), RP4 (the session bob " +
+            "reset comes back) and RP5, fault-free and under a crash in the transaction that writes the tuple; " +
+            "its second half (the tuple written outside the RECV transaction) by RP5 under a crash in its " +
+            "split window",
         expect = "a rejected request came back as a second one",
+        // Under a crash inside the RECV transaction that writes the tuple (§22.37): the transaction
+        // rolls back, the first flight is taken again after the reboot, and the rewrite writes a
+        // tuple that matches nothing once more.
+        expectUnderCrash = listOf("a rejected request came back as a second one"),
         // A random `session_id`, for the same reason MC-5 writes a random tag: the row still goes
         // in, so nothing downstream sees a failed write, and `firstFlightUsed` — which is what D2b
         // actually asks — never finds the tuple it is looking for.
@@ -280,6 +285,10 @@ internal object DmMutants {
         detectedBy = "KC5b (a genuine binding replayed with another namespace, a stale minute, another " +
             "ciphertext or another base key: no state change), each omission by its own replay",
         expect = "KC5b: bob accepted an intro whose binding names another $label",
+        // Under a crash inside the transaction the omission first changes — bob's first RECV of the
+        // replay whose binding it lets verify (§22.37 item 6): it rolls back, the blob is taken again
+        // after the reboot, and the omission lets it through again.
+        expectUnderCrash = listOf("KC5b: bob accepted an intro whose binding names another $label"),
         bindingOmit = field,
     )
 

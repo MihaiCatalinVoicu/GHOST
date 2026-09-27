@@ -550,9 +550,9 @@ grep -qxF 'dm suite cases: 11 run, 0 failures' "$report" || bad "the suite-case 
 # the end of the run, and its review found MC-21's all after the mutant's only commit and five of
 # MC-24's before its first rewritten read (§22.27 item 11). Sixteen since §22.37: MC-20, which KC5b
 # makes reachable through the host library's binding hooks (a native mutation, per DM context), each
-# of its four omissions killed fault-free beside a clean run. §22.37 also kills MC-7′'s second half —
-# the reuse tuple split out of the RECV transaction — which adds no id: MC-7′ is one §15.7 entry, and
-# its rule below now names both halves.
+# of its four omissions killed fault-free and under crashes, beside clean runs. §22.37 also kills
+# MC-7′'s second half — the reuse tuple split out of the RECV transaction — which adds no id: MC-7′
+# is one §15.7 entry, and its rule below now names both halves.
 grep -qxF 'dm mutants: 16 run, 16 detected' "$report" \
   || bad "the mutant line is not 'dm mutants: 16 run, 16 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
@@ -571,13 +571,16 @@ rule_scne='fault-free and at 6 of 6 crash points between the loss and its fault-
 # is crashed at both, every event it has.
 rule_mc21='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 rule_mc24='fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run'
-# §22.37's two. MC-7′: its first half fault-free by the CB replay and by RP4; its second half — the
-# tuple insert held back into a second transaction — at every event of RP5's split window (three:
-# the first transaction's post-commit event, the held insert, the second one's pre-commit event),
-# each beside a clean run at the same point, the crash injected and rebooted. MC-20: each of its four
-# omissions by KC5b's replay of that field, fault-free, each beside a clean run.
-rule_mc7='fault-free by two cases (its first half) and, its second half, at 3 of 3 crash points of its split window, each beside a clean run'
-rule_mc20='fault-free, each of its 4 omissions by its own replay, each beside a clean run'
+# §22.37's two, each fault-free and at crash points of the window where it acts, beside a clean run
+# at each point, the crash injected and rebooted. MC-7′: its first half fault-free by the CB replay,
+# RP4 and RP5, and at six points inside the transaction its rewrite first changes (RP5's RECV of the
+# first flight); its second half — the tuple insert held back into a second transaction — at every
+# event of RP5's split window (three: the first transaction's post-commit event, the held insert,
+# the second one's pre-commit event). MC-20: each of its four omissions by KC5b's replay of that
+# field, fault-free and at every event (five) of the transaction it first changes — bob's first RECV
+# of that replay, found where the traced mutated run departs from the clean one.
+rule_mc7='its first half fault-free by 3 cases and at 6 of 6 crash points inside the transaction it first changes; its second half at 3 of 3 crash points of its split window; each beside a clean run'
+rule_mc20='each of its 4 omissions fault-free and at 5 of 5 crash points inside the transaction it first changes, by its own replay, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
   "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \

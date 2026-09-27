@@ -88,6 +88,9 @@ internal class FaultyDmSqlExecutor(
      */
     private var rewrittenFrom: Long? = null
 
+    /** The event index of the open transaction's first event, for [DmEventBus.actsFrom]. */
+    private var transactionFrom: Long? = null
+
     /**
      * The statement [rewrite] makes of this one. Called right after the statement's own event was
      * raised, so the bus's count is that event's index.
@@ -122,7 +125,17 @@ internal class FaultyDmSqlExecutor(
      * that text, and a fake whose shape differs from the real one tests the injector.
      */
     private fun fire(kind: DmEventKind, sql: String) {
-        if (bus.event(kind, node, label(sql)) === DmFault.StorageFull) {
+        val fault = bus.event(kind, node, label(sql))
+        if (delegate.inTransaction && transactionFrom == null) transactionFrom = bus.count
+        if (bus.armed && bus.count == bus.actsFrom) {
+            // A native mutant's departure (§22.37): its whole transaction is the span.
+            if (delegate.inTransaction) {
+                if (rewrittenFrom == null) rewrittenFrom = transactionFrom
+            } else {
+                bus.rewrittenSpans += bus.count..bus.count
+            }
+        }
+        if (fault === DmFault.StorageFull) {
             throw StorageFullException(IllegalStateException("[SQLITE_FULL] injected at: ${label(sql)}"))
         }
     }
@@ -156,6 +169,7 @@ internal class FaultyDmSqlExecutor(
 
     override fun <T> transaction(block: () -> T): T {
         rewrittenFrom = null
+        if (!delegate.inTransaction) transactionFrom = null
         val result = try {
             delegate.transaction {
                 val r = block()

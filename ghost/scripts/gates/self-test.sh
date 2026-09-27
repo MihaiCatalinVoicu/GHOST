@@ -1117,6 +1117,9 @@ expect_fail_msg "dm-jni-surface rejects the test-vectors entry point in a shippe
 expect_fail_msg "dm-jni-surface rejects a test library without the test-vectors entry point" \
   "does not export the test-vectors entry point" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects the binding hooks in a shipped library (§22.37)" \
+  "exports the test-vectors entry point 'DmEquivalence.bindingHooks': a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/hooks-only-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
 expect_fail_msg "dm-jni-surface rejects a test library without the binding hooks (§22.37)" \
   "does not export the test-vectors entry point 'DmEquivalence.bindingHooks'" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-run-only-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
