@@ -94,6 +94,28 @@ internal class DmNode(
     var bindingOmit: Int = DmEquivalence.BINDING_NONE
     var bindingPerturb: Int = DmEquivalence.BINDING_NONE
 
+    /**
+     * §10.9 item 3, "sweep, then assert … the WAL is 0 bytes" (§22.38), measured at the one
+     * instant it is defined: right after a checkpoint the device reported done
+     * ([FaultyDmSqlExecutor.afterCheckpoint]), before the pass writes again. One entry per
+     * checkpoint that left bytes in the `-wal` file; [DmStructuralInvariants.check] reports them.
+     * Kept across reboots: a process that died owes nothing, but what it did before is the run's.
+     */
+    val logAfterCheckpoint = ArrayList<String>()
+
+    /** How many checkpoints [logAfterCheckpoint] measured, across reboots. */
+    var checkpointsMeasured: Int = 0
+        private set
+
+    private fun measureTheLog() {
+        checkpointsMeasured++
+        val bytes = walFile.let { if (it.exists()) it.length() else 0L }
+        if (bytes != 0L) {
+            logAfterCheckpoint += "the log held $bytes bytes right after a checkpoint that reported it truncated " +
+                "(§10.9 item 3, T25)"
+        }
+    }
+
     /** Whether the running context carries hooks, so a node that never had any never calls in. */
     private var bindingHooksOn = false
 
@@ -163,6 +185,7 @@ internal class DmNode(
         wrapper.rewrite = rewrite
         wrapper.defer = defer
         wrapper.deferUpdate = deferUpdate
+        wrapper.afterCheckpoint = ::measureTheLog
         jdbc = connection
         faulty = wrapper
         current = DmDevice(

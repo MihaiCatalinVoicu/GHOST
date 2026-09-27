@@ -1187,6 +1187,12 @@ internal object DmSuiteCases {
 
     /** The note RP5 writes the event count into as bob's first flight starts (§22.37). */
     const val RP5_MARK: String = "rp5Mark"
+
+    /** The note EP-sweep-log writes at its first step: ME-11's window starts after it. */
+    const val EP_LOG_MARK: String = "epLogMark"
+    private const val EP_LOG_MEASURED: String = "epLogMeasured"
+    private const val EP_LOG_FIRST: String = "ep-log-first"
+    private const val EP_LOG_SECOND: String = "ep-log-second"
     private const val RP5_FIRST: String = "rp5-hello"
     private const val RP5_AGAIN: String = "rp5-again"
     private const val RP5_REJECTED: String = "rp5Rejected"
@@ -1677,6 +1683,81 @@ internal object DmSuiteCases {
     /** The note KC5b writes at the start of the step that replays [field]: MC-20's window starts after it. */
     fun kc5bMark(field: Int): String = "kc5bMark$field"
 
+    /**
+     * **EP — SWEEP truncates the log** (§10.9 item 3, §10.7 "Checkpoint", T25; §15.5 EP, "the §10.9
+     * cases"; built by §22.38).
+     *
+     * Two five-minute messages from alice to bob, each left unread past its §10.3 deadline, each
+     * then swept away on both sides — so SWEEP deletes rows twice after the mark, and checkpoints
+     * each time. The clause is the standing one of [DmStructuralInvariants.checkpointsTruncatedTheLog]
+     * (measured right after every checkpoint the device reports done, for every scenario); this case
+     * is the one built to reach it **twice** in its armed phase, which ME-11's kill needs: a crash
+     * at the first checkpoint reboots through R-K1, which truncates, so only a later one can show
+     * the mutant again.
+     *
+     * **Fault-free:** both messages reached bob before their deadlines and are gone after them, and
+     * bob measured at least two checkpoints after the mark. **Oracles:** no-loss with the two texts
+     * declared (their expiry is the subject), liveness alice ↔ bob, nothing owed.
+     */
+    fun epSweepTruncatesTheLog(): DmScenario = DmScenario(
+        name = "EP-sweep-log",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.MIN_5)
+            world.pump()
+            world.passes()
+        },
+        steps = listOf(
+            step("the first five-minute message reaches bob") { w ->
+                w.notes.putIfAbsent(EP_LOG_MARK, w.bus.count)
+                w.notes.putIfAbsent(EP_LOG_MEASURED, w["bob"].checkpointsMeasured)
+                epLogDeliver(w, EP_LOG_FIRST)
+            },
+            step("past its deadline, both sides sweep it") { w -> epLogExpire(w) },
+            step("the second five-minute message reaches bob") { w -> epLogDeliver(w, EP_LOG_SECOND) },
+            step("past its deadline, both sides sweep it") { w -> epLogExpire(w) },
+        ),
+        finalChecks = { world ->
+            for (text in listOf(EP_LOG_FIRST, EP_LOG_SECOND)) {
+                if (world.notes["arrived-$text"] != true) {
+                    dmViolation("EP-sweep-log: '$text' never reached bob, so its expiry proved nothing")
+                }
+                if (text in DmScripts.inboundTexts(world, "bob")) {
+                    dmViolation("EP-sweep-log: '$text' is still at bob after its deadline and a sweep")
+                }
+            }
+            val measured = world["bob"].checkpointsMeasured - (world.notes[EP_LOG_MEASURED] as Int)
+            if (measured < 2) {
+                dmViolation("EP-sweep-log: bob measured $measured checkpoints after the mark, so the clause was not reached twice")
+            }
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { setOf(EP_LOG_FIRST, EP_LOG_SECOND) },
+    )
+
+    /** One of EP-sweep-log's messages: written if no row of it exists, then carried to bob with no clock advance. */
+    private fun epLogDeliver(w: DmCrashWorld, text: String) {
+        if (DmScripts.outgoingState(w, "alice", text) == null && w.notes["arrived-$text"] != true) {
+            w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), text, null)
+        }
+        w.pump()
+        w.passes()
+        w.pump()
+        w.passes()
+        if (text in DmScripts.inboundTexts(w, "bob")) w.notes["arrived-$text"] = true
+    }
+
+    /** Past the unread deadline (`consume + bucket + 1 h`, §10.3) and the sender's, then a pass on each side. */
+    private fun epLogExpire(w: DmCrashWorld) {
+        w.advanceBy(2 * DmWorld.HOUR)
+        w.pump()
+        w.passes()
+    }
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -1689,5 +1770,6 @@ internal object DmSuiteCases {
         rp4FirstFlightOfAResetSession(),
         rp11APreKeyMessageOfAReplacedSession(),
         kc5bAGenuineBindingReplayed(),
+        epSweepTruncatesTheLog(),
     )
 }

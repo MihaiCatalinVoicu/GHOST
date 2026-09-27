@@ -88,6 +88,14 @@ internal class FaultyDmSqlExecutor(
      */
     private var rewrittenFrom: Long? = null
 
+    /**
+     * Told when a `PRAGMA wal_checkpoint` through this executor answered `busy = 0` — a checkpoint
+     * that reports it truncated the log (§22.38). The pragma is recognised by the statement the
+     * engine **issued**, before any rewrite, so a mutant that answers for the checkpoint without
+     * running it (ME-11) is measured like the real one.
+     */
+    var afterCheckpoint: (() -> Unit)? = null
+
     /** The event index of the open transaction's first event, for [DmEventBus.actsFrom]. */
     private var transactionFrom: Long? = null
 
@@ -164,7 +172,17 @@ internal class FaultyDmSqlExecutor(
     override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) {
         fire(DmEventKind.SQL_QUERY, sql)
         val (s, a) = rewritten(sql, args)
-        delegate.query(s, a, onRow)
+        val measure = afterCheckpoint
+        if (measure == null || !sql.startsWith("PRAGMA wal_checkpoint")) {
+            delegate.query(s, a, onRow)
+            return
+        }
+        var busy: Long? = null
+        delegate.query(s, a) { row ->
+            if (busy == null) busy = row.long(0)
+            onRow(row)
+        }
+        if (busy == 0L) measure()
     }
 
     override fun <T> transaction(block: () -> T): T {

@@ -47,8 +47,21 @@ internal object DmStructuralInvariants {
      *
      * [where] names the moment ("reboot 3", "end") and goes into every failure message.
      */
-    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) =
+    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) {
         check(node.raw, node.name, where, heavy, settled)
+        checkpointsTruncatedTheLog(node, where)
+    }
+
+    /**
+     * §10.9 item 3, "sweep, then assert … the WAL is 0 bytes" (§22.38): every checkpoint the
+     * device reported done left the `-wal` file empty. It is measured at the instant it is defined
+     * ([DmNode.logAfterCheckpoint]) — right after the checkpoint, before the pass writes again; the
+     * post-sweep clause of §22.19 item 3 is the other half, measured after R-K1 at the next open. A
+     * checkpoint that answered `busy ≠ 0` said it did not truncate, and is not measured.
+     */
+    fun checkpointsTruncatedTheLog(node: DmNode, where: String) {
+        node.logAfterCheckpoint.firstOrNull()?.let { dmViolation("${node.name} @ $where: $it") }
+    }
 
     /**
      * The same clauses over a raw connection and a client's name: the entitlement world's clients

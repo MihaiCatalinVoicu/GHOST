@@ -293,6 +293,27 @@ internal object DmMutants {
     )
 
     /**
+     * **ME-11 — no checkpoint** (§10.7 "Checkpoint", §10.9 item 3; built by §22.38). SWEEP's
+     * `PRAGMA wal_checkpoint(TRUNCATE)` answers as a truncation that succeeded (`busy = 0`) and
+     * truncates nothing: the engine goes on as if the log were empty, and the freed frames stay in
+     * the `-wal`. A statement rewrite, because the pragma is read through the device's executor
+     * (`Checkpoint.truncate(sql)`, the real one, `DmWorld`'s `checkpoints`); R-K1 at every open runs
+     * on the raw connection and is untouched, which is what makes a crash at the checkpoint a
+     * point where the mutant acts **and** is healed — so its kill needs a second checkpoint after it.
+     */
+    val ME11 = Mutation(
+        id = "ME-11",
+        defeats = "§10.7: after a SWEEP that deleted rows, wal_checkpoint(TRUNCATE) empties the log",
+        detectedBy = "EP-sweep-log (the log is 0 bytes right after every checkpoint the device reports done, " +
+            "§10.9 item 3)",
+        expect = "the log held",
+        expectUnderCrash = listOf("the log held"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("PRAGMA wal_checkpoint")) Pair("SELECT 0, 0, 0", emptyList()) else Pair(sql, args)
+        },
+    )
+
+    /**
      * **MC-10 — arrival-order display.** The conversation page is ordered by the row identity
      * instead of §7.7's `(sort_minute, minute_index)`.
      *
@@ -756,5 +777,5 @@ internal object DmMutants {
      * report prints them.
      */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME16)
+        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME11, ME16)
 }

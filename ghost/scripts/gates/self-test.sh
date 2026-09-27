@@ -390,6 +390,17 @@ dmr_case fail suite-fifteen-mutant-count.txt gate "rejects the fifteen-mutant re
 dmr_case fail mc7-first-half-rule.txt gate "rejects MC-7′ held to its first half's fault-free rule alone"
 dmr_case fail mc20-three-omissions.txt gate "rejects MC-20 killed for three of its four omissions"
 dmr_case fail mc20-no-kill-line.txt gate "rejects a report without MC-20's kill line"
+# §22.38, group 1: EP-sweep-log under the enumeration, twelve suite cases, seventeen mutants, and
+# ME-11 held to the window rule (its one event, SWEEP's first checkpoint after the mark). The
+# positives are regenerated as §22.37's were (`pass-pr.txt` a real PR-scale report, `pass-gate.txt`
+# assembled, the new crash-class line a real every-point count), and every negative above was
+# re-derived from them with its own edit. Four more, each a positive with one violation: no
+# EP-sweep-log line, the eleven-case suite line of §22.37, its sixteen-mutant line, and ME-11 held
+# to the fault-free rule alone.
+dmr_case fail missing-ep-sweep-log.txt gate "rejects a report without EP-sweep-log"
+dmr_case fail suite-eleven-case-count.txt gate "rejects the eleven-case suite line of §22.37"
+dmr_case fail suite-sixteen-mutant-count.txt gate "rejects the sixteen-mutant report of §22.37"
+dmr_case fail me11-weakened-kill-rule.txt gate "rejects ME-11 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

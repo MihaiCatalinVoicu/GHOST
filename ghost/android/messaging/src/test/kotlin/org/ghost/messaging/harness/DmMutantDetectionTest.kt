@@ -35,6 +35,14 @@ class DmMutantDetectionTest {
     fun mc5D3OffIsDetected() = detect(DmMutants.MC5, DmSuiteCases.rp6ReEncryptionAfterAWronglyReportedFailure())
 
     @Test
+    fun me11NoCheckpointIsDetected() {
+        // ME-11 (§10.7, §10.9 item 3; §22.38): fault-free by the standing clause, and at every event
+        // of the window it acts in — the first checkpoint after EP-sweep-log's mark, one statement
+        // outside any transaction — each beside the clean case at the same point.
+        detectFaultFreeAndWhereItActs(DmMutants.ME11, DmSuiteCases.epSweepTruncatesTheLog(), DmSuiteCases.EP_LOG_MARK)
+    }
+
+    @Test
     fun mc20BindingCoverageIsDetected() {
         // MC-20 (§21.4 point 1; §22.37): each of the four omissions by KC5b's replay of its own field,
         // fault-free and at crash points inside the transaction it first changes — bob's first RECV of
