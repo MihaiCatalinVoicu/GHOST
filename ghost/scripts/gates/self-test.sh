@@ -368,6 +368,25 @@ dmr_case fail mc21-weakened-kill-rule.txt gate "rejects MC-21 killed only fault-
 dmr_case fail mc24-whole-run-kill-rule.txt gate "rejects MC-24 killed at crash points over the whole run"
 dmr_case fail suite-old-case-count.txt gate "rejects the four-case suite line of the slices before §22.27"
 dmr_case fail mc21-first-window-rule.txt gate "rejects MC-21 held to the first version's window (mark to end of run)"
+# The second suite-case slice (design §22.37): RP5, RP4, RP11 and KC5b under the enumeration, the
+# suite line pinned at eleven cases, sixteen mutants, MC-7′ held to the rule of both its halves (the
+# CB replay and RP4 fault-free; RP5 at every event of its split window) and MC-20 to its four
+# omissions. `pass-pr.txt` is a real PR-scale report of this slice (§22.37 item 10); `pass-gate.txt`
+# is assembled, its four new crash-class lines the real counts of every-point enumerations. Every
+# negative above that was a positive with an edit (all but `s10-only-gate.txt`,
+# `relay-event-denominator.txt` and `no-timeouts.txt`) was re-derived from the new positives with its
+# own edit, and checked to fail with exactly the violations it failed with before. Eight more, each a
+# way a report could claim more than was run: no KC5b, no RP5 (at the PR scale), no RP11, the
+# seven-case suite line of §22.27, the fifteen-mutant report of §22.27, MC-7′ held to its first
+# half's fault-free rule alone, MC-20 killed for three of its four omissions, and no MC-20 line.
+dmr_case fail missing-kc5b.txt gate "rejects a report without KC5b"
+dmr_case fail missing-rp5-pr.txt pr "rejects a PR-scale report without RP5"
+dmr_case fail missing-rp11.txt gate "rejects a report without RP11"
+dmr_case fail suite-seven-case-count.txt gate "rejects the seven-case suite line of §22.27"
+dmr_case fail suite-fifteen-mutant-count.txt gate "rejects the fifteen-mutant report of §22.27"
+dmr_case fail mc7-first-half-rule.txt gate "rejects MC-7′ held to its first half's fault-free rule alone"
+dmr_case fail mc20-three-omissions.txt gate "rejects MC-20 killed for three of its four omissions"
+dmr_case fail mc20-no-kill-line.txt gate "rejects a report without MC-20's kill line"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

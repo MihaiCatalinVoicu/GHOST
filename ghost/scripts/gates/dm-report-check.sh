@@ -573,9 +573,9 @@ rule_mc21='fault-free and at 6 of 6 crash points inside the transaction it first
 rule_mc24='fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run'
 # §22.37's two. MC-7′: its first half fault-free by the CB replay and by RP4; its second half — the
 # tuple insert held back into a second transaction — at every event of RP5's split window (three:
-# the first commit's post-commit event, the held insert, its commit), each beside a clean run at the
-# same point, the crash injected and rebooted. MC-20: each of its four omissions by KC5b's replay of
-# that field, fault-free, each beside a clean run.
+# the first transaction's post-commit event, the held insert, the second one's pre-commit event),
+# each beside a clean run at the same point, the crash injected and rebooted. MC-20: each of its four
+# omissions by KC5b's replay of that field, fault-free, each beside a clean run.
 rule_mc7='fault-free by two cases (its first half) and, its second half, at 3 of 3 crash points of its split window, each beside a clean run'
 rule_mc20='fault-free, each of its 4 omissions by its own replay, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-10|$rule_ff" "MC-12|$rule_ff" \
