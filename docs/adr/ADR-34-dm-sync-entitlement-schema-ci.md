@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4) |
 | Sursă | Design Faza 9 (`docs/design/faza9-dm.md`: §4.8–§4.9, §10.4, §10.7, §13.3–§13.7, §16.2), R-code F1–F8, R-envelope F3–F5 |
 | Modifică | ADR-20 punctul 1 (o alarmă inexactă în stratul de mesagerie; punctul 8 rămâne respectat după revizie, încadrarea E2E fiind în Rust, ADR-31′); ADR-23 punctul 9 (slotul de participant rămâne unul; se adaugă coada de consum, care nu e participant); API-ul `:sync` (Faza 7 §9); INVARIANTS T20 (setul coloanelor de timp); `Schema.kt` (migrarea 4); designul Fazei 8 §19.24 punctul 6 și ADR-25 (exportul T2 include `keys.redb`); CI (joburi noi, o acțiune terță fixată prin SHA) |
 

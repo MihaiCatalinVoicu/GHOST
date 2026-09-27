@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4; acțiuni ale proprietarului) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4; acțiuni ale proprietarului) |
 | Sursă | R-license §7.4; design Faza 9 (`docs/design/faza9-dm.md`) §2.10.5, §22 |
 | Modifică | `.github/workflows/ci.yml` (încărcările APK și `.so`), setările depozitului, identitatea commit-urilor viitoare |
 

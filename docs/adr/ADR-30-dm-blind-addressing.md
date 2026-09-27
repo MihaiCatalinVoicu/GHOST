@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4) |
 | Sursă | Design Faza 9 (`docs/design/faza9-dm.md`: §3–§5, §12), R-privacy F1, F2, F8, F11, F12, F15 |
 | Modifică | Anexa B a planului (prekeys citibile public după `ghost1`; scriere în inbox cu capabilitatea fiecărui expeditor; citirea inbox-ului cu token derivat din identitate); designul Fazei 8 §10.7 (D11: `RegisterReadKey` generalizat, verificatorul legat de namespace și săptămână) și ADR-25 punctul 9 (implementat); ADR-14 (lanțul de atestare nu se publică în bundle); designul Fazei 8 (cardul ca Invitație v3 amânat în Faza 13; ADR-05 rămâne deschis); `relay.proto`; `allowed-observables.json` (op `register`, `key_kind`, nota `capability_scope`); THREAT_MODEL §6 |
 

@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4) |
 | Sursă | R-pq, R-libs; design Faza 9 (`docs/design/faza9-dm.md`) §6.4, §6.7, §9, §22 |
 | Modifică | ADR-12, clauza DM („PQXDH și ratchet-ul post-quantum așa cum sunt expuse de libsignal”); plan:231; felul în care e îndeplinit rândul PQC din spec, Anexa A („ML-KEM doar prin integrare revizuită; FIPS 203”); spec §7.5 se aplică prin a doua ramură (design propriu, model, revizie externă). Clauza MLS și „niciun KEM standalone de bifat” rămân. |
 

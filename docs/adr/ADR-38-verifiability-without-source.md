@@ -2,7 +2,7 @@
 
 | Câmp | Valoare |
 |---|---|
-| Status | **Propus** 2026-09-16, aplicat în Faza 9 (în așteptarea deciziei proprietarului, Q4; condiții de lansare) |
+| Status | **Aprobat** 2026-09-27 de proprietar (propus 2026-09-16, aplicat în Faza 9; decizia proprietarului pe Q4; condiții de lansare) |
 | Sursă | R-license §8; design Faza 9 (`docs/design/faza9-dm.md`) §2.9, §2.10.4, §9.5, §22 |
 | Înlocuiește | din ADR-07, fraza din plan „Fără open-source, CP-10 nu poate fi îndeplinit pentru utilizator” (plan:202); FR-8.9, a doua jumătate (precizată) |
 | Completează | CP-08, CP-09, CP-10, FR-8.2, FR-8.8, spec §12.2, ADR-11, ADR-22, THREAT_MODEL (AD-9, TB-6, adversar nou AD-V), LIMITE (L-SRC = L7-D23), INVARIANTS T12 (T12b) |
