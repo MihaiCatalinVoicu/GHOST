@@ -262,6 +262,20 @@ class EdgeStatisticsSelfTest {
     private val edges = setOf(EdgeFeatures.key(0, 1))
     private val establishments = listOf(PrivacyWorld.Establishment(reader = 1, owner = 0, at = 900))
 
+    /**
+     * The views of a hand-built record, each relay round of it a relay session of its own: every second
+     * a client lists its own namespace is taken as one of its session starts (JD7's windows open a
+     * later attempt only at one, and none of these records reaches a later attempt).
+     */
+    private fun views(events: List<ViewEvent>): EdgeViews {
+        val starts = HashMap<Int, java.util.TreeSet<Long>>()
+        for (e in events) {
+            val c = clusters[EdgeViews.hex(e.namespace)]
+            if (e.op == ViewOp.LIST && c != null && c.first == e.client) starts.getOrPut(e.client) { java.util.TreeSet() } += e.second
+        }
+        return EdgeViews(events, clusters, establishments, starts)
+    }
+
     private fun features(views: List<EdgeEvent>): EdgeFeatures.Sample =
         EdgeFeatures.extract(views, pairs, edges, start = 0, end = 30_000, window = 30_000)
 
@@ -274,7 +288,7 @@ class EdgeStatisticsSelfTest {
             ev(ViewOp.STORE, 0, 0, 'X', 22_000, bytes = bytes(5)),
             ViewEvent(ViewOp.LIST, 0, 2, "c2/unknown", ByteArray(32) { 99 }, 23_000),
         )
-        val v = EdgeViews(honest(extra = outside), clusters, establishments)
+        val v = views(honest(extra = outside))
         assertEquals(16, v.full.size)
         assertEquals(12, v.ld.size)
         assertEquals(
@@ -297,7 +311,7 @@ class EdgeStatisticsSelfTest {
 
     @Test
     fun theTwoViewsGiveEqualFeaturesWhenTheFullViewAddsNothing() {
-        val v = EdgeViews(honest(), clusters, establishments)
+        val v = views(honest())
         assertTrue(v.outsideLd.isEmpty())
         val full = features(v.full)
         val ld = features(v.ld)
@@ -312,7 +326,7 @@ class EdgeStatisticsSelfTest {
 
     @Test
     fun aReadOutsideLdMovesOnlyTheFullViewsFeatures() {
-        val v = EdgeViews(honest(extra = listOf(ev(ViewOp.LIST, 1, 1, 'X', 20_000), ev(ViewOp.LIST, 1, 0, 'P', 20_000))), clusters, establishments)
+        val v = views(honest(extra = listOf(ev(ViewOp.LIST, 1, 1, 'X', 20_000), ev(ViewOp.LIST, 1, 0, 'P', 20_000))))
         assertEquals(mapOf("a bundle read outside every attempt window" to 1), v.outsideLd)
         assertEquals(Math.log1p(4.0), features(v.full).x[0][EdgeFeatures.CO0], 1e-12)
         assertEquals(Math.log1p(3.0), features(v.ld).x[0][EdgeFeatures.CO0], 1e-12)
@@ -321,7 +335,7 @@ class EdgeStatisticsSelfTest {
     @Test
     fun bytesSharedByTwoClientsNamespacesAreCountedInTheFullViewOnly() {
         val tagged = bytes(2, prefix = bytes(1).copyOf(16))
-        val v = EdgeViews(honest(reply = tagged), clusters, establishments)
+        val v = views(honest(reply = tagged))
         val full = features(v.full)
         // A 16-byte run holds nine 8-byte windows.
         assertEquals(9, full.structure["byte windows"])
@@ -340,7 +354,7 @@ class EdgeStatisticsSelfTest {
         // one in 128 would be longer).
         reply[to - 1] = (first[from - 1].toInt() xor 0xff).toByte()
         reply[to + length] = (first[from + length].toInt() xor 0xff).toByte()
-        return features(EdgeViews(honest(reply = reply), clusters, establishments).full).structure.getValue("byte windows")
+        return features(views(honest(reply = reply)).full).structure.getValue("byte windows")
     }
 
     @Test

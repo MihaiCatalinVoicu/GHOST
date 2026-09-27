@@ -42,6 +42,8 @@ class DmPrivacyWorldTest {
                         "${byOp[ViewOp.GET] ?: 0} gets, ${byOp[ViewOp.REGISTER] ?: 0} registrations, " +
                         "seals ${world.truth.seals.toSortedMap()}, ${"%.0f".format(seconds)} s $tag",
                 )
+                // The production trigger mix the world ran (§22.36), for the test's output.
+                println("$tag DM triggers ${world.triggers}; behaviour ${world.counters}")
                 if (world.acceptedEdges.isEmpty() || sends == 0) failures += "$tag: the world did nothing"
                 val joins = Joins(world)
                 for (result in listOf(joins.jd1(), joins.jd2(), joins.jd3(), joins.jd4(), joins.jd5(), joins.jd6(), joins.jd7(), joins.jd9())) {

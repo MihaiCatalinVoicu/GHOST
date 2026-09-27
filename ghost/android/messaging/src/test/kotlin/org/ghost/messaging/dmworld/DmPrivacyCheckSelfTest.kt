@@ -226,7 +226,7 @@ class DmPrivacyCheckSelfTest {
 
     private val hour = DmWorld.HOUR
 
-    /** A reader that holds a relay session every hour for [hours] hours. */
+    /** A reader whose relay sessions start every hour for [hours] hours. */
     private fun wakes(hours: Int): java.util.TreeSet<Long> = java.util.TreeSet((0..hours).map { it * hour })
 
     /** Reads in three windows, six hours apart, after an establishment at 0 (see §21.7 points 2, 5). */
@@ -239,10 +239,37 @@ class DmPrivacyCheckSelfTest {
         for (t in threeWindows) assertTrue("read at $t refused", w.accept(t))
         assertEquals(3, w.total)
         assertEquals(1, w.exhausted)
-        // The third window closed at the 15-hour session; a session at 21 h exists and no new
+        // The third window closed at its end, 14 h 15 min; a session starts at 21 h and no new
         // establishment came: an unbounded engine's fourth attempt had somewhere to fall.
         assertEquals(1, w.binding())
         assertFalse("a fourth attempt was accepted", w.accept(21 * hour + 10))
+    }
+
+    /**
+     * The production triggers' windows (§22.36): a window closes at its end — the alarm and the actor
+     * timer wake for the fetch deadline — not at the reader's next relay round, and a later attempt
+     * opens only at a relay session **start** (`Due.START`, phase review MD-2), whose read lane lists
+     * in the second it started.
+     */
+    @Test
+    fun jd7sWindowsCloseAtTheirEndAndReopenOnlyAtASessionStart() {
+        val establishment = PrivacyWorld.Establishment(0, 1, 0)
+        val w = Joins.Windows(listOf(establishment), wakes(72))
+        // The first window's last second is in it; a read a minute later is not (the first version
+        // closed the window at the next relay session, an hour on here, and accepted it).
+        assertTrue(w.accept(15 * 60))
+        assertFalse("a read after the first window's end was accepted", w.accept(16 * 60))
+        // Six hours after that end, a session starts at 7 h: its read in that second opens the
+        // second window, and a read of the same session past the window's end is outside it.
+        assertTrue(w.accept(7 * hour))
+        assertTrue(w.accept(7 * hour + 15 * 60))
+        assertFalse("a read after the second window's end was accepted", w.accept(7 * hour + 20 * 60))
+        // A reader with no session start six hours after the end gets no second window, however
+        // many relay rounds it makes: the rounds of a foreground session are no session starts.
+        val quiet = Joins.Windows(listOf(establishment), java.util.TreeSet(listOf(0L, hour)))
+        assertTrue(quiet.accept(60))
+        assertFalse("a later attempt without a session start was accepted", quiet.accept(8 * hour))
+        assertEquals(1, quiet.total)
     }
 
     @Test

@@ -12,9 +12,11 @@ import org.ghost.messaging.engine.DmCounters
 import org.ghost.messaging.engine.DmSyncPorts
 import org.ghost.messaging.engine.EstablishmentSteps
 import org.ghost.messaging.engine.ExpirySchedule
+import org.ghost.messaging.engine.ExpiryTimer
 import org.ghost.messaging.engine.HeldReplay
 import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.MessagingEngine
+import org.ghost.messaging.engine.MessagingRuntime
 import org.ghost.messaging.engine.OutcomeStep
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.engine.PairKeySteps
@@ -428,6 +430,40 @@ class DmDevice(
          */
         val decorateCapabilities: ((org.ghost.sync.api.Capabilities) -> org.ghost.sync.api.Capabilities)? = null,
         val decorateNamespaces: ((org.ghost.sync.api.Namespaces) -> org.ghost.sync.api.Namespaces)? = null,
+        /**
+         * The production triggers in the world's virtual time ([Wiring]; the privacy worlds and the
+         * entitlement world, phase review MD-2 and MD-3, design §22.36). Null keeps every world that
+         * drives its passes itself byte for byte: the actor on its own thread, never posted to, and
+         * the schedule without the owner's term.
+         */
+        val wiring: Wiring? = null,
+    )
+
+    /**
+     * The triggers `MessagingWiring` and `MessagingRuntime` give the DM actor on a device, run in a
+     * world's virtual time (phase review MD-2 and MD-3, design §22.36): the actor's turns run on the
+     * caller's thread ([TurnExecutor]), so a world drives the production entry points —
+     * [relaySessionStart], [alarmFired], [databaseOpen], [consumerTail], [listener] — and never picks
+     * a pass's flags itself; the actor timer is the production `ExpiryTimer` with the world's
+     * scheduler ([timer]); the one inexact alarm is the world's ([alarm]); and the schedule of both
+     * is `MessagingRuntime.wiredSchedule`, the runtime's own, so every term it gives the timer — the
+     * rows, the owner's `t_pub` and week boundary, the next `EST-READY` — is in the world's.
+     */
+    class Wiring(
+        /**
+         * Schedules the actor timer's wake [Long] seconds from now in the world's time and returns
+         * what cancels it: `ExpiryTimer`'s scheduler seam. The world decides when a due wake fires —
+         * at once while the process runs, or at its next run if the cached-app freezer stopped it.
+         */
+        val timer: (Long, () -> Unit) -> () -> Unit,
+        /**
+         * The one inexact alarm of §10.7 trigger 5 (`ExpiryAlarm` on a device): the world keeps the
+         * latest delay it was given, replacing the previous one as `setAndAllowWhileIdle` does, and
+         * calls [alarmFired] when it is due.
+         */
+        val alarm: org.ghost.messaging.port.ExpiryWake,
+        /** What a failed actor turn does ([TurnExecutor]). */
+        val failed: (Throwable) -> Unit,
     )
 
     /** Null when [harness] supplied the executor: the harness closes what it opened. */
@@ -545,9 +581,11 @@ class DmDevice(
 
     /**
      * Every wake the **in-process actor timer** was asked for: the row deadlines [wakes] gets plus
-     * the next `EST-READY` (phase review MD-3), wired as `MessagingRuntime` wires it. The owner's
-     * term is left out here: it reads the database, and the crash enumeration counts every read.
-     * It records; the world still drives every pass itself.
+     * the next `EST-READY` (phase review MD-3), wired as `MessagingRuntime` wires it. Without a
+     * [Wiring] the owner's term is left out: it reads the database, and the crash enumeration counts
+     * every read; the recording is all there is, and the world drives every pass itself. Under a
+     * [Wiring] it records the runtime's own schedule, owner term included, and the production
+     * `ExpiryTimer` behind it wakes the actor in the world's time.
      */
     val timerWakes = RecordingWake()
 
@@ -568,13 +606,30 @@ class DmDevice(
         media = media,
     )
     internal val notices = UnreadNotices { sweeper.unreadCount() }
-    internal val schedule = ExpirySchedule(
-        sweeper = sweeper,
-        wakes = wakes,
-        notices = notices,
-        timer = timerWakes,
-        establishmentDelay = { actor.nextReadySeconds() },
-    )
+
+    /** The actor's turns under a [Wiring]: the caller's thread, one at a time, in order. Null: its own thread. */
+    private val turns: TurnExecutor? = harness?.wiring?.let { TurnExecutor(it.failed) }
+
+    /**
+     * The production actor timer under a [Wiring] (§10.7 trigger 1), scheduled in the world's time;
+     * its wake is `MessagingRuntime`'s, a time trigger posted to the actor.
+     */
+    private val actorTimer: ExpiryTimer? = harness?.wiring?.let { w ->
+        ExpiryTimer(
+            wake = { actor.onTimeTrigger() },
+            scheduler = { delay, task ->
+                val cancel = w.timer(delay, task)
+                ExpiryTimer.Cancellable { cancel() }
+            },
+        )
+    }
+
+    /**
+     * Without a [Wiring], the timer term the crash enumeration can afford: the owner's is left out, it
+     * reads the database and every read is an event there ([timerWakes]). With one, the runtime's own
+     * schedule, owner term included, feeding the recording ports and the world's two wakes.
+     */
+    internal val schedule: ExpirySchedule
     internal val engine: MessagingEngine
     internal val outcomeStep: OutcomeStep
     internal val actor: DmActor
@@ -607,6 +662,22 @@ class DmDevice(
             keyWrapper = wrapper,
             esSlots = esSlots,
         )
+        schedule = harness?.wiring?.let { w ->
+            MessagingRuntime.wiredSchedule(
+                sweeper = sweeper,
+                alarm = ExpiryTimer.both(wakes, w.alarm),
+                notices = notices,
+                timer = ExpiryTimer.both(timerWakes, requireNotNull(actorTimer)),
+                steps = steps,
+                clock = clock,
+            ) { actor.nextReadySeconds() }
+        } ?: ExpirySchedule(
+            sweeper = sweeper,
+            wakes = wakes,
+            notices = notices,
+            timer = timerWakes,
+            establishmentDelay = { actor.nextReadySeconds() },
+        )
         engine = MessagingEngine(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
             scheduledSteps, displayStep, schedule, counters, clock, contexts, recognition,
@@ -638,11 +709,56 @@ class DmDevice(
             material = material,
             clock = clock,
             contexts = contexts,
+            turns = turns,
         )
         // The world drives the pass directly, so the facade must not post to the actor's thread
         // and wait for it: every test here is single-threaded on purpose, and `DmActorTest` is
-        // where the threading contract of §13.7 is checked on its own.
+        // where the threading contract of §13.7 is checked on its own. Under a [Wiring] the facade
+        // stays unattached for the same reason: a pass calls the owner maintenance through it, and
+        // on the caller's thread a turn cannot wait for a turn queued behind it.
         engine.setNotificationPort(notifications)
+    }
+
+    // ------------------------------------------------------------ the production triggers
+
+    private fun wired(): TurnExecutor = checkNotNull(turns) { "the production triggers need a Wiring (HarnessOverride.wiring)" }
+
+    /**
+     * A relay session is READY: `MessagingWiring.onRelaySessionStart`, the one trigger that may also
+     * open the next bundle-fetch attempt (§21.7 point 5, phase review MD-2).
+     */
+    fun relaySessionStart() {
+        wired()
+        actor.onTimeTrigger(sessionStart = true)
+    }
+
+    /** The alarm fired: `MessagingWiring.onAlarm` (§10.7 trigger 5), a time trigger that is no session start. */
+    fun alarmFired() {
+        wired()
+        actor.onTimeTrigger()
+    }
+
+    /** A database open: `MessagingWiring.ensureStack`'s time trigger (§21.12 point 2), no session start. */
+    fun databaseOpen() {
+        wired()
+        actor.onTimeTrigger()
+    }
+
+    /** `MessagingRuntime.consumerTail` (§13.3 item 6): after a background session or a quiet run. */
+    val consumerTail: org.ghost.sync.api.ConsumerTail =
+        org.ghost.sync.api.ConsumerTail { kind, deadline -> actor.consumerTail(kind, deadline) }
+
+    /** `MessagingRuntime.listener` (§13.7): each hint posts one coalesced pass. */
+    val listener: org.ghost.sync.api.SyncListener =
+        org.ghost.sync.api.SyncListener { changes -> for (change in changes) actor.onChange(change) }
+
+    /**
+     * Hands [changes] to [listener] **as the committing thread does** — outside the actor — so the
+     * passes it posts run after it, coalesced as they are behind the one thread: two kinds of hint
+     * committed together are one pass (`DmActor.onChange`'s flag), not two.
+     */
+    fun deliver(changes: Set<org.ghost.sync.api.SyncChange>) {
+        wired().posting { listener.onChanged(changes) }
     }
 
     /** The owner's own card, as the other device would scan it. */
@@ -740,6 +856,7 @@ class DmDevice(
     override fun close() {
         handle?.let { DmSessions.closeContext(it) }
         actor.close()
+        actorTimer?.close()
         ownExecutor?.close()
     }
 }

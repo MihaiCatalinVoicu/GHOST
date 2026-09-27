@@ -124,14 +124,7 @@ class MessagingRuntime(
     /** §10.7 trigger 1: the in-process timer, which wakes the actor with a time trigger (§21.9 rule 1). */
     private val timer = ExpiryTimer(wake = { boundActor?.onTimeTrigger() })
 
-    private val schedule = ExpirySchedule(
-        sweeper = sweeper,
-        wakes = alarm,
-        notices = notices,
-        timer = timer,
-        ownerDelay = { steps.nextOwnerWakeSeconds()?.let { maxOf(0L, it - clock.nowEpochSeconds()) } },
-        establishmentDelay = { boundActor?.nextReadySeconds() },
-    )
+    private val schedule = wiredSchedule(sweeper, alarm, notices, timer, steps, clock) { boundActor?.nextReadySeconds() }
 
     private val engine = MessagingEngine(
         database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
@@ -289,4 +282,32 @@ class MessagingRuntime(
     }
 
     override fun toString(): String = "MessagingRuntime"
+
+    internal companion object {
+        /**
+         * The two wakes of §10.7 as this class wires them (§21.9 rule 1): the row deadlines go to
+         * the one inexact [alarm] and to the actor [timer]; the owner's `t_pub` and week boundary
+         * (§22.14 item 10) and the next `EST-READY` (phase review MD-3, [ready]) go to the timer
+         * alone. A world of the test harness that runs the production triggers builds its schedule
+         * here as well, so a term added to one is in the other: the entitlement world's own timer,
+         * written beside this one, never got MD-3's term (phase review MD-3, the privacy worlds'
+         * forward note of §22.36).
+         */
+        fun wiredSchedule(
+            sweeper: Sweeper,
+            alarm: ExpiryWake,
+            notices: UnreadNotices,
+            timer: ExpiryWake,
+            steps: OwnerSteps,
+            clock: DmClock,
+            ready: () -> Long?,
+        ): ExpirySchedule = ExpirySchedule(
+            sweeper = sweeper,
+            wakes = alarm,
+            notices = notices,
+            timer = timer,
+            ownerDelay = { steps.nextOwnerWakeSeconds()?.let { maxOf(0L, it - clock.nowEpochSeconds()) } },
+            establishmentDelay = ready,
+        )
+    }
 }

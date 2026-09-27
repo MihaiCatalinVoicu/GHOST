@@ -50,7 +50,8 @@
 # §22.15 and §22.19 of the design list what is still owed, scenario by scenario and mutant by
 # mutant. The privacy half follows the same rule: it does not
 # require JD10, NI-DM4 … NI-DM7, a baseline of S-DM2 or S-DM4 at any scale or seed but the one
-# measured (the PR world of seed 5eed0001, §22.30), S-DM2 per mode (HIGH is not built), a baseline
+# measured (the PR world of seed 5eed0001, §22.30, re-recorded on the production triggers by
+# §22.36), S-DM2 per mode (HIGH is not built), a baseline
 # or a rule for S-DM2's rounds to single out (reported only), S-DM4 over TTL-bucket sequences (it
 # measures each deposit, §22.30 item 7), the AD-7-with-token line, the EM-1/EM-2 lines, the
 # `pq-model` status line, JD5's membership-expiry clause, T26's model-relay open check, circuit
@@ -118,15 +119,17 @@ privacy_worlds() {
 }
 
 # --- S-DM1, S-DM2 and S-DM4 (§15.6 "Statistics"; the statistics slice, §22.30) -----------------------
-# The recorded baselines of S-DM2 and S-DM4: **one run of one seed at the PR scale** (N = 120, 14 days,
-# seed 5eed0001, STANDARD, the owner's workstation, 2026-09-24) — a baseline of that world and nothing
-# else. The gate scale (N = 600, 42 days) has never run in this project, so it has no baseline and its
-# lines must say so; the first gate run records one (§22.30).
-SDM2_BASELINE_PR_SEED1="0.5611"
-SDM2_7D_BASELINE_PR_SEED1="0.5615"
+# The recorded baselines of S-DM2 and S-DM4: **one seed at the PR scale** (N = 120, 14 days, seed
+# 5eed0001, STANDARD, the owner's workstation) — a baseline of that world and nothing else. They were
+# first recorded on 2026-09-24 (§22.30: 0.5611, 7 d 0.5615; 0.8769 and 0.0029 bits) while the world
+# started a relay session every foreground minute, and re-recorded on 2026-09-27 from the same world on
+# the production triggers (§22.36), the only values now held here. The gate scale (N = 600, 42 days)
+# has no baseline, so its lines must say so; the first gate run that records one adds it here.
+SDM2_BASELINE_PR_SEED1="0.5621"
+SDM2_7D_BASELINE_PR_SEED1="0.5624"
 SDM4_WITHIN_BASELINE_PR_SEED1="0.8769"
 SDM4_PAIRING_BASELINE_PR_SEED1="0.0029"
-SDM_BASELINE_WHAT='PR scale, seed 5eed0001, one run, recorded 2026-09-24'
+SDM_BASELINE_WHAT='PR scale, seed 5eed0001, production triggers, recorded 2026-09-27'
 SDM_NO_BASELINE='no baseline recorded for this scale and seed (only the PR world of seed 5eed0001 has been measured, §22.30)'
 # `within a b` succeeds when the number a is at most the number b + 0.02 (§15.6, §16.1); an empty a fails.
 sdm_within() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a != "" && a + 0 <= b + 0.02 + 1e-9) }'; }

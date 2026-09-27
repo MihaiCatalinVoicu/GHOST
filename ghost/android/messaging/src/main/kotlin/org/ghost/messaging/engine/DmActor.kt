@@ -99,6 +99,16 @@ internal class DmActor(
     private val material: ContactMaterial,
     private val clock: DmClock,
     private val contexts: SelfContexts,
+    /**
+     * Where the actor's turns run. Null, which every production caller passes, is the one daemon
+     * thread of §13.7 ([THREAD_NAME]). A world of the test harness that runs in virtual time passes
+     * an executor of its own, which runs each posted turn on the caller's thread, one at a time and
+     * in the order posted, so that it drives [onTimeTrigger], [onChange] and [consumerTail] — the
+     * entry points `MessagingRuntime` exposes and `MessagingWiring` calls — instead of calling
+     * [runPass] with a trigger of its own choosing (phase review MD-2: the privacy world's own
+     * reading of which pass is a relay session start had drifted from the wiring's).
+     */
+    turns: ExecutorService? = null,
 ) : AutoCloseable {
 
     private val contacts = ContactStore()
@@ -110,12 +120,13 @@ internal class DmActor(
     /**
      * The actor's own thread, recorded by the thread factory so [call] can tell whether it is
      * already on it (slice S12). A single-thread executor makes exactly one thread for its whole
-     * life, so the reference never changes once set.
+     * life, so the reference never changes once set. It stays null under an executor passed as
+     * `turns`, whose turns run on the thread that posted them.
      */
     @Volatile
     private var actorThread: Thread? = null
 
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+    private val executor: ExecutorService = turns ?: Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, THREAD_NAME).apply { isDaemon = true }.also { actorThread = it }
     }
 
@@ -363,8 +374,10 @@ internal class DmActor(
         deadlineMonotonicMillis: Long?,
         /**
          * Whether the trigger was a relay session start ([onTimeTrigger]). A caller that drives
-         * passes itself — the worlds of the test harness — gets the old reading by default: every
-         * time-triggered pass it runs stands for a session start.
+         * passes itself — the worlds of the test harness that do not run the production triggers —
+         * gets the old reading by default: every time-triggered pass it runs stands for a session
+         * start. The privacy and entitlement worlds go through [onTimeTrigger], [onChange] and
+         * [consumerTail] instead (design §22.36).
          */
         sessionStart: Boolean = timeTriggered,
     ) {
