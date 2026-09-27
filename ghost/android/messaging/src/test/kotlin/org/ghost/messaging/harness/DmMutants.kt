@@ -458,6 +458,41 @@ internal object DmMutants {
     )
 
     /**
+     * **ME-7 — the recipient's countdown at receive** (§10.3, ADR-27 point 9; built by §22.38). A
+     * statement rewrite of RECV's incoming insert, bound to the device's clock (like MC-21's): the
+     * row is written with `expire_at_minute = ceil_minute(receive + timer)` — the sender's formula,
+     * at the recipient's arrival — and `delete_at_minute` with it, as its CHECK requires, so an
+     * unread five-minute message goes five minutes after it arrived instead of at its unread cap.
+     * Killed by EP-stale-display's check, ten minutes on, that the unread message is still there,
+     * fault-free and at crash points of bob's first RECV after the mark.
+     */
+    val ME7 = Mutation(
+        id = "ME-7",
+        defeats = "§10.3, ADR-27 point 9: the recipient's countdown starts at the first display, not at receipt",
+        detectedBy = "EP-stale-display (the unread message is still there past its own timer, before its unread cap)",
+        expect = "the recipient's countdown started before its display",
+        expectUnderCrash = listOf("the recipient's countdown started before its display"),
+        rewriteOn = { clock ->
+            { sql, args ->
+                if (sql.startsWith(ME19_INSERT) && sql.contains(ME19_INCOMING) && args[9] != null) {
+                    val expireAt = org.ghost.messaging.engine.DmTimers.senderExpireMinute(
+                        clock.now,
+                        (args[6] as Long).toInt(),
+                    )
+                    val mutated = sql.replace(ME7_NO_COUNTDOWN, "?, ?, ?, ?")
+                    check(mutated != sql) { "ME-7's rewrite found no NULL countdown in RECV's insert" }
+                    Pair(mutated, args.toMutableList().also { it.add(9, expireAt); it[11] = expireAt })
+                } else {
+                    Pair(sql, args)
+                }
+            }
+        },
+    )
+
+    /** RECV's insert leaves the countdown NULL between the state and the cap: `?, NULL, ?, ?`. */
+    private const val ME7_NO_COUNTDOWN: String = "?, NULL, ?, ?"
+
+    /**
      * **ME-19 — the unread deadline from `author + bucket`** (C-11, §10.3; built by §22.38). A
      * statement rewrite of RECV's incoming insert: the cap it writes into `unread_deadline_minute`
      * (and into `delete_at_minute`, which its CHECK ties to it while the row is unread) is
@@ -1049,6 +1084,6 @@ internal object DmMutants {
     fun all(): List<Mutation> =
         listOf(
             MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC30, MC33,
-            ME9, ME11, ME16, ME17, ME19, ME20, ME24,
+            ME7, ME9, ME11, ME16, ME17, ME19, ME20, ME24,
         )
 }

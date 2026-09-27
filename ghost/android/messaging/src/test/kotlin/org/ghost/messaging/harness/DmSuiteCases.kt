@@ -1205,6 +1205,14 @@ internal object DmSuiteCases {
     const val EP_LATE_MARK: String = "epLateMark"
     /** EP-sender-ahead's first step: bob's RECV of the message written five days ahead (ME-19). */
     const val EP_AHEAD_MARK: String = "epAheadMark"
+    /** EP-stale-display's first step: bob's first RECV of the two five-minute messages (ME-7). */
+    const val EP_STALE_MARK: String = "epStaleMark"
+    private const val EP_SHOWN: String = "ep-shown"
+    private const val EP_STALE: String = "ep-stale"
+    private const val EP_SHOWN_COUNT: String = "epShownCount"
+    private const val EP_STALE_COUNT: String = "epStaleCount"
+    private const val EP_STALE_TEN: String = "epStaleTen"
+    private const val EP_STALE_PAST: String = "epStalePast"
     private const val EP_AHEAD: String = "ep-ahead"
     private const val EP_AHEAD_PAST: String = "epAheadPast"
     private const val EP_AHEAD_SENT_AT: String = "epAheadSentAt"
@@ -2313,6 +2321,170 @@ internal object DmSuiteCases {
         }
     }
 
+    /**
+     * **EP — the recipient's countdown starts at the first display, and a stale `markDisplayed`
+     * resurrects nothing** (§10.3, ADR-27 point 9, §21.10 point 6, R-T7; §15.5 EP, "a stale
+     * `markDisplayed`" and the displayed and unread paths of §10.9; design §22.38).
+     *
+     * alice and bob in pair mode with a five-minute timer; alice writes two messages and both reach
+     * bob unread, his screen holding their ids. bob's screen shows [EP_SHOWN] at once, and its
+     * countdown starts there: five minutes from the display. [EP_STALE] he leaves unread, and ten
+     * minutes on — past its own five minutes — it must **still be there**, because an unread
+     * message is kept to its unread cap `consume + bucket + 1 h` and no countdown has started
+     * (mutant ME-7, "recipient countdown at receive", would have deleted it at five minutes). Then
+     * the clock passes that cap before bob's device runs a pass — a phone frozen for two hours — and
+     * the screen marks the held id displayed: DISPLAY must ignore it (its read carries the §10.7
+     * point 4 filter against `now_e`), count nothing, and leave the row to the next SWEEP, which
+     * deletes it. A DISPLAY that found it would start a five-minute countdown after the deadline the
+     * row had already passed: a message resurrected past its bound.
+     *
+     * **Checked in the steps and at the end of every run** ([displayedAfterItsCap]): no incoming
+     * message at bob was displayed after its unread cap — a read row's countdown, its
+     * `expire_at_minute` less its own timer, starts no later than its cap. A display at `t` before
+     * the cap writes `ceil_minute(t + timer)`, whose countdown starts at or before the cap, so the
+     * bound is exact. **Checked in the step ten minutes on:** the unread message that arrived is
+     * still at bob. **Every step first finishes what a crash cut short** — the sends (user retries,
+     * never once the clock has moved), their delivery. **Fault-free:** the timely display counted
+     * one and its message is gone after its five minutes, the stale display counted none, and both
+     * messages are gone at the end. **Oracles:** no-loss with both texts declared (they expire at bob
+     * by design), liveness alice ↔ bob, nothing owed.
+     *
+     * **Mutant ME-7**: a rewrite of RECV's incoming insert that starts the countdown at receipt; its
+     * window is bob's first RECV after [EP_STALE_MARK].
+     */
+    fun epStaleDisplayResurrectsNothing(): DmScenario = DmScenario(
+        name = "EP-stale-display",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.MIN_5)
+            world.pump()
+            world.passes()
+        },
+        steps = listOf(
+            step("alice writes two five-minute messages; both reach bob unread, and his screen holds their ids") { w ->
+                w.notes.putIfAbsent(EP_STALE_MARK, w.bus.count)
+                epStaleDeliver(w)
+            },
+            step("bob's screen shows the first at once") { w ->
+                epStaleDeliver(w)
+                val id = w.notes["id-$EP_SHOWN"] as? org.ghost.messaging.api.MessageId
+                if (id != null && w.notes[EP_SHOWN_COUNT] == null) {
+                    w.notes[EP_SHOWN_COUNT] = w["bob"].device.engine.markDisplayed(listOf(id))
+                }
+                displayedAfterItsCap(w, "bob")
+            },
+            step("ten minutes on, past both timers: the unread one is still there") { w ->
+                if (w.notes[EP_STALE_TEN] != true) {
+                    w.advanceBy(10 * DmWorld.MINUTE)
+                    w.notes[EP_STALE_TEN] = true
+                }
+                w.passes()
+                if (w.notes["arrived-$EP_STALE"] == true && EP_STALE !in DmScripts.inboundTexts(w, "bob")) {
+                    dmViolation(
+                        "EP-stale-display: bob's unread five-minute message is gone before its unread cap — " +
+                            "the recipient's countdown started before its display (§10.3, ADR-27 point 9)",
+                    )
+                }
+                displayedAfterItsCap(w, "bob")
+            },
+            step("the clock passes the unread cap before bob's device runs a pass; the screen marks the held id displayed") { w ->
+                if (w.notes[EP_STALE_PAST] != true) {
+                    val cap = w.notes["cap-$EP_STALE"] as? Long
+                    if (cap != null) advanceTo(w, cap + DmWorld.MINUTE) else w.advanceBy(2 * DmWorld.HOUR + DmWorld.MINUTE)
+                    w.notes[EP_STALE_PAST] = true
+                }
+                val id = w.notes["id-$EP_STALE"] as? org.ghost.messaging.api.MessageId
+                if (id != null && w.notes[EP_STALE_COUNT] == null) {
+                    w.notes[EP_STALE_COUNT] = w["bob"].device.engine.markDisplayed(listOf(id))
+                }
+                displayedAfterItsCap(w, "bob")
+            },
+            step("bob's device sweeps") { w ->
+                w.pump()
+                w.passes()
+                displayedAfterItsCap(w, "bob")
+            },
+        ),
+        alwaysChecks = { world -> displayedAfterItsCap(world, "bob") },
+        finalChecks = { world ->
+            if (world.notes[EP_SHOWN_COUNT] != 1) {
+                dmViolation("EP-stale-display fault-free: the timely display counted ${world.notes[EP_SHOWN_COUNT]}, not 1")
+            }
+            if (world.notes[EP_STALE_COUNT] != 0) {
+                dmViolation(
+                    "EP-stale-display fault-free: the stale display counted ${world.notes[EP_STALE_COUNT]} messages, " +
+                        "not 0 (§21.10 point 6)",
+                )
+            }
+            for (text in listOf(EP_SHOWN, EP_STALE)) {
+                if (world.notes["arrived-$text"] != true) dmViolation("EP-stale-display: '$text' never reached bob")
+                if (text in DmScripts.inboundTexts(world, "bob")) {
+                    dmViolation("EP-stale-display: '$text' is still at bob past its deadline and a sweep")
+                }
+            }
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { setOf(EP_SHOWN, EP_STALE) },
+    )
+
+    /**
+     * EP-stale-display's two messages: each written if no row of it exists and the clock has not
+     * moved, carried to bob with no clock advance, and recorded — its id as bob's screen holds it,
+     * its unread cap read raw — once it is there.
+     */
+    private fun epStaleDeliver(w: DmCrashWorld) {
+        for (text in listOf(EP_SHOWN, EP_STALE)) {
+            if (w.notes[EP_STALE_TEN] != true && w.notes["arrived-$text"] != true &&
+                DmScripts.outgoingState(w, "alice", text) == null
+            ) {
+                w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), text, null)
+            }
+        }
+        w.pump()
+        w.passes()
+        w.pump()
+        w.passes()
+        val contact = DmScripts.contact(w, "bob", "alice")
+        for (text in listOf(EP_SHOWN, EP_STALE)) {
+            if (w.notes["id-$text"] != null) continue
+            val item = w["bob"].device.engine.conversation(contact, 50, null)
+                .firstOrNull { !it.outgoing && it.text == text } ?: continue
+            var cap: Long? = null
+            w["bob"].raw.query(
+                "SELECT unread_deadline_minute FROM dm_message WHERE message_id = ?",
+                listOf(item.id.toByteArray()),
+            ) { cap = it.long(0) }
+            w.notes["id-$text"] = item.id
+            w.notes["cap-$text"] = cap ?: continue
+            w.notes["arrived-$text"] = true
+        }
+    }
+
+    /**
+     * No incoming message at [node] was displayed after its unread cap (§21.10 point 6): a `read`
+     * row's countdown — its `expire_at_minute` less its own timer — starts no later than its
+     * `unread_deadline_minute`.
+     */
+    private fun displayedAfterItsCap(w: DmCrashWorld, node: String) {
+        w[node].raw.query(
+            "SELECT timer_code, expire_at_minute, unread_deadline_minute FROM dm_message " +
+                "WHERE direction = 'in' AND state = 'read' AND expire_at_minute IS NOT NULL " +
+                "AND unread_deadline_minute IS NOT NULL",
+        ) { r ->
+            val started = r.long(1) - DmTimers.timerSeconds(r.long(0).toInt())
+            if (started > r.long(2)) {
+                dmViolation(
+                    "EP-stale-display: $node displayed a message after its unread cap — its countdown starts at " +
+                        "$started, past the cap ${r.long(2)} (§21.10 point 6)",
+                )
+            }
+        }
+    }
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -2330,5 +2502,6 @@ internal object DmSuiteCases {
         roPruneASkippedKeyAtItsAgeBound(),
         epStoreAfterExpiry(),
         epSenderClockAhead(),
+        epStaleDisplayResurrectsNothing(),
     )
 }

@@ -37,7 +37,8 @@ dm crash classes: SCN-L-v3 1156 events, 1156 singles, 0 doubles, 2 timeouts over
 dm crash classes: RO-prune 8682 events, 8682 singles, 0 doubles, 8 timeouts over 8 stores
 dm crash classes: EP-store-after-expiry 1626 events, 1626 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-sender-ahead 1892 events, 1892 singles, 0 doubles, 1 timeouts over 1 stores
-dm suite cases: 16 run, 0 failures
+dm crash classes: EP-stale-display 2263 events, 2263 singles, 0 doubles, 2 timeouts over 2 stores
+dm suite cases: 17 run, 0 failures
 dm mutants: 19 run, 19 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
 dm mutant MC-5: detected by RP6's retry, which D3's absence lets reach the message row (counted id_taken); kill rule: fault-free, beside a clean control
@@ -57,6 +58,7 @@ dm mutant MC-26: detected by SCN-I (the renewal's demoted session outlives its r
 dm mutant MC-28: detected by SCN-H's retention oracle (a generation erased before superseded_day + 91); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
 dm mutant MC-30: detected by RO-prune (the age clause after SWEEP; the sidecar projection clause); kill rule: its prune half fault-free and at 6 of 6 crash points inside the transaction it first changes; its sidecar half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run
 dm mutant MC-33: detected by SCN-G-week (the FAILED retry across a week boundary re-establishes the session); kill rule: fault-free and at 6 of 6 crash points, each beside a clean run
+dm mutant ME-7: detected by EP-stale-display (the unread message is still there past its own timer, before its unread cap); kill rule: fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run
 dm mutant ME-9: detected by SCN-L-v3 (the open path refuses a file without dm_message_expiry); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
 dm mutant ME-11: detected by EP-sweep-log (the log is 0 bytes right after every checkpoint the device reports done, §10.9 item 3); kill rule: fault-free and at 1 of 1 crash points inside the transaction it first changes, each beside a clean run
 dm mutant ME-16: detected by EP-read-expiry (an expired row is still readable before SWEEP); kill rule: fault-free, beside a clean control
