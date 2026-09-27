@@ -415,6 +415,15 @@ dmr_case fail me17-weakened-kill-rule.txt gate "rejects ME-17 killed only fault-
 # fault-free rule alone.
 dmr_case fail suite-eighteen-mutant-count.txt gate "rejects the eighteen-mutant report of §22.38's group 2"
 dmr_case fail mc9-weakened-kill-rule.txt gate "rejects MC-9 killed only fault-free"
+# §22.38, group 4: SCN-L-v3 (a v3 file migrated on the bus) under the enumeration, and MC-17 and ME-9
+# killed there — thirteen suite cases (SCN-L-v3 is a scenario line) and twenty-one mutants.
+# Positives and every negative regenerated as for group 1. Four more, each a positive with one
+# violation: no SCN-L-v3 line, the nineteen-mutant line of group 3, MC-17 held to one half's rule,
+# and ME-9 held to the fault-free rule alone.
+dmr_case fail missing-scn-l-v3.txt gate "rejects a report without SCN-L-v3"
+dmr_case fail suite-nineteen-mutant-count.txt gate "rejects the nineteen-mutant report of §22.38's group 3"
+dmr_case fail mc17-one-half.txt gate "rejects MC-17 killed for one of its two halves"
+dmr_case fail me9-weakened-kill-rule.txt gate "rejects ME-9 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

@@ -17,9 +17,10 @@ import org.ghost.messaging.api.TrustState
  * including the forged-binding case), **SCN-F** (ephemeral), **SCN-G** (outcomes and resend),
  * **SCN-J** (faults) and **SCN-L** (migration safety), from S10; **SCN-H** (bundle generations,
  * in part), **SCN-I** (restore), **SCN-K** (revocation) and SCN-G's week-boundary retry as
- * `SCN-G-week`, from S10b; **SCN-C** (establishment through WITHHOLD_NEWEST_BUNDLE), from S10c.
- * SCN-E is not here; §22.15 of the design records what it still owes, §22.19 what S10b left of
- * the rest and §22.23 what S10c left of SCN-C.
+ * `SCN-G-week`, from S10b; **SCN-C** (establishment through WITHHOLD_NEWEST_BUNDLE), from S10c;
+ * SCN-L's migration of a v3 file on the bus as `SCN-L-v3`, from §22.38. SCN-E is not here; §22.15
+ * of the design records what it still owes, §22.19 what S10b left of the rest and §22.23 what S10c
+ * left of SCN-C.
  *
  * **Two deviations from §15.3's table, declared.** The scenario texts say "3 relays over 2
  * operators, one refusing" (SCN-A) and similar relay-set shapes elsewhere. The relay set, the
@@ -1685,6 +1686,93 @@ internal object DmScenarios {
             if (seen != listOf("l1", "l2")) dmViolation("SCN-L fault-free: bob saw $seen")
         },
     )
+
+    /**
+     * **SCN-L-v3 — the migration itself under the crash enumeration** (§15.3 SCN-L, CS-9; design
+     * §22.38).
+     *
+     * > a v3 database with a live outbox and inbox migrates to v4 and v5, then SCN-A traffic
+     *
+     * [scnL] migrates its files in the setup, on the raw connection, and enumerates the traffic that
+     * follows. The migration an **updated** device performs — a v3 file with Phase 7 rows, rebuilt
+     * to v4 (the outbox) and extended to v5 (the DM tables) — was `SchemaAndMigrationTest`'s alone
+     * (every statement interrupted, then migrated), never a crash world's. Here bob's device is
+     * created **in the armed phase** on [DmV3Fixture]'s file, and its migrations run **on the bus**
+     * ([DmNode.migrateOnTheBus]): every statement of migrations 4 and 5 is an event, so a crash
+     * point, and the reboot that follows a crash migrates again from whatever version the crash
+     * left. At every boot, until it has passed once, [DmV3Fixture.kept] checks CS-9's "preserves
+     * every sync … row, `outbox_op` rowids" on the file the migrations left; the open path's own
+     * `verifyIntegrity` checks "and the trigger set", and a refusal is the run's finding. Then bob's
+     * identity activates on the migrated file and publishes, still armed: ACTIVATE is redone while
+     * the device shows no card, which is CR-12's resumable activation at the next open, and the
+     * second step is the one a crash inside the first cost it.
+     *
+     * **The traffic runs unarmed** ([DmScenario.unarmedTail]): the §12.2 establishment, SCN-A's two
+     * messages and [scnL]'s scripted reboot, in every run. [scnL] enumerates that traffic on a
+     * migrated file already, and the establishment script is not crash-tolerant; what a crash can
+     * do to the migration is the new half. The three oracles are on and run over it.
+     *
+     * **Mutants.** MC-17 (the outbox rebuild loses a rowid or a trigger) and ME-9 (an expiry that can
+     * be extended: `dm_message_expiry` never created) — each a rewrite of one migration statement,
+     * which only a migration on the bus makes reachable. Their window starts at [L_V3_MARK].
+     */
+    fun scnLv3(): DmScenario = DmScenario(
+        name = "SCN-L-v3",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        setup = { world ->
+            world.node("alice", 0x41)
+            DmScripts.activate(world)
+        },
+        steps = listOf(
+            step("bob's device, updated, opens its v3 database") { w ->
+                w.notes.putIfAbsent(L_V3_MARK, w.bus.count)
+                w.nodeFromFile("bob", 0x51, DmV3Fixture::build) { raw ->
+                    if (w.notes[L_V3_KEPT] != true) {
+                        DmV3Fixture.kept(raw, "SCN-L-v3: bob's migrations")
+                        w.notes[L_V3_KEPT] = true
+                    }
+                }
+            },
+            step("bob's identity activates on the migrated file and publishes") { w -> activateOnTheMigratedFile(w) },
+            step("the activation a crash cost the step above, if it did") { w -> activateOnTheMigratedFile(w) },
+        ),
+        unarmedTail = { world ->
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.send(DmScripts.contact(world, "alice", "bob"), "l1", null)
+            world.pump()
+            world.passes()
+            world["bob"].reboot()
+            DmStructuralInvariants.check(world["bob"], "SCN-L-v3 scripted reboot")
+            DmStructuralInvariants.checkpointEmptiedTheLog(world["bob"], "SCN-L-v3 scripted reboot")
+            world["alice"].device.engine.send(DmScripts.contact(world, "alice", "bob"), "l2", null)
+            world.pump()
+            world.passes()
+        },
+        alwaysChecks = { world ->
+            if (world.notes[L_V3_KEPT] != true) {
+                dmViolation("SCN-L-v3: bob's migrations never reached their CS-9 check")
+            }
+            for (node in world.nodes()) DmStructuralInvariants.check(node, "SCN-L-v3 always")
+            // The traffic is unarmed, so it is asserted in every run and not only fault-free.
+            val seen = DmScripts.inboundTexts(world, "bob").filter { it.startsWith("l") }
+            if (seen != listOf("l1", "l2")) dmViolation("SCN-L-v3: bob saw $seen on the migrated file")
+        },
+    )
+
+    /** bob's ACTIVATE on the migrated file, redone while his device shows no card; then a round. */
+    private fun activateOnTheMigratedFile(w: DmCrashWorld) {
+        val bob = w["bob"].device.engine
+        if (bob.myCard() == null) bob.onActivated()
+        w.pump()
+        w.passes()
+    }
+
+    /** The note SCN-L-v3 writes at its first step: MC-17's and ME-9's windows start after it. */
+    const val L_V3_MARK: String = "lV3Mark"
+
+    /** Set once [DmV3Fixture.kept] has passed on bob's migrated file. */
+    private const val L_V3_KEPT: String = "lV3Kept"
 
     // ------------------------------------------------------------------ SCN-H bundle generations
 

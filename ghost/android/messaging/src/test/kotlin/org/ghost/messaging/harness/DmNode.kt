@@ -119,6 +119,23 @@ internal class DmNode(
         }
     }
 
+    /**
+     * Where [boot] runs the migrations (SCN-L-v3, design §22.38). False for every node but
+     * SCN-L-v3's bob: on the raw connection, unarmed, as always. True: through the fault-injecting
+     * executor, so every statement of every migration the file still needs is an **event** — a
+     * crash point, and a statement a mutant's [rewrite] can change (MC-17, ME-9) — and an integrity
+     * refusal at open is a **finding** of the run ([DmInvariantViolation]) rather than a harness
+     * error. Test-only: the device's own open path is not in `:messaging` at all.
+     */
+    var migrateOnTheBus: Boolean = false
+
+    /**
+     * Run at every [boot], on the raw connection, right after the migrations — before R-K1, before
+     * `verifyIntegrity`, before the client is built (SCN-L-v3's CS-9 check). Nothing it reads is an
+     * event.
+     */
+    var afterMigrations: ((JdbcSqlExecutor) -> Unit)? = null
+
     /** Whether the running context carries hooks, so a node that never had any never calls in. */
     private var bindingHooksOn = false
 
@@ -167,7 +184,8 @@ internal class DmNode(
      *
      * Migration and `verifyIntegrity` run on the **raw** connection, unarmed, because they are the
      * open path and not the scenario: a crash injected into `MigrationRunner` would test migration
-     * atomicity, which is SCN-L's job and `Migration5Test`'s, not every scenario's.
+     * atomicity, which is SCN-L's job and `Migration5Test`'s, not every scenario's. SCN-L-v3's node
+     * is the one exception, and the one scenario whose job it is ([migrateOnTheBus]).
      */
     fun boot() {
         check(current == null) { "$name is already booted" }
@@ -175,22 +193,32 @@ internal class DmNode(
         // WAL first, so the migration and R-K1 below see the journal mode the device runs in and
         // `-wal` exists to be truncated at all (§10.9 point 3).
         connection.query("PRAGMA journal_mode = WAL") { }
-        val runner = MigrationRunner(connection)
-        runner.migrate()
+        val wrapper = FaultyDmSqlExecutor(connection, bus, name)
+        wrapper.rewrite = rewrite
+        wrapper.defer = defer
+        wrapper.deferUpdate = deferUpdate
+        wrapper.afterCheckpoint = ::measureTheLog
+        // Held before the migrations, so a crash inside one on the bus leaves a node [kill] closes.
+        jdbc = connection
+        faulty = wrapper
+        MigrationRunner(if (migrateOnTheBus) wrapper else connection).migrate()
+        afterMigrations?.invoke(connection)
         // R-K1 (§10.7): "a checkpoint runs at every database open, after migration and before the
         // first read". Its other end is the in-memory `checkpoint_due` of SWEEP, which dies with
         // the process — so without this a device that swept and was then killed would keep freed
         // plaintext pages in the `-wal` for the life of the next process (the T25 physical bound).
         lastOpenTruncated = Checkpoint.truncate(connection) { }
         walBytesAfterOpen = walFile.let { if (it.exists()) it.length() else 0L }
-        runner.verifyIntegrity()
-        val wrapper = FaultyDmSqlExecutor(connection, bus, name)
-        wrapper.rewrite = rewrite
-        wrapper.defer = defer
-        wrapper.deferUpdate = deferUpdate
-        wrapper.afterCheckpoint = ::measureTheLog
-        jdbc = connection
-        faulty = wrapper
+        val runner = MigrationRunner(connection)
+        if (migrateOnTheBus) {
+            // CS-9's "and the trigger set": a file the open path refuses is what the migration left,
+            // so it is the run's finding.
+            runCatching { runner.verifyIntegrity() }.onFailure {
+                dmViolation("$name's database was refused at open: ${it.message} (MigrationRunner.verifyIntegrity, CS-9)")
+            }
+        } else {
+            runner.verifyIntegrity()
+        }
         current = DmDevice(
             branch = branch,
             slotCount = slotCount,

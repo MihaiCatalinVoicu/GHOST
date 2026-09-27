@@ -43,6 +43,31 @@ class DmMutantDetectionTest {
     }
 
     @Test
+    fun mc17TheOutboxRebuildLosesARowidOrATriggerIsDetected() {
+        // MC-17, both halves (CS-9; §22.38): the rows copied without their rowids, and one of the
+        // eight v2 triggers not re-created. Each fault-free and at crash points inside the migration
+        // transaction its rewrite changes — migration 4, on the bus in SCN-L-v3 — each beside the
+        // clean SCN-L-v3 at the same point. One §15.7 id, recorded once, and only when both halves
+        // are killed.
+        val rowid = proveWhereItActs(DmMutants.MC17, DmScenarios.scnLv3(), DmScenarios.L_V3_MARK)
+        val trigger = proveWhereItActs(DmMutants.MC17_TRIGGER, DmScenarios.scnLv3(), DmScenarios.L_V3_MARK)
+        DmKills.record(
+            DmMutants.MC17.id,
+            "its rowid half: ${rowid.detail("SCN-L-v3")} | its trigger half: ${trigger.detail("SCN-L-v3")}",
+            "its rowid half fault-free and at ${rowid.kills.size} of ${rowid.points} crash points inside the " +
+                "transaction it first changes; its trigger half fault-free and at ${trigger.kills.size} of " +
+                "${trigger.points} crash points inside the transaction it first changes; each beside a clean run",
+        )
+    }
+
+    @Test
+    fun me9AnExpiryThatCanBeExtendedIsDetected() {
+        // ME-9 (R-T6; §22.38): fault-free by the open path's trigger set, and at crash points inside
+        // migration 5, whose trigger statement its rewrite changes, each beside the clean SCN-L-v3.
+        detectFaultFreeAndWhereItActs(DmMutants.ME9, DmScenarios.scnLv3(), DmScenarios.L_V3_MARK)
+    }
+
+    @Test
     fun me17AWallClockBackStepIsDetected() {
         // ME-17 (R-T7, §10.9 item 4; §22.38): fault-free by EP-clock-back's check, and at crash
         // points inside the first transaction its rewrite changes after the mark, each beside the
@@ -153,8 +178,8 @@ class DmMutantDetectionTest {
      * The registry is well formed, and the report's count is armed to be written from the kills.
      *
      * It is deliberately not "57 run, 57 detected". §15.7's set is 97 — 40 privacy, 33 correctness
-     * and 24 ephemeral — and the slices so far register fifteen (§22.27). A gate that printed the
-     * design's number while running fifteen would be the one failure a report-checked gate must not have, which is
+     * and 24 ephemeral — and the slices so far register twenty-one (§22.38). A gate that printed the
+     * design's number while running fewer would be the one failure a report-checked gate must not have, which is
      * why the check script pins this line to the number this suite actually runs — and why the line
      * itself is now written from [DmKills], so that removing a kill lowers it.
      */

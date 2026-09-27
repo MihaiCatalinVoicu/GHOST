@@ -298,6 +298,25 @@ internal object DmMutants {
     )
 
     /**
+     * **ME-9 — expiry extendable** (R-T6, §10.3; built by §22.38). Migration 5 does not create
+     * `dm_message_expiry`, the trigger by which an expiry time only moves earlier. The engine never
+     * asks it to refuse anything — DISPLAY writes `expire_at_minute` under its own guard and only
+     * for an unread row — so no traffic sees it gone; what sees it is §15.7's "trigger test", which
+     * is the open path's own trigger set (`verifyIntegrity`), and it refuses the file. A statement
+     * rewrite of the migration, which only a migration on the bus reaches (SCN-L-v3).
+     */
+    val ME9 = Mutation(
+        id = "ME-9",
+        defeats = "R-T6: an expiry time only moves earlier (the dm_message_expiry trigger)",
+        detectedBy = "SCN-L-v3 (the open path refuses a file without dm_message_expiry)",
+        expect = "bob's database was refused at open: schema integrity: missing triggers [dm_message_expiry]",
+        expectUnderCrash = listOf("bob's database was refused at open: schema integrity: missing triggers [dm_message_expiry]"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("CREATE TRIGGER dm_message_expiry")) Pair("SELECT 1", emptyList()) else Pair(sql, args)
+        },
+    )
+
+    /**
      * **ME-11 — no checkpoint** (§10.7 "Checkpoint", §10.9 item 3; built by §22.38). SWEEP's
      * `PRAGMA wal_checkpoint(TRUNCATE)` answers as a truncation that succeeded (`busy = 0`) and
      * truncates nothing: the engine goes on as if the log were empty, and the freed frames stay in
@@ -463,6 +482,47 @@ internal object DmMutants {
             } else {
                 Pair(sql, args)
             }
+        },
+    )
+
+    /**
+     * **MC-17 — the outbox rebuild loses a rowid or a trigger** (CS-9, §13.6 step 1; built by
+     * §22.38). Migration 4 rebuilds `outbox_op` to admit a one-hour TTL; this half copies the rows
+     * **without** their rowids (`INSERT INTO outbox_op_v4(…) SELECT …` with `rowid` left out of both
+     * lists), so they are numbered afresh — in the same order, which is why only a table with gaps,
+     * [DmV3Fixture]'s, shows it. A statement rewrite of the migration, which only a migration on the
+     * bus reaches (SCN-L-v3, [DmNode.migrateOnTheBus]). One §15.7 id, two halves: this one is the
+     * entry registered below, and the kill runs both ([MC17_TRIGGER]).
+     */
+    val MC17 = Mutation(
+        id = "MC-17",
+        defeats = "CS-9: the outbox rebuild keeps every row at its rowid and re-creates every trigger",
+        detectedBy = "SCN-L-v3 (the v3 file's Phase 7 rows at their rowids after the migrations; the open path's " +
+            "trigger set)",
+        expect = "SCN-L-v3: bob's migrations did not keep the v3 file's Phase 7 rows (CS-9)",
+        expectUnderCrash = listOf("SCN-L-v3: bob's migrations did not keep the v3 file's Phase 7 rows (CS-9)"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("INSERT INTO outbox_op_v4(rowid, ")) {
+                Pair(sql.replaceFirst("outbox_op_v4(rowid, ", "outbox_op_v4(").replaceFirst("SELECT rowid, ", "SELECT "), args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
+     * MC-17's other half: the rebuild does not re-create one of the eight v2 triggers of the table
+     * it replaced — `outbox_op_outcome`, "an outcome is decided once" (any other is the same
+     * statement's shape) — so the open path's own trigger set (`verifyIntegrity`) refuses the file.
+     */
+    val MC17_TRIGGER = Mutation(
+        id = "MC-17",
+        defeats = "CS-9: the outbox rebuild keeps every row at its rowid and re-creates every trigger",
+        detectedBy = "SCN-L-v3 (the open path refuses a file without outbox_op_outcome)",
+        expect = "bob's database was refused at open: schema integrity: missing triggers [outbox_op_outcome]",
+        expectUnderCrash = listOf("bob's database was refused at open: schema integrity: missing triggers [outbox_op_outcome]"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("CREATE TRIGGER outbox_op_outcome")) Pair("SELECT 1", emptyList()) else Pair(sql, args)
         },
     )
 
@@ -826,5 +886,8 @@ internal object DmMutants {
      * report prints them.
      */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME11, ME16, ME17)
+        listOf(
+            MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC33,
+            ME9, ME11, ME16, ME17,
+        )
 }

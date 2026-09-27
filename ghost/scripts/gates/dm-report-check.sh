@@ -425,10 +425,12 @@ esac
 
 
 # The scenarios and suite cases slices S10, S10b and S10c implement (S10b added SCN-H, SCN-I, SCN-K
-# and SCN-G's week-boundary retry as `SCN-G-week`, §22.19; S10c added SCN-C, §22.23). Each must have
-# a crash-class line, and that line must report at least one single crash: an enumeration of zero
-# crash points is a scenario that ran once without faults, which is not a crash enumeration.
-scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
+# and SCN-G's week-boundary retry as `SCN-G-week`, §22.19; S10c added SCN-C, §22.23; §22.38 added
+# `SCN-L-v3`, SCN-L's v3 file migrated on the bus, every statement of migrations 4 and 5 a crash
+# point). Each must have a crash-class line, and that line must report at least one single crash: an
+# enumeration of zero crash points is a scenario that ran once without faults, which is not a crash
+# enumeration.
+scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L SCN-L-v3)
 # §15.5's sub-cases under the enumeration: S10's four, KC12, RS2 and RP7 since §22.27, RP5, RP4,
 # RP11 and KC5b since §22.37, and EP-sweep-log and EP-clock-back since §22.38.
 scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7 RP5 RP4 RP11 KC5b EP-sweep-log EP-clock-back)
@@ -603,8 +605,10 @@ grep -qxF 'dm suite cases: 13 run, 0 failures' "$report" || bad "the suite-case 
 # ME-17 (a wall-clock back step delays deletion), which EP-clock-back makes reachable. Nineteen since
 # §22.38's group 3: MC-9 (no freshness check), which RP7 makes reachable through RECV's freshness
 # policy (`ContentFreshness`, whose production rule is the three comparisons RECV wrote inline).
-grep -qxF 'dm mutants: 19 run, 19 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 19 run, 19 detected'"
+# Twenty-one since §22.38's group 4: MC-17 (the outbox rebuild loses a rowid or a trigger) and ME-9
+# (the expiry trigger never created), which SCN-L-v3's migration on the bus makes reachable.
+grep -qxF 'dm mutants: 21 run, 21 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 21 run, 21 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -641,11 +645,17 @@ rule_me17='fault-free and at 5 of 5 crash points inside the transaction it first
 # RECV of the re-sealed L0 (22 events), found where the traced mutated run departs from the clean one
 # (a policy substitution raises no event of its own, like MC-20's native omissions).
 rule_mc9='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# Group 4's two, inside the migration transaction the rewrite changes, SCN-L-v3's bob migrating on
+# the bus. MC-17: each of its halves at six points spread from its rewritten statement to the end of
+# migration 4 (events 18..51 for the rows copied without their rowids, 29..51 for the trigger not
+# re-created). ME-9: six points from the trigger migration 5 no longer creates to its end (83..111).
+rule_mc17='its rowid half fault-free and at 6 of 6 crash points inside the transaction it first changes; its trigger half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run'
+rule_me9='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-9|$rule_mc9" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
-  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
+  "MC-16|$rule_ff" "MC-17|$rule_mc17" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
   "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
-  "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17"; do
+  "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"
   line="$(grep -E "^dm mutant ${mutant}: " "$report" | head -1 || true)"
