@@ -65,6 +65,11 @@ internal class ReceiveStep(
     private val random: DmRandom,
     private val contexts: SelfContexts,
     private val counters: DmCounters,
+    /**
+     * R9, `accept_after_minute` and binding B1 ([ContentFreshness]). Production never names it and
+     * runs [ContentFreshness.RULE]; the crash worlds install mutant MC-9 here (design §22.38).
+     */
+    private val freshness: ContentFreshness = ContentFreshness.RULE,
 ) {
     private val contacts = ContactStore()
     private val messages = MessageStore()
@@ -660,21 +665,13 @@ internal class ReceiveStep(
             return dropped(DmCounters.Reason.BAD_CONTENT)
         }
 
-        // R9: freshness (§7.6, §21.10 points 3 and 5), measured from when the ciphertext arrived.
+        // R9: freshness (§7.6, §21.10 points 3 and 5), measured from when the ciphertext arrived;
+        // `accept_after_minute` (§8.6); binding B1 (§7.6): in pair mode the author's own week must be
+        // the key's week, so an old L0 cannot be re-sealed under a later week key. The rule is
+        // [ContentFreshness.RULE]; the self row is read only once the age bound has passed.
         val authorSeconds = content.authorMinute * DmTime.MINUTE
         val fresh = DmTimers.freshSeconds(DmTimers.bucketOf(content.timerCode))
-        if (authorSeconds < arrivalSeconds - fresh ||
-            authorSeconds > arrivalSeconds + 2 * DmTimers.SIGMA_SECONDS
-        ) {
-            return dropped(DmCounters.Reason.STALE)
-        }
-        val acceptAfter = owner.self(tx.sql)?.acceptAfterMinute
-        if (acceptAfter != null && authorSeconds < acceptAfter) {
-            return dropped(DmCounters.Reason.STALE)
-        }
-        // Binding B1 (§7.6): in pair mode the author's own week must be the key's week, so an old
-        // L0 cannot be re-sealed under a later week key.
-        if (pairWeek != null && DmTime.week(authorSeconds) != pairWeek) {
+        if (!freshness.admits(authorSeconds, arrivalSeconds, fresh, pairWeek) { owner.self(tx.sql)?.acceptAfterMinute }) {
             return dropped(DmCounters.Reason.STALE)
         }
 

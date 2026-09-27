@@ -45,7 +45,8 @@
 # rules below and never to the every-event rule of the `dm crash classes:` lines; it adds MC-14 and
 # MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25). The suite cases of §22.27
 # add three functional-suite sub-cases under the enumeration, KC12, RS2 and RP7, and the two mutants
-# the first two make reachable, MC-21 and MC-24: fifteen (RP7's MC-9 needs a seam, §22.27).
+# the first two make reachable, MC-21 and MC-24: fifteen (RP7's MC-9 needed a seam, §22.27, which
+# §22.38 built).
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -599,9 +600,11 @@ grep -qxF 'dm suite cases: 13 run, 0 failures' "$report" || bad "the suite-case 
 # is one §15.7 entry, and its rule below now names both halves. Seventeen since §22.38: ME-11 (no
 # checkpoint), which EP-sweep-log makes reachable with the standing clause "the log is 0 bytes right
 # after every checkpoint the device reports done" (§10.9 item 3). Eighteen since §22.38's group 2:
-# ME-17 (a wall-clock back step delays deletion), which EP-clock-back makes reachable.
-grep -qxF 'dm mutants: 18 run, 18 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 18 run, 18 detected'"
+# ME-17 (a wall-clock back step delays deletion), which EP-clock-back makes reachable. Nineteen since
+# §22.38's group 3: MC-9 (no freshness check), which RP7 makes reachable through RECV's freshness
+# policy (`ContentFreshness`, whose production rule is the three comparisons RECV wrote inline).
+grep -qxF 'dm mutants: 19 run, 19 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 19 run, 19 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -634,7 +637,11 @@ rule_me11='fault-free and at 1 of 1 crash points inside the transaction it first
 # ME-17: fault-free, and at every event (five) of the first transaction its rewrite of the expiry
 # clock's read changes after EP-clock-back's mark.
 rule_me17='fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run'
-for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-10|$rule_ff" "MC-12|$rule_ff" \
+# MC-9: fault-free by RP7, and at six points spread over the first transaction it changes — bob's
+# RECV of the re-sealed L0 (22 events), found where the traced mutated run departs from the clean one
+# (a policy substitution raises no event of its own, like MC-20's native omissions).
+rule_mc9='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-9|$rule_mc9" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
   "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
   "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \

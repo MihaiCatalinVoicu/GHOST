@@ -35,6 +35,14 @@ class DmMutantDetectionTest {
     fun mc5D3OffIsDetected() = detect(DmMutants.MC5, DmSuiteCases.rp6ReEncryptionAfterAWronglyReportedFailure())
 
     @Test
+    fun mc9NoFreshnessCheckIsDetected() {
+        // MC-9 (R9, B1; §22.38): fault-free by RP7, and at crash points inside the first transaction
+        // it changes after RP7's mark — measured where its world departs from the clean one, since a
+        // policy raises no event — each beside the clean RP7 at the same point.
+        detectFaultFreeAndWhereItActs(DmMutants.MC9, DmSuiteCases.rp7AnOldL0ResealedUnderALaterWeekKey(), DmSuiteCases.RP7_MARK)
+    }
+
+    @Test
     fun me17AWallClockBackStepIsDetected() {
         // ME-17 (R-T7, §10.9 item 4; §22.38): fault-free by EP-clock-back's check, and at crash
         // points inside the first transaction its rewrite changes after the mark, each beside the
@@ -161,7 +169,7 @@ class DmMutantDetectionTest {
                     "hook: it mutates nothing",
                 mutant.rewrite != null || mutant.rewriteOn != null || mutant.decorate != null ||
                     mutant.defer != null || mutant.deferUpdate != null || mutant.hintKeeper ||
-                    mutant.bindingOmit != DmEquivalence.BINDING_NONE,
+                    mutant.bindingOmit != DmEquivalence.BINDING_NONE || mutant.freshness != null,
             )
             assertTrue("${mutant.id} names no property", mutant.defeats.isNotBlank())
             assertTrue("${mutant.id} names no detecting case", mutant.detectedBy.isNotBlank())

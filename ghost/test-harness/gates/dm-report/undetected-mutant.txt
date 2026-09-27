@@ -34,10 +34,11 @@ dm crash classes: KC5b 2547 events, 2547 singles, 0 doubles, 6 timeouts over 6 s
 dm crash classes: EP-sweep-log 2240 events, 2240 singles, 0 doubles, 2 timeouts over 2 stores
 dm crash classes: EP-clock-back 1879 events, 1879 singles, 0 doubles, 1 timeouts over 1 stores
 dm suite cases: 13 run, 0 failures
-dm mutants: 18 run, 17 detected
+dm mutants: 19 run, 18 detected
 dm mutant MC-1: NOT DETECTED (no run recorded a kill)
 dm mutant MC-5: detected by RP6's retry, which D3's absence lets reach the message row (counted id_taken); kill rule: fault-free, beside a clean control
 dm mutant MC-7': detected by the rejected-request replay of §12.3 (a second request appears), RP4 (the session bob reset comes back) and RP5, fault-free and under a crash in the transaction that writes the tuple; its second half (the tuple written outside the RECV transaction) by RP5 under a crash in its split window; kill rule: its first half fault-free by 3 cases and at 6 of 6 crash points inside the transaction it first changes; its second half at 3 of 3 crash points of its split window; each beside a clean run
+dm mutant MC-9: detected by RP7 (an L0 of last week re-sealed under this week's key is rendered); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
 dm mutant MC-10: detected by SCN-B (six messages reordered across the relay set); kill rule: fault-free, beside a clean control
 dm mutant MC-12: detected by DmPoisonTest (SimulatedNativeCrash on every open of one blob); kill rule: fault-free, beside a clean control
 dm mutant MC-14: detected by SCN-E/LOSE_KEYS (6 h after the loss the relay still holds none of the owner's inbox registrations); kill rule: fault-free and at 6 of 6 crash points between the loss and its fault-free failure, each beside a clean run

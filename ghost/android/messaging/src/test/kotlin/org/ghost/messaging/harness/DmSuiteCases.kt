@@ -33,9 +33,9 @@ import org.ghost.messaging.port.DmEnvelopes
  * makes reachable: **KC12** (a requester sending two identities: no crash, no state change) kills
  * MC-24, and **RS2** (a client offline 60 days: pair envelopes open after the absence) kills
  * MC-21. The third, **RP7** (an old L0 re-sealed under a later week key — built narrower, as a
- * back-dated L0 sealed by its sender, which its KDoc declares), has no registered mutant — §15.7's
- * MC-9 is out of every mechanism's reach — and its check is shown able to fail by a control in
- * `DmHarnessSelfTest` instead.
+ * back-dated L0 sealed by its sender, which its KDoc declares), had no registered mutant — §15.7's
+ * MC-9 was out of every mechanism's reach — and its check was shown able to fail by a control in
+ * `DmHarnessSelfTest` instead. §22.38 registers MC-9 on RECV's freshness policy, and RP7 kills it.
  *
  * The rest of RO, RS, RP, KC, CB, RE, EP, OS and RK is not here. §22.15 lists them by sub-case,
  * and §22.27 says which of them were looked at for this slice and why they stayed out.
@@ -931,13 +931,15 @@ internal object DmSuiteCases {
      * ([DmScenario.declaredLoss]'s rule); the fault-free run measures the drop. Liveness: alice ↔
      * bob. Nothing owed.
      *
-     * **No mutant is registered with it, and §22.27 says why:** §15.7's RP7 killer is MC-9 ("no
-     * freshness check"), and B1 and R9 are Kotlin comparisons in `ReceiveStep.decryptAndApply` over
-     * the decoded author minute and the arrival time — no statement carries the decision and no
-     * port result is the decision, so none of the harness's mechanisms reaches it faithfully. The
-     * check is shown able to fail by `DmHarnessSelfTest` item 10's control instead: the same
-     * decorator dating the L0 a minute earlier **in the key's own week**, which B1 lets through,
-     * must fail the render check.
+     * **Its mutant is MC-9 ("no freshness check"), since §22.38.** §22.27 registered none: B1 and
+     * R9 are Kotlin comparisons in `ReceiveStep.decryptAndApply` over the decoded author minute and
+     * the arrival time — no statement carries the decision and no port result is the decision, so
+     * none of the harness's mechanisms reached it faithfully. §22.38 moved the comparisons, verbatim
+     * and in their order, into RECV's freshness policy (`ContentFreshness.RULE`), which the crash
+     * worlds substitute, and MC-9 is killed here fault-free and at crash points inside the RECV it
+     * first changes ([RP7_MARK]). The check is also shown able to fail by `DmHarnessSelfTest` item
+     * 10's control: the same decorator dating the L0 a minute earlier **in the key's own week**,
+     * which B1 lets through, must fail the render check.
      */
     fun rp7AnOldL0ResealedUnderALaterWeekKey(
         /** True only in the control: the L0 is dated a minute earlier, in the key's own week. */
@@ -960,6 +962,7 @@ internal object DmSuiteCases {
         },
         steps = listOf(
             step("alice's device re-seals an L0 of last week under this week's key") { w ->
+                w.notes.putIfAbsent(RP7_MARK, w.bus.count)
                 // Two minutes first, so the control's L0 — a minute earlier — shares no rendered
                 // position with the establishment's last message (the CS-2 proxy, which the
                 // control would otherwise fail before the check it is about).
@@ -1187,6 +1190,9 @@ internal object DmSuiteCases {
 
     /** The note RP5 writes the event count into as bob's first flight starts (§22.37). */
     const val RP5_MARK: String = "rp5Mark"
+
+    /** The note RP7 writes at its re-sealing step: MC-9's window starts after it. */
+    const val RP7_MARK: String = "rp7Mark"
 
     /** The note EP-sweep-log writes at its first step: ME-11's window starts after it. */
     const val EP_LOG_MARK: String = "epLogMark"

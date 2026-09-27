@@ -76,6 +76,7 @@ internal class DmCrashWorld(
             node.defer = it.defer
             node.deferUpdate = it.deferUpdate
             node.bindingOmit = it.bindingOmit
+            node.freshness = it.freshness
         }
         node.boot()
         order += node

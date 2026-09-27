@@ -86,6 +86,9 @@ internal class DmNode(
     /** [FaultyDmSqlExecutor.deferUpdate], re-installed at every boot like [defer]. */
     var deferUpdate: ((String) -> Int?)? = null
 
+    /** RECV's freshness policy (mutant MC-9, §22.38), handed to every device this node boots. */
+    var freshness: org.ghost.messaging.engine.ContentFreshness? = null
+
     /**
      * MC-20's omitted binding field and KC5b's perturbed one (`DmEquivalence.bindingHooks`,
      * §22.37). They live on the native DM context, which dies with the process, so [boot]
@@ -195,7 +198,7 @@ internal class DmNode(
             startSeconds = clock.now,
             identityBranch = identityBranch,
             path = path,
-            harness = DmDevice.HarnessOverride(wrapper, clock, streamOffset + boots, decorate),
+            harness = DmDevice.HarnessOverride(wrapper, clock, streamOffset + boots, decorate, freshness = freshness),
         )
         bindingHooksOn = false
         installBindingHooks()

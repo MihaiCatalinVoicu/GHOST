@@ -398,8 +398,8 @@ class DmHarnessSelfTest {
      *    expire unserved") must fail: the declaration excuses a loss at the relay and nothing else;
      *  - **RP7, the L0 dated in the key's own week**: the sender's decorator dates the message a
      *    minute earlier instead of a week, binding B1 lets it through, and the render check must
-     *    fail — RP7 has no registered mutant (MC-9 is out of reach), so this is what shows its one
-     *    check reads the rendering at all.
+     *    fail — this showed RP7's one check reads the rendering at all while it had no registered
+     *    mutant (MC-9 was out of reach until §22.38), and still shows it with no mutant installed.
      */
     @Test
     fun kc12Rs2AndRp7ChecksFailOnWhatTheyAreAbout() {
@@ -524,9 +524,9 @@ class DmHarnessSelfTest {
             "whose window is still open",
         )
 
-        // RP7's render check, which no registered mutant reaches (MC-9 is out of every mechanism's
-        // reach, §22.27): the sender's L0 dated a minute earlier in the key's **own** week, which
-        // binding B1 lets through, must fail it.
+        // RP7's render check, which no registered mutant reached until §22.38 registered MC-9 (it
+        // was out of every mechanism's reach, §22.27): the sender's L0 dated a minute earlier in the
+        // key's **own** week, which binding B1 lets through, must fail it.
         assertFailsWith(
             DmSuiteCases.rp7AnOldL0ResealedUnderALaterWeekKey(sameWeek = true),
             "bob rendered an L0 dated in another week",

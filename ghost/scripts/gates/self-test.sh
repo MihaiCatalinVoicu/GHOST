@@ -409,6 +409,12 @@ dmr_case fail missing-ep-clock-back.txt gate "rejects a report without EP-clock-
 dmr_case fail suite-twelve-case-count.txt gate "rejects the twelve-case suite line of §22.38's group 1"
 dmr_case fail suite-seventeen-mutant-count.txt gate "rejects the seventeen-mutant report of §22.38's group 1"
 dmr_case fail me17-weakened-kill-rule.txt gate "rejects ME-17 killed only fault-free"
+# §22.38, group 3: MC-9 on RECV's freshness policy, killed by RP7 — no new case, so thirteen suite
+# cases and nineteen mutants. Positives and every negative regenerated as for group 1. Two more, each
+# a positive with one violation: the eighteen-mutant line of group 2, and MC-9 held to the
+# fault-free rule alone.
+dmr_case fail suite-eighteen-mutant-count.txt gate "rejects the eighteen-mutant report of §22.38's group 2"
+dmr_case fail mc9-weakened-kill-rule.txt gate "rejects MC-9 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

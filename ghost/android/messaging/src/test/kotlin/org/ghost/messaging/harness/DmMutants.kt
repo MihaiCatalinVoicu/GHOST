@@ -103,6 +103,11 @@ internal object DmMutants {
          * binding v3 is signed and verified inside it.
          */
         val bindingOmit: Int = DmEquivalence.BINDING_NONE,
+        /**
+         * A **policy substitution** (§22.38): RECV's freshness rule ([org.ghost.messaging.engine.ContentFreshness]),
+         * handed to every device of the world. MC-9 only.
+         */
+        val freshness: org.ghost.messaging.engine.ContentFreshness? = null,
         /** True when the mutant is invisible without a crash, so its kill runs the enumeration. */
         val needsACrash: Boolean = false,
         /**
@@ -335,6 +340,25 @@ internal object DmMutants {
             } else {
                 Pair(sql, args)
             }
+        },
+    )
+
+    /**
+     * **MC-9 — no freshness check** (R9 and binding B1, §7.6; built by §22.38). RECV's freshness
+     * policy admits content of any age and of any week; `accept_after_minute` (§8.6, a restore rule
+     * and not MC-9's) is kept, and read exactly when the rule reads it. The decision is Kotlin
+     * comparisons over the decrypted author minute, which no statement carries and no port result
+     * is, so the mutant lives on the policy parameter §22.38 added to `ReceiveStep`.
+     */
+    val MC9 = Mutation(
+        id = "MC-9",
+        defeats = "R9 and B1: content older than FRESH(bucket), from the future, or of another week than its key is refused",
+        detectedBy = "RP7 (an L0 of last week re-sealed under this week's key is rendered)",
+        expect = "RP7: bob rendered an L0 dated in another week",
+        expectUnderCrash = listOf("RP7: bob rendered an L0 dated in another week"),
+        freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, _, _, _, acceptAfter ->
+            val after = acceptAfter()
+            after == null || authorSeconds >= after
         },
     )
 
@@ -802,5 +826,5 @@ internal object DmMutants {
      * report prints them.
      */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME11, ME16, ME17)
+        listOf(MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME11, ME16, ME17)
 }
