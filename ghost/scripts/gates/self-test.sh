@@ -373,9 +373,12 @@ dmr_case fail mc21-first-window-rule.txt gate "rejects MC-21 held to the first v
 # CB replay and RP4 fault-free; RP5 at every event of its split window) and MC-20 to its four
 # omissions. `pass-pr.txt` is a real PR-scale report of this slice (§22.37 item 10); `pass-gate.txt`
 # is assembled, its four new crash-class lines the real counts of every-point enumerations. Every
-# negative above that was a positive with an edit (all but `s10-only-gate.txt`,
-# `relay-event-denominator.txt` and `no-timeouts.txt`) was re-derived from the new positives with its
-# own edit, and checked to fail with exactly the violations it failed with before. Eight more, each a
+# negative above that was a positive with an edit was re-derived from the new positives with its own
+# edit and checked to fail with exactly the violations it failed with before; `no-timeouts.txt` and
+# `relay-event-denominator.txt`, a positive under a transform (every timeout zeroed; stores counted
+# as three relay events each), by that transform, checked to reproduce the old copies from the old
+# positives exactly, so they fail the same way for the four new lines too; `s10-only-gate.txt`
+# stays the S10-era report it is. Eight more, each a
 # way a report could claim more than was run: no KC5b, no RP5 (at the PR scale), no RP11, the
 # seven-case suite line of §22.27, the fifteen-mutant report of §22.27, MC-7′ held to its first
 # half's fault-free rule alone, MC-20 killed for three of its four omissions, and no MC-20 line.
