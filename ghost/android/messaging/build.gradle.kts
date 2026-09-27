@@ -36,6 +36,10 @@ android {
             // entitlement engine, redeem lane and registration lane instead of a redeem fairy.
             kotlin.srcDir("../sync/src/test/kotlin")
             kotlin.srcDir("../entitlement/src/test/kotlin")
+            // `DmEquivalence`'s declarations (design §22.37): the crash worlds switch MC-20's mutant
+            // and KC5b's replayed binding on one DM context with `bindingHooks`, a test-vectors
+            // entry point of the host library. A test source set, never a release one (G-DM5).
+            kotlin.srcDir("../crypto-bridge/src/equivalence/kotlin")
         }
         getByName("androidTest") {
             kotlin.srcDir("../crypto-bridge/src/deviceRunner/kotlin")

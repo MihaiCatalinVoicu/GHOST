@@ -1,5 +1,6 @@
 package org.ghost.messaging.harness
 
+import org.ghost.crypto.bridge.DmEquivalence
 import org.ghost.messaging.MovableClock
 import org.ghost.messaging.engine.DmTime
 import org.ghost.messaging.engine.DmTimers
@@ -90,6 +91,18 @@ internal object DmMutants {
         val decorate: ((DmEnvelopes) -> DmEnvelopes)? = null,
         /** The transaction-split seam of [FaultyDmSqlExecutor.defer]; only a crash run kills these. */
         val defer: ((String) -> Boolean)? = null,
+        /**
+         * The split for an `execUpdate`, with the count its caller is given
+         * ([FaultyDmSqlExecutor.deferUpdate], §22.37): MC-7′'s second half.
+         */
+        val deferUpdate: ((String) -> Int?)? = null,
+        /**
+         * A **native** mutation (§22.37): the binding v3 field every DM context of the world leaves
+         * out of its transcript (`DmEquivalence.bindingHooks`, a test-library entry point). The
+         * crate's own code, switched per context, where the three JVM mechanisms cannot reach:
+         * binding v3 is signed and verified inside it.
+         */
+        val bindingOmit: Int = DmEquivalence.BINDING_NONE,
         /** True when the mutant is invisible without a crash, so its kill runs the enumeration. */
         val needsACrash: Boolean = false,
         /**
@@ -198,7 +211,9 @@ internal object DmMutants {
     val MC7 = Mutation(
         id = "MC-7'",
         defeats = "D2b: a replayed first flight never builds a second session",
-        detectedBy = "the rejected-request replay of §12.3 (a second request appears)",
+        detectedBy = "the rejected-request replay of §12.3 (a second request appears) and RP4 (the session " +
+            "bob reset comes back); its second half (the tuple written outside the RECV transaction) by RP5 " +
+            "under a crash in its split window",
         expect = "a rejected request came back as a second one",
         // A random `session_id`, for the same reason MC-5 writes a random tag: the row still goes
         // in, so nothing downstream sees a failed write, and `firstFlightUsed` — which is what D2b
@@ -214,6 +229,58 @@ internal object DmMutants {
                 Pair(sql, args)
             }
         },
+    )
+
+    /**
+     * **MC-7′'s second half — the reuse tuple written outside the RECV transaction** (§15.7:
+     * "D2b not enforced, or written outside the RECV transaction"; §22.27 item 8; built by §22.37).
+     * The same §15.7 id as [MC7], which is its first half, and not a new one: it is not in [all],
+     * and MC-7′ is recorded as detected only once both halves are killed (`DmMutantDetectionTest`).
+     *
+     * `SessionStore.markFirstFlightUsed`'s insert is held back until the RECV transaction that built
+     * the inbound session has committed, and committed in a transaction of its own — the split of
+     * [MC1], for an `execUpdate`, with the count 1 the unmutated insert returns there
+     * ([FaultyDmSqlExecutor.deferUpdate]). With no fault it is invisible. A crash between the two
+     * commits loses the tuple while the session, the request and the consumed blob stand, which is
+     * exactly what §7.8's "a crash after `sessionInbound` rolls back the session row and the reuse
+     * tuple together" forbids; RP5 then sees it: bob rejects the request, restarts, and the
+     * requester's next envelope of the same session builds a second request.
+     */
+    val MC7_SPLIT = Mutation(
+        id = "MC-7'",
+        defeats = "D2b: the reuse tuple commits in the RECV transaction that builds the session",
+        detectedBy = "RP5, a PreKey replay across a restart, under a crash in the split window",
+        expect = "a rejected request came back as a second one",
+        needsACrash = true,
+        deferUpdate = { sql -> if (sql.startsWith("INSERT OR IGNORE INTO olm_prekey_used")) 1 else null },
+    )
+
+    /**
+     * **MC-20 — binding without namespace, minute, ciphertext or base key** (§21.4 point 1, §3.4;
+     * built by §22.37). Binding v3's transcript leaves one of the four out, on every device of the
+     * world — signed without it and verified without it, so the world's own traffic still verifies
+     * and only a binding moved to another value of that field tells. KC5b moves one per field: the
+     * intro whose genuine binding names another value of the omitted field is accepted, and bob
+     * gains a request from it. One §15.7 id, four omissions; the entry registered below carries the
+     * namespace, and the kill runs all four ([MC20_OMISSIONS]).
+     */
+    val MC20 = mc20(DmEquivalence.BINDING_NAMESPACE, "namespace")
+
+    /** MC-20's four omissions, in KC5b's order. */
+    val MC20_OMISSIONS: List<Mutation> = listOf(
+        MC20,
+        mc20(DmEquivalence.BINDING_MINUTE, "minute"),
+        mc20(DmEquivalence.BINDING_CIPHERTEXT, "ciphertext"),
+        mc20(DmEquivalence.BINDING_BASE_KEY, "base key"),
+    )
+
+    private fun mc20(field: Int, label: String) = Mutation(
+        id = "MC-20",
+        defeats = "binding v3 covers the recipient namespace, the minute, the X-Wing ciphertext and the base key",
+        detectedBy = "KC5b (a genuine binding replayed with another namespace, a stale minute, another " +
+            "ciphertext or another base key: no state change), each omission by its own replay",
+        expect = "KC5b: bob accepted an intro whose binding names another $label",
+        bindingOmit = field,
     )
 
     /**
@@ -680,5 +747,5 @@ internal object DmMutants {
      * report prints them.
      */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC21, MC24, MC26, MC28, MC33, ME16)
+        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC20, MC21, MC24, MC26, MC28, MC33, ME16)
 }

@@ -1098,10 +1098,13 @@ expect_fail_msg "dm-jni-surface rejects the test-vectors entry point in a shippe
 expect_fail_msg "dm-jni-surface rejects a test library without the test-vectors entry point" \
   "does not export the test-vectors entry point" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the binding hooks (§22.37)" \
+  "does not export the test-vectors entry point 'DmEquivalence.bindingHooks'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-run-only-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
 if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf" >/dev/null 2>&1; then
-  echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry point"
+  echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry points"
 else
-  echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry point" >&2; rc=1
+  echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry points" >&2; rc=1
 fi
 # Phase 9 review GATES-3: every half named one class, `DmNative`. A JNI entry point of another
 # class or package — in the workspace's sources, in a built library — and a native method in any

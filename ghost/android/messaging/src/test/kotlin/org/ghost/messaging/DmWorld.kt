@@ -477,6 +477,9 @@ class DmDevice(
         null
     }
 
+    /** The DM context's handle, for the crash worlds' test-library hooks (`DmEquivalence`, §22.37). */
+    internal val nativeHandle: Long? get() = handle
+
     private val stateKey: ByteArray =
         FakeKeyWrapper.PREFIX + (seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() })
 

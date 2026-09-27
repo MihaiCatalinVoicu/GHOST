@@ -1,5 +1,6 @@
 package org.ghost.messaging.harness
 
+import org.ghost.crypto.bridge.DmEquivalence
 import org.ghost.messaging.DmDevice
 import org.ghost.messaging.MovableClock
 import org.ghost.messaging.port.DmEnvelopes
@@ -82,6 +83,31 @@ internal class DmNode(
      */
     var defer: ((String) -> Boolean)? = null
 
+    /** [FaultyDmSqlExecutor.deferUpdate], re-installed at every boot like [defer]. */
+    var deferUpdate: ((String) -> Int?)? = null
+
+    /**
+     * MC-20's omitted binding field and KC5b's perturbed one (`DmEquivalence.bindingHooks`,
+     * §22.37). They live on the native DM context, which dies with the process, so [boot]
+     * re-installs them like [defer]; a step that changes one calls [installBindingHooks].
+     */
+    var bindingOmit: Int = DmEquivalence.BINDING_NONE
+    var bindingPerturb: Int = DmEquivalence.BINDING_NONE
+
+    /** Whether the running context carries hooks, so a node that never had any never calls in. */
+    private var bindingHooksOn = false
+
+    /** Sets [bindingOmit] and [bindingPerturb] on the running context. */
+    fun installBindingHooks() {
+        val none = bindingOmit == DmEquivalence.BINDING_NONE && bindingPerturb == DmEquivalence.BINDING_NONE
+        if (none && !bindingHooksOn) return
+        val handle = requireNotNull(device.nativeHandle) { "$name has no DM context to hook" }
+        check(DmEquivalence.bindingHooks(handle, bindingOmit, bindingPerturb)) {
+            "$name: the host library refused binding hooks ($bindingOmit, $bindingPerturb)"
+        }
+        bindingHooksOn = !none
+    }
+
     private var jdbc: JdbcSqlExecutor? = null
     private var faulty: FaultyDmSqlExecutor? = null
     private var current: DmDevice? = null
@@ -136,6 +162,7 @@ internal class DmNode(
         val wrapper = FaultyDmSqlExecutor(connection, bus, name)
         wrapper.rewrite = rewrite
         wrapper.defer = defer
+        wrapper.deferUpdate = deferUpdate
         jdbc = connection
         faulty = wrapper
         current = DmDevice(
@@ -147,6 +174,8 @@ internal class DmNode(
             path = path,
             harness = DmDevice.HarnessOverride(wrapper, clock, streamOffset + boots, decorate),
         )
+        bindingHooksOn = false
+        installBindingHooks()
         boots++
     }
 

@@ -781,7 +781,20 @@ fn with_context<T>(
 ) -> Result<T, DmCode> {
     let guard = registry_lock();
     let context = guard.get(&handle).ok_or(DmCode::CryptoUnavailable)?;
-    body(context)
+    in_hook_scope(handle, || body(context))
+}
+
+/// Every shipped build: the call itself.
+#[cfg(not(feature = "test-vectors"))]
+fn in_hook_scope<T>(_handle: jlong, body: impl FnOnce() -> T) -> T {
+    body()
+}
+
+/// A test build: the call with MC-20 and KC5b's binding hooks of this context active on this
+/// thread (`binding::hooks`, §22.37) — none unless a JVM world set them on this handle.
+#[cfg(feature = "test-vectors")]
+fn in_hook_scope<T>(handle: jlong, body: impl FnOnce() -> T) -> T {
+    crate::binding::hooks::scope(handle, body)
 }
 
 pub(crate) fn quiet_panics() {

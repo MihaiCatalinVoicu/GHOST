@@ -74,6 +74,8 @@ internal class DmCrashWorld(
             node.rewrite = it.rewriteOn?.invoke(node.clock) ?: it.rewrite
             node.decorate = it.decorate
             node.defer = it.defer
+            node.deferUpdate = it.deferUpdate
+            node.bindingOmit = it.bindingOmit
         }
         node.boot()
         order += node

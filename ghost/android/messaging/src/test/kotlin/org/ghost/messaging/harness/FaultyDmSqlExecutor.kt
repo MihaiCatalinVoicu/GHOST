@@ -61,7 +61,23 @@ internal class FaultyDmSqlExecutor(
      */
     var defer: ((String) -> Boolean)? = null
 
-    private val deferred = ArrayList<Pair<String, List<Any?>>>()
+    /**
+     * The same seam for an [execUpdate] (design §22.37, MC-7′'s second half), which [defer] refuses
+     * because a split must not invent what the engine reads. Here the count is **declared** by the
+     * mutation and **checked**: the predicate returns the row count the held-back statement returns
+     * in the unmutated world at that call (or null to run the statement now); the caller is given
+     * that count, and when the statement runs in its own transaction its real count must be the
+     * declared one, or the run fails as a harness error — never as a kill. Its one user holds back
+     * `SessionStore.markFirstFlightUsed`'s insert, whose only caller (`ReceiveStep`) discards the
+     * count and reaches it only after `firstFlightUsed` found no tuple, so the unmutated insert
+     * returns 1 there and the split changes nothing the engine reads.
+     */
+    var deferUpdate: ((String) -> Int?)? = null
+
+    /** A held-back statement, and the count its caller was given when it was an [execUpdate]. */
+    private class Held(val sql: String, val args: List<Any?>, val declaredCount: Int?)
+
+    private val deferred = ArrayList<Held>()
 
     /** True while the held-back statements are being replayed, so the predicate does not re-hold them. */
     private var replaying = false
@@ -113,7 +129,7 @@ internal class FaultyDmSqlExecutor(
 
     override fun exec(sql: String, args: List<Any?>) {
         if (held(sql)) {
-            deferred += Pair(sql, args)
+            deferred += Held(sql, args, declaredCount = null)
             return
         }
         fire(DmEventKind.SQL_EXEC, sql)
@@ -122,6 +138,11 @@ internal class FaultyDmSqlExecutor(
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int {
+        val declared = if (!replaying && delegate.inTransaction) deferUpdate?.invoke(sql) else null
+        if (declared != null) {
+            deferred += Held(sql, args, declared)
+            return declared
+        }
         fire(DmEventKind.SQL_UPDATE, sql)
         val (s, a) = rewritten(sql, args)
         return delegate.execUpdate(s, a)
@@ -152,6 +173,11 @@ internal class FaultyDmSqlExecutor(
         // After the commit: the caller never learns it succeeded, which is the other half of the
         // window §7.8 is about.
         if (deferred.isEmpty()) {
+            // The second half of a split has just committed: from its post-commit event on, a
+            // crash loses nothing the unmutated engine had committed, so the window closes before
+            // that event (§22.37: [DmEventBus.vulnerable] had counted it, and a crash there is not
+            // one at which the split is observable).
+            if (replaying) bus.inSplitWindow = false
             try {
                 fire(DmEventKind.POST_COMMIT, "commit")
             } finally {
@@ -165,6 +191,14 @@ internal class FaultyDmSqlExecutor(
         try {
             try {
                 fire(DmEventKind.POST_COMMIT, "commit")
+            } catch (death: Throwable) {
+                // A crash at the first commit's post-commit event: the process is dead, and a
+                // process that died owes nothing — the held-back statements are lost, which is the
+                // split's defect. They must not be committed by a transaction the dying device still
+                // runs on its way out (`DmActor.runPass`'s `afterCommit`), which the runner refuses
+                // as a write after death (found by §22.37's MC-7′ kill; MC-1's seam had the gap).
+                deferred.clear()
+                throw death
             } finally {
                 closeRewrittenSpan()
             }
@@ -188,7 +222,20 @@ internal class FaultyDmSqlExecutor(
         deferred.clear()
         replaying = true
         try {
-            transaction { for ((sql, args) in pending) exec(sql, args) }
+            transaction {
+                for (held in pending) {
+                    val declared = held.declaredCount
+                    if (declared == null) {
+                        exec(held.sql, held.args)
+                    } else {
+                        val real = execUpdate(held.sql, held.args)
+                        check(real == declared) {
+                            "the split told its caller ${label(held.sql)} changed $declared row(s), and it " +
+                                "changed $real: the mutation's declared count is wrong (a harness error)"
+                        }
+                    }
+                }
+            }
         } finally {
             replaying = false
         }

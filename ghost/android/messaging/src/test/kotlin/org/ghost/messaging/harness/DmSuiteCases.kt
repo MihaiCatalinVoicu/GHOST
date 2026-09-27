@@ -1,6 +1,7 @@
 package org.ghost.messaging.harness
 
 import org.ghost.crypto.bridge.DmContent
+import org.ghost.crypto.bridge.DmEquivalence
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AddContactResult
 import org.ghost.messaging.api.CardSource
@@ -1184,6 +1185,36 @@ internal object DmSuiteCases {
     private const val RS2_NEWEST_WEEK: String = "rs2NewestWeek"
     private const val RS2_SESSIONS: String = "rs2Sessions"
 
+    /** The note RP5 writes the event count into as bob's first flight starts (§22.37). */
+    const val RP5_MARK: String = "rp5Mark"
+    private const val RP5_FIRST: String = "rp5-hello"
+    private const val RP5_AGAIN: String = "rp5-again"
+    private const val RP5_REJECTED: String = "rp5Rejected"
+    private const val RP5_REJECTING: String = "rp5Rejecting"
+    private const val RP5_RESTARTED: String = "rp5Restarted"
+
+    private const val RP4_FIRST: String = "rp4-hello"
+    private const val RP4_AGAIN: String = "rp4-again"
+    private const val RP4_AFTER: String = "rp4-after-reset"
+    private const val RP4_SESSION: String = "rp4Session"
+    private const val RP4_RESET: String = "rp4Reset"
+    private const val RP11_FIRST: String = "rp11-hello"
+    private const val RP11_OLD: String = "rp11-old"
+    private const val RP11_SESSION: String = "rp11Session"
+    private const val RP11_HOLD_UNTIL: String = "rp11HoldUntil"
+    private const val RP11_RENEWALS: String = "rp11Renewals"
+    private const val RP11_REPLACED: String = "rp11Replaced"
+    private const val RP11_REOFFERED: String = "rp11Reoffered"
+
+    /** How long the relay holds RP11's old envelope: longer than every renewal a crash can repeat. */
+    private const val RP11_HOLD_SECONDS: Long = 6 * DmWorld.HOUR
+
+    /** Renewals RP11 may need: two, and one more for each a crash interrupted before bob took it. */
+    private const val RP11_MAX_RENEWALS: Int = 4
+
+    /** Rounds a delivery of RP4, RP5 or RP11 may take: each is three minutes, past the gap hold with room. */
+    private const val RP_DRAIN_ROUNDS: Int = 12
+
     /** The note RS2 writes the event count into at the step MC-21 can first change (§22.27). */
     const val RS2_MARK: String = "rs2Mark"
 
@@ -1208,6 +1239,440 @@ internal object DmSuiteCases {
     /** Rounds after a send: five of three minutes, past §7.7 point 2's twelve-minute gap hold. */
     private const val RS2_GAP_ROUNDS: Int = 5
 
+    /**
+     * **RP5 — a PreKey replay across a restart** (§15.5 RP5, §7.6 D2b, §7.8; built by §22.37).
+     *
+     * The CB replay's shape ([cbRejectedRequestStaysRejected]) with the two things RP5 adds. The
+     * first flight reaches bob **inside** the armed phase, so a crash can land in the RECV
+     * transaction that builds the request and writes the reuse tuple `(gen_id, session_id)` to
+     * `olm_prekey_used` (§7.8: in that same transaction). And bob **restarts** between rejecting the
+     * request and the replay, so what refuses the replay is the tuple read back from the database
+     * by a new process, not anything a live one held.
+     *
+     * alice adds bob and writes; bob rejects the request — the contact, the session and the rows go,
+     * the tuple stays (§12.3) — and restarts. alice writes again: nothing of bob's reached her, so her
+     * session is still unacknowledged and the envelope is another PreKey message of the same
+     * session, which D2b refuses by its tuple. **Checked in every run:** once bob has rejected, he
+     * holds no contact at the end (a second request is D2b off, or its tuple lost) and never renders
+     * the second text. **Fault-free:** bob restarted after the rejection and before the re-send,
+     * alice's second text is `SENT`, and bob dropped exactly one envelope as `replay`.
+     *
+     * **Redo rule (§22.19 item 6):** every step first finishes what a crash interrupted — the first
+     * flight is settled (written, `SENT`, owed to bob by no relay, consumed) before bob decides, and
+     * the rejection is taken again while a request stands — judged from rows and engine reads, never
+     * from which step ran. MC-7′'s second half, the tuple split out of the RECV transaction, is killed
+     * here under a crash in its split window ([DmMutants.MC7_SPLIT]).
+     */
+    fun rp5PreKeyReplayAcrossARestart(): DmScenario = DmScenario(
+        name = "RP5",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            world["alice"].device.engine.addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
+            world.contacts["alice->bob"] = world["alice"].device.engine.contacts().single().id
+        },
+        steps = listOf(
+            step("alice's first flight reaches bob") { w ->
+                w.notes.putIfAbsent(RP5_MARK, w.bus.count)
+                rpDeliver(w, "alice", "bob", RP5_FIRST, "RP5")
+            },
+            step("bob rejects the request") { w -> rp5EnsureRejected(w) },
+            step("bob restarts") { w ->
+                rp5EnsureRejected(w)
+                w["bob"].reboot()
+                w.notes[RP5_RESTARTED] = true
+            },
+            step("the requester re-sends the same session") { w ->
+                rp5EnsureRejected(w)
+                rpDeliver(w, "alice", "bob", RP5_AGAIN, "RP5")
+            },
+        ),
+        alwaysChecks = { world ->
+            if (world.notes[RP5_REJECTED] == true && world["bob"].device.engine.contacts().isNotEmpty()) {
+                dmViolation("RP5: a rejected request came back as a second one (D2b is off, or its tuple was lost)")
+            }
+            if (RP5_AGAIN in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("RP5: bob rendered the second message of a session he had rejected")
+            }
+        },
+        finalChecks = { world ->
+            if (world.notes[RP5_RESTARTED] != true) dmViolation("RP5: bob never restarted between the rejection and the replay")
+            val again = DmScripts.outgoingState(world, "alice", RP5_AGAIN)
+            if (again != MessageState.SENT) dmViolation("RP5: alice's re-sent message is $again, not SENT")
+            val replays = world["bob"].device.engine.status().drops["replay"] ?: 0
+            if (replays != 1) dmViolation("RP5: bob dropped $replays envelopes as replay, expected exactly one")
+        },
+    )
+
+    /**
+     * bob's rejection, taken again while a request stands — and only once the first flight is
+     * settled, so the request it rejects is the one the flight built and nothing of it is still on
+     * its way. The note that arms the every-run check is written once bob holds no contact.
+     *
+     * A crash after the rejection committed and before that note leaves bob with no contact, which
+     * is the rejection standing, not the request lost: [RP5_REJECTING], written before the call, is
+     * what tells the two apart (the crash enumeration's point 932 of RP5, §22.37).
+     */
+    private fun rp5EnsureRejected(w: DmCrashWorld) {
+        if (w.notes[RP5_REJECTED] == true) return
+        rpDeliver(w, "alice", "bob", RP5_FIRST, "RP5")
+        val request = w["bob"].device.engine.contacts().singleOrNull()
+        if (request == null) {
+            if (w.notes[RP5_REJECTING] != true) dmViolation("RP5: alice's first flight settled and bob holds no request")
+        } else {
+            if (request.trust != TrustState.REQUEST) dmViolation("RP5: bob's contact for alice is ${request.trust}, not a request")
+            w.notes[RP5_REJECTING] = true
+            if (!w["bob"].device.engine.rejectRequest(request.id)) dmViolation("RP5: bob could not reject the request")
+        }
+        if (w["bob"].device.engine.contacts().isNotEmpty()) dmViolation("RP5: a rejected request lingered")
+        w.notes[RP5_REJECTED] = true
+    }
+
+    /**
+     * **RP4 — a first flight of a session the recipient reset** (§15.5 RP4, "first-flight replay
+     * after session resets (D2b, then D3)"; §7.6 D2b, §8.7; built by §22.37). The CB replay's shape:
+     * the replayed flight is the requester's own next envelope of a session that is still
+     * unacknowledged on her side.
+     *
+     * Setup (unfaulted): alice writes, bob accepts, and nothing of bob's reaches alice, so every
+     * envelope alice seals is a PreKey message of that one session. Armed: alice writes again and
+     * the relay holds the envelope for bob; **bob resets** the conversation (§8.7: both session rows
+     * go, the reuse tuple stays); his inbox then takes the envelope — a PreKey message of a session
+     * he no longer holds — and D2b drops it as `replay`; bob writes, so his new session reaches
+     * alice and the two talk. Without D2b the envelope would build the reset session again, and
+     * since bob's own sessions are initiator ones then, R-SS1's age exception (§22.8.4) would not
+     * stop it: it would become `current`, over the reset the user asked for.
+     *
+     * **Checked in every run:** once bob has reset, he never holds the reset session again and never
+     * renders the held message. **Fault-free:** exactly one `replay` drop, the held message `SENT`,
+     * bob's message after the reset rendered by alice. **Oracles:** no-loss with one declared loss
+     * (the held message, once bob's reset has preceded its receipt), liveness alice ↔ bob, nothing
+     * owed. **Not built:** §15.5's "then D3" — D3 refuses a replay whose L0 bob has seen, and the
+     * envelope here carries a new message (the CB shape), so D2b alone decides (§22.37).
+     */
+    fun rp4FirstFlightOfAResetSession(): DmScenario = DmScenario(
+        name = "RP4",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            world["alice"].device.engine.addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
+            world.contacts["alice->bob"] = world["alice"].device.engine.contacts().single().id
+            rpDeliver(world, "alice", "bob", RP4_FIRST, "RP4")
+            val request = world["bob"].device.engine.contacts().single()
+            check(world["bob"].device.engine.acceptRequest(request.id)) { "bob could not accept" }
+            world.contacts["bob->alice"] = request.id
+            world.notes[RP4_SESSION] = rpOnlySessionOf(world, "bob")
+            check(rawCount(world, "alice", "SELECT count(*) FROM olm_session WHERE acknowledged = 0") == 1L) {
+                "alice's session was acknowledged before the replay"
+            }
+        },
+        steps = listOf(
+            step("alice writes again, and the relay holds it for bob") { w -> rpStore(w, "alice", RP4_AGAIN, "RP4") },
+            step("bob resets the conversation") { w -> rp4EnsureReset(w) },
+            step("bob's inbox takes the held envelope") { w ->
+                rp4EnsureReset(w)
+                rpTake(w, "bob", "RP4")
+            },
+            step("bob writes after the reset") { w ->
+                rp4EnsureReset(w)
+                rpDeliver(w, "bob", "alice", RP4_AFTER, "RP4")
+            },
+        ),
+        alwaysChecks = { world ->
+            if (world.notes[RP4_RESET] == true && rpHolds(world, "bob", world.notes[RP4_SESSION] as ByteArray)) {
+                dmViolation("RP4: bob holds the session he reset again (D2b is off)")
+            }
+            if (RP4_AGAIN in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("RP4: bob rendered a message of the session he reset")
+            }
+        },
+        finalChecks = { world ->
+            val replays = world["bob"].device.engine.status().drops["replay"] ?: 0
+            if (replays != 1) dmViolation("RP4: bob dropped $replays envelopes as replay, expected exactly one")
+            val held = DmScripts.outgoingState(world, "alice", RP4_AGAIN)
+            if (held != MessageState.SENT) dmViolation("RP4: alice's held message is $held, not SENT")
+            if (RP4_AFTER !in DmScripts.inboundTexts(world, "alice")) {
+                dmViolation("RP4: alice never rendered bob's message after the reset")
+            }
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { w -> if (w.notes[RP4_RESET] == true) setOf(RP4_AGAIN) else emptySet() },
+    )
+
+    /** bob's reset, taken again while he still holds the session — and only once the held message is out. */
+    private fun rp4EnsureReset(w: DmCrashWorld) {
+        if (w.notes[RP4_RESET] == true) return
+        rpStore(w, "alice", RP4_AGAIN, "RP4")
+        val session = w.notes[RP4_SESSION] as ByteArray
+        if (rpHolds(w, "bob", session)) {
+            w["bob"].device.engine.resetSession(DmScripts.contact(w, "bob", "alice"))
+        }
+        if (rpHolds(w, "bob", session)) dmViolation("RP4: bob still holds the session after resetting it")
+        w.notes[RP4_RESET] = true
+    }
+
+    /**
+     * **RP11 — a PreKey message of a session R-SS1 replaced** (§15.5 RP11; R-SS1 as §22.8.4 amended
+     * it; §7.6 D2b; built by §22.37).
+     *
+     * Setup (unfaulted): alice writes, bob accepts, nothing of bob's reaches alice. Armed: alice
+     * writes again and the relay holds that envelope back ([ModelDmRelay.releaseNotBefore], six
+     * hours); alice resets and writes, twice, so bob receives two first flights of new sessions:
+     * R-SS1 makes the first `current` and the original `previous`, then the second `current` and
+     * the first `previous` — the original is gone. The hold ends and bob's inbox takes the old
+     * envelope, a PreKey message of a session R-SS1 replaced: D2b drops it as `replay`.
+     *
+     * **Two layers, each sufficient (§22.37).** Without D2b the envelope would build the old session
+     * again — and R-SS1's age exception would refuse it as `stale_session`, since both of bob's
+     * sessions are responder sessions newer than it. So no session comes back either way: RP11 is
+     * not a detector of MC-7′ by its property, as §15.7's registry says it is (its entry predates
+     * §22.8.4's amendment). What RP11 pins is that D2b decides first.
+     *
+     * **Checked in every run:** once R-SS1 has replaced it, bob never holds the original session again
+     * and never renders the held message. **Fault-free:** two renewals, exactly one `replay` drop,
+     * the held message `SENT`. **Oracles:** no-loss with one declared loss (the held message, once the
+     * original session was gone before it arrived), liveness alice ↔ bob, nothing owed.
+     */
+    fun rp11APreKeyMessageOfAReplacedSession(): DmScenario = DmScenario(
+        name = "RP11",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            world["alice"].device.engine.addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
+            world.contacts["alice->bob"] = world["alice"].device.engine.contacts().single().id
+            rpDeliver(world, "alice", "bob", RP11_FIRST, "RP11")
+            val request = world["bob"].device.engine.contacts().single()
+            check(world["bob"].device.engine.acceptRequest(request.id)) { "bob could not accept" }
+            world.contacts["bob->alice"] = request.id
+            world.notes[RP11_SESSION] = rpOnlySessionOf(world, "bob")
+        },
+        steps = listOf(
+            step("alice writes again, and the relay holds it back") { w -> rp11EnsureHeld(w) },
+            step("alice renews the session twice") { w -> rp11EnsureReplaced(w) },
+            step("the hold ends, and bob's inbox takes the old envelope") { w ->
+                rp11EnsureReplaced(w)
+                advanceTo(w, w.notes[RP11_HOLD_UNTIL] as Long + DmWorld.MINUTE)
+                rpTake(w, "bob", "RP11")
+            },
+        ),
+        alwaysChecks = { world ->
+            if (world.notes[RP11_REPLACED] == true && rpHolds(world, "bob", world.notes[RP11_SESSION] as ByteArray)) {
+                dmViolation("RP11: bob holds the session R-SS1 replaced again")
+            }
+            if (RP11_OLD in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation("RP11: bob rendered the held message of a replaced session")
+            }
+        },
+        finalChecks = { world ->
+            val renewals = world.notes[RP11_RENEWALS] as Int? ?: 0
+            if (renewals != 2) dmViolation("RP11: alice renewed $renewals times, expected two")
+            val reoffered = world.notes[RP11_REOFFERED] as Int? ?: 0
+            if (reoffered != 2) dmViolation("RP11: the relay re-offered bob's bundle $reoffered times, expected once per renewal")
+            val replays = world["bob"].device.engine.status().drops["replay"] ?: 0
+            if (replays != 1) dmViolation("RP11: bob dropped $replays envelopes as replay, expected exactly one")
+            val held = DmScripts.outgoingState(world, "alice", RP11_OLD)
+            if (held != MessageState.SENT) dmViolation("RP11: alice's held message is $held, not SENT")
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+        declaredLoss = { w -> if (w.notes[RP11_REPLACED] == true) setOf(RP11_OLD) else emptySet() },
+    )
+
+    /** alice's held message, stored under the hold (set until the store is `SENT`, then lifted). */
+    private fun rp11EnsureHeld(w: DmCrashWorld) {
+        if (DmScripts.outgoingState(w, "alice", RP11_OLD) == MessageState.SENT) {
+            w.relay.releaseNotBefore = emptyMap()
+            return
+        }
+        val until = w.notes.getOrPut(RP11_HOLD_UNTIL) { now(w) + RP11_HOLD_SECONDS } as Long
+        w.relay.releaseNotBefore = mapOf("alice" to until)
+        rpStore(w, "alice", RP11_OLD, "RP11")
+        w.relay.releaseNotBefore = emptyMap()
+    }
+
+    /** alice's renewals, one more while bob still holds the original session, each written and taken. */
+    private fun rp11EnsureReplaced(w: DmCrashWorld) {
+        if (w.notes[RP11_REPLACED] == true) return
+        rp11EnsureHeld(w)
+        val session = w.notes[RP11_SESSION] as ByteArray
+        // A renewal a crash interrupted is finished before another starts: its reset may have
+        // committed and its text be owed, and a second reset over it would only make a third.
+        (w.notes[RP11_RENEWALS] as Int?)?.let { n -> rpDeliver(w, "alice", "bob", "rp11-renewal-$n", "RP11", ::rp11Reoffer) }
+        while (rpHolds(w, "bob", session)) {
+            val renewal = (w.notes[RP11_RENEWALS] as Int? ?: 0) + 1
+            if (renewal > RP11_MAX_RENEWALS) dmViolation("RP11: bob still holds the original session after ${renewal - 1} renewals")
+            w.notes[RP11_RENEWALS] = renewal
+            w["alice"].device.engine.resetSession(DmScripts.contact(w, "alice", "bob"))
+            rpDeliver(w, "alice", "bob", "rp11-renewal-$renewal", "RP11", ::rp11Reoffer)
+        }
+        if (now(w) >= w.notes[RP11_HOLD_UNTIL] as Long) dmViolation("RP11: the hold ended before R-SS1 replaced the session")
+        w.notes[RP11_REPLACED] = true
+    }
+
+    /**
+     * The relay lists bob's bundle again once alice's `EST-START` forgot its tombstone
+     * ([ModelDmRelay.reofferForgottenBundles]) — asked only while alice holds no session, the one
+     * window in which her reset's bundle fetch is owed, and counted for the fault-free check.
+     */
+    private fun rp11Reoffer(w: DmCrashWorld) {
+        if (rawCount(w, "alice", "SELECT count(*) FROM olm_session") != 0L) return
+        val n = w.relay.reofferForgottenBundles(w["alice"])
+        w.notes[RP11_REOFFERED] = (w.notes[RP11_REOFFERED] as Int? ?: 0) + n
+    }
+
+    /**
+     * One text from [from] to [to], written if no row of it exists (a crash may have lost the send),
+     * then moved until it is settled — `SENT`, owed to [to] by no relay, consumed by its inbox —
+     * which for a PreKey message of a session [to] does not hold includes §7.7 point 2's gap hold.
+     */
+    private fun rpDeliver(
+        w: DmCrashWorld,
+        from: String,
+        to: String,
+        text: String,
+        case: String,
+        beforeRound: (DmCrashWorld) -> Unit = {},
+    ) {
+        if (DmScripts.outgoingState(w, from, text) == null) {
+            w[from].device.engine.send(DmScripts.contact(w, from, to), text, null)
+        }
+        var rounds = 0
+        while (!(DmScripts.outgoingState(w, from, text) == MessageState.SENT && rpInboxEmpty(w, to))) {
+            if (rounds++ >= RP_DRAIN_ROUNDS) dmViolation("$case: $from's '$text' was still in flight after $RP_DRAIN_ROUNDS rounds")
+            beforeRound(w)
+            w.pump()
+            w.pass(from)
+            w.advanceBy(3 * DmWorld.MINUTE)
+            w.pass(from)
+            w.pump()
+            w.hint(to)
+        }
+    }
+
+    /** One text from [from], written if missing and stored at the relay (`SENT`); the recipient runs no pass. */
+    private fun rpStore(w: DmCrashWorld, from: String, text: String, case: String) {
+        val to = if (from == "alice") "bob" else "alice"
+        if (DmScripts.outgoingState(w, from, text) == null) {
+            w[from].device.engine.send(DmScripts.contact(w, from, to), text, null)
+        }
+        var rounds = 0
+        while (DmScripts.outgoingState(w, from, text) != MessageState.SENT) {
+            if (rounds++ >= RP_DRAIN_ROUNDS) dmViolation("$case: $from's '$text' was not stored after $RP_DRAIN_ROUNDS rounds")
+            w.pump()
+            w.pass(from)
+            w.advanceBy(3 * DmWorld.MINUTE)
+            w.pass(from)
+        }
+    }
+
+    /** [node]'s inbox takes what the relay holds for it, through the gap hold, until nothing is owed or pending. */
+    private fun rpTake(w: DmCrashWorld, node: String, case: String) {
+        var rounds = 0
+        while (!rpInboxEmpty(w, node)) {
+            if (rounds++ >= RP_DRAIN_ROUNDS) dmViolation("$case: $node's inbox was not empty after $RP_DRAIN_ROUNDS rounds")
+            w.pump()
+            w.hint(node)
+            w.advanceBy(3 * DmWorld.MINUTE)
+            w.pump()
+            w.hint(node)
+        }
+    }
+
+    private fun rpInboxEmpty(w: DmCrashWorld, node: String): Boolean =
+        w.relay.owed(listOf(w[node]), now(w)) == 0 &&
+            rawCount(w, node, "SELECT count(*) FROM inbox_blob WHERE state <> 'done'") == 0L
+
+    /** The id of the one session [node] holds, read raw (setup only). */
+    private fun rpOnlySessionOf(w: DmCrashWorld, node: String): ByteArray {
+        val ids = ArrayList<ByteArray>()
+        w[node].raw.query("SELECT session_id FROM olm_session") { ids += it.blob(0) }
+        return ids.singleOrNull() ?: error("$node holds ${ids.size} sessions, expected one")
+    }
+
+    /** Whether [node] holds a session with [sessionId], in either slot; raw. */
+    private fun rpHolds(w: DmCrashWorld, node: String, sessionId: ByteArray): Boolean =
+        rawCount(w, node, "SELECT count(*) FROM olm_session WHERE session_id = ?", listOf(sessionId)) > 0L
+
+    /**
+     * **KC5b — a genuine binding replayed** (§15.5 KC5b: "a genuine binding replayed with another
+     * recipient namespace, another ciphertext or base key, or a stale minute → no state change";
+     * §3.4, §21.4 point 1; built by §22.37).
+     *
+     * alice writes to bob four times, and each intro is sealed with KC5b's hook on one field
+     * (`DmEquivalence.bindingHooks`, a test-library entry point): the envelope is alice's own, sealed
+     * as she seals every intro, and its binding is her **genuine** signature over another value of
+     * that field than the envelope carries — another recipient namespace, a stale minute (`FRESH`
+     * and a minute before the one the envelope carries, which R5 accepts), another X-Wing
+     * ciphertext, another base key. Those are the bytes a replayed binding presents, and no JVM seam
+     * could build them (§22.27 item 8). Each must stop at the binding: `bad_binding`, nothing kept.
+     * The hook stays on to the end, so an intro a crash left to be sealed later is a replay too.
+     *
+     * **Checked in every run:** bob holds no contact, no session and no reuse tuple, and renders none
+     * of the four. **Fault-free:** exactly four `bad_binding` drops, the four texts `SENT`.
+     * **Oracles:** no-loss with the four texts declared (each is refused by design), no liveness
+     * (bob refuses all of alice, so the pair never forms), nothing owed.
+     */
+    fun kc5bAGenuineBindingReplayed(): DmScenario = DmScenario(
+        name = "KC5b",
+        setup = { world ->
+            world.node("alice", 0x41)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            world["alice"].device.engine.addContact(world["bob"].device.card(), CardSource.QR_IN_PERSON)
+            world.contacts["alice->bob"] = world["alice"].device.engine.contacts().single().id
+        },
+        steps = KC5B_REPLAYS.map { (field, label) ->
+            step("an intro whose binding names another $label reaches bob") { w ->
+                w["alice"].bindingPerturb = field
+                w["alice"].installBindingHooks()
+                rpDeliver(w, "alice", "bob", kc5bText(label), "KC5b")
+            }
+        },
+        alwaysChecks = { world ->
+            val rendered = DmScripts.everyInboundText(world["bob"])
+            for ((_, label) in KC5B_REPLAYS) {
+                if (kc5bText(label) in rendered) {
+                    dmViolation("KC5b: bob accepted an intro whose binding names another $label")
+                }
+            }
+            if (world["bob"].device.engine.contacts().isNotEmpty()) {
+                dmViolation("KC5b: bob holds a contact, and every binding alice sent was replayed")
+            }
+            if (rawCount(world, "bob", "SELECT count(*) FROM olm_session") != 0L) {
+                dmViolation("KC5b: bob holds a session built from a replayed binding")
+            }
+            if (rawCount(world, "bob", "SELECT count(*) FROM olm_prekey_used") != 0L) {
+                dmViolation("KC5b: bob recorded a reuse tuple for a replayed binding")
+            }
+        },
+        finalChecks = { world ->
+            val refused = world["bob"].device.engine.status().drops["bad_binding"] ?: 0
+            if (refused != KC5B_REPLAYS.size) {
+                dmViolation("KC5b: bob refused $refused intros at the binding, expected ${KC5B_REPLAYS.size}")
+            }
+            for ((_, label) in KC5B_REPLAYS) {
+                val state = DmScripts.outgoingState(world, "alice", kc5bText(label))
+                if (state != MessageState.SENT) dmViolation("KC5b: alice's '${kc5bText(label)}' is $state, not SENT")
+            }
+        },
+        noLoss = true,
+        declaredLoss = { KC5B_REPLAYS.map { (_, label) -> kc5bText(label) }.toSet() },
+    )
+
+    /** KC5b's four replays: the binding field each moves, and its name in the case's messages. */
+    private val KC5B_REPLAYS: List<Pair<Int, String>> = listOf(
+        DmEquivalence.BINDING_NAMESPACE to "namespace",
+        DmEquivalence.BINDING_MINUTE to "minute",
+        DmEquivalence.BINDING_CIPHERTEXT to "ciphertext",
+        DmEquivalence.BINDING_BASE_KEY to "base key",
+    )
+
+    private fun kc5bText(label: String): String = "kc5b-" + label.replace(' ', '-')
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -1216,5 +1681,9 @@ internal object DmSuiteCases {
         kc12ARequestSendingTwoIdentities(),
         rs2AClientOfflineSixtyDays(),
         rp7AnOldL0ResealedUnderALaterWeekKey(),
+        rp5PreKeyReplayAcrossARestart(),
+        rp4FirstFlightOfAResetSession(),
+        rp11APreKeyMessageOfAReplacedSession(),
+        kc5bAGenuineBindingReplayed(),
     )
 }

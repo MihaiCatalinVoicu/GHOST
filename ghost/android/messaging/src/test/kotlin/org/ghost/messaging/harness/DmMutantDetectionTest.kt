@@ -1,5 +1,6 @@
 package org.ghost.messaging.harness
 
+import org.ghost.crypto.bridge.DmEquivalence
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -34,7 +35,40 @@ class DmMutantDetectionTest {
     fun mc5D3OffIsDetected() = detect(DmMutants.MC5, DmSuiteCases.rp6ReEncryptionAfterAWronglyReportedFailure())
 
     @Test
-    fun mc7D2bOffIsDetected() = detect(DmMutants.MC7, DmSuiteCases.cbRejectedRequestStaysRejected())
+    fun mc20BindingCoverageIsDetected() {
+        // MC-20 (§21.4 point 1; §22.37): each of the four omissions, fault-free, by KC5b's replay
+        // of its own field — each beside the clean KC5b, which refuses all four. One §15.7 id,
+        // recorded once, and only when every omission is killed.
+        val kills = DmMutants.MC20_OMISSIONS.map { detectFaultFree(it, DmSuiteCases.kc5bAGenuineBindingReplayed()) }
+        DmKills.record(
+            DmMutants.MC20.id,
+            kills.joinToString(" | "),
+            "fault-free, each of its ${kills.size} omissions by its own replay, each beside a clean run",
+        )
+    }
+
+    @Test
+    fun mc7D2bOffIsDetected() {
+        // MC-7′, both halves (§15.7: "D2b not enforced, or written outside the RECV transaction";
+        // §22.37). The first — the tuple never matches — fault-free by the CB replay and by RP4, whose
+        // own property it breaks (the session bob reset comes back); the second — the tuple split
+        // out of the RECV transaction, which no fault-free run can see — by RP5 at every crash
+        // point of its split window, each beside a clean run. One §15.7 id, recorded once, and only
+        // when both halves are killed.
+        val first = detectFaultFree(DmMutants.MC7, DmSuiteCases.cbRejectedRequestStaysRejected())
+        val byRp4 = detectFaultFree(
+            DmMutants.MC7, DmSuiteCases.rp4FirstFlightOfAResetSession(), expect = "RP4: bob holds the session he reset again",
+        )
+        val (second, points) = detectAtEveryPointOfItsSplitWindow(
+            DmMutants.MC7_SPLIT, DmSuiteCases.rp5PreKeyReplayAcrossARestart(),
+        )
+        DmKills.record(
+            DmMutants.MC7.id,
+            "$first | $byRp4 | its second half: $second",
+            "fault-free by two cases (its first half) and, its second half, at $points of $points crash " +
+                "points of its split window, each beside a clean run",
+        )
+    }
 
     @Test
     fun mc10ArrivalOrderDisplayIsDetected() = detect(DmMutants.MC10, DmScenarios.scnB())
@@ -92,9 +126,11 @@ class DmMutantDetectionTest {
         assertTrue("the registry is empty", registered.isNotEmpty())
         for (mutant in registered) {
             assertTrue(
-                "${mutant.id} has no rewrite, no decorator, no split and no trigger substitution: it mutates nothing",
+                "${mutant.id} has no rewrite, no decorator, no split, no trigger substitution and no native " +
+                    "hook: it mutates nothing",
                 mutant.rewrite != null || mutant.rewriteOn != null || mutant.decorate != null ||
-                    mutant.defer != null || mutant.hintKeeper,
+                    mutant.defer != null || mutant.deferUpdate != null || mutant.hintKeeper ||
+                    mutant.bindingOmit != DmEquivalence.BINDING_NONE,
             )
             assertTrue("${mutant.id} names no property", mutant.defeats.isNotBlank())
             assertTrue("${mutant.id} names no detecting case", mutant.detectedBy.isNotBlank())
@@ -115,6 +151,104 @@ class DmMutantDetectionTest {
             DmCrashRunner(mutated(scenario, mutation)).run(DmRunSpec())
         }.exceptionOrNull()
         assertKilled(mutation, scenario.name, failure, rule = DmKills.FAULT_FREE)
+    }
+
+    /** [detect] without recording: the kill's message, for a mutant whose kill has more than one half. */
+    private fun detectFaultFree(
+        mutation: DmMutants.Mutation,
+        scenario: DmScenario,
+        expect: String = mutation.expect,
+    ): String {
+        requireNative()
+        DmCrashRunner(scenario).run(DmRunSpec())
+        val failure = runCatching {
+            DmCrashRunner(mutated(scenario, mutation)).run(DmRunSpec())
+        }.exceptionOrNull()
+        assertKilled(mutation, scenario.name, failure, record = false, expect = expect)
+        return deepMessage(requireNotNull(failure))
+    }
+
+    /**
+     * A split mutant's kill at **every** crash point of its split window (§22.37): MC-1's rule, held
+     * to what §22.27's review made of the window rule. The mutated world with no fault must pass (a
+     * split is invisible without one, so a failure here would be some other defect); its recording
+     * run reports the event indices inside its split windows ([DmEventBus.vulnerable], which since
+     * §22.37 ends before the second transaction's post-commit event, the first at which the split
+     * is no longer observable), and the scenario must split exactly one transaction in its armed
+     * phase. Then **every** index of that window is a crash point, not the first that kills:
+     * the mutated run must fail there for the reason the entry names, with its crash injected
+     * **and rebooted** (a crash something absorbed is not a kill, §22.27 item 11(b)), and the
+     * unmutated scenario crashed at the same index must pass. The two worlds differ before the
+     * window by one event — the held-back statement raises its event in the second transaction,
+     * not in the first — so "the same index" is where MC-1's rule put its control, inside or at the
+     * end of the unsplit transaction.
+     */
+    private fun detectAtEveryPointOfItsSplitWindow(
+        mutation: DmMutants.Mutation,
+        scenario: DmScenario,
+    ): Pair<String, Int> {
+        requireNative()
+        assertTrue("${mutation.id} is not declared as crash-only", mutation.needsACrash)
+        DmCrashRunner(scenario).run(DmRunSpec())
+        val mutant = mutated(scenario, mutation)
+        // Invisible without a fault.
+        DmCrashRunner(mutant).run(DmRunSpec())
+        val vulnerable = DmCrashRunner(mutant).record().vulnerable
+        val windows = ArrayList<MutableList<Long>>()
+        for (at in vulnerable) {
+            val last = windows.lastOrNull()
+            if (last != null && last.last() + 1 == at) last += at else windows += mutableListOf(at)
+        }
+        assertEquals(
+            "${mutation.id} split ${windows.size} transactions in ${scenario.name}'s armed phase " +
+                "(windows $windows), expected exactly one",
+            1, windows.size,
+        )
+        val points = windows.single().toList()
+        val tasks: List<Pair<String, () -> Pair<Throwable?, DmArmedPhase?>>> = points.flatMap { at ->
+            listOf(
+                "${scenario.name} clean crash@$at" to {
+                    val failure = runCatching { DmCrashRunner(scenario).run(DmRunSpec(crashAt = at)) }.exceptionOrNull()
+                    failure to null
+                },
+                "${scenario.name}/${mutation.id} crash@$at" to {
+                    var phase: DmArmedPhase? = null
+                    val failure = runCatching {
+                        DmCrashRunner(mutant).run(DmRunSpec(crashAt = at, onArmed = { phase = it }))
+                    }.exceptionOrNull()
+                    failure to phase
+                },
+            )
+        }
+        val outcomes = DmHarness.parallel(tasks)
+        var first: String? = null
+        for ((index, at) in points.withIndex()) {
+            val (clean, _) = outcomes[2 * index]
+            val (killed, phase) = outcomes[2 * index + 1]
+            assertTrue(
+                "the unmutated ${scenario.name} fails at crash@$at, so a kill there proves nothing: " +
+                    clean?.let { deepMessage(it) },
+                clean == null,
+            )
+            assertTrue(
+                "${mutation.id} survived ${scenario.name} crash@$at, inside its split window $points",
+                killed is AssertionError,
+            )
+            val armed = requireNotNull(phase) {
+                "${mutation.id}'s run at crash@$at never ended its armed phase: ${killed?.let { deepMessage(it) }}"
+            }
+            assertEquals("${mutation.id}'s run at crash@$at: crashes injected", 1, armed.injected)
+            assertEquals("${mutation.id}'s run at crash@$at: crashes that reached a reboot", 1, armed.reboots)
+            val message = deepMessage(requireNotNull(killed))
+            assertTrue(
+                "${mutation.id} failed ${scenario.name} crash@$at, but not for the reason its entry names.\n" +
+                    "  expected to contain: ${mutation.expect}\n  actual: $message",
+                message.contains(mutation.expect),
+            )
+            println("${mutation.id} killed at ${scenario.name} crash@$at, in its split window $points (clean passed): $message")
+            if (first == null) first = "${scenario.name} crash@$at: $message"
+        }
+        return requireNotNull(first) to points.size
     }
 
     /**
@@ -389,6 +523,7 @@ class DmMutantDetectionTest {
         failure: Throwable?,
         record: Boolean = true,
         rule: String = DmKills.FAULT_FREE,
+        expect: String = mutation.expect,
     ) {
         assertTrue(
             "${mutation.id} survived $where: the mutant is registered but nothing kills it",
@@ -397,9 +532,9 @@ class DmMutantDetectionTest {
         val message = failure?.let { deepMessage(it) } ?: ""
         assertTrue(
             "${mutation.id} failed $where, but not for the reason its entry names.\n" +
-                "  expected to contain: ${mutation.expect}\n" +
+                "  expected to contain: $expect\n" +
                 "  actual: $message",
-            message.contains(mutation.expect),
+            message.contains(expect),
         )
         if (record) DmKills.record(mutation.id, message, rule)
     }

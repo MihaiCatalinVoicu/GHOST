@@ -35,6 +35,33 @@ object DmEquivalence {
     @JvmName("run")
     external fun run(kind: Int, input: ByteArray): ByteArray?
 
+    /**
+     * MC-20 and KC5b's binding hooks of the DM context [handle] (design §15.5 KC5b, §15.7 MC-20,
+     * §22.37; `ghost_client_dm::binding::hooks`): the second test-vectors entry point, in the test
+     * libraries only like [run] (G-R6 `--test`). [omit] leaves one binding v3 field out of every
+     * transcript the context signs or verifies — the mutant; [perturb] has every intro the context
+     * seals carry the sender's genuine signature over another value of one field than the envelope
+     * carries — KC5b's replayed binding. [BINDING_NONE] clears; false for a code out of range.
+     */
+    @JvmStatic
+    @JvmName("bindingHooks")
+    external fun bindingHooks(handle: Long, omit: Int, perturb: Int): Boolean
+
+    /** [bindingHooks]: no field. */
+    const val BINDING_NONE: Int = 0
+
+    /** [bindingHooks]: the recipient namespace. */
+    const val BINDING_NAMESPACE: Int = 1
+
+    /** [bindingHooks]: the binding minute (perturbed to a stale one). */
+    const val BINDING_MINUTE: Int = 2
+
+    /** [bindingHooks]: the X-Wing ciphertext, as its SHA-256. */
+    const val BINDING_CIPHERTEXT: Int = 3
+
+    /** [bindingHooks]: the base key of the Olm PreKey message. */
+    const val BINDING_BASE_KEY: Int = 4
+
     /** One case of the case file. */
     class Case(val id: String, val kind: Int, input: ByteArray) {
         private val bytes = input.copyOf()
