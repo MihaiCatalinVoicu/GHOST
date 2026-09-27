@@ -14,9 +14,17 @@ import org.ghost.messaging.port.ExpiryWake
 import org.ghost.storage.JdbcSqlExecutor
 import org.ghost.storage.MigrationRunner
 import org.ghost.storage.SqlExecutor
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.NamespaceId
+import org.ghost.sync.api.Namespaces
+import org.ghost.sync.api.RelayId
+import org.ghost.sync.api.SendDelay
 import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncListener
+import org.ghost.sync.api.SyncTransaction
+import org.ghost.sync.engine.JobFate
 import org.ghost.sync.engine.KeyedRandomSources
 import org.ghost.sync.engine.QuietRunScheduler
 import org.ghost.sync.engine.TrafficPolicy
@@ -90,7 +98,8 @@ internal enum class PrivacyScale(val clients: Int, val days: Int) {
  *    per foreground period, however many of the plan's sessions overlap in it — and at a periodic job
  *    while it is hidden, unless the job is a **quiet run** (Phase 8's `QuietRunScheduler`, one job in
  *    eight, drawn by the production component from a key of the world's seed), which opens no relay
- *    session. A job that comes while the app is visible returns at once (`SyncRuntime.runJob`);
+ *    session. A job that comes while the app is visible returns at once — the runtime's own decision,
+ *    `JobFate`, which `SyncRuntime.runJob` makes too;
  *  - the relay traffic of a session: at its start and then every minute while the app stays visible
  *    — the read lane's lists and fetches, the work lane's stores and registrations — as one model
  *    relay round per minute ([ViewRelay]); what the fetches deliver and the stores decide is handed to
@@ -104,7 +113,10 @@ internal enum class PrivacyScale(val clients: Int, val days: Int) {
  *    freezer has stopped it (Phase 7 design §5.1), so a wake that falls due then fires when the
  *    process next runs;
  *  - the **alarm** (`ExpiryAlarm`'s one inexact wake, the row deadlines alone) at its minute, which
- *    starts the process as the broadcast does (Doze's deferral of it is not modelled).
+ *    starts the process as the broadcast does (Doze's deferral of it is not modelled). At a deadline
+ *    both carry, the exact timer goes first (the review of §22.36, finding 3): while the process runs
+ *    its pass replaces the alarm, which never fires; while it is frozen the alarm runs it, the timer
+ *    fires as it thaws, and the alarm's own pass follows.
  * Every relay session is instantaneous (§22.30 item 4 (e)): its requests arrive in one world second,
  * and its session-start pass runs before its read lane lists (as the actor's pass runs a moment after
  * READY, before the first pair event), so a fetch attempt opened there is listed in that session.
@@ -121,10 +133,35 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         private set
     val relay = ViewRelay { now }.also { it.withholdBundles = config.withholdAllBundles }
 
-    /** One wake a client's process is owed at [at] (the actor timer's or the alarm's). */
+    /** One wake a client's process is owed at [at] (the actor timer's or the alarm's); cancelled once it fired. */
     internal class OwedWake(val at: Long, val task: () -> Unit) {
         var cancelled = false
     }
+
+    /**
+     * One `EST-START` the engine ran — a contact's bundle namespace registered listening
+     * (`Namespaces.register` with `Consumer.PREKEYS`, the call only `EST-START` makes): the moment an
+     * attempt window opened, as the engine opened it, with the trigger of the pass that ran it — the
+     * kind [hand] was handing, or [USER_ACTION] for a facade call — and the attempt it opened, the
+     * engine's own `fetch_attempts` once that trigger was done (1: an establishment's start, by a send
+     * or a stranded item's retry; 2 or 3: a later attempt, which §21.7 point 5 opens at a relay
+     * session start only). JD7 holds every later attempt to that ([Joins.jd7]; the review of §22.36,
+     * finding 1: the windows JD7 infers from reads cannot see an attempt opened at the wrong trigger,
+     * because a window no relay session lists is never read).
+     */
+    class FetchStart(val reader: Int, val bundle: String, val at: Long, val trigger: String) {
+        var attempt: Int = 0
+            internal set
+    }
+
+    /** Every `EST-START` of the run, in order ([FetchStart]). */
+    val fetchStarts = ArrayList<FetchStart>()
+
+    /** The [fetchStarts] whose attempt is read once their trigger is done. */
+    private val unresolvedStarts = ArrayList<FetchStart>()
+
+    /** The kind of the trigger [hand] is handing to an actor, or null (a facade call's). */
+    private var handing: String? = null
 
     /** One client of the world. */
     inner class Client(val index: Int) {
@@ -156,6 +193,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
                     val mutated = config.mutant?.crypto?.invoke(this@PrivacyWorld, index, native) ?: native
                     RecordingCrypto(mutated, index, truth)
                 },
+                decorateNamespaces = { real -> FetchStartRecorder(real) { namespace -> fetchStarted(index, namespace) } },
                 wiring = DmDevice.Wiring(
                     timer = { delay, task -> scheduleTimer(this, delay, task) },
                     alarm = ExpiryWake { delay -> setAlarm(this, delay) },
@@ -197,6 +235,9 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
 
         /** The actor timer's wake that fell due while the process was frozen: it fires at the next run. */
         internal var overdueTimer: OwedWake? = null
+
+        /** The actor timer's pending wake (the last one `ExpiryTimer` scheduled), until it fires or is cancelled. */
+        internal var timer: OwedWake? = null
 
         /** The alarm's pending wake. */
         internal var alarm: OwedWake? = null
@@ -378,7 +419,9 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         count("activations")
         flushHints(c)
         // The user onboards with the app open: a foreground minute, whose relay session's start is
-        // the first time trigger the activated DM layer gets.
+        // the first time trigger the activated DM layer gets. One of two orders a device can take,
+        // declared (design §22.36 item 9 (g)): a fresh install's foreground session is READY before the
+        // K20 hook activates, and then no session start follows ACTIVATE until the next foreground or job.
         foreground(c, now + DmWorld.MINUTE)
     }
 
@@ -398,15 +441,22 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     private fun job(c: Int) {
         val client = clients[c]
         if (!client.activated) return
-        val quiet = client.quietRuns.quiet(client.jobs++)
+        // The runtime's own decision (`JobFate`, which `SyncRuntime.runJob` makes; the review of §22.36,
+        // item 12): occupied while the app is visible — the one activity this world's instantaneous
+        // sessions leave at a job's second — with the entitlement engine always the participant.
+        val fate = JobFate.of(
+            occupied = now < client.visibleUntil,
+            quietDraw = client.quietRuns.quiet(client.jobs++),
+            participant = true,
+        )
         count("jobs")
-        if (now < client.visibleUntil) {
+        if (fate == JobFate.RETURN) {
             count("jobs while the app is visible")
             return
         }
         client.thawedAt = now
         thaw(c)
-        if (quiet) {
+        if (fate == JobFate.QUIET_RUN) {
             count("quiet runs")
             tail(c, SessionKind.QUIET)
             return
@@ -470,7 +520,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         if (sessionStart) {
             relay.beginSession(c)
             sessionStarts.getOrPut(c) { TreeSet() } += now
-            trigger(c, "session start") { it.relaySessionStart() }
+            trigger(c, SESSION_START) { it.relaySessionStart() }
         }
         if (relay.serve(c, client.device, ownNamespaces(c), contactBundles) > 0) commit(c, SyncChange.INBOX)
         store(c)
@@ -509,32 +559,43 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
 
     /** The process runs (the app shown, a job, an alarm): the actor timer's wake owed while it was frozen fires first. */
     private fun thaw(c: Int) {
-        val client = clients[c]
-        val owed = client.overdueTimer ?: return
-        client.overdueTimer = null
-        trigger(c, "actor timer") { owed.task() }
+        val owed = clients[c].overdueTimer ?: return
+        runTimer(clients[c], owed)
     }
 
     /** `ExpiryTimer`'s scheduler for [client]: its one wake, [delay] seconds from now. */
     private fun scheduleTimer(client: Client, delay: Long, task: () -> Unit): () -> Unit {
         val wake = OwedWake(now + delay, task)
+        client.timer = wake
         schedule(wake.at) { fireTimer(client, wake) }
         return {
             wake.cancelled = true
             if (client.overdueTimer === wake) client.overdueTimer = null
+            if (client.timer === wake) client.timer = null
         }
     }
 
     private fun fireTimer(client: Client, wake: OwedWake) {
-        if (wake.cancelled) return
-        if (now >= client.visibleUntil && now != client.thawedAt) {
+        if (wake.cancelled || client.overdueTimer === wake) return
+        if (!running(client)) {
             // Hidden: the cached-app freezer has stopped the process (Phase 7 design §5.1), and the
             // timer fires when it next runs.
             client.overdueTimer = wake
             return
         }
+        runTimer(client, wake)
+    }
+
+    /** The actor timer fires: its wake, once (a fired wake is spent, and its event, if still ahead, does nothing). */
+    private fun runTimer(client: Client, wake: OwedWake) {
+        wake.cancelled = true
+        if (client.overdueTimer === wake) client.overdueTimer = null
+        if (client.timer === wake) client.timer = null
         trigger(client.index, "actor timer") { wake.task() }
     }
+
+    /** The process runs now: the app is visible, or a job or an alarm ran it at this second. */
+    private fun running(client: Client): Boolean = now < client.visibleUntil || now == client.thawedAt
 
     /** `ExpiryAlarm` for [client]: the one inexact alarm, each call replacing the last (one request code). */
     private fun setAlarm(client: Client, delay: Long?) {
@@ -546,9 +607,32 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         schedule(wake.at) { fireAlarm(client, wake) }
     }
 
-    /** The alarm is due: its broadcast runs the process (an owed actor timer first), then `MessagingWiring.onAlarm`. */
+    /**
+     * The alarm is due: its broadcast runs the process (an owed actor timer first), then
+     * `MessagingWiring.onAlarm`.
+     *
+     * **The exact timer first** (the review of §22.36, finding 3). The schedule arms the alarm and
+     * then the timer, with the same delay whenever the next row deadline is the timer's nearest term,
+     * so the alarm's event came first in its second: its pass re-armed the timer and the timer never
+     * fired at a row deadline — the withheld world ran no actor-timer wake at all, and an attempt the
+     * timer opened could not have been seen. On a device the in-process timer is exact and the alarm
+     * inexact: while the process runs, the timer fires at its second and its pass replaces the pending
+     * alarm, which then never fires; while the process is frozen, the alarm's broadcast runs it and the
+     * timer that fell due fires as it thaws, before the alarm's own pass. A timer due at this second is
+     * handled so here.
+     */
     private fun fireAlarm(client: Client, wake: OwedWake) {
         if (wake.cancelled) return
+        val due = client.timer?.takeIf { !it.cancelled && it.at <= now }
+        if (due != null) {
+            if (running(client)) {
+                runTimer(client, due)
+                // Its pass re-armed the alarm (or cancelled it): this one was replaced.
+                if (wake.cancelled) return
+            } else {
+                client.overdueTimer = due
+            }
+        }
         client.alarm = null
         client.thawedAt = now
         thaw(client.index)
@@ -566,8 +650,44 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         client.sync()
         lastPass[c] = now
         triggers.merge(kind, 1L, Long::plus)
-        body(client.device)
+        handing = kind
+        try {
+            body(client.device)
+        } finally {
+            handing = null
+        }
+        resolveFetchStarts(c)
         client.checkTurns()
+    }
+
+    /** An `EST-START` of [c]'s engine on [namespace], in the trigger being handed ([FetchStart]). */
+    private fun fetchStarted(c: Int, namespace: NamespaceId) {
+        val start = FetchStart(c, hex(namespace.toByteArray()), now, handing ?: USER_ACTION)
+        fetchStarts += start
+        unresolvedStarts += start
+    }
+
+    /**
+     * The attempt each of [c]'s new [fetchStarts] opened: the engine's `fetch_attempts` for the bundle's
+     * owner, read once the trigger (or the facade call) that ran it is over.
+     */
+    private fun resolveFetchStarts(c: Int) {
+        if (unresolvedStarts.isEmpty()) return
+        val iterator = unresolvedStarts.iterator()
+        while (iterator.hasNext()) {
+            val start = iterator.next()
+            if (start.reader != c) continue
+            // A namespace that is no card's bundle namespace has no attempt to count; JD7 fails on its
+            // reads ("no card's bundle namespace") whatever this says.
+            var attempts = 0
+            contactBundles[start.bundle]?.let { owner ->
+                clients[c].device.sql.query("SELECT fetch_attempts FROM dm_contact WHERE identity_pk = ?", listOf(owner)) {
+                    attempts = it.long(0).toInt()
+                }
+            }
+            start.attempt = attempts
+            iterator.remove()
+        }
     }
 
     /**
@@ -640,6 +760,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     private fun <T> userAction(c: Int, peer: Int?, expect: Expect, body: () -> T): Pair<T, String?> {
         val before = outgoingIds(c)
         val result = body()
+        resolveFetchStarts(c)
         val created = outgoingIds(c) - before
         if (created.isEmpty()) return result to null
         val contact = peer?.let { contactIdOf(c, it) }
@@ -771,6 +892,12 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     companion object {
         const val SLOTS: Int = 4
         const val OPERATORS: Int = 2
+
+        /** The trigger kind of a relay session start (`MessagingWiring.onRelaySessionStart`). */
+        const val SESSION_START: String = "session start"
+
+        /** What ran an `EST-START` outside every trigger: a facade call, the user's ([FetchStart]). */
+        const val USER_ACTION: String = "user action"
 
         /** The production traffic policy: the job budget and the consumer tail's reserve. */
         private val POLICY: TrafficPolicy = TrafficPolicy.DEFAULT
@@ -1064,6 +1191,29 @@ internal class Plan private constructor(
             val seconds = medianSeconds * Math.exp(sigma * z)
             return seconds.toLong().coerceIn(DmWorld.MINUTE, 6 * DmWorld.HOUR)
         }
+    }
+}
+
+/**
+ * The DM steps' `Namespaces` port with every `EST-START` reported ([PrivacyWorld.FetchStart]): a
+ * contact's bundle namespace registered listening, after the call returned. Records only; every call
+ * goes through unchanged.
+ */
+internal class FetchStartRecorder(
+    private val inner: Namespaces,
+    private val started: (NamespaceId) -> Unit,
+) : Namespaces by inner {
+    override fun register(
+        tx: SyncTransaction,
+        namespace: NamespaceId,
+        consumer: Consumer,
+        relays: Set<RelayId>,
+        listen: Boolean,
+        sendDelay: SendDelay,
+        capabilitySource: CapabilitySource,
+    ) {
+        inner.register(tx, namespace, consumer, relays, listen, sendDelay, capabilitySource)
+        if (consumer == Consumer.PREKEYS && listen) started(namespace)
     }
 }
 

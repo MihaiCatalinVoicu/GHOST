@@ -10,13 +10,13 @@ import org.ghost.messaging.engine.DisplayStep
 import org.ghost.messaging.engine.DmActor
 import org.ghost.messaging.engine.DmCounters
 import org.ghost.messaging.engine.DmSyncPorts
+import org.ghost.messaging.engine.DmTriggers
 import org.ghost.messaging.engine.EstablishmentSteps
 import org.ghost.messaging.engine.ExpirySchedule
 import org.ghost.messaging.engine.ExpiryTimer
 import org.ghost.messaging.engine.HeldReplay
 import org.ghost.messaging.engine.KeyDecision
 import org.ghost.messaging.engine.MessagingEngine
-import org.ghost.messaging.engine.MessagingRuntime
 import org.ghost.messaging.engine.OutcomeStep
 import org.ghost.messaging.engine.OwnerSteps
 import org.ghost.messaging.engine.PairKeySteps
@@ -89,11 +89,27 @@ class DmWorld(
      */
     private val decorate: ((Int, org.ghost.messaging.port.DmEnvelopes) -> org.ghost.messaging.port.DmEnvelopes)? =
         null,
+    /**
+     * When set, [alice] runs the production triggers ([DmDevice.Wiring]): her actor's turns on the
+     * caller's thread, her timer on the wiring's scheduler, over an in-memory database this world
+     * opens and closes; bob stays a device the test drives itself. The review of §22.36 needs it: its
+     * regression tests call alice's production entry points around a bundle bob publishes (item 12).
+     */
+    aliceWiring: DmDevice.Wiring? = null,
 ) : AutoCloseable {
+
+    /** Alice's database when she runs the production triggers (the harness override owns no executor). */
+    private val aliceSql: JdbcSqlExecutor? = aliceWiring?.let {
+        require(databaseDirectory == null) { "a wired alice runs in memory" }
+        JdbcSqlExecutor(":memory:").also { sql -> MigrationRunner(sql).migrate() }
+    }
 
     /** The two devices. Distinct MESSAGING branches, so distinct identities and cards. */
     val alice: DmDevice = DmDevice(
         0x41, slotCount, operators, startSeconds, path = pathFor(0x41),
+        harness = aliceWiring?.let { w ->
+            DmDevice.HarnessOverride(requireNotNull(aliceSql), MovableClock(startSeconds), bootIndex = 0, wiring = w)
+        },
         decorateEnvelopes = decorate?.let { d -> { e: org.ghost.messaging.port.DmEnvelopes -> d(0x41, e) } },
     )
     val bob: DmDevice = DmDevice(
@@ -307,6 +323,7 @@ class DmWorld(
 
     override fun close() {
         for (device in devices()) device.close()
+        aliceSql?.close()
     }
 
     companion object {
@@ -444,10 +461,14 @@ class DmDevice(
      * world's virtual time (phase review MD-2 and MD-3, design §22.36): the actor's turns run on the
      * caller's thread ([TurnExecutor]), so a world drives the production entry points —
      * [relaySessionStart], [alarmFired], [databaseOpen], [consumerTail], [listener] — and never picks
-     * a pass's flags itself; the actor timer is the production `ExpiryTimer` with the world's
-     * scheduler ([timer]); the one inexact alarm is the world's ([alarm]); and the schedule of both
-     * is `MessagingRuntime.wiredSchedule`, the runtime's own, so every term it gives the timer — the
-     * rows, the owner's `t_pub` and week boundary, the next `EST-READY` — is in the world's.
+     * a pass's flags itself. What each entry point hands the actor, the actor timer's wake and the
+     * schedule of both wakes are `MessagingRuntime`'s own bindings, `DmTriggers` (the review of §22.36,
+     * item 12: they were copies here, and a runtime whose timer or tail counted as a session start,
+     * whose listener dropped a hint or whose schedule lost the `EST-READY` term passed every world);
+     * the timer runs on the world's scheduler ([timer]) and the one inexact alarm is the world's
+     * ([alarm]). Only the mapping from a trigger to its kind is written here, as `MessagingWiring`
+     * writes it: a relay session start is one, the alarm and a database open are not
+     * (`MessagingWiringTest` pins the wiring's).
      */
     class Wiring(
         /**
@@ -581,10 +602,10 @@ class DmDevice(
 
     /**
      * Every wake the **in-process actor timer** was asked for: the row deadlines [wakes] gets plus
-     * the next `EST-READY` (phase review MD-3), wired as `MessagingRuntime` wires it. Without a
+     * the next `EST-READY` (phase review MD-3), by the runtime's own schedule (`DmTriggers`). Without a
      * [Wiring] the owner's term is left out: it reads the database, and the crash enumeration counts
      * every read; the recording is all there is, and the world drives every pass itself. Under a
-     * [Wiring] it records the runtime's own schedule, owner term included, and the production
+     * [Wiring] it records the runtime's schedule, owner term included, and the production
      * `ExpiryTimer` behind it wakes the actor in the world's time.
      */
     val timerWakes = RecordingWake()
@@ -611,18 +632,19 @@ class DmDevice(
     private val turns: TurnExecutor? = harness?.wiring?.let { TurnExecutor(it.failed) }
 
     /**
-     * The production actor timer under a [Wiring] (§10.7 trigger 1), scheduled in the world's time;
-     * its wake is `MessagingRuntime`'s, a time trigger posted to the actor.
+     * The actor's triggers and the schedule of its two wakes, bound as `MessagingRuntime` binds them
+     * (`DmTriggers`, the review of §22.36). Under a [Wiring] its in-process timer (§10.7 trigger 1) is
+     * the production `ExpiryTimer`, scheduled in the world's time; without one no timer is started
+     * (the world drives every pass itself and records the timer's requests, [timerWakes]).
      */
-    private val actorTimer: ExpiryTimer? = harness?.wiring?.let { w ->
-        ExpiryTimer(
-            wake = { actor.onTimeTrigger() },
-            scheduler = { delay, task ->
+    internal val triggers: DmTriggers = DmTriggers(
+        timerScheduler = harness?.wiring?.let { w ->
+            { delay: Long, task: () -> Unit ->
                 val cancel = w.timer(delay, task)
                 ExpiryTimer.Cancellable { cancel() }
-            },
-        )
-    }
+            }
+        },
+    )
 
     /**
      * Without a [Wiring], the timer term the crash enumeration can afford: the owner's is left out, it
@@ -663,20 +685,21 @@ class DmDevice(
             esSlots = esSlots,
         )
         schedule = harness?.wiring?.let { w ->
-            MessagingRuntime.wiredSchedule(
+            triggers.schedule(
                 sweeper = sweeper,
                 alarm = ExpiryTimer.both(wakes, w.alarm),
                 notices = notices,
-                timer = ExpiryTimer.both(timerWakes, requireNotNull(actorTimer)),
-                steps = steps,
+                timer = ExpiryTimer.both(timerWakes, triggers.timer),
+                owner = steps,
                 clock = clock,
-            ) { actor.nextReadySeconds() }
-        } ?: ExpirySchedule(
+            )
+        } ?: triggers.schedule(
             sweeper = sweeper,
-            wakes = wakes,
+            alarm = wakes,
             notices = notices,
             timer = timerWakes,
-            establishmentDelay = { actor.nextReadySeconds() },
+            owner = null,
+            clock = clock,
         )
         engine = MessagingEngine(
             database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
@@ -711,6 +734,7 @@ class DmDevice(
             contexts = contexts,
             turns = turns,
         )
+        triggers.bind(actor)
         // The world drives the pass directly, so the facade must not post to the actor's thread
         // and wait for it: every test here is single-threaded on purpose, and `DmActorTest` is
         // where the threading contract of §13.7 is checked on its own. Under a [Wiring] the facade
@@ -729,28 +753,26 @@ class DmDevice(
      */
     fun relaySessionStart() {
         wired()
-        actor.onTimeTrigger(sessionStart = true)
+        triggers.onTimeTrigger(sessionStart = true)
     }
 
     /** The alarm fired: `MessagingWiring.onAlarm` (§10.7 trigger 5), a time trigger that is no session start. */
     fun alarmFired() {
         wired()
-        actor.onTimeTrigger()
+        triggers.onTimeTrigger()
     }
 
     /** A database open: `MessagingWiring.ensureStack`'s time trigger (§21.12 point 2), no session start. */
     fun databaseOpen() {
         wired()
-        actor.onTimeTrigger()
+        triggers.onTimeTrigger()
     }
 
     /** `MessagingRuntime.consumerTail` (§13.3 item 6): after a background session or a quiet run. */
-    val consumerTail: org.ghost.sync.api.ConsumerTail =
-        org.ghost.sync.api.ConsumerTail { kind, deadline -> actor.consumerTail(kind, deadline) }
+    val consumerTail: org.ghost.sync.api.ConsumerTail get() = triggers.consumerTail
 
     /** `MessagingRuntime.listener` (§13.7): each hint posts one coalesced pass. */
-    val listener: org.ghost.sync.api.SyncListener =
-        org.ghost.sync.api.SyncListener { changes -> for (change in changes) actor.onChange(change) }
+    val listener: org.ghost.sync.api.SyncListener get() = triggers.listener
 
     /**
      * Hands [changes] to [listener] **as the committing thread does** — outside the actor — so the
@@ -856,7 +878,7 @@ class DmDevice(
     override fun close() {
         handle?.let { DmSessions.closeContext(it) }
         actor.close()
-        actorTimer?.close()
+        triggers.close()
         ownExecutor?.close()
     }
 }

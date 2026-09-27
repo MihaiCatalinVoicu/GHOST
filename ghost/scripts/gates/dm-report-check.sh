@@ -14,7 +14,8 @@
 #
 #   privacy-gate    one matrix job's worlds at the gate scale (N = 600, 42 days): per seed pair the
 #                   world line of that scale, JD1–JD7 and JD9 (not JD8, not JD10) at `PASS 0` over a
-#                   non-zero denominator, S-DM3 at PASS with n >= 100, 0 namespaces named by the
+#                   non-zero denominator (JD7 saying by which trigger each later fetch attempt opened,
+#                   every one a relay session start, §22.36), S-DM3 at PASS with n >= 100, 0 namespaces named by the
 #                   dictionary and an exact control that the statistic rejects, the T35 line of a
 #                   provenance build with 0 seal calls thrown, and (§22.30) S-DM1 at PASS with its
 #                   exact half clean, S-DM2 and S-DM4 within their recorded baselines + 0.02 where
@@ -22,7 +23,8 @@
 #                   n >= 100, every derived number of their lines recomputed here;
 #   privacy-suite   the scale-independent job: NI-DM1 with its four twins, NI-DM2 with its fifteen
 #                   (slice S11b), NI-DM3, JD7's WITHHOLD_ALL_BUNDLES variant with the bound reached
-#                   (S11b), the T34 seizure line with both controls complete, the T34 one-reply
+#                   (S11b) and later attempts opened, every one by a relay session start (§22.36),
+#                   the T34 seizure line with both controls complete, the T34 one-reply
 #                   line, JD8 over the entitlement world's twins with its control and its two
 #                   timing leaks (§22.26), the controls that must move S-DM1 and S-DM2 (§22.30),
 #                   and the privacy mutant count with one detection line per mutant;
@@ -79,6 +81,38 @@ bad() { echo "DM-REPORT-FAIL: $*" >&2; fail=1; }
 # The privacy report (slice S11).
 # ---------------------------------------------------------------------------------------------------
 
+# JD7's trigger clause (§21.7 point 5: a later bundle-fetch attempt opens "at the first relay session
+# start at least 6 h later"; the review of §22.36, finding 1). The windows JD7 infers from reads cannot
+# see a later attempt that a pass no relay session start ran — a consumer tail, the alarm, the actor
+# timer — opened: a window no session lists is never read, and one a session starting inside it lists
+# is read as if it had opened there. So each JD7 line says, from the engine's own record, how many later
+# attempts (second or third windows) it opened and by the trigger of the pass that opened each; a PASS
+# names relay session starts only, exactly as many as it counts. A line without the clause comes from a
+# build that could not see such an attempt.
+#   jd7_triggers <line regex> <lines expected> <name> <fewest later attempts>
+jd7_triggers() {
+  local re="$1" want="$2" name="$3" fewest="$4" line later by n=0
+  local clause='.*; the engine opened ([0-9]+) later attempts \(second or third windows\), by the trigger of the pass that opened each: \{([^}]*)\}.*'
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    later="$(printf '%s\n' "$line" | sed -nE "s/$clause/\\1/p")"
+    by="$(printf '%s\n' "$line" | sed -nE "s/$clause/\\2/p")"
+    if [ -z "$later" ]; then
+      bad "$name: a line that does not say by which trigger the engine opened each later attempt"
+      continue
+    fi
+    n=$((n + 1))
+    [ "$later" -ge "$fewest" ] \
+      || bad "$name: the engine opened $later later attempts, fewer than $fewest: the rule that one opens at a relay session start only was never put to the test"
+    if [ "$later" = 0 ]; then
+      [ -z "$by" ] || bad "$name: 0 later attempts, by the triggers {$by}"
+    else
+      [ "$by" = "session start=$later" ] || bad "$name: of $later later attempts, not every one opened by a relay session start ({$by})"
+    fi
+  done <<<"$(grep -E "$re" "$report" || true)"
+  [ "$n" = "$want" ] || bad "$name: $n lines that say by which trigger each later attempt opened, for $want expected"
+}
+
 # The per-world half: one line of each kind per seed pair the header names.
 privacy_worlds() {
   local scale="$1" clients="$2" days="$3" pairs worlds join n
@@ -104,6 +138,8 @@ privacy_worlds() {
   # flush) is NI-DM2's declared open defect, and a line without the split would read as covering it.
   n="$(grep -cE "^dm JD5: PASS 0 over [1-9][0-9]*; .*, [0-9]+ TIMER_SETs against R-T3's larger bucket \([0-9]+ set over a session, [0-9]+ queued for EST-READY's flush: " "$report" || true)"
   [ "$n" = "$pairs" ] || bad "JD5: $n lines that say which TIMER_SET path they covered for $pairs seed pairs"
+  # JD7's trigger clause on every world (its establishments get their bundle, so it may count none).
+  jd7_triggers '^dm JD7: PASS ' "$pairs" "JD7" 0
   # S-DM3 (gating): PASS, the n >= 100 floor, no namespace of the view named by the dictionary (the
   # only part of the statistic the world decides, §22.16), and the colluders' control exact,
   # non-empty and rejected by the statistic (the interval test can fail when the attacker knows).
@@ -211,7 +247,9 @@ privacy_edge_statistics() {
 # killer), and raises S-DM2's strongest LD attacker over this scale's control by more than the 0.02
 # allowance — the rise recomputed here from the two AUCs the line prints — so S-DM1's comparison is
 # shown to fail on a leak, and S-DM2's allowance to be exceeded by one at MEDIUM (at the PR scale the
-# same leak stays inside the pinned rule, measured once, §22.30 item 5); a conversation tag in the
+# same leak stays inside the pinned rule — +0.0075 and, in the 7 d class, +0.0073 over the baselines
+# re-recorded on production's triggers, measured once, §22.36 item 12 (h); +0.0084 on the old cadence,
+# §22.30 item 5 — while S-DM1 and JD7 fail on it); a conversation tag in the
 # envelope bytes is flagged by the exact half; and PM-2, a leak inside LD's categories, is not an
 # S-DM1 leak, with what it does to
 # S-DM2 and S-DM4 printed as measured (not required: its exact detectors are JD6 and NI-DM1). The
@@ -268,6 +306,8 @@ privacy_suite() {
   grep -qE '^dm JD7 WITHHOLD_ALL_BUNDLES: PASS 0 over [1-9][0-9]*; .*; [1-9][0-9]* establishments reached their third attempt window, [1-9][0-9]* of them followed by a relay session of the reader at least 6 h after it closed and before the pair.s next establishment \(where an unbounded engine makes a fourth attempt\); harness guards: [1-9][0-9]* bundle lists answered empty over a live bundle, 0 bundle GETs' "$report" \
     || bad "no JD7 WITHHOLD_ALL_BUNDLES PASS in which an establishment reached its third window with room for a fourth attempt, with bundles withheld and none fetched"
   if grep -qE '^dm JD7 WITHHOLD_ALL_BUNDLES: FAIL' "$report"; then bad "the JD7 WITHHOLD_ALL_BUNDLES variant failed"; fi
+  # The world whose later attempts there are: its trigger clause must count at least one (§22.36 item 12).
+  jd7_triggers '^dm JD7 WITHHOLD_ALL_BUNDLES: PASS ' 1 "JD7 WITHHOLD_ALL_BUNDLES" 1
   # T34: a non-empty expired-week sample with nothing recognised or opened, and **every** control
   # complete — each "N of M" with N = M and M > 0 — so a "0" is never the output of an attempt that
   # does not work (a control of "1 of 515" is refused, not accepted).

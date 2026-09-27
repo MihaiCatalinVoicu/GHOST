@@ -522,8 +522,18 @@ internal class Joins(private val world: PrivacyWorld) {
      * at its end, which the alarm and the actor timer both carry (the fetch deadline is a row term), so
      * a read after it is outside it whatever relay round comes next. Every read of a card's bundle
      * namespace must fall inside one; every read of any other namespace that is not the reader's own
-     * fails. Nothing here reads the reader's `dm_contact` row (its state is printed only to explain a
-     * failure).
+     * fails. The windows read nothing of the reader's `dm_contact` row (its state is printed only to
+     * explain a failure).
+     *
+     * **The windows are inferred from reads, so the trigger rule is checked on the engine's own
+     * record as well** (the review of §22.36, finding 1). A later window opened by a pass that is no
+     * relay session start — a consumer tail, the alarm, the actor timer — is either listed in a session
+     * that starts while it is open, and then read as if it had opened there, or never listed at all,
+     * and then no read shows it: the relay's view cannot tell. [PrivacyWorld.fetchStarts] records each
+     * `EST-START` with the trigger that ran it and the attempt it opened; every later attempt (a second
+     * or third window) must have been opened by a relay session start's pass (§21.7 point 5). This is
+     * the one clause that reads the engine's state — the attempt's number, its own `fetch_attempts` —
+     * and it reads it only to tell a later attempt from an establishment's start.
      */
     fun jd7(): JoinResult {
         val violations = ArrayList<String>()
@@ -559,12 +569,21 @@ internal class Joins(private val world: PrivacyWorld) {
         val most = windows.values.maxOfOrNull { it.most } ?: 0
         lastJd7Exhausted = windows.values.sumOf { it.exhausted }
         lastJd7Binding = windows.values.sumOf { it.binding() }
+        // §21.7 point 5 on the engine's own record: a later attempt opens at a relay session start only.
+        val later = world.fetchStarts.filter { it.attempt >= 2 }
+        violations += laterAttemptsOutsideSessionStarts(world.fetchStarts) { bundleOwner[it] }
+        lastJd7Later = later.size
         return JoinResult(
             "JD7", n, violations,
             "reads, $bundleReads of them bundle reads inside $opened attempt windows of " +
-                "${world.establishments.size} establishments (at most $most windows for one)",
+                "${world.establishments.size} establishments (at most $most windows for one); the engine opened " +
+                "${later.size} later attempts (second or third windows), by the trigger of the pass that opened each: " +
+                "${later.groupingBy { it.trigger }.eachCount().toSortedMap()}",
         )
     }
+
+    /** How many later attempts (second or third windows) the engine opened in the last [jd7]'s world. */
+    private var lastJd7Later = 0
 
     /** How many establishments the last [jd7] saw open their third attempt window. */
     private var lastJd7Exhausted = 0
@@ -587,7 +606,10 @@ internal class Joins(private val world: PrivacyWorld) {
      * establishment (a new send with no session, which starts a new count) and before the world
      * ended ([Windows.binding]). Only there does a fourth attempt have somewhere to fall that no
      * window covers; an establishment that reached its third window in the world's last six hours,
-     * or whose peer was written to again within six hours, bounds nothing.
+     * or whose peer was written to again within six hours, bounds nothing. And, for [jd7]'s trigger
+     * clause (the review of §22.36, finding 1): the engine opened at least one later attempt, so the
+     * rule that one opens at a relay session start only was put to the test — this is the world whose
+     * later attempts there are; the PR world's establishments get their bundle in the first window.
      *
      * Two further requirements guard **the harness**, not the engine, and say so: the relay model
      * answered at least one bundle list empty over a live bundle (a world in which nobody had
@@ -611,6 +633,10 @@ internal class Joins(private val world: PrivacyWorld) {
         if (binding == 0) {
             violations += "no establishment reached its third attempt window with a later session where a fourth " +
                 "attempt would fall ($exhausted reached the third): the bound was never put to the test"
+        }
+        if (lastJd7Later == 0) {
+            violations += "the engine opened no later attempt: the rule that one opens at a relay session start only " +
+                "was never put to the test"
         }
         return JoinResult(
             "JD7 WITHHOLD_ALL_BUNDLES", base.scanned, violations,
@@ -736,6 +762,18 @@ internal class Joins(private val world: PrivacyWorld) {
     }
 
     companion object {
+        /**
+         * JD7's trigger clause (§21.7 point 5: "at the first relay session start at least 6 h later";
+         * the review of §22.36, finding 1): one violation per later attempt among [starts] — attempt 2
+         * or 3, the engine's own count — that a pass run by anything but a relay session start opened.
+         * An establishment's start (attempt 1: a send, a stranded item's retry) may open at any trigger.
+         */
+        fun laterAttemptsOutsideSessionStarts(starts: List<PrivacyWorld.FetchStart>, ownerOf: (String) -> Int?): List<String> =
+            starts.filter { it.attempt >= 2 && it.trigger != PrivacyWorld.SESSION_START }.map { start ->
+                "c${start.reader} opened attempt ${start.attempt} of its fetch of c${ownerOf(start.bundle) ?: "?"}'s bundle " +
+                    "at ${start.at} in a pass run by a ${start.trigger}, not by a relay session start (§21.7 point 5)"
+            }
+
         /** R-B1 of §6.6 with `O_MAX = 1 664` and `EXT_RESERVE = 160`. */
         fun rb1(body: Int): Int = listOf(4096, 16384, 65536).first { 52 + body + 160 <= it - 1664 }
 

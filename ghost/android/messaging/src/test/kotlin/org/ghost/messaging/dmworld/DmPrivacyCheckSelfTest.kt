@@ -272,6 +272,32 @@ class DmPrivacyCheckSelfTest {
         assertEquals(1, quiet.total)
     }
 
+    /**
+     * JD7's trigger clause (the review of §22.36, finding 1): a later attempt — the engine's second or
+     * third window — opened by a pass that no relay session start ran is refused whatever the reads
+     * show, and an establishment's start is not held to it. The windows above cannot see the first
+     * case: a window a tail opened is read, if at all, in a session that starts while it is open.
+     */
+    @Test
+    fun jd7sTriggerClauseRefusesALaterAttemptOpenedByAnythingButASessionStart() {
+        fun start(trigger: String, attempt: Int, at: Long = 7 * hour) =
+            PrivacyWorld.FetchStart(0, "bb", at, trigger).apply { this.attempt = attempt }
+        val owner = { bundle: String -> if (bundle == "bb") 1 else null }
+        val honest = listOf(
+            start(PrivacyWorld.USER_ACTION, 1, at = 0),
+            start(PrivacyWorld.SESSION_START, 2),
+            start(PrivacyWorld.SESSION_START, 3, at = 14 * hour),
+            // A stranded item's retry is a start (attempt 1): any time trigger may run it.
+            start("consumer tail", 1, at = 30 * hour),
+        )
+        assertEquals(emptyList<String>(), Joins.laterAttemptsOutsideSessionStarts(honest, owner))
+        for (trigger in listOf("consumer tail", "actor timer", "alarm", "hint", PrivacyWorld.USER_ACTION)) {
+            val refused = Joins.laterAttemptsOutsideSessionStarts(honest + start(trigger, 2, at = 40 * hour), owner)
+            assertEquals("a later attempt opened by a $trigger", 1, refused.size)
+            assertTrue(refused.single(), refused.single().startsWith("c0 opened attempt 2 of its fetch of c1's bundle at ${40 * hour} in a pass run by a $trigger"))
+        }
+    }
+
     @Test
     fun jd7sBindingCountRefusesAnExhaustionWithNoRoomForAFourthAttempt() {
         val establishment = PrivacyWorld.Establishment(0, 1, 0)

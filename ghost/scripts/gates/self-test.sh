@@ -505,6 +505,16 @@ dmr_case fail privacy-sdm-controls-pm2.txt privacy-pr "rejects controls in which
 # never the old one moved) and the two real FAIL lines taken from the same run; the regeneration first
 # reproduced every committed privacy fixture byte for byte from the committed positive. Each negative
 # still fails with the messages it failed with before, numbers aside.
+# The review of that slice (design §22.36 item 12): JD7's trigger clause, the engine's own record of the
+# trigger that opened each later fetch attempt, which the windows JD7 infers from reads cannot see (a
+# window no relay session lists is never read). Every privacy fixture above was regenerated again from
+# the reviewed tree's real PR report, the regeneration first reproducing every committed one byte for
+# byte; three negatives are new, each one edit of one line: a withheld world whose engine opened no
+# later attempt (the rule never put to the test), one whose PASS counts later attempts a consumer tail
+# opened, and a per-world JD7 line without the clause (a build that could not see such an attempt).
+dmr_case fail privacy-withhold-no-later-attempt.txt privacy-pr "rejects a JD7 withhold variant in which the engine opened no later attempt"
+dmr_case fail privacy-withhold-later-attempt-at-tail.txt privacy-pr "rejects a JD7 withhold variant whose later attempts were not all opened by a relay session start"
+dmr_case fail privacy-jd7-no-trigger-clause.txt privacy-pr "rejects a JD7 line that does not say by which trigger each later attempt opened"
 # Phase 9 S12 (design §15.9): the emulator report check. `pass/` is a green run on API 29 and 35;
 # every negative case is a copy of it with one change, each a way an emulator run could look green
 # while it proved less: an API level or a suite that never ran, a skipped or missing test, a
