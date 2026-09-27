@@ -19,7 +19,7 @@ import org.ghost.messaging.api.Timer
  * root and `reply_seed`) of **any column of any table** of the database, not only the rows that are
  * supposed to hold keys — so a copy of a week key, a root or a `reply_seed` kept anywhere is found.
  * The archive is every blob any relay ever stored ([ViewRelay.archive], AD-1's archive). Each check
- * is against the seized device's **last relay session**, the last time its SWEEP ran.
+ * is against the seized device's **last pass**, the last time its SWEEP ran (whatever triggered it: §22.36).
  *
  * **What is checked, per seized client** (each half has a floor, so an empty sample fails):
  *  1. **Pair mode** (§6.3 P-7): over the pair-mode blobs of the client's conversations sealed in a
@@ -305,7 +305,7 @@ internal object Seizure {
         val ownInbox = own.inboxNamespace!!
         val ownOi = own.olmIdentity!!
         // The device's last SWEEP: a key that expired after it cannot have been erased yet.
-        val now = world.lastWakeOf(s) ?: world.now
+        val now = world.lastPassOf(s) ?: world.now
         val nowWeek = world.weekOf(now)
         val (v32, v60) = storedValues(device)
 
@@ -520,7 +520,7 @@ internal object Seizure {
      * B's root), A answers once more (pair-sealed under B's root, carrying A's) — and B never writes
      * again, so A never opens a pair envelope under **its own** root and never acknowledges it: only
      * the anchor bounds A's `prov_env`. The anchors are the recorder's (A's first decryption, B's
-     * first provisional seal), the check is against each device's last relay session before day 125.
+     * first provisional seal), the check is against each device's last pass (its last SWEEP) before day 125.
      */
     class OneReply(val sessions: List<String>, val kept: List<String>, val due: Int, val held: Int) {
         val passed: Boolean get() = kept.isEmpty() && due == 2 && held == 2
@@ -556,7 +556,7 @@ internal object Seizure {
             var due = 0
             var held = 0
             for (c in 0..1) {
-                val now = world.lastWakeOf(c) ?: world.now
+                val now = world.lastPassOf(c) ?: world.now
                 world.clients[c].device.sql.query(
                     "SELECT contact_id, session_id, role, prov_env IS NOT NULL FROM olm_session",
                 ) { r ->

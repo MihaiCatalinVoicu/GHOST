@@ -86,13 +86,18 @@ internal class EdgeViews(
     val clusters: Map<String, Pair<Int, Char>>,
     establishments: List<PrivacyWorld.Establishment>,
     /**
+     * Each reader's relay session starts, the moments a later attempt window may open (JD7's
+     * [Joins.Windows]; the world's record, [PrivacyWorld.sessionStarts]).
+     */
+    sessionStarts: Map<Int, java.util.TreeSet<Long>>,
+    /**
      * Which events **outside LD** the full view keeps, by their index in the record (all of them but
      * in the controls' thinned views, which measure how few such events the comparison still sees).
      */
     keepOutside: (Int) -> Boolean = { true },
 ) {
     constructor(world: PrivacyWorld, keepOutside: (Int) -> Boolean = { true }) :
-        this(world.relay.events, clustersOf(world), world.establishments, keepOutside)
+        this(world.relay.events, clustersOf(world), world.establishments, world.sessionStarts, keepOutside)
 
     val full: List<EdgeEvent>
     val ld: List<EdgeEvent>
@@ -103,11 +108,6 @@ internal class EdgeViews(
     init {
         val cluster = clusters
         // JD7's attempt windows (Joins.Windows), fed each (reader, bundle owner) pair's reads in order.
-        val wakes = HashMap<Int, java.util.TreeSet<Long>>()
-        for (e in events) {
-            val c = cluster[hex(e.namespace)]
-            if (e.op == ViewOp.LIST && c != null && c.first == e.client) wakes.getOrPut(e.client) { java.util.TreeSet() } += e.second
-        }
         val byPair = establishments.groupBy { it.reader to it.owner }.mapValues { (_, l) -> l.sortedBy { it.at } }
         val windows = HashMap<Pair<Int, Int>, Joins.Windows>()
         val blobClass = HashMap<GroundTruth.Key, Int>()
@@ -135,7 +135,7 @@ internal class EdgeViews(
                     own -> null
                     role == 'P' -> {
                         val w = windows.getOrPut(e.client to owner) {
-                            Joins.Windows(byPair[e.client to owner].orEmpty(), wakes[e.client] ?: java.util.TreeSet())
+                            Joins.Windows(byPair[e.client to owner].orEmpty(), sessionStarts[e.client] ?: java.util.TreeSet())
                         }
                         if (w.accept(e.second)) null else "a bundle read outside every attempt window"
                     }

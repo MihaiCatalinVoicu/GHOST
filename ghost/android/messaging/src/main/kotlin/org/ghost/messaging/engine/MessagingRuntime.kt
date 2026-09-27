@@ -13,7 +13,6 @@ import org.ghost.messaging.port.KeyWrapper
 import org.ghost.messaging.port.NativeDmCrypto
 import org.ghost.messaging.port.NativeDmEnvelopes
 import org.ghost.sync.api.ConsumerTail
-import org.ghost.sync.api.SessionKind
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncListener
 import org.ghost.sync.store.SyncStores
@@ -29,7 +28,10 @@ import org.ghost.sync.store.SyncStores
  * public and in this module. It is this class, and it holds no decision of its own: which ports,
  * when to open the context, when to trigger — every one of those is `MessagingWiring`'s, where
  * `MessagingWiringTest` pins them. The construction below is the same recipe `DmWorld`'s `DmDevice`
- * uses, so the test worlds and the device run one assembly.
+ * uses, written twice; what the actor's triggers are bound to — the listener, the consumer tail, the
+ * time triggers, the in-process timer and the schedule of both wakes — is not written twice but built
+ * by [DmTriggers] for both, so the worlds that run the production triggers run these bindings (the
+ * review of §22.36, item 12).
  *
  * **One stack per [SyncStores].** A `SyncDatabase` serializes every transaction through its own
  * lock and delivers its hints to its own listener, so the DM layer must use the very instance the
@@ -117,21 +119,14 @@ class MessagingRuntime(
     )
     private val notices = UnreadNotices { sweeper.unreadCount() }
 
-    /** Set once [actor] exists; the timer's thread posts a time trigger to it and does nothing else. */
-    @Volatile
-    private var boundActor: DmActor? = null
+    /**
+     * Every trigger the actor gets — the listener, the consumer tail, the time triggers, the
+     * in-process timer of §10.7 trigger 1 — and the schedule of both wakes, bound in [DmTriggers],
+     * which the test harness's worlds build theirs with too (the review of §22.36, item 12).
+     */
+    private val triggers = DmTriggers()
 
-    /** §10.7 trigger 1: the in-process timer, which wakes the actor with a time trigger (§21.9 rule 1). */
-    private val timer = ExpiryTimer(wake = { boundActor?.onTimeTrigger() })
-
-    private val schedule = ExpirySchedule(
-        sweeper = sweeper,
-        wakes = alarm,
-        notices = notices,
-        timer = timer,
-        ownerDelay = { steps.nextOwnerWakeSeconds()?.let { maxOf(0L, it - clock.nowEpochSeconds()) } },
-        establishmentDelay = { boundActor?.nextReadySeconds() },
-    )
+    private val schedule = triggers.schedule(sweeper, alarm, notices, triggers.timer, steps, clock)
 
     private val engine = MessagingEngine(
         database, steps, contactSteps, sendStep, establishment, keyDecision, heldReplay,
@@ -169,7 +164,7 @@ class MessagingRuntime(
 
     init {
         engine.attach(actor)
-        boundActor = actor
+        triggers.bind(actor)
     }
 
     /** The facade of §13.2. Every call posts to the DM actor and returns after its commit. */
@@ -179,23 +174,23 @@ class MessagingRuntime(
      * The inbox listener of §13.7: it posts a coalesced flag and returns, touching nothing — the
      * committing thread can be a lane thread (`SyncDatabase` delivers hints there).
      */
-    val listener: SyncListener = SyncListener { changes -> for (change in changes) actor.onChange(change) }
+    val listener: SyncListener = triggers.listener
 
     /** The `ConsumerTail` body (§13.3 item 6): a time-triggered pass that returns by the deadline. */
-    val consumerTail: ConsumerTail =
-        ConsumerTail { kind: SessionKind, deadline: Long -> actor.consumerTail(kind, deadline) }
+    val consumerTail: ConsumerTail = triggers.consumerTail
 
     /**
-     * A relay session start, a database open, the alarm, or the timer (§21.9 rule 1). Posts.
-     * [sessionStart] is true for the first alone (see [DmActor.onTimeTrigger]).
+     * A relay session start, a database open or the alarm (§21.9 rule 1). Posts. [sessionStart] is
+     * true for the first alone (see [DmActor.onTimeTrigger]); the in-process timer's wake is bound in
+     * [DmTriggers] and is no session start either.
      */
     fun onTimeTrigger(sessionStart: Boolean = false) {
-        actor.onTimeTrigger(sessionStart)
+        triggers.onTimeTrigger(sessionStart)
     }
 
     /** One hint, as the listener would deliver it; for a caller that holds a [SyncChange] alone. */
     fun onChange(change: SyncChange) {
-        actor.onChange(change)
+        triggers.onChange(change)
     }
 
     /**
@@ -285,7 +280,7 @@ class MessagingRuntime(
             lockOnActor()
             schedule.cancel()
         }
-        timer.close()
+        triggers.close()
     }
 
     override fun toString(): String = "MessagingRuntime"

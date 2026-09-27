@@ -2,8 +2,11 @@ package org.ghost.messaging
 
 import org.ghost.identity.RootEntropy
 import org.ghost.messaging.api.ActivationOutcome
+import org.ghost.messaging.api.AddContactResult
+import org.ghost.messaging.api.CardSource
 import org.ghost.messaging.api.NotificationPort
 import org.ghost.messaging.api.RevocationReason
+import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.engine.DmActor
 import org.ghost.messaging.engine.DmKeys
 import org.ghost.messaging.engine.MessagingRuntime
@@ -270,6 +273,77 @@ class MessagingRuntimeTest {
         runtime.consumerTail.run(SessionKind.BACKGROUND, deadline)
         barrier()
         assertTrue("the tail's pass is time-triggered and resumed ACTIVATE", dmSelfExists())
+    }
+
+    /**
+     * The review of §22.36 (item 12): the runtime's own entry points, as `MessagingWiring` calls them,
+     * with a later bundle-fetch attempt due (§21.7 point 5, phase review MD-2). The consumer tail of
+     * either kind, a time trigger that is no session start (the alarm, a database open) and the
+     * listener's hints leave the attempt count where it is; `onTimeTrigger(sessionStart = true)`, the
+     * relay session start, opens the attempt. Before the review nothing ran these bindings with an
+     * attempt due: a tail bound as a session start passed this class and every world.
+     */
+    @Test
+    fun onlyARelaySessionStartOpensALaterFetchAttempt() {
+        runtime.unlock(::root)
+        assertEquals(ActivationOutcome.ACTIVATED, runtime.messaging.onActivated())
+        // A contact that never publishes a bundle: every attempt window runs out.
+        val card = DmDevice(0x51, 4, 2, clock.now).use { it.card() }
+        assertEquals(AddContactResult.ADDED, runtime.messaging.addContact(card, CardSource.QR_IN_PERSON))
+        val contact = runtime.messaging.contacts().single().id
+        assertEquals(SendResult.QUEUED, runtime.messaging.send(contact, "hello", null))
+        assertEquals("the send opened attempt 1", 1, fetchAttempts())
+        // The window's end: a time trigger's pass runs EST-END, and the six-hour wait starts.
+        advance(16 * DmWorld.MINUTE)
+        runtime.onTimeTrigger()
+        barrier()
+        assertEquals(1, fetchAttempts())
+        advance(6 * DmWorld.HOUR + DmWorld.MINUTE)
+        val triggers = listOf<Pair<String, () -> Unit>>(
+            "the consumer tail of a quiet run" to { runtime.consumerTail.run(SessionKind.QUIET, clock.monotonicMillis() + 30_000) },
+            "the consumer tail of a background session" to {
+                runtime.consumerTail.run(SessionKind.BACKGROUND, clock.monotonicMillis() + 30_000)
+            },
+            "a time trigger that is no session start" to { runtime.onTimeTrigger() },
+            "the listener's hints" to { runtime.listener.onChanged(SyncChange.entries.toSet()) },
+            "one hint" to { runtime.onChange(SyncChange.TOPOLOGY) },
+        )
+        for ((name, trigger) in triggers) {
+            trigger()
+            barrier()
+            assertEquals("$name opened no attempt", 1, fetchAttempts())
+        }
+        runtime.onTimeTrigger(sessionStart = true)
+        barrier()
+        assertEquals("the relay session start opened attempt 2", 2, fetchAttempts())
+    }
+
+    /**
+     * Each of the four hints (§13.7) runs a pass through the runtime's listener: the pass's
+     * after-commit re-arms the alarm, once per pass. A listener that dropped one (the review of §22.36,
+     * mutant L: `OUTCOMES`) left the outcome step to whatever pass came next.
+     */
+    @Test
+    fun everyHintTheListenerIsGivenRunsAPass() {
+        runtime.unlock(::root)
+        for (change in SyncChange.entries) {
+            barrier()
+            val before = alarm.requested.size
+            runtime.listener.onChanged(setOf(change))
+            barrier()
+            assertEquals("$change ran one pass (its after-commit re-arms the alarm)", before + 1, alarm.requested.size)
+        }
+    }
+
+    private fun advance(seconds: Long) {
+        clock.now += seconds
+        clock.monotonic += seconds * 1_000
+    }
+
+    private fun fetchAttempts(): Int {
+        var n = 0
+        sql.query("SELECT fetch_attempts FROM dm_contact") { n = it.long(0).toInt() }
+        return n
     }
 
     @Test
