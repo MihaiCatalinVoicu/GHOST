@@ -96,6 +96,16 @@ class DmMutantDetectionTest {
     }
 
     @Test
+    fun me20RetainedBlobSurvivingItsMessageIsDetected() {
+        // ME-20 (§7.5 "Retained blob", §21.10 point 2, T25; §22.38): alice's schema without the op's
+        // foreign key, killed by the standing clause that no retained blob outlives its message —
+        // fault-free, and at crash points inside the SWEEP transaction that deletes the message while
+        // its op is in flight (the statement it acts at, after EP-store-after-expiry's mark), each
+        // beside the clean case at the same point.
+        detectFaultFreeAndWhereItActs(DmMutants.ME20, DmSuiteCases.epStoreAfterExpiry(), DmSuiteCases.EP_LATE_MARK)
+    }
+
+    @Test
     fun me17AWallClockBackStepIsDetected() {
         // ME-17 (R-T7, §10.9 item 4; §22.38): fault-free by EP-clock-back's check, and at crash
         // points inside the first transaction its rewrite changes after the mark, each beside the
@@ -206,7 +216,7 @@ class DmMutantDetectionTest {
      * The registry is well formed, and the report's count is armed to be written from the kills.
      *
      * It is deliberately not "57 run, 57 detected". §15.7's set is 97 — 40 privacy, 33 correctness
-     * and 24 ephemeral — and the slices so far register twenty-one (§22.38). A gate that printed the
+     * and 24 ephemeral — and the slices so far register twenty-four (§22.38). A gate that printed the
      * design's number while running fewer would be the one failure a report-checked gate must not have, which is
      * why the check script pins this line to the number this suite actually runs — and why the line
      * itself is now written from [DmKills], so that removing a kill lowers it.
@@ -553,12 +563,16 @@ class DmMutantDetectionTest {
         requireNative()
         assertTrue("${mutation.id} names no failure under a crash", mutation.expectUnderCrash.isNotEmpty())
         val native = mutation.rewrite == null && mutation.rewriteOn == null
+        // A window found by tracing: every native mutant, and a rewrite named by the statement it
+        // acts at (ME-20: it rewrote a schema in the setup, where nothing is an event, and changes
+        // no statement the armed world issues, so no rewritten span can show where it acts).
+        val byTrace = native || mutation.actsAt != null
         // Half 1: fault-free, against the clean control, with the entry's own message.
         val cleanTrace = ArrayList<String>()
-        val cleanEvents = DmCrashRunner(if (native) traced(scenario, cleanTrace) else scenario).run(DmRunSpec()).events
+        val cleanEvents = DmCrashRunner(if (byTrace) traced(scenario, cleanTrace) else scenario).run(DmRunSpec()).events
         val mutant = mutated(scenario, mutation)
         var departsAt: Long? = null
-        if (native) {
+        if (byTrace) {
             val mutantTrace = ArrayList<String>()
             var tracedPhase: DmArmedPhase? = null
             runCatching { DmCrashRunner(traced(mutant, mutantTrace)).run(DmRunSpec(onArmed = { tracedPhase = it })) }
@@ -567,11 +581,11 @@ class DmMutantDetectionTest {
                 val first = (0 until minOf(cleanTrace.size, mutantTrace.size)).firstOrNull { cleanTrace[it] != mutantTrace[it] }
                 requireNotNull(first) { "${mutation.id}'s world never departs from the clean ${scenario.name}" } + 1L
             } else {
-                // A mutant that changes only the bytes a statement writes (ME-24, MC-30's sidecar)
-                // issues the clean world's statements: the window is the transaction of the first
-                // statement it acts at **after the mark** (trace entry i is event i + 1, and the mark
-                // is the count of events before it), and the two worlds must be the same event for
-                // event up to it.
+                // A mutant that changes only the bytes a statement writes (ME-24, MC-30's sidecar),
+                // or only what the schema does with a statement (ME-20's cascade), issues the clean
+                // world's statements: the window is the transaction of the first statement it acts
+                // at **after the mark** (trace entry i is event i + 1, and the mark is the count of
+                // events before it), and the two worlds must be the same event for event up to it.
                 val tracedMark = requireNotNull(tracedPhase?.notes?.get(mark) as Long?) {
                     "${mutation.id}'s traced world never reached the step ${scenario.name} marks ($mark)"
                 }
@@ -596,7 +610,7 @@ class DmMutantDetectionTest {
             "${mutation.id}'s world never reached the step ${scenario.name} marks ($mark)"
         }
         val window = requireNotNull(phase.rewrittenSpans.firstOrNull { it.first > markAt }) {
-            if (native) {
+            if (byTrace) {
                 "${mutation.id} departs from the clean ${scenario.name} at event $departsAt, not after its mark at $markAt"
             } else {
                 "${mutation.id}'s rewrite changed no statement after ${scenario.name}'s mark at event $markAt"

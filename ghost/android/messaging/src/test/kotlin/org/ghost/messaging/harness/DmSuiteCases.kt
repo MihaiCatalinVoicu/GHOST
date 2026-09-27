@@ -1201,6 +1201,15 @@ internal object DmSuiteCases {
     const val EP_CLOCK_MARK: String = "epClockMark"
 
     /** The note RO-prune writes at its day-fifty-two step: MC-30's windows start after it. */
+    /** EP-store-after-expiry's second step: the sweep that deletes the message while its op is in flight (ME-20). */
+    const val EP_LATE_MARK: String = "epLateMark"
+    private const val EP_LATE: String = "ep-late"
+    private const val EP_LATE_WRITTEN: String = "epLateWritten"
+    private const val EP_LATE_EXPIRED: String = "epLateExpired"
+    private const val EP_LATE_ID: String = "epLateId"
+    private const val EP_LATE_OP: String = "epLateOp"
+    private const val EP_LATE_IN_FLIGHT: String = "epLateInFlight"
+
     const val RO_PRUNE_MARK: String = "roPruneMark"
     private const val RO_PRUNE_LOST = "ro-lost"
     private const val RO_PRUNE_NEXT = "ro-next"
@@ -1999,6 +2008,145 @@ internal object DmSuiteCases {
         },
     )
 
+    /**
+     * **EP — a five-minute message stored after its own expiry** (§21.10 point 2, §10.6, §7.5
+     * "Retained blob", T25; §15.5 EP, "HIGH mode 5-minute store after expiry"; design §22.38).
+     *
+     * §15.5 builds the case in HIGH mode, where a `not_before` past the message's own expiry is what
+     * holds the op back. Every crash world is STANDARD (`DmDevice` fixes the mode), so here the same
+     * shape comes from **no network**: alice's device is offline ([ModelDmRelay.offline]) when she
+     * writes, so her op is still `pending` — the ciphertext in Phase 7's row, the retained blob in
+     * `dm_outbound_op` — when her SWEEP deletes the message at its five-minute expiry. What must
+     * happen is §21.10 point 2's: the message, its item, its op and the op's retained blob go
+     * together, by the cascade, and **nothing cancels the op** — "ops run to their outcome or
+     * deadline", SWEEP never calls `Outbox.cancel` (ME-21) — so once alice is back online the op is
+     * stored, its outcome lands on a message that no longer exists (`OutcomeStep`: "the message
+     * expired and was swept meanwhile … the release stands"), and bob receives it, unread, capped
+     * from his own arrival (C-11).
+     *
+     * **Every step first does what a crash cut short in the one before** — the send (a user retry,
+     * never once the clock has passed the message's expiry), the clock past its expiry, alice's
+     * sweep — and the last step takes alice's device off the offline list before it raises a single
+     * event, so no crash leaves her offline for the run's tail. One crash per run, so no step is
+     * cut short twice.
+     *
+     * **Checked at every check of every run:** the standing T25 clause
+     * [DmStructuralInvariants.retainedBlobs]. **Checked in every run:** once alice's op for the
+     * message existed, bob renders the message at the end — the op ran to its outcome after its
+     * message was gone. **Fault-free:** alice's SWEEP deleted the message while its op was still
+     * pending, and the op's late outcome was released. **Oracles:** no-loss (alice's row goes by her
+     * own timer, so she calls nothing sent that bob must render; bob's copy is the check above),
+     * liveness alice ↔ bob, nothing owed.
+     *
+     * **Mutant ME-20** (the retained blob survives its message's deletion): a rewrite of the schema
+     * of alice's device — which migrates on the bus in the setup for it ([DmCrashWorld.node]) —
+     * whose window is the SWEEP transaction that deletes the message after [EP_LATE_MARK].
+     */
+    fun epStoreAfterExpiry(): DmScenario = DmScenario(
+        name = "EP-store-after-expiry",
+        setup = { world ->
+            world.node("alice", 0x41, migrateOnTheBus = true)
+            world.node("bob", 0x51)
+            DmScripts.activate(world)
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.setTimer(DmScripts.contact(world, "alice", "bob"), Timer.MIN_5)
+            world.pump()
+            world.passes()
+        },
+        steps = listOf(
+            step("alice's device goes offline, and she writes a five-minute message") { w ->
+                w.relay.offline = setOf("alice")
+                epLateWrite(w)
+            },
+            step("past its expiry, alice's SWEEP runs with no network") { w ->
+                w.notes.putIfAbsent(EP_LATE_MARK, w.bus.count)
+                epLateWrite(w)
+                epLateExpire(w)
+            },
+            step("alice is back online: her op is stored, its outcome lands on a deleted message, bob receives it") { w ->
+                // First, before any event: no crash can leave alice offline for the run's tail.
+                w.relay.offline = emptySet()
+                epLateWrite(w)
+                // What a crash cut short in the step before — the clock, the sweep — before the
+                // first pump, so still with no network.
+                epLateExpire(w)
+                w.pump()
+                w.passes()
+                w.pump()
+                w.passes()
+            },
+        ),
+        alwaysChecks = { world ->
+            if (world.notes[EP_LATE_WRITTEN] == true && EP_LATE !in DmScripts.inboundTexts(world, "bob")) {
+                dmViolation(
+                    "EP-store-after-expiry: alice's op for '$EP_LATE' existed and bob never received it — an op " +
+                        "runs to its outcome after its message is deleted (§21.10 point 2)",
+                )
+            }
+        },
+        finalChecks = { world ->
+            if (world.notes[EP_LATE_IN_FLIGHT] != true) {
+                dmViolation(
+                    "EP-store-after-expiry fault-free: alice's SWEEP did not delete the message while its op was " +
+                        "still pending, so nothing was in flight past its deletion",
+                )
+            }
+            val op = world.notes[EP_LATE_OP] as ByteArray
+            val released = rawCount(
+                world, "alice", "SELECT count(*) FROM outbox_op WHERE operation_id = ? AND released = 1", listOf(op),
+            )
+            if (released != 1L) {
+                dmViolation("EP-store-after-expiry fault-free: the late outcome of alice's op was not released")
+            }
+        },
+        liveness = "alice" to "bob",
+        noLoss = true,
+    )
+
+    /**
+     * [EP_LATE], written if no row of it exists and the clock has not yet passed its expiry — a user
+     * retry of a send a crash lost — and its op recorded.
+     */
+    private fun epLateWrite(w: DmCrashWorld) {
+        if (w.notes[EP_LATE_EXPIRED] != true && DmScripts.outgoingState(w, "alice", EP_LATE) == null) {
+            w["alice"].device.engine.send(DmScripts.contact(w, "alice", "bob"), EP_LATE, null)
+        }
+        if (w.notes[EP_LATE_OP] != null) return
+        val id = w["alice"].device.engine.conversation(DmScripts.contact(w, "alice", "bob"), 50, null)
+            .firstOrNull { it.outgoing && it.text == EP_LATE }?.id?.toByteArray() ?: return
+        var op: ByteArray? = null
+        w["alice"].raw.query(
+            "SELECT o.operation_id FROM dm_outbound_op o JOIN dm_outbound_item i ON i.item_id = o.item_id " +
+                "WHERE i.message_ref = ?",
+            listOf(id),
+        ) { op = it.blob(0) }
+        w.notes[EP_LATE_ID] = id
+        w.notes[EP_LATE_OP] = op ?: return
+        w.notes[EP_LATE_WRITTEN] = true
+    }
+
+    /**
+     * The clock past [EP_LATE]'s expiry, once — `ceil_minute(send + 5 min)` is at most six minutes
+     * on — then a pass on each side, and whether alice's sweep deleted the message while its op was
+     * still pending with its ciphertext.
+     */
+    private fun epLateExpire(w: DmCrashWorld) {
+        if (w.notes[EP_LATE_EXPIRED] != true) {
+            w.advanceBy(6 * DmWorld.MINUTE)
+            w.notes[EP_LATE_EXPIRED] = true
+        }
+        w.passes()
+        val id = w.notes[EP_LATE_ID] as? ByteArray ?: return
+        val op = w.notes[EP_LATE_OP] as ByteArray
+        val gone = rawCount(w, "alice", "SELECT count(*) FROM dm_message WHERE message_id = ?", listOf(id)) == 0L
+        val pending = rawCount(
+            w, "alice",
+            "SELECT count(*) FROM outbox_op WHERE operation_id = ? AND outcome = 'pending' AND ciphertext IS NOT NULL",
+            listOf(op),
+        ) == 1L
+        if (gone && pending) w.notes[EP_LATE_IN_FLIGHT] = true
+    }
+
     fun all(): List<DmScenario> = listOf(
         rp6ReEncryptionAfterAWronglyReportedFailure(),
         rp9FlippedBytesDoNotOpenAndAnswerNothing(),
@@ -2014,5 +2162,6 @@ internal object DmSuiteCases {
         epSweepTruncatesTheLog(),
         epClockSteppedBackDoesNotDelayDeletion(),
         roPruneASkippedKeyAtItsAgeBound(),
+        epStoreAfterExpiry(),
     )
 }

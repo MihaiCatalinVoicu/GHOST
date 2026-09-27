@@ -127,6 +127,16 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
      */
     var honoursTtl: Boolean = true
 
+    /**
+     * Devices with **no network** (§22.38, EP-store-after-expiry): the relay neither takes a store
+     * from one of these nodes nor serves it anything, so every op the node writes stays `pending`
+     * with its ciphertext — Phase 7 retrying against a network that is not there — until the
+     * scenario takes the node off the list. The node's own passes run as ever, SWEEP among them:
+     * what a device does on its own clock does not wait for the network. Empty in every scenario
+     * but the one that needs a message's op still in flight when SWEEP deletes the message.
+     */
+    var offline: Set<String> = emptySet()
+
     private class Stored(
         val namespace: ByteArray,
         val hash: ByteArray,
@@ -157,9 +167,10 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
      * node that listens on its namespace. Returns how many blobs were delivered.
      */
     fun pump(nodes: List<DmNode>): Int {
-        for (node in nodes) collect(node)
+        val online = nodes.filter { it.name !in offline }
+        for (node in online) collect(node)
         var moved = 0
-        for (node in nodes) moved += serve(node)
+        for (node in online) moved += serve(node)
         return moved
     }
 

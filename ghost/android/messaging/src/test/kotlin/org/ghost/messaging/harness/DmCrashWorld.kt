@@ -50,11 +50,18 @@ internal class DmCrashWorld(
      */
     var mutation: DmMutants.Mutation? = null
 
+    /**
+     * A node on a fresh file. [migrateOnTheBus] runs its migrations through the fault-injecting
+     * executor ([DmNode.migrateOnTheBus]): a setup is unarmed, so they raise no event and move no
+     * count, and what it buys is that a mutant's statement rewrite reaches this device's schema
+     * (ME-20, EP-store-after-expiry; design §22.38). False for every other node.
+     */
     fun node(
         name: String,
         branch: Int,
         identityBranch: Int = branch + 1,
         streamOffset: Int = 0,
+        migrateOnTheBus: Boolean = false,
     ): DmNode {
         check(name !in byName && name !in retired) { "duplicate node $name" }
         val node = DmNode(
@@ -69,6 +76,7 @@ internal class DmCrashWorld(
             identityBranch = identityBranch,
             streamOffset = streamOffset,
         )
+        node.migrateOnTheBus = migrateOnTheBus
         install(node)
         node.boot()
         order += node

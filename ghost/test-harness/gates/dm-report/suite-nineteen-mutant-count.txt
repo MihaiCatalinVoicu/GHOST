@@ -35,7 +35,8 @@ dm crash classes: EP-sweep-log 2240 events, 2240 singles, 0 doubles, 2 timeouts 
 dm crash classes: EP-clock-back 1879 events, 1879 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: SCN-L-v3 1156 events, 1156 singles, 0 doubles, 2 timeouts over 2 stores
 dm crash classes: RO-prune 8682 events, 8682 singles, 0 doubles, 8 timeouts over 8 stores
-dm suite cases: 14 run, 0 failures
+dm crash classes: EP-store-after-expiry 1626 events, 1626 singles, 0 doubles, 1 timeouts over 1 stores
+dm suite cases: 15 run, 0 failures
 dm mutants: 19 run, 19 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point
 dm mutant MC-5: detected by RP6's retry, which D3's absence lets reach the message row (counted id_taken); kill rule: fault-free, beside a clean control
@@ -59,4 +60,5 @@ dm mutant ME-9: detected by SCN-L-v3 (the open path refuses a file without dm_me
 dm mutant ME-11: detected by EP-sweep-log (the log is 0 bytes right after every checkpoint the device reports done, §10.9 item 3); kill rule: fault-free and at 1 of 1 crash points inside the transaction it first changes, each beside a clean run
 dm mutant ME-16: detected by EP-read-expiry (an expired row is still readable before SWEEP); kill rule: fault-free, beside a clean control
 dm mutant ME-17: detected by EP-clock-back (a message whose unread cap lies between the stepped-back wall clock and the expiry clock is deleted by the sweep that follows its RECV, §10.9 item 4); kill rule: fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run
+dm mutant ME-20: detected by EP-store-after-expiry (the standing clause: no retained blob outlives its message); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run
 dm mutant ME-24: detected by SCN-C (the standing clause: every stored session state opens under the device's state key); kill rule: fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run

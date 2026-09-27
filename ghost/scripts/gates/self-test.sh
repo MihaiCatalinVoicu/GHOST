@@ -439,6 +439,14 @@ dmr_case fail missing-ro-prune.txt gate "rejects a report without RO-prune"
 dmr_case fail suite-thirteen-case-count.txt gate "rejects the thirteen-case suite line of §22.38's group 5"
 dmr_case fail suite-twentytwo-mutant-count.txt gate "rejects the twenty-two-mutant report of §22.38's group 5"
 dmr_case fail mc30-one-half.txt gate "rejects MC-30 killed for one of its two halves"
+# §22.38, group 7: EP-store-after-expiry under the enumeration, and ME-20 killed there — fifteen suite
+# cases and twenty-four mutants. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no EP-store-after-expiry line, the fourteen-case suite line of
+# group 6, its twenty-three-mutant line, and ME-20 held to the fault-free rule alone.
+dmr_case fail missing-ep-store-after-expiry.txt gate "rejects a report without EP-store-after-expiry"
+dmr_case fail suite-fourteen-case-count.txt gate "rejects the fourteen-case suite line of §22.38's group 6"
+dmr_case fail suite-twentythree-mutant-count.txt gate "rejects the twenty-three-mutant report of §22.38's group 6"
+dmr_case fail me20-weakened-kill-rule.txt gate "rejects ME-20 killed only fault-free"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

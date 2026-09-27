@@ -51,6 +51,33 @@ internal object DmStructuralInvariants {
         check(node.raw, node.name, where, heavy, settled)
         checkpointsTruncatedTheLog(node, where)
         sessionStates(node, where)
+        retainedBlobs(node, where)
+    }
+
+    /**
+     * **T25: no retained blob outlives the message it was kept for** (§7.5 "Retained blob", §21.10
+     * point 2; mutant ME-20, design §22.38). The blob is messaging's copy of an op's ciphertext,
+     * kept only so an INDETERMINATE resend can repeat the identical bytes, and it goes one of two
+     * ways: at the op's terminal outcome (`clearOpBlob`), or — when SWEEP deletes the message
+     * first, which a five-minute message whose op is still in flight makes happen — with the
+     * message, by the cascade message → item → op. So an op that still holds a blob has its item,
+     * and the item's message (a control item has none) still exists. The schema's foreign keys are
+     * what make that so; what this catches is a schema without them — the op left behind, whose
+     * late outcome then finds no item and never clears the blob. §15.7 names T25's physical scan of
+     * the blob bytes; this is its logical half, over the rows. On [DmNode]s only, like the other
+     * clauses of §22.38: the entitlement world's clients are not this work's.
+     */
+    fun retainedBlobs(node: DmNode, where: String) {
+        empty(
+            node.raw, "${node.name} @ $where", "a retained blob that outlives its message (T25, §7.5 \"Retained blob\")",
+            """SELECT count(*) FROM dm_outbound_op o
+                 WHERE o.purpose = 'item' AND o.blob IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM dm_outbound_item i
+                                    WHERE i.item_id = o.item_id
+                                      AND (i.message_ref IS NULL
+                                           OR EXISTS (SELECT 1 FROM dm_message m
+                                                       WHERE m.message_id = i.message_ref)))""",
+        )
     }
 
     /**

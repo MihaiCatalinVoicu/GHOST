@@ -121,11 +121,13 @@ internal class DmNode(
 
     /**
      * Where [boot] runs the migrations (SCN-L-v3, design §22.38). False for every node but
-     * SCN-L-v3's bob: on the raw connection, unarmed, as always. True: through the fault-injecting
-     * executor, so every statement of every migration the file still needs is an **event** — a
-     * crash point, and a statement a mutant's [rewrite] can change (MC-17, ME-9) — and an integrity
-     * refusal at open is a **finding** of the run ([DmInvariantViolation]) rather than a harness
-     * error. Test-only: the device's own open path is not in `:messaging` at all.
+     * SCN-L-v3's bob and EP-store-after-expiry's alice: on the raw connection, unarmed, as always.
+     * True: through the fault-injecting executor, so every statement of every migration the file
+     * still needs is an **event** when the world is armed — a crash point — and in every case a
+     * statement a mutant's [rewrite] can change (MC-17, ME-9; ME-20 on a file migrated in a setup,
+     * where nothing is an event) — and an integrity refusal at open is a **finding** of the run
+     * ([DmInvariantViolation]) rather than a harness error. Test-only: the device's own open path
+     * is not in `:messaging` at all.
      */
     var migrateOnTheBus: Boolean = false
 
@@ -198,7 +200,8 @@ internal class DmNode(
      * Migration and `verifyIntegrity` run on the **raw** connection, unarmed, because they are the
      * open path and not the scenario: a crash injected into `MigrationRunner` would test migration
      * atomicity, which is SCN-L's job and `Migration5Test`'s, not every scenario's. SCN-L-v3's node
-     * is the one exception, and the one scenario whose job it is ([migrateOnTheBus]).
+     * is the exception whose job it is, and EP-store-after-expiry's alice the one that needs a
+     * mutant's rewrite to reach its schema ([migrateOnTheBus]).
      */
     fun boot() {
         check(current == null) { "$name is already booted" }

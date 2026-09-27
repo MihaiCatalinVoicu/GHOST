@@ -432,8 +432,10 @@ esac
 # enumeration.
 scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L SCN-L-v3)
 # §15.5's sub-cases under the enumeration: S10's four, KC12, RS2 and RP7 since §22.27, RP5, RP4,
-# RP11 and KC5b since §22.37, and EP-sweep-log, EP-clock-back and RO-prune since §22.38.
+# RP11 and KC5b since §22.37, and EP-sweep-log, EP-clock-back, RO-prune and EP-store-after-expiry
+# since §22.38.
 scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7 RP5 RP4 RP11 KC5b EP-sweep-log EP-clock-back RO-prune)
+scenarios+=(EP-store-after-expiry)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
@@ -570,11 +572,11 @@ seeds="$(grep -E '^dm seeded worlds: [0-9]+ seeds, 0 failures$' "$report" | sed 
 drew="$(grep -E '^dm seeded worlds \(faulted\): [0-9]+ seeds, [0-9]+ drew a fault, 0 failures$' "$report" | sed -nE 's/.*, ([0-9]+) drew a fault.*/\1/p' || true)"
 [ -n "$drew" ] && [ "$drew" -gt 0 ] 2>/dev/null || bad "no faulted seeded-world line, or no seed drew a fault"
 
-# §15.5's suite cases: fourteen since §22.38 — S10's four, §22.27's KC12, RS2 and RP7, §22.37's RP5,
-# RP4, RP11 and KC5b, and EP-sweep-log, EP-clock-back and RO-prune. Pinned, not "at least one"
-# (§22.27's review): a report of the four cases before §22.27 passed the old rule, and one of an
-# earlier count would pass a floor.
-grep -qxF 'dm suite cases: 14 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 14 run, 0 failures'"
+# §15.5's suite cases: fifteen since §22.38 — S10's four, §22.27's KC12, RS2 and RP7, §22.37's RP5,
+# RP4, RP11 and KC5b, and EP-sweep-log, EP-clock-back, RO-prune and EP-store-after-expiry. Pinned, not
+# "at least one" (§22.27's review): a report of the four cases before §22.27 passed the old rule, and
+# one of an earlier count would pass a floor.
+grep -qxF 'dm suite cases: 15 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 15 run, 0 failures'"
 
 # §15.7's mutants: the count, and one line per mutant naming the case that kills it. A registered
 # mutant with no named killer is not registered, it is a claim (§15.7, `Mutants.kt`, `t2_mutants.rs`).
@@ -612,8 +614,11 @@ grep -qxF 'dm suite cases: 14 run, 0 failures' "$report" || bad "the suite-case 
 # under the device's state key. Twenty-three since §22.38's group 6: MC-30 (skipped keys not pruned at
 # FRESH + 2σ, or the first-seen sidecar kept as a log), both halves killed by RO-prune — the first by
 # the age clause after SWEEP, the second, a native hook, by the sidecar's projection clause.
-grep -qxF 'dm mutants: 23 run, 23 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 23 run, 23 detected'"
+# Twenty-four since §22.38's group 7: ME-20 (the retained blob survives its message's deletion), a
+# rewrite of the op's foreign key in the schema of a sender that migrates on the bus, killed by
+# EP-store-after-expiry's standing clause that no retained blob outlives its message.
+grep -qxF 'dm mutants: 24 run, 24 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 24 run, 24 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -664,11 +669,16 @@ rule_me24='fault-free and at 6 of 6 crash points inside the transaction it first
 # prune runs in — found by the prune half's departure (events 7948..7973) and by the first session
 # state the sidecar half writes after the mark (7948..7974).
 rule_mc30='its prune half fault-free and at 6 of 6 crash points inside the transaction it first changes; its sidecar half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run'
+# Group 7's: ME-20, at six points spread over the SWEEP transaction that deletes EP-store-after-expiry's
+# message while its op is in flight — named by the first statement it acts at after the mark, the
+# message's delete (the rewrite acted on the schema in the setup and changes no statement after it) —
+# events 64..89.
+rule_me20='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-9|$rule_mc9" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
   "MC-16|$rule_ff" "MC-17|$rule_mc17" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
   "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-30|$rule_mc30" "MC-33|$rule_s10b" \
-  "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17" "ME-24|$rule_me24"; do
+  "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17" "ME-20|$rule_me20" "ME-24|$rule_me24"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"
   line="$(grep -E "^dm mutant ${mutant}: " "$report" | head -1 || true)"

@@ -125,7 +125,8 @@ internal object DmMutants {
          * For a mutant that changes only the **bytes** a statement writes — its world issues the same
          * statements, so no trace ever departs (§22.37's window of a native mutant has no event to
          * find): the statements it acts at, by their label. Its window is the transaction of the
-         * first one after the scenario's mark. ME-24 only.
+         * first one after the scenario's mark. ME-24, MC-30's sidecar half, and ME-20 — a rewrite
+         * that acted in the setup, where nothing is an event, and changes no statement after it.
          */
         val actsAt: ((String) -> Boolean)? = null,
         /**
@@ -455,6 +456,41 @@ internal object DmMutants {
         sidecarLog = true,
         actsAt = { label -> label.startsWith("INSERT INTO olm_session(") || label.startsWith("UPDATE olm_session SET state_env") },
     )
+
+    /**
+     * **ME-20 — the retained blob survives its message's deletion** (§7.5 "Retained blob", §21.10
+     * point 2, T25; built by §22.38). A statement rewrite of migration 5: `dm_outbound_op.item_id`
+     * loses its foreign key — the whole clause, since a key kept without its cascade makes SWEEP's
+     * delete fail instead of leaving the op — so when SWEEP deletes a message whose op is still in
+     * flight, the cascade takes the message and its item and leaves the op with its blob, and the
+     * op's late outcome then finds no item and never clears it. Only a device that migrates on the
+     * bus has its schema rewritten: EP-store-after-expiry's alice, in the setup
+     * ([DmCrashWorld.node]). §15.7 names T25's physical scan of the blob bytes; what kills it here
+     * is its logical half, the standing clause [DmStructuralInvariants.retainedBlobs]. The rewrite
+     * acts in the setup, where nothing is an event, and changes no statement the world then issues,
+     * so its window is named by the statement it acts at ([actsAt]): the SWEEP delete of the first
+     * message after the mark, whose cascade is the one the schema no longer has.
+     */
+    val ME20 = Mutation(
+        id = "ME-20",
+        defeats = "§7.5, §21.10 point 2: a message's retained blob is deleted with the message, by the cascade message → item → op",
+        detectedBy = "EP-store-after-expiry (the standing clause: no retained blob outlives its message)",
+        expect = "a retained blob that outlives its message (T25",
+        expectUnderCrash = listOf("a retained blob that outlives its message (T25"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("CREATE TABLE dm_outbound_op")) {
+                val mutated = sql.replace(ME20_KEY, "item_id BLOB,")
+                check(mutated != sql) { "ME-20's rewrite found no foreign key on dm_outbound_op.item_id" }
+                Pair(mutated, args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+        actsAt = { label -> label.startsWith("DELETE FROM dm_message WHERE message_id") },
+    )
+
+    /** `dm_outbound_op.item_id`'s foreign key, as migration 5 writes it (the spacing is the schema's). */
+    private val ME20_KEY = Regex("""item_id\s+BLOB REFERENCES dm_outbound_item\(item_id\) ON DELETE CASCADE,""")
 
     /** MC-30's decorator: every `sessionPrune` reports that it removed nothing and leaves the state as it was. */
     private class NoPrune(private val real: org.ghost.messaging.port.DmEnvelopes) : org.ghost.messaging.port.DmEnvelopes by real {
@@ -973,6 +1009,6 @@ internal object DmMutants {
     fun all(): List<Mutation> =
         listOf(
             MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC30, MC33,
-            ME9, ME11, ME16, ME17, ME24,
+            ME9, ME11, ME16, ME17, ME20, ME24,
         )
 }
