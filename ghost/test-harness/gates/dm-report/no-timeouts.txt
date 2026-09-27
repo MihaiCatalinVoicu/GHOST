@@ -1,10 +1,10 @@
 GHOST DM exit gate (Phase 9 design §15.3, §15.4, §15.5, §15.7; slices S10, S10b, S10c, SCN-E and the suite cases of §22.27 and §22.37)
 scale: pr (every 13th event), seeds 8
 coverage: the scale is the density of the dm crash classes lines; the dm crash sample lines (SCN-E) are sampled, not every event
-dm crash sample: SCN-E/LOSE_KEYS bob 75467 events, 3 singles over 3 phases (1 per phase), 1 timeouts and 1 crashes after apply at 1 of 6 stores (per phase 1/6 0/0 0/0); sampled, not every event
-dm crash sample: SCN-E/LOSE_KEYS alice 79469 events, 3 singles over 3 phases (1 per phase), 2 timeouts and 2 crashes after apply at 2 of 16 stores (per phase 1/12 1/4 0/0); sampled, not every event
-dm crash sample: SCN-E bob 643799 events, 6 singles over 6 phases (1 per phase), 3 timeouts and 3 crashes after apply at 3 of 12 stores (per phase 1/6 0/0 0/0 0/0 1/3 1/3); sampled, not every event
-dm crash sample: SCN-E alice 1569281 events, 6 singles over 6 phases (1 per phase), 5 timeouts and 5 crashes after apply at 5 of 1923 stores (per phase 1/12 1/6 1/6 1/1890 1/9 0/0); sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS bob 71931 events, 3 singles over 3 phases (1 per phase), 1 timeouts and 1 crashes after apply at 1 of 6 stores (per phase 1/6 0/0 0/0); sampled, not every event
+dm crash sample: SCN-E/LOSE_KEYS alice 73595 events, 3 singles over 3 phases (1 per phase), 2 timeouts and 2 crashes after apply at 2 of 16 stores (per phase 1/12 1/4 0/0); sampled, not every event
+dm crash sample: SCN-E bob 593700 events, 6 singles over 6 phases (1 per phase), 3 timeouts and 3 crashes after apply at 3 of 12 stores (per phase 1/6 0/0 0/0 0/0 1/3 1/3); sampled, not every event
+dm crash sample: SCN-E alice 1475798 events, 6 singles over 6 phases (1 per phase), 5 timeouts and 5 crashes after apply at 5 of 1923 stores (per phase 1/12 1/6 1/6 1/1890 1/9 0/0); sampled, not every event
 dm crash classes: SCN-A 1553 events, 120 singles, 120 doubles, 0 timeouts over 3 stores
 dm crash classes: SCN-K 1859 events, 143 singles, 0 doubles, 0 timeouts over 3 stores
 dm crash classes: SCN-H 17416 events, 1340 singles, 0 doubles, 0 timeouts over 22 stores
