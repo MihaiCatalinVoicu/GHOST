@@ -65,6 +65,12 @@ dependencies {
     implementation(project(":identity"))
     testImplementation(libs.junit)
     testImplementation(libs.sqlite.jdbc)
+    // `DmSessionStates` (design §22.38 items 11 and 12) opens every stored session state on the JVM,
+    // independently of the native code that wrapped it: ChaCha20-Poly1305 from Bouncy Castle, the
+    // coordinate the project already ships (`:identity`, `:network`) and tests with (§16.3). Those
+    // modules declare it `implementation`, so it is on this source set's runtime classpath but not
+    // on its compile classpath: without this line the unit tests do not compile under AGP.
+    testImplementation(libs.bouncycastle.bcprov)
     // **Test only**, and only for the entitlement world of §15.1 variant (b): its clients carry the
     // real entitlement engine (the Phase 8 `EntHarness` compiled in above), so the unit-test
     // classpath needs `:entitlement` and the `:network` JNI surface it names. The production graph
