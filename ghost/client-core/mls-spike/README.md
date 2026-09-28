@@ -31,6 +31,9 @@ V10-10's timings, which bound nothing, are printed without assertion.
 | `size-probe/size-probe.patch` | V10-1, V10-3, V10-7: links a probe crate (the spike's sources by `#[path]`) into `ghost-client-net`, plus a stub for openmls's optional `openmls_sqlite_storage` without which the ghost lock does not resolve (evidence §1) |
 | `scripts/` | the build, symbol, determinism, fetch, crawl and aggregation scripts named below |
 | `vectors/` | fetched test vectors (not committed; `.gitignore`) |
+| `core/tests/r10d_s0_12_lifetimes.rs` | round 10d (design §19.27): the lifetime **refusal branch** hides the sender and the proposals; the **constant lifetime** `[0, 2⁶⁴ − 1]` (still 395 B) is never refused |
+| `core/tests/r10d_s0_15_anchor.rs` | round 10d (design §19.27): a removed committer captures an invitee/rejoiner; the **set** vs ordered committers digest; the anchor **pre-check** cost before `JoinBuilder::build()` |
+| `core/tests/r10d_password.rs` | round 10d (design §19.28): the RFC 9106 §5.3 Argon2id vector, host timings per profile, the `ChannelInviteV2` sealed invite and its leaked-link oracle (adds `argon2` 0.6.0 as a **dev-dependency** of this workspace only) |
 
 ## Commands
 
