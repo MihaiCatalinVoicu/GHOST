@@ -31,6 +31,12 @@ V10-10's timings, which bound nothing, are printed without assertion.
 | `size-probe/size-probe.patch` | V10-1, V10-3, V10-7: links a probe crate (the spike's sources by `#[path]`) into `ghost-client-net`, plus a stub for openmls's optional `openmls_sqlite_storage` without which the ghost lock does not resolve (evidence §1) |
 | `scripts/` | the build, symbol, determinism, fetch, crawl and aggregation scripts named below |
 | `vectors/` | fetched test vectors (not committed; `.gitignore`) |
+| `core/tests/r10d_s0_12_lifetimes.rs` | round 10d (design §19.27): the lifetime **refusal branch** hides the sender and the proposals; the **constant lifetime** `[0, 2⁶⁴ − 1]` (still 395 B) is never refused |
+| `core/tests/r10d_s0_15_anchor.rs` | round 10d (design §19.27): a removed committer's fresh-group forgery passes the anchor comparison (and, round 10e, fails §5.3's leaf rule); the **set** vs ordered committers digest; the anchor **pre-check** cost before `JoinBuilder::build()` |
+| `core/tests/r10d_password.rs` | round 10d (design §19.28, as corrected by §19.29): the RFC 9106 §5.3 Argon2id vector, host timings per profile (p = 1 and p = 4), and `ChannelInviteV2` **exactly as specified** (`core/tests/support/invite_v2.rs`: 335 B for every kind and name, what a leaked link shows, the refusals); adds `argon2` 0.6.0 as a **dev-dependency** of this workspace only |
+| `core/tests/r10e_protocol.rs` | round 10e (design §19.29): round 10d's lifetime rule forks honest members and lets any member freeze a channel, the constant-lifetime rule converges; a removed committer's fork of the real group passes the anchor and §5.3 and stays live (join and rejoin); the rejoin anchor is the signature only |
+| `core/tests/r10e_password.rs` | round 10e (design §19.29): the `pw_version` admission check (round 10d's vs the corrected one), a sponsor that never knew the password, Argon2id floors as OWASP pairs, the offline guessing rate of a leaked link |
+| `core/tests/support/invite_v2.rs` | the `ChannelInviteV2` construction shared by the two password probes (a `#[path]` module, not a test target) |
 
 ## Commands
 
