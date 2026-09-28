@@ -71,6 +71,9 @@ class DmCrashEnumerationTest {
 
     @Test fun scnLMigration() = enumerate(DmScenarios.scnL())
 
+    /** §22.38: a v3 file with Phase 7 rows migrated on the bus, every statement a crash point. */
+    @Test fun scnLMigrationOfAV3File() = enumerate(DmScenarios.scnLv3())
+
     /**
      * SCN-J's other half: `SQLITE_FULL` at every statement of SEND, RECV, BUNDLE and SWEEP.
      *

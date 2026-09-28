@@ -2,6 +2,7 @@ package org.ghost.messaging.harness
 
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.ContactId
+import org.ghost.storage.JdbcSqlExecutor
 import java.io.File
 import java.nio.file.Files
 
@@ -49,11 +50,18 @@ internal class DmCrashWorld(
      */
     var mutation: DmMutants.Mutation? = null
 
+    /**
+     * A node on a fresh file. [migrateOnTheBus] runs its migrations through the fault-injecting
+     * executor ([DmNode.migrateOnTheBus]): a setup is unarmed, so they raise no event and move no
+     * count, and what it buys is that a mutant's statement rewrite reaches this device's schema
+     * (ME-20, EP-store-after-expiry; design §22.38). False for every other node.
+     */
     fun node(
         name: String,
         branch: Int,
         identityBranch: Int = branch + 1,
         streamOffset: Int = 0,
+        migrateOnTheBus: Boolean = false,
     ): DmNode {
         check(name !in byName && name !in retired) { "duplicate node $name" }
         val node = DmNode(
@@ -68,17 +76,60 @@ internal class DmCrashWorld(
             identityBranch = identityBranch,
             streamOffset = streamOffset,
         )
+        node.migrateOnTheBus = migrateOnTheBus
+        install(node)
+        node.boot()
+        order += node
+        byName[name] = node
+        return node
+    }
+
+    /**
+     * A node on a database file [prepare] writes first, whose migrations run **on the bus**
+     * ([DmNode.migrateOnTheBus]; SCN-L-v3, design §22.38), with [afterMigrations] run at every
+     * boot right after them. For a step of the armed phase: the node is registered **before** its
+     * first boot, so a crash inside that boot's migration reaches a runner that can reboot it.
+     * [prepare] writes through a raw connection of its own, which it does not keep: nothing it
+     * does is an event.
+     */
+    fun nodeFromFile(
+        name: String,
+        branch: Int,
+        prepare: (JdbcSqlExecutor) -> Unit,
+        afterMigrations: (JdbcSqlExecutor) -> Unit,
+    ): DmNode {
+        check(name !in byName && name !in retired) { "duplicate node $name" }
+        val node = DmNode(
+            name = name,
+            branch = branch,
+            directory = directory,
+            bus = bus,
+            startSeconds = order.maxOfOrNull { it.clock.now } ?: startSeconds,
+        )
+        JdbcSqlExecutor(node.path).use(prepare)
+        node.migrateOnTheBus = true
+        node.afterMigrations = afterMigrations
+        install(node)
+        order += node
+        byName[name] = node
+        node.boot()
+        return node
+    }
+
+    /** The world's [mutation], on a node about to boot. */
+    private fun install(node: DmNode) {
         mutation?.let {
             // A rewrite that reads the device's own clock (MC-21, §22.27) is bound to this node's
             // clock here, once: the clock survives every reboot, so the bound rewrite does too.
             node.rewrite = it.rewriteOn?.invoke(node.clock) ?: it.rewrite
             node.decorate = it.decorate
             node.defer = it.defer
+            node.deferUpdate = it.deferUpdate
+            node.bindingOmit = it.bindingOmit
+            node.freshness = it.freshness
+            node.stateUnwrapped = it.stateUnwrapped
+            node.sidecarLog = it.sidecarLog
         }
-        node.boot()
-        order += node
-        byName[name] = node
-        return node
     }
 
     fun nodes(): List<DmNode> = order

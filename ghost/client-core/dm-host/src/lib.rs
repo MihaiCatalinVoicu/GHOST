@@ -8,11 +8,15 @@
 //! what makes the host/Android equivalence test of §15.9 item 7 an equivalence test rather than a
 //! comparison of two implementations.
 //!
-//! **The one symbol more** (slice S12, §22.8.10 point 6): `DmEquivalence.run`, the deterministic
-//! case runner of `ghost_client_dm::equivalence`, behind the `test-vectors` feature. Built for
-//! `x86_64-linux-android` this library is the emulator's test library, packaged only in the
-//! `androidTest` APK; G-R6 checks it exports the closed list plus that one entry, and that the
-//! shipped `libghost_client_net.so` exports no `DmEquivalence` symbol.
+//! **The symbols more** (slice S12, §22.8.10 point 6): `DmEquivalence.run`, the deterministic
+//! case runner of `ghost_client_dm::equivalence`, since §22.37 `DmEquivalence.bindingHooks`, the
+//! per-context switch of MC-20's mutant and KC5b's replayed binding (`ghost_client_dm::binding::
+//! hooks`), and since §22.38 `DmEquivalence.stateWrapHook` and `DmEquivalence.sidecarLogHook`, the
+//! per-context switches of ME-24's and MC-30's mutants (`ghost_client_dm::wrap::hooks`,
+//! `ghost_client_dm::olm::state::hooks`), all behind the `test-vectors` feature. Built for `x86_64-linux-android` this library is
+//! the emulator's test library, packaged only in the `androidTest` APK; G-R6 checks it exports the
+//! closed list plus exactly those entries, and that the shipped `libghost_client_net.so` exports no
+//! `DmEquivalence` symbol.
 //!
 //! **One check more, and no symbol** (§15.5 PQ1, §22.20): `ghost-client-dm`'s `pq-spy` feature runs
 //! PQ1 as an assertion around every `openIntro` — exactly one X-Wing decapsulation and one inner key

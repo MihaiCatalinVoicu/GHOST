@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6 (`scripts/gates/dm-jni-surface.sh`): a test library as §22.38's group
+# 5 built it — the closed list, `DmEquivalence.run`, `.bindingHooks` and `.stateWrapHook`, without
+# `DmEquivalence.sidecarLogHook`. Refused with `--test`: the crash worlds' MC-30 would find no switch
+# in it.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_run\n' 65536
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks\n' 65600
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook\n' 65664

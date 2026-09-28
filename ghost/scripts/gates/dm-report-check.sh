@@ -45,7 +45,8 @@
 # rules below and never to the every-event rule of the `dm crash classes:` lines; it adds MC-14 and
 # MC-15, and MC-22 stays out of reach (it needs an engine seam, §22.25). The suite cases of §22.27
 # add three functional-suite sub-cases under the enumeration, KC12, RS2 and RP7, and the two mutants
-# the first two make reachable, MC-21 and MC-24: fifteen (RP7's MC-9 needs a seam, §22.27).
+# the first two make reachable, MC-21 and MC-24: fifteen (RP7's MC-9 needed a seam, §22.27, which
+# §22.38 built).
 # Raising them is the next slice's job and is exactly what should fail this script until the tests
 # behind them exist: a gate that asserted the design's numbers while running a subset would pass on
 # evidence nobody produced, which is the one failure mode a report-checked gate must not have.
@@ -424,12 +425,17 @@ esac
 
 
 # The scenarios and suite cases slices S10, S10b and S10c implement (S10b added SCN-H, SCN-I, SCN-K
-# and SCN-G's week-boundary retry as `SCN-G-week`, §22.19; S10c added SCN-C, §22.23). Each must have
-# a crash-class line, and that line must report at least one single crash: an enumeration of zero
-# crash points is a scenario that ran once without faults, which is not a crash enumeration.
-scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L)
-# §15.5's sub-cases under the enumeration: S10's four, and KC12, RS2 and RP7 since §22.27.
-scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7)
+# and SCN-G's week-boundary retry as `SCN-G-week`, §22.19; S10c added SCN-C, §22.23; §22.38 added
+# `SCN-L-v3`, SCN-L's v3 file migrated on the bus, every statement of migrations 4 and 5 a crash
+# point). Each must have a crash-class line, and that line must report at least one single crash: an
+# enumeration of zero crash points is a scenario that ran once without faults, which is not a crash
+# enumeration.
+scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L SCN-L-v3)
+# §15.5's sub-cases under the enumeration: S10's four, KC12, RS2 and RP7 since §22.27, RP5, RP4,
+# RP11 and KC5b since §22.37, and EP-sweep-log, EP-clock-back, RO-prune, EP-store-after-expiry,
+# EP-sender-ahead, EP-stale-display and RP8 since §22.38.
+scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7 RP5 RP4 RP11 KC5b EP-sweep-log EP-clock-back RO-prune)
+scenarios+=(EP-store-after-expiry EP-sender-ahead EP-stale-display RP8)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
@@ -566,9 +572,11 @@ seeds="$(grep -E '^dm seeded worlds: [0-9]+ seeds, 0 failures$' "$report" | sed 
 drew="$(grep -E '^dm seeded worlds \(faulted\): [0-9]+ seeds, [0-9]+ drew a fault, 0 failures$' "$report" | sed -nE 's/.*, ([0-9]+) drew a fault.*/\1/p' || true)"
 [ -n "$drew" ] && [ "$drew" -gt 0 ] 2>/dev/null || bad "no faulted seeded-world line, or no seed drew a fault"
 
-# §15.5's suite cases: seven since §22.27 — S10's four and KC12, RS2 and RP7. Pinned, not "at least
-# one" (§22.27's review): a report of the four cases before this slice passed the old rule.
-grep -qxF 'dm suite cases: 7 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 7 run, 0 failures'"
+# §15.5's suite cases: eighteen since §22.38 — S10's four, §22.27's KC12, RS2 and RP7, §22.37's RP5,
+# RP4, RP11 and KC5b, and EP-sweep-log, EP-clock-back, RO-prune, EP-store-after-expiry,
+# EP-sender-ahead, EP-stale-display and RP8. Pinned, not "at least one" (§22.27's review): a report of
+# the four cases before §22.27 passed the old rule, and one of an earlier count would pass a floor.
+grep -qxF 'dm suite cases: 18 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
 
 # §15.7's mutants: the count, and one line per mutant naming the case that kills it. A registered
 # mutant with no named killer is not registered, it is a claim (§15.7, `Mutants.kt`, `t2_mutants.rs`).
@@ -589,9 +597,33 @@ grep -qxF 'dm suite cases: 7 run, 0 failures' "$report" || bad "the suite-case l
 # changes after the scenario's mark — measured from the mutated run, from its first rewritten
 # statement to the transaction's last event. The first version spread the points from the mark to
 # the end of the run, and its review found MC-21's all after the mutant's only commit and five of
-# MC-24's before its first rewritten read (§22.27 item 11).
-grep -qxF 'dm mutants: 15 run, 15 detected' "$report" \
-  || bad "the mutant line is not 'dm mutants: 15 run, 15 detected'"
+# MC-24's before its first rewritten read (§22.27 item 11). Sixteen since §22.37: MC-20, which KC5b
+# makes reachable through the host library's binding hooks (a native mutation, per DM context), each
+# of its four omissions killed fault-free and under crashes, beside clean runs. §22.37 also kills
+# MC-7′'s second half — the reuse tuple split out of the RECV transaction — which adds no id: MC-7′
+# is one §15.7 entry, and its rule below now names both halves. Seventeen since §22.38: ME-11 (no
+# checkpoint), which EP-sweep-log makes reachable with the standing clause "the log is 0 bytes right
+# after every checkpoint the device reports done" (§10.9 item 3). Eighteen since §22.38's group 2:
+# ME-17 (a wall-clock back step delays deletion), which EP-clock-back makes reachable. Nineteen since
+# §22.38's group 3: MC-9 (no freshness check), which RP7 makes reachable through RECV's freshness
+# policy (`ContentFreshness`, whose production rule is the three comparisons RECV wrote inline) —
+# its B1 half, as the group's review found: RP7 cannot tell R9's.
+# Twenty-one since §22.38's group 4: MC-17 (the outbox rebuild loses a rowid or a trigger) and ME-9
+# (the expiry trigger never created), which SCN-L-v3's migration on the bus makes reachable.
+# Twenty-two since §22.38's group 5: ME-24 (session state stored unwrapped), a native hook per DM
+# context under `test-vectors`, killed by the standing clause that every stored session state opens
+# under the device's state key. Twenty-three since §22.38's group 6: MC-30 (skipped keys not pruned at
+# FRESH + 2σ, or the first-seen sidecar kept as a log), both halves killed by RO-prune — the first by
+# the age clause after SWEEP, the second, a native hook, by the sidecar's projection clause.
+# Twenty-four since §22.38's group 7: ME-20 (the retained blob survives its message's deletion), a
+# rewrite of the op's foreign key in the schema of a sender that migrates on the bus, killed by
+# EP-store-after-expiry's standing clause that no retained blob outlives its message. Twenty-five
+# since §22.38's group 8: ME-19 (the unread deadline from `author + bucket`), a rewrite of RECV's
+# incoming insert, killed by EP-sender-ahead's check that no cap lies past the recipient's own clock.
+# Twenty-six since §22.38's group 9: ME-7 (the recipient's countdown at receive), a clock-bound rewrite
+# of the same insert, killed by EP-stale-display's check that an unread message outlives its own timer.
+grep -qxF 'dm mutants: 26 run, 26 detected' "$report" \
+  || bad "the mutant line is not 'dm mutants: 26 run, 26 detected'"
 # Each line ends with the **rule** its kill was held to, written by the test that applied it from
 # the numbers it measured (`DmKills`). Without it the line was the registry's own sentence, and
 # moving one of S10b's kills back to the fault-free-only rule left the report — and this check —
@@ -608,11 +640,61 @@ rule_scne='fault-free and at 6 of 6 crash points between the loss and its fault-
 # is crashed at both, every event it has.
 rule_mc21='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 rule_mc24='fault-free and at 2 of 2 crash points inside the transaction it first changes, each beside a clean run'
-for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_ff" "MC-10|$rule_ff" "MC-12|$rule_ff" \
+# §22.37's two, each fault-free and at crash points of the window where it acts, beside a clean run
+# at each point, the crash injected and rebooted. MC-7′: its first half fault-free by the CB replay,
+# RP4 and RP5, and at six points inside the transaction its rewrite first changes (RP5's RECV of the
+# first flight); its second half — the tuple insert held back into a second transaction — at every
+# event of RP5's split window (three: the first transaction's post-commit event, the held insert,
+# the second one's pre-commit event). MC-20: each of its four omissions by KC5b's replay of that
+# field, fault-free and at every event (five) of the transaction it first changes — bob's first RECV
+# of that replay, found where the traced mutated run departs from the clean one.
+rule_mc7='its first half fault-free by 3 cases and at 6 of 6 crash points inside the transaction it first changes; its second half at 3 of 3 crash points of its split window; each beside a clean run'
+rule_mc20='each of its 4 omissions fault-free and at 5 of 5 crash points inside the transaction it first changes, by its own replay, each beside a clean run'
+# §22.38's. ME-11: fault-free, and at the one event of the window it acts in — SWEEP's first
+# checkpoint after EP-sweep-log's mark, a statement outside any transaction — beside a clean run.
+rule_me11='fault-free and at 1 of 1 crash points inside the transaction it first changes, each beside a clean run'
+# ME-17: fault-free, and at six points spread over the transaction in which its traced world parts
+# from the clean one — bob's RECV of the message, whose held-cap check the rewritten expiry-clock read
+# lets through (events 311..329). §22.38's review: its first rewritten span, which the rule took until
+# then, is alice's read-only conversation read (events 4..8), which decides nothing — "5 of 5" there
+# was the fault-free kill after an unrelated reboot, and a crash anywhere before the RECV killed it too.
+rule_me17='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# MC-9: fault-free by RP7, and at six points spread over the first transaction it changes — bob's
+# RECV of the re-sealed L0 (22 events), found where the traced mutated run departs from the clean one
+# (a policy substitution raises no event of its own, like MC-20's native omissions). What it shows is
+# the B1 half (§22.38's review): RP7's L0 is inside R9's age bound, so the age bound dropped alone
+# passes RP7, and the kill test runs that beside it; R9's half is `ContentFreshnessTest`'s.
+rule_mc9='its B1 half fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# Group 4's two, inside the migration transaction the rewrite changes, SCN-L-v3's bob migrating on
+# the bus. MC-17: each of its halves at six points spread from its rewritten statement to the end of
+# migration 4 (events 18..51 for the rows copied without their rowids, 29..51 for the trigger not
+# re-created). ME-9: six points from the trigger migration 5 no longer creates to its end (83..111).
+rule_mc17='its rowid half fault-free and at 6 of 6 crash points inside the transaction it first changes; its trigger half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run'
+rule_me9='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# Group 5's: ME-24 at six points spread over the transaction that stores SCN-C's first session — the
+# first statement the hook acts at after the mark (its world issues the clean world's statements, so
+# the window is named by the statement, not found by a departure) — events 3361..3377.
+rule_me24='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# Group 6's: MC-30, each half at six points spread over RO-prune's day-52 sweep, the transaction the
+# prune runs in — found by the prune half's departure (events 7948..7973) and by the first session
+# state the sidecar half writes after the mark (7948..7974).
+rule_mc30='its prune half fault-free and at 6 of 6 crash points inside the transaction it first changes; its sidecar half fault-free and at 6 of 6 crash points inside the transaction it first changes; each beside a clean run'
+# Group 7's: ME-20, at six points spread over the SWEEP transaction that deletes EP-store-after-expiry's
+# message while its op is in flight — named by the first statement it acts at after the mark, the
+# message's delete (the rewrite acted on the schema in the setup and changes no statement after it) —
+# events 64..89.
+rule_me20='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# Group 8's: ME-19, at every event of the transaction its rewrite first changes after the mark — bob's
+# RECV of the message dated five days ahead, from the rewritten insert to its commit — events 328..332.
+rule_me19='fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run'
+# Group 9's: ME-7, at every event of the transaction its rewrite first changes after the mark — bob's
+# first RECV of EP-stale-display's two messages, from the rewritten insert to its commit — events 388..392.
+rule_me7='fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run'
+for pair in "MC-1|$rule_crash" "MC-5|$rule_ff" "MC-7'|$rule_mc7" "MC-9|$rule_mc9" "MC-10|$rule_ff" "MC-12|$rule_ff" \
   "MC-14|$rule_scne" "MC-15|$rule_scne" \
-  "MC-16|$rule_ff" "MC-18|$rule_s10b" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
-  "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-33|$rule_s10b" \
-  "ME-16|$rule_ff"; do
+  "MC-16|$rule_ff" "MC-17|$rule_mc17" "MC-18|$rule_s10b" "MC-20|$rule_mc20" "MC-21|$rule_mc21" "MC-24|$rule_mc24" \
+  "MC-26|$rule_s10b" "MC-28|$rule_s10b" "MC-30|$rule_mc30" "MC-33|$rule_s10b" \
+  "ME-7|$rule_me7" "ME-9|$rule_me9" "ME-11|$rule_me11" "ME-16|$rule_ff" "ME-17|$rule_me17" "ME-19|$rule_me19" "ME-20|$rule_me20" "ME-24|$rule_me24"; do
   mutant="${pair%%|*}"
   rule="${pair#*|}"
   line="$(grep -E "^dm mutant ${mutant}: " "$report" | head -1 || true)"

@@ -107,6 +107,14 @@ internal class DmScenario(
      * a message a crash had lost for some other reason.
      */
     val declaredLoss: (DmCrashWorld) -> Set<String> = { emptySet() },
+    /**
+     * Run once the armed phase is over and the bus disarmed, in **every** run, faulted or not,
+     * before the quiescence the oracles are read at (SCN-L-v3, design §22.38): the establishment
+     * and the traffic after a migration whose every statement the armed phase enumerated, and
+     * which SCN-L already enumerates on a migrated file of its own. Nothing it does is a crash
+     * point; the three oracles and [alwaysChecks] run over what it did. Null everywhere else.
+     */
+    val unarmedTail: ((DmCrashWorld) -> Unit)? = null,
 ) {
     class Step(val label: String, val body: (DmCrashWorld) -> Unit)
 
@@ -229,53 +237,61 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             }
 
             val onDeath: (Error) -> Unit = { death ->
-                val node = nodeOf(death)
-                check(world.bus.injected.lastOrNull() === death) {
-                    "the crash that reached the top level is not the one injected: $death"
-                }
-                // A process death is not a `finally`. `DmActor.runPass` runs one on the way out —
-                // `schedule.afterCommit()` — so the "dead" device performs two more transactions
-                // before this line is reached. They are read-only, and until now nothing said so;
-                // a write there would make every crash run a crash-plus-one-transaction run
-                // without a single test changing.
-                if (world.bus.afterDeathWrites.isNotEmpty()) {
-                    dmViolation(
-                        "${scenario.name}: $node wrote after its process death: " +
-                            world.bus.afterDeathWrites.joinToString(", "),
-                    )
-                }
-                world.bus.deadNode = null
-                world.bus.afterDeathWrites.clear()
-                reboots++
-                world[node].reboot()
-                // §15.3: "check the structural invariants" — at the reboot, before anything runs.
-                DmStructuralInvariants.check(
-                    world[node], "reboot $reboots of $node", settled = false,
-                )
-                // §15.3 says "check the structural invariants" without naming a node, and a crash
-                // class is a state of the **world**: the peer that did not die is half of it. Its
-                // clauses are checked without the heavy `integrity_check`/`verifyIntegrity` pass,
-                // which is a statement about a file that was just reopened and is the crashed
-                // node's alone.
-                for (other in world.nodes()) {
-                    if (other.name == node) continue
+                try {
+                    val node = nodeOf(death)
+                    check(world.bus.injected.lastOrNull() === death) {
+                        "the crash that reached the top level is not the one injected: $death"
+                    }
+                    // A process death is not a `finally`. `DmActor.runPass` runs one on the way out —
+                    // `schedule.afterCommit()` — so the "dead" device performs two more transactions
+                    // before this line is reached. They are read-only, and until now nothing said so;
+                    // a write there would make every crash run a crash-plus-one-transaction run
+                    // without a single test changing.
+                    if (world.bus.afterDeathWrites.isNotEmpty()) {
+                        dmViolation(
+                            "${scenario.name}: $node wrote after its process death: " +
+                                world.bus.afterDeathWrites.joinToString(", "),
+                        )
+                    }
+                    world.bus.deadNode = null
+                    world.bus.afterDeathWrites.clear()
+                    reboots++
+                    world[node].reboot()
+                    // §15.3: "check the structural invariants" — at the reboot, before anything runs.
                     DmStructuralInvariants.check(
-                        other, "reboot $reboots of $node", heavy = false, settled = false,
+                        world[node], "reboot $reboots of $node", settled = false,
                     )
-                }
-                // And the second half of §15.3's post-reboot clause, at the one moment it is a
-                // statement about the reboot rather than about the pass that follows it: R-K1 has
-                // just run and nothing has been built on top of it yet. Without this, "the WAL is 0
-                // bytes" was asserted only by SCN-F and by the seeded worlds, so for SCN-A, SCN-B,
-                // SCN-D, SCN-G, SCN-J and SCN-L no crash ever checked it.
-                DmStructuralInvariants.checkpointEmptiedTheLog(
-                    world[node], "reboot $reboots of $node",
-                )
-                if (phase == 0) {
-                    phase = 1
-                    world.bus.resetCount()
-                } else {
-                    phase = 2
+                    // §15.3 says "check the structural invariants" without naming a node, and a crash
+                    // class is a state of the **world**: the peer that did not die is half of it. Its
+                    // clauses are checked without the heavy `integrity_check`/`verifyIntegrity` pass,
+                    // which is a statement about a file that was just reopened and is the crashed
+                    // node's alone.
+                    for (other in world.nodes()) {
+                        if (other.name == node) continue
+                        DmStructuralInvariants.check(
+                            other, "reboot $reboots of $node", heavy = false, settled = false,
+                        )
+                    }
+                    // And the second half of §15.3's post-reboot clause, at the one moment it is a
+                    // statement about the reboot rather than about the pass that follows it: R-K1 has
+                    // just run and nothing has been built on top of it yet. Without this, "the WAL is 0
+                    // bytes" was asserted only by SCN-F and by the seeded worlds, so for SCN-A, SCN-B,
+                    // SCN-D, SCN-G, SCN-J and SCN-L no crash ever checked it.
+                    DmStructuralInvariants.checkpointEmptiedTheLog(
+                        world[node], "reboot $reboots of $node",
+                    )
+                    if (phase == 0) {
+                        phase = 1
+                        world.bus.resetCount()
+                    } else {
+                        phase = 2
+                    }
+                } catch (finding: DmInvariantViolation) {
+                    // A finding at the reboot itself — the open path refusing the file a migration on
+                    // the bus left (SCN-L-v3, §22.38), or a structural clause right after it — ends the
+                    // run like a step's own check does, with what the armed phase measured told first.
+                    armedEnd()
+                    throw finding
                 }
             }
 
@@ -323,6 +339,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
                         "absorbed: ${world.bus.injected.joinToString { it.message ?: "" }}",
                 )
             }
+            scenario.unarmedTail?.invoke(world)
             // One unarmed settling round, so a run whose last crash landed mid-round is compared at
             // the same place as the recording run.
             world.quiesce(scenario.tailRounds)
@@ -351,6 +368,7 @@ internal class DmCrashRunner(private val scenario: DmScenario) {
             for (node in world.nodes()) {
                 DmStructuralInvariants.afterSweep(node, node.clock.now, "end")
                 DmStructuralInvariants.retiredSessionsGone(node, node.clock.now, "end")
+                DmStructuralInvariants.skippedKeysPruned(node, "end")
             }
 
             // The rendering order **before** the liveness sends, so the comparison across runs is

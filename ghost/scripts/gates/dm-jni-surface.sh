@@ -32,15 +32,19 @@
 # (or under any other package), an `external fun` in another Android class, and a library exporting
 # either passed every half. So the workspace's Rust sources, every production Android source set and
 # every library read here may carry a JNI entry point only of `DmNative` (the closed list),
-# `DmEquivalence.run` (test libraries and `src/equivalence` only) or the three classes of the
-# network surface (`OTHER_JNI_CLASSES`: Phases 6 and 8, not DM). A new class is a change to this
-# list, which is what makes it arrive deliberately.
+# `DmEquivalence.run`, `.bindingHooks`, `.stateWrapHook` and `.sidecarLogHook` (test libraries and
+# `src/equivalence` only) or the three classes of the network surface (`OTHER_JNI_CLASSES`: Phases 6
+# and 8, not DM). A new class is a change to this list, which is what makes it arrive deliberately.
 #
-# **The equivalence-test entry point** (§15.9 item 7, §22.8.10 point 6; slice S12) is the one
-# symbol a *test* library adds: `Java_org_ghost_crypto_bridge_DmEquivalence_run`, compiled only with
-# `ghost-client-dm`'s `test-vectors` feature, which only `ghost-dm-host` enables. A library passed
-# as `--test <library>` must export exactly the closed list plus that one symbol; every other
-# library is a shipped one and must export no `DmEquivalence` symbol at all.
+# **The test-vectors entry points** (§15.9 item 7, §22.8.10 point 6; slice S12) are the symbols a
+# *test* library adds: `Java_org_ghost_crypto_bridge_DmEquivalence_run`, since §22.37
+# `…_DmEquivalence_bindingHooks` (MC-20's mutant and KC5b's replayed binding, switched per DM
+# context) and since §22.38 `…_DmEquivalence_stateWrapHook` and `…_DmEquivalence_sidecarLogHook`
+# (ME-24's and MC-30's mutants, each switched per DM context), compiled only with
+# `ghost-client-dm`'s `test-vectors` feature, which only
+# `ghost-dm-host` enables. A library passed as `--test <library>` must export exactly the closed
+# list plus those symbols; every other library is a shipped one and must export no
+# `DmEquivalence` symbol at all.
 #
 # Usage: dm-jni-surface.sh [[--test] <library> ...]
 #   <library>  a built library to read symbols from: `android-native` passes every shipped
@@ -64,9 +68,9 @@ KOTLIN="${GHOST_DM_JNI_KOTLIN:-$GHOST_ROOT/android/crypto-bridge/src/main/kotlin
 if [ -n "${GHOST_DM_JNI_SOURCE:-}" ]; then SCAN_DEFAULT="$SOURCE"; else SCAN_DEFAULT="$GHOST_ROOT"; fi
 SCAN="${GHOST_DM_JNI_SCAN:-$SCAN_DEFAULT}"
 PREFIX="Java_org_ghost_crypto_bridge_DmNative_"
-# The test libraries' one extra symbol (see the header).
+# The test libraries' extra symbols (see the header).
 ENTRY_PREFIX="Java_org_ghost_crypto_bridge_DmEquivalence_"
-ENTRY_NAMES="run"
+ENTRY_NAMES="run bindingHooks stateWrapHook sidecarLogHook"
 # The other classes a GHOST library may export JNI entry points for (see the header): the network
 # surface of `ghost-client-net`, whose files are `android/network/src/main/…/<class>.kt`.
 OTHER_JNI_CLASSES="TorRelayTransport TorIssuerTransport EntitlementCrypto"
@@ -282,8 +286,8 @@ for LIBRARY in "$@"; do
       [ -n "$symbol" ] || continue
       fail "$LIBRARY exports the JNI symbol '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
     done < "$work/foreign-symbols"
-    # The equivalence-test entry point: exactly its one symbol in a test library, none in a
-    # shipped one (§22.8.10 point 6).
+    # The test-vectors entry points: exactly their symbols in a test library, none in a shipped
+    # one (§22.8.10 point 6, §22.37).
     grep -oE "${ENTRY_PREFIX}[A-Za-z0-9]+" "$work/nm-out" \
       | sed -E "s/${ENTRY_PREFIX}//" | sort -u > "$work/entry-symbols" || true
     if [ "$is_test" = 1 ]; then

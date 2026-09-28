@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6 (`scripts/gates/dm-jni-surface.sh`): a shipped-style library that
+# exports the closed list and `DmEquivalence.stateWrapHook` alone (§22.38) — ME-24's switch, which
+# stores session states in the clear, leaking into a shipped build without the rest of the
+# test-vectors surface. Refused without `--test`, and for that symbol by name.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook\n' 65664

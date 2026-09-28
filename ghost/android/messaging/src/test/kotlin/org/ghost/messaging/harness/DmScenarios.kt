@@ -8,6 +8,7 @@ import org.ghost.messaging.api.RevocationReason
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.api.Timer
 import org.ghost.messaging.api.TrustState
+import org.ghost.messaging.engine.DmTime
 
 /**
  * The named crash scenarios of Phase 9 design §15.3, as far as slices S10, S10b and S10c implement
@@ -17,9 +18,10 @@ import org.ghost.messaging.api.TrustState
  * including the forged-binding case), **SCN-F** (ephemeral), **SCN-G** (outcomes and resend),
  * **SCN-J** (faults) and **SCN-L** (migration safety), from S10; **SCN-H** (bundle generations,
  * in part), **SCN-I** (restore), **SCN-K** (revocation) and SCN-G's week-boundary retry as
- * `SCN-G-week`, from S10b; **SCN-C** (establishment through WITHHOLD_NEWEST_BUNDLE), from S10c.
- * SCN-E is not here; §22.15 of the design records what it still owes, §22.19 what S10b left of
- * the rest and §22.23 what S10c left of SCN-C.
+ * `SCN-G-week`, from S10b; **SCN-C** (establishment through WITHHOLD_NEWEST_BUNDLE), from S10c;
+ * SCN-L's migration of a v3 file on the bus as `SCN-L-v3`, from §22.38. SCN-E is not here; §22.15
+ * of the design records what it still owes, §22.19 what S10b left of the rest and §22.23 what S10c
+ * left of SCN-C.
  *
  * **Two deviations from §15.3's table, declared.** The scenario texts say "3 relays over 2
  * operators, one refusing" (SCN-A) and similar relay-set shapes elsewhere. The relay set, the
@@ -315,6 +317,7 @@ internal object DmScenarios {
         },
         steps = listOf(
             step("alice scans bob's card and writes; the first window") { w ->
+                w.notes.putIfAbsent(C_MARK, w.bus.count)
                 ensurePartOne(w)
                 attemptWindow(w)
             },
@@ -906,6 +909,9 @@ internal object DmScenarios {
     private const val C_LISTED_AT_PROBE = "cListedAtProbe"
     private const val C_STILL_GIVEN_UP = "cStillGivenUp"
     private const val C_BEFORE_ACCEPT = "cBeforeAccept"
+
+    /** The note SCN-C writes at its first step: no session exists before it, so ME-24's window follows it. */
+    const val C_MARK: String = "cMark"
 
     // ------------------------------------------------------------------ SCN-D key change
 
@@ -1686,6 +1692,93 @@ internal object DmScenarios {
         },
     )
 
+    /**
+     * **SCN-L-v3 — the migration itself under the crash enumeration** (§15.3 SCN-L, CS-9; design
+     * §22.38).
+     *
+     * > a v3 database with a live outbox and inbox migrates to v4 and v5, then SCN-A traffic
+     *
+     * [scnL] migrates its files in the setup, on the raw connection, and enumerates the traffic that
+     * follows. The migration an **updated** device performs — a v3 file with Phase 7 rows, rebuilt
+     * to v4 (the outbox) and extended to v5 (the DM tables) — was `SchemaAndMigrationTest`'s alone
+     * (every statement interrupted, then migrated), never a crash world's. Here bob's device is
+     * created **in the armed phase** on [DmV3Fixture]'s file, and its migrations run **on the bus**
+     * ([DmNode.migrateOnTheBus]): every statement of migrations 4 and 5 is an event, so a crash
+     * point, and the reboot that follows a crash migrates again from whatever version the crash
+     * left. At every boot, until it has passed once, [DmV3Fixture.kept] checks CS-9's "preserves
+     * every sync … row, `outbox_op` rowids" on the file the migrations left; the open path's own
+     * `verifyIntegrity` checks "and the trigger set", and a refusal is the run's finding. Then bob's
+     * identity activates on the migrated file and publishes, still armed: ACTIVATE is redone while
+     * the device shows no card, which is CR-12's resumable activation at the next open, and the
+     * second step is the one a crash inside the first cost it.
+     *
+     * **The traffic runs unarmed** ([DmScenario.unarmedTail]): the §12.2 establishment, SCN-A's two
+     * messages and [scnL]'s scripted reboot, in every run. [scnL] enumerates that traffic on a
+     * migrated file already, and the establishment script is not crash-tolerant; what a crash can
+     * do to the migration is the new half. The three oracles are on and run over it.
+     *
+     * **Mutants.** MC-17 (the outbox rebuild loses a rowid or a trigger) and ME-9 (an expiry that can
+     * be extended: `dm_message_expiry` never created) — each a rewrite of one migration statement,
+     * which only a migration on the bus makes reachable. Their window starts at [L_V3_MARK].
+     */
+    fun scnLv3(): DmScenario = DmScenario(
+        name = "SCN-L-v3",
+        liveness = "alice" to "bob",
+        noLoss = true,
+        setup = { world ->
+            world.node("alice", 0x41)
+            DmScripts.activate(world)
+        },
+        steps = listOf(
+            step("bob's device, updated, opens its v3 database") { w ->
+                w.notes.putIfAbsent(L_V3_MARK, w.bus.count)
+                w.nodeFromFile("bob", 0x51, DmV3Fixture::build) { raw ->
+                    if (w.notes[L_V3_KEPT] != true) {
+                        DmV3Fixture.kept(raw, "SCN-L-v3: bob's migrations")
+                        w.notes[L_V3_KEPT] = true
+                    }
+                }
+            },
+            step("bob's identity activates on the migrated file and publishes") { w -> activateOnTheMigratedFile(w) },
+            step("the activation a crash cost the step above, if it did") { w -> activateOnTheMigratedFile(w) },
+        ),
+        unarmedTail = { world ->
+            DmScripts.establishBothWays(world, "alice", "bob")
+            world["alice"].device.engine.send(DmScripts.contact(world, "alice", "bob"), "l1", null)
+            world.pump()
+            world.passes()
+            world["bob"].reboot()
+            DmStructuralInvariants.check(world["bob"], "SCN-L-v3 scripted reboot")
+            DmStructuralInvariants.checkpointEmptiedTheLog(world["bob"], "SCN-L-v3 scripted reboot")
+            world["alice"].device.engine.send(DmScripts.contact(world, "alice", "bob"), "l2", null)
+            world.pump()
+            world.passes()
+        },
+        alwaysChecks = { world ->
+            if (world.notes[L_V3_KEPT] != true) {
+                dmViolation("SCN-L-v3: bob's migrations never reached their CS-9 check")
+            }
+            for (node in world.nodes()) DmStructuralInvariants.check(node, "SCN-L-v3 always")
+            // The traffic is unarmed, so it is asserted in every run and not only fault-free.
+            val seen = DmScripts.inboundTexts(world, "bob").filter { it.startsWith("l") }
+            if (seen != listOf("l1", "l2")) dmViolation("SCN-L-v3: bob saw $seen on the migrated file")
+        },
+    )
+
+    /** bob's ACTIVATE on the migrated file, redone while his device shows no card; then a round. */
+    private fun activateOnTheMigratedFile(w: DmCrashWorld) {
+        val bob = w["bob"].device.engine
+        if (bob.myCard() == null) bob.onActivated()
+        w.pump()
+        w.passes()
+    }
+
+    /** The note SCN-L-v3 writes at its first step: MC-17's and ME-9's windows start after it. */
+    const val L_V3_MARK: String = "lV3Mark"
+
+    /** Set once [DmV3Fixture.kept] has passed on bob's migrated file. */
+    private const val L_V3_KEPT: String = "lV3Kept"
+
     // ------------------------------------------------------------------ SCN-H bundle generations
 
     /**
@@ -2095,12 +2188,27 @@ internal object DmScenarios {
      * published a new bundle, and the three §22.8.4 variants in which B's pre-restore first flight,
      * PreKey re-sends or normal replies reach A after B's reconnect intro (MC-32's subject, which
      * §22.15 item 8 records as needing a step seam).
+     *
+     * **[rp8]: §15.5's RP8, "pre-restore content (`accept_after_minute`)", on this world** (design
+     * §22.38). Everything the restored device receives above is **unopenable** — sealed under keys
+     * the lost device took with it — so nothing here has yet reached the rule that refuses content
+     * that **opens**: `accept_after_minute`, set to the restore minute (§8.6), below which nothing
+     * authored is applied. The variant adds one message that opens: once alice has renewed, she
+     * writes [RP8_OLD] in pair mode with its author minute a minute before the restore
+     * ([PreRestoreDated], one argument of one call, as RP7's decorator dates its L0), in the week of
+     * the pair key that seals it and far inside R9 — so what refuses it is `accept_after_minute`
+     * and nothing else. **Checked in every run:** the restored device never renders it. **Fault-
+     * free:** it was dated before the restore minute and in its seal's week, alice calls it `SENT`,
+     * and the restored device counted exactly one `stale` drop. Singles only, as every suite case;
+     * the rest of the world, its checks and its oracles are SCN-I's, and the message is declared to
+     * the no-loss oracle once it is dated.
      */
-    fun scnI(): DmScenario = DmScenario(
-        name = "SCN-I",
-        doubles = true,
+    fun scnI(rp8: Boolean = false): DmScenario = DmScenario(
+        name = if (rp8) "RP8" else "SCN-I",
+        doubles = !rp8,
         liveness = RESTORED to "alice",
         noLoss = true,
+        declaredLoss = { world -> if (rp8 && world.notes[RP8_DATED] != null) setOf(RP8_OLD) else emptySet() },
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -2144,6 +2252,12 @@ internal object DmScenarios {
             world.retire("carol")
             // The same MESSAGING branch and `ghost1` seed on a new file: a restore from the seed.
             world.node(RESTORED, 0x51, identityBranch = 0x52, streamOffset = RESTORED_STREAM)
+            if (rp8) {
+                val alice = world["alice"]
+                alice.decorate = { real -> PreRestoreDated(real, RP8_OLD.toByteArray(Charsets.UTF_8), world) }
+                alice.reboot()
+                DmStructuralInvariants.check(alice, "RP8 setup reboot")
+            }
         },
         steps = listOf(
             step("B restores from seed") { w ->
@@ -2189,6 +2303,7 @@ internal object DmScenarios {
                 ensureRestoreFlow(w, reconnect = true)
                 round(w)
                 sendOnceRenewed(w, "i-pair")
+                if (rp8) sendOnceRenewed(w, RP8_OLD)
                 round(w)
             },
             step("the world settles and the demoted session reaches its retire day") { w ->
@@ -2225,6 +2340,9 @@ internal object DmScenarios {
             }
             val held = DmScripts.count(world, "alice", "SELECT count(*) FROM dm_held")
             if (held != 0L) dmViolation("SCN-I: alice holds $held rows after a same-identity restore")
+            if (rp8 && RP8_OLD in DmScripts.everyInboundText(world[RESTORED])) {
+                dmViolation("RP8: the restored device rendered content authored before its restore (§8.6, accept_after_minute)")
+            }
         },
         finalChecks = { world ->
             val renewed = world["alice"].device.engine.status().drops["session_renewed"]
@@ -2270,8 +2388,72 @@ internal object DmScenarios {
                         "and unknown_generation=$PRE_RESTORE_INTROS (carol's intro)",
                 )
             }
+            if (rp8) rp8FaultFree(world)
         },
     )
+
+    /** RP8's fault-free half (see [scnI]): the message opened and `accept_after_minute` alone refused it. */
+    private fun rp8FaultFree(world: DmCrashWorld) {
+        val dated = world.notes[RP8_DATED] as? Long ?: dmViolation("RP8 fault-free: the decorator never dated the message")
+        val restore = world.notes[RP8_AFTER] as Long
+        val sealedAt = world.notes[RP8_SEALED_AT] as Long
+        if (dated >= restore) dmViolation("RP8 fault-free: the message was dated at $dated, not before the restore minute $restore")
+        // B1: in the week of the pair key that sealed it, so B1 did not refuse it.
+        if (DmTime.week(dated) != DmTime.week(sealedAt)) {
+            dmViolation("RP8 fault-free: the message was dated in week ${DmTime.week(dated)}, not its seal's ${DmTime.week(sealedAt)}")
+        }
+        if (DmScripts.outgoingState(world, "alice", RP8_OLD) != org.ghost.messaging.api.MessageState.SENT) {
+            dmViolation("RP8 fault-free: alice does not call the pre-restore-dated message SENT, so its refusal proved nothing")
+        }
+        val stale = world[RESTORED].device.engine.status().drops["stale"] ?: 0
+        if (stale != 1) dmViolation("RP8 fault-free: the restored device counted $stale stale drops, expected exactly one")
+    }
+
+    /**
+     * alice's device with one message dated a minute before the restored device's
+     * `accept_after_minute` — the RP8 sender (§8.6). It changes one argument of one call, like RP7's
+     * `OldDatedL0`, and reads the restore minute raw from the restored device's `dm_self` as it seals
+     * (no event), recording the three instants for the fault-free checks.
+     */
+    private class PreRestoreDated(
+        private val real: org.ghost.messaging.port.DmEnvelopes,
+        private val text: ByteArray,
+        private val world: DmCrashWorld,
+    ) : org.ghost.messaging.port.DmEnvelopes by real {
+        override fun encodeContent(
+            kind: org.ghost.crypto.bridge.DmContent.Kind,
+            messageId: ByteArray,
+            authorMinute: Long,
+            minuteIndex: Int,
+            timerCode: Int,
+            timerVersion: Long,
+            quoteRef: ByteArray?,
+            body: ByteArray,
+            contactId: ByteArray,
+            offerRootGen: Int,
+            offerEnv: ByteArray,
+            revocation: ByteArray,
+            sessionReset: Boolean,
+            pqKey: org.ghost.crypto.bridge.DmContent.PqKeyCandidate?,
+            pqKeyFirst: Boolean,
+        ): org.ghost.crypto.bridge.DmContent.Encoded {
+            var minute = authorMinute
+            if (kind == org.ghost.crypto.bridge.DmContent.Kind.TEXT && body.contentEquals(text)) {
+                var after: Long? = null
+                world[RESTORED].raw.query("SELECT accept_after_minute FROM dm_self") { if (!it.isNull(0)) after = it.long(0) }
+                val restore = checkNotNull(after) { "RP8: the restored device has no accept_after_minute when alice seals" }
+                val dated = restore - DmTime.MINUTE
+                world.notes[RP8_AFTER] = restore
+                world.notes[RP8_SEALED_AT] = authorMinute * DmTime.MINUTE
+                world.notes[RP8_DATED] = dated
+                minute = dated / DmTime.MINUTE
+            }
+            return real.encodeContent(
+                kind, messageId, minute, minuteIndex, timerCode, timerVersion, quoteRef, body,
+                contactId, offerRootGen, offerEnv, revocation, sessionReset, pqKey, pqKeyFirst,
+            )
+        }
+    }
 
     /**
      * The three user actions of a restore, each done again when a crash interrupted it: the restore
@@ -2453,6 +2635,12 @@ internal object DmScenarios {
     }
 
     private const val RESTORED: String = "bob-restored"
+
+    /** RP8's message: not `i-`, so SCN-I's own rendering check does not count it. */
+    private const val RP8_OLD: String = "rp8-dated-before-the-restore"
+    private const val RP8_DATED: String = "rp8Dated"
+    private const val RP8_AFTER: String = "rp8After"
+    private const val RP8_SEALED_AT: String = "rp8SealedAt"
 
     /** The restored node's random stream (see [DmNode]'s `streamOffset`). */
     private const val RESTORED_STREAM: Int = 1_000

@@ -127,6 +127,16 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
      */
     var honoursTtl: Boolean = true
 
+    /**
+     * Devices with **no network** (§22.38, EP-store-after-expiry): the relay neither takes a store
+     * from one of these nodes nor serves it anything, so every op the node writes stays `pending`
+     * with its ciphertext — Phase 7 retrying against a network that is not there — until the
+     * scenario takes the node off the list. The node's own passes run as ever, SWEEP among them:
+     * what a device does on its own clock does not wait for the network. Empty in every scenario
+     * but the one that needs a message's op still in flight when SWEEP deletes the message.
+     */
+    var offline: Set<String> = emptySet()
+
     private class Stored(
         val namespace: ByteArray,
         val hash: ByteArray,
@@ -157,9 +167,10 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
      * node that listens on its namespace. Returns how many blobs were delivered.
      */
     fun pump(nodes: List<DmNode>): Int {
-        for (node in nodes) collect(node)
+        val online = nodes.filter { it.name !in offline }
+        for (node in online) collect(node)
         var moved = 0
-        for (node in nodes) moved += serve(node)
+        for (node in online) moved += serve(node)
         return moved
     }
 
@@ -370,6 +381,34 @@ internal class ModelDmRelay(private val bus: DmEventBus) {
     }
 
     /** The namespaces [node] listens on, with the consumer it registered each one for. */
+    /**
+     * A bundle listing after [node] forgot its tombstones — §21.7 point 2: `EST-START` forgets the
+     * bundle namespace's tombstones "so the bundle can be fetched again", which is how a reset's
+     * one-shot bundle fetch (§8.7) reaches a bundle it fetched before.
+     *
+     * A real relay lists every blob it holds on every round, and it is the inbox's tombstone that
+     * refuses a second copy; [served] is only this model's shortcut for that refusal, and with the
+     * tombstone gone the shortcut is wrong. This drops it for the blobs of [node]'s **listening
+     * bundle namespaces** whose hash its inbox no longer holds — the model twin of
+     * `DmWorld.deliverBetween(again = true)`, which the reset tests of the pair world use. It is a
+     * call rather than a rule of [serve] because every other scenario's enumeration was recorded
+     * under serve-once; RP11 (§22.37) is its one caller. Returns how many blobs it re-offers.
+     */
+    fun reofferForgottenBundles(node: DmNode): Int {
+        val bundles = listeningConsumers(node).filterValues { it == PREKEYS }.keys
+        var reoffered = 0
+        for (blob in stored) {
+            if (blob.from == node.name || blob.namespace.hex() !in bundles) continue
+            var tombstone = false
+            node.raw.query(
+                "SELECT 1 FROM inbox_blob WHERE namespace_id = ? AND blob_hash = ?",
+                listOf(blob.namespace, sha256(blob.ciphertext)),
+            ) { tombstone = true }
+            if (!tombstone && served.remove(blob.namespace.hex() + blob.hash.hex() + "@" + node.name)) reoffered++
+        }
+        return reoffered
+    }
+
     private fun listeningConsumers(node: DmNode): Map<String, String> {
         val out = HashMap<String, String>()
         node.raw.query("SELECT hex(namespace_id), consumer FROM sync_namespace WHERE listening = 1") {

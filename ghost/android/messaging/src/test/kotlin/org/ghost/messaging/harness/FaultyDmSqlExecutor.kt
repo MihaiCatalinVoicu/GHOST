@@ -61,7 +61,23 @@ internal class FaultyDmSqlExecutor(
      */
     var defer: ((String) -> Boolean)? = null
 
-    private val deferred = ArrayList<Pair<String, List<Any?>>>()
+    /**
+     * The same seam for an [execUpdate] (design §22.37, MC-7′'s second half), which [defer] refuses
+     * because a split must not invent what the engine reads. Here the count is **declared** by the
+     * mutation and **checked**: the predicate returns the row count the held-back statement returns
+     * in the unmutated world at that call (or null to run the statement now); the caller is given
+     * that count, and when the statement runs in its own transaction its real count must be the
+     * declared one, or the run fails as a harness error — never as a kill. Its one user holds back
+     * `SessionStore.markFirstFlightUsed`'s insert, whose only caller (`ReceiveStep`) discards the
+     * count and reaches it only after `firstFlightUsed` found no tuple, so the unmutated insert
+     * returns 1 there and the split changes nothing the engine reads.
+     */
+    var deferUpdate: ((String) -> Int?)? = null
+
+    /** A held-back statement, and the count its caller was given when it was an [execUpdate]. */
+    private class Held(val sql: String, val args: List<Any?>, val declaredCount: Int?)
+
+    private val deferred = ArrayList<Held>()
 
     /** True while the held-back statements are being replayed, so the predicate does not re-hold them. */
     private var replaying = false
@@ -73,12 +89,28 @@ internal class FaultyDmSqlExecutor(
     private var rewrittenFrom: Long? = null
 
     /**
+     * Told when a `PRAGMA wal_checkpoint` through this executor answered `busy = 0` — a checkpoint
+     * that reports it truncated the log (§22.38). The pragma is recognised by the statement the
+     * engine **issued**, before any rewrite, so a mutant that answers for the checkpoint without
+     * running it (ME-11) is measured like the real one.
+     */
+    var afterCheckpoint: (() -> Unit)? = null
+
+    /** The event index of the open transaction's first event, for [DmEventBus.actsFrom]. */
+    private var transactionFrom: Long? = null
+
+    /**
      * The statement [rewrite] makes of this one. Called right after the statement's own event was
      * raised, so the bus's count is that event's index.
+     *
+     * Its span is not recorded in a run whose window is found by tracing ([DmEventBus.actsFrom] set):
+     * there the window is the transaction in which the worlds part, whole, and a rewritten statement
+     * says only that a text changed — ME-17's first one after its mark decided nothing (§22.38's
+     * review). Every other mutant found by tracing rewrites nothing in the armed phase.
      */
     private fun rewritten(sql: String, args: List<Any?>): Pair<String, List<Any?>> {
         val out = rewrite?.invoke(sql, args) ?: return Pair(sql, args)
-        if (bus.armed && (out.first != sql || out.second != args)) {
+        if (bus.armed && bus.actsFrom == null && (out.first != sql || out.second != args)) {
             if (delegate.inTransaction) {
                 if (rewrittenFrom == null) rewrittenFrom = bus.count
             } else {
@@ -106,14 +138,24 @@ internal class FaultyDmSqlExecutor(
      * that text, and a fake whose shape differs from the real one tests the injector.
      */
     private fun fire(kind: DmEventKind, sql: String) {
-        if (bus.event(kind, node, label(sql)) === DmFault.StorageFull) {
+        val fault = bus.event(kind, node, label(sql))
+        if (delegate.inTransaction && transactionFrom == null) transactionFrom = bus.count
+        if (bus.armed && bus.count == bus.actsFrom) {
+            // A native mutant's departure (§22.37): its whole transaction is the span.
+            if (delegate.inTransaction) {
+                if (rewrittenFrom == null) rewrittenFrom = transactionFrom
+            } else {
+                bus.rewrittenSpans += bus.count..bus.count
+            }
+        }
+        if (fault === DmFault.StorageFull) {
             throw StorageFullException(IllegalStateException("[SQLITE_FULL] injected at: ${label(sql)}"))
         }
     }
 
     override fun exec(sql: String, args: List<Any?>) {
         if (held(sql)) {
-            deferred += Pair(sql, args)
+            deferred += Held(sql, args, declaredCount = null)
             return
         }
         fire(DmEventKind.SQL_EXEC, sql)
@@ -122,6 +164,11 @@ internal class FaultyDmSqlExecutor(
     }
 
     override fun execUpdate(sql: String, args: List<Any?>): Int {
+        val declared = if (!replaying && delegate.inTransaction) deferUpdate?.invoke(sql) else null
+        if (declared != null) {
+            deferred += Held(sql, args, declared)
+            return declared
+        }
         fire(DmEventKind.SQL_UPDATE, sql)
         val (s, a) = rewritten(sql, args)
         return delegate.execUpdate(s, a)
@@ -130,11 +177,22 @@ internal class FaultyDmSqlExecutor(
     override fun query(sql: String, args: List<Any?>, onRow: (SqlExecutor.Row) -> Unit) {
         fire(DmEventKind.SQL_QUERY, sql)
         val (s, a) = rewritten(sql, args)
-        delegate.query(s, a, onRow)
+        val measure = afterCheckpoint
+        if (measure == null || !sql.startsWith("PRAGMA wal_checkpoint")) {
+            delegate.query(s, a, onRow)
+            return
+        }
+        var busy: Long? = null
+        delegate.query(s, a) { row ->
+            if (busy == null) busy = row.long(0)
+            onRow(row)
+        }
+        if (busy == 0L) measure()
     }
 
     override fun <T> transaction(block: () -> T): T {
         rewrittenFrom = null
+        if (!delegate.inTransaction) transactionFrom = null
         val result = try {
             delegate.transaction {
                 val r = block()
@@ -152,6 +210,11 @@ internal class FaultyDmSqlExecutor(
         // After the commit: the caller never learns it succeeded, which is the other half of the
         // window §7.8 is about.
         if (deferred.isEmpty()) {
+            // The second half of a split has just committed: from its post-commit event on, a
+            // crash loses nothing the unmutated engine had committed, so the window closes before
+            // that event (§22.37: [DmEventBus.vulnerable] had counted it, and a crash there is not
+            // one at which the split is observable).
+            if (replaying) bus.inSplitWindow = false
             try {
                 fire(DmEventKind.POST_COMMIT, "commit")
             } finally {
@@ -165,6 +228,14 @@ internal class FaultyDmSqlExecutor(
         try {
             try {
                 fire(DmEventKind.POST_COMMIT, "commit")
+            } catch (death: Throwable) {
+                // A crash at the first commit's post-commit event: the process is dead, and a
+                // process that died owes nothing — the held-back statements are lost, which is the
+                // split's defect. They must not be committed by a transaction the dying device still
+                // runs on its way out (`DmActor.runPass`'s `afterCommit`), which the runner refuses
+                // as a write after death (found by §22.37's MC-7′ kill; MC-1's seam had the gap).
+                deferred.clear()
+                throw death
             } finally {
                 closeRewrittenSpan()
             }
@@ -188,7 +259,20 @@ internal class FaultyDmSqlExecutor(
         deferred.clear()
         replaying = true
         try {
-            transaction { for ((sql, args) in pending) exec(sql, args) }
+            transaction {
+                for (held in pending) {
+                    val declared = held.declaredCount
+                    if (declared == null) {
+                        exec(held.sql, held.args)
+                    } else {
+                        val real = execUpdate(held.sql, held.args)
+                        check(real == declared) {
+                            "the split told its caller ${label(held.sql)} changed $declared row(s), and it " +
+                                "changed $real: the mutation's declared count is wrong (a harness error)"
+                        }
+                    }
+                }
+            }
         } finally {
             replaying = false
         }

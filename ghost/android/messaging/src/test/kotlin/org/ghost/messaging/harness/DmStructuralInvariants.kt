@@ -47,8 +47,103 @@ internal object DmStructuralInvariants {
      *
      * [where] names the moment ("reboot 3", "end") and goes into every failure message.
      */
-    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) =
+    fun check(node: DmNode, where: String, heavy: Boolean = true, settled: Boolean = true) {
         check(node.raw, node.name, where, heavy, settled)
+        checkpointsTruncatedTheLog(node, where)
+        sessionStates(node, where)
+        retainedBlobs(node, where)
+    }
+
+    /**
+     * **T25: no retained blob outlives the message it was kept for** (§7.5 "Retained blob", §21.10
+     * point 2; mutant ME-20, design §22.38). The blob is messaging's copy of an op's ciphertext,
+     * kept only so an INDETERMINATE resend can repeat the identical bytes, and it goes one of two
+     * ways: at the op's terminal outcome (`clearOpBlob`), or — when SWEEP deletes the message
+     * first, which a five-minute message whose op is still in flight makes happen — with the
+     * message, by the cascade message → item → op. So an op that still holds a blob has its item,
+     * and the item's message (a control item has none) still exists. The schema's foreign keys are
+     * what make that so; what this catches is a schema without them — the op left behind, whose
+     * late outcome then finds no item and never clears the blob. §15.7 names T25's physical scan of
+     * the blob bytes; this is its logical half, over the rows. On [DmNode]s only, like the other
+     * clauses of §22.38: the entitlement world's clients are not this work's.
+     */
+    fun retainedBlobs(node: DmNode, where: String) {
+        empty(
+            node.raw, "${node.name} @ $where", "a retained blob that outlives its message (T25, §7.5 \"Retained blob\")",
+            """SELECT count(*) FROM dm_outbound_op o
+                 WHERE o.purpose = 'item' AND o.blob IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM dm_outbound_item i
+                                    WHERE i.item_id = o.item_id
+                                      AND (i.message_ref IS NULL
+                                           OR EXISTS (SELECT 1 FROM dm_message m
+                                                       WHERE m.message_id = i.message_ref)))""",
+        )
+    }
+
+    /**
+     * Over every stored Olm session, opened on the JVM independently of the native code that wrote
+     * it ([DmSessionStates], design §22.38):
+     * - **wrapped** (§2.5, R-S6) — the logical half of T3's and T25's scans, mutant ME-24: every state
+     *   is an envelope that opens under the device's `session_state_key` with its own binding, so
+     *   the pickle and its sidecar — the session's keys — never sit in the file in the clear;
+     * - **the sidecar is a projection** (§7.7 point 4) — RO6's projection assertion, mutant MC-30's
+     *   second half: every first-seen sidecar holds exactly the skipped keys its pickle holds, so a
+     *   key the pickle no longer has (used, evicted by the library, or pruned) leaves no entry.
+     */
+    fun sessionStates(node: DmNode, where: String) {
+        for (session in DmSessionStates.all(node, where)) {
+            val pickle = session.pickleKeys.toSet()
+            val sidecar = session.sidecar.keys
+            if (pickle != sidecar) {
+                dmViolation(
+                    "${node.name} @ $where: a session's first-seen sidecar is not the projection of its pickle " +
+                        "(§7.7 point 4): it lists ${sidecar - pickle} the pickle does not hold and misses ${pickle - sidecar}",
+                )
+            }
+        }
+    }
+
+    /**
+     * §7.7 point 4's age bound **after SWEEP** (the T34 age case; mutant MC-30's first half, design
+     * §22.38): no live session holds a skipped key first seen `SKIPPED_KEY_MAX_AGE_DAYS` (51, `FRESH +
+     * 2σ`) or more days before the day SWEEP measures by — `now_e`'s (R-T7), which the sweep that just
+     * ran stored as the expiry clock. Only keys the pickle holds count: an entry for a key the pickle
+     * no longer has is [sessionStates]' finding. Called by the runner after its own last pass, like
+     * [retiredSessionsGone].
+     */
+    fun skippedKeysPruned(node: DmNode, where: String) {
+        var expiryClock = 0L
+        node.raw.query("SELECT expiry_clock_minute FROM dm_self WHERE id = 1") { expiryClock = it.long(0) }
+        val now = node.clock.now
+        val nowE = maxOf(now - Math.floorMod(now, 60L), expiryClock)
+        val today = Math.floorDiv(nowE, org.ghost.messaging.DmWorld.DAY)
+        for (session in DmSessionStates.all(node, where)) {
+            for (key in session.pickleKeys) {
+                val day = session.sidecar[key] ?: continue
+                if (today >= day + SKIPPED_KEY_MAX_AGE_DAYS) {
+                    dmViolation(
+                        "${node.name} @ $where: a session still holds the skipped key $key first seen on day $day, " +
+                            "${today - day} days before day $today — past FRESH + 2σ ($SKIPPED_KEY_MAX_AGE_DAYS days, " +
+                            "§7.7 point 4)",
+                    )
+                }
+            }
+        }
+    }
+
+    /** `ghost_client_dm::olm::session::SKIPPED_KEY_MAX_AGE_DAYS`: `FRESH + 2σ` in days (§7.7 point 4, V-15). */
+    const val SKIPPED_KEY_MAX_AGE_DAYS: Long = 51
+
+    /**
+     * §10.9 item 3, "sweep, then assert … the WAL is 0 bytes" (§22.38): every checkpoint the
+     * device reported done left the `-wal` file empty. It is measured at the instant it is defined
+     * ([DmNode.logAfterCheckpoint]) — right after the checkpoint, before the pass writes again; the
+     * post-sweep clause of §22.19 item 3 is the other half, measured after R-K1 at the next open. A
+     * checkpoint that answered `busy ≠ 0` said it did not truncate, and is not measured.
+     */
+    fun checkpointsTruncatedTheLog(node: DmNode, where: String) {
+        node.logAfterCheckpoint.firstOrNull()?.let { dmViolation("${node.name} @ $where: $it") }
+    }
 
     /**
      * The same clauses over a raw connection and a client's name: the entitlement world's clients

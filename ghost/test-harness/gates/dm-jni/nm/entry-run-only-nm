@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-R6 (`scripts/gates/dm-jni-surface.sh`): a test library as slice S12
+# built it — the closed list and `DmEquivalence.run`, without `DmEquivalence.bindingHooks` (§22.37).
+# Refused with `--test`: the crash worlds' MC-20 and KC5b would find no switch in it.
+set -euo pipefail
+"$(dirname "$0")/exact-nm" "$@"
+printf '%016x T Java_org_ghost_crypto_bridge_DmEquivalence_run\n' 65536

@@ -404,8 +404,12 @@ class DmDevice(
         }
     }
 
-    /** The three things the S10 crash harness owns instead of the device (see [harness]). */
-    class HarnessOverride(
+    /**
+     * The three things the S10 crash harness owns instead of the device (see [harness]). The
+     * constructor is `internal` only because [freshness] names an engine type that is `internal`
+     * to this module; every caller is in this module's tests.
+     */
+    class HarnessOverride internal constructor(
         val sql: SqlExecutor,
         val clock: MovableClock,
         /** 0 for the first boot; later boots draw from their own random stream. */
@@ -447,6 +451,11 @@ class DmDevice(
          */
         val decorateCapabilities: ((org.ghost.sync.api.Capabilities) -> org.ghost.sync.api.Capabilities)? = null,
         val decorateNamespaces: ((org.ghost.sync.api.Namespaces) -> org.ghost.sync.api.Namespaces)? = null,
+        /**
+         * RECV's freshness policy (design §22.38): the crash worlds install mutant MC-9 here. Null
+         * runs the production rule, [org.ghost.messaging.engine.ContentFreshness.RULE].
+         */
+        internal val freshness: org.ghost.messaging.engine.ContentFreshness? = null,
         /**
          * The production triggers in the world's virtual time ([Wiring]; the privacy worlds and the
          * entitlement world, phase review MD-2 and MD-3, design §22.36). Null keeps every world that
@@ -523,6 +532,14 @@ class DmDevice(
     )
     val wrapper = FakeKeyWrapper()
 
+    /**
+     * A copy of the `session_state_key` the DM context is opened with: what the crash worlds'
+     * standing clause opens every stored session state under (§2.5, mutant ME-24, design §22.38).
+     * A copy taken **before** the context opens, because `DmSessions.openContext` erases the array
+     * it is handed; the two expressions below are the ones every world has always run.
+     */
+    internal val sessionStateKey: ByteArray = (seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() }).copyOf()
+
     /** The real DM context: one per device, opened on this device's own MESSAGING branch. */
     private val handle: Long? = if (DmWorld.nativeAvailable()) {
         DmSessions.openContext(
@@ -533,6 +550,9 @@ class DmDevice(
     } else {
         null
     }
+
+    /** The DM context's handle, for the crash worlds' test-library hooks (`DmEquivalence`, §22.37). */
+    internal val nativeHandle: Long? get() = handle
 
     private val stateKey: ByteArray =
         FakeKeyWrapper.PREFIX + (seeds?.sessionStateKey ?: ByteArray(32) { (branch + 2).toByte() })
@@ -578,7 +598,7 @@ class DmDevice(
     internal val recognition = RecognitionKeys(envelopes)
     internal val receiveStep = ReceiveStep(
         database, dmSync, envelopes, crypto, material, recognition, SessionSlots(), clock, random,
-        contexts, counters,
+        contexts, counters, harness?.freshness ?: org.ghost.messaging.engine.ContentFreshness.RULE,
     )
     internal val peekOrder = PeekOrder(database, dmSync, envelopes, recognition, clock, contexts)
     internal val keyDecision = KeyDecision(database, crypto, contexts)

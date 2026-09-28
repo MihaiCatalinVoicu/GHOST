@@ -35,7 +35,9 @@ import org.junit.Test
  *     window deleted (every week up to `week(now)`), and an L0 dated in the key's own week (the
  *     render check) — §22.27 and its review, which also lists the checks that have no control;
  * 11. an injected crash reaches the runner even when a pass that had already thrown carries it as
- *     a *suppressed* exception (`DmActor.runPass`'s `finally`; §22.27's review).
+ *     a *suppressed* exception (`DmActor.runPass`'s `finally`; §22.27's review);
+ * 12. RP8's render check really fails on a world whose freshness rule drops `accept_after_minute`
+ *     and keeps everything else (§22.38).
  *
  * Without 5 in particular the whole enumeration could pass on an engine that writes nothing.
  */
@@ -398,8 +400,8 @@ class DmHarnessSelfTest {
      *    expire unserved") must fail: the declaration excuses a loss at the relay and nothing else;
      *  - **RP7, the L0 dated in the key's own week**: the sender's decorator dates the message a
      *    minute earlier instead of a week, binding B1 lets it through, and the render check must
-     *    fail — RP7 has no registered mutant (MC-9 is out of reach), so this is what shows its one
-     *    check reads the rendering at all.
+     *    fail — this showed RP7's one check reads the rendering at all while it had no registered
+     *    mutant (MC-9 was out of reach until §22.38), and still shows it with no mutant installed.
      */
     @Test
     fun kc12Rs2AndRp7ChecksFailOnWhatTheyAreAbout() {
@@ -524,12 +526,50 @@ class DmHarnessSelfTest {
             "whose window is still open",
         )
 
-        // RP7's render check, which no registered mutant reaches (MC-9 is out of every mechanism's
-        // reach, §22.27): the sender's L0 dated a minute earlier in the key's **own** week, which
-        // binding B1 lets through, must fail it.
+        // RP7's render check, which no registered mutant reached until §22.38 registered MC-9 (it
+        // was out of every mechanism's reach, §22.27): the sender's L0 dated a minute earlier in the
+        // key's **own** week, which binding B1 lets through, must fail it.
         assertFailsWith(
             DmSuiteCases.rp7AnOldL0ResealedUnderALaterWeekKey(sameWeek = true),
             "bob rendered an L0 dated in another week",
+        )
+    }
+
+    /**
+     * 12: RP8's render check (§22.38) is not vacuous, and what it reads is `accept_after_minute`'s
+     * refusal and nothing else: RP8 on a world whose freshness rule is the production rule with that
+     * one clause dropped — R9's age bound and binding B1 kept, the rule itself called — must fail it.
+     * MC-9's registered policy keeps the clause (a restore rule and not MC-9's), and no §15.7 id
+     * names it, so this is the check's control rather than a registered mutant.
+     */
+    @Test
+    fun rp8sRenderCheckFailsWithoutAcceptAfter() {
+        requireNative()
+        val rp8 = DmScenarios.scnI(rp8 = true)
+        val noAcceptAfter = DmMutants.Mutation(
+            id = "RP8-control",
+            defeats = "§8.6: nothing authored before accept_after_minute is applied on a restored device",
+            detectedBy = "RP8's render check",
+            expect = "the restored device rendered content authored before its restore",
+            freshness = org.ghost.messaging.engine.ContentFreshness { author, arrival, fresh, pairWeek, _ ->
+                org.ghost.messaging.engine.ContentFreshness.RULE.admits(author, arrival, fresh, pairWeek) { null }
+            },
+        )
+        assertFailsWith(
+            DmScenario(
+                name = "RP8/no-accept-after",
+                setup = { w ->
+                    w.mutation = noAcceptAfter
+                    rp8.setup(w)
+                },
+                steps = rp8.steps,
+                alwaysChecks = rp8.alwaysChecks,
+                finalChecks = rp8.finalChecks,
+                liveness = rp8.liveness,
+                noLoss = rp8.noLoss,
+                declaredLoss = rp8.declaredLoss,
+            ),
+            "the restored device rendered content authored before its restore",
         )
     }
 

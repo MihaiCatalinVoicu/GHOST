@@ -1,5 +1,6 @@
 package org.ghost.messaging.harness
 
+import org.ghost.crypto.bridge.DmEquivalence
 import org.ghost.messaging.MovableClock
 import org.ghost.messaging.engine.DmTime
 import org.ghost.messaging.engine.DmTimers
@@ -90,8 +91,53 @@ internal object DmMutants {
         val decorate: ((DmEnvelopes) -> DmEnvelopes)? = null,
         /** The transaction-split seam of [FaultyDmSqlExecutor.defer]; only a crash run kills these. */
         val defer: ((String) -> Boolean)? = null,
+        /**
+         * The split for an `execUpdate`, with the count its caller is given
+         * ([FaultyDmSqlExecutor.deferUpdate], §22.37): MC-7′'s second half.
+         */
+        val deferUpdate: ((String) -> Int?)? = null,
+        /**
+         * A **native** mutation (§22.37): the binding v3 field every DM context of the world leaves
+         * out of its transcript (`DmEquivalence.bindingHooks`, a test-library entry point). The
+         * crate's own code, switched per context, where the three JVM mechanisms cannot reach:
+         * binding v3 is signed and verified inside it.
+         */
+        val bindingOmit: Int = DmEquivalence.BINDING_NONE,
+        /**
+         * A **policy substitution** (§22.38): RECV's freshness rule ([org.ghost.messaging.engine.ContentFreshness]),
+         * handed to every device of the world. MC-9 only.
+         */
+        val freshness: org.ghost.messaging.engine.ContentFreshness? = null,
         /** True when the mutant is invisible without a crash, so its kill runs the enumeration. */
         val needsACrash: Boolean = false,
+        /**
+         * A **native hook** of the state wrap (§22.38): every context of the world stores its Olm
+         * session states unwrapped (`DmEquivalence.stateWrapHook`). ME-24 only.
+         */
+        val stateUnwrapped: Boolean = false,
+        /**
+         * A **native hook** of the sidecar (§22.38): every context of the world keeps its sessions'
+         * first-seen sidecars as insert-only logs (`DmEquivalence.sidecarLogHook`). MC-30's second
+         * half only.
+         */
+        val sidecarLog: Boolean = false,
+        /**
+         * For a mutant that changes only the **bytes** a statement writes — its world issues the same
+         * statements, so no trace ever departs (§22.37's window of a native mutant has no event to
+         * find): the statements it acts at, by their label. Its window is the transaction of the
+         * first one after the scenario's mark. ME-24, MC-30's sidecar half, and ME-20 — a rewrite
+         * that acted in the setup, where nothing is an event, and changes no statement after it.
+         */
+        val actsAt: ((String) -> Boolean)? = null,
+        /**
+         * For a **rewrite of a read** whose changed result need not change anything the device then
+         * does (§22.38's review of ME-17): the window is not the first rewritten span after the mark
+         * but the transaction in which the traced mutated world first departs from the clean one —
+         * where the device first decides otherwise — measured as a native mutant's is (§22.37). A
+         * rewritten span says only that a statement's text changed; ME-17's first one after its mark
+         * was alice's read-only conversation read, whose `now_e` is her wall clock either way.
+         */
+        val windowByDeparture: Boolean = false,
         /**
          * A **trigger substitution** in the entitlement world's wiring (SCN-E, §22.25): the contact
          * half of KEEPER — the production `ContactKeeper` — runs on every `CAPABILITIES` hint instead
@@ -198,8 +244,15 @@ internal object DmMutants {
     val MC7 = Mutation(
         id = "MC-7'",
         defeats = "D2b: a replayed first flight never builds a second session",
-        detectedBy = "the rejected-request replay of §12.3 (a second request appears)",
+        detectedBy = "the rejected-request replay of §12.3 (a second request appears), RP4 (the session bob " +
+            "reset comes back) and RP5, fault-free and under a crash in the transaction that writes the tuple; " +
+            "its second half (the tuple written outside the RECV transaction) by RP5 under a crash in its " +
+            "split window",
         expect = "a rejected request came back as a second one",
+        // Under a crash inside the RECV transaction that writes the tuple (§22.37): the transaction
+        // rolls back, the first flight is taken again after the reboot, and the rewrite writes a
+        // tuple that matches nothing once more.
+        expectUnderCrash = listOf("a rejected request came back as a second one"),
         // A random `session_id`, for the same reason MC-5 writes a random tag: the row still goes
         // in, so nothing downstream sees a failed write, and `firstFlightUsed` — which is what D2b
         // actually asks — never finds the tuple it is looking for.
@@ -215,6 +268,380 @@ internal object DmMutants {
             }
         },
     )
+
+    /**
+     * **MC-7′'s second half — the reuse tuple written outside the RECV transaction** (§15.7:
+     * "D2b not enforced, or written outside the RECV transaction"; §22.27 item 8; built by §22.37).
+     * The same §15.7 id as [MC7], which is its first half, and not a new one: it is not in [all],
+     * and MC-7′ is recorded as detected only once both halves are killed (`DmMutantDetectionTest`).
+     *
+     * `SessionStore.markFirstFlightUsed`'s insert is held back until the RECV transaction that built
+     * the inbound session has committed, and committed in a transaction of its own — the split of
+     * [MC1], for an `execUpdate`, with the count 1 the unmutated insert returns there
+     * ([FaultyDmSqlExecutor.deferUpdate]). With no fault it is invisible. A crash between the two
+     * commits loses the tuple while the session, the request and the consumed blob stand, which is
+     * exactly what §7.8's "a crash after `sessionInbound` rolls back the session row and the reuse
+     * tuple together" forbids; RP5 then sees it: bob rejects the request, restarts, and the
+     * requester's next envelope of the same session builds a second request.
+     */
+    val MC7_SPLIT = Mutation(
+        id = "MC-7'",
+        defeats = "D2b: the reuse tuple commits in the RECV transaction that builds the session",
+        detectedBy = "RP5, a PreKey replay across a restart, under a crash in the split window",
+        expect = "a rejected request came back as a second one",
+        needsACrash = true,
+        deferUpdate = { sql -> if (sql.startsWith("INSERT OR IGNORE INTO olm_prekey_used")) 1 else null },
+    )
+
+    /**
+     * **MC-20 — binding without namespace, minute, ciphertext or base key** (§21.4 point 1, §3.4;
+     * built by §22.37). Binding v3's transcript leaves one of the four out, on every device of the
+     * world — signed without it and verified without it, so the world's own traffic still verifies
+     * and only a binding moved to another value of that field tells. KC5b moves one per field: the
+     * intro whose genuine binding names another value of the omitted field is accepted, and bob
+     * gains a request from it. One §15.7 id, four omissions; the entry registered below carries the
+     * namespace, and the kill runs all four ([MC20_OMISSIONS]).
+     */
+    val MC20 = mc20(DmEquivalence.BINDING_NAMESPACE, "namespace")
+
+    /** MC-20's four omissions, in KC5b's order. */
+    val MC20_OMISSIONS: List<Mutation> = listOf(
+        MC20,
+        mc20(DmEquivalence.BINDING_MINUTE, "minute"),
+        mc20(DmEquivalence.BINDING_CIPHERTEXT, "ciphertext"),
+        mc20(DmEquivalence.BINDING_BASE_KEY, "base key"),
+    )
+
+    private fun mc20(field: Int, label: String) = Mutation(
+        id = "MC-20",
+        defeats = "binding v3 covers the recipient namespace, the minute, the X-Wing ciphertext and the base key",
+        detectedBy = "KC5b (a genuine binding replayed with another namespace, a stale minute, another " +
+            "ciphertext or another base key: no state change), each omission by its own replay",
+        expect = "KC5b: bob accepted an intro whose binding names another $label",
+        // Under a crash inside the transaction the omission first changes — bob's first RECV of the
+        // replay whose binding it lets verify (§22.37 item 6): it rolls back, the blob is taken again
+        // after the reboot, and the omission lets it through again.
+        expectUnderCrash = listOf("KC5b: bob accepted an intro whose binding names another $label"),
+        bindingOmit = field,
+    )
+
+    /**
+     * **ME-9 — expiry extendable** (R-T6, §10.3; built by §22.38). Migration 5 does not create
+     * `dm_message_expiry`, the trigger by which an expiry time only moves earlier. The engine never
+     * asks it to refuse anything — DISPLAY writes `expire_at_minute` under its own guard and only
+     * for an unread row — so no traffic sees it gone; what sees it is §15.7's "trigger test", which
+     * is the open path's own trigger set (`verifyIntegrity`), and it refuses the file. A statement
+     * rewrite of the migration, which only a migration on the bus reaches (SCN-L-v3).
+     */
+    val ME9 = Mutation(
+        id = "ME-9",
+        defeats = "R-T6: an expiry time only moves earlier (the dm_message_expiry trigger)",
+        detectedBy = "SCN-L-v3 (the open path refuses a file without dm_message_expiry)",
+        expect = "bob's database was refused at open: schema integrity: missing triggers [dm_message_expiry]",
+        expectUnderCrash = listOf("bob's database was refused at open: schema integrity: missing triggers [dm_message_expiry]"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("CREATE TRIGGER dm_message_expiry")) Pair("SELECT 1", emptyList()) else Pair(sql, args)
+        },
+    )
+
+    /**
+     * **ME-24 — session state stored unwrapped** (§2.5, R-S6; built by §22.38). A native hook under
+     * `test-vectors` (`ghost_client_dm::wrap::hooks`, per DM context, like MC-20's): the context
+     * stores every Olm session state as it is and reads it back as stored, so the world's ratchet
+     * still runs and what differs is only what `olm_session.state_env` holds — the pickle and its
+     * sidecar, the session's keys, in the clear. §15.7 names T3's and T25's physical scans for
+     * exported root-key canaries; what kills it here is their logical half, the standing clause
+     * that every stored state opens under the device's state key
+     * (`DmStructuralInvariants.sessionStatesAreWrapped`). The physical canary scan is not built.
+     */
+    val ME24 = Mutation(
+        id = "ME-24",
+        defeats = "§2.5: every Olm session state is stored wrapped under session_state_key with its own binding",
+        detectedBy = "SCN-C (the standing clause: every stored session state opens under the device's state key)",
+        expect = "a stored session state does not open under the device's state key",
+        expectUnderCrash = listOf("a stored session state does not open under the device's state key"),
+        stateUnwrapped = true,
+        actsAt = { label -> label.startsWith("INSERT INTO olm_session(") || label.startsWith("UPDATE olm_session SET state_env") },
+    )
+
+    /**
+     * **ME-11 — no checkpoint** (§10.7 "Checkpoint", §10.9 item 3; built by §22.38). SWEEP's
+     * `PRAGMA wal_checkpoint(TRUNCATE)` answers as a truncation that succeeded (`busy = 0`) and
+     * truncates nothing: the engine goes on as if the log were empty, and the freed frames stay in
+     * the `-wal`. A statement rewrite, because the pragma is read through the device's executor
+     * (`Checkpoint.truncate(sql)`, the real one, `DmWorld`'s `checkpoints`); R-K1 at every open runs
+     * on the raw connection and is untouched, which is what makes a crash at the checkpoint a
+     * point where the mutant acts **and** is healed — so its kill needs a second checkpoint after it.
+     */
+    val ME11 = Mutation(
+        id = "ME-11",
+        defeats = "§10.7: after a SWEEP that deleted rows, wal_checkpoint(TRUNCATE) empties the log",
+        detectedBy = "EP-sweep-log (the log is 0 bytes right after every checkpoint the device reports done, " +
+            "§10.9 item 3)",
+        expect = "the log held",
+        expectUnderCrash = listOf("the log held"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("PRAGMA wal_checkpoint")) Pair("SELECT 0, 0, 0", emptyList()) else Pair(sql, args)
+        },
+    )
+
+    /**
+     * **ME-17 — a wall-clock back step delays deletion** (R-T7, §10.3, §10.9 item 4; built by
+     * §22.38). The expiry clock `dm_self.expiry_clock_minute` reads as 0 in the one statement that
+     * reads it (`OwnerStore.self`), so `now_e = max(wall, 0)` is the wall clock for every deadline:
+     * a device whose clock stepped back keeps rows past the minute its sweeps had already reached.
+     * The column itself is untouched — SWEEP raises it with `... WHERE expiry_clock_minute < ?`,
+     * which a smaller `now_e` never matches, so no guard fires and the mutant is seen only by what it
+     * delays.
+     *
+     * What EP-clock-back sees of it is **RECV's** held-cap check (§21.10 point 5): the clean RECV
+     * refuses the row, whose cap lies at or below `now_e` (`expired_while_held`), and the mutated one
+     * — comparing with the stepped-back wall clock — inserts it, past its deadline on the expiry
+     * clock. SWEEP's own `now_e` decides nothing in the case: the row it would delete never exists in
+     * the clean world (§22.38's review). The rewrite changes the text of every `dm_self` read of every
+     * node, so its window is where the traced worlds part, bob's RECV ([windowByDeparture]), not its
+     * first rewritten span — alice's conversation read, which decides nothing.
+     */
+    val ME17 = Mutation(
+        id = "ME-17",
+        defeats = "R-T7: every deadline is measured against now_e = max(wall, expiry_clock_minute)",
+        detectedBy = "EP-clock-back (the RECV of a message whose unread cap lies between the stepped-back wall clock " +
+            "and the expiry clock refuses it, §10.9 item 4, §21.10 point 5)",
+        expect = "past their delete_at_minute on the expiry clock",
+        expectUnderCrash = listOf("past their delete_at_minute on the expiry clock"),
+        windowByDeparture = true,
+        rewrite = { sql, args ->
+            if (sql.startsWith("SELECT card_index, seen_key, content_key_wrapped") && sql.contains(" FROM dm_self")) {
+                Pair(sql.replace("expiry_clock_minute, accept_after_minute", "0, accept_after_minute"), args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
+     * **MC-9 — no freshness check** (R9 and binding B1, §7.6; built by §22.38). RECV's freshness
+     * policy admits content of any age and of any week; `accept_after_minute` (§8.6, a restore rule
+     * and not MC-9's) is kept. It is read for **every** content — `acceptAfter()` first,
+     * unconditionally — where [org.ghost.messaging.engine.ContentFreshness.RULE] reads it only once
+     * the age bound has passed: the same statements as the clean world for content inside the age
+     * bound, one self-row read more for content outside it (§22.38's review corrected this comment,
+     * which said "read exactly when the rule reads it"). The decision is Kotlin comparisons over the
+     * decrypted author minute, which no statement carries and no port result is, so the mutant lives
+     * on the policy parameter §22.38 added to `ReceiveStep`.
+     *
+     * **Its kill is its B1 half** (§22.38's review). RP7's back-dated L0 lies inside R9's age bound,
+     * so RP7 refuses it by B1 alone: the age bound dropped alone ([MC9_WITHOUT_R9]) passes RP7, and B1
+     * dropped alone ([MC9_WITHOUT_B1]) fails it for this entry's reason — both run beside the kill, and
+     * the kill is recorded as B1's. R9's half is covered by `ContentFreshnessTest` (each edge of the
+     * age bound, and the grid on which the rule decides and reads as the inline code did), not by
+     * this mutant.
+     */
+    val MC9 = Mutation(
+        id = "MC-9",
+        defeats = "R9 and B1: content older than FRESH(bucket), from the future, or of another week than its key is refused",
+        detectedBy = "RP7, its B1 half (an L0 of last week re-sealed under this week's key is rendered); its R9 half, " +
+            "the age bound, by ContentFreshnessTest and not by a kill",
+        expect = "RP7: bob rendered an L0 dated in another week",
+        expectUnderCrash = listOf("RP7: bob rendered an L0 dated in another week"),
+        freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, _, _, _, acceptAfter ->
+            val after = acceptAfter()
+            after == null || authorSeconds >= after
+        },
+    )
+
+    /**
+     * [MC9]'s B1 half alone, a control of what its kill shows and **not** a registered mutant (not in
+     * [all]): the production rule with the key week withheld, so R9's age bound and
+     * `accept_after_minute` stand and the self row is read exactly when the rule reads it. RP7 must
+     * fail under it for [MC9]'s reason.
+     */
+    val MC9_WITHOUT_B1 = Mutation(
+        id = "MC-9",
+        defeats = "B1: content of another week than the key that sealed it is refused",
+        detectedBy = "RP7 (an L0 of last week re-sealed under this week's key is rendered)",
+        expect = MC9.expect,
+        freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, arrivalSeconds, freshSeconds, _, acceptAfter ->
+            org.ghost.messaging.engine.ContentFreshness.RULE.admits(authorSeconds, arrivalSeconds, freshSeconds, null, acceptAfter)
+        },
+    )
+
+    /**
+     * [MC9]'s R9 half alone, the other control and not a registered mutant: the production rule
+     * without its age bound — `accept_after_minute` and B1 stand. RP7 must **pass** under it: its L0
+     * is inside the age bound, so no RP7 run can tell this half, which is why the kill is B1's.
+     */
+    val MC9_WITHOUT_R9 = Mutation(
+        id = "MC-9",
+        defeats = "R9: content older than FRESH(bucket) or more than 2σ ahead of its arrival is refused",
+        detectedBy = "no crash-world case (ContentFreshnessTest covers the age bound)",
+        expect = MC9.expect,
+        freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, _, _, pairWeek, acceptAfter ->
+            val after = acceptAfter()
+            if (after != null && authorSeconds < after) {
+                false
+            } else {
+                pairWeek == null || DmTime.week(authorSeconds) == pairWeek
+            }
+        },
+    )
+
+    /**
+     * **MC-30 — skipped keys not pruned at `FRESH + 2σ`** (§7.7 point 4, V-15; built by §22.38), its
+     * first half. A `DmEnvelopes` decorator: SWEEP's `sessionPrune` removes nothing — the call reports
+     * no key removed and the stored state is left as it was — so a skipped key outlives its 51 days.
+     * One §15.7 id, two halves: this one is the entry registered below, and the kill runs both
+     * ([MC30_LOG]). RO-prune kills it by the age clause after SWEEP
+     * (`DmStructuralInvariants.skippedKeysPruned`).
+     */
+    val MC30 = Mutation(
+        id = "MC-30",
+        defeats = "§7.7 point 4: skipped keys are pruned at FRESH + 2σ, and the first-seen sidecar is the projection " +
+            "of the pickle rebuilt at every store",
+        detectedBy = "RO-prune (the age clause after SWEEP; the sidecar projection clause)",
+        expect = "past FRESH + 2σ (51 days, §7.7 point 4)",
+        expectUnderCrash = listOf("past FRESH + 2σ (51 days, §7.7 point 4)"),
+        decorate = { real -> NoPrune(real) },
+    )
+
+    /**
+     * MC-30's second half: the first-seen sidecar kept as an insert-only **log** instead of the
+     * projection rebuilt at every store — a native hook under `test-vectors` (`olm::state::hooks`, per
+     * DM context), so a key the pickle no longer holds keeps its entry for good. RO-prune's prune is
+     * where that first shows: the key goes from the pickle, its entry stays, and the standing
+     * projection clause refuses the state. The world issues the clean world's statements, so its
+     * window is named by the statement it acts at ([actsAt]): the first session state written after
+     * the mark, the prune's.
+     */
+    val MC30_LOG = Mutation(
+        id = "MC-30",
+        defeats = MC30.defeats,
+        detectedBy = "RO-prune (the sidecar projection clause, at the prune)",
+        expect = "is not the projection of its pickle (§7.7 point 4)",
+        expectUnderCrash = listOf("is not the projection of its pickle (§7.7 point 4)"),
+        sidecarLog = true,
+        actsAt = { label -> label.startsWith("INSERT INTO olm_session(") || label.startsWith("UPDATE olm_session SET state_env") },
+    )
+
+    /**
+     * **ME-7 — the recipient's countdown at receive** (§10.3, ADR-27 point 9; built by §22.38). A
+     * statement rewrite of RECV's incoming insert, bound to the device's clock (like MC-21's): the
+     * row is written with `expire_at_minute = ceil_minute(receive + timer)` — the sender's formula,
+     * at the recipient's arrival — and `delete_at_minute` with it, as its CHECK requires, so an
+     * unread five-minute message goes five minutes after it arrived instead of at its unread cap.
+     * Killed by EP-stale-display's check, ten minutes on, that the unread message is still there,
+     * fault-free and at crash points of bob's first RECV after the mark.
+     */
+    val ME7 = Mutation(
+        id = "ME-7",
+        defeats = "§10.3, ADR-27 point 9: the recipient's countdown starts at the first display, not at receipt",
+        detectedBy = "EP-stale-display (the unread message is still there past its own timer, before its unread cap)",
+        expect = "the recipient's countdown started before its display",
+        expectUnderCrash = listOf("the recipient's countdown started before its display"),
+        rewriteOn = { clock ->
+            { sql, args ->
+                if (sql.startsWith(ME19_INSERT) && sql.contains(ME19_INCOMING) && args[9] != null) {
+                    val expireAt = org.ghost.messaging.engine.DmTimers.senderExpireMinute(
+                        clock.now,
+                        (args[6] as Long).toInt(),
+                    )
+                    val mutated = sql.replace(ME7_NO_COUNTDOWN, "?, ?, ?, ?")
+                    check(mutated != sql) { "ME-7's rewrite found no NULL countdown in RECV's insert" }
+                    Pair(mutated, args.toMutableList().also { it.add(9, expireAt); it[11] = expireAt })
+                } else {
+                    Pair(sql, args)
+                }
+            }
+        },
+    )
+
+    /** RECV's insert leaves the countdown NULL between the state and the cap: `?, NULL, ?, ?`. */
+    private const val ME7_NO_COUNTDOWN: String = "?, NULL, ?, ?"
+
+    /**
+     * **ME-19 — the unread deadline from `author + bucket`** (C-11, §10.3; built by §22.38). A
+     * statement rewrite of RECV's incoming insert: the cap it writes into `unread_deadline_minute`
+     * (and into `delete_at_minute`, which its CHECK ties to it while the row is unread) is
+     * `ceil_minute(author + bucket + 1 h)` — the production formula with the content's author time
+     * where the recipient's own arrival belongs. `min(E, …)` is dropped with it: the rewrite sees
+     * no relay expiry, and E — thirty days in the crash world — binds only past R9's six-day bound
+     * on how far ahead an author may be. Killed by EP-sender-ahead's check that no cap lies past the
+     * recipient's own `now_e` plus its bucket, an hour and a minute, fault-free and at crash points
+     * of bob's RECV of the message dated five days ahead.
+     */
+    val ME19 = Mutation(
+        id = "ME-19",
+        defeats = "C-11, §10.3: an unread message's cap is min(E, consume + bucket + 1 h), from the recipient's own arrival",
+        detectedBy = "EP-sender-ahead (a sender clock five days ahead: no cap past the recipient's own clock)",
+        expect = "the cap came from the sender's clock (C-11, §10.3)",
+        expectUnderCrash = listOf("the cap came from the sender's clock (C-11, §10.3)"),
+        rewrite = { sql, args ->
+            if (sql.startsWith(ME19_INSERT) && sql.contains(ME19_INCOMING) && args[9] != null) {
+                val cap = org.ghost.messaging.engine.DmTimers.unreadDeadlineMinute(
+                    consumeSeconds = args[3] as Long,
+                    relayExpiryHour = Long.MAX_VALUE,
+                    timerCode = (args[6] as Long).toInt(),
+                )
+                Pair(sql, args.toMutableList().also { it[9] = cap; it[10] = cap })
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
+     * RECV's incoming insert (`MessageStore.insertIncomingIfAbsent`), told from SEND's outgoing one —
+     * which starts the same and binds its arguments differently — by the `'in'` it selects: its
+     * arguments 3, 6, 9 and 10 are the author minute, the timer, the cap and `delete_at_minute`.
+     */
+    private const val ME19_INSERT: String =
+        "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, "
+    private const val ME19_INCOMING: String = "SELECT ?, ?, 'in', "
+
+    /**
+     * **ME-20 — the retained blob survives its message's deletion** (§7.5 "Retained blob", §21.10
+     * point 2, T25; built by §22.38). A statement rewrite of migration 5: `dm_outbound_op.item_id`
+     * loses its foreign key — the whole clause, since a key kept without its cascade makes SWEEP's
+     * delete fail instead of leaving the op — so when SWEEP deletes a message whose op is still in
+     * flight, the cascade takes the message and its item and leaves the op with its blob, and the
+     * op's late outcome then finds no item and never clears it. Only a device that migrates on the
+     * bus has its schema rewritten: EP-store-after-expiry's alice, in the setup
+     * ([DmCrashWorld.node]). §15.7 names T25's physical scan of the blob bytes; what kills it here
+     * is its logical half, the standing clause [DmStructuralInvariants.retainedBlobs]. The rewrite
+     * acts in the setup, where nothing is an event, and changes no statement the world then issues,
+     * so its window is named by the statement it acts at ([actsAt]): the SWEEP delete of the first
+     * message after the mark, whose cascade is the one the schema no longer has.
+     */
+    val ME20 = Mutation(
+        id = "ME-20",
+        defeats = "§7.5, §21.10 point 2: a message's retained blob is deleted with the message, by the cascade message → item → op",
+        detectedBy = "EP-store-after-expiry (the standing clause: no retained blob outlives its message)",
+        expect = "a retained blob that outlives its message (T25",
+        expectUnderCrash = listOf("a retained blob that outlives its message (T25"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("CREATE TABLE dm_outbound_op")) {
+                val mutated = sql.replace(ME20_KEY, "item_id BLOB,")
+                check(mutated != sql) { "ME-20's rewrite found no foreign key on dm_outbound_op.item_id" }
+                Pair(mutated, args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+        actsAt = { label -> label.startsWith("DELETE FROM dm_message WHERE message_id") },
+    )
+
+    /** `dm_outbound_op.item_id`'s foreign key, as migration 5 writes it (the spacing is the schema's). */
+    private val ME20_KEY = Regex("""item_id\s+BLOB REFERENCES dm_outbound_item\(item_id\) ON DELETE CASCADE,""")
+
+    /** MC-30's decorator: every `sessionPrune` reports that it removed nothing and leaves the state as it was. */
+    private class NoPrune(private val real: org.ghost.messaging.port.DmEnvelopes) : org.ghost.messaging.port.DmEnvelopes by real {
+        override fun prune(
+            contactId: ByteArray,
+            slot: org.ghost.crypto.bridge.DmSessions.StoredSlot,
+            today: Int,
+        ): org.ghost.crypto.bridge.DmSessions.Pruned =
+            org.ghost.crypto.bridge.DmSessions.Pruned.Ok(slot.stateEnv, 0)
+    }
 
     /**
      * **MC-10 — arrival-order display.** The conversation page is ordered by the row identity
@@ -317,6 +744,47 @@ internal object DmMutants {
             } else {
                 Pair(sql, args)
             }
+        },
+    )
+
+    /**
+     * **MC-17 — the outbox rebuild loses a rowid or a trigger** (CS-9, §13.6 step 1; built by
+     * §22.38). Migration 4 rebuilds `outbox_op` to admit a one-hour TTL; this half copies the rows
+     * **without** their rowids (`INSERT INTO outbox_op_v4(…) SELECT …` with `rowid` left out of both
+     * lists), so they are numbered afresh — in the same order, which is why only a table with gaps,
+     * [DmV3Fixture]'s, shows it. A statement rewrite of the migration, which only a migration on the
+     * bus reaches (SCN-L-v3, [DmNode.migrateOnTheBus]). One §15.7 id, two halves: this one is the
+     * entry registered below, and the kill runs both ([MC17_TRIGGER]).
+     */
+    val MC17 = Mutation(
+        id = "MC-17",
+        defeats = "CS-9: the outbox rebuild keeps every row at its rowid and re-creates every trigger",
+        detectedBy = "SCN-L-v3 (the v3 file's Phase 7 rows at their rowids after the migrations; the open path's " +
+            "trigger set)",
+        expect = "SCN-L-v3: bob's migrations did not keep the v3 file's Phase 7 rows (CS-9)",
+        expectUnderCrash = listOf("SCN-L-v3: bob's migrations did not keep the v3 file's Phase 7 rows (CS-9)"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("INSERT INTO outbox_op_v4(rowid, ")) {
+                Pair(sql.replaceFirst("outbox_op_v4(rowid, ", "outbox_op_v4(").replaceFirst("SELECT rowid, ", "SELECT "), args)
+            } else {
+                Pair(sql, args)
+            }
+        },
+    )
+
+    /**
+     * MC-17's other half: the rebuild does not re-create one of the eight v2 triggers of the table
+     * it replaced — `outbox_op_outcome`, "an outcome is decided once" (any other is the same
+     * statement's shape) — so the open path's own trigger set (`verifyIntegrity`) refuses the file.
+     */
+    val MC17_TRIGGER = Mutation(
+        id = "MC-17",
+        defeats = "CS-9: the outbox rebuild keeps every row at its rowid and re-creates every trigger",
+        detectedBy = "SCN-L-v3 (the open path refuses a file without outbox_op_outcome)",
+        expect = "bob's database was refused at open: schema integrity: missing triggers [outbox_op_outcome]",
+        expectUnderCrash = listOf("bob's database was refused at open: schema integrity: missing triggers [outbox_op_outcome]"),
+        rewrite = { sql, args ->
+            if (sql.startsWith("CREATE TRIGGER outbox_op_outcome")) Pair("SELECT 1", emptyList()) else Pair(sql, args)
         },
     )
 
@@ -680,5 +1148,8 @@ internal object DmMutants {
      * report prints them.
      */
     fun all(): List<Mutation> =
-        listOf(MC1, MC5, MC7, MC10, MC12, MC14, MC15, MC16, MC18, MC21, MC24, MC26, MC28, MC33, ME16)
+        listOf(
+            MC1, MC5, MC7, MC9, MC10, MC12, MC14, MC15, MC16, MC17, MC18, MC20, MC21, MC24, MC26, MC28, MC30, MC33,
+            ME7, ME9, ME11, ME16, ME17, ME19, ME20, ME24,
+        )
 }

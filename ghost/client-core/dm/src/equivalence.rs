@@ -461,7 +461,7 @@ fn dispatch(case_kind: u8, f: &mut Fields<'_>) -> DmResult<Vec<Vec<u8>>> {
 #[cfg(feature = "jni-bridge")]
 pub mod jni_entry {
     use jni::objects::{JByteArray, JClass};
-    use jni::sys::{jbyteArray, jint};
+    use jni::sys::{jboolean, jbyteArray, jint, jlong, JNI_FALSE, JNI_TRUE};
     use jni::JNIEnv;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -484,11 +484,43 @@ pub mod jni_entry {
             Err(_) => std::ptr::null_mut(),
         }
     }
+
+    /// `DmEquivalence.bindingHooks`: MC-20 and KC5b's binding hooks of one DM context
+    /// (`crate::binding::hooks`, design §22.37). False for a code out of range.
+    pub fn binding_hooks(handle: jlong, omit: jint, perturb: jint) -> jboolean {
+        let set = match (u8::try_from(omit), u8::try_from(perturb)) {
+            (Ok(omit), Ok(perturb)) => crate::binding::hooks::set(handle, omit, perturb),
+            _ => false,
+        };
+        if set {
+            JNI_TRUE
+        } else {
+            JNI_FALSE
+        }
+    }
+
+    /// `DmEquivalence.stateWrapHook`: ME-24's hook of one DM context (`crate::wrap::hooks`, design
+    /// §22.38) — its session states stored unwrapped, or wrapped again.
+    pub fn state_wrap_hook(handle: jlong, unwrapped: jboolean) -> jboolean {
+        crate::wrap::hooks::set(handle, unwrapped != JNI_FALSE);
+        JNI_TRUE
+    }
+
+    /// `DmEquivalence.sidecarLogHook`: MC-30's sidecar-log hook of one DM context
+    /// (`crate::olm::state::hooks`, design §22.38) — its sidecars kept as an insert-only log, or
+    /// rebuilt as projections again.
+    pub fn sidecar_log_hook(handle: jlong, on: jboolean) -> jboolean {
+        crate::olm::state::hooks::set(handle, on != JNI_FALSE);
+        JNI_TRUE
+    }
 }
 
-/// Emits `Java_org_ghost_crypto_bridge_DmEquivalence_run` in the invoking crate: the
-/// **test-vectors entry point** of §22.8.10 point 6, exported by the test libraries only (G-R6
-/// checks it is there in them and nowhere else).
+/// Emits the **test-vectors entry points** of §22.8.10 point 6 in the invoking crate, exported by
+/// the test libraries only (G-R6 checks they are there in them and nowhere else):
+/// `Java_org_ghost_crypto_bridge_DmEquivalence_run` (slice S12), since §22.37
+/// `Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks`, MC-20 and KC5b's switch, and since
+/// §22.38 `Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook`, ME-24's, and
+/// `Java_org_ghost_crypto_bridge_DmEquivalence_sidecarLogHook`, MC-30's.
 #[cfg(feature = "jni-bridge")]
 #[macro_export]
 macro_rules! export_equivalence_jni {
@@ -502,6 +534,40 @@ macro_rules! export_equivalence_jni {
             input: ::jni::objects::JByteArray<'local>,
         ) -> ::jni::sys::jbyteArray {
             $crate::equivalence::jni_entry::run(env, class, case_kind, input)
+        }
+
+        /// MC-20 and KC5b's binding hooks of one DM context (design §22.37); test libraries only.
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmEquivalence_bindingHooks<'local>(
+            _env: ::jni::JNIEnv<'local>,
+            _class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            omit: ::jni::sys::jint,
+            perturb: ::jni::sys::jint,
+        ) -> ::jni::sys::jboolean {
+            $crate::equivalence::jni_entry::binding_hooks(handle, omit, perturb)
+        }
+
+        /// ME-24's state-wrap hook of one DM context (design §22.38); test libraries only.
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmEquivalence_stateWrapHook<'local>(
+            _env: ::jni::JNIEnv<'local>,
+            _class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            unwrapped: ::jni::sys::jboolean,
+        ) -> ::jni::sys::jboolean {
+            $crate::equivalence::jni_entry::state_wrap_hook(handle, unwrapped)
+        }
+
+        /// MC-30's sidecar-log hook of one DM context (design §22.38); test libraries only.
+        #[no_mangle]
+        pub extern "system" fn Java_org_ghost_crypto_bridge_DmEquivalence_sidecarLogHook<'local>(
+            _env: ::jni::JNIEnv<'local>,
+            _class: ::jni::objects::JClass<'local>,
+            handle: ::jni::sys::jlong,
+            on: ::jni::sys::jboolean,
+        ) -> ::jni::sys::jboolean {
+            $crate::equivalence::jni_entry::sidecar_log_hook(handle, on)
         }
     };
 }

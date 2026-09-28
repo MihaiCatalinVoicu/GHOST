@@ -35,6 +35,55 @@ object DmEquivalence {
     @JvmName("run")
     external fun run(kind: Int, input: ByteArray): ByteArray?
 
+    /**
+     * MC-20 and KC5b's binding hooks of the DM context [handle] (design §15.5 KC5b, §15.7 MC-20,
+     * §22.37; `ghost_client_dm::binding::hooks`): the second test-vectors entry point, in the test
+     * libraries only like [run] (G-R6 `--test`). [omit] leaves one binding v3 field out of every
+     * transcript the context signs or verifies — the mutant; [perturb] has every intro the context
+     * seals carry the sender's genuine signature over another value of one field than the envelope
+     * carries — KC5b's replayed binding. [BINDING_NONE] clears; false for a code out of range.
+     */
+    @JvmStatic
+    @JvmName("bindingHooks")
+    external fun bindingHooks(handle: Long, omit: Int, perturb: Int): Boolean
+
+    /**
+     * ME-24's state-wrap hook of the DM context [handle] (design §15.7 ME-24, §22.38;
+     * `ghost_client_dm::wrap::hooks`): the third test-vectors entry point, in the test libraries
+     * only like [run]. [unwrapped] true has the context store its Olm session states **unwrapped**
+     * and read them back as stored, so a mutated world still runs its ratchet and only what
+     * `olm_session.state_env` holds differs; false wraps them again. Always true.
+     */
+    @JvmStatic
+    @JvmName("stateWrapHook")
+    external fun stateWrapHook(handle: Long, unwrapped: Boolean): Boolean
+
+    /**
+     * MC-30's sidecar-log hook of the DM context [handle] (design §15.7 MC-30, §22.38;
+     * `ghost_client_dm::olm::state::hooks`): the fourth test-vectors entry point, in the test
+     * libraries only like [run]. [on] true has the context keep every session's first-seen sidecar as
+     * an insert-only **log** — an entry outlives the key the pickle no longer holds — instead of the
+     * projection §7.7 point 4 rebuilds at every store; false rebuilds projections again. Always true.
+     */
+    @JvmStatic
+    @JvmName("sidecarLogHook")
+    external fun sidecarLogHook(handle: Long, on: Boolean): Boolean
+
+    /** [bindingHooks]: no field. */
+    const val BINDING_NONE: Int = 0
+
+    /** [bindingHooks]: the recipient namespace. */
+    const val BINDING_NAMESPACE: Int = 1
+
+    /** [bindingHooks]: the binding minute (perturbed to a stale one). */
+    const val BINDING_MINUTE: Int = 2
+
+    /** [bindingHooks]: the X-Wing ciphertext, as its SHA-256. */
+    const val BINDING_CIPHERTEXT: Int = 3
+
+    /** [bindingHooks]: the base key of the Olm PreKey message. */
+    const val BINDING_BASE_KEY: Int = 4
+
     /** One case of the case file. */
     class Case(val id: String, val kind: Int, input: ByteArray) {
         private val bytes = input.copyOf()

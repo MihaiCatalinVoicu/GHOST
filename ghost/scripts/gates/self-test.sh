@@ -186,26 +186,40 @@ t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants" "25 of 26 
 # anywhere, a scenario with no stores to run them over (relay events, until S10b's review), and a
 # mutant the registry counts while no run killed it.
 DMR="$HARNESS/dm-report"
-dmr_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description
-  if bash "$DIR/dm-report-check.sh" "$DMR/$2" "$3" >/dev/null 2>&1; then got=pass; else got=fail; fi
-  if [ "$got" = "$1" ]; then echo "self-test ok: dm-report-check $4"; else echo "SELF-TEST FAIL: dm-report-check $4 ($got)" >&2; rc=1; fi
+# Since the review of §22.38 a failing case of the exit-gate report (kinds gate and pr) names the
+# violation it is for ($5, as `t2r_case` does), and that text must be one of the check's
+# DM-REPORT-FAIL lines: until then a negative passed here as long as it failed at all, so one that had
+# gone stale — failing for some other reason, or for its own no longer — could not be told from one
+# that works. The privacy kinds keep the pass/fail rule for now.
+dmr_case() { # $1 = expect pass|fail, $2 = report, $3 = kind, $4 = description, $5 = the violation (fail; gate and pr kinds)
+  local err fails
+  if err="$(bash "$DIR/dm-report-check.sh" "$DMR/$2" "$3" 2>&1 >/dev/null)"; then got=pass; else got=fail; fi
+  fails="$(grep -E '^DM-REPORT-FAIL: ' <<<"$err" || true)"
+  if [ "$got" != "$1" ]; then
+    echo "SELF-TEST FAIL: dm-report-check $4 ($got)" >&2; rc=1
+  elif [ "$1" = fail ] && case "$3" in gate|pr) true ;; *) [ -n "${5:-}" ] ;; esac &&
+    { [ -z "${5:-}" ] || ! grep -qF -- "$5" <<<"$fails"; }; then
+    echo "SELF-TEST FAIL: dm-report-check $4 (failed, but not with \"${5:-<no violation named>}\")" >&2; rc=1
+  else
+    echo "self-test ok: dm-report-check $4"
+  fi
 }
 dmr_case pass pass-gate.txt gate "accepts a complete gate report"
 dmr_case pass pass-pr.txt pr "accepts a complete PR-scale report"
-dmr_case fail pass-pr.txt gate "rejects a PR-scale report as the gate's"
-dmr_case fail pass-gate.txt pr "rejects a gate-scale report as a PR's"
-dmr_case fail missing-scenario.txt gate "rejects a report without a scenario (SCN-D)"
-dmr_case fail empty-enumeration.txt gate "rejects a scenario that enumerated 0 crash points"
-dmr_case fail no-doubles.txt gate "rejects SCN-F without double crashes (§15.3)"
-dmr_case fail no-storage-full.txt gate "rejects SCN-J with no SQLITE_FULL injected"
-dmr_case fail no-fault-drawn.txt gate "rejects a faulted seeded loop in which no seed drew a fault"
-dmr_case fail unkilled-mutant.txt gate "rejects a mutant with no line naming what kills it"
-dmr_case fail undetected-mutant.txt gate "rejects a mutant the run recorded no kill for"
-dmr_case fail sampled-gate.txt gate "rejects a gate header over a sampled enumeration"
-dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeout-after-apply runs"
-dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere"
-dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator"
-dmr_case fail no-such-report.txt gate "rejects a missing report"
+dmr_case fail pass-pr.txt gate "rejects a PR-scale report as the gate's" "the report is not of the gate scale"
+dmr_case fail pass-gate.txt pr "rejects a gate-scale report as a PR's" "the report is not of the pr scale"
+dmr_case fail missing-scenario.txt gate "rejects a report without a scenario (SCN-D)" "no crash-class line for SCN-D"
+dmr_case fail empty-enumeration.txt gate "rejects a scenario that enumerated 0 crash points" "SCN-G enumerated 0 crash points"
+dmr_case fail no-doubles.txt gate "rejects SCN-F without double crashes (§15.3)" "SCN-F ran no double crashes"
+dmr_case fail no-storage-full.txt gate "rejects SCN-J with no SQLITE_FULL injected" "SCN-J injected no SQLITE_FULL"
+dmr_case fail no-fault-drawn.txt gate "rejects a faulted seeded loop in which no seed drew a fault" "no faulted seeded-world line, or no seed drew a fault"
+dmr_case fail unkilled-mutant.txt gate "rejects a mutant with no line naming what kills it" "no detection line for mutant MC-10"
+dmr_case fail undetected-mutant.txt gate "rejects a mutant the run recorded no kill for" "a registered mutant was not detected by any run"
+dmr_case fail sampled-gate.txt gate "rejects a gate header over a sampled enumeration" "SCN-A sampled: 120 singles over 1550 events, and the gate crashes at every one"
+dmr_case fail gate-sampled-timeouts.txt gate "rejects a gate that skipped timeout-after-apply runs" "SCN-G ran 2 timeout-after-apply runs over 4 stores"
+dmr_case fail no-timeouts.txt pr "rejects a report with no timeout-after-apply run anywhere" "SCN-A ran no timeout-after-apply run"
+dmr_case fail no-relay-events.txt gate "rejects a scenario whose timeout runs have no denominator" "SCN-B reported no stores, so its timeout runs have no denominator"
+dmr_case fail no-such-report.txt gate "rejects a missing report" "no report at"
 # Phase 9 S13 (design §9.5, §16.2): the `pq-model` comparison, proven without ProVerif. A fake
 # replays recorded outputs; every negative fixture is a way a model run could look green while it
 # decided nothing: a flipped result, `cannot be proved`, a query removed from a model, a query added
@@ -301,24 +315,24 @@ pqx_case "fail, tree not restored" "fails when a patch cannot be reverted" pass 
 # a report of S10's shape (seven scenarios, seven mutants) — the check must not accept the old
 # evidence as the new — SCN-I without the double crashes §15.3 names for it, a report without
 # SCN-K, and one of S10b's mutants with no line naming its killer.
-dmr_case fail s10-only-gate.txt gate "rejects an S10-shaped report without S10b's scenarios and mutants"
-dmr_case fail no-scn-i-doubles.txt gate "rejects SCN-I without double crashes (§15.3)"
-dmr_case fail missing-scn-k.txt gate "rejects a report without SCN-K"
-dmr_case fail unkilled-s10b-mutant.txt gate "rejects MC-33 with no line naming what kills it"
+dmr_case fail s10-only-gate.txt gate "rejects an S10-shaped report without S10b's scenarios and mutants" "no crash-class line for SCN-H"
+dmr_case fail no-scn-i-doubles.txt gate "rejects SCN-I without double crashes (§15.3)" "SCN-I ran no double crashes"
+dmr_case fail missing-scn-k.txt gate "rejects a report without SCN-K" "no crash-class line for SCN-K"
+dmr_case fail unkilled-s10b-mutant.txt gate "rejects MC-33 with no line naming what kills it" "no detection line for mutant MC-33"
 # The review of S10b (design §22.19 item 14): a timeout counted at every relay event, three per
 # store, where only the after-apply one injects anything — the inflated shape the S10b report had;
 # one of S10b's kills held only to the fault-free rule, which the report could not show before the
 # rule was printed on the line; and a PR report with one scenario that ran no timeout at all.
-dmr_case fail relay-event-denominator.txt gate "rejects timeouts counted over relay events instead of stores"
-dmr_case fail weakened-kill-rule.txt gate "rejects MC-18 killed only fault-free"
-dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K ran no timeout"
+dmr_case fail relay-event-denominator.txt gate "rejects timeouts counted over relay events instead of stores" "SCN-A reported no stores, so its timeout runs have no denominator"
+dmr_case fail weakened-kill-rule.txt gate "rejects MC-18 killed only fault-free" "mutant MC-18 was not killed under its rule"
+dmr_case fail pr-scenario-no-timeout.txt pr "rejects a PR report in which SCN-K ran no timeout" "SCN-K ran no timeout-after-apply run"
 # Phase 9 S10c (design §22.23): the report now carries SCN-C, both positives are real reports of the
 # S10c code, and every negative above except `s10-only-gate.txt` was regenerated from them with its
 # one change (that one is an S10-shaped report on purpose and is kept as S10b wrote it; it still
 # fails for the reason it names). Two more: a gate and a PR report without SCN-C, which is also the
 # shape of every report before S10c.
-dmr_case fail missing-scn-c.txt gate "rejects a report without SCN-C"
-dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C"
+dmr_case fail missing-scn-c.txt gate "rejects a report without SCN-C" "no crash-class line for SCN-C"
+dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C" "no crash-class line for SCN-C"
 # Phase 9 SCN-E (design §22.25): the report now carries SCN-E's four `dm crash sample:` lines — its
 # crash coverage is sampled, not every event — and thirteen mutants. `pass-pr.txt` is a real report
 # of the SCN-E code; `pass-gate.txt` is **assembled** (§22.25 items 13 and 14: main's gate report of
@@ -330,24 +344,24 @@ dmr_case fail missing-scn-c-pr.txt pr "rejects a PR-scale report without SCN-C"
 # did: no SCN-E at all (every report before it), at either scale; a line that does not say it is
 # sampled; a line in the every-event form; a gate report whose sample has the PR density; a line
 # with no timeout run; MC-15 held only to the fault-free rule; and the eleven-mutant count.
-dmr_case fail missing-scn-e.txt gate "rejects a report without SCN-E"
-dmr_case fail missing-scn-e-pr.txt pr "rejects a PR-scale report without SCN-E"
-dmr_case fail scn-e-not-said-sampled.txt gate "rejects an SCN-E line that does not say it is sampled"
-dmr_case fail scn-e-as-crash-classes.txt gate "rejects an SCN-E line that claims every event"
-dmr_case fail scn-e-pr-density-gate.txt gate "rejects a gate report whose SCN-E sample has the PR density"
-dmr_case fail scn-e-no-timeout.txt pr "rejects an SCN-E line with no timeout run"
-dmr_case fail scn-e-weakened-kill-rule.txt gate "rejects MC-15 killed only fault-free"
-dmr_case fail scn-e-old-mutant-count.txt gate "rejects the eleven-mutant report of the slices before SCN-E"
+dmr_case fail missing-scn-e.txt gate "rejects a report without SCN-E" "no crash-sample line for SCN-E bob"
+dmr_case fail missing-scn-e-pr.txt pr "rejects a PR-scale report without SCN-E" "no crash-sample line for SCN-E bob"
+dmr_case fail scn-e-not-said-sampled.txt gate "rejects an SCN-E line that does not say it is sampled" "SCN-E bob's line is not of the sample form, or does not say that its enumeration is sampled, not every event"
+dmr_case fail scn-e-as-crash-classes.txt gate "rejects an SCN-E line that claims every event" "an SCN-E line claims the every-event enumeration it does not run"
+dmr_case fail scn-e-pr-density-gate.txt gate "rejects a gate report whose SCN-E sample has the PR density" "SCN-E alice sampled 1 crash points per phase, and the gate scale samples 8"
+dmr_case fail scn-e-no-timeout.txt pr "rejects an SCN-E line with no timeout run" "SCN-E/LOSE_KEYS bob ran 0 timeouts at 1 faulted stores"
+dmr_case fail scn-e-weakened-kill-rule.txt gate "rejects MC-15 killed only fault-free" "mutant MC-15 was not killed under its rule"
+dmr_case fail scn-e-old-mutant-count.txt gate "rejects the eleven-mutant report of the slices before SCN-E" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
 # The review of SCN-E (design §22.25 item 14): an SCN-E line collapsed to one phase (the review's
 # "8 singles over 1 phases", which the check accepted); a gate line whose store faults have the PR
 # density; a line whose stores were timed out but never crashed after apply; MC-15 held to the
 # whole-run crash points the review found all in the establishment; and a header that does not say
 # its "every event" is not the SCN-E lines'.
-dmr_case fail scn-e-one-phase.txt gate "rejects an SCN-E line sampled over fewer phases than its script has"
-dmr_case fail scn-e-gate-store-density.txt gate "rejects a gate SCN-E line whose store faults have the PR density"
-dmr_case fail scn-e-no-store-crash.txt gate "rejects an SCN-E line with no crash after apply at its stores"
-dmr_case fail scn-e-old-kill-window.txt gate "rejects MC-15 killed at crash points outside the window where it acts"
-dmr_case fail scn-e-no-coverage-note.txt gate "rejects a header that does not say the SCN-E lines are sampled"
+dmr_case fail scn-e-one-phase.txt gate "rejects an SCN-E line sampled over fewer phases than its script has" "SCN-E bob sampled over 1 phases, and its script has 6"
+dmr_case fail scn-e-gate-store-density.txt gate "rejects a gate SCN-E line whose store faults have the PR density" "SCN-E alice faulted 1 of the 12 stores of its phase 1, and the gate scale faults 3"
+dmr_case fail scn-e-no-store-crash.txt gate "rejects an SCN-E line with no crash after apply at its stores" "SCN-E/LOSE_KEYS alice ran 0 crashes after apply at 6 faulted stores"
+dmr_case fail scn-e-old-kill-window.txt gate "rejects MC-15 killed at crash points outside the window where it acts" "mutant MC-15 was not killed under its rule"
+dmr_case fail scn-e-no-coverage-note.txt gate "rejects a header that does not say the SCN-E lines are sampled" "the header does not say that its scale is not the SCN-E lines', which are sampled"
 # Phase 9 suite cases (design §22.27): the report now carries KC12, RS2 and RP7 as crash-class lines,
 # the suite line pinned at seven cases, and fifteen mutants, MC-21 and MC-24 held to the rule of the
 # transaction each first changes (six crash points spread over MC-21's, both events of MC-24's; the
@@ -360,14 +374,124 @@ dmr_case fail scn-e-no-coverage-note.txt gate "rejects a header that does not sa
 # MC-21 held only to the fault-free rule, MC-24 held to crash points spread over the whole run, and
 # (the review's) the four-case suite line of the slices before, and MC-21 held to the first version's
 # window — from the mark to the end of the run, which put all six points after its only commit.
-dmr_case fail missing-kc12.txt gate "rejects a report without KC12"
-dmr_case fail missing-rs2-pr.txt pr "rejects a PR-scale report without RS2"
-dmr_case fail missing-rp7.txt gate "rejects a report without RP7"
-dmr_case fail suite-old-mutant-count.txt gate "rejects the thirteen-mutant report of the slices before §22.27"
-dmr_case fail mc21-weakened-kill-rule.txt gate "rejects MC-21 killed only fault-free"
-dmr_case fail mc24-whole-run-kill-rule.txt gate "rejects MC-24 killed at crash points over the whole run"
-dmr_case fail suite-old-case-count.txt gate "rejects the four-case suite line of the slices before §22.27"
-dmr_case fail mc21-first-window-rule.txt gate "rejects MC-21 held to the first version's window (mark to end of run)"
+dmr_case fail missing-kc12.txt gate "rejects a report without KC12" "no crash-class line for KC12"
+dmr_case fail missing-rs2-pr.txt pr "rejects a PR-scale report without RS2" "no crash-class line for RS2"
+dmr_case fail missing-rp7.txt gate "rejects a report without RP7" "no crash-class line for RP7"
+dmr_case fail suite-old-mutant-count.txt gate "rejects the thirteen-mutant report of the slices before §22.27" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail mc21-weakened-kill-rule.txt gate "rejects MC-21 killed only fault-free" "mutant MC-21 was not killed under its rule"
+dmr_case fail mc24-whole-run-kill-rule.txt gate "rejects MC-24 killed at crash points over the whole run" "mutant MC-24 was not killed under its rule"
+dmr_case fail suite-old-case-count.txt gate "rejects the four-case suite line of the slices before §22.27" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail mc21-first-window-rule.txt gate "rejects MC-21 held to the first version's window (mark to end of run)" "mutant MC-21 was not killed under its rule"
+# The second suite-case slice (design §22.37): RP5, RP4, RP11 and KC5b under the enumeration, the
+# suite line pinned at eleven cases, sixteen mutants, MC-7′ held to the rule of both its halves (the
+# CB replay and RP4 fault-free; RP5 at every event of its split window) and MC-20 to its four
+# omissions. `pass-pr.txt` is a real PR-scale report of this slice (§22.37 item 10); `pass-gate.txt`
+# is assembled, its four new crash-class lines the real counts of every-point enumerations. Every
+# negative above that was a positive with an edit was re-derived from the new positives with its own
+# edit and checked to fail with exactly the violations it failed with before; `no-timeouts.txt` and
+# `relay-event-denominator.txt`, a positive under a transform (every timeout zeroed; stores counted
+# as three relay events each), by that transform, checked to reproduce the old copies from the old
+# positives exactly, so they fail the same way for the four new lines too; `s10-only-gate.txt`
+# stays the S10-era report it is. Eight more, each a
+# way a report could claim more than was run: no KC5b, no RP5 (at the PR scale), no RP11, the
+# seven-case suite line of §22.27, the fifteen-mutant report of §22.27, MC-7′ held to its first
+# half's fault-free rule alone, MC-20 killed for three of its four omissions, and no MC-20 line.
+dmr_case fail missing-kc5b.txt gate "rejects a report without KC5b" "no crash-class line for KC5b"
+dmr_case fail missing-rp5-pr.txt pr "rejects a PR-scale report without RP5" "no crash-class line for RP5"
+dmr_case fail missing-rp11.txt gate "rejects a report without RP11" "no crash-class line for RP11"
+dmr_case fail suite-seven-case-count.txt gate "rejects the seven-case suite line of §22.27" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-fifteen-mutant-count.txt gate "rejects the fifteen-mutant report of §22.27" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail mc7-first-half-rule.txt gate "rejects MC-7′ held to its first half's fault-free rule alone" "mutant MC-7' was not killed under its rule"
+dmr_case fail mc20-three-omissions.txt gate "rejects MC-20 killed for three of its four omissions" "mutant MC-20 was not killed under its rule"
+dmr_case fail mc20-no-kill-line.txt gate "rejects a report without MC-20's kill line" "no detection line for mutant MC-20"
+# §22.38, group 1: EP-sweep-log under the enumeration, twelve suite cases, seventeen mutants, and
+# ME-11 held to the window rule (its one event, SWEEP's first checkpoint after the mark). The
+# positives are regenerated as §22.37's were (`pass-pr.txt` a real PR-scale report, `pass-gate.txt`
+# assembled, the new crash-class line a real every-point count), and every negative above was
+# re-derived from them with its own edit. Four more, each a positive with one violation: no
+# EP-sweep-log line, the eleven-case suite line of §22.37, its sixteen-mutant line, and ME-11 held
+# to the fault-free rule alone.
+dmr_case fail missing-ep-sweep-log.txt gate "rejects a report without EP-sweep-log" "no crash-class line for EP-sweep-log"
+dmr_case fail suite-eleven-case-count.txt gate "rejects the eleven-case suite line of §22.37" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-sixteen-mutant-count.txt gate "rejects the sixteen-mutant report of §22.37" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail me11-weakened-kill-rule.txt gate "rejects ME-11 killed only fault-free" "mutant ME-11 was not killed under its rule"
+# §22.38, group 2: EP-clock-back under the enumeration, thirteen suite cases, eighteen mutants, and
+# ME-17 held to the window rule. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no EP-clock-back line, the twelve-case suite line of group 1,
+# its seventeen-mutant line, and ME-17 held to the fault-free rule alone.
+dmr_case fail missing-ep-clock-back.txt gate "rejects a report without EP-clock-back" "no crash-class line for EP-clock-back"
+dmr_case fail suite-twelve-case-count.txt gate "rejects the twelve-case suite line of §22.38's group 1" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-seventeen-mutant-count.txt gate "rejects the seventeen-mutant report of §22.38's group 1" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail me17-weakened-kill-rule.txt gate "rejects ME-17 killed only fault-free" "mutant ME-17 was not killed under its rule"
+# §22.38, group 3: MC-9 on RECV's freshness policy, killed by RP7 — no new case, so thirteen suite
+# cases and nineteen mutants. Positives and every negative regenerated as for group 1. Two more, each
+# a positive with one violation: the eighteen-mutant line of group 2, and MC-9 held to the
+# fault-free rule alone.
+dmr_case fail suite-eighteen-mutant-count.txt gate "rejects the eighteen-mutant report of §22.38's group 2" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail mc9-weakened-kill-rule.txt gate "rejects MC-9 killed only fault-free" "mutant MC-9 was not killed under its rule"
+# §22.38, group 4: SCN-L-v3 (a v3 file migrated on the bus) under the enumeration, and MC-17 and ME-9
+# killed there — thirteen suite cases (SCN-L-v3 is a scenario line) and twenty-one mutants.
+# Positives and every negative regenerated as for group 1. Four more, each a positive with one
+# violation: no SCN-L-v3 line, the nineteen-mutant line of group 3, MC-17 held to one half's rule,
+# and ME-9 held to the fault-free rule alone.
+dmr_case fail missing-scn-l-v3.txt gate "rejects a report without SCN-L-v3" "no crash-class line for SCN-L-v3"
+dmr_case fail suite-nineteen-mutant-count.txt gate "rejects the nineteen-mutant report of §22.38's group 3" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail mc17-one-half.txt gate "rejects MC-17 killed for one of its two halves" "mutant MC-17 was not killed under its rule"
+dmr_case fail me9-weakened-kill-rule.txt gate "rejects ME-9 killed only fault-free" "mutant ME-9 was not killed under its rule"
+# §22.38, group 5: ME-24, a native hook per DM context, killed by the standing clause that every stored
+# session state opens under the device's state key — no new case, so thirteen suite cases and
+# twenty-two mutants. Positives and every negative regenerated as for group 1. Two more, each a
+# positive with one violation: the twenty-one-mutant line of group 4, and ME-24 held to the
+# fault-free rule alone.
+dmr_case fail suite-twentyone-mutant-count.txt gate "rejects the twenty-one-mutant report of §22.38's group 4" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail me24-weakened-kill-rule.txt gate "rejects ME-24 killed only fault-free" "mutant ME-24 was not killed under its rule"
+# §22.38, group 6: RO-prune under the enumeration, and MC-30 killed there, both halves — fourteen suite
+# cases and twenty-three mutants. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no RO-prune line, the thirteen-case suite line of group 5, its
+# twenty-two-mutant line, and MC-30 held to one half's rule.
+dmr_case fail missing-ro-prune.txt gate "rejects a report without RO-prune" "no crash-class line for RO-prune"
+dmr_case fail suite-thirteen-case-count.txt gate "rejects the thirteen-case suite line of §22.38's group 5" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-twentytwo-mutant-count.txt gate "rejects the twenty-two-mutant report of §22.38's group 5" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail mc30-one-half.txt gate "rejects MC-30 killed for one of its two halves" "mutant MC-30 was not killed under its rule"
+# §22.38, group 7: EP-store-after-expiry under the enumeration, and ME-20 killed there — fifteen suite
+# cases and twenty-four mutants. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no EP-store-after-expiry line, the fourteen-case suite line of
+# group 6, its twenty-three-mutant line, and ME-20 held to the fault-free rule alone.
+dmr_case fail missing-ep-store-after-expiry.txt gate "rejects a report without EP-store-after-expiry" "no crash-class line for EP-store-after-expiry"
+dmr_case fail suite-fourteen-case-count.txt gate "rejects the fourteen-case suite line of §22.38's group 6" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-twentythree-mutant-count.txt gate "rejects the twenty-three-mutant report of §22.38's group 6" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail me20-weakened-kill-rule.txt gate "rejects ME-20 killed only fault-free" "mutant ME-20 was not killed under its rule"
+# §22.38, group 8: EP-sender-ahead under the enumeration, and ME-19 killed there — sixteen suite cases
+# and twenty-five mutants. Positives and every negative regenerated as for group 1. Four more, each a
+# positive with one violation: no EP-sender-ahead line, the fifteen-case suite line of group 7, its
+# twenty-four-mutant line, and ME-19 held to the fault-free rule alone.
+dmr_case fail missing-ep-sender-ahead.txt gate "rejects a report without EP-sender-ahead" "no crash-class line for EP-sender-ahead"
+dmr_case fail suite-fifteen-case-count.txt gate "rejects the fifteen-case suite line of §22.38's group 7" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-twentyfour-mutant-count.txt gate "rejects the twenty-four-mutant report of §22.38's group 7" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail me19-weakened-kill-rule.txt gate "rejects ME-19 killed only fault-free" "mutant ME-19 was not killed under its rule"
+# §22.38, group 9: EP-stale-display under the enumeration, and ME-7 killed there — seventeen suite
+# cases and twenty-six mutants. Positives and every negative regenerated as for group 1. Four more,
+# each a positive with one violation: no EP-stale-display line, the sixteen-case suite line of group 8,
+# its twenty-five-mutant line, and ME-7 held to the fault-free rule alone.
+dmr_case fail missing-ep-stale-display.txt gate "rejects a report without EP-stale-display" "no crash-class line for EP-stale-display"
+dmr_case fail suite-sixteen-case-count.txt gate "rejects the sixteen-case suite line of §22.38's group 8" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+dmr_case fail suite-twentyfive-mutant-count.txt gate "rejects the twenty-five-mutant report of §22.38's group 8" "the mutant line is not 'dm mutants: 26 run, 26 detected'"
+dmr_case fail me7-weakened-kill-rule.txt gate "rejects ME-7 killed only fault-free" "mutant ME-7 was not killed under its rule"
+# §22.38, group 10: RP8 under the enumeration, a suite case without a mutant of its own — eighteen
+# suite cases, twenty-six mutants still. Positives and every negative regenerated as for group 1. Two
+# more, each a positive with one violation: no RP8 line, and the seventeen-case suite line of group 9.
+dmr_case fail missing-rp8.txt gate "rejects a report without RP8" "no crash-class line for RP8"
+dmr_case fail suite-seventeen-case-count.txt gate "rejects the seventeen-case suite line of §22.38's group 9" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+# The review of §22.38 (its item 23): ME-17's window is where its traced world parts from the clean
+# one — bob's RECV, six points over events 311..329 — and no longer its first rewritten span, alice's
+# read-only conversation read (4..8), which decided nothing; MC-9's kill is its B1 half (RP7 cannot
+# tell R9's). `pass-pr.txt` is the report of the first run of the whole suite on the real build (AGP),
+# `pass-gate.txt` stays assembled with the new mutant lines, and every negative above was re-derived
+# with its own edit, checked to be the same edit and to fail with the same violations as before. Two
+# more, each a positive with one line as the reviewed report had it: ME-17 held to its first
+# rewritten span (5 of 5), and MC-9 recorded whole.
+dmr_case fail me17-first-span-rule.txt gate "rejects ME-17 held to its first rewritten span, alice's read (5 of 5)" "mutant ME-17 was not killed under its rule"
+dmr_case fail mc9-whole-rule.txt gate "rejects MC-9 recorded whole, where its kill is its B1 half" "mutant MC-9 was not killed under its rule"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the
@@ -1114,10 +1238,28 @@ expect_fail_msg "dm-jni-surface rejects the test-vectors entry point in a shippe
 expect_fail_msg "dm-jni-surface rejects a test library without the test-vectors entry point" \
   "does not export the test-vectors entry point" \
   env GHOST_DM_JNI_NM="$DM_JNI/nm/exact-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects the binding hooks in a shipped library (§22.37)" \
+  "exports the test-vectors entry point 'DmEquivalence.bindingHooks': a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/hooks-only-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the binding hooks (§22.37)" \
+  "does not export the test-vectors entry point 'DmEquivalence.bindingHooks'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-run-only-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects the state-wrap hook in a shipped library (§22.38)" \
+  "exports the test-vectors entry point 'DmEquivalence.stateWrapHook': a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/state-hook-only-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the state-wrap hook (§22.38)" \
+  "does not export the test-vectors entry point 'DmEquivalence.stateWrapHook'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-no-state-hook-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
+expect_fail_msg "dm-jni-surface rejects the sidecar-log hook in a shipped library (§22.38)" \
+  "exports the test-vectors entry point 'DmEquivalence.sidecarLogHook': a shipped library never carries it" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/sidecar-hook-only-nm" bash "$DIR/dm-jni-surface.sh" "$elf"
+expect_fail_msg "dm-jni-surface rejects a test library without the sidecar-log hook (§22.38)" \
+  "does not export the test-vectors entry point 'DmEquivalence.sidecarLogHook'" \
+  env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-no-sidecar-hook-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf"
 if env GHOST_DM_JNI_NM="$DM_JNI/nm/entry-nm" bash "$DIR/dm-jni-surface.sh" --test "$elf" >/dev/null 2>&1; then
-  echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry point"
+  echo "self-test ok: dm-jni-surface accepts a test library with exactly the test-vectors entry points"
 else
-  echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry point" >&2; rc=1
+  echo "SELF-TEST FAIL: dm-jni-surface rejects a test library with exactly the test-vectors entry points" >&2; rc=1
 fi
 # Phase 9 review GATES-3: every half named one class, `DmNative`. A JNI entry point of another
 # class or package — in the workspace's sources, in a built library — and a native method in any

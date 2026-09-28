@@ -694,7 +694,7 @@ fn seal_intro_layers(
     transcript: &[u8; 32],
     inner_key: &[u8; 32],
 ) -> DmResult<Vec<u8>> {
-    let signature = binding::sign(
+    let signature = sign_intro_binding(
         sender.identity_seed,
         &binding::BindingV3 {
             oi_a: sender.oi,
@@ -753,6 +753,25 @@ fn seal_intro_layers(
         &body,
         salt,
     )
+}
+
+/// Binding v3's signature for an intro (§3.4): in a shipped build, over the envelope's own values.
+#[cfg(not(feature = "test-vectors"))]
+fn sign_intro_binding(
+    identity_seed: &[u8; 32],
+    binding: &binding::BindingV3<'_>,
+) -> [u8; sign::SIGNATURE_BYTES] {
+    binding::sign(identity_seed, binding)
+}
+
+/// Binding v3's signature for an intro (§3.4), in a test build through KC5b's perturb hook, which
+/// is off unless a JVM world set it on this context (`binding::hooks`, §22.37).
+#[cfg(feature = "test-vectors")]
+fn sign_intro_binding(
+    identity_seed: &[u8; 32],
+    binding: &binding::BindingV3<'_>,
+) -> [u8; sign::SIGNATURE_BYTES] {
+    binding::hooks::sign_intro(identity_seed, binding)
 }
 
 /// Intro mode with a fresh salt (R-S4) and CSPRNG encapsulation randomness.

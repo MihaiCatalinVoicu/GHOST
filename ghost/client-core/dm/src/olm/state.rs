@@ -92,13 +92,24 @@ impl Sidecar {
     /// The projection rule: exactly the pairs `pickle` holds, each keeping the day already
     /// recorded for it, a pair not recorded before taking `today`.
     pub fn reconcile(previous: &Sidecar, pickle_bytes: &[u8], today: u32) -> DmResult<Self> {
-        let entries = pickle::skipped_keys(pickle_bytes)?
+        #[allow(unused_mut)]
+        let mut entries: Vec<(SkippedKey, u32)> = pickle::skipped_keys(pickle_bytes)?
             .into_iter()
             .map(|key| {
                 let day = previous.day_of(&key).unwrap_or(today);
                 (key, day)
             })
             .collect();
+        #[cfg(feature = "test-vectors")]
+        if hooks::log() {
+            // MC-30's second half: every entry recorded before stays, whether the pickle still
+            // holds its key or not — an insert-only log instead of a projection.
+            for (key, day) in &previous.entries {
+                if !entries.iter().any(|(held, _)| held == key) {
+                    entries.push((*key, *day));
+                }
+            }
+        }
         Ok(Self { entries })
     }
 
@@ -260,6 +271,69 @@ impl SessionState {
             .ok_or(DmCode::StateCorrupt)?
             .to_vec();
         Ok(Self { pickle, sidecar })
+    }
+}
+
+/// MC-30's second half over the JVM crash worlds (design §15.7 MC-30, §22.38): test builds only —
+/// `test-vectors`, which only `ghost-dm-host` enables (G-R2 keeps it out of every shipped graph, G-R6
+/// keeps its JNI symbol out of every shipped library).
+///
+/// One hook per DM context, set by `DmEquivalence.sidecarLogHook(handle, on)`: the mutant "the
+/// first-seen sidecar kept as an insert-only log instead of a projection rebuilt at every store".
+/// [`Sidecar::reconcile`] then keeps every entry it was given as well as the pickle's, so a key the
+/// pickle no longer holds — used, evicted by the library, or pruned — keeps its entry for good.
+///
+/// Keyed by context handle and active on the calling thread for one context call only ([`scope`],
+/// from `with_context` beside `binding::hooks` and `wrap::hooks`), so parallel worlds in one JVM never
+/// see one another's hook.
+#[cfg(feature = "test-vectors")]
+pub mod hooks {
+    use std::cell::Cell;
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock, PoisonError};
+
+    thread_local! {
+        /// Whether the context call running on this thread keeps its sidecars as a log.
+        static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn registry() -> &'static Mutex<HashSet<i64>> {
+        static HOOKS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+        HOOKS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    /// Sets or clears the hook of the context `handle`.
+    pub fn set(handle: i64, on: bool) {
+        let mut hooks = registry().lock().unwrap_or_else(PoisonError::into_inner);
+        if on {
+            hooks.insert(handle);
+        } else {
+            hooks.remove(&handle);
+        }
+    }
+
+    /// Runs `body` with the hook of `handle` active on this thread, and the previous state back
+    /// after it, a caught panic included. Its caller is `jni.rs`'s context scope, so a
+    /// `test-vectors` build without `jni-bridge` compiles it unused outside the tests.
+    #[cfg_attr(not(feature = "jni-bridge"), allow(dead_code))]
+    pub(crate) fn scope<T>(handle: i64, body: impl FnOnce() -> T) -> T {
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                ACTIVE.with(|active| active.set(self.0));
+            }
+        }
+        let on = registry()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&handle);
+        let _restore = Restore(ACTIVE.with(|active| active.replace(on)));
+        body()
+    }
+
+    /// Whether the running context call keeps its sidecars as a log.
+    pub(crate) fn log() -> bool {
+        ACTIVE.with(Cell::get)
     }
 }
 
@@ -476,5 +550,41 @@ mod tests {
         assert_eq!(state.sidecar.expired(151, 51).len(), 2);
         // A day index before the recorded one prunes nothing.
         assert!(state.sidecar.expired(0, 51).is_empty());
+    }
+
+    #[cfg(feature = "test-vectors")]
+    #[test]
+    fn the_mc30_log_hook_keeps_what_the_pickle_lost_in_its_own_context_only() {
+        let chain = [0x5a; 32];
+        let used = SkippedKey {
+            ratchet_key: chain,
+            index: 3,
+        };
+        let before = Sidecar::reconcile(&Sidecar::new(), &pickle_with(&[(chain, &[3, 5])]), 10)
+            .expect("reconcile");
+        // Key 3 left the pickle (used, evicted or pruned): the projection drops its entry.
+        let after = pickle_with(&[(chain, &[5])]);
+        let projected = Sidecar::reconcile(&before, &after, 12).expect("reconcile");
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected.day_of(&used), None);
+        hooks::set(51, true);
+        let logged =
+            hooks::scope(51, || Sidecar::reconcile(&before, &after, 12)).expect("reconcile");
+        assert_eq!(logged.len(), 2);
+        assert_eq!(logged.day_of(&used), Some(10));
+        // Another context, and a call outside any, rebuild the projection.
+        let other =
+            hooks::scope(52, || Sidecar::reconcile(&before, &after, 12)).expect("reconcile");
+        assert_eq!(other.len(), 1);
+        assert_eq!(
+            Sidecar::reconcile(&before, &after, 12)
+                .expect("reconcile")
+                .len(),
+            1
+        );
+        hooks::set(51, false);
+        let cleared =
+            hooks::scope(51, || Sidecar::reconcile(&before, &after, 12)).expect("reconcile");
+        assert_eq!(cleared.len(), 1);
     }
 }
