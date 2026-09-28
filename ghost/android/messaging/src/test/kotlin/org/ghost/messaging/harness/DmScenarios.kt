@@ -8,6 +8,7 @@ import org.ghost.messaging.api.RevocationReason
 import org.ghost.messaging.api.SendResult
 import org.ghost.messaging.api.Timer
 import org.ghost.messaging.api.TrustState
+import org.ghost.messaging.engine.DmTime
 
 /**
  * The named crash scenarios of Phase 9 design §15.3, as far as slices S10, S10b and S10c implement
@@ -2187,12 +2188,27 @@ internal object DmScenarios {
      * published a new bundle, and the three §22.8.4 variants in which B's pre-restore first flight,
      * PreKey re-sends or normal replies reach A after B's reconnect intro (MC-32's subject, which
      * §22.15 item 8 records as needing a step seam).
+     *
+     * **[rp8]: §15.5's RP8, "pre-restore content (`accept_after_minute`)", on this world** (design
+     * §22.38). Everything the restored device receives above is **unopenable** — sealed under keys
+     * the lost device took with it — so nothing here has yet reached the rule that refuses content
+     * that **opens**: `accept_after_minute`, set to the restore minute (§8.6), below which nothing
+     * authored is applied. The variant adds one message that opens: once alice has renewed, she
+     * writes [RP8_OLD] in pair mode with its author minute a minute before the restore
+     * ([PreRestoreDated], one argument of one call, as RP7's decorator dates its L0), in the week of
+     * the pair key that seals it and far inside R9 — so what refuses it is `accept_after_minute`
+     * and nothing else. **Checked in every run:** the restored device never renders it. **Fault-
+     * free:** it was dated before the restore minute and in its seal's week, alice calls it `SENT`,
+     * and the restored device counted exactly one `stale` drop. Singles only, as every suite case;
+     * the rest of the world, its checks and its oracles are SCN-I's, and the message is declared to
+     * the no-loss oracle once it is dated.
      */
-    fun scnI(): DmScenario = DmScenario(
-        name = "SCN-I",
-        doubles = true,
+    fun scnI(rp8: Boolean = false): DmScenario = DmScenario(
+        name = if (rp8) "RP8" else "SCN-I",
+        doubles = !rp8,
         liveness = RESTORED to "alice",
         noLoss = true,
+        declaredLoss = { world -> if (rp8 && world.notes[RP8_DATED] != null) setOf(RP8_OLD) else emptySet() },
         setup = { world ->
             world.node("alice", 0x41)
             world.node("bob", 0x51)
@@ -2236,6 +2252,12 @@ internal object DmScenarios {
             world.retire("carol")
             // The same MESSAGING branch and `ghost1` seed on a new file: a restore from the seed.
             world.node(RESTORED, 0x51, identityBranch = 0x52, streamOffset = RESTORED_STREAM)
+            if (rp8) {
+                val alice = world["alice"]
+                alice.decorate = { real -> PreRestoreDated(real, RP8_OLD.toByteArray(Charsets.UTF_8), world) }
+                alice.reboot()
+                DmStructuralInvariants.check(alice, "RP8 setup reboot")
+            }
         },
         steps = listOf(
             step("B restores from seed") { w ->
@@ -2281,6 +2303,7 @@ internal object DmScenarios {
                 ensureRestoreFlow(w, reconnect = true)
                 round(w)
                 sendOnceRenewed(w, "i-pair")
+                if (rp8) sendOnceRenewed(w, RP8_OLD)
                 round(w)
             },
             step("the world settles and the demoted session reaches its retire day") { w ->
@@ -2317,6 +2340,9 @@ internal object DmScenarios {
             }
             val held = DmScripts.count(world, "alice", "SELECT count(*) FROM dm_held")
             if (held != 0L) dmViolation("SCN-I: alice holds $held rows after a same-identity restore")
+            if (rp8 && RP8_OLD in DmScripts.everyInboundText(world[RESTORED])) {
+                dmViolation("RP8: the restored device rendered content authored before its restore (§8.6, accept_after_minute)")
+            }
         },
         finalChecks = { world ->
             val renewed = world["alice"].device.engine.status().drops["session_renewed"]
@@ -2362,8 +2388,72 @@ internal object DmScenarios {
                         "and unknown_generation=$PRE_RESTORE_INTROS (carol's intro)",
                 )
             }
+            if (rp8) rp8FaultFree(world)
         },
     )
+
+    /** RP8's fault-free half (see [scnI]): the message opened and `accept_after_minute` alone refused it. */
+    private fun rp8FaultFree(world: DmCrashWorld) {
+        val dated = world.notes[RP8_DATED] as? Long ?: dmViolation("RP8 fault-free: the decorator never dated the message")
+        val restore = world.notes[RP8_AFTER] as Long
+        val sealedAt = world.notes[RP8_SEALED_AT] as Long
+        if (dated >= restore) dmViolation("RP8 fault-free: the message was dated at $dated, not before the restore minute $restore")
+        // B1: in the week of the pair key that sealed it, so B1 did not refuse it.
+        if (DmTime.week(dated) != DmTime.week(sealedAt)) {
+            dmViolation("RP8 fault-free: the message was dated in week ${DmTime.week(dated)}, not its seal's ${DmTime.week(sealedAt)}")
+        }
+        if (DmScripts.outgoingState(world, "alice", RP8_OLD) != org.ghost.messaging.api.MessageState.SENT) {
+            dmViolation("RP8 fault-free: alice does not call the pre-restore-dated message SENT, so its refusal proved nothing")
+        }
+        val stale = world[RESTORED].device.engine.status().drops["stale"] ?: 0
+        if (stale != 1) dmViolation("RP8 fault-free: the restored device counted $stale stale drops, expected exactly one")
+    }
+
+    /**
+     * alice's device with one message dated a minute before the restored device's
+     * `accept_after_minute` — the RP8 sender (§8.6). It changes one argument of one call, like RP7's
+     * `OldDatedL0`, and reads the restore minute raw from the restored device's `dm_self` as it seals
+     * (no event), recording the three instants for the fault-free checks.
+     */
+    private class PreRestoreDated(
+        private val real: org.ghost.messaging.port.DmEnvelopes,
+        private val text: ByteArray,
+        private val world: DmCrashWorld,
+    ) : org.ghost.messaging.port.DmEnvelopes by real {
+        override fun encodeContent(
+            kind: org.ghost.crypto.bridge.DmContent.Kind,
+            messageId: ByteArray,
+            authorMinute: Long,
+            minuteIndex: Int,
+            timerCode: Int,
+            timerVersion: Long,
+            quoteRef: ByteArray?,
+            body: ByteArray,
+            contactId: ByteArray,
+            offerRootGen: Int,
+            offerEnv: ByteArray,
+            revocation: ByteArray,
+            sessionReset: Boolean,
+            pqKey: org.ghost.crypto.bridge.DmContent.PqKeyCandidate?,
+            pqKeyFirst: Boolean,
+        ): org.ghost.crypto.bridge.DmContent.Encoded {
+            var minute = authorMinute
+            if (kind == org.ghost.crypto.bridge.DmContent.Kind.TEXT && body.contentEquals(text)) {
+                var after: Long? = null
+                world[RESTORED].raw.query("SELECT accept_after_minute FROM dm_self") { if (!it.isNull(0)) after = it.long(0) }
+                val restore = checkNotNull(after) { "RP8: the restored device has no accept_after_minute when alice seals" }
+                val dated = restore - DmTime.MINUTE
+                world.notes[RP8_AFTER] = restore
+                world.notes[RP8_SEALED_AT] = authorMinute * DmTime.MINUTE
+                world.notes[RP8_DATED] = dated
+                minute = dated / DmTime.MINUTE
+            }
+            return real.encodeContent(
+                kind, messageId, minute, minuteIndex, timerCode, timerVersion, quoteRef, body,
+                contactId, offerRootGen, offerEnv, revocation, sessionReset, pqKey, pqKeyFirst,
+            )
+        }
+    }
 
     /**
      * The three user actions of a restore, each done again when a crash interrupted it: the restore
@@ -2545,6 +2635,12 @@ internal object DmScenarios {
     }
 
     private const val RESTORED: String = "bob-restored"
+
+    /** RP8's message: not `i-`, so SCN-I's own rendering check does not count it. */
+    private const val RP8_OLD: String = "rp8-dated-before-the-restore"
+    private const val RP8_DATED: String = "rp8Dated"
+    private const val RP8_AFTER: String = "rp8After"
+    private const val RP8_SEALED_AT: String = "rp8SealedAt"
 
     /** The restored node's random stream (see [DmNode]'s `streamOffset`). */
     private const val RESTORED_STREAM: Int = 1_000

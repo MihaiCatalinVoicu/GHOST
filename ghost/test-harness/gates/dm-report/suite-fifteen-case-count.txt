@@ -38,6 +38,7 @@ dm crash classes: RO-prune 8682 events, 8682 singles, 0 doubles, 8 timeouts over
 dm crash classes: EP-store-after-expiry 1626 events, 1626 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-sender-ahead 1892 events, 1892 singles, 0 doubles, 1 timeouts over 1 stores
 dm crash classes: EP-stale-display 2263 events, 2263 singles, 0 doubles, 2 timeouts over 2 stores
+dm crash classes: RP8 6800 events, 6800 singles, 0 doubles, 8 timeouts over 8 stores
 dm suite cases: 15 run, 0 failures
 dm mutants: 26 run, 26 detected
 dm mutant MC-1: detected by SCN-A under a crash in the split window (a lost message the sender calls sent); kill rule: invisible fault-free, killed under a crash in its split window, beside a clean run at the same point

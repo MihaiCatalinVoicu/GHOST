@@ -2503,5 +2503,6 @@ internal object DmSuiteCases {
         epStoreAfterExpiry(),
         epSenderClockAhead(),
         epStaleDisplayResurrectsNothing(),
+        DmScenarios.scnI(rp8 = true),
     )
 }

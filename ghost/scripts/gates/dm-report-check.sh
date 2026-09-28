@@ -433,9 +433,9 @@ esac
 scenarios=(SCN-A SCN-B SCN-C SCN-D SCN-F SCN-G SCN-G-week SCN-H SCN-I SCN-J SCN-K SCN-L SCN-L-v3)
 # §15.5's sub-cases under the enumeration: S10's four, KC12, RS2 and RP7 since §22.27, RP5, RP4,
 # RP11 and KC5b since §22.37, and EP-sweep-log, EP-clock-back, RO-prune, EP-store-after-expiry,
-# EP-sender-ahead and EP-stale-display since §22.38.
+# EP-sender-ahead, EP-stale-display and RP8 since §22.38.
 scenarios+=(RP6 RP9 CB-reject-replay EP-read-expiry KC12 RS2 RP7 RP5 RP4 RP11 KC5b EP-sweep-log EP-clock-back RO-prune)
-scenarios+=(EP-store-after-expiry EP-sender-ahead EP-stale-display)
+scenarios+=(EP-store-after-expiry EP-sender-ahead EP-stale-display RP8)
 timeout_total=0
 for scenario in "${scenarios[@]}"; do
   line="$(grep -E "^dm crash classes: ${scenario} " "$report" || true)"
@@ -572,11 +572,11 @@ seeds="$(grep -E '^dm seeded worlds: [0-9]+ seeds, 0 failures$' "$report" | sed 
 drew="$(grep -E '^dm seeded worlds \(faulted\): [0-9]+ seeds, [0-9]+ drew a fault, 0 failures$' "$report" | sed -nE 's/.*, ([0-9]+) drew a fault.*/\1/p' || true)"
 [ -n "$drew" ] && [ "$drew" -gt 0 ] 2>/dev/null || bad "no faulted seeded-world line, or no seed drew a fault"
 
-# §15.5's suite cases: seventeen since §22.38 — S10's four, §22.27's KC12, RS2 and RP7, §22.37's RP5,
+# §15.5's suite cases: eighteen since §22.38 — S10's four, §22.27's KC12, RS2 and RP7, §22.37's RP5,
 # RP4, RP11 and KC5b, and EP-sweep-log, EP-clock-back, RO-prune, EP-store-after-expiry,
-# EP-sender-ahead and EP-stale-display. Pinned, not "at least one" (§22.27's review): a report of the
-# four cases before §22.27 passed the old rule, and one of an earlier count would pass a floor.
-grep -qxF 'dm suite cases: 17 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 17 run, 0 failures'"
+# EP-sender-ahead, EP-stale-display and RP8. Pinned, not "at least one" (§22.27's review): a report of
+# the four cases before §22.27 passed the old rule, and one of an earlier count would pass a floor.
+grep -qxF 'dm suite cases: 18 run, 0 failures' "$report" || bad "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
 
 # §15.7's mutants: the count, and one line per mutant naming the case that kills it. A registered
 # mutant with no named killer is not registered, it is a claim (§15.7, `Mutants.kt`, `t2_mutants.rs`).
