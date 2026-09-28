@@ -1823,24 +1823,34 @@ internal object DmSuiteCases {
      *
      * alice and bob in pair mode with a five-minute timer. bob's device clock steps back one day
      * after his sweeps have raised the expiry clock (`dm_self.expiry_clock_minute`, R-T7) to the
-     * true time. alice writes; bob's RECV stamps the unread cap from **his** clock —
-     * `min(E, consume + bucket + 1 h)`, consume being the stepped-back arrival — so the row's
-     * `delete_at_minute` lies **between** his wall clock and the expiry clock he already reached.
-     * R-T7 measures every deadline against `now_e = max(wall, expiry_clock_minute)`, so the sweep
-     * that follows the RECV deletes it; an engine that measured against the wall clock would keep
-     * it for the hour the wall needs to catch up — mutant ME-17. The check reads the expiry clock
-     * **raw**, so it is the true `now_e` whatever the engine read. §22.27 item 8 thought this case
-     * needed the model relay's own clock (a relay expiry in the recipient's past); the consume term
-     * of the cap puts the deadline there on its own, and the relay is left as it is (§22.38).
+     * true time. alice writes; bob's RECV computes the unread cap from **his** clock —
+     * `min(E, consume + bucket + 1 h)`, consume being the stepped-back arrival — so the cap lies
+     * **between** his wall clock and the expiry clock he already reached. R-T7 measures every
+     * deadline against `now_e = max(wall, expiry_clock_minute)`, and what does it here is **RECV's**
+     * held-cap check (§21.10 point 5, `ReceiveStep.insertIncoming`): the cap is at or below `now_e`,
+     * so the row is refused (`expired_while_held`) and never written. An engine that measured that
+     * check against the wall clock would store the row and keep it for the hour the wall needs to
+     * catch up — mutant ME-17. The check reads the expiry clock **raw**, so it is the true `now_e`
+     * whatever the engine read. §22.27 item 8 thought this case needed the model relay's own clock
+     * (a relay expiry in the recipient's past); the consume term of the cap puts the deadline there
+     * on its own, and the relay is left as it is (§22.38).
+     *
+     * **What it does not test: SWEEP's own `now_e`.** The row never exists in the clean world, so no
+     * sweep deletes it, and a regression that put only SWEEP on the wall clock passes this case (the
+     * first version of this comment, and §22.38 item 4, said the sweep after the RECV deletes it; the
+     * review found there is no row for it to delete). A case for SWEEP needs a row already stored,
+     * with its deadline between the stepped-back wall clock and the expiry clock, when SWEEP runs —
+     * which RECV never stores here; it is not built.
      *
      * After the check bob's clock is corrected, so the liveness probes carry ordinary deadlines.
      *
      * **Checked in the steps** (a crash in one leaves the next to take the message, sweep and check
      * again, with bob still a day behind): after bob's passes, no message of his has a
      * `delete_at_minute` at or before the true `now_e`. **Fault-free:** bob's clock was stepped
-     * back after his expiry clock reached the true time, and the message reached him (a `dm_seen`
-     * tag was written) and is gone. **Oracles:** no-loss with the message declared (it expires on
-     * arrival by design), liveness alice ↔ bob, nothing owed.
+     * back after his expiry clock reached the true time, the message reached him (a `dm_seen` tag
+     * was written) and is not at him, and his RECV refused it — exactly one `expired_while_held`
+     * drop. **Oracles:** no-loss with the message declared (it expires on arrival by design),
+     * liveness alice ↔ bob, nothing owed.
      */
     fun epClockSteppedBackDoesNotDelayDeletion(): DmScenario = DmScenario(
         name = "EP-clock-back",
@@ -1882,6 +1892,15 @@ internal object DmSuiteCases {
             if (seen < 1L) dmViolation("EP-clock-back: the message never reached bob, so its deletion proved nothing")
             if (EP_CLOCK_TEXT in DmScripts.inboundTexts(world, "bob")) {
                 dmViolation("EP-clock-back: the message is still at bob")
+            }
+            // What refused it is RECV's held-cap check, once (§22.38's review): the row was never
+            // written, so no sweep deleted it.
+            val refused = world["bob"].device.engine.status().drops["expired_while_held"] ?: 0
+            if (refused != 1) {
+                dmViolation(
+                    "EP-clock-back fault-free: bob counted $refused expired_while_held drops, expected exactly one " +
+                        "(his RECV refuses the row whose cap lies at or below now_e, §21.10 point 5)",
+                )
             }
         },
         liveness = "alice" to "bob",
