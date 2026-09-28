@@ -102,10 +102,15 @@ internal class FaultyDmSqlExecutor(
     /**
      * The statement [rewrite] makes of this one. Called right after the statement's own event was
      * raised, so the bus's count is that event's index.
+     *
+     * Its span is not recorded in a run whose window is found by tracing ([DmEventBus.actsFrom] set):
+     * there the window is the transaction in which the worlds part, whole, and a rewritten statement
+     * says only that a text changed — ME-17's first one after its mark decided nothing (§22.38's
+     * review). Every other mutant found by tracing rewrites nothing in the armed phase.
      */
     private fun rewritten(sql: String, args: List<Any?>): Pair<String, List<Any?>> {
         val out = rewrite?.invoke(sql, args) ?: return Pair(sql, args)
-        if (bus.armed && (out.first != sql || out.second != args)) {
+        if (bus.armed && bus.actsFrom == null && (out.first != sql || out.second != args)) {
             if (delegate.inTransaction) {
                 if (rewrittenFrom == null) rewrittenFrom = bus.count
             } else {

@@ -130,6 +130,15 @@ internal object DmMutants {
          */
         val actsAt: ((String) -> Boolean)? = null,
         /**
+         * For a **rewrite of a read** whose changed result need not change anything the device then
+         * does (§22.38's review of ME-17): the window is not the first rewritten span after the mark
+         * but the transaction in which the traced mutated world first departs from the clean one —
+         * where the device first decides otherwise — measured as a native mutant's is (§22.37). A
+         * rewritten span says only that a statement's text changed; ME-17's first one after its mark
+         * was alice's read-only conversation read, whose `now_e` is her wall clock either way.
+         */
+        val windowByDeparture: Boolean = false,
+        /**
          * A **trigger substitution** in the entitlement world's wiring (SCN-E, §22.25): the contact
          * half of KEEPER — the production `ContactKeeper` — runs on every `CAPABILITIES` hint instead
          * of on time-triggered passes only. A fourth mechanism beside the rewrite, the decorator and
@@ -384,14 +393,23 @@ internal object DmMutants {
      * The column itself is untouched — SWEEP raises it with `... WHERE expiry_clock_minute < ?`,
      * which a smaller `now_e` never matches, so no guard fires and the mutant is seen only by what it
      * delays.
+     *
+     * What EP-clock-back sees of it is **RECV's** held-cap check (§21.10 point 5): the clean RECV
+     * refuses the row, whose cap lies at or below `now_e` (`expired_while_held`), and the mutated one
+     * — comparing with the stepped-back wall clock — inserts it, past its deadline on the expiry
+     * clock. SWEEP's own `now_e` decides nothing in the case: the row it would delete never exists in
+     * the clean world (§22.38's review). The rewrite changes the text of every `dm_self` read of every
+     * node, so its window is where the traced worlds part, bob's RECV ([windowByDeparture]), not its
+     * first rewritten span — alice's conversation read, which decides nothing.
      */
     val ME17 = Mutation(
         id = "ME-17",
         defeats = "R-T7: every deadline is measured against now_e = max(wall, expiry_clock_minute)",
-        detectedBy = "EP-clock-back (a message whose unread cap lies between the stepped-back wall clock and the " +
-            "expiry clock is deleted by the sweep that follows its RECV, §10.9 item 4)",
+        detectedBy = "EP-clock-back (the RECV of a message whose unread cap lies between the stepped-back wall clock " +
+            "and the expiry clock refuses it, §10.9 item 4, §21.10 point 5)",
         expect = "past their delete_at_minute on the expiry clock",
         expectUnderCrash = listOf("past their delete_at_minute on the expiry clock"),
+        windowByDeparture = true,
         rewrite = { sql, args ->
             if (sql.startsWith("SELECT card_index, seen_key, content_key_wrapped") && sql.contains(" FROM dm_self")) {
                 Pair(sql.replace("expiry_clock_minute, accept_after_minute", "0, accept_after_minute"), args)
@@ -404,19 +422,67 @@ internal object DmMutants {
     /**
      * **MC-9 — no freshness check** (R9 and binding B1, §7.6; built by §22.38). RECV's freshness
      * policy admits content of any age and of any week; `accept_after_minute` (§8.6, a restore rule
-     * and not MC-9's) is kept, and read exactly when the rule reads it. The decision is Kotlin
-     * comparisons over the decrypted author minute, which no statement carries and no port result
-     * is, so the mutant lives on the policy parameter §22.38 added to `ReceiveStep`.
+     * and not MC-9's) is kept. It is read for **every** content — `acceptAfter()` first,
+     * unconditionally — where [org.ghost.messaging.engine.ContentFreshness.RULE] reads it only once
+     * the age bound has passed: the same statements as the clean world for content inside the age
+     * bound, one self-row read more for content outside it (§22.38's review corrected this comment,
+     * which said "read exactly when the rule reads it"). The decision is Kotlin comparisons over the
+     * decrypted author minute, which no statement carries and no port result is, so the mutant lives
+     * on the policy parameter §22.38 added to `ReceiveStep`.
+     *
+     * **Its kill is its B1 half** (§22.38's review). RP7's back-dated L0 lies inside R9's age bound,
+     * so RP7 refuses it by B1 alone: the age bound dropped alone ([MC9_WITHOUT_R9]) passes RP7, and B1
+     * dropped alone ([MC9_WITHOUT_B1]) fails it for this entry's reason — both run beside the kill, and
+     * the kill is recorded as B1's. R9's half is covered by `ContentFreshnessTest` (each edge of the
+     * age bound, and the grid on which the rule decides and reads as the inline code did), not by
+     * this mutant.
      */
     val MC9 = Mutation(
         id = "MC-9",
         defeats = "R9 and B1: content older than FRESH(bucket), from the future, or of another week than its key is refused",
-        detectedBy = "RP7 (an L0 of last week re-sealed under this week's key is rendered)",
+        detectedBy = "RP7, its B1 half (an L0 of last week re-sealed under this week's key is rendered); its R9 half, " +
+            "the age bound, by ContentFreshnessTest and not by a kill",
         expect = "RP7: bob rendered an L0 dated in another week",
         expectUnderCrash = listOf("RP7: bob rendered an L0 dated in another week"),
         freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, _, _, _, acceptAfter ->
             val after = acceptAfter()
             after == null || authorSeconds >= after
+        },
+    )
+
+    /**
+     * [MC9]'s B1 half alone, a control of what its kill shows and **not** a registered mutant (not in
+     * [all]): the production rule with the key week withheld, so R9's age bound and
+     * `accept_after_minute` stand and the self row is read exactly when the rule reads it. RP7 must
+     * fail under it for [MC9]'s reason.
+     */
+    val MC9_WITHOUT_B1 = Mutation(
+        id = "MC-9",
+        defeats = "B1: content of another week than the key that sealed it is refused",
+        detectedBy = "RP7 (an L0 of last week re-sealed under this week's key is rendered)",
+        expect = MC9.expect,
+        freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, arrivalSeconds, freshSeconds, _, acceptAfter ->
+            org.ghost.messaging.engine.ContentFreshness.RULE.admits(authorSeconds, arrivalSeconds, freshSeconds, null, acceptAfter)
+        },
+    )
+
+    /**
+     * [MC9]'s R9 half alone, the other control and not a registered mutant: the production rule
+     * without its age bound — `accept_after_minute` and B1 stand. RP7 must **pass** under it: its L0
+     * is inside the age bound, so no RP7 run can tell this half, which is why the kill is B1's.
+     */
+    val MC9_WITHOUT_R9 = Mutation(
+        id = "MC-9",
+        defeats = "R9: content older than FRESH(bucket) or more than 2σ ahead of its arrival is refused",
+        detectedBy = "no crash-world case (ContentFreshnessTest covers the age bound)",
+        expect = MC9.expect,
+        freshness = org.ghost.messaging.engine.ContentFreshness { authorSeconds, _, _, pairWeek, acceptAfter ->
+            val after = acceptAfter()
+            if (after != null && authorSeconds < after) {
+                false
+            } else {
+                pairWeek == null || DmTime.week(authorSeconds) == pairWeek
+            }
         },
     )
 

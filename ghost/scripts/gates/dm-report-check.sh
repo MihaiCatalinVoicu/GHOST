@@ -606,7 +606,8 @@ grep -qxF 'dm suite cases: 18 run, 0 failures' "$report" || bad "the suite-case 
 # after every checkpoint the device reports done" (§10.9 item 3). Eighteen since §22.38's group 2:
 # ME-17 (a wall-clock back step delays deletion), which EP-clock-back makes reachable. Nineteen since
 # §22.38's group 3: MC-9 (no freshness check), which RP7 makes reachable through RECV's freshness
-# policy (`ContentFreshness`, whose production rule is the three comparisons RECV wrote inline).
+# policy (`ContentFreshness`, whose production rule is the three comparisons RECV wrote inline) —
+# its B1 half, as the group's review found: RP7 cannot tell R9's.
 # Twenty-one since §22.38's group 4: MC-17 (the outbox rebuild loses a rowid or a trigger) and ME-9
 # (the expiry trigger never created), which SCN-L-v3's migration on the bus makes reachable.
 # Twenty-two since §22.38's group 5: ME-24 (session state stored unwrapped), a native hook per DM
@@ -652,13 +653,18 @@ rule_mc20='each of its 4 omissions fault-free and at 5 of 5 crash points inside 
 # §22.38's. ME-11: fault-free, and at the one event of the window it acts in — SWEEP's first
 # checkpoint after EP-sweep-log's mark, a statement outside any transaction — beside a clean run.
 rule_me11='fault-free and at 1 of 1 crash points inside the transaction it first changes, each beside a clean run'
-# ME-17: fault-free, and at every event (five) of the first transaction its rewrite of the expiry
-# clock's read changes after EP-clock-back's mark.
-rule_me17='fault-free and at 5 of 5 crash points inside the transaction it first changes, each beside a clean run'
+# ME-17: fault-free, and at six points spread over the transaction in which its traced world parts
+# from the clean one — bob's RECV of the message, whose held-cap check the rewritten expiry-clock read
+# lets through (events 311..329). §22.38's review: its first rewritten span, which the rule took until
+# then, is alice's read-only conversation read (events 4..8), which decides nothing — "5 of 5" there
+# was the fault-free kill after an unrelated reboot, and a crash anywhere before the RECV killed it too.
+rule_me17='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 # MC-9: fault-free by RP7, and at six points spread over the first transaction it changes — bob's
 # RECV of the re-sealed L0 (22 events), found where the traced mutated run departs from the clean one
-# (a policy substitution raises no event of its own, like MC-20's native omissions).
-rule_mc9='fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
+# (a policy substitution raises no event of its own, like MC-20's native omissions). What it shows is
+# the B1 half (§22.38's review): RP7's L0 is inside R9's age bound, so the age bound dropped alone
+# passes RP7, and the kill test runs that beside it; R9's half is `ContentFreshnessTest`'s.
+rule_mc9='its B1 half fault-free and at 6 of 6 crash points inside the transaction it first changes, each beside a clean run'
 # Group 4's two, inside the migration transaction the rewrite changes, SCN-L-v3's bob migrating on
 # the bus. MC-17: each of its halves at six points spread from its rewritten statement to the end of
 # migration 4 (events 18..51 for the rows copied without their rowids, 29..51 for the trigger not

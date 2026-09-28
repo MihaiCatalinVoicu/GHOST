@@ -482,6 +482,16 @@ dmr_case fail me7-weakened-kill-rule.txt gate "rejects ME-7 killed only fault-fr
 # more, each a positive with one violation: no RP8 line, and the seventeen-case suite line of group 9.
 dmr_case fail missing-rp8.txt gate "rejects a report without RP8" "no crash-class line for RP8"
 dmr_case fail suite-seventeen-case-count.txt gate "rejects the seventeen-case suite line of §22.38's group 9" "the suite-case line is not 'dm suite cases: 18 run, 0 failures'"
+# The review of §22.38 (its item 23): ME-17's window is where its traced world parts from the clean
+# one — bob's RECV, six points over events 311..329 — and no longer its first rewritten span, alice's
+# read-only conversation read (4..8), which decided nothing; MC-9's kill is its B1 half (RP7 cannot
+# tell R9's). `pass-pr.txt` is the report of the first run of the whole suite on the real build (AGP),
+# `pass-gate.txt` stays assembled with the new mutant lines, and every negative above was re-derived
+# with its own edit, checked to be the same edit and to fail with the same violations as before. Two
+# more, each a positive with one line as the reviewed report had it: ME-17 held to its first
+# rewritten span (5 of 5), and MC-9 recorded whole.
+dmr_case fail me17-first-span-rule.txt gate "rejects ME-17 held to its first rewritten span, alice's read (5 of 5)" "mutant ME-17 was not killed under its rule"
+dmr_case fail mc9-whole-rule.txt gate "rejects MC-9 recorded whole, where its kill is its B1 half" "mutant MC-9 was not killed under its rule"
 # Phase 9 S11 (design §15.6, §15.7, §22.16): the privacy report. `privacy-pass-pr.txt` is a real
 # PR-scale report of this slice (the owner's workstation); the gate and suite positives are its halves
 # with the gate header, illustrative of the shape the check enforces. Every negative is a way the

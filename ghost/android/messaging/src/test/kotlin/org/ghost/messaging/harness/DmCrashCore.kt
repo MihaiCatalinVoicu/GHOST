@@ -226,6 +226,10 @@ internal class DmEventBus {
      * inside the crate raises no event of its own. The transaction that raises it goes into
      * [rewrittenSpans] as a rewrite's would, from its **first** event to its last (the mutant acted
      * in a native call before any statement of it could tell). Null — the default — records nothing.
+     *
+     * A rewrite whose window is measured the same way (ME-17, [DmMutants.Mutation.windowByDeparture];
+     * §22.38's review) records no span of its own while this is set, so the departure's transaction,
+     * whole, is the one span of the run.
      */
     var actsFrom: Long? = null
 

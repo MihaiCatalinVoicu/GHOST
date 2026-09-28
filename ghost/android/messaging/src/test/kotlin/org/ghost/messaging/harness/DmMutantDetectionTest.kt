@@ -39,7 +39,26 @@ class DmMutantDetectionTest {
         // MC-9 (R9, B1; §22.38): fault-free by RP7, and at crash points inside the first transaction
         // it changes after RP7's mark — measured where its world departs from the clean one, since a
         // policy raises no event — each beside the clean RP7 at the same point.
-        detectFaultFreeAndWhereItActs(DmMutants.MC9, DmSuiteCases.rp7AnOldL0ResealedUnderALaterWeekKey(), DmSuiteCases.RP7_MARK)
+        val rp7 = DmSuiteCases.rp7AnOldL0ResealedUnderALaterWeekKey()
+        val acts = proveWhereItActs(DmMutants.MC9, rp7, DmSuiteCases.RP7_MARK)
+        // What that kill shows is its B1 half (§22.38's review): RP7's L0 is inside R9's age bound, so
+        // the age bound dropped alone passes RP7, and B1 dropped alone fails it for MC-9's own reason.
+        // Both run here, so the line below says what was measured; R9's half is ContentFreshnessTest's.
+        requireNative()
+        val r9Alone = runCatching { DmCrashRunner(mutated(rp7, DmMutants.MC9_WITHOUT_R9)).run(DmRunSpec()) }.exceptionOrNull()
+        assertTrue(
+            "RP7 fails with MC-9's R9 half alone, so its kill is not B1's alone and the record must say so: " +
+                r9Alone?.let { deepMessage(it) },
+            r9Alone == null,
+        )
+        val b1Alone = detectFaultFree(DmMutants.MC9_WITHOUT_B1, rp7)
+        println("MC-9's halves on RP7 fault-free: R9 dropped alone passes; B1 dropped alone is killed: $b1Alone")
+        DmKills.record(
+            DmMutants.MC9.id,
+            "${acts.detail("RP7")} | its R9 half alone passes RP7 | its B1 half alone: $b1Alone",
+            "its B1 half fault-free and at ${acts.kills.size} of ${acts.points} crash points inside the transaction it " +
+                "first changes, each beside a clean run",
+        )
     }
 
     @Test
@@ -576,15 +595,29 @@ class DmMutantDetectionTest {
      * the clear, §22.38) issues the clean world's statements, so its world never departs; it names
      * the statements it acts at ([DmMutants.Mutation.actsAt]), and the window is the transaction of
      * the first of them after [mark] — with both worlds checked equal event for event up to it.
+     *
+     * **A rewrite of a read that need not decide anything** ([DmMutants.Mutation.windowByDeparture];
+     * ME-17, §22.38's review) is traced like a native mutant: its first rewritten span after the mark
+     * was a read whose changed result changed nothing the device did (alice's conversation read), and
+     * crashes there and anywhere else before the worlds parted killed it just the same — the fault-free
+     * kill after an unrelated reboot, which is what this rule exists to refuse. Its window is the
+     * transaction in which the worlds part, whole; its rewrite records no span of its own in that run
+     * ([FaultyDmSqlExecutor]). Every other rewrite keeps its first rewritten span, and the review's
+     * measurement says why (§22.38 item 5): where the rewrite changes what a statement writes or does
+     * to the file (MC-7′, MC-17, ME-7, ME-9, ME-11, ME-19) that span is where the file first differs,
+     * while the traces — statement labels, not bytes — part only where something later reads the
+     * difference (MC-7′, ME-7) or never (the other four); where it rewrites a read (MC-21, MC-24) the
+     * traces part inside that span.
      */
     private fun proveWhereItActs(mutation: DmMutants.Mutation, scenario: DmScenario, mark: String): WhereItActs {
         requireNative()
         assertTrue("${mutation.id} names no failure under a crash", mutation.expectUnderCrash.isNotEmpty())
         val native = mutation.rewrite == null && mutation.rewriteOn == null
-        // A window found by tracing: every native mutant, and a rewrite named by the statement it
-        // acts at (ME-20: it rewrote a schema in the setup, where nothing is an event, and changes
-        // no statement the armed world issues, so no rewritten span can show where it acts).
-        val byTrace = native || mutation.actsAt != null
+        // A window found by tracing: every native mutant, a rewrite named by the statement it acts at
+        // (ME-20: it rewrote a schema in the setup, where nothing is an event, and changes no statement
+        // the armed world issues, so no rewritten span can show where it acts), and a rewrite of a read
+        // measured where the worlds part (ME-17).
+        val byTrace = native || mutation.actsAt != null || mutation.windowByDeparture
         // Half 1: fault-free, against the clean control, with the entry's own message.
         val cleanTrace = ArrayList<String>()
         val cleanEvents = DmCrashRunner(if (byTrace) traced(scenario, cleanTrace) else scenario).run(DmRunSpec()).events
