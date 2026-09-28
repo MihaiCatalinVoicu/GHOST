@@ -41,14 +41,13 @@ fn aad(day: u32) -> CommitAad {
     }
 }
 
-/// The context of the group and the GroupInfo signer's key, after `JoinBuilder::build()`, in a dry
-/// call over `rows` (so nothing is written); `rows` is the joiner's (for a rejoin: only its global
-/// rows, design §6.2.5).
-fn inspect_welcome(
-    j: &mut Device,
-    ch: [u8; 32],
-    welcome: &[u8],
-) -> Result<(ChannelContext, [u8; 32]), String> {
+/// A joined state as the anchor sees it: the context, the GroupInfo signer's key, every leaf's key.
+type JoinedView = (ChannelContext, [u8; 32], Vec<[u8; 32]>);
+
+/// The context of the group, the GroupInfo signer's key and every leaf's signature key, after
+/// `JoinBuilder::build()`, in a dry call over `rows` (so nothing is written); `rows` is the joiner's
+/// (for a rejoin: only its global rows, design §6.2.5).
+fn inspect_welcome(j: &mut Device, ch: [u8; 32], welcome: &[u8]) -> Result<JoinedView, String> {
     j.dry_call(&ch, |p, _| {
         let m = MlsMessageIn::tls_deserialize_exact(welcome).map_err(|e| format!("{e:?}"))?;
         let w = match m.extract() {
@@ -74,9 +73,19 @@ fn inspect_welcome(
             .as_slice()
             .try_into()
             .map_err(|_| "signature key length")?;
-        Ok::<_, String>((ctx, signer))
+        let leaves: Vec<[u8; 32]> = staged
+            .members()
+            .map(|m| m.signature_key.as_slice().try_into().unwrap())
+            .collect();
+        Ok::<_, String>((ctx, signer, leaves))
     })
     .map(|(v, _)| v)
+}
+
+/// §5.3's validity of a joined context, the part a fresh group cannot fake: every committer key is
+/// the signature key of a current leaf (round 10e, design §19.29).
+fn every_committer_a_leaf(ctx: &ChannelContext, leaves: &[[u8; 32]]) -> bool {
+    ctx.committers.iter().all(|k| leaves.contains(k))
 }
 
 /// The joiner's anchor for a join or restore (S0-15): the joined context's committers hash to the
@@ -195,7 +204,11 @@ fn remove_moderator(w: &mut World, owner: [u8; 32], skip: &[usize]) {
 
 /// TR-4: after the moderator's removal the real committers void the invite (the digest of the new
 /// committers differs), so they never admit its join request; the removed moderator, whose key the
-/// invite still names, builds a group of its own and the invitee's anchor accepts that Welcome.
+/// invite still names, builds a group of its own and the invitee's anchor comparison accepts that
+/// Welcome. Round 10e (design §19.29): this fresh-group form passes the anchor comparison only —
+/// §5.3's validity, which `welcomeJoin` checks on the joined context, refuses it, because the
+/// owner it names is not a leaf of the forger's group. The capture that passes every check is the
+/// removed moderator's fork of the real group from its last state (`r10e_protocol.rs`).
 #[test]
 fn r10d_removed_committer_answers_the_invites_it_voided() {
     let day = host_day();
@@ -215,27 +228,33 @@ fn r10d_removed_committer_answers_the_invites_it_voided() {
     assert_ne!(now_digest, invite_digest);
     // The removed moderator (it held JK_g of the generation the invite names) forges the Welcome.
     let forged = forged_welcome(&mut w.members[1], ch, vec![owner, moderator], &kp, day);
-    let (ctx, signer) = inspect_welcome(&mut j, ch, &forged).expect("OpenMLS accepts the forgery");
+    let (ctx, signer, leaves) =
+        inspect_welcome(&mut j, ch, &forged).expect("OpenMLS accepts the forgery");
     let verdict = join_anchor(&ch, &invite_digest, &ctx, &signer);
+    let valid = every_committer_a_leaf(&ctx, &leaves);
     println!(
-        "R10d TR-4 the removed moderator's own group: signer is the moderator {}, anchor -> {verdict:?} (the invitee is captured)",
+        "R10d TR-4 the removed moderator's own group: signer is the moderator {}, anchor -> {verdict:?}; §5.3 every committer a leaf -> {valid} (round 10e: welcomeJoin refuses this form; the fork form passes both, r10e_protocol)",
         signer == moderator
     );
     assert_eq!(verdict, Ok(()));
-    // The joiner applies it (nothing distinguishes it) and its KeyPackage is consumed.
-    j.join(ch, &forged, true).expect("captured");
+    assert!(!valid);
+    // OpenMLS alone applies it (nothing at its level distinguishes it) and consumes the KeyPackage.
+    j.join(ch, &forged, true).expect("applied by OpenMLS");
     // A fresh invite from the sponsor names the new committers: its digest differs from the digest
-    // of the group the joiner now holds, which is what the correction's ANCHOR_CONFLICT detects.
+    // of the group the joiner now holds (what the ANCHOR_CONFLICT option of Q49 would compare;
+    // recorded in design §19.29, not adopted).
     let held = digest_ordered(&ch, &ctx.committers);
     println!(
-        "R10d TR-4 re-invite: new invite digest == digest of the joined group's committers? {} (ANCHOR_CONFLICT when not)",
+        "R10d TR-4 re-invite: new invite digest == digest of the joined group's committers? {}",
         held == now_digest
     );
     assert_ne!(held, now_digest);
 }
 
 /// TR-5: a member offline across the moderator's removal rejoins later; its anchor is the
-/// committers of its last final epoch, which still name the removed moderator.
+/// committers of its last final epoch, which still name the removed moderator. Round 10e (design
+/// §19.29): as for TR-4, this fresh-group form passes the signer check only and §5.3 refuses it;
+/// the removed moderator's fork of the real group passes both (`r10e_protocol.rs`).
 #[test]
 fn r10d_stale_rejoin_anchor() {
     let day = host_day();
@@ -256,13 +275,15 @@ fn r10d_stale_rejoin_anchor() {
         .filter(|((s, _), _)| *s == Scope::Global)
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let (_ctx, signer) =
+    let (ctx, signer, leaves) =
         inspect_welcome(&mut view, ch, &forged).expect("OpenMLS accepts the forgery");
     let passes = last_committers.contains(&signer);
+    let valid = every_committer_a_leaf(&ctx, &leaves);
     println!(
-        "R10d TR-5 rejoin Welcome forged by the removed moderator: signer among the rejoiner's last committers -> {passes} (captured)"
+        "R10d TR-5 rejoin Welcome forged by the removed moderator: signer among the rejoiner's last committers -> {passes}; §5.3 every committer a leaf -> {valid} (the fork form passes both, r10e_protocol)"
     );
     assert!(passes);
+    assert!(!valid);
 }
 
 /// TR-6: the transfer of rank 0 reorders `committers`; an ordered digest changes (every outstanding
@@ -322,7 +343,7 @@ fn full_check(
     welcome: &[u8],
     anchor: &[u8; 32],
 ) -> Result<(), String> {
-    let (ctx, signer) = inspect_welcome(j, ch, welcome)?;
+    let (ctx, signer, _) = inspect_welcome(j, ch, welcome)?;
     join_anchor(&ch, anchor, &ctx, &signer).map_err(str::to_string)
 }
 
