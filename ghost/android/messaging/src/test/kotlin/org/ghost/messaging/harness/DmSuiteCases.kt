@@ -1838,9 +1838,10 @@ internal object DmSuiteCases {
      * **What it does not test: SWEEP's own `now_e`.** The row never exists in the clean world, so no
      * sweep deletes it, and a regression that put only SWEEP on the wall clock passes this case (the
      * first version of this comment, and §22.38 item 4, said the sweep after the RECV deletes it; the
-     * review found there is no row for it to delete). A case for SWEEP needs a row already stored,
-     * with its deadline between the stepped-back wall clock and the expiry clock, when SWEEP runs —
-     * which RECV never stores here; it is not built.
+     * review found there is no row for it to delete). What covers SWEEP's own `now_e` is the unit test
+     * `SweepTest.aClockSteppedBackDoesNotDelayDeletion`, which seeds a row with its deadline between
+     * the stepped-back wall clock and the expiry clock directly and sweeps; no crash-world case does,
+     * since here the engine would have to store such a row and RECV refuses it.
      *
      * After the check bob's clock is corrected, so the liveness probes carry ordinary deadlines.
      *
