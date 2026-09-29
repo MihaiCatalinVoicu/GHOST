@@ -7,9 +7,12 @@
 # clearing them in an existing target directory does not re-run the build scripts and the previous
 # SIMD cfgs are reused (measured in S0', evidence V-6 §6.3: FAIL -> FAIL -> portable after a clean
 # -> still portable after the reverse change). Every client build is therefore preceded by
-#   cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics [--target <triple>] --release
+#   cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes [--target <triple>] --release
 # which also covers target directories restored from CI caches, and G-R3 reads the `cargo:rustc-cfg`
 # lines of the build it guards.
+# Phase 10 (G-M9, design faza10-forum.md §13.1, S0-8, V10-7): `libcrux-aes`, which the OpenMLS
+# provider compiles through `libcrux-aead`, reads the same variables the same way, so it is in every
+# clean list and in the gate's package list (required with `--with-aes`).
 [env]
 LIBCRUX_DISABLE_SIMD128 = "1"
 LIBCRUX_DISABLE_SIMD256 = "1"

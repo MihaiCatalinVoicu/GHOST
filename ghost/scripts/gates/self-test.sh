@@ -1578,6 +1578,27 @@ if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
 else
   echo "SELF-TEST FAIL: dm-derivation-inputs rejects the real DM modules" >&2; rc=1
 fi
+# G-M3's script half (Phase 10 design faza10-forum.md §5.2 rule (1), §13.1; slice S2a): a positive with
+# a declaration split over lines, one in a comment and one in a string, the two exports and the hint
+# label in Kotlin; then one fixture per rule (test-harness/gates/ch-derivation/README.md).
+near_misses ch-derivation-inputs ch-derivation/positive
+evasion_count ch-derivation-inputs ch-derivation/raw-key 1
+evasion_named ch-derivation-inputs "src/derive.rs:3: derive_bad takes \`&[u8]\` as its key input" "reports an untyped key input declared across lines"
+evasion_count ch-derivation-inputs ch-derivation/public-elsewhere 1
+evasion_named ch-derivation-inputs "src/derive.rs:4: derive_something_else takes the public OpenInviteSalt" "reports the open invite's public salt keying another derivation"
+evasion_count ch-derivation-inputs ch-derivation/outside 2
+evasion_named ch-derivation-inputs "src/seal.rs:2: derive_hidden is declared outside src/derive.rs" "reports a derivation declared outside the typed module"
+evasion_named ch-derivation-inputs "src/seal.rs:3: HKDF outside src/derive.rs" "reports an HKDF outside the typed module, its path split over lines"
+evasion_count ch-derivation-inputs ch-derivation/exporter 2
+evasion_named ch-derivation-inputs "src/group.rs:3: export_secret with a label other than" "reports an export under another label"
+evasion_named ch-derivation-inputs "src/kv.rs:2: export_secret outside src/group.rs" "reports an export outside group.rs"
+evasion_count ch-derivation-inputs ch-derivation/kotlin 2
+evasion_named ch-derivation-inputs "Channel.kt:3: a channel derivation label in Kotlin (\"ghost/v1/ch-seal\")" "reports a channel label in Kotlin and not the hint label"
+if bash "$DIR/ch-derivation-inputs.sh" >/dev/null 2>&1; then
+  echo "self-test ok: ch-derivation-inputs accepts the real channel crate"
+else
+  echo "SELF-TEST FAIL: ch-derivation-inputs rejects the real channel crate" >&2; rc=1
+fi
 
 # G-R3 (ADR-36): the portable-libcrux detector over build outputs. A host build's JSON stream
 # (portable with a decoy package, SIMD on all three packages, one package missing) and a cargo-ndk
@@ -1606,6 +1627,13 @@ lcx_case fail 3 "no build script output of libcrux-ml-kem" "refuses a directory 
 lcx_case fail 2 "dir-simd" "checks every build it is given" --json "$LCX/portable.json" --target-dir "$LCX/dir-simd"
 lcx_case pass 0 "[libcrux-portable] OK" "accepts workspace path package ids (upstream's layout, §22.35)" --json "$LCX/portable-path.json"
 lcx_case fail 1 "libcrux-ml-kem enabled SIMD code" "rejects SIMD cfgs under a path package id" --json "$LCX/simd-path.json"
+# G-M9 (Phase 10 design §13.1, S0-8, V10-7; slice S2a): libcrux-aes joins the rule wherever it was
+# built, and `--with-aes` requires it (the builds that compile the OpenMLS provider say so).
+lcx_case pass 0 "[libcrux-portable] OK" "accepts a portable build with libcrux-aes and ignores libcrux-aesgcm (G-M9)" --with-aes --json "$LCX/aes-portable.json"
+lcx_case fail 1 "no build-script-executed message of libcrux-aes" "refuses a host build without libcrux-aes under --with-aes (G-M9)" --with-aes --json "$LCX/portable.json"
+lcx_case fail 1 "libcrux-aes enabled SIMD code" "rejects SIMD cfgs in libcrux-aes, --with-aes or not (G-M9)" --json "$LCX/aes-simd.json"
+lcx_case fail 1 "libcrux-aes-0123456789abcdef/output:2:cargo:rustc-cfg" "rejects SIMD cfgs in libcrux-aes's build script output (G-M9)" --target-dir "$LCX/dir-aes-simd"
+lcx_case fail 1 "no build script output of libcrux-aes" "refuses a profile directory without libcrux-aes under --with-aes (G-M9)" --with-aes --target-dir "$LCX/dir-portable"
 
 # G-R7 (c) (§2.9, V-9): the shipped library carries Olm's KDF labels and none of the HPKE strings
 # the linker drops. Byte files stand in for stripped libraries (test-harness/gates/dm-golden/).
@@ -1662,6 +1690,33 @@ verdict_case vendor-tests.sh --suite-verdict fail "FAIL exit 101" "rejects a pas
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL a test failed" "rejects a failed test" "$VTV/suite-failed.txt" 101
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL zero tests ran" "rejects a suite that runs no test" "$VTV/suite-zero.txt" 0
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL the suite did not build" "rejects a suite that does not build" "$VTV/suite-build-error.txt" 101
+# The GHSA watch of G-M1 (Phase 10 design §13.1, §13.2, S0-2; slice S2a), offline: GitHub advisories
+# and a RustSec checkout from test-harness/gates/mls-advisories/ over a fixture lock. Fixed advisories
+# and a draft pass, a former-name entry passes only while the reviewed list accounts for it, and an
+# open range fails, under the current name and under the former one.
+ADV="$HARNESS/mls-advisories"
+adv_case() { # $1 = expect pass|fail, $2 = expected text, $3 = description, $4 = GHSA dir, $5 = reviewed list
+  local out got
+  if out="$(GHOST_ADV_LOCK="$ADV/lock.toml" GHOST_ADV_RUSTSEC_DIR="$ADV/clean/rustsec" GHOST_ADV_GHSA_DIR="$4" \
+      GHOST_ADV_REVIEWED="$5" bash "$DIR/../ci/mls-advisories.sh" "$(mktemp -d)" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ] && grep -qF -- "$2" <<<"$out"; then
+    echo "self-test ok: mls-advisories $3"
+  else
+    echo "SELF-TEST FAIL: mls-advisories $3 ($got)" >&2; printf '%s\n' "$out" | tail -4 >&2; rc=1
+  fi
+}
+if command -v perl >/dev/null && perl -MJSON::PP -e 1 2>/dev/null; then
+  adv_case pass "reviewed: RUSTSEC-2026-0209 libcrux-aes 0.0.9 (RustSec crates/libcrux-aesgcm)" \
+    "accepts fixed advisories, a draft, and a reviewed entry under a former name" "$ADV/clean/ghsa" "$ADV/clean/reviewed.txt"
+  adv_case fail "ADVISORY: RUSTSEC-2026-0209 libcrux-aes 0.0.9 (RustSec crates/libcrux-aesgcm)" \
+    "reads RustSec under a former name and refuses an entry nobody reviewed" "$ADV/clean/ghsa" "$ADV/empty-reviewed.txt"
+  adv_case fail "ADVISORY: GHSA-fixt-ure0-0004 openmls 0.9.0" \
+    "refuses a GitHub advisory whose range contains the pin" "$ADV/open-ghsa/ghsa" "$ADV/clean/reviewed.txt"
+  adv_case fail "ADVISORY: GHSA-fixt-ure0-0005 libcrux-aes 0.0.9" \
+    "maps a GitHub advisory under a former name to the pinned crate" "$ADV/former-ghsa/ghsa" "$ADV/clean/reviewed.txt"
+else
+  echo "SELF-TEST FAIL: perl with JSON::PP missing; the GHSA watch is not proven" >&2; rc=1
+fi
 
 # G-DM5 (Phase 9 design §16.1, §21.13 points 5 and 7; slice S12): each source tree and each mapping
 # fixture reports exactly its own violations, the positive mapping passes, and the real tree passes.
@@ -1908,6 +1963,99 @@ if command -v cargo >/dev/null; then
     echo "SELF-TEST FAIL: the G-R8 scanner was not built at $scanner" >&2; rc=1
   fi
   rm -rf "$scan_tmp"
+  # Phase 10's channel gates (design faza10-forum.md §13.1; slice S2a): every clause fires, and the
+  # real graphs pass. G-M1: a copy of the allowlist without openmls, and another package's graph
+  # standing in for the channel crate's (the issuer's brings new versions of names the client has).
+  # G-M2 and G-R2's seeded-stream clauses: a feature the graph really has added to the forbidden list,
+  # a required package it lacks, the KAT exemption given to another package, the stand-in with a
+  # source and with a build script, a source root with forbidden calls across lines (and a KAT crate
+  # that holds them and is skipped), a package of the channel graph named host-only, and a build
+  # configuration naming the backend cfg (test-harness/gates/mls-policy/). G-M4: `log` through a
+  # dependent not on the list, a crate of the graph named forbidden, a missing required package, a
+  # function the crate defines named as a logger installer, and a failing query. G-M8: the G-R8 rules
+  # on the channel baseline. (The GHSA watch runs offline above, without cargo.)
+  # The clauses that do not stop a gate share one run of it: each hook adds exactly its own
+  # violations, and the run must report every expected text and exactly the expected count, so a
+  # clause that never fires, or one that fires twice, fails the case as surely as in a run of its own,
+  # at a fifth of the job's time (a feature-policy run reads some twenty cargo graphs).
+  multi_case() { # $1 = description, $2 = expected violation count, $3 = expected texts (one per line), rest = command
+    local desc="$1" want="$2" texts="$3" out got hits t missing=""
+    shift 3
+    if out="$("$@" 2>&1)"; then got=pass; else got=fail; fi
+    hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      grep -qF -- "$t" <<<"$out" || missing+="[$t] "
+    done <<<"$texts"
+    if [ "$got" = fail ] && [ "$hits" = "$want" ] && [ -z "$missing" ]; then
+      echo "self-test ok: $desc"
+    else
+      echo "SELF-TEST FAIL: $desc ($got, $hits of $want violations; missing: ${missing:-none})" >&2
+      printf '%s\n' "$out" | grep '^GATE-FAIL' | tail -12 >&2; rc=1
+    fi
+  }
+  tmp="$(mktemp)"
+  grep -vx "openmls" "$DIR/../../client-core/rust-dependency-allowlist.txt" > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects an unlisted package of the channel graph (G-M1)" "Rust package 'openmls'" \
+    env GHOST_RUST_ALLOWLIST="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  rm -f "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects a new version of a name the client graph has (G-M1)" \
+    "(G-M1: no new version of a name already present)" \
+    env GHOST_ALLOWLIST_MLS_PACKAGE=ghost-issuer bash "$DIR/rust-client-allowlist.sh"
+  MLSP="$HARNESS/mls-policy"
+  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graph has, a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped), a host-only package in a shipped graph, a build configuration naming the backend cfg" 9 \
+"hpke-rs feature 'hazmat' is enabled in ghost-client-mls's graph (G-M2
+package 'openmls-no-such-crate' is not in ghost-client-mls's graph
+ghost-client-mls-kat enables openmls/test-utils (dev); G-M2 allows it only as a dev-dependency of ghost-client-mls
+the stub's src/lib.rs is not empty
+mls/src/group.rs:3: openmls_memory_storage
+mls/src/group.rs:9: build_with_new_signer
+mls/src/group.rs:11: store_pending_proposal
+package 'rayon' is in ghost-client-mls's graph: host and test builds only (G-R2
+shipped-config.toml names getrandom_backend" \
+    env GHOST_POLICY_MLS_FORBID_EXTRA=hpke-rs:hazmat GHOST_POLICY_MLS_GRAPH=openmls-no-such-crate \
+      GHOST_POLICY_KAT=ghost-client-mls GHOST_POLICY_STUB_DIR="$MLSP/stub-nonempty" \
+      GHOST_POLICY_MLS_SOURCES="$MLSP/sources" GHOST_POLICY_HOST_ONLY_EXTRA=rayon \
+      GHOST_POLICY_SHIPPED_CONFIGS="$MLSP/shipped-config.toml" bash "$DIR/rust-feature-policy.sh"
+  multi_case "rust-feature-policy rejects a stand-in with a build script (G-M2)" 1 \
+    "the openmls_sqlite_storage stub holds [Cargo.toml README.md build.rs src/lib.rs ]" \
+    env GHOST_POLICY_STUB_DIR="$MLSP/stub-extra" bash "$DIR/rust-feature-policy.sh"
+  multi_case "mls-rust-no-logging reports each clause (G-M4): log through a dependent not on the list, a forbidden crate, a graph without OpenMLS, a logger installer in the graph's sources" 6 \
+"'openmls_memory_storage' depends on log directly in ghost-client-mls's graph
+ghost-client-mls links 'rayon'
+openmls-no-such-crate is not in ghost-client-mls's graph
+src/derive.rs:200:pub fn derive_epoch_recognition(" \
+    env GHOST_DMLOG_LOG_VIA="openmls hpke-rs" GHOST_DMLOG_FORBID_EXTRA=rayon \
+      GHOST_DMLOG_REQUIRED=openmls-no-such-crate GHOST_DMLOG_INSTALLER=derive_epoch_recognition \
+      bash "$DIR/mls-rust-no-logging.sh"
+  expect_fail_msg "mls-rust-no-logging fails when its cargo query fails (G-M4)" \
+    "GATE-FAIL: cargo tree -p ghost-client-mls@0.0.0-no-such-version" \
+    env GHOST_DMLOG_BAD_SPEC=ghost-client-mls bash "$DIR/mls-rust-no-logging.sh"
+  if bash "$DIR/mls-rust-no-logging.sh" >/dev/null 2>&1; then
+    echo "self-test ok: mls-rust-no-logging accepts the real channel graph"
+  else
+    echo "SELF-TEST FAIL: mls-rust-no-logging rejects the real channel graph" >&2; rc=1
+  fi
+  tmp="$(mktemp)"
+  gm8="$DIR/mls-vendored-clock-log.baseline"
+  grep -v '^site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log' "$gm8" > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log rejects a site missing from the baseline (G-M8)" \
+    "unjustified: site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  { cat "$gm8"; echo "site openmls@0.9.0 src/lib.rs:1 SystemTime clock-log [lib]  # fixture: a site the scan does not find"; } > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log rejects a stale baseline entry (G-M8)" \
+    "stale: site openmls@0.9.0 src/lib.rs:1 SystemTime clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  sed 's#^\(site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log \[lib\]\)  \# .*$#\1#' "$gm8" > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log rejects a site without its reason (G-M8)" \
+    "no justification for: site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  rm -f "$tmp"
+  if bash "$DIR/mls-vendored-clock-log.sh" >/dev/null 2>&1; then
+    echo "self-test ok: mls-vendored-clock-log accepts the real channel graph against its baseline"
+  else
+    echo "SELF-TEST FAIL: mls-vendored-clock-log rejects the real channel graph" >&2; rc=1
+  fi
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate
   # of each banned name; its lock file must fail with a [banned] diagnostic naming that crate and the

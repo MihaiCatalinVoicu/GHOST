@@ -155,9 +155,11 @@ opt-level = 3
 
 # Phase 10 design §3.2 "Lock resolution" (S0-1, Q40 (a)): the optional, forbidden SQLite provider of
 # openmls 0.9.0 needs libsqlite3-sys ^0.35 (`links = "sqlite3"`) against the 0.37.0 of
-# ghost-client-net, and Cargo resolves optional dependencies into the lock. This manifest-only
-# stand-in of the same name and version (no dependency, an empty lib.rs) lets the lock resolve; it
-# is never compiled (G-M2).
+# ghost-client-net. Cargo resolves an optional dependency that an enabled feature names, even weakly
+# (`openmls_sqlite_storage?/…`, which OpenMLS's PQ and draft-extension features do), and then the
+# lock does not resolve; this manifest-only stand-in of the same name and version (no dependency, an
+# empty lib.rs) makes it resolve. With the features G-M2 allows, the lock resolves without it and
+# records the patch as unused (faza10-forum.md §19.30 F-6). It is never compiled (G-M2).
 [patch.crates-io]
 openmls_sqlite_storage = { path = "third_party/openmls-sqlite-storage-stub" }
 

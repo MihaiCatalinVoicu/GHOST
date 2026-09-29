@@ -1,20 +1,28 @@
 # Upstream licence snapshot (scripts/license-upstream-snapshot.sh; ADR-37, Phase 9 design §22.8.10 point 3).
-# Written 2026-09-20; reviewed with the commit that changes it.
+# Written 2026-09-29; reviewed with the commit that changes it.
 cargo amplify_derive 4.0.1 https://github.com/rust-amplify/amplify-derive bb36a490d68ccf7d574b5926bfc7f8b9509776f2 none
 cargo amplify_num 0.5.4 https://github.com/rust-amplify/amplify-num 872842c3d151296b18314dfa5bf86548c2ce4f29 none
 cargo amplify_syn 2.0.1 https://github.com/rust-amplify/amplify-derive 29ca86c56316ce683bf3827a9d245334db69ce1f none
 cargo hax-lib 0.3.7 https://github.com/hacspec/hax d8b5b3d3b666fee8943a351445d2b680105e8ea3 none
 cargo hax-lib-macros 0.3.7 https://github.com/hacspec/hax d8b5b3d3b666fee8943a351445d2b680105e8ea3 none
 cargo imara-diff 0.2.0 https://github.com/pascalkuthe/imara-diff c0b655a86b5b4fc05324e08b9c684368e7413e1f none
+cargo libcrux-aead 0.0.9 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
+cargo libcrux-aes 0.0.9 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
+cargo libcrux-chacha20poly1305 0.0.9 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-curve25519 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-ecdh 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
+cargo libcrux-ed25519 0.0.9 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-hacl-rs 0.0.5 https://github.com/cryspen/libcrux 451259bb704d4a9dab8cd31ac68a97e766fbd2bc none
+cargo libcrux-hkdf 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
+cargo libcrux-hmac 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
+cargo libcrux-hmac-drbg 0.0.1 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-intrinsics 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-kem 0.0.9 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-macros 0.0.3 https://github.com/cryspen/libcrux 8ebe73237378c80b86a953ec8a77bdd3299918e7 none
 cargo libcrux-ml-kem 0.0.10 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-p256 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-platform 0.0.3 https://github.com/cryspen/libcrux 316fcd6c19c2e33bd0429e1319b6557d91038512 none
+cargo libcrux-poly1305 0.0.6 https://github.com/cryspen/libcrux 451259bb704d4a9dab8cd31ac68a97e766fbd2bc none
 cargo libcrux-secrets 0.0.6 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-sha2 0.0.8 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none
 cargo libcrux-sha3 0.0.10 https://github.com/cryspen/libcrux c5fb80f37530ee9b2df9501ae5ff8cb4a973a4bd none

@@ -10,3 +10,9 @@ streams in upstream's workspace layout, where `libcrux-ml-kem`'s id is `path+fil
 `dir-simd` (`simd128` in both directive syntaxes), `dir-stale` (two outputs of one package) and
 `dir-empty` (no libcrux build). The repository ignores `build/`: the files under `dir-*/build/` were
 added with `git add -f`. Nothing here is compiled or shipped.
+
+G-M9 (Phase 10 design §13.1, S0-8; slice S2a) adds `libcrux-aes`, required with `--with-aes`:
+`aes-portable.json` (the three packages and `libcrux-aes` portable, plus `libcrux-aesgcm` with
+`simd256`, a different name that must not count), `aes-simd.json` (`simd256` on `libcrux-aes` only,
+checked with or without `--with-aes`) and `dir-aes-simd` (`simd128` in `libcrux-aes`'s output). Run with
+`--with-aes`, `portable.json` and `dir-portable` must fail for the missing `libcrux-aes`.

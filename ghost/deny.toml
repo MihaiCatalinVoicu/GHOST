@@ -39,6 +39,15 @@ ignore = [
     # gate slice, design §22.33); the libcrux graph entered this workspace with ghost-client-dm in S4a,
     # where the entry now applies.
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 (unmaintained) reached only through the hax-lib-macros proc-macro of the libcrux graph: build-time code, nothing linked; re-review at every libcrux or hax-lib bump (ADR-36, design faza9-dm.md §16.3, V-6)" },
+    # Phase 10's OpenMLS stack (design faza10-forum.md §3.7, §13.1 G-M1; S0-2, V10-2; slice S2a) needs no
+    # entry here: every RustSec advisory on a crate it links is fixed at the locked version (hpke-rs
+    # RUSTSEC-2026-0069/0070/0071; libcrux-ed25519 -0026, -0075; libcrux-ecdh -0023;
+    # libcrux-chacha20poly1305 -0124; libcrux-poly1305 -0073; libcrux-sha3 -0074, -0207, -0208;
+    # libcrux-secrets -0212; libcrux-intrinsics RUSTSEC-2025-0133; crossbeam-epoch RUSTSEC-2026-0204).
+    # What this file cannot see — OpenMLS's own advisories, published only on GitHub, and
+    # RUSTSEC-2026-0209, -0210 and -0211, filed under `libcrux-aesgcm`, the former name of the pinned
+    # `libcrux-aes` — is the GHSA watch's (scripts/ci/mls-advisories.sh with its reviewed list
+    # scripts/ci/mls-advisories.reviewed, weekly and on pin changes in mls-vendor-tests.yml).
 ]
 
 [licenses]

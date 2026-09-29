@@ -89,13 +89,30 @@ jobs:
       # three build scripts do not re-run when LIBCRUX_DISABLE_SIMD* change, and rust-cache restores
       # target/ — and the host test build's cargo messages are read before any test runs.
       - name: libcrux clean (G-R3)
-        run: cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics
+        run: cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: workspace test build, portable libcrux only (G-R3)
+      # G-M9 (Phase 10 design faza10-forum.md §13.1, S0-8): the OpenMLS provider's libcrux-aes joins
+      # G-R3, and a build that compiles it must show it (--with-aes). ghost-client-mls is built and
+      # tested on its own: in a workspace build, feature unification gives its openmls the
+      # `test-utils` that ghost-client-mls-kat's dev-dependency enables (G-M2 allows it there only), so
+      # the crate's tests would not run on the feature set it ships with.
+      - name: workspace test build, portable libcrux only (G-R3, G-M9)
         run: |
-          cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/test-build.json"
-          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/test-build.json"
-      - run: cargo test --workspace --locked
+          cargo test --workspace --exclude ghost-client-mls --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/test-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/test-build.json"
+          cargo test -p ghost-client-mls --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/mls-test-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/mls-test-build.json"
+      - run: cargo test --workspace --exclude ghost-client-mls --locked
+      # Phase 10 design §12.2: the channel crate's tests (vectors, GhostKv, admission, CO-2, the
+      # committers anchor, the golden sizes, and the property tests of every GHOST parser with 10^6
+      # inputs from this run's seed, which a failure prints); §12.1, S0-7: V10-6, two processes of the
+      # scripted world byte-identical with the seeded getrandom stream (its own target sub-directory).
+      - name: ghost-client-mls on its shipped feature set; V10-6 determinism
+        env:
+          GHOST_PROP_SEED: ${{ github.run_id }}
+        run: |
+          cargo test -p ghost-client-mls --locked
+          bash scripts/ci/mls-determinism.sh "$RUNNER_TEMP/mls-determinism"
       # Design §19.17 point 2: the issuer crash suite (I-A … I-H, double crashes) runs in the
       # release profile; a debug build lists its tests as ignored.
       - name: issuer crash suite (release profile)
@@ -153,6 +170,17 @@ jobs:
             bash scripts/gates/dm-golden-lock.sh
           fi
           bash scripts/gates/dm-vendored-clock-log.sh
+      # Phase 10 (design faza10-forum.md §13.1; slice S2a): G-M4's graph half (no logging crate in the
+      # channel crate's graph; `log` only under the vendored crates that declare it; nothing installs a
+      # logger) and G-M8 (the clock, logging and network sites of that graph equal their justified
+      # baseline). G-M1 is rust-client-allowlist.sh's channel clause, G-M2 and G-R2's seeded-stream
+      # checks are rust-feature-policy.sh's, G-M3 is ch-derivation-inputs.sh (static gates) with the
+      # crate's derive test, G-M9 the test-build step; mls-vendor-tests.yml runs OpenMLS's own suite
+      # and the GHSA watch.
+      - name: channel graph gates (G-M4 no logging crate, G-M8 vendored clock and logging sites)
+        run: |
+          bash scripts/gates/mls-rust-no-logging.sh
+          bash scripts/gates/mls-vendored-clock-log.sh
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 points 2, 3, 10): the licence gates that need the Rust
       # toolchain and the published sources: the notices of every shipped Rust graph, compared with the
       # committed ghost/licenses/THIRD_PARTY_NOTICES-*.txt (G-L1), the licence declarations of the shipped
@@ -326,7 +354,7 @@ jobs:
       - name: build ghost-dm-host (the DM host library the JVM tests load)
         working-directory: ghost
         run: |
-          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
           bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"

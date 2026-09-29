@@ -1,0 +1,105 @@
+name: mls-vendor-tests
+
+# Phase 10 (design docs/design/faza10-forum.md §12.2 item (1), §13.1 G-M1, §13.2; S0-2, S0-13; slice
+# S2a): OpenMLS's own test suite at the pinned tag, and the GHSA watch of gate G-M1.
+#
+# The `openmls` job runs OpenMLS's lib suite with its KAT vectors in a git checkout of openmls/openmls
+# at 3a3e35de3feeca8f6605143c464d5452ae584d43 (tag openmls-v0.9.0, the commit the crates.io package
+# was built from): the crates.io package ships no test_vectors/. scripts/ci/vendor-tests.sh openmls
+# checks the package against the lock's checksum, its .cargo_vcs_info.json against the commit, every
+# published file against the checkout, and the KAT crate's committed passive-client vectors against
+# the checkout's blob ids, then runs `cargo test --locked -p openmls --lib --features
+# test-utils,libcrux-provider,all-ciphersuites` (S0 ran it: 1 134 passed, 0 failed, 15 ignored) on
+# toolchain 1.98.1 with the portable libcrux cfgs, G-M9 (libcrux-portable.sh --with-aes) reading the
+# test build. `test-utils` exists only here and in ghost-client-mls-kat (G-M2).
+#
+# The `advisories` job is the GHSA watch (S0-2): OpenMLS's advisories are published only as GitHub
+# security advisories (none in RustSec), and two libcrux entries are filed under a former crate name,
+# so cargo-deny and cargo-audit cannot see them. scripts/ci/mls-advisories.sh queries
+# repos/{openmls/openmls, celabshq/hpke-rs, celabshq/libcrux}/security-advisories and RustSec by
+# package and former package name, and fails when an advisory's range contains a pinned version that
+# scripts/ci/mls-advisories.reviewed does not account for.
+#
+# Weekly, on dispatch, and on a push to main that can move the pins (design §13.2: on pin changes and
+# weekly; never on pull requests, whose code the self-hosted runners must not run).
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  schedule:
+    - cron: "23 4 * * 0"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "ghost/Cargo.lock"
+      - "ghost/Cargo.toml"
+      - "ghost/client-core/mls/Cargo.toml"
+      - "ghost/client-core/mls-kat/**"
+      - "ghost/scripts/ci/vendor-tests.sh"
+      - "ghost/scripts/ci/mls-advisories.sh"
+      - "ghost/scripts/ci/mls-advisories.reviewed"
+      - ".github/workflows/mls-vendor-tests.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  openmls:
+    name: OpenMLS suite at the pinned tag (all ciphersuites, libcrux provider, portable libcrux)
+    runs-on: [self-hosted, linux, x64, ghost]
+    # S0 measured a 6.5-minute build and 37 s of tests on a 24-core host; a 4-vCPU runner and a cold
+    # cache need several times that.
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: OpenMLS's own suite (the checkout at the tag, holding the published code)
+        run: |
+          set -o pipefail
+          bash scripts/ci/vendor-tests.sh openmls "$RUNNER_TEMP/openmls" | tee "$RUNNER_TEMP/openmls-summary.txt"
+      - name: job summary
+        if: always()
+        run: |
+          {
+            echo "## OpenMLS suite at the pinned tag"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/openmls-summary.txt" 2>/dev/null || echo "no summary: the run did not start"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  advisories:
+    name: GHSA watch (OpenMLS, hpke-rs, libcrux; RustSec by former names)
+    runs-on: [self-hosted, linux, x64, ghost]
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: advisories at the pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          bash scripts/ci/mls-advisories.sh "$RUNNER_TEMP/advisories" | tee "$RUNNER_TEMP/advisories.txt"
+      - name: job summary
+        if: always()
+        run: |
+          {
+            echo "## GHSA watch"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/advisories.txt" 2>/dev/null || echo "no summary"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

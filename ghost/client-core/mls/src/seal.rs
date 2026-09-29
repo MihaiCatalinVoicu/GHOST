@@ -249,8 +249,15 @@ pub fn open(key: &SealKeyInput<'_>, ns: &[u8; 32], mode: u8, blob: &[u8]) -> Mls
             },
         )
         .map_err(|_| MlsError::new(Code::NotOpen))?;
+    open_plain(bucket, mode, &p)
+}
+
+/// The layout checks of `open` on the decrypted P (split out so the property tests reach them
+/// without an AEAD in front, design §12.2). `p` is `B − 48` bytes after the AEAD; any other
+/// length is `NON_CANONICAL`.
+pub(crate) fn open_plain(bucket: usize, mode: u8, p: &[u8]) -> MlsResult<Opened> {
     let nc = MlsError::new(Code::NonCanonical);
-    if p[0] != mode {
+    if !BUCKETS.contains(&bucket) || p.len() + 48 != bucket || p[0] != mode {
         return Err(nc);
     }
     let len = u32::from_be_bytes([0, p[1], p[2], p[3]]) as usize;

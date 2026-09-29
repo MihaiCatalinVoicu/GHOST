@@ -1,0 +1,21 @@
+# GHOST's manifest-only stand-in for `openmls_sqlite_storage` 0.3.0 (Phase 10 design
+# docs/design/faza10-forum.md §3.2 "Lock resolution", S0-1, Q40 (a)). See README.md. Never compiled:
+# it exists only so that Cargo can resolve OpenMLS's optional, forbidden SQLite provider into the
+# ghost lock (gate G-M2, scripts/gates/rust-feature-policy.sh, checks this file and src/lib.rs by
+# hash, and that no graph of the workspace reaches the package).
+[package]
+name = "openmls_sqlite_storage"
+version = "0.3.0"
+edition = "2021"
+license = "LicenseRef-GHOST-Proprietary"
+publish = false
+description = "Empty stand-in for OpenMLS's optional SQLite storage provider (never compiled; GHOST design faza10-forum.md §3.2)"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+draft-ietf-mls-pq-ciphersuites = []
+extensions-draft = []
+virtual-clients-draft = []
+test-utils = []

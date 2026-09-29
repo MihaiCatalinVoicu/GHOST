@@ -7,6 +7,7 @@
 #
 #   vendor-tests.sh <version> [work-dir]     e.g. vendor-tests.sh 0.11.0
 #   vendor-tests.sh libcrux [work-dir]
+#   vendor-tests.sh openmls [work-dir]     (Phase 10: OpenMLS's own suite at the pinned tag; below)
 #
 # Checks the .crate against the checksum the ghost lock pins, extracts it, and runs `cargo test`
 # twice: default features, then --all-features. Needs network (the dev-dependencies are not in the
@@ -85,9 +86,17 @@ libcrux_main() {
   lock="$ghost/Cargo.lock"
   mkdir -p "$work"
   work="$(cd "$work" && pwd)"
-  # name version checksum of every pinned libcrux package.
+  # name version checksum of every pinned libcrux package of ghost-client-dm's graph. Phase 10's slice
+  # S2a added the OpenMLS provider's libcrux primitives (libcrux-aead, -aes, -chacha20poly1305,
+  # -ed25519, -hkdf, -hmac, -hmac-drbg, -poly1305) to the lock; they were cut from other commits and
+  # are exercised by OpenMLS's own suite with the libcrux provider (`vendor-tests.sh openmls`), so this
+  # mode keeps its scope, the DM graph's crates (their own suites are deferred, faza10-forum.md §19.30).
+  local dm_names
+  dm_names="$(cd "$ghost" && cargo tree --locked -q -p ghost-client-dm -e normal --target all --prefix none -f '{p}' | awk '{print $1}' | sort -u)"
+  [ -n "$dm_names" ] || { echo "cargo tree of ghost-client-dm printed nothing" >&2; return 1; }
   awk '/^\[\[package\]\]/ { n = v = "" } /^name = / { n = $3 } /^version = / { v = $3 }
-       /^checksum = / && n ~ /^"libcrux-/ { print n, v, $3 }' "$lock" | tr -d '"' | sort > "$work/pins"
+       /^checksum = / && n ~ /^"libcrux-/ { print n, v, $3 }' "$lock" | tr -d '"' | sort > "$work/pins.all"
+  awk 'NR == FNR { keep[$1] = 1; next } keep[$1]' <(printf '%s\n' "$dm_names") "$work/pins.all" > "$work/pins"
   [ -s "$work/pins" ] || { echo "no libcrux package in $lock" >&2; return 1; }
   while read -r name _ _; do
     if ! printf '%s\n' "${LIBCRUX_SUITES[@]}" "${LIBCRUX_NO_SUITE[@]}" | grep -qxF "$name"; then
@@ -181,6 +190,94 @@ libcrux_main() {
   echo "libcrux: $total_passed tests passed over ${#LIBCRUX_SUITES[@]} suites (portable build)"
   return "$status"
 }
+
+# ---- `vendor-tests.sh openmls [work-dir]`: OpenMLS's own suite (Phase 10 design §12.2 item (1), §13.2
+# `mls-vendor-tests`; S0-13, E-59; slice S2a) ------------------------------------------------------
+# The crates.io package ships only benches, examples, src and tests, while OpenMLS's KATs read
+# `../test_vectors/*.json`: the suite runs in a git checkout of openmls/openmls at the commit the
+# package was built from (tag openmls-v0.9.0, `.cargo_vcs_info.json`), after the script has checked
+# that (1) the package's SHA-256 is the checksum the ghost lock records, (2) its `.cargo_vcs_info.json`
+# names OPENMLS_COMMIT, (3) the checkout is that commit, (4) every file the package ships is the
+# checkout's (the published code is what runs), and (5) the three passive-client vector files the KAT
+# crate commits are the checkout's (by git blob id). Then `cargo test --locked -p openmls --lib
+# --features test-utils,libcrux-provider,all-ciphersuites` in the checkout (its own lock; without
+# `all-ciphersuites` the parametrised tests run suite 0x0001 only, `openmls_test/src/lib.rs:8-19`), on
+# the shipped toolchain with the portable libcrux cfgs, G-M9 reading the test build (libcrux-aes
+# included). S0 ran it: 1 134 passed, 0 failed, 15 ignored. A failure, or fewer passes than that,
+# fails the job. `test-utils` exists only here and in ghost-client-mls-kat (G-M2).
+OPENMLS_COMMIT=3a3e35de3feeca8f6605143c464d5452ae584d43
+OPENMLS_MIN_PASSED=1134
+
+openmls_main() {
+  local work="$1" ghost lock version sum crate dir status=0 f u differ=0 total=0
+  ghost="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  lock="$ghost/Cargo.lock"
+  mkdir -p "$work"
+  work="$(cd "$work" && pwd)"
+  read -r version sum < <(awk '/^\[\[package\]\]/ { n = v = "" } /^name = / { n = $3 } /^version = / { v = $3 }
+       /^checksum = / && n == "\"openmls\"" { print v, $3 }' "$lock" | tr -d '"')
+  [ -n "${version:-}" ] || { echo "openmls: not in $lock" >&2; return 1; }
+  [ "$version" = 0.9.0 ] || { echo "openmls $version: OPENMLS_COMMIT names 0.9.0's commit (a bump updates it, design §3.8)" >&2; return 1; }
+  mkdir -p "$work/fetch/src"
+  printf '[package]\nname = "fetch"\nversion = "0.0.0"\nedition = "2021"\n[dependencies]\nopenmls = "=%s"\n' "$version" > "$work/fetch/Cargo.toml"
+  : > "$work/fetch/src/lib.rs"
+  cargo fetch --manifest-path "$work/fetch/Cargo.toml" >/dev/null
+  crate="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/cache" -name "openmls-$version.crate" | head -1)"
+  [ -n "$crate" ] || { echo "openmls $version: no .crate after cargo fetch" >&2; return 1; }
+  echo "$sum  $crate" | sha256sum -c --quiet - || { echo "openmls $version: checksum differs from the lock" >&2; return 1; }
+  rm -rf "$work/pkg"; mkdir -p "$work/pkg"
+  tar -xzf "$crate" -C "$work/pkg"
+  dir="$work/pkg/openmls-$version"
+  local vcs
+  vcs="$(sed -nE 's/.*"sha1": *"([0-9a-f]{40})".*/\1/p' "$dir/.cargo_vcs_info.json" | head -1)"
+  [ "$vcs" = "$OPENMLS_COMMIT" ] || { echo "openmls $version was built from $vcs, not $OPENMLS_COMMIT" >&2; return 1; }
+  # The comparison is byte for byte: no line-ending conversion from a global core.autocrlf.
+  rm -rf "$work/upstream"; git init -q "$work/upstream"; git -C "$work/upstream" config core.autocrlf false
+  git -C "$work/upstream" fetch -q --depth 1 https://github.com/openmls/openmls "$OPENMLS_COMMIT"
+  git -C "$work/upstream" checkout -q FETCH_HEAD
+  [ "$(git -C "$work/upstream" rev-parse HEAD)" = "$OPENMLS_COMMIT" ] || { echo "the checkout is not $OPENMLS_COMMIT" >&2; return 1; }
+  while IFS= read -r f; do
+    case "$f" in .cargo_vcs_info.json | Cargo.lock | Cargo.toml) continue ;; esac
+    u="$work/upstream/openmls/$f"; [ "$f" = Cargo.toml.orig ] && u="$work/upstream/openmls/Cargo.toml"
+    # A symbolic link in the repository (openmls/README.md -> ../README.md) is published as its
+    # target; git may check it out as a text file holding the target (core.symlinks=false).
+    if [ "$(git -C "$work/upstream" ls-files -s -- "openmls/$f" | cut -d" " -f1)" = 120000 ]; then
+      u="$work/upstream/openmls/$(dirname "$f")/$(git -C "$work/upstream" cat-file -p "HEAD:openmls/$f")"
+    fi
+    total=$((total + 1))
+    cmp -s "$dir/$f" "$u" || { differ=$((differ + 1)); echo "  differs from the checkout: $f" >&2; }
+  done < <(cd "$dir" && find . -type f | sed 's|^\./||')
+  [ "$differ" = 0 ] || { echo "openmls $version: $differ of $total published files differ at $OPENMLS_COMMIT" >&2; return 1; }
+  echo "openmls $version: $total published files equal the checkout at $OPENMLS_COMMIT"
+  local name sha blob got
+  while read -r name sha blob; do
+    got="$(git -C "$work/upstream" hash-object "openmls/test_vectors/$name")"
+    [ "$got" = "$blob" ] || { echo "$name: blob $got at the checkout, $blob in SOURCE.txt" >&2; status=1; }
+    got="$(git hash-object "$ghost/client-core/mls-kat/vectors/$name")"
+    [ "$got" = "$blob" ] || { echo "$name: the KAT crate's copy is blob $got, not $blob" >&2; status=1; }
+  done < <(grep -E '^passive-client-[a-z-]+\.json ' "$ghost/client-core/mls-kat/vectors/SOURCE.txt")
+  cd "$work/upstream"
+  RUSTUP_TOOLCHAIN="$(sed -nE 's/^channel = "(.*)"/\1/p' "$ghost/rust-toolchain.toml")"
+  export RUSTUP_TOOLCHAIN LIBCRUX_DISABLE_SIMD128=1 LIBCRUX_DISABLE_SIMD256=1
+  local features="test-utils,libcrux-provider,all-ciphersuites" code=0 result passed
+  cargo test --locked -p openmls --lib --features "$features" --no-run --message-format=json-render-diagnostics > "$work/build.json" 2>/dev/null || true
+  cargo test --locked -p openmls --lib --features "$features" > "$work/openmls.log" 2>&1 || code=$?
+  result="$(suite_verdict "$work/openmls.log" "$code" || true)"
+  echo "  openmls ($features): $result; $(grep -E '^test result:' "$work/openmls.log" | tail -1)"
+  case "$result" in
+    PASS*)
+      passed="${result#PASS }"
+      [ "$passed" -ge "$OPENMLS_MIN_PASSED" ] || { echo "only $passed tests passed; S0 ran $OPENMLS_MIN_PASSED (E-59)" >&2; status=1; } ;;
+    *) status=1; tail -30 "$work/openmls.log" >&2 ;;
+  esac
+  bash "$ghost/scripts/gates/libcrux-portable.sh" --with-aes --json "$work/build.json" || status=1
+  return "$status"
+}
+
+if [ "${1:-}" = "openmls" ]; then
+  openmls_main "${2:-$(mktemp -d)}"
+  exit $?
+fi
 
 if [ "${1:-}" = "libcrux" ]; then
   libcrux_main "${2:-$(mktemp -d)}"

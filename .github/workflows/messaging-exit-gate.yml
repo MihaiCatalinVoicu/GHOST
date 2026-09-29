@@ -158,7 +158,7 @@ jobs:
       - name: build ghost-dm-host (the DM host library the JVM tests load)
         working-directory: ghost
         run: |
-          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
           bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"

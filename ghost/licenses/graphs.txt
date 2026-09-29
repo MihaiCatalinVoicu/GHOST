@@ -3,6 +3,9 @@
 # targets (cargo tree -e normal --target). Keep the Android targets in sync with
 # scripts/build-native.sh; the relay and issuer images build for x86_64 Linux (infra/*/Dockerfile).
 #   graph <name> <packages, comma-separated> <targets, comma-separated>
-graph client-net ghost-client-net aarch64-linux-android,x86_64-linux-android
+# The client library's graph includes ghost-client-mls from Phase 10's slice S2a (design faza10-forum.md
+# §3.9, §13.1 G-L1 … G-L4): its OpenMLS stack enters the notices, the MPL-2.0 source bundle (the three
+# hpke-rs crates) and the header scan before slice S2b links the crate into ghost-client-net.
+graph client-net ghost-client-net,ghost-client-mls aarch64-linux-android,x86_64-linux-android
 graph relay ghost-relay-node x86_64-unknown-linux-gnu
 graph issuer ghost-issuer,ghost-issuer-ops x86_64-unknown-linux-gnu

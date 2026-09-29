@@ -71,7 +71,7 @@ impl core::fmt::Debug for InviteFields {
 }
 
 impl InviteFields {
-    fn encode(&self) -> MlsResult<Zeroizing<Vec<u8>>> {
+    pub(crate) fn encode(&self) -> MlsResult<Zeroizing<Vec<u8>>> {
         if self.name.len() > 48 || self.size_class > 1 || self.handshake_ttl_code > 5 {
             return Err(MlsError::new(Code::NonCanonical));
         }
@@ -96,7 +96,7 @@ impl InviteFields {
         Ok(o)
     }
 
-    fn decode(inner: &[u8]) -> MlsResult<Self> {
+    pub(crate) fn decode(inner: &[u8]) -> MlsResult<Self> {
         let nc = MlsError::new(Code::NonCanonical);
         if inner.len() != INNER_LEN {
             return Err(nc);

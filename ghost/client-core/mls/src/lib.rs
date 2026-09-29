@@ -35,5 +35,8 @@ pub mod provider;
 pub mod result;
 pub mod seal;
 
+#[cfg(test)]
+mod props;
+
 pub use group::{pin_rayon_single_worker, ChannelHandle, MlsContext};
 pub use result::{Code, CommitReason, MlsError, MlsResult};

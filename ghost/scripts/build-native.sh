@@ -62,7 +62,7 @@ cd "$GHOST_ROOT"
 # no-op in a fresh directory); scripts/gates/libcrux-portable.sh then reads what the build scripts
 # emitted, from the one output each package has after it.
 for triple in aarch64-linux-android x86_64-linux-android; do
-  cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --target "$triple" --release 1>&2
+  cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --target "$triple" --release 1>&2
 done
 targets=()
 for abi in "${ABIS[@]}"; do targets+=(-t "$abi"); done
