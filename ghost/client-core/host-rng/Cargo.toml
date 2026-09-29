@@ -16,3 +16,7 @@ crate-type = ["rlib"]
 getrandom = "=0.4.3"
 # The stream (the version already in the lock).
 rand_chacha = { version = "=0.10.0", default-features = false }
+
+[lints.rust]
+# The getrandom backend switch of host and test builds (design §12.1): the only cfg of the crate.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(getrandom_backend, values("custom"))'] }

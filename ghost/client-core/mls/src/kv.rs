@@ -470,6 +470,44 @@ impl GhostKv {
     }
 }
 
+/// Sorts every `queued_proposals` list of `[reference, proposal]` pairs that sits next to a
+/// `proposal_references` list into that list's order (unknown references last, by their bytes).
+/// The order carries no meaning (it is a map); a fixed one makes the stored bytes a function of the
+/// state, which V10-6's byte-identical runs need. A layout without these fields is left as it is.
+fn canonical_proposal_queues(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(m) => {
+            if let (Some(serde_json::Value::Array(refs)), Some(serde_json::Value::Array(_))) =
+                (m.get("proposal_references"), m.get("queued_proposals"))
+            {
+                let order: Vec<Vec<u8>> = refs
+                    .iter()
+                    .map(|r| serde_json::to_vec(r).unwrap_or_default())
+                    .collect();
+                if let Some(serde_json::Value::Array(pairs)) = m.get_mut("queued_proposals") {
+                    pairs.sort_by_cached_key(|p| {
+                        let k = p
+                            .get(0)
+                            .map(|k| serde_json::to_vec(k).unwrap_or_default())
+                            .unwrap_or_default();
+                        let at = order.iter().position(|o| *o == k).unwrap_or(usize::MAX);
+                        (at, k)
+                    });
+                }
+            }
+            for (_, c) in m.iter_mut() {
+                canonical_proposal_queues(c);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for c in a {
+                canonical_proposal_queues(c);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The wrapping AD of §3.4 point 2.
 fn ad(scope: Scope, channel_id: &[u8; 32], k: &[u8]) -> Vec<u8> {
     let mut ad = b"ghost/v1/mls-kv".to_vec();
@@ -722,7 +760,12 @@ impl StorageProvider<CURRENT_VERSION> for GhostKv {
         g: &G,
         s: &S,
     ) -> R<()> {
-        self.put(Scope::Group, self.gk(L_GROUP_STATE, g)?, s)
+        // A pending commit's proposal queue keeps its proposals in a `HashMap` that OpenMLS
+        // serialises as a list in iteration order (`proposal_store.rs:261`, `vector_converter`),
+        // which differs between processes: canonicalised to the queue's own order (S2a, §19.30).
+        let mut v = serde_json::to_value(s)?;
+        canonical_proposal_queues(&mut v);
+        self.put(Scope::Group, self.gk(L_GROUP_STATE, g)?, &v)
     }
     fn write_message_secrets<
         G: traits::GroupId<CURRENT_VERSION>,
@@ -1242,6 +1285,19 @@ mod tests {
         assert_eq!(
             kv.rewrite_days(&mut drift),
             Err(KvError::LayoutDrift("message_secrets.added_at"))
+        );
+    }
+
+    #[test]
+    fn proposal_queues_are_stored_in_their_own_order() {
+        let mut v = serde_json::json!({"state": {"staged_proposal_queue": {
+            "proposal_references": [[3], [1], [2]],
+            "queued_proposals": [[[2], "b"], [[3], "c"], [[1], "a"]]
+        }}});
+        canonical_proposal_queues(&mut v);
+        assert_eq!(
+            v["state"]["staged_proposal_queue"]["queued_proposals"],
+            serde_json::json!([[[3], "c"], [[1], "a"], [[2], "b"]])
         );
     }
 
