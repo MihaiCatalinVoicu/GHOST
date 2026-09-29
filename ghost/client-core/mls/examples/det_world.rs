@@ -147,12 +147,20 @@ fn main() {
 
     let mut generation = 0u32;
     let mut next = 2u8;
-    // Two admissions of three and four members; a post by each of three members; a self-update;
-    // a removal (rotating); an admission after it; a removal against unmerged leaves.
+    // Two admissions of three and four members; a post by each of three members; six passes of
+    // the owner (PCS commits: CO-14 lets a rank-255 member of an 8-member channel self-update a
+    // KeyPackage leaf from epoch min(8, n) = 8 on, design §6.4); a self-update; a removal
+    // (rotating); an admission after it; a removal against unmerged leaves.
     for (step, action) in [
         "admit3",
         "admit4",
         "posts",
+        "pcs",
+        "pcs",
+        "pcs",
+        "pcs",
+        "pcs",
+        "pcs",
         "self_update",
         "remove",
         "admit1",
@@ -293,7 +301,7 @@ fn main() {
                 }
                 continue;
             }
-            "self_update" => {}
+            "self_update" | "pcs" => {}
             "remove" => req.removes.push(ms[3].ch.pseudonym()),
             "remove2" => req.removes.push(ms[ms.len() - 1].ch.pseudonym()),
             _ => unreachable!(),
@@ -335,14 +343,15 @@ fn main() {
                     .settle(&m.ch, &WrappedRows(&rows), winner, generation, DAY)
             })
             .unwrap();
+            let e = s.epoch.expect("a member settles to the next epoch");
             out(format!(
                 "step {step} settle {j} changes {} authenticator {}",
                 changes_hash(&s.changes),
-                h(&s.epoch.epoch_authenticator)
+                h(&e.epoch_authenticator)
             ));
             m.apply(s.changes);
-            m.epoch = s.epoch.epoch;
-            m.k_env = s.epoch.k_env;
+            m.epoch = e.epoch;
+            m.k_env = e.k_env;
             if let Some(g) = s.rotated {
                 m.g = Some(g);
             }

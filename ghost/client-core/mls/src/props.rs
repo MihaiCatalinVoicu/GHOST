@@ -716,7 +716,7 @@ fn prop_sealed_blobs_open_only_unmodified() {
     let ns = [0x63; 32];
     let body = private_message(12, 1, &app_order());
     let epoch_blob = seal(
-        &SealKeyInput::Epoch(&k),
+        &SealKeyInput::Epoch { key: &k, epoch: 12 },
         &ns,
         4096,
         MODE_EPOCH,
@@ -737,7 +737,12 @@ fn prop_sealed_blobs_open_only_unmodified() {
     .unwrap();
     let corpus = vec![epoch_blob.clone(), join_blob.clone()];
     run_n("sealed_blob", cases() / 10, &corpus, |b| {
-        let e = open(&SealKeyInput::Epoch(&k), &ns, MODE_EPOCH, b);
+        let e = open(
+            &SealKeyInput::Epoch { key: &k, epoch: 12 },
+            &ns,
+            MODE_EPOCH,
+            b,
+        );
         let j = open(&SealKeyInput::Join(&jk), &ns, MODE_JOIN, b);
         match (e, j) {
             (Ok(_), _) if b == epoch_blob.as_slice() => Ok(true),
@@ -753,17 +758,31 @@ fn prop_sealed_blobs_open_only_unmodified() {
 fn prop_key_envelope_and_key_package() {
     let ctx = MlsContext::open(StateKey::from_bytes([0x71; 32])).unwrap();
     let channel_id = [0x72; 32];
-    let env = ctx
-        .wrap_key(KeyClass::Epoch, &channel_id, &[0x73; 32])
-        .unwrap();
+    let env = ctx.wrap_epoch_key(&channel_id, 9, &[0x73; 32]).unwrap();
+    assert_eq!(env.len(), 68);
     run("key_envelope", std::slice::from_ref(&env), |b| {
-        match ctx.unwrap_key(KeyClass::Epoch, &channel_id, b) {
-            Ok(_) if b == env.as_slice() => Ok(true),
+        match ctx.unwrap_epoch_key(&channel_id, b) {
+            Ok((_, 9)) if b == env.as_slice() => Ok(true),
             Ok(_) => Err("a modified envelope opened".into()),
             Err(e) if e.code == Code::StateCorrupt => Ok(false),
             Err(e) => Err(format!("unexpected refusal {e:?}")),
         }
     });
+    // The 60-byte envelopes of the other classes (the join key here).
+    let join_env = ctx
+        .wrap_key(KeyClass::Join, &channel_id, &[0x75; 32])
+        .unwrap();
+    assert_eq!(join_env.len(), 60);
+    run(
+        "key_envelope_join",
+        std::slice::from_ref(&join_env),
+        |b| match ctx.unwrap_key(KeyClass::Join, &channel_id, b) {
+            Ok(_) if b == join_env.as_slice() => Ok(true),
+            Ok(_) => Err("a modified envelope opened".into()),
+            Err(e) if e.code == Code::StateCorrupt => Ok(false),
+            Err(e) => Err(format!("unexpected refusal {e:?}")),
+        },
+    );
     let ch = ChannelHandle::open(channel_id, &PseudonymSeed::from_bytes([0x74; 32]));
     let kps: Vec<Vec<u8>> = [Purpose::Join, Purpose::Rejoin]
         .iter()

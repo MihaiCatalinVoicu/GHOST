@@ -122,7 +122,9 @@ libcrux_main() {
   read -r commit _ < <(vcs "$work/pkg/libcrux-ml-kem-$version/.cargo_vcs_info.json")
   repo="$(sed -nE 's/^repository = "(.*)"/\1/p' "$work/pkg/libcrux-ml-kem-$version/Cargo.toml")"
   [ "$repo" = "https://github.com/cryspen/libcrux" ] || { echo "unexpected repository $repo" >&2; return 1; }
-  rm -rf "$work/upstream"; git init -q "$work/upstream"
+  # Byte for byte, as in openmls mode: no line-ending conversion from a global core.autocrlf (on a
+  # Windows host every file "differed" and the as-published count meant nothing; review of S2a, F8).
+  rm -rf "$work/upstream"; git init -q "$work/upstream"; git -C "$work/upstream" config core.autocrlf false
   git -C "$work/upstream" fetch -q --depth 1 "$repo" "$commit"
   git -C "$work/upstream" checkout -q FETCH_HEAD
   echo "libcrux: suites run in $repo at $commit (the commit libcrux-ml-kem $version was cut from)"

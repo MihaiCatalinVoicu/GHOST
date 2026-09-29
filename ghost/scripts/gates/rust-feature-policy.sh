@@ -51,8 +51,10 @@
 # GHOST_POLICY_MLS_GRAPH replaces the packages ghost-client-mls's graph must hold, GHOST_POLICY_KAT
 # names the one package allowed openmls/test-utils (as a dev-dependency), GHOST_POLICY_STUB_DIR
 # points the stand-in check at another directory, GHOST_POLICY_MLS_SOURCES at another source root,
-# GHOST_POLICY_HOST_ONLY_EXTRA adds a package that must stay out of the shipped graphs, and
-# GHOST_POLICY_SHIPPED_CONFIGS replaces the build configurations that must not name the backend cfg.
+# GHOST_POLICY_HOST_ONLY_EXTRA adds a package that must stay out of the shipped graphs,
+# GHOST_POLICY_SHIPPED_CONFIGS replaces the build configurations that must not name the backend cfg,
+# and GHOST_POLICY_ROOT_MANIFEST / GHOST_POLICY_LOCK replace the manifest and lock whose [patch],
+# [replace] and sources are checked (review of S2a, F7).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
 cd "$GHOST_ROOT"
@@ -236,10 +238,10 @@ done <<< "$(graph_features ghost-client-mls ghost-client-mls)"
 # package depends directly on the memory storage, the basic credential, OpenMLS's RustCrypto
 # provider or its test macros (G-M2; the libcrux provider's own dependency on the memory storage is
 # upstream's, and the linker drops it, V10-3).
+# The perl reader is fail-closed (review of S2a, F3): its output is taken whole, a perl that fails
+# fails the gate, and it must report the packages it read (a reader that read none is vacuous).
 if meta="$(cargo metadata --locked --no-deps --format-version 1 2>"$err")"; then
-  while IFS= read -r line; do
-    [ -n "$line" ] && fail "$line"
-  done < <(KAT="${GHOST_POLICY_KAT:-ghost-client-mls-kat}" perl -MJSON::PP -e '
+  if ! meta_out="$(KAT="${GHOST_POLICY_KAT:-ghost-client-mls-kat}" perl -MJSON::PP -e '
     local $/; my $m = JSON::PP->new->decode(<STDIN>);
     my %banned = map { $_ => 1 } qw(openmls_memory_storage openmls_basic_credential openmls_rust_crypto openmls_test openmls_sqlite_storage);
     for my $p (@{ $m->{packages} }) {
@@ -252,10 +254,87 @@ if meta="$(cargo metadata --locked --no-deps --format-version 1 2>"$err")"; then
         print "$p->{name} enables openmls/test-utils ($kind); G-M2 allows it only as a dev-dependency of $ENV{KAT}\n"
           if $p->{name} ne $ENV{KAT} || $kind ne "dev";
       }
-    }' <<< "$meta")
+    }
+    print "PACKAGES-READ " . scalar(@{ $m->{packages} }) . "\n";' <<< "$meta")"; then
+    fail "the workspace metadata reader (perl) failed: G-M2's test-utils and banned-name clauses are unproven"
+    meta_out=""
+  fi
+  read_n="$(sed -n 's/^PACKAGES-READ //p' <<< "$meta_out")"
+  [ "${read_n:-0}" -gt 0 ] || fail "the workspace metadata reader read no package (G-M2's test-utils and banned-name clauses would pass vacuously)"
+  while IFS= read -r line; do
+    [ -n "$line" ] && fail "$line"
+  done < <(grep -v '^PACKAGES-READ ' <<< "$meta_out" || true)
 else
   cat "$err" >&2
   fail "cargo metadata failed"
+fi
+
+# No fork of a pinned crate through the manifest (review of S2a, F7): the workspace's `[patch]` tables
+# may name only the reviewed stand-in (`openmls_sqlite_storage` under `[patch.crates-io]`), and it has
+# no `[replace]`; and every package of Cargo.lock that is not a workspace member comes from the
+# crates.io registry with a checksum — so a copied `third_party/openmls` patched in with one added
+# function, or a git source, fails here, where every other PR gate passed it. Fail-closed, like the
+# readers above. Hooks: GHOST_POLICY_ROOT_MANIFEST, GHOST_POLICY_LOCK.
+ROOT_MANIFEST="${GHOST_POLICY_ROOT_MANIFEST:-$GHOST_ROOT/Cargo.toml}"
+LOCK="${GHOST_POLICY_LOCK:-$GHOST_ROOT/Cargo.lock}"
+if [ -z "${meta:-}" ]; then
+  fail "no workspace metadata: the patch and lock-source clause is unproven"
+elif ! patch_out="$(MANIFEST="$ROOT_MANIFEST" LOCK="$LOCK" perl -MJSON::PP -e '
+    local $/;
+    my $m = JSON::PP->new->decode(<STDIN>);
+    my %member = map { ("$_->{name} $_->{version}" => 1) } @{ $m->{packages} };
+    open(my $fh, "<", $ENV{MANIFEST}) or die "cannot read $ENV{MANIFEST}\n";
+    my $toml = <$fh>;
+    close $fh;
+    my ($table, $n) = ("", 0);
+    for my $line (split /\n/, $toml) {
+      $n++;
+      (my $l = $line) =~ s/^\s+|\s+$//g;
+      next if $l eq "" || $l =~ /^#/;
+      if ($l =~ /^\[\s*([^\]]+?)\s*\]$/) {
+        $table = $1;
+        if ($table =~ /^replace(\.|$)/) { print "Cargo.toml:$n: a [replace] table (G-M2: no replaced crate)\n" }
+        elsif ($table =~ /^patch\.(?:crates-io|"crates-io")\.("?)([\w-]+)\1$/) {
+          print "Cargo.toml:$n: [patch.crates-io] names $2 (G-M2: only the reviewed openmls_sqlite_storage stand-in)\n" unless $2 eq "openmls_sqlite_storage";
+        }
+        elsif ($table =~ /^patch\.(.+)$/ && $1 !~ /^(?:crates-io|"crates-io")$/) { print "Cargo.toml:$n: a [$table] table (G-M2: patches of crates.io only, and only the stand-in)\n" }
+        next;
+      }
+      next unless $table =~ /^patch\.(?:crates-io|"crates-io")$/ || $table =~ /^replace$/;
+      if ($l =~ /^("?)([^"=\s]+)\1\s*=/) {
+        my $name = $2;
+        if ($table eq "replace") { print "Cargo.toml:$n: [replace] names $name (G-M2: no replaced crate)\n" }
+        elsif ($name ne "openmls_sqlite_storage") { print "Cargo.toml:$n: [patch.crates-io] names $name (G-M2: only the reviewed openmls_sqlite_storage stand-in)\n" }
+      }
+    }
+    open($fh, "<", $ENV{LOCK}) or die "cannot read $ENV{LOCK}\n";
+    my $lock = <$fh>;
+    close $fh;
+    my $packages = 0;
+    for my $block (split /\n(?=\[\[)/, $lock) {
+      next unless $block =~ /^\[\[package\]\]/;
+      $packages++;
+      my ($name) = $block =~ /^name = "([^"]+)"/m;
+      my ($version) = $block =~ /^version = "([^"]+)"/m;
+      my ($source) = $block =~ /^source = "([^"]+)"/m;
+      my $checksum = $block =~ /^checksum = "[0-9a-f]{64}"/m;
+      my $what = "$name $version";
+      if (!defined $source) {
+        print "Cargo.lock: $what has no source and is not a workspace member (G-M2: a path package outside the workspace, such as a [patch]ed fork)\n" unless $member{$what};
+      } elsif ($source ne "registry+https://github.com/rust-lang/crates.io-index") {
+        print "Cargo.lock: $what comes from $source (G-M2: every dependency from the crates.io registry)\n";
+      } elsif (!$checksum) {
+        print "Cargo.lock: $what has no checksum (G-M2: every registry package with its checksum)\n";
+      }
+    }
+    print "LOCK-PACKAGES $packages\n";' <<< "$meta")"; then
+  fail "the patch and lock-source reader (perl) failed: the clause is unproven"
+else
+  read_n="$(sed -n 's/^LOCK-PACKAGES //p' <<< "$patch_out")"
+  [ "${read_n:-0}" -gt 0 ] || fail "Cargo.lock held no package (the lock-source clause would pass vacuously)"
+  while IFS= read -r line; do
+    [ -n "$line" ] && fail "$line"
+  done < <(grep -v '^LOCK-PACKAGES ' <<< "$patch_out" || true)
 fi
 
 # The openmls_sqlite_storage stand-in (§3.2, S0-1, Q40 (a)): exactly its manifest, an empty lib.rs
@@ -281,15 +360,17 @@ fi
 # `into_group_info*` (§19.14, §19.16, S0-9). Read as code (comments and strings blanked; a call split
 # over lines is still the call: source-text.pl) over every Rust source under client-core but the
 # test-only KAT crate (which replays standalone proposals) and the spikes (evidence tooling outside
-# the workspace).
-while IFS= read -r line; do
-  [ -n "$line" ] && fail "$line"
-done < <(ROOTS="${GHOST_POLICY_MLS_SOURCES:-$GHOST_ROOT/client-core}" GATES="$GATES_DIR" perl -e '
+# the workspace). Those three and a build directory are skipped **by their exact path under the
+# root** (client-core/mls-kat, …, client-core/target), never by a directory name found anywhere: a
+# `src/target/` module is read (review of S2a, F4). The reader is fail-closed and counts its files
+# (F3).
+if ! src_out="$(ROOTS="${GHOST_POLICY_MLS_SOURCES:-$GHOST_ROOT/client-core}" GATES="$GATES_DIR" perl -e '
   require "$ENV{GATES}/source-text.pl";
   use File::Find;
   my @files;
+  my %skip = map { ("$ENV{ROOTS}/$_" => 1) } qw(target mls-kat mls-spike dm-spike);
   find({ no_chdir => 1, wanted => sub {
-    if (-d $_ && m{/(target|mls-kat|mls-spike|dm-spike)$}) { $File::Find::prune = 1; return; }
+    if (-d $_ && $skip{$_}) { $File::Find::prune = 1; return; }
     push @files, $_ if -f $_ && /\.rs$/;
   } }, $ENV{ROOTS});
   my $bad = qr/\b(openmls_memory_storage|openmls_basic_credential|build_with_new_signer|store_pending_proposal|export_group_info\w*|into_group_info\w*)\b/;
@@ -301,7 +382,16 @@ done < <(ROOTS="${GHOST_POLICY_MLS_SOURCES:-$GHOST_ROOT/client-core}" GATES="$GA
       (my $rel = $f) =~ s{^\Q$ENV{ROOTS}\E/?}{};
       print "$rel:$line: $name (G-M2: never in GHOST code, design §3.2, §19.14, §19.16, S0-9)\n";
     }
-  }')
+  }
+  print "FILES-READ " . scalar(@files) . "\n";')"; then
+  fail "the GHOST source scan (perl) failed: G-M2's forbidden-entry-point clause is unproven"
+  src_out=""
+fi
+read_n="$(sed -n 's/^FILES-READ //p' <<< "$src_out")"
+[ "${read_n:-0}" -gt 0 ] || fail "the GHOST source scan read no Rust file (G-M2's forbidden-entry-point clause would pass vacuously)"
+while IFS= read -r line; do
+  [ -n "$line" ] && fail "$line"
+done < <(grep -v '^FILES-READ ' <<< "$src_out" || true)
 
 # ---- G-R2 for the seeded stream (Phase 10 design §12.1, §19.10; S0-7; slice S2a) ----------------
 # ghost-host-rng (the getrandom custom backend of host and test builds) never reaches a shipped

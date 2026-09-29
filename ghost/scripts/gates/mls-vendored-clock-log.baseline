@@ -15,7 +15,10 @@
 # lifetime.rs:66 never called, 88/93 never refusing the constant lifetime), its log facade calls (no
 # logger installed, G-M4), the memory storage GHOST never uses, rayon's worker parking and abort
 # guard, the build directives of crossbeam, zerocopy, rayon-core and libcrux-aes (G-M9), and the
-# crate's own UNIX_EPOCH constant.
+# crate's own UNIX_EPOCH constant. The review of S2a (F5, §19.31) added the patterns UNIX_EPOCH and
+# elapsed (a clock read through the imported constant or a clock value's method): 11 more sites, each
+# justified below — the crate's import and its one use in sweep_past, OpenMLS's time-based deletion
+# and lifetime code, a rayon-core test module and serde's re-export.
 
 # Sites (clock, logging, printing, network):
 site crossbeam-utils@0.8.23 src/sync/parker.rs:124 Instant::now clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
@@ -23,7 +26,9 @@ site crossbeam-utils@0.8.23 src/sync/parker.rs:333 Instant::now clock-log [lib] 
 site crossbeam-utils@0.8.23 src/sync/parker.rs:362 Instant::now clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
 site crossbeam-utils@0.8.23 src/sync/parker.rs:5 std::time clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
 site either@1.18.0 src/lib.rs:1798 stdout clock-log [lib]  # either's own #[test] fn read_write (a #[test] item, not a cfg(test) module, so the scan keeps it); a dependency of rayon here, the test function is never called in the library
+site ghost-client-mls@0.1.0 src/group.rs:14 UNIX_EPOCH clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
 site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
+site ghost-client-mls@0.1.0 src/group.rs:1847 UNIX_EPOCH clock-log [lib]  # sweep_past passes the UNIX_EPOCH constant to PastEpochDeletion::before_timestamp, so only the count applies (design §3.5, §8.3); no clock read
 site libc@0.2.189 src/new/mod.rs:218 time:: clock-log [lib]  # re-export of the time type declarations (timespec, clock ids); no call in the DM graph
 site libcrux-macros@0.0.3 src/lib.rs:121 tracing:: clock-log [proc-macro]  # proc-macro output text for test tracing; build time only, never linked
 site memchr@2.8.3 src/macros.rs:15 log:: clock-log [lib]  # macro body inert: log! expands to nothing without the disabled logging feature
@@ -68,7 +73,11 @@ site openmls@0.9.0 src/group/mls_group/exporting.rs:43 log:: clock-log [lib]  # 
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:105 SystemTime clock-log [lib]  # SystemTime::now() stamped when an epoch becomes current (with_timestamp); GhostKv rewrites every added_at to the start of the call's Kotlin-supplied day (design §3.4 point 5), so no device time is stored
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:231 std::time clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:234 SystemTime clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:234 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:235 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:254 SystemTime clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:254 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:258 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:271 SystemTime clock-log [lib]  # before_timestamp's comparison: GHOST passes UNIX_EPOCH, so only the count applies (design §3.5, §8.3)
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:4 SystemTime clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
 site openmls@0.9.0 src/group/mls_group/past_secrets.rs:4 std::time clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
@@ -90,10 +99,13 @@ site openmls@0.9.0 src/group/public_group/staged_commit.rs:59 log:: clock-log [l
 site openmls@0.9.0 src/group/public_group/validation.rs:58 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
 site openmls@0.9.0 src/group/public_group/validation.rs:70 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
 site openmls@0.9.0 src/key_packages/lifetime.rs:2 SystemTime clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/key_packages/lifetime.rs:2 UNIX_EPOCH clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
 site openmls@0.9.0 src/key_packages/lifetime.rs:2 std::time clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
 site openmls@0.9.0 src/key_packages/lifetime.rs:66 SystemTime clock-log [lib]  # Lifetime::new (now-relative bounds): never called; GHOST uses Lifetime::init(0, u64::MAX), the constant lifetime of Q42 (a)
+site openmls@0.9.0 src/key_packages/lifetime.rs:67 UNIX_EPOCH clock-log [lib]  # Lifetime::new (now-relative bounds): never called; GHOST uses Lifetime::init(0, u64::MAX), the constant lifetime of Q42 (a)
 site openmls@0.9.0 src/key_packages/lifetime.rs:88 SystemTime clock-log [lib]  # KeyPackage lifetime validation against the device clock (received Adds; joins unless skipped): with the constant lifetime it never refuses a canonical KeyPackage, and a refusal makes the commit invalid for every member (design §3.5, §19.29.1); GHOST's join skips it
 site openmls@0.9.0 src/key_packages/lifetime.rs:93 SystemTime clock-log [lib]  # KeyPackage lifetime validation against the device clock (received Adds; joins unless skipped): with the constant lifetime it never refuses a canonical KeyPackage, and a refusal makes the commit invalid for every member (design §3.5, §19.29.1); GHOST's join skips it
+site openmls@0.9.0 src/key_packages/lifetime.rs:95 UNIX_EPOCH clock-log [lib]  # KeyPackage lifetime validation against the device clock (received Adds; joins unless skipped): with the constant lifetime it never refuses a canonical KeyPackage, and a refusal makes the commit invalid for every member (design §19.29.1)
 site openmls@0.9.0 src/schedule/message_secrets.rs:24 SystemTime clock-log [lib]  # MessageSecrets' added_at field and its setters (the stamp above); rewritten to the call's day by GhostKv (design §3.4 point 5)
 site openmls@0.9.0 src/schedule/message_secrets.rs:4 SystemTime clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
 site openmls@0.9.0 src/schedule/message_secrets.rs:4 std::time clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
@@ -155,6 +167,7 @@ site rayon-core@1.13.0 src/broadcast/test.rs:133 time:: clock-log [lib]  # rayon
 site rayon-core@1.13.0 src/broadcast/test.rs:221 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
 site rayon-core@1.13.0 src/broadcast/test.rs:223 Instant::now clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
 site rayon-core@1.13.0 src/broadcast/test.rs:223 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:224 elapsed clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
 site rayon-core@1.13.0 src/broadcast/test.rs:228 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
 site rayon-core@1.13.0 src/thread_pool/test.rs:186 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
 site rayon-core@1.13.0 src/thread_pool/test.rs:191 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
@@ -164,6 +177,7 @@ site rayon-core@1.13.0 src/unwind.rs:28 eprintln! clock-log [lib]  # rayon's Abo
 site serde_core@1.0.229 src/crate_root.rs:27 time:: clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
 site serde_core@1.0.229 src/crate_root.rs:77 std::net network [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
 site serde_core@1.0.229 src/crate_root.rs:95 SystemTime clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+site serde_core@1.0.229 src/crate_root.rs:95 UNIX_EPOCH clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
 site serde_core@1.0.229 src/crate_root.rs:95 std::time clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
 
 # Build-script directives (cargo: lines):

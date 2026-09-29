@@ -15,7 +15,8 @@
 # `#[cfg]` is false for the target removed (`test`, `debug_assertions`, disabled features, other
 # architectures; unknown predicates kept), `mod` declarations followed (`#[path]`, `cfg_attr` path),
 # macro invocations and `macro_rules!` bodies included, comments excluded. Patterns: `SystemTime`,
-# `Instant::now`, `std::time`, `chrono`, `time::`, `log::`, `tracing::`, `println!`, `eprintln!`,
+# `Instant::now`, `UNIX_EPOCH` and `elapsed` (a clock read through an imported constant or a clock
+# value's method; Phase 10 review of S2a, F5), `std::time`, `chrono`, `time::`, `log::`, `tracing::`, `println!`, `eprintln!`,
 # `dbg!`, `print!`, `eprint!`, and since the evasion review (design §22.33 item 16) the standard
 # stream handles `stdout`, `stderr`, `Stdout`, `Stderr`, `StdoutLock`, `StderrLock` (clock-log:
 # `writeln!(std::io::stderr(), …)` names no print macro); `std::net`, `TcpStream`, `TcpListener`,

@@ -1,0 +1,13 @@
+# Fixture (G-M2, review of S2a F7): a workspace manifest that patches a pinned crate with a fork.
+[workspace]
+members = []
+
+[patch.crates-io]
+openmls_sqlite_storage = { path = "third_party/openmls-sqlite-storage-stub" }
+openmls = { path = "third_party/openmls" }
+
+[patch."https://github.com/example/tls_codec"]
+tls_codec = { git = "https://github.com/example/tls_codec" }
+
+[replace]
+"hpke-rs:0.6.0" = { path = "third_party/hpke-rs" }

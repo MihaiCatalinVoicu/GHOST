@@ -58,7 +58,7 @@ export CARGO_TARGET_DIR="$TARGET_DIR"
 cd "$GHOST_ROOT"
 # G-R3 (Phase 9 design §16.1, §22.33): the libcrux build scripts read LIBCRUX_DISABLE_SIMD* without
 # `cargo:rerun-if-env-changed`, so a target directory once built without them keeps its SIMD cfgs.
-# Every client build is therefore preceded by the clean of the three packages for each triple (a
+# Every client build is therefore preceded by the clean of the four packages for each triple (a
 # no-op in a fresh directory); scripts/gates/libcrux-portable.sh then reads what the build scripts
 # emitted, from the one output each package has after it.
 for triple in aarch64-linux-android x86_64-linux-android; do

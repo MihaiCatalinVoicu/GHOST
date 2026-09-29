@@ -134,8 +134,9 @@ pub enum CommitReason {
     /// The update-path leaf's `GhostLeaf.refresh_epoch` is not the commit's epoch, or it is missing
     /// (§19.5).
     RefreshEpoch = 7,
-    /// A leaf the commit installs is not canonical (S0-5), or an Add's KeyPackage is not the
-    /// canonical KeyPackage (lifetime included, §19.29.1).
+    /// A leaf the commit installs is not canonical (S0-5), an Add's KeyPackage is not the
+    /// canonical KeyPackage (lifetime included, §19.29.1), or an HPKE key of the tree the commit
+    /// produces (a leaf's or a parent node's) is not a valid X25519 key (review H1, §19.31).
     NonCanonicalLeaf = 8,
     /// A leaf the commit installs changes its member's signature key or credential (§19.14).
     Continuity = 9,
@@ -150,10 +151,13 @@ pub enum CommitReason {
     Permission = 12,
     /// A proposal type GHOST never commits (Update, PSK, ReInit, ExternalInit, …).
     Proposal = 13,
+    /// CO-14: a rank-255 commit whose sender's leaf was refreshed within the last `min(8, n)`
+    /// epochs (review of S2a, §19.31).
+    Rate = 14,
 }
 
 impl CommitReason {
-    pub const ALL: [CommitReason; 13] = [
+    pub const ALL: [CommitReason; 14] = [
         CommitReason::Lifetime,
         CommitReason::Refused,
         CommitReason::NotAMember,
@@ -167,6 +171,7 @@ impl CommitReason {
         CommitReason::Context,
         CommitReason::Permission,
         CommitReason::Proposal,
+        CommitReason::Rate,
     ];
 }
 

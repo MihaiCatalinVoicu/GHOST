@@ -3,7 +3,8 @@
 //! the joiner's tree check.
 //!
 //! An `MlsMessage` carrying a KeyPackage with: protocol version mls10; suite 0x0003; X25519 init
-//! and encryption keys; the leaf signature key equal to the `BasicCredential` identity (the
+//! and encryption keys, each canonical and not of low order (review H1, §19.31); the leaf signature
+//! key equal to the `BasicCredential` identity (the
 //! pseudonym key); **leaf capabilities exactly** versions [mls10], suites [0x0003], extensions
 //! [0xF0A1, 0xF0A2, 0xF0A4], proposals [], credentials [Basic], no GREASE; the leaf node source
 //! `key_package` with the **constant lifetime `[0, 2⁶⁴ − 1]`** (Q42 (a)); leaf extensions exactly
@@ -12,7 +13,7 @@
 
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
-use openmls::treesync::LeafNodeSource;
+use openmls::treesync::{LeafNodeSource, ParentNode, RatchetTree};
 
 use crate::ext::{self, GhostLeaf, KpBind};
 use crate::join::KEY_PACKAGE_LEN;
@@ -94,6 +95,59 @@ pub fn box_public(sk: &[u8; 32]) -> [u8; 32] {
     x25519_dalek::x25519(*sk, x25519_dalek::X25519_BASEPOINT_BYTES)
 }
 
+/// Whether an HPKE public key of suite 0x0003 (an `init_key`, a leaf's or a parent node's
+/// `encryption_key`) is acceptable: 32 bytes and [`valid_box_pk`]. OpenMLS checks only that a
+/// KeyPackage's two keys differ (`KeyPackageIn::validate`); a low-order key it admits makes every
+/// later HPKE encryption to that node fail (HACL refuses the all-zero shared secret), so one admitted
+/// KeyPackage, or one update path, would stop every later commit that encrypts to it (review of
+/// S2a, H1; §19.31).
+pub fn valid_hpke_key(key: &[u8]) -> bool {
+    <[u8; 32]>::try_from(key).is_ok_and(|k| valid_box_pk(&k))
+}
+
+/// The key of a TLS-encoded `HPKEPublicKey` at the start of `tls` (RFC 9420 §7.1: a one-byte
+/// vector length, 32 for X25519, then the key): an `EncryptionKey`, or a `ParentNode`, whose first
+/// field it is. OpenMLS 0.9.0 keeps both accessors crate-private.
+fn leading_hpke_key(tls: &[u8]) -> Option<[u8; 32]> {
+    match tls.split_first() {
+        Some((32, rest)) if rest.len() >= 32 => rest[..32].try_into().ok(),
+        _ => None,
+    }
+}
+
+/// A leaf's `encryption_key`.
+pub fn leaf_encryption_key(leaf: &LeafNode) -> Option<[u8; 32]> {
+    let tls = leaf.encryption_key().tls_serialize_detached().ok()?;
+    (tls.len() == 33).then(|| leading_hpke_key(&tls)).flatten()
+}
+
+/// A parent node's `encryption_key`.
+pub fn parent_encryption_key(node: &ParentNode) -> Option<[u8; 32]> {
+    leading_hpke_key(&node.tls_serialize_detached().ok()?)
+}
+
+/// Every HPKE key of a ratchet tree — each leaf's and each parent node's — is valid
+/// ([`valid_hpke_key`]): what CO-2 requires of the tree a commit produces and the joiner of the tree
+/// it joins (H1, §19.31). Every member computes it alike from the commit and the pre-commit tree.
+pub fn tree_keys_valid(tree: &RatchetTree) -> bool {
+    tree.leaves()
+        .all(|l| leaf_encryption_key(l).is_some_and(|k| valid_box_pk(&k)))
+        && tree
+            .parents()
+            .all(|p| parent_encryption_key(p).is_some_and(|k| valid_box_pk(&k)))
+}
+
+/// The pseudonym key a `BasicCredential` names (its 32-byte identity), the author of a message as
+/// OpenMLS verified it (`ProcessedMessage::credential`: the sender's leaf **in the message's
+/// epoch**, H2).
+pub fn basic_identity(credential: &Credential) -> Option<[u8; 32]> {
+    BasicCredential::try_from(credential.clone())
+        .ok()?
+        .identity()
+        .try_into()
+        .ok()
+}
+
 /// Why a leaf or KeyPackage is not canonical (tests and summaries; every one is
 /// `INVALID_KEYPACKAGE` or `INVALID_COMMIT(non-canonical leaf)` at the API).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +161,8 @@ pub enum Fault {
     Source,
     LeafExtensions,
     BoxKey,
+    /// An `init_key` or `encryption_key` that is not a valid X25519 key ([`valid_hpke_key`]).
+    HpkeKey,
     RefreshEpoch,
     Credential,
     KpExtensions,
@@ -121,8 +177,8 @@ pub struct LeafFacts {
 }
 
 /// The canonical form of a leaf node except its source (§6.2.4 (B), S0-5): the canonical
-/// capabilities, exactly one extension (`GhostLeaf` with a valid `box_pk`), and a
-/// `BasicCredential` whose identity is the 32-byte signature key.
+/// capabilities, exactly one extension (`GhostLeaf` with a valid `box_pk`), a valid X25519
+/// `encryption_key` (H1), and a `BasicCredential` whose identity is the 32-byte signature key.
 pub fn check_leaf(leaf: &LeafNode) -> Result<LeafFacts, Fault> {
     let want = capabilities_bytes(&canonical_capabilities()).ok_or(Fault::Capabilities)?;
     if capabilities_bytes(leaf.capabilities()).as_deref() != Some(want.as_slice()) {
@@ -135,6 +191,9 @@ pub fn check_leaf(leaf: &LeafNode) -> Result<LeafFacts, Fault> {
     let gl = GhostLeaf::decode(bytes).ok_or(Fault::LeafExtensions)?;
     if !valid_box_pk(&gl.box_pk) {
         return Err(Fault::BoxKey);
+    }
+    if !leaf_encryption_key(leaf).is_some_and(|k| valid_box_pk(&k)) {
+        return Err(Fault::HpkeKey);
     }
     let signature_key: [u8; 32] = leaf
         .signature_key()
@@ -187,9 +246,9 @@ pub fn check_key_package(kp: &KeyPackage) -> Result<(LeafFacts, KpBind), Fault> 
     if facts.leaf.refresh_epoch != 0 {
         return Err(Fault::RefreshEpoch);
     }
-    // X25519 keys: the init key here; the leaf's encryption key through the fixed 395-byte size.
-    if kp.hpke_init_key().as_slice().len() != 32 {
-        return Err(Fault::Suite);
+    // Valid X25519 keys: the leaf's encryption key in `check_leaf`, the init key here (H1).
+    if !valid_hpke_key(kp.hpke_init_key().as_slice()) {
+        return Err(Fault::HpkeKey);
     }
     let exts: Vec<&Extension> = kp.extensions().iter().collect();
     let [Extension::Unknown(ext::EXT_KP_BIND, UnknownExtension(bytes))] = exts.as_slice() else {

@@ -38,9 +38,10 @@ pub const MODE_EPOCH: u8 = 0x11;
 pub const MODE_JOIN: u8 = 0x12;
 pub const MODE_WELCOME: u8 = 0x13;
 
-/// `C(B) = B − 68`.
+/// `C(B) = B − 68` (0 below 68: a caller's bucket is validated before it is used, and no input
+/// makes this panic).
 pub const fn capacity(bucket: usize) -> usize {
-    bucket - OVERHEAD
+    bucket.saturating_sub(OVERHEAD)
 }
 
 /// The class floor (§5.3, §5.7): 4 KiB small (≤ 32 members), 16 KiB large (≤ 100).
@@ -94,23 +95,24 @@ impl Order {
     }
 }
 
-/// The key a blob is sealed under: `K_ep(e)` for mode 0x11, `JK_g` for modes 0x12 and 0x13.
+/// The key a blob is sealed under: `K_ep(e)` for mode 0x11, with the epoch e it was exported at,
+/// and `JK_g` for modes 0x12 and 0x13.
 pub enum SealKeyInput<'a> {
-    Epoch(&'a EpochExport),
+    Epoch { key: &'a EpochExport, epoch: u64 },
     Join(&'a JoinKey),
 }
 
 impl SealKeyInput<'_> {
     fn recognition(&self) -> RecognitionKey {
         match self {
-            SealKeyInput::Epoch(k) => derive_epoch_recognition(k),
+            SealKeyInput::Epoch { key, .. } => derive_epoch_recognition(key),
             SealKeyInput::Join(k) => derive_join_recognition(k),
         }
     }
 
     fn key(&self, salt: &[u8; 16], ns: &[u8; 32]) -> SealKey {
         match self {
-            SealKeyInput::Epoch(k) => derive_epoch_seal_key(k, salt, ns),
+            SealKeyInput::Epoch { key, .. } => derive_epoch_seal_key(key, salt, ns),
             SealKeyInput::Join(k) => derive_join_seal_key(k, salt, ns),
         }
     }
@@ -118,10 +120,17 @@ impl SealKeyInput<'_> {
     fn allows(&self, mode: u8) -> bool {
         matches!(
             (self, mode),
-            (SealKeyInput::Epoch(_), MODE_EPOCH)
+            (SealKeyInput::Epoch { .. }, MODE_EPOCH)
                 | (SealKeyInput::Join(_), MODE_JOIN)
                 | (SealKeyInput::Join(_), MODE_WELCOME)
         )
+    }
+
+    fn epoch(&self) -> Option<u64> {
+        match self {
+            SealKeyInput::Epoch { epoch, .. } => Some(*epoch),
+            SealKeyInput::Join(_) => None,
+        }
     }
 }
 
@@ -151,7 +160,8 @@ fn ad(ns: &[u8; 32], bucket: usize, mode: u8) -> Vec<u8> {
 
 /// `seal` (§10.2 fn 11). `salt` comes from the provider's CSPRNG (the seeded stream in host
 /// builds). `NO_FIT` when the body exceeds `C(bucket)`; `INVALID_POLICY` for a bucket that is not
-/// one of the three, a mode the key class does not seal, or a non-zero order outside mode 0x11.
+/// one of the three, a mode the key class does not seal, a non-zero order outside mode 0x11, or a
+/// mode-0x11 order of another epoch than the key's (`K_ep(e)` seals only epoch e's messages, §5.6).
 pub fn seal(
     key: &SealKeyInput<'_>,
     ns: &[u8; 32],
@@ -165,6 +175,9 @@ pub fn seal(
         return Err(MlsError::new(Code::InvalidPolicy));
     }
     if mode != MODE_EPOCH && *order != Order::default() {
+        return Err(MlsError::new(Code::InvalidPolicy));
+    }
+    if key.epoch().is_some_and(|e| e != order.epoch) {
         return Err(MlsError::new(Code::InvalidPolicy));
     }
     if body.len() > capacity(bucket) {
@@ -220,8 +233,10 @@ pub struct EpochHeader {
 
 /// `open` (§10.2 fn 12): `NOT_OPEN` when the hint does not match or the AEAD refuses (a match whose
 /// AEAD fails is a forgery, CS-S5); `NON_CANONICAL` for a wrong mode byte, a length outside P,
-/// non-zero padding, or an `order` that differs from the MLS header's epoch or from the author's
-/// `ChannelOrder` (CS-S7; a commit's `sender_leaf` and `seq` are zero).
+/// non-zero padding, an `order` that differs from the MLS header's epoch or from the author's
+/// `ChannelOrder` (CS-S7; a commit's `sender_leaf` and `seq` are zero), or — mode 0x11 — a header
+/// epoch other than the key's: every holder of `K_ep(e + 1)` can seal, so a message of an older
+/// epoch re-sealed under it would otherwise pass for one of epoch e + 1 (review M1, §19.31).
 pub fn open(key: &SealKeyInput<'_>, ns: &[u8; 32], mode: u8, blob: &[u8]) -> MlsResult<Opened> {
     let bucket = blob.len();
     if !BUCKETS.contains(&bucket) || !key.allows(mode) {
@@ -249,7 +264,13 @@ pub fn open(key: &SealKeyInput<'_>, ns: &[u8; 32], mode: u8, blob: &[u8]) -> Mls
             },
         )
         .map_err(|_| MlsError::new(Code::NotOpen))?;
-    open_plain(bucket, mode, &p)
+    let opened = open_plain(bucket, mode, &p)?;
+    if let (Some(e), Some(h)) = (key.epoch(), &opened.header) {
+        if h.epoch != e {
+            return Err(MlsError::new(Code::NonCanonical));
+        }
+    }
+    Ok(opened)
 }
 
 /// The layout checks of `open` on the decrypted P (split out so the property tests reach them

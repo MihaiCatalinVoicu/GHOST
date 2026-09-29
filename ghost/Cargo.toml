@@ -146,6 +146,12 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.tls_codec]
 opt-level = 3
+# The X25519 validity check of every HPKE key of a channel's tree (review H1, §19.31): one scalar
+# multiplication per node and commit, slow unoptimised; release builds are unaffected.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
 [profile.dev.package.serde_json]
 opt-level = 3
 [profile.dev.package.argon2]

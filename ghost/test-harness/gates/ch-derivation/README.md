@@ -8,5 +8,9 @@ every other directory breaks one rule: `raw-key` (a `&[u8]` key, the signature s
 `public-elsewhere` (`OpenInviteSalt` keying another derivation), `outside` (a `derive_*` function and
 an HKDF outside `derive.rs`, the HKDF path split over lines), `exporter` (an export under another
 label, and one outside `group.rs`), `kotlin` (two channel labels in Kotlin literals, beside the hint
-label, which must not count). `scripts/gates/self-test.sh` checks the violation count and text of
-each.
+label, which must not count). Added by the review of S2a (F6, rules 2 and 5): `helper-untyped`
+(`expand_untyped(ikm: &[u8])` calling the HKDF helper), `second-param` (a `derive_*` function keyed by
+its second, untyped parameter), `macro` (a derivation a `macro_rules!` generates), `other-names`
+(`hkdf::SimpleHkdf` in `seal.rs` and the provider's `hkdf_expand` in `group.rs`), `from-bytes` (T36's
+scenario: `EpochExport::from_bytes(*channel_id)` in `seal.rs`, which no `typed-key-sites.txt` pins).
+`scripts/gates/self-test.sh` checks the violation count and text of each.

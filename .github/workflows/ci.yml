@@ -86,7 +86,7 @@ jobs:
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
       # G-R3 (Phase 9 design §16.1, §22.33): every client build is preceded by the libcrux clean — the
-      # three build scripts do not re-run when LIBCRUX_DISABLE_SIMD* change, and rust-cache restores
+      # four build scripts do not re-run when LIBCRUX_DISABLE_SIMD* change, and rust-cache restores
       # target/ — and the host test build's cargo messages are read before any test runs.
       - name: libcrux clean (G-R3)
         run: cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes

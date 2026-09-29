@@ -216,6 +216,12 @@ fn a_failed_item_rolls_back_alone_inside_a_batch() {
 fn trial_count_counts_successor_senders_and_writes_nothing() {
     let mut w = World::create(23, 0);
     w.admit(2);
+    // CO-14 (k = min(8, n) = 3 with three members): a rank-255 self-update of a KeyPackage leaf
+    // (refresh_epoch 0) is valid from epoch 3; two passes of the owner get there.
+    for _ in 0..2 {
+        let req = w.request(0);
+        w.commit_and_settle(0, &req);
+    }
     let epoch = w.members[0].epoch.as_ref().unwrap().epoch;
     // The owner's commit X; member 1 settles it and posts in the next epoch.
     let rows = w.members[0].wrapped();
@@ -237,7 +243,7 @@ fn trial_count_counts_successor_senders_and_writes_nothing() {
             )
             .unwrap();
         m1.apply(s.changes);
-        m1.epoch = Some(s.epoch);
+        m1.epoch = s.epoch;
     }
     let successor = w.post(1, &post("after X", 7));
     let order = Order {

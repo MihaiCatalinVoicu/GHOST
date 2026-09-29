@@ -1,11 +1,15 @@
 //! A commit's validation summary and CO-2 (design §6.4, revised §19.29.1) as far as it is a
 //! function of the commit, the pre-commit group state and the commit's `GhostCommitAad` — no clock,
-//! no local history (§19.2 rule 2). The summary is `receive`'s COMMIT output (§10.2 fn 6); the
+//! no local history (§19.2 rule 2). The verdict also applies CO-14 (a rank-255 commit's rate, which
+//! reads only the tree) and requires every HPKE key of the resulting tree to be a valid X25519 key
+//! (review of S2a, H1; §19.31). The summary is `receive`'s COMMIT output (§10.2 fn 6); the
 //! arbitration that uses it (CO-1 … CO-14, slice S5) is Kotlin's. The same function validates a
-//! committer's own pending commit before it leaves the device.
+//! committer's own pending commit before it leaves the device, and `settle` re-runs it on the
+//! winner before merging.
 
 use openmls::prelude::tls_codec::Serialize as _;
 use openmls::prelude::*;
+use openmls::treesync::RatchetTree;
 use sha2::{Digest, Sha256};
 
 use crate::canonical::{self, CanonicalKeyPackage, LeafFacts};
@@ -20,13 +24,18 @@ use crate::result::{Code, CommitReason, MlsError, MlsResult};
 use crate::seal;
 
 /// The pre-commit state a validation reads: the epoch, the context (ranks are always read from
-/// it, §19.13) and every member's leaf and signature key.
+/// it, §19.13), every member's leaf, signature key and `GhostLeaf.refresh_epoch` (CO-14), and — for
+/// a commit's validation — the ratchet tree (the base of the tree check of H1).
 #[derive(Clone, Debug)]
 pub struct PreState {
     pub epoch: u64,
     pub context: ChannelContext,
     pub members: Vec<(u32, [u8; 32])>,
+    /// `(leaf, GhostLeaf.refresh_epoch)` of every member whose leaf carries a readable `GhostLeaf`.
+    pub refresh: Vec<(u32, u64)>,
     pub own_leaf: u32,
+    /// The pre-commit ratchet tree ([`PreState::with_tree`]); `summarize` requires it.
+    pub tree: Option<RatchetTree>,
 }
 
 impl PreState {
@@ -37,6 +46,7 @@ impl PreState {
             .and_then(|u| ChannelContext::decode(&u.0))
             .ok_or(MlsError::new(Code::StateCorrupt))?;
         let mut members = Vec::new();
+        let mut refresh = Vec::new();
         for m in g.members() {
             let k: [u8; 32] = m
                 .signature_key
@@ -44,13 +54,38 @@ impl PreState {
                 .try_into()
                 .map_err(|_| MlsError::new(Code::StateCorrupt))?;
             members.push((m.index.u32(), k));
+            let leaf = g.public_group().leaf(m.index);
+            if let Some(gl) = leaf.and_then(|l| {
+                l.extensions()
+                    .unknown(crate::ext::EXT_LEAF)
+                    .and_then(|u| crate::ext::GhostLeaf::decode(&u.0))
+            }) {
+                refresh.push((m.index.u32(), gl.refresh_epoch));
+            }
         }
         Ok(Self {
             epoch: g.epoch().as_u64(),
             context,
             members,
+            refresh,
             own_leaf: g.own_leaf_index().u32(),
+            tree: None,
         })
+    }
+
+    /// The pre-state of a commit's validation: with the ratchet tree.
+    pub fn of_commit(g: &MlsGroup) -> MlsResult<Self> {
+        let mut pre = Self::of(g)?;
+        pre.tree = Some(g.export_ratchet_tree());
+        Ok(pre)
+    }
+
+    /// The `GhostLeaf.refresh_epoch` of a member's leaf before the commit.
+    pub fn refresh_of(&self, leaf: u32) -> Option<u64> {
+        self.refresh
+            .iter()
+            .find(|(l, _)| *l == leaf)
+            .map(|(_, e)| *e)
     }
 
     pub fn key_of(&self, leaf: u32) -> Option<[u8; 32]> {
@@ -124,6 +159,10 @@ pub struct CommitSummary {
     pub rotates: bool,
     /// The update-path leaf's GHOST facts (`refresh_epoch`, `box_pk`), when the commit has a path.
     pub update_leaf: Option<LeafFacts>,
+    /// The sender's leaf `GhostLeaf.refresh_epoch` **before** the commit, and the member count `n`
+    /// before it: the inputs of CO-14 (a rank-255 commit's rate), which the verdict applies.
+    pub sender_refresh_epoch: Option<u64>,
+    pub members: usize,
     pub epoch_authenticator: Option<Vec<u8>>,
     /// `Ok` when CO-2 holds, or the first rule it breaks.
     pub verdict: Result<(), CommitReason>,
@@ -553,6 +592,32 @@ pub fn summarize(
     if bytes.len() > seal::capacity(floor) {
         fault(CommitReason::Size);
     }
+    // Every HPKE key of the tree the commit produces — the update path's leaf and parent nodes,
+    // the Adds' leaves — is a valid X25519 key (H1, §19.31): a low-order key would make every later
+    // commit that encrypts to that node fail for everyone. Read from the staged tree, so every
+    // member checks every node alike (a member can derive only the path keys above its own
+    // subtree). A member the commit removes gets a public staged state whose tree OpenMLS 0.9.0
+    // keeps crate-private: it checks the leaves (the Adds' KeyPackages and the path's leaf, above)
+    // and not the parent nodes, which concerns only its own departure (§19.31).
+    let pre_tree = pre.tree.clone().ok_or(MlsError::new(Code::Internal))?;
+    if !sc.self_removed() {
+        match sc.export_ratchet_tree(crypto, pre_tree) {
+            Ok(Some(t)) if canonical::tree_keys_valid(&t) => {}
+            _ => fault(CommitReason::NonCanonicalLeaf),
+        }
+    }
+    // CO-14 (§6.4, §19.5): a rank-255 commit for epoch e only from a leaf whose `refresh_epoch`
+    // before the commit is at most e − min(8, n), n the member count before the commit.
+    let sender_refresh_epoch = pre.refresh_of(idx.u32());
+    if rank == 255 {
+        let k = pre.members.len().min(8) as u64;
+        let within = sender_refresh_epoch
+            .and_then(|r| r.checked_add(k))
+            .is_some_and(|x| x <= pre.epoch);
+        if !within {
+            fault(CommitReason::Rate);
+        }
+    }
 
     let (_, _, rotates) = membership_change(pre, sc, &aad_v);
     // The first broken rule in a fixed order (the reason reported).
@@ -565,6 +630,7 @@ pub fn summarize(
         CommitReason::Evidence,
         CommitReason::CommittersChanged,
         CommitReason::Permission,
+        CommitReason::Rate,
         CommitReason::Context,
         CommitReason::Size,
     ];
@@ -586,6 +652,8 @@ pub fn summarize(
         context,
         rotates,
         update_leaf,
+        sender_refresh_epoch,
+        members: pre.members.len(),
         epoch_authenticator: sc.epoch_authenticator().map(|a| a.as_slice().to_vec()),
         verdict,
     })

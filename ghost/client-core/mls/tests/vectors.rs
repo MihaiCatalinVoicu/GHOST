@@ -265,7 +265,13 @@ fn ch_seal() {
     for (mode, key) in [
         (seal::MODE_JOIN, SealKeyInput::Join(&jk)),
         (seal::MODE_WELCOME, SealKeyInput::Join(&jk)),
-        (seal::MODE_EPOCH, SealKeyInput::Epoch(&k_ep)),
+        (
+            seal::MODE_EPOCH,
+            SealKeyInput::Epoch {
+                key: &k_ep,
+                epoch: 7,
+            },
+        ),
     ] {
         for bucket in seal::BUCKETS {
             let salt = b16(&format!("seal salt {mode} {bucket}"));

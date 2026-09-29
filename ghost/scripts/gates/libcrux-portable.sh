@@ -7,7 +7,7 @@
 # `LIBCRUX_DISABLE_SIMD128`/`LIBCRUX_DISABLE_SIMD256` are set.
 #
 # Why the gate reads the build and not the variables. `.cargo/config.toml` sets both variables, but
-# the three build scripts read them without `cargo:rerun-if-env-changed`, so a target directory built
+# the four build scripts read them without `cargo:rerun-if-env-changed`, so a target directory built
 # once without them keeps its SIMD cfgs after they are set (S0′ measured FAIL -> FAIL -> portable ->
 # portable). Every client build is therefore preceded by
 #   cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes [--target <triple>] --release
@@ -15,16 +15,17 @@
 # the host), and this gate then reads what the build scripts actually emitted:
 #
 #   --json <file>        a `cargo build --message-format=json…` stream (a host build): every
-#                        `build-script-executed` message of the three packages — cargo emits one for
+#                        `build-script-executed` message of the four packages — cargo emits one for
 #                        each build script of the build, fresh or re-run, with the cfgs rustc gets;
 #   --target-dir <dir>   a profile directory (`target/<triple>/release`) after a cargo-ndk build, which
 #                        prints no cargo messages: the `build/<package>-<hash>/output` file of each of
-#                        the three packages. After the clean each package has **exactly one**; two or
+#                        the four packages. After the clean each package has **exactly one**; two or
 #                        more mean a stale run the clean did not remove, and which one the build used
 #                        cannot be told from the files, so the gate fails rather than guess.
 #
-# It fails if any `cargo:rustc-cfg` (or `cargo::rustc-cfg`) line of the three packages carries
-# `feature="simd128"` or `feature="simd256"`, and if any of the three is missing from a source — a
+# It fails if any `cargo:rustc-cfg` (or `cargo::rustc-cfg`) line of the four packages carries
+# `feature="simd128"` or `feature="simd256"`, and if any of the three DM-graph packages (and, with
+# `--with-aes`, `libcrux-aes`) is missing from a source — a
 # check that sees no libcrux build proves nothing. Several `--json`/`--target-dir` arguments may be
 # given; each is checked on its own.
 #

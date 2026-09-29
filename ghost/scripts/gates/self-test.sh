@@ -1012,6 +1012,11 @@ lic_case license-notices "rejects a dropped upstream NOTICE" fail "apache-droppe
 lic_case license-notices "rejects an Apache-2.0 package without an upstream NOTICE snapshot entry" fail "apache-nosnapshot 1.0.0: used under Apache-2.0 without an upstream NOTICE snapshot entry" "$(lic_list no-snapshot)" -- rust
 lic_case license-notices "rejects an undecided licence file of vendored sources" fail "undecided-pkg 1.0.0: vendor/lib/LICENSE: a licence file of vendored sources" "$(lic_list undecided-vendored)" -- rust
 lic_case license-notices "rejects a copyleft-only package" fail "gpl-pkg 1.0.0: no alternative of 'GPL-3.0-only' is an allowed licence" "$(lic_list copyleft)" -- rust
+# The SPDX template clause (Phase 10 review of S2a, F1): a package that ships no MIT text would get
+# the template's "<year> <copyright holders>" in place of a copyright line; unreviewed, it fails, and
+# a reviewed line no package needs fails too.
+lic_case license-notices "rejects an unreviewed package that would carry an SPDX template text" fail "template-pkg 1.0.0: ships no MIT text, and the SPDX one is a template without a copyright line" "$(lic_list template)" -- rust
+lic_case license-notices "rejects a template review line no package needs" fail "template-texts-reviewed.txt: mit-pkg 1.0.0 is not needed" "$(lic_list positive)" GHOST_LICENSE_TEMPLATE_REVIEWED="$LIC_FIX/lists/template-reviewed-stale.txt" -- rust
 if grep -q "used under: Apache-2.0" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt" && ! grep -q "LICENSE-APACHE of dual-pkg" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt" \
   && grep -q "NOTICE of https://github.com/fixture/apache-pkg" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt" \
   && grep -q "third_party/zlib/LICENSE of vendored-pkg" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt"; then
@@ -1552,6 +1557,11 @@ near_misses dm-no-replace positive-dm-replace-near-misses
 # G-R4's source half (no-logging): a standard stream without a print macro.
 evasion_count no-logging negative-rust-std-streams 1
 evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
+# The source finder's exemptions are exact (Phase 10 review of S2a, F4): a module directory named
+# target and a module file named main.rs are read; the crate's own src/main.rs stays exempt.
+evasion_count no-logging negative-rust-path-exemptions 2
+evasion_named no-logging "client-core/fx/src/target/mod.rs:3:    eprintln!" "reads a module directory named target"
+evasion_named no-logging "client-core/fx/src/x/main.rs:3:" "reads a module file named main.rs"
 near_misses no-logging positive-rust-std-streams
 # G-DM3's Kotlin half (§22.33 item 17): the split-call evasion, one violation per rule, the allowlist's
 # own checks, and a positive with a listed site and a seed branch both written across lines.
@@ -1594,6 +1604,19 @@ evasion_named ch-derivation-inputs "src/group.rs:3: export_secret with a label o
 evasion_named ch-derivation-inputs "src/kv.rs:2: export_secret outside src/group.rs" "reports an export outside group.rs"
 evasion_count ch-derivation-inputs ch-derivation/kotlin 2
 evasion_named ch-derivation-inputs "Channel.kt:3: a channel derivation label in Kotlin (\"ghost/v1/ch-seal\")" "reports a channel label in Kotlin and not the hint label"
+# Rules 2 and 5 as the review of S2a (F6) extended them: an untyped helper, a second parameter as
+# the key, a function a macro generates, HKDF by other names, and T36's own from_bytes scenario.
+evasion_count ch-derivation-inputs ch-derivation/helper-untyped 1
+evasion_named ch-derivation-inputs "src/derive.rs:12: HKDF (\`hkdf32\`) outside a derive_* function" "reports an HKDF helper keyed by untyped bytes"
+evasion_count ch-derivation-inputs ch-derivation/second-param 1
+evasion_named ch-derivation-inputs "src/derive.rs:12: derive_twice keys HKDF with \`ikm\`, not its first parameter \`k\`" "reports a derivation keyed by its second parameter"
+evasion_count ch-derivation-inputs ch-derivation/macro 1
+evasion_named ch-derivation-inputs "src/derive.rs:14: HKDF (\`hkdf32\`) outside a derive_* function" "reports a derivation a macro generates"
+evasion_count ch-derivation-inputs ch-derivation/other-names 2
+evasion_named ch-derivation-inputs "src/seal.rs:3: HKDF outside src/derive.rs" "reports SimpleHkdf outside the typed module"
+evasion_named ch-derivation-inputs "src/group.rs:3: HKDF outside src/derive.rs" "reports the provider's hkdf_expand outside the typed module"
+evasion_count ch-derivation-inputs ch-derivation/from-bytes 1
+evasion_named ch-derivation-inputs "src/seal.rs: EpochExport::from_bytes at 1 site(s), typed-key-sites.txt pins 0" "reports a typed key built from a channel id (T36)"
 if bash "$DIR/ch-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: ch-derivation-inputs accepts the real channel crate"
 else
@@ -1958,6 +1981,11 @@ if command -v cargo >/dev/null; then
   if [ -x "$scanner" ]; then
     vs_case streams "site fixture-streams@0.1.0 src/lib.rs:6 stderr clock-log [lib]"
     vs_case unix-socket "site fixture-unix-socket@0.1.0 src/lib.rs:5 UnixStream network [lib]"
+    # A clock read through the imported constant (review of S2a, F5): std::time found only the import.
+    vs_case clock-epoch "site fixture-clock-epoch@0.1.0 src/lib.rs:3 UNIX_EPOCH clock-log [lib]
+site fixture-clock-epoch@0.1.0 src/lib.rs:3 std::time clock-log [lib]
+site fixture-clock-epoch@0.1.0 src/lib.rs:6 UNIX_EPOCH clock-log [lib]
+site fixture-clock-epoch@0.1.0 src/lib.rs:6 elapsed clock-log [lib]"
     vs_case clean ""
   else
     echo "SELF-TEST FAIL: the G-R8 scanner was not built at $scanner" >&2; rc=1
@@ -2000,10 +2028,46 @@ if command -v cargo >/dev/null; then
     env GHOST_RUST_ALLOWLIST="$tmp" bash "$DIR/rust-client-allowlist.sh"
   rm -f "$tmp"
   expect_fail_msg "rust-client-allowlist rejects a new version of a name the client graph has (G-M1)" \
-    "(G-M1: no new version of a name already present)" \
+    "(G-M1: no second copy of a crate in the library unreviewed)" \
     env GHOST_ALLOWLIST_MLS_PACKAGE=ghost-issuer bash "$DIR/rust-client-allowlist.sh"
+  # G-M1's duplicate baseline (review of S2a, F2): a duplicate the baseline does not list fails, and
+  # so does a line the graphs no longer reach.
+  tmp="$(mktemp)"
+  grep -v '^getrandom ' "$DIR/../../client-core/rust-duplicate-versions.txt" > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects a duplicate the baseline does not list (G-M1)" \
+    "getrandom is at 2 versions" env GHOST_RUST_DUPLICATES="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  { cat "$DIR/../../client-core/rust-duplicate-versions.txt"; echo "bitflags 2"; } > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects a stale baseline line (G-M1)" \
+    "bitflags 2 is stale" env GHOST_RUST_DUPLICATES="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  rm -f "$tmp"
+  # The linked state of slice S2b, simulated: a scratch workspace whose root links ghost-client-net
+  # and ghost-client-mls (the lock copied, resolved offline). It passes today's baseline; with a
+  # second bitflags beside it — S2a's rule saw nothing there, since the client graph then contains
+  # every version the MLS graph brings — it fails.
+  linked_case() { # $1 = pass|fail, $2 = extra dependency line ("" for none), $3 = expected text, $4 = description
+    local fx gw out got
+    fx="$(mktemp -d)"
+    gw="$(cd "$DIR/../.." && { pwd -W 2>/dev/null || pwd; })"
+    mkdir -p "$fx/src" && : > "$fx/src/lib.rs"
+    printf '[package]\nname = "ghost-linked-fixture"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[dependencies]\nghost-client-net = { path = "%s/client-core/net" }\nghost-client-mls = { path = "%s/client-core/mls" }\n%s\n\n[workspace]\n' "$gw" "$gw" "$2" > "$fx/Cargo.toml"
+    cp "$DIR/../../Cargo.lock" "$fx/Cargo.lock"
+    { cat "$DIR/../../client-core/rust-dependency-allowlist.txt"; echo ghost-linked-fixture; } > "$fx/allowlist.txt"
+    if ! (cd "$fx" && cargo update -w --offline -q >/dev/null 2>&1); then
+      echo "SELF-TEST FAIL: rust-client-allowlist $4: the linked fixture does not resolve offline" >&2; rc=1; rm -rf "$fx"; return
+    fi
+    if out="$(env GHOST_ALLOWLIST_WORKSPACE="$fx" GHOST_ALLOWLIST_NET_PACKAGE=ghost-linked-fixture \
+        GHOST_RUST_ALLOWLIST="$fx/allowlist.txt" bash "$DIR/rust-client-allowlist.sh" 2>&1)"; then got=pass; else got=fail; fi
+    if [ "$got" = "$1" ] && grep -qF -- "$3" <<<"$out"; then
+      echo "self-test ok: rust-client-allowlist $4"
+    else
+      echo "SELF-TEST FAIL: rust-client-allowlist $4 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+    fi
+    rm -rf "$fx"
+  }
+  linked_case pass "" "[rust-client-allowlist] OK" "accepts the linked state of S2b against the baseline (G-M1)"
+  linked_case fail 'bitflags = "=1.3.2"' "bitflags is at 2 versions (1.3.2 2.13.2)" "rejects a second copy of a crate in the linked state (G-M1)"
   MLSP="$HARNESS/mls-policy"
-  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graph has, a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped), a host-only package in a shipped graph, a build configuration naming the backend cfg" 9 \
+  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graph has, a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped, a module directory named target read), a host-only package in a shipped graph, a build configuration naming the backend cfg, a patched fork and a lock with sources other than crates.io" 17 \
 "hpke-rs feature 'hazmat' is enabled in ghost-client-mls's graph (G-M2
 package 'openmls-no-such-crate' is not in ghost-client-mls's graph
 ghost-client-mls-kat enables openmls/test-utils (dev); G-M2 allows it only as a dev-dependency of ghost-client-mls
@@ -2011,15 +2075,40 @@ the stub's src/lib.rs is not empty
 mls/src/group.rs:3: openmls_memory_storage
 mls/src/group.rs:9: build_with_new_signer
 mls/src/group.rs:11: store_pending_proposal
+mls/src/target/mod.rs:3: export_group_info
 package 'rayon' is in ghost-client-mls's graph: host and test builds only (G-R2
-shipped-config.toml names getrandom_backend" \
+shipped-config.toml names getrandom_backend
+Cargo.toml:7: [patch.crates-io] names openmls (G-M2
+a [patch.\"https://github.com/example/tls_codec\"] table
+Cargo.toml:13: [replace] names hpke-rs:0.6.0
+Cargo.lock: openmls 0.9.0 has no source and is not a workspace member
+Cargo.lock: tls_codec 0.5.0 comes from git+https://github.com/example/tls_codec
+Cargo.lock: hpke-rs 0.6.0 has no checksum" \
     env GHOST_POLICY_MLS_FORBID_EXTRA=hpke-rs:hazmat GHOST_POLICY_MLS_GRAPH=openmls-no-such-crate \
       GHOST_POLICY_KAT=ghost-client-mls GHOST_POLICY_STUB_DIR="$MLSP/stub-nonempty" \
       GHOST_POLICY_MLS_SOURCES="$MLSP/sources" GHOST_POLICY_HOST_ONLY_EXTRA=rayon \
-      GHOST_POLICY_SHIPPED_CONFIGS="$MLSP/shipped-config.toml" bash "$DIR/rust-feature-policy.sh"
+      GHOST_POLICY_SHIPPED_CONFIGS="$MLSP/shipped-config.toml" \
+      GHOST_POLICY_ROOT_MANIFEST="$MLSP/fork/Cargo.toml" GHOST_POLICY_LOCK="$MLSP/fork/Cargo.lock" \
+      bash "$DIR/rust-feature-policy.sh"
   multi_case "rust-feature-policy rejects a stand-in with a build script (G-M2)" 1 \
     "the openmls_sqlite_storage stub holds [Cargo.toml README.md build.rs src/lib.rs ]" \
     env GHOST_POLICY_STUB_DIR="$MLSP/stub-extra" bash "$DIR/rust-feature-policy.sh"
+  # Fail-closed readers (review of S2a, F3): with a perl that fails on PATH, G-M2's metadata reader,
+  # its patch and lock-source reader (F7) and its source scan each fail the gate, and the two that
+  # count report reading nothing, instead of reading no violation. G-M3's script fails the same way.
+  perl_stub="$(mktemp -d)"
+  printf '#!/bin/sh\necho "perl stub: failing on purpose" >&2\nexit 2\n' > "$perl_stub/perl"
+  chmod +x "$perl_stub/perl"
+  multi_case "rust-feature-policy fails closed when perl fails (G-M2)" 5 \
+"the workspace metadata reader (perl) failed
+the workspace metadata reader read no package
+the patch and lock-source reader (perl) failed
+the GHOST source scan (perl) failed
+the GHOST source scan read no Rust file" \
+    env PATH="$perl_stub:$PATH" bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "ch-derivation-inputs fails closed when perl fails (G-M3)" "the channel source reader (perl) failed" \
+    env PATH="$perl_stub:$PATH" bash "$DIR/ch-derivation-inputs.sh"
+  rm -rf "$perl_stub"
   multi_case "mls-rust-no-logging reports each clause (G-M4): log through a dependent not on the list, a forbidden crate, a graph without OpenMLS, a logger installer in the graph's sources" 6 \
 "'openmls_memory_storage' depends on log directly in ghost-client-mls's graph
 ghost-client-mls links 'rayon'

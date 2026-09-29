@@ -58,7 +58,11 @@ jobs:
         shell: bash
         working-directory: ghost
     steps:
+      # The job builds some 485 third-party crates from upstream's own lock: no token is left in the
+      # checkout for their build scripts to read (review of S2a, hardening).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
         with:
           toolchain: 1.98.1
@@ -87,6 +91,8 @@ jobs:
         working-directory: ghost
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: advisories at the pins
         env:
           GH_TOKEN: ${{ github.token }}

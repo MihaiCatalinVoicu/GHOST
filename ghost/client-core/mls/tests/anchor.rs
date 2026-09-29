@@ -7,7 +7,7 @@ mod support;
 use ghost_client_mls::canonical::{self, SUITE};
 use ghost_client_mls::derive::PseudonymSeed;
 use ghost_client_mls::ext::{self, Bootstrap, CommitAad, KpBind, Purpose};
-use ghost_client_mls::group::{Anchor, ReceiveItem};
+use ghost_client_mls::group::{join_config, Anchor, ReceiveItem};
 use ghost_client_mls::join::WelcomeBlob;
 use ghost_client_mls::kv::{GhostKv, WrappedRows};
 use ghost_client_mls::provider::{GhostProvider, PseudonymSigner};
@@ -233,6 +233,174 @@ fn a_rejoin_anchor_checks_the_signature_only() {
         },
     );
     assert_eq!(bad_ns.err(), Some(MlsError::new(Code::InvalidBootstrap)));
+}
+
+/// A forger's group of `fillers + 1` joiners in one commit — the joiner's KeyPackage and `fillers`
+/// canonical ones — whose Welcome carries the whole tree: the tree validation `JoinBuilder::build()`
+/// would spend on it grows with the leaves.
+fn big_forged_welcome(channel_id: [u8; 32], forger_seed: u8, kp: &[u8], fillers: usize) -> Vec<u8> {
+    let crypto = CryptoProvider::new().unwrap();
+    let p = GhostProvider {
+        crypto: &crypto,
+        storage: GhostKv::new(channel_id, DAY),
+    };
+    let signer = PseudonymSigner::from_seed(&PseudonymSeed::from_bytes([forger_seed; 32]));
+    let ctx = initial_context(channel_id, signer.public(), 1);
+    let exts = Extensions::from_vec(vec![
+        Extension::Unknown(ext::EXT_CHANNEL_CONTEXT, UnknownExtension(ctx.encode())),
+        canonical::required_capabilities(),
+    ])
+    .unwrap();
+    let mut g = MlsGroup::builder()
+        .with_group_id(GroupId::from_slice(&channel_id))
+        .ciphersuite(SUITE)
+        .use_ratchet_tree_extension(true)
+        .lifetime(canonical::constant_lifetime())
+        .with_capabilities(canonical::canonical_capabilities())
+        .with_group_context_extensions(exts)
+        .with_leaf_node_extensions(
+            canonical::leaf_extensions(&ext::GhostLeaf {
+                box_pk: canonical::box_public(&[forger_seed; 32]),
+                refresh_epoch: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap()
+        .build(&p, &signer, credential(signer.public()))
+        .unwrap();
+    let mut kps = vec![
+        canonical::parse_key_package(&crypto, kp, Some(&channel_id))
+            .unwrap()
+            .key_package,
+    ];
+    for i in 0..fillers {
+        let m = support::Member::new(channel_id, 90_000 + i);
+        let f = m.ctx.key_package(&m.ch, Purpose::Join, DAY).unwrap();
+        kps.push(
+            canonical::parse_key_package(&crypto, &f.key_package, Some(&channel_id))
+                .unwrap()
+                .key_package,
+        );
+    }
+    g.set_aad(CommitAad::default().encode());
+    let boot = Bootstrap {
+        generation: 0,
+        open_epoch: 0,
+        g: [0x42; 32],
+    };
+    let bundle = g
+        .commit_builder()
+        .propose_adds(kps)
+        .force_self_update(true)
+        .load_psks(p.storage())
+        .unwrap()
+        .create_group_info_with_extensions(vec![Extension::Unknown(
+            ext::EXT_BOOTSTRAP,
+            UnknownExtension(boot.encode()),
+        )])
+        .unwrap()
+        .create_group_info(false)
+        .build(p.rand(), p.crypto(), &signer, |_| true)
+        .unwrap()
+        .stage_commit(&p)
+        .unwrap();
+    let (_, w, _) = bundle.into_messages();
+    w.unwrap().tls_serialize_detached().unwrap()
+}
+
+/// MM-44's killer (§19.27 TR-7, §12.9: "the measured pre-check cost"): a Welcome refused by the
+/// committers anchor costs the joiner no tree validation. A forger's Welcome over a 64-leaf tree:
+/// OpenMLS's own processing of it (`ProcessedWelcome`) and its tree validation (`build()`) are
+/// timed on the joiner's rows, and `welcome_join` refusing it at the anchor must cost less than
+/// the processing plus half of the validation (the minimum of seven runs each). An anchor checked
+/// after `build()` pays the whole validation first and fails this.
+#[test]
+fn the_anchor_refuses_before_the_tree_validation_is_paid() {
+    use std::time::{Duration, Instant};
+    let w = World::create(14, 0);
+    let mut j = support::Member::new(w.channel_id, 14_500);
+    let kp = j.ctx.key_package(&j.ch, Purpose::Join, DAY).unwrap();
+    j.apply(kp.changes);
+    let welcome_bytes = big_forged_welcome(w.channel_id, 0x44, &kp.key_package, 63);
+    let welcome = match MlsMessageIn::tls_deserialize_exact(&welcome_bytes)
+        .unwrap()
+        .extract()
+    {
+        MlsMessageBodyIn::Welcome(x) => x,
+        _ => unreachable!(),
+    };
+    let blob = WelcomeBlob {
+        kp_ref: kp.kp_ref.clone(),
+        welcome: welcome_bytes,
+    }
+    .encode()
+    .unwrap();
+    let rows = j.wrapped();
+    let crypto = CryptoProvider::new().unwrap();
+    let provider = || {
+        let storage = GhostKv::new(w.channel_id, DAY);
+        storage
+            .load(
+                ghost_client_mls::kv::RowSource::load(
+                    &WrappedRows(&rows),
+                    &w.channel_id,
+                    &state_key_of(j.index),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        GhostProvider {
+            crypto: &crypto,
+            storage,
+        }
+    };
+    let fastest = |f: &mut dyn FnMut()| -> Duration {
+        (0..7)
+            .map(|_| {
+                let t = Instant::now();
+                f();
+                t.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let processed = fastest(&mut || {
+        let p = provider();
+        ProcessedWelcome::new_from_welcome(&p, &join_config(), welcome.clone()).unwrap();
+    });
+    let built = fastest(&mut || {
+        let p = provider();
+        let pw = ProcessedWelcome::new_from_welcome(&p, &join_config(), welcome.clone()).unwrap();
+        JoinBuilder::new(&p, pw)
+            .skip_lifetime_validation()
+            .build()
+            .unwrap();
+    });
+    let refused = fastest(&mut || {
+        let r = j.ctx.welcome_join(
+            &j.ch,
+            &WrappedRows(&rows),
+            &blob,
+            DAY,
+            (0, [0; 32]),
+            &Anchor::Invite {
+                committers_digest: bytes32("not the forger's committers", 0),
+            },
+        );
+        assert_eq!(r.err(), Some(MlsError::new(Code::InvalidWelcome)));
+    });
+    let validation = built.saturating_sub(processed);
+    eprintln!(
+        "processing {processed:?}, tree validation {validation:?}, anchor refusal {refused:?}"
+    );
+    assert!(
+        validation > processed / 2,
+        "the 64-leaf tree's validation ({validation:?}) is not the dominant cost it is meant to be (processing {processed:?})"
+    );
+    assert!(
+        refused < processed + validation / 2,
+        "the anchor's refusal took {refused:?}: OpenMLS's processing takes {processed:?} and the tree validation {validation:?}"
+    );
 }
 
 /// A KeyPackage of a member, with a given lifetime, built with OpenMLS directly (the crate's

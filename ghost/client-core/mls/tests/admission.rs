@@ -443,6 +443,12 @@ fn co2_rank_rules_on_the_committers_own_check() {
 fn co2_refuses_an_inflated_leaf_and_an_add_without_evidence() {
     let mut w = World::create(35, 0);
     w.admit(2);
+    // CO-14 (k = min(8, n) = 3 with three members): a rank-255 self-update of a KeyPackage leaf
+    // (refresh_epoch 0) is valid from epoch 3; two passes of the owner get there.
+    for _ in 0..2 {
+        let req = w.request(0);
+        w.commit_and_settle(0, &req);
+    }
     let epoch = w.members[1].epoch.as_ref().unwrap().epoch;
     let crypto = CryptoProvider::new().unwrap();
     let build = |m: &Member, adds: Vec<openmls::prelude::KeyPackage>, extra: bool| -> Vec<u8> {

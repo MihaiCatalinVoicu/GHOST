@@ -17,6 +17,7 @@ use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
 use openmls_libcrux_crypto::CryptoProvider;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::canonical::{self, CanonicalKeyPackage, LeafFacts, SUITE};
 use crate::check::{self, CommitSummary, PreState};
@@ -83,8 +84,10 @@ fn internal<E>(_: E) -> MlsError {
 }
 
 /// The kinds of key envelope (§3.4's wrapping applied to single keys; the byte format is fixed by
-/// S2a, §19.30): `nonce(12) ‖ ChaCha20-Poly1305(state key, AD = "ghost/v1/ch-key" ‖ class ‖
-/// channel_id, key(32))`.
+/// S2a, §19.30 item 14, amended §19.31): `nonce(12) ‖ ChaCha20-Poly1305(state key, AD =
+/// "ghost/v1/ch-key" ‖ class ‖ channel_id, key(32))`, 60 bytes; an **epoch** key's plaintext is
+/// `key(32) ‖ u64_be(e)`, 68 bytes, so the envelope names the epoch `K_ep(e)` belongs to and
+/// `open_blob` refuses a blob whose MLS header is of another epoch (review M1).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyClass {
@@ -139,7 +142,7 @@ impl ChannelHandle {
 }
 
 /// An epoch's keys as Kotlin stores them (§9 `ch_epoch`): `K_ep` wrapped, `R_ep` in clear (CS-S6).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EpochKeys {
     pub epoch: u64,
     pub k_env: Vec<u8>,
@@ -148,7 +151,7 @@ pub struct EpochKeys {
 }
 
 /// A generation's values (§5.2, fn 13): `G_g` and `JK_g` wrapped, `ns` and `R_join` in clear.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GenerationValues {
     pub generation: u32,
     pub open_epoch: u64,
@@ -156,6 +159,27 @@ pub struct GenerationValues {
     pub ns: [u8; 32],
     pub jk_env: Vec<u8>,
     pub r_join: [u8; 32],
+}
+
+// Secrets never render (derive.rs's rule; review of S2a, §19.31): the recognition keys, the bearer
+// credentials and an invite link are left out of every `Debug` of an output, which a panic
+// payload can carry; the public fields and the lengths stay.
+impl core::fmt::Debug for EpochKeys {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EpochKeys")
+            .field("epoch", &self.epoch)
+            .field("k_env_len", &self.k_env.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl core::fmt::Debug for GenerationValues {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GenerationValues")
+            .field("generation", &self.generation)
+            .field("open_epoch", &self.open_epoch)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A member of the roster (fn 18).
@@ -207,7 +231,9 @@ pub struct JoinOut {
 }
 
 /// One message of a `receive` batch (fn 6). A batch holds at most 32, so the size difference
-/// between the variants costs nothing worth a box.
+/// between the variants costs nothing worth a box. An application message's `sender` is the
+/// pseudonym of the leaf that signed it in the message's own epoch (`ProcessedMessage::credential`;
+/// review H2), never the current holder of its leaf index.
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum ReceiveItem {
@@ -239,15 +265,35 @@ pub enum Winner<'a> {
     Own(&'a [u8]),
 }
 
+/// Where a settle leaves the member (§6.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    /// Still a member, at the new epoch.
+    Member,
+    /// The commit removed the member's leaf (a Remove, a leave, an eviction): OpenMLS marks the
+    /// group inactive; Kotlin sets `state = removed`, deletes the MLS state and keeps listening
+    /// until the drain ends (§6.5, §6.6).
+    Removed,
+    /// The commit removed the member's leaf and added its own pseudonym with a KeyPackage of
+    /// another device (a restore or rejoin swap): `state = replaced` (§6.6, §6.7).
+    Replaced,
+}
+
 #[derive(Clone, Debug)]
 pub struct SettleOut {
     pub changes: ChangeSet,
-    pub epoch: EpochKeys,
+    /// The new epoch's keys; `None` when the commit removed or replaced the member (an inactive
+    /// group exports nothing).
+    pub epoch: Option<EpochKeys>,
     pub commit_minute: u32,
-    /// The new generation when the commit rotates (§6.5).
+    /// Whether the commit opens a new generation (§6.5): what a removed member needs to end its
+    /// drain on the same day as everyone.
+    pub rotates: bool,
+    /// The new generation when the commit rotates and the member stays (§6.5).
     pub rotated: Option<GenerationValues>,
     pub added: Vec<[u8; 32]>,
     pub removed: Vec<[u8; 32]>,
+    pub standing: Standing,
 }
 
 /// What a commit carries (fn 9).
@@ -259,7 +305,9 @@ pub struct CommitRequest {
     pub context: Option<ChannelContext>,
     pub rotate: bool,
     pub commit_minute: u32,
-    /// The size class's floor bucket (§5.7): the commit's body must fit `C(floor)`.
+    /// The size class's floor bucket (§5.7): the commit's body must fit `C(floor)`. It must be the
+    /// floor of the pre-commit context's class, the one every member's CO-2 applies
+    /// (`INVALID_POLICY` otherwise, checked before it is used; review M2).
     pub floor: usize,
     /// The current generation (the Welcome's bootstrap, §5.4).
     pub generation: u32,
@@ -303,7 +351,7 @@ pub struct EncryptOut {
 }
 
 /// The per-slot credentials of a generation (fn 13).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SlotCredentials {
     pub slot: u8,
     pub read_credential: Vec<u8>,
@@ -312,11 +360,30 @@ pub struct SlotCredentials {
     pub deposit_verifier: [u8; 32],
 }
 
-#[derive(Clone, Debug)]
+impl core::fmt::Debug for SlotCredentials {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The credentials are bearer secrets (F9 §4.3): left out.
+        f.debug_struct("SlotCredentials")
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
 pub struct InviteOut {
     /// `ChannelInviteV2`, 335 bytes.
     pub invite: Vec<u8>,
     pub issued: crate::content::InviteIssued,
+}
+
+impl core::fmt::Debug for InviteOut {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // An open link is a bearer secret (§5.9): left out.
+        f.debug_struct("InviteOut")
+            .field("invite_len", &self.invite.len())
+            .field("issued", &self.issued)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -381,20 +448,24 @@ impl MlsContext {
         a
     }
 
-    /// Wraps a 32-byte key under the state key.
-    pub fn wrap_key(
-        &self,
-        class: KeyClass,
-        channel_id: &[u8; 32],
-        key: &[u8; 32],
-    ) -> MlsResult<Vec<u8>> {
+    fn env_plain_len(class: KeyClass) -> usize {
+        match class {
+            KeyClass::Epoch => 40,
+            _ => 32,
+        }
+    }
+
+    fn seal_env(&self, class: KeyClass, channel_id: &[u8; 32], plain: &[u8]) -> MlsResult<Vec<u8>> {
         use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+        if plain.len() != Self::env_plain_len(class) {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
         let nonce: [u8; 12] = self.random()?;
         let ct = chacha20poly1305::ChaCha20Poly1305::new(self.state_key.as_bytes().into())
             .encrypt(
                 &chacha20poly1305::Nonce::from(nonce),
                 Payload {
-                    msg: key,
+                    msg: plain,
                     aad: &Self::key_env_ad(class, channel_id),
                 },
             )
@@ -404,20 +475,19 @@ impl MlsContext {
         Ok(o)
     }
 
-    /// Opens a key envelope; one that does not open is `STATE_CORRUPT`.
-    pub fn unwrap_key(
+    fn open_env(
         &self,
         class: KeyClass,
         channel_id: &[u8; 32],
         env: &[u8],
-    ) -> MlsResult<zeroize::Zeroizing<[u8; 32]>> {
+    ) -> MlsResult<Zeroizing<Vec<u8>>> {
         use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-        if env.len() != 12 + 32 + 16 {
+        if env.len() != 12 + Self::env_plain_len(class) + 16 {
             return Err(MlsError::new(Code::StateCorrupt));
         }
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&env[..12]);
-        let pt = zeroize::Zeroizing::new(
+        Ok(Zeroizing::new(
             chacha20poly1305::ChaCha20Poly1305::new(self.state_key.as_bytes().into())
                 .decrypt(
                     &chacha20poly1305::Nonce::from(nonce),
@@ -427,10 +497,59 @@ impl MlsContext {
                     },
                 )
                 .map_err(corrupt)?,
-        );
-        let mut k = zeroize::Zeroizing::new([0u8; 32]);
-        k.copy_from_slice(&pt);
+        ))
+    }
+
+    /// Wraps a 32-byte key of class generation, join or box under the state key; an epoch key goes
+    /// through [`MlsContext::wrap_epoch_key`] (`INVALID_POLICY` here).
+    pub fn wrap_key(
+        &self,
+        class: KeyClass,
+        channel_id: &[u8; 32],
+        key: &[u8; 32],
+    ) -> MlsResult<Vec<u8>> {
+        self.seal_env(class, channel_id, key)
+    }
+
+    /// Wraps `K_ep(e)` with its epoch (68 bytes).
+    pub fn wrap_epoch_key(
+        &self,
+        channel_id: &[u8; 32],
+        epoch: u64,
+        key: &[u8; 32],
+    ) -> MlsResult<Vec<u8>> {
+        let mut plain = Zeroizing::new([0u8; 40]);
+        plain[..32].copy_from_slice(key);
+        plain[32..].copy_from_slice(&epoch.to_be_bytes());
+        self.seal_env(KeyClass::Epoch, channel_id, &plain[..])
+    }
+
+    /// Opens a key envelope (for an epoch key, the key without its epoch); one that does not open
+    /// is `STATE_CORRUPT`.
+    pub fn unwrap_key(
+        &self,
+        class: KeyClass,
+        channel_id: &[u8; 32],
+        env: &[u8],
+    ) -> MlsResult<Zeroizing<[u8; 32]>> {
+        let pt = self.open_env(class, channel_id, env)?;
+        let mut k = Zeroizing::new([0u8; 32]);
+        k.copy_from_slice(&pt[..32]);
         Ok(k)
+    }
+
+    /// Opens an epoch key's envelope: `K_ep(e)` and e.
+    pub fn unwrap_epoch_key(
+        &self,
+        channel_id: &[u8; 32],
+        env: &[u8],
+    ) -> MlsResult<(Zeroizing<[u8; 32]>, u64)> {
+        let pt = self.open_env(KeyClass::Epoch, channel_id, env)?;
+        let mut k = Zeroizing::new([0u8; 32]);
+        k.copy_from_slice(&pt[..32]);
+        let mut e = [0u8; 8];
+        e.copy_from_slice(&pt[32..40]);
+        Ok((k, u64::from_be_bytes(e)))
     }
 
     // ---- value semantics ------------------------------------------------------------------------
@@ -491,12 +610,14 @@ impl MlsContext {
     // ---- derived values -------------------------------------------------------------------------
 
     fn export_epoch_key(&self, g: &MlsGroup, channel_id: &[u8; 32]) -> MlsResult<EpochExport> {
-        let v = g
-            .export_secret(&self.crypto, derive::LABEL_EPOCH, channel_id, 32)
-            .map_err(internal)?;
-        let mut k = [0u8; 32];
+        // The exporter's output is a key: zeroized when dropped, like every copy (review ML2).
+        let v = Zeroizing::new(
+            g.export_secret(&self.crypto, derive::LABEL_EPOCH, channel_id, 32)
+                .map_err(internal)?,
+        );
+        let mut k = Zeroizing::new([0u8; 32]);
         k.copy_from_slice(&v);
-        Ok(EpochExport::from_bytes(k))
+        Ok(EpochExport::from_bytes(*k))
     }
 
     fn export_generation_secret(
@@ -504,19 +625,21 @@ impl MlsContext {
         g: &MlsGroup,
         channel_id: &[u8; 32],
     ) -> MlsResult<GenerationSecret> {
-        let v = g
-            .export_secret(&self.crypto, derive::LABEL_GENERATION, channel_id, 32)
-            .map_err(internal)?;
-        let mut k = [0u8; 32];
+        let v = Zeroizing::new(
+            g.export_secret(&self.crypto, derive::LABEL_GENERATION, channel_id, 32)
+                .map_err(internal)?,
+        );
+        let mut k = Zeroizing::new([0u8; 32]);
         k.copy_from_slice(&v);
-        Ok(GenerationSecret::from_bytes(k))
+        Ok(GenerationSecret::from_bytes(*k))
     }
 
     fn epoch_keys(&self, g: &MlsGroup, channel_id: &[u8; 32]) -> MlsResult<EpochKeys> {
         let k = self.export_epoch_key(g, channel_id)?;
+        let epoch = g.epoch().as_u64();
         Ok(EpochKeys {
-            epoch: g.epoch().as_u64(),
-            k_env: self.wrap_key(KeyClass::Epoch, channel_id, k.as_bytes())?,
+            epoch,
+            k_env: self.wrap_epoch_key(channel_id, epoch, k.as_bytes())?,
             r_ep: *derive_epoch_recognition(&k).as_bytes(),
             epoch_authenticator: g.epoch_authenticator().as_slice().to_vec(),
         })
@@ -753,14 +876,21 @@ impl MlsContext {
             .build()
             .map_err(|_| invalid)?;
         let g = staged.into_group(&l.p).map_err(|_| invalid)?;
+        // Every leaf of the joined tree is canonical (S0-5: capabilities, `GhostLeaf`, the credential
+        // naming the signature key) with a valid X25519 key, the KeyPackage-source ones with the
+        // constant lifetime (§19.29.1), and every parent node's key is valid too (H1): a joiner never
+        // enters a tree to which some later commit could not encrypt.
         let mut leaves = Vec::new();
         for m in g.members() {
             let leaf = g.public_group().leaf(m.index).ok_or(invalid)?;
+            let facts = canonical::check_leaf(leaf).map_err(|_| invalid)?;
             if let openmls::treesync::LeafNodeSource::KeyPackage(_) = leaf.leaf_node_source() {
                 canonical::check_key_package_source(leaf).map_err(|_| invalid)?;
             }
-            let k: [u8; 32] = m.signature_key.as_slice().try_into().map_err(|_| invalid)?;
-            leaves.push(k);
+            leaves.push(facts.signature_key);
+        }
+        if !canonical::tree_keys_valid(&g.export_ratchet_tree()) {
+            return Err(invalid);
         }
         let joined_ctx = Self::context_of(&g).map_err(|_| invalid)?;
         if joined_ctx != ctx {
@@ -884,7 +1014,11 @@ impl MlsContext {
         if !epoch_ok {
             return fail(Code::WrongEpoch);
         }
-        let pre = match PreState::of(&g) {
+        let pre = match content_type {
+            ContentType::Commit => PreState::of_commit(&g),
+            _ => PreState::of(&g),
+        };
+        let pre = match pre {
             Ok(p) => p,
             Err(e) => return ReceiveItem::Failed(e),
         };
@@ -899,6 +1033,10 @@ impl MlsContext {
         };
         let aad = processed.aad().to_vec();
         let sender = processed.sender().clone();
+        // The author as OpenMLS verified it: the credential of the sender's leaf **in the message's
+        // epoch** (a late post of a retained epoch is signed by that epoch's leaf; whoever holds the
+        // leaf index now may be someone else, review H2).
+        let author = canonical::basic_identity(processed.credential());
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(a) => {
                 let Sender::Member(idx) = sender else {
@@ -910,7 +1048,7 @@ impl MlsContext {
                 if order.sender_leaf != idx.u32() {
                     return fail(Code::OrderMismatch);
                 }
-                let Some(key) = pre.key_of(idx.u32()) else {
+                let Some(key) = author else {
                     return fail(Code::Undecryptable);
                 };
                 match ChannelContent::decode(&a.into_bytes()) {
@@ -947,9 +1085,13 @@ impl MlsContext {
 
     // ---- fn 7: settle ---------------------------------------------------------------------------
 
-    /// `settle` (fn 7): re-processes the winner with persistence and merges it (or merges the own
-    /// pending commit), and returns the new epoch's keys and, when the commit rotates (§6.5), the
-    /// next generation's values (`generation + 1`, opened at the new epoch).
+    /// `settle` (fn 7): re-processes the winner with persistence, **re-runs CO-2 on it** (a winner
+    /// whose verdict is not `Ok` is `INVALID_COMMIT(reason)` and nothing is merged: CO-3 chooses
+    /// among valid candidates only, and the settle enforces it natively), merges it (or merges the
+    /// own pending commit), and returns the new epoch's keys and, when the commit rotates (§6.5),
+    /// the next generation's values (`generation + 1`, opened at the new epoch). A commit that
+    /// removes the member, or replaces its leaf, settles too: the member learns it is `Removed` or
+    /// `Replaced` (§6.6), with no epoch keys (review of S2a, §19.31).
     pub fn settle(
         &self,
         ch: &ChannelHandle,
@@ -961,8 +1103,10 @@ impl MlsContext {
         let channel_id = ch.channel_id;
         let l = self.load(&channel_id, rows, day)?;
         let mut g = Self::group(&l)?;
-        let pre = PreState::of(&g)?;
-        let (aad, added, removed, rotates) = match winner {
+        let pre = PreState::of_commit(&g)?;
+        let floor = seal::floor(pre.context.size_class).ok_or(MlsError::new(Code::StateCorrupt))?;
+        let me = ch.pseudonym();
+        let (aad, added, removed, rotates, standing) = match winner {
             Winner::Foreign(bytes) => {
                 let m = MlsMessageIn::tls_deserialize_exact(bytes)
                     .map_err(|_| MlsError::commit(CommitReason::Refused))?;
@@ -972,46 +1116,97 @@ impl MlsContext {
                 let processed = g
                     .process_message(&l.p, pm)
                     .map_err(|e| check::map_process_error(&e))?;
-                let aad = CommitAad::decode(processed.aad())
-                    .ok_or(MlsError::commit(CommitReason::Aad))?;
+                let aad_bytes = processed.aad().to_vec();
+                let sender = processed.sender().clone();
                 let staged = match processed.into_content() {
                     ProcessedMessageContent::StagedCommitMessage(sc) => *sc,
                     _ => return Err(MlsError::commit(CommitReason::Refused)),
                 };
+                let summary = check::summarize(
+                    &self.crypto,
+                    &channel_id,
+                    &pre,
+                    &sender,
+                    &aad_bytes,
+                    &staged,
+                    bytes,
+                    floor,
+                )?;
+                if let Err(r) = summary.verdict {
+                    return Err(MlsError::commit(r));
+                }
+                let aad =
+                    CommitAad::decode(&aad_bytes).ok_or(MlsError::commit(CommitReason::Aad))?;
                 let (added, removed, rotates) = check::membership_change(&pre, &staged, &aad);
+                let standing = if !staged.self_removed() {
+                    Standing::Member
+                } else if staged.add_proposals().any(|a| {
+                    a.add_proposal()
+                        .key_package()
+                        .leaf_node()
+                        .signature_key()
+                        .as_slice()
+                        == me
+                }) {
+                    Standing::Replaced
+                } else {
+                    Standing::Removed
+                };
                 g.merge_staged_commit(&l.p, staged).map_err(corrupt)?;
-                (aad, added, removed, rotates)
+                (aad, added, removed, rotates, standing)
             }
             Winner::Own(bytes) => {
-                let aad = CommitAad::decode(&own_commit_aad(bytes)?)
-                    .ok_or(MlsError::commit(CommitReason::Aad))?;
+                let aad_bytes = own_commit_aad(bytes)?;
+                let aad =
+                    CommitAad::decode(&aad_bytes).ok_or(MlsError::commit(CommitReason::Aad))?;
                 let (added, removed, rotates) = {
                     let sc = g
                         .pending_commit()
                         .ok_or(MlsError::new(Code::StateCorrupt))?;
+                    let summary = check::summarize(
+                        &self.crypto,
+                        &channel_id,
+                        &pre,
+                        &Sender::Member(g.own_leaf_index()),
+                        &aad_bytes,
+                        sc,
+                        bytes,
+                        floor,
+                    )?;
+                    if let Err(r) = summary.verdict {
+                        return Err(MlsError::commit(r));
+                    }
                     check::membership_change(&pre, sc, &aad)
                 };
                 g.merge_pending_commit(&l.p).map_err(corrupt)?;
-                (aad, added, removed, rotates)
+                // A commit never removes its own committer (RFC 9420 §12.2).
+                (aad, added, removed, rotates, Standing::Member)
             }
         };
-        let epoch = self.epoch_keys(&g, &channel_id)?;
-        let rotated = if rotates {
-            let gs = self.export_generation_secret(&g, &channel_id)?;
-            let next = generation
-                .checked_add(1)
-                .ok_or(MlsError::new(Code::InvalidPolicy))?;
-            Some(self.generation_values(&channel_id, next, g.epoch().as_u64(), &gs)?)
+        let (epoch, rotated) = if standing == Standing::Member {
+            let epoch = self.epoch_keys(&g, &channel_id)?;
+            let rotated = if rotates {
+                let gs = self.export_generation_secret(&g, &channel_id)?;
+                let next = generation
+                    .checked_add(1)
+                    .ok_or(MlsError::new(Code::InvalidPolicy))?;
+                Some(self.generation_values(&channel_id, next, g.epoch().as_u64(), &gs)?)
+            } else {
+                None
+            };
+            (Some(epoch), rotated)
         } else {
-            None
+            (None, None)
         };
         Ok(SettleOut {
             changes: self.finish(&l)?,
             epoch,
             commit_minute: aad.commit_minute,
+            rotates,
             rotated,
             added,
             removed,
+            standing,
         })
     }
 
@@ -1050,7 +1245,14 @@ impl MlsContext {
         if g0.pending_commit().is_some() {
             return Err(MlsError::new(Code::PendingCommit));
         }
-        let pre = PreState::of(&g0)?;
+        let pre = PreState::of_commit(&g0)?;
+        // The size rule is the class floor of the pre-commit context, the one every member applies
+        // (CO-2, §5.7): a caller's other floor is refused before anything uses it (review M2; a floor
+        // below 68 bytes used to underflow `capacity`).
+        let floor = seal::floor(pre.context.size_class).ok_or(MlsError::new(Code::StateCorrupt))?;
+        if req.floor != floor {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
         let me = ch.pseudonym();
         let rank = pre.context.rank_of(&me);
         if req.rotate && rank == 255 {
@@ -1105,10 +1307,7 @@ impl MlsContext {
             &channel_id,
             &req.g_env,
         )?);
-        let cap = seal::capacity(req.floor);
-        if !seal::BUCKETS.contains(&req.floor) {
-            return Err(MlsError::new(Code::InvalidPolicy));
-        }
+        let cap = seal::capacity(floor);
         // §5.7's deferral order: Adds from the end, then swaps, then the context change except the
         // drops of keys the commit removes, then Removes beyond the first (each with its drop).
         let mut plan = Plan {
@@ -1238,7 +1437,7 @@ impl MlsContext {
                 &aad.encode(),
                 pending,
                 &commit,
-                req.floor,
+                floor,
             )?;
             if let Err(r) = summary.verdict {
                 return Err(MlsError::commit(r));
@@ -1269,8 +1468,9 @@ impl MlsContext {
     // ---- fn 10: encrypt -------------------------------------------------------------------------
 
     /// `encrypt` (fn 10): `ChannelOrder(sender_leaf, seq)` as the MLS AAD of exactly this message.
-    /// `PENDING_COMMIT` when the own pending commit removes a pseudonym (§6.3.1, §19.13);
-    /// `NON_CANONICAL` for a content `contentDecode` refuses.
+    /// `PENDING_COMMIT` when the own pending commit removes a leaf — a Remove, a leave, an eviction
+    /// **or a swap**, whose replaced leaf (a seized device's, for a restore) could read the post
+    /// (§6.3.1, CO-13, §19.13; review ML1); `NON_CANONICAL` for a content `contentDecode` refuses.
     pub fn encrypt(
         &self,
         ch: &ChannelHandle,
@@ -1282,12 +1482,10 @@ impl MlsContext {
         ChannelContent::decode(content)?;
         let l = self.load(&ch.channel_id, rows, day)?;
         let mut g = Self::group(&l)?;
-        if let Some(pc) = g.pending_commit() {
-            let pre = PreState::of(&g)?;
-            let (_, removed, _) = check::membership_change(&pre, pc, &CommitAad::default());
-            if !removed.is_empty() {
-                return Err(MlsError::new(Code::PendingCommit));
-            }
+        if g.pending_commit()
+            .is_some_and(|pc| pc.remove_proposals().next().is_some())
+        {
+            return Err(MlsError::new(Code::PendingCommit));
         }
         let sender_leaf = g.own_leaf_index().u32();
         g.set_aad(ChannelOrder { sender_leaf, seq }.encode());
@@ -1310,16 +1508,22 @@ impl MlsContext {
         channel_id: &[u8; 32],
         env: &[u8],
     ) -> MlsResult<SealSecret> {
-        let k = self.unwrap_key(class, channel_id, env)?;
         match class {
-            KeyClass::Epoch => Ok(SealSecret::Epoch(EpochExport::from_bytes(*k))),
-            KeyClass::Join => Ok(SealSecret::Join(JoinKey::from_bytes(*k))),
+            KeyClass::Epoch => {
+                let (k, epoch) = self.unwrap_epoch_key(channel_id, env)?;
+                Ok(SealSecret::Epoch(EpochExport::from_bytes(*k), epoch))
+            }
+            KeyClass::Join => {
+                let k = self.unwrap_key(class, channel_id, env)?;
+                Ok(SealSecret::Join(JoinKey::from_bytes(*k)))
+            }
             _ => Err(MlsError::new(Code::InvalidPolicy)),
         }
     }
 
     /// `seal` (fn 11): the key comes wrapped (`K_ep` for mode 0x11, `JK_g` for 0x12 and 0x13); the
-    /// salt from the provider's CSPRNG.
+    /// salt from the provider's CSPRNG. A mode-0x11 `order` must name the envelope's epoch
+    /// (`INVALID_POLICY` otherwise).
     #[allow(clippy::too_many_arguments)]
     pub fn seal_blob(
         &self,
@@ -1336,7 +1540,8 @@ impl MlsContext {
         seal::seal(&k.input(), ns, bucket, mode, order, body, self.random()?)
     }
 
-    /// `open` (fn 12).
+    /// `open` (fn 12). A mode-0x11 blob whose MLS header is of another epoch than the envelope's is
+    /// `NON_CANONICAL` (review M1: a re-sealed message of an older epoch is not one of this epoch).
     pub fn open_blob(
         &self,
         channel_id: &[u8; 32],
@@ -1397,8 +1602,11 @@ impl MlsContext {
     /// `inviteBuild` (fn 14, §19.28.3 corrected by §19.29.3). Reads the policy from the channel's
     /// own state: `INVALID_POLICY` when the sponsor may not invite (not a committer and
     /// `members_may_invite` clear; in a password channel only committers, Q46 (b)), or when
-    /// `kdf_code` does not match flag bit 2. The salt, `invite_id` and `invite_seed` come from the
-    /// provider's CSPRNG; the name travels only when `carry_name` (Q29's default is not to).
+    /// `kdf_code` does not match flag bit 2, or when `expiry_day` is not within `[day, day + 7]`
+    /// (§5.9: an invite expires at `expiry_day ≤ issue day + 7`; review of S2a, §19.31). A password
+    /// invite with an empty password is `PASSWORD_REQUIRED` (`invite::build_v2`). The salt,
+    /// `invite_id` and `invite_seed` come from the provider's CSPRNG; the name travels only when
+    /// `carry_name` (Q29's default is not to).
     #[allow(clippy::too_many_arguments)]
     pub fn invite_build(
         &self,
@@ -1413,6 +1621,9 @@ impl MlsContext {
         day: u32,
     ) -> MlsResult<InviteOut> {
         let channel_id = ch.channel_id;
+        if expiry_day < day || expiry_day > day.saturating_add(7) {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
         let l = self.load(&channel_id, rows, day)?;
         let g = Self::group(&l)?;
         let ctx = Self::context_of(&g)?;
@@ -1644,7 +1855,11 @@ impl MlsContext {
 
     /// `trialCount` (fn 20, CO-3, S0-17): the candidate settled in memory, every held blob (with
     /// the namespace it came from) opened under `K_ep(e + 1)` of the trial state and tried from
-    /// the post-merge checkpoint; nothing is written.
+    /// the post-merge checkpoint; nothing is written. **Only a message of epoch e + 1 counts**: a
+    /// held blob whose MLS header is of another epoch — a message of epoch e re-sealed under
+    /// `K_ep(e + 1)` by any holder of that key — says nothing about who saw the candidate (review
+    /// M1); and the sender is the credential OpenMLS verified the message under (H2). A candidate
+    /// that removes the member leaves it nothing to open: no senders.
     pub fn trial_count(
         &self,
         ch: &ChannelHandle,
@@ -1689,14 +1904,27 @@ impl MlsContext {
                 ch.pseudonym()
             }
         };
+        if !g.is_active() {
+            // The candidate removes the member: nothing opens under a state it no longer has.
+            let _ = l.p.storage.take_plain_changes();
+            return Ok(TrialOut {
+                committer,
+                senders: Vec::new(),
+            });
+        }
         let k = self.export_epoch_key(&g, &channel_id)?;
+        let trial_epoch = g.epoch().as_u64();
         let after = l.p.storage.checkpoint();
         let me = ch.pseudonym();
         let mut senders: Vec<[u8; 32]> = Vec::new();
         for (ns, blob) in held {
             l.p.storage.restore(after.duplicate());
-            let Ok(opened) = seal::open(&SealKeyInput::Epoch(&k), ns, seal::MODE_EPOCH, blob)
-            else {
+            let key = SealKeyInput::Epoch {
+                key: &k,
+                epoch: trial_epoch,
+            };
+            // `open` refuses a header of another epoch than the key's (M1).
+            let Ok(opened) = seal::open(&key, ns, seal::MODE_EPOCH, blob) else {
                 continue;
             };
             let Ok(mut tg) = Self::group(&l) else {
@@ -1708,13 +1936,13 @@ impl MlsContext {
             let Ok(pm) = m.try_into_protocol_message() else {
                 continue;
             };
-            let members = PreState::of(&tg);
+            if pm.epoch().as_u64() != trial_epoch {
+                continue;
+            }
             if let Ok(p) = tg.process_message(&l.p, pm) {
-                if let (Sender::Member(idx), Ok(ms)) = (p.sender().clone(), members) {
-                    if let Some(key) = ms.key_of(idx.u32()) {
-                        if key != me && !senders.contains(&key) {
-                            senders.push(key);
-                        }
+                if let Some(key) = canonical::basic_identity(p.credential()) {
+                    if key != me && !senders.contains(&key) {
+                        senders.push(key);
                     }
                 }
             }
@@ -1726,14 +1954,14 @@ impl MlsContext {
 }
 
 enum SealSecret {
-    Epoch(EpochExport),
+    Epoch(EpochExport, u64),
     Join(JoinKey),
 }
 
 impl SealSecret {
     fn input(&self) -> SealKeyInput<'_> {
         match self {
-            SealSecret::Epoch(k) => SealKeyInput::Epoch(k),
+            SealSecret::Epoch(key, epoch) => SealKeyInput::Epoch { key, epoch: *epoch },
             SealSecret::Join(k) => SealKeyInput::Join(k),
         }
     }

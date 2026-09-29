@@ -102,7 +102,13 @@ impl Passive {
         };
         provider
             .storage
-            .load(self.rows.clone().into_iter().collect())
+            .load(
+                self.rows
+                    .clone()
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into()))
+                    .collect(),
+            )
             .map_err(|e| format!("load: {e:?}"))?;
         let out = f(&provider)?;
         let changes = provider.storage.take_plain_changes();
@@ -112,7 +118,7 @@ impl Passive {
         for (k, v) in changes {
             match v {
                 Some(v) => {
-                    self.rows.insert(k, v);
+                    self.rows.insert(k, v.to_vec());
                 }
                 None => {
                     self.rows.remove(&k);
@@ -286,7 +292,13 @@ fn run(v: &Vector, cfg: Config) -> Outcome {
             storage: adapter(&[0u8], cfg.layout),
         };
         p.storage
-            .load(pc.rows.clone().into_iter().collect())
+            .load(
+                pc.rows
+                    .clone()
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into()))
+                    .collect(),
+            )
             .unwrap();
         match ProcessedWelcome::new_from_welcome(&p, &join_config(cfg.past), welcome.clone()) {
             Ok(pw) => pw.unverified_group_info().group_id().as_slice().to_vec(),

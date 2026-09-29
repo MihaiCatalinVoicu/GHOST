@@ -9,7 +9,7 @@ use ghost_client_mls::derive::{PseudonymSeed, StateKey};
 use ghost_client_mls::ext::{ChannelContext, CommitAad, Purpose, FLAG_MEMBERS_MAY_INVITE};
 use ghost_client_mls::group::{
     Anchor, ChannelHandle, CommitOut, CommitRequest, EpochKeys, GenerationValues, KeyClass,
-    MlsContext, ReceiveItem, Winner,
+    MlsContext, ReceiveItem, Standing, Winner,
 };
 use ghost_client_mls::invite;
 use ghost_client_mls::join::WelcomeBlob;
@@ -281,8 +281,9 @@ impl World {
                     self.day,
                 )
                 .expect("settle");
+            assert_eq!(s.standing, Standing::Member, "member {j} stays");
             m.apply(s.changes);
-            m.epoch = Some(s.epoch);
+            m.epoch = s.epoch;
             if let Some(g) = s.rotated {
                 m.generation = Some(g);
             }
@@ -299,8 +300,9 @@ impl World {
                 self.day,
             )
             .expect("settle own");
+        assert_eq!(s.standing, Standing::Member);
         c.apply(s.changes);
-        c.epoch = Some(s.epoch);
+        c.epoch = s.epoch;
         if let Some(g) = s.rotated {
             c.generation = Some(g);
             self.generation += 1;

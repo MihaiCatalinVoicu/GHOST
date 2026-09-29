@@ -20,11 +20,23 @@
 #      `&JoinKey`, `&InviteSeed`, `&InvitePassword`, `&InvitePasswordKey` — the secrets of §5.2 and
 #      the password the Argon2id step consumes — or `&OpenInviteSalt`, the one declared public input,
 #      which only `derive_open_invite_seal_key` may take (§5.2 rule (1)'s exemption, §19.29.3).
-#   2. **HKDF only in the typed module.** The token `Hkdf` appears in no other file of the crate:
-#      every HKDF of the channel formats is a `derive_*` function.
+#   2. **HKDF only in the typed module, keyed by the typed input.** No identifier naming HKDF
+#      (`Hkdf`, `SimpleHkdf`, `HkdfExtract`, the `hkdf` crate path, the provider's `hkdf_expand`,
+#      any `\w*[Hh]kdf\w*`) appears in another file of the crate. In `src/derive.rs` such an identifier
+#      appears only on a `use` line, in the private helper `hkdf32` or inside a `derive_*` function;
+#      `hkdf32` is called only from a `derive_*` function and with that function's **first parameter**
+#      `.as_bytes()` as its key material — so a helper keyed by `&[u8]` (`expand_untyped`), a
+#      function a macro generates, and a second parameter used as the key all fail (review of S2a,
+#      F6).
 #   3. **The MLS exporter only for the two exports.** `export_secret(` is called only in
 #      `src/group.rs`, and each call's label is `derive::LABEL_EPOCH` or `derive::LABEL_GENERATION`
 #      (`K_ep(e)` and `G_g`, §5.2): no other value is exported from the key schedule.
+#   5. **Typed keys from raw bytes only at reviewed sites.** A typed key input built from bytes —
+#      `EpochExport::from_bytes`, `GenerationSecret::from_bytes`, …, the constructor T36's own scenario
+#      misuses (`derive_epoch_recognition(&EpochExport::from_bytes(*channel_id))`) — appears in each
+#      file of `src/` exactly as often as `client-core/mls/typed-key-sites.txt` pins it (`<file>
+#      <type> <count>`, the crate's unit tests included); a new site fails until it is reviewed and
+#      pinned, and a pin no site needs fails too (review of S2a, F6).
 #   4. **No channel derivation in Kotlin.** No string literal of Android production code looks like a
 #      channel label (`ghost/v1/ch/…`, `ghost/v1/ch-…`): parsing, sealing and derivations are native
 #      (§10.1). The one exception is the literal `ghost/v1/ch-hint` exactly: Kotlin matches blobs by
@@ -34,27 +46,41 @@
 #      the pseudonym seed, is not a channel-crate label and is not matched.)
 #
 # **What it does not see.** A derivation written without HKDF (a hand-rolled HMAC over a public
-# value) in another module, and a typed key built from public bytes at a caller (`from_bytes` on a
-# `channel_id`): the reviewer's, and the Rust half's pins make the second visible at the type.
+# value) in another module; a `derive_*` function that calls `Hkdf` directly (not through `hkdf32`)
+# with another parameter as the key; and what a pinned `from_bytes` site is given — rule 5 makes a
+# new site visible, the reviewer judges its bytes.
 #
 # Usage: ch-derivation-inputs.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/ch-derivation/*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 SRC="$GHOST_ROOT/client-core/mls/src"
+SITES="$GHOST_ROOT/client-core/mls/typed-key-sites.txt"
 [ -d "$SRC" ] || { fail "$SRC: no channel crate sources (the gate would pass vacuously)"; finish ch-derivation-inputs; }
 
-out="$(SRC="$SRC" GATES="$GATES_DIR" perl -e '
+if ! out="$(SRC="$SRC" SITES="$SITES" GATES="$GATES_DIR" perl -e '
   require "$ENV{GATES}/source-text.pl";
   use File::Find;
   my @files;
   find({ no_chdir => 1, wanted => sub { push @files, $_ if -f $_ && /\.rs$/ } }, $ENV{SRC});
   my %typed = map { $_ => 1 } qw(&EpochExport &GenerationSecret &ReadBase &DepositBase &JoinKey &InviteSeed &InvitePassword &InvitePasswordKey);
+  my $key_types = qr/\b(EpochExport|GenerationSecret|ReadBase|DepositBase|JoinKey|InviteSeed|InvitePassword|InvitePasswordKey|OpenInviteSalt|RecognitionKey|SealKey)::from_bytes\b/;
+  my (%pinned, %sites);
+  if (-f $ENV{SITES}) {
+    open(my $p, "<", $ENV{SITES}) or die "cannot read $ENV{SITES}\n";
+    while (<$p>) {
+      s/#.*//; next unless /\S/;
+      my ($file, $type, $n) = split " ";
+      $pinned{"$file $type"} = $n;
+    }
+  }
+  my $hkdf_word = qr/\b\w*[Hh]kdf\w*\b/;
   my ($derives, $exports) = (0, 0);
   for my $f (sort @files) {
     my $text = read_text($f);
     my (undef, $code) = views($text, "rust");
     (my $rel = $f) =~ s{^\Q$ENV{SRC}\E/?}{};
     my $is_derive = $rel eq "derive.rs";
+    while ($code =~ /$key_types/g) { $sites{"$rel $1"}++ }
     while ($code =~ /\bfn\s+(derive_\w+)/g) {
       my ($name, $at) = ($1, $-[0]);
       my $line = line_of(\$code, $at);
@@ -97,8 +123,83 @@ out="$(SRC="$SRC" GATES="$GATES_DIR" perl -e '
       }
     }
     unless ($is_derive) {
-      while ($code =~ /\bHkdf\b/g) {
-        print "src/$rel:" . line_of(\$code, $-[0]) . ": HKDF outside src/derive.rs (G-M3 rule 2: every derivation is a typed derive_* function)\n";
+      my %seen;
+      while ($code =~ /$hkdf_word/g) {
+        my $line = line_of(\$code, $-[0]);
+        next if $seen{$line}++;
+        print "src/$rel:$line: HKDF outside src/derive.rs (G-M3 rule 2: every derivation is a typed derive_* function)\n";
+      }
+    }
+    if ($is_derive) {
+      # The functions of the file with their first parameter and their body.
+      my @fns;
+      while ($code =~ /\bfn\s+(\w+)/g) {
+        my ($name, $at) = ($1, $-[0]);
+        my $open = index($code, "(", pos($code));
+        next if $open < 0;
+        my ($depth, $i) = (1, $open + 1);
+        while ($i < length $code && $depth) {
+          my $c = substr($code, $i, 1);
+          $depth++ if $c eq "(";
+          $depth-- if $c eq ")";
+          $i++;
+        }
+        my $params = substr($code, $open + 1, $i - $open - 2);
+        # The body: the first "{" outside brackets after the parameters (a return type such as
+        # [u8; N] holds a ";"); a ";" first is a declaration without a body.
+        my ($body, $b) = (-1, 0);
+        for (my $q = $i; $q < length $code; $q++) {
+          my $c = substr($code, $q, 1);
+          if ($c eq "[" || $c eq "(") { $b++ }
+          elsif ($c eq "]" || $c eq ")") { $b-- }
+          elsif ($b == 0 && $c eq "{") { $body = $q; last }
+          elsif ($b == 0 && $c eq ";") { last }
+        }
+        next if $body < 0;
+        my ($d, $j) = (1, $body + 1);
+        while ($j < length $code && $d) {
+          my $c = substr($code, $j, 1);
+          $d++ if $c eq "{";
+          $d-- if $c eq "}";
+          $j++;
+        }
+        my ($first) = $params =~ /^\s*(?:mut\s+)?(\w+)\s*:/;
+        push @fns, { name => $name, first => $first // "", decl => $at, start => $body, end => $j };
+      }
+      my $within = sub {
+        my $pos = shift;
+        my $best;
+        for my $fn (@fns) {
+          $best = $fn if $fn->{start} < $pos && $pos < $fn->{end} && (!$best || $fn->{start} > $best->{start});
+        }
+        return $best;
+      };
+      while ($code =~ /$hkdf_word/g) {
+        my ($word, $at) = ($&, $-[0]);
+        my $line = line_of(\$code, $at);
+        my $bol = rindex($code, "\n", $at) + 1;
+        next if substr($code, $bol, $at - $bol) =~ /^\s*(?:pub(?:\([^)]*\))?\s+)?use\b/;
+        next if $word eq "hkdf32" && substr($code, 0, $at) =~ /\bfn\s+\z/;
+        my $fn = $within->($at);
+        if (!$fn || ($fn->{name} ne "hkdf32" && $fn->{name} !~ /^derive_/)) {
+          print "src/derive.rs:$line: HKDF (\x60$word\x60) outside a derive_* function and the hkdf32 helper (G-M3 rule 2)\n";
+          next;
+        }
+        next unless $word eq "hkdf32";
+        # A call of the helper: its key material is the first parameter of its function.
+        my $open = index($code, "(", $at);
+        my ($depth, $k, $arg) = (0, $open + 1, "");
+        while ($k < length $code) {
+          my $c = substr($code, $k, 1);
+          last if $depth == 0 && ($c eq "," || $c eq ")");
+          $depth++ if $c =~ /[\(\[]/;
+          $depth-- if $c =~ /[\)\]]/;
+          $arg .= $c;
+          $k++;
+        }
+        $arg =~ s/\s+//g;
+        print "src/derive.rs:$line: $fn->{name} keys HKDF with \x60$arg\x60, not its first parameter \x60$fn->{first}\x60 (G-M3 rule 2: the typed input is the key)\n"
+          unless $fn->{first} ne "" && $arg eq "$fn->{first}.as_bytes()";
       }
     }
     while ($code =~ /\bexport_secret\s*\(/g) {
@@ -114,8 +215,19 @@ out="$(SRC="$SRC" GATES="$GATES_DIR" perl -e '
       print "src/$rel:$line: export_secret with a label other than derive::LABEL_EPOCH or LABEL_GENERATION (G-M3 rule 3)\n" unless $ok;
     }
   }
+  # Rule 5: every typed key built from bytes is at a pinned site, and every pin is used.
+  my %all = (%pinned, %sites);
+  for my $k (sort keys %all) {
+    my ($file, $type) = split " ", $k;
+    my ($have, $want) = ($sites{$k} // 0, $pinned{$k} // 0);
+    next if $have == $want;
+    print "src/$file: $type\x3a\x3afrom_bytes at $have site(s), typed-key-sites.txt pins $want (G-M3 rule 5: a typed key built from bytes only at a reviewed site)\n";
+  }
   print "SUMMARY $derives $exports\n";
-')"
+')"; then
+  fail "the channel source reader (perl) failed: G-M3 rules 1 to 3 are unproven"
+  finish ch-derivation-inputs
+fi
 summary="$(grep '^SUMMARY ' <<< "$out" || true)"
 while IFS= read -r line; do
   [ -n "$line" ] && fail "$line"
@@ -123,10 +235,9 @@ done < <(grep -v '^SUMMARY ' <<< "$out" || true)
 read -r _ derives exports <<< "$summary"
 [ "${derives:-0}" -gt 0 ] || fail "no derive_* function found under $SRC (the rules would pass vacuously)"
 
-# Rule 4: no channel label in Kotlin production code.
-while IFS= read -r hit; do
-  [ -n "$hit" ] && fail "$hit"
-done < <(android_main_files | FILES_FROM_STDIN=1 GATES="$GATES_DIR" ROOT="$GHOST_ROOT" perl -e '
+# Rule 4: no channel label in Kotlin production code. Fail-closed: a perl that fails fails the gate
+# (review of S2a, F3).
+if ! kt_out="$(android_main_files | FILES_FROM_STDIN=1 GATES="$GATES_DIR" ROOT="$GHOST_ROOT" perl -e '
   require "$ENV{GATES}/source-text.pl";
   while (my $f = <STDIN>) {
     chomp $f;
@@ -139,6 +250,12 @@ done < <(android_main_files | FILES_FROM_STDIN=1 GATES="$GATES_DIR" ROOT="$GHOST
         print "$rel:$line: a channel derivation label in Kotlin (\"$body\"); channel derivations are native (G-M3 rule 4, design §10.1)\n";
       }
     }
-  }')
+  }')"; then
+  fail "the Kotlin literal scan (perl) failed: G-M3 rule 4 is unproven"
+  kt_out=""
+fi
+while IFS= read -r hit; do
+  [ -n "$hit" ] && fail "$hit"
+done <<< "$kt_out"
 echo "[ch-derivation-inputs] ${derives:-0} derive_* functions, ${exports:-0} exporter calls read"
 finish ch-derivation-inputs

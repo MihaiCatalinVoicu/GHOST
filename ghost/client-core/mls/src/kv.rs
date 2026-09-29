@@ -21,6 +21,14 @@
 //!    an unchanged row is not rewritten (S0-6; a second recorded deviation like point 5).
 //!
 //! Values are OpenMLS's serde entities as JSON (the memory provider's format).
+//!
+//! **Plaintext hygiene (review ML2, §19.31).** A row's plaintext holds epoch secrets, the secret
+//! tree and HPKE private keys. Every plaintext byte buffer of the adapter — an opened row, the
+//! map's values, a checkpoint, a value it serialises or reads — is a [`Plain`]
+//! (`Zeroizing<Vec<u8>>`), wiped when it is dropped; the JSON trees of the day rewrite, the
+//! per-epoch split and the proposal-queue order are wiped (numbers and strings overwritten) before
+//! they are dropped. What OpenMLS itself allocates while it deserialises is its own (its secrets
+//! are `SecretVLBytes`, which zeroize on drop).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -30,6 +38,7 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use openmls_traits::storage::{traits, StorageProvider, CURRENT_VERSION};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::derive::StateKey;
 use crate::result::{Code, MlsError, MlsResult};
@@ -52,6 +61,9 @@ impl Scope {
 }
 
 pub type RowKey = (Scope, Vec<u8>);
+
+/// A row's plaintext (or any plaintext copy of it): zeroized when dropped.
+pub type Plain = Zeroizing<Vec<u8>>;
 
 /// Errors of the adapter; every one is `STATE_CORRUPT` at the API (a failure inside OpenMLS's
 /// storage calls surfaces as an OpenMLS error, which the operation maps).
@@ -100,22 +112,14 @@ pub type ChangeSet = Vec<Change>;
 
 /// Where a call's plaintext rows come from: the cache seam of S0-17 (§3.4 point 4).
 pub trait RowSource {
-    fn load(
-        &self,
-        channel_id: &[u8; 32],
-        state_key: &StateKey,
-    ) -> MlsResult<Vec<(RowKey, Vec<u8>)>>;
+    fn load(&self, channel_id: &[u8; 32], state_key: &StateKey) -> MlsResult<Vec<(RowKey, Plain)>>;
 }
 
 /// The rows Kotlin passes, wrapped under the state key.
 pub struct WrappedRows<'a>(pub &'a [WrappedRow]);
 
 impl RowSource for WrappedRows<'_> {
-    fn load(
-        &self,
-        channel_id: &[u8; 32],
-        state_key: &StateKey,
-    ) -> MlsResult<Vec<(RowKey, Vec<u8>)>> {
+    fn load(&self, channel_id: &[u8; 32], state_key: &StateKey) -> MlsResult<Vec<(RowKey, Plain)>> {
         let mut out = Vec::with_capacity(self.0.len());
         for r in self.0 {
             let v = unwrap(state_key, r.scope, channel_id, &r.key, &r.env)?;
@@ -136,9 +140,9 @@ pub enum PastLayout {
 
 #[derive(Default, Clone)]
 struct State {
-    rows: BTreeMap<RowKey, Vec<u8>>,
+    rows: BTreeMap<RowKey, Plain>,
     /// Net change-set: `Some(v)` put, `None` delete.
-    dirty: BTreeMap<RowKey, Option<Vec<u8>>>,
+    dirty: BTreeMap<RowKey, Option<Plain>>,
 }
 
 /// A saved state of the map, for per-item rollback inside a batched call (§3.4 point 9).
@@ -199,7 +203,7 @@ impl GhostKv {
     /// Loads plaintext rows as the state before the call. Every key must match its scope's layout
     /// (a known label, and for a group-scoped row the call's group), or the call is
     /// `STATE_CORRUPT` (§3.4 point 1).
-    pub fn load(&self, rows: Vec<(RowKey, Vec<u8>)>) -> MlsResult<()> {
+    pub fn load(&self, rows: Vec<(RowKey, Plain)>) -> MlsResult<()> {
         for ((scope, k), _) in &rows {
             if !self.key_in_scope(*scope, k) {
                 return Err(MlsError::new(Code::StateCorrupt));
@@ -232,7 +236,7 @@ impl GhostKv {
     }
 
     /// The current in-memory rows (plaintext).
-    pub fn rows(&self) -> BTreeMap<RowKey, Vec<u8>> {
+    pub fn rows(&self) -> BTreeMap<RowKey, Plain> {
         self.lock().rows.clone()
     }
 
@@ -245,7 +249,7 @@ impl GhostKv {
     }
 
     /// The net change-set in plaintext (key order), leaving the map clean.
-    pub fn take_plain_changes(&self) -> BTreeMap<RowKey, Option<Vec<u8>>> {
+    pub fn take_plain_changes(&self) -> BTreeMap<RowKey, Option<Plain>> {
         std::mem::take(&mut self.lock().dirty)
     }
 
@@ -264,7 +268,7 @@ impl GhostKv {
         }
     }
 
-    fn put_raw(&self, scope: Scope, k: Vec<u8>, v: Vec<u8>) {
+    fn put_raw(&self, scope: Scope, k: Vec<u8>, v: Plain) {
         let mut s = self.lock();
         s.rows.insert((scope, k.clone()), v.clone());
         s.dirty.insert((scope, k), Some(v));
@@ -280,12 +284,12 @@ impl GhostKv {
         }
     }
 
-    fn get_raw(&self, scope: Scope, k: &[u8]) -> Option<Vec<u8>> {
+    fn get_raw(&self, scope: Scope, k: &[u8]) -> Option<Plain> {
         self.lock().rows.get(&(scope, k.to_vec())).cloned()
     }
 
     fn put<V: Serialize>(&self, scope: Scope, k: Vec<u8>, v: &V) -> Result<(), KvError> {
-        let v = serde_json::to_vec(v)?;
+        let v = Zeroizing::new(serde_json::to_vec(v)?);
         self.put_raw(scope, k, v);
         Ok(())
     }
@@ -306,10 +310,10 @@ impl GhostKv {
         scope: Scope,
         k: &[u8],
     ) -> Result<Vec<V>, KvError> {
-        let items: Vec<Vec<u8>> = match self.get_raw(scope, k) {
+        let items: Zeroizing<Vec<Vec<u8>>> = Zeroizing::new(match self.get_raw(scope, k) {
             Some(v) => serde_json::from_slice(&v)?,
             None => Vec::new(),
-        };
+        });
         items
             .iter()
             .map(|i| serde_json::from_slice(i).map_err(KvError::from))
@@ -317,24 +321,25 @@ impl GhostKv {
     }
 
     fn list_append<V: Serialize>(&self, scope: Scope, k: Vec<u8>, v: &V) -> Result<(), KvError> {
-        let mut items: Vec<Vec<u8>> = match self.get_raw(scope, &k) {
+        let mut items: Zeroizing<Vec<Vec<u8>>> = Zeroizing::new(match self.get_raw(scope, &k) {
             Some(v) => serde_json::from_slice(&v)?,
             None => Vec::new(),
-        };
+        });
         items.push(serde_json::to_vec(v)?);
-        self.put(scope, k, &items)
+        self.put(scope, k, &*items)
     }
 
     fn list_remove<V: Serialize>(&self, scope: Scope, k: Vec<u8>, v: &V) -> Result<(), KvError> {
-        let mut items: Vec<Vec<u8>> = match self.get_raw(scope, &k) {
+        let mut items: Zeroizing<Vec<Vec<u8>>> = Zeroizing::new(match self.get_raw(scope, &k) {
             Some(v) => serde_json::from_slice(&v)?,
             None => Vec::new(),
-        };
-        let needle = serde_json::to_vec(v)?;
-        if let Some(p) = items.iter().position(|i| *i == needle) {
-            items.remove(p);
+        });
+        let needle = Zeroizing::new(serde_json::to_vec(v)?);
+        if let Some(p) = items.iter().position(|i| *i == *needle) {
+            let mut gone = items.remove(p);
+            gone.zeroize();
         }
-        self.put(scope, k, &items)
+        self.put(scope, k, &*items)
     }
 
     /// Group-scoped key for `label`.
@@ -394,15 +399,20 @@ impl GhostKv {
     fn split_epochs(&self, g: &impl Serialize) -> Result<Vec<u64>, KvError> {
         let head: Option<serde_json::Value> =
             self.get(Scope::Group, &self.gk(L_MESSAGE_SECRETS, g)?)?;
-        let Some(head) = head else {
+        let Some(mut head) = head else {
             return Ok(Vec::new());
         };
-        head.get("past_epoch_trees")
+        let epochs = head
+            .get("past_epoch_trees")
             .and_then(|a| a.as_array())
-            .ok_or(KvError::LayoutDrift("past_epoch_trees"))?
-            .iter()
-            .map(|e| e.as_u64().ok_or(KvError::LayoutDrift("past_epoch_trees[]")))
-            .collect()
+            .ok_or(KvError::LayoutDrift("past_epoch_trees"))
+            .and_then(|a| {
+                a.iter()
+                    .map(|e| e.as_u64().ok_or(KvError::LayoutDrift("past_epoch_trees[]")))
+                    .collect()
+            });
+        wipe(&mut head);
+        epochs
     }
 
     /// Writes the head (the store with `past_epoch_trees` replaced by its epoch numbers) and one
@@ -414,32 +424,60 @@ impl GhostKv {
         mut v: serde_json::Value,
     ) -> Result<(), KvError> {
         let old = self.split_epochs(g)?;
-        let trees = v
+        let Some(mut trees) = v
             .get_mut("past_epoch_trees")
             .map(serde_json::Value::take)
             .and_then(|a| match a {
                 serde_json::Value::Array(a) => Some(a),
                 _ => None,
             })
-            .ok_or(KvError::LayoutDrift("past_epoch_trees"))?;
+        else {
+            wipe(&mut v);
+            return Err(KvError::LayoutDrift("past_epoch_trees"));
+        };
+        let written = self.write_past_rows(g, &old, &trees);
+        for t in trees.iter_mut() {
+            wipe(t);
+        }
+        let epochs = match written {
+            Ok(e) => e,
+            Err(e) => {
+                wipe(&mut v);
+                return Err(e);
+            }
+        };
+        v["past_epoch_trees"] = serde_json::json!(epochs);
+        let r = self.put(Scope::Group, head_key, &v);
+        wipe(&mut v);
+        r
+    }
+
+    /// One row per past epoch (unchanged rows not rewritten), and the dropped epochs deleted.
+    fn write_past_rows(
+        &self,
+        g: &impl Serialize,
+        old: &[u64],
+        trees: &[serde_json::Value],
+    ) -> Result<Vec<u64>, KvError> {
         let mut epochs = Vec::with_capacity(trees.len());
-        for t in &trees {
+        for t in trees {
             let e = t
                 .get("epoch")
                 .and_then(|e| e.as_u64())
                 .ok_or(KvError::LayoutDrift("past_epoch_trees[].epoch"))?;
             epochs.push(e);
             let k = self.key(L_MESSAGE_SECRETS_PAST, &(g, e))?;
-            let bytes = serde_json::to_vec(t)?;
-            if self.get_raw(Scope::Group, &k).as_deref() != Some(bytes.as_slice()) {
+            let bytes = Zeroizing::new(serde_json::to_vec(t)?);
+            if self.get_raw(Scope::Group, &k).as_deref().map(Vec::as_slice)
+                != Some(bytes.as_slice())
+            {
                 self.put_raw(Scope::Group, k, bytes);
             }
         }
         for e in old.iter().filter(|e| !epochs.contains(e)) {
             self.del_raw(Scope::Group, self.key(L_MESSAGE_SECRETS_PAST, &(g, *e))?);
         }
-        v["past_epoch_trees"] = serde_json::json!(epochs);
-        self.put(Scope::Group, head_key, &v)
+        Ok(epochs)
     }
 
     fn read_split<M: serde::de::DeserializeOwned>(
@@ -451,6 +489,16 @@ impl GhostKv {
         else {
             return Ok(None);
         };
+        let r = self.reassemble(g, &mut head);
+        wipe(&mut head);
+        r.map(Some)
+    }
+
+    fn reassemble<M: serde::de::DeserializeOwned>(
+        &self,
+        g: &impl Serialize,
+        head: &mut serde_json::Value,
+    ) -> Result<M, KvError> {
         let epochs: Vec<u64> = head
             .get("past_epoch_trees")
             .and_then(|a| a.as_array())
@@ -460,13 +508,22 @@ impl GhostKv {
             .collect::<Result<_, _>>()?;
         let mut trees = Vec::with_capacity(epochs.len());
         for e in epochs {
-            let t: serde_json::Value = self
-                .get(Scope::Group, &self.key(L_MESSAGE_SECRETS_PAST, &(g, e))?)?
-                .ok_or(KvError::LayoutDrift("missing past epoch row"))?;
-            trees.push(t);
+            let t: Option<serde_json::Value> =
+                self.get(Scope::Group, &self.key(L_MESSAGE_SECRETS_PAST, &(g, e))?)?;
+            match t {
+                Some(t) => trees.push(t),
+                None => {
+                    for t in trees.iter_mut() {
+                        wipe(t);
+                    }
+                    return Err(KvError::LayoutDrift("missing past epoch row"));
+                }
+            }
         }
         head["past_epoch_trees"] = serde_json::Value::Array(trees);
-        Ok(Some(serde_json::from_value(head)?))
+        // Read from a reference, so the tree is wiped by the caller, not freed unwiped inside
+        // `from_value`.
+        Ok(M::deserialize(&*head)?)
     }
 }
 
@@ -548,7 +605,7 @@ pub fn unwrap(
     channel_id: &[u8; 32],
     k: &[u8],
     env: &[u8],
-) -> MlsResult<Vec<u8>> {
+) -> MlsResult<Plain> {
     if env.len() < 12 + 16 {
         return Err(MlsError::new(Code::StateCorrupt));
     }
@@ -562,7 +619,31 @@ pub fn unwrap(
                 aad: &ad(scope, channel_id, k),
             },
         )
+        .map(Zeroizing::new)
         .map_err(|_| MlsError::new(Code::StateCorrupt))
+}
+
+/// Overwrites every number and string of a JSON value, then keeps the writes from being optimised
+/// away (the value is about to be freed): OpenMLS's secrets are serde byte arrays, so in a JSON
+/// tree they sit in its numbers (review ML2). Best effort, without `unsafe`: the old strings are
+/// zeroized in place; a number's bytes are overwritten by the assignment.
+fn wipe(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Number(n) => *n = serde_json::Number::from(0u8),
+        serde_json::Value::String(s) => s.zeroize(),
+        serde_json::Value::Array(a) => {
+            for x in a.iter_mut() {
+                wipe(x);
+            }
+        }
+        serde_json::Value::Object(m) => {
+            for (_, x) in m.iter_mut() {
+                wipe(x);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) => {}
+    }
+    core::hint::black_box(&*v);
 }
 
 // Labels (GHOST's own schema; stable: they are the stored keys).
@@ -765,7 +846,11 @@ impl StorageProvider<CURRENT_VERSION> for GhostKv {
         // which differs between processes: canonicalised to the queue's own order (S2a, §19.30).
         let mut v = serde_json::to_value(s)?;
         canonical_proposal_queues(&mut v);
-        self.put(Scope::Group, self.gk(L_GROUP_STATE, g)?, &v)
+        let r = self
+            .gk(L_GROUP_STATE, g)
+            .and_then(|k| self.put(Scope::Group, k, &v));
+        wipe(&mut v);
+        r
     }
     fn write_message_secrets<
         G: traits::GroupId<CURRENT_VERSION>,
@@ -777,10 +862,17 @@ impl StorageProvider<CURRENT_VERSION> for GhostKv {
     ) -> R<()> {
         let k = self.gk(L_MESSAGE_SECRETS, g)?;
         let mut v = serde_json::to_value(m)?;
-        self.rewrite_days(&mut v)?;
+        if let Err(e) = self.rewrite_days(&mut v) {
+            wipe(&mut v);
+            return Err(e);
+        }
         match self.layout {
             PastLayout::Split => self.write_split(g, k, v),
-            PastLayout::Whole => self.put(Scope::Group, k, &v),
+            PastLayout::Whole => {
+                let r = self.put(Scope::Group, k, &v);
+                wipe(&mut v);
+                r
+            }
         }
     }
     fn write_resumption_psk_store<
@@ -1207,9 +1299,11 @@ mod tests {
             .key(L_TREE, &openmls::group::GroupId::from_slice(&[2; 32]))
             .unwrap();
         let global = kv.key(L_KEY_PACKAGE, &[9u8; 3]).unwrap();
-        assert!(kv.load(vec![((Scope::Group, gk.clone()), vec![1])]).is_ok());
         assert!(kv
-            .load(vec![((Scope::Global, global.clone()), vec![1])])
+            .load(vec![((Scope::Group, gk.clone()), vec![1].into())])
+            .is_ok());
+        assert!(kv
+            .load(vec![((Scope::Global, global.clone()), vec![1].into())])
             .is_ok());
         for bad in [
             (Scope::Group, other),
@@ -1219,7 +1313,7 @@ mod tests {
             (Scope::Group, b"no-separator".to_vec()),
         ] {
             assert_eq!(
-                kv.load(vec![(bad, vec![1])]),
+                kv.load(vec![(bad, vec![1].into())]),
                 Err(MlsError::new(Code::StateCorrupt))
             );
         }
@@ -1235,7 +1329,7 @@ mod tests {
         let sk = StateKey::from_bytes([3; 32]);
         let env = wrap(&sk, [1; 12], Scope::Group, &[1; 32], b"Tree\0k", b"value");
         assert_eq!(
-            unwrap(&sk, Scope::Group, &[1; 32], b"Tree\0k", &env).unwrap(),
+            *unwrap(&sk, Scope::Group, &[1; 32], b"Tree\0k", &env).unwrap(),
             b"value"
         );
         let corrupt = Err(MlsError::new(Code::StateCorrupt));

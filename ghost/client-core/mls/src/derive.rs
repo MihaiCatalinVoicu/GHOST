@@ -252,8 +252,12 @@ pub fn derive_invite_signing_key(seed: &InviteSeed) -> SigningKey {
 }
 
 /// `ikm = Argon2id(password, salt, profile(kdf_code), T = 32)` (§19.28.3) with the RustCrypto
-/// `argon2` 0.6.0 (Q47 (a)); its matrix lives in native memory and is zeroized by the crate.
-/// `NON_CANONICAL` for a `kdf_code` without a profile (0 included: an open invite has no KDF).
+/// `argon2` 0.6.0 (Q47 (a)). Its matrix lives in native memory and is **zeroized here**, in a
+/// buffer this function owns: `argon2`'s own `hash_password_into` frees its matrix without wiping
+/// it (0.6.0's `Blocks` only deallocates; the `zeroize` feature wipes the initial hash and the
+/// output), and the freed matrix yields the key and a way to test password guesses without the
+/// memory-hard work (review M3, §19.31). `NON_CANONICAL` for a `kdf_code` without a profile (0
+/// included: an open invite has no KDF).
 pub fn derive_invite_password_key(
     password: &InvitePassword,
     salt: &[u8; 16],
@@ -262,10 +266,16 @@ pub fn derive_invite_password_key(
     let (m, t, p) = argon2id_profile(kdf_code).ok_or(MlsError::new(Code::NonCanonical))?;
     let params = argon2::Params::new(m, t, p, Some(SECRET_BYTES))
         .map_err(|_| MlsError::new(Code::Internal))?;
+    let mut matrix = Zeroizing::new(vec![argon2::Block::default(); params.block_count()]);
     let a = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
     let mut out = Zeroizing::new([0u8; SECRET_BYTES]);
-    a.hash_password_into(password.as_bytes(), salt, out.as_mut())
-        .map_err(|_| MlsError::new(Code::Internal))?;
+    a.hash_password_into_with_memory(
+        password.as_bytes(),
+        salt,
+        out.as_mut(),
+        matrix.as_mut_slice(),
+    )
+    .map_err(|_| MlsError::new(Code::Internal))?;
     Ok(InvitePasswordKey(*out))
 }
 

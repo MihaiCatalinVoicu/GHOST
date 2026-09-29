@@ -41,8 +41,19 @@ rust_src_files() {
   # configuration only; every library crate stays free of logging primitives. Under issuer/ every
   # crate is found at any depth (issuer/crates/*) and main.rs is not exempt: the issuer keeps no
   # logs at all (Phase 8 design §14.1, ADR-26).
-  find "$GHOST_ROOT/relay" "$GHOST_ROOT/client-core" -path '*/target' -prune -o -type f -name '*.rs' -not -name main.rs -path '*/src/*' -print 2>/dev/null || true
-  find "$GHOST_ROOT/issuer" -path '*/target' -prune -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true
+  # Exact exemptions only (Phase 10 review of S2a, F4): the entry point is a crate's own
+  # `src/main.rs` (a Cargo.toml next to that src/), not any file named main.rs (`src/x/main.rs` is a
+  # module); a build directory is a `target` directory outside every src/, never `src/target/`.
+  local f
+  { find "$GHOST_ROOT/relay" "$GHOST_ROOT/client-core" -type d -name target -not -path '*/src/*' -prune \
+      -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true; } \
+    | while IFS= read -r f; do
+        case "$f" in
+          */src/main.rs) [ -f "${f%/src/main.rs}/Cargo.toml" ] && continue ;;
+        esac
+        printf '%s\n' "$f"
+      done
+  find "$GHOST_ROOT/issuer" -type d -name target -not -path '*/src/*' -prune -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true
 }
 manifest_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f -name 'AndroidManifest.xml' -print 2>/dev/null || true

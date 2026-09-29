@@ -178,18 +178,20 @@ fn seal_key(
         (0, _) => Ok(derive_open_invite_seal_key(&OpenInviteSalt::from_bytes(
             *salt,
         ))),
-        (c, Some(pw)) if argon2id_profile(c).is_some() => {
+        // An empty password is no password: a link sealed under it would open for anyone who
+        // types nothing (review of S2a, §19.31); refused before Argon2id runs.
+        (c, Some(pw)) if argon2id_profile(c).is_some() && !pw.as_bytes().is_empty() => {
             let ikm = derive_invite_password_key(pw, salt, c)?;
             Ok(derive_invite_seal_key(&ikm, salt, c))
         }
-        (c, None) if argon2id_profile(c).is_some() => Err(MlsError::new(Code::PasswordRequired)),
+        (c, _) if argon2id_profile(c).is_some() => Err(MlsError::new(Code::PasswordRequired)),
         _ => Err(MlsError::new(Code::NonCanonical)),
     }
 }
 
 /// Seals `fields` as a `ChannelInviteV2` (§19.28.3). `kdf_code` 0 is an open invite (no
-/// password); 1 is a password invite (`PASSWORD_REQUIRED` without one). `salt` comes from the
-/// provider's CSPRNG.
+/// password); 1 is a password invite (`PASSWORD_REQUIRED` without one, or with an empty one).
+/// `salt` comes from the provider's CSPRNG.
 pub fn build_v2(
     fields: &InviteFields,
     kdf_code: u8,
