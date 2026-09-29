@@ -1,0 +1,35 @@
+[package]
+publish = false
+name = "ghost-client-mls-kat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Test-only: the MLS WG passive-client vectors replayed through GhostKv, and an independent replay of the channel vectors from the design text (Phase 10 design faza10-forum.md §10.1, §12.2; S0-13)"
+
+[lib]
+# No code of its own: every check is an integration test under tests/. Nothing depends on this
+# package; it is outside every shipped and host graph (gate G-M2).
+crate-type = ["rlib"]
+
+[dev-dependencies]
+# The WG replay goes through the crate's GhostKv (design §12.2 item (2)); it joins through
+# OpenMLS's JoinBuilder with the vectors' configuration, never through GHOST's welcome_join.
+ghost-client-mls = { path = "../mls" }
+# `test-utils` for `KeyPackageBundle::new` (the vectors' private keys); allowed only here and in the
+# mls-vendor-tests checkout (design §3.2, gate G-M2).
+openmls = { workspace = true, features = ["test-utils"] }
+openmls_traits = { workspace = true }
+openmls_libcrux_crypto = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true, features = ["serde"] }
+# The independent replay of the protocol/test-vectors/ch_*.txt files (tests/spec_replay.rs) is
+# written from the design text with the primitives alone: no code of ghost-client-mls.
+hkdf = "=0.13.0"
+hmac = { workspace = true }
+sha2 = { workspace = true }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+ed25519-dalek = { workspace = true }
+argon2 = { workspace = true }
