@@ -1,0 +1,19 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+note: ChannelMixingMatrix.createForConstantGain(3, 2) unsupported (Default channel mixing coefficients for 3->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(4, 2) unsupported (Default channel mixing coefficients for 4->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(5, 2) unsupported (Default channel mixing coefficients for 5->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(6, 2) unsupported (Default channel mixing coefficients for 6->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(7, 2) unsupported (Default channel mixing coefficients for 7->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(8, 2) unsupported (Default channel mixing coefficients for 8->2 are not yet implemented.); explicit matrix supplied
+#0 transcode src=long160_noise.mp4 mode=DESIGN landscape=true cbrRequested=false cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_IO_FILE_NOT_FOUND:Asset loader error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 wallMs=733 neverWrittenExists=false pathOffered=null appVmHWMkB=135068 (before 124188) outSha256=-
+#0   tracks=[]
+#0   metadataOffered=[] forwarded=[]
+#0   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#0   channel writes=0 bytes=0 largestWrite=0
+#1 transcode src=long160_mixed.mp4 mode=DESIGN landscape=true cbrRequested=false cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_IO_FILE_NOT_FOUND:Asset loader error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 wallMs=57 neverWrittenExists=false pathOffered=null appVmHWMkB=135324 (before 135068) outSha256=-
+#1   tracks=[]
+#1   metadataOffered=[] forwarded=[]
+#1   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#1   channel writes=0 bytes=0 largestWrite=0
+probe transcode: OK
+

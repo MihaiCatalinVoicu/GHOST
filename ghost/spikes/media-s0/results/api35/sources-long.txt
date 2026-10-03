@@ -1,0 +1,6 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+source long160_smooth.mp4: 82342404 B sha256=d57a976b3073fe7b5535c9c71d7a4e4990f6cb628794ec63da11ccb299a11628 1280x720@30 160.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=smooth canaries=false location=false videoSamples=4800 audioSamples=7500 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=394384
+source long160_mixed.mp4: 116300469 B sha256=26ea3ce7aa3ffdf678ed9a05a5a05d28af49d74e155ff2adaa6a203bde0d0069 1280x720@30 160.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=mixed canaries=false location=false videoSamples=4800 audioSamples=7500 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=493208
+source long160_grain.mp4: 82863998 B sha256=64d442622efd015ea73a50304e2df45cf2f4f1bca19dedba87c6e6c03657d2e2 1280x720@30 160.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=grain canaries=false location=false videoSamples=4800 audioSamples=7500 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=421630
+probe sources: OK
+

@@ -1,0 +1,1909 @@
+=== src/match720p30.mp4 (4622600 B, sha256 83d6207f3b3411cb1ad42bb559bd38cd12010cdfed4344a5a00c2d5713284614)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30.mp4
+  [System]        Directory                       : src
+  [System]        FileSize                        : 4.6 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:41+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:28:16+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:41+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 v2 [ISO 14496-14]
+  [QuickTime]     MinorVersion                    : 0.0.0
+  [QuickTime]     CompatibleBrands                : isom, mp42
+  [QuickTime]     MediaDataSize                   : 4614159
+  [QuickTime]     MediaDataOffset                 : 3262
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 2026:09:25 05:28:24
+  [QuickTime]     ModifyDate                      : 2026:09:25 05:28:24
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 12.00 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     HandlerType                     : Metadata Tags
+  [UserData]      GPSCoordinates                  : 46 deg 46' 16.32" N, 23 deg 37' 24.60" E
+  [Keys]          AndroidVersion                  : 15
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 2026:09:25 05:28:24
+  [Track1]        TrackModifyDate                 : 2026:09:25 05:28:24
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 12.00 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 0.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        ImageWidth                      : 1280
+  [Track1]        ImageHeight                     : 720
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 2026:09:25 05:28:24
+  [Track1]        MediaModifyDate                 : 2026:09:25 05:28:24
+  [Track1]        MediaTimeScale                  : 90000
+  [Track1]        MediaDuration                   : 12.00 s
+  [Track1]        HandlerType                     : Video Track
+  [Track1]        HandlerDescription              : VideoHandle
+  [Track1]        GraphicsMode                    : srcCopy
+  [Track1]        OpColor                         : 0 0 0
+  [Track1]        CompressorID                    : avc1
+  [Track1]        SourceImageWidth                : 1280
+  [Track1]        SourceImageHeight               : 720
+  [Track1]        XResolution                     : 72
+  [Track1]        YResolution                     : 72
+  [Track1]        BitDepth                        : 24
+  [Track1]        ColorProfiles                   : nclx
+  [Track1]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track1]        TransferCharacteristics         : BT.709
+  [Track1]        MatrixCoefficients              : BT.601
+  [Track1]        VideoFullRangeFlag              : Full
+  [Track1]        VideoFrameRate                  : 30
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 2026:09:25 05:28:24
+  [Track2]        TrackModifyDate                 : 2026:09:25 05:28:24
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 11.99 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 100.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 2026:09:25 05:28:24
+  [Track2]        MediaModifyDate                 : 2026:09:25 05:28:24
+  [Track2]        MediaTimeScale                  : 48000
+  [Track2]        MediaDuration                   : 11.99 s
+  [Track2]        HandlerType                     : Audio Track
+  [Track2]        HandlerDescription              : SoundHandle
+  [Track2]        Balance                         : 0
+  [Track2]        AudioFormat                     : mp4a
+  [Track2]        AudioChannels                   : 2
+  [Track2]        AudioBitsPerSample              : 16
+  [Track2]        AudioSampleRate                 : 48000
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     AvgBitrate                      : 3.08 Mbps
+  [Composite]     GPSLatitude                     : 46 deg 46' 16.32" N
+  [Composite]     GPSLongitude                    : 23 deg 37' 24.60" E
+  [Composite]     Rotation                        : 0
+  [Composite]     GPSPosition                     : 46 deg 46' 16.32" N, 23 deg 37' 24.60" E
+  -- tags outside the structural allowlist: 6
+  !! [QuickTime]     HandlerType                     : Metadata Tags
+  !! [UserData]      GPSCoordinates                  : 46 deg 46' 16.32" N, 23 deg 37' 24.60" E
+  !! [Keys]          AndroidVersion                  : 15
+  !! [Composite]     GPSLatitude                     : 46 deg 46' 16.32" N
+  !! [Composite]     GPSLongitude                    : 23 deg 37' 24.60" E
+  !! [Composite]     GPSPosition                     : 46 deg 46' 16.32" N, 23 deg 37' 24.60" E
+  src/match720p30.mp4 canary "GHOSTCANARYS0": ascii=922 utf16le=0 utf16be=0
+  src/match720p30.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  src/match720p30.mp4 canary "46.77": ascii=1 utf16le=0 utf16be=0
+  src/match720p30.mp4 canary "23.62": ascii=1 utf16le=0 utf16be=0
+  src/match720p30.mp4 canary "com.android": ascii=1 utf16le=0 utf16be=0
+  src/match720p30.mp4 canary "GHOST-S0": ascii=360 utf16le=0 utf16be=0
+=== out/land1080p60__DESIGN.mp4 (3103910 B, sha256 a87c1cdffdb1ab4e5f53f45f6d3357459c5575e6359ac4f21732a3dc26f4598d)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : land1080p60__DESIGN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 3.1 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:28:23+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 2107455
+  [QuickTime]     MediaDataOffset                 : 5207
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 989504
+  [QuickTime]     MediaDataOffset                 : 2114406
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/land1080p60__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/land1080p60__DESIGN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/land1080p60__DESIGN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/land1080p60__DESIGN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/land1080p60__DESIGN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/land1080p60__DESIGN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30_709__DESIGN.mp4 (5571744 B, sha256 f3db56467164b55dc40d31eab39da2884f84322ad5cec5268d723b1f8775eb7c)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30_709__DESIGN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.6 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:28:33+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1519293
+  [QuickTime]     MediaDataOffset                 : 4223
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1354262
+  [QuickTime]     MediaDataOffset                 : 1526388
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1357514
+  [QuickTime]     MediaDataOffset                 : 2883642
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1327932
+  [QuickTime]     MediaDataOffset                 : 4243812
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.709
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.709
+  [Track2]        VideoFullRangeFlag              : Limited
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30_709__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30_709__DESIGN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30_709__DESIGN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30_709__DESIGN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30_709__DESIGN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30_709__DESIGN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__DESIGN.mp4 (5877982 B, sha256 c97a1e7b05adbbd605edca288f59fc094c54fe085e42bfd58b283df8fa0c0531)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__DESIGN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.9 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:28:41+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1616483
+  [QuickTime]     MediaDataOffset                 : 4259
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1425101
+  [QuickTime]     MediaDataOffset                 : 1623674
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1425483
+  [QuickTime]     MediaDataOffset                 : 3051707
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1398172
+  [QuickTime]     MediaDataOffset                 : 4479810
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__DESIGN_VBR.mp4 (4486375 B, sha256 53af49eb762297def44edb98972ce8a81f9701debddb4e2ee3b41b03d41c7720)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__DESIGN_VBR.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 4.5 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:28:47+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1271540
+  [QuickTime]     MediaDataOffset                 : 4223
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1069645
+  [QuickTime]     MediaDataOffset                 : 1278731
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1079524
+  [QuickTime]     MediaDataOffset                 : 2351296
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1052923
+  [QuickTime]     MediaDataOffset                 : 3433452
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__DESIGN_VBR.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_VBR.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_VBR.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_VBR.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_VBR.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_VBR.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__DESIGN_bt709.mp4 (5571744 B, sha256 20ff9b899c2fb933f080651419527960d7da4476db52cb6ee2ba2ac150a67ad9)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__DESIGN_bt709.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.6 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:28:55+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1522024
+  [QuickTime]     MediaDataOffset                 : 4319
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1355286
+  [QuickTime]     MediaDataOffset                 : 1529251
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1354441
+  [QuickTime]     MediaDataOffset                 : 2887421
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1327250
+  [QuickTime]     MediaDataOffset                 : 4244494
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.709
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.709
+  [Track2]        VideoFullRangeFlag              : Limited
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__DESIGN_bt709.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_bt709.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_bt709.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_bt709.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_bt709.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_bt709.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__DESIGN_mfra.mp4 (5878106 B, sha256 331fe7e97d66ede772b0de3a9a933951cf9b9278c345f8d56b76510269995a90)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__DESIGN_mfra.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.9 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:29:02+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1616483
+  [QuickTime]     MediaDataOffset                 : 4259
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1425101
+  [QuickTime]     MediaDataOffset                 : 1623674
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1425483
+  [QuickTime]     MediaDataOffset                 : 3051707
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1398172
+  [QuickTime]     MediaDataOffset                 : 4479810
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__DESIGN_mfra.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_mfra.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_mfra.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_mfra.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_mfra.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_mfra.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__DESIGN_tfdt_mfra.mp4 (5878266 B, sha256 61120f371bb7f732f12ad92f9e2c3a350365231ad42e05ffb7d86cc252964fa4)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__DESIGN_tfdt_mfra.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.9 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:29:14+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1616483
+  [QuickTime]     MediaDataOffset                 : 4299
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1425101
+  [QuickTime]     MediaDataOffset                 : 1623754
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1425483
+  [QuickTime]     MediaDataOffset                 : 3051827
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1398172
+  [QuickTime]     MediaDataOffset                 : 4479970
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__DESIGN_tfdt_mfra.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_tfdt_mfra.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_tfdt_mfra.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_tfdt_mfra.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_tfdt_mfra.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__DESIGN_tfdt_mfra.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__PLAIN.mp4 (5902846 B, sha256 390dafbc71e727811aaa77e4a6c0853402213c6f1324f4ec964180d926668dee)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__PLAIN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.9 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:29:26+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1620330
+  [QuickTime]     MediaDataOffset                 : 4295
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1428455
+  [QuickTime]     MediaDataOffset                 : 1627497
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1429645
+  [QuickTime]     MediaDataOffset                 : 3058884
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1411661
+  [QuickTime]     MediaDataOffset                 : 4491185
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__PLAIN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__PLAIN_DEFAULTS.mp4 (4608778 B, sha256 9d4e935350625ebc11617aa6083bce5cb93ce97da1ddee98e4a4bfc653ffa70c)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__PLAIN_DEFAULTS.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 4.6 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:29:38+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1697425
+  [QuickTime]     MediaDataOffset                 : 4943
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1451072
+  [QuickTime]     MediaDataOffset                 : 1706152
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1447662
+  [QuickTime]     MediaDataOffset                 : 3161116
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 0.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        ImageWidth                      : 1280
+  [Track1]        ImageHeight                     : 720
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 90000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Video Track
+  [Track1]        HandlerDescription              : VideoHandle
+  [Track1]        GraphicsMode                    : srcCopy
+  [Track1]        OpColor                         : 0 0 0
+  [Track1]        CompressorID                    : avc1
+  [Track1]        SourceImageWidth                : 1280
+  [Track1]        SourceImageHeight               : 720
+  [Track1]        XResolution                     : 72
+  [Track1]        YResolution                     : 72
+  [Track1]        BitDepth                        : 24
+  [Track1]        PixelAspectRatio                : 65536:65536
+  [Track1]        ColorProfiles                   : nclx
+  [Track1]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track1]        TransferCharacteristics         : BT.709
+  [Track1]        MatrixCoefficients              : BT.601
+  [Track1]        VideoFullRangeFlag              : Full
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 100.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 48000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Audio Track
+  [Track2]        HandlerDescription              : SoundHandle
+  [Track2]        Balance                         : 0
+  [Track2]        AudioFormat                     : mp4a
+  [Track2]        AudioChannels                   : 2
+  [Track2]        AudioBitsPerSample              : 16
+  [Track2]        AudioSampleRate                 : 48000
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__PLAIN_DEFAULTS.mp4 canary "GHOSTCANARYS0": ascii=562 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_DEFAULTS.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_DEFAULTS.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_DEFAULTS.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_DEFAULTS.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_DEFAULTS.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__PLAIN_KEEP_HDR.mp4 (5902846 B, sha256 b1063a649e2f58304f43f1de2e77570cbfef660a5f46931c255a0c2e350fdd2a)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__PLAIN_KEEP_HDR.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.9 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:29:53+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1614528
+  [QuickTime]     MediaDataOffset                 : 4091
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1435281
+  [QuickTime]     MediaDataOffset                 : 1621731
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1429304
+  [QuickTime]     MediaDataOffset                 : 3059932
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1410978
+  [QuickTime]     MediaDataOffset                 : 4491868
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__PLAIN_KEEP_HDR.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_KEEP_HDR.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_KEEP_HDR.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_KEEP_HDR.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_KEEP_HDR.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__PLAIN_KEEP_HDR.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/match720p30__UNFORCED_EFFECTS.mp4 (5877982 B, sha256 df2bb7e35385eab4b5a8d4cc8e00c55ae9b567f938f525ae0d2c9024d24cd526)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : match720p30__UNFORCED_EFFECTS.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 5.9 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:30:03+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1615118
+  [QuickTime]     MediaDataOffset                 : 4211
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1425101
+  [QuickTime]     MediaDataOffset                 : 1622261
+  [QuickTime]     MovieFragmentSequence           : 3
+  [QuickTime]     MediaDataSize                   : 1420021
+  [QuickTime]     MediaDataOffset                 : 3050102
+  [QuickTime]     MovieFragmentSequence           : 4
+  [QuickTime]     MediaDataSize                   : 1404999
+  [QuickTime]     MediaDataOffset                 : 4472983
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/match720p30__UNFORCED_EFFECTS.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__UNFORCED_EFFECTS.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__UNFORCED_EFFECTS.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__UNFORCED_EFFECTS.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__UNFORCED_EFFECTS.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/match720p30__UNFORCED_EFFECTS.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/port720x1280p24__DESIGN.mp4 (2961117 B, sha256 46f5618d260802de19d769d13b981a2f00e87402151f4615d270dd9ed1e8725f)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : port720x1280p24__DESIGN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 3.0 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:30:12+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1573482
+  [QuickTime]     MediaDataOffset                 : 4103
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1381128
+  [QuickTime]     MediaDataOffset                 : 1579989
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/port720x1280p24__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/port720x1280p24__DESIGN_orientfix.mp4 (2961117 B, sha256 12250567cf3cacdef754e618ae3d38d0c7961c26e6600ba384e8e35d8dd613f3)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : port720x1280p24__DESIGN_orientfix.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 3.0 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:30:21+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1567679
+  [QuickTime]     MediaDataOffset                 : 3899
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1386931
+  [QuickTime]     MediaDataOffset                 : 1574186
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 0 1 0 -1 0 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 0 1 0 -1 0 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 90
+  -- tags outside the structural allowlist: 0
+  out/port720x1280p24__DESIGN_orientfix.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_orientfix.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_orientfix.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_orientfix.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_orientfix.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_orientfix.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/port720x1280p24__DESIGN_portraittrue.mp4 (2698435 B, sha256 c4aaf15a984e259c1a7bff398acbb7ed68aa4006efa4d743af3477a7fabdf62c)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : port720x1280p24__DESIGN_portraittrue.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 2.7 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:30:31+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1439455
+  [QuickTime]     MediaDataOffset                 : 4079
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1252473
+  [QuickTime]     MediaDataOffset                 : 1445962
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 720
+  [Track2]        ImageHeight                     : 1280
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 720
+  [Track2]        SourceImageHeight               : 1280
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 720x1280
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/port720x1280p24__DESIGN_portraittrue.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_portraittrue.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_portraittrue.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_portraittrue.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_portraittrue.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/port720x1280p24__DESIGN_portraittrue.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/rot90_1280x720p30__DESIGN.mp4 (3072877 B, sha256 41e4b809c8d54ea5be13c190587191c1cd8a46bc2d1c889f580a79853eb16713)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : rot90_1280x720p30__DESIGN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 3.1 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:30:43+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1640644
+  [QuickTime]     MediaDataOffset                 : 4259
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1425294
+  [QuickTime]     MediaDataOffset                 : 1647583
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/rot90_1280x720p30__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/rot90_1280x720p30__DESIGN_orientfix.mp4 (3072877 B, sha256 4923d48f3f5591e43fffb04eadc15c47ecc893a29edc152ac80987f0ea0814ab)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : rot90_1280x720p30__DESIGN_orientfix.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 3.1 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:30:53+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1642351
+  [QuickTime]     MediaDataOffset                 : 4319
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1423587
+  [QuickTime]     MediaDataOffset                 : 1649290
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 0 1 0 -1 0 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 0 1 0 -1 0 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 90
+  -- tags outside the structural allowlist: 0
+  out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/rot90_1280x720p30__DESIGN_portraittrue.mp4 (3436800 B, sha256 b3984d36303283d8ebeec1ab8d9e6a26118addc7878fd42dc530027856131801)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : rot90_1280x720p30__DESIGN_portraittrue.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 3.4 MB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:31:03+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 1800686
+  [QuickTime]     MediaDataOffset                 : 4127
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 1629175
+  [QuickTime]     MediaDataOffset                 : 1807625
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 720
+  [Track2]        ImageHeight                     : 1280
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 720
+  [Track2]        SourceImageHeight               : 1280
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 720x1280
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== out/vga640x480p30__DESIGN.mp4 (1820490 B, sha256 9a5634d53b1ea6cf2ce769cac4c44eb5ec7aba8f5f0d149829e14ef5f7f30a66)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : vga640x480p30__DESIGN.mp4
+  [System]        Directory                       : out
+  [System]        FileSize                        : 1820 kB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:39+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:31:11+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:39+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : MP4
+  [File]          FileTypeExtension               : mp4
+  [File]          MIMEType                        : video/mp4
+  [QuickTime]     MajorBrand                      : MP4 Base Media v1 [IS0 14496-12:2003]
+  [QuickTime]     MinorVersion                    : 2.0.0
+  [QuickTime]     CompatibleBrands                : isom, iso2, mp41
+  [QuickTime]     MovieHeaderVersion              : 0
+  [QuickTime]     CreateDate                      : 0000:00:00 00:00:00
+  [QuickTime]     ModifyDate                      : 0000:00:00 00:00:00
+  [QuickTime]     TimeScale                       : 10000
+  [QuickTime]     Duration                        : 0 s
+  [QuickTime]     PreferredRate                   : 1
+  [QuickTime]     PreferredVolume                 : 100.00%
+  [QuickTime]     MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [QuickTime]     PreviewTime                     : 0 s
+  [QuickTime]     PreviewDuration                 : 0 s
+  [QuickTime]     PosterTime                      : 0 s
+  [QuickTime]     SelectionTime                   : 0 s
+  [QuickTime]     SelectionDuration               : 0 s
+  [QuickTime]     CurrentTime                     : 0 s
+  [QuickTime]     NextTrackID                     : 3
+  [QuickTime]     MovieFragmentSequence           : 1
+  [QuickTime]     MediaDataSize                   : 951585
+  [QuickTime]     MediaDataOffset                 : 4283
+  [QuickTime]     MovieFragmentSequence           : 2
+  [QuickTime]     MediaDataSize                   : 861966
+  [QuickTime]     MediaDataOffset                 : 958524
+  [Track1]        TrackHeaderVersion              : 0
+  [Track1]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        TrackID                         : 1
+  [Track1]        TrackDuration                   : 0 s
+  [Track1]        TrackLayer                      : 0
+  [Track1]        TrackVolume                     : 100.00%
+  [Track1]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track1]        MediaHeaderVersion              : 0
+  [Track1]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track1]        MediaTimeScale                  : 48000
+  [Track1]        MediaDuration                   : 0 s
+  [Track1]        HandlerType                     : Audio Track
+  [Track1]        HandlerDescription              : SoundHandle
+  [Track1]        Balance                         : 0
+  [Track1]        AudioFormat                     : mp4a
+  [Track1]        AudioChannels                   : 2
+  [Track1]        AudioBitsPerSample              : 16
+  [Track1]        AudioSampleRate                 : 48000
+  [Track2]        TrackHeaderVersion              : 0
+  [Track2]        TrackCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        TrackID                         : 2
+  [Track2]        TrackDuration                   : 0 s
+  [Track2]        TrackLayer                      : 0
+  [Track2]        TrackVolume                     : 0.00%
+  [Track2]        MatrixStructure                 : 1 0 0 0 1 0 0 0 1
+  [Track2]        ImageWidth                      : 1280
+  [Track2]        ImageHeight                     : 720
+  [Track2]        MediaHeaderVersion              : 0
+  [Track2]        MediaCreateDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaModifyDate                 : 0000:00:00 00:00:00
+  [Track2]        MediaTimeScale                  : 90000
+  [Track2]        MediaDuration                   : 0 s
+  [Track2]        HandlerType                     : Video Track
+  [Track2]        HandlerDescription              : VideoHandle
+  [Track2]        GraphicsMode                    : srcCopy
+  [Track2]        OpColor                         : 0 0 0
+  [Track2]        CompressorID                    : avc1
+  [Track2]        SourceImageWidth                : 1280
+  [Track2]        SourceImageHeight               : 720
+  [Track2]        XResolution                     : 72
+  [Track2]        YResolution                     : 72
+  [Track2]        BitDepth                        : 24
+  [Track2]        PixelAspectRatio                : 65536:65536
+  [Track2]        ColorProfiles                   : nclx
+  [Track2]        ColorPrimaries                  : BT.470 System B, G (historical)
+  [Track2]        TransferCharacteristics         : BT.709
+  [Track2]        MatrixCoefficients              : BT.601
+  [Track2]        VideoFullRangeFlag              : Full
+  [Composite]     ImageSize                       : 1280x720
+  [Composite]     Megapixels                      : 0.922
+  [Composite]     Rotation                        : 0
+  -- tags outside the structural allowlist: 0
+  out/vga640x480p30__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  out/vga640x480p30__DESIGN.mp4 canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  out/vga640x480p30__DESIGN.mp4 canary "46.77": ascii=0 utf16le=0 utf16be=0
+  out/vga640x480p30__DESIGN.mp4 canary "23.62": ascii=0 utf16le=0 utf16be=0
+  out/vga640x480p30__DESIGN.mp4 canary "com.android": ascii=0 utf16le=0 utf16be=0
+  out/vga640x480p30__DESIGN.mp4 canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0

@@ -1,0 +1,18 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+source orient1.jpg: 4269 B stored=600x400 exifOrientation=1 sha256=424c2a0bebc4935b01a558a218bfabfa7fea0a7d0435c62031cd2ce965983265
+source orient2.jpg: 4262 B stored=600x400 exifOrientation=2 sha256=9f473d92f489958846471a6a7db6cdb6ba83591b01524848b6f080f24c36d79a
+source orient3.jpg: 4264 B stored=600x400 exifOrientation=3 sha256=c7b376d26daba145664953474982aeba09133183311c160120b89322fd68f7fa
+source orient4.jpg: 4261 B stored=600x400 exifOrientation=4 sha256=69a4c2bbd1daaf801dafb7890bbe8e83665e9abfdd6c1dd2007647f86e381eb9
+source orient5.jpg: 4346 B stored=400x600 exifOrientation=5 sha256=996da3a46130ce934023ed73774b07b95b68d6ae8d58d5b7312598fd34c7b6fc
+source orient6.jpg: 4341 B stored=400x600 exifOrientation=6 sha256=6922c84d8ddee558f59ebd7a18607caac7eb245b15dca840dfc4a9fbe74e2b06
+source orient7.jpg: 4343 B stored=400x600 exifOrientation=7 sha256=0c70b37875bc375543167a57476e018e46a97b8c35d52ab0ef27cc1e0dffd3e7
+source orient8.jpg: 4344 B stored=400x600 exifOrientation=8 sha256=8f905d35eaa05e4aa6dc01f2313952c0c1460b2cee30951c924396aa426af17c
+source alpha.png: 10087 B
+source photo.webp: 1740 B
+source preview320.jpg: 1446 B
+source photo.heic: 1528 B sha256=448bb7c9b242bfa35b0e4babb477feaadd430e1b0610e5af7ea2e22d06683f60
+source photo.avif: 1975 B sha256=a29dd56a483cff0d1b748ae2419417aab51b274351e7fe850b749d64f8f4d9e5
+source p3.jpg: 2626 B
+source ultrahdr.jpg: 6406 B
+probe sources: OK
+

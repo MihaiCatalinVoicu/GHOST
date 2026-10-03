@@ -1,0 +1,4 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm20 crash mode=3 pid=3769 callback=connected result=returned deathMs=14.6 wallclockMs=1790315566731
+probe crash: OK
+

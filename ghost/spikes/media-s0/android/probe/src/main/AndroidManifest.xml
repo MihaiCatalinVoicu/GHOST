@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- S0 probe app (evidence tooling, never shipped). No permission is requested: the photo picker
+     and ACTION_OPEN_DOCUMENT need none, as in the design (§6.1). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <instrumentation
+        android:name=".SpikeRunner"
+        android:targetPackage="org.ghost.spike.media" />
+
+    <application
+        android:name=".SpikeApp"
+        android:allowBackup="false"
+        android:label="GHOST S0 probe">
+
+        <!-- The isolated decoding service of design §9.2, exactly as specified: isolated, its own
+             process, not exported, no intent filter. -->
+        <service
+            android:name=".IsoService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":mdec" />
+
+        <!-- V-M19: a provider in the default process; it records whether it was ever created in an
+             isolated process. Also serves the video sources to Media3 as content:// URIs (§6.1:
+             the source is read through ContentDataSource). -->
+        <provider
+            android:name=".SourceProvider"
+            android:authorities="org.ghost.spike.media.src"
+            android:exported="false" />
+
+        <!-- V-M20: shows a pattern with or without FLAG_SECURE / setRecentsScreenshotEnabled. -->
+        <activity
+            android:name=".ViewerActivity"
+            android:exported="false" />
+
+        <!-- V-M21 / V-M11: launches the system picker (ACTION_PICK_IMAGES on API 33+,
+             ACTION_OPEN_DOCUMENT on API 29) and reads the returned stream. -->
+        <activity
+            android:name=".PickActivity"
+            android:exported="false" />
+    </application>
+</manifest>

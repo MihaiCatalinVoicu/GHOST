@@ -1,0 +1,9 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+source match720p30.mp4: 4622600 B sha256=83d6207f3b3411cb1ad42bb559bd38cd12010cdfed4344a5a00c2d5713284614 1280x720@30 12.0s vbitrate=1800000 audio=48000Hz/2ch rotation=0 content=mixed canaries=true location=true videoSamples=360 audioSamples=562 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source land1080p60.mp4: 19497921 B sha256=4a4683146ab9841722cc98a644f5c8ff6489b79eafac059bd6b8b0b9582a98a0 1920x1080@60 6.0s vbitrate=8000000 audio=44100Hz/1ch rotation=0 content=mixed canaries=true location=true videoSamples=360 audioSamples=258 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source port720x1280p24.mp4: 2508963 B sha256=9980ee99570adb2e64c61901dfda42fef16d04ebd83617f62564243c92f42786 720x1280@24 6.0s vbitrate=3000000 audio=48000Hz/6ch rotation=0 content=mixed canaries=true location=true videoSamples=144 audioSamples=281 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source rot90_1280x720p30.mp4: 2476050 B sha256=002578ff0a0f7de6db1b5a944b4d9627ba0ce6e2131071002db8418e1725bd52 1280x720@30 6.0s vbitrate=3000000 audio=48000Hz/2ch rotation=90 content=mixed canaries=true location=true videoSamples=180 audioSamples=281 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source vga640x480p30.mp4: 1492933 B sha256=29f492690eee02bd6724064fc9a038fb2b5a34e7dab23af174960599cf4842bf 640x480@30 6.0s vbitrate=1000000 audio=22050Hz/2ch rotation=0 content=mixed canaries=true location=true videoSamples=180 audioSamples=129 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source match720p30_709.mp4: 4622581 B sha256=84dadda5c8fe05c7fd0e2d815b740677dd1d76fb692542de06da3cea9addc9cb 1280x720@30 12.0s vbitrate=1800000 audio=48000Hz/2ch rotation=0 content=mixed canaries=true location=true videoSamples=360 audioSamples=562 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+probe sources: OK
+

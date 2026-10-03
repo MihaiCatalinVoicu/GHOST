@@ -1,0 +1,15 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm6 cmp_srgb_q85.jpg: 3584 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_srgb_q60.jpg: 3322 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_srgb_q100.jpg: 4089 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_rgb565.jpg: 3584 B config=RGB_565 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_displayp3.jpg: 4256 B config=ARGB_8888 cs=Display P3 hasGainmap=false
+vm6 cmp_f16_linear_extended.jpg: 4305 B config=RGBA_F16 cs=scRGB IEC 61966-2-2:2003 hasGainmap=false
+vm6 cmp_from_exif_source.jpg: 4037 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_with_gainmap.jpg: 5671 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=true
+vm6 cmp_gainmap_removed.jpg: 3584 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_decoded_ultrahdr.jpg: 6881 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=true
+vm6 cmp_decoded_ultrahdr_gainmap_removed.jpg: 4781 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=false
+vm6 cmp_decoded_ultrahdr_srgb_target.jpg: 6881 B config=ARGB_8888 cs=sRGB IEC61966-2.1 hasGainmap=true
+probe compress: OK
+

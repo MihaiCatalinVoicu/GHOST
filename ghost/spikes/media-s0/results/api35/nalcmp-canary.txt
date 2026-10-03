@@ -1,0 +1,104 @@
+=== nalcmp src/match720p30.mp4 vs out/match720p30__DESIGN.mp4
+vide: source units=720 output units=359 identical_units(>=16B)=0 sampled_16B_windows_found=0/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== nalcmp src/match720p30.mp4 vs out/match720p30__PLAIN_DEFAULTS.mp4
+vide: source units=720 output units=360 identical_units(>=16B)=360 sampled_16B_windows_found=1016/1080
+soun: source units=562 output units=562 identical_units(>=16B)=562 sampled_16B_windows_found=1686/1686
+=== nalcmp src/match720p30.mp4 vs out/match720p30__PLAIN.mp4
+vide: source units=720 output units=360 identical_units(>=16B)=0 sampled_16B_windows_found=0/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== nalcmp src/match720p30.mp4 vs out/match720p30__UNFORCED_EFFECTS.mp4
+vide: source units=720 output units=359 identical_units(>=16B)=0 sampled_16B_windows_found=0/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== nalcmp src/match720p30.mp4 vs out/match720p30__DESIGN_VBR.mp4
+vide: source units=720 output units=359 identical_units(>=16B)=0 sampled_16B_windows_found=55/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== nalcmp src/match720p30.mp4 vs out/match720p30_709__DESIGN.mp4
+vide: source units=720 output units=359 identical_units(>=16B)=0 sampled_16B_windows_found=3/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== nalcmp src/match720p30.mp4 vs out/match720p30__DESIGN_bt709.mp4
+vide: source units=720 output units=359 identical_units(>=16B)=0 sampled_16B_windows_found=3/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== nalcmp 709 source vs its output
+vide: source units=720 output units=359 identical_units(>=16B)=0 sampled_16B_windows_found=3/1080
+soun: source units=562 output units=562 identical_units(>=16B)=0 sampled_16B_windows_found=1486/1686
+=== canaries
+work/api35/out/land1080p60__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/land1080p60__DESIGN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/land1080p60__DESIGN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/land1080p60__DESIGN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30_709__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30_709__DESIGN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30_709__DESIGN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30_709__DESIGN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_VBR.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_VBR.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_VBR.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_VBR.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_bt709.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_bt709.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_bt709.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_bt709.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_mfra.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_mfra.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_mfra.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_mfra.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_tfdt_mfra.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_tfdt_mfra.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_tfdt_mfra.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__DESIGN_tfdt_mfra.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_DEFAULTS.mp4 canary "GHOSTCANARYS0": ascii=562 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_DEFAULTS.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_DEFAULTS.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_DEFAULTS.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_KEEP_HDR.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_KEEP_HDR.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_KEEP_HDR.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__PLAIN_KEEP_HDR.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__UNFORCED_EFFECTS.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__UNFORCED_EFFECTS.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__UNFORCED_EFFECTS.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/match720p30__UNFORCED_EFFECTS.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_orientfix.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_orientfix.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_orientfix.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_orientfix.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_portraittrue.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_portraittrue.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_portraittrue.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/port720x1280p24__DESIGN_portraittrue.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_orientfix.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/rot90_1280x720p30__DESIGN_portraittrue.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/vga640x480p30__DESIGN.mp4 canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/out/vga640x480p30__DESIGN.mp4 canary "com.android.version": ascii=0 utf16le=0 utf16be=0
+work/api35/out/vga640x480p30__DESIGN.mp4 canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/out/vga640x480p30__DESIGN.mp4 canary "23.623": ascii=0 utf16le=0 utf16be=0
+work/api35/out/strip_*.jpg: The filename, directory name, or volume label syntax is incorrect. (os error 123)
+work/api35/canon/strip_big.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/canon/strip_big.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+work/api35/canon/strip_big.canon.jpg canary "46.771": ascii=0 utf16le=0 utf16be=0
+work/api35/canon/strip_orient6.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+work/api35/canon/strip_orient6.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+work/api35/canon/strip_orient6.canon.jpg canary "46.771": ascii=0 utf16le=0 utf16be=0

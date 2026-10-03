@@ -1,0 +1,434 @@
+== cmp_decoded_ultrahdr.jpg (6881 B, sha256 e62e15a064dd1f9f95257bee193cc9b9bb07e8b0d47d8fe0c81c1d9bdf66aef2)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP1   len=54       id="Exif"
+       74 APP2   len=90       id="MPF"
+      164 APP1   len=925      id="http://ns.adobe.com/xap/1.0/"
+     1089 APP2   len=474      id="ICC_PROFILE"
+     1563 APP2   len=36       id="urn:iso:std:iso:ts:21496:-1"
+     1599 DQT    len=69       T0/8bit
+     1668 DQT    len=69       T1/8bit
+     1737 SOF0   len=19       8bit 640x480 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+     1756 DHT    len=28       DC0
+     1784 DHT    len=43       AC0
+     1827 DHT    len=30       DC1
+     1857 DHT    len=41       AC1
+     1898 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+     1912 ECS    len=3972     entropy-coded data, 0 RST markers
+     5884 EOI    len=2        
+summary: sof=SOF0 640x480 eoi=true trailing_after_eoi=995 fill_bytes=0 errors=[]
+canonicalize: NON_CANONICAL (995 bytes after EOI)
+== cmp_decoded_ultrahdr_gainmap_removed.jpg (4781 B, sha256 10d4157575c3b858d81b48af26b0ed05b100f6b99597e45fab23e2c743df0396)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 640x480 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=28       DC0
+      679 DHT    len=43       AC0
+      722 DHT    len=30       DC1
+      752 DHT    len=41       AC1
+      793 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      807 ECS    len=3972     entropy-coded data, 0 RST markers
+     4779 EOI    len=2        
+summary: sof=SOF0 640x480 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 4289 B, dropped 492 B, fixed point: true
+== cmp_decoded_ultrahdr_srgb_target.jpg (6881 B, sha256 e62e15a064dd1f9f95257bee193cc9b9bb07e8b0d47d8fe0c81c1d9bdf66aef2)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP1   len=54       id="Exif"
+       74 APP2   len=90       id="MPF"
+      164 APP1   len=925      id="http://ns.adobe.com/xap/1.0/"
+     1089 APP2   len=474      id="ICC_PROFILE"
+     1563 APP2   len=36       id="urn:iso:std:iso:ts:21496:-1"
+     1599 DQT    len=69       T0/8bit
+     1668 DQT    len=69       T1/8bit
+     1737 SOF0   len=19       8bit 640x480 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+     1756 DHT    len=28       DC0
+     1784 DHT    len=43       AC0
+     1827 DHT    len=30       DC1
+     1857 DHT    len=41       AC1
+     1898 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+     1912 ECS    len=3972     entropy-coded data, 0 RST markers
+     5884 EOI    len=2        
+summary: sof=SOF0 640x480 eoi=true trailing_after_eoi=995 fill_bytes=0 errors=[]
+canonicalize: NON_CANONICAL (995 bytes after EOI)
+== cmp_displayp3.jpg (4256 B, sha256 6eaece618c18e44a73f9c0347a899b90bb93e761b0445433e2e3648bc88af8bc)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=538      id="ICC_PROFILE"
+      558 DQT    len=69       T0/8bit
+      627 DQT    len=69       T1/8bit
+      696 SOF0   len=19       8bit 640x480 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      715 DHT    len=26       DC0
+      741 DHT    len=30       AC0
+      771 DHT    len=27       DC1
+      798 DHT    len=60       AC1
+      858 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      872 ECS    len=3382     entropy-coded data, 0 RST markers
+     4254 EOI    len=2        
+summary: sof=SOF0 640x480 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3700 B, dropped 556 B, fixed point: true
+== cmp_f16_linear_extended.jpg (4305 B, sha256 24a8cfb0a936b41f488e479862474ba28c90a48874d557590022e3e71d8bf7d4)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=506      id="ICC_PROFILE"
+      526 DQT    len=69       T0/8bit
+      595 DQT    len=69       T1/8bit
+      664 SOF0   len=19       8bit 640x480 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      683 DHT    len=27       DC0
+      710 DHT    len=30       AC0
+      740 DHT    len=28       DC1
+      768 DHT    len=62       AC1
+      830 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      844 ECS    len=3459     entropy-coded data, 0 RST markers
+     4303 EOI    len=2        
+summary: sof=SOF0 640x480 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3781 B, dropped 524 B, fixed point: true
+== cmp_from_exif_source.jpg (4037 B, sha256 c86880685246b7a4e4d6cafbf85280e8cfe3a8c340662b52fcb54db6188069e6)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=28       DC0
+      679 DHT    len=45       AC0
+      724 DHT    len=29       DC1
+      753 DHT    len=53       AC1
+      806 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      820 ECS    len=3215     entropy-coded data, 0 RST markers
+     4035 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3545 B, dropped 492 B, fixed point: true
+== cmp_gainmap_removed.jpg (3584 B, sha256 89772ab0dc433d12bdf8a204517f276202d2e2b0391ed3ef082717e6813591ee)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=30       AC0
+      708 DHT    len=28       DC1
+      736 DHT    len=58       AC1
+      794 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      808 ECS    len=2774     entropy-coded data, 0 RST markers
+     3582 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3092 B, dropped 492 B, fixed point: true
+== cmp_rgb565.jpg (3584 B, sha256 89772ab0dc433d12bdf8a204517f276202d2e2b0391ed3ef082717e6813591ee)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=30       AC0
+      708 DHT    len=28       DC1
+      736 DHT    len=58       AC1
+      794 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      808 ECS    len=2774     entropy-coded data, 0 RST markers
+     3582 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3092 B, dropped 492 B, fixed point: true
+== cmp_srgb_q100.jpg (4089 B, sha256 d41ac41bd2aea62874a6f13b5609d731b118b27be5d868e9088bf1434355213c)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=26       DC0
+      677 DHT    len=30       AC0
+      707 DHT    len=28       DC1
+      735 DHT    len=62       AC1
+      797 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      811 ECS    len=3276     entropy-coded data, 0 RST markers
+     4087 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3597 B, dropped 492 B, fixed point: true
+== cmp_srgb_q60.jpg (3322 B, sha256 e7ea543c90a7825b3ed45bdf39e664c6f974a6dd93663319fd9fe9847d797248)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=30       AC0
+      708 DHT    len=29       DC1
+      737 DHT    len=52       AC1
+      789 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      803 ECS    len=2517     entropy-coded data, 0 RST markers
+     3320 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2830 B, dropped 492 B, fixed point: true
+== cmp_srgb_q85.jpg (3584 B, sha256 89772ab0dc433d12bdf8a204517f276202d2e2b0391ed3ef082717e6813591ee)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=30       AC0
+      708 DHT    len=28       DC1
+      736 DHT    len=58       AC1
+      794 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      808 ECS    len=2774     entropy-coded data, 0 RST markers
+     3582 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3092 B, dropped 492 B, fixed point: true
+== cmp_with_gainmap.jpg (5671 B, sha256 5d7f84e04ff1720e7d9e926aea82cab9be0ce5ccb8fd89558a30dabb5f3a85de)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP1   len=54       id="Exif"
+       74 APP2   len=90       id="MPF"
+      164 APP1   len=925      id="http://ns.adobe.com/xap/1.0/"
+     1089 APP2   len=474      id="ICC_PROFILE"
+     1563 APP2   len=36       id="urn:iso:std:iso:ts:21496:-1"
+     1599 DQT    len=69       T0/8bit
+     1668 DQT    len=69       T1/8bit
+     1737 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+     1756 DHT    len=27       DC0
+     1783 DHT    len=30       AC0
+     1813 DHT    len=28       DC1
+     1841 DHT    len=58       AC1
+     1899 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+     1913 ECS    len=2774     entropy-coded data, 0 RST markers
+     4687 EOI    len=2        
+summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=982 fill_bytes=0 errors=[]
+canonicalize: NON_CANONICAL (982 bytes after EOI)
+== strip_alpha_png.jpg (6412 B, sha256 a0a2c4ec9857af2f48ba2f0611a85b3d4df749475d39afdfe62976baf835b426)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x384 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=30       DC0
+      681 DHT    len=61       AC0
+      742 DHT    len=29       DC1
+      771 DHT    len=48       AC1
+      819 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      833 ECS    len=5577     entropy-coded data, 0 RST markers
+     6410 EOI    len=2        
+summary: sof=SOF0 512x384 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 5920 B, dropped 492 B, fixed point: true
+== strip_big10000_jpg.jpg (126357 B, sha256 2f21124c3757d782d7bf9347fd8b975824292c7af34e27049b7dad8de0904fc7)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 2048x2048 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=31       DC0
+      682 DHT    len=67       AC0
+      749 DHT    len=30       DC1
+      779 DHT    len=67       AC1
+      846 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      860 ECS    len=125495   entropy-coded data, 0 RST markers
+   126355 EOI    len=2        
+summary: sof=SOF0 2048x2048 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 125865 B, dropped 492 B, fixed point: true
+== strip_orient1.jpg (2928 B, sha256 6ca6f245300ce02200005e85475e2db0c8320abf80b626c4193bec1d8977170c)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=26       DC0
+      677 DHT    len=37       AC0
+      714 DHT    len=29       DC1
+      743 DHT    len=44       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2125     entropy-coded data, 0 RST markers
+     2926 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2436 B, dropped 492 B, fixed point: true
+== strip_orient1_jpg.jpg (2928 B, sha256 6ca6f245300ce02200005e85475e2db0c8320abf80b626c4193bec1d8977170c)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=26       DC0
+      677 DHT    len=37       AC0
+      714 DHT    len=29       DC1
+      743 DHT    len=44       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2125     entropy-coded data, 0 RST markers
+     2926 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2436 B, dropped 492 B, fixed point: true
+== strip_orient2.jpg (2955 B, sha256 23a0950719f35ccc6707135871644fd2a3126e2b5038f3a1cc8fd9346c5005a1)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=35       AC0
+      713 DHT    len=29       DC1
+      742 DHT    len=45       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2152     entropy-coded data, 0 RST markers
+     2953 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2463 B, dropped 492 B, fixed point: true
+== strip_orient3.jpg (2955 B, sha256 23a0950719f35ccc6707135871644fd2a3126e2b5038f3a1cc8fd9346c5005a1)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=35       AC0
+      713 DHT    len=29       DC1
+      742 DHT    len=45       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2152     entropy-coded data, 0 RST markers
+     2953 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2463 B, dropped 492 B, fixed point: true
+== strip_orient4.jpg (2928 B, sha256 6ca6f245300ce02200005e85475e2db0c8320abf80b626c4193bec1d8977170c)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=26       DC0
+      677 DHT    len=37       AC0
+      714 DHT    len=29       DC1
+      743 DHT    len=44       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2125     entropy-coded data, 0 RST markers
+     2926 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2436 B, dropped 492 B, fixed point: true
+== strip_orient5.jpg (2933 B, sha256 91a26c8a0e5cd74b098b25267febb46f8aa2dd1e9252af9e7b465f4279beebb7)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=26       DC0
+      677 DHT    len=36       AC0
+      713 DHT    len=29       DC1
+      742 DHT    len=44       AC1
+      786 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      800 ECS    len=2131     entropy-coded data, 0 RST markers
+     2931 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2441 B, dropped 492 B, fixed point: true
+== strip_orient6.jpg (2944 B, sha256 37b277dd5db8fac1de029341ec6c89f6e9b29dac1f0ed7ea41ae9ef9276fce75)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=34       AC0
+      712 DHT    len=29       DC1
+      741 DHT    len=45       AC1
+      786 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      800 ECS    len=2142     entropy-coded data, 0 RST markers
+     2942 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2452 B, dropped 492 B, fixed point: true
+== strip_orient7.jpg (2971 B, sha256 ede966bf718ee6d58576467b92230e5b1e4d759491a2e7facced8ea65070b461)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=35       AC0
+      713 DHT    len=29       DC1
+      742 DHT    len=45       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2168     entropy-coded data, 0 RST markers
+     2969 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2479 B, dropped 492 B, fixed point: true
+== strip_orient8.jpg (2957 B, sha256 18931faedca078229817a57f846ee9c479c2ce7f957484df12fdba254d3f75d8)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=26       DC0
+      677 DHT    len=37       AC0
+      714 DHT    len=29       DC1
+      743 DHT    len=44       AC1
+      787 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      801 ECS    len=2154     entropy-coded data, 0 RST markers
+     2955 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2465 B, dropped 492 B, fixed point: true
+== strip_p3_jpg.jpg (1913 B, sha256 10664f43b36bd74704e5e4e5df8ddfd340d6b459e4e63a61539702a3ba451789)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x384 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=23       DC0
+      674 DHT    len=22       AC0
+      696 DHT    len=24       DC1
+      720 DHT    len=22       AC1
+      742 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      756 ECS    len=1155     entropy-coded data, 0 RST markers
+     1911 EOI    len=2        
+summary: sof=SOF0 512x384 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 1421 B, dropped 492 B, fixed point: true
+== strip_photo_avif.jpg (0 B, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855)
+summary: sof=none 0x0 eoi=false trailing_after_eoi=0 fill_bytes=0 errors=["no SOI at offset 0"]
+canonicalize: NON_CANONICAL (walk: ["no SOI at offset 0"])
+== strip_photo_heic.jpg (0 B, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855)
+summary: sof=none 0x0 eoi=false trailing_after_eoi=0 fill_bytes=0 errors=["no SOI at offset 0"]
+canonicalize: NON_CANONICAL (walk: ["no SOI at offset 0"])
+== strip_photo_webp.jpg (2924 B, sha256 1f194bc706d32c6fb462f3eb5be9e9fbc894970cb9abb0e273e6eed0925c5797)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x336 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=27       DC0
+      678 DHT    len=38       AC0
+      716 DHT    len=29       DC1
+      745 DHT    len=43       AC1
+      788 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      802 ECS    len=2120     entropy-coded data, 0 RST markers
+     2922 EOI    len=2        
+summary: sof=SOF0 512x336 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 2432 B, dropped 492 B, fixed point: true
+== strip_ultrahdr_jpg.jpg (3548 B, sha256 99bafb3912c1db57477eecbb491931616f5420a7f5604bc4cd75cfb8111998ac)
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 512x384 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=28       DC0
+      679 DHT    len=42       AC0
+      721 DHT    len=30       DC1
+      751 DHT    len=40       AC1
+      791 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      805 ECS    len=2741     entropy-coded data, 0 RST markers
+     3546 EOI    len=2        
+summary: sof=SOF0 512x384 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]
+canonicalize: OK, 3056 B, dropped 492 B, fixed point: true

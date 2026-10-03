@@ -1,0 +1,4 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm20 crash mode=2 pid=3719 callback=connected+disconnected result=call failed: DeadObjectException null deathMs=0.0 wallclockMs=1790315552411
+probe crash: OK
+
