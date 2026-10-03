@@ -81,6 +81,12 @@ name: messaging-exit-gate
 on:
   push:
     branches: [main]
+    # A push that only touches documents cannot change what this gate measures (it runs on every
+    # nightly and on dispatch anyway); on the owner's laptop a docs-only push used to queue hours of
+    # gate work on the same machine that builds the next change.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
   pull_request:
     paths:
       - "ghost/android/messaging/**"

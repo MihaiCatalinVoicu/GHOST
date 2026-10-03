@@ -1796,8 +1796,16 @@ if command -v cargo >/dev/null; then
     "vodozemac-0.11.0/olm-session.txt is missing" \
     env GHOST_GOLDEN_NO_TESTS=1 GHOST_GOLDEN_DIR="$dmg_empty" bash "$DIR/dm-golden-lock.sh" --base none
   rmdir "$dmg_empty"
+  # Both refusals are the same fail-closed rule (G-R7 never guesses a base): on a full clone the base
+  # is named and unreadable; on CI's shallow checkout the gate stops one step earlier, at the
+  # shallow check, whatever the base is (run 36434212692 failed this case on that difference).
+  if [ "$(git -C "$DIR" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+    dmg_unreadable_msg="the repository is shallow"
+  else
+    dmg_unreadable_msg="cannot read Cargo.lock at the base 'no-such-revision'"
+  fi
   expect_fail_msg "dm-golden-lock fails closed on an unreadable base" \
-    "cannot read Cargo.lock at the base 'no-such-revision'" \
+    "$dmg_unreadable_msg" \
     env GHOST_GOLDEN_NO_TESTS=1 bash "$DIR/dm-golden-lock.sh" --base no-such-revision
   if out="$(GHOST_GOLDEN_NO_TESTS=1 bash "$DIR/dm-golden-lock.sh" --base none 2>&1)" && grep -qF "first pin, exempt" <<<"$out"; then
     echo "self-test ok: dm-golden-lock exempts the first pin"
