@@ -59,7 +59,10 @@ class T19BasicTest {
         // 8 read pairs over 4 event workers (read via write tokens), plus a write-only namespace.
         val listened: List<NamespaceId> =
             (1..2).map { n -> w.namespace(n, relays).also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } } }
-        val writeOnly = w.namespace(3, relays, listen = false).also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } }
+        // A channel namespace in both runs (only a channel can be funded, Phase 10 review of S1a), of source
+        // REDEEM so that, unfunded, its registrations are served by a write capability as in Phase 9.
+        val writeOnly = w.namespace(3, relays, listen = false, consumer = Consumer.CHANNEL)
+            .also { ns -> relays.forEach { w.capability(it, ns, expiresAt = capabilityExpiry) } }
         // A relay in no namespace's set, as the owner keeps one after a slot change (§21.1 point 3):
         // it adds no read pair, and run (b) gives it key registrations of its own.
         val spare = w.relays(5).single()
@@ -107,7 +110,9 @@ class T19BasicTest {
                 }
                 if (items % 7 == 0) {
                     for (b in w.stores.inbox.claim(Consumer.DM, 4)) w.tx { w.stores.inbox.markConsumed(it, b.namespace, b.hash) }
-                    for (o in w.stores.outbox.outcomes(Consumer.DM, 4)) w.tx { w.stores.outbox.release(it, o.operationId) }
+                    for (consumer in listOf(Consumer.DM, Consumer.CHANNEL)) {
+                        for (o in w.stores.outbox.outcomes(consumer, 4)) w.tx { w.stores.outbox.release(it, o.operationId) }
+                    }
                 }
             }
         }

@@ -1320,8 +1320,10 @@ object Schema {
         // row would write generation 1 over the generation of the token it replaces, and the
         // rejection race guard compares generations, so a stale refusal could mark the new token
         // rejected; the flag has no rule to skip, but the guard is what makes "no REPLACE in sync
-        // SQL for these tables" a property of the database. Both tables are therefore written by
-        // an UPDATE followed by an INSERT, never by an upsert (a guard refuses every insert form).
+        // SQL for these tables" a property of the database. Neither table is therefore ever written
+        // by an upsert or a REPLACE (a guard refuses every insert of a key that exists): the
+        // registration capability by an UPDATE of the row that exists, else an INSERT, and the flag,
+        // which has no column to update, by an INSERT that finds no row (`WHERE NOT EXISTS`).
         replaceGuard("sync_namespace_fund", "namespace_id = NEW.namespace_id"),
         replaceGuard("relay_register_capability", "relay_id = NEW.relay_id AND namespace_id = NEW.namespace_id"),
     )

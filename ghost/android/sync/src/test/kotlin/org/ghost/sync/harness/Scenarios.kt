@@ -501,6 +501,81 @@ internal class ScenarioFundedChannel : Scenario("S-R/funded-channel") {
 }
 
 /**
+ * S-R/funding-flip (Phase 10 review of S1a, finding on the harness driver). A funder's background session
+ * starts with its four registrations due (a funded channel, registration capabilities installed), each
+ * pair's work waiting for its keyed offset in the job window. Seconds later the funding flag is taken off
+ * from the script — a commit outside any lane item, as S6's renewal step will make — which the engine
+ * answers by refreshing the pairs: the unfunded LOCAL channel has no capability that serves a registration
+ * (its write slot holds the bearer credential), so the work the session waited for is gone, both lanes are
+ * idle and no lane has a wake time. The production runner wakes on that change and ends the session; a driver
+ * that takes an item only when a lane has a wake time never did, and left the session online for ever, so
+ * that no later session started (seed 9 of a funded seeded world: "no quiescence"). The flag is put back at
+ * minute 30 and later sessions register everything.
+ */
+internal class ScenarioFundingFlip : Scenario("S-R/funding-flip") {
+    private val kinds = listOf(KeyKind.DEPOSIT, KeyKind.READ)
+    private var ns: NamespaceId? = null
+    private var week = 0L
+
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val relays = listOf(a, b)
+        // HIGH mode, where a registration is work of its pair's event (STANDARD runs them in the session's
+        // first maintenance pass), and a five-minute window for the keyed offsets of the pairs' events.
+        val fay = subject(w, "fay", mode = PrivacyMode.HIGH, policy = TrafficPolicy(listLimit = 4, backgroundWindowMillis = 5 * MINUTE))
+        val chan = fay.namespace("chan", relays, listen = false, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        ns = chan
+        relays.forEach { fay.depositCredential(it, chan) }
+        week = ModelRelay.week(w.relayNow(a))
+        fay.tx { tx ->
+            fay.stores.funding.set(tx, chan, true)
+            for (node in relays) for (kind in kinds) fay.stores.registrations.request(tx, fay.id(node), chan, week, kind, fay.verifier(chan, kind))
+        }
+        relays.forEach { fay.capability(it, chan, CapabilityKind.REGISTER, validSeconds = thisWeekValidSeconds(w, it)) }
+        // The background session starts at minute 1 and is online within seconds; the flag goes off ten
+        // seconds in, before the pairs' events have fired their registrations.
+        w.jobs(fay, MINUTE, MINUTE)
+        w.at(MINUTE + 10 * SECOND, "funding off, outside any lane item") { fay.tx { tx -> fay.stores.funding.set(tx, chan, false) } }
+        // Thirty seconds later the session the flip emptied has ended, on its own: nothing else has touched
+        // it (the flag goes back on at minute 30, which would give it work to wake for).
+        w.at(MINUTE + 40 * SECOND, "the emptied session has ended") {
+            val s = fay.session
+            if (s != null) violation("S-R/funding-flip: $s still runs 30 s after the funding flip took its work away (the driver never re-checked its end)")
+        }
+        w.at(30 * MINUTE, "funding on") { fay.tx { tx -> fay.stores.funding.set(tx, chan, true) } }
+        w.jobs(fay, 31 * MINUTE, 41 * MINUTE, every = 5 * MINUTE)
+        w.endMillis = 45 * MINUTE
+    }
+
+    private fun thisWeekValidSeconds(w: World, node: RelayNode): Long = ModelRelay.weekStart(week + 1) + 3_600 - w.relayNow(node)
+
+    override fun renewalValidSeconds(w: World, node: RelayNode, need: CapabilityNeed): Long =
+        if (need.kind == CapabilityKind.REGISTER) thisWeekValidSeconds(w, node) else super.renewalValidSeconds(w, node, need)
+
+    override fun extraQuiescence(w: World): List<String> {
+        val out = ArrayList<String>()
+        w.subject.jdbc.query("SELECT count(*) FROM relay_key_registration WHERE state <> 'done' OR inflight <> 0") {
+            if (it.long(0) > 0) out += "${it.long(0)} registration(s) still pending or in flight"
+        }
+        return out
+    }
+
+    override fun finalChecks(w: World) {
+        val chan = ns ?: violation("S-R/funding-flip: no namespace")
+        val fay = w.subject
+        for (node in w.relays) {
+            for (kind in kinds) {
+                val relayKind = if (kind == KeyKind.DEPOSIT) ModelRelay.KIND_DEPOSIT else ModelRelay.KIND_READ
+                if (node.model.record(chan, week, relayKind, fay.verifier(chan, kind)) == null) {
+                    violation("S-R/funding-flip: ${node.name} holds no $kind record for the channel")
+                }
+            }
+        }
+    }
+}
+
+/**
  * S-G verification (design §8.3): relay B acknowledges stores and drops them (repair, then failed
  * at the second strike); relay D answers the first store of each hash `malformed_response`
  * without storing. op1 (A, B, C, D) ends SENT; op2 (A, B) can only be verified on A: DEGRADED.

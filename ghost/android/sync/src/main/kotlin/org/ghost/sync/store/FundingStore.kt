@@ -1,5 +1,6 @@
 package org.ghost.sync.store
 
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.SyncChange
 import org.ghost.sync.api.SyncTransaction
@@ -15,10 +16,18 @@ import org.ghost.sync.api.SyncTransaction
  */
 internal class FundingStore {
 
-    /** True when the call changed the flag. */
+    /**
+     * True when the call changed the flag. Only a channel namespace can be funded: for any other the flag
+     * would move the registrations of a Phase 9 owner namespace (a DM inbox, a bundle) from its write
+     * capability to a second, token-bought registration capability, silently doubling its token spend
+     * (Phase 10 review of S1a, §19.33). Taking the flag off is a no-op for a namespace that has none, of
+     * whatever consumer.
+     */
     fun set(tx: SyncTransaction, ns: NamespaceId, funded: Boolean): Boolean {
         val changed = if (funded) {
-            check(namespaceRegistered(tx, ns)) { "namespace is not registered" }
+            val consumer = tx.sql.single("SELECT consumer FROM sync_namespace WHERE namespace_id = ?1", listOf(ns.raw)) { it.string(0) }
+            check(consumer != null) { "namespace is not registered" }
+            check(consumer == Consumer.CHANNEL.code) { "only a channel namespace can be funded" }
             tx.sql.execUpdate(
                 "INSERT INTO sync_namespace_fund(namespace_id) SELECT ?1 " +
                     "WHERE NOT EXISTS (SELECT 1 FROM sync_namespace_fund WHERE namespace_id = ?1)",
@@ -33,7 +42,4 @@ internal class FundingStore {
 
     fun isFunded(tx: SyncTransaction, ns: NamespaceId): Boolean =
         tx.sql.single("SELECT 1 FROM sync_namespace_fund WHERE namespace_id = ?1", listOf(ns.raw)) { 1 } != null
-
-    private fun namespaceRegistered(tx: SyncTransaction, ns: NamespaceId): Boolean =
-        tx.sql.single("SELECT 1 FROM sync_namespace WHERE namespace_id = ?1", listOf(ns.raw)) { 1 } != null
 }

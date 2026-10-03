@@ -297,7 +297,8 @@ class RegistrationStoreTest {
         assertEquals(listOf(week, week + 1), periods())
         assertEquals(listOf(Pair(relay, ns)), w.tx { store.workPairs(it, w.now) })
         // An unknown expiry names no week, an expired or a refused one serves nothing, and neither does a retired relay.
-        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = null, seed = 3)
+        // (The API no longer installs a registration capability without an expiry, review of S1a; the table allows it.)
+        w.raw("UPDATE relay_register_capability SET expires_hour = NULL")
         assertEquals(emptyList<Long>(), periods())
         w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = w.now - HOUR, seed = 4)
         assertEquals(emptyList<Long>(), periods())
@@ -337,7 +338,8 @@ class RegistrationStoreTest {
     @Test
     fun theFundingFlagMovesARowBetweenTheTwoCapabilities(): Unit = SyncWorld().use { w ->
         val relays = w.relays(1, 2)
-        val ns = w.namespace(1, relays, listen = true)
+        // Only a channel namespace can be funded; its source here is REDEEM, which the write capability serves unfunded.
+        val ns = w.namespace(1, relays, listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.REDEEM)
         val week = weekOf(w.now)
         val relay = relays[0]
         val store = w.stores.registrationStore

@@ -1373,8 +1373,11 @@ dmenq_case recv 1 "ReceiveStep.kt:9" "refuses a RECV step that registers a names
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-remove"
 dmenq_case remove 1 "ContactDao.kt:10" "refuses Namespaces.remove from the store layer"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-evasion"
-dmenq_case evasion 6 "ReceiveStep.kt:47" \
+dmenq_case evasion 8 "ReceiveStep.kt:47" \
   "sees a call through a line break, an alias, a scope function, a safe call and a typed port"
+# Phase 10 review of S1a: a callable reference to a restricted call and a parenthesized receiver.
+dmenq_case evasion 8 "ReceiveStep.kt:59" "sees a callable reference to a restricted call (sync.funding::set)"
+dmenq_case evasion 8 "ReceiveStep.kt:61" "sees a parenthesized receiver ((sync.funding).set(…))"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-sweeper"
 dmenq_case sweeper 1 "Sweeper.kt:11" "lets SWEEP remove a namespace and nothing else"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-trigger"

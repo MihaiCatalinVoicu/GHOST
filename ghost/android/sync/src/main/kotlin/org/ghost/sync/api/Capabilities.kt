@@ -12,7 +12,10 @@ interface Capabilities {
      * namespace, a row of its own table. It re-arms the pair's pending key registrations when the
      * namespace is funded ([Funding]) and nothing else; it is never read by a store, a listing, a
      * fetch or a check. A write token put for a funded namespace — the channel's shared DEPOSIT
-     * credential — re-arms the parked deliveries and leaves the registrations alone.
+     * credential — re-arms the parked deliveries and leaves the registrations alone. A registration
+     * capability must declare its expiry (`expiresAtEpochSeconds` non-null, else
+     * [IllegalArgumentException]): the week it serves is read from it, and one without would read as
+     * usable for ever, serve nothing and never be renewed.
      */
     fun put(
         tx: SyncTransaction,

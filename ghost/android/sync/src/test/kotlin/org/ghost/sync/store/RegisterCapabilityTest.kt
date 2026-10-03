@@ -76,19 +76,50 @@ class RegisterCapabilityTest {
         // One row per pair, whatever the number of puts, and a pair's neighbours are untouched.
         assertEquals(1L, w.count("relay_register_capability"))
         assertNull(w.installed(relays[1], ns, CapabilityKind.REGISTER))
-        // An unknown expiry is kept as unknown.
-        w.capability(relays[1], ns, CapabilityKind.REGISTER, expiresAt = null, seed = 5)
-        assertNull(w.installed(relays[1], ns, CapabilityKind.REGISTER)!!.expiresHour)
         // The bounds of a token and of a pair are the others' (design §3.8).
-        assertThrows(IllegalArgumentException::class.java) { w.tx { w.caps.put(it, relays[2], ns, CapabilityKind.REGISTER, ByteArray(0), null) } }
-        assertThrows(IllegalArgumentException::class.java) { w.tx { w.caps.put(it, relays[2], ns, CapabilityKind.REGISTER, ByteArray(513), null) } }
+        assertThrows(IllegalArgumentException::class.java) { w.tx { w.caps.put(it, relays[2], ns, CapabilityKind.REGISTER, ByteArray(0), expiry) } }
+        assertThrows(IllegalArgumentException::class.java) { w.tx { w.caps.put(it, relays[2], ns, CapabilityKind.REGISTER, ByteArray(513), expiry) } }
         assertEquals("unknown relay", assertThrows(IllegalStateException::class.java) {
-            w.tx { w.caps.put(it, RelayId(999), ns, CapabilityKind.REGISTER, ByteArray(82), null) }
+            w.tx { w.caps.put(it, RelayId(999), ns, CapabilityKind.REGISTER, ByteArray(82), expiry) }
         }.message)
         assertEquals("namespace is not registered", assertThrows(IllegalStateException::class.java) {
-            w.tx { w.caps.put(it, relays[2], TestBytes.namespace(77), CapabilityKind.REGISTER, ByteArray(82), null) }
+            w.tx { w.caps.put(it, relays[2], TestBytes.namespace(77), CapabilityKind.REGISTER, ByteArray(82), expiry) }
         }.message)
-        assertEquals(2L, w.count("relay_register_capability"))
+        assertEquals(1L, w.count("relay_register_capability"))
+    }
+
+    /**
+     * A registration capability declares its expiry (Phase 10 review of S1a): its week is read from it, so
+     * one without would read as usable for ever, serve no registration (the due rule needs a declared week),
+     * never be reported as expiring, collected or renewed, and suppress REGISTER MISSING for its pair —
+     * a starved pair that no redemption could ever reach. The other kinds keep their unknown expiry.
+     */
+    @Test
+    fun aRegistrationCapabilityWithoutADeclaredExpiryIsRefusedAndTheOtherKindsKeepTheirs(): Unit = SyncWorld().use { w ->
+        val (ns, relays) = w.channel()
+        w.fund(ns)
+        w.request(relays[0], ns)
+        val before = w.needs()
+        val e = assertThrows(IllegalArgumentException::class.java) {
+            w.tx { w.caps.put(it, relays[0], ns, CapabilityKind.REGISTER, ByteArray(82), null) }
+        }
+        assertEquals("a registration capability needs a declared expiry", e.message)
+        assertEquals("nothing was installed", 0L, w.count("relay_register_capability"))
+        assertNull(w.installed(relays[0], ns, CapabilityKind.REGISTER))
+        assertEquals("the pair still asks for one", before, w.needs())
+        assertTrue(w.needs().any { it.kind == CapabilityKind.REGISTER && it.reason == CapabilityNeed.Reason.MISSING && it.relay == relays[0] })
+        // The refusal is the public API's too, and a held capability is not replaced by an expiry-less one.
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = w.now + 8 * DAY)
+        assertThrows(IllegalArgumentException::class.java) {
+            w.tx { w.stores.capabilities.put(it, relays[0], ns, CapabilityKind.REGISTER, ByteArray(82), null) }
+        }
+        assertEquals(1L, w.tx { w.caps.generation(it, relays[0], ns, CapabilityKind.REGISTER) })
+        assertEquals(Time.floorHour(w.now + 8 * DAY), w.installed(relays[0], ns, CapabilityKind.REGISTER)!!.expiresHour)
+        // The write and read kinds keep an expiry that is unknown (design §3.8).
+        w.capability(relays[1], ns, CapabilityKind.WRITE, expiresAt = null, seed = 5)
+        assertNull(w.installed(relays[1], ns, CapabilityKind.WRITE)!!.expiresHour)
+        w.capability(relays[1], ns, CapabilityKind.READ, expiresAt = null, seed = 6)
+        assertNull(w.installed(relays[1], ns, CapabilityKind.READ)!!.expiresHour)
     }
 
     @Test
@@ -99,8 +130,8 @@ class RegisterCapabilityTest {
         assertTrue(usable())
         w.clock.advance(2 * HOUR)
         assertFalse("the expiry hour is exclusive", usable())
-        w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = null)
-        assertTrue("no declared expiry reads as usable, as for the other kinds", usable())
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = w.now + 2 * HOUR)
+        assertTrue("a new generation is usable again", usable())
         w.tx { w.caps.refuse(it, relays[0], ns, CapabilityKind.REGISTER, 2, exhausted = true) }
         assertFalse(usable())
         assertEquals(InstalledCapability.State.EXHAUSTED, w.installed(relays[0], ns, CapabilityKind.REGISTER)!!.state)
@@ -249,12 +280,78 @@ class RegisterCapabilityTest {
         assertEquals(emptyList<CapabilityNeed>(), w.needs())
     }
 
+    /**
+     * The registration capabilities a funder HOLDS follow the same rule (Phase 10 review of S1a): a rejected,
+     * exhausted or expiring one is a need only on a relay that is in the namespace's set and active. Without the
+     * rule a funder would renew, every week and for ever, the capability of a relay that left its set or was
+     * retired: one token a week and a redemption that relay can see, for nothing.
+     */
+    @Test
+    fun aHeldRegistrationCapabilityIsRenewedOnlyOnARelayOfTheSetThatIsActive(): Unit = SyncWorld().use { w ->
+        val (ns, relays) = w.channel()
+        w.fund(ns)
+        relays.forEach { w.capability(it, ns, CapabilityKind.REGISTER, expiresAt = w.now + 8 * DAY) }
+        assertEquals("healthy ones are no need", emptyList<CapabilityNeed>(), w.needs())
+        // One of each reason: rejected, exhausted, expiring.
+        w.tx { w.caps.refuse(it, relays[0], ns, CapabilityKind.REGISTER, 1, exhausted = false) }
+        w.tx { w.caps.refuse(it, relays[1], ns, CapabilityKind.REGISTER, 1, exhausted = true) }
+        w.capability(relays[2], ns, CapabilityKind.REGISTER, expiresAt = w.now + 20 * HOUR, seed = 2)
+        fun held() = w.needs().map { Triple(it.relay, it.kind, it.reason) }
+        val rejected = CapabilityNeed.Reason.REJECTED
+        val exhausted = CapabilityNeed.Reason.EXHAUSTED
+        val expiring = CapabilityNeed.Reason.EXPIRING
+        assertEquals(
+            listOf(
+                Triple(relays[0], CapabilityKind.REGISTER, rejected),
+                Triple(relays[1], CapabilityKind.REGISTER, exhausted),
+                Triple(relays[2], CapabilityKind.REGISTER, expiring),
+            ),
+            held(),
+        )
+        // A relay that left the namespace's set is no pair of it any more: its held capability is nobody's need.
+        w.tx { w.stores.namespaces.setRelays(it, ns, setOf(relays[1], relays[2])) }
+        assertEquals(listOf(relays[1], relays[2]), w.needs().map { it.relay })
+        // A retired relay is not asked either (it would arm the redeem hold for a relay nobody uses).
+        w.tx { w.stores.relayDirectory.retire(it, relays[2]) }
+        assertEquals(listOf(Triple(relays[1], CapabilityKind.REGISTER, exhausted)), held())
+        assertEquals("no hold is armed for the relays that left", 1, org.ghost.sync.engine.RedeemHold.pendingWriteNeeds(w.stores))
+        // Back in the set and active again (a new row for the relay, the capability is still the old one).
+        w.tx { w.stores.namespaces.setRelays(it, ns, setOf(relays[0], relays[1])) }
+        assertEquals(listOf(relays[0], relays[1]), w.needs().map { it.relay })
+    }
+
+    /**
+     * A registration capability serves `RegisterKey` and nothing else, so a put of one releases no parked
+     * store (Phase 10 design §7.5 item 2; row 15 of the notes): the deliveries wait for a write token, and
+     * only a write token puts them back to pending, due now. Re-arming moves a call time, which is what T19 and
+     * T40 forbid a funder's credential refreshes to do.
+     */
+    @Test
+    fun aRegistrationCapabilityReleasesNoParkedDeliveryAndAWriteCredentialDoes(): Unit = SyncWorld().use { w ->
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays, listen = false, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        w.fund(ns)
+        val op = w.enqueue(1, ns)
+        assertEquals("both deliveries wait for a write token", 2, w.tx { w.outbox.parkWithoutCapability(it, w.now) })
+        assertEquals("wait_capability", w.state(op, relays[0]))
+        val parkedAt = w.delivery(op, relays[0], "next_attempt_minute")
+        w.clock.advance(7 * SyncWorld.MINUTE + 5)
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = w.now + 8 * DAY)
+        assertEquals("a registration capability is no write token", "wait_capability", w.state(op, relays[0]))
+        assertEquals("and moves no time", parkedAt, w.delivery(op, relays[0], "next_attempt_minute"))
+        assertEquals("wait_capability", w.state(op, relays[1]))
+        w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = w.now + 8 * DAY)
+        assertEquals("a write credential does", "pending", w.state(op, relays[0]))
+        assertEquals(Time.floorMinute(w.now), w.delivery(op, relays[0], "next_attempt_minute"))
+        assertEquals("the other relay still waits", "wait_capability", w.state(op, relays[1]))
+    }
+
     @Test
     fun thePendingRegistrationsOfAFundedNamespaceAreNotWriteWork(): Unit = SyncWorld().use { w ->
         // A REDEEM funded namespace without any write token: before funding the pending row asked for a
         // write capability; funded, it asks for a registration capability instead, and only that.
         val relays = w.relays(1, 2)
-        val ns = w.namespace(1, relays, listen = false, consumer = Consumer.DM, capabilitySource = CapabilitySource.REDEEM)
+        val ns = w.namespace(1, relays, listen = false, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.REDEEM)
         w.request(relays[0], ns)
         assertEquals(CapabilityKind.WRITE to CapabilitySource.REDEEM, w.needs().single().let { it.kind to it.source })
         w.fund(ns)
@@ -272,7 +369,12 @@ class RegisterCapabilityTest {
         w.fund(ns)
         w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = w.now + HOUR)
         w.capability(relays[1], ns, CapabilityKind.REGISTER, expiresAt = w.now + 30 * DAY)
-        w.capability(relays[2], ns, CapabilityKind.REGISTER, expiresAt = null)
+        // A row with no expiry cannot be installed any more (a registration capability declares its expiry,
+        // review of S1a), but the table allows it (design §9) and the collector must not treat it as expired.
+        w.raw(
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, expires_hour, state, generation) VALUES (?, ?, ?, NULL, 'usable', 1)",
+            relays[2], ns, TestBytes.of(82, 99),
+        )
         // The write credentials expire at +8 d; the grace is the others' (RetentionPolicy.CAPABILITY_GRACE_SECONDS).
         w.clock.advance(HOUR + RetentionPolicy.CAPABILITY_GRACE_SECONDS - 1)
         assertEquals(0, w.tx { w.caps.collect(it, w.now) })

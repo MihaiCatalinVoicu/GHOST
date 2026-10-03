@@ -114,7 +114,11 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
 
     override fun toString(): String = "RedeemPlanner"
 
-    /** The kind byte of the PRF input: 1 for READ and 2 for WRITE (Phase 8, pinned by the policy vectors), 3 for REGISTER. */
+    /**
+     * The kind byte of the PRF input: 1 for READ and 2 for WRITE (Phase 8's; no policy vector pins them, the
+     * vectors take the PRF draw as an input), 3 for REGISTER (Phase 10, a Kotlin-only choice until the shared
+     * vectors and the Rust reference learn REGISTER, §19.33 F-2).
+     */
     private fun kindByte(kind: CapabilityKind): Byte = when (kind) {
         CapabilityKind.READ -> 1
         CapabilityKind.WRITE -> 2

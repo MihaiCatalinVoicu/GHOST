@@ -43,9 +43,11 @@
 #       whole words, so `relay_capability` and a longer name do not match), anywhere else under
 #       `android/*/src/main` (a later migration that alters such a table, a DAO in another module).
 #       The two sync tables carry `*_no_replace` guards like the DM ones, which refuse every insert
-#       form for an existing key, so their writers are an UPDATE followed by an INSERT and an upsert
-#       or a REPLACE there is a defect that this reads before a test has to reach the statement
-#       (slice S1a; the migration 6 DDL itself is inside the region of (2)).
+#       form for an existing key, so their writers insert only a key that does not exist yet — the
+#       registration capability by an UPDATE of the row that exists and else an INSERT, the funding
+#       flag by an INSERT guarded by `WHERE NOT EXISTS` — and an upsert or a REPLACE there is a
+#       defect that this reads before a test has to reach the statement (slice S1a; the migration 6
+#       DDL itself is inside the region of (2)).
 # `:sync`'s own upserts (cursors, capabilities, the directory) and `:storage`'s pre-DM tables are not
 # DM SQL and are not read against this rule — `relay_capability` is upserted by design — except for
 # the two tables named in (3).

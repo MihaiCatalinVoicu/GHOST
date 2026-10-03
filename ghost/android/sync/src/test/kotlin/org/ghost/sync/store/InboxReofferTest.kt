@@ -138,9 +138,16 @@ class InboxReofferTest {
         assertTrue(w.tx { w.stores.inbox.defer(it, ns, w.hashOf(1), 7 * 86_400) })
         w.clock.advance(-2 * 60)
         assertEquals("treated as due by the clamp already", listOf(1), w.peekSeeds())
-        // The call still resets it (it lies ahead of now): harmless, the row was due, and now it is plainly due.
+        // It is offered once on the strength of the clamp, so the row now carries a counter of 1 beside a
+        // re-offer time that still lies ahead: the one state in which `offers` and a future time meet.
+        assertNotNull(w.stores.inbox.claimOne(Consumer.CHANNEL, ns, w.hashOf(1)))
+        assertEquals(1L, w.offers(1))
+        // The call still resets the time (it lies ahead of now): harmless, the row was due, and now it is
+        // plainly due. It leaves the counter alone (Phase 10 review of S1a, mutant R-F4: a reset of the
+        // counter would let a row that fails be offered again from the start).
         assertEquals(1, w.reoffer(ns))
         assertEquals(0L, w.offerAfter(1))
+        assertEquals("the offer counter is not the call's to reset", 1L, w.offers(1))
         assertEquals(listOf(1), w.peekSeeds())
     }
 

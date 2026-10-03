@@ -47,3 +47,17 @@ internal class SweepStep(private val ops: Outbox, private val registry: Namespac
         ops.cancel(tx, op)
     }
 }
+
+/**
+ * The sixth and seventh shapes, added by the Phase 10 review of S1a: a **callable reference** to a
+ * restricted call (the call is made later, through the reference) and a **parenthesized receiver**
+ * (`(port).call(…)`, where the `)` stood between the receiver and the `.` the rule looked for). Both were
+ * open for every restricted call; the review tried them on `Funding.set`.
+ */
+internal class FundStep(private val sync: SyncPorts) {
+    fun fund(tx: Any, ns: Any) {
+        val later = sync.funding::set
+        later(tx, ns, true)
+        (sync.funding).set(tx, ns, false)
+    }
+}

@@ -35,8 +35,8 @@ class RedeemLaneTest {
     private val ns = NamespaceId(TestBytes.of(32, 4242))
 
     /** A write-only namespace with one queued blob on [relays]: WRITE MISSING at each. */
-    private fun World.writeNeed(relays: Set<RelayId>) = tx { t ->
-        stores.namespaces.register(t, ns, Consumer.DM, relays, listen = false)
+    private fun World.writeNeed(relays: Set<RelayId>, consumer: Consumer = Consumer.DM) = tx { t ->
+        stores.namespaces.register(t, ns, consumer, relays, listen = false)
         stores.outbox.enqueue(t, OutboundBlob(OperationId(TestBytes.of(16, 1)), ns, TestBytes.of(1024, 2), TtlBucket.DAYS_7))
     }
 
@@ -509,15 +509,15 @@ class RedeemLaneTest {
     }
 
     /**
-     * A funded namespace of a REDEEM source (not a channel's case, but the API allows it) with outbox work has
-     * both a WRITE and a REGISTER need on a pair. They are two redemptions with two tokens: the planner does
-     * not let the registration capability stand for the write capability or the reverse, because they are
+     * A funded channel namespace of a REDEEM source (not a channel's case, but the API allows it) with outbox
+     * work has both a WRITE and a REGISTER need on a pair. They are two redemptions with two tokens: the planner
+     * does not let the registration capability stand for the write capability or the reverse, because they are
      * installed into different tables for different purposes.
      */
     @Test
     fun aWriteNeedAndARegisterNeedOfOnePairAreTwoRedemptions(): Unit = World().use { w ->
         val relays = setOf(w.relayIds[0], w.relayIds[1])
-        w.writeNeed(relays)
+        w.writeNeed(relays, Consumer.CHANNEL)
         w.tx { t ->
             w.stores.funding.set(t, ns, true)
             for (relay in relays) w.stores.registrations.request(t, relay, ns, WEEK0, KeyKind.DEPOSIT, TestBytes.of(32, 13))
@@ -533,6 +533,42 @@ class RedeemLaneTest {
         assertEquals(listOf("usable", "usable"), w.registerRows())
         assertTrue(w.tokenRows("access").isEmpty())
         assertTrue(w.stores.capabilities.needed().isEmpty())
+    }
+
+    /**
+     * Only a **usable** registration capability covers a REGISTER need (Phase 10 review of S1a, mutant R-G6).
+     * One the relay refused is rejected, or exhausted, whatever its expiry says, and can reach past the end of
+     * the week all the same; if it covered the need the planner would skip it, the funder would never redeem a
+     * replacement, and the channel's registrations at that relay would lapse with the week, silently (found on
+     * a throwaway funded scenario of the crash enumeration: "2 registration(s) still pending" for ever).
+     */
+    @Test
+    fun aRefusedRegistrationCapabilityThatReachesPastTheWeekIsReplacedAndNeverTrusted() {
+        for (exhausted in listOf(false, true)) {
+            World().use { w ->
+                val relay = w.relayIds[0]
+                w.fundedChannel(setOf(relay))
+                val reachesPastTheWeek = Grid.start(WEEK0 + 1) + 3600
+                w.tx { t -> w.stores.capabilities.put(t, relay, ns, CapabilityKind.REGISTER, TestBytes.of(98, 3), reachesPastTheWeek) }
+                w.addAccess(WEEK0, 0, 2)
+                assertTrue("a healthy one covers the need", w.stores.capabilities.needed().isEmpty())
+                w.laneStep()
+                assertTrue("and nothing is redeemed ($exhausted)", w.redeem.calls.isEmpty())
+                // The relay refuses the token it was presented: the capability is spent for this purpose.
+                w.tx { t ->
+                    val generation = checkNotNull(w.stores.capabilityStore.generation(t, relay, ns, CapabilityKind.REGISTER))
+                    assertTrue(w.stores.capabilityStore.refuse(t, relay, ns, CapabilityKind.REGISTER, generation, exhausted))
+                }
+                val reason = if (exhausted) CapabilityNeed.Reason.EXHAUSTED else CapabilityNeed.Reason.REJECTED
+                assertEquals(listOf(CapabilityKind.REGISTER to reason), w.stores.capabilities.needed().map { it.kind to it.reason })
+                w.laneStep()
+                assertEquals("one fresh redemption replaces it (exhausted = $exhausted)", 1, w.redeem.calls.size)
+                assertEquals(listOf("usable"), w.registerRows())
+                assertEquals("a new generation", 2L, w.count("SELECT generation FROM relay_register_capability"))
+                assertTrue(w.stores.capabilities.needed().isEmpty())
+                assertEquals("the channel's own credentials are as they were", listOf(1L), w.writeGenerations())
+            }
+        }
     }
 
     @Test

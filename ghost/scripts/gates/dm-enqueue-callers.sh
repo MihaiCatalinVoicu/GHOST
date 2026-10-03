@@ -71,9 +71,14 @@
 # `SCOPES` while matching only bare calls meant `sync.outbox.let { it.enqueue(tx) }` across two
 # lines passed a gate whose header claimed to catch it.
 #
+# A **callable reference** to a restricted call (`sync.funding::set`, `ob::enqueue`) and a
+# **parenthesized receiver** (`(sync.funding).set(…)`) are seen too, since the Phase 10 review of S1a
+# (see `is_call_site`); before it both passed for every restricted call, `Outbox.enqueue` included.
+#
 # What is still not seen: an alias that travels through a function parameter, a field or a
-# collection, and a call reached by reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`,
-# S7) is what covers those; this half is the one that fails before a world is ever built.
+# collection, a reference taken to a function that wraps the call, an `import … as` alias of a port
+# type, and a call reached by reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`, S7) is
+# what covers those; this half is the one that fails before a world is ever built.
 #
 # **Slice S6 (2026-09-20).** The mechanism was built and armed then, with a partial corpus:
 # `OwnerSteps.kt` alone, and no RECV, BUNDLE or HELD file to exercise the forbidden side. The gate
@@ -134,10 +139,19 @@
 # committer's CH-SWITCH and by the funder renewal step, never by CH-SETTLE or CH-RECV). It joins
 # the restricted calls under the same rule as `Capabilities.put`: `funding` is a receiver name,
 # `Funding` a receiver type (a constructor-injected `private val ledger: Funding` is a port whatever
-# it is called), `set` a restricted call. `ALLOWED_FILES` is unchanged: no DM file funds anything,
-# and the channel engine's files (slices S4 and S6) are added to it one by one, deliberately, the
-# day they exist. `Inbox.reofferDeferred` is **not** restricted: it writes the re-offer time of local
-# rows and causes no relay traffic (design §7.5 item 6), which `ChannelSyncNoTrafficTest` pins.
+# it is called), `set` a restricted call. `ALLOWED_FILES` is unchanged: no DM file funds anything
+# (and `Funding.set` throws for a namespace that is not a channel's, so none could).
+#
+# **What this does not do, and who does** (Phase 10 review of S1a). The allowlist is shared by every
+# restricted call, so `Funding.set` is accepted in the four files that may enqueue: harmless while no
+# DM file calls it, but it would be wrong for a channel step in this module — CH-SETTLE is allowed
+# to enqueue its own Welcomes and must never fund (design §7.5 item 7). The channel's counterpart of this
+# gate is **G-M5** (`ch-enqueue-callers.sh`, design §13.1), which lists the funding call per step; the
+# review assigned it to slice S4 (§14), the first slice with a channel step that calls a restricted
+# port. Until it exists this gate must not grow channel files: S4 either gives `Funding.set` a file
+# list of its own here or builds G-M5, and says which. `Inbox.reofferDeferred` is **not** restricted:
+# it writes the re-offer time of local rows and makes no relay call (design §7.5 item 6), which
+# `ChannelSyncNoTrafficTest` pins — it can only delay a GET while the fetched cap binds.
 #
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
@@ -356,10 +370,19 @@ while IFS= read -r file; do
   # safe call therefore passed — found by the S9 review while checking that the file SWEEP lives in
   # really cannot write `Outbox.cancel` (mutant ME-21). `joined_lines` folds a continuation that
   # begins with `?.` for the same reason.
+  #
+  # Two shapes more (found by the Phase 10 review of S1a, which tried them on `Funding.set`; both were
+  # equally open for `Outbox.enqueue`): a **callable reference** to a restricted call, which makes the
+  # call later and elsewhere (`val fund = sync.funding::set; fund(tx, ns, true)`), reported at the
+  # reference, and a **parenthesized receiver** (`(sync.funding).set(…)`), where the `)` kept the
+  # receiver off the `.` the first rule looks for.
   is_call_site() {
     [[ "$1" =~ \.[[:space:]]*($2)[[:space:]]*\( ]] && [[ "$1" =~ ($RECEIVERS)[[:space:]]*\??[[:space:]]*\.[[:space:]]*[a-zA-Z] ]] && return 0
     [ -n "$alias_alt" ] && [[ "$1" =~ (^|[^A-Za-z0-9_])($alias_alt)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($2)[[:space:]]*\( ]] && return 0
     [ "$scoped" = 1 ] && [[ "$1" =~ (^|[^.A-Za-z0-9_])($2)[[:space:]]*\( ]] && return 0
+    local ports="$RECEIVERS${alias_alt:+|$alias_alt}"
+    [[ "$1" =~ (^|[^A-Za-z0-9_])($ports)[[:space:]]*\??[[:space:]]*::[[:space:]]*($2)([^A-Za-z0-9_]|$) ]] && return 0
+    [[ "$1" =~ (^|[^A-Za-z0-9_])($ports)[[:space:]]*\)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($2)[[:space:]]*\( ]] && return 0
     return 1
   }
 

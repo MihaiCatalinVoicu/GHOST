@@ -32,7 +32,10 @@ interface Funding {
     /**
      * Marks the namespace funded ([funded] true) or not, in the caller's transaction. Idempotent: it
      * returns normally when the flag already has the value. Marking an unregistered namespace funded
-     * throws [IllegalStateException] ("namespace is not registered"); unmarking one is a no-op.
+     * throws [IllegalStateException] ("namespace is not registered"), and so does marking one whose
+     * consumer is not [Consumer.CHANNEL] ("only a channel namespace can be funded": the flag would move
+     * the registrations of a Phase 9 owner namespace to a second, token-bought capability and double
+     * its token spend); unmarking a namespace that has no flag is a no-op, whatever it is.
      *
      * Unmarking keeps the registration capabilities the namespace already holds: they are inert
      * (nothing reads them for an unfunded namespace, and [Capabilities.needed] stops reporting them)

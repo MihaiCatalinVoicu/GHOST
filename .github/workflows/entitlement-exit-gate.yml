@@ -1,7 +1,8 @@
 name: entitlement-exit-gate
 
 # The entitlement exit gate (Phase 8 design §13.2, §13.6, §19.17): the client crash enumeration of
-# E-A … E-J with every double crash of E-A, E-D and E-F in both journal modes, and 20 000 seeded
+# E-A … E-J (and E-R, the funder's registration capabilities, since the Phase 10 review of S1a) with
+# every double crash of E-A, E-D, E-F and E-R/funded in both journal modes, and 20 000 seeded
 # :entitlement liveness worlds, all with the real entitlement engine and redeem lane over the
 # Phase 7 sync harness, the model issuer and the model redeem relays; plus NI-K, the client mutants
 # and the conformance replays, which every shard runs. A workflow file of its own, like
@@ -106,8 +107,9 @@ jobs:
           crashes="$(sed -n 's/^entitlement crashes injected=\([0-9]*\) caught=\([0-9]*\)$/\1 \2/p' "$report" 2>/dev/null || true)"
           if [ -z "$crashes" ] || [ "${crashes% *}" != "${crashes#* }" ]; then echo "::error::harness report: no crash line, or injected and caught crashes differ"; fail=1; fi
           count '^E-[A-J][^ ]* (DELETE|WAL): K=[1-9]' 24 "enumeration lines (E-A ... E-J in both journal modes)"
-          need '^entitlement mutants: 17 run ' "mutant line (17 run)"
-          count ' DETECTED: ' 17 "detected mutants"
+          count '^E-R[^ ]* (DELETE|WAL): K=[1-9]' 4 "enumeration lines (E-R/funded and E-R/funded-plain in both journal modes)"
+          need '^entitlement mutants: 18 run ' "mutant line (18 run)"
+          count ' DETECTED: ' 18 "detected mutants"
           count '^NI-K ' 3 "NI-K lines"
           exit "$fail"
       # A failed test's message and stack trace in the job summary, and an upload the artifact quota

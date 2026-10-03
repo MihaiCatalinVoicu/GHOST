@@ -426,8 +426,10 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       # Phase 7 design §8.3–§8.8, §8.10: exhaustive crash enumeration of S-A..S-H (single crashes in
-      # DELETE and WAL, double crashes for S-A, S-D, S-F in both), 20 000 seeded worlds, the 13
-      # mutants, T19/T3/T20 and the model-relay conformance replay. World databases go to /dev/shm
+      # DELETE and WAL, double crashes for S-A, S-D, S-F in both; Phase 10 adds S-P/reoffer-deferred and
+      # S-R/funded-channel), 20 000 seeded worlds, the 19 mutants (M1-M13 of Phase 7, M14-M17 of the
+      # reviews and the T19 worlds, M18-M19 of Phase 10 slice S1a), T19/T3/T20 and the model-relay
+      # conformance replay. World databases go to /dev/shm
       # (the crash model is process death, not power loss).
       # --rerun: org.gradle.caching is on and setup-gradle restores the local build cache, so without it
       # an unchanged test task is restored FROM-CACHE and the gate runs nothing; the summary step then
@@ -446,7 +448,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           fail=0
-          for line in '^seeded worlds: 20000 seeds, ' '^mutants: 17 run' '^crashes injected=[0-9]+ caught at the top level=[0-9]+$'; do
+          for line in '^seeded worlds: 20000 seeds, ' '^mutants: 19 run' '^crashes injected=[0-9]+ caught at the top level=[0-9]+$'; do
             if ! grep -Eq "$line" "$report" 2>/dev/null; then echo "::error::sync harness report: no line matching $line"; fail=1; fi
           done
           exit "$fail"

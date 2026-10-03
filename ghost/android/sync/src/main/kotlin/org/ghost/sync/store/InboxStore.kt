@@ -437,8 +437,11 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
      * consumer chose to wait with, not for a blob that failed. Rows that are not fetched, rows of
      * other namespaces and rows already due are left as they are.
      *
-     * **It causes no relay traffic**: no list, get, store, check, redemption or registration, and no
-     * schedule is read or changed; the only effect outside the table is the local consumer hint.
+     * **It adds no relay call and changes no schedule**: no list, get, store, check, redemption or
+     * registration follows from it, and no schedule is read or changed; the only effect outside the
+     * table is the local consumer hint. What it can do to what a relay sees is delay, and only a GET:
+     * the rows it makes due count against FETCHED_CAP again ([fetchedLoad] skips a row while its
+     * re-offer time lies ahead), so a namespace at the cap fetches no further blob until they are consumed.
      */
     fun reofferDeferred(tx: SyncTransaction, ns: NamespaceId, now: Long): Int {
         val moved = tx.sql.execUpdate(

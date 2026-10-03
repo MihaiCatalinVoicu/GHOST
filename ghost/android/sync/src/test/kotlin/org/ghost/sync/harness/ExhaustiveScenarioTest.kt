@@ -119,7 +119,7 @@ class ExhaustiveScenarioTest {
             HarnessReport.add("crashes injected=${Harness.injectedCrashes.get()} caught at the top level=${Harness.caughtCrashes.get()}")
             HarnessReport.add(
                 "exhaustive enumeration: ${(System.nanoTime() - started) / 1_000_000_000} s on ${Harness.threads} threads " +
-                    "(mode=${if (Harness.fullExhaustive) "full" else "default"}; budget: default :sync tests under ~10 min on CI)",
+                    "(mode=${if (Harness.fullExhaustive) "full" else "default"}; Phase 7 aimed the default enumeration at ~10 min on CI: not enforced, this line is the measurement)",
             )
         }
     }

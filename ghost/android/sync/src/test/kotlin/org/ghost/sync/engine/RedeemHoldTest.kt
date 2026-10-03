@@ -1,6 +1,7 @@
 package org.ghost.sync.engine
 
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilityNeed
 import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.port.SyncClock
@@ -55,6 +56,44 @@ class RedeemHoldTest {
         assertEquals(setOf(CapabilityKind.READ, CapabilityKind.REGISTER), kinds)
         assertEquals("the REGISTER need and no other is counted", 1, RedeemHold.pendingWriteNeeds(w.stores))
         assertTrue(RedeemHold.background(RedeemHold.pendingWriteNeeds(w.stores), 1_000).armed)
+    }
+
+    /**
+     * "A funder whose registration capabilities lapsed" (Phase 10 design §7.6; the review of S1a found the
+     * note's claim covered only the capability that was never there): a held registration capability that is
+     * rejected, exhausted or about to expire is a write need of a REDEEM namespace like one that is missing, so
+     * a background session holds for the redemption in all four cases.
+     */
+    @Test
+    fun aLapsedRegistrationCapabilityArmsTheHoldInEveryReason() = EngineWorld().use { w ->
+        val relays = w.relays(1, 2, 3)
+        val ns = w.namespace(1, relays, listen = false, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        w.fund(ns)
+        val week = Time.week(w.clock.epochSeconds())
+        val healthy = Time.WEEK_ORIGIN + Time.WEEK * (week + 1) + Time.HOUR
+        relays.forEach { w.capability(it, ns, CapabilityKind.REGISTER, seed = 1, expiresAt = healthy) }
+        assertEquals("healthy registration capabilities are no need", 0, RedeemHold.pendingWriteNeeds(w.stores))
+        fun armedBy(reason: CapabilityNeed.Reason) {
+            val needs = w.stores.capabilities.needed()
+            assertEquals(listOf(CapabilityKind.REGISTER to reason), needs.map { it.kind to it.reason })
+            assertEquals("$reason is counted", 1, RedeemHold.pendingWriteNeeds(w.stores))
+            assertTrue("$reason arms the hold", RedeemHold.background(RedeemHold.pendingWriteNeeds(w.stores), 1_000).armed)
+        }
+        // Expiring: inside the last 24 hours of its validity.
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, seed = 2, expiresAt = w.clock.epochSeconds() + 20 * 3_600)
+        armedBy(CapabilityNeed.Reason.EXPIRING)
+        // Rejected, then a new generation, then exhausted: the relay refused the token it was presented.
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, seed = 3, expiresAt = healthy)
+        assertEquals(0, RedeemHold.pendingWriteNeeds(w.stores))
+        w.tx { w.stores.capabilityStore.refuse(it, relays[0], ns, CapabilityKind.REGISTER, w.stores.capabilityStore.generation(it, relays[0], ns, CapabilityKind.REGISTER)!!, exhausted = false) }
+        armedBy(CapabilityNeed.Reason.REJECTED)
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, seed = 4, expiresAt = healthy)
+        w.tx { w.stores.capabilityStore.refuse(it, relays[0], ns, CapabilityKind.REGISTER, w.stores.capabilityStore.generation(it, relays[0], ns, CapabilityKind.REGISTER)!!, exhausted = true) }
+        armedBy(CapabilityNeed.Reason.EXHAUSTED)
+        // Renewed: nothing is pending, nothing is held.
+        w.capability(relays[0], ns, CapabilityKind.REGISTER, seed = 5, expiresAt = healthy)
+        assertEquals(0, RedeemHold.pendingWriteNeeds(w.stores))
+        assertFalse(RedeemHold.background(RedeemHold.pendingWriteNeeds(w.stores), 1_000).armed)
     }
 
     @Test

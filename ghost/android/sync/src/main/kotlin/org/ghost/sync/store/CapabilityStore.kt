@@ -32,9 +32,17 @@ internal class CapabilityToken(val kind: CapabilityKind, token: ByteArray, val g
  */
 internal class CapabilityStore {
 
-    /** Upserts a usable token with generation + 1 (1 for a new row); returns the new generation. */
+    /**
+     * Upserts a usable token with generation + 1 (1 for a new row); returns the new generation. A
+     * registration capability ([CapabilityKind.REGISTER]) must declare its expiry: its week is read from
+     * it, by the relay and by the registration step's due rule, so one without an expiry names no week and
+     * serves no registration, yet reads as usable, is never expiring, collected or renewed, and suppresses
+     * REGISTER MISSING for its pair for ever (found by the Phase 10 review of S1a, §19.33). Every
+     * redemption carries an expiry, so nothing that exists installs one without.
+     */
     fun put(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, kind: CapabilityKind, token: ByteArray, expiresAtEpochSeconds: Long?): Long {
         require(token.size in 1..MAX_TOKEN_SIZE) { "capability token has the wrong length" }
+        require(kind != CapabilityKind.REGISTER || expiresAtEpochSeconds != null) { "a registration capability needs a declared expiry" }
         val sql = tx.sql
         check(sql.single("SELECT 1 FROM relay_directory WHERE relay_id = ?1", listOf(relay.value)) { 1 } != null) { "unknown relay" }
         check(sql.single("SELECT 1 FROM sync_namespace WHERE namespace_id = ?1", listOf(ns.raw)) { 1 } != null) { "namespace is not registered" }
@@ -98,6 +106,12 @@ internal class CapabilityStore {
      * grants read). An exhausted write token still reads: the relay charges quota only on store
      * (design §3.6, `quota` cannot occur on list, get or check), so a store quota running out never
      * ends a pair's listing. A registration capability never reads (Phase 10 design §7.5 item 2).
+     *
+     * **Known gap F-6** (Phase 10 review of S1a, design §19.33; S4 decides): the fallback does not look at
+     * the namespace's source, and for a LOCAL channel namespace the write slot holds the bearer DEPOSIT
+     * credential, which no relay lets list. A listened channel whose READ credential is missing or has
+     * lapsed would list with it, be refused before any I/O and stop listing for a day (a BUG flag).
+     * `CapabilityTest.knownGapF6…` pins it.
      */
     fun forReading(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, now: Long): CapabilityToken? =
         usable(tx, relay, ns, CapabilityKind.READ, now) ?: readableWrite(tx, relay, ns, now)

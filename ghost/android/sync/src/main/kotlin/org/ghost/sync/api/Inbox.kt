@@ -81,10 +81,14 @@ interface Inbox {
      *
      * **Use contract.** Called by the consumer from the transactions that make deferred blobs
      * openable (a settle, a join, a namespace switch), once per transaction and namespace. It
-     * **causes no traffic**: it writes the re-offer time of local rows and sends a consumer hint
-     * ([SyncListener]) when it moved any; no relay call, store, redemption, registration or schedule
-     * change follows from it, and the engine's pair snapshot is untouched. A row on the poison backoff
-     * (offered three times without being consumed or deferred, §11.2 #3) is not a deferred row and
+     * **adds no relay call and changes no schedule**: it writes the re-offer time of local rows and
+     * sends a consumer hint ([SyncListener]) when it moved any; no list, get, store, check, redemption
+     * or registration follows from it, and the engine's pair snapshot is untouched. **One effect on
+     * what a relay sees remains, and it is a delay:** the rows it makes due count against
+     * `FETCHED_CAP` again (a deferred row does not count while it waits), so while the namespace is at
+     * the cap the GETs that were pending wait until the consumer has consumed them. A call is held
+     * back, never added and never moved earlier (`ChannelSyncNoTrafficTest`). A row on the poison
+     * backoff (offered three times without being consumed or deferred, §11.2 #3) is not a deferred row and
      * keeps it, and rows that are not fetched, belong to another namespace or are due already are not
      * touched.
      */
