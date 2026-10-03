@@ -1,0 +1,109 @@
+EM-3 arithmetic store hour in [store, store + 60 min) (F7:485): 20160 cases, smallest margin 0
+EM-3 arithmetic a blind concurrent pass is stored before any settle window ends (T1): 118800 cases, smallest margin 5
+EM-3 arithmetic a prompt store precedes every sibling's store-hour anchor (T1): 120 cases, smallest margin 63
+EM-3 arithmetic a return 140 min after the last store settles N <= 30 epochs at once: 279000 cases, smallest margin 1
+EM-3 arithmetic honest 28-day self-updates satisfy CO-14 for 2..=100 members: 99 cases, smallest margin 2
+EM-3 arithmetic 9-day flags exceed the PCS cadence; stale_suspected comes inside the drain: 3 cases, smallest margin 1
+EM-3 arithmetic a moderator never races an active owner on fresh work: 7 cases, smallest margin 23
+EM-3 arithmetic: 7 checks hold
+EM-3 SC-CONC concurrent honest commits: 138057 states, 587605 transitions, 238703 decisions, 526 terminal, depth 22, reach 4/4, 2.1 s
+EM-3 SC-LATE late better commit, returning member: 86243 states, 406454 transitions, 194141 decisions, 123 terminal, depth 22, reach 4/4, 1.5 s
+EM-3 SC-GRIND ground self-update below a settled winner: 188239 states, 762646 transitions, 305148 decisions, 1220 terminal, depth 25, reach 2/2, 2.4 s
+EM-3 SC-JOIN admission, Welcome after the win: 61734 states, 292549 transitions, 79772 decisions, 23 terminal, depth 29, reach 2/2, 1.2 s
+EM-3 SC-REMOVE removal hold and rotation: 80057 states, 348242 transitions, 143893 decisions, 33 terminal, depth 31, reach 3/3, 0.9 s
+EM-3 SC-GOV transfer, resignation and leave of the owner: 3927 states, 15882 transitions, 6339 decisions, 1 terminal, depth 36, reach 4/4, 0.1 s
+EM-3 SC-FLOOD self-update flood: 73039 states, 323417 transitions, 113010 decisions, 50 terminal, depth 33, reach 3/3, 0.8 s
+EM-3 SC-INDET own commit closed INDETERMINATE: 2080 states, 7665 transitions, 2598 decisions, 5 terminal, depth 15, reach 3/3, 0.0 s
+EM-3 SC-JUNK non-canonical lifetime commit: 1413 states, 4966 transitions, 1770 decisions, 4 terminal, depth 17, reach 1/1, 0.0 s
+EM-3 SC-CLOCKS members with different clocks: 72553 states, 345938 transitions, 95312 decisions, 23 terminal, depth 30, reach 1/1, 1.9 s
+EM-3 SC-ADV rank-255 proposals and a new signer: 2457 states, 8860 transitions, 3132 decisions, 5 terminal, depth 16, reach 1/1, 0.0 s
+EM-3 SC-CATCHUP returning member across epochs: 368 states, 1222 transitions, 410 decisions, 1 terminal, depth 19, reach 2/2, 0.0 s
+EM-3 SC-FORK dead branch, resync and rejoin: 148278 states, 646233 transitions, 3396 decisions, 29 terminal, depth 42, reach 2/2, 3.1 s
+EM-3 SC-OWNER the owner on a dead branch is readmitted: 464 states, 1472 transitions, 312 decisions, 1 terminal, depth 19, reach 1/1, 0.0 s
+EM-3 SC-SILENT silent orphan: 11220 states, 36471 transitions, 2220 decisions, 24 terminal, depth 34, reach 2/2, 0.1 s
+EM-3 SC-PARTITION committers cut off: 5044 states, 16854 transitions, 0 decisions, 8 terminal, depth 21, reach 1/1, 0.1 s
+EM-3 SC-SPAM-DRAIN spam in the draining namespace: 476 states, 1629 transitions, 0 decisions, 3 terminal, depth 13, reach 1/1, 0.0 s
+EM-3 SC-REPLAY replayed and re-wrapped KeyPackages: 126503 states, 544214 transitions, 94708 decisions, 8 terminal, depth 29, reach 2/2, 2.0 s
+EM-3 controls (pr): 18 scenarios, 1002152 states, 4352319 transitions, 1284864 decisions, 2087 terminal
+EM-3 mutant Rank255Proposals [CO-1 (MM-5)]: killed by P-NO-INVALID-MERGE in SC-ADV rank-255 proposals and a new signer (4 steps, 0.07 s)
+EM-3 mutant PostCommitRank [CO-1 (rank basis, §19.13)]: killed by P-GOVERNANCE in SC-GOV transfer, resignation and leave of the owner (1 steps, 0.00 s)
+EM-3 mutant SwapWithoutEvidence [CO-2 (MM-21)]: killed by P-NO-INVALID-MERGE in SC-REPLAY replayed and re-wrapped KeyPackages (27 steps, 0.00 s)
+EM-3 mutant LocalHistory [CO-2 (MM-23)]: killed by P-VALID-SAME in SC-JOIN admission, Welcome after the win (9 steps, 0.00 s)
+EM-3 mutant NoSwapOfLowerRank [CO-2 (MM-33)]: killed by P-OWNER-BACK in SC-OWNER the owner on a dead branch is readmitted (5 steps, 0.00 s)
+EM-3 mutant NewSigner [CO-2 (MM-31)]: killed by P-NO-INVALID-MERGE in SC-ADV rank-255 proposals and a new signer (4 steps, 0.02 s)
+EM-3 mutant LifetimeByClock [CO-2 (S0-12 / round 10d, Q42 (b))]: killed by P-VALID-SAME in SC-CLOCKS members with different clocks (18 steps, 0.00 s)
+EM-3 mutant LifetimePending [CO-2, CO-4 (MM-46)]: killed by P-LIFETIME in SC-JUNK non-canonical lifetime commit (5 steps, 0.02 s)
+EM-3 mutant HashOnly [CO-3 (MM-4)]: killed by P-RANK in SC-CONC concurrent honest commits (12 steps, 0.00 s)
+EM-3 mutant NoSuccessors [CO-3 (MM-24)]: killed by P-FOLLOW in SC-LATE late better commit, returning member (17 steps, 0.07 s)
+EM-3 mutant NoWindow [CO-4 (MM-3)]: killed by P-FRESH in SC-CONC concurrent honest commits (8 steps, 0.00 s)
+EM-3 mutant OwnUnverified [CO-4 (MM-2)]: killed by P-VERIFIED in SC-INDET own commit closed INDETERMINATE (4 steps, 0.01 s)
+EM-3 mutant NoStoreHourAnchor [CO-4 (MM-25)]: killed by P-CATCHUP in SC-CATCHUP returning member across epochs (7 steps, 0.00 s)
+EM-3 mutant ClearIndeterminate [CO-4 (MM-32)]: killed by P-CUSTODY in SC-INDET own commit closed INDETERMINATE (12 steps, 0.01 s)
+EM-3 mutant NoListingPass [CO-4 (ii)]: killed by P-FRESH in SC-CONC concurrent honest commits (12 steps, 0.00 s)
+EM-3 mutant OwnAnchorAtPass [CO-4 (i) (own commit's anchor)]: killed by P-FRESH in SC-LATE late better commit, returning member (9 steps, 0.21 s)
+EM-3 mutant WelcomeAtPass [CO-5 (MM-19)]: killed by P-WELCOME in SC-JOIN admission, Welcome after the win (17 steps, 0.05 s)
+EM-3 mutant NotSticky [CO-6 (MM-16)]: killed by P-STICKY in SC-LATE late better commit, returning member (14 steps, 0.06 s)
+EM-3 mutant Rank255Blocks [CO-7 (MM-26)]: killed by P-PASS in SC-FLOOD self-update flood (5 steps, 0.02 s)
+EM-3 mutant FreshWork [CO-8 (MM-34)]: killed by P-WORKAGE in SC-JOIN admission, Welcome after the win (3 steps, 0.00 s)
+EM-3 mutant NoSkip [CO-9]: killed by P-OWN-VALID in SC-CONC concurrent honest commits (1 steps, 0.00 s)
+EM-3 mutant DropLoserWork [CO-10]: killed by P-LIVENESS in SC-REMOVE removal hold and rotation (22 steps, 0.07 s)
+EM-3 mutant CountDraining [CO-11 (MM-37)]: killed by P-NO-FALSE-RESYNC in SC-SPAM-DRAIN spam in the draining namespace (13 steps, 0.01 s)
+EM-3 mutant NoBranchDeath [CO-11]: killed by P-DETECT in SC-FORK dead branch, resync and rejoin (23 steps, 0.62 s)
+EM-3 mutant NoStale [CO-12 (MM-36)]: killed by P-DETECT in SC-SILENT silent orphan (15 steps, 0.00 s)
+EM-3 mutant NoPartition [CO-12]: killed by P-DETECT in SC-PARTITION committers cut off (21 steps, 0.00 s)
+EM-3 mutant NoHold [CO-13 (PC-14)]: killed by P-HOLD in SC-REMOVE removal hold and rotation (17 steps, 0.00 s)
+EM-3 mutant NoRate [CO-14 (MM-26)]: killed by P-NO-INVALID-MERGE in SC-FLOOD self-update flood (15 steps, 0.02 s)
+EM-3 mutant NoRotation [§6.5 (MM-7)]: killed by P-ROTATION in SC-REMOVE removal hold and rotation (15 steps, 0.00 s)
+EM-3 mutant PreCommitGeneration [§6.5 (MM-8)]: killed by P-ROTATION in SC-REMOVE removal hold and rotation (15 steps, 0.00 s)
+EM-3 mutant RejoinNoFreshness [§6.7 (MM-20)]: killed by P-REJOIN-SAFE in SC-REPLAY replayed and re-wrapped KeyPackages (22 steps, 0.00 s)
+EM-3 mutants (pr): 31 run, 31 killed
+EM-3 finding F-1 (a) reproduced (design rules):
+EM-3 finding F-1 (b) reproduced (design rules):
+EM-3 finding F-1 corrected (SettleBeforePass): (a) 35405 states, no fork; (b) 31809 states, no stranded committer
+EM-3 finding F-2 (a) reproduced (design rules):
+EM-3 finding F-2 (b) reproduced (design rules with F-1's correction):
+EM-3 finding F-2 (a) closed by settle beacons (SettleBeacon): 1728 states, no fork
+EM-3 finding F-2 (b) remains with settle beacons (declared residual):
+EM-3 finding F-3 (a) reproduced (design rules, F-3 (b) corrected):
+EM-3 finding F-3 (b) reproduced (design rules, F-3 (a) corrected):
+EM-3 finding F-3 corrected (PartitionOneOther, SplitCountsDraining): 98269 states
+EM-3 finding F-4 reproduced (the pass-time reading of CO-4 (i)):
+EM-3 finding F-5 reproduced (design rules):
+EM-3 finding F-5 corrected (FetchedOwnCopy, with SettleBeforePass): 71815 states, no stranded committer
+EM-3 corrected SC-CONC concurrent honest commits: 35405 states, 168500 transitions, reach 3/3
+EM-3 corrected SC-LATE late better commit, returning member: 62627 states, 297890 transitions, reach 4/4
+EM-3 corrected SC-GRIND ground self-update below a settled winner: 188239 states, 762646 transitions, reach 2/2
+EM-3 corrected SC-JOIN admission, Welcome after the win: 26536 states, 128323 transitions, reach 2/2
+EM-3 corrected SC-REMOVE removal hold and rotation: 80057 states, 355921 transitions, reach 3/3
+EM-3 corrected SC-GOV transfer, resignation and leave of the owner: 3927 states, 16206 transitions, reach 4/4
+EM-3 corrected SC-FLOOD self-update flood: 7587 states, 30713 transitions, reach 3/3
+EM-3 corrected SC-INDET own commit closed INDETERMINATE: 2080 states, 7665 transitions, reach 2/2
+EM-3 corrected SC-JUNK non-canonical lifetime commit: 1413 states, 4966 transitions, reach 1/1
+EM-3 corrected SC-CLOCKS members with different clocks: 27707 states, 133736 transitions, reach 1/1
+EM-3 corrected SC-ADV rank-255 proposals and a new signer: 2457 states, 8860 transitions, reach 1/1
+EM-3 corrected SC-CATCHUP returning member across epochs: 368 states, 1222 transitions, reach 2/2
+EM-3 corrected SC-FORK dead branch, resync and rejoin: 148278 states, 646233 transitions, reach 2/2
+EM-3 corrected SC-OWNER the owner on a dead branch is readmitted: 464 states, 1472 transitions, reach 1/1
+EM-3 corrected SC-SILENT silent orphan: 11448 states, 37037 transitions, reach 2/2
+EM-3 corrected SC-PARTITION committers cut off: 5044 states, 16854 transitions, reach 1/1
+EM-3 corrected SC-SPAM-DRAIN spam in the draining namespace: 3490 states, 9054 transitions, reach 1/1
+EM-3 corrected SC-REPLAY replayed and re-wrapped KeyPackages: 126503 states, 544214 transitions, reach 2/2
+EM-3 beacons SC-CONC concurrent honest commits: 174817 states, 774125 transitions, reach 3/3
+EM-3 beacons SC-LATE late better commit, returning member: 172165 states, 797805 transitions, reach 4/4
+EM-3 beacons SC-GRIND ground self-update below a settled winner: 848943 states, 3953554 transitions, reach 2/2
+EM-3 beacons SC-JOIN admission, Welcome after the win: 371148 states, 1730529 transitions, reach 2/2
+EM-3 beacons SC-REMOVE removal hold and rotation: 1147059 states, 5231030 transitions, reach 3/3
+EM-3 beacons SC-GOV transfer, resignation and leave of the owner: 1426668 states, 6288524 transitions, reach 4/4
+EM-3 beacons SC-FLOOD self-update flood: 225110 states, 984506 transitions, reach 3/3
+EM-3 beacons SC-INDET own commit closed INDETERMINATE: 35008 states, 141939 transitions, reach 2/2
+EM-3 beacons SC-JUNK non-canonical lifetime commit: 4110 states, 14566 transitions, reach 1/1
+EM-3 beacons SC-CLOCKS members with different clocks: 402424 states, 1877199 transitions, reach 1/1
+EM-3 beacons SC-ADV rank-255 proposals and a new signer: 17491 states, 71440 transitions, reach 1/1
+EM-3 beacons SC-CATCHUP returning member across epochs: 724 states, 2552 transitions, reach 2/2
+EM-3 beacons SC-FORK dead branch, resync and rejoin: 2665564 states, 10784640 transitions, reach 2/2
+EM-3 beacons SC-OWNER the owner on a dead branch is readmitted: 2618 states, 8948 transitions, reach 1/1
+EM-3 beacons SC-SILENT silent orphan: 16937 states, 55674 transitions, reach 2/2
+EM-3 beacons SC-PARTITION committers cut off: 130867 states, 462867 transitions, reach 1/1
+EM-3 beacons SC-SPAM-DRAIN spam in the draining namespace: 6576 states, 19866 transitions, reach 1/1
+EM-3 beacons SC-REPLAY replayed and re-wrapped KeyPackages: 293219 states, 1270038 transitions, reach 2/2
+EM-3 corrections: 18 controls rerun with F-1's, F-3's and F-5's corrections (pr), 18 with F-2's beacons too (pr), 0 failures

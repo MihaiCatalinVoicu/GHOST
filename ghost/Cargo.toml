@@ -26,6 +26,10 @@ members = [
     # vectors (§10.1, §12.2, S0-13): test-only, outside every shipped and host graph; the only crate
     # that enables openmls/test-utils (G-M2).
     "client-core/mls-kat",
+    # EM-3, the exhaustive commit-arbitration model (Phase 10 design §12.3, §19.34): test-only, no
+    # dependency, outside every shipped and host graph (the EM-1/EM-2 placement: a model and its search
+    # run as an integration test).
+    "client-core/mls-models",
     # The process-global seeded randomness of host and test builds (§12.1, §19.10, S0-7): the
     # getrandom custom backend behind --cfg getrandom_backend="custom". Host-only; refuses to compile
     # for Android and is kept out of every shipped graph by rust-feature-policy.sh (G-R2).
@@ -157,6 +161,10 @@ opt-level = 3
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]
+opt-level = 3
+# EM-3 (§12.3) runs in the rust job's debug `cargo test` at its PR bound: optimised like the OpenMLS
+# crates above so that the exhaustive search fits the job; release builds are unaffected.
+[profile.dev.package.ghost-client-mls-models]
 opt-level = 3
 
 # Phase 10 design §3.2 "Lock resolution" (S0-1, Q40 (a)): the optional, forbidden SQLite provider of

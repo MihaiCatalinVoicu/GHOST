@@ -2018,6 +2018,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost-client-mls-models"
+version = "0.1.0"
+
+[[package]]
 name = "ghost-client-net"
 version = "0.1.0"
 dependencies = [

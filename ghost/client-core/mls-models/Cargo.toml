@@ -1,0 +1,15 @@
+[package]
+publish = false
+name = "ghost-client-mls-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Test-only: EM-3, the exhaustive commit-arbitration model of the channel design (Phase 10 design faza10-forum.md §12.3, §19.34); no dependency, outside every shipped and host graph"
+
+[lib]
+# The model is a library so that its unit tests sit next to the rules they check; the search, the
+# properties, the mutants and the printed counts run as the integration test tests/state_models.rs
+# (the EM-1/EM-2 placement, ghost-client-dm/tests/state_models.rs). Nothing depends on this
+# package and it depends on nothing: it is outside every shipped and host graph.
+crate-type = ["rlib"]

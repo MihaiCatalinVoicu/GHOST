@@ -1,0 +1,82 @@
+name: channel-state-models
+
+# EM-3, the exhaustive commit-arbitration model of the channel design (Phase 10 design
+# faza10-forum.md §12.3; findings and counts in §19.34), at its full bound. `cargo test -p
+# ghost-client-mls-models --test state_models` runs at the pull-request bound in the `rust` job of
+# ci.yml (the workspace tests); this job runs every control scenario, every mutant and every finding
+# probe at the full bound (EM3_SCALE=full: deeper epochs, both committers' commits where the PR
+# bound keeps one, the returning members, the moderator acting on the aged request, the relays
+# ending a FORK, the declared spam scenario) in the release profile, and checks the report with
+# scripts/gates/ch-state-models-check.sh (every control with all its flows reached, every mutant
+# killed by its named property, every finding reproduced and corrected).
+# Triggers: schedule, dispatch and pushes to main only. No pull_request trigger: this job runs on the
+# self-hosted runners, which never run a pull request's code; §12.3's "on pull requests that touch
+# the arbitration code" is the PR bound in the rust job.
+# Budget: measured on the owner's workstation (24 threads, release, EM3_THREADS=8): the 9 tests at
+# the full bound in 349-352 s after the build (34.8 million states in the controls; the largest
+# exploration 9.3 million), peak working set 0.67 GB (one 128-bit fingerprint per state); the
+# timeout leaves room for a slower runner and the build. EM3_BUDGET is a per-exploration state
+# budget: reaching it fails the run (an overflow is not a verdict).
+# Supply chain (ci.yml rules): every action pinned by full commit SHA (the comment names the tag).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ghost/client-core/mls-models/**"
+      - "ghost/scripts/gates/ch-state-models-check.sh"
+      - ".github/workflows/channel-state-models.yml"
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "State budget per exploration (EM3_BUDGET); reaching it fails the run"
+        type: string
+        default: "100000000"
+      threads:
+        description: "Explorations at once (EM3_THREADS); each holds its own fingerprint set"
+        type: string
+        default: "8"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  channel-state-models:
+    name: Channel state model EM-3 (full bound, release)
+    runs-on: [self-hosted, linux, x64, ghost]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: ghost
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch
+        with:
+          toolchain: 1.98.1
+      - name: EM-3 at the full bound
+        env:
+          EM3_SCALE: full
+          EM3_BUDGET: ${{ github.event.inputs.budget || '100000000' }}
+          EM3_THREADS: ${{ github.event.inputs.threads || '8' }}
+        run: |
+          cargo test --locked --release -p ghost-client-mls-models --test state_models \
+            -- --nocapture --test-threads 1 | tee "$RUNNER_TEMP/channel-state-models.txt"
+      - name: EM-3 report check
+        run: bash scripts/gates/ch-state-models-check.sh "$RUNNER_TEMP/channel-state-models.txt" full
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Channel state model EM-3 (full bound)"
+            echo '```'
+            # The counts the model prints. `|| true`: the summary is evidence, never the verdict —
+            # the verdict is the exit status of the run and of the report check above.
+            grep -E "^EM-3 " "$RUNNER_TEMP/channel-state-models.txt" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
