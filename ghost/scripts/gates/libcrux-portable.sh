@@ -36,10 +36,11 @@
 # `rerun-if-env-changed` — the same stale-cfg hazard (V10-7: simd256 -> still simd256 after the
 # variables changed -> portable after a clean). Every clean list therefore names it too
 # (`cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes`), and this
-# gate checks it in every build that has it. It is required only with `--with-aes`: until slice S2b
-# links `ghost-client-mls` into `ghost-client-net` and `ghost-dm-host`, the DM builds do not compile
-# it, and a build that must (the workspace test build, the OpenMLS suite) says so, so that a check
-# that sees no `libcrux-aes` build there fails instead of passing vacuously.
+# gate checks it in every build that has it. It is required only with `--with-aes`, which a build that
+# must compile it says, so that a check that sees no `libcrux-aes` build there fails instead of
+# passing vacuously: the workspace test build and the OpenMLS suite since slice S2a, and since slice
+# S2b — which links `ghost-client-mls` into `ghost-client-net` and `ghost-dm-host` — every shipped
+# and host build the workflows check (the review of S2b found two `ci.yml` calls without it).
 #
 # Usage: libcrux-portable.sh [--with-aes] (--json <file> | --target-dir <dir>)...
 # Self-test: scripts/gates/self-test.sh runs it over test-harness/gates/libcrux-portable/.

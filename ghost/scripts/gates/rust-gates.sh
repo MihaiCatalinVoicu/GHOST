@@ -12,6 +12,8 @@ cargo fmt --all -- --check || fail "rustfmt"
 cargo clippy --locked --workspace --all-targets -- -D warnings || fail "clippy"
 cargo test --locked --workspace --exclude ghost-client-mls || fail "cargo test"
 cargo test --locked -p ghost-client-mls || fail "cargo test -p ghost-client-mls"
+cargo test --locked -p ghost-client-mls --features jni-bridge,test-vectors --lib -- jni:: testvec:: \
+  || fail "cargo test -p ghost-client-mls (its JNI layer, slice S2b)"
 bash "$GHOST_ROOT/scripts/ci/mls-determinism.sh" || fail "mls-determinism (V10-6)"
 # The issuer crash suite runs in the release profile (Phase 8 design §19.17 point 2; CI job rust).
 cargo test --locked --release -p ghost-issuer --test crash || fail "issuer crash suite (release)"

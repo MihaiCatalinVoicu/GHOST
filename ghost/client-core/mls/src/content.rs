@@ -9,6 +9,8 @@
 //! kind, lengths within bounds, no trailing bytes; otherwise `NON_CANONICAL`. The encoder refuses
 //! what the decoder refuses, so every encoded content decodes to itself.
 
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use crate::codec::{put_u16, put_u32, Reader};
 use crate::result::{Code, MlsError, MlsResult};
 
@@ -43,8 +45,11 @@ pub const REVEAL_CT_MAX: usize = 512;
 /// version ‖ kind ‖ op_id ‖ author_minute ‖ timer_code.
 pub const HEADER_LEN: usize = 23;
 
-/// A decoded, canonical content.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A decoded, canonical content. It holds a post's plaintext (a reaction's grapheme, a reveal's
+/// ciphertext), so every copy the crate makes is erased when it is dropped (review of S2b:
+/// `contentEncode`, `contentDecode`, `encrypt`'s validation decode and a received post each left
+/// one in freed memory).
+#[derive(Clone, Debug, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct ChannelContent {
     pub kind: u8,
     pub op_id: [u8; 16],
@@ -70,6 +75,31 @@ pub enum Body {
         hpke_enc: [u8; 32],
         ciphertext: Vec<u8>,
     },
+}
+
+// What `ChannelContent`'s erasure reaches in its body: the text, the grapheme, the reveal's
+// ciphertext. An `INVITE_ISSUED` record is public (ids, public keys, signatures) and is left as it is.
+impl Zeroize for Body {
+    fn zeroize(&mut self) {
+        match self {
+            Body::Post { text, reply_to } => {
+                text.zeroize();
+                reply_to.zeroize();
+            }
+            Body::Reaction { target, grapheme } => {
+                target.zeroize();
+                grapheme.zeroize();
+            }
+            Body::InviteIssued(_) | Body::Leave => {}
+            Body::Reveal {
+                hpke_enc,
+                ciphertext,
+            } => {
+                hpke_enc.zeroize();
+                ciphertext.zeroize();
+            }
+        }
+    }
 }
 
 /// The sponsor's record of an invite (§5.5 kind 0x03, §19.28.3).
@@ -103,7 +133,18 @@ impl ChannelContent {
         if self.timer_code > 5 {
             return Err(nc());
         }
-        let mut o = Vec::with_capacity(HEADER_LEN + 64);
+        // The exact length up front: a buffer that grew would leave the text it held in freed
+        // memory, where the caller's erasure of the encoding cannot reach it (review of S2b).
+        let tlvs = match &self.body {
+            Body::Post { text, reply_to } => 4 + text.len() + reply_to.map_or(0, |_| 4 + 16),
+            Body::Reaction { grapheme, .. } => 4 + 16 + 4 + grapheme.len(),
+            Body::InviteIssued(i) => {
+                5 * 4 + 16 + 32 + 4 + 64 + 32 + i.pw_version.map_or(0, |_| 4 + 2)
+            }
+            Body::Leave => 0,
+            Body::Reveal { ciphertext, .. } => 4 + 32 + 4 + ciphertext.len(),
+        };
+        let mut o = Vec::with_capacity(HEADER_LEN + tlvs);
         o.push(1);
         o.push(self.kind);
         o.extend_from_slice(&self.op_id);
@@ -349,9 +390,23 @@ mod tests {
                 },
                 ..post("x")
             },
+            ChannelContent {
+                body: Body::InviteIssued(InviteIssued {
+                    invite_id: [2; 16],
+                    invite_pk: [3; 32],
+                    expiry_day: 20_730,
+                    sponsor_sig: [4; 64],
+                    committers_digest: [5; 32],
+                    pw_version: None,
+                }),
+                kind: KIND_INVITE_ISSUED,
+                ..post("x")
+            },
         ] {
             let e = c.encode().unwrap();
             assert_eq!(ChannelContent::decode(&e).unwrap(), c);
+            // Allocated once at its exact length: no outgrown buffer holds a copy (review of S2b).
+            assert_eq!(e.capacity(), e.len(), "kind {}", c.kind);
         }
         // The longest text post: 16 027 bytes of content (V10-4's 16 000-byte post).
         let longest = ChannelContent {
@@ -362,6 +417,43 @@ mod tests {
             ..post("x")
         };
         assert_eq!(longest.encode().unwrap().len(), 16_027);
+    }
+
+    /// A content erases what it holds of a post when it is dropped (review of S2b): the text, the
+    /// grapheme, a reveal's ciphertext and the op id; an `INVITE_ISSUED` record is public.
+    #[test]
+    fn a_content_erases_its_plaintext() {
+        fn zeroizes_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        zeroizes_on_drop::<ChannelContent>();
+        // What its drop runs: the whole content, header and body.
+        let mut content = post("o postare");
+        content.zeroize();
+        assert_eq!(content.op_id, [0; 16]);
+        assert!(matches!(&content.body, Body::Post { text, .. } if text.is_empty()));
+        let mut post = Body::Post {
+            text: "o postare".into(),
+            reply_to: Some([9; 16]),
+        };
+        post.zeroize();
+        assert!(
+            matches!(&post, Body::Post { text, reply_to } if text.is_empty() && reply_to.is_none())
+        );
+        let mut reaction = Body::Reaction {
+            target: [7; 16],
+            grapheme: "👍".into(),
+        };
+        reaction.zeroize();
+        assert!(
+            matches!(&reaction, Body::Reaction { target, grapheme } if *target == [0; 16] && grapheme.is_empty())
+        );
+        let mut reveal = Body::Reveal {
+            hpke_enc: [1; 32],
+            ciphertext: vec![2; 64],
+        };
+        reveal.zeroize();
+        assert!(
+            matches!(&reveal, Body::Reveal { hpke_enc, ciphertext } if *hpke_enc == [0; 32] && ciphertext.is_empty())
+        );
     }
 
     #[test]

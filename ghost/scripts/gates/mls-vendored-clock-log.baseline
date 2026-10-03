@@ -1,8 +1,9 @@
 # Gate G-M8 baseline (scripts/gates/mls-vendored-clock-log.sh = dm-vendored-clock-log.sh --graph mls;
 # Phase 10 design faza10-forum.md §3.6, §13.1 G-M8; T3, T33; slice S2a). The compiled library code of
-# every crate of `cargo tree -p ghost-client-mls -e normal` on aarch64-linux-android and
-# x86_64-linux-android, with the features of the crate's own graph (slice S2b links it into
-# ghost-client-net), merged over both triples. Kinds: [lib] linked into the library; [proc-macro] and
+# every crate of `cargo tree -p ghost-client-mls -e normal --features jni-bridge` on
+# aarch64-linux-android and x86_64-linux-android, with the features each package has in the shipped
+# library (`cargo tree -p ghost-client-net`; slice S2b links the crate there with its JNI export),
+# merged over both triples. Kinds: [lib] linked into the library; [proc-macro] and
 # [build-time] run only while compiling. Every site, directive and note line ends in its reason after
 # two spaces and '#'. An entry the scan finds and this file lacks fails the gate (unjustified); an
 # entry here the scan no longer finds fails it too (stale). Regenerate at a pin change with
@@ -19,6 +20,13 @@
 # elapsed (a clock read through the imported constant or a clock value's method): 11 more sites, each
 # justified below — the crate's import and its one use in sweep_past, OpenMLS's time-based deletion
 # and lifetime code, a rayon-core test module and serde's re-export.
+#
+# Slice S2b (design §19.32) scans the graph as the shipped library links it: `jni-bridge` on, each
+# package with its features in ghost-client-net's graph. Measured: of S2a's entries only the crate's
+# own sweep_past line moved (1847 -> 1947: the invite and join functions S2b adds above it), and the
+# feature unification adds no site; new are the `jni` subtree's 9 crates, 15 build directives
+# (jni-sys 0.3.1, thiserror 1.0.69) and jni's 23 log facade sites — each identical to the DM graph's
+# entry and carrying the reason reviewed there (G-R4, G-R8).
 
 # Sites (clock, logging, printing, network):
 site crossbeam-utils@0.8.23 src/sync/parker.rs:124 Instant::now clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
@@ -28,7 +36,30 @@ site crossbeam-utils@0.8.23 src/sync/parker.rs:5 std::time clock-log [lib]  # Pa
 site either@1.18.0 src/lib.rs:1798 stdout clock-log [lib]  # either's own #[test] fn read_write (a #[test] item, not a cfg(test) module, so the scan keeps it); a dependency of rayon here, the test function is never called in the library
 site ghost-client-mls@0.1.0 src/group.rs:14 UNIX_EPOCH clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
 site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
-site ghost-client-mls@0.1.0 src/group.rs:1847 UNIX_EPOCH clock-log [lib]  # sweep_past passes the UNIX_EPOCH constant to PastEpochDeletion::before_timestamp, so only the count applies (design §3.5, §8.3); no clock read
+site ghost-client-mls@0.1.0 src/group.rs:2027 UNIX_EPOCH clock-log [lib]  # sweep_past passes the UNIX_EPOCH constant to PastEpochDeletion::before_timestamp, so only the count applies (design §3.5, §8.3); no clock read
+site jni@0.21.1 src/wrapper/java_vm/vm.rs:9 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/jnienv.rs:9 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:107 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:114 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:118 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:122 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:15 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:41 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:56 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:67 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:71 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:75 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:86 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:89 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/macros.rs:92 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/objects/auto_elements.rs:1 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/objects/auto_elements_critical.rs:1 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/objects/auto_local.rs:7 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/objects/global_ref.rs:3 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/objects/jvalue.rs:4 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/objects/weak_ref.rs:3 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/strings/ffi_str.rs:8 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
+site jni@0.21.1 src/wrapper/strings/java_str.rs:4 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
 site libc@0.2.189 src/new/mod.rs:218 time:: clock-log [lib]  # re-export of the time type declarations (timespec, clock ids); no call in the DM graph
 site libcrux-macros@0.0.3 src/lib.rs:121 tracing:: clock-log [proc-macro]  # proc-macro output text for test tracing; build time only, never linked
 site memchr@2.8.3 src/macros.rs:15 log:: clock-log [lib]  # macro body inert: log! expands to nothing without the disabled logging feature
@@ -201,6 +232,16 @@ directive generic-array@0.14.7 build.rs:3  # build-script configuration only (ru
 directive getrandom@0.4.3 build.rs:6  # a rerun-if line and one rustc-cfg: configuration only; the OS entropy backend is chosen by cfg in its sources, no link directive
 directive getrandom@0.4.3 build.rs:9  # a rerun-if line and one rustc-cfg: configuration only; the OS entropy backend is chosen by cfg in its sources, no link directive
 directive hax-lib@0.3.7 build.rs:62  # rerun-if-changed only (its build script writes the proc_macros_generated.rs re-exports, see the note)
+directive jni-sys@0.3.1 build.rs:11  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:18  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:19  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:2  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:25  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:33  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:34  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:6  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:7  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
+directive jni-sys@0.3.1 build.rs:9  # the link-search, rustc-cfg jvm_linked, rustc-link-lib=dylib=jvm and rustc-env lines run only under the crate's own test variable _JNI_SYS_TEST (option_env!, at build-script compile time), never set in a GHOST build: no JVM is linked; the check-cfg and rerun-if lines are configuration
 directive libc@0.2.189 build.rs:103  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
 directive libc@0.2.189 build.rs:106  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
 directive libc@0.2.189 build.rs:119  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
@@ -293,6 +334,11 @@ directive serde_json@1.0.151 build.rs:26  # build-script configuration only (rus
 directive serde_json@1.0.151 build.rs:28  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
 directive serde_json@1.0.151 build.rs:4  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
 directive serde_json@1.0.151 build.rs:6  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive thiserror@1.0.69 build.rs:10  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive thiserror@1.0.69 build.rs:12  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive thiserror@1.0.69 build.rs:13  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive thiserror@1.0.69 build.rs:51  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive thiserror@1.0.69 build.rs:55  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
 directive thiserror@2.0.20 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
 directive thiserror@2.0.20 build.rs:21  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
 directive thiserror@2.0.20 build.rs:22  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
@@ -334,11 +380,14 @@ crate base64ct@1.8.3 lib Apache-2.0 OR MIT
 crate blake2@0.11.0 lib MIT OR Apache-2.0
 crate block-buffer@0.10.4 lib MIT OR Apache-2.0
 crate block-buffer@0.12.1 lib MIT OR Apache-2.0
+crate bytes@1.12.1 lib MIT
+crate cesu8@1.1.0 lib Apache-2.0/MIT
 crate cfg-if@1.0.4 lib MIT OR Apache-2.0
 crate chacha20@0.10.2 lib MIT OR Apache-2.0
 crate chacha20poly1305@0.11.0 lib Apache-2.0 OR MIT
 crate cipher@0.5.2 lib MIT OR Apache-2.0
 crate cmov@0.5.4 lib Apache-2.0 OR MIT
+crate combine@4.6.8 lib MIT
 crate const-oid@0.10.2 lib Apache-2.0 OR MIT
 crate cpufeatures@0.2.17 lib MIT OR Apache-2.0
 crate cpufeatures@0.3.1 lib MIT OR Apache-2.0
@@ -368,6 +417,10 @@ crate hpke-rs@0.7.0 lib MPL-2.0
 crate hybrid-array@0.4.15 lib MIT OR Apache-2.0
 crate inout@0.2.2 lib MIT OR Apache-2.0
 crate itoa@1.0.18 lib MIT OR Apache-2.0
+crate jni-sys-macros@0.4.1 proc-macro MIT OR Apache-2.0
+crate jni-sys@0.3.1 lib MIT OR Apache-2.0
+crate jni-sys@0.4.1 lib MIT OR Apache-2.0
+crate jni@0.21.1 lib MIT/Apache-2.0
 crate libc@0.2.189 lib MIT OR Apache-2.0
 crate libcrux-aead@0.0.9 lib Apache-2.0
 crate libcrux-aes@0.0.9 lib Apache-2.0
@@ -418,7 +471,9 @@ crate signature@2.2.0 lib Apache-2.0 OR MIT
 crate subtle@2.6.1 lib BSD-3-Clause
 crate syn@2.0.119 build-time MIT OR Apache-2.0
 crate syn@3.0.5 build-time MIT OR Apache-2.0
+crate thiserror-impl@1.0.69 proc-macro MIT OR Apache-2.0
 crate thiserror-impl@2.0.20 proc-macro MIT OR Apache-2.0
+crate thiserror@1.0.69 lib MIT OR Apache-2.0
 crate thiserror@2.0.20 lib MIT OR Apache-2.0
 crate tls_codec@0.5.0 lib Apache-2.0 OR MIT
 crate tls_codec_derive@0.5.0 proc-macro Apache-2.0 OR MIT

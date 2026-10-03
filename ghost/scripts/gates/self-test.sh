@@ -1692,7 +1692,10 @@ dmg_lib_case() { # $1 = expect pass|fail, $2 = expected violation count, $3 = ex
   fi
 }
 dmg_lib_case pass 0 "[dm-golden-lock] OK" "accepts a library with Olm and without HPKE" hpke-dropped.bin
-dmg_lib_case fail 2 "contains 'HPKE-v1'" "rejects a library the linker left HPKE in" hpke-linked.bin
+dmg_lib_case fail 2 "contains 'HPKEXXYYZZ'" "rejects a library the linker left RustCrypto's hpke and vodozemac's HPKE in" hpke-linked.bin
+# Phase 10 slice S2b (faza10-forum.md §19.32): OpenMLS's HPKE (hpke-rs) is linked on purpose and its
+# RFC 9180 labels no longer count as RustCrypto's hpke.
+dmg_lib_case pass 0 "[dm-golden-lock] OK" "accepts OpenMLS's hpke-rs labels (HPKE-v1, psk_id_hash) beside Olm" hpke-rs-linked.bin
 dmg_lib_case fail 2 "does not contain 'OLM_KEYS'" "refuses a library with no Olm code" no-olm.bin
 # `--library` is the whole of its mode and reads no git base: the `android-native` job's checkout is
 # shallow, and the first CI run fell through to the pin rule after "OK" (design §22.33 item 18). A
@@ -1704,6 +1707,156 @@ else
   echo "SELF-TEST FAIL: dm-golden-lock --library went on to the pin rule" >&2
   printf '%s\n' "$dmg_out" | tail -3 >&2; rc=1
 fi
+
+# G-M6 (Phase 10 design faza10-forum.md §10.2, §13.1; slice S2b): the channel JNI surface is a
+# closed list with function 16 reserved for slice S9 — G-R6's halves for `MlsNative`, its one test
+# entry (`MlsVectors.run`) only in a test library, and one list of allowed classes shared with G-R6.
+MLS_JNI="$HARNESS/mls-jni"
+if env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+     GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: mls-jni-surface accepts a closed list whose entry points and declarations agree"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface rejects the good fixture" >&2; rc=1
+fi
+expect_fail_msg "mls-jni-surface rejects an export outside the closed list" \
+  "the workspace exports 'MlsNative.debugDump', which is not on the closed list" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/undeclared-export.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects function 16 written before slice S9" \
+  "'MlsNative.revealSeal' is reserved on the closed list (a later slice's: Declared) but the workspace already writes its entry point" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/early-reveal.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects an Exported entry with no entry point" \
+  "'MlsNative.ctxClose' is marked Exported on the closed list but the workspace writes no entry point for it" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/missing-export.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a Kotlin declaration the crate does not export" \
+  "MlsNative declares 'external fun debugDump', which the crate does not export" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeExtra.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a Kotlin declaration of the reserved function 16" \
+  "MlsNative declares 'external fun revealSeal', which is reserved for a later slice" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeReveal.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a public native declaration" \
+  "it must be internal" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativePublic.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects an internal declaration Kotlin would mangle" \
+  "would mangle the JNI name" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeMangled.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a missing Kotlin declaration" \
+  "MlsNative does not declare 'external fun ctxClose'" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeMissing.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects an MlsNative entry point written outside the closed list's file" \
+  "the workspace exports 'MlsNative.debugDump'" \
+  env GHOST_MLS_JNI_SCAN="$MLS_JNI/stray" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a JNI entry point of a class no surface gate knows" \
+  "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_MlsDebug_dump'" \
+  env GHOST_MLS_JNI_SCAN="$MLS_JNI/foreign" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+# Review of S2b. The source halves read code, not one spelling (common.sh jni_source_symbols): every
+# MlsNative name of mls-jni/evasions/ is reported — `pub unsafe extern "system"`, no `pub`, `extern
+# "C"`, a line break after `fn`, an `export_name` a macro argument writes, module directories named
+# `target` and `build` under `src/` — with the foreign class a macro exports, and neither the name in
+# a comment nor the build output outside `src/`. G-R6 reads the same files the same way.
+mls_ev_out="$(env GHOST_MLS_JNI_SCAN="$MLS_JNI/evasions" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" 2>&1 || true)"
+mls_ev_missing=""
+for name in debugUnsafe debugPrivate debugC debugSplit debugMacro debugTarget debugBuild; do
+  grep -qF "the workspace exports 'MlsNative.$name', which is not on the closed list" <<<"$mls_ev_out" || mls_ev_missing+="$name "
+done
+if [ -z "$mls_ev_missing" ] && [ "$(grep -c '^GATE-FAIL' <<<"$mls_ev_out" || true)" = "8" ] \
+   && grep -qF "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_DmDebug_dump'" <<<"$mls_ev_out" \
+   && ! grep -qE 'debugComment|debugOutput' <<<"$mls_ev_out"; then
+  echo "self-test ok: mls-jni-surface reads every spelling of an entry point rustc exports, and no comment or build output"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface does not report exactly the eight entry points of mls-jni/evasions/ (missing: ${mls_ev_missing:-none})" >&2
+  printf '%s\n' "$mls_ev_out" | grep '^GATE-FAIL' >&2; rc=1
+fi
+dm_ev_out="$(env GHOST_DM_JNI_SCAN="$MLS_JNI/evasions" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
+if grep -qF "the crate exports 'debugDm', which is not on the closed list" <<<"$dm_ev_out" \
+   && grep -qF "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_DmDebug_dump'" <<<"$dm_ev_out" \
+   && ! grep -qE 'debugComment|debugOutput' <<<"$dm_ev_out"; then
+  echo "self-test ok: dm-jni-surface reads the same spellings (a DmNative entry point in src/target/, a foreign class a macro exports)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface misses an entry point of mls-jni/evasions/" >&2
+  printf '%s\n' "$dm_ev_out" | grep '^GATE-FAIL' >&2; rc=1
+fi
+# A closed list with no reserved entry (slice S9 exports function 16): an empty selection ended the
+# gate with no message under pipefail.
+if env GHOST_MLS_JNI_SOURCE="$MLS_JNI/all-exported.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+     GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: mls-jni-surface accepts a closed list with no reserved entry"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface rejects a closed list with no reserved entry" >&2; rc=1
+fi
+# JNI binds by name: the declarations' parameter types are the entry points' (review of S2b).
+expect_fail_msg "mls-jni-surface rejects a declaration whose parameter types are not its entry point's" \
+  "MlsNative.ctxClose: Kotlin declares (I), its entry point takes (J)" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeRetyped.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a public declaration on its @JvmName's line" \
+  "MlsNative declares 'external fun ctxOpen' outside the module: it must be internal" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeOneLine.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a public declaration on its @JvmName's line" \
+  "DmNative declares 'external fun ctxOpen' outside the module: it must be internal" \
+  env GHOST_DM_JNI_KOTLIN="$HARNESS/dm-jni/DmNativeOneLine.kt" bash "$DIR/dm-jni-surface.sh"
+mls_native_out="$(env GHOST_MLS_JNI_ANDROID="$MLS_JNI/android-native" bash "$DIR/mls-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$mls_native_out" || true)" = "2" ] \
+   && grep -qF "MlsDebug.kt:8: declares a native method outside MlsNative" <<<"$mls_native_out" \
+   && grep -qF "ChannelLeak.java:6: declares a native method outside MlsNative" <<<"$mls_native_out"; then
+  echo "self-test ok: mls-jni-surface reports native methods outside the allowed files (Kotlin and Java, comments skipped)"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface does not report exactly the two native declarations of mls-jni/android-native/" >&2
+  printf '%s\n' "$mls_native_out" | tail -4 >&2; rc=1
+fi
+mls_ref_out="$(env GHOST_MLS_JNI_ANDROID="$MLS_JNI/android-ref" bash "$DIR/mls-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$mls_ref_out" || true)" = "2" ] \
+   && grep -qF "ChannelShortcut.kt:9: references MlsNative outside :crypto-bridge src/main" <<<"$mls_ref_out" \
+   && grep -qF "GateChannel.kt:5: references MlsNative outside :crypto-bridge src/main" <<<"$mls_ref_out"; then
+  echo "self-test ok: mls-jni-surface reports MlsNative referenced outside :crypto-bridge src/main (code, not prose)"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface does not report exactly the two code references to MlsNative" >&2
+  printf '%s\n' "$mls_ref_out" | tail -4 >&2; rc=1
+fi
+expect_fail_msg "mls-jni-surface rejects a library that was named but is not there" \
+  "library not found" env GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" "$MLS_JNI/no-such-library.so"
+mls_elf="$(mktemp)"
+printf '\177ELF G-M6 fixture: the symbols come from GHOST_MLS_JNI_NM\n' > "$mls_elf"
+mls_lib_case() { # $1 = expect pass|fail, $2 = expected text ("" for pass), $3 = description, $4 = reader, rest = gate arguments
+  local want="$1" text="$2" desc="$3" reader="$4" out got
+  shift 4
+  if out="$(env GHOST_MLS_JNI_NM="$MLS_JNI/nm/$reader" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" "$@" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$want" ] && { [ -z "$text" ] || grep -qF "$text" <<<"$out"; }; then
+    echo "self-test ok: mls-jni-surface $desc"
+  else
+    echo "SELF-TEST FAIL: mls-jni-surface $desc ($got)" >&2; printf '%s\n' "$out" | tail -4 >&2; rc=1
+  fi
+}
+mls_lib_case pass "" "accepts a shipped library whose symbols are the closed list minus function 16" exact-nm "$mls_elf"
+mls_lib_case pass "" "accepts a test library with exactly its one test entry point" entry-nm --test "$mls_elf"
+mls_lib_case fail "exports 'MlsNative.debugDump', which is not on the closed list" "rejects a library exporting a symbol outside the closed list" stray-nm "$mls_elf"
+mls_lib_case fail "does not export 'MlsNative.trialCount'" "rejects a library that does not export an Exported entry" missing-nm "$mls_elf"
+mls_lib_case fail "exports 'MlsNative.revealSeal', which is reserved for a later slice (function 16 is S9's)" "rejects a library exporting function 16 early" reveal-nm "$mls_elf"
+mls_lib_case fail "exports the test entry point 'MlsVectors.run': a shipped library never carries it" "rejects the test entry point in a shipped library" entry-nm "$mls_elf"
+mls_lib_case fail "does not export the test entry point 'MlsVectors.run'" "rejects a test library without its test entry point" exact-nm --test "$mls_elf"
+mls_lib_case fail "exports 'MlsVectors.dumpState', which is not its one test entry point" "rejects a test library with a second test entry" entry-extra-nm --test "$mls_elf"
+mls_lib_case fail "exports the JNI symbol 'Java_org_ghost_crypto_bridge_MlsDebug_dump'" "rejects a library exporting a JNI symbol of another class" foreign-nm "$mls_elf"
+mls_lib_case fail "could not read" "rejects a symbol reader that cannot read the library" unreadable-nm "$mls_elf"
+# The two surface gates agree (one class list, common.sh GHOST_JNI_CLASSES): a shipped library with
+# both closed surfaces passes both, and a foreign class fails both.
+mls_lib_case pass "" "accepts a library carrying both closed surfaces" both-nm "$mls_elf"
+if env GHOST_DM_JNI_NM="$MLS_JNI/nm/both-nm" bash "$DIR/dm-jni-surface.sh" "$mls_elf" >/dev/null 2>&1; then
+  echo "self-test ok: dm-jni-surface accepts a library carrying both closed surfaces (the gates agree)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface rejects a library carrying both closed surfaces" >&2; rc=1
+fi
+expect_fail_msg "dm-jni-surface rejects the channel gate's foreign class too" \
+  "exports the JNI symbol 'Java_org_ghost_crypto_bridge_MlsDebug_dump'" \
+  env GHOST_DM_JNI_NM="$MLS_JNI/nm/foreign-nm" bash "$DIR/dm-jni-surface.sh" "$mls_elf"
+rm -f "$mls_elf"
 
 # dm-fuzz and the libcrux suites (Phase 9 design §16.2 `dm-fuzz` and `vendor-tests`, §22.35): the
 # decisions the nightly jobs apply to a libFuzzer run and to a crate's own `cargo test` suite, over
@@ -1797,6 +1950,8 @@ dmhooks_case "refuses a harness class in mapping.txt" 1 "from a harness or gate 
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/harness.txt"
 dmhooks_case "refuses the equivalence entry point in mapping.txt" 1 "ships the equivalence-test entry point" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/entry.txt"
+dmhooks_case "refuses the channel vector replay's test entry point (MlsVectors) in mapping.txt (Phase 10 S2b)" 1 "ships the vector-replay test entry point org.ghost.crypto.bridge.MlsVectors" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/mls-vectors.txt"
 dmhooks_case "refuses a mapping without an org.ghost. class" 1 "lists no org.ghost. class" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/no-ghost.txt"
 if bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/positive.txt" >/dev/null 2>&1; then
@@ -2094,8 +2249,12 @@ site fixture-clock-epoch@0.1.0 src/lib.rs:6 elapsed clock-log [lib]"
   linked_case pass "" "[rust-client-allowlist] OK" "accepts the linked state of S2b against the baseline (G-M1)"
   linked_case fail 'bitflags = "=1.3.2"' "bitflags is at 2 versions (1.3.2 2.13.2)" "rejects a second copy of a crate in the linked state (G-M1)"
   MLSP="$HARNESS/mls-policy"
-  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graph has, a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped, a module directory named target read), a host-only package in a shipped graph, a build configuration naming the backend cfg, a patched fork and a lock with sources other than crates.io" 17 \
+  # Since slice S2b links the crate into ghost-client-net, the forbidden-feature and host-only
+  # clauses read both graphs, so their hooks fire twice (the review of S2b found this case still
+  # expecting 17 and failing); and S2b's two shipped-graph clauses get their hooks here.
+  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graphs have (the channel crate's and, linked since S2b, the shipped one), a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped, a module directory named target read), a host-only package in both graphs, a build configuration naming the backend cfg, a patched fork, a lock with sources other than crates.io, a shipped graph without the channel crate and a feature of the crate's own the shipped graph may not carry" 21 \
 "hpke-rs feature 'hazmat' is enabled in ghost-client-mls's graph (G-M2
+hpke-rs feature 'hazmat' is enabled in ghost-client-net's graph (G-M2
 package 'openmls-no-such-crate' is not in ghost-client-mls's graph
 ghost-client-mls-kat enables openmls/test-utils (dev); G-M2 allows it only as a dev-dependency of ghost-client-mls
 the stub's src/lib.rs is not empty
@@ -2104,18 +2263,22 @@ mls/src/group.rs:9: build_with_new_signer
 mls/src/group.rs:11: store_pending_proposal
 mls/src/target/mod.rs:3: export_group_info
 package 'rayon' is in ghost-client-mls's graph: host and test builds only (G-R2
+package 'rayon' is in ghost-client-net's graph: host and test builds only (G-R2
 shipped-config.toml names getrandom_backend
 Cargo.toml:7: [patch.crates-io] names openmls (G-M2
 a [patch.\"https://github.com/example/tls_codec\"] table
 Cargo.toml:13: [replace] names hpke-rs:0.6.0
 Cargo.lock: openmls 0.9.0 has no source and is not a workspace member
 Cargo.lock: tls_codec 0.5.0 comes from git+https://github.com/example/tls_codec
-Cargo.lock: hpke-rs 0.6.0 has no checksum" \
+Cargo.lock: hpke-rs 0.6.0 has no checksum
+package 'ghost-client-mls-no-such-crate' is not in the shipped client graph
+ghost-client-mls feature 'jni-bridge' is enabled in the shipped client graph; G-M2 allows: default" \
     env GHOST_POLICY_MLS_FORBID_EXTRA=hpke-rs:hazmat GHOST_POLICY_MLS_GRAPH=openmls-no-such-crate \
       GHOST_POLICY_KAT=ghost-client-mls GHOST_POLICY_STUB_DIR="$MLSP/stub-nonempty" \
       GHOST_POLICY_MLS_SOURCES="$MLSP/sources" GHOST_POLICY_HOST_ONLY_EXTRA=rayon \
       GHOST_POLICY_SHIPPED_CONFIGS="$MLSP/shipped-config.toml" \
       GHOST_POLICY_ROOT_MANIFEST="$MLSP/fork/Cargo.toml" GHOST_POLICY_LOCK="$MLSP/fork/Cargo.lock" \
+      GHOST_POLICY_SHIPPED_MLS=ghost-client-mls-no-such-crate GHOST_POLICY_MLS_SHIPPED_ALLOWED=default \
       bash "$DIR/rust-feature-policy.sh"
   multi_case "rust-feature-policy rejects a stand-in with a build script (G-M2)" 1 \
     "the openmls_sqlite_storage stub holds [Cargo.toml README.md build.rs src/lib.rs ]" \
@@ -2165,6 +2328,12 @@ src/derive.rs:200:pub fn derive_epoch_recognition(" \
   sed 's#^\(site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log \[lib\]\)  \# .*$#\1#' "$gm8" > "$tmp"
   expect_fail_msg "mls-vendored-clock-log rejects a site without its reason (G-M8)" \
     "no justification for: site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  # Slice S2b (faza10-forum.md §19.32): the scan reads the graph as the shipped library links it,
+  # `jni-bridge` on, so the `jni` subtree is in it; a jni site left out of the baseline fails.
+  grep -v '^site jni@0.21.1 src/wrapper/jnienv.rs:9 log::' "$gm8" > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log scans the jni-bridge graph the shipped library links (G-M8, S2b)" \
+    "unjustified: site jni@0.21.1 src/wrapper/jnienv.rs:9 log:: clock-log [lib]" \
     env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
   rm -f "$tmp"
   if bash "$DIR/mls-vendored-clock-log.sh" >/dev/null 2>&1; then

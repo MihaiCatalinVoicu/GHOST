@@ -11,6 +11,8 @@
 site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|SecretKeySpec(recognitionKey, "HmacSHA256")|1|fun hint(recognitionKey: ByteArray|the §6.2 hint, keyed by R_sel: a recognition key the native side derives from a card and returns (§3.2: it recognises and never opens, R-S6), never identity material
 site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/RelaySets.kt|SecretKeySpec(namespace, "HmacSHA256")|1|fun order(namespace: ByteArray|the §5.2 relay-set order, keyed by the namespace it orders relays for (relay sets are set(ns, w)); a namespace is derived from a card or the seed and is relay-visible already
 site|android/messaging/src/main/kotlin/org/ghost/messaging/engine/ReceiveStep.kt|SecretKeySpec(key, "HmacSHA256")|1|val key = self.seenKey|the §7.6 dm_seen tag, keyed by the random seen key the native context returns; the tag stays in the local database and never reaches a relay
+# The channel hint (Phase 10 design §5.6 CS-S5, CS-S6; slice S2b): the same HMAC shape, with the channel label.
+site|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/ChannelRecognition.kt|SecretKeySpec(recognitionKey, "HmacSHA256")|1|fun hint(recognitionKey: ByteArray, mode: Int, salt: ByteArray)|the channel hint of Phase 10 §5.6, keyed by R_ep(e) or R_join(g): recognition keys the native side derives and returns (CS-S6: they recognise and never open), never identity material, a channel id or a pseudonym key (T36)
 # The gate build type's hook, which the same rule reads (the `gate` source set ships on gate devices):
 site|android/crypto-bridge/src/gate/kotlin/org/ghost/crypto/bridge/gate/GateKeyChange.kt|SecretKeySpec(branch, "HmacSHA256")|1|fun alternateBranch(branch: ByteArray)|the §15.1 key-change hook, keyed by the MESSAGING branch m itself; gate build type only, never in a release (G-DM5)
 # Cipher keys: a text gate cannot tell a MAC key from a cipher key once the algorithm is a constant.
@@ -18,6 +20,7 @@ site|android/messaging/src/main/kotlin/org/ghost/messaging/store/ContentCipher.k
 #
 # The DM labels of these modules:
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Recognition.kt|ghost/v1/dm-hint|1|-|the §6.2 hint label, fed to the recognition-key HMAC above
+label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/ChannelRecognition.kt|ghost/v1/ch-hint|1|-|the Phase 10 §5.6 channel hint label, fed to the recognition-key HMAC above (the one channel literal G-M3 rule 4 admits in Kotlin)
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/RelaySets.kt|ghost/v1/dm/slot-order|1|-|the §5.2 slot-order label, fed to the namespace-keyed HMAC above
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/CredentialV3.kt|ghost/v1/read-verifier|1|-|the §4.3 domain label of SHA-256(label, slot, namespace, secret) over a read credential; its secret is seed-derived in Rust, no identity material
 label|android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/CredentialV3.kt|ghost/v1/deposit-verifier|1|-|the §4.3 domain label of the deposit verifier; its secret is card-derived in Rust, no identity material

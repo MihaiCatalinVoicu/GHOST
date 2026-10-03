@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6 and G-R6: a shipped library carrying **both** closed surfaces,
+# each read from its own closed list, the shape of `libghost_client_net.so` from slice S2b on. The
+# DM gate and the channel gate must both accept it (they agree on the allowed classes).
+set -euo pipefail
+here="$(dirname "$0")"
+bash "$here/exact-nm" "$@" | grep -v 'DmNative_ctxOpen$'
+dm="$here/../../../../client-core/dm/src/jni.rs"
+address=65536
+while read -r name; do
+  [ -n "$name" ] || continue
+  printf '%016x T Java_org_ghost_crypto_bridge_DmNative_%s\n' "$address" "$name"
+  address=$((address + 16))
+done < <(grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::Exported\)' "$dm" | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)

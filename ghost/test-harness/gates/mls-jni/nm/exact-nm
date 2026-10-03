@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6 (`scripts/gates/mls-jni-surface.sh`), positive case: a shipped
+# library — exactly the closed list's `Exported` entries, in `nm -D --defined-only` shape, read from
+# the closed list itself (`client-core/mls/src/jni.rs`), so a function promoted to `Exported` needs no
+# fixture change. A library exports more than the channel surface: the DM surface and the network
+# classes (allowed by class, common.sh GHOST_JNI_CLASSES) and symbols that are not JNI at all.
+# The arguments (`-D --defined-only <library>`) are accepted and ignored. The other readers of this
+# directory print this list and then their one change (MLS_NM_EXTRA, MLS_NM_DROP).
+set -euo pipefail
+source="${GHOST_MLS_JNI_FIXTURE_SOURCE:-$(dirname "$0")/../../../../client-core/mls/src/jni.rs}"
+address=4096
+while read -r name; do
+  [ -n "$name" ] || continue
+  [ "$name" = "${MLS_NM_DROP:-}" ] && continue
+  printf '%016x T Java_org_ghost_crypto_bridge_MlsNative_%s\n' "$address" "$name"
+  address=$((address + 16))
+done < <(grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::Exported\)' "$source" \
+  | sed -E 's/.*"([A-Za-z0-9]+)".*/\1/' | sort -u)
+printf '%016x T Java_org_ghost_crypto_bridge_DmNative_ctxOpen\n' "$((address + 16))"
+printf '%016x T Java_org_ghost_network_TorRelayTransport_nativeCreate\n' "$((address + 32))"
+printf '%016x T rust_eh_personality\n' "$((address + 48))"
+for extra in ${MLS_NM_EXTRA:-}; do
+  address=$((address + 16))
+  printf '%016x T %s\n' "$((address + 64))" "$extra"
+done

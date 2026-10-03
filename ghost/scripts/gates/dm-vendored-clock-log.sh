@@ -36,11 +36,12 @@
 #
 # **G-M8, the MLS graph (Phase 10 design faza10-forum.md §3.6, §13.1 G-M8; T3, T33; slice S2a).** The
 # same script for both graphs (S0-18): `--graph mls` (or `mls-vendored-clock-log.sh`) scans the
-# compiled library code of `cargo tree -p ghost-client-mls -e normal` on both triples, with the
-# features the crate's own graph gives each package (slice S2b links the crate into
-# `ghost-client-net`; from then its features are the shipped library's), against
-# `scripts/gates/mls-vendored-clock-log.baseline`. OpenMLS's clock sites of design §3.6 are among
-# the entries; so are its `log::` facade calls (no logger is installed, G-M4).
+# compiled library code of `cargo tree -p ghost-client-mls -e normal --features jni-bridge` on both
+# triples, each package with the features it has in the shipped library (`cargo tree -p
+# ghost-client-net`, which links the crate with its JNI export since slice S2b, design §19.32; S2a
+# read the crate's own graph, which left the JNI module and the `jni` subtree out of the scan),
+# against `scripts/gates/mls-vendored-clock-log.baseline`. OpenMLS's clock sites of design §3.6 are
+# among the entries; so are its `log::` facade calls (no logger is installed, G-M4) and `jni`'s.
 #
 # Runs in the CI `rust` job (it needs cargo, the lock and the unpacked registry sources, not a build
 # of the library) and on every pin change through it.
@@ -66,8 +67,8 @@ case "$GRAPH" in
     NAME=dm-vendored-clock-log ROOT_PKG=ghost-client-dm ROOT_FEATURES=(--features jni-bridge)
     FEATURES_PKG=ghost-client-net REQUIRED_CRATES="ghost-client-dm vodozemac" ;;
   mls)
-    NAME=mls-vendored-clock-log ROOT_PKG=ghost-client-mls ROOT_FEATURES=()
-    FEATURES_PKG=ghost-client-mls REQUIRED_CRATES="ghost-client-mls openmls" ;;
+    NAME=mls-vendored-clock-log ROOT_PKG=ghost-client-mls ROOT_FEATURES=(--features jni-bridge)
+    FEATURES_PKG=ghost-client-net REQUIRED_CRATES="ghost-client-mls openmls jni" ;;
   *) echo "usage: dm-vendored-clock-log.sh [--graph dm|mls]" >&2; exit 2 ;;
 esac
 BASELINE="${GHOST_G_R8_BASELINE:-$GATES_DIR/$NAME.baseline}"

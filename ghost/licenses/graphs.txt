@@ -4,10 +4,10 @@
 # scripts/build-native.sh; the relay and issuer images build for x86_64 Linux (infra/*/Dockerfile).
 #   graph <name> <packages, comma-separated> <targets, comma-separated>
 #   note <name> <text>     (appended to that graph's notices as a paragraph of their introduction)
-# The client library's graph includes ghost-client-mls from Phase 10's slice S2a (design faza10-forum.md
-# §3.9, §13.1 G-L1 … G-L4): its OpenMLS stack enters the notices, the MPL-2.0 source bundle (the three
-# hpke-rs crates) and the header scan before slice S2b links the crate into ghost-client-net.
-graph client-net ghost-client-net,ghost-client-mls aarch64-linux-android,x86_64-linux-android
-note client-net The components of ghost-client-mls (the OpenMLS stack) are listed ahead of their use: Phase 10's slice S2b links that crate into libghost_client_net.so, and until then they are not in the library. (This note goes with that link.)
+# The client library's graph holds ghost-client-mls since Phase 10's slice S2b links it into
+# ghost-client-net (design faza10-forum.md §19.32; S2a had listed it here ahead of the link, §3.9,
+# §13.1 G-L1 … G-L4): its OpenMLS stack is in the notices, the MPL-2.0 source bundle (the three
+# hpke-rs crates) and the header scan as a part of the shipped library.
+graph client-net ghost-client-net aarch64-linux-android,x86_64-linux-android
 graph relay ghost-relay-node x86_64-unknown-linux-gnu
 graph issuer ghost-issuer,ghost-issuer-ops x86_64-unknown-linux-gnu

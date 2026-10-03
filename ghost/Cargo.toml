@@ -19,8 +19,8 @@ members = [
     # gates cover it, never built for Android and never in the shipped graph.
     "client-core/dm-host",
     # Channel cryptography on OpenMLS (Phase 10 design faza10-forum.md §10.1, slice S2a): a workspace
-    # member so cargo-deny, the licence gates and the Rust gates (G-M1 … G-M4, G-M8) cover it. Not yet
-    # linked into ghost-client-net: the JNI export is slice S2b.
+    # member so cargo-deny, the licence gates and the Rust gates (G-M1 … G-M4, G-M8) cover it. Linked
+    # into ghost-client-net with its JNI export `MlsNative` since slice S2b (§19.32).
     "client-core/mls",
     # The MLS WG passive-client replay through GhostKv and the independent replay of the channel
     # vectors (§10.1, §12.2, S0-13): test-only, outside every shipped and host graph; the only crate
