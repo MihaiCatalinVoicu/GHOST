@@ -128,7 +128,8 @@ internal class DirectoryStore(
     /**
      * Registers [ns] or reuses its row (a known namespace keeps its consumer and its tombstones),
      * then applies [relays] as [setRelays] does. A DM namespace may not turn the send delay off
-     * (Phase 9 design §13.3 item 8); the v4 trigger refuses it as well.
+     * (Phase 9 design §13.3 item 8), nor a channel namespace (Phase 10 design §7.5 item 3); the v4 and
+     * v6 triggers refuse it as well.
      */
     fun register(
         tx: SyncTransaction,
@@ -143,7 +144,7 @@ internal class DirectoryStore(
         val sql = tx.sql
         val existing = namespace(tx, ns)
         check(existing == null || existing.consumer == consumer) { "namespace is registered for another consumer" }
-        checkDmDelay(consumer, sendDelay)
+        checkSendDelay(consumer, sendDelay)
         sql.updateExactly(
             1,
             "INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay, capability_source) VALUES (?1, ?2, ?3, ?4, ?5) " +
@@ -191,24 +192,27 @@ internal class DirectoryStore(
 
     fun setSendDelay(tx: SyncTransaction, ns: NamespaceId, sendDelay: SendDelay) {
         val existing = checkNotNull(namespace(tx, ns)) { "namespace is not registered" }
-        checkDmDelay(existing.consumer, sendDelay)
+        checkSendDelay(existing.consumer, sendDelay)
         tx.sql.updateExactly(1, "UPDATE sync_namespace SET send_delay = ?1 WHERE namespace_id = ?2", listOf(sendDelay.code, ns.raw))
     }
 
     /**
-     * A DM namespace keeps its send delay (Phase 9 design §13.3 item 8): without it a store would
-     * name the minute the user pressed send. A Kotlin pre-check, so the v4 trigger is a backstop and
-     * never an expected path (§21.4 point 5).
+     * A DM namespace keeps its send delay (Phase 9 design §13.3 item 8), and so does a channel
+     * namespace (Phase 10 design §7.5 item 3): without it a store would name the minute the user
+     * pressed send. A Kotlin pre-check, so the v4 and v6 triggers are a backstop and never an expected
+     * path (Phase 9 §21.4 point 5). The messages are the triggers' own.
      */
-    private fun checkDmDelay(consumer: Consumer, sendDelay: SendDelay) {
+    private fun checkSendDelay(consumer: Consumer, sendDelay: SendDelay) {
         check(consumer != Consumer.DM || sendDelay != SendDelay.OFF) { "DM namespaces cannot turn the send delay off" }
+        check(consumer != Consumer.CHANNEL || sendDelay != SendDelay.OFF) { "Channel namespaces cannot turn the send delay off" }
     }
 
     /**
      * §11.2 #19: refuses (false) while the namespace has ops or fetched rows, and for an unknown
-     * namespace. Otherwise stops listening and drops its relay set, cursors, capabilities and
-     * not-yet-fetched rows; `done` tombstones stay until their retention day. The namespace row is
-     * deleted now if no inbox row is left, otherwise by garbage collection after the last one.
+     * namespace. Otherwise stops listening and drops its relay set, cursors, capabilities (registration
+     * capabilities and the funding flag included, Phase 10 design §7.5) and not-yet-fetched rows;
+     * `done` tombstones stay until their retention day. The namespace row is deleted now if no inbox
+     * row is left, otherwise by garbage collection after the last one.
      */
     fun remove(tx: SyncTransaction, ns: NamespaceId): Boolean {
         val sql = tx.sql
@@ -222,7 +226,10 @@ internal class DirectoryStore(
         sql.updateExactly(1, "UPDATE sync_namespace SET listening = 0 WHERE namespace_id = ?1", listOf(ns.raw))
         sql.execUpdate("DELETE FROM namespace_relay WHERE namespace_id = ?1", listOf(ns.raw))
         sql.execUpdate("DELETE FROM relay_cursor WHERE namespace_id = ?1", listOf(ns.raw))
-        val capabilitiesDropped = sql.execUpdate("DELETE FROM relay_capability WHERE namespace_id = ?1", listOf(ns.raw))
+        val capabilitiesDropped = sql.execUpdate("DELETE FROM relay_capability WHERE namespace_id = ?1", listOf(ns.raw)) +
+            sql.execUpdate("DELETE FROM relay_register_capability WHERE namespace_id = ?1", listOf(ns.raw))
+        // A removed namespace is no longer funded: nothing could be redeemed for it (no relay set is left).
+        val fundingDropped = sql.execUpdate("DELETE FROM sync_namespace_fund WHERE namespace_id = ?1", listOf(ns.raw))
         // Key registrations of a namespace we no longer use are work that must not outlive it; the
         // relay forgets its own records on its own (§4.6).
         sql.execUpdate("DELETE FROM relay_key_registration WHERE namespace_id = ?1", listOf(ns.raw))
@@ -231,7 +238,7 @@ internal class DirectoryStore(
             "DELETE FROM sync_namespace WHERE namespace_id = ?1 AND NOT EXISTS (SELECT 1 FROM inbox_blob b WHERE b.namespace_id = ?1)",
             listOf(ns.raw),
         )
-        if (capabilitiesDropped > 0) tx.hint(SyncChange.CAPABILITIES)
+        if (capabilitiesDropped > 0 || fundingDropped > 0) tx.hint(SyncChange.CAPABILITIES)
         tx.hint(SyncChange.TOPOLOGY)
         return true
     }

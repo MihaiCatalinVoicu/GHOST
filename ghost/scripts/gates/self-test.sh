@@ -1347,7 +1347,8 @@ fi
 
 # G-DM2 (Phase 9 design §16.1, §21.7, §21.9; T28, T31): the restricted sync calls are made only
 # from the steps that may make them, an owner pass is started only by what may start one, and a
-# relay-visible step is driven only by what may drive one. Seven single-purpose fixtures — a RECV
+# relay-visible step is driven only by what may drive one. Seven single-purpose fixtures (an eighth,
+# `funding`, is Phase 10 slice S1a's, below) — a RECV
 # that registers (the reflex T28 forbids), a store-layer `Namespaces.remove` (§21.12 point 3 makes
 # it SWEEP's), a RECV that hides its three call sites from a line-by-line reader (a receiver on the
 # line above, a local alias, a scope function, a safe call, a port injected under a name of the
@@ -1385,6 +1386,13 @@ dmenq_case step 2 "a send, a resend, a control or an establishment step is drive
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-vacuous"
 dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
   "refuses a tree whose DM sources make no restricted call"
+# Phase 10, slice S1a: `Funding.set` joins the restricted calls (design §7.5 item 1, item 7; T40).
+# One fixture, three call sites in a RECV step — the port by its name, a local alias, a port injected
+# as a `Funding` under a name of the author's choosing — beside an allowed OwnerSteps that funds (an
+# allowed file may) and a RECV `Inbox.reofferDeferred` that is no violation (it makes no relay call).
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding"
+dmenq_case funding 3 "ReceiveStep.kt:13" \
+  "refuses a RECV step that funds a namespace by name, through an alias and through a typed port (and lets reofferDeferred pass)"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -1455,6 +1463,14 @@ dmrep_case schema 3 "Schema.kt:27: OR REPLACE, REPLACE INTO" \
 expect_fail dm-no-replace "$HARNESS/negative-dm-replace-vacuous"
 dmrep_case vacuous 2 "no SQL string found (the gate would pass vacuously)" \
   "refuses a DM store without SQL and a schema without its migration 5 markers"
+# Phase 10, slice S1a: the two tables migration 6 adds to `:sync` (`sync_namespace_fund`,
+# `relay_register_capability`) are REPLACE-guarded like the DM tables, so the rule reads their writers
+# too. `v6tables` holds an upsert on the one and an INSERT OR REPLACE on the other in a `:sync` store,
+# beside the v2 `relay_capability` upsert, the writers' own UPDATE-then-INSERT form and a longer table
+# name, none of which may count.
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-v6tables"
+dmrep_case v6tables 2 "CapabilityStore.kt:17: ON CONFLICT ... DO UPDATE" \
+  "reads the writers of the two migration-6 sync tables, and not relay_capability's upsert or a longer table name"
 if bash "$DIR/dm-no-replace.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-no-replace accepts the real DM SQL"
 else

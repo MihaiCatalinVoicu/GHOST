@@ -12,7 +12,9 @@ import org.ghost.network.OnionAddress
 import org.ghost.network.TorRelayTransport
 import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.OutboundBlob
@@ -385,6 +387,164 @@ class RedeemLaneTest {
         w.laneStep()
         assertEquals(1, w.redeem.calls.size)
         assertEquals("usable", w.capability(w.relayIds[0]))
+    }
+
+    /**
+     * A funder's channel (Phase 10 design §7.5, §7.6): a LOCAL channel namespace listened on every relay of
+     * [relays] with the shared READ and DEPOSIT credentials installed (valid for [credentialDays]), funded,
+     * with a registration pending at each relay and no registration capability held.
+     */
+    private fun World.fundedChannel(relays: Set<RelayId>, credentialDays: Long = 8) = tx { t ->
+        stores.namespaces.register(t, ns, Consumer.CHANNEL, relays, listen = true, capabilitySource = CapabilitySource.LOCAL)
+        stores.funding.set(t, ns, true)
+        for (relay in relays) {
+            stores.capabilities.put(t, relay, ns, CapabilityKind.READ, TestBytes.of(82, 11), T0 + credentialDays * 86_400)
+            stores.capabilities.put(t, relay, ns, CapabilityKind.WRITE, TestBytes.of(82, 12), T0 + credentialDays * 86_400)
+            stores.registrations.request(t, relay, ns, WEEK0, KeyKind.DEPOSIT, TestBytes.of(32, 13))
+        }
+    }
+
+    private fun World.registerRows(): List<String> {
+        val out = ArrayList<String>()
+        sql.query("SELECT state FROM relay_register_capability ORDER BY relay_id") { out += it.string(0) }
+        return out
+    }
+
+    private fun World.writeGenerations(): List<Long> {
+        val out = ArrayList<Long>()
+        sql.query("SELECT generation FROM relay_capability WHERE kind = 'write' ORDER BY relay_id") { out += it.long(0) }
+        return out
+    }
+
+    /**
+     * Design §7.4: a funder spends one token per relay of the set per funded namespace per week. The
+     * renewal of a held registration capability is the EXPIRING one of every capability: once, inside the
+     * last 23 hours, with a token of the next week, and the channel's own credentials play no part.
+     */
+    @Test
+    fun aFundersRegistrationCapabilityIsRenewedOncePerRelayAndWeek(): Unit = World().use { w ->
+        val relays = setOf(w.relayIds[0], w.relayIds[1])
+        w.fundedChannel(relays)
+        w.tx { t ->
+            for (relay in relays) {
+                w.stores.capabilities.put(t, relay, ns, CapabilityKind.REGISTER, TestBytes.of(98, 3), Grid.start(WEEK0 + 1) + 3600)
+            }
+        }
+        val next0 = w.addAccess(WEEK0 + 1, 0, 2).map { it.toList() }
+        val next1 = w.addAccess(WEEK0 + 1, 1, 2).map { it.toList() }
+        w.addAccess(WEEK0, 0, 3)
+        w.random.prfValue = 0.0
+        w.clock.now = Grid.start(WEEK0 + 1) - 20 * 3600
+        assertEquals(
+            "inside the last day the held capabilities are expiring, and nothing else is asked",
+            setOf(CapabilityKind.REGISTER to CapabilityNeed.Reason.EXPIRING),
+            w.stores.capabilities.needed().map { it.kind to it.reason }.toSet(),
+        )
+        w.steps(5)
+        assertEquals("one next-week token per relay renews the pairs", 2, w.redeem.calls.size)
+        assertEquals(setOf(w.crypto.onions[0], w.crypto.onions[1]), w.redeem.calls.map { it.relay }.toSet())
+        assertTrue(w.redeem.calls.single { it.relay == w.crypto.onions[0] }.token in next0)
+        assertTrue(w.redeem.calls.single { it.relay == w.crypto.onions[1] }.token in next1)
+        assertTrue("the renewed capabilities reach past the next week", w.stores.capabilities.needed().isEmpty())
+        assertEquals("the current week's tokens are untouched", 3, w.tokenRows("access").count { it.epoch == WEEK0 })
+        assertEquals("the channel's credentials are as they were", listOf(1L, 1L), w.writeGenerations())
+    }
+
+    @Test
+    fun aFundersRegisterNeedIsMetWithATokenAndInstalledAsARegistrationCapability(): Unit = World().use { w ->
+        val relays = setOf(w.relayIds[0], w.relayIds[1])
+        w.fundedChannel(relays)
+        val writes = w.writeGenerations()
+        assertEquals(setOf(CapabilityKind.REGISTER), w.stores.capabilities.needed().map { it.kind }.toSet())
+        val slot0 = w.addAccess(WEEK0, 0, 1).map { it.toList() }
+        val slot1 = w.addAccess(WEEK0, 1, 1).map { it.toList() }
+        w.laneStep()
+        assertEquals(2, w.redeem.calls.size)
+        val byRelay = w.redeem.calls.associateBy { it.relay }
+        assertTrue(checkNotNull(byRelay[w.crypto.onions[0]]).token in slot0)
+        assertTrue(checkNotNull(byRelay[w.crypto.onions[1]]).token in slot1)
+        assertTrue("the redemption is for the channel's namespace", w.redeem.calls.all { it.namespace == ns })
+        assertEquals(listOf("usable", "usable"), w.registerRows())
+        assertEquals("the channel's own credentials are as they were", writes, w.writeGenerations())
+        assertEquals(2L, w.count("SELECT count(*) FROM relay_capability WHERE kind = 'write'"))
+        assertTrue("the redeemed tokens are gone", w.tokenRows("access").isEmpty())
+        assertTrue(w.stores.capabilities.needed().isEmpty())
+        w.laneStep()
+        assertEquals("no need, no call", 2, w.redeem.calls.size)
+    }
+
+    /**
+     * The channel's DEPOSIT credential lives in the write slot and reaches past the end of the week. A
+     * WRITE need would be covered by a capability like that; a REGISTER need is not, because a token
+     * extends a registration capability and the credential is none.
+     */
+    @Test
+    fun theChannelsOwnCredentialDoesNotCoverAFundersRegisterNeed(): Unit = World().use { w ->
+        val relays = setOf(w.relayIds[0])
+        w.fundedChannel(relays, credentialDays = 20)
+        w.addAccess(WEEK0, 0, 1)
+        w.laneStep()
+        assertEquals(1, w.redeem.calls.size)
+        assertEquals(listOf("usable"), w.registerRows())
+        // And the other way round: a registration capability that reaches past the week covers the need.
+        w.clock.now = T0 + 3 * 86_400
+        w.tx { t -> w.stores.registrations.request(t, w.relayIds[0], ns, WEEK0 + 1, KeyKind.READ, TestBytes.of(32, 14)) }
+        w.laneStep()
+        assertEquals("a held registration capability of the week is not renewed early", 1, w.redeem.calls.size)
+    }
+
+    @Test
+    fun anUnfundedChannelCostsNoTokenAndAFundedOneStopsAskingWhenItIsUnfunded(): Unit = World().use { w ->
+        val relays = setOf(w.relayIds[0], w.relayIds[1])
+        w.fundedChannel(relays)
+        w.tx { t -> w.stores.funding.set(t, ns, false) }
+        // Unfunded, the pending registrations raise WRITE needs that carry the channel's LOCAL source: counted, never redeemed.
+        val needs = w.stores.capabilities.needed()
+        assertEquals(emptyList<CapabilityNeed>(), needs.filter { it.kind == CapabilityKind.REGISTER })
+        w.addAccess(WEEK0, 0, 1)
+        w.addAccess(WEEK0, 1, 1)
+        w.laneStep()
+        assertTrue(w.redeem.calls.isEmpty())
+        assertEquals(2L, w.tokenRows("access").size.toLong())
+    }
+
+    /**
+     * A funded namespace of a REDEEM source (not a channel's case, but the API allows it) with outbox work has
+     * both a WRITE and a REGISTER need on a pair. They are two redemptions with two tokens: the planner does
+     * not let the registration capability stand for the write capability or the reverse, because they are
+     * installed into different tables for different purposes.
+     */
+    @Test
+    fun aWriteNeedAndARegisterNeedOfOnePairAreTwoRedemptions(): Unit = World().use { w ->
+        val relays = setOf(w.relayIds[0], w.relayIds[1])
+        w.writeNeed(relays)
+        w.tx { t ->
+            w.stores.funding.set(t, ns, true)
+            for (relay in relays) w.stores.registrations.request(t, relay, ns, WEEK0, KeyKind.DEPOSIT, TestBytes.of(32, 13))
+        }
+        val kinds = w.stores.capabilities.needed().map { it.kind }.toSet()
+        assertEquals(setOf(CapabilityKind.WRITE, CapabilityKind.REGISTER), kinds)
+        w.addAccess(WEEK0, 0, 2)
+        w.addAccess(WEEK0, 1, 2)
+        w.laneStep()
+        assertEquals(4, w.redeem.calls.size)
+        assertEquals("usable", w.capability(w.relayIds[0]))
+        assertEquals("usable", w.capability(w.relayIds[1]))
+        assertEquals(listOf("usable", "usable"), w.registerRows())
+        assertTrue(w.tokenRows("access").isEmpty())
+        assertTrue(w.stores.capabilities.needed().isEmpty())
+    }
+
+    @Test
+    fun aDueRegisterNeedWithoutAnEligibleTokenRaisesEntitlementNeededLikeAWriteNeed(): Unit = World().use { w ->
+        w.fundedChannel(setOf(w.relayIds[0], w.relayIds[1]))
+        w.addAccess(WEEK0, 0, 1, eligibleMinute = T0 + 3600)
+        w.random.prfValue = 0.5
+        w.laneStep()
+        assertTrue("not eligible yet", w.redeem.calls.isEmpty())
+        assertFalse(EntitlementFlag.ENTITLEMENT_NEEDED in w.engine.status().flags)
+        w.clock.now = T0 + 6 * 3600
+        assertTrue(EntitlementFlag.ENTITLEMENT_NEEDED in w.engine.status().flags)
     }
 
     @Test

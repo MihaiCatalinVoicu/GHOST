@@ -84,22 +84,25 @@ internal class RedeemLane(private val c: EngineContext) {
         }
         val trusted = session.clockTrusted()
         val relays = c.tx { tx -> SyncTables.relays(tx).filter { it.active }.associateBy { it.id } }
-        val writeExpiry = c.tx { tx -> needs.associateWith { SyncTables.usableWriteExpiry(tx, it.relay, it.namespace) } }
+        val coveringExpiry = c.tx { tx -> needs.associateWith { SyncTables.coveringExpiry(tx, it.kind, it.relay, it.namespace) } }
         val plans = ArrayList<RedeemPlanner.Decision.Redeem>()
         for (need in needs) {
             val relay = relays[need.relay]
             // Each relay's decisions run on its own clock once it answered (§12.5, §19.24 point 1).
             val relayNow = if (relay != null) c.memory.clock.relayNow(relay.id, now) else c.memory.clock.now(now)
             val week = if (relay != null) c.memory.clock.week(relay.id, now) else Grid.week(relayNow)
-            when (val d = planner.plan(need, relay, c.summary, relayNow, week, trusted, c.memory.firstSeen(need, now), writeExpiry[need])) {
+            when (val d = planner.plan(need, relay, c.summary, relayNow, week, trusted, c.memory.firstSeen(need, now), coveringExpiry[need])) {
                 is RedeemPlanner.Decision.Redeem -> plans += d
                 RedeemPlanner.Decision.NoSlot -> c.memory.count(Counters.NO_SLOT)
                 RedeemPlanner.Decision.LocalSkipped -> c.memory.count(Counters.LOCAL_SKIPPED)
                 else -> Unit
             }
         }
-        // One redemption per (relay, namespace, week): a pair's READ and WRITE needs share it (§10.7).
-        val single = plans.groupBy { Triple(it.relay.id, it.need.namespace, it.week) }.values.map { same -> same.minBy { it.dueSeconds } }
+        // One redemption per (relay, namespace, week): a pair's READ and WRITE needs share it (§10.7). A
+        // REGISTER need does not share it with them: its capability is another table's, installed for
+        // another purpose (Phase 10 design §7.6), so it is its own group.
+        val single = plans.groupBy { Triple(it.relay.id, it.need.namespace, it.week) to (it.need.kind == CapabilityKind.REGISTER) }
+            .values.map { same -> same.minBy { it.dueSeconds } }
         var unmet = false
         // A relay that refused a period in this step is planned again at the next step, on the period
         // and the clock its answer set: never a second refused redemption from the stale plan.
@@ -144,7 +147,7 @@ internal class RedeemLane(private val c: EngineContext) {
         val relayNow = c.memory.clock.relayNow(plan.relay.id, now)
         val ns = plan.need.namespace.toByteArray()
         val held = c.tokens.relayReservation(tx, plan.relay.id.value, ns, plan.week)
-        val expiry = SyncTables.usableWriteExpiry(tx, plan.relay.id, plan.need.namespace)
+        val expiry = SyncTables.coveringExpiry(tx, plan.need.kind, plan.relay.id, plan.need.namespace)
         return when (reserveStep(held != null, held?.let { c.memory.retryAfter(it.nullifier()) }, plan.week, relayNow, expiry)) {
             ReserveStep.RETRY -> Reservation.Held(checkNotNull(held))
             ReserveStep.DROP -> {
@@ -170,9 +173,12 @@ internal class RedeemLane(private val c: EngineContext) {
             TorRelayTransport.REDEEM_OK -> {
                 val capability = checkNotNull(answer.capability()) { "capability missing" }
                 val relay: RelayId = plan.relay.id
-                // Interim READ-by-write (§10.7): every redemption yields a write capability.
+                // Interim READ-by-write (§10.7): every redemption yields a write capability. For a REGISTER
+                // need (Phase 10 design §7.5) it is a registration capability, installed as such: it
+                // serves `RegisterKey` and nothing else, and the namespace's write slot is left alone.
                 if (SyncTables.relayKnown(tx, relay) && SyncTables.namespaceRegistered(tx, plan.need.namespace)) {
-                    c.sync.capabilities.put(tx, relay, plan.need.namespace, CapabilityKind.WRITE, capability, answer.expiryUnixSeconds)
+                    val kind = if (plan.need.kind == CapabilityKind.REGISTER) CapabilityKind.REGISTER else CapabilityKind.WRITE
+                    c.sync.capabilities.put(tx, relay, plan.need.namespace, kind, capability, answer.expiryUnixSeconds)
                 }
                 c.tokens.deleteRelayReservation(tx, nullifier, requestId)
                 clear(nullifier)

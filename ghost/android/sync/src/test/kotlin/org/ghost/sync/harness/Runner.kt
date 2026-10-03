@@ -85,6 +85,14 @@ internal abstract class Scenario(val name: String) {
     /** The tail plays Phase 8: it installs the capabilities `needed()` reports (liveness premise). */
     open val renewCapabilitiesInTail: Boolean = true
 
+    /**
+     * How long the tail's renewal of [need] stays valid, in seconds from the relay's now. A scenario
+     * whose capabilities carry a week (a registration capability: the relay and the registration rule
+     * both read the week from its expiry) says so here; the default is the long validity of the
+     * Phase 7 worlds.
+     */
+    open fun renewalValidSeconds(w: World, node: RelayNode, need: org.ghost.sync.api.CapabilityNeed): Long = 200L * 86_400
+
     /** Builds relays, clients, setup (unarmed) and the timeline; sets [World.endMillis]. */
     abstract fun build(w: World)
 
@@ -114,7 +122,7 @@ internal abstract class Scenario(val name: String) {
     ): Client {
         val m = mutation
         val consumerPolicy = if (m?.consumeOutsideTransaction == true) {
-            ConsumerPolicy(consumer.paused, consumer.deferOnce, consumer.deferSeconds, consumeOutsideTransaction = true)
+            ConsumerPolicy(consumer.paused, consumer.deferOnce, consumer.deferSeconds, consumeOutsideTransaction = true, settle = consumer.settle)
         } else {
             consumer
         }
@@ -318,7 +326,7 @@ internal class Runner(private val scenario: Scenario, private val journal: Journ
     private fun renewNeeded(c: Client) {
         for (need in c.stores.capabilities.needed()) {
             val node = c.relayIds.entries.firstOrNull { it.value == need.relay }?.let { c.world.relays[it.key] } ?: continue
-            c.capability(node, need.namespace, need.kind)
+            c.capability(node, need.namespace, need.kind, validSeconds = scenario.renewalValidSeconds(c.world, node, need))
         }
     }
 }

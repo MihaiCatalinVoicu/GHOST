@@ -5,7 +5,7 @@
 #
 #   Outbox.enqueue, Outbox.cancel, Registrations.request, Registrations.keep, Registrations.rearm,
 #   Registrations.forget, Namespaces.register, Namespaces.setRelays, Namespaces.setListening,
-#   Namespaces.setSendDelay and Capabilities.put
+#   Namespaces.setSendDelay, Capabilities.put and Funding.set
 #       only from SEND, RESEND, EST-START, EST-READY, EST-END, OWNER-WEEK, ACTIVATE, KEEPER,
 #       REGROWS
 #   Namespaces.remove
@@ -126,25 +126,38 @@
 # silently granted BUNDLE, the one establishment transaction driven by an arriving blob, the
 # permission §21.7 point 7 denies it. `BundleStep.kt` restores the invariant the gate depends on.
 #
+# **Phase 10, slice S1a (2026-10-03): `Funding.set`.** `Funding` (Phase 10 design §7.5 item 1) marks a
+# namespace as one this client funds. It moves nothing by itself, but it is the switch that makes the
+# planner redeem registration capabilities and the registration step run for the namespace, so a
+# call made because a blob arrived would make a funder's redemptions and registrations depend on the
+# inbox (T40, design §7.5 item 7: `Funding.set` for a new generation is called by the rotating
+# committer's CH-SWITCH and by the funder renewal step, never by CH-SETTLE or CH-RECV). It joins
+# the restricted calls under the same rule as `Capabilities.put`: `funding` is a receiver name,
+# `Funding` a receiver type (a constructor-injected `private val ledger: Funding` is a port whatever
+# it is called), `set` a restricted call. `ALLOWED_FILES` is unchanged: no DM file funds anything,
+# and the channel engine's files (slices S4 and S6) are added to it one by one, deliberately, the
+# day they exist. `Inbox.reofferDeferred` is **not** restricted: it writes the re-offer time of local
+# rows and causes no relay traffic (design §7.5 item 6), which `ChannelSyncNoTrafficTest` pins.
+#
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # The restricted calls, as they are written at a call site.
-RESTRICTED='enqueue|cancel|request|keep|rearm|forget|register|setRelays|setListening|setSendDelay|put'
+RESTRICTED='enqueue|cancel|request|keep|rearm|forget|register|setRelays|setListening|setSendDelay|put|set'
 # `remove` is the one call SWEEP may make as well, so it is matched separately.
 REMOVE='remove'
 
 # A receiver that makes the match a **DM** call rather than any `.put(` on a map. The call sites of
 # this codebase always go through a named port; a call on something else is not one of these.
-RECEIVERS='outbox|registrations|namespaces|capabilities'
-# The **types** of those four ports. A property declared with one of them is a port whatever it is
+RECEIVERS='outbox|registrations|namespaces|capabilities|funding'
+# The **types** of those five ports. A property declared with one of them is a port whatever it is
 # called, which is what closes the hole the S9 review found: the alias rule below needs an
 # initialiser (`val ob = sync.outbox`), so a constructor-injected `private val ops: Outbox` was
 # invisible and `ops.cancel(tx, id)` passed. That is not a hypothetical shape — `Sweeper.kt` is the
 # one production file that takes a port as a bare constructor property rather than through `sync.`,
 # so the evading shape is the shape that file already uses.
-RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities'
+RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities|Funding'
 # The scope functions that turn a port into `this`, so a call inside can be bare.
 SCOPES='run|apply'
 # The scope functions that bind the port to a lambda **parameter** instead: the call inside is
@@ -372,7 +385,7 @@ while IFS= read -r file; do
   if [ -n "$restricted_hits" ] && ! allowed_file "$base"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen or install)"
+      fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen, install or fund)"
     done <<< "$restricted_hits"
   fi
   if [ -n "$remove_hits" ] && ! remove_allowed "$base"; then

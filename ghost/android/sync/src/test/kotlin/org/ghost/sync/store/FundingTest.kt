@@ -1,0 +1,187 @@
+package org.ghost.sync.store
+
+import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.KeyKind
+import org.ghost.sync.api.NamespaceId
+import org.ghost.sync.api.RelayId
+import org.ghost.sync.api.SyncChange
+import org.ghost.sync.api.SyncTransaction
+import org.ghost.sync.store.SyncWorld.Companion.DAY
+import org.ghost.sync.store.SyncWorld.Companion.HOUR
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * `Funding` and `sync_namespace_fund` (Phase 10 design §7.5 item 1, §9 migration 6): a flag in the
+ * sync database that says this client funds the namespace. The flag is the whole of it: nothing is
+ * redeemed, registered or stored by setting it, which these tests pin from the outside (the counts
+ * and needs do not move) because the channel engine's T40 argument rests on it. What the flag
+ * changes for the needs and for the registration step is tested with them
+ * ([RegisterCapabilityTest], [RegistrationStoreTest], `RegistrationStepTest`).
+ */
+class FundingTest {
+
+    private fun SyncWorld.channelSet(): Pair<NamespaceId, List<RelayId>> {
+        val relays = relays(1, 2, 3)
+        val ns = namespace(1, relays, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        return Pair(ns, relays)
+    }
+
+    private fun SyncWorld.isFunded(ns: NamespaceId): Boolean = tx { stores.funding.isFunded(it, ns) }
+
+    @Test
+    fun theFlagIsSetOnceReadBackAndClearedAndEveryCallIsIdempotent(): Unit = SyncWorld().use { w ->
+        val (ns, _) = w.channelSet()
+        assertFalse("a namespace starts unfunded", w.isFunded(ns))
+        w.fund(ns)
+        assertTrue(w.isFunded(ns))
+        assertEquals(1L, w.count("sync_namespace_fund"))
+        // Setting it again changes nothing, and the REPLACE guard of the table is never met (a plain
+        // INSERT of an existing key would be refused, an INSERT OR IGNORE too).
+        w.fund(ns)
+        w.fund(ns, true)
+        assertEquals(1L, w.count("sync_namespace_fund"))
+        w.fund(ns, false)
+        assertFalse(w.isFunded(ns))
+        assertEquals(0L, w.count("sync_namespace_fund"))
+        w.fund(ns, false)
+        assertEquals(0L, w.count("sync_namespace_fund"))
+        // The flag is per namespace.
+        val other = w.namespace(2, w.relays(4, 5), consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        w.fund(ns)
+        assertTrue(w.isFunded(ns))
+        assertFalse(w.isFunded(other))
+        // It is the database's fact: a process restart reads it back.
+        w.reopen()
+        assertTrue(w.isFunded(ns))
+        assertFalse(w.isFunded(other))
+    }
+
+    @Test
+    fun anUnknownNamespaceIsNotFundedAndCannotBe(): Unit = SyncWorld().use { w ->
+        val unknown = TestBytes.namespace(77)
+        assertFalse(w.isFunded(unknown))
+        val e = assertThrows(IllegalStateException::class.java) { w.fund(unknown) }
+        assertEquals("namespace is not registered", e.message)
+        assertEquals(0L, w.count("sync_namespace_fund"))
+        // Taking the flag off a namespace that has none is a no-op, whatever the namespace is.
+        w.fund(unknown, false)
+        assertEquals(0L, w.count("sync_namespace_fund"))
+    }
+
+    @Test
+    fun theFlagIsPartOfTheCallersTransactionAndRollsBackWithIt(): Unit = SyncWorld().use { w ->
+        val (ns, _) = w.channelSet()
+        assertThrows(IllegalStateException::class.java) {
+            w.tx { tx ->
+                w.stores.funding.set(tx, ns, true)
+                assertTrue(w.stores.funding.isFunded(tx, ns))
+                throw IllegalStateException("the caller's transaction failed")
+            }
+        }
+        assertFalse(w.isFunded(ns))
+        // And the other way round: a removal that rolls back leaves the flag.
+        w.fund(ns)
+        assertThrows(IllegalStateException::class.java) {
+            w.tx { tx ->
+                w.stores.funding.set(tx, ns, false)
+                throw IllegalStateException("the caller's transaction failed")
+            }
+        }
+        assertTrue(w.isFunded(ns))
+    }
+
+    @Test
+    fun aStaleOrForeignTransactionIsRefused(): Unit = SyncWorld().use { w ->
+        val (ns, _) = w.channelSet()
+        var leaked: SyncTransaction? = null
+        w.tx { leaked = it }
+        assertThrows(IllegalStateException::class.java) { w.stores.funding.set(checkNotNull(leaked), ns, true) }
+        assertThrows(IllegalStateException::class.java) { w.stores.funding.isFunded(checkNotNull(leaked), ns) }
+        assertFalse(w.isFunded(ns))
+    }
+
+    /**
+     * Funding causes no traffic by itself (design §7.5 item 7; T40): marking a namespace funded moves
+     * no count, creates no registration row and no operation, installs no capability, and reports no
+     * need while nothing is pending. The only effect outside the table is the capability hint the
+     * engine uses to refresh its pair snapshot, and it is sent when the flag changed, not otherwise.
+     */
+    @Test
+    fun fundingIsAFlagNotAnAct(): Unit = SyncWorld().use { w ->
+        val (ns, relays) = w.channelSet()
+        relays.forEach {
+            w.capability(it, ns, CapabilityKind.READ, expiresAt = w.now + 8 * DAY)
+            w.capability(it, ns, CapabilityKind.WRITE, expiresAt = w.now + 8 * DAY)
+        }
+        val before = Triple(w.stores.counts().toString(), w.stores.capabilities.needed(), w.stores.registrations.pendingCount())
+        val tables = listOf("outbox_op", "outbox_delivery", "relay_key_registration", "relay_capability", "relay_register_capability", "inbox_blob")
+        val rows = tables.map { w.count(it) }
+        w.hints.clear()
+        w.fund(ns)
+        assertEquals(listOf<Set<SyncChange>>(setOf(SyncChange.CAPABILITIES)), w.hints.toList())
+        w.hints.clear()
+        w.fund(ns)
+        assertTrue("an unchanged flag sends no hint", w.hints.isEmpty())
+        assertEquals(before, Triple(w.stores.counts().toString(), w.stores.capabilities.needed(), w.stores.registrations.pendingCount()))
+        assertEquals(rows, tables.map { w.count(it) })
+        w.fund(ns, false)
+        assertEquals(before, Triple(w.stores.counts().toString(), w.stores.capabilities.needed(), w.stores.registrations.pendingCount()))
+    }
+
+    /** Removing a namespace ends its funding and its registration capabilities (they are capabilities of a namespace that is gone). */
+    @Test
+    fun removingTheNamespaceEndsItsFundingAndItsRegistrationCapabilities(): Unit = SyncWorld().use { w ->
+        val (ns, relays) = w.channelSet()
+        w.fund(ns)
+        relays.forEach { w.capability(it, ns, CapabilityKind.REGISTER, expiresAt = w.now + 8 * DAY) }
+        w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = w.now + 8 * DAY)
+        assertEquals(3L, w.count("relay_register_capability"))
+        w.hints.clear()
+        assertTrue(w.tx { w.stores.namespaces.remove(it, ns) })
+        assertEquals(0L, w.count("relay_register_capability"))
+        assertEquals(0L, w.count("relay_capability"))
+        assertEquals(0L, w.count("sync_namespace_fund"))
+        assertTrue("the capability hint follows", w.hints.any { SyncChange.CAPABILITIES in it })
+        // No tombstone is left, so the namespace row went with them (Namespaces.remove deletes it when nothing refers to it).
+        assertEquals(0L, w.count("sync_namespace"))
+        assertFalse(w.isFunded(ns))
+    }
+
+    @Test
+    fun aRemovedNamespaceThatKeepsTombstonesKeepsItsRowButNoFundingAndGcWaitsForNothingElse(): Unit = SyncWorld().use { w ->
+        val (ns, relays) = w.channelSet()
+        w.fund(ns)
+        relays.forEach { w.capability(it, ns, CapabilityKind.REGISTER, expiresAt = w.now + 8 * DAY) }
+        w.raw("INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?, ?, 'done', ?)", ns, w.hashOf(1), (Time.day(w.now) / 7 + 3) * 7)
+        assertTrue(w.tx { w.stores.namespaces.remove(it, ns) })
+        assertEquals("the tombstone keeps the namespace row", 1L, w.count("sync_namespace"))
+        assertFalse(w.isFunded(ns))
+        assertEquals(0L, w.count("relay_register_capability"))
+        // Once the tombstone is collected the garbage collector deletes the row, funded or not.
+        w.clock.advance(30 * DAY)
+        w.tx { w.gc.pass(it, w.now) }
+        assertEquals(0L, w.count("sync_namespace"))
+        assertNull(w.long("SELECT 1 FROM sync_namespace_fund"))
+    }
+
+    /** A funded namespace with a pending registration is write work of nobody: the flag, not the source, routes it to REGISTER. */
+    @Test
+    fun theFlagDecidesWhichKindOfNeedARegistrationRaises(): Unit = SyncWorld().use { w ->
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays, listen = false, consumer = Consumer.DM)
+        val week = Time.week(w.now)
+        w.tx { w.stores.registrations.request(it, relays[0], ns, week, KeyKind.DEPOSIT, TestBytes.of(32, 41)) }
+        assertEquals(listOf(CapabilityKind.WRITE), w.stores.capabilities.needed().map { it.kind })
+        w.fund(ns)
+        assertEquals(listOf(CapabilityKind.REGISTER), w.stores.capabilities.needed().map { it.kind })
+        w.fund(ns, false)
+        assertEquals(listOf(CapabilityKind.WRITE), w.stores.capabilities.needed().map { it.kind })
+    }
+}

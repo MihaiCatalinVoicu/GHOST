@@ -21,11 +21,15 @@ enum class KeyKind(val code: Int, internal val dbCode: String) {
  * `:sync` work lane runs them with a usable write capability, never on the read lane (T19).
  *
  * A row is due when it is pending, not in flight, its next attempt time has come, and a usable,
- * unexpired write capability of week c exists for its pair with `period_id` in `{c, c + 1}`, which
- * is the rule the relay judges the request by (§4.4 point 3). Results: OK marks the row done with
- * the relay's validity; WRONG_PERIOD and `unauthorized` leave it pending for the next capability
- * generation; transient failures take the Phase 7 backoff and breakers; a crash inside the call
- * leaves a lease that session start normalizes.
+ * unexpired capability of week c exists for its pair with `period_id` in `{c, c + 1}`, which
+ * is the rule the relay judges the request by (§4.4 point 3). The capability is the **write**
+ * capability of a namespace of source `redeem` that this client does not fund (Phase 9), and the
+ * **registration** capability ([CapabilityKind.REGISTER]) of a namespace it funds ([Funding], Phase 10
+ * design §7.5 item 2) — never the write capability of a funded namespace, which is the channel's
+ * bearer DEPOSIT credential. Results: OK marks the row done with the relay's validity; WRONG_PERIOD
+ * and `unauthorized` leave it pending for the next generation of the capability that served it;
+ * transient failures take the Phase 7 backoff and breakers; a crash inside the call leaves a lease
+ * that session start normalizes.
  */
 interface Registrations {
     /**

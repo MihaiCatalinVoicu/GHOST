@@ -1,5 +1,6 @@
 package org.ghost.sync.engine
 
+import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.PrivacyMode
@@ -31,6 +32,8 @@ class T19BasicTest {
         val checks: Int,
         val registrations: Int,
         val continuations: Int,
+        /** Start time of every registration call, in order: the work lane's registration schedule. */
+        val registrationStarts: List<Long> = emptyList(),
     )
 
     private val workFailures = listOf("timeout", "transport", "internal", "relay_unavailable", "malformed_response", "not_stored", "rejected", "not_found", "invalid_argument")
@@ -41,7 +44,12 @@ class T19BasicTest {
         return Math.floorMod(((d[0].toInt() and 0xff) shl 8) or (d[1].toInt() and 0xff), n)
     }
 
-    private fun run(mode: PrivacyMode, activity: Boolean): Observed = EngineWorld(TrafficPolicy(listLimit = 4)).use { w ->
+    /**
+     * [funded] (Phase 10 design §7.5): the write-only namespace is a funder's, so its key registrations
+     * are served by a registration capability on the spare relay instead of a write capability, and
+     * nothing else differs. The property is that the read schedule is the same either way.
+     */
+    private fun run(mode: PrivacyMode, activity: Boolean, funded: Boolean = false): Observed = EngineWorld(TrafficPolicy(listLimit = 4)).use { w ->
         w.mode = mode
         val relays = w.relays(1, 2, 3, 4)
         // The capabilities declare the expiry of a redeemed week, in both runs alike: a key
@@ -55,7 +63,12 @@ class T19BasicTest {
         // A relay in no namespace's set, as the owner keeps one after a slot change (§21.1 point 3):
         // it adds no read pair, and run (b) gives it key registrations of its own.
         val spare = w.relays(5).single()
-        w.capability(spare, writeOnly, expiresAt = capabilityExpiry)
+        if (funded) {
+            w.fund(writeOnly)
+            w.capability(spare, writeOnly, CapabilityKind.REGISTER, expiresAt = capabilityExpiry)
+        } else {
+            w.capability(spare, writeOnly, expiresAt = capabilityExpiry)
+        }
         val firstList = HashSet<Pair<String, String>>()
         w.net.latency = { call ->
             when (call.kind) {
@@ -113,6 +126,7 @@ class T19BasicTest {
             w.net.callsOf(TestRelays.Kind.CHECK).size,
             w.net.callsOf(TestRelays.Kind.REGISTER).size,
             driver.started.map { it.second }.filterIsInstance<ReadItem>().count { it.continuation },
+            w.net.callsOf(TestRelays.Kind.REGISTER).map { it.startMillis },
         )
     }
 
@@ -139,6 +153,27 @@ class T19BasicTest {
         assertEquals(0, busy.continuations)
         assertTrue(busy.stores > 0 && busy.gets > 0)
         assertTrue("key registrations ran at the pair's events", busy.registrations > 0)
+    }
+
+    /**
+     * Phase 10 design §7.5, §7.8 ("no new request kind, field or timing"): a namespace whose
+     * registrations are served by a funder's registration capability reads and registers on exactly the
+     * schedule of one served by a write capability — every first list request in STANDARD, the whole
+     * list sequence in HIGH, and the start of every registration call.
+     */
+    @Test
+    fun aFundedNamespaceChangesNeitherTheReadScheduleNorTheRegistrationTimes() {
+        for (mode in PrivacyMode.entries) {
+            val plain = run(mode, activity = true)
+            val funded = run(mode, activity = true, funded = true)
+            assertTrue(mode.toString(), plain.requests.size > 200)
+            assertEquals(mode.toString(), plain.requests, funded.requests)
+            assertEquals(mode.toString(), plain.registrationStarts, funded.registrationStarts)
+            assertTrue("key registrations ran on the funded namespace too ($mode)", funded.registrations > 0)
+            assertEquals(mode.toString(), plain.stores, funded.stores)
+            assertEquals(mode.toString(), plain.gets, funded.gets)
+            assertEquals(mode.toString(), plain.continuations, funded.continuations)
+        }
     }
 
     @Test

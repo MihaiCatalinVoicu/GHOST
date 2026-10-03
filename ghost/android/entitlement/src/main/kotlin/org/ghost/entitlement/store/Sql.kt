@@ -106,4 +106,20 @@ internal object SyncTables {
             "SELECT expires_hour FROM relay_capability WHERE relay_id = ?1 AND namespace_id = ?2 AND kind = 'write' AND state = 'usable'",
             listOf(relay.value, ns.toByteArray()),
         ) { it.longOrNull(0) }
+
+    /**
+     * The expiry hour of the pair's usable **registration** capability (Phase 10 design §7.5 item 2,
+     * `relay_register_capability`, schema v6), or null (none, or no known expiry). The covering
+     * capability of a REGISTER need: a funder's write slot holds the channel's DEPOSIT credential, which
+     * a token cannot extend and which therefore says nothing about the need.
+     */
+    fun usableRegisterExpiry(tx: SyncTransaction, relay: RelayId, ns: NamespaceId): Long? =
+        tx.sql.single(
+            "SELECT expires_hour FROM relay_register_capability WHERE relay_id = ?1 AND namespace_id = ?2 AND state = 'usable'",
+            listOf(relay.value, ns.toByteArray()),
+        ) { it.longOrNull(0) }
+
+    /** The expiry of the capability a need's redemption would extend: the registration one for REGISTER, else the write one. */
+    fun coveringExpiry(tx: SyncTransaction, kind: org.ghost.sync.api.CapabilityKind, relay: RelayId, ns: NamespaceId): Long? =
+        if (kind == org.ghost.sync.api.CapabilityKind.REGISTER) usableRegisterExpiry(tx, relay, ns) else usableWriteExpiry(tx, relay, ns)
 }

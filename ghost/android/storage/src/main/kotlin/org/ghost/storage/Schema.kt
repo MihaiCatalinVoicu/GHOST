@@ -111,13 +111,19 @@ private object OutboxObjects {
  *    `session_state_key` (§2.5), so a SQLCipher row is doubly encrypted and the JVM heap never
  *    holds a ratchet, KEM or seal opening secret. The round-9 `sig_*` tables and
  *    `dm_self.registration_id` are not created (§22).
+ *  - v6 (Phase 10 forum, docs/design/faza10-forum.md §9 "Migration 6", the `:sync` half): the
+ *    funding flag `sync_namespace_fund` (a side table, because the CHECK of
+ *    `sync_namespace.capability_source` cannot be altered), `relay_register_capability` (the
+ *    redeemed capabilities of funded namespaces, which only the registration step reads), the two
+ *    triggers that refuse `send_delay = 'off'` for a channel namespace, and the REPLACE guards of
+ *    the two new tables. The channel tables `ch_*` and `mls_*` are migration 7, a later slice.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
  * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2.
  */
 object Schema {
-    const val CURRENT_VERSION = 5
+    const val CURRENT_VERSION = 6
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -739,6 +745,10 @@ object Schema {
             version = 5,
             statements = migration5Tables() + migration5Triggers(),
         ),
+        Migration(
+            version = 6,
+            statements = migration6(),
+        ),
     )
 
     /**
@@ -1263,6 +1273,59 @@ object Schema {
                 WHEN EXISTS (SELECT 1 FROM $table WHERE $conflict)
                 BEGIN SELECT RAISE(ABORT, '$table rows are never replaced'); END"""
 
+    /**
+     * Phase 10 design §9, "Migration 6 (`:sync`)" (slice S1a). One transaction, append-only,
+     * fail-closed like every migration before it; the channel tables are migration 7.
+     */
+    private fun migration6(): List<String> = listOf(
+        // (0) The rule of step 3 is about rows, not only about writes: no channel namespace may be
+        // left with the send delay off, whatever wrote it (before this version only a test could
+        // register a CHANNEL namespace, and the one thing a row with `off` does is store at once
+        // in HIGH mode, so `default`, which follows the global mode, is the strict reading). The
+        // triggers below are created after this statement, so it fires none of them.
+        "UPDATE sync_namespace SET send_delay = 'default' WHERE consumer = 'channel' AND send_delay = 'off'",
+        // (1) A namespace this client funds (§7.5): presence is the flag. A side table because
+        // `sync_namespace.capability_source` has a CHECK that SQLite cannot alter without
+        // rebuilding a table the outbox and the inbox reference. The cascade ends the flag with
+        // the namespace row.
+        """CREATE TABLE sync_namespace_fund (
+                  namespace_id BLOB PRIMARY KEY NOT NULL CHECK (length(namespace_id) = 32)
+                               REFERENCES sync_namespace(namespace_id) ON DELETE CASCADE
+                ) WITHOUT ROWID""",
+        // (2) The capabilities a funder redeems for `RegisterKey` alone (§7.4, §7.5 item 2): the
+        // columns of `relay_capability` (v2) without `kind`, because a pair holds at most one. Only
+        // the registration step reads it; store, list, get and check never do, so a token-bought
+        // capability is never presented as a writer. `expires_hour` follows the v4 and v5 rule
+        // (`typeof` beside the granularity), `generation` is the rejection race guard of §3.8.
+        """CREATE TABLE relay_register_capability (
+                  relay_id     INTEGER NOT NULL REFERENCES relay_directory(relay_id) ON DELETE CASCADE,
+                  namespace_id BLOB NOT NULL REFERENCES sync_namespace(namespace_id) ON DELETE CASCADE,
+                  token        BLOB NOT NULL CHECK (length(token) BETWEEN 1 AND 512),
+                  expires_hour INTEGER CHECK (expires_hour IS NULL OR (typeof(expires_hour) = 'integer' AND expires_hour % 3600 = 0)),
+                  state        TEXT NOT NULL CHECK (state IN ('usable', 'rejected', 'exhausted')),
+                  generation   INTEGER NOT NULL CHECK (typeof(generation) = 'integer' AND generation >= 1),
+                  PRIMARY KEY (relay_id, namespace_id)
+                ) WITHOUT ROWID""",
+        // (3) A channel namespace keeps its send delay (§7.5 item 3), as a DM namespace does (v4):
+        // without it a store would name the minute the member pressed send. Unlike the v4 update
+        // trigger this one also watches `consumer`, so a row cannot reach `channel` with `off` by
+        // changing the consumer instead of the delay.
+        """CREATE TRIGGER sync_namespace_channel_delay_update BEFORE UPDATE OF send_delay, consumer ON sync_namespace
+                WHEN NEW.consumer = 'channel' AND NEW.send_delay = 'off'
+                BEGIN SELECT RAISE(ABORT, 'Channel namespaces cannot turn the send delay off'); END""",
+        """CREATE TRIGGER sync_namespace_channel_delay_insert BEFORE INSERT ON sync_namespace
+                WHEN NEW.consumer = 'channel' AND NEW.send_delay = 'off'
+                BEGIN SELECT RAISE(ABORT, 'Channel namespaces cannot turn the send delay off'); END""",
+        // (4) REPLACE guards (§19.21 point 4 of Phase 8, §9 of Phase 10). A REPLACE of a capability
+        // row would write generation 1 over the generation of the token it replaces, and the
+        // rejection race guard compares generations, so a stale refusal could mark the new token
+        // rejected; the flag has no rule to skip, but the guard is what makes "no REPLACE in sync
+        // SQL for these tables" a property of the database. Both tables are therefore written by
+        // an UPDATE followed by an INSERT, never by an upsert (a guard refuses every insert form).
+        replaceGuard("sync_namespace_fund", "namespace_id = NEW.namespace_id"),
+        replaceGuard("relay_register_capability", "relay_id = NEW.relay_id AND namespace_id = NEW.namespace_id"),
+    )
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
@@ -1282,6 +1345,8 @@ object Schema {
         "dm_conversation", "dm_message", "dm_outbound_item", "dm_outbound_op", "dm_pending_send",
         "dm_bundle_candidate", "dm_orphan_namespace", "dm_scheduled", "dm_held", "dm_reaction",
         "dm_seen", "olm_session", "olm_prekey_gen", "olm_prekey_used", "dm_peer_pq",
+        // v6 (Phase 10 §9, the `:sync` half): the funding flag and the registration capabilities.
+        "sync_namespace_fund", "relay_register_capability",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -1315,6 +1380,9 @@ object Schema {
         "dm_orphan_namespace_no_replace", "dm_scheduled_no_replace", "dm_held_no_replace",
         "dm_reaction_no_replace", "dm_pair_offer_no_replace", "olm_session_no_replace",
         "olm_prekey_gen_no_replace", "olm_prekey_used_no_replace", "dm_peer_pq_no_replace",
+        // v6 (Phase 10 §9): the channel send-delay rule and the REPLACE guards of the two new tables
+        "sync_namespace_channel_delay_update", "sync_namespace_channel_delay_insert",
+        "sync_namespace_fund_no_replace", "relay_register_capability_no_replace",
     )
 
     /**

@@ -1,6 +1,12 @@
 package org.ghost.sync.harness
 
+import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilityNeed
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.KeyKind
+import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.Outcome
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.TtlBucket
@@ -366,6 +372,131 @@ internal class ScenarioPeekClaimOne : Scenario("S-P/peek-claim-one") {
         }
         w.jobs(pia, MINUTE, 61 * MINUTE)
         w.endMillis = 75 * MINUTE
+    }
+}
+
+/**
+ * S-P/reoffer-deferred (Phase 10 design §7.5 item 6, slice S1a): the consumer is a channel actor.
+ * A message it cannot open before the channel is settled is deferred for three days
+ * (`Inbox.defer`); the key message, consumed in one transaction with `Inbox.reofferDeferred`, brings
+ * every deferred row back at once. Without the re-offer the deferred rows would stay fetched for
+ * three days and the run would not reach quiescence; with it, every message is consumed exactly
+ * once, however a crash cuts the claim, the deferral or the settling transaction, and the key
+ * arrives before some messages, with others, and after others.
+ */
+internal class ScenarioReofferDeferred : Scenario("S-P/reoffer-deferred") {
+    private fun labelOf(w: World, hash: BlobHash): String? = w.otherBlobs.entries.firstOrNull { it.value.second == hash }?.key
+
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val settle = SettlePolicy(
+            unopenable = { world, hash -> labelOf(world, hash)?.startsWith("msg") == true },
+            settles = { world, hash -> labelOf(world, hash)?.startsWith("key") == true },
+        )
+        val ria = subject(w, "ria", consumer = ConsumerPolicy(settle = settle))
+        val chan = ria.namespace("chan", listOf(a, b), listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        ria.capability(a, chan, CapabilityKind.READ)
+        ria.capability(b, chan, CapabilityKind.READ)
+        for (i in 1..3) {
+            w.otherWrite(a, chan, "msg$i")
+            w.otherWrite(b, chan, "msg$i")
+        }
+        w.otherWrite(b, chan, "msg4")
+        w.at(8 * MINUTE, "the key arrives with a message") {
+            w.otherWrite(a, chan, "key1")
+            w.otherWrite(b, chan, "key1")
+            w.otherWrite(a, chan, "msg5")
+        }
+        w.at(18 * MINUTE, "a message after the key") {
+            w.otherWrite(a, chan, "msg6")
+            w.otherWrite(b, chan, "msg6")
+        }
+        w.jobs(ria, MINUTE, 31 * MINUTE, every = 5 * MINUTE)
+        w.endMillis = 45 * MINUTE
+    }
+
+    override fun finalChecks(w: World) {
+        val sql = w.subject.jdbc
+        var consumed = 0L
+        sql.query("SELECT count(*) FROM oracle_consumed") { consumed = it.long(0) }
+        if (consumed != w.otherBlobs.size.toLong()) violation("S-P/reoffer-deferred: $consumed of ${w.otherBlobs.size} blobs consumed")
+        var deferred = 0L
+        sql.query("SELECT count(*) FROM inbox_blob WHERE state = 'fetched'") { deferred = it.long(0) }
+        if (deferred != 0L) violation("S-P/reoffer-deferred: $deferred deferred row(s) left after the namespace settled")
+    }
+}
+
+/**
+ * S-R/funded-channel (Phase 10 design §7.5 item 2, slice S1a): a funded CHANNEL namespace of source
+ * LOCAL whose **write slot holds the shared bearer DEPOSIT credential**, with this week's member keys
+ * (DEPOSIT and READ) to register at two relays. The registrations are served by the registration
+ * capability alone: the credential at `RegisterKey` is a T21 violation the harness port refuses, which
+ * would leave the rows pending for ever (no quiescence), mark the write slot rejected (the truth
+ * invariant) and leave a relay without its record (the final check). The capability arrives from the
+ * script (the planner's REGISTER MISSING need, played by Phase 8) or, when a crash lost that action, from
+ * the quiescence tail, which installs what `Capabilities.needed()` reports. Crashes cut the lease, the
+ * call and the result of every registration.
+ */
+internal class ScenarioFundedChannel : Scenario("S-R/funded-channel") {
+    private val kinds = listOf(KeyKind.DEPOSIT, KeyKind.READ)
+    private var ns: NamespaceId? = null
+    private var week = 0L
+
+    override fun build(w: World) {
+        val a = w.relay("A", 1)
+        val b = w.relay("B", 2)
+        val relays = listOf(a, b)
+        val fay = subject(w, "fay")
+        val chan = fay.namespace("chan", relays, listen = false, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        ns = chan
+        relays.forEach { fay.depositCredential(it, chan) }
+        week = ModelRelay.week(w.relayNow(a))
+        fay.tx { tx ->
+            fay.stores.funding.set(tx, chan, true)
+            for (node in relays) for (kind in kinds) fay.stores.registrations.request(tx, fay.id(node), chan, week, kind, fay.verifier(chan, kind))
+        }
+        w.at(2 * MINUTE, "phase 8 installs the registration capabilities") {
+            relays.forEach { fay.capability(it, chan, CapabilityKind.REGISTER, validSeconds = thisWeekValidSeconds(w, it)) }
+        }
+        w.jobs(fay, MINUTE, 31 * MINUTE, every = 5 * MINUTE)
+        w.endMillis = 45 * MINUTE
+    }
+
+    /**
+     * A redeemed capability is valid to the end of its week plus an hour (`start(c + 1) + 1 h`), which is
+     * where both the relay and the registration rule read the week from; the tail's renewal mints the same.
+     */
+    private fun thisWeekValidSeconds(w: World, node: RelayNode): Long = ModelRelay.weekStart(week + 1) + 3_600 - w.relayNow(node)
+
+    override fun renewalValidSeconds(w: World, node: RelayNode, need: CapabilityNeed): Long =
+        if (need.kind == CapabilityKind.REGISTER) thisWeekValidSeconds(w, node) else super.renewalValidSeconds(w, node, need)
+
+    override fun extraQuiescence(w: World): List<String> {
+        val out = ArrayList<String>()
+        w.subject.jdbc.query("SELECT count(*) FROM relay_key_registration WHERE state <> 'done' OR inflight <> 0") {
+            if (it.long(0) > 0) out += "${it.long(0)} registration(s) still pending or in flight"
+        }
+        return out
+    }
+
+    override fun finalChecks(w: World) {
+        val chan = ns ?: violation("S-R: no namespace")
+        val fay = w.subject
+        for (node in w.relays) {
+            for (kind in kinds) {
+                val relayKind = if (kind == KeyKind.DEPOSIT) ModelRelay.KIND_DEPOSIT else ModelRelay.KIND_READ
+                if (node.model.record(chan, week, relayKind, fay.verifier(chan, kind)) == null) {
+                    violation("S-R: ${node.name} holds no $kind record for the channel")
+                }
+            }
+        }
+        fay.jdbc.query("SELECT kind, state FROM relay_capability") {
+            if (it.string(1) != "usable") violation("S-R: the write slot ended ${it.string(1)}, the bearer credential was refused somewhere")
+        }
+        fay.jdbc.query("SELECT count(*) FROM relay_register_capability WHERE state = 'usable'") {
+            if (it.long(0) != w.relays.size.toLong()) violation("S-R: ${it.long(0)} usable registration capabilities, one per relay expected")
+        }
     }
 }
 

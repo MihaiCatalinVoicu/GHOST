@@ -48,6 +48,20 @@ class DmSchemaIntrospectionTest {
         "relay_key_registration.valid_until_hour",
     )
 
+    /**
+     * Phase 10 design §9, "Migration 6" (slice S1a): the one time column migration 6 adds, the floored
+     * expiry of a registration capability (the sync set grows 15 -> 16). It follows the v4 and v5 rule:
+     * granularity and `typeof` in one CHECK.
+     */
+    private val timeColumnsOfMigration6 = setOf("relay_register_capability.expires_hour")
+
+    /**
+     * The integer counter of migration 6 that is no time and no period index: the capability's
+     * generation, the rejection race guard of Phase 7 §3.8. Its name matches none of the rule's words,
+     * so only the executed test below finds it; it is declared so that a REAL cannot be stored in it.
+     */
+    private val countersOfMigration6 = setOf("relay_register_capability.generation")
+
     /** §13.6 steps 5 and 6: the 24 time columns migration 5 adds, verbatim from R-M3. */
     private val timeColumnsOfMigration5 = setOf(
         "dm_self.expiry_clock_minute", "dm_self.accept_after_minute",
@@ -183,7 +197,7 @@ class DmSchemaIntrospectionTest {
 
     @Test
     fun everyTimeLikeColumnOfEveryTableIsOneTheDesignDeclares() = migrated().use { db ->
-        val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsBeforeV4
+        val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 + timeColumnsBeforeV4
         val foundTimes = HashSet<String>()
         val foundIndices = HashSet<String>()
         val usedExemptions = HashSet<String>()
@@ -222,7 +236,7 @@ class DmSchemaIntrospectionTest {
      */
     @Test
     fun everyTimeColumnCarriesItsGranularityCheck() = migrated().use { db ->
-        val v4AndV5 = timeColumnsOfMigration4 + timeColumnsOfMigration5
+        val v4AndV5 = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6
         for (qualified in v4AndV5 + timeColumnsBeforeV4) {
             val (table, column) = qualified.split(".")
             val sql = createSql(db, table)
@@ -351,7 +365,7 @@ class DmSchemaIntrospectionTest {
     private val registrationArgs = listOf<Any?>(bytes(32, 1), bytes(32, 2), bytes(16, 1))
 
     /**
-     * Every v4 and v5 column that R-M3 declares integer-typed, with a statement that writes it.
+     * Every v4, v5 and v6 column that R-M3 declares integer-typed, with a statement that writes it.
      *
      * Two pairs cannot be separated, and are written together on purpose: `dm_message`'s
      * `expire_at_minute` and `delete_at_minute` are tied by `delete_at_minute IS (CASE WHEN
@@ -388,6 +402,19 @@ class DmSchemaIntrospectionTest {
             "relay_key_registration.period_id", 7,
             "$registrationRow) VALUES (1, ?, {v}, 'read', ?, ?, 'pending', 600)",
             registrationArgs, prepare = ::aRelayAndNamespace,
+        ),
+        // ---- migration 6
+        TypedColumn(
+            "relay_register_capability.expires_hour", 3600,
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, expires_hour, state, generation) " +
+                "VALUES (1, ?, ?, {v}, 'usable', 1)",
+            listOf(bytes(32, 1), bytes(82, 1)), prepare = ::aRelayAndNamespace,
+        ),
+        TypedColumn(
+            "relay_register_capability.generation", 7,
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, state, generation) " +
+                "VALUES (1, ?, ?, 'usable', {v})",
+            listOf(bytes(32, 1), bytes(82, 1)), prepare = ::aRelayAndNamespace,
         ),
         // ---- dm_self
         TypedColumn(
@@ -630,8 +657,8 @@ class DmSchemaIntrospectionTest {
      */
     @Test
     fun everyTypedColumnRefusesAFractionalValue() {
-        val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + periodIndices -
-            typeofCheckedByForeignKey - executedByTheEntitlementSuite
+        val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
+            countersOfMigration6 + periodIndices - typeofCheckedByForeignKey - executedByTheEntitlementSuite
         assertEquals(
             "a declared integer-typed column that no case of this test ever writes",
             declared.sorted(),
