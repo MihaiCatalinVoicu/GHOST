@@ -1,0 +1,15 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm2 file=match720p30__DESIGN.mp4 bytes=5877982 videoTrack=2 moofs=4
+vm2 design-literal tfra (from tfdt): entries=0 mfraBytes=48
+vm2 corrected tfra (summed trun durations, 90 kHz): entries=4 mfraBytes=124 times=[0, 270000, 540000, 810000] offsets=[1147, 1620742, 3048775, 4477190]
+vm2 tfdt-inserted file: bytes=5878142 (+160) tfra entries=4
+vm2 literal-mfra+flag: seekMap=MfraSeekMap seekable=true durationUs=-9223372036854775807
+vm2 literal-mfra+flag: targets=50 firstSampleIsKeyFrame=50 firstSampleTimeInTarget-1s..Target=20 maxAbsLagUs=6845136 e.g. t=5023164 point=(0,1147) firstSampleUs=2000000; t=7647236 point=(0,1147) firstSampleUs=2000000; t=2551119 point=(0,1147) firstSampleUs=2000000; t=8764343 point=(0,1147) firstSampleUs=2000000
+vm2 summed-mfra+flag (no tfdt): seekMap=MfraSeekMap seekable=true durationUs=-9223372036854775807
+vm2 summed-mfra+flag (no tfdt): targets=50 firstSampleIsKeyFrame=50 firstSampleTimeInTarget-1s..Target=20 maxAbsLagUs=6845136 e.g. t=5023164 point=(3000000,1620742) firstSampleUs=2000000; t=7647236 point=(6000000,3048775) firstSampleUs=2000000; t=2551119 point=(0,1147) firstSampleUs=2000000; t=8764343 point=(6000000,3048775) firstSampleUs=2000000
+vm2 tfdt+mfra+flag: seekMap=MfraSeekMap seekable=true durationUs=-9223372036854775807
+vm2 tfdt+mfra+flag: targets=50 firstSampleIsKeyFrame=50 firstSampleTimeInTarget-1s..Target=50 maxAbsLagUs=987486 e.g. t=5023164 point=(3000000,1620782) firstSampleUs=5000000; t=7647236 point=(6000000,3048855) firstSampleUs=7000000; t=2551119 point=(0,1147) firstSampleUs=2000000; t=8764343 point=(6000000,3048855) firstSampleUs=8000000
+vm2 summed-mfra,noflag: seekMap=Unseekable seekable=false durationUs=-9223372036854775807
+vm2 nomfra+flag: seekMap=Unseekable seekable=false durationUs=-9223372036854775807
+probe seek: OK
+

@@ -76,6 +76,7 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
             "play" -> play()
             "mtime" -> mtime()
             "preview" -> preview()
+            "luma" -> lumaRange()
             "bench" -> bench()
             "pick" -> pick()
             "inventory" -> inventory(ctx).forEach { (k, v) -> report("inv $k $v") }
@@ -123,7 +124,7 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
             SourceMaker.makeStills(src).forEach { report(it) }
         }
         if (set == "all" || set == "big") report(SourceMaker.makeBig(src))
-        if (set == "one") report(makeVideoWithFallback((SourceMaker.videoSpecs + SourceMaker.longSpecs + SourceMaker.shortSpecs).first { it.name == arg("name", "") }))
+        if (set == "one") report(makeVideoWithFallback((SourceMaker.videoSpecs + SourceMaker.longSpecs + SourceMaker.shortSpecs + SourceMaker.encoderSpecs).first { it.name == arg("name", "") }))
         if (set == "short") for (s in SourceMaker.shortSpecs) {
             val t0 = SystemClock.elapsedRealtime()
             report(makeVideoWithFallback(s) + " genMs=${SystemClock.elapsedRealtime() - t0}")
@@ -134,11 +135,26 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
         }
     }
 
-    private fun makeVideoWithFallback(s: SourceMaker.VideoSpec): String = try {
-        SourceMaker.makeVideo(src, s)
-    } catch (t: Throwable) {
-        val fb = SourceMaker.VideoSpec(s.name, s.w, s.h, s.fps, s.seconds, s.bitrate, s.audioRate, 2, s.rotation, s.content, s.canaries, s.location, s.profile, s.bt601Full)
-        "note: ${s.name} with ${s.audioChannels} audio channels failed (${t.javaClass.simpleName}: ${t.message}); stereo instead. " + SourceMaker.makeVideo(src, fb)
+    /**
+     * The spec as asked; then with stereo audio; then also without the profile and colour keys,
+     * which API 29's OMX.google.h264.encoder refuses (`configureCodec` error -38). Each fallback is
+     * named in the report line.
+     */
+    private fun makeVideoWithFallback(s: SourceMaker.VideoSpec): String {
+        val tries = listOf(
+            s to "as specified",
+            SourceMaker.VideoSpec(s.name, s.w, s.h, s.fps, s.seconds, s.bitrate, s.audioRate, 2, s.rotation, s.content, s.canaries, s.location, s.profile, s.bt601Full) to "stereo",
+            SourceMaker.VideoSpec(s.name, s.w, s.h, s.fps, s.seconds, s.bitrate, s.audioRate, 2, s.rotation, s.content, s.canaries, s.location, 0, false) to "stereo, no profile or colour keys",
+        )
+        val notes = StringBuilder()
+        for ((spec, label) in tries) {
+            try {
+                return notes.toString() + SourceMaker.makeVideo(src, spec)
+            } catch (t: Throwable) {
+                notes.append("note: ${s.name} ($label) failed (${t.javaClass.simpleName}: ${t.message}); ")
+            }
+        }
+        return "$notes FAILED"
     }
 
     // ---------------------------------------------------------------- transcodes (V-M1, V-M3, V-M12, V-M17, V-M22, V-M24)
@@ -331,9 +347,10 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
         seekTest("tfdt+mfra+flag", fixed, FragmentedMp4Extractor.FLAG_READ_MFRA_FOR_SEEK_MAP, targets)
         seekTest("summed-mfra,noflag", withMfra, 0, targets)
         seekTest("nomfra+flag", raw, FragmentedMp4Extractor.FLAG_READ_MFRA_FOR_SEEK_MAP, targets)
-        // `-e player 0` keeps the extractor half alone (the API 29 emulator's gralloc crashes the
-        // process when a YUV image of a decoder surface is locked); `-e readerFormat private`
-        // keeps the player half with timestamps only (no pixel read, so no content check).
+        // `-e player 0` keeps the extractor half alone; `-e readerFormat private` keeps the player
+        // half with timestamps only (no pixel read, so no content check). On API 29 the YUV run
+        // aborted in ART's JIT (debuggable app) until the probe was AOT-compiled, and its luma
+        // blocks do not decode to frame indices there: API 29 rests on timestamps.
         if (arg("player", "1") != "1") return
         val n = arg("playerSeeks", "50").toInt()
         val fmt = if (arg("readerFormat", "yuv") == "private") ImageFormat.PRIVATE else ImageFormat.YUV_420_888
@@ -690,7 +707,7 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
     // ---------------------------------------------------------------- V-M23 video preview
     private fun preview() {
         val names = arg("files", "match720p30.mp4,rot90_1280x720p30.mp4,port720x1280p24.mp4").split(",")
-        // `-e formats private` on the API 29 emulator, whose gralloc crashes on a YUV lock.
+        // `-e formats yuv` or `private` restricts the reader formats (both work on API 29 and 35).
         val formats = arg("formats", "yuv,private").split(",").map { if (it == "yuv") ImageFormat.YUV_420_888 else ImageFormat.PRIVATE }
         val before = inventory(ctx)
         val watch = FsWatch(ctx)
@@ -710,6 +727,16 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
                             var sum = 0L; var cnt = 0
                             while (y.hasRemaining() && cnt < 100_000) { sum += (y.get().toInt() and 0xff); cnt++ }
                             desc += " meanLuma=${sum / maxOf(1, cnt)}"
+                            // V-M17 colour check: the coded luma range of the picture area (a
+                            // full-range source spans 0..255; converted to limited range, 16..235).
+                            val p = img.planes[0]
+                            var lo = 255; var hi = 0
+                            for (row in 0 until img.height step 4) for (col in 0 until img.width step 2) {
+                                val v = p.buffer.get(row * p.rowStride + col * p.pixelStride).toInt() and 0xff
+                                if (v < lo) lo = v
+                                if (v > hi) hi = v
+                            }
+                            desc += " lumaMin=$lo lumaMax=$hi"
                         }
                         img.close()
                         got.countDown()
@@ -766,9 +793,65 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
         report("vm9 JCA ChaCha20-Poly1305 sealed $chunks chunks (${chunks.toLong() * chunk} B) in ${"%.3f".format(s)} s = ${"%.1f".format(chunks.toLong() * chunk / s / 1e6)} MB/s; appVmHWM=${procStatus("VmHWM")}kB")
     }
 
+    // ---------------------------------------------------------------- V-M17 coded luma range
+    /**
+     * Decodes the first video frame of each `-e files` source with `MediaCodec` into a buffer (no
+     * surface, so no colour conversion between the decoder and the reader) and reports the range
+     * of the coded luma values and the colour fields of the decoder's output format: a full-range
+     * picture spans about 0..255, a limited-range one 16..235. The preview path (a Surface into an
+     * ImageReader) cannot answer this: on the emulators it hands back 16..235 for every input.
+     */
+    private fun lumaRange() {
+        for (n in arg("files", "match720p30.mp4").split(",")) {
+            val ex = android.media.MediaExtractor()
+            ex.setDataSource(File(src, n).absolutePath)
+            val track = (0 until ex.trackCount).first { ex.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)!!.startsWith("video/") }
+            ex.selectTrack(track)
+            val fmt = ex.getTrackFormat(track)
+            fmt.setInteger(android.media.MediaFormat.KEY_COLOR_FORMAT, android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            val codec = android.media.MediaCodec.createDecoderByType(fmt.getString(android.media.MediaFormat.KEY_MIME)!!)
+            codec.configure(fmt, null, null, 0)
+            codec.start()
+            val info = android.media.MediaCodec.BufferInfo()
+            var result = "no frame"
+            var inputDone = false
+            val deadline = SystemClock.elapsedRealtime() + 20_000
+            while (result == "no frame" && SystemClock.elapsedRealtime() < deadline) {
+                if (!inputDone) {
+                    val ii = codec.dequeueInputBuffer(10_000)
+                    if (ii >= 0) {
+                        val sz = ex.readSampleData(codec.getInputBuffer(ii)!!, 0)
+                        if (sz < 0) { codec.queueInputBuffer(ii, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true }
+                        else { codec.queueInputBuffer(ii, 0, sz, ex.sampleTime, 0); ex.advance() }
+                    }
+                }
+                val oi = codec.dequeueOutputBuffer(info, 10_000)
+                if (oi >= 0) {
+                    codec.getOutputImage(oi)?.use { img ->
+                        val p = img.planes[0]
+                        var lo = 255; var hi = 0; var sum = 0L; var cnt = 0L
+                        for (row in 0 until img.height step 2) for (col in 0 until img.width step 2) {
+                            val v = p.buffer.get(row * p.rowStride + col * p.pixelStride).toInt() and 0xff
+                            if (v < lo) lo = v
+                            if (v > hi) hi = v
+                            sum += v; cnt++
+                        }
+                        val of = codec.outputFormat
+                        fun f(k: String) = if (of.containsKey(k)) of.getInteger(k).toString() else "-"
+                        result = "${img.width}x${img.height} lumaMin=$lo lumaMax=$hi lumaMean=${sum / cnt} outputFormat colorStandard=${f(android.media.MediaFormat.KEY_COLOR_STANDARD)} colorRange=${f(android.media.MediaFormat.KEY_COLOR_RANGE)} colorTransfer=${f(android.media.MediaFormat.KEY_COLOR_TRANSFER)}"
+                    }
+                    codec.releaseOutputBuffer(oi, false)
+                }
+            }
+            report("vm17 luma $n decoder=${codec.name} $result")
+            codec.stop(); codec.release(); ex.release()
+        }
+    }
+
     // ---------------------------------------------------------------- V-M21 / V-M11 picker
     private fun pick() {
         PickActivity.result = null
+        PickActivity.picked = null
         PickActivity.done = CountDownLatch(1)
         val before = inventory(ctx)
         PickActivity.watch = FsWatch(ctx)
@@ -782,5 +865,9 @@ class Probes(private val inst: SpikeRunner, private val args: Bundle) {
         report("vm11 read of the picked stream: fileObserverEvents=${events.size} inventoryChanges=${diff.size}")
         events.take(50).forEach { report("vm11 event: $it") }
         diff.take(50).forEach { report("vm11 diff: $it") }
+        // After the observation only: the bytes the picker handed over, for the host to compare
+        // with the file that was pushed (does the picker pass the file through unchanged?).
+        PickActivity.picked?.let { File(ctx.filesDir, "picked.bin").writeBytes(it); report("vm21 picked bytes saved to files/picked.bin after the watch") }
+        PickActivity.picked = null
     }
 }

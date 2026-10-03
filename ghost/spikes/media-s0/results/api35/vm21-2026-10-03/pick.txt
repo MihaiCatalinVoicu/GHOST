@@ -1,0 +1,6 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm21 picker launched at 1791055351127; waiting for the host to pick
+vm21 picked=true intent=android.provider.action.PICK_IMAGES resultCode=-1 uri=content://media/picker/0/com.android.providers.media.photopicker/media/1000000018 bytes=4341 sha256=fe4398d4fd397f9049128a2c18b895ade6b963c1ab04018347d84d5209581c36 flags=0x41
+vm11 read of the picked stream: fileObserverEvents=0 inventoryChanges=0
+probe pick: OK
+

@@ -1,0 +1,15 @@
+1c1
+< 7e8aa6d927a74e7ff679afcac34d406f  /data/data/com.android.documentsui/databases/lastAccess.db
+---
+> 18a3aa42f06c1fea138868f4e3629434  /data/data/com.android.documentsui/databases/lastAccess.db
+3c3
+< cd4501d043f1d512d4a58734e694151b  /data/data/com.android.documentsui/databases/pickCountRecord.db
+---
+> 3953bb3c09f59e969adf040f98f6bda1  /data/data/com.android.documentsui/databases/pickCountRecord.db
+11a12,13
+> b7c14ec6110fa820ca6b65f5aec85911  /data/data/com.android.providers.media/databases/internal.db-shm
+> d41d8cd98f00b204e9800998ecf8427e  /data/data/com.android.providers.media/databases/internal.db-wal
+22c24
+< dbea20289fdef667cf974629b103fc5d  /data/system_ce/0/recent_tasks/11_task.xml
+---
+> 4c2586c54d7f5aa6a82cb624c757bb66  /data/system_ce/0/recent_tasks/12_task.xml

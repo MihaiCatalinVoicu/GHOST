@@ -1,0 +1,30 @@
+1c1
+< 56c0d7024093f82137d62b0da86e8a77  /data/data/com.android.documentsui/databases/lastAccess.db
+---
+> 7e8aa6d927a74e7ff679afcac34d406f  /data/data/com.android.documentsui/databases/lastAccess.db
+2a3,4
+> cd4501d043f1d512d4a58734e694151b  /data/data/com.android.documentsui/databases/pickCountRecord.db
+> d41d8cd98f00b204e9800998ecf8427e  /data/data/com.android.documentsui/databases/pickCountRecord.db-journal
+5,7c7
+< 8023941be29c260f816ad1a0a90cfcb1  /data/data/com.android.providers.media/databases/external.db
+< d0c9032f30e6c14c27b899f62cc509b4  /data/data/com.android.providers.media/databases/external.db-shm
+< 10cbb97dcf0b1a801d7c0c33ee98b1ab  /data/data/com.android.providers.media/databases/external.db-wal
+---
+> 90f850929d2ea8e56d4b6165477945aa  /data/data/com.android.providers.media/databases/external.db
+8a9,10
+> b7c14ec6110fa820ca6b65f5aec85911  /data/data/com.android.providers.media/databases/internal.db-shm
+> d41d8cd98f00b204e9800998ecf8427e  /data/data/com.android.providers.media/databases/internal.db-wal
+13,14c15,16
+< 00896b71e904976b835a215b3db91e42  /data/system/usagestats/0/daily/1791057108293
+< 0c115beb69e9fad0aae69495c31c6ce4  /data/system/usagestats/0/monthly/1790260498928
+---
+> f07f276bbc33f224462eac6314622548  /data/system/usagestats/0/daily/1791057108293
+> c3c6feeb6d416dde612a533082a3d170  /data/system/usagestats/0/monthly/1790260498928
+17,19c19,21
+< 145d8d3c69e03b70a57bd38d5ce7db47  /data/system/usagestats/0/weekly/1791057108293
+< 0c115beb69e9fad0aae69495c31c6ce4  /data/system/usagestats/0/yearly/1790260498928
+< 5332a8b7d2e4969082d742be804b3ee7  /data/system_ce/0/recent_tasks/11_task.xml
+---
+> 0fc25a6071585c3417ad5417ca31cb9b  /data/system/usagestats/0/weekly/1791057108293
+> c3c6feeb6d416dde612a533082a3d170  /data/system/usagestats/0/yearly/1790260498928
+> dbea20289fdef667cf974629b103fc5d  /data/system_ce/0/recent_tasks/11_task.xml

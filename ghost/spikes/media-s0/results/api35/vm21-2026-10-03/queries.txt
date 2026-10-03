@@ -1,0 +1,7 @@
+# API 35, after the pick (2026-10-03)
+external.db media_grants rows: 0
+picker.db media rows:
+_id|local_id|cloud_id|is_visible|date_taken_ms|sync_generation|width|height|orientation|size_bytes|duration_ms|mime_type|standard_mime_type_extension|is_favorite
+1|1000000018||1|1790310673000|21|400|600|90|4341|0|image/jpeg|0|0
+urigrants.xml present: no
+usagestats files changed during the run: 0 (UsageStatsService flushes on its own schedule, so absence here proves nothing)

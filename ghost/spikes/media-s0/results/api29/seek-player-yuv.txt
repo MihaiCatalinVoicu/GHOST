@@ -1,0 +1,18 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm2 file=match720p30__DESIGN.mp4 bytes=5877982 videoTrack=2 moofs=4
+vm2 design-literal tfra (from tfdt): entries=0 mfraBytes=48
+vm2 corrected tfra (summed trun durations, 90 kHz): entries=4 mfraBytes=124 times=[0, 270000, 540000, 810000] offsets=[1147, 1620742, 3048775, 4477190]
+vm2 tfdt-inserted file: bytes=5878142 (+160) tfra entries=4
+vm2 literal-mfra+flag: seekMap=MfraSeekMap seekable=true durationUs=-9223372036854775807
+vm2 literal-mfra+flag: targets=50 firstSampleIsKeyFrame=50 firstSampleTimeInTarget-1s..Target=20 maxAbsLagUs=6845136 e.g. t=5023164 point=(0,1147) firstSampleUs=2000000; t=7647236 point=(0,1147) firstSampleUs=2000000; t=2551119 point=(0,1147) firstSampleUs=2000000; t=8764343 point=(0,1147) firstSampleUs=2000000
+vm2 summed-mfra+flag (no tfdt): seekMap=MfraSeekMap seekable=true durationUs=-9223372036854775807
+vm2 summed-mfra+flag (no tfdt): targets=50 firstSampleIsKeyFrame=50 firstSampleTimeInTarget-1s..Target=20 maxAbsLagUs=6845136 e.g. t=5023164 point=(3000000,1620742) firstSampleUs=2000000; t=7647236 point=(6000000,3048775) firstSampleUs=2000000; t=2551119 point=(0,1147) firstSampleUs=2000000; t=8764343 point=(6000000,3048775) firstSampleUs=2000000
+vm2 tfdt+mfra+flag: seekMap=MfraSeekMap seekable=true durationUs=-9223372036854775807
+vm2 tfdt+mfra+flag: targets=50 firstSampleIsKeyFrame=50 firstSampleTimeInTarget-1s..Target=50 maxAbsLagUs=987486 e.g. t=5023164 point=(3000000,1620782) firstSampleUs=5000000; t=7647236 point=(6000000,3048855) firstSampleUs=7000000; t=2551119 point=(0,1147) firstSampleUs=2000000; t=8764343 point=(6000000,3048855) firstSampleUs=8000000
+vm2 summed-mfra,noflag: seekMap=Unseekable seekable=false durationUs=-9223372036854775807
+vm2 nomfra+flag: seekMap=Unseekable seekable=false durationUs=-9223372036854775807
+vm2 player [summed-mfra (no tfdt)]: seekable=true seeks=20 ptsWithin1Frame=19 ptsWithin2s=20 noFrame=0 worstPtsLagUs=1054153 contentFrameWithin1=0 worstContentErrorFrames=2237 e.g. t=5023ms pts=5033ms frame=1647 expected=150; t=7647ms pts=7666ms frame=1934 expected=229; t=2551ms pts=2566ms frame=281 expected=76; t=8764ms pts=8766ms frame=2063 expected=262; t=5942ms pts=5966ms frame=2073 expected=178
+vm2 player [tfdt+mfra]: seekable=true seeks=20 ptsWithin1Frame=20 ptsWithin2s=20 noFrame=0 worstPtsLagUs=28681 contentFrameWithin1=0 worstContentErrorFrames=1801 e.g. t=5023ms pts=5033ms frame=1647 expected=150; t=7647ms pts=7666ms frame=1934 expected=229; t=2551ms pts=2566ms frame=281 expected=76; t=8764ms pts=8766ms frame=2063 expected=262; t=5942ms pts=5966ms frame=1767 expected=178
+vm2 player [literal-mfra]: seekable=true seeks=20 ptsWithin1Frame=20 ptsWithin2s=20 noFrame=0 worstPtsLagUs=28681 contentFrameWithin1=0 worstContentErrorFrames=1801 e.g. t=5023ms pts=5033ms frame=1647 expected=150; t=7647ms pts=7666ms frame=1934 expected=229; t=2551ms pts=2566ms frame=281 expected=76; t=8764ms pts=8766ms frame=2063 expected=262; t=5942ms pts=5966ms frame=1767 expected=178
+probe seek: OK
+

@@ -1,0 +1,14 @@
+/data/data/com.android.providers.media.module/app_logs/1791050708239 598 B
+/data/data/com.android.providers.media.module/cache/image_manager_disk_cache/766a447273bb95451e37b684a96cb0dbdebf72f61d29d128882913c39d61eb3c.0 4283 B
+/data/data/com.android.providers.media.module/cache/image_manager_disk_cache/journal 325 B
+/data/data/com.android.providers.media.module/databases/external.db-shm 32768 B
+/data/data/com.android.providers.media.module/databases/external.db 151552 B
+/data/data/com.android.providers.media.module/databases/external.db-wal 206032 B
+/data/data/com.android.providers.media.module/databases/internal.db-shm 32768 B
+/data/data/com.android.providers.media.module/databases/internal.db 258048 B
+/data/data/com.android.providers.media.module/databases/internal.db-wal 523272 B
+/data/data/com.android.providers.media.module/databases/picker.db-shm 32768 B
+/data/data/com.android.providers.media.module/databases/picker.db 4096 B
+/data/data/com.android.providers.media.module/databases/picker.db-wal 197792 B
+/data/data/com.android.providers.media.module/shared_prefs/picker_sync_prefs.xml 265 B
+/data/system_ce/0/recent_tasks/14_task.xml 981 B

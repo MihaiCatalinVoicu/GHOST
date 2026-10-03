@@ -1,0 +1,30 @@
+# V-M21 (API 29): DocumentsUI's per-package records after the pick (adb root, sqlite3 on the device), 2026-10-04
+## /data/data/com.android.documentsui/databases/lastAccess.db
+CREATE TABLE lastAccessed (package_name TEXT NOT NULL PRIMARY KEY,stack BLOB DEFAULT NULL,timestamp INTEGER,external INTEGER NOT NULL DEFAULT 0);
+row (package|timestamp ms|external|stack bytes): org.ghost.spike.media|1791063223686|0|520
+stack blob, printable runs (DocumentStack: root, then the documents of the path):
+  android:query-arg-display-name
+  android:query-arg-file-size-over
+  android:query-arg-last-modified-after
+  android:query-arg-mime-types
+  %com.android.providers.media.documents
+  images_root
+  Images
+  images_root
+  image/*
+  %com.android.providers.media.documents
+  images_root
+  vnd.android.document/directory
+  Images
+  %com.android.providers.media.documents
+  images_bucket:-1617409521
+  vnd.android.document/directory
+  Pictures
+## /data/data/com.android.documentsui/databases/pickCountRecord.db
+CREATE TABLE pickCountRecordTable (file_hash_id TEXT NOT NULL PRIMARY KEY,pick_count INTEGER);
+pickCountRecordTable: file_hash_id|pick_count
+pickCountRecordTable: 1436924597|2
+## /data/data/com.android.documentsui/databases/search_history.db
+CREATE TABLE search_history (keyword TEXT NOT NULL, last_updated_time INTEGER);
+## file_hash_id check: Java String.hashCode() of the picked document URI
+  1436924597  content://com.android.providers.media.documents/document/image%3A14

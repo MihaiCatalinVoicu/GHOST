@@ -1,0 +1,31 @@
+# V-M20 (API 35, mode 1): files under /data/tombstones and /data/system/dropbox newer than the crash
+/data/tombstones/tombstone_01.pb: 259011 B raw=81 gunzipped=0
+/data/tombstones/tombstone_01: 418586 B raw=0 gunzipped=0
+/data/system/dropbox/data_app_native_crash@1791055885842.txt: 9280 B raw=0 gunzipped=0
+/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791055885862.dat.gz: 52829 B raw=0 gunzipped=81
+/data/system/dropbox/SYSTEM_TOMBSTONE@1791055885980.txt.gz: 14001 B raw=0 gunzipped=0
+/data/system/dropbox/system_server_strictmode@1791055886114.txt: 1096 B raw=0 gunzipped=0
+/data/system/dropbox/system_server_strictmode@1791055886116.txt: 3650 B raw=0 gunzipped=0
+# adb bugreport (taken after the crash, no root needed)
+bugreport: 3927633 B, 156 entries
+  FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791055885862.dat.gz: 52829 B raw=0 gunzipped=81
+  FS/data/tombstones/tombstone_00.pb: 252566 B raw=79 gunzipped=0
+  FS/data/tombstones/tombstone_01.pb: 259011 B raw=81 gunzipped=0
+  entries naming tombstones or dropbox:
+    FS/data/system/dropbox/SYSTEM_BOOT@1791036846556.txt
+    FS/data/system/dropbox/SYSTEM_LAST_KMSG@1791036846583.txt
+    FS/data/system/dropbox/SYSTEM_AUDIT@1791036846584.txt
+    FS/data/system/dropbox/SYSTEM_BOOT@1791050711012.txt
+    FS/data/system/dropbox/SYSTEM_LAST_KMSG@1791050711019.txt
+    FS/data/system/dropbox/SYSTEM_AUDIT@1791050711024.txt
+    FS/data/system/dropbox/data_app_native_crash@1791055885842.txt
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791055885862.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791055885980.txt.gz
+    FS/data/tombstones/tombstone_01.pb
+    FS/data/tombstones/tombstone_01
+    FS/data/tombstones/tombstone_00.pb
+    FS/data/tombstones/tombstone_00
+# the two tombstones inside the bug report (FS/data/tombstones), their headers and canary lines (the text form shows the canary in the hex dump's ASCII column, split across lines):
+tombstone_00: Timestamp: 2026-09-25 08:52:13.619404000+0300 | Cmdline: org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:crash_449aa86579f6b749 | lines with 'GHOST-S0-PLAINTE': 13
+tombstone_01: Timestamp: 2026-10-03 22:31:25.305822300+0300 | Cmdline: org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:crash_cf28de27906b3b10 | lines with 'GHOST-S0-PLAINTE': 13
+# dropbox in the bug report: only entries of 2026-10-03 (the 2026-09-25 dropbox copies had expired; the 2026-09-25 tombstone file had not)

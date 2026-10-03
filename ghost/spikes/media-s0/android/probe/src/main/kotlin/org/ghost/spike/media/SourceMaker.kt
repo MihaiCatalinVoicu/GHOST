@@ -79,6 +79,13 @@ object SourceMaker {
         VideoSpec("long160_mixed.mp4", 1280, 720, 30, 160.0, 4_000_000, 48_000, 2, content = "mixed", canaries = false, location = false),
         VideoSpec("long160_grain.mp4", 1280, 720, 30, 160.0, 4_000_000, 48_000, 2, content = "grain", canaries = false, location = false),
     )
+    /**
+     * V-M12 on every API level: what this emulator's own H.264 and AAC encoders emit (SEI payload
+     * types, AAC first elements) with no request beyond size, rate and bitrate.
+     */
+    val encoderSpecs = listOf(
+        VideoSpec("t10_plain.mp4", 1280, 720, 30, 10.0, 2_000_000, 48_000, 2, content = "mixed", canaries = false, location = false, profile = 0, bt601Full = false),
+    )
     val shortSpecs = listOf("smooth", "mixed", "grain", "noise").map {
         VideoSpec("t10_$it.mp4", 1280, 720, 30, 10.0, 4_000_000, 48_000, 2, content = it, canaries = false, location = false)
     }
@@ -120,7 +127,9 @@ object SourceMaker {
         vf.setInteger(MediaFormat.KEY_BIT_RATE, s.bitrate)
         vf.setInteger(MediaFormat.KEY_FRAME_RATE, s.fps)
         vf.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-        vf.setInteger(MediaFormat.KEY_PROFILE, s.profile)
+        // profile 0 = leave the encoder's default (API 29's OMX.google.h264.encoder refuses the
+        // explicit profile and colour keys with configure error -38).
+        if (s.profile > 0) vf.setInteger(MediaFormat.KEY_PROFILE, s.profile)
         if (s.bt601Full) {
             vf.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT601_PAL)
             vf.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)

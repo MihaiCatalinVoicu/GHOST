@@ -30,6 +30,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            // V-M14 diagnostics: `-PwhyKeeping` makes R8 print why it keeps the classes of why-kept.pro.
+            if (project.hasProperty("whyKeeping")) proguardFiles("why-kept.pro")
         }
     }
 

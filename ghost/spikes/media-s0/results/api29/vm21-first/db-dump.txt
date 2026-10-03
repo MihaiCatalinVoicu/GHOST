@@ -1,0 +1,9 @@
+== /data/data/com.android.documentsui/databases/lastAccess.db
+lastAccessed|org.ghost.spike.media||1791063223686|0
+== /data/data/com.android.documentsui/databases/pickCountRecord.db
+== /data/data/com.android.providers.media/databases/internal.db
+audio|207|/system/product/media/audio/ringtones/FriendlyGhost.ogg|FriendlyGhost.ogg|46425|audio/ogg|1790260629|0|1629522702|Friendly Ghost|4L:2D0@Z68FNP|5217|4||5|||1|0|0|0|0|||||0|0||0|1458320580||||||||internal||-2044634724|ringtones|1458320580||4|0LB*0|Dr. Mad|5|L:D6PFD2N-2044634724|ringtones||
+search|207|audio/ogg|Dr. Mad|ringtones|Friendly Ghost|Friendly Ghost|Dr. Mad|||0LB*0 L:D6PFD2N-2044634724 4L:2D0@Z68FNP|content://media/external/audio/media/207|3
+searchhelpertitle|207|/system/product/media/audio/ringtones/FriendlyGhost.ogg|FriendlyGhost.ogg|46425|audio/ogg|1790260629|0|1629522702|Friendly Ghost|4L:2D0@Z68FNP|5217|4||5|||1|0|0|0|0|||||0|0||0|1458320580||||||||internal||-2044634724|ringtones|1458320580||4|0LB*0|Dr. Mad|5|L:D6PFD2N-2044634724|ringtones||
+audio_meta|207|/system/product/media/audio/ringtones/FriendlyGhost.ogg|FriendlyGhost.ogg|46425|audio/ogg|1790260629|0|1629522702|Friendly Ghost|4L:2D0@Z68FNP|5217|4||5|||1|0|0|0|0|||||0|0||0|1458320580||||||||internal||-2044634724|ringtones|1458320580|
+files|207|/system/product/media/audio/ringtones/FriendlyGhost.ogg|46425|47362|140|1790260629|1629522702|audio/ogg|Friendly Ghost||FriendlyGhost.ogg|||||||-2044634724|ringtones||4L:2D0@Z68FNP|4|5||||1|0|0|0|0||5217||||||||||2||0|||||||||0|0|||0||0|1458320580|||||||internal

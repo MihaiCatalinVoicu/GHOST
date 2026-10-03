@@ -1,0 +1,10 @@
+/data/data/com.android.documentsui/databases/lastAccess.db 20480 B
+/data/data/com.android.documentsui/databases/pickCountRecord.db 20480 B
+/data/data/com.android.documentsui/databases/pickCountRecord.db-journal 0 B
+/data/data/com.android.providers.media/databases/external.db 155648 B
+/data/data/com.android.providers.media/databases/internal.db 253952 B
+/data/system/usagestats/0/daily/1791057108293 3657 B
+/data/system/usagestats/0/monthly/1790260498928 2496 B
+/data/system/usagestats/0/weekly/1791057108293 1925 B
+/data/system/usagestats/0/yearly/1790260498928 2496 B
+/data/system_ce/0/recent_tasks/11_task.xml 829 B

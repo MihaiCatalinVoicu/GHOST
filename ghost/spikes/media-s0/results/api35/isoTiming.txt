@@ -1,7 +1,7 @@
 device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
 vm18 requests=100 failures=0 distinctPids=100
-vm18 bind(to onServiceConnected): n=100 min=380.0 median=425.5 p90=575.1 max=899.9 ms
-vm18 bind+decode 320px+reply: n=100 min=427.0 median=478.5 p90=675.9 max=1012.5 ms
-vm18 unbind->binderDied: n=100 min=2.4 median=11.0 p90=20.0 max=35.0 ms (deaths observed 100/100)
+vm18 bind(to onServiceConnected): n=100 min=532.1 median=742.1 p90=992.8 max=1866.1 ms
+vm18 bind+decode 320px+reply: n=100 min=621.3 median=835.5 p90=1170.9 max=2152.0 ms
+vm18 unbind->binderDied: n=100 min=0.0 median=16.0 p90=45.5 max=145.5 ms (deaths observed 100/100)
 probe isoTiming: OK
 

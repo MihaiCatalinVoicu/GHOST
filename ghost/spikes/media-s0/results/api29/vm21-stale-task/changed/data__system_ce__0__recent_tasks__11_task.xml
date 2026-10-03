@@ -1,0 +1,5 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<task task_id="11" real_activity="org.ghost.spike.media/.PickActivity" real_activity_suspended="false" affinity="org.ghost.spike.media" root_has_reset="false" auto_remove_recents="false" asked_compat_mode="false" user_id="0" user_setup_complete="true" effective_uid="10116" last_time_moved="1791061494036" never_relinquish_identity="true" task_description_color="ff1e88e5" task_description_colorBackground="ffffffff" task_affiliation_color="-14776091" task_affiliation="11" prev_affiliation="-1" next_affiliation="-1" calling_uid="10116" calling_package="org.ghost.spike.media" resize_mode="1" supports_picture_in_picture="false" min_width="-1" min_height="-1" persist_task_version="1">
+<intent component="org.ghost.spike.media/.PickActivity" flags="10000000" />
+</task>
+

@@ -25,14 +25,15 @@ for variant in plain secure norecents secure_norecents; do
   a shell "rm -f /data/system_ce/0/snapshots/*" || true
   a shell am start -W -n org.ghost.spike.media/.ViewerActivity --ez secure "$secure" --ez noRecents "$norecents" >/dev/null
   sleep 4
-  a shell screencap -p /data/local/tmp/vm20-screen.png
-  a pull /data/local/tmp/vm20-screen.png "$(cygpath -w "$out/$variant-screen.png")" >/dev/null
+  # API 29 refuses to capture a FLAG_SECURE window (screencap fails); API 35 returns black.
+  a shell "rm -f /data/local/tmp/vm20-screen.png; screencap -p /data/local/tmp/vm20-screen.png" || echo "screencap failed (variant $variant)" >> "$out/screencap-notes.txt"
+  a pull /data/local/tmp/vm20-screen.png "$(cygpath -w "$out/$variant-screen.png")" >/dev/null 2>&1 || true
   a shell input keyevent KEYCODE_HOME
   sleep 5
   a shell input keyevent KEYCODE_APP_SWITCH
   sleep 4
-  a shell screencap -p /data/local/tmp/vm20-recents.png
-  a pull /data/local/tmp/vm20-recents.png "$(cygpath -w "$out/$variant-recents.png")" >/dev/null
+  a shell "rm -f /data/local/tmp/vm20-recents.png; screencap -p /data/local/tmp/vm20-recents.png" || echo "recents screencap failed (variant $variant)" >> "$out/screencap-notes.txt"
+  a pull /data/local/tmp/vm20-recents.png "$(cygpath -w "$out/$variant-recents.png")" >/dev/null 2>&1 || true
   a shell input keyevent KEYCODE_HOME
   sleep 2
   {

@@ -1,0 +1,1 @@
+tap attempt 1 at bounds="[64,400][366,702]"

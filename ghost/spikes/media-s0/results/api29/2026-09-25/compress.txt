@@ -1,0 +1,10 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm6 cmp_srgb_q85.jpg: 3664 B config=ARGB_8888 cs=sRGB IEC61966-2.1 
+vm6 cmp_srgb_q60.jpg: 3402 B config=ARGB_8888 cs=sRGB IEC61966-2.1 
+vm6 cmp_srgb_q100.jpg: 4169 B config=ARGB_8888 cs=sRGB IEC61966-2.1 
+vm6 cmp_rgb565.jpg: 3664 B config=RGB_565 cs=sRGB IEC61966-2.1 
+vm6 cmp_displayp3.jpg: 4270 B config=ARGB_8888 cs=Display P3 
+vm6 cmp_f16_linear_extended.jpg: 4272 B config=RGBA_F16 cs=scRGB IEC 61966-2-2:2003 
+vm6 cmp_from_exif_source.jpg: 4117 B config=ARGB_8888 cs=sRGB IEC61966-2.1 
+probe compress: OK
+

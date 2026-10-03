@@ -67,6 +67,7 @@ class PickActivity : Activity() {
         } else {
             try {
                 val bytes = contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                picked = bytes
                 "$result resultCode=$resultCode uri=$uri bytes=${bytes.size} sha256=${sha256(bytes)} flags=0x${Integer.toHexString(data.flags)}"
             } catch (t: Throwable) {
                 "$result uri=$uri read failed ${t.javaClass.simpleName}: ${t.message}"
@@ -78,6 +79,8 @@ class PickActivity : Activity() {
 
     companion object {
         @Volatile var result: String? = null
+        /** The bytes read, kept in memory; written out by the probe only after the watch stopped. */
+        @Volatile var picked: ByteArray? = null
         @Volatile var done: CountDownLatch? = null
         @Volatile var watch: FsWatch? = null
     }

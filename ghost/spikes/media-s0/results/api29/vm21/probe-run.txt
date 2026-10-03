@@ -1,0 +1,2 @@
+== /d/Forum/.claude/worktrees/p11-s0/ghost/spikes/media-s0/results/api29/pick.txt (6 lines)
+probe pick: OK

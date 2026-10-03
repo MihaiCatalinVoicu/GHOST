@@ -1,0 +1,10 @@
+/data/data/com.android.providers.media.module/app_logs/1791068869486 596 B
+/data/data/com.android.providers.media.module/cache/image_manager_disk_cache/9d616256dc7c788dbfb9dda9b2bef83c379af347bc3539bf89e54b84843fa42f.0 4283 B
+/data/data/com.android.providers.media.module/cache/image_manager_disk_cache/journal 395 B
+/data/data/com.android.providers.media.module/databases/external.db-shm 32768 B
+/data/data/com.android.providers.media.module/databases/external.db 151552 B
+/data/data/com.android.providers.media.module/databases/external.db-wal 210152 B
+/data/data/com.android.providers.media.module/databases/internal.db-shm 32768 B
+/data/data/com.android.providers.media.module/databases/internal.db 258048 B
+/data/data/com.android.providers.media.module/databases/internal.db-wal 523272 B
+/data/system_ce/0/recent_tasks/14_task.xml 981 B

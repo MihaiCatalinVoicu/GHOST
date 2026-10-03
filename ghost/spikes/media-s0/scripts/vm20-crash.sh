@@ -42,9 +42,13 @@ sleep 8
     echo "bugreport: $(wc -c < "$work/bugreport-mode$mode.zip") B, $(unzip -Z1 "$work/bugreport-mode$mode.zip" | wc -l) entries"
     rm -rf "$work/br$mode"; mkdir -p "$work/br$mode"
     unzip -q -o "$work/bugreport-mode$mode.zip" -d "$work/br$mode"
-    find "$work/br$mode" -type f | while read -r f; do
-      c="$(count "$f")"
-      case "$c" in "raw=0 gunzipped=0") ;; *) echo "  ${f#$work/br$mode/}: $(wc -c < "$f") B $c" ;; esac
+    # One grep over the whole tree for raw copies (spawning a process per file is slow on Windows),
+    # then the gzip members one by one.
+    ( cd "$work/br$mode" && grep -a -o -r "$canary" . 2>/dev/null | cut -d: -f1 | sort | uniq -c \
+        | while read -r n f; do echo "  ${f#./}: $(wc -c < "$f") B raw=$n"; done ) || true
+    find "$work/br$mode" -type f -name '*.gz' | while read -r f; do
+      n="$(gzip -dc "$f" 2>/dev/null | grep -a -o "$canary" | wc -l || true)"
+      [ "$n" = 0 ] || echo "  ${f#$work/br$mode/}: $(wc -c < "$f") B gunzipped=$n"
     done
     echo "  entries naming tombstones or dropbox:"
     unzip -Z1 "$work/bugreport-mode$mode.zip" | grep -i -E 'tombstone|dropbox' | head -20 | sed 's/^/    /'

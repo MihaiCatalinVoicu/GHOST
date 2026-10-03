@@ -1,1 +1,1 @@
-tap attempt 1 at bounds="[0,1154][354,1508]"
+tap attempt 1 at bounds="[0,1154][354,1509]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
