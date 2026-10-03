@@ -61,3 +61,49 @@ manifest_files() {
 gradle_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.gradle.kts' -o -name 'libs.versions.toml' \) -print 2>/dev/null || true
 }
+# The JNI surfaces of GHOST's native libraries (Phase 9 G-R6, Phase 10 G-M6; one list, so the two
+# surface gates agree on what is allowed and each checks its own classes exactly):
+#   - `org.ghost.crypto.bridge.DmNative` (the DM closed list, dm-jni-surface.sh) and
+#     `DmEquivalence` (its test libraries' entry points);
+#   - `org.ghost.crypto.bridge.MlsNative` (the channel closed list, mls-jni-surface.sh) and
+#     `MlsVectors` (its test library's entry point);
+#   - the network surface of Phases 6 and 8 (`TorRelayTransport`, `TorIssuerTransport`,
+#     `EntitlementCrypto`).
+# A JNI entry point of any other class, in the workspace's sources or in a built library, fails both
+# gates; a new class is a change to this list, which is what makes it arrive deliberately.
+GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto"
+# The production source files allowed to declare a native method (paths under android/): the two
+# closed-list classes and the network classes. Test-only declarations (`DmEquivalence`, `MlsVectors`)
+# live in test source sets, which no production half reads.
+GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt"
+# Prints the `Java_…` symbols of stdin that belong to no class of GHOST_JNI_CLASSES.
+jni_foreign() {
+  local alt
+  alt="$(printf '%s|' $GHOST_JNI_CLASSES)"
+  alt="${alt%|}"
+  grep -vE "^Java_(${alt})_" || true
+}
+# Prints `<file>:<line>: declares a native method outside <who>` for every native declaration
+# (Kotlin `external fun`, Java `native`) of the production source sets under $1 (`src/main`,
+# `src/release`, `src/gate`) that is not in GHOST_JNI_NATIVE_FILES. Comment lines are skipped.
+jni_stray_natives() { # $1 = android tree, $2 = the gate's wording for the allowed classes
+  local tree="$1" who="$2" f rel allowed a
+  [ -d "$tree" ] || return 0
+  # One awk over every file (a process per file costs half a second on the Windows hosts).
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="${f#"$tree"/}"
+    allowed=0
+    for a in $GHOST_JNI_NATIVE_FILES; do
+      [ "$rel" = "$a" ] && allowed=1
+    done
+    [ "$allowed" = 1 ] || printf '%s\0' "$f"
+  done < <(find "$tree" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+             \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' \) -print 2>/dev/null || true) \
+    | xargs -0 -r awk -v who="$who" '
+      { t = $0; sub(/^[ \t]+/, "", t)
+        if (t ~ /^(\*|\/\/|\/\*)/) next
+        if ($0 ~ /(^|[^A-Za-z0-9_])external[ \t]+fun[ \t]/ || (FILENAME ~ /\.java$/ && $0 ~ /(^|[ \t])native[ \t]/))
+          print FILENAME ":" FNR ": declares a native method outside " who
+      }'
+}

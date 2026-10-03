@@ -107,11 +107,16 @@ jobs:
       # committers anchor, the golden sizes, and the property tests of every GHOST parser with 10^6
       # inputs from this run's seed, which a failure prints); §12.1, S0-7: V10-6, two processes of the
       # scripted world byte-identical with the seeded getrandom stream (its own target sub-directory).
-      - name: ghost-client-mls on its shipped feature set; V10-6 determinism
+      # Slice S2b: the JNI layer's own unit tests (the closed list against what the export macro
+      # writes, the wire's tags, strict argument decoding, the registry's pointers and its recovery
+      # from a panic, the vector-replay entry) need the crate's two JNI features, so they run on
+      # their own, the library's unit tests only.
+      - name: ghost-client-mls on its shipped feature set; V10-6 determinism; its JNI layer
         env:
           GHOST_PROP_SEED: ${{ github.run_id }}
         run: |
           cargo test -p ghost-client-mls --locked
+          cargo test -p ghost-client-mls --locked --features jni-bridge,test-vectors --lib -- jni:: testvec::
           bash scripts/ci/mls-determinism.sh "$RUNNER_TEMP/mls-determinism"
       # Design §19.17 point 2: the issuer crash suite (I-A … I-H, double crashes) runs in the
       # release profile; a debug build lists its tests as ignored.
@@ -264,6 +269,13 @@ jobs:
           bash scripts/gates/dm-jni-surface.sh \
             "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
             "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
+      # G-M6 (Phase 10 design §10.2, §13.1; slice S2b): the same libraries export exactly the closed
+      # channel list (function 16 reserved for S9) and no MlsVectors test entry.
+      - name: G-M6 closed channel JNI surface (the shipped libraries)
+        run: |
+          bash scripts/gates/mls-jni-surface.sh \
+            "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
+            "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
       # G-R3 (Phase 9 design §16.1, §22.33): cargo-ndk prints no cargo messages, so the detector reads
       # the build-script outputs of the second build, which ran in a removed-then-recreated target
       # directory after build-native.sh's libcrux clean: exactly one output per package and triple.
@@ -387,6 +399,11 @@ jobs:
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
+      # G-M6 (host half, slice S2b): the host library the channel JVM tests loaded exports the closed
+      # channel list plus its one test entry point, MlsVectors.run (the JDK vector replay).
+      - name: G-M6 closed channel JNI surface (the host build)
+        working-directory: ghost
+        run: bash scripts/gates/mls-jni-surface.sh --test "$GHOST_DM_NATIVE"
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 10): the Gradle part of the third-party notices and
       # the Gradle licence allowlist (G-L1, G-L2), then the notices asset of the release APK (G-L3).
       - name: licence gates (G-L1 Gradle notices, G-L2 licence allowlist, G-L3 notices in the APK)

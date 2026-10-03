@@ -27,8 +27,9 @@
 #  be present in the shipped graph, or the clause would hold vacuously.
 #  and, for the channel stack (Phase 10 design faza10-forum.md §3.2, §13.1 G-M2, ADR-40), none of
 #  §3.2's forbidden OpenMLS, openmls_traits, provider and hpke-rs features in ghost-client-mls's
-#  graph (and ghost-client-net's once it links OpenMLS, slice S2b), no feature of ghost-client-mls's
-#  own, `test-utils` only as a dev-dependency of ghost-client-mls-kat, no workspace package naming the
+#  graph and ghost-client-net's (which links it since slice S2b), no feature of ghost-client-mls's own
+#  in its own graph and only `jni-bridge` in the shipped one (`test-vectors` is ghost-dm-host's),
+#  `test-utils` only as a dev-dependency of ghost-client-mls-kat, no workspace package naming the
 #  memory storage, the basic credential, the RustCrypto provider, openmls_test or the SQLite storage,
 #  the SQLite stand-in exactly as reviewed (by hash) and unreachable, and no GHOST source naming the
 #  memory storage or the basic credential or calling the four forbidden group entry points.
@@ -188,7 +189,8 @@ relay_raw="$(tree -p ghost-relay-node -e normal,build --target all --prefix none
 # `ghost-client-net` too as soon as it links the stack (slice S2b). The forbidden lists are §3.2's,
 # plus the provider-side switches that would make HPKE deterministic or add suites
 # (`hpke-rs-libcrux/deterministic-prng`, the draft KEMs, the RustCrypto curves); and
-# `ghost-client-mls` has no feature of its own beyond `default` (the JNI export is S2b's).
+# `ghost-client-mls` has no feature of its own in its own graph, and only `jni-bridge` in the shipped
+# one (slice S2b).
 mls_forbidden="openmls:crypto-debug openmls:content-debug openmls:test-utils openmls:targeted-messages-draft
 openmls:virtual-clients-draft openmls:sqlite-provider openmls:js openmls:js-test openmls:backtrace
 openmls:0-8-1-storage-format openmls:migration-import openmls:extensions-draft openmls:fork-resolution
@@ -231,8 +233,20 @@ for root in $roots; do
 done
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  [ "$f" = default ] || fail "ghost-client-mls feature '$f' is enabled in the shipped graph; G-M2 allows none in S2a"
+  [ "$f" = default ] || fail "ghost-client-mls feature '$f' is enabled in its own graph; G-M2 allows none there"
 done <<< "$(graph_features ghost-client-mls ghost-client-mls)"
+# Slice S2b links the crate into the shipped library with its JNI export: in ghost-client-net's
+# graph the crate must be present (or the clauses above would be vacuous for the shipped library)
+# and carry `jni-bridge` and nothing else of its own — `test-vectors`, the JDK replay's entry point,
+# belongs to ghost-dm-host alone (G-M6 refuses a shipped library that exports it).
+has "$pkgs" ghost-client-mls || fail "package 'ghost-client-mls' is not in the shipped client graph: slice S2b links it (G-M2, G-M6)"
+mls_allowed="default jni-bridge"
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  if ! grep -qx "$f" <<< "$(printf '%s\n' $mls_allowed)"; then
+    fail "ghost-client-mls feature '$f' is enabled in the shipped client graph; G-M2 allows: $(echo $mls_allowed)"
+  fi
+done <<< "$(features ghost-client-mls)"
 
 # `test-utils` only in ghost-client-mls-kat, and there only as a dev-dependency; no workspace
 # package depends directly on the memory storage, the basic credential, OpenMLS's RustCrypto

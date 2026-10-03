@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6: a test library (ghost-dm-host): the shipped list plus its one test entry point.
+set -euo pipefail
+MLS_NM_EXTRA="Java_org_ghost_crypto_bridge_MlsVectors_run" exec bash "$(dirname "$0")/exact-nm" "$@"

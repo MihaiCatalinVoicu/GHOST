@@ -1,0 +1,4 @@
+# G-DM5 fixture (Phase 10 slice S2b): the channel vector replay's test entry point in a release mapping.
+org.ghost.crypto.bridge.MlsNative -> org.ghost.crypto.bridge.MlsNative:
+org.ghost.crypto.bridge.MlsVectors -> org.ghost.crypto.bridge.MlsVectors:
+    byte[] run(int,byte[]) -> run

@@ -15,6 +15,10 @@
 //! - [`check`]: a commit's validation summary and CO-2 (§6.4).
 //! - [`group`]: the channel operations over `MlsGroup` (§10.2's function list).
 //! - [`result`]: the result codes.
+//! - `jni` (feature `jni-bridge`): the closed JNI surface `MlsNative` and the `export_jni!` macro
+//!   `ghost-client-net` and `ghost-dm-host` invoke (§10.2, gate G-M6; slice S2b).
+//! - `testvec` (feature `test-vectors`, the host library only): the vector-replay entry point of the
+//!   JDK replay (§12.2's Kotlin half; slice S2b).
 //!
 //! **No network, async runtime, logger or clock.** The crate reads no clock (a `day` or `minute`
 //! is always the caller's, from the trusted clock), prints nothing and installs no logger (gates
@@ -29,11 +33,15 @@ pub mod derive;
 pub mod ext;
 pub mod group;
 pub mod invite;
+#[cfg(feature = "jni-bridge")]
+pub mod jni;
 pub mod join;
 pub mod kv;
 pub mod provider;
 pub mod result;
 pub mod seal;
+#[cfg(feature = "test-vectors")]
+pub mod testvec;
 
 #[cfg(test)]
 mod props;

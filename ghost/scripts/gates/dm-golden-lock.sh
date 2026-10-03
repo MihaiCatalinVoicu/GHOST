@@ -25,9 +25,15 @@
 #
 # `--library <so>...` is G-R7 (c), the V-9 check that the linker still drops `hpke` (§2.9, §22.8.10
 # point 13): in each shipped `libghost_client_net.so` (android-native, stripped release builds), none
-# of the strings V-9 found only in `hpke` and in vodozemac's HPKE and QR-login code (`HPKE-v1`,
-# `HPKEXXYYZZ`, `psk_id_hash`, `MATRIX_QR_CODE_LOGIN`) and both of Olm's KDF labels (`OLM_KEYS`,
-# `OLM_RATCHET`), without which the library would not hold the DM code this check is about.
+# of the strings V-9 found only in RustCrypto's `hpke` and in vodozemac's HPKE and QR-login code
+# (`HPKEXXYYZZ`, `MATRIX_QR_CODE_LOGIN`) and both of Olm's KDF labels (`OLM_KEYS`, `OLM_RATCHET`),
+# without which the library would not hold the DM code this check is about. **Narrowed by Phase 10
+# slice S2b** (faza10-forum.md §19.32): the library now links OpenMLS's HPKE, `hpke-rs` and
+# `hpke-rs-libcrux` (ADR-40, the channel stack's audit scope, §3.7), whose RFC 9180 labels are the
+# other two strings V-9 listed (`HPKE-v1` in `hpke-rs/src/kdf.rs` and `hpke-rs-libcrux`, `psk_id_hash`
+# in `hpke-rs/src/lib.rs`); they say nothing about RustCrypto's `hpke` any more, so the check keeps the
+# two strings only that crate (`HPKEXXYYZZ`, its suite-id template in `hpke/src/util.rs`) and
+# vodozemac's QR login carry. Measured on S2b's libraries: both absent, both Olm labels present.
 #
 # Runs in the CI `rust` job and in rust-gates.sh (pins, goldens, tests) and in `android-native`
 # (`--library`). Self-test hooks: GHOST_GOLDEN_LOCK=<file> reads the current lock from a file;
@@ -53,8 +59,8 @@ done
 if [ "${#libraries[@]}" -gt 0 ]; then
   for so in "${libraries[@]}"; do
     [ -f "$so" ] || { fail "$so: no such library"; continue; }
-    for s in HPKE-v1 HPKEXXYYZZ psk_id_hash MATRIX_QR_CODE_LOGIN; do
-      if grep -a -F -q -- "$s" "$so"; then fail "$so: contains '$s' (G-R7 (c): hpke is no longer dropped by the linker; V-9 must be re-run and the audit scope re-decided, §2.9)"; fi
+    for s in HPKEXXYYZZ MATRIX_QR_CODE_LOGIN; do
+      if grep -a -F -q -- "$s" "$so"; then fail "$so: contains '$s' (G-R7 (c): RustCrypto's hpke is no longer dropped by the linker; V-9 must be re-run and the audit scope re-decided, §2.9)"; fi
     done
     for s in OLM_KEYS OLM_RATCHET; do
       grep -a -F -q -- "$s" "$so" || fail "$so: does not contain '$s' (the library holds no Olm code: the hpke check would pass vacuously)"

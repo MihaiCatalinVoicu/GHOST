@@ -5,14 +5,24 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "GHOST channels on OpenMLS 0.9.0: the storage adapter GhostKv, the pseudonym signer, the channel derivations, the outer seal, channel content, invites and join codecs, and the group operations (Phase 10 design faza10-forum.md §3, §5, §10.1, §10.2; slice S2a, no JNI)"
+description = "GHOST channels on OpenMLS 0.9.0: the storage adapter GhostKv, the pseudonym signer, the channel derivations, the outer seal, channel content, invites and join codecs, the group operations and the closed JNI surface MlsNative (Phase 10 design faza10-forum.md §3, §5, §10.1, §10.2; slices S2a and S2b)"
 
 [lib]
 crate-type = ["rlib"]
 
 [features]
-# G-R2/G-M2: no default feature. The JNI export (`jni-bridge`) is slice S2b.
+# G-R2/G-M2: no default feature.
 default = []
+# The closed JNI surface `MlsNative` of §10.2 and the `export_jni!` macro `ghost-client-net` and
+# `ghost-dm-host` invoke (§10.1; slice S2b). Off by default so the crate stays testable without a
+# JVM; the shipped `ghost-client-net` enables it (G-M2 allows this one feature in a shipped graph).
+jni-bridge = ["dep:jni"]
+# The vector-replay entry point of the JDK replay (§12.2's Kotlin half; slice S2b): the case runner
+# `testvec::run` and, with `jni-bridge`, the one extra JNI symbol
+# `Java_org_ghost_crypto_bridge_MlsVectors_run`. Only `ghost-dm-host` enables it — the library the
+# JVM tests load. G-M2 keeps it out of every shipped graph; G-M6 checks that no shipped library
+# exports its symbol.
+test-vectors = []
 
 [dependencies]
 # Design §3.2 (ADR-40): exact pins, no feature; the libcrux provider's `CryptoProvider` directly.
@@ -40,6 +50,9 @@ x25519-dalek = "=2.0.1"
 # by GhostKv (the day rewrite and the per-epoch rows read OpenMLS's serde layout, design §3.4).
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The closed JNI surface (§10.2), behind `jni-bridge`; the version `ghost-client-net` and
+# `ghost-client-dm` already use (no new crate in the shipped graph).
+jni = { workspace = true, optional = true }
 
 [dev-dependencies]
 hex = { workspace = true }

@@ -31,10 +31,14 @@
 # name one class, `DmNative`: an entry point exported as `Java_org_ghost_crypto_bridge_DmDebug_…`
 # (or under any other package), an `external fun` in another Android class, and a library exporting
 # either passed every half. So the workspace's Rust sources, every production Android source set and
-# every library read here may carry a JNI entry point only of `DmNative` (the closed list),
-# `DmEquivalence.run`, `.bindingHooks`, `.stateWrapHook` and `.sidecarLogHook` (test libraries and
-# `src/equivalence` only) or the three classes of the network surface (`OTHER_JNI_CLASSES`: Phases 6
-# and 8, not DM). A new class is a change to this list, which is what makes it arrive deliberately.
+# every library read here may carry a JNI entry point only of the classes `common.sh` lists in
+# `GHOST_JNI_CLASSES` — `DmNative` (the closed list), `DmEquivalence.run`, `.bindingHooks`,
+# `.stateWrapHook` and `.sidecarLogHook` (test libraries and `src/equivalence` only), the channel
+# surface `MlsNative` and its test entry `MlsVectors` (Phase 10 slice S2b, checked exactly by G-M6,
+# `mls-jni-surface.sh`) and the three classes of the network surface (Phases 6 and 8) — and a native
+# method may be declared only in the files of `GHOST_JNI_NATIVE_FILES`. One list for both surface
+# gates, so they agree on what is allowed; a new class is a change to it, which is what makes it
+# arrive deliberately.
 #
 # **The test-vectors entry points** (§15.9 item 7, §22.8.10 point 6; slice S12) are the symbols a
 # *test* library adds: `Java_org_ghost_crypto_bridge_DmEquivalence_run`, since §22.37
@@ -71,18 +75,10 @@ PREFIX="Java_org_ghost_crypto_bridge_DmNative_"
 # The test libraries' extra symbols (see the header).
 ENTRY_PREFIX="Java_org_ghost_crypto_bridge_DmEquivalence_"
 ENTRY_NAMES="run bindingHooks stateWrapHook sidecarLogHook"
-# The other classes a GHOST library may export JNI entry points for (see the header): the network
-# surface of `ghost-client-net`, whose files are `android/network/src/main/…/<class>.kt`.
-OTHER_JNI_CLASSES="TorRelayTransport TorIssuerTransport EntitlementCrypto"
-OTHER_JNI_PREFIX="Java_org_ghost_network_"
-# A JNI symbol is allowed when it is `DmNative`'s, `DmEquivalence`'s (decided by the halves below)
-# or one of the network classes'. Prints the symbols of stdin that are none of these.
-foreign_jni() {
-  local classes
-  classes="$(printf '%s|' $OTHER_JNI_CLASSES)"
-  classes="${classes%|}"
-  grep -vE "^(${PREFIX}|${ENTRY_PREFIX}|${OTHER_JNI_PREFIX}(${classes})_)" || true
-}
+# A JNI symbol of a class outside `common.sh`'s GHOST_JNI_CLASSES (`DmNative`'s and `DmEquivalence`'s
+# are decided by the halves below, the channel surface's by G-M6). Prints the symbols of stdin that
+# belong to none of them.
+foreign_jni() { jni_foreign; }
 # The Android tree the source-set half reads (self-test hook: GHOST_DM_JNI_ANDROID).
 ANDROID_TREE="${GHOST_DM_JNI_ANDROID:-$GHOST_ROOT/android}"
 
@@ -143,7 +139,7 @@ done < <(comm -13 "$work/expected" "$work/emitted")
 } | grep -oE 'Java_[A-Za-z0-9_]+' | sort -u | foreign_jni > "$work/foreign-source"
 while read -r symbol; do
   [ -n "$symbol" ] || continue
-  fail "the workspace exports the JNI entry point '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
+  fail "the workspace exports the JNI entry point '$symbol', which is not a class of the JNI surfaces (common.sh GHOST_JNI_CLASSES; G-R6)"
 done < "$work/foreign-source"
 
 # Kotlin declares exactly the exported names, and declares them `internal` with an explicit
@@ -180,31 +176,13 @@ while read -r name; do
 done < <(comm -13 "$work/kotlin" "$work/expected")
 
 # No other native declaration in a production source set (GATES-3): an `external fun` (Kotlin) or a
-# `native` method (Java) anywhere but DmNative.kt and the network classes' own files. Without it a
-# second class in `:crypto-bridge` — `DmDebug.exportSessionState` — needed no closed-list entry and
-# was not `DmNative` for the reference rule below, so `:messaging` could call it directly.
-if [ -d "$ANDROID_TREE" ]; then
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    case "$f" in
-      */crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt) continue ;;
-    esac
-    allowed=0
-    for class in $OTHER_JNI_CLASSES; do
-      case "$f" in */network/src/main/kotlin/org/ghost/network/"$class".kt) allowed=1 ;; esac
-    done
-    [ "$allowed" = 1 ] && continue
-    while IFS= read -r v; do
-      [ -n "$v" ] && fail "$v"
-    done < <(awk '
-      { t = $0; sub(/^[ \t]+/, "", t)
-        if (t ~ /^(\*|\/\/|\/\*)/) next
-        if ($0 ~ /(^|[^A-Za-z0-9_])external[ \t]+fun[ \t]/ || (FILENAME ~ /\.java$/ && $0 ~ /(^|[ \t])native[ \t]/))
-          print FILENAME ":" FNR ": declares a native method outside DmNative and the network classes (G-R6)"
-      }' "$f")
-  done < <(find "$ANDROID_TREE" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
-             \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' \) -print 2>/dev/null || true)
-fi
+# `native` method (Java) anywhere but the files of `common.sh`'s GHOST_JNI_NATIVE_FILES (DmNative.kt,
+# MlsNative.kt and the network classes' own files). Without it a second class in `:crypto-bridge` —
+# `DmDebug.exportSessionState` — needed no closed-list entry and was not `DmNative` for the reference
+# rule below, so `:messaging` could call it directly.
+while IFS= read -r v; do
+  [ -n "$v" ] && fail "$v"
+done < <(jni_stray_natives "$ANDROID_TREE" "DmNative, MlsNative and the network classes (G-R6)")
 
 # Only `:crypto-bridge`'s `main` and `gate` source sets reference `DmNative` (see the header). Code
 # lines only: the design's KDoc across `:messaging` names `DmNative` on purpose.
@@ -284,7 +262,7 @@ for LIBRARY in "$@"; do
     grep -oE 'Java_[A-Za-z0-9_]+' "$work/nm-out" | sort -u | foreign_jni > "$work/foreign-symbols"
     while read -r symbol; do
       [ -n "$symbol" ] || continue
-      fail "$LIBRARY exports the JNI symbol '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
+      fail "$LIBRARY exports the JNI symbol '$symbol', which is not a class of the JNI surfaces (common.sh GHOST_JNI_CLASSES; G-R6)"
     done < "$work/foreign-symbols"
     # The test-vectors entry points: exactly their symbols in a test library, none in a shipped
     # one (§22.8.10 point 6, §22.37).

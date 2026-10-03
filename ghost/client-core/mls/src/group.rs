@@ -99,6 +99,24 @@ pub enum KeyClass {
     Join = 3,
     /// A box secret key `b_sk` (§5.1, §19.17).
     Box = 4,
+    /// An invite's `invite_seed` (§5.9), held by the invitee between `inviteParse` and
+    /// `joinRequest` (slice S2b, §19.32): the invite key is a signing secret, so Kotlin keeps it
+    /// wrapped like every other key of the channel (CS-S6's rule applied to it).
+    Invite = 5,
+}
+
+impl KeyClass {
+    /// The class of a JNI argument (`seal`, `open`): 1 epoch, 3 join; the others are not seal keys.
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(KeyClass::Epoch),
+            2 => Some(KeyClass::Generation),
+            3 => Some(KeyClass::Join),
+            4 => Some(KeyClass::Box),
+            5 => Some(KeyClass::Invite),
+            _ => None,
+        }
+    }
 }
 
 const KEY_ENV_LABEL: &[u8] = b"ghost/v1/ch-key";
@@ -383,6 +401,42 @@ impl core::fmt::Debug for InviteOut {
             .field("invite_len", &self.invite.len())
             .field("issued", &self.issued)
             .finish()
+    }
+}
+
+/// `inviteParse` with a context (fn 14 as slice S2b maps it, §19.32): the invite's public fields,
+/// its secrets **wrapped** under the state key (`JK_g` as a join-key envelope, `invite_seed` as an
+/// invite envelope, both bound to the invite's channel), `R_join` (a recognition key, CS-S6) and the
+/// READ and DEPOSIT credentials of the requested slots, which the invitee presents to the relays of
+/// `ns_g` to deposit its join request and to listen for its Welcome.
+#[derive(Clone)]
+pub struct ParsedInvite {
+    pub kdf_code: u8,
+    pub suite: u16,
+    pub size_class: u8,
+    pub handshake_ttl_code: u8,
+    pub channel_id: [u8; 32],
+    pub generation: u32,
+    pub ns: [u8; 32],
+    pub invite_id: [u8; 16],
+    pub invite_pk: [u8; 32],
+    pub committers_digest: [u8; 32],
+    pub expiry_day: u32,
+    pub name: Vec<u8>,
+    pub jk_env: Vec<u8>,
+    pub r_join: [u8; 32],
+    pub seed_env: Vec<u8>,
+    pub slots: Vec<SlotCredentials>,
+}
+
+impl core::fmt::Debug for ParsedInvite {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // `R_join` and the credentials are left out, like every output's secrets (§19.31 row 13).
+        f.debug_struct("ParsedInvite")
+            .field("kdf_code", &self.kdf_code)
+            .field("generation", &self.generation)
+            .field("expiry_day", &self.expiry_day)
+            .finish_non_exhaustive()
     }
 }
 
@@ -1574,26 +1628,7 @@ impl MlsContext {
         )?);
         let values = self.generation_values(channel_id, generation, open_epoch, &g)?;
         let (rb, db) = (derive_read_base(&g), derive_deposit_base(&g));
-        let ns = values.ns;
-        let creds = slots
-            .iter()
-            .map(|&s| {
-                let rs = derive_read_secret(&rb, s);
-                let ds = derive_deposit_secret(&db, s);
-                SlotCredentials {
-                    slot: s,
-                    read_credential: derive::credential_v3(CredentialKind::Read, s, &ns, &rs),
-                    read_verifier: derive::credential_verifier(CredentialKind::Read, s, &ns, &rs),
-                    deposit_credential: derive::credential_v3(CredentialKind::Deposit, s, &ns, &ds),
-                    deposit_verifier: derive::credential_verifier(
-                        CredentialKind::Deposit,
-                        s,
-                        &ns,
-                        &ds,
-                    ),
-                }
-            })
-            .collect();
+        let creds = slot_credentials(&rb, &db, &values.ns, slots);
         Ok((values, creds))
     }
 
@@ -1678,22 +1713,87 @@ impl MlsContext {
 
     // ---- fn 15: joinRequest / rejoinRequest / joinVerify ----------------------------------------
 
+    /// `inviteParse` with a context (fn 14 as slice S2b maps it, §19.32): [`invite::parse_v2`]
+    /// (its codes unchanged: `NON_CANONICAL`, `UNSUPPORTED_SUITE`, `PASSWORD_REQUIRED` without
+    /// running Argon2id, `WRONG_PASSWORD`), then the invite's secrets wrapped under the state key
+    /// and bound to the invite's channel, `R_join`, and the credentials of `slots` from the
+    /// invite's read and deposit bases (§5.2: the invite carries `RB_g` and `DB_g`, never `G_g`).
+    pub fn invite_parse(
+        &self,
+        bytes: &[u8],
+        password: Option<&InvitePassword>,
+        slots: &[u8],
+    ) -> MlsResult<ParsedInvite> {
+        let (kdf_code, f) = invite::parse_v2(bytes, password)?;
+        Ok(ParsedInvite {
+            kdf_code,
+            suite: f.suite,
+            size_class: f.size_class,
+            handshake_ttl_code: f.handshake_ttl_code,
+            channel_id: f.channel_id,
+            generation: f.generation,
+            ns: f.ns,
+            invite_id: f.invite_id,
+            invite_pk: f.invite_pk(),
+            committers_digest: f.committers_digest,
+            expiry_day: f.expiry_day,
+            name: f.name.clone(),
+            jk_env: self.wrap_key(KeyClass::Join, &f.channel_id, f.join_key.as_bytes())?,
+            r_join: *derive_join_recognition(&f.join_key).as_bytes(),
+            seed_env: self.wrap_key(KeyClass::Invite, &f.channel_id, f.invite_seed.as_bytes())?,
+            slots: slot_credentials(&f.read_base, &f.deposit_base, &f.ns, slots),
+        })
+    }
+
     /// `joinRequest` (fn 15): the canonical KeyPackage (purpose join or restore, bound to the
     /// invite's channel) signed with the invite key.
     pub fn join_request(&self, invite: &InviteFields, key_package: &[u8]) -> MlsResult<Vec<u8>> {
-        let kp = canonical::parse_key_package(&self.crypto, key_package, Some(&invite.channel_id))?;
+        self.join_request_seeded(
+            &invite.channel_id,
+            &invite.invite_id,
+            &invite.invite_seed,
+            key_package,
+        )
+    }
+
+    /// `joinRequest` as the JNI surface calls it (slice S2b, §19.32): the invite seed comes back as
+    /// the envelope [`MlsContext::invite_parse`] made (`STATE_CORRUPT` when it does not open under
+    /// this context's state key for this channel).
+    pub fn join_request_wrapped(
+        &self,
+        channel_id: &[u8; 32],
+        invite_id: &[u8; 16],
+        seed_env: &[u8],
+        key_package: &[u8],
+    ) -> MlsResult<Vec<u8>> {
+        let seed = derive::InviteSeed::from_bytes(*self.unwrap_key(
+            KeyClass::Invite,
+            channel_id,
+            seed_env,
+        )?);
+        self.join_request_seeded(channel_id, invite_id, &seed, key_package)
+    }
+
+    fn join_request_seeded(
+        &self,
+        channel_id: &[u8; 32],
+        invite_id: &[u8; 16],
+        seed: &derive::InviteSeed,
+        key_package: &[u8],
+    ) -> MlsResult<Vec<u8>> {
+        let kp = canonical::parse_key_package(&self.crypto, key_package, Some(channel_id))?;
         let request_type = match kp.bind.purpose {
             Purpose::Join => RequestType::Join,
             Purpose::Restore => RequestType::Restore,
             Purpose::Rejoin => return Err(MlsError::new(Code::WrongPurpose)),
         };
-        let key = derive::derive_invite_signing_key(&invite.invite_seed);
-        let msg = join::invite_sig_message(&invite.channel_id, &invite.invite_id, key_package);
+        let key = derive::derive_invite_signing_key(seed);
+        let msg = join::invite_sig_message(channel_id, invite_id, key_package);
         JoinRequest {
             request_type,
             key_package: key_package.to_vec(),
             auth: JoinAuth::Invite {
-                invite_id: invite.invite_id,
+                invite_id: *invite_id,
                 invite_sig: invite::sign_sponsor(&key, &msg),
             },
         }
@@ -2025,6 +2125,30 @@ impl Plan {
 }
 
 /// The digest of an MLS message (a candidate's hash, CO-3).
+/// The READ and DEPOSIT credentials v3 and verifiers of `slots` (§5.2), from a generation's bases:
+/// a member's (`generation`, fn 13) or an invitee's (`invite_parse`, fn 14).
+fn slot_credentials(
+    rb: &derive::ReadBase,
+    db: &derive::DepositBase,
+    ns: &[u8; 32],
+    slots: &[u8],
+) -> Vec<SlotCredentials> {
+    slots
+        .iter()
+        .map(|&s| {
+            let rs = Zeroizing::new(derive_read_secret(rb, s));
+            let ds = Zeroizing::new(derive_deposit_secret(db, s));
+            SlotCredentials {
+                slot: s,
+                read_credential: derive::credential_v3(CredentialKind::Read, s, ns, &rs),
+                read_verifier: derive::credential_verifier(CredentialKind::Read, s, ns, &rs),
+                deposit_credential: derive::credential_v3(CredentialKind::Deposit, s, ns, &ds),
+                deposit_verifier: derive::credential_verifier(CredentialKind::Deposit, s, ns, &ds),
+            }
+        })
+        .collect()
+}
+
 pub fn message_hash(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }

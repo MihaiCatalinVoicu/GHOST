@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6: a library exporting an MlsNative symbol outside the closed list.
+set -euo pipefail
+MLS_NM_EXTRA="Java_org_ghost_crypto_bridge_MlsNative_debugDump" exec bash "$(dirname "$0")/exact-nm" "$@"
