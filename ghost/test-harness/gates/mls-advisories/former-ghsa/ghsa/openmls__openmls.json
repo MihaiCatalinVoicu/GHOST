@@ -1,0 +1,4 @@
+[
+  {"ghsa_id": "GHSA-fixt-ure0-0001", "state": "published", "vulnerabilities": [{"package": {"ecosystem": "rust", "name": "openmls"}, "vulnerable_version_range": "< 0.9.0", "patched_versions": "0.9.0"}]},
+  {"ghsa_id": "GHSA-fixt-ure0-0002", "state": "draft", "vulnerabilities": [{"package": {"ecosystem": "rust", "name": "openmls"}, "vulnerable_version_range": "<= 0.9.0", "patched_versions": null}]}
+]

@@ -59,7 +59,7 @@ The libcrux build scripts decide `simd128`/`simd256` in `build.rs` **without**
 its own (evidence V-6 §6.3). Every client build is preceded by
 
 ```
-cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics [--target <triple>] --release
+cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes [--target <triple>] --release
 ```
 
 which also covers CI target directories restored from caches, and gate G-R3 reads the

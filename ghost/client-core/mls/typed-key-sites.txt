@@ -1,0 +1,33 @@
+# The reviewed sites where a typed key input of the channel derivations is built from raw bytes
+# (gate G-M3 rule 5, scripts/gates/ch-derivation-inputs.sh; Phase 10 design faza10-forum.md §5.2
+# rule (1), T36; review of S2a, F6, §19.31). `<file under src/> <type> <sites>`: each file holds
+# exactly that many `<type>::from_bytes` calls. A new site — T36's own scenario is
+# `derive_epoch_recognition(&EpochExport::from_bytes(*channel_id))` — fails the gate until its bytes
+# are reviewed (a secret: an exporter output, an opened envelope, a decoded invite, a CSPRNG draw)
+# and its count is raised here; a count no site reaches fails too.
+#
+# group.rs: K_ep from the exporter and from its envelope; G_g from the exporter, the bootstrap, the
+# envelopes of commit, generation and invite_build; the invite seed from the CSPRNG; JK_g from its
+# envelope.
+group.rs EpochExport 2
+group.rs GenerationSecret 5
+group.rs InviteSeed 1
+group.rs JoinKey 1
+# invite.rs: the decoded (opened) invite body, and the tests' fixed fields; the open invite's salt
+# from its own header (the one declared public input, §19.29.3); the tests' passwords.
+invite.rs ReadBase 2
+invite.rs DepositBase 2
+invite.rs JoinKey 2
+invite.rs InviteSeed 2
+invite.rs OpenInviteSalt 1
+invite.rs InvitePassword 2
+# Unit tests and the property tests: fixed test keys.
+derive.rs EpochExport 1
+derive.rs InvitePassword 1
+seal.rs JoinKey 1
+props.rs EpochExport 1
+props.rs ReadBase 1
+props.rs DepositBase 1
+props.rs JoinKey 2
+props.rs InviteSeed 1
+props.rs InvitePassword 1

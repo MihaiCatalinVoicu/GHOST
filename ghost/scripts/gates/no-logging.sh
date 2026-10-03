@@ -43,9 +43,8 @@ done < <(rust_src_files)
 # operator report module takes no exemption here: it prints with its two macros only. What a text
 # gate cannot see: a descriptor opened another way (`libc::write(2, …)`, a `File` on `/dev/stderr`
 # or `/proc/self/fd/2`); the DM crate forbids `unsafe`, and G-R8 lists the vendored sites.
-while IFS= read -r v; do
-  [ -n "$v" ] && fail "$v"
-done < <(rust_src_files | GATES_DIR="$GATES_DIR" perl -e '
+# Fail-closed (Phase 10 review of S2a, F3): a perl that fails fails the gate.
+if ! stream_out="$(rust_src_files | GATES_DIR="$GATES_DIR" perl -e '
 use strict; use warnings;
 require "$ENV{GATES_DIR}/source-text.pl";
 while (my $file = <STDIN>) {
@@ -60,7 +59,13 @@ while (my $file = <STDIN>) {
     my @l = split /\n/, $text, -1;
     print "$file:$n:$l[$n - 1] (a standard output or error handle: the print macros without their names)\n";
   }
-}')
+}')"; then
+  fail "the standard-stream scan (perl) failed: G-R4's stream clause is unproven"
+  stream_out=""
+fi
+while IFS= read -r v; do
+  [ -n "$v" ] && fail "$v"
+done <<< "$stream_out"
 while IFS= read -r m; do
   [ -n "$m" ] || continue
   hits="$(grep -nE -- "$LOG_DEPENDENCY_REGEX" "$m" || true)"

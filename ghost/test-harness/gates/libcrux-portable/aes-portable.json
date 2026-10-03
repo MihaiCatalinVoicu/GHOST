@@ -1,0 +1,8 @@
+{"reason":"compiler-artifact","package_id":"registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189","target":{"name":"libc"}}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-sha3@0.0.10","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/target/release/build/libcrux-sha3-bc7ac8e1f2a3b4c5/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-ml-kem@0.0.10","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/target/release/build/libcrux-ml-kem-b1c2d3e4f5a6b7c8/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-intrinsics@0.0.8","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/target/release/build/libcrux-intrinsics-0a1b2c3d4e5f6a7b/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-ml-kem-extra@1.0.0","linked_libs":[],"linked_paths":[],"cfgs":["feature=\"simd256\""],"env":[],"out_dir":"/target/release/build/libcrux-ml-kem-extra-1a2b3c4d5e6f7a8b/out"}
+{"reason":"build-finished","success":true}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-aes@0.0.9","linked_libs":[],"linked_paths":[],"cfgs":[],"env":[],"out_dir":"/target/release/build/libcrux-aes-5d6e7f8091a2b3c4/out"}
+{"reason":"build-script-executed","package_id":"registry+https://github.com/rust-lang/crates.io-index#libcrux-aesgcm@0.0.8","linked_libs":[],"linked_paths":[],"cfgs":["feature=\"simd256\""],"env":[],"out_dir":"/target/release/build/libcrux-aesgcm-6e7f8091a2b3c4d5/out"}

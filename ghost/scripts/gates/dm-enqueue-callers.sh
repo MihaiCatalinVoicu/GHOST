@@ -5,7 +5,7 @@
 #
 #   Outbox.enqueue, Outbox.cancel, Registrations.request, Registrations.keep, Registrations.rearm,
 #   Registrations.forget, Namespaces.register, Namespaces.setRelays, Namespaces.setListening,
-#   Namespaces.setSendDelay and Capabilities.put
+#   Namespaces.setSendDelay, Capabilities.put and Funding.set
 #       only from SEND, RESEND, EST-START, EST-READY, EST-END, OWNER-WEEK, ACTIVATE, KEEPER,
 #       REGROWS
 #   Namespaces.remove
@@ -71,9 +71,14 @@
 # `SCOPES` while matching only bare calls meant `sync.outbox.let { it.enqueue(tx) }` across two
 # lines passed a gate whose header claimed to catch it.
 #
+# A **callable reference** to a restricted call (`sync.funding::set`, `ob::enqueue`) and a
+# **parenthesized receiver** (`(sync.funding).set(…)`) are seen too, since the Phase 10 review of S1a
+# (see `is_call_site`); before it both passed for every restricted call, `Outbox.enqueue` included.
+#
 # What is still not seen: an alias that travels through a function parameter, a field or a
-# collection, and a call reached by reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`,
-# S7) is what covers those; this half is the one that fails before a world is ever built.
+# collection, a reference taken to a function that wraps the call, an `import … as` alias of a port
+# type, and a call reached by reflection. The behavioural half (NI-DM3/JD7, `NoReflexTest`, S7) is
+# what covers those; this half is the one that fails before a world is ever built.
 #
 # **Slice S6 (2026-09-20).** The mechanism was built and armed then, with a partial corpus:
 # `OwnerSteps.kt` alone, and no RECV, BUNDLE or HELD file to exercise the forbidden side. The gate
@@ -126,25 +131,47 @@
 # silently granted BUNDLE, the one establishment transaction driven by an arriving blob, the
 # permission §21.7 point 7 denies it. `BundleStep.kt` restores the invariant the gate depends on.
 #
+# **Phase 10, slice S1a (2026-10-03): `Funding.set`.** `Funding` (Phase 10 design §7.5 item 1) marks a
+# namespace as one this client funds. It moves nothing by itself, but it is the switch that makes the
+# planner redeem registration capabilities and the registration step run for the namespace, so a
+# call made because a blob arrived would make a funder's redemptions and registrations depend on the
+# inbox (T40, design §7.5 item 7: `Funding.set` for a new generation is called by the rotating
+# committer's CH-SWITCH and by the funder renewal step, never by CH-SETTLE or CH-RECV). It joins
+# the restricted calls under the same rule as `Capabilities.put`: `funding` is a receiver name,
+# `Funding` a receiver type (a constructor-injected `private val ledger: Funding` is a port whatever
+# it is called), `set` a restricted call. `ALLOWED_FILES` is unchanged: no DM file funds anything
+# (and `Funding.set` throws for a namespace that is not a channel's, so none could).
+#
+# **What this does not do, and who does** (Phase 10 review of S1a). The allowlist is shared by every
+# restricted call, so `Funding.set` is accepted in the four files that may enqueue: harmless while no
+# DM file calls it, but it would be wrong for a channel step in this module — CH-SETTLE is allowed
+# to enqueue its own Welcomes and must never fund (design §7.5 item 7). The channel's counterpart of this
+# gate is **G-M5** (`ch-enqueue-callers.sh`, design §13.1), which lists the funding call per step; the
+# review assigned it to slice S4 (§14), the first slice with a channel step that calls a restricted
+# port. Until it exists this gate must not grow channel files: S4 either gives `Funding.set` a file
+# list of its own here or builds G-M5, and says which. `Inbox.reofferDeferred` is **not** restricted:
+# it writes the re-offer time of local rows and makes no relay call (design §7.5 item 6), which
+# `ChannelSyncNoTrafficTest` pins — it can only delay a GET while the fetched cap binds.
+#
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # The restricted calls, as they are written at a call site.
-RESTRICTED='enqueue|cancel|request|keep|rearm|forget|register|setRelays|setListening|setSendDelay|put'
+RESTRICTED='enqueue|cancel|request|keep|rearm|forget|register|setRelays|setListening|setSendDelay|put|set'
 # `remove` is the one call SWEEP may make as well, so it is matched separately.
 REMOVE='remove'
 
 # A receiver that makes the match a **DM** call rather than any `.put(` on a map. The call sites of
 # this codebase always go through a named port; a call on something else is not one of these.
-RECEIVERS='outbox|registrations|namespaces|capabilities'
-# The **types** of those four ports. A property declared with one of them is a port whatever it is
+RECEIVERS='outbox|registrations|namespaces|capabilities|funding'
+# The **types** of those five ports. A property declared with one of them is a port whatever it is
 # called, which is what closes the hole the S9 review found: the alias rule below needs an
 # initialiser (`val ob = sync.outbox`), so a constructor-injected `private val ops: Outbox` was
 # invisible and `ops.cancel(tx, id)` passed. That is not a hypothetical shape — `Sweeper.kt` is the
 # one production file that takes a port as a bare constructor property rather than through `sync.`,
 # so the evading shape is the shape that file already uses.
-RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities'
+RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities|Funding'
 # The scope functions that turn a port into `this`, so a call inside can be bare.
 SCOPES='run|apply'
 # The scope functions that bind the port to a lambda **parameter** instead: the call inside is
@@ -343,10 +370,19 @@ while IFS= read -r file; do
   # safe call therefore passed — found by the S9 review while checking that the file SWEEP lives in
   # really cannot write `Outbox.cancel` (mutant ME-21). `joined_lines` folds a continuation that
   # begins with `?.` for the same reason.
+  #
+  # Two shapes more (found by the Phase 10 review of S1a, which tried them on `Funding.set`; both were
+  # equally open for `Outbox.enqueue`): a **callable reference** to a restricted call, which makes the
+  # call later and elsewhere (`val fund = sync.funding::set; fund(tx, ns, true)`), reported at the
+  # reference, and a **parenthesized receiver** (`(sync.funding).set(…)`), where the `)` kept the
+  # receiver off the `.` the first rule looks for.
   is_call_site() {
     [[ "$1" =~ \.[[:space:]]*($2)[[:space:]]*\( ]] && [[ "$1" =~ ($RECEIVERS)[[:space:]]*\??[[:space:]]*\.[[:space:]]*[a-zA-Z] ]] && return 0
     [ -n "$alias_alt" ] && [[ "$1" =~ (^|[^A-Za-z0-9_])($alias_alt)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($2)[[:space:]]*\( ]] && return 0
     [ "$scoped" = 1 ] && [[ "$1" =~ (^|[^.A-Za-z0-9_])($2)[[:space:]]*\( ]] && return 0
+    local ports="$RECEIVERS${alias_alt:+|$alias_alt}"
+    [[ "$1" =~ (^|[^A-Za-z0-9_])($ports)[[:space:]]*\??[[:space:]]*::[[:space:]]*($2)([^A-Za-z0-9_]|$) ]] && return 0
+    [[ "$1" =~ (^|[^A-Za-z0-9_])($ports)[[:space:]]*\)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($2)[[:space:]]*\( ]] && return 0
     return 1
   }
 
@@ -372,7 +408,7 @@ while IFS= read -r file; do
   if [ -n "$restricted_hits" ] && ! allowed_file "$base"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
-      fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen or install)"
+      fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen, install or fund)"
     done <<< "$restricted_hits"
   fi
   if [ -n "$remove_hits" ] && ! remove_allowed "$base"; then

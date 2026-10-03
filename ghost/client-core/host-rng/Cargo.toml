@@ -1,0 +1,22 @@
+[package]
+publish = false
+name = "ghost-host-rng"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Host and test builds only: the process-global seeded ChaCha20 stream behind getrandom's custom backend, and the lock that serialises native calls (Phase 10 design faza10-forum.md §12.1, §19.10; S0-7)"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# The one getrandom major of the host graph (S0-7 (c)): 0.4.3, whose custom backend calls
+# `__getrandom_v03_custom`. The Error type of the symbol's signature is this crate's.
+getrandom = "=0.4.3"
+# The stream (the version already in the lock).
+rand_chacha = { version = "=0.10.0", default-features = false }
+
+[lints.rust]
+# The getrandom backend switch of host and test builds (design §12.1): the only cfg of the crate.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(getrandom_backend, values("custom"))'] }

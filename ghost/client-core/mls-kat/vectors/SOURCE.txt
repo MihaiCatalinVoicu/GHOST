@@ -1,0 +1,11 @@
+# The MLS WG passive-client test vectors (RFC 9420 interoperability fixtures, mlswg/mls-implementations),
+# as the MIT-licensed openmls repository carries them at the commit the crates.io openmls 0.9.0 package
+# was built from (tag openmls-v0.9.0; design faza10-forum.md §12.2, §13.3; S0 evidence V10-12).
+# mlswg/mls-implementations declares no licence (GitHub licence API: none); test data, never distributed.
+# Fetched from https://raw.githubusercontent.com/openmls/openmls/<commit>/openmls/test_vectors/<file> and
+# checked against the git blob id of that tree; tests/passive_client.rs checks the SHA-256 before use.
+commit 3a3e35de3feeca8f6605143c464d5452ae584d43
+# <file> <sha256> <git blob id at the commit>
+passive-client-welcome.json 92ebb04b67b1aca4290965ae363650921842ceebe275bd79a2733414078d849c 15bbfcf01b55f64d2dd60771c7ae8643e1764ec5
+passive-client-handling-commit.json b24949fdf857bf79d511f57504a8bdc7ce3247eb199684745e439c11b1a1da21 c702dcc3227ccb4d36a1770e1b5c44392f62604a
+passive-client-random.json 0095d863e9d316872e237fc708debcd20ba2687ee905a3e831f97dd3e578d3c1 ea20d75259ab73ef38e9a4d23c32697f1d849822

@@ -85,6 +85,7 @@ internal class Gc(
             "DELETE FROM sync_namespace WHERE listening = 0 " +
                 "AND NOT EXISTS (SELECT 1 FROM namespace_relay nr WHERE nr.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM relay_capability c WHERE c.namespace_id = sync_namespace.namespace_id) " +
+                "AND NOT EXISTS (SELECT 1 FROM relay_register_capability g WHERE g.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM relay_cursor r WHERE r.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM inbox_blob b WHERE b.namespace_id = sync_namespace.namespace_id) " +
                 "AND NOT EXISTS (SELECT 1 FROM relay_key_registration k WHERE k.namespace_id = sync_namespace.namespace_id) " +

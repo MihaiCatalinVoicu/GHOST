@@ -9,6 +9,7 @@ import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.RelayId
 import org.ghost.sync.store.SyncWorld.Companion.DAY
 import org.ghost.sync.store.SyncWorld.Companion.HOUR
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -263,6 +264,168 @@ class RegistrationStoreTest {
         assertEquals("a row in flight is still pending work", 1, w.tx { w.stores.registrations.pending(it, relay, ns, week) })
         assertTrue(w.tx { store.recordDone(it, key, expiryOf(week) + Time.WEEK) })
         assertEquals(0, w.tx { w.stores.registrations.pending(it, relay, ns, week) })
+    }
+
+    /** A LOCAL channel namespace on two relays with the channel's DEPOSIT credential in its write slot (declaring a week). */
+    private fun SyncWorld.channel(): Triple<NamespaceId, List<RelayId>, Long> {
+        val relays = relays(1, 2)
+        val ns = namespace(1, relays, listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        val week = weekOf(now)
+        relays.forEach { capability(it, ns, CapabilityKind.WRITE, expiresAt = expiryOf(week), seed = 1) }
+        return Triple(ns, relays, week)
+    }
+
+    /**
+     * Phase 10 design §7.5 item 2: the rows of a funded namespace are served by its **registration**
+     * capability and by nothing else. The channel's DEPOSIT credential sits in the write slot and
+     * declares a week like a redeemed capability does, so an implementation that kept reading the
+     * write slot would call these rows due and present a bearer credential at `RegisterKey`.
+     */
+    @Test
+    fun aFundedNamespacesRowsAreDueOnlyWithItsRegistrationCapability(): Unit = SyncWorld().use { w ->
+        val (ns, relays, week) = w.channel()
+        val relay = relays[0]
+        val store = w.stores.registrationStore
+        w.fund(ns)
+        for (period in listOf(week - 1, week, week + 1, week + 2)) w.request(w.key(ns, relay, period))
+        fun periods() = w.tx { store.due(it, w.now, 8, null, null) }.map { it.key.periodId }
+        assertEquals("a write credential serves no registration of a funded namespace", emptyList<Long>(), periods())
+        assertNull(w.tx { store.lease(it, w.key(ns, relay, week), w.now, 600) })
+        assertEquals(emptyList<Pair<RelayId, NamespaceId>>(), w.tx { store.workPairs(it, w.now) })
+        // A registration capability of the week serves the week and the next, the rule the relay judges by.
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 2)
+        assertEquals(listOf(week, week + 1), periods())
+        assertEquals(listOf(Pair(relay, ns)), w.tx { store.workPairs(it, w.now) })
+        // An unknown expiry names no week, an expired or a refused one serves nothing, and neither does a retired relay.
+        // (The API no longer installs a registration capability without an expiry, review of S1a; the table allows it.)
+        w.raw("UPDATE relay_register_capability SET expires_hour = NULL")
+        assertEquals(emptyList<Long>(), periods())
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = w.now - HOUR, seed = 4)
+        assertEquals(emptyList<Long>(), periods())
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 5)
+        assertEquals(listOf(week, week + 1), periods())
+        w.tx { w.caps.refuse(it, relay, ns, CapabilityKind.REGISTER, w.caps.generation(it, relay, ns, CapabilityKind.REGISTER)!!, false) }
+        assertEquals(emptyList<Long>(), periods())
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 6)
+        w.tx { w.stores.relayDirectory.retire(it, relay) }
+        assertEquals(emptyList<Long>(), periods())
+    }
+
+    @Test
+    fun theLeaseOfAFundedRowPresentsTheRegistrationCapabilityAndNeverTheWriteCredential(): Unit = SyncWorld().use { w ->
+        val (ns, relays, week) = w.channel()
+        val relay = relays[0]
+        val store = w.stores.registrationStore
+        w.fund(ns)
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 2)
+        val key = w.key(ns, relay, week)
+        w.request(key)
+        val lease = checkNotNull(w.tx { store.lease(it, key, w.now, 600) })
+        assertEquals(CapabilityKind.REGISTER, lease.capability.kind)
+        assertArrayEquals(TestBytes.of(82, 2 * 17 + relay.value.toInt()), lease.capability.token)
+        assertEquals(w.tx { w.caps.generation(it, relay, ns, CapabilityKind.REGISTER) }, lease.capability.generation)
+        assertTrue("the write credential is not the token the lease carries", !TestBytes.of(82, 1 * 17 + relay.value.toInt()).contentEquals(lease.capability.token))
+        // The registration capability going away between the plan and the lease leaves the row alone,
+        // exactly as a refused write capability does for an owner's row.
+        w.tx { store.endLease(it, key) }
+        w.tx { tx -> w.caps.refuse(tx, relay, ns, CapabilityKind.REGISTER, w.caps.generation(tx, relay, ns, CapabilityKind.REGISTER)!!, false) }
+        w.clock.advance(HOUR)
+        assertNull(w.tx { store.lease(it, key, w.now, 600) })
+        assertEquals("pending", w.string("SELECT state FROM relay_key_registration"))
+    }
+
+    /** The flag decides at each read: an unfunded REDEEM namespace is served by its write capability as in Phase 9. */
+    @Test
+    fun theFundingFlagMovesARowBetweenTheTwoCapabilities(): Unit = SyncWorld().use { w ->
+        val relays = w.relays(1, 2)
+        // Only a channel namespace can be funded; its source here is REDEEM, which the write capability serves unfunded.
+        val ns = w.namespace(1, relays, listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.REDEEM)
+        val week = weekOf(w.now)
+        val relay = relays[0]
+        val store = w.stores.registrationStore
+        w.capability(relay, ns, CapabilityKind.WRITE, expiresAt = expiryOf(week))
+        w.request(w.key(ns, relay, week))
+        fun due() = w.tx { store.due(it, w.now, 8, null, null) }.size
+        assertEquals("unfunded: the write capability serves it", 1, due())
+        w.fund(ns)
+        assertEquals("funded: only a registration capability does", 0, due())
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 2)
+        assertEquals(1, due())
+        w.fund(ns, false)
+        assertEquals("unfunded again: the write capability, not the leftover registration one", 1, due())
+        // Without the write capability the leftover registration capability serves nothing.
+        w.raw("DELETE FROM relay_capability")
+        assertEquals(0, due())
+    }
+
+    /**
+     * A namespace whose credentials the consumer installs itself (a channel, a contact) is never served by its
+     * write slot: those are bearer credentials, `RegisterKey` refuses them, and the refusal would mark the
+     * credential rejected and park the namespace's stores. A funder that stopped funding with rows still
+     * pending is the case that reaches it (hardening of this slice; no Phase 9 step requests a registration
+     * for a LOCAL namespace).
+     */
+    @Test
+    fun anUnfundedLocalNamespaceIsNeverServedByItsWriteCredential(): Unit = SyncWorld().use { w ->
+        val (ns, relays, week) = w.channel()
+        val relay = relays[0]
+        val store = w.stores.registrationStore
+        w.request(w.key(ns, relay, week))
+        assertEquals(emptyList<Long>(), w.tx { store.due(it, w.now, 8, null, null) }.map { it.key.periodId })
+        assertNull(w.tx { store.lease(it, w.key(ns, relay, week), w.now, 600) })
+        // It was funded, the row was requested, the funding ended: the same.
+        w.fund(ns)
+        w.capability(relay, ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 2)
+        assertEquals(1, w.tx { store.due(it, w.now, 8, null, null) }.size)
+        w.fund(ns, false)
+        assertEquals(0, w.tx { store.due(it, w.now, 8, null, null) }.size)
+        assertNull(w.tx { store.lease(it, w.key(ns, relay, week), w.now, 600) })
+        assertEquals(0L, w.long("SELECT attempts FROM relay_key_registration"))
+    }
+
+    /**
+     * A new capability re-arms the pair's pending rows only when it is the kind that serves them: the
+     * registration capability of a funded namespace and the write capability of an unfunded REDEEM one. A
+     * channel's DEPOSIT credential re-put under a funder (every generation switch, every refresh) must not
+     * move a registration's attempts or time, or the registration step's schedule would follow credential
+     * puts, which are not a funder's act.
+     */
+    @Test
+    fun onlyTheCapabilityThatServesARowReArmsIt(): Unit = SyncWorld().use { w ->
+        fun SyncWorld.backedOff(key: RegistrationKey) {
+            request(key)
+            check(tx { stores.registrationStore.lease(it, key, now, 3600) } != null)
+            check(tx { stores.registrationStore.endLease(it, key) })
+        }
+        fun SyncWorld.attempts(): Long = long("SELECT attempts FROM relay_key_registration")!!
+        // Funded: the registration capability re-arms, the write credential does not.
+        run {
+            val (ns, relays, week) = w.channel()
+            w.fund(ns)
+            w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 2)
+            w.backedOff(w.key(ns, relays[0], week))
+            assertEquals(1L, w.attempts())
+            w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = expiryOf(week), seed = 3)
+            assertEquals("a re-put DEPOSIT credential leaves the row alone", 1L, w.attempts())
+            assertEquals(0, w.tx { w.stores.registrationStore.due(it, w.now, 8, null, null) }.size)
+            w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 4)
+            assertEquals("the registration capability re-arms it", 0L, w.attempts())
+            assertEquals(1, w.tx { w.stores.registrationStore.due(it, w.now, 8, null, null) }.size)
+        }
+        w.raw("DELETE FROM relay_key_registration")
+        // Unfunded REDEEM (Phase 9, unchanged): the write capability re-arms, a registration one does not.
+        run {
+            val relays = w.relays(3, 4)
+            val ns = w.namespace(9, relays, listen = true)
+            val week = weekOf(w.now)
+            w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = expiryOf(week), seed = 2)
+            w.backedOff(w.key(ns, relays[0], week))
+            assertEquals(1L, w.attempts())
+            w.capability(relays[0], ns, CapabilityKind.REGISTER, expiresAt = expiryOf(week), seed = 3)
+            assertEquals("a registration capability does not serve an unfunded namespace", 1L, w.attempts())
+            w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = expiryOf(week), seed = 4)
+            assertEquals(0L, w.attempts())
+        }
     }
 
     @Test

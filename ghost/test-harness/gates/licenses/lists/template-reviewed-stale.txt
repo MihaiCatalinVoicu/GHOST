@@ -1,0 +1,2 @@
+# A line no package needs: mit-pkg ships its LICENSE-MIT (self-test.sh, G-L1's template clause).
+mit-pkg 1.0.0  # fixture: it ships its own text

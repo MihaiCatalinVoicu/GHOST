@@ -192,6 +192,9 @@ internal class SyncWorld(start: Long = T0) : AutoCloseable {
     fun capability(relay: RelayId, ns: NamespaceId, kind: CapabilityKind = CapabilityKind.WRITE, expiresAt: Long? = null, seed: Int = 1) =
         tx { stores.capabilities.put(it, relay, ns, kind, TestBytes.of(82, seed * 17 + relay.value.toInt()), expiresAt) }
 
+    /** Marks [ns] funded (Phase 10 design §7.5), or not. */
+    fun fund(ns: NamespaceId, funded: Boolean = true) = tx { stores.funding.set(it, ns, funded) }
+
     /** Relays of operators 1, 2, 3, a listening namespace over them and write tokens on each. */
     fun standardSet(listen: Boolean = true, seed: Int = 1): Pair<NamespaceId, List<RelayId>> {
         val relays = relays(1, 2, 3)

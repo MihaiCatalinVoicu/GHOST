@@ -1,0 +1,3 @@
+[
+  {"ghsa_id": "GHSA-fixt-ure0-0005", "state": "published", "vulnerabilities": [{"package": {"ecosystem": "rust", "name": "libcrux-aesgcm"}, "vulnerable_version_range": "<= 0.0.9", "patched_versions": null}]}
+]

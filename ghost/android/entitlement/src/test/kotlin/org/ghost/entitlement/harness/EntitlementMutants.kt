@@ -31,7 +31,8 @@ internal class EntMutant(
  * The client mutants EM1–EM9 of design §13.5, the NI-K-caught privacy mutants M3, M8 and M20, four
  * fixtures of the S9c review that pin what the harness checks beyond them (MS-6 for issued and
  * never-delivered invoices, the accounting of every finalized kind, every redemption byte in NI-1),
- * and one of the restore-scan review (every credit sealed into a listened drop ends refreshed), each
+ * one of the restore-scan review (every credit sealed into a listened drop ends refreshed) and one of the
+ * Phase 10 review of S1a (a refused registration capability covers a REGISTER need), each
  * detected by `EntitlementMutantDetectionTest` in the world named there.
  */
 internal object EntMutants {
@@ -192,6 +193,19 @@ internal object EntMutants {
 
     private const val INVITE_BY_NAMESPACE =
         "SELECT invite_index, state, payload, drop_namespace, listen_until_day, refresh_minute FROM ent_invite WHERE drop_namespace = ?1"
+
+    /**
+     * RefusedRegistrationCovers (Phase 10 review of S1a, mutant R-G6): the capability that covers a REGISTER
+     * need need not be usable, so a registration capability the relay refused — rejected or exhausted — still
+     * covers it while its expiry reaches past the week. The planner skips the need, the funder never redeems a
+     * replacement, and the channel's registrations at that relay lapse with the week. E-R refuses the first
+     * `RegisterKey` of relay B: the tail finds "2 registration(s) still pending".
+     */
+    val REFUSED_REGISTER_COVERS = EntMutant("RefusedRegistrationCovers", rewrite { _, sql, args ->
+        if (sql.startsWith(REGISTER_COVERING_EXPIRY)) Pair(sql.replace(" AND state = 'usable'", ""), args) else null
+    })
+
+    private const val REGISTER_COVERING_EXPIRY = "SELECT expires_hour FROM relay_register_capability WHERE relay_id = ?1 AND namespace_id = ?2"
 
     private fun blindSignDue(ec: EntClient): Boolean {
         var n = 0L

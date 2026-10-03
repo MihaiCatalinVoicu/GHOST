@@ -1,0 +1,72 @@
+# GHOST channel derivations (Phase 10 design faza10-forum.md §5.2, corrected by §19.27 TR-6 and §19.28.3;
+# the invite seal as corrected by §19.29.3). Generated and checked by
+# client-core/mls/tests/vectors.rs::ch_derive; replayed independently by
+# client-core/mls-kat/tests/spec_replay.rs (and by the JDK in slice S2b).
+#
+# hkdf(ikm, salt, info) = HKDF-SHA256(ikm, salt, info, L = 32); '-' is the empty salt.
+# Inputs are SHA-256 of a label so the file regenerates exactly. K_ep and G come from MLS
+# exporters (labels ghost/v1/ch/epoch and ghost/v1/ch/generation, context = channel_id, L = 32);
+# the file starts from their values.
+
+[epoch]
+exporter_label = ghost/v1/ch/epoch
+k_ep = 32b22535602cb30f55511d095e772d4da98943e01ed79e4ebd18d388a4575410
+r_ep = 9ad272ccd47ff91af59892e3975e7a1c4bf8d1250c33d6e9ab2356debe8fa8f2
+
+[generation]
+exporter_label = ghost/v1/ch/generation
+g = 16b9acd7295170c724f168660bb8f6ac3d3fdecad55a430a4bb2879037bc46af
+ns = 8a16b01dab80cebb9c3e19d2e93fcb288e80b16335839cf616f238c7f982ccf9
+read_base = 5983c56fc285c4d709ffd122a54d6abc70c241a2ee86ee4ae99b3cbd87dc7d49
+deposit_base = 4a46e2f8f001ff85ecfeae5d5d5f08effd31eb93ec8a039fcd9f2097ca4f90b4
+join_key = e4f65d6444481ada720089bcc19c016f4c8100b76a6d068d7edac530af77b9ff
+r_join = 171645856f324bda4681464eed68e788df840644682a731540e838f7e7cd899e
+read_secret_slot_0 = 61f1211aedc919877f126d644e64f4db7888d5a23f2bb30b49a3a9e4cc5effb1
+deposit_secret_slot_0 = e8606f19a75b7cefd29c54bce1935560120b344777e6b3a4bdd4aa9f7416fe2c
+read_credential_slot_0 = 0301008a16b01dab80cebb9c3e19d2e93fcb288e80b16335839cf616f238c7f982ccf961f1211aedc919877f126d644e64f4db7888d5a23f2bb30b49a3a9e4cc5effb1
+read_verifier_slot_0 = 3bfd3591b7f8b2d618788c3c67da50f9da6e8e41b1918d4acc6d72dd73f4928c
+deposit_credential_slot_0 = 0303008a16b01dab80cebb9c3e19d2e93fcb288e80b16335839cf616f238c7f982ccf9e8606f19a75b7cefd29c54bce1935560120b344777e6b3a4bdd4aa9f7416fe2c
+deposit_verifier_slot_0 = 62f97c982c9af75a50f75b3c500d0f8d372e914653bd82cbb2a0b8c720bde94c
+read_secret_slot_7 = 84b003bf5069cc9c3c0fc8df8740312691f8ddcf7ac0dc0385258f378a26f8ab
+deposit_secret_slot_7 = 1b0a38e7da3d05c44d5c689bf407f51ad5c83492a8a44e2e57119dd1a3001593
+read_credential_slot_7 = 0301078a16b01dab80cebb9c3e19d2e93fcb288e80b16335839cf616f238c7f982ccf984b003bf5069cc9c3c0fc8df8740312691f8ddcf7ac0dc0385258f378a26f8ab
+read_verifier_slot_7 = 6c557f2c49e17136968a48a6857308a433e8265d4de97c938186da577b57b754
+deposit_credential_slot_7 = 0303078a16b01dab80cebb9c3e19d2e93fcb288e80b16335839cf616f238c7f982ccf91b0a38e7da3d05c44d5c689bf407f51ad5c83492a8a44e2e57119dd1a3001593
+deposit_verifier_slot_7 = 35b960f3f429abbdcc5845e877ac0e8e7bcfca10335c7a180f7f4975559929dd
+
+[seal_keys]
+salt = 83369a3fcf227110e401955e82343ae7
+ns = 8a16b01dab80cebb9c3e19d2e93fcb288e80b16335839cf616f238c7f982ccf9
+epoch_seal_key = c53ed6b6255482d90327c9563a20f430cf75b04788376a3e3f8c7fc2e9e0eb49
+join_seal_key = d1ebd5c5f60a508007ec2a2372695e93292d5fea9a9959cfcea4dc686df2d332
+
+[pseudonym]
+pseudonym_seed = 36516a46b2ace9020f6867e7a723673a8872a69424baeba0d94fda48c72b4fc3
+pseudonym_key = 417e9d42bcbe624e9924f4892ba22fbf3f858300073fecb3dafd5ddec7ee8142
+
+[invite_key]
+invite_seed = 64b997b316069cd30b9aa74f1ce7201dfb5659583c633d91dbf6c8af01712c0e
+invite_pk = 9824db8f33a3bdb7f996dfaefcdde71fb40ec1cc8de3942c10070669ad58d81f
+
+[committers]
+channel_id = b780abbba0475c27f9e1d73c0495e151a88cf7447c9373c9be0905741f31053d
+committers = 2e327fa0ed87996070e46b246acbde408d7f6ad577a01d26680ab8d8aeed08bf,a8a2f5ac93a5edac45727aa5e2af4ced6e3cfd66f8c2e5d9a4479dc762b525be,cbabd17e6acb953835854ee9b4ea8a66e26ae228bb8d41cc87899cb1c94564ce
+digest = 5c28c954f57833ceffb506d85124bbb19e8c55f2868d315dff24d79ed1b6b5e2
+digest_reordered = 5c28c954f57833ceffb506d85124bbb19e8c55f2868d315dff24d79ed1b6b5e2
+digest_first_two = 444638ea007c161a20360ce29bcb10d95933d5f3c443ae66a67512e19fa70843
+
+[invite_seal]
+salt = 869f595a5407c94fc6f39c8ac54eaf6e
+open_seal_key = a0d7a8bff4c24a732f6ad1cf1a167db32d85980f63eb40a951e844fa82e38259
+password_nfkd_utf8 = 636162696e2066726f7374206c6164646572206d617267696e206f72626974
+kdf_code_1_profile = argon2id m=65536 t=1 p=4 T=32 v=0x13
+argon2id_ikm = 0bf7429dfc863dd0793a110cf22f2fc7c460d2cbbbb918ba6036ab58eb6a4ef1
+password_seal_key = 47872a48a5b45dd82279a4b746b91faf06426200ebc61704ca58fc29a573622b
+
+[argon2id_rfc9106_5_3]
+parameters = argon2id m=32 t=3 p=4 T=32 v=0x13
+password = 0101010101010101010101010101010101010101010101010101010101010101
+salt = 02020202020202020202020202020202
+secret = 0303030303030303
+associated_data = 040404040404040404040404
+tag = 0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659

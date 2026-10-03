@@ -7,6 +7,7 @@ import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.OperationId
 import org.ghost.sync.api.OutboundBlob
@@ -41,6 +42,22 @@ internal enum class ClaimStyle {
     PEEK_ONE,
 }
 
+/**
+ * A channel actor's use of `Inbox.defer` and `Inbox.reofferDeferred` (Phase 10 design §7.5 item 6,
+ * slice S1a): a blob it cannot open yet is deferred while its namespace is not settled, and the
+ * consumption of a settling blob re-offers the namespace's deferred rows **in the same transaction**
+ * (the CH-SETTLE step of §7.4). A namespace is settled once a blob for which [settles] holds was
+ * consumed there, which the oracle's own table records, so a crash does not forget it.
+ */
+internal class SettlePolicy(
+    /** The blob cannot be opened before its namespace is settled. */
+    val unopenable: (World, BlobHash) -> Boolean,
+    /** Consuming the blob settles its namespace. */
+    val settles: (World, BlobHash) -> Boolean,
+    /** Shorter than the defer clamp (7 d), so the deferral is the engine's, not a clamp's. */
+    val deferSeconds: Int = 3 * 86_400,
+)
+
 /** How the oracle consumer behaves (design §8.2). */
 internal class ConsumerPolicy(
     /** Consumers do nothing while this returns true (S-H: paused longer than a TTL). */
@@ -52,6 +69,8 @@ internal class ConsumerPolicy(
     val consumeOutsideTransaction: Boolean = false,
     /** Which inbox calls the consumer uses to take its blobs. */
     val claimStyle: ClaimStyle = ClaimStyle.BATCH,
+    /** A channel actor that defers what it cannot open and re-offers it when a namespace settles (S-P/reoffer-deferred). */
+    val settle: SettlePolicy? = null,
 )
 
 internal class ClientSpec(
@@ -253,6 +272,28 @@ internal class Client(val world: World, val index: Int, val spec: ClientSpec) : 
         return token
     }
 
+    /** A bearer secret of this client's namespace, deterministic in the world's seed (a channel's shared key material). */
+    private fun bearerSecret(ns: NamespaceId, label: String): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest("bearer|${world.seed}|$label|${ns.toByteArray().hex()}".toByteArray())
+
+    /**
+     * The shared bearer DEPOSIT credential of a channel (v3, [slot]) installed in [node]'s **write** slot
+     * of [ns], as a member's device holds it (Phase 10 design §7.5). Returns the credential bytes. The
+     * relay's `RegisterKey` refuses such a credential (T21): in a funded namespace only the registration
+     * capability registers, so presenting this one there is a failure the harness port reports.
+     */
+    fun depositCredential(node: RelayNode, ns: NamespaceId, slot: Int = 1): ByteArray {
+        val credential = ModelRelay.credentialBytes(ModelRelay.KIND_DEPOSIT, slot, ns, bearerSecret(ns, "deposit"))
+        tx { stores.capabilities.put(it, id(node), ns, CapabilityKind.WRITE, credential, null) }
+        return credential
+    }
+
+    /** The verifier of this client's bearer secret of [kind] for [ns]: what the funder registers at a relay. */
+    fun verifier(ns: NamespaceId, kind: KeyKind, slot: Int = 1): ByteArray {
+        val relayKind = if (kind == KeyKind.DEPOSIT) ModelRelay.KIND_DEPOSIT else ModelRelay.KIND_READ
+        return ModelRelay.verifierOf(ModelRelay.Credential(relayKind, slot, ns, bearerSecret(ns, if (kind == KeyKind.DEPOSIT) "deposit" else "read")))
+    }
+
     /** Registers [label] as an op of this client and enqueues it through the oracle (one transaction). */
     fun enqueue(label: String, ns: NamespaceId, ttl: TtlBucket = TtlBucket.DAYS_7, size: Int = 1024, deadlineInSeconds: Long? = null): OpRecord {
         val op = world.ops.getOrPut(label) {
@@ -408,6 +449,12 @@ internal class OracleConsumer(private val client: Client) {
 
     private fun consume(b: org.ghost.sync.api.InboundBlob) {
         val policy = client.spec.consumer
+        val settle = policy.settle
+        if (settle != null && settle.unopenable(client.world, b.hash) && !settled(b.namespace, settle)) {
+            // Cannot be opened before the namespace settles: wait, and let the settling blob bring it back.
+            client.tx { tx -> client.stores.inbox.defer(tx, b.namespace, b.hash, settle.deferSeconds) }
+            return
+        }
         if (policy.deferOnce(b.hash) && deferred.add(b.hash)) {
             client.tx { tx -> client.stores.inbox.defer(tx, b.namespace, b.hash, policy.deferSeconds) }
             return
@@ -419,8 +466,24 @@ internal class OracleConsumer(private val client: Client) {
             val consumed = client.tx { tx -> client.stores.inbox.markConsumed(tx, b.namespace, b.hash) }
             if (consumed) client.tx { tx -> tx.sql.execUpdate(insert, args) }
         } else {
-            client.tx { tx -> if (client.stores.inbox.markConsumed(tx, b.namespace, b.hash)) tx.sql.execUpdate(insert, args) }
+            client.tx { tx ->
+                if (client.stores.inbox.markConsumed(tx, b.namespace, b.hash)) {
+                    tx.sql.execUpdate(insert, args)
+                    // CH-SETTLE (design §7.4): the consumption that settles the namespace brings its deferred rows back
+                    // in the same transaction, so a crash leaves both or neither.
+                    if (settle != null && settle.settles(client.world, b.hash)) client.stores.inbox.reofferDeferred(tx, b.namespace)
+                }
+            }
         }
+    }
+
+    /** True once a blob that settles [ns] was consumed there (the oracle's table survives a crash). */
+    private fun settled(ns: NamespaceId, settle: SettlePolicy): Boolean {
+        var found = false
+        client.jdbc.query("SELECT blob_hash FROM oracle_consumed WHERE namespace_id = ?1", listOf(ns.toByteArray())) {
+            if (settle.settles(client.world, BlobHash(it.blob(0)))) found = true
+        }
+        return found
     }
 
     companion object {

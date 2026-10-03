@@ -66,8 +66,33 @@ interface Inbox {
     /** True exactly once per (namespace, hash). Call it for every blob, including rejected ones. */
     fun markConsumed(tx: SyncTransaction, namespace: NamespaceId, hash: BlobHash): Boolean
 
-    /** Re-offer later (e.g. an MLS message for a future epoch); 1 second to 7 days. */
+    /**
+     * Re-offer later (e.g. an MLS message for a future epoch); 1 second to 7 days. A deferred row does
+     * not count against `FETCHED_CAP` while it waits (Phase 10 design §7.5 item 5), so a consumer that
+     * defers what it cannot yet open never throttles the fetching of what it can.
+     */
     fun defer(tx: SyncTransaction, namespace: NamespaceId, hash: BlobHash, seconds: Int): Boolean
+
+    /**
+     * Makes every row of [namespace] that [defer] set aside due for an offer at once, in the caller's
+     * transaction, so the next [peek] returns it in its arrival order (Phase 10 design §7.5 item 6,
+     * §19.1): a channel blob of epoch e + 1 that was deferred with a six-hour backoff must not wait
+     * out the backoff after epoch e has settled. Returns the number of rows made due.
+     *
+     * **Use contract.** Called by the consumer from the transactions that make deferred blobs
+     * openable (a settle, a join, a namespace switch), once per transaction and namespace. It
+     * **adds no relay call and changes no schedule**: it writes the re-offer time of local rows and
+     * sends a consumer hint ([SyncListener]) when it moved any; no list, get, store, check, redemption
+     * or registration follows from it, and the engine's pair snapshot is untouched. **One effect on
+     * what a relay sees remains, and it is a delay:** the rows it makes due count against
+     * `FETCHED_CAP` again (a deferred row does not count while it waits), so while the namespace is at
+     * the cap the GETs that were pending wait until the consumer has consumed them. A call is held
+     * back, never added and never moved earlier (`ChannelSyncNoTrafficTest`). A row on the poison
+     * backoff (offered three times without being consumed or deferred, §11.2 #3) is not a deferred row and
+     * keeps it, and rows that are not fetched, belong to another namespace or are due already are not
+     * touched.
+     */
+    fun reofferDeferred(tx: SyncTransaction, namespace: NamespaceId): Int
 
     /**
      * Forgets the consumed-blob tombstones of a [Consumer.PREKEYS] namespace (Phase 9 design §21.7

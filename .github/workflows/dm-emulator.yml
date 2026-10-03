@@ -146,7 +146,7 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/${NDK_PACKAGE#ndk;}"
           for triple in aarch64-linux-android x86_64-linux-android; do
-            CARGO_TARGET_DIR=target/android-native cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --target "$triple" --release || true
+            CARGO_TARGET_DIR=target/android-native cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --target "$triple" --release || true
           done
           bash scripts/build-native.sh "$RUNNER_TEMP/native" "$RUNNER_TEMP/native.sha256"
           cat "$RUNNER_TEMP/native.sha256"
@@ -162,14 +162,14 @@ jobs:
       - name: build the x86_64 test library (ghost-dm-host with test-vectors) and G-R6 --test on it
         run: |
           export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/${NDK_PACKAGE#ndk;}"
-          CARGO_TARGET_DIR=target/dm-test-jni cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --target x86_64-linux-android --release || true
+          CARGO_TARGET_DIR=target/dm-test-jni cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --target x86_64-linux-android --release || true
           rm -rf android/crypto-bridge/build/dm-test-jni
           CARGO_TARGET_DIR=target/dm-test-jni cargo ndk -t x86_64 -o android/crypto-bridge/build/dm-test-jni \
             build --release --locked -p ghost-dm-host
           bash scripts/gates/dm-jni-surface.sh --test android/crypto-bridge/build/dm-test-jni/x86_64/libghost_dm_host.so
       - name: build ghost-dm-host (the host library) and G-R6 --test on it
         run: |
-          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
           bash scripts/gates/dm-jni-surface.sh --test "$PWD/target/release/libghost_dm_host.so"

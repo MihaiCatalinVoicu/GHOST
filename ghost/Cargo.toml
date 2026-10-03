@@ -18,6 +18,18 @@ members = [
     # Test-only host build of the DM JNI surface (Phase 9 design §2.3): a workspace member so the
     # gates cover it, never built for Android and never in the shipped graph.
     "client-core/dm-host",
+    # Channel cryptography on OpenMLS (Phase 10 design faza10-forum.md §10.1, slice S2a): a workspace
+    # member so cargo-deny, the licence gates and the Rust gates (G-M1 … G-M4, G-M8) cover it. Not yet
+    # linked into ghost-client-net: the JNI export is slice S2b.
+    "client-core/mls",
+    # The MLS WG passive-client replay through GhostKv and the independent replay of the channel
+    # vectors (§10.1, §12.2, S0-13): test-only, outside every shipped and host graph; the only crate
+    # that enables openmls/test-utils (G-M2).
+    "client-core/mls-kat",
+    # The process-global seeded randomness of host and test builds (§12.1, §19.10, S0-7): the
+    # getrandom custom backend behind --cfg getrandom_backend="custom". Host-only; refuses to compile
+    # for Android and is kept out of every shipped graph by rust-feature-policy.sh (G-R2).
+    "client-core/host-rng",
     "test-harness/privacy/capture-check",
     # The T2 analyzer (Phase 8 design §13.4): test tooling, linked only by the issuer's T2 tests.
     "test-harness/privacy/t2-join",
@@ -82,6 +94,17 @@ blind-rsa-signatures = { version = "=0.17.2", default-features = false }
 md-5 = "0.10.6"
 # The issuer's configuration file (design §6.6); the version already in the lock file.
 toml = { version = "0.8.23", default-features = false, features = ["parse"] }
+# Channels on OpenMLS (Phase 10 design §3.2, ADR-40; slice S2a). Exact pins; no default feature and
+# none of the forbidden ones (crypto-debug, content-debug, test-utils, the drafts, sqlite-provider,
+# js, backtrace, …; gate G-M2 in rust-feature-policy.sh). The libcrux provider is a direct
+# dependency, not the `libcrux-provider` feature of openmls; its memory storage is never named (G-M2).
+openmls = { version = "=0.9.0", default-features = false }
+openmls_traits = { version = "=0.6.0", default-features = false }
+openmls_libcrux_crypto = { version = "=0.4.0", default-features = false }
+# A normal dependency of openmls; pinned to one worker at every context open (design §3.6).
+rayon = "=1.12.0"
+# The channel password (design §19.28.5, Q47 (a)): Argon2id (RFC 9106) in Rust, pinned exactly.
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc", "zeroize"] }
 
 [profile.dev.package.crypto-bigint]
 opt-level = 3
@@ -93,6 +116,58 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.ghost-entitlement]
 opt-level = 3
+
+# OpenMLS and the libcrux provider in debug builds (the rust job's `cargo test`): tree operations,
+# HPKE and Ed25519 unoptimised make a 32-member channel test take minutes; Argon2id at kdf_code 1
+# fills 64 MiB. Optimised like the issuer's bignum crates above; release builds are unaffected.
+[profile.dev.package.openmls]
+opt-level = 3
+[profile.dev.package.openmls_libcrux_crypto]
+opt-level = 3
+[profile.dev.package.hpke-rs]
+opt-level = 3
+[profile.dev.package.hpke-rs-libcrux]
+opt-level = 3
+[profile.dev.package.libcrux-curve25519]
+opt-level = 3
+[profile.dev.package.libcrux-ed25519]
+opt-level = 3
+[profile.dev.package.libcrux-sha2]
+opt-level = 3
+[profile.dev.package.libcrux-hacl-rs]
+opt-level = 3
+[profile.dev.package.libcrux-chacha20poly1305]
+opt-level = 3
+[profile.dev.package.libcrux-poly1305]
+opt-level = 3
+[profile.dev.package.libcrux-hmac]
+opt-level = 3
+[profile.dev.package.libcrux-hkdf]
+opt-level = 3
+[profile.dev.package.tls_codec]
+opt-level = 3
+# The X25519 validity check of every HPKE key of a channel's tree (review H1, §19.31): one scalar
+# multiplication per node and commit, slow unoptimised; release builds are unaffected.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+[profile.dev.package.serde_json]
+opt-level = 3
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+
+# Phase 10 design §3.2 "Lock resolution" (S0-1, Q40 (a)): the optional, forbidden SQLite provider of
+# openmls 0.9.0 needs libsqlite3-sys ^0.35 (`links = "sqlite3"`) against the 0.37.0 of
+# ghost-client-net. Cargo resolves an optional dependency that an enabled feature names, even weakly
+# (`openmls_sqlite_storage?/…`, which OpenMLS's PQ and draft-extension features do), and then the
+# lock does not resolve; this manifest-only stand-in of the same name and version (no dependency, an
+# empty lib.rs) makes it resolve. With the features G-M2 allows, the lock resolves without it and
+# records the patch as unused (faza10-forum.md §19.30 F-6). It is never compiled (G-M2).
+[patch.crates-io]
+openmls_sqlite_storage = { path = "third_party/openmls-sqlite-storage-stub" }
 
 [profile.release]
 # Native client libraries ship in the APK (NFR-4): strip symbols, keep panics unwinding for JNI safety.

@@ -29,6 +29,8 @@ shipped; the licence texts under `licenses/spdx` are copies of `ghost/licenses/s
 | license-notices rust | `no-snapshot.tsv` | fail | `without an upstream NOTICE snapshot entry` |
 | license-notices rust | `undecided-vendored.tsv` | fail | `a licence file of vendored sources` not decided |
 | license-notices rust | `copyleft.tsv` | fail | `no alternative of 'GPL-3.0-only' is an allowed licence` |
+| license-notices rust | `template.tsv` (`template-pkg` ships no licence file) | fail | `ships no MIT text, and the SPDX one is a template without a copyright line` (no `licenses/template-texts-reviewed.txt` here) |
+| license-notices rust | `positive.tsv` with `template-reviewed-stale.txt` | fail | `template-texts-reviewed.txt: mit-pkg 1.0.0 is not needed` |
 | rust-license-headers | `headers.tsv` with `headers-exceptions.txt` | fail, exactly 5 lines | AGPL header, Signal Messenger copyright, GPL notice across comment lines, GPL text, no allowed alternative; `excepted` (an LGPL header with an exception) and `clean` pass |
 | rust-license-headers | `headers-own.tsv` with `headers-exceptions-unused.txt` | fail | GHOST's own crates are scanned; an exception that matches nothing fails |
 | mpl-sources | `mpl.tsv` (manifests as named in `self-test.sh`) | pass, then fail | missing line, wrong checksum; `mit-only.tsv`: stale line; `mpl-patched.tsv`: `[patch]` without a diff; `--bundle` copies `mpl-pkg-1.0.0.crate` |

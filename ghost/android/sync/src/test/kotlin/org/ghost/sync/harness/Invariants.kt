@@ -124,11 +124,14 @@ internal object Invariants {
         }
 
         // A capability is marked rejected (exhausted) only if its relay refused that token as unauthorized (quota).
-        sql.query("SELECT relay_id, token, state FROM relay_capability WHERE state IN ('rejected', 'exhausted')") { r ->
-            val node = nodeOf(c, r.long(0)) ?: fail("capability of an unknown relay")
-            val category = if (r.string(2) == "rejected") "unauthorized" else "quota"
-            if (listOf(node.name, ModelRelay.sha256(r.blob(1)), category) !in w.records.refused) {
-                fail("a capability of ${node.name} is ${r.string(2)} although the relay never refused that token ($category)")
+        // The registration capability of a funded namespace (Phase 10 design §7.5 item 2) is held to the same rule.
+        for (table in listOf("relay_capability", "relay_register_capability")) {
+            sql.query("SELECT relay_id, token, state FROM $table WHERE state IN ('rejected', 'exhausted')") { r ->
+                val node = nodeOf(c, r.long(0)) ?: fail("capability of an unknown relay")
+                val category = if (r.string(2) == "rejected") "unauthorized" else "quota"
+                if (listOf(node.name, ModelRelay.sha256(r.blob(1)), category) !in w.records.refused) {
+                    fail("a capability of ${node.name} ($table) is ${r.string(2)} although the relay never refused that token ($category)")
+                }
             }
         }
     }

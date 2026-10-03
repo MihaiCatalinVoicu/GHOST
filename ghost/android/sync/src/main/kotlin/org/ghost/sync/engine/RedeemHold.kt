@@ -49,7 +49,13 @@ class RedeemHold private constructor(
             return RedeemHold(pendingWriteNeeds > 0, deadlineMonotonicMillis)
         }
 
-        /** The pending write needs of [stores] (any reason), read at a session's start in its own transaction. */
-        fun pendingWriteNeeds(stores: SyncStores): Int = stores.capabilities.needed().count { it.kind == CapabilityKind.WRITE }
+        /**
+         * The pending write needs of [stores] (any reason), read at a session's start in its own
+         * transaction. A registration capability is a write need of a REDEEM namespace for the redeem
+         * hold (Phase 10 design §7.6): a funder whose registration capabilities lapsed recovers in the
+         * background like an owner whose write capabilities did.
+         */
+        fun pendingWriteNeeds(stores: SyncStores): Int =
+            stores.capabilities.needed().count { it.kind == CapabilityKind.WRITE || it.kind == CapabilityKind.REGISTER }
     }
 }

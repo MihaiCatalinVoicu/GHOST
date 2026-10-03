@@ -38,10 +38,19 @@
 #       string of the DM stores is DM SQL), or
 #   (2) it is inside migration 5 of `android/storage/.../Schema.kt` — from `fun migration5Tables(`
 #       to `val expectedTables` — where `replaceGuard` builds trigger names from templates, or
-#   (3) it names a DM table (`dm_…` or `olm_…`) anywhere else under `android/*/src/main` (a later
-#       migration that alters a DM table, a DAO in another module).
+#   (3) it names a DM table (`dm_…` or `olm_…`), or one of the two tables migration 6 of Phase 10 adds
+#       to `:sync` (`sync_namespace_fund` and `relay_register_capability`, design faza10-forum.md §9,
+#       whole words, so `relay_capability` and a longer name do not match), anywhere else under
+#       `android/*/src/main` (a later migration that alters such a table, a DAO in another module).
+#       The two sync tables carry `*_no_replace` guards like the DM ones, which refuse every insert
+#       form for an existing key, so their writers insert only a key that does not exist yet — the
+#       registration capability by an UPDATE of the row that exists and else an INSERT, the funding
+#       flag by an INSERT guarded by `WHERE NOT EXISTS` — and an upsert or a REPLACE there is a
+#       defect that this reads before a test has to reach the statement (slice S1a; the migration 6
+#       DDL itself is inside the region of (2)).
 # `:sync`'s own upserts (cursors, capabilities, the directory) and `:storage`'s pre-DM tables are not
-# DM SQL and are not read against this rule.
+# DM SQL and are not read against this rule — `relay_capability` is upserted by design — except for
+# the two tables named in (3).
 #
 # Vacuity: `android/messaging/src/main` must exist and hold at least one SQL group, and Schema.kt must
 # carry both region markers with a `CREATE TABLE dm_` between them; otherwise the gate fails rather
@@ -247,7 +256,7 @@ for my $main (@mains) {
         my ($start, $text) = @$g;
         my $in_region = $from && $to && $start >= $from && $start < $to;
         $region_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+dm_/i;
-        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm)_[a-z0-9_]+/;
+        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/;
         next unless $dm;
         $dm_sql_groups++ if $module eq "messaging" && $text =~ $sqlish;
         check($rel, $g);

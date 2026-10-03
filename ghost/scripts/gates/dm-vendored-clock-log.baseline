@@ -62,6 +62,7 @@ site serde_core@1.0.229 src/crate_root.rs:27 time:: clock-log [lib]  # type re-e
 site serde_core@1.0.229 src/crate_root.rs:77 std::net network [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
 site serde_core@1.0.229 src/crate_root.rs:95 SystemTime clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
 site serde_core@1.0.229 src/crate_root.rs:95 std::time clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+site serde_core@1.0.229 src/crate_root.rs:95 UNIX_EPOCH clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket (the UNIX_EPOCH pattern, Phase 10 review of S2a F5)
 
 # include! the scanner does not follow (the included text is reviewed here instead):
 note include! in src/lib.rs not followed (thiserror@2.0.20)  # OUT_DIR/private.rs is a fixed module text its build script writes (the crate's patch version substituted into a private path): no clock, log or network; V-8 recorded it

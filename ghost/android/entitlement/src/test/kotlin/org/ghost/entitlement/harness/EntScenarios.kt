@@ -8,12 +8,15 @@ import org.ghost.identity.DropSeal
 import org.ghost.identity.Invite
 import org.ghost.identity.RootEntropy
 import org.ghost.network.EntitlementCrypto
+import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
+import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.PrivacyMode
 import org.ghost.sync.api.TtlBucket
 import org.ghost.sync.harness.CallKind
 import org.ghost.sync.harness.EventKind
+import org.ghost.sync.harness.ModelRelay
 import org.ghost.sync.harness.Scenario
 import org.ghost.sync.harness.World
 import org.ghost.sync.harness.World.Companion.DAY
@@ -21,6 +24,7 @@ import org.ghost.sync.harness.World.Companion.HOUR
 import org.ghost.sync.harness.World.Companion.MINUTE
 import org.ghost.sync.harness.foreground
 import org.ghost.sync.harness.jobs
+import org.ghost.sync.harness.violation
 import org.ghost.sync.store.Time
 import java.security.SecureRandom
 import org.ghost.sync.engine.SessionKind as SyncKind
@@ -538,5 +542,87 @@ internal open class ScenarioEI : EntScenario("E-I") {
         // ends the flow with its cap spent (J9, §19.23 point 2): the user then buys again, as in E-A.
         w.keepBuying(166 * HOUR + 32 * MINUTE, PayWith.XMR)
         w.endMillis = 167 * HOUR
+    }
+}
+
+/**
+ * E-R funder (Phase 10 review of S1a; before it no scenario of this harness funded a namespace, so its
+ * crashes and mutants said nothing about the REGISTER lane): the funder path end to end with the real redeem
+ * lane. A funded LOCAL channel namespace on A and B whose write slots hold the shared bearer DEPOSIT
+ * credential, and the registrations of DEPOSIT and READ for weeks 2975 and 2976 at both relays. The lane
+ * meets the REGISTER MISSING needs on Friday with tokens of week 2975, installed as registration
+ * capabilities and never in the write slots; with [refuseAtB] relay B refuses the first `RegisterKey`
+ * (`unauthorized`: that registration capability is rejected and a fresh one is redeemed); on Sunday, inside
+ * the last day of the week, both are renewed (EXPIRING) with tokens of week 2976; on Monday the rows of the
+ * next week are served by the renewed capabilities. Checked in every run: a capability a relay minted is
+ * never installed while its token is held (`checkCommit` reads the registration capabilities), the truth
+ * invariant (`relay_register_capability` too), RED-2, and, at the end, that both relays hold every record,
+ * that the write slots were never refused, and that no registration call failed before I/O (a bearer
+ * credential presented).
+ */
+internal class ScenarioER(private val refuseAtB: Boolean = true) : EntScenario(if (refuseAtB) "E-R/funded" else "E-R/funded-plain") {
+    private var ns: NamespaceId? = null
+    private val kinds = listOf(KeyKind.DEPOSIT, KeyKind.READ)
+
+    override fun build(w: World) {
+        val e = standard(w)
+        accessTokens(WEEK0, 3)
+        accessTokens(WEEK0 + 1, 3)
+        val relays = listOf(w.relays[0], w.relays[1])
+        val chan = e.c.namespace("chan", relays, listen = false, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        ns = chan
+        for (node in relays) e.c.depositCredential(node, chan)
+        e.c.tx { tx ->
+            e.c.stores.funding.set(tx, chan, true)
+            for (node in relays) for (period in listOf(WEEK0, WEEK0 + 1)) for (kind in kinds) {
+                e.c.stores.registrations.request(tx, e.c.id(node), chan, period, kind, e.c.verifier(chan, kind))
+            }
+        }
+        var refused = !refuseAtB
+        w.relayHook = { client, kind, info ->
+            when {
+                client !== e.c || kind != EventKind.RELAY_BEFORE_SEND || info.kind != CallKind.REGISTER -> null
+                !refused && info.relay == "B" -> {
+                    refused = true
+                    w.scriptState++
+                    "unauthorized"
+                }
+                else -> null
+            }
+        }
+        // Friday morning: the funder's first session; the REGISTER MISSING needs are met at once.
+        w.foreground(e.c, 2 * HOUR, 2 * HOUR + 10 * MINUTE)
+        // Sunday evening: a background session inside the EXPIRING window; Monday after the boundary.
+        w.backgroundAt(60 * HOUR)
+        w.foreground(e.c, 65 * HOUR + 30 * MINUTE, 65 * HOUR + 40 * MINUTE)
+        w.endMillis = 66 * HOUR
+    }
+
+    override fun extraQuiescence(w: World): List<String> {
+        val out = ArrayList(super.extraQuiescence(w))
+        alice.c.jdbc.query("SELECT count(*) FROM relay_key_registration WHERE state <> 'done' OR inflight <> 0") {
+            if (it.long(0) > 0) out += "${it.long(0)} registration(s) still pending or in flight"
+        }
+        return out
+    }
+
+    override fun finalChecks(w: World) {
+        super.finalChecks(w)
+        val chan = ns ?: violation("E-R: no namespace")
+        for (node in listOf(w.relays[0], w.relays[1])) {
+            for (period in listOf(WEEK0, WEEK0 + 1)) for (kind in kinds) {
+                val relayKind = if (kind == KeyKind.DEPOSIT) ModelRelay.KIND_DEPOSIT else ModelRelay.KIND_READ
+                if (node.model.record(chan, period, relayKind, alice.c.verifier(chan, kind)) == null) {
+                    violation("E-R: ${node.name} holds no $kind record of period $period")
+                }
+            }
+        }
+        alice.c.jdbc.query("SELECT state FROM relay_capability") {
+            if (it.string(0) != "usable") violation("E-R: the channel's DEPOSIT credential ended ${it.string(0)}")
+        }
+        // The bearer credential never reached RegisterKey (the harness port's T21 guard would have failed the call).
+        for (call in alice.c.port.calls.filter { it.kind == CallKind.REGISTER }) {
+            if (call.result.contains("invalid_argument")) violation("E-R: a registration call failed invalid_argument (a bearer credential was presented)")
+        }
     }
 }

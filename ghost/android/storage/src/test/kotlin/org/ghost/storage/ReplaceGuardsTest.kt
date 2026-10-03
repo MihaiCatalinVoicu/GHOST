@@ -96,6 +96,11 @@ class ReplaceGuardsTest {
         val guardedWithoutRules = setOf(
             "dm_own_namespace", "dm_outbound_item", "dm_outbound_op", "dm_pending_send",
             "dm_bundle_candidate", "dm_orphan_namespace", "dm_scheduled", "dm_reaction", "dm_peer_pq",
+            // v6 (Phase 10 §9): neither the funding flag nor the registration capabilities carry an
+            // UPDATE or DELETE rule; their guards keep a REPLACE from resetting a capability's
+            // generation (the rejection race guard compares generations) and are what forces the
+            // UPDATE-then-INSERT writers of FundingStore and CapabilityStore.
+            "sync_namespace_fund", "relay_register_capability",
         )
         assertEquals(guardedWithoutRules, guarded - withRules)
         for (table in guarded) {
@@ -429,5 +434,53 @@ class ReplaceGuardsTest {
             listOf(opId(2)),
         )
         assertEquals(0L, db.queryLong("SELECT inflight FROM outbox_delivery WHERE operation_id = ?", listOf(opId(2))))
+    }
+
+    /**
+     * The two tables of migration 6 (Phase 10 design §9): a REPLACE, an INSERT OR IGNORE and an upsert
+     * are all refused for a key that exists. For `relay_register_capability` that is the point: the
+     * rejection race guard (§3.8) compares generations, and a REPLACE writes generation 1 over a
+     * higher one, so a stale refusal of the old token could reject the new one. The row that exists
+     * is untouched by every refused form, and an UPDATE followed by an INSERT (the writers' form) works.
+     */
+    @Test
+    fun theFundingFlagAndTheRegistrationCapabilitiesAreNeverReplaced(): Unit = SyncFixture().use { f ->
+        val db = f.db
+        val flag = "sync_namespace_fund rows are never replaced"
+        db.exec("INSERT INTO sync_namespace_fund(namespace_id) VALUES (?)", listOf(f.ns))
+        db.rejectsEveryInsert(flag, "sync_namespace_fund(namespace_id) VALUES (?)", f.ns)
+        db.rejects(flag, "INSERT INTO sync_namespace_fund(namespace_id) VALUES (?) ON CONFLICT(namespace_id) DO NOTHING", f.ns)
+        assertEquals(1L, f.count("sync_namespace_fund"))
+
+        val capability = "relay_register_capability rows are never replaced"
+        val columns = "relay_register_capability(relay_id, namespace_id, token, expires_hour, state, generation) VALUES (?, ?, ?, ?, ?, ?)"
+        db.exec("INSERT INTO $columns", listOf(1, f.ns, bytes(82, 1), 3600L * 500_000, "usable", 7))
+        db.rejectsEveryInsert(capability, columns, 1, f.ns, bytes(82, 2), 3600L * 500_001, "usable", 1)
+        db.rejects(
+            capability,
+            "INSERT INTO $columns ON CONFLICT(relay_id, namespace_id) DO UPDATE SET generation = excluded.generation",
+            1, f.ns, bytes(82, 2), 3600L * 500_001, "usable", 1,
+        )
+        // The row that exists is the one that was written: nothing the refused forms carried got in.
+        assertArrayEquals(bytes(82, 1), db.queryBlob("SELECT token FROM relay_register_capability WHERE relay_id = 1"))
+        assertEquals(7L, db.queryLong("SELECT generation FROM relay_register_capability WHERE relay_id = 1"))
+        // Another relay of the same namespace is another key; so is another namespace on the same relay.
+        db.exec("INSERT INTO $columns", listOf(2, f.ns, bytes(82, 3), null, "usable", 1))
+        f.namespace(bytes(32, 5))
+        db.exec("INSERT INTO $columns", listOf(1, bytes(32, 5), bytes(82, 4), null, "usable", 1))
+        assertEquals(3L, f.count("relay_register_capability"))
+        // The writers' form: an UPDATE of the existing row, an INSERT when there is none.
+        assertEquals(
+            1,
+            db.changes(
+                "UPDATE relay_register_capability SET token = ?, state = 'usable', generation = generation + 1 " +
+                    "WHERE relay_id = 1 AND namespace_id = ?",
+                bytes(82, 9), f.ns,
+            ),
+        )
+        assertEquals(8L, db.queryLong("SELECT generation FROM relay_register_capability WHERE relay_id = 1 AND namespace_id = ?", listOf(f.ns)))
+        // An UPDATE onto another row's key is a primary-key conflict (the writers never change a key,
+        // and the table has no DELETE rule that an UPDATE OR REPLACE onto it could skip).
+        db.rejects(UNIQUE_FAILED, "UPDATE relay_register_capability SET relay_id = 2 WHERE relay_id = 1 AND namespace_id = ?", f.ns)
     }
 }

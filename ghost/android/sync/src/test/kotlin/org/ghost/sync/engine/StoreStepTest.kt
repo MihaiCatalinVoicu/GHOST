@@ -49,7 +49,7 @@ class StoreStepTest {
     private fun fixture(w: EngineWorld): Fixture {
         w.mode = PrivacyMode.HIGH
         val relays = w.relays(1, 2, 3)
-        val ns = w.namespace(1, relays, listen = false, sendDelay = SendDelay.OFF, consumer = Consumer.CHANNEL)
+        val ns = w.namespace(1, relays, listen = false, sendDelay = SendDelay.OFF, consumer = Consumer.MEDIA)
         relays.forEach { w.capability(it, ns) }
         val (session, driver) = w.session()
         driver.runUntil(0)

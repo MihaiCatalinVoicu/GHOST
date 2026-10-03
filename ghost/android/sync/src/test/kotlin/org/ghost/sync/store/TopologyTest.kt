@@ -187,14 +187,27 @@ class TopologyTest {
         assertEquals("namespace is registered for another consumer", e.message)
         w.tx { w.stores.namespaces.setListening(it, ns, true) }
         assertEquals(1L, w.long("SELECT listening FROM sync_namespace"))
-        // A DM namespace keeps its send delay (Phase 9 design §13.3 item 8); another consumer may
-        // turn it off, and the capability source is applied like the other arguments (item 3).
+        // A DM namespace keeps its send delay (Phase 9 design §13.3 item 8), and so does a channel
+        // namespace (Phase 10 design §7.5 item 3); another consumer may turn it off, and the capability
+        // source is applied like the other arguments (item 3).
         val dmOff = assertThrows(IllegalStateException::class.java) { w.tx { w.stores.namespaces.setSendDelay(it, ns, SendDelay.OFF) } }
         assertEquals("DM namespaces cannot turn the send delay off", dmOff.message)
         assertEquals("on", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", ns))
         val chan = w.namespace(9, relays, consumer = Consumer.CHANNEL)
-        w.tx { w.stores.namespaces.setSendDelay(it, chan, SendDelay.OFF) }
-        assertEquals("off", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", chan))
+        val channelOff = assertThrows(IllegalStateException::class.java) { w.tx { w.stores.namespaces.setSendDelay(it, chan, SendDelay.OFF) } }
+        assertEquals("Channel namespaces cannot turn the send delay off", channelOff.message)
+        assertEquals("default", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", chan))
+        w.tx { w.stores.namespaces.setSendDelay(it, chan, SendDelay.ON) }
+        assertEquals("on", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", chan))
+        val media = w.namespace(10, relays, consumer = Consumer.MEDIA)
+        w.tx { w.stores.namespaces.setSendDelay(it, media, SendDelay.OFF) }
+        assertEquals("off", w.string("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", media))
+        // A channel namespace cannot be registered with the delay off either, and the failed call leaves nothing behind.
+        val channelRegister = assertThrows(IllegalStateException::class.java) {
+            w.tx { w.stores.namespaces.register(it, TestBytes.namespace(11), Consumer.CHANNEL, relays.toSet(), listen = true, sendDelay = SendDelay.OFF) }
+        }
+        assertEquals("Channel namespaces cannot turn the send delay off", channelRegister.message)
+        assertEquals(null, w.long("SELECT 1 FROM sync_namespace WHERE namespace_id = ?", TestBytes.namespace(11)))
         val dmRegister = assertThrows(IllegalStateException::class.java) {
             w.tx { w.stores.namespaces.register(it, ns, Consumer.DM, relays.toSet(), listen = true, sendDelay = SendDelay.OFF) }
         }

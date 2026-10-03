@@ -195,10 +195,27 @@ internal class HarnessDriver(private val world: World) {
         return true
     }
 
-    /** Clears finished sessions (a stop with nothing running finishes at once) that no extension holds. */
+    /**
+     * Clears finished sessions (a stop with nothing running finishes at once) that no extension holds.
+     *
+     * First it gives every session the wake-up the production runner has and this driver lacked. A lane
+     * thread takes again whenever the session signals a change (`ThreadedLaneRunner.next`), and `take`
+     * re-checks whether the session's work has ended (`Session.finishChanged`). The driver took an item
+     * only when a lane had a wake time, so a change committed outside a lane item that took the work of a
+     * background session away — a funding flip, a capability put, a topology change, each of which makes
+     * the engine refresh the pairs — left both lanes idle with no wake time, and the session stayed
+     * online for ever: no later session started and the world never reached quiescence (found by the
+     * Phase 10 review of S1a with a funded seeded world; S6 flips funding from its renewal step, outside
+     * the lanes). Only a session in exactly that state is taken from, so every other run is unchanged.
+     */
     private fun settle() {
         for (c in world.clients) {
             val s = c.session ?: continue
+            s.lock.withLock {
+                if (!s.finished && s.work.idle && s.read.allConsumed && s.wakeAt(Lane.READ, time) == null && s.wakeAt(Lane.WORK, time) == null) {
+                    check(s.take(Lane.WORK, time) == null) { "an idle work lane produced an item" }
+                }
+            }
             if (s.lock.withLock { s.finished } && pending.none { it.session === s } && !world.sessionHold(c, s)) {
                 c.session = null
                 onSessionFinished?.invoke(c, s)

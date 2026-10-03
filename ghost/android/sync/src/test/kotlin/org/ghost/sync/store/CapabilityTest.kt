@@ -234,6 +234,43 @@ class CapabilityTest {
         assertEquals(CapabilityKind.WRITE, w.tx { w.caps.usable(it, relays[0], ownInbox, CapabilityKind.WRITE, w.now) }!!.kind)
     }
 
+    /**
+     * KNOWN GAP F-6 (Phase 10 review of S1a, §19.33; S4 closes it; recorded, not decided here). The
+     * write-grants-read fallback of `forReading` applies to every namespace, so a channel's listened
+     * namespace whose READ credential is missing or has lapsed lists with its write slot — the shared
+     * bearer DEPOSIT credential. No relay lets a DEPOSIT credential list (design §7.3: it serves store and
+     * check): the harness port's T21 guard refuses it before any I/O (`invalid_argument`, a BUG), the
+     * pair stops listing for a day, and, when no READ row exists at all, no READ need is reported either
+     * because a write row exists. Pinned so that the change cannot happen unseen; the lines to flip are
+     * marked. The options are in the notes: the fallback for REDEEM-source namespaces only, with a READ need
+     * for a LOCAL one that has no usable READ credential.
+     */
+    @Test
+    fun knownGapF6AChannelReadsWithItsDepositCredentialWhenItsReadCredentialIsMissingOrLapsed(): Unit = SyncWorld().use { w ->
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays, listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        // The DEPOSIT credential in the write slot, and no READ credential at all.
+        w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = w.now + 8 * DAY)
+        assertEquals(
+            "F-6: S4 flips this to assertNull (a LOCAL namespace's write slot never reads)",
+            CapabilityKind.WRITE,
+            w.tx { w.caps.forReading(it, relays[0], ns, w.now) }!!.kind,
+        )
+        assertEquals("F-6: a READ need for the pair, once the fallback is gone", emptyList<CapabilityNeed>(), w.needs().filter { it.relay == relays[0] })
+        // A READ credential that lapses: the read lane falls back to the write slot from then on.
+        w.capability(relays[0], ns, CapabilityKind.READ, expiresAt = w.now + 2 * HOUR)
+        assertEquals(CapabilityKind.READ, w.tx { w.caps.forReading(it, relays[0], ns, w.now) }!!.kind)
+        w.clock.advance(2 * HOUR)
+        assertEquals("F-6: S4 flips this to assertNull", CapabilityKind.WRITE, w.tx { w.caps.forReading(it, relays[0], ns, w.now) }!!.kind)
+        assertEquals(
+            "the expired READ credential is reported (source LOCAL: the consumer re-installs it)",
+            listOf(CapabilityNeed(relays[0], ns, CapabilityKind.READ, CapabilityNeed.Reason.EXPIRING, CapabilitySource.LOCAL)),
+            w.needs().filter { it.relay == relays[0] },
+        )
+    }
+
+    private fun SyncWorld.needs(): List<CapabilityNeed> = stores.capabilities.needed()
+
     @Test
     fun anAcknowledgedDeliveryWithoutAWriteTokenAsksForOne(): Unit = SyncWorld().use { w ->
         // Seeded world 18694: an ack awaiting verification on a relay whose write token is gone

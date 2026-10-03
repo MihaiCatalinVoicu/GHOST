@@ -1,6 +1,5 @@
 package org.ghost.sync.engine
 
-import org.ghost.sync.api.CapabilityKind
 import org.ghost.sync.port.PairKey
 import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.store.DueRegistration
@@ -109,10 +108,12 @@ internal open class RegistrationStep {
             ctx.stores.registrationStore.endLease(tx, lease.key)
             if (disposition.action == StoreAction.PARK_UNAUTHORIZED || disposition.action == StoreAction.QUOTA_CHECK) {
                 // A quota answer cannot reach RegisterKey (no bytes are stored); both refusals mean
-                // the write capability is spent for this purpose, so its generation is marked and
-                // the row waits for the next one.
+                // the capability that was presented is spent for this purpose, so its generation is
+                // marked and the row waits for the next one. The capability is the lease's own: the
+                // write capability of an unfunded namespace, the registration capability of a funded
+                // one (Phase 10 design §7.5 item 2), and never the other of the two.
                 ctx.stores.capabilityStore.refuse(
-                    tx, lease.key.relayId, lease.key.namespace, CapabilityKind.WRITE, lease.capability.generation,
+                    tx, lease.key.relayId, lease.key.namespace, lease.capability.kind, lease.capability.generation,
                     exhausted = disposition.action == StoreAction.QUOTA_CHECK,
                 )
             }

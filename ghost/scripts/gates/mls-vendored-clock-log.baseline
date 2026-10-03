@@ -1,0 +1,432 @@
+# Gate G-M8 baseline (scripts/gates/mls-vendored-clock-log.sh = dm-vendored-clock-log.sh --graph mls;
+# Phase 10 design faza10-forum.md §3.6, §13.1 G-M8; T3, T33; slice S2a). The compiled library code of
+# every crate of `cargo tree -p ghost-client-mls -e normal` on aarch64-linux-android and
+# x86_64-linux-android, with the features of the crate's own graph (slice S2b links it into
+# ghost-client-net), merged over both triples. Kinds: [lib] linked into the library; [proc-macro] and
+# [build-time] run only while compiling. Every site, directive and note line ends in its reason after
+# two spaces and '#'. An entry the scan finds and this file lacks fails the gate (unjustified); an
+# entry here the scan no longer finds fails it too (stale). Regenerate at a pin change with
+# GHOST_G_R8_PRINT=1 and complete every '# UNJUSTIFIED' by review, never by copy.
+#
+# Seeded 2026-09-29 by slice S2a. Entries identical to the DM graph's (dm-vendored-clock-log.baseline:
+# serde_core, libc, rand, memchr, the proc-macro and build-time crates, ...) carry the reasons reviewed
+# there. New with the OpenMLS stack: OpenMLS's clock sites of design §3.6 (past_secrets.rs:80,105
+# stamps rewritten to the call's day; 234,254 never called; 271 called with UNIX_EPOCH only;
+# lifetime.rs:66 never called, 88/93 never refusing the constant lifetime), its log facade calls (no
+# logger installed, G-M4), the memory storage GHOST never uses, rayon's worker parking and abort
+# guard, the build directives of crossbeam, zerocopy, rayon-core and libcrux-aes (G-M9), and the
+# crate's own UNIX_EPOCH constant. The review of S2a (F5, §19.31) added the patterns UNIX_EPOCH and
+# elapsed (a clock read through the imported constant or a clock value's method): 11 more sites, each
+# justified below — the crate's import and its one use in sweep_past, OpenMLS's time-based deletion
+# and lifetime code, a rayon-core test module and serde's re-export.
+
+# Sites (clock, logging, printing, network):
+site crossbeam-utils@0.8.23 src/sync/parker.rs:124 Instant::now clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
+site crossbeam-utils@0.8.23 src/sync/parker.rs:333 Instant::now clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
+site crossbeam-utils@0.8.23 src/sync/parker.rs:362 Instant::now clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
+site crossbeam-utils@0.8.23 src/sync/parker.rs:5 std::time clock-log [lib]  # Parker::park_timeout / park_deadline: a monotonic deadline for parking rayon's worker thread; no timestamp is stored, compared with a trusted day or sent
+site either@1.18.0 src/lib.rs:1798 stdout clock-log [lib]  # either's own #[test] fn read_write (a #[test] item, not a cfg(test) module, so the scan keeps it); a dependency of rayon here, the test function is never called in the library
+site ghost-client-mls@0.1.0 src/group.rs:14 UNIX_EPOCH clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
+site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
+site ghost-client-mls@0.1.0 src/group.rs:1847 UNIX_EPOCH clock-log [lib]  # sweep_past passes the UNIX_EPOCH constant to PastEpochDeletion::before_timestamp, so only the count applies (design §3.5, §8.3); no clock read
+site libc@0.2.189 src/new/mod.rs:218 time:: clock-log [lib]  # re-export of the time type declarations (timespec, clock ids); no call in the DM graph
+site libcrux-macros@0.0.3 src/lib.rs:121 tracing:: clock-log [proc-macro]  # proc-macro output text for test tracing; build time only, never linked
+site memchr@2.8.3 src/macros.rs:15 log:: clock-log [lib]  # macro body inert: log! expands to nothing without the disabled logging feature
+site memchr@2.8.3 src/macros.rs:19 log:: clock-log [lib]  # macro body inert: log! expands to nothing without the disabled logging feature
+site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/kdf_label.rs:44 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/mod.rs:58 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/mod.rs:59 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/secret.rs:102 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/secret.rs:150 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/secret.rs:157 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/secret.rs:81 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/signable.rs:156 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/ciphersuite/signable.rs:82 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message.rs:132 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message.rs:133 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message.rs:288 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message_in.rs:101 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message_in.rs:104 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message_in.rs:133 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message_in.rs:142 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message_in.rs:190 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/private_message_in.rs:70 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/framing/public_message_in.rs:141 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/errors.rs:183 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/errors.rs:298 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/builder.rs:174 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/config.rs:138 std::time clock-log [lib]  # the past-epoch deletion API's time types (PastEpochDeletion::before_timestamp, older_than_duration); GHOST calls only before_timestamp(UNIX_EPOCH) with a count (design §3.5, §8.3), no clock read
+site openmls@0.9.0 src/group/mls_group/config.rs:139 SystemTime clock-log [lib]  # the past-epoch deletion API's time types (PastEpochDeletion::before_timestamp, older_than_duration); GHOST calls only before_timestamp(UNIX_EPOCH) with a count (design §3.5, §8.3), no clock read
+site openmls@0.9.0 src/group/mls_group/config.rs:145 std::time clock-log [lib]  # the past-epoch deletion API's time types (PastEpochDeletion::before_timestamp, older_than_duration); GHOST calls only before_timestamp(UNIX_EPOCH) with a count (design §3.5, §8.3), no clock read
+site openmls@0.9.0 src/group/mls_group/config.rs:153 SystemTime clock-log [lib]  # the past-epoch deletion API's time types (PastEpochDeletion::before_timestamp, older_than_duration); GHOST calls only before_timestamp(UNIX_EPOCH) with a count (design §3.5, §8.3), no clock read
+site openmls@0.9.0 src/group/mls_group/config.rs:31 SystemTime clock-log [lib]  # the past-epoch deletion API's time types (PastEpochDeletion::before_timestamp, older_than_duration); GHOST calls only before_timestamp(UNIX_EPOCH) with a count (design §3.5, §8.3), no clock read
+site openmls@0.9.0 src/group/mls_group/config.rs:31 std::time clock-log [lib]  # the past-epoch deletion API's time types (PastEpochDeletion::before_timestamp, older_than_duration); GHOST calls only before_timestamp(UNIX_EPOCH) with a count (design §3.5, §8.3), no clock read
+site openmls@0.9.0 src/group/mls_group/creation.rs:123 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/creation.rs:170 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/creation.rs:252 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/creation.rs:437 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/creation.rs:508 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/creation.rs:670 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/creation.rs:714 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/exporting.rs:43 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:105 SystemTime clock-log [lib]  # SystemTime::now() stamped when an epoch becomes current (with_timestamp); GhostKv rewrites every added_at to the start of the call's Kotlin-supplied day (design §3.4 point 5), so no device time is stored
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:231 std::time clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:234 SystemTime clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:234 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:235 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:254 SystemTime clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:254 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:258 elapsed clock-log [lib]  # time-based past-epoch deletion (older_than_duration): never called by GHOST (design §3.6)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:271 SystemTime clock-log [lib]  # before_timestamp's comparison: GHOST passes UNIX_EPOCH, so only the count applies (design §3.5, §8.3)
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:4 SystemTime clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:4 std::time clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/group/mls_group/past_secrets.rs:80 SystemTime clock-log [lib]  # SystemTime::now() stamped when an epoch becomes current (with_timestamp); GhostKv rewrites every added_at to the start of the call's Kotlin-supplied day (design §3.4 point 5), so no device time is stored
+site openmls@0.9.0 src/group/mls_group/processing.rs:490 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/processing.rs:497 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/processing.rs:522 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/processing.rs:733 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/proposal.rs:104 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/proposal_store.rs:283 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/proposal_store.rs:293 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/proposal_store.rs:300 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/proposal_store.rs:302 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/staged_commit.rs:1075 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/mls_group/staged_commit.rs:565 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/public_group/diff/apply_proposals.rs:65 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/public_group/staged_commit.rs:136 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/public_group/staged_commit.rs:59 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/public_group/validation.rs:58 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/group/public_group/validation.rs:70 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/key_packages/lifetime.rs:2 SystemTime clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/key_packages/lifetime.rs:2 UNIX_EPOCH clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/key_packages/lifetime.rs:2 std::time clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/key_packages/lifetime.rs:66 SystemTime clock-log [lib]  # Lifetime::new (now-relative bounds): never called; GHOST uses Lifetime::init(0, u64::MAX), the constant lifetime of Q42 (a)
+site openmls@0.9.0 src/key_packages/lifetime.rs:67 UNIX_EPOCH clock-log [lib]  # Lifetime::new (now-relative bounds): never called; GHOST uses Lifetime::init(0, u64::MAX), the constant lifetime of Q42 (a)
+site openmls@0.9.0 src/key_packages/lifetime.rs:88 SystemTime clock-log [lib]  # KeyPackage lifetime validation against the device clock (received Adds; joins unless skipped): with the constant lifetime it never refuses a canonical KeyPackage, and a refusal makes the commit invalid for every member (design §3.5, §19.29.1); GHOST's join skips it
+site openmls@0.9.0 src/key_packages/lifetime.rs:93 SystemTime clock-log [lib]  # KeyPackage lifetime validation against the device clock (received Adds; joins unless skipped): with the constant lifetime it never refuses a canonical KeyPackage, and a refusal makes the commit invalid for every member (design §3.5, §19.29.1); GHOST's join skips it
+site openmls@0.9.0 src/key_packages/lifetime.rs:95 UNIX_EPOCH clock-log [lib]  # KeyPackage lifetime validation against the device clock (received Adds; joins unless skipped): with the constant lifetime it never refuses a canonical KeyPackage, and a refusal makes the commit invalid for every member (design §19.29.1)
+site openmls@0.9.0 src/schedule/message_secrets.rs:24 SystemTime clock-log [lib]  # MessageSecrets' added_at field and its setters (the stamp above); rewritten to the call's day by GhostKv (design §3.4 point 5)
+site openmls@0.9.0 src/schedule/message_secrets.rs:4 SystemTime clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/schedule/message_secrets.rs:4 std::time clock-log [lib]  # the time types' import (use std::time / SystemTime); the uses are the other entries of this file
+site openmls@0.9.0 src/schedule/message_secrets.rs:85 SystemTime clock-log [lib]  # MessageSecrets' added_at field and its setters (the stamp above); rewritten to the call's day by GhostKv (design §3.4 point 5)
+site openmls@0.9.0 src/schedule/message_secrets.rs:89 SystemTime clock-log [lib]  # MessageSecrets' added_at field and its setters (the stamp above); rewritten to the call's day by GhostKv (design §3.4 point 5)
+site openmls@0.9.0 src/schedule/mod.rs:1011 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:1030 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:1178 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:1193 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:434 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:458 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:481 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:483 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:521 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:602 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:847 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:873 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/schedule/mod.rs:972 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:108 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:207 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:209 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:220 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:230 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:244 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:258 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:342 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:347 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:351 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:356 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:360 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:385 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/secret_tree.rs:456 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/sender_ratchet.rs:192 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/sender_ratchet.rs:281 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/sender_ratchet.rs:293 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/tree/sender_ratchet.rs:326 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/treesync/diff.rs:22 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/treesync/node/leaf_node.rs:533 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/treesync/node/leaf_node.rs:564 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/treesync/node/leaf_node.rs:570 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls@0.9.0 src/treesync/node/leaf_node/capabilities.rs:177 log:: clock-log [lib]  # log facade calls (debug, trace and error diagnostics of OpenMLS); no crate of the graph installs a logger (G-M4), so each is a no-op; crypto-debug and content-debug, which would log secrets and content, are forbidden (G-M2)
+site openmls_memory_storage@0.6.0 src/lib.rs:101 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:118 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:145 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:175 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:203 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:232 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:811 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:814 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:815 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site openmls_memory_storage@0.6.0 src/lib.rs:833 log:: clock-log [lib]  # OpenMLS's memory storage, a dependency of the libcrux provider that GHOST never uses (GhostKv is the storage; G-M2 forbids naming it) and the linker drops (V10-3); log facade calls, no logger installed
+site rand@0.10.2 src/distr/uniform_other.rs:15 time:: clock-log [lib]  # core::time::Duration import for uniform Duration sampling; no clock read
+site rayon-core@1.13.0 src/broadcast/test.rs:107 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:109 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:111 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:128 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:131 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:133 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:221 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:223 Instant::now clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:223 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:224 elapsed clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/broadcast/test.rs:228 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/thread_pool/test.rs:186 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/thread_pool/test.rs:191 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/thread_pool/test.rs:59 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/thread_pool/test.rs:83 time:: clock-log [lib]  # rayon-core's own test modules (the files start with #![cfg(test)], an inner attribute the scan does not evaluate); never compiled into the library
+site rayon-core@1.13.0 src/unwind.rs:28 eprintln! clock-log [lib]  # rayon's AbortIfPanic guard: one constant line to stderr, then abort, only if rayon's own internals panic inside a job; no GHOST value or secret, and nothing reads stderr on a device (T3 canaries)
+site serde_core@1.0.229 src/crate_root.rs:27 time:: clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+site serde_core@1.0.229 src/crate_root.rs:77 std::net network [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+site serde_core@1.0.229 src/crate_root.rs:95 SystemTime clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+site serde_core@1.0.229 src/crate_root.rs:95 UNIX_EPOCH clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+site serde_core@1.0.229 src/crate_root.rs:95 std::time clock-log [lib]  # type re-exports for serde impls (Duration, SystemTime, std::net addresses); no clock read, no socket
+
+# Build-script directives (cargo: lines):
+directive crossbeam-deque@0.8.8 build.rs:15  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-deque@0.8.8 build.rs:6  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-deque@0.8.8 build.rs:7  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-epoch@0.9.21 build.rs:15  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-epoch@0.9.21 build.rs:6  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-epoch@0.9.21 build.rs:7  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-utils@0.8.23 build.rs:21  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-utils@0.8.23 build.rs:22  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-utils@0.8.23 build.rs:28  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-utils@0.8.23 build.rs:40  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive crossbeam-utils@0.8.23 build.rs:49  # build-script directives: rerun-if-changed, check-cfg declarations and the target-atomics and sanitizer cfgs (crossbeam_no_atomic, crossbeam_sanitize_thread); no linked C code
+directive curve25519-dalek@4.1.3 build.rs:36  # backend selection (curve25519_dalek_backend and _bits cfgs) and a warning line: configuration only, no link directive
+directive curve25519-dalek@4.1.3 build.rs:43  # backend selection (curve25519_dalek_backend and _bits cfgs) and a warning line: configuration only, no link directive
+directive curve25519-dalek@4.1.3 build.rs:50  # backend selection (curve25519_dalek_backend and _bits cfgs) and a warning line: configuration only, no link directive
+directive curve25519-dalek@4.1.3 build.rs:73  # backend selection (curve25519_dalek_backend and _bits cfgs) and a warning line: configuration only, no link directive
+directive curve25519-dalek@4.1.3 build.rs:95  # backend selection (curve25519_dalek_backend and _bits cfgs) and a warning line: configuration only, no link directive
+directive generic-array@0.14.7 build.rs:3  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive getrandom@0.4.3 build.rs:6  # a rerun-if line and one rustc-cfg: configuration only; the OS entropy backend is chosen by cfg in its sources, no link directive
+directive getrandom@0.4.3 build.rs:9  # a rerun-if line and one rustc-cfg: configuration only; the OS entropy backend is chosen by cfg in its sources, no link directive
+directive hax-lib@0.3.7 build.rs:62  # rerun-if-changed only (its build script writes the proc_macros_generated.rs re-exports, see the note)
+directive libc@0.2.189 build.rs:103  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:106  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:119  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:192  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:201  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:231  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:235  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:381  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:73  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:80  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:82  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libcrux-aes@0.0.9 build.rs:15  # the SIMD switch (feature="simd128"/"simd256") emitted unless LIBCRUX_DISABLE_SIMD128/256 are set: G-M9 (libcrux-portable.sh --with-aes) refuses it in every client build output; no linked C code
+directive libcrux-aes@0.0.9 build.rs:25  # the SIMD switch (feature="simd128"/"simd256") emitted unless LIBCRUX_DISABLE_SIMD128/256 are set: G-M9 (libcrux-portable.sh --with-aes) refuses it in every client build output; no linked C code
+directive libcrux-intrinsics@0.0.8 build.rs:15  # the SIMD cfgs of ADR-36: emitted only without LIBCRUX_DISABLE_SIMD128/256, and libcrux-portable.sh (G-R3) fails any build that carries them
+directive libcrux-intrinsics@0.0.8 build.rs:25  # the SIMD cfgs of ADR-36: emitted only without LIBCRUX_DISABLE_SIMD128/256, and libcrux-portable.sh (G-R3) fails any build that carries them
+directive libcrux-ml-kem@0.0.10 build.rs:15  # the SIMD cfgs of ADR-36: emitted only without LIBCRUX_DISABLE_SIMD128/256, and libcrux-portable.sh (G-R3) fails any build that carries them
+directive libcrux-ml-kem@0.0.10 build.rs:25  # the SIMD cfgs of ADR-36: emitted only without LIBCRUX_DISABLE_SIMD128/256, and libcrux-portable.sh (G-R3) fails any build that carries them
+directive libcrux-sha3@0.0.10 build.rs:15  # the SIMD cfgs of ADR-36: emitted only without LIBCRUX_DISABLE_SIMD128/256, and libcrux-portable.sh (G-R3) fails any build that carries them
+directive libcrux-sha3@0.0.10 build.rs:25  # the SIMD cfgs of ADR-36: emitted only without LIBCRUX_DISABLE_SIMD128/256, and libcrux-portable.sh (G-R3) fails any build that carries them
+directive proc-macro2@1.0.107 build.rs:116  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:124  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:130  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:136  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:142  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:146  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:166  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:18  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:20  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:21  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:22  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:23  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:24  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:25  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:26  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:27  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:28  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:29  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:30  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:31  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:32  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:33  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:39  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:46  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:54  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:59  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:65  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:66  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:70  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive quote@1.0.47 build.rs:13  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive quote@1.0.47 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive quote@1.0.47 build.rs:6  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive rayon-core@1.13.0 build.rs:6  # rerun-if-changed=build.rs (the build script exists only for links = "rayon-core", one rayon-core per graph); no linked code
+directive serde@1.0.229 build.rs:20  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:22  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:35  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:36  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:37  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:38  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:39  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:40  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:41  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:42  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:43  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:44  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:45  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:50  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde@1.0.229 build.rs:56  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:100  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:32  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:33  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:34  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:35  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:36  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:37  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:38  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:39  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:40  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:41  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:49  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:61  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:64  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:71  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:76  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:82  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:88  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_core@1.0.229 build.rs:94  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_json@1.0.151 build.rs:26  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_json@1.0.151 build.rs:28  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_json@1.0.151 build.rs:4  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive serde_json@1.0.151 build.rs:6  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive thiserror@2.0.20 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:21  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:22  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:23  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:66  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:70  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:77  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive thiserror@2.0.20 build.rs:87  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library (it also writes the private.rs module named in the note)
+directive zerocopy@0.8.57 build.rs:100  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:101  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:102  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:107  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:62  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:67  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:77  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:85  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:89  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:90  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:92  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:95  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:97  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:98  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zerocopy@0.8.57 build.rs:99  # build-script directives: rerun-if-changed, check-cfg declarations and the toolchain-version cfgs; no linked C code
+directive zmij@1.0.23 build.rs:12  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive zmij@1.0.23 build.rs:13  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive zmij@1.0.23 build.rs:14  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive zmij@1.0.23 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive zmij@1.0.23 build.rs:24  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+directive zmij@1.0.23 build.rs:7  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library
+
+# Notes:
+note include! in src/lib.rs not followed (thiserror@2.0.20)  # OUT_DIR/private.rs is a fixed module text its build script writes (the crate's patch version substituted into a private path): no clock, log or network; V-8 recorded it
+note include! in src/proc_macros.rs not followed (hax-lib@0.3.7)  # OUT_DIR/proc_macros_generated.rs is fixed text its build script writes: pub use re-exports of hax_lib_macros proof annotations (fstar, proverif, coq, lean), inert in a normal build; V-8 recorded it
+
+# The crates the scan covers:
+crate aead@0.6.1 lib MIT OR Apache-2.0
+crate argon2@0.6.0 lib MIT OR Apache-2.0
+crate base64ct@1.8.3 lib Apache-2.0 OR MIT
+crate blake2@0.11.0 lib MIT OR Apache-2.0
+crate block-buffer@0.10.4 lib MIT OR Apache-2.0
+crate block-buffer@0.12.1 lib MIT OR Apache-2.0
+crate cfg-if@1.0.4 lib MIT OR Apache-2.0
+crate chacha20@0.10.2 lib MIT OR Apache-2.0
+crate chacha20poly1305@0.11.0 lib Apache-2.0 OR MIT
+crate cipher@0.5.2 lib MIT OR Apache-2.0
+crate cmov@0.5.4 lib Apache-2.0 OR MIT
+crate const-oid@0.10.2 lib Apache-2.0 OR MIT
+crate cpufeatures@0.2.17 lib MIT OR Apache-2.0
+crate cpufeatures@0.3.1 lib MIT OR Apache-2.0
+crate crossbeam-deque@0.8.8 lib MIT OR Apache-2.0
+crate crossbeam-epoch@0.9.21 lib MIT OR Apache-2.0
+crate crossbeam-utils@0.8.23 lib MIT OR Apache-2.0
+crate crypto-common@0.1.7 lib MIT OR Apache-2.0
+crate crypto-common@0.2.2 lib MIT OR Apache-2.0
+crate ctutils@0.4.2 lib Apache-2.0 OR MIT
+crate curve25519-dalek-derive@0.1.1 proc-macro MIT/Apache-2.0
+crate curve25519-dalek@4.1.3 lib BSD-3-Clause
+crate digest@0.10.7 lib MIT OR Apache-2.0
+crate digest@0.11.3 lib MIT OR Apache-2.0
+crate ed25519-dalek@2.2.0 lib BSD-3-Clause
+crate ed25519@2.2.3 lib Apache-2.0 OR MIT
+crate either@1.18.0 lib MIT OR Apache-2.0
+crate generic-array@0.14.7 lib MIT
+crate getrandom@0.4.3 lib MIT OR Apache-2.0
+crate ghost-client-mls@0.1.0 lib LicenseRef-GHOST-Proprietary
+crate hax-lib-macros@0.3.7 proc-macro Apache-2.0
+crate hax-lib@0.3.7 lib Apache-2.0
+crate hkdf@0.13.0 lib MIT OR Apache-2.0
+crate hmac@0.13.0 lib MIT OR Apache-2.0
+crate hpke-rs-crypto@0.7.0 lib MPL-2.0
+crate hpke-rs-libcrux@0.7.0 lib MPL-2.0
+crate hpke-rs@0.7.0 lib MPL-2.0
+crate hybrid-array@0.4.15 lib MIT OR Apache-2.0
+crate inout@0.2.2 lib MIT OR Apache-2.0
+crate itoa@1.0.18 lib MIT OR Apache-2.0
+crate libc@0.2.189 lib MIT OR Apache-2.0
+crate libcrux-aead@0.0.9 lib Apache-2.0
+crate libcrux-aes@0.0.9 lib Apache-2.0
+crate libcrux-chacha20poly1305@0.0.9 lib Apache-2.0
+crate libcrux-curve25519@0.0.8 lib Apache-2.0
+crate libcrux-ecdh@0.0.8 lib Apache-2.0
+crate libcrux-ed25519@0.0.9 lib Apache-2.0
+crate libcrux-hacl-rs@0.0.5 lib Apache-2.0
+crate libcrux-hkdf@0.0.8 lib Apache-2.0
+crate libcrux-hmac-drbg@0.0.1 lib Apache-2.0
+crate libcrux-hmac@0.0.8 lib Apache-2.0
+crate libcrux-intrinsics@0.0.8 lib Apache-2.0
+crate libcrux-kem@0.0.9 lib Apache-2.0
+crate libcrux-macros@0.0.3 proc-macro Apache-2.0
+crate libcrux-ml-kem@0.0.10 lib Apache-2.0
+crate libcrux-p256@0.0.8 lib Apache-2.0
+crate libcrux-platform@0.0.3 lib Apache-2.0
+crate libcrux-poly1305@0.0.6 lib Apache-2.0
+crate libcrux-secrets@0.0.6 lib Apache-2.0
+crate libcrux-sha2@0.0.8 lib Apache-2.0
+crate libcrux-sha3@0.0.10 lib Apache-2.0
+crate libcrux-traits@0.0.8 lib Apache-2.0
+crate log@0.4.34 lib MIT OR Apache-2.0
+crate memchr@2.8.3 lib Unlicense OR MIT
+crate openmls@0.9.0 lib MIT
+crate openmls_libcrux_crypto@0.4.0 lib MIT
+crate openmls_memory_storage@0.6.0 lib MIT
+crate openmls_serialization_helpers@0.1.0 proc-macro MIT
+crate openmls_traits@0.6.0 lib MIT
+crate poly1305@0.9.1 lib Apache-2.0 OR MIT
+crate ppv-lite86@0.2.21 lib MIT OR Apache-2.0
+crate proc-macro2@1.0.107 build-time MIT OR Apache-2.0
+crate quote@1.0.47 build-time MIT OR Apache-2.0
+crate rand@0.10.2 lib MIT OR Apache-2.0
+crate rand_chacha@0.10.0 lib MIT OR Apache-2.0
+crate rand_core@0.10.1 lib MIT OR Apache-2.0
+crate rand_core@0.6.4 lib MIT OR Apache-2.0
+crate rayon-core@1.13.0 lib MIT OR Apache-2.0
+crate rayon@1.12.0 lib MIT OR Apache-2.0
+crate serde@1.0.229 lib MIT OR Apache-2.0
+crate serde_bytes@0.11.19 lib MIT OR Apache-2.0
+crate serde_core@1.0.229 lib MIT OR Apache-2.0
+crate serde_derive@1.0.229 proc-macro MIT OR Apache-2.0
+crate serde_json@1.0.151 lib MIT OR Apache-2.0
+crate sha2@0.10.9 lib MIT OR Apache-2.0
+crate sha2@0.11.0 lib MIT OR Apache-2.0
+crate signature@2.2.0 lib Apache-2.0 OR MIT
+crate subtle@2.6.1 lib BSD-3-Clause
+crate syn@2.0.119 build-time MIT OR Apache-2.0
+crate syn@3.0.5 build-time MIT OR Apache-2.0
+crate thiserror-impl@2.0.20 proc-macro MIT OR Apache-2.0
+crate thiserror@2.0.20 lib MIT OR Apache-2.0
+crate tls_codec@0.5.0 lib Apache-2.0 OR MIT
+crate tls_codec_derive@0.5.0 proc-macro Apache-2.0 OR MIT
+crate typenum@1.20.1 lib MIT OR Apache-2.0
+crate unicode-ident@1.0.24 build-time (MIT OR Apache-2.0) AND Unicode-3.0
+crate universal-hash@0.6.1 lib MIT OR Apache-2.0
+crate x25519-dalek@2.0.1 lib BSD-3-Clause
+crate zerocopy@0.8.57 lib BSD-2-Clause OR Apache-2.0 OR MIT
+crate zeroize@1.9.0 lib Apache-2.0 OR MIT
+crate zeroize_derive@1.5.0 proc-macro Apache-2.0 OR MIT
+crate zmij@1.0.23 lib MIT

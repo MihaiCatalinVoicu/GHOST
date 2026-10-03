@@ -15,6 +15,10 @@ local.properties
 
 # Rust
 **/target/
+# ... except the gate fixtures whose point is a module directory named `target` (the source finders once
+# pruned every such directory unread; Phase 10 review of S2a F4, whose two fixtures were ignored by the
+# rule above and never committed, found by the review of S1a).
+!ghost/test-harness/gates/**/target/
 Cargo.lock.orig
 
 # IDE

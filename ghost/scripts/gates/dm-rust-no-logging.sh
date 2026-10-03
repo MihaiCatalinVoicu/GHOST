@@ -24,6 +24,16 @@
 # code of the *other* crates of the graph contains (jni's 23 `log::` sites, the re-exports of
 # `serde_core`) is G-R8's (`dm-vendored-clock-log.sh`), against its justified baseline.
 #
+# **G-M4, the MLS graph (Phase 10 design faza10-forum.md §3.6, §13.1 G-M4; slice S2a).** The same
+# script, built once for both graphs (S0-18): `--graph mls` (or `mls-rust-no-logging.sh`) reads
+# `ghost-client-mls`'s graph. There `log` is a hard dependency of OpenMLS (its non-test sources
+# hold about 200 facade calls, design §3.6), so rule 1 does not apply; rule 2 allows `log` only as a
+# dependency of the vendored crates that declare it — `openmls`, `hpke-rs` and
+# `openmls_memory_storage` (measured in S2a) — never of a GHOST crate; rules 3 and 4 are unchanged
+# (nothing installs a logger; the graph holds `ghost-client-mls` and `openmls`). The source half
+# (no `println!`, `eprintln!`, `dbg!`, stream handles or `log::` in GHOST sources) is
+# `no-logging.sh`, which reads `client-core/mls` with every other client-core crate.
+#
 # Runs in the CI `rust` job and in `rust-gates.sh` (it needs cargo and the lock, not a build).
 # Self-test hooks (scripts/gates/self-test.sh): GHOST_DMLOG_FORBID_EXTRA adds a crate name to the
 # forbidden list; GHOST_DMLOG_LOG_VIA replaces the allowed direct dependents of `log` (default
@@ -32,6 +42,22 @@
 # logger-installing calls searched for.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
+GRAPH=dm
+if [ "${1:-}" = --graph ]; then
+  GRAPH="${2:-}"
+  shift 2
+fi
+case "$GRAPH" in
+  dm)
+    NAME=dm-rust-no-logging ROOT_PKG=ghost-client-dm WITH_FEATURES=(--features jni-bridge)
+    WITH_LABEL="ghost-client-dm with jni-bridge" LOG_VIA_DEFAULT=jni
+    REQUIRED_DEFAULT="ghost-client-dm vodozemac" LOG_FREE_WITHOUT=1 ;;
+  mls)
+    NAME=mls-rust-no-logging ROOT_PKG=ghost-client-mls WITH_FEATURES=()
+    WITH_LABEL="ghost-client-mls" LOG_VIA_DEFAULT="openmls hpke-rs openmls_memory_storage"
+    REQUIRED_DEFAULT="ghost-client-mls openmls" LOG_FREE_WITHOUT=0 ;;
+  *) echo "usage: dm-rust-no-logging.sh [--graph dm|mls]" >&2; exit 2 ;;
+esac
 # cargo tree's text is parsed below: plain output whatever the job exports (CARGO_TERM_COLOR=always
 # colours the `(*)` markers into a pipe; see dm-vendored-clock-log.sh).
 export CARGO_TERM_COLOR=never
@@ -40,11 +66,11 @@ err="$(mktemp)"
 trap 'rm -f "$err"' EXIT
 
 DM="${GHOST_DMLOG_BAD_SPEC:+$GHOST_DMLOG_BAD_SPEC@0.0.0-no-such-version}"
-DM="${DM:-ghost-client-dm}"
+DM="${DM:-$ROOT_PKG}"
 LOGGERS='^(log|env_logger|pretty_env_logger|android_logger|android_log-sys|simple_logger|simplelog|fern|log4rs|flexi_logger|stderrlog|syslog|systemd-journal-logger|slog.*|tracing.*)$'
 [ -z "${GHOST_DMLOG_FORBID_EXTRA:-}" ] || LOGGERS="${LOGGERS%)\$}|${GHOST_DMLOG_FORBID_EXTRA})\$"
-LOG_VIA="${GHOST_DMLOG_LOG_VIA:-jni}"
-REQUIRED="${GHOST_DMLOG_REQUIRED:-ghost-client-dm vodozemac}"
+LOG_VIA="${GHOST_DMLOG_LOG_VIA:-$LOG_VIA_DEFAULT}"
+REQUIRED="${GHOST_DMLOG_REQUIRED:-$REQUIRED_DEFAULT}"
 INSTALLERS='set_logger|set_boxed_logger|set_max_level'
 [ -z "${GHOST_DMLOG_INSTALLER:-}" ] || INSTALLERS="$INSTALLERS|$GHOST_DMLOG_INSTALLER"
 
@@ -52,50 +78,58 @@ tree() { # args passed to cargo tree; on error: print cargo's stderr and fail th
   if ! cargo tree --locked -q "$@" 2>"$err"; then
     cat "$err" >&2
     fail "cargo tree $* failed"
-    finish dm-rust-no-logging
+    finish "$NAME"
   fi
 }
 names() { sed -E 's/ \(\*\)$//; s/ \(proc-macro\)$//' | awk '{print $1}' | sort -u; }
 
 without="$(tree -p "$DM" -e normal --target all --prefix none -f '{p}')"
-with="$(tree -p "$DM" -e normal --features jni-bridge --target all --prefix none -f '{p}')"
+with="$(tree -p "$DM" -e normal "${WITH_FEATURES[@]}" --target all --prefix none -f '{p}')"
 without_names="$(names <<< "$without")"
 with_names="$(names <<< "$with")"
 
 for want in $REQUIRED; do
-  grep -qx -- "$want" <<< "$without_names" || fail "$want is not in ghost-client-dm's graph without jni-bridge (the gate would pass vacuously)"
-  grep -qx -- "$want" <<< "$with_names" || fail "$want is not in ghost-client-dm's graph with jni-bridge (the gate would pass vacuously)"
+  if [ "$LOG_FREE_WITHOUT" = 1 ]; then
+    grep -qx -- "$want" <<< "$without_names" || fail "$want is not in $ROOT_PKG's graph without jni-bridge (the gate would pass vacuously)"
+    grep -qx -- "$want" <<< "$with_names" || fail "$want is not in $ROOT_PKG's graph with jni-bridge (the gate would pass vacuously)"
+  else
+    grep -qx -- "$want" <<< "$with_names" || fail "$want is not in $ROOT_PKG's graph (the gate would pass vacuously)"
+  fi
 done
-grep -qx jni <<< "$with_names" || fail "jni is not in ghost-client-dm's graph with jni-bridge (the query did not select the JNI surface)"
+if [ "$GRAPH" = dm ]; then
+  grep -qx jni <<< "$with_names" || fail "jni is not in ghost-client-dm's graph with jni-bridge (the query did not select the JNI surface)"
+fi
 
-# 1. Without jni-bridge: no logging crate at all, `log` included.
-while IFS= read -r name; do
-  [ -n "$name" ] || continue
-  fail "ghost-client-dm without jni-bridge links '$name' (G-R4: no log, tracing or logger crate in the DM graph)"
-done < <(grep -E -- "$LOGGERS" <<< "$without_names" || true)
+# 1. Without jni-bridge: no logging crate at all, `log` included (the DM graph only).
+if [ "$LOG_FREE_WITHOUT" = 1 ]; then
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    fail "ghost-client-dm without jni-bridge links '$name' (G-R4: no log, tracing or logger crate in the DM graph)"
+  done < <(grep -E -- "$LOGGERS" <<< "$without_names" || true)
+fi
 
 # 2. With jni-bridge: `log` only through `jni`, nothing else of the list.
 while IFS= read -r name; do
   [ -n "$name" ] || continue
   [ "$name" = log ] && continue
-  fail "ghost-client-dm with jni-bridge links '$name' (G-R4: no tracing or logger crate in the DM graph)"
+  fail "$WITH_LABEL links '$name' (G-R4/G-M4: no tracing or logger crate in the graph)"
 done < <(grep -E -- "$LOGGERS" <<< "$with_names" || true)
 if grep -qx log <<< "$with_names"; then
-  inverse="$(tree -p "$DM" -e normal --features jni-bridge --target all -i log --prefix depth -f '{p}')"
+  inverse="$(tree -p "$DM" -e normal "${WITH_FEATURES[@]}" --target all -i log --prefix depth -f '{p}')"
   dependents="$(sed -nE 's/^1([^ ]+) .*/\1/p' <<< "$inverse" | sort -u)"
   [ -n "$dependents" ] || fail "cargo tree -i log listed no dependent of log (the check would pass vacuously)"
   while IFS= read -r dep; do
     [ -n "$dep" ] || continue
     ok=0
     for allowed in $LOG_VIA; do [ "$dep" = "$allowed" ] && ok=1; done
-    [ "$ok" = 1 ] || fail "'$dep' depends on log directly in ghost-client-dm's graph (G-R4: log is reached only through jni)"
+    [ "$ok" = 1 ] || fail "'$dep' depends on log directly in $ROOT_PKG's graph (G-R4/G-M4: log is reached only through $LOG_VIA)"
   done <<< "$dependents"
 fi
 
 # 3. Nothing installs a logger. The sources of every package of the jni-bridge graph but `log`, from
 # `cargo metadata` (the registry sources are unpacked on any machine that resolved the lock).
 meta="$(cargo metadata --locked --format-version 1 2>"$err")" || {
-  cat "$err" >&2; fail "cargo metadata failed"; finish dm-rust-no-logging; }
+  cat "$err" >&2; fail "cargo metadata failed"; finish "$NAME"; }
 # Keyed by name and version: a second version of a name elsewhere in the lock is not in the graph.
 keys="$(sed -E 's/ \(\*\)$//; s/ \(proc-macro\)$//' <<< "$with" | awk '{sub(/^v/, "", $2); print $1 " " $2}' | sort -u)"
 dirs="$(GRAPH="$keys" perl -MJSON::PP -e '
@@ -116,10 +150,16 @@ while read -r name version dir; do
   [ -d "$dir/src" ] || { fail "$name $version: no source directory at $dir/src (cannot check for a logger)"; continue; }
   hits="$(grep -rnE --include='*.rs' -- "\\b($INSTALLERS)[[:space:]]*\\(" "$dir/src" || true)"
   [ -z "$hits" ] || while IFS= read -r line; do
-    fail "$name $version: ${line#"$dir"/} (G-R4: no crate of the DM graph installs a logger)"
+    fail "$name $version: ${line#"$dir"/} (G-R4/G-M4: no crate of the graph installs a logger)"
   done <<< "$hits"
 done <<< "$dirs"
-[ "$scanned" -gt 0 ] || fail "no package source of ghost-client-dm's graph was found (the logger check would pass vacuously)"
+[ "$scanned" -gt 0 ] || fail "no package source of $ROOT_PKG's graph was found (the logger check would pass vacuously)"
 
-echo "[dm-rust-no-logging] $(wc -l <<< "$without_names") packages without jni-bridge, $(wc -l <<< "$with_names") with it; log's dependents: ${dependents:-none}; $scanned package sources read"
-finish dm-rust-no-logging
+if [ "$LOG_FREE_WITHOUT" = 1 ]; then
+  sizes="$(wc -l <<< "$without_names") packages without jni-bridge, $(wc -l <<< "$with_names") with it"
+else
+  sizes="$(wc -l <<< "$with_names") packages"
+fi
+echo "[$NAME] $sizes; log's dependents: $(tr '
+' ' ' <<< "${dependents:-none}"); $scanned package sources read"
+finish "$NAME"
