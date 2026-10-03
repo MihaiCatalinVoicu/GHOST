@@ -36,7 +36,7 @@ site crossbeam-utils@0.8.23 src/sync/parker.rs:5 std::time clock-log [lib]  # Pa
 site either@1.18.0 src/lib.rs:1798 stdout clock-log [lib]  # either's own #[test] fn read_write (a #[test] item, not a cfg(test) module, so the scan keeps it); a dependency of rayon here, the test function is never called in the library
 site ghost-client-mls@0.1.0 src/group.rs:14 UNIX_EPOCH clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
 site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log [lib]  # use std::time::UNIX_EPOCH: the constant of count-based past-epoch deletion (sweep_past, design §8.3); the crate reads no clock
-site ghost-client-mls@0.1.0 src/group.rs:1947 UNIX_EPOCH clock-log [lib]  # sweep_past passes the UNIX_EPOCH constant to PastEpochDeletion::before_timestamp, so only the count applies (design §3.5, §8.3); no clock read
+site ghost-client-mls@0.1.0 src/group.rs:2027 UNIX_EPOCH clock-log [lib]  # sweep_past passes the UNIX_EPOCH constant to PastEpochDeletion::before_timestamp, so only the count applies (design §3.5, §8.3); no clock read
 site jni@0.21.1 src/wrapper/java_vm/vm.rs:9 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
 site jni@0.21.1 src/wrapper/jnienv.rs:9 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)
 site jni@0.21.1 src/wrapper/macros.rs:107 log:: clock-log [lib]  # jni-bridge only (G-R4 scope, S0-8): log facade calls, no logger installed in the app (T3 canary scans)

@@ -86,7 +86,17 @@ class ChannelCryptoNativeTest {
         joiner.apply(kp.changes)
         val body = joiner.crypto.joinRequest(channel, parsed.inviteId, parsed.inviteSeedEnv, kp.keyPackage).ok()
         // The request travels sealed under JK_g (mode 0x12), recognised by R_join, opened by the sponsor.
-        val blob = joiner.crypto.seal(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, parsed.ns, 4096, ChannelCrypto.MODE_JOIN, ChannelCrypto.SealOrder.NONE, body).ok()
+        // The invitee's JK_g is an invite's (class 6, §19.33): never the channel's own class 3, and
+        // it opens no join request.
+        val blob = joiner.crypto.seal(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, parsed.ns, 4096, ChannelCrypto.MODE_JOIN, ChannelCrypto.SealOrder.NONE, body).ok()
+        assertEquals(
+            MlsCode.STATE_CORRUPT,
+            joiner.crypto.seal(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, parsed.ns, 4096, ChannelCrypto.MODE_JOIN, ChannelCrypto.SealOrder.NONE, body).code,
+        )
+        assertEquals(
+            MlsCode.INVALID_POLICY,
+            joiner.crypto.open(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, parsed.ns, ChannelCrypto.MODE_JOIN, blob).code,
+        )
         assertTrue(ChannelRecognition.matches(blob, g.rJoin, ChannelCrypto.MODE_JOIN))
         val opened = sponsor.crypto.open(channel, g.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, g.ns, ChannelCrypto.MODE_JOIN, blob).ok()
         assertArrayEquals(body, opened.body)
@@ -152,7 +162,7 @@ class ChannelCryptoNativeTest {
             val sealed = a.crypto.seal(channel, g0.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, g0.ns, 16384, ChannelCrypto.MODE_WELCOME, ChannelCrypto.SealOrder.NONE, blobBody).ok()
             val parsed = inviteState.getValue(joiner)
             assertTrue(ChannelRecognition.matches(sealed, parsed.rJoin, ChannelCrypto.MODE_WELCOME))
-            val welcome = joiner.crypto.open(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, parsed.ns, ChannelCrypto.MODE_WELCOME, sealed).ok().body
+            val welcome = joiner.crypto.open(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, parsed.ns, ChannelCrypto.MODE_WELCOME, sealed).ok().body
             val joined = joiner.crypto.welcomeJoin(
                 channel, joiner.rows(), welcome, day, parsed.generation.toInt(), parsed.ns,
                 ChannelCrypto.Anchor.Invite(parsed.committersDigest),

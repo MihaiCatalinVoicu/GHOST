@@ -153,6 +153,36 @@ class MlsResultCodesTest {
         assertEquals(exported, declared)
     }
 
+    /**
+     * JNI binds a native method **by name**: a parameter added, dropped, reordered or retyped on one
+     * side only would bind and then read the wrong registers (review of S2b). So each `MlsNative`
+     * method, as the compiled class declares it, takes exactly the JNI types the export macro's
+     * entry point takes after `JNIEnv` and `JClass`, in order, returns a byte array, and is static.
+     */
+    @Test
+    fun mlsNativeSignaturesAreTheExportMacrosJniTypes() {
+        val macro = rust("jni.rs").substringAfter("macro_rules! export_jni {").substringBefore("\n}\n")
+        val jvm = mapOf("JByteArray" to "byte[]", "jlong" to "long", "jint" to "int")
+        val exported = Regex(
+            """fn Java_org_ghost_crypto_bridge_MlsNative_(\w+)<'l>\((.*?)\)\s*->\s*::jni::sys::(\w+)""",
+            RegexOption.DOT_MATCHES_ALL,
+        ).findAll(macro).associate { m ->
+            val types = m.groupValues[2].split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                .map { it.substringAfter(":").trim().substringAfterLast("::").substringBefore("<") }
+            assertEquals("${m.groupValues[1]} takes JNIEnv and JClass first", listOf("JNIEnv", "JClass"), types.take(2))
+            assertEquals("${m.groupValues[1]} returns a byte array", "jbyteArray", m.groupValues[3])
+            m.groupValues[1] to types.drop(2).map { jvm[it] ?: error("${m.groupValues[1]}: unmapped JNI type $it") }
+        }
+        assertEquals(25, exported.size)
+        val natives = MlsNative::class.java.declaredMethods.filter { java.lang.reflect.Modifier.isNative(it.modifiers) }
+        assertEquals(exported.keys, natives.map { it.name }.toSet())
+        for (method in natives) {
+            assertTrue("${method.name} is static", java.lang.reflect.Modifier.isStatic(method.modifiers))
+            assertEquals("${method.name} returns a byte array", ByteArray::class.java, method.returnType)
+            assertEquals("${method.name}'s parameters", exported.getValue(method.name), method.parameterTypes.map { it.typeName })
+        }
+    }
+
     @Test
     fun everyWireByteRoundTripsAndUndefinedBytesHaveNoCode() {
         for (code in MlsCode.entries) assertSame(code, MlsCode.fromWire(code.wire))

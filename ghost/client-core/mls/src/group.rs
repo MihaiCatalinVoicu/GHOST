@@ -43,6 +43,10 @@ use crate::seal::{self, Order, SealKeyInput};
 pub const RECEIVE_BATCH_MAX: usize = 32;
 /// Most held blobs one `trial_count` call tries (CO-3, S0-17).
 pub const TRIAL_HELD_MAX: usize = 32;
+/// Most Adds and swaps one `commit` request carries together: the bound on a channel's pending
+/// join, restore and rejoin requests (§6.3.5, CS-C8: "≤ 64 per channel"), so a pass can hand every
+/// pending request to one call and let §5.7's deferral choose (review of S2b).
+pub const COMMIT_JOINERS_MAX: usize = 64;
 /// `max_past_epochs` (§3.5, S0-6).
 pub const MAX_PAST_EPOCHS: usize = 16;
 
@@ -103,10 +107,17 @@ pub enum KeyClass {
     /// `joinRequest` (slice S2b, §19.32): the invite key is a signing secret, so Kotlin keeps it
     /// wrapped like every other key of the channel (CS-S6's rule applied to it).
     Invite = 5,
+    /// `JK_g` **as an invite carries it** (`inviteParse`'s `JK_ENV`; review of S2b, §19.33): the
+    /// invitee's copy, which seals its join or restore request (mode 0x12) and opens its Welcome
+    /// blob (mode 0x13), and nothing else. Anyone can write an invite naming any channel, so an
+    /// envelope minted from one must never pass for that channel's own `JK_g` (class 3), and never
+    /// open the join requests a member reads.
+    InviteJoin = 6,
 }
 
 impl KeyClass {
-    /// The class of a JNI argument (`seal`, `open`): 1 epoch, 3 join; the others are not seal keys.
+    /// The class byte of a JNI argument or a test vector, 1 … 6. Only 1 (`K_ep`), 3 (`JK_g`) and 6
+    /// (an invite's `JK_g`) are seal keys: `seal` and `open` refuse the others (`INVALID_POLICY`).
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             1 => Some(KeyClass::Epoch),
@@ -114,6 +125,7 @@ impl KeyClass {
             3 => Some(KeyClass::Join),
             4 => Some(KeyClass::Box),
             5 => Some(KeyClass::Invite),
+            6 => Some(KeyClass::InviteJoin),
             _ => None,
         }
     }
@@ -405,10 +417,11 @@ impl core::fmt::Debug for InviteOut {
 }
 
 /// `inviteParse` with a context (fn 14 as slice S2b maps it, §19.32): the invite's public fields,
-/// its secrets **wrapped** under the state key (`JK_g` as a join-key envelope, `invite_seed` as an
-/// invite envelope, both bound to the invite's channel), `R_join` (a recognition key, CS-S6) and the
-/// READ and DEPOSIT credentials of the requested slots, which the invitee presents to the relays of
-/// `ns_g` to deposit its join request and to listen for its Welcome.
+/// its secrets **wrapped** under the state key (`JK_g` as an invite join-key envelope, class 6 —
+/// never the channel's own class 3, §19.33 —, `invite_seed` as an invite envelope, both bound to
+/// the invite's channel), `R_join` (a recognition key, CS-S6) and the READ and DEPOSIT credentials
+/// of the requested slots, which the invitee presents to the relays of `ns_g` to deposit its join
+/// request and to listen for its Welcome.
 #[derive(Clone)]
 pub struct ParsedInvite {
     pub kdf_code: u8,
@@ -554,7 +567,7 @@ impl MlsContext {
         ))
     }
 
-    /// Wraps a 32-byte key of class generation, join or box under the state key; an epoch key goes
+    /// Wraps a 32-byte key of any class but the epoch's under the state key; an epoch key goes
     /// through [`MlsContext::wrap_epoch_key`] (`INVALID_POLICY` here).
     pub fn wrap_key(
         &self,
@@ -1093,6 +1106,8 @@ impl MlsContext {
         let author = canonical::basic_identity(processed.credential());
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(a) => {
+                // A post's plaintext: erased however this arm ends (review of S2b).
+                let plain = Zeroizing::new(a.into_bytes());
                 let Sender::Member(idx) = sender else {
                     return fail(Code::Undecryptable);
                 };
@@ -1105,7 +1120,7 @@ impl MlsContext {
                 let Some(key) = author else {
                     return fail(Code::Undecryptable);
                 };
-                match ChannelContent::decode(&a.into_bytes()) {
+                match ChannelContent::decode(&plain) {
                     Ok(content) => ReceiveItem::App {
                         content,
                         sender: key,
@@ -1286,6 +1301,12 @@ impl MlsContext {
     /// `C(floor)` are deferred in §5.7's order (S0-16); a commit of one proposal (or none, with a
     /// path) that still does not fit is `NO_FIT`. The committer validates its own pending commit
     /// with CO-2 before returning it.
+    ///
+    /// **Bounded (review of S2b).** A request carries at most [`COMMIT_JOINERS_MAX`] Adds and swaps
+    /// together, and each Remove names a distinct member (`INVALID_POLICY` otherwise), and the
+    /// deferral of Adds and swaps bisects (see [`defer_to_fit`]): S2b's first version rebuilt the
+    /// whole commit once per deferred item, under the registry's one lock, so a 64-Add pass of the
+    /// small class cost 60 builds (1.8 s on the review's host) and kept 5.
     pub fn commit(
         &self,
         ch: &ChannelHandle,
@@ -1293,6 +1314,9 @@ impl MlsContext {
         req: &CommitRequest,
         day: u32,
     ) -> MlsResult<CommitOut> {
+        if req.adds.len() + req.swaps.len() > COMMIT_JOINERS_MAX {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
         let channel_id = ch.channel_id;
         let l = self.load(&channel_id, rows, day)?;
         let g0 = Self::group(&l)?;
@@ -1315,10 +1339,11 @@ impl MlsContext {
         let commit_day = req.commit_minute / 1440;
         // The inputs, checked as CO-2 (A) will check them (the sponsor of an admission must not
         // be a pseudonym this commit removes).
-        let mut removes = Vec::with_capacity(req.removes.len());
+        let mut removes: Vec<(LeafNodeIndex, [u8; 32])> = Vec::with_capacity(req.removes.len());
         for key in &req.removes {
             let leaf = pre.leaf_of(key).ok_or(MlsError::new(Code::InvalidPolicy))?;
-            if *key == me {
+            // A member is removed once: the Removes are bounded by the roster (review of S2b).
+            if *key == me || removes.iter().any(|(_, k)| k == key) {
                 return Err(MlsError::new(Code::InvalidPolicy));
             }
             removes.push((leaf, *key));
@@ -1362,20 +1387,10 @@ impl MlsContext {
             &req.g_env,
         )?);
         let cap = seal::capacity(floor);
-        // §5.7's deferral order: Adds from the end, then swaps, then the context change except the
-        // drops of keys the commit removes, then Removes beyond the first (each with its drop).
-        let mut plan = Plan {
-            adds: (0..adds.len()).collect(),
-            swaps: (0..swaps.len()).collect(),
-            removes: (0..removes.len()).collect(),
-            context: if req.context.is_some() {
-                ContextKept::Full
-            } else {
-                ContextKept::NotRequested
-            },
-        };
         let base = l.p.storage.checkpoint();
-        loop {
+        // One build of a plan: its outputs when the commit fits `C(floor)`, with the commit staged
+        // in `l`'s storage; `None`, with the storage restored, when it does not.
+        let attempt = |plan: &Plan| -> MlsResult<Option<Built>> {
             let effective = plan.effective_context(&pre.context, req.context.as_ref(), &removes);
             if let Some(c) = &effective {
                 c.check_password_change(&pre.context, rank)
@@ -1475,48 +1490,98 @@ impl MlsContext {
             let commit = ser(&c)?;
             if commit.len() > cap {
                 l.p.storage.restore(base.duplicate());
-                if !plan.defer_one() {
-                    return Err(MlsError::new(Code::NoFit));
-                }
-                continue;
+                return Ok(None);
             }
-            // The committer's own CO-2, over its pending commit (what every member will run).
-            let g2 = Self::group(&l)?;
-            let pending = g2.pending_commit().ok_or(MlsError::new(Code::Internal))?;
-            let summary = check::summarize(
-                &self.crypto,
-                &channel_id,
-                &pre,
-                &Sender::Member(g0.own_leaf_index()),
-                &aad.encode(),
-                pending,
-                &commit,
-                floor,
-            )?;
-            if let Err(r) = summary.verdict {
-                return Err(MlsError::commit(r));
-            }
-            let joiners_refs = plan
-                .adds
-                .iter()
-                .map(|&i| adds[i].0.kp_ref.clone())
-                .chain(plan.swaps.iter().map(|&i| swaps[i].1.kp_ref.clone()))
-                .collect();
-            return Ok(CommitOut {
+            Ok(Some(Built {
                 welcome: w.map(|w| ser(&w)).transpose()?,
                 commit,
-                joiners: joiners_refs,
-                kept_adds: plan.adds.clone(),
-                kept_swaps: plan.swaps.clone(),
-                kept_removes: plan.removes.clone(),
-                context: plan.context,
+                aad,
                 rotates,
                 box_pk,
                 box_env,
-                changes: self.finish(&l)?,
-                summary: Box::new(summary),
-            });
+            }))
+        };
+        // §5.7's deferral order: Adds from the end, then swaps, then the context change except the
+        // drops of keys the commit removes, then Removes beyond the first (each with its drop).
+        let full = Plan {
+            adds: (0..adds.len()).collect(),
+            swaps: (0..swaps.len()).collect(),
+            removes: (0..removes.len()).collect(),
+            context: if req.context.is_some() {
+                ContextKept::Full
+            } else {
+                ContextKept::NotRequested
+            },
+        };
+        let (plan, built) = match attempt(&full)? {
+            Some(built) => (full, built),
+            None => {
+                // The plan of the last build, when its commit fitted and is still staged.
+                let mut staged: Option<(Plan, Built)> = None;
+                let plan = defer_to_fit(&full, |p| {
+                    if staged.take().is_some() {
+                        l.p.storage.restore(base.duplicate());
+                    }
+                    Ok(match attempt(p)? {
+                        Some(built) => {
+                            staged = Some((p.clone(), built));
+                            true
+                        }
+                        None => false,
+                    })
+                })?
+                .ok_or(MlsError::new(Code::NoFit))?;
+                let built = match staged {
+                    Some((p, built)) if p == plan => built,
+                    other => {
+                        if other.is_some() {
+                            l.p.storage.restore(base.duplicate());
+                        }
+                        // A commit's size is a function of its plan alone (every key, signature and
+                        // ciphertext GHOST's suite draws has a fixed length): the plan the search
+                        // found fits again.
+                        attempt(&plan)?.ok_or(MlsError::new(Code::Internal))?
+                    }
+                };
+                (plan, built)
+            }
+        };
+        // The committer's own CO-2, over its pending commit (what every member will run).
+        let g2 = Self::group(&l)?;
+        let pending = g2.pending_commit().ok_or(MlsError::new(Code::Internal))?;
+        let summary = check::summarize(
+            &self.crypto,
+            &channel_id,
+            &pre,
+            &Sender::Member(g0.own_leaf_index()),
+            &built.aad.encode(),
+            pending,
+            &built.commit,
+            floor,
+        )?;
+        if let Err(r) = summary.verdict {
+            return Err(MlsError::commit(r));
         }
+        let joiners_refs = plan
+            .adds
+            .iter()
+            .map(|&i| adds[i].0.kp_ref.clone())
+            .chain(plan.swaps.iter().map(|&i| swaps[i].1.kp_ref.clone()))
+            .collect();
+        Ok(CommitOut {
+            welcome: built.welcome,
+            commit: built.commit,
+            joiners: joiners_refs,
+            kept_adds: plan.adds,
+            kept_swaps: plan.swaps,
+            kept_removes: plan.removes,
+            context: plan.context,
+            rotates: built.rotates,
+            box_pk: built.box_pk,
+            box_env: built.box_env,
+            changes: self.finish(&l)?,
+            summary: Box::new(summary),
+        })
     }
 
     // ---- fn 10: encrypt -------------------------------------------------------------------------
@@ -1567,7 +1632,7 @@ impl MlsContext {
                 let (k, epoch) = self.unwrap_epoch_key(channel_id, env)?;
                 Ok(SealSecret::Epoch(EpochExport::from_bytes(*k), epoch))
             }
-            KeyClass::Join => {
+            KeyClass::Join | KeyClass::InviteJoin => {
                 let k = self.unwrap_key(class, channel_id, env)?;
                 Ok(SealSecret::Join(JoinKey::from_bytes(*k)))
             }
@@ -1575,9 +1640,9 @@ impl MlsContext {
         }
     }
 
-    /// `seal` (fn 11): the key comes wrapped (`K_ep` for mode 0x11, `JK_g` for 0x12 and 0x13); the
-    /// salt from the provider's CSPRNG. A mode-0x11 `order` must name the envelope's epoch
-    /// (`INVALID_POLICY` otherwise).
+    /// `seal` (fn 11): the key comes wrapped (`K_ep` for mode 0x11, `JK_g` for 0x12 and 0x13, an
+    /// invite's `JK_g` for 0x12 only); the salt from the provider's CSPRNG. A mode-0x11 `order` must
+    /// name the envelope's epoch (`INVALID_POLICY` otherwise).
     #[allow(clippy::too_many_arguments)]
     pub fn seal_blob(
         &self,
@@ -1590,12 +1655,18 @@ impl MlsContext {
         order: &Order,
         body: &[u8],
     ) -> MlsResult<Vec<u8>> {
+        // An invitee seals its join or restore request (review of S2b, §19.33).
+        if class == KeyClass::InviteJoin && mode != seal::MODE_JOIN {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
         let k = self.seal_key_env(class, channel_id, key_env)?;
         seal::seal(&k.input(), ns, bucket, mode, order, body, self.random()?)
     }
 
     /// `open` (fn 12). A mode-0x11 blob whose MLS header is of another epoch than the envelope's is
     /// `NON_CANONICAL` (review M1: a re-sealed message of an older epoch is not one of this epoch).
+    /// An invite's `JK_g` opens the invitee's Welcome blob (mode 0x13) only: a join request is read
+    /// by a member, under the channel's own `JK_g` (`INVALID_POLICY`; review of S2b, §19.33).
     pub fn open_blob(
         &self,
         channel_id: &[u8; 32],
@@ -1605,6 +1676,9 @@ impl MlsContext {
         mode: u8,
         blob: &[u8],
     ) -> MlsResult<seal::Opened> {
+        if class == KeyClass::InviteJoin && mode != seal::MODE_WELCOME {
+            return Err(MlsError::new(Code::InvalidPolicy));
+        }
         let k = self.seal_key_env(class, channel_id, key_env)?;
         seal::open(&k.input(), ns, mode, blob)
     }
@@ -1612,7 +1686,7 @@ impl MlsContext {
     // ---- fn 13: generation ----------------------------------------------------------------------
 
     /// `generation` (fn 13): `ns`, the per-slot READ and DEPOSIT credentials v3 and verifiers,
-    /// `JK` wrapped and `R_join`.
+    /// `JK` wrapped and `R_join`. A slot named twice is `NON_CANONICAL`.
     pub fn generation(
         &self,
         channel_id: &[u8; 32],
@@ -1621,6 +1695,7 @@ impl MlsContext {
         open_epoch: u64,
         slots: &[u8],
     ) -> MlsResult<(GenerationValues, Vec<SlotCredentials>)> {
+        check_slots(slots)?;
         let g = GenerationSecret::from_bytes(*self.unwrap_key(
             KeyClass::Generation,
             channel_id,
@@ -1716,14 +1791,17 @@ impl MlsContext {
     /// `inviteParse` with a context (fn 14 as slice S2b maps it, §19.32): [`invite::parse_v2`]
     /// (its codes unchanged: `NON_CANONICAL`, `UNSUPPORTED_SUITE`, `PASSWORD_REQUIRED` without
     /// running Argon2id, `WRONG_PASSWORD`), then the invite's secrets wrapped under the state key
-    /// and bound to the invite's channel, `R_join`, and the credentials of `slots` from the
-    /// invite's read and deposit bases (§5.2: the invite carries `RB_g` and `DB_g`, never `G_g`).
+    /// and bound to the invite's channel — the join key in its own class, [`KeyClass::InviteJoin`]
+    /// (§19.33) —, `R_join`, and the credentials of `slots` from the invite's read and deposit
+    /// bases (§5.2: the invite carries `RB_g` and `DB_g`, never `G_g`). A slot named twice is
+    /// `NON_CANONICAL`, before any Argon2id runs.
     pub fn invite_parse(
         &self,
         bytes: &[u8],
         password: Option<&InvitePassword>,
         slots: &[u8],
     ) -> MlsResult<ParsedInvite> {
+        check_slots(slots)?;
         let (kdf_code, f) = invite::parse_v2(bytes, password)?;
         Ok(ParsedInvite {
             kdf_code,
@@ -1738,7 +1816,9 @@ impl MlsContext {
             committers_digest: f.committers_digest,
             expiry_day: f.expiry_day,
             name: f.name.clone(),
-            jk_env: self.wrap_key(KeyClass::Join, &f.channel_id, f.join_key.as_bytes())?,
+            // Class 6, not the channel's own class 3: the invite, not a member, vouches for this
+            // key (review of S2b, §19.33).
+            jk_env: self.wrap_key(KeyClass::InviteJoin, &f.channel_id, f.join_key.as_bytes())?,
             r_join: *derive_join_recognition(&f.join_key).as_bytes(),
             seed_env: self.wrap_key(KeyClass::Invite, &f.channel_id, f.invite_seed.as_bytes())?,
             slots: slot_credentials(&f.read_base, &f.deposit_base, &f.ns, slots),
@@ -2079,7 +2159,18 @@ fn own_commit_aad(bytes: &[u8]) -> MlsResult<Vec<u8>> {
     }
 }
 
+/// One build of a commit whose body fits the floor (fn 9): what `commit` returns of it.
+struct Built {
+    commit: Vec<u8>,
+    welcome: Option<Vec<u8>>,
+    aad: CommitAad,
+    rotates: bool,
+    box_pk: [u8; 32],
+    box_env: Vec<u8>,
+}
+
 /// The deferral state of a commit (§5.7, S0-16).
+#[derive(Clone, PartialEq, Eq)]
 struct Plan {
     adds: Vec<usize>,
     swaps: Vec<usize>,
@@ -2087,7 +2178,89 @@ struct Plan {
     context: ContextKept,
 }
 
+/// The plan §5.7's deferral reaches from `full`, whose commit does not fit: the first plan of the
+/// order — Adds from the end, then swaps, then the context change (its drops of removed keys
+/// kept), then Removes beyond the first — whose commit fits, or `None` (`NO_FIT`). `fits` builds a
+/// plan and answers whether its commit fits `C(floor)`.
+///
+/// **Adds and swaps are bisected** (review of S2b): deferring one never makes a commit larger — each
+/// is a proposal by value of a canonical KeyPackage (395 bytes, S0-4) with fixed-size evidence in
+/// the AAD, and RFC 9420 §12.4.2 encrypts no path secret to a joiner (a swap's Remove can only add
+/// path ciphertexts, which go with it) — so "the first fitting plan" of the one-at-a-time order is
+/// the longest prefix that fits, found in ⌈log₂(n + 1)⌉ builds where the order took up to n. The
+/// context change is one step, and the Removes stay one at a time: a Remove blanks a direct path,
+/// so deferring one can make a commit larger as well as smaller; they are bounded by the roster.
+fn defer_to_fit(
+    full: &Plan,
+    mut fits: impl FnMut(&Plan) -> MlsResult<bool>,
+) -> MlsResult<Option<Plan>> {
+    let mut plan = full.clone();
+    if !plan.adds.is_empty() {
+        match longest_fitting(plan.adds.len(), |k| fits(&plan.with_adds(k)))? {
+            Some(k) => {
+                plan.adds.truncate(k);
+                return Ok(Some(plan));
+            }
+            None => plan.adds.clear(),
+        }
+    }
+    if !plan.swaps.is_empty() {
+        match longest_fitting(plan.swaps.len(), |k| fits(&plan.with_swaps(k)))? {
+            Some(k) => {
+                plan.swaps.truncate(k);
+                return Ok(Some(plan));
+            }
+            None => plan.swaps.clear(),
+        }
+    }
+    while plan.defer_one() {
+        if fits(&plan)? {
+            return Ok(Some(plan));
+        }
+    }
+    Ok(None)
+}
+
+/// The largest `k < n` with `fits(k)`, for a `fits` that holds up to some point and fails after it
+/// (`fits(n)` is known to fail), or `None` when even `fits(0)` fails: a bisection, at most
+/// ⌈log₂(n + 1)⌉ calls, never with `k ≥ n`.
+fn longest_fitting(
+    n: usize,
+    mut fits: impl FnMut(usize) -> MlsResult<bool>,
+) -> MlsResult<Option<usize>> {
+    // Every k ≥ `above` fails; every k ≤ `best` fits.
+    let (mut best, mut above): (Option<usize>, usize) = (None, n);
+    loop {
+        let from = best.map_or(0, |b| b + 1);
+        if from >= above {
+            return Ok(best);
+        }
+        let mid = from + (above - from) / 2;
+        if fits(mid)? {
+            best = Some(mid);
+        } else {
+            above = mid;
+        }
+    }
+}
+
 impl Plan {
+    /// The plan with only the first `k` of its Adds.
+    fn with_adds(&self, k: usize) -> Plan {
+        Plan {
+            adds: self.adds[..k].to_vec(),
+            ..self.clone()
+        }
+    }
+
+    /// The plan with only the first `k` of its swaps.
+    fn with_swaps(&self, k: usize) -> Plan {
+        Plan {
+            swaps: self.swaps[..k].to_vec(),
+            ..self.clone()
+        }
+    }
+
     /// Defers the next item in §5.7's order; `false` when nothing more may be deferred.
     fn defer_one(&mut self) -> bool {
         if self.adds.pop().is_some() || self.swaps.pop().is_some() {
@@ -2124,7 +2297,20 @@ impl Plan {
     }
 }
 
-/// The digest of an MLS message (a candidate's hash, CO-3).
+/// A `slots` argument (fn 13, fn 14): each relay slot at most once (`NON_CANONICAL`), so a reply
+/// carries at most 256 slots' credentials. The review of S2b turned 64 KiB of slots into a
+/// 15 MB reply; the relay set itself has no fixed size (a reader lists the union of the sets
+/// across a slot-table change, §19.23), so the bound is the slot byte's.
+fn check_slots(slots: &[u8]) -> MlsResult<()> {
+    let mut seen = [false; 256];
+    for &s in slots {
+        if std::mem::replace(&mut seen[usize::from(s)], true) {
+            return Err(MlsError::new(Code::NonCanonical));
+        }
+    }
+    Ok(())
+}
+
 /// The READ and DEPOSIT credentials v3 and verifiers of `slots` (§5.2), from a generation's bases:
 /// a member's (`generation`, fn 13) or an invitee's (`invite_parse`, fn 14).
 fn slot_credentials(
@@ -2149,6 +2335,7 @@ fn slot_credentials(
         .collect()
 }
 
+/// The digest of an MLS message (a candidate's hash, CO-3).
 pub fn message_hash(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
@@ -2160,3 +2347,99 @@ pub fn leaf_facts(leaf: &LeafNode) -> Option<LeafFacts> {
 
 /// `Scope` is part of the change-set API.
 pub type RowScope = Scope;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⌈log₂(n + 1)⌉, the bisection's bound.
+    fn bits(n: usize) -> usize {
+        (usize::BITS - n.leading_zeros()) as usize
+    }
+
+    /// The bisection of §5.7's deferral (review of S2b): for every count n up to the request bound
+    /// and every point t where a monotone fit stops holding, `longest_fitting` answers t − 1 (none
+    /// when nothing fits), never probes a k ≥ n, and probes at most ⌈log₂(n + 1)⌉ times — where
+    /// S2b's first version built the commit once per deferred item, up to n times.
+    #[test]
+    fn the_deferral_bisects_a_monotone_fit() {
+        for n in 1..=COMMIT_JOINERS_MAX {
+            for t in 0..=n {
+                let mut probes = 0;
+                let got = longest_fitting(n, |k| {
+                    assert!(k < n, "probed {k} of {n}");
+                    probes += 1;
+                    Ok(k < t)
+                })
+                .expect("no error");
+                assert_eq!(got, t.checked_sub(1), "n {n}, t {t}");
+                assert!(probes <= bits(n), "n {n}, t {t}: {probes} probes");
+            }
+        }
+        assert_eq!(bits(64), 7);
+        // An error of a build is the call's.
+        assert_eq!(
+            longest_fitting(8, |_| Err(MlsError::new(Code::InvalidPolicy))),
+            Err(MlsError::new(Code::InvalidPolicy))
+        );
+    }
+
+    fn plan(adds: usize, swaps: usize, removes: usize, context: ContextKept) -> Plan {
+        Plan {
+            adds: (0..adds).collect(),
+            swaps: (0..swaps).collect(),
+            removes: (0..removes).collect(),
+            context,
+        }
+    }
+
+    /// The one-at-a-time order of S0-16 (S2b's first version): the reference the search must agree
+    /// with whenever deferring an Add or a swap never makes a commit larger.
+    fn one_at_a_time(full: &Plan, fits: &dyn Fn(&Plan) -> bool) -> Option<Plan> {
+        let mut p = full.clone();
+        while p.defer_one() {
+            if fits(&p) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// `defer_to_fit` reaches the plan the one-at-a-time order reaches — Adds from the end, then
+    /// swaps, then the context change, then Removes beyond the first — for fits that stop at every
+    /// possible point of that order, in a bounded number of builds; and `None` when nothing fits.
+    #[test]
+    fn the_deferral_reaches_the_plan_of_the_one_at_a_time_order() {
+        let full = plan(10, 3, 3, ContextKept::Full);
+        // The order's plans, from the full one to the last; a "fits" that holds from the i-th on
+        // (every plan of the order is smaller than the one before it, here by construction).
+        let mut order = vec![full.clone()];
+        let mut p = full.clone();
+        while p.defer_one() {
+            order.push(p.clone());
+        }
+        assert_eq!(order.len(), 1 + 10 + 3 + 1 + 2);
+        let size = |q: &Plan| -> usize {
+            q.adds.len() * 1000
+                + q.swaps.len() * 100
+                + usize::from(q.context == ContextKept::Full) * 10
+                + q.removes.len()
+        };
+        for first in 1..=order.len() {
+            let limit = order.get(first).map_or(0, size);
+            let fits = |q: &Plan| order.len() > first && size(q) <= limit;
+            let expected = one_at_a_time(&full, &fits);
+            let mut builds = 0;
+            let got = defer_to_fit(&full, |q| {
+                builds += 1;
+                Ok(fits(q))
+            })
+            .expect("no error");
+            assert!(got == expected, "stop {first}");
+            assert!(
+                builds <= bits(10) + bits(3) + 1 + 2,
+                "stop {first}: {builds} builds"
+            );
+        }
+    }
+}

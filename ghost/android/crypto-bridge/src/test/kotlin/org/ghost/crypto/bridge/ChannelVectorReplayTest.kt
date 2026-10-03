@@ -39,7 +39,9 @@ import javax.crypto.spec.SecretKeySpec
  *     through the host library only.
  *
  * Skipped (not failed) without `-Dghost.dm.native=<ghost_dm_host>`, like every native test of this
- * module; CI and the slice's verification check `skipped=0` in the JUnit report.
+ * module; the CI `android` job fails when this class, or another channel test class, reports a
+ * skipped test (review of S2b: no step read the skip counts before). `ch_sizes.txt` is not replayed
+ * here: no function of §10.2 returns a golden size, and G-M7 (the size gate) is a later slice's.
  */
 class ChannelVectorReplayTest {
 
@@ -401,12 +403,30 @@ class ChannelVectorReplayTest {
             val rs0 = Jdk.hkdf(v.hex(section, "read_base"), null, "ghost/v1/ch/read".ascii() + byteArrayOf(0))
             assertArrayEquals(byteArrayOf(3, 1, 0) + p.ns + rs0, p.slots.single().readCredential)
             assertFalse(p.jkEnv.indexOf(jk) >= 0)
-            // The wrapped join key opens a join blob sealed under the vector's key.
-            val blob = MlsVectors.call(
-                MlsVectors.SEAL, byteArrayOf(3), jk, MlsVectors.u64(0), p.ns, MlsVectors.u32(4096), byteArrayOf(0x12),
-                ByteArray(16) { 5 }, ByteArray(16), "join".ascii(),
+            // The wrapped join key is an invite's (class 6, §19.33): it opens a Welcome blob sealed
+            // under the vector's key, and seals a join request the JDK opens under that key; it is
+            // not the channel's own class 3, and it opens no join request.
+            val welcome = MlsVectors.call(
+                MlsVectors.SEAL, byteArrayOf(3), jk, MlsVectors.u64(0), p.ns, MlsVectors.u32(16384), byteArrayOf(0x13),
+                ByteArray(16) { 5 }, ByteArray(16), "welcome".ascii(),
             )[0]
-            assertArrayEquals("join".ascii(), (crypto.open(p.channelId, p.jkEnv, 3, p.ns, 0x12, blob) as MlsOutcome.Ok).value.body)
+            assertArrayEquals(
+                "welcome".ascii(),
+                (crypto.open(p.channelId, p.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, p.ns, 0x13, welcome) as MlsOutcome.Ok).value.body,
+            )
+            assertEquals(MlsCode.STATE_CORRUPT, crypto.open(p.channelId, p.jkEnv, ChannelCrypto.KEY_CLASS_JOIN, p.ns, 0x13, welcome).code)
+            val request = (
+                crypto.seal(p.channelId, p.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, p.ns, 4096, 0x12, ChannelCrypto.SealOrder.NONE, "join".ascii())
+                    as MlsOutcome.Ok
+                ).value
+            val k = Jdk.hkdf(jk, request.copyOfRange(0, 16), "ghost/v1/ch-seal".ascii() + p.ns)
+            val ad = "ghost/v1/ch-seal".ascii() + byteArrayOf(1) + p.ns + MlsVectors.u32(4096) + byteArrayOf(0x12)
+            val plain = Jdk.chachaOpen(k, ByteArray(12), ad, request.copyOfRange(32, request.size))
+            assertArrayEquals("join".ascii(), plain.copyOfRange(20, 24))
+            assertEquals(
+                MlsCode.INVALID_POLICY,
+                crypto.open(p.channelId, p.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, p.ns, 0x12, request).code,
+            )
             if (kdf == 0) {
                 // The JDK opens an open invite on its own: the salt-derived key of §19.29.3.
                 val salt = v.hex(section, "salt")

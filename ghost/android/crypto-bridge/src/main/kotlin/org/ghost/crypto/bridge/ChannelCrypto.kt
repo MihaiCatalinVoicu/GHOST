@@ -134,12 +134,7 @@ class ChannelCrypto private constructor(private val handle: Long) {
 
     /** `groupCreate` (fn 3, §6.1). */
     fun groupCreate(channelId: ByteArray, policy: ChannelPolicy, day: Int): MlsOutcome<Created> {
-        val args = policy.toRecord()
-        val reply = try {
-            mlsCall { MlsNative.groupCreate(handle, channelId, args.toByteArray(), day) }
-        } finally {
-            args.erase()
-        }
+        val reply = policy.toRecord().consume { args -> mlsCall { MlsNative.groupCreate(handle, channelId, args, day) } }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(
                 reply.fields.let {
@@ -367,10 +362,8 @@ class ChannelCrypto private constructor(private val handle: Long) {
     ): MlsOutcome<Received> {
         val list = MlsTlv()
         for (m in messages) list.put(MlsField.MESSAGE, m)
-        val reply = try {
-            mlsCall { MlsNative.receive(handle, channelId, MlsRow.encode(rows), epoch, list.toByteArray(), day) }
-        } finally {
-            list.erase()
+        val reply = list.consume { batch ->
+            mlsCall { MlsNative.receive(handle, channelId, MlsRow.encode(rows), epoch, batch, day) }
         }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(
@@ -503,11 +496,8 @@ class ChannelCrypto private constructor(private val handle: Long) {
         request: CommitRequest,
         day: Int,
     ): MlsOutcome<Committed> {
-        val args = request.toRecord()
-        val reply = try {
-            mlsCall { MlsNative.commit(handle, channelId, MlsRow.encode(rows), args.toByteArray(), day) }
-        } finally {
-            args.erase()
+        val reply = request.toRecord().consume { args ->
+            mlsCall { MlsNative.commit(handle, channelId, MlsRow.encode(rows), args, day) }
         }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(
@@ -593,7 +583,11 @@ class ChannelCrypto private constructor(private val handle: Long) {
         }
     }
 
-    /** `seal` (fn 11): [keyClass] [KEY_CLASS_EPOCH] with mode 0x11, [KEY_CLASS_JOIN] with 0x12, 0x13. */
+    /**
+     * `seal` (fn 11): [keyClass] [KEY_CLASS_EPOCH] with mode 0x11, [KEY_CLASS_JOIN] with 0x12 and
+     * 0x13, [KEY_CLASS_INVITE_JOIN] with 0x12 (the invitee's request); `open` takes the same keys,
+     * an invite's for 0x13 only (the invitee's Welcome).
+     */
     fun seal(
         channelId: ByteArray,
         keyEnv: ByteArray,
@@ -731,17 +725,19 @@ class ChannelCrypto private constructor(private val handle: Long) {
         carryName: Boolean,
         day: Int,
     ): MlsOutcome<InviteBuilt> {
-        val bytes = password?.let { ChannelPassword.nfkdUtf8(it) ?: return unencodablePassword() }
         val kdfCode = if (password == null) 0 else ChannelInvite.KDF_ARGON2ID_P0
-        val reply = try {
+        val call = { bytes: ByteArray? ->
             mlsCall {
                 MlsNative.inviteBuild(
                     handle, channelId, MlsRow.encode(rows), gEnv, generation, expiryDay, kdfCode, bytes,
                     if (carryName) 1 else 0, day,
                 )
             }
-        } finally {
-            bytes?.fill(0)
+        }
+        val reply = if (password == null) {
+            call(null)
+        } else {
+            ChannelPassword.withNfkdUtf8(password) { bytes -> call(bytes) } ?: return unencodablePassword()
         }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(
@@ -791,7 +787,11 @@ class ChannelCrypto private constructor(private val handle: Long) {
         val expiryDay: Long,
         /** The name (empty unless the sponsor carried it). */
         val name: ByteArray,
-        /** `JK_g` wrapped under this context, bound to the invite's channel. */
+        /**
+         * `JK_g` wrapped under this context, bound to the invite's channel, in its own class
+         * ([KEY_CLASS_INVITE_JOIN]): it seals the join request and opens the Welcome blob, and never
+         * passes for a member's own `JK_g`.
+         */
         val jkEnv: ByteArray,
         /** `R_join(g)`. */
         val rJoin: ByteArray,
@@ -808,11 +808,11 @@ class ChannelCrypto private constructor(private val handle: Long) {
      * Argon2id runs; with one, the facade builds the NFKD UTF-8 bytes and zeroes them after the call.
      */
     fun inviteParse(invite: ByteArray, password: CharArray?, slots: ByteArray): MlsOutcome<InviteParsed> {
-        val bytes = password?.let { ChannelPassword.nfkdUtf8(it) ?: return unencodablePassword() }
-        val reply = try {
-            mlsCall { MlsNative.inviteParse(handle, invite, bytes, slots) }
-        } finally {
-            bytes?.fill(0)
+        val reply = if (password == null) {
+            mlsCall { MlsNative.inviteParse(handle, invite, null, slots) }
+        } else {
+            ChannelPassword.withNfkdUtf8(password) { bytes -> mlsCall { MlsNative.inviteParse(handle, invite, bytes, slots) } }
+                ?: return unencodablePassword()
         }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(
@@ -1002,14 +1002,10 @@ class ChannelCrypto private constructor(private val handle: Long) {
     ): MlsOutcome<Trial> {
         val list = MlsTlv()
         for (h in held) list.record(MlsField.HELD, MlsTlv().put(MlsField.NS, h.ns).put(MlsField.BLOB, h.blob))
-        val reply = try {
+        val reply = list.consume { blobs ->
             mlsCall {
-                MlsNative.trialCount(
-                    handle, channelId, MlsRow.encode(rows), candidate.kind, candidate.bytes, list.toByteArray(), day,
-                )
+                MlsNative.trialCount(handle, channelId, MlsRow.encode(rows), candidate.kind, candidate.bytes, blobs, day)
             }
-        } finally {
-            list.erase()
         }
         return when (reply.code) {
             MlsCode.OK -> MlsOutcome.Ok(
@@ -1030,6 +1026,15 @@ class ChannelCrypto private constructor(private val handle: Long) {
 
         /** `keyClass` of `JK_g` (modes 0x12, 0x13). */
         const val KEY_CLASS_JOIN: Int = 3
+
+        /**
+         * `keyClass` of `JK_g` as an invite carries it ([InviteParsed.jkEnv]; review of S2b,
+         * §19.33): it seals the invitee's request (mode 0x12) and opens its Welcome blob (0x13); the
+         * native side refuses it for any other mode (`INVALID_POLICY`), and the envelope never opens
+         * as [KEY_CLASS_JOIN] (`STATE_CORRUPT`) — an invite anyone can write for any channel never
+         * stands in for the channel's own `JK_g`.
+         */
+        const val KEY_CLASS_INVITE_JOIN: Int = 6
 
         /** The seal modes of §5.6. */
         const val MODE_EPOCH: Int = 0x11
@@ -1054,12 +1059,8 @@ class ChannelCrypto private constructor(private val handle: Long) {
 
         /** `contentEncode` (fn 17): the canonical `ChannelContent`. */
         fun contentEncode(content: ChannelContentFields): MlsOutcome<ByteArray> {
-            val args = content.toRecord()
-            val reply = try {
-                mlsCall { MlsNative.contentEncode(args.toByteArray()) }
-            } finally {
-                args.erase()
-            }
+            // The argument is the post's plaintext: the copy the native call reads is erased too.
+            val reply = content.toRecord().consume { args -> mlsCall { MlsNative.contentEncode(args) } }
             return when (reply.code) {
                 MlsCode.OK -> MlsOutcome.Ok(reply.fields.bytes(MlsField.ENCODED))
                 MlsCode.NON_CANONICAL, MlsCode.CRYPTO_UNAVAILABLE -> refused(reply)

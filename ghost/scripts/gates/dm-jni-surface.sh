@@ -97,20 +97,21 @@ grep 'Availability::Exported' "$work/entries" \
   | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/expected"
 
 # The names the export macro really emits: the macro arms of the closed-list file, and every other
-# Rust source of the scan root, so an entry point written by hand somewhere else is caught too.
-prune=(-not -path '*/target/*')
-if [ -z "${GHOST_DM_JNI_SCAN:-}" ]; then
-  prune+=(-not -path '*/test-harness/*')
+# Rust source of the scan root, so an entry point written by hand somewhere else is caught too. Read
+# as code by common.sh's jni_source_symbols — any `fn Java_…` whatever its qualifiers (`unsafe`,
+# `extern "C"`, no `pub`) or line breaks, and any string literal that is a `Java_…` symbol — over
+# jni_rust_files, which prunes a `target` or `build` directory only outside `src/` (review of S2b:
+# the first readers matched `pub extern "system" fn` on one line and filtered every `*/target/*`).
+fixtures=""
+[ -z "${GHOST_DM_JNI_SCAN:-}" ] || fixtures=with-fixtures
+{ printf '%s\n' "$SOURCE"; jni_rust_files "$SCAN" "$fixtures"; } | sort -u > "$work/rust-files"
+if ! jni_source_symbols < "$work/rust-files" > "$work/jni-scan"; then
+  fail "the JNI source reader (perl) failed: the source half is unproven"
 fi
-{
-  grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SOURCE" || true
-  if [ -d "$SCAN" ]; then
-    find "$SCAN" -name '*.rs' "${prune[@]}" -exec \
-      grep -ohE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" {} + || true
-  elif [ "$SCAN" != "$SOURCE" ]; then
-    grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SCAN" || true
-  fi
-} | sed -E "s/.*${PREFIX}//" | sort -u > "$work/emitted"
+read_n="$(sed -n 's/^JNI-FILES-READ //p' "$work/jni-scan")"
+[ "${read_n:-0}" -gt 0 ] || fail "the JNI source reader read no Rust file (the source half would pass vacuously)"
+{ grep -v '^JNI-FILES-READ ' "$work/jni-scan" || true; } | sort -u > "$work/jni-source"
+{ grep -E "^${PREFIX}" "$work/jni-source" || true; } | sed -E "s/^${PREFIX}//" | sort -u > "$work/emitted"
 
 while read -r name; do
   [ -n "$name" ] || continue
@@ -127,16 +128,8 @@ while read -r name; do
   fail "'$name' is emitted but not marked Exported on the closed list"
 done < <(comm -13 "$work/expected" "$work/emitted")
 
-# Every other JNI entry point of the scan root, under any class (GATES-3): `pub extern "system" fn
-# Java_…` whatever attributes precede it, and an `export_name` that spells one.
-{
-  if [ -d "$SCAN" ]; then
-    find "$SCAN" -name '*.rs' "${prune[@]}" -exec \
-      grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' {} + || true
-  else
-    grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' "$SCAN" "$SOURCE" || true
-  fi
-} | grep -oE 'Java_[A-Za-z0-9_]+' | sort -u | foreign_jni > "$work/foreign-source"
+# Every other JNI entry point of the scan root, under any class (GATES-3), from the same reading.
+foreign_jni < "$work/jni-source" > "$work/foreign-source"
 while read -r symbol; do
   [ -n "$symbol" ] || continue
   fail "the workspace exports the JNI entry point '$symbol', which is not a class of the JNI surfaces (common.sh GHOST_JNI_CLASSES; G-R6)"
@@ -146,10 +139,11 @@ done < "$work/foreign-source"
 # `@JvmName`: `:messaging` must go through the typed facade (§2.6, §13.1), and Kotlin mangles an
 # internal member's JVM name (`ctxClose` -> `ctxClose$crypto_bridge`), which no JNI symbol matches.
 # Both halves are checked, so tightening the visibility cannot turn into an UnsatisfiedLinkError on
-# a device, and loosening it cannot slip past review.
+# a device, and loosening it cannot slip past review. A `@JvmName` and its declaration may share a
+# line, which is read for both (review of S2b: a `next` here skipped the declaration).
 awk '
   match($0, /@JvmName\("[A-Za-z0-9]+"\)/) {
-    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR; next
+    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR
   }
   match($0, /external fun [A-Za-z0-9]+/) {
     name = substr($0, RSTART + 13, RLENGTH - 13)

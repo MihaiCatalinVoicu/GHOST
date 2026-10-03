@@ -279,9 +279,11 @@ jobs:
       # G-R3 (Phase 9 design §16.1, §22.33): cargo-ndk prints no cargo messages, so the detector reads
       # the build-script outputs of the second build, which ran in a removed-then-recreated target
       # directory after build-native.sh's libcrux clean: exactly one output per package and triple.
+      # `--with-aes` (G-M9): since slice S2b the shipped library links the OpenMLS provider, whose
+      # libcrux-aes must be in both builds and portable (review of S2b: this step still omitted it).
       - name: G-R3 portable libcrux in both shipped triples
         run: |
-          bash scripts/gates/libcrux-portable.sh \
+          bash scripts/gates/libcrux-portable.sh --with-aes \
             --target-dir target/android-native/aarch64-linux-android/release \
             --target-dir target/android-native/x86_64-linux-android/release
       # G-R7 (c) (§2.9, V-9): the shipped libraries hold Olm's KDF labels and none of the strings of the
@@ -368,9 +370,18 @@ jobs:
         run: |
           cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
-          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       - run: ./gradlew build --no-daemon -Dghost.dm.native="$GHOST_DM_NATIVE"
+      # The channel JVM tests skip themselves without the host library (`assumeTrue`, like the DM
+      # ones), so a lost `-Dghost.dm.native` would leave this job green with nothing run (review of
+      # S2b). Each class must have reported, with no test skipped.
+      - name: the channel JVM tests ran (skipped="0")
+        run: |
+          for c in MlsResultCodesTest ChannelCodecTest ChannelVectorReplayTest MlsHandleLifecycleTest ChannelCryptoNativeTest; do
+            f="crypto-bridge/build/test-results/testDebugUnitTest/TEST-org.ghost.crypto.bridge.$c.xml"
+            grep -q 'skipped="0"' "$f" || { echo "$c: no report, or a skipped test ($f)" >&2; exit 1; }
+          done
       # A failed test's message and stack trace in the job summary: the test reports are not uploaded.
       - name: failed tests (job summary)
         if: failure()

@@ -180,7 +180,8 @@ object MlsNative {
         day: Int,
     ): ByteArray?
 
-    // Function 11: `keyClass` 1 (`K_ep`, mode 0x11) or 3 (`JK_g`, modes 0x12 and 0x13).
+    // Function 11: `keyClass` 1 (`K_ep`, mode 0x11), 3 (`JK_g`, modes 0x12 and 0x13) or 6 (an
+    // invite's `JK_g`: it seals mode 0x12 and, in `open`, opens mode 0x13 only).
     @JvmStatic
     @JvmName("seal")
     internal external fun seal(

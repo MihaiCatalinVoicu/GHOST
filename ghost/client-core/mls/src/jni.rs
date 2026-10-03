@@ -28,12 +28,16 @@
 //!
 //! **The registry.** A handle names one context — the crypto provider and the state key — behind
 //! a pointer (Phase 9 review CRY-P9-02: a registry that held contexts by value left their secrets
-//! in the hash table's buckets after `ctxClose`), and each channel opened on it holds its
+//! in the hash table's buckets after `ctxClose`) with its own lock (review of S2b: calls on
+//! different contexts never wait for each other), and each channel opened on it holds its
 //! pseudonym signer behind a pointer too. `ctxClose` and `channelClose` drop them in place, which
 //! runs every key's `ZeroizeOnDrop` (the state key, the pseudonym seed's signing key, the
-//! provider's HMAC-DRBG state) before the allocation is freed. A closed or foreign handle, and a
-//! channel not open on the handle, are [`Code::CryptoUnavailable`]: the native state the call
-//! needs is not there (a lock or a wipe closed it), never a crash.
+//! provider's HMAC-DRBG state) before the allocation is freed. A closed or foreign handle is
+//! [`Code::CryptoUnavailable`], and so is a channel not open on the handle for the thirteen
+//! functions that run on an open channel (its signer or its MLS state); `seal`, `open`,
+//! `generation`, `inviteParse`, `joinRequest` and `joinVerify` take envelopes bound to a channel id
+//! and need no open channel. The native state a call needs is not there (a lock or a wipe closed
+//! it), never a crash.
 //!
 //! **The closed list.** [`CLOSED_LIST`] is §10.2's table; G-M6 checks both directions — no export
 //! outside the list, every entry marked [`Availability::Exported`] exported by every library it
@@ -42,7 +46,7 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, MutexGuard, Once, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, Once, OnceLock, PoisonError};
 
 use jni::objects::{JByteArray, JClass};
 use jni::sys::{jbyteArray, jint, jlong};
@@ -109,9 +113,10 @@ pub const CLOSED_LIST: &[(u8, &str, Availability)] = &[
 
 /// The codes each exported function can return besides [`Code::Ok`]: §10.2's protocol codes and
 /// the codes the JNI layer itself produces — [`Code::NonCanonical`] for an argument of the wrong
-/// width or form (a negative day, a malformed field list), [`Code::InvalidKey`] for a key input of
-/// the wrong length, [`Code::CryptoUnavailable`] for a closed or foreign handle or a channel not
-/// open on it, [`Code::StateCorrupt`] for a row or an envelope that does not open. A `receive`
+/// width or form (a negative day, a malformed field list, a slot named twice), [`Code::InvalidKey`]
+/// for a key input of the wrong length, [`Code::CryptoUnavailable`] for a closed or foreign handle
+/// or, where the function runs on an open channel, a channel not open on it,
+/// [`Code::StateCorrupt`] for a row or an envelope that does not open. A `receive`
 /// item's own code travels inside its record (`ITEM`), not here. [`Code::Internal`] is not listed:
 /// it is a caught panic, it belongs to every function, and it is the one outcome the typed facade
 /// throws on. `MlsResultCodesTest` reads this table and checks the facade's arms against it.
@@ -1176,11 +1181,16 @@ fn content_in(b: &[u8]) -> MlsResult<ChannelContent> {
     {
         return Err(nc());
     }
-    let utf8 = |v: &[u8]| String::from_utf8(v.to_vec()).map_err(|_| nc());
+    // The header first, and a value checked before it is copied: no refusal leaves a copy of a post
+    // outside the content, which erases its own when dropped (review of S2b).
+    let op_id = f.fixed(Field::OpId)?;
+    let author_minute = f.u32(Field::AuthorMinute)?;
+    let timer_code = f.u8(Field::TimerCode)?;
+    let utf8 = |v: &[u8]| core::str::from_utf8(v).map(str::to_owned).map_err(|_| nc());
     let body = match kind {
         crate::content::KIND_POST => Body::Post {
-            text: utf8(f.req(Field::Text)?)?,
             reply_to: f.opt_fixed(Field::ReplyTo)?,
+            text: utf8(f.req(Field::Text)?)?,
         },
         crate::content::KIND_REACTION => Body::Reaction {
             target: f.fixed(Field::Target)?,
@@ -1202,9 +1212,9 @@ fn content_in(b: &[u8]) -> MlsResult<ChannelContent> {
     };
     Ok(ChannelContent {
         kind,
-        op_id: f.fixed(Field::OpId)?,
-        author_minute: f.u32(Field::AuthorMinute)?,
-        timer_code: f.u8(Field::TimerCode)?,
+        op_id,
+        author_minute,
+        timer_code,
         body,
     })
 }
@@ -1525,8 +1535,11 @@ struct MlsJni {
     channels: HashMap<[u8; 32], Box<ChannelHandle>>,
 }
 
-/// One registry entry: the context **behind a pointer** (CRY-P9-02, see the module header).
-type ContextSlot = Box<MlsJni>;
+/// One registry entry: the context **behind a pointer** (CRY-P9-02, see the module header) with
+/// **its own lock** (review of S2b: one process-wide lock held across every call made `ctxClose`
+/// of one context wait behind another context's Argon2id or commit). The registry's own lock is
+/// held only to find or change an entry.
+type ContextSlot = Arc<Mutex<MlsJni>>;
 
 type Registry = HashMap<i64, ContextSlot>;
 
@@ -1535,11 +1548,11 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The registry guard, **recovered from poisoning**: a panic caught by [`guarded`] unwinds
-/// through it, and treating the poisoned mutex as an error would make every later call —
-/// `ctxClose` included — `INTERNAL` for the life of the process. The map cannot be left
-/// half-written by such a panic: inserts and removes run no user code under the guard, and a
-/// call body only reads the context and the channel map.
+/// The registry guard, **recovered from poisoning**, like each context's own guard: a panic caught
+/// by [`guarded`] unwinds through the context's guard, and treating a poisoned mutex as an error
+/// would make every later call on it — `ctxClose` included — `INTERNAL` for the life of the
+/// process. Neither map can be left half-written by such a panic: inserts and removes run no user
+/// code under a guard, and a call body only reads the context and its channel map.
 fn registry_lock() -> MutexGuard<'static, Registry> {
     registry().lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -1555,25 +1568,29 @@ fn next_handle() -> i64 {
 
 fn insert_context(context: MlsJni) -> i64 {
     let handle = next_handle();
-    registry_lock().insert(handle, Box::new(context));
+    registry_lock().insert(handle, Arc::new(Mutex::new(context)));
     handle
 }
 
-/// Removes a context; dropping its slot zeroises it in place. False for a closed or foreign
-/// handle.
-fn remove_context(registry: &mut Registry, handle: i64) -> bool {
-    registry.remove(&handle).is_some()
+/// Removes a context from the registry: no later call finds it. Dropping the last reference
+/// zeroises it in place — here, or when a call that is still running on it on another thread
+/// returns. False for a closed or foreign handle.
+fn remove_context(handle: i64) -> bool {
+    // The registry's guard is a temporary of this statement: the context is dropped after it.
+    let slot = registry_lock().remove(&handle);
+    slot.is_some()
 }
 
 /// Runs `body` with the named context, or reports `CRYPTO_UNAVAILABLE` for a closed or foreign
-/// handle. The guard is held across the body (channel calls arrive on the messaging actor's one
-/// thread, §10.1), so no secret is copied out of the registry.
+/// handle. The context's own guard is held across the body, the registry's only while the entry is
+/// found, so calls on different contexts never wait for each other and no secret is copied out.
 fn with_context<T>(handle: jlong, body: impl FnOnce(&mut MlsJni) -> MlsResult<T>) -> MlsResult<T> {
-    let mut guard = registry_lock();
-    let slot = guard
-        .get_mut(&handle)
+    let slot = registry_lock()
+        .get(&handle)
+        .cloned()
         .ok_or(MlsError::new(Code::CryptoUnavailable))?;
-    body(slot)
+    let mut context = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    body(&mut context)
 }
 
 /// [`with_context`] for a channel open on the handle; a channel not open there is
@@ -1607,8 +1624,10 @@ pub fn quiet_panics() {
 }
 
 /// Runs a JNI body and turns its outcome into the reply array: a panic becomes `INTERNAL`, an
-/// error its code and detail. A failure to allocate the reply array leaves a null return, which
-/// Kotlin reads as `INTERNAL`. The reply is erased once the Java array holds its copy.
+/// error its code and detail. The reply is erased once the Java array holds its copy. A reply the
+/// JVM cannot allocate returns null with the JVM's `OutOfMemoryError` pending, so the Kotlin call
+/// **throws** it (measured by the review of S2b at `-Xmx48m`): an out-of-memory heap is the VM's
+/// condition, not a channel code, and nothing here clears it.
 fn guarded(env: &mut JNIEnv, body: impl FnOnce(&mut JNIEnv) -> MlsResult<Vec<u8>>) -> jbyteArray {
     quiet_panics();
     let reply = Zeroizing::new(match catch_unwind(AssertUnwindSafe(|| body(env))) {
@@ -1718,9 +1737,10 @@ pub fn ctx_open(env: &mut JNIEnv, state_key: &JByteArray) -> MlsResult<Vec<u8>> 
 }
 
 /// fn 1 `ctxClose(h)`: drops the context and every channel opened on it in place (their keys
-/// zeroize on drop); a second close is `CRYPTO_UNAVAILABLE`, never a crash.
+/// zeroize on drop) — at once, or as soon as a call still running on it on another thread returns;
+/// no later call finds it. A second close is `CRYPTO_UNAVAILABLE`, never a crash.
 pub fn ctx_close(handle: jlong) -> MlsResult<Vec<u8>> {
-    if !remove_context(&mut registry_lock(), handle) {
+    if !remove_context(handle) {
         return Err(MlsError::new(Code::CryptoUnavailable));
     }
     Ok(Tlv::ok().into_bytes())
@@ -2088,8 +2108,8 @@ pub fn encrypt(
 }
 
 /// fn 11 `seal(h, channelId, keyEnv, keyClass, ns, bucket, mode, orderEpoch, orderLeaf, orderSeq,
-/// body)`: `keyClass` 1 (`K_ep`, mode 0x11) or 3 (`JK_g`, modes 0x12 and 0x13); the salt from the
-/// provider's CSPRNG.
+/// body)`: `keyClass` 1 (`K_ep`, mode 0x11), 3 (`JK_g`, modes 0x12 and 0x13) or 6 (an invite's
+/// `JK_g`, mode 0x12 only; review of S2b, §19.33); the salt from the provider's CSPRNG.
 #[allow(clippy::too_many_arguments)]
 pub fn seal(
     env: &mut JNIEnv,
@@ -2136,7 +2156,7 @@ pub fn seal(
 
 /// fn 12 `open(h, channelId, keyEnv, keyClass, ns, mode, blob)`: the order and the body, and for
 /// mode 0x11 the PrivateMessage header's epoch and content type and, for an application message,
-/// its `ChannelOrder` (CS-S7).
+/// its `ChannelOrder` (CS-S7). An invite's `JK_g` (class 6) opens mode 0x13 only.
 #[allow(clippy::too_many_arguments)]
 pub fn open(
     env: &mut JNIEnv,
@@ -2182,7 +2202,7 @@ pub fn open(
 }
 
 /// fn 13 `generation(h, channelId, gEnv, generation, openEpoch, slots)`: `slots` one byte per
-/// relay slot.
+/// relay slot, each at most once (`NON_CANONICAL`; review of S2b).
 pub fn generation(
     env: &mut JNIEnv,
     handle: jlong,
@@ -2258,8 +2278,9 @@ pub fn invite_build(
 }
 
 /// fn 14 `inviteParse(h, invite, password, slots)`: the invite's public fields, its secrets
-/// wrapped under the state key (`JK_ENV`, `INVITE_SEED_ENV`), `R_JOIN` and the credentials of
-/// `slots`. Without a password a password invite is `PASSWORD_REQUIRED` and no Argon2id runs.
+/// wrapped under the state key (`JK_ENV` in class 6, `INVITE_SEED_ENV`), `R_JOIN` and the
+/// credentials of `slots` (each at most once). Without a password a password invite is
+/// `PASSWORD_REQUIRED` and no Argon2id runs.
 pub fn invite_parse(
     env: &mut JNIEnv,
     handle: jlong,
@@ -3296,7 +3317,13 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
             .expect("the export macro is in this file");
-        let prefix = concat!("pub extern \"system\" fn ", "Java_org_ghost_crypto_bridge_");
+        // Spelled in pieces: no string literal of this file is a JNI symbol, which G-M6's source
+        // half reads as one (review of S2b).
+        let prefix = concat!(
+            "pub extern \"system\" fn ",
+            "Java",
+            "_org_ghost_crypto_bridge_"
+        );
         let mut names: Vec<String> = macro_body
             .split(prefix)
             .skip(1)
@@ -3525,5 +3552,65 @@ mod tests {
             with_channel(handle, &[0; 32], |_, _| Ok(())).err(),
             Some(MlsError::new(Code::CryptoUnavailable))
         );
+    }
+
+    /// Each context has its own lock (review of S2b): while a call holds one context — a commit or
+    /// an Argon2id can take seconds on a phone —, a call on another context and `ctxClose` of a
+    /// third run at once; and a context closed during a call on it stays valid for that call and
+    /// is gone for the next.
+    #[test]
+    fn calls_on_different_contexts_never_wait_for_each_other() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let open = |k: u8| {
+            insert_context(MlsJni {
+                ctx: MlsContext::open(StateKey::from_bytes([k; 32])).expect("context"),
+                channels: HashMap::new(),
+            })
+        };
+        let (busy, other, closing) = (open(0x31), open(0x32), open(0x33));
+        let (entered_tx, entered) = channel();
+        let (release, release_rx) = channel::<()>();
+        let holder = std::thread::spawn(move || {
+            with_context(busy, |_| {
+                entered_tx.send(()).expect("signal");
+                // Hold the context until the test lets go (or a minute: never in a passing run).
+                let _ = release_rx.recv_timeout(Duration::from_secs(60));
+                Ok(())
+            })
+        });
+        entered.recv().expect("the holder is inside its call");
+        let (done_tx, done) = channel();
+        let other_thread = std::thread::spawn(move || {
+            let r = (
+                with_context(other, |_| Ok(())),
+                ctx_close(closing).map(drop),
+                ctx_close(busy).map(drop),
+            );
+            done_tx.send(r).expect("report");
+        });
+        // With one lock for every context these three wait for the holder, which waits for us.
+        let finished = done.recv_timeout(Duration::from_secs(20));
+        release.send(()).expect("release");
+        let (other_ok, close_ok, busy_close) =
+            finished.expect("a call on another context waited for a busy one");
+        assert_eq!(other_ok, Ok(()));
+        assert_eq!(close_ok, Ok(()));
+        assert_eq!(busy_close, Ok(()), "a context in use can be closed");
+        assert_eq!(
+            holder.join().expect("holder"),
+            Ok(()),
+            "the running call finished"
+        );
+        other_thread.join().expect("other thread");
+        assert_eq!(
+            with_context(busy, |_| Ok(())).err(),
+            Some(MlsError::new(Code::CryptoUnavailable))
+        );
+        assert_eq!(
+            with_context(closing, |_| Ok(())).err(),
+            Some(MlsError::new(Code::CryptoUnavailable))
+        );
+        assert!(ctx_close(other).is_ok());
     }
 }

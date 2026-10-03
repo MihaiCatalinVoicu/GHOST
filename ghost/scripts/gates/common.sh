@@ -76,6 +76,44 @@ GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEq
 # closed-list classes and the network classes. Test-only declarations (`DmEquivalence`, `MlsVectors`)
 # live in test source sets, which no production half reads.
 GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt"
+# The Rust files the surface gates read under $1 (a directory, or one file): build outputs pruned —
+# a `target` or `build` directory **outside every `src/`**, so a module directory of either name is
+# code and is read (Phase 10 review of S2a F4, review of S2b) — and `.gradle`; the gates' own
+# fixtures (`test-harness/`) too, unless $2 is "with-fixtures" (a fixture is the scan root).
+jni_rust_files() { # $1 = scan root, $2 = "with-fixtures" or empty
+  local fixtures=(-o -name test-harness)
+  [ "${2:-}" = with-fixtures ] && fixtures=()
+  if [ -d "$1" ]; then
+    find "$1" -type d \( \( -name target -o -name build \) -not -path '*/src/*' -o -name .gradle "${fixtures[@]}" \) \
+      -prune -o -type f -name '*.rs' -print 2>/dev/null || true
+  elif [ -f "$1" ]; then
+    printf '%s\n' "$1"
+  fi
+}
+# Every JNI symbol a set of Rust files writes (G-R6, G-M6; review of S2b), read as code with every
+# comment blanked (source-text.pl): a function named `Java_…` **whatever precedes its `fn`** —
+# `pub` or not, `unsafe`, `extern "system"` or `extern "C"` — and wherever its name falls (a line
+# break after `fn`, a raw identifier); and **a string literal that is exactly a `Java_…` symbol** (an
+# `export_name`, or a macro argument that becomes one). S2b's first readers matched
+# `pub extern "system" fn Java_…` and `export_name = "Java_…"` on one line, and five spellings the
+# compiler exports passed them. Reads file paths on stdin, one per line; prints one symbol per line
+# and then `JNI-FILES-READ <n>`; fails when perl does, so a caller can tell "nothing written" from
+# "nothing read". A name computed at compile time (`concat!` in an attribute, a procedural macro) is
+# not seen here: each gate's library half reads what the linker exported.
+jni_source_symbols() {
+  GATES="$GATES_DIR" perl -e '
+    require "$ENV{GATES}/source-text.pl";
+    my $n = 0;
+    while (my $f = <STDIN>) {
+      chomp $f;
+      next unless length $f;
+      my ($w) = views(read_text($f), "rust");
+      $n++;
+      print "$1\n" while $w =~ /\bfn\s+(?:r#)?(Java_[A-Za-z0-9_]+)/g;
+      print "$1\n" while $w =~ /"(Java_[A-Za-z0-9_]+)"/g;
+    }
+    print "JNI-FILES-READ $n\n";'
+}
 # Prints the `Java_…` symbols of stdin that belong to no class of GHOST_JNI_CLASSES.
 jni_foreign() {
   local alt

@@ -85,20 +85,29 @@ object ChannelInvite {
 
 /**
  * The channel password as it crosses the JNI boundary (§10.2 fn 14, §19.29.3): the NFKD UTF-8
- * bytes of what the user typed, built from a `CharArray` — never a `String`, which is immutable
- * and cannot be zeroed — and zeroed by the facade after the native call.
+ * bytes of what the user typed, built from a `CharArray` — never a `String` of our own, which is
+ * immutable and cannot be zeroed — and zeroed by the facade after the native call
+ * ([withNfkdUtf8]).
  */
 object ChannelPassword {
+
+    /** The most UTF-8 bytes one UTF-16 unit needs (a surrogate pair's two units make four). */
+    private const val UTF8_MAX_BYTES_PER_CHAR: Int = 3
 
     /**
      * The NFKD form of [password], UTF-8 encoded, in an array the caller zeroes after use.
      *
-     * NFKD of ASCII is ASCII, so an ASCII password (the app-generated passphrase Q44 proposes) never
-     * becomes a `String`. Any other password goes through `java.text.Normalizer`, which accepts a
-     * `CharSequence` but returns a `String`: that one normalized copy is immutable and stays on the
-     * heap until the collector reclaims it — the JDK offers no normalizer into a caller's buffer,
-     * and the native side has no Unicode tables (a recorded residue, §19.32). An unpaired surrogate
-     * is refused (`null`) rather than replaced, so two different typed passwords never encode alike.
+     * NFKD of ASCII is ASCII, so an ASCII password (the app-generated passphrase Q44 proposes) is
+     * encoded straight from the caller's array and leaves no copy behind. Any other password goes
+     * through `java.text.Normalizer`, and **its copies are a recorded residue** (§19.33; measured
+     * by the review of S2b with heap dumps, HotSpot 17): `normalize` turns its `CharSequence` into a
+     * `String` of the typed password (JDK 17 calls `toString()` on it) and builds the NFKD form in a
+     * builder and a result `String` — immutable copies that stay on the heap until the collector
+     * reclaims them. The JDK has no normalizer into a caller's buffer, and the native side has no
+     * Unicode tables. The encoding itself leaves nothing: it writes into a buffer sized for the
+     * worst case and zeroed after ([encodeUtf8]; the JDK encoder's own buffer grew and dropped the
+     * outgrown one unzeroed). An unpaired surrogate is refused (`null`) rather than replaced, so two
+     * different typed passwords never encode alike.
      */
     fun nfkdUtf8(password: CharArray): ByteArray? {
         var i = 0
@@ -119,13 +128,41 @@ object ChannelPassword {
         } else {
             CharBuffer.wrap(Normalizer.normalize(CharBuffer.wrap(password), Normalizer.Form.NFKD))
         }
-        val encoder = Charsets.UTF_8.newEncoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-        val encoded: ByteBuffer = encoder.encode(chars)
-        val out = ByteArray(encoded.remaining())
-        encoded.get(out)
-        if (encoded.hasArray()) encoded.array().fill(0)
-        return out
+        return encodeUtf8(chars, ByteBuffer.allocate(UTF8_MAX_BYTES_PER_CHAR * chars.remaining()))
+    }
+
+    /**
+     * Runs [call] with the NFKD UTF-8 bytes of [password] and zeroes them afterwards, however
+     * [call] ends — what the facade hands `inviteBuild` and `inviteParse`; `null`, with no call, for
+     * a password [nfkdUtf8] refuses. [password] itself stays the caller's.
+     */
+    internal inline fun <T : Any> withNfkdUtf8(password: CharArray, call: (ByteArray) -> T): T? {
+        val bytes = nfkdUtf8(password) ?: return null
+        try {
+            return call(bytes)
+        } finally {
+            bytes.fill(0)
+        }
+    }
+
+    /**
+     * [chars] as UTF-8, copied out at its exact length, through [scratch] — a heap buffer of at least
+     * [UTF8_MAX_BYTES_PER_CHAR] bytes per char, so the encoder never grows it — which is zeroed
+     * however the encoding ends. `null` for input UTF-8 cannot encode, or a [scratch] too small.
+     */
+    internal fun encodeUtf8(chars: CharBuffer, scratch: ByteBuffer): ByteArray? {
+        try {
+            val encoder = Charsets.UTF_8.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+            if (!encoder.encode(chars, scratch, true).isUnderflow) return null
+            if (!encoder.flush(scratch).isUnderflow) return null
+            val out = ByteArray(scratch.position())
+            scratch.flip()
+            scratch.get(out)
+            return out
+        } finally {
+            scratch.array().fill(0)
+        }
     }
 }

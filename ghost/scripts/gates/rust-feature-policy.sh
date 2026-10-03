@@ -55,7 +55,9 @@
 # GHOST_POLICY_HOST_ONLY_EXTRA adds a package that must stay out of the shipped graphs,
 # GHOST_POLICY_SHIPPED_CONFIGS replaces the build configurations that must not name the backend cfg,
 # and GHOST_POLICY_ROOT_MANIFEST / GHOST_POLICY_LOCK replace the manifest and lock whose [patch],
-# [replace] and sources are checked (review of S2a, F7).
+# [replace] and sources are checked (review of S2a, F7); GHOST_POLICY_SHIPPED_MLS names the package
+# the shipped graph must hold and GHOST_POLICY_MLS_SHIPPED_ALLOWED replaces the features it may carry
+# there (S2b's two clauses, given fixtures by the review of S2b).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
 cd "$GHOST_ROOT"
@@ -239,8 +241,9 @@ done <<< "$(graph_features ghost-client-mls ghost-client-mls)"
 # graph the crate must be present (or the clauses above would be vacuous for the shipped library)
 # and carry `jni-bridge` and nothing else of its own — `test-vectors`, the JDK replay's entry point,
 # belongs to ghost-dm-host alone (G-M6 refuses a shipped library that exports it).
-has "$pkgs" ghost-client-mls || fail "package 'ghost-client-mls' is not in the shipped client graph: slice S2b links it (G-M2, G-M6)"
-mls_allowed="default jni-bridge"
+shipped_mls="${GHOST_POLICY_SHIPPED_MLS:-ghost-client-mls}"
+has "$pkgs" "$shipped_mls" || fail "package '$shipped_mls' is not in the shipped client graph: slice S2b links it (G-M2, G-M6)"
+mls_allowed="${GHOST_POLICY_MLS_SHIPPED_ALLOWED:-default jni-bridge}"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   if ! grep -qx "$f" <<< "$(printf '%s\n' $mls_allowed)"; then

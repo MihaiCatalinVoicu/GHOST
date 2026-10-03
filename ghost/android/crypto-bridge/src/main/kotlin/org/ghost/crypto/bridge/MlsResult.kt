@@ -288,6 +288,11 @@ enum class MlsField(val tag: Int, val repeatable: Boolean = false, val record: B
  * One decoded field list: the fields in wire order, every record among them already decoded and
  * checked. Accessors throw `IllegalStateException` for a missing field or a value of the wrong
  * width: the only producer is GHOST's own native code, so either means the two sides disagree.
+ *
+ * **One copy of each value.** A record field keeps its decoded record only, never its raw bytes
+ * too (review of S2b: a received post's text was held three times — in its `ITEM`'s bytes, its
+ * `CONTENT`'s bytes and its `TEXT` —, so erasing the one the caller owns left two). A value's
+ * array is the one the accessor returns, so its owner's erasure reaches the only copy.
  */
 class MlsRecord internal constructor(
     private val fields: List<Pair<MlsField, ByteArray>>,
@@ -296,15 +301,26 @@ class MlsRecord internal constructor(
     /** Whether the list carries [field]. */
     fun has(field: MlsField): Boolean = fields.any { it.first == field }
 
-    /** The raw bytes of a field, or `null`. */
-    fun bytesOrNull(field: MlsField): ByteArray? = fields.firstOrNull { it.first == field }?.second
+    /** The raw bytes of a field, or `null`; a record field is read with [record]. */
+    fun bytesOrNull(field: MlsField): ByteArray? {
+        check(!field.record) { "${field.name} is a record: read it with record()" }
+        return fields.firstOrNull { it.first == field }?.second
+    }
 
     /** The raw bytes of a field; a missing field is a surface disagreement. */
     fun bytes(field: MlsField): ByteArray =
         bytesOrNull(field) ?: throw IllegalStateException("channel reply is missing ${field.name}")
 
-    /** Every value of a repeatable field, in order. */
-    fun all(field: MlsField): List<ByteArray> = fields.filter { it.first == field }.map { it.second }
+    /** Every value of a repeatable field, in order; a record field is read with [records]. */
+    fun all(field: MlsField): List<ByteArray> {
+        check(!field.record) { "${field.name} is a record: read it with records()" }
+        return fields.filter { it.first == field }.map { it.second }
+    }
+
+    /** Every array this list and its records hold, depth first: what an owner must erase. */
+    internal fun values(): List<ByteArray> = fields.indices.flatMap { i ->
+        listOf(fields[i].second) + (records[i]?.values() ?: emptyList())
+    }
 
     /** A one-byte field as an unsigned int. */
     fun byte(field: MlsField): Int = sized(field, 1)[0].toInt() and 0xff
@@ -381,8 +397,10 @@ class MlsRecord internal constructor(
                 if (!field.repeatable && fields.any { it.first == field }) return null
                 if (field.record) {
                     records[fields.size] = parse(bytes, offset, end) ?: return null
+                    fields.add(field to NO_VALUE)
+                } else {
+                    fields.add(field to bytes.copyOfRange(offset, end))
                 }
-                fields.add(field to bytes.copyOfRange(offset, end))
                 offset = end
             }
             return MlsRecord(fields, records)
@@ -390,6 +408,9 @@ class MlsRecord internal constructor(
 
         /** An empty list. */
         val EMPTY: MlsRecord = MlsRecord(emptyList(), emptyMap())
+
+        /** What a record field holds beside its decoded record: nothing (one copy of each value). */
+        private val NO_VALUE = ByteArray(0)
     }
 }
 
@@ -399,8 +420,9 @@ class MlsRecord internal constructor(
  *
  * Decoding is strict — a truncated reply, an overrun, an unknown tag, a repeated scalar, a
  * malformed record — and its failure is [MlsCode.STATE_CORRUPT]: the only producer of these bytes is
- * GHOST's own native code. A `null` or empty reply is [MlsCode.INTERNAL] (the native side could not
- * allocate it).
+ * GHOST's own native code. A `null` or empty reply is [MlsCode.INTERNAL]; the native side never
+ * returns one. A reply the JVM cannot allocate is not a code: the call **throws** the JVM's
+ * `OutOfMemoryError`, which the facade does not catch (measured by the review of S2b at `-Xmx48m`).
  */
 class MlsReply private constructor(
     /** The result code. */
@@ -451,8 +473,8 @@ class MlsReply private constructor(
 /**
  * A field list under construction, for the arguments that carry lists or records (`rows`, a batch
  * of messages, a policy, a commit request, a content). The buffer grows by hand and erases the
- * array it outgrew, and [erase] clears it once the native call has its copy: a content argument is
- * a post's plaintext.
+ * array it outgrew, and [consume] hands a native call its copy and erases both afterwards: a content
+ * argument is a post's plaintext.
  */
 class MlsTlv {
     private var buffer = ByteArray(64)
@@ -496,13 +518,29 @@ class MlsTlv {
         return this
     }
 
-    /** A copy of the list. */
+    /** A copy of the list; the caller erases it (see [consume]). */
     fun toByteArray(): ByteArray = buffer.copyOf(size)
 
     /** Erases the buffer. */
     fun erase() {
         buffer.fill(0)
         size = 0
+    }
+
+    /**
+     * Runs [call] with a copy of the list — the array a native call reads — and erases the copy and
+     * the list afterwards, however [call] ends (review of S2b: the facade handed its calls
+     * `toByteArray()` and erased only the list, so every `contentEncode` left its plaintext in the
+     * copy).
+     */
+    inline fun <T> consume(call: (ByteArray) -> T): T {
+        val bytes = toByteArray()
+        try {
+            return call(bytes)
+        } finally {
+            bytes.fill(0)
+            erase()
+        }
     }
 
     private fun ensure(more: Int) {

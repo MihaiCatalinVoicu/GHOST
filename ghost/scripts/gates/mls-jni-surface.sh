@@ -17,9 +17,14 @@
 #      `Exported`, and every `Exported` entry is written; the test entry point is written with
 #      exactly its one name (`MlsVectors.run`); and no JNI entry point of any class outside
 #      `common.sh`'s GHOST_JNI_CLASSES is written anywhere (the list the DM gate reads too, so the
-#      two gates agree on what is allowed).
+#      two gates agree on what is allowed). The sources are read as code by `common.sh`'s
+#      `jni_source_symbols` (any `fn Java_…` whatever its qualifiers or line breaks, any string
+#      literal that is a `Java_…` symbol; a module directory named `target` or `build` under `src/`
+#      is read) — the review of S2b exported five spellings past the first, one-line reader. A name
+#      computed at compile time is the library half's.
 #   2. **Kotlin.** `MlsNative.kt` declares exactly the exported names, each `internal` with its
-#      `@JvmName` (Kotlin mangles an internal member's JVM name). No production Android source set
+#      `@JvmName` (Kotlin mangles an internal member's JVM name), **with its entry point's JNI
+#      types in order** (JNI binds by name; review of S2b). No production Android source set
 #      (`src/main`, `src/release`, `src/gate`) declares a native method outside GHOST_JNI_NATIVE_FILES
 #      — so `MlsVectors`, the test entry's declaration, lives in `:crypto-bridge`'s `src/test` only —
 #      and only `:crypto-bridge`'s `src/main` references `MlsNative` (everyone else goes through the
@@ -33,8 +38,10 @@
 #
 # Usage: mls-jni-surface.sh [[--test] <library> ...]
 #   <library>  `android-native` passes every shipped `libghost_client_net.so`; the `android` job
-#              passes the `ghost-dm-host` build with `--test`. Without one the symbol half is
-#              skipped and the source halves still run.
+#              passes the `ghost-dm-host` build with `--test`; and every workflow step that runs G-R6
+#              on a library runs this gate on it too, since G-R6 accepts the channel classes by name
+#              only (review of S2b). Without one the symbol half is skipped and the source halves
+#              still run.
 # Self-test hooks: GHOST_MLS_JNI_SOURCE, GHOST_MLS_JNI_KOTLIN, GHOST_MLS_JNI_SCAN, GHOST_MLS_JNI_ANDROID
 # and GHOST_MLS_JNI_NM (the symbol reader: the fixtures in `test-harness/gates/mls-jni/nm/` print a
 # shipped list, a test list, one symbol too many or too few, the reserved function, or fail).
@@ -59,30 +66,29 @@ grep -oE '\([0-9]+, "[A-Za-z0-9]+", Availability::(Exported|Declared\("[A-Za-z0-
   > "$work/entries" || true
 [ -s "$work/entries" ] || { fail "no closed-list entries read from $SOURCE"; finish mls-jni-surface; }
 sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' "$work/entries" | sort -u > "$work/declared"
-grep 'Availability::Exported' "$work/entries" | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/expected"
-grep 'Availability::Declared' "$work/entries" | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/reserved"
+# Either list may be empty — no Declared entry once slice S9 exports function 16 — so a grep that
+# selects nothing is not an error (review of S2b: it ended the gate with no message under pipefail).
+{ grep 'Availability::Exported' "$work/entries" || true; } | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/expected"
+{ grep 'Availability::Declared' "$work/entries" || true; } | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/reserved"
 [ -s "$work/expected" ] || fail "no Exported entry on the closed list of $SOURCE (the gate would pass vacuously)"
 printf '%s\n' $ENTRY_NAMES | sort -u > "$work/entry-expected"
 
 # ---- half 1: the sources ----------------------------------------------------------------------
-# Build outputs are pruned, not filtered (a developer tree's `target/` holds every dependency's
-# sources), and the gates' own fixtures unless a fixture is the scan root.
-prune=(-name target -o -name build -o -name .gradle)
-[ -n "${GHOST_MLS_JNI_SCAN:-}" ] || prune+=(-o -name test-harness)
-rust_sources() { # every Rust file the halves read: the scan root (a directory or one file) and $SOURCE
-  if [ -d "$SCAN" ]; then
-    find "$SCAN" -type d \( "${prune[@]}" \) -prune -o -type f -name '*.rs' -print
-  elif [ "$SCAN" != "$SOURCE" ]; then
-    printf '%s\n' "$SCAN"
-  fi
-  printf '%s\n' "$SOURCE"
-}
-rust_sources | sort -u > "$work/rust-files"
-# Every JNI entry point the Rust sources write (`pub extern "system" fn Java_…` whatever attributes
-# precede it, and an `export_name` that spells one), read in one batch.
-tr '\n' '\0' < "$work/rust-files" \
-  | xargs -0 grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' 2>/dev/null \
-  | grep -oE 'Java_[A-Za-z0-9_]+' | sort -u > "$work/jni-source" || true
+# Every Rust file of the scan root and $SOURCE: build outputs pruned, not filtered (a developer
+# tree's `target/` holds every dependency's sources) — but only outside `src/` —, and the gates' own
+# fixtures unless a fixture is the scan root (common.sh jni_rust_files).
+fixtures=""
+[ -z "${GHOST_MLS_JNI_SCAN:-}" ] || fixtures=with-fixtures
+{ jni_rust_files "$SCAN" "$fixtures"; printf '%s\n' "$SOURCE"; } | sort -u > "$work/rust-files"
+# Every JNI symbol the Rust sources write, read as code (common.sh jni_source_symbols: any `fn
+# Java_…` whatever its qualifiers or line breaks, and any string literal that is a `Java_…` symbol),
+# fail-closed: a reader that fails, or reads nothing, fails the gate.
+if ! jni_source_symbols < "$work/rust-files" > "$work/jni-scan"; then
+  fail "the JNI source reader (perl) failed: the source half is unproven"
+fi
+read_n="$(sed -n 's/^JNI-FILES-READ //p' "$work/jni-scan")"
+[ "${read_n:-0}" -gt 0 ] || fail "the JNI source reader read no Rust file (the source half would pass vacuously)"
+{ grep -v '^JNI-FILES-READ ' "$work/jni-scan" || true; } | sort -u > "$work/jni-source"
 emitted_names() { # $1 = symbol prefix: the names written after it in an entry point, sorted
   { grep -E "^${1}" "$work/jni-source" || true; } | sed -E "s/^${1}//" | sort -u
 }
@@ -117,9 +123,11 @@ while read -r symbol; do
 done < "$work/foreign-source"
 
 # ---- half 2: Kotlin ------------------------------------------------------------------------------
+# A `@JvmName` and its declaration may share a line: the line is read for both (review of S2b: a
+# `next` here skipped `@JvmName("x") external fun x()`, public, on one line).
 awk '
   match($0, /@JvmName\("[A-Za-z0-9]+"\)/) {
-    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR; next
+    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR
   }
   match($0, /external fun [A-Za-z0-9]+/) {
     name = substr($0, RSTART + 13, RLENGTH - 13)
@@ -147,6 +155,51 @@ while read -r name; do
   [ -n "$name" ] || continue
   fail "MlsNative does not declare 'external fun $name', which the crate exports"
 done < <(comm -13 "$work/kotlin" "$work/expected")
+# Each declaration takes exactly its entry point's JNI types, in order (review of S2b): JNI binds by
+# name, so a parameter added, dropped, reordered or retyped on one side only would bind and then
+# read the wrong arguments. Read as code from $SOURCE (the export macro) and MlsNative.kt, across
+# lines: ByteArray ↔ JByteArray (B), Long ↔ jlong (J), Int ↔ jint (I); every entry point takes
+# JNIEnv and JClass first and returns jbyteArray, every declaration a ByteArray. Fail-closed.
+if ! sig_out="$(SOURCE="$SOURCE" KOTLIN="$KOTLIN" GATES="$GATES_DIR" perl -e '
+    require "$ENV{GATES}/source-text.pl";
+    my %jni = (JByteArray => "B", jlong => "J", jint => "I");
+    my %kt = (ByteArray => "B", Long => "J", Int => "I");
+    my (%rust, %kotlin);
+    my (undef, $rs) = views(read_text($ENV{SOURCE}), "rust");
+    while ($rs =~ /\bfn\s+Java_org_ghost_crypto_bridge_MlsNative_(\w+)\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*(?:->\s*([\w:]+))?/g) {
+      my ($name, $params, $ret) = ($1, $2, $3 // "");
+      my @t = map { my $x = $_; $x =~ s/^\s*\w+\s*:\s*//; $x =~ s/<[^>]*>//g; $x =~ s/\s+//g; $x =~ s/.*:://; $x }
+        grep { /\S/ } split /,/, $params;
+      if (@t < 2 || $t[0] ne "JNIEnv" || $t[1] ne "JClass" || $ret !~ /(?:^|::)jbyteArray$/) {
+        print "the entry point of MlsNative.$name does not take (JNIEnv, JClass, ...) and return jbyteArray\n";
+        next;
+      }
+      $rust{$name} = join(",", map { $jni{$_} // "?$_" } @t[2 .. $#t]);
+    }
+    my (undef, $kc) = views(read_text($ENV{KOTLIN}), "kotlin");
+    while ($kc =~ /\bexternal\s+fun\s+(\w+)\s*\(([^)]*)\)\s*:\s*([\w.?]+)/g) {
+      my ($name, $params, $ret) = ($1, $2, $3);
+      my @t = map { my $x = $_; $x =~ s/^\s*\w+\s*:\s*//; $x =~ s/\s+//g; $x =~ s/\?$//; $x }
+        grep { /\S/ } split /,/, $params;
+      print "MlsNative.$name returns $ret, not ByteArray?\n" unless $ret eq "ByteArray?";
+      $kotlin{$name} = join(",", map { $kt{$_} // "?$_" } @t);
+    }
+    for my $name (sort keys %kotlin) {
+      next unless exists $rust{$name};
+      print "MlsNative.$name: Kotlin declares ($kotlin{$name}), its entry point takes ($rust{$name})\n"
+        if $kotlin{$name} ne $rust{$name};
+    }
+    print "SIGNATURES-READ " . scalar(keys %rust) . " " . scalar(keys %kotlin) . "\n";')"; then
+  fail "the signature reader (perl) failed: the declarations' types are unproven"
+  sig_out=""
+fi
+read -r sig_rust sig_kotlin < <(sed -n 's/^SIGNATURES-READ //p' <<< "$sig_out") || true
+if [ "${sig_rust:-0}" -eq 0 ] || [ "${sig_kotlin:-0}" -eq 0 ]; then
+  fail "the signature reader read no entry point or no declaration (the type check would pass vacuously)"
+fi
+while IFS= read -r line; do
+  [ -n "$line" ] && fail "$line (G-M6: JNI binds by name, the types must agree)"
+done < <(grep -v '^SIGNATURES-READ ' <<< "$sig_out" || true)
 # No native declaration outside the allowed files, in any production source set.
 while IFS= read -r v; do
   [ -n "$v" ] && fail "$v"

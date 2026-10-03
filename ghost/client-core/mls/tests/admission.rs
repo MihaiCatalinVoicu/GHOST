@@ -10,11 +10,12 @@ use ghost_client_mls::derive::InvitePassword;
 use ghost_client_mls::ext::{
     self, AdmitEvidence, ChannelContext, CommitAad, Purpose, SwapEvidence, FLAG_PASSWORD,
 };
-use ghost_client_mls::group::{Anchor, ContextKept, ReceiveItem};
+use ghost_client_mls::group::{Anchor, ContextKept, KeyClass, ReceiveItem};
 use ghost_client_mls::invite;
 use ghost_client_mls::join::{JoinAuth, WelcomeBlob};
 use ghost_client_mls::kv::WrappedRows;
 use ghost_client_mls::provider::GhostProvider;
+use ghost_client_mls::seal::{self, Order};
 use ghost_client_mls::{Code, CommitReason, MlsError};
 use openmls::prelude::tls_codec::Serialize as _;
 use openmls::prelude::{
@@ -87,6 +88,212 @@ fn adds_that_do_not_fit_the_floor_are_deferred_from_the_end() {
     }
     let a = w.authenticators();
     assert!(a.windows(2).all(|p| p[0] == p[1]));
+}
+
+/// The review of S2b: a pass with the most requests a channel holds (64, §6.3.5) keeps the same
+/// prefix a pass of 10 keeps — §5.7's order — and every member validates the commit; the deferral
+/// bisects, so this costs about ten builds where S2b's first version built the commit sixty times.
+/// One request more than the bound is refused before anything is parsed, and so is a member
+/// removed twice.
+#[test]
+fn a_pass_of_sixty_four_requests_keeps_the_prefix_that_fits() {
+    let mut w = World::create(36, 0);
+    let mut req = w.request(0);
+    let mut pending = Vec::new();
+    for _ in 0..ghost_client_mls::group::COMMIT_JOINERS_MAX {
+        let (j, kp, ev, digest, expected) = w.invite_and_key_package(0);
+        req.adds.push((kp, ev.clone()));
+        pending.push((j, ev.kp_ref, digest, expected));
+    }
+    let mut over = req.clone();
+    over.adds.push(req.adds[0].clone());
+    let rows = w.owner().wrapped();
+    let owner = w.owner();
+    assert_eq!(
+        owner
+            .ctx
+            .commit(&owner.ch, &WrappedRows(&rows), &over, w.day)
+            .err(),
+        Some(MlsError::new(Code::InvalidPolicy)),
+        "65 Adds"
+    );
+    // The first ten alone: the reference prefix.
+    let mut ten = req.clone();
+    ten.adds.truncate(10);
+    let reference = owner
+        .ctx
+        .commit(&owner.ch, &WrappedRows(&rows), &ten, w.day)
+        .expect("ten Adds")
+        .kept_adds;
+    let out = w.commit_and_settle(0, &req);
+    assert!(out.commit.len() <= 4028, "{} bytes", out.commit.len());
+    assert_eq!(out.kept_adds, reference, "the same prefix as a pass of ten");
+    assert!(
+        !reference.is_empty() && reference.len() < 10,
+        "kept {reference:?}"
+    );
+    let welcome = out.welcome.unwrap();
+    for (i, (mut j, kp_ref, digest, expected)) in pending.into_iter().enumerate() {
+        if out.kept_adds.contains(&i) {
+            join_from(&w, &mut j, &welcome, &kp_ref, digest, expected);
+            w.members.push(j);
+        }
+    }
+    let a = w.authenticators();
+    assert_eq!(a.len(), 1 + reference.len());
+    assert!(a.windows(2).all(|p| p[0] == p[1]));
+    // A member removed twice in one request is refused; once, it is removed.
+    let gone = w.members[1].p();
+    let mut twice = w.request(0);
+    twice.removes = vec![gone, gone];
+    let rows = w.owner().wrapped();
+    let owner = w.owner();
+    assert_eq!(
+        owner
+            .ctx
+            .commit(&owner.ch, &WrappedRows(&rows), &twice, w.day)
+            .err(),
+        Some(MlsError::new(Code::InvalidPolicy)),
+        "a member removed twice"
+    );
+    twice.removes.pop();
+    let out = w.commit_and_settle(0, &twice);
+    assert_eq!(out.kept_removes, vec![0]);
+}
+
+/// The invite's join key in a class of its own (review of S2b, §19.33): `invite_parse` wraps `JK_g`
+/// as class 6, which never opens as the channel's own class 3. It seals the invitee's join request
+/// (mode 0x12), which the sponsor opens with its own key, and opens the Welcome blob the sponsor
+/// seals (mode 0x13) — and nothing else, so an invite anyone can write for any channel id cannot
+/// open the join requests a member reads. A slot named twice is refused, before any Argon2id.
+#[test]
+fn an_invites_join_key_seals_the_request_and_opens_the_welcome_only() {
+    let w = World::create(37, 0);
+    let owner = w.owner();
+    let g = owner.generation.clone().unwrap();
+    let rows = owner.wrapped();
+    let inv = owner
+        .ctx
+        .invite_build(
+            &owner.ch,
+            &WrappedRows(&rows),
+            &g.g_env,
+            g.generation,
+            w.day + 7,
+            0,
+            None,
+            false,
+            w.day,
+        )
+        .unwrap();
+    let joiner = Member::new(w.channel_id, 37_500);
+    let nc = Some(MlsError::new(Code::NonCanonical));
+    assert_eq!(
+        joiner.ctx.invite_parse(&inv.invite, None, &[1, 2, 1]).err(),
+        nc
+    );
+    let p = joiner.ctx.invite_parse(&inv.invite, None, &[1, 2]).unwrap();
+    assert_eq!(p.slots.len(), 2);
+    assert_eq!(
+        joiner
+            .ctx
+            .unwrap_key(KeyClass::Join, &w.channel_id, &p.jk_env)
+            .err(),
+        Some(MlsError::new(Code::StateCorrupt)),
+        "an invite's key is not the channel's own"
+    );
+    let none = Order::default();
+    let policy = Some(MlsError::new(Code::InvalidPolicy));
+    let request = joiner
+        .ctx
+        .seal_blob(
+            &w.channel_id,
+            &p.jk_env,
+            KeyClass::InviteJoin,
+            &p.ns,
+            4096,
+            seal::MODE_JOIN,
+            &none,
+            b"request",
+        )
+        .unwrap();
+    let opened = owner
+        .ctx
+        .open_blob(
+            &w.channel_id,
+            &g.jk_env,
+            KeyClass::Join,
+            &g.ns,
+            seal::MODE_JOIN,
+            &request,
+        )
+        .unwrap();
+    assert_eq!(opened.body, b"request");
+    assert_eq!(
+        joiner
+            .ctx
+            .open_blob(
+                &w.channel_id,
+                &p.jk_env,
+                KeyClass::InviteJoin,
+                &p.ns,
+                seal::MODE_JOIN,
+                &request,
+            )
+            .err(),
+        policy,
+        "an invite's key opens no join request"
+    );
+    let welcome = owner
+        .ctx
+        .seal_blob(
+            &w.channel_id,
+            &g.jk_env,
+            KeyClass::Join,
+            &g.ns,
+            16384,
+            seal::MODE_WELCOME,
+            &none,
+            b"welcome",
+        )
+        .unwrap();
+    let opened = joiner
+        .ctx
+        .open_blob(
+            &w.channel_id,
+            &p.jk_env,
+            KeyClass::InviteJoin,
+            &p.ns,
+            seal::MODE_WELCOME,
+            &welcome,
+        )
+        .unwrap();
+    assert_eq!(opened.body, b"welcome");
+    assert_eq!(
+        joiner
+            .ctx
+            .seal_blob(
+                &w.channel_id,
+                &p.jk_env,
+                KeyClass::InviteJoin,
+                &p.ns,
+                16384,
+                seal::MODE_WELCOME,
+                &none,
+                b"x",
+            )
+            .err(),
+        policy,
+        "an invite's key seals no Welcome"
+    );
+    assert_eq!(
+        owner
+            .ctx
+            .generation(&w.channel_id, &g.g_env, g.generation, g.open_epoch, &[0, 0])
+            .err(),
+        nc,
+        "a slot named twice"
+    );
 }
 
 /// A restore swap (§6.12, §19.3): a lost device's pseudonym comes back through an invite with a
