@@ -403,7 +403,7 @@ class ChannelVectorReplayTest {
             val rs0 = Jdk.hkdf(v.hex(section, "read_base"), null, "ghost/v1/ch/read".ascii() + byteArrayOf(0))
             assertArrayEquals(byteArrayOf(3, 1, 0) + p.ns + rs0, p.slots.single().readCredential)
             assertFalse(p.jkEnv.indexOf(jk) >= 0)
-            // The wrapped join key is an invite's (class 6, §19.33): it opens a Welcome blob sealed
+            // The wrapped join key is an invite's (class 6, §19.36): it opens a Welcome blob sealed
             // under the vector's key, and seals a join request the JDK opens under that key; it is
             // not the channel's own class 3, and it opens no join request.
             val welcome = MlsVectors.call(

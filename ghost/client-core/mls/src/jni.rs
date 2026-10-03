@@ -2109,7 +2109,7 @@ pub fn encrypt(
 
 /// fn 11 `seal(h, channelId, keyEnv, keyClass, ns, bucket, mode, orderEpoch, orderLeaf, orderSeq,
 /// body)`: `keyClass` 1 (`K_ep`, mode 0x11), 3 (`JK_g`, modes 0x12 and 0x13) or 6 (an invite's
-/// `JK_g`, mode 0x12 only; review of S2b, §19.33); the salt from the provider's CSPRNG.
+/// `JK_g`, mode 0x12 only; review of S2b, §19.36); the salt from the provider's CSPRNG.
 #[allow(clippy::too_many_arguments)]
 pub fn seal(
     env: &mut JNIEnv,

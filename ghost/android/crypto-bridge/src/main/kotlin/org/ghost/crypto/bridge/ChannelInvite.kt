@@ -99,7 +99,7 @@ object ChannelPassword {
      *
      * NFKD of ASCII is ASCII, so an ASCII password (the app-generated passphrase Q44 proposes) is
      * encoded straight from the caller's array and leaves no copy behind. Any other password goes
-     * through `java.text.Normalizer`, and **its copies are a recorded residue** (§19.33; measured
+     * through `java.text.Normalizer`, and **its copies are a recorded residue** (§19.36; measured
      * by the review of S2b with heap dumps, HotSpot 17): `normalize` turns its `CharSequence` into a
      * `String` of the typed password (JDK 17 calls `toString()` on it) and builds the NFKD form in a
      * builder and a result `String` — immutable copies that stay on the heap until the collector

@@ -86,7 +86,7 @@ class ChannelCryptoNativeTest {
         joiner.apply(kp.changes)
         val body = joiner.crypto.joinRequest(channel, parsed.inviteId, parsed.inviteSeedEnv, kp.keyPackage).ok()
         // The request travels sealed under JK_g (mode 0x12), recognised by R_join, opened by the sponsor.
-        // The invitee's JK_g is an invite's (class 6, §19.33): never the channel's own class 3, and
+        // The invitee's JK_g is an invite's (class 6, §19.36): never the channel's own class 3, and
         // it opens no join request.
         val blob = joiner.crypto.seal(channel, parsed.jkEnv, ChannelCrypto.KEY_CLASS_INVITE_JOIN, parsed.ns, 4096, ChannelCrypto.MODE_JOIN, ChannelCrypto.SealOrder.NONE, body).ok()
         assertEquals(

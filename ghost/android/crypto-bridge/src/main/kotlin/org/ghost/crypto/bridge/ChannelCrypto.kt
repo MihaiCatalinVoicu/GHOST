@@ -1029,7 +1029,7 @@ class ChannelCrypto private constructor(private val handle: Long) {
 
         /**
          * `keyClass` of `JK_g` as an invite carries it ([InviteParsed.jkEnv]; review of S2b,
-         * §19.33): it seals the invitee's request (mode 0x12) and opens its Welcome blob (0x13); the
+         * §19.36): it seals the invitee's request (mode 0x12) and opens its Welcome blob (0x13); the
          * native side refuses it for any other mode (`INVALID_POLICY`), and the envelope never opens
          * as [KEY_CLASS_JOIN] (`STATE_CORRUPT`) — an invite anyone can write for any channel never
          * stands in for the channel's own `JK_g`.

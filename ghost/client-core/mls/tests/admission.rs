@@ -161,7 +161,7 @@ fn a_pass_of_sixty_four_requests_keeps_the_prefix_that_fits() {
     assert_eq!(out.kept_removes, vec![0]);
 }
 
-/// The invite's join key in a class of its own (review of S2b, §19.33): `invite_parse` wraps `JK_g`
+/// The invite's join key in a class of its own (review of S2b, §19.36): `invite_parse` wraps `JK_g`
 /// as class 6, which never opens as the channel's own class 3. It seals the invitee's join request
 /// (mode 0x12), which the sponsor opens with its own key, and opens the Welcome blob the sponsor
 /// seals (mode 0x13) — and nothing else, so an invite anyone can write for any channel id cannot

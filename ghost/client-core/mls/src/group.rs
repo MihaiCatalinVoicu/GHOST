@@ -107,7 +107,7 @@ pub enum KeyClass {
     /// `joinRequest` (slice S2b, §19.32): the invite key is a signing secret, so Kotlin keeps it
     /// wrapped like every other key of the channel (CS-S6's rule applied to it).
     Invite = 5,
-    /// `JK_g` **as an invite carries it** (`inviteParse`'s `JK_ENV`; review of S2b, §19.33): the
+    /// `JK_g` **as an invite carries it** (`inviteParse`'s `JK_ENV`; review of S2b, §19.36): the
     /// invitee's copy, which seals its join or restore request (mode 0x12) and opens its Welcome
     /// blob (mode 0x13), and nothing else. Anyone can write an invite naming any channel, so an
     /// envelope minted from one must never pass for that channel's own `JK_g` (class 3), and never
@@ -418,7 +418,7 @@ impl core::fmt::Debug for InviteOut {
 
 /// `inviteParse` with a context (fn 14 as slice S2b maps it, §19.32): the invite's public fields,
 /// its secrets **wrapped** under the state key (`JK_g` as an invite join-key envelope, class 6 —
-/// never the channel's own class 3, §19.33 —, `invite_seed` as an invite envelope, both bound to
+/// never the channel's own class 3, §19.36 —, `invite_seed` as an invite envelope, both bound to
 /// the invite's channel), `R_join` (a recognition key, CS-S6) and the READ and DEPOSIT credentials
 /// of the requested slots, which the invitee presents to the relays of `ns_g` to deposit its join
 /// request and to listen for its Welcome.
@@ -1655,7 +1655,7 @@ impl MlsContext {
         order: &Order,
         body: &[u8],
     ) -> MlsResult<Vec<u8>> {
-        // An invitee seals its join or restore request (review of S2b, §19.33).
+        // An invitee seals its join or restore request (review of S2b, §19.36).
         if class == KeyClass::InviteJoin && mode != seal::MODE_JOIN {
             return Err(MlsError::new(Code::InvalidPolicy));
         }
@@ -1666,7 +1666,7 @@ impl MlsContext {
     /// `open` (fn 12). A mode-0x11 blob whose MLS header is of another epoch than the envelope's is
     /// `NON_CANONICAL` (review M1: a re-sealed message of an older epoch is not one of this epoch).
     /// An invite's `JK_g` opens the invitee's Welcome blob (mode 0x13) only: a join request is read
-    /// by a member, under the channel's own `JK_g` (`INVALID_POLICY`; review of S2b, §19.33).
+    /// by a member, under the channel's own `JK_g` (`INVALID_POLICY`; review of S2b, §19.36).
     pub fn open_blob(
         &self,
         channel_id: &[u8; 32],
@@ -1792,7 +1792,7 @@ impl MlsContext {
     /// (its codes unchanged: `NON_CANONICAL`, `UNSUPPORTED_SUITE`, `PASSWORD_REQUIRED` without
     /// running Argon2id, `WRONG_PASSWORD`), then the invite's secrets wrapped under the state key
     /// and bound to the invite's channel — the join key in its own class, [`KeyClass::InviteJoin`]
-    /// (§19.33) —, `R_join`, and the credentials of `slots` from the invite's read and deposit
+    /// (§19.36) —, `R_join`, and the credentials of `slots` from the invite's read and deposit
     /// bases (§5.2: the invite carries `RB_g` and `DB_g`, never `G_g`). A slot named twice is
     /// `NON_CANONICAL`, before any Argon2id runs.
     pub fn invite_parse(
@@ -1817,7 +1817,7 @@ impl MlsContext {
             expiry_day: f.expiry_day,
             name: f.name.clone(),
             // Class 6, not the channel's own class 3: the invite, not a member, vouches for this
-            // key (review of S2b, §19.33).
+            // key (review of S2b, §19.36).
             jk_env: self.wrap_key(KeyClass::InviteJoin, &f.channel_id, f.join_key.as_bytes())?,
             r_join: *derive_join_recognition(&f.join_key).as_bytes(),
             seed_env: self.wrap_key(KeyClass::Invite, &f.channel_id, f.invite_seed.as_bytes())?,
