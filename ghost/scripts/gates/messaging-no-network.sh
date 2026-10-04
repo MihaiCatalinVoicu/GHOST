@@ -3,8 +3,12 @@
 # never touch the network themselves.** `android/messaging` and `android/crypto-bridge` reach a relay
 # only through the `:sync` API (the outbox, the inbox, the registration lane), so every relay-visible
 # action is one the sync engine schedules, pads and paces (T28: nothing a DM step does is a network
-# reflex; ADR-20: the only network work is the sync job and its foreground session). Their production
-# sources may therefore name none of:
+# reflex; ADR-20: the only network work is the sync job and its foreground session). Phase 11 slice S3
+# extends the rule to `android/media` (design faza11-media.md 13.1: "`:media` references no
+# `org.ghost.network`, `java.net`, `javax.net`, socket or HTTP class and no coroutines (G-DM1's rule
+# extended)"): the media store and engine write ciphertext files and rows and never open a connection;
+# the bytes reach a relay as `Consumer.MEDIA` operations the DM actor's MEDIA-FEED enqueues. Their
+# production sources may therefore name none of:
 #   - `org.ghost.network` (the transport module; `:messaging` sees it through `:sync`'s `api`
 #     dependency, which is exactly why a text gate is needed: the compiler would accept the import);
 #   - `java.net`, `javax.net` (sockets, URLs, name resolution, socket factories, TLS);
@@ -23,7 +27,7 @@
 #   - the `suspend` modifier, in code: a suspending function, function type or lambda is a coroutine
 #     whatever it imports (`suspend fun`, `suspend () -> Unit`, `suspend Step.() -> Unit`).
 #
-# Production sources are every Kotlin and Java file of the two modules' non-test source sets:
+# Production sources are every Kotlin and Java file of the three modules' non-test source sets:
 # `src/main`, and `src/gate`, `src/debug`, `src/release` where they exist (the `gate` build type is
 # installed on the gate devices, §21.13 point 7). `src/test`, `src/androidTest`, `src/deviceRunner`
 # and `src/equivalence` are test code and are not read.
@@ -43,7 +47,7 @@
 # another module (the reason `:messaging` has no dependency on `:network` of its own, §13.1), and a
 # network class of a library this list does not name. Those are the reviewer's.
 #
-# Vacuity: both modules' `src/main` must exist and hold at least one source, or the gate fails
+# Vacuity: the three modules' `src/main` must exist and hold at least one source, or the gate fails
 # rather than pass over a moved module.
 #
 # Usage: messaging-no-network.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
@@ -52,7 +56,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v perl >/dev/null || { echo "perl not found" >&2; exit 2; }
 
 files=()
-for module in messaging crypto-bridge; do
+for module in messaging crypto-bridge media; do
   for set in main gate debug release; do
     dir="$GHOST_ROOT/android/$module/src/$set"
     [ -d "$dir" ] || continue
@@ -121,7 +125,7 @@ while IFS= read -r line; do
     SCANNED) scanned["${rest% *}"]="${rest##* }" ;;
   esac
 done <<< "$out"
-for module in messaging crypto-bridge; do
+for module in messaging crypto-bridge media; do
   main="$GHOST_ROOT/android/$module/src/main"
   [ -d "$main" ] || fail "android/$module/src/main: missing (the gate would pass vacuously)"
   [ ! -d "$main" ] || [ "${scanned[$module]:-0}" -gt 0 ] || fail "android/$module/src/main: no sources found (the gate would pass vacuously)"

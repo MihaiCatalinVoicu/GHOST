@@ -27,8 +27,13 @@
 # What is read: every Kotlin and Java file of the production source sets (every `src/<set>` but
 # `test`, `androidTest`, `testShared`, `testFixtures`, `equivalence`, `deviceRunner`) of
 # `android/messaging`, `android/crypto-bridge` and `android/app` — the DM modules and the app's DM
-# wiring — each as **one string** (`source-text.pl`: comments blanked, so a call written across
-# lines, with a comment inside or with a quoted name is the call it spells). Three rules:
+# wiring — and, since Phase 11 slice S3, `android/media` (design faza11-media.md 13.1, 13.2: every media
+# derivation, the file key, the fragment keys, the namespace labels, lives in `ghost-client-media`
+# behind `MediaNative`, so the Kotlin of `:media` holds no KDF site, no seed branch and no `ghost/v<n>/`
+# label, and the allowlist's path check below still names only the three modules that may hold one: an
+# entry for `:media` is refused until a later slice widens it on purpose) — each as **one string**
+# (`source-text.pl`: comments blanked, so a call written across lines, with a comment inside or with a
+# quoted name is the call it spells). Three rules:
 #
 #   1. **Keys handed to a primitive.** Every `SecretKeySpec(…)` (a MAC or a cipher key: a text gate
 #      cannot tell them apart when the algorithm is a constant), every `Hkdf.derive|extract|expand(…)`
@@ -68,7 +73,7 @@ use warnings;
 use File::Find;
 require "$ENV{GATES_DIR}/source-text.pl";
 my $root = $ENV{GHOST_ROOT};
-my %dm_modules = map { $_ => 1 } ("messaging", "crypto-bridge", "app");
+my %dm_modules = map { $_ => 1 } ("messaging", "crypto-bridge", "app", "media");
 my %test_sets = map { $_ => 1 } qw(test androidTest testShared testFixtures equivalence deviceRunner);
 sub report { print "VIOLATION\t$_[0]\n" }
 # A call or a declaration compared without its layout: whitespace and a trailing comma are formatting.
@@ -223,5 +228,5 @@ while IFS= read -r line; do
 done <<< "$out"
 [ "$scanned" -gt 0 ] || fail "no production source of the DM modules found under $GHOST_ROOT (the gate would pass vacuously)"
 [ -f "$ALLOW" ] || fail "scripts/gates/dm-derivation-inputs.allow: missing (every site would fail)"
-echo "[dm-derivation-inputs] $scanned production sources of android/{messaging,crypto-bridge,app} read"
+echo "[dm-derivation-inputs] $scanned production sources of android/{messaging,crypto-bridge,app,media} read"
 finish dm-derivation-inputs
