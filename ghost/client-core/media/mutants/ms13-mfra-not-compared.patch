@@ -1,0 +1,16 @@
+Mutant ms13-mfra-not-compared (Phase 11 slice S1, ghost-client-media): an mfra whose tfra does not match its moofs accepted (S0-2).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -872,11 +872,7 @@
+             }
+             Collecting::Mfra => {
+                 let video_track = self.moov.as_ref().map_or(0, Moov::video_track);
+-                exact(
+-                    &whole,
+-                    &build_mfra(video_track, &self.moofs),
+-                    "an mfra other than GHOST's (S0-2)",
+-                )?;
++                let _ = (&whole, video_track);
+                 self.stage = Stage::End;
+                 return Ok(());
+             }

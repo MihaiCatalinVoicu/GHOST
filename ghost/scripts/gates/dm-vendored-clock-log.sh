@@ -69,7 +69,14 @@ case "$GRAPH" in
   mls)
     NAME=mls-vendored-clock-log ROOT_PKG=ghost-client-mls ROOT_FEATURES=(--features jni-bridge)
     FEATURES_PKG=ghost-client-net REQUIRED_CRATES="ghost-client-mls openmls jni" ;;
-  *) echo "usage: dm-vendored-clock-log.sh [--graph dm|mls]" >&2; exit 2 ;;
+  media)
+    # G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1): the media crate and its
+    # graph, each package with the features it has in the crate's own graph — the shipped library does
+    # not link it before slice S2, which switches FEATURES_PKG to ghost-client-net when ghost-client-dm
+    # gains the dependency (as S2b did for the channel crate; design §22.2).
+    NAME=media-vendored-clock-log ROOT_PKG=ghost-client-media ROOT_FEATURES=()
+    FEATURES_PKG=ghost-client-media REQUIRED_CRATES="ghost-client-media chacha20poly1305 sha2" ;;
+  *) echo "usage: dm-vendored-clock-log.sh [--graph dm|mls|media]" >&2; exit 2 ;;
 esac
 BASELINE="${GHOST_G_R8_BASELINE:-$GATES_DIR/$NAME.baseline}"
 TRIPLES="${GHOST_G_R8_TRIPLES:-aarch64-linux-android x86_64-linux-android}"

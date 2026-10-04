@@ -1,0 +1,88 @@
+# Gate G-M7's G-R8 baseline for the media crate (scripts/gates/media-vendored-clock-log.sh =
+# dm-vendored-clock-log.sh --graph media; Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1).
+# The compiled library code of every crate of `cargo tree -p ghost-client-media -e normal` on
+# aarch64-linux-android and x86_64-linux-android, with the features each has in that graph (slice S2
+# switches to the features of the shipped ghost-client-net when ghost-client-dm links the crate),
+# merged over both triples. Kinds: [lib] linked into the library; [proc-macro] and [build-time] run
+# only while compiling. Every site, directive and note line ends in its reason after two spaces and
+# '#'. An entry the scan finds and this file lacks fails the gate (unjustified); an entry here the scan
+# no longer finds fails it too (stale). Regenerate at a pin change with GHOST_G_R8_PRINT=1 and
+# complete every '# UNJUSTIFIED' by review, never by copy.
+#
+# Seeded 2026-10-04 by slice S1: 28 crates (ghost-client-media and the AEAD, HKDF, SHA-2 and zeroize
+# stack ghost-client-dm already ships), 1 site and 44 directives, every one of them the same entry,
+# with the same reason, as in dm-vendored-clock-log.baseline (the crates are the DM graph's, at the
+# same versions). ghost-client-media itself: no site.
+crate aead@0.6.1 lib MIT OR Apache-2.0
+crate block-buffer@0.12.1 lib MIT OR Apache-2.0
+crate cfg-if@1.0.4 lib MIT OR Apache-2.0
+crate chacha20@0.10.2 lib MIT OR Apache-2.0
+crate chacha20poly1305@0.11.0 lib Apache-2.0 OR MIT
+crate cipher@0.5.2 lib MIT OR Apache-2.0
+crate cmov@0.5.4 lib Apache-2.0 OR MIT
+crate const-oid@0.10.2 lib Apache-2.0 OR MIT
+crate cpufeatures@0.3.1 lib MIT OR Apache-2.0
+crate crypto-common@0.2.2 lib MIT OR Apache-2.0
+crate ctutils@0.4.2 lib Apache-2.0 OR MIT
+crate digest@0.11.3 lib MIT OR Apache-2.0
+crate ghost-client-media@0.1.0 lib LicenseRef-GHOST-Proprietary
+crate hkdf@0.13.0 lib MIT OR Apache-2.0
+crate hmac@0.13.0 lib MIT OR Apache-2.0
+crate hybrid-array@0.4.15 lib MIT OR Apache-2.0
+crate inout@0.2.2 lib MIT OR Apache-2.0
+crate libc@0.2.189 lib MIT OR Apache-2.0
+crate poly1305@0.9.1 lib Apache-2.0 OR MIT
+crate proc-macro2@1.0.107 build-time MIT OR Apache-2.0
+crate quote@1.0.47 build-time MIT OR Apache-2.0
+crate sha2@0.11.0 lib MIT OR Apache-2.0
+crate syn@2.0.119 build-time MIT OR Apache-2.0
+crate typenum@1.20.1 lib MIT OR Apache-2.0
+crate unicode-ident@1.0.24 build-time (MIT OR Apache-2.0) AND Unicode-3.0
+crate universal-hash@0.6.1 lib MIT OR Apache-2.0
+crate zeroize@1.9.0 lib Apache-2.0 OR MIT
+crate zeroize_derive@1.5.0 proc-macro Apache-2.0 OR MIT
+directive libc@0.2.189 build.rs:103  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:106  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:119  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:192  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:201  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:231  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:235  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:381  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:73  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:80  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive libc@0.2.189 build.rs:82  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; libc binds the platform C library (bionic) by design and its build script adds no link
+directive proc-macro2@1.0.107 build.rs:116  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:124  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:130  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:136  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:142  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:146  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:166  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:18  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:20  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:21  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:22  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:23  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:24  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:25  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:26  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:27  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:28  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:29  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:30  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:31  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:32  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:33  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:39  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:46  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:54  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:59  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:65  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:66  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive proc-macro2@1.0.107 build.rs:70  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive quote@1.0.47 build.rs:13  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive quote@1.0.47 build.rs:19  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+directive quote@1.0.47 build.rs:6  # build-script configuration only (rustc-cfg, rustc-check-cfg, rerun-if lines, warnings): compile-time probes, no rustc-link-lib or link-search, no clock, log or network in the library; build time only (proc-macro support crate)
+site libc@0.2.189 src/new/mod.rs:218 time:: clock-log [lib]  # re-export of the time type declarations (timespec, clock ids); no call in the media graph (the same libc as the DM graph, reviewed there)

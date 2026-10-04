@@ -766,7 +766,12 @@ sub cmd_headers {
     my $fields = manifest_fields($p->{dir});
     my $expr = $p->{license} ne "" ? $p->{license} : ($fields->{license} // "");
     if ($p->{own}) {
-      # GHOST's own crates carry LicenseRef-GHOST-Proprietary (root LICENSE); only their sources are scanned.
+      # GHOST's own crates carry LicenseRef-GHOST-Proprietary (root LICENSE); their sources are scanned
+      # below. G-M7 (Phase 11 design faza11-media.md §16.1; slice S1): the declaration is checked, so
+      # an own crate whose manifest declares no licence, or another one, fails (a crate's licence
+      # header is its manifest's `license`, inherited from the workspace).
+      fail "$where: GHOST's own crate declares " . ($expr eq "" ? "no licence" : "'$expr'") . ", not LicenseRef-GHOST-Proprietary (license.workspace = true; G-R5, G-M7)"
+        unless $expr eq "LicenseRef-GHOST-Proprietary";
     } elsif ($expr eq "") {
       if ($exc && $exc->{"Cargo.toml"}) { $exc->{"Cargo.toml"}{used} = 1 } else { fail "$where: declares no SPDX licence expression" }
     } else {

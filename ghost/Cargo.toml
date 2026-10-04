@@ -18,6 +18,11 @@ members = [
     # Test-only host build of the DM JNI surface (Phase 9 design §2.3): a workspace member so the
     # gates cover it, never built for Android and never in the shipped graph.
     "client-core/dm-host",
+    # The media object, its sealer and reader, the codecs and the canonical-format walkers (Phase 11
+    # design faza11-media.md §3, §4.1, §8.2, §8.3, §13.1; slice S1): a workspace member so cargo-deny,
+    # the licence gates and the Rust gates (G-M7) cover it. Pure: no JNI, I/O, clock, logging or
+    # randomness; ghost-client-dm links it with the MediaNative surface in slice S2.
+    "client-core/media",
     # Channel cryptography on OpenMLS (Phase 10 design faza10-forum.md §10.1, slice S2a): a workspace
     # member so cargo-deny, the licence gates and the Rust gates (G-M1 … G-M4, G-M8) cover it. Linked
     # into ghost-client-net with its JNI export `MlsNative` since slice S2b (§19.32).
@@ -157,6 +162,19 @@ opt-level = 3
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]
+opt-level = 3
+# The media crate's tests (Phase 11 design §15.1, §15.2; slice S1) seal and open every class
+# boundary up to 50 MiB, every golden, the corruption matrix and the property runs, and sweep the
+# walkers over every prefix and single-byte mutation: unoptimised ChaCha20, Poly1305 and SHA-256
+# make that hours. Optimised like the crates above (overflow checks stay on in the dev profile);
+# release builds are unaffected.
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.ghost-client-media]
 opt-level = 3
 
 # Phase 10 design §3.2 "Lock resolution" (S0-1, Q40 (a)): the optional, forbidden SQLite provider of

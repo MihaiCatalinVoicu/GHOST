@@ -1,0 +1,609 @@
+# GHOST media object vectors (Phase 11 design faza11-media.md §3, §4.1, §6.4; §3.9, §15.2 item 1).
+# Generated and checked by client-core/media/tests/vectors.rs (GHOST_WRITE_VECTORS=1 rewrites it);
+# replayed independently by android/media/src/test/kotlin/org/ghost/media/vectors/MediaVectorReplayTest.kt.
+#
+# Byte recipes: `hex:<hex>`, `golden:<path under media-goldens/media3-1.11.1/>[a..b]` (a slice of a
+# committed golden; either bound may be empty), `+` between parts.
+# Each [object] is sealed with its k_f and object_id: K_p, K_m and commit = HKDF-SHA256(ikm = k_f,
+# salt = object_id, info = label, L = 32); chunk i of n = class.chunks seals content[i*CHUNK_PT ..]
+# zero padded to CHUNK_PT under nonce 0^7 || u32_be(i) || u8(i = n - 1) and AD_c; fragment j is
+# bytes [(j%4)*FRAG, (j%4+1)*FRAG) of chunk j/4. width, height and duration_ms are what the walker
+# of the content's kind reports (the manifest must equal them); the preview is a canonical JPEG.
+# manifest_plaintext is MP (65 488 B), manifest_blob = commit || ChaCha20-Poly1305(K_m, 0^12, AD_m, MP),
+# manifest_hash = SHA-256(manifest_blob) = the descriptor's. A video's content ends with GHOST's mfra.
+#
+# [negative *] cases: start from the honest `object`, apply each `opN` in order, then run `step`;
+# every step before the one named must pass, and that step must give `expect`.
+#   flip_fragment j byte bit       XOR 1 << bit into byte `byte` of fragment j
+#   swap_fragments j1 j2           exchange two fragments
+#   swap_chunks i1 i2              exchange two chunks (all four fragments)
+#   foreign_fragment j obj j2      fragment j := fragment j2 of the honest object `obj`
+#   reseal_chunk i last            chunk i := its honest plaintext sealed with the given last flag
+#   reseal_chunk_ad i oid kind     chunk i := its honest plaintext sealed with AD_c(oid, kind)
+#   reseal_chunk_pad i at v        chunk i := its honest plaintext with byte `at` := v, sealed
+#   rehash                         the hash list of MP := SHA-256 of the current fragments; reseal MP
+#   manifest_set at hex            MP[at ..] := hex; reseal MP (same K_m, nonce 0)
+#   manifest_flip byte bit         XOR a bit into the blob; the descriptor keeps the old hash
+#   manifest_flip_rehash byte bit  XOR a bit into the blob; the descriptor names the new hash
+#   key hex                        the reader opens with this K_f (the blob is not resealed)
+#   expect field value             the descriptor's kind | view_once | class_code := value
+#   truncate_class c               MP's class := c, content_len := min(content_len, cap(c)), the hashes
+#                                  after F(c) := zero, only the first c.chunks chunks; reseal MP
+# "Reseal MP" also sets the descriptor's manifest_hash to the new blob's. Steps: `open` (readerOpen:
+# hash, commitment, tag, every §3.5 rule, agreement with the descriptor), `read i` (readerChunk in
+# read mode: index range, fragment hashes, tag with the last flag of index n - 1 only, zero pad; a
+# refused chunk exposes nothing), `validate` (every chunk in order, then the walked width, height
+# and duration against the manifest's).
+# MP offsets: m_version 0, kind 1, flags 2, class_code 3, object_id 4, content_len 20, width 28,
+# height 30, duration_ms 32, preview_len 36, preview 38, hashes 32806.
+# [separation] values are checks that cannot fail (another key derives another value); they are
+# reported apart from the refusals (S0-6).
+# [ladder]: the size STRIP_IMAGE re-encodes a W x H source to (D29, §8.2, Q37): the long edge is the
+# largest of 512, 1 024 and 2 048 not above the source's (512 for a smaller source), the short edge
+# max(16, 16 * round(long * short_src / long_src / 16)) rounding half up, at most the long edge, and the
+# orientation kept; preview[W x H] is the same with the long edge 320 (S1's reading, §22.2).
+
+[constants]
+FRAG = 65536
+TAG = 16
+CHUNK_CT = 262144
+CHUNK_PT = 262128
+MANIFEST_PT = 65488
+PREVIEW_OFFSET = 38
+PREVIEW_MAX = 32768
+HASHES_OFFSET = 32806
+IMAGE_MAX_CONTENT = 1048512
+MAX_CONTENT = 52428800
+VIDEO_MAX_MS = 160000
+DESCRIPTOR_FIXED = 86
+MAX_CAPTION_BYTES = 1024
+
+[labels]
+payload = ghost/v1/media/payload
+manifest = ghost/v1/media/manifest
+commit = ghost/v1/media/commit
+ad_chunk = ghost/v1/media/ad/chunk
+ad_manifest = ghost/v1/media/ad/manifest
+op_id = ghost/v1/media/op
+wrap = ghost/v1/wrap/media-file-key
+
+[classes]
+class[0] = F 16 chunks 4 cap 1048512 blobs 17 bytes_per_relay 1114112
+class[1] = F 24 chunks 6 cap 1572768 blobs 25 bytes_per_relay 1638400
+class[2] = F 36 chunks 9 cap 2359152 blobs 37 bytes_per_relay 2424832
+class[3] = F 56 chunks 14 cap 3669792 blobs 57 bytes_per_relay 3735552
+class[4] = F 84 chunks 21 cap 5504688 blobs 85 bytes_per_relay 5570560
+class[5] = F 128 chunks 32 cap 8388096 blobs 129 bytes_per_relay 8454144
+class[6] = F 192 chunks 48 cap 12582144 blobs 193 bytes_per_relay 12648448
+class[7] = F 288 chunks 72 cap 18873216 blobs 289 bytes_per_relay 18939904
+class[8] = F 432 chunks 108 cap 28309824 blobs 433 bytes_per_relay 28377088
+class[9] = F 648 chunks 162 cap 42464736 blobs 649 bytes_per_relay 42532864
+class[10] = F 804 chunks 201 cap 52428800 blobs 805 bytes_per_relay 52756480
+boundary[0] = none
+boundary[1] = 0
+boundary[1048511] = 0
+boundary[1048512] = 0
+boundary[1048513] = 1
+boundary[1572767] = 1
+boundary[1572768] = 1
+boundary[1572769] = 2
+boundary[2359151] = 2
+boundary[2359152] = 2
+boundary[2359153] = 3
+boundary[3669791] = 3
+boundary[3669792] = 3
+boundary[3669793] = 4
+boundary[5504687] = 4
+boundary[5504688] = 4
+boundary[5504689] = 5
+boundary[8388095] = 5
+boundary[8388096] = 5
+boundary[8388097] = 6
+boundary[12582143] = 6
+boundary[12582144] = 6
+boundary[12582145] = 7
+boundary[18873215] = 7
+boundary[18873216] = 7
+boundary[18873217] = 8
+boundary[28309823] = 8
+boundary[28309824] = 8
+boundary[28309825] = 9
+boundary[42464735] = 9
+boundary[42464736] = 9
+boundary[42464737] = 10
+boundary[52428799] = 10
+boundary[52428800] = 10
+boundary[52428801] = none
+
+[ladder]
+image[4032x3024] = 2048x1536
+image[3024x4032] = 1536x2048
+image[1080x2400] = 928x2048
+image[2400x1080] = 2048x928
+image[1920x1080] = 1024x576
+image[2047x1151] = 1024x576
+image[1000x1001] = 512x512
+image[600x400] = 512x336
+image[513x300] = 512x304
+image[100x50] = 512x256
+image[10000x10000] = 2048x2048
+image[5000x10] = 2048x16
+preview[2048x1536] = 320x240
+preview[1536x2048] = 240x320
+preview[512x336] = 320x208
+preview[1280x720] = 320x176
+preview[720x1280] = 176x320
+preview[2048x16] = 320x16
+
+[object image_class0]
+k_f = 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+object_id = a0a1a2a3a4a5a6a7a8a9aaabacadaeaf
+kind = 1
+view_once = 0
+content = golden:api35-emulator/strip_orient1.jpg
+content_len = 2436
+content_sha256 = 2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c
+width = 512
+height = 336
+duration_ms = 0
+preview = hex:ffd8ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b0800d0014001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+caption_utf8 = 6f20666f746f677261666965
+k_p = 130d7ae0e70b9cd9743ef444b606c2a78b3ab49180723c33d617366fe001a502
+k_m = 7cdb612608b9b5f1882eea2e4a0c8dc5ecefde4aa1fb67a29b6103e6c9fc6b3f
+commit = d6d66617a1c855ff5fffaef7d622c46c3a0b87e67bc5f33edb45a089e1a26640
+class_code = 0
+chunks = 4
+chunk_ad = 67686f73742f76312f6d656469612f61642f6368756e6b01a0a1a2a3a4a5a6a7a8a9aaabacadaeaf01
+chunk_nonce[0] = 000000000000000000000000
+chunk_nonce[1] = 000000000000000000000100
+chunk_nonce[2] = 000000000000000000000200
+chunk_nonce[3] = 000000000000000000000301
+fragment_sha256[0] = 1a8c21110b5d18daf6e86d10184308ec8d2326c9b50ef7756c29d4d6251185c3
+fragment_sha256[1] = 58b3d7c58e1bc07b35b920cbd127e7ce6793b2542684b75e9d442c6275ba3b7c
+fragment_sha256[2] = 49ca80b33cc89ce7362d80a2c92dff94d6513333dc45e74964adaf3727a09f4e
+fragment_sha256[3] = 28b1ab7baf6fa3fe66db90ee29bd1e081e633bdee7fd86da655ce4f6b48961f4
+fragment_sha256[4] = a097ca0e6baeaeb33f2d9fdd9eb3f151f66594a828e576dc3cadc67c010305a1
+fragment_sha256[5] = 6a914c036671abb5018bc1e702efe057f90c448e32602ddb9481fea2c5d1e5c1
+fragment_sha256[6] = ffffdca528bf12ebf831aa7ca1c21dc73ba0c867dc8e381e8ecbdad2ec8719c1
+fragment_sha256[7] = 7b161aa7d6d721e5706d6dc8dc1ff21f14663d9dc15920666d1e7365207b2d86
+fragment_sha256[8] = fe3c6d63bba4aec215e09989e9108ee62347237bb655c7ade82cc9e946fc109e
+fragment_sha256[9] = cd4e4a31f68ffa9759933fba81b184a03743d336299098892981bb2c16917390
+fragment_sha256[10] = c5dd386d41b85f621fdd894a0fb9ed35a237ea5137505dc7db66322e80e28d33
+fragment_sha256[11] = 8d3076f6cd93170c30d3996891b6ad64e6fc1f37414db04296175fdc53fce142
+fragment_sha256[12] = e56696bb0b413639cd755cc6eb887c99bdb69bccea975cabdb2ab338b6b73aa8
+fragment_sha256[13] = b521cde143f093161d50171003b3ccd9c4f434e190f884bf9d0d240b12c5ba80
+fragment_sha256[14] = f1ce91955eb30bf0af5286b02a4e7d33971539c6c8ddbd685e87ad416fe3a62d
+fragment_sha256[15] = ff2e9d05570cd63920d280ed8e1bc978a0f917eb367ea4000134ca9f38414d6d
+manifest_ad = 67686f73742f76312f6d656469612f61642f6d616e696665737401a0a1a2a3a4a5a6a7a8a9aaabacadaeafd6d66617a1c855ff5fffaef7d622c46c3a0b87e67bc5f33edb45a089e1a26640
+manifest_plaintext_head = 01010000a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000000000098402000150000000000440
+manifest_plaintext_sha256 = e7aec61ecb7803db6343534254ccc4275ced281612be308b16362d30c42ad20e
+manifest_hash = b2abbeaf8f992a848bf6de9d3f2afcc650d0ffddceda4d98b6ff9fd6a4578065
+manifest_blob_tail16 = bfa172932f3095c9dd8e375b9d3a0ab6
+descriptor = 01010000a0a1a2a3a4a5a6a7a8a9aaabacadaeaf0000000000000000000000000000000000000000000000000000000000000000b2abbeaf8f992a848bf6de9d3f2afcc650d0ffddceda4d98b6ff9fd6a4578065000c6f20666f746f677261666965
+op_id[-1,0,0] = f04846cc02b9d421eee1f7a7c0959d4f
+op_id[0,0,0] = 0bd63ccb7a48538f691481f58470da5b
+op_id[15,1,2] = 52f098695b9df6c13c4837f018b5ecf7
+op_id[15,3,2] = 6b96f0eba4d6e36c59f26327a9c60cc8
+
+[object video_class0]
+k_f = 101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f
+object_id = b0b1b2b3b4b5b6b7b8b9babbbcbdbebf
+kind = 2
+view_once = 0
+content = golden:api35-emulator/quad_land.fmp4
+content_len = 129540
+content_sha256 = 1b28f0c8b64979d81d400dbaf7b27d32c56532f2040521ca1f6f9e2a1f17e1a0
+width = 1280
+height = 720
+duration_ms = 3966
+preview = hex:ffd8ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b0800b0014001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+caption_utf8 = 
+k_p = cc5e6e7d66a088fc7ce4cb162858f92bdf81f7986e11d644260186bf107601fb
+k_m = 0ea9c5b30fb3fc6c06ef688abf2b73020dc71229737d1e16fe60840b4aba271c
+commit = 74b36be32c8577f849be384fbba520fe12786c65d28765b846a8bf53b4c5d014
+class_code = 0
+chunks = 4
+chunk_ad = 67686f73742f76312f6d656469612f61642f6368756e6b01b0b1b2b3b4b5b6b7b8b9babbbcbdbebf02
+chunk_nonce[0] = 000000000000000000000000
+chunk_nonce[1] = 000000000000000000000100
+chunk_nonce[2] = 000000000000000000000200
+chunk_nonce[3] = 000000000000000000000301
+fragment_sha256[0] = 2c688c6ce232e0d2aa055dbb60087da2dc3057933a59e69472020734a63e1cd6
+fragment_sha256[1] = 91f93fb0703c674feed8cc26fa090a08df7a011f961b1907b7a0cef9e862ca88
+fragment_sha256[2] = a6789ffb1b2d8177fd154ea1c6f9290005b6771a05122fa64d6a653bd755f6b7
+fragment_sha256[3] = a1e1cb93d2b4e0edaf407ad4210eb11505f40b08fac2e90346bc3cc19e3dc649
+fragment_sha256[4] = 3b64be7ba6930187ec26000ccb569d2135557c99e283a506779c8851039c2997
+fragment_sha256[5] = dc78bb345bbdbcb429f644a036c47f626fa6d110d08e7748baf6d2ab46bee5a6
+fragment_sha256[6] = 145df319a5fce1546e291eaf056b9f3cbc923318ffecbe97ac63a23e997272d1
+fragment_sha256[7] = 6c2b244ac41d420279a7447d85499902dd2b841826b75918d97617c6ce83eb6b
+fragment_sha256[8] = 2aa9652877bfd9ad19268b8cc531673f02fc44133c30cb07c064409a0bf80ba2
+fragment_sha256[9] = a198c1f385421c6ca1fc2408238f031c4960662fef85951459680c4d5c0f9d61
+fragment_sha256[10] = 35f69c038ae2a87d24234735cdd14fa4335783e667af93421635183fcc3d3f60
+fragment_sha256[11] = 4c665924696370220281376e488f90d1996235e1ac6df4910cd194c6ced74b4c
+fragment_sha256[12] = d5d3c4e846e72d4f638c84798b9bce9d1391de161b8e89e0e8e17f89c0152a14
+fragment_sha256[13] = b4177ec969ca088feb5ac5cd7208aa3de1ea8f4f29cefcc78e3e2522831dfbdd
+fragment_sha256[14] = f7ef3ce69ddf9b583307e5ce551689b548770c93599c626598edcb95ce74e7c2
+fragment_sha256[15] = 9b009f631c240304cdc20c5682355501d04ad2f0d3a28858d79539ffd39d8fa3
+manifest_ad = 67686f73742f76312f6d656469612f61642f6d616e696665737401b0b1b2b3b4b5b6b7b8b9babbbcbdbebf74b36be32c8577f849be384fbba520fe12786c65d28765b846a8bf53b4c5d014
+manifest_plaintext_head = 01020000b0b1b2b3b4b5b6b7b8b9babbbcbdbebf000000000001fa04050002d000000f7e03c8
+manifest_plaintext_sha256 = d4b3c01a83862aa11f13021ad1d656ec9c63a82f6ba2641b12fe5668ad0f608c
+manifest_hash = 3fc50ef9a5bbf3d5388125d1227996e64b236dc17d4b6be140d1a2f732f009d9
+manifest_blob_tail16 = 99c9a434d1f9195070fb0ce38b1b0fac
+descriptor = 01020000b0b1b2b3b4b5b6b7b8b9babbbcbdbebf00000000000000000000000000000000000000000000000000000000000000003fc50ef9a5bbf3d5388125d1227996e64b236dc17d4b6be140d1a2f732f009d90000
+op_id[-1,0,0] = aebaf04af6688c86d7c38d01379ee04a
+op_id[0,0,0] = f83c17150fcb2f34f2f235bb75163087
+op_id[15,1,2] = 44a587611b369cefe5f2a42532c4bdd9
+op_id[15,3,2] = a708d833c5a7d05c5136fe57bee551da
+
+[object video_class2_view_once]
+k_f = 202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+object_id = c0c1c2c3c4c5c6c7c8c9cacbcccdcecf
+kind = 2
+view_once = 1
+content = golden:api35-emulator/land1080p60.fmp4
+content_len = 1643727
+content_sha256 = b53e00a7524716fefb48d1920675194718b7ecc1044f9b65206572d390068e19
+width = 1280
+height = 720
+duration_ms = 6000
+preview = 
+caption_utf8 = 76657a69206f2073696e677572c48320646174c483
+k_p = 02e392d19f3096daee62cf7032eb61a73be30165356fcdb188fd83eb819086aa
+k_m = 3cd7582c43707def1a4e3746728a600de92b3a424e05e7350f7507f3528a8cc1
+commit = e64480494fb93e58d987793533d349c84c6af245b2046402591830e251187095
+class_code = 2
+chunks = 9
+chunk_ad = 67686f73742f76312f6d656469612f61642f6368756e6b01c0c1c2c3c4c5c6c7c8c9cacbcccdcecf02
+chunk_nonce[0] = 000000000000000000000000
+chunk_nonce[1] = 000000000000000000000100
+chunk_nonce[2] = 000000000000000000000200
+chunk_nonce[3] = 000000000000000000000300
+chunk_nonce[4] = 000000000000000000000400
+chunk_nonce[5] = 000000000000000000000500
+chunk_nonce[6] = 000000000000000000000600
+chunk_nonce[7] = 000000000000000000000700
+chunk_nonce[8] = 000000000000000000000801
+fragment_sha256[0] = 04877a71a37352afc0305c01aaf430a410a4105efb9d4ef7d918b8e751f0a4cf
+fragment_sha256[1] = 83406559f120adf19c883eb64a867b806d27aec15f2bf09792af0855bfcfcfa9
+fragment_sha256[2] = 670f5fce2b234bb71068cdbdb25eadff54b4de1faef0e3701a1ce0d76ecbbb21
+fragment_sha256[3] = c6b66613a81a609fa84b6b3515624a056b7ea885c7ec851c869bee640b710c3d
+fragment_sha256[4] = f5e56cd0bcffdc5588eb5c45556359dd5ed6e2f518135cce56decedc429054c9
+fragment_sha256[5] = 080dee5c54175a92adb11343026c352098017a8bab1a6613fd303ab113c3a08e
+fragment_sha256[6] = c8bc593c1b6c3054bc9d695aa36ed3562c06012db032000815befe47a0ab989e
+fragment_sha256[7] = e6f68620197da2e0877434aee61e0048eee81ca2ad99dff8af4974a9a0c2e365
+fragment_sha256[8] = cc52214da4e872145115132f34c71fc05f78a79c3d4eaac1441f9c6436147cc8
+fragment_sha256[9] = a436b9c95c6fb28f8f6dcc950571ea1dbbcc45719a8a1f9d32dd6e224ffa50a7
+fragment_sha256[10] = 3e3894c8e53e75b00ff13ff31f09a3420bfe33874fada3c8179f490a5d41df48
+fragment_sha256[11] = 387e265df147dc2fe60d1f18696dba2c632170573773d7386358714f30dd09eb
+fragment_sha256[12] = f388987a386caef0a5addf11fcf3112cc0d7ef1c872462a3b036d3e77ee8f0d9
+fragment_sha256[13] = fdbe71da6623a96328d106053b72573789ca05c2fa6ef9eba5038730dcc81ba7
+fragment_sha256[14] = 8454bc7aa9b11f9c5a5b3ee13c39e8346b1cf5cf5a14ced2d00d5e053ecf3fbd
+fragment_sha256[15] = c41fd531f60374cb4ca59b52ffb5774cbac058be63760610217808c563b59500
+fragment_sha256[16] = 786bb07c70b8659f4546f3be50705ffc522d2a346e2b00e6d99ca7d89a2ed1e4
+fragment_sha256[17] = 5345924337e2b14d92af2600f56bae3bf962270da2bb4226960e55fc9acbf7b9
+fragment_sha256[18] = 39983a99366316e64393c17fc17228ea4cc8b9a54df979f36fc20f6bf2a5ddff
+fragment_sha256[19] = 97b77d0f123f4acccd93f1a1c9633190c2ea1ff0eae0d1c376c3f374420d6518
+fragment_sha256[20] = c5b2fefe4aadf9eedabfce86df365d11c2020d6c7a009102550c2d24c5ad2140
+fragment_sha256[21] = ad0d261948fb0255ada2b181ab37fdb21b4aeda3df9ca69bc7d3be1a1355d551
+fragment_sha256[22] = d16dd2cb4c0da8872e45346a485a3c81bec2d735f0fab8d8f12c8f6f9aac7bee
+fragment_sha256[23] = fbcb4ac04efa7b1fa8042ac0a79a463ce9b2d12773e616b663c3f97e34d2437e
+fragment_sha256[24] = 6286af66bca34fd5ee05c9cb20c8bfcf025762307ddc2c42b0519442c3e5b77e
+fragment_sha256[25] = 57eb7a572886f482c5a6a756a713de926834cc776e0386f4a259f2a580eda7ed
+fragment_sha256[26] = fa9d08905d8a4eb3268d9118914eadb7494c36e18c5af6dbbf9de4699878e9b5
+fragment_sha256[27] = fe69f50f0b2256fc7803a9883fa6c4f8c3274636a2a96cd939f48471519dd66e
+fragment_sha256[28] = 0ac76d3e52a4843f897f611c3e99610a766e8369320936965aa19f9a9da7a7d5
+fragment_sha256[29] = b466662e2e684ab6bfc83e6ce9a0664ccb2cd78582de42d4cb0042d40f4368f4
+fragment_sha256[30] = b0f65cd54ada87a04137d9945428d3b683b9823ce713037e73ce082996f23e86
+fragment_sha256[31] = 576dbe94bde78f24073113f99db1936d615e559145bc604d5425d8245a403e96
+fragment_sha256[32] = 55ffa9b533e0bad0d50976a59b7dc2e3edd592a38bf1b07d1fb2a63a565cc6db
+fragment_sha256[33] = 45624896c1ba4c41c539238c3817a6b2c5ab7bff99c135607057cdb3dc464add
+fragment_sha256[34] = 52f51a159e3e41464ef23f1c055e26b6143b64c0209907f6c0107eff0c0ec811
+fragment_sha256[35] = 9072c09bb354e252b2e8b1b48300453b2fa91a051e68366c2badb058bc8ef41b
+manifest_ad = 67686f73742f76312f6d656469612f61642f6d616e696665737401c0c1c2c3c4c5c6c7c8c9cacbcccdcecfe64480494fb93e58d987793533d349c84c6af245b2046402591830e251187095
+manifest_plaintext_head = 01020102c0c1c2c3c4c5c6c7c8c9cacbcccdcecf00000000001914cf050002d0000017700000
+manifest_plaintext_sha256 = c414bf701659ce19422ac14d0e6e35634d6a4ffecdaabdda4e297133368f6c6f
+manifest_hash = f288e758762f1c3c28c3278135e2bb767a70f09d993bd769834d1e932e85be7d
+manifest_blob_tail16 = 7dabd1baf47067dfe323f12ef6e64d6b
+descriptor = 01020102c0c1c2c3c4c5c6c7c8c9cacbcccdcecf0000000000000000000000000000000000000000000000000000000000000000f288e758762f1c3c28c3278135e2bb767a70f09d993bd769834d1e932e85be7d001576657a69206f2073696e677572c48320646174c483
+op_id[-1,0,0] = 87adc3e75d143a394b6b70d0c733d674
+op_id[0,0,0] = 1920001d3782e810805df8a29011ac08
+op_id[15,1,2] = 55abf27568e8d82b18fe8e5661904ffa
+op_id[35,3,2] = cbe796680f074eb2126deba9feab511b
+
+[negative fragment_bit_flip]
+object = image_class0
+op1 = flip_fragment 2 1000 3
+step = read 0
+expect = HASH_MISMATCH
+
+[negative fragment_bit_flip_rehashed]
+object = image_class0
+op1 = flip_fragment 2 1000 3
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative tag_bit_flip_rehashed]
+object = image_class0
+op1 = flip_fragment 3 65535 7
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative fragments_swapped]
+object = video_class0
+op1 = swap_fragments 1 5
+step = read 0
+expect = HASH_MISMATCH
+
+[negative chunks_swapped_rehashed]
+object = video_class0
+op1 = swap_chunks 0 1
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative foreign_fragment]
+object = image_class0
+op1 = foreign_fragment 0 video_class0 0
+step = read 0
+expect = HASH_MISMATCH
+
+[negative foreign_fragment_rehashed]
+object = image_class0
+op1 = foreign_fragment 0 video_class0 0
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative last_flag_removed]
+object = image_class0
+op1 = reseal_chunk 3 0
+op2 = rehash
+step = read 3
+expect = NOT_OPEN
+
+[negative first_chunk_as_last]
+object = video_class2_view_once
+op1 = reseal_chunk 0 1
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative chunk_of_another_object_id]
+object = image_class0
+op1 = reseal_chunk_ad 0 f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff 1
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative chunk_of_another_kind]
+object = image_class0
+op1 = reseal_chunk_ad 0 a0a1a2a3a4a5a6a7a8a9aaabacadaeaf 2
+op2 = rehash
+step = read 0
+expect = NOT_OPEN
+
+[negative truncated_to_class0]
+object = video_class2_view_once
+op1 = truncate_class 0
+step = read 3
+expect = NOT_OPEN
+
+[negative truncated_to_class1]
+object = video_class2_view_once
+op1 = truncate_class 1
+step = read 5
+expect = NOT_OPEN
+
+[negative extended_index]
+object = image_class0
+step = read 4
+expect = INDEX_RANGE
+
+[negative repeated_hash]
+object = video_class0
+op1 = manifest_set 32838 2c688c6ce232e0d2aa055dbb60087da2dc3057933a59e69472020734a63e1cd6
+step = open
+expect = NON_CANONICAL
+
+[negative another_key]
+object = image_class0
+op1 = key 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1e
+step = open
+expect = COMMIT_MISMATCH
+
+[negative manifest_bit_flip]
+object = image_class0
+op1 = manifest_flip 40000 0
+step = open
+expect = HASH_MISMATCH
+
+[negative manifest_bit_flip_rehashed]
+object = image_class0
+op1 = manifest_flip_rehash 40000 0
+step = open
+expect = NOT_OPEN
+
+[negative commitment_bit_flip_rehashed]
+object = image_class0
+op1 = manifest_flip_rehash 5 1
+step = open
+expect = COMMIT_MISMATCH
+
+[negative descriptor_class_differs]
+object = video_class0
+op1 = expect class_code 1
+step = open
+expect = NON_CANONICAL
+
+[negative descriptor_view_once_differs]
+object = video_class0
+op1 = expect view_once 1
+step = open
+expect = NON_CANONICAL
+
+[negative descriptor_kind_differs]
+object = video_class0
+op1 = expect kind 1
+step = open
+expect = NON_CANONICAL
+
+[negative m_version_2]
+object = image_class0
+op1 = manifest_set 0 02
+step = open
+expect = NON_CANONICAL
+
+[negative kind_3]
+object = image_class0
+op1 = manifest_set 1 03
+step = open
+expect = NON_CANONICAL
+
+[negative flag_bit_1]
+object = image_class0
+op1 = manifest_set 2 02
+step = open
+expect = NON_CANONICAL
+
+[negative class_code_11]
+object = video_class0
+op1 = manifest_set 3 0b
+step = open
+expect = NON_CANONICAL
+
+[negative image_above_class0]
+object = image_class0
+op1 = manifest_set 3 01
+op2 = expect class_code 1
+step = open
+expect = NON_CANONICAL
+
+[negative content_len_zero]
+object = image_class0
+op1 = manifest_set 20 0000000000000000
+step = open
+expect = NON_CANONICAL
+
+[negative image_above_image_max]
+object = image_class0
+op1 = manifest_set 20 00000000000fffc1
+step = open
+expect = NON_CANONICAL
+
+[negative content_len_below_class]
+object = video_class2_view_once
+op1 = manifest_set 20 000000000017ffa0
+step = open
+expect = NON_CANONICAL
+
+[negative image_long_edge_off_ladder]
+object = image_class0
+op1 = manifest_set 28 03e8
+step = open
+expect = NON_CANONICAL
+
+[negative image_short_edge_not_16]
+object = image_class0
+op1 = manifest_set 30 014a
+step = open
+expect = NON_CANONICAL
+
+[negative video_geometry_square]
+object = video_class0
+op1 = manifest_set 30 0500
+step = open
+expect = NON_CANONICAL
+
+[negative image_with_duration]
+object = image_class0
+op1 = manifest_set 32 00000005
+step = open
+expect = NON_CANONICAL
+
+[negative video_duration_zero]
+object = video_class0
+op1 = manifest_set 32 00000000
+step = open
+expect = NON_CANONICAL
+
+[negative video_duration_above_max]
+object = video_class0
+op1 = manifest_set 32 00027101
+step = open
+expect = NON_CANONICAL
+
+[negative preview_len_above_max]
+object = image_class0
+op1 = manifest_set 36 8001
+step = open
+expect = NON_CANONICAL
+
+[negative view_once_with_preview]
+object = video_class2_view_once
+op1 = manifest_set 36 03c8ffd8ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b0800b0014001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+step = open
+expect = NON_CANONICAL
+
+[negative preview_pad_not_zero]
+object = image_class0
+op1 = manifest_set 1136 01
+step = open
+expect = NON_CANONICAL
+
+[negative preview_with_app1]
+object = image_class0
+op1 = manifest_set 36 044affd8ffe10008457869660000ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b0800d0014001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+step = open
+expect = NON_CANONICAL
+
+[negative preview_outside_geometry]
+object = image_class0
+op1 = manifest_set 36 0914ffd8ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b080150020001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+step = open
+expect = NON_CANONICAL
+
+[negative tail_not_zero]
+object = image_class0
+op1 = manifest_set 33323 01
+step = open
+expect = NON_CANONICAL
+
+[negative object_id_field_differs]
+object = image_class0
+op1 = manifest_set 4 f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff
+step = open
+expect = NON_CANONICAL
+
+[negative dimensions_not_walked]
+object = image_class0
+op1 = manifest_set 28 040002a0
+step = validate
+expect = NON_CANONICAL
+
+[negative duration_not_walked]
+object = video_class0
+op1 = manifest_set 32 00000f7d
+step = validate
+expect = NON_CANONICAL
+
+[negative rotation_not_walked]
+object = video_class0
+op1 = manifest_set 28 02d00500
+step = validate
+expect = NON_CANONICAL
+
+[negative content_pad_not_zero]
+object = image_class0
+op1 = reseal_chunk_pad 0 2437 1
+op2 = rehash
+step = read 0
+expect = NON_CANONICAL
+
+[separation]
+other_k_f = fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e0
+other_k_f_commit = 1ebd2205bb051efa9eac87f26a35ce9ab27aa7675ce812f5e39bf0947a76a38f
+other_object_id = eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+other_object_id_k_p = ddf61852fd8e15746ffcd2fa1eccc4378fcb52dc553cdd036fffb15d90229b00
+other_object_id_commit = 152ff9406cc597a1887c2e8afafb739fded16e6ba6629d90a26dd33ca77758b6

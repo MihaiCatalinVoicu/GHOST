@@ -56,7 +56,14 @@ case "$GRAPH" in
     NAME=mls-rust-no-logging ROOT_PKG=ghost-client-mls WITH_FEATURES=()
     WITH_LABEL="ghost-client-mls" LOG_VIA_DEFAULT="openmls hpke-rs openmls_memory_storage"
     REQUIRED_DEFAULT="ghost-client-mls openmls" LOG_FREE_WITHOUT=0 ;;
-  *) echo "usage: dm-rust-no-logging.sh [--graph dm|mls]" >&2; exit 2 ;;
+  media)
+    # G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1): the media crate's graph has
+    # no feature to vary and no JNI half, so it is held to rule 1 whole: no logging crate at all,
+    # `log` included; rules 3 and 4 as for the others.
+    NAME=media-rust-no-logging ROOT_PKG=ghost-client-media WITH_FEATURES=()
+    WITH_LABEL="ghost-client-media" LOG_VIA_DEFAULT=""
+    REQUIRED_DEFAULT="ghost-client-media chacha20poly1305" LOG_FREE_WITHOUT=1 ;;
+  *) echo "usage: dm-rust-no-logging.sh [--graph dm|mls|media]" >&2; exit 2 ;;
 esac
 # cargo tree's text is parsed below: plain output whatever the job exports (CARGO_TERM_COLOR=always
 # colours the `(*)` markers into a pipe; see dm-vendored-clock-log.sh).
@@ -100,11 +107,14 @@ if [ "$GRAPH" = dm ]; then
   grep -qx jni <<< "$with_names" || fail "jni is not in ghost-client-dm's graph with jni-bridge (the query did not select the JNI surface)"
 fi
 
-# 1. Without jni-bridge: no logging crate at all, `log` included (the DM graph only).
+# 1. Without jni-bridge: no logging crate at all, `log` included (the DM graph, and the media graph
+#    whole: it has no jni-bridge half).
 if [ "$LOG_FREE_WITHOUT" = 1 ]; then
+  without_label="$ROOT_PKG without jni-bridge"
+  [ "$GRAPH" = media ] && without_label="$ROOT_PKG"
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    fail "ghost-client-dm without jni-bridge links '$name' (G-R4: no log, tracing or logger crate in the DM graph)"
+    fail "$without_label links '$name' (G-R4/G-M7: no log, tracing or logger crate in the graph)"
   done < <(grep -E -- "$LOGGERS" <<< "$without_names" || true)
 fi
 
@@ -155,7 +165,7 @@ while read -r name version dir; do
 done <<< "$dirs"
 [ "$scanned" -gt 0 ] || fail "no package source of $ROOT_PKG's graph was found (the logger check would pass vacuously)"
 
-if [ "$LOG_FREE_WITHOUT" = 1 ]; then
+if [ "$LOG_FREE_WITHOUT" = 1 ] && [ "$GRAPH" != media ]; then
   sizes="$(wc -l <<< "$without_names") packages without jni-bridge, $(wc -l <<< "$with_names") with it"
 else
   sizes="$(wc -l <<< "$with_names") packages"

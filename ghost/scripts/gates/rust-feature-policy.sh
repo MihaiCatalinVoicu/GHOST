@@ -438,4 +438,61 @@ for root in ghost-dm-host ghost-client-mls ghost-host-rng; do
   if [ -z "$majors" ]; then fail "no getrandom in $root's linked graph (the check would pass vacuously)"; continue; fi
   [ "$(grep -c . <<< "$majors")" = 1 ] || fail "$root links getrandom $(tr '\n' ' ' <<< "$majors")(G-R2, S0-7 (c): one major)"
 done
+
+# ---- G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1) -------------------------
+# The media crate carries no feature but its empty `default` in any graph that holds it, so
+# `nonce-registry` (§3.7 point 5: process-global state, test builds only) and any later test feature
+# can never reach an Android build (the ghost-client-dm clause's pattern). Checked on its own normal
+# graph, which must hold it (or the clause would be vacuous), and on the shipped graph. The crate
+# enters the shipped graph in slice S2, when ghost-client-dm gains the dependency (§13.1, §17.1 S2):
+# from the commit whose ghost-client-dm manifest names it as a normal dependency, the shipped graph
+# must hold it (an optional dependency left disabled would pass the feature clause vacuously), so the
+# rule turns itself on at S2's link with no edit here (the S1 decision, design §22.2).
+# Hooks: GHOST_POLICY_MEDIA_QUERY_FEATURES passes --features to the own-graph query (a feature that
+# reaches the graph); GHOST_POLICY_MEDIA_GRAPH replaces the packages that graph must hold;
+# GHOST_POLICY_MEDIA_LINKER names the package whose dependency makes the shipped graph required;
+# GHOST_POLICY_MEDIA_SHIPPED_REQUIRED=1 requires it now.
+media_query=(-p ghost-client-media -e features,no-dev -i ghost-client-media --target all)
+[ -n "${GHOST_POLICY_MEDIA_QUERY_FEATURES:-}" ] && media_query+=(--features "$GHOST_POLICY_MEDIA_QUERY_FEATURES")
+if media_raw="$(tree -p ghost-client-media -e normal --target all --prefix none -f '{p}')"; then
+  media_pkgs="$(awk '{print $1}' <<< "$media_raw" | sort -u)"
+else
+  FAILURES=$((FAILURES + 1))
+  media_pkgs=""
+fi
+for p in ${GHOST_POLICY_MEDIA_GRAPH:-ghost-client-media chacha20poly1305}; do
+  has "$media_pkgs" "$p" || fail "package '$p' is not in ghost-client-media's graph: G-M7's feature clause would be vacuous"
+done
+if media_own="$(tree "${media_query[@]}")"; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = default ] || fail "ghost-client-media feature '$f' is enabled in its own graph; G-M7 allows: default"
+  done <<< "$({ grep -oE 'ghost-client-media feature "[a-z0-9_-]+"' <<< "$media_own" || true; } | sed -E 's/.*"(.*)"/\1/' | sort -u)"
+else
+  FAILURES=$((FAILURES + 1))
+fi
+media_required="${GHOST_POLICY_MEDIA_SHIPPED_REQUIRED:-}"
+if [ -z "$media_required" ] && [ -n "${meta:-}" ]; then
+  if ! media_declared="$(LINKER="${GHOST_POLICY_MEDIA_LINKER:-ghost-client-dm}" perl -MJSON::PP -e '
+      local $/; my $m = JSON::PP->new->decode(<STDIN>);
+      for my $p (@{ $m->{packages} }) {
+        next unless $p->{name} eq $ENV{LINKER};
+        for my $d (@{ $p->{dependencies} }) {
+          print "yes\n" if $d->{name} eq "ghost-client-media" && !defined $d->{kind};
+        }
+      }' <<< "$meta")"; then
+    fail "the workspace metadata reader (perl) failed: G-M7's shipped-graph clause is unproven"
+    media_declared=""
+  fi
+  [ -n "$media_declared" ] && media_required=1
+fi
+if [ -n "$media_required" ] && ! has "$pkgs" ghost-client-media; then
+  fail "package 'ghost-client-media' is not in the shipped client graph although ${GHOST_POLICY_MEDIA_LINKER:-ghost-client-dm} declares it (G-M7: slice S2 links it)"
+fi
+if has "$pkgs" ghost-client-media; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = default ] || fail "ghost-client-media feature '$f' is enabled in the shipped client graph; G-M7 allows: default"
+  done <<< "$(features ghost-client-media)"
+fi
 finish rust-feature-policy

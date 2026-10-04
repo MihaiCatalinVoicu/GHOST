@@ -8,6 +8,10 @@
 # ghost-client-net (design faza10-forum.md §19.32; S2a had listed it here ahead of the link, §3.9,
 # §13.1 G-L1 … G-L4): its OpenMLS stack is in the notices, the MPL-2.0 source bundle (the three
 # hpke-rs crates) and the header scan as a part of the shipped library.
-graph client-net ghost-client-net aarch64-linux-android,x86_64-linux-android
+# Phase 11's media crate (design faza11-media.md §16.1 G-M7; slice S1) is listed ahead of its link, as
+# S2a listed ghost-client-mls: slice S2 links it into ghost-client-dm and so into ghost-client-net.
+# Its graph adds no third-party package (every one is already the DM stack's, at the same version), so
+# the notices and the MPL-2.0 bundle are unchanged; the header scan reads its sources and its licence.
+graph client-net ghost-client-net,ghost-client-media aarch64-linux-android,x86_64-linux-android
 graph relay ghost-relay-node x86_64-unknown-linux-gnu
 graph issuer ghost-issuer,ghost-issuer-ops x86_64-unknown-linux-gnu

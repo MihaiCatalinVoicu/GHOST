@@ -1,0 +1,114 @@
+# GHOST source sniffer vectors (Phase 11 design faza11-media.md §6.1, §9.2, §13.2 M10; S0-4, S0-21).
+# Generated and checked by client-core/media/tests/vectors.rs; replayed by the JDK replay.
+# `input` is a byte recipe (see media_object.txt); at most its first 64 bytes are read. `expect` is
+# JPEG, PNG, WEBP, ISO_BMFF_VIDEO or UNSUPPORTED. The rules: JPEG starts FF D8 FF; PNG is the
+# 8-byte signature then a 13-byte IHDR chunk (00 00 00 0d 'IHDR'); WEBP is 'RIFF' ? 'WEBP' with the
+# chunk 'VP8 ' or 'VP8L', or 'VP8X' whose flags byte (offset 20) has the animation bit 0x02 clear;
+# ISO_BMFF_VIDEO is a box 'ftyp' at offset 4 whose size is a multiple of 4 in 16 … the bytes read
+# (the whole ftyp inside the 64 bytes) and whose major brand (offset 8) and compatible brands
+# (offset 16 to the size) include none of the HEIF, MIAF and AVIF image brands heic heix heim heis
+# hevc hevx hevm hevs mif1 mif2 msf1 miaf avif avis avio MiHE; anything else is UNSUPPORTED.
+
+[sniff jpeg_golden]
+input = golden:api35-emulator/strip_orient1.jpg[0..64]
+expect = JPEG
+
+[sniff fmp4_golden]
+input = golden:api35-emulator/quad_land.fmp4[0..64]
+expect = ISO_BMFF_VIDEO
+
+[sniff png]
+input = hex:89504e470d0a1a0a0000000d49484452000001000000010008060000005c72a866
+expect = PNG
+
+[sniff png_first_chunk_not_ihdr]
+input = hex:89504e470d0a1a0a0000000d6163544c
+expect = UNSUPPORTED
+
+[sniff webp_lossy]
+input = hex:52494646240000005745425056503820180000003001009d012a0100010002
+expect = WEBP
+
+[sniff webp_lossless]
+input = hex:5249464624000000574542505650384c0d0000002f0000000700
+expect = WEBP
+
+[sniff webp_extended_static]
+input = hex:524946462400000057454250565038580a00000010000000
+expect = WEBP
+
+[sniff webp_animated]
+input = hex:524946462400000057454250565038580a00000002000000
+expect = UNSUPPORTED
+
+[sniff mp4_phone]
+input = hex:000000206674797069736f6d0000020069736f6d69736f32617663316d703431000000086d646174
+expect = ISO_BMFF_VIDEO
+
+[sniff quicktime]
+input = hex:0000001466747970717420200000020071742020000000086d646174
+expect = ISO_BMFF_VIDEO
+
+[sniff 3gp]
+input = hex:0000001866747970336770340000020069736f6d33677034000000086d646174
+expect = ISO_BMFF_VIDEO
+
+[sniff heic]
+input = hex:000000186674797068656963000002006d69663168656963000000086d646174
+expect = UNSUPPORTED
+
+[sniff heix_compatible]
+input = hex:00000014667479706d7034310000020068656978000000086d646174
+expect = UNSUPPORTED
+
+[sniff avif]
+input = hex:0000001c667479706176696600000200617669666d6966316d696166000000086d646174
+expect = UNSUPPORTED
+
+[sniff avis_sequence]
+input = hex:000000146674797061766973000002006d736631000000086d646174
+expect = UNSUPPORTED
+
+[sniff msf1_major]
+input = hex:00000010667479706d73663100000200000000086d646174
+expect = UNSUPPORTED
+
+[sniff ftyp_beyond_64_bytes]
+input = hex:000000486674797069736f6d00000200696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969696969
+expect = UNSUPPORTED
+
+[sniff gif]
+input = hex:474946383961
+expect = UNSUPPORTED
+
+[sniff bmp]
+input = hex:424d36000000
+expect = UNSUPPORTED
+
+[sniff ico]
+input = hex:00000100
+expect = UNSUPPORTED
+
+[sniff tiff_dng_le]
+input = hex:49492a00
+expect = UNSUPPORTED
+
+[sniff tiff_dng_be]
+input = hex:4d4d002a
+expect = UNSUPPORTED
+
+[sniff svg]
+input = hex:3c737667
+expect = UNSUPPORTED
+
+[sniff webm]
+input = hex:1a45dfa3
+expect = UNSUPPORTED
+
+[sniff riff_avi]
+input = hex:52494646240000004156492020
+expect = UNSUPPORTED
+
+[sniff empty]
+input = hex:
+expect = UNSUPPORTED

@@ -49,6 +49,49 @@ for g in no-logging kotlin-clearnet anti-placeholder dm-enqueue-callers dm-no-ft
     echo "SELF-TEST FAIL: $g does not report the release-only source set's violations" >&2; rc=1
   fi
 done
+# G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1): the media crate is pure. Each
+# fixture of media-purity/ breaks one rule and must fail for that rule's reason alone (every GATE-FAIL
+# line of the run names it); the good fixture, with the near misses (banned names in comments and
+# strings, core::time, the registry's static in src/registry.rs), passes. A logging macro in the
+# crate is no-logging.sh's, which reads every client-core crate.
+MPUR="$HARNESS/media-purity"
+if GHOST_ROOT="$MPUR/good" bash "$DIR/media-crate-purity.sh" >/dev/null 2>&1; then
+  echo "self-test ok: media-crate-purity accepts the near misses"
+else
+  echo "SELF-TEST FAIL: media-crate-purity rejects the good fixture" >&2; rc=1
+fi
+for mp_case in \
+  "clock|a clock (the media crate reads no clock" \
+  "io|I/O (the media crate does no I/O" \
+  "state|state (the media crate keeps none" \
+  "random|randomness (the caller passes K_f and object_id" \
+  "unsafe|unsafe code (forbidden in the media crate)" \
+  "forbid-missing|no #![forbid(unsafe_code)]" \
+  "jni|JNI (the media crate has none" \
+  "extern-crate|dependency 'base64' (an external crate" \
+  "target-dependency|no build or target-specific dependency" \
+  "feature|feature 'simd' = [] (a feature" \
+  "build-script|a build script"; do
+  mp_name="${mp_case%%|*}"
+  mp_want="${mp_case#*|}"
+  if mp_out="$(GHOST_ROOT="$MPUR/$mp_name" bash "$DIR/media-crate-purity.sh" 2>&1)"; then
+    echo "SELF-TEST FAIL: media-crate-purity passed fixture $mp_name" >&2; rc=1
+  elif [ "$(grep -c '^GATE-FAIL' <<<"$mp_out" || true)" -lt 1 ] \
+    || [ "$(grep '^GATE-FAIL' <<<"$mp_out" | grep -cvF -- "$mp_want" || true)" != 0 ]; then
+    echo "SELF-TEST FAIL: media-crate-purity does not fail fixture $mp_name for its own reason ($mp_want)" >&2
+    printf '%s\n' "$mp_out" | grep '^GATE-FAIL' | head -4 >&2; rc=1
+  else
+    echo "self-test ok: media-crate-purity rejects $mp_name for its own reason"
+  fi
+done
+media_log_out="$(GHOST_ROOT="$HARNESS/negative-media-logging" bash "$DIR/no-logging.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$media_log_out" || true)" = 2 ] \
+  && grep -qF "client-core/media/src/lib.rs:3:    log::info!" <<<"$media_log_out" \
+  && grep -qF "client-core/media/src/lib.rs:4:    println!" <<<"$media_log_out"; then
+  echo "self-test ok: no-logging reports a logging and a print macro in the media crate (G-M7)"
+else
+  echo "SELF-TEST FAIL: no-logging does not report exactly the media crate's two logging lines" >&2; rc=1
+fi
 # Phase 9 §21.13 point 7 (slice S12): anti-placeholder reads the `gate` source sets. The fixture holds
 # a gate source and nothing else, so only that reading can fail it.
 expect_fail anti-placeholder "$HARNESS/negative-gate-placeholder"
@@ -1059,6 +1102,14 @@ for want in "agpl-header 1.0.0: src/lib.rs: SPDX-License-Identifier: AGPL-3.0-on
 done
 lic_case rust-license-headers "scans GHOST's own crates and rejects an exception that matches nothing" fail "rust-license-exceptions.txt: clean 1.0.0 src/lib.rs is not needed" \
   "$(lic_list headers-own)" GHOST_LICENSE_EXCEPTIONS="$LIC_FIX/lists/headers-exceptions-unused.txt"
+# G-M7 (Phase 11 design faza11-media.md §16.1; slice S1): a crate of GHOST's own whose manifest declares
+# no licence (a missing licence header: `license.workspace = true` dropped), or another licence, fails.
+lic_case rust-license-headers "rejects an own crate that declares no licence (G-M7)" fail \
+  "clean 1.0.0: GHOST's own crate declares no licence, not LicenseRef-GHOST-Proprietary" \
+  "$(lic_list headers-own-unlicensed)" GHOST_LICENSE_EXCEPTIONS=/dev/null
+lic_case rust-license-headers "rejects an own crate that declares another licence (G-M7)" fail \
+  "clean 1.0.0: GHOST's own crate declares 'MIT', not LicenseRef-GHOST-Proprietary" \
+  "$(lic_list headers-own-mit)" GHOST_LICENSE_EXCEPTIONS=/dev/null
 lic_case mpl-sources "accepts the MPL-2.0 manifest" pass "[mpl-sources] OK" "$(lic_list mpl)"
 lic_case mpl-sources "rejects an MPL-2.0 package missing from the manifest" fail "mpl-pkg 1.0.0 is used under MPL-2.0 and missing from" "$(lic_list mpl)" GHOST_MPL_SOURCES="$LIC_FIX/licenses/mpl-sources-empty.txt"
 lic_case mpl-sources "rejects a checksum Cargo.lock does not record" fail "mpl-pkg 1.0.0: mpl-sources.txt records 0000" "$(lic_list mpl)" GHOST_MPL_SOURCES="$LIC_FIX/licenses/mpl-sources-wrong-sum.txt"
@@ -2252,7 +2303,7 @@ site fixture-clock-epoch@0.1.0 src/lib.rs:6 elapsed clock-log [lib]"
     fx="$(mktemp -d)"
     gw="$(cd "$DIR/../.." && { pwd -W 2>/dev/null || pwd; })"
     mkdir -p "$fx/src" && : > "$fx/src/lib.rs"
-    printf '[package]\nname = "ghost-linked-fixture"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[dependencies]\nghost-client-net = { path = "%s/client-core/net" }\nghost-client-mls = { path = "%s/client-core/mls" }\n%s\n\n[workspace]\n' "$gw" "$gw" "$2" > "$fx/Cargo.toml"
+    printf '[package]\nname = "ghost-linked-fixture"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[dependencies]\nghost-client-net = { path = "%s/client-core/net" }\nghost-client-mls = { path = "%s/client-core/mls" }\nghost-client-media = { path = "%s/client-core/media" }\n%s\n\n[workspace]\n' "$gw" "$gw" "$gw" "$2" > "$fx/Cargo.toml"
     cp "$DIR/../../Cargo.lock" "$fx/Cargo.lock"
     { cat "$DIR/../../client-core/rust-dependency-allowlist.txt"; echo ghost-linked-fixture; } > "$fx/allowlist.txt"
     if ! (cd "$fx" && cargo update -w --offline -q >/dev/null 2>&1); then
@@ -2361,6 +2412,53 @@ src/derive.rs:200:pub fn derive_epoch_recognition(" \
     echo "self-test ok: mls-vendored-clock-log accepts the real channel graph against its baseline"
   else
     echo "SELF-TEST FAIL: mls-vendored-clock-log rejects the real channel graph" >&2; rc=1
+  fi
+  # G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1): the media crate's graph rules,
+  # each failing for its own reason. G-R1: the workspace line and the direct-dependency clause (an
+  # external crate the allowlist holds for another reason, simulated by narrowing the allowed five);
+  # G-R2: a feature reaching the crate's own graph, the graph without the crate, and the shipped-graph
+  # requirement S2's link turns on; G-R4's graph half; G-R8 against its baseline.
+  tmp="$(mktemp)"
+  grep -vx "ghost-client-media" "$DIR/../../client-core/rust-dependency-allowlist.txt" > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects the media crate without its workspace line (G-M7)" \
+    "Rust package 'ghost-client-media'" env GHOST_RUST_ALLOWLIST="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  rm -f "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects an external crate as the media crate's dependency (G-M7)" \
+    "ghost-client-media depends on 'zeroize' directly: design §13.1 allows chacha20poly1305 hkdf hmac sha2" \
+    env GHOST_ALLOWLIST_MEDIA_DEPS="chacha20poly1305 hkdf hmac sha2" bash "$DIR/rust-client-allowlist.sh"
+  multi_case "rust-feature-policy reports each media clause (G-M7): a feature in the crate's own graph, a graph without the crate's stack, the shipped graph S2 must link it into" 3 \
+"ghost-client-media feature 'nonce-registry' is enabled in its own graph; G-M7 allows: default
+package 'media-no-such-crate' is not in ghost-client-media's graph
+package 'ghost-client-media' is not in the shipped client graph although ghost-client-dm declares it" \
+    env GHOST_POLICY_MEDIA_QUERY_FEATURES=nonce-registry GHOST_POLICY_MEDIA_GRAPH="ghost-client-media media-no-such-crate" \
+      GHOST_POLICY_MEDIA_SHIPPED_REQUIRED=1 bash "$DIR/rust-feature-policy.sh"
+  multi_case "media-rust-no-logging reports each clause (G-M7): a forbidden crate (rules 1 and 2), a graph without the media stack (both queries)" 4 \
+"ghost-client-media links 'zeroize'
+media-no-such-crate is not in ghost-client-media's graph" \
+    env GHOST_DMLOG_FORBID_EXTRA=zeroize GHOST_DMLOG_REQUIRED="ghost-client-media media-no-such-crate" \
+      bash "$DIR/media-rust-no-logging.sh"
+  expect_fail_msg "media-rust-no-logging reads the media crate's own sources for a logger (G-M7)" \
+    "ghost-client-media 0.1.0: src/sniff.rs" env GHOST_DMLOG_INSTALLER=sniff bash "$DIR/media-rust-no-logging.sh"
+  if bash "$DIR/media-rust-no-logging.sh" >/dev/null 2>&1; then
+    echo "self-test ok: media-rust-no-logging accepts the real media graph"
+  else
+    echo "SELF-TEST FAIL: media-rust-no-logging rejects the real media graph" >&2; rc=1
+  fi
+  tmp="$(mktemp)"
+  gm7="$DIR/media-vendored-clock-log.baseline"
+  grep -v '^site libc@0.2.189 src/new/mod.rs:218 time::' "$gm7" > "$tmp"
+  expect_fail_msg "media-vendored-clock-log rejects a site missing from the baseline (G-M7)" \
+    "unjustified: site libc@0.2.189 src/new/mod.rs:218 time:: clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/media-vendored-clock-log.sh"
+  { cat "$gm7"; echo "site ghost-client-media@0.1.0 src/sealer.rs:1 SystemTime clock-log [lib]  # fixture: a clock site the scan does not find"; } > "$tmp"
+  expect_fail_msg "media-vendored-clock-log rejects a stale baseline entry (G-M7)" \
+    "stale: site ghost-client-media@0.1.0 src/sealer.rs:1 SystemTime clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/media-vendored-clock-log.sh"
+  rm -f "$tmp"
+  if bash "$DIR/media-vendored-clock-log.sh" >/dev/null 2>&1; then
+    echo "self-test ok: media-vendored-clock-log accepts the real media graph against its baseline"
+  else
+    echo "SELF-TEST FAIL: media-vendored-clock-log rejects the real media graph" >&2; rc=1
   fi
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate

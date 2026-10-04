@@ -1,0 +1,12 @@
+Mutant ms04-fragment-hashes-not-checked (Phase 11 slice S1, ghost-client-media): fragments opened without their hashes (MC-M4's shape).
+--- a/client-core/media/src/reader.rs
++++ b/client-core/media/src/reader.rs
+@@ -165,7 +165,7 @@
+             ))?;
+         for (k, fragment) in fragments.chunks(FRAG).enumerate() {
+             let want = self.manifest.hashes.get(first.saturating_add(k));
+-            if want != Some(&sha256(fragment)) {
++            if false && want != Some(&sha256(fragment)) {
+                 return Err(MediaError::new(
+                     Code::HashMismatch,
+                     "a fragment other than the one the manifest names at its position",

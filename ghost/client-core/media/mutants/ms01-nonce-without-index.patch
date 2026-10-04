@@ -1,0 +1,12 @@
+Mutant ms01-nonce-without-index (Phase 11 slice S1, ghost-client-media): the chunk index left out of the nonce (MC-M2's shape).
+--- a/client-core/media/src/stream.rs
++++ b/client-core/media/src/stream.rs
+@@ -26,7 +26,7 @@
+ pub fn chunk_nonce(index: u32, last: bool) -> [u8; NONCE_BYTES] {
+     let mut n = [0u8; NONCE_BYTES];
+     let i = index.to_be_bytes();
+-    for (dst, src) in n.iter_mut().skip(7).zip(i.iter()) {
++    for (dst, src) in n.iter_mut().skip(7).zip(0u32.to_be_bytes().iter()) {
+         *dst = *src;
+     }
+     if let Some(l) = n.last_mut() {

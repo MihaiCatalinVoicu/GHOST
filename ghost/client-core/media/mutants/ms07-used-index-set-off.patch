@@ -1,0 +1,12 @@
+Mutant ms07-used-index-set-off (Phase 11 slice S1, ghost-client-media): the sealer's used-index set does not refuse a second seal.
+--- a/client-core/media/src/sealer.rs
++++ b/client-core/media/src/sealer.rs
+@@ -152,7 +152,7 @@
+             Code::IndexReused,
+             "a chunk index beyond 255",
+         ))?;
+-        if *slot & bit != 0 {
++        if false && *slot & bit != 0 {
+             return Err(MediaError::new(
+                 Code::IndexReused,
+                 "a chunk index sealed twice",

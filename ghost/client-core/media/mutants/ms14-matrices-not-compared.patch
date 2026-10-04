@@ -1,0 +1,12 @@
+Mutant ms14-matrices-not-compared (Phase 11 slice S1, ghost-client-media): two tkhd with different matrices accepted (S0-3).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -572,7 +572,7 @@
+     if a.video == b.video {
+         return Err(nc("tracks that are not one soun and one vide"));
+     }
+-    if a.matrix != b.matrix {
++    if false && a.matrix != b.matrix {
+         return Err(nc("two tkhd with different matrices"));
+     }
+     let rotation = rotation_of(&a.matrix).unwrap_or(0);

@@ -33,7 +33,13 @@ rc=0
 # mls-jni-surface is G-M6 (Phase 10 design §10.2, §13.1; slice S2b), G-R6's method for the channel
 # surface `MlsNative`: its source halves run here without a library; the CI android-native job runs it
 # with the shipped libraries and the android job with the ghost-dm-host build (`--test`).
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface; do
+# media-crate-purity is G-M7's source half (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice
+# S1): the media crate has no clock, I/O, state (but the test registry), randomness, unsafe code, JNI,
+# external crate or feature; it reads sources and the manifest only. G-M7's graph halves need cargo:
+# clauses of rust-client-allowlist.sh (G-R1) and rust-feature-policy.sh (G-R2), media-rust-no-logging
+# (G-R4) and media-vendored-clock-log (G-R8) in rust-gates.sh and the CI rust job, and the licence scan
+# (G-R5) with the client-net graph of licenses/graphs.txt.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface media-crate-purity; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

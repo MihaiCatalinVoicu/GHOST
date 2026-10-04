@@ -1,0 +1,13 @@
+Mutant ms03-last-flag-not-checked (Phase 11 slice S1, ghost-client-media): the reader accepts either last flag (MC-M3's shape).
+--- a/client-core/media/src/reader.rs
++++ b/client-core/media/src/reader.rs
+@@ -173,7 +173,8 @@
+             }
+         }
+         let last = index == self.chunks.saturating_sub(1);
+-        let plaintext = open_chunk(&self.payload, &self.ad, index, last, fragments)?;
++        let plaintext = open_chunk(&self.payload, &self.ad, index, last, fragments)
++            .or_else(|_| open_chunk(&self.payload, &self.ad, index, !last, fragments))?;
+         let start = u64::from(index).saturating_mul(CHUNK_PT as u64);
+         let content = self
+             .manifest

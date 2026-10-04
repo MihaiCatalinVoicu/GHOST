@@ -1,0 +1,12 @@
+Mutant ms10-repeated-hashes-allowed (Phase 11 slice S1, ghost-client-media): a repeated fragment hash allowed.
+--- a/client-core/media/src/manifest.rs
++++ b/client-core/media/src/manifest.rs
+@@ -121,7 +121,7 @@
+         }
+         let mut sorted = self.hashes.clone();
+         sorted.sort_unstable();
+-        if sorted.windows(2).any(|w| w.first() == w.get(1)) {
++        if false && sorted.windows(2).any(|w| w.first() == w.get(1)) {
+             return Err(nc("a repeated fragment hash"));
+         }
+         Ok(())

@@ -1,0 +1,39 @@
+[package]
+publish = false
+name = "ghost-client-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST media objects: constants and size classes, the HKDF derivations, STREAM chunks and fragments, the sealer and reader state machines, the manifest and descriptor codecs, the magic-byte sniffer, the JPEG canonicaliser and the fMP4 walker with the mfra builder (Phase 11 design faza11-media.md §3, §4.1, §8.2, §8.3, §13.1; slice S1)"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# G-M7 (the G-R2 clause): no default feature, and no feature of this crate in any shipped graph.
+default = []
+# §3.7 point 5: every (SHA-256(K_p or K_m), nonce) the crate seals is recorded in a process-global
+# registry with the digest of the plaintext it sealed, and a second plaintext under one pair is a
+# violation the test reads. Test builds only (the crate's own tests always have it); G-R2 keeps it
+# out of every shipped graph. It is the crate's only state, and only this feature compiles it.
+nonce-registry = []
+
+[dependencies]
+# Design §13.1: chacha20poly1305, hkdf, hmac, sha2 and zeroize only, the versions and features
+# ghost-client-dm and ghost-client-mls already link (no new crate and no new feature in the shipped
+# graph). HMAC is reached through HKDF only, so `hmac` is not a direct dependency.
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+hkdf = "=0.13.0"
+sha2 = { workspace = true }
+zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+hex = { workspace = true }
+# The tests' own chunk layer (re-sealing negative cases, and the StreamBE32 re-derivation that
+# stands in for the aead-stream oracle the S1 brief does not allow, §22.2): the normal
+# dependency's version and features, so the dev graph adds no crate.
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+# The integration tests read the nonce registry (§3.7 point 5, CS-M1): the crate itself with the
+# test feature, through the dev graph only (G-R2 reads `-e no-dev`).
+ghost-client-media = { path = ".", features = ["nonce-registry"] }

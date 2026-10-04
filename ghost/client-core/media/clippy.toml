@@ -1,0 +1,20 @@
+# `ghost-client-media` does no I/O, reads no clock, starts no thread and asks the environment
+# nothing (design §13.1: "no JNI, no I/O, no clock, no logging, no state"). clippy reads the
+# clippy.toml nearest the crate's own manifest, so the bans of client-core/net and client-core/dm do
+# not reach this crate; these are the `std` paths of the rule that clippy can resolve (a path it
+# cannot resolve is ignored silently, so only `std` paths are named). The source half of the same
+# rule, which also covers the paths clippy cannot see, is scripts/gates/media-crate-purity.sh (G-M7).
+disallowed-methods = [
+    { path = "std::net::TcpStream::connect", reason = "the media crate does no I/O: no sockets" },
+    { path = "std::net::TcpListener::bind", reason = "the media crate does no I/O: no sockets" },
+    { path = "std::net::UdpSocket::bind", reason = "the media crate does no I/O: no sockets" },
+    { path = "std::time::SystemTime::now", reason = "the media crate reads no clock" },
+    { path = "std::time::Instant::now", reason = "the media crate reads no clock" },
+    { path = "std::fs::read", reason = "the media crate does no I/O: bytes come from the caller" },
+    { path = "std::fs::write", reason = "the media crate does no I/O: bytes go to the caller" },
+    { path = "std::fs::File::open", reason = "the media crate does no I/O" },
+    { path = "std::fs::File::create", reason = "the media crate does no I/O" },
+    { path = "std::env::var", reason = "the media crate reads no environment" },
+    { path = "std::process::Command::new", reason = "the media crate starts no process" },
+    { path = "std::thread::spawn", reason = "the media crate starts no thread" },
+]

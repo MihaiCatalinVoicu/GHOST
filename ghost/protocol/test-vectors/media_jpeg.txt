@@ -1,0 +1,144 @@
+# GHOST canonical JPEG vectors (Phase 11 design faza11-media.md §8.2, §13.2 M9, §15.2 item 6).
+# Generated and checked by client-core/media/tests/vectors.rs; replayed by the JDK replay.
+# `input` is a byte recipe (see media_object.txt). `check` is the canonical-profile walk (OK or
+# NON_CANONICAL: an APPn or COM segment is refused there); `canonical` is jpegCanonicalize's output,
+# as `sha256:<digest>`, or NON_CANONICAL; `width`/`height` are SOF0's when either is OK.
+# Allowed: SOI, DQT (8-bit, 1 to 4 tables), SOF0 (8-bit, 1 or 3 components), DHT (classes and numbers
+# 0 or 1), DRI, SOS (Ss 0, Se 63, Ah = Al = 0), entropy data with RST0 … RST7 (in order, only with a
+# non-zero DRI), EOI. Dropped by jpegCanonicalize: APP0 … APP15, COM. Refused: everything else,
+# fill bytes, a second SOI, a byte after EOI, a missing EOI.
+
+[jpeg golden_fixed_point]
+input = golden:api35-emulator/strip_orient1.jpg
+check = OK
+canonical = sha256:2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c
+width = 512
+height = 336
+
+[jpeg grey_preview_320x208]
+input = hex:ffd8ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b0800d0014001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+check = OK
+canonical = sha256:c37794c00af023d08e1158c3538d5309221fc1f059928f3ce7aa3174abdc4968
+width = 320
+height = 208
+
+[jpeg app1_app2_app13_com_dropped]
+input = golden:api35-emulator/strip_orient1.jpg[0..2] + hex:ffe100124578696600004d4d002a000000080000ffe200164943435f50524f46494c4500010163616e617279ffed001b50686f746f73686f7020332e30003842494d2063616e617279fffe001063616e61727920636f6d6d656e74 + golden:api35-emulator/strip_orient1.jpg[2..]
+check = NON_CANONICAL
+canonical = sha256:2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c
+width = 512
+height = 336
+
+[jpeg app0_jfif_dropped]
+input = golden:api35-emulator/strip_orient1.jpg[0..2] + hex:ffe000104a46494600010100000100010000 + golden:api35-emulator/strip_orient1.jpg[2..]
+check = NON_CANONICAL
+canonical = sha256:2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c
+width = 512
+height = 336
+
+[jpeg app_between_tables_dropped]
+input = golden:api35-emulator/strip_orient1.jpg[0..140] + hex:ffe100124578696600004d4d002a000000080000 + golden:api35-emulator/strip_orient1.jpg[140..]
+check = NON_CANONICAL
+canonical = sha256:2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c
+width = 512
+height = 336
+
+[jpeg trailer_after_eoi]
+input = golden:api35-emulator/strip_orient1.jpg + hex:ffd8ffd9
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg byte_after_eoi]
+input = golden:api35-emulator/strip_orient1.jpg + hex:00
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg missing_eoi]
+input = golden:api35-emulator/strip_orient1.jpg[0..2434]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg second_soi]
+input = golden:api35-emulator/strip_orient1.jpg[0..2] + hex:ffd8 + golden:api35-emulator/strip_orient1.jpg[2..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg progressive_sof2]
+input = golden:api35-emulator/strip_orient1.jpg[0..140] + hex:ffc2 + golden:api35-emulator/strip_orient1.jpg[142..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg extended_sof1]
+input = golden:api35-emulator/strip_orient1.jpg[0..140] + hex:ffc1 + golden:api35-emulator/strip_orient1.jpg[142..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg arithmetic_sof9]
+input = golden:api35-emulator/strip_orient1.jpg[0..140] + hex:ffc9 + golden:api35-emulator/strip_orient1.jpg[142..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg dnl_marker]
+input = golden:api35-emulator/strip_orient1.jpg[0..295] + hex:ffdc00040010 + golden:api35-emulator/strip_orient1.jpg[295..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg dac_marker]
+input = golden:api35-emulator/strip_orient1.jpg[0..295] + hex:ffcc0004000f + golden:api35-emulator/strip_orient1.jpg[295..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg dhp_marker]
+input = golden:api35-emulator/strip_orient1.jpg[0..295] + hex:ffde0004000f + golden:api35-emulator/strip_orient1.jpg[295..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg exp_marker]
+input = golden:api35-emulator/strip_orient1.jpg[0..295] + hex:ffdf000300 + golden:api35-emulator/strip_orient1.jpg[295..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg reserved_marker]
+input = golden:api35-emulator/strip_orient1.jpg[0..295] + hex:ff02 + golden:api35-emulator/strip_orient1.jpg[295..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg fill_byte]
+input = golden:api35-emulator/strip_orient1.jpg[0..295] + hex:ff + golden:api35-emulator/strip_orient1.jpg[295..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg twelve_bit_dqt]
+input = golden:api35-emulator/strip_orient1.jpg[0..6] + hex:10 + golden:api35-emulator/strip_orient1.jpg[7..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg restart_without_dri]
+input = golden:api35-emulator/strip_orient1.jpg[0..2434] + hex:ffd0 + golden:api35-emulator/strip_orient1.jpg[2434..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg sos_before_sof]
+input = hex:ffd8 + hex:ffda0008010100003f00 + golden:api35-emulator/strip_orient1.jpg[2..]
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg two_components]
+input = hex:ffd8ffc0000e080010001002011100021100ffd9
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg empty]
+input = hex:
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg soi_only]
+input = hex:ffd8
+check = NON_CANONICAL
+canonical = NON_CANONICAL
+
+[jpeg not_a_jpeg]
+input = hex:89504e47
+check = NON_CANONICAL
+canonical = NON_CANONICAL
