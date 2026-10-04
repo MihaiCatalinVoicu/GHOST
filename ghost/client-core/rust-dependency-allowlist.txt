@@ -478,3 +478,11 @@ rayon
 rayon-core
 tls_codec
 tls_codec_derive
+
+# Phase 11 media (design faza11-media.md §13.1, §16.1 G-M7, §16.3; ADR-44; slice S1). The media crate
+# itself (workspace, proprietary); rust-client-allowlist.sh reads its graph on both shipped ABIs
+# before slice S2 links it into ghost-client-dm (and so into ghost-client-net), and refuses a direct
+# dependency outside design §13.1's chacha20poly1305, hkdf, hmac, sha2 and zeroize. It brings no
+# external crate: every package of its graph is already listed above (the DM stack's AEAD, HKDF,
+# SHA-2 and zeroize crates).
+ghost-client-media

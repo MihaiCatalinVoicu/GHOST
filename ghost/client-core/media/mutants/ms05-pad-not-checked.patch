@@ -1,0 +1,13 @@
+Mutant ms05-pad-not-checked (Phase 11 slice S1, ghost-client-media): the content pad not checked for zeros (MC-M5's shape).
+--- a/client-core/media/src/reader.rs
++++ b/client-core/media/src/reader.rs
+@@ -190,7 +190,8 @@
+             .saturating_sub(start)
+             .min(CHUNK_PT as u64);
+         let content = usize::try_from(content).map_err(|_| nc("a chunk too large"))?;
+-        if !plaintext
++        if false
++            && !plaintext
+             .get(content..)
+             .unwrap_or(&[])
+             .iter()

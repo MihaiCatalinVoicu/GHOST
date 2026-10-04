@@ -1,0 +1,12 @@
+Mutant ms50-component-coded-twice (Phase 11 slice S1, ghost-client-media; the review of S1): a component may be coded by more than one scan (row 9: at most 3 scans).
+--- a/client-core/media/src/jpeg.rs
++++ b/client-core/media/src/jpeg.rs
+@@ -477,7 +477,7 @@
+         }
+         c.finish()?;
+         for (cs, tq, td_ta) in seen {
+-            if self.scanned.contains(&cs) {
++            if false && self.scanned.contains(&cs) {
+                 return Err(nc(
+                     "a component coded by two scans (baseline codes each once)",
+                 ));

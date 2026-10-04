@@ -1,0 +1,12 @@
+Mutant ms18-walked-fields-not-compared (Phase 11 slice S1, ghost-client-media): manifest dimensions and duration trusted, not compared with the walk (MC-M21's shape).
+--- a/client-core/media/src/reader.rs
++++ b/client-core/media/src/reader.rs
+@@ -255,7 +255,7 @@
+         }
+         let walked = self.walker.finish()?;
+         let f = &self.manifest.fields;
+-        if (walked.width, walked.height, walked.duration_ms) != (f.width, f.height, f.duration_ms) {
++        if false && (walked.width, walked.height, walked.duration_ms) != (f.width, f.height, f.duration_ms) {
+             return Err(nc(
+                 "manifest dimensions or duration other than the walked stream's",
+             ));

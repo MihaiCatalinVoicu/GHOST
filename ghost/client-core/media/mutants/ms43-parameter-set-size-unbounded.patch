@@ -1,0 +1,21 @@
+Mutant ms43-parameter-set-size-unbounded (Phase 11 slice S1, ghost-client-media; the review of S1): an SPS or PPS of more than 512 bytes is allowed (row 9(g)).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -524,7 +524,7 @@
+         ));
+     }
+     let sps_len = c.u16()?;
+-    if sps_len == 0 || sps_len > PARAMETER_SET_MAX_BYTES {
++    if sps_len == 0 {
+         return Err(nc("an SPS length outside 1 … 512"));
+     }
+     let sps_nal = Zeroizing::new(c.take(usize::from(sps_len))?.to_vec());
+@@ -532,7 +532,7 @@
+         return Err(nc("an avcC with other than one PPS"));
+     }
+     let pps_len = c.u16()?;
+-    if !(2..=PARAMETER_SET_MAX_BYTES).contains(&pps_len) {
++    if pps_len < 2 {
+         return Err(nc("a PPS length outside 2 … 512"));
+     }
+     let pps_nal = Zeroizing::new(c.take(usize::from(pps_len))?.to_vec());

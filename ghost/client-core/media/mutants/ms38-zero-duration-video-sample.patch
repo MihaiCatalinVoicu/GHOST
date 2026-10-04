@@ -1,0 +1,12 @@
+Mutant ms38-zero-duration-video-sample (Phase 11 slice S1, ghost-client-media; the review of S1): a video sample may last zero ticks (X9).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -995,7 +995,7 @@
+                             "a fragment whose first video sample is not a sync sample",
+                         ));
+                     }
+-                    if duration == 0 || size < 5 {
++                    if size < 5 {
+                         return Err(nc("a video sample of zero duration or without a NAL unit"));
+                     }
+                     samples.push((size, sync));

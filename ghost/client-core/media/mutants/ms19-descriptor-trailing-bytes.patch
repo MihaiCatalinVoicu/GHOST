@@ -1,0 +1,12 @@
+Mutant ms19-descriptor-trailing-bytes (Phase 11 slice S1, ghost-client-media): a descriptor with trailing bytes accepted (R-D3).
+--- a/client-core/media/src/descriptor.rs
++++ b/client-core/media/src/descriptor.rs
+@@ -164,7 +164,7 @@
+             return Err(nc("a caption above 1 024 bytes"));
+         }
+         let caption = c.take(caption_len)?;
+-        c.finish()?;
++        let _ = c.finish();
+         let caption = core::str::from_utf8(caption)
+             .map_err(|_| nc("a caption that is not strict UTF-8"))?
+             .to_owned();

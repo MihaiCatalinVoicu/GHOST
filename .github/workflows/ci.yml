@@ -196,6 +196,14 @@ jobs:
         run: |
           bash scripts/gates/mls-rust-no-logging.sh
           bash scripts/gates/mls-vendored-clock-log.sh
+      # Phase 11 (design faza11-media.md §16.1 G-M7; slice S1): the media crate's graph has no logging
+      # crate at all and its clock, logging and network sites equal their justified baseline. G-R1 and
+      # G-R2's media clauses are in rust-client-allowlist.sh and rust-feature-policy.sh, its source half
+      # (media-crate-purity.sh) is a static gate, and its tests run with the workspace's.
+      - name: media graph gates (G-M7 no logging crate, vendored clock and logging sites)
+        run: |
+          bash scripts/gates/media-rust-no-logging.sh
+          bash scripts/gates/media-vendored-clock-log.sh
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 points 2, 3, 10): the licence gates that need the Rust
       # toolchain and the published sources: the notices of every shipped Rust graph, compared with the
       # committed ghost/licenses/THIRD_PARTY_NOTICES-*.txt (G-L1), the licence declarations of the shipped

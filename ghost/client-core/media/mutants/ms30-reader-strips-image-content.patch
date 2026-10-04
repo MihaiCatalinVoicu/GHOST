@@ -1,0 +1,12 @@
+Mutant ms30-reader-strips-image-content (Phase 11 slice S1, ghost-client-media; the review of S1): the reader walks an image's content in strip mode, so an EXIF, ICC or XMP segment validates (X1).
+--- a/client-core/media/src/walk.rs
++++ b/client-core/media/src/walk.rs
+@@ -37,7 +37,7 @@
+     /// The reader's walker: a video's content ends with GHOST's `mfra`.
+     pub(crate) fn for_reader(kind: MediaKind) -> Self {
+         match kind {
+-            MediaKind::Image => ContentWalker::Image(JpegWalker::new(JpegMode::Check)),
++            MediaKind::Image => ContentWalker::Image(JpegWalker::new(JpegMode::Strip)),
+             MediaKind::Video => ContentWalker::Video(Fmp4Walker::new(Fmp4Mode::Reader)),
+         }
+     }

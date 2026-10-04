@@ -1,0 +1,12 @@
+Mutant ms09-preview-pad-not-checked (Phase 11 slice S1, ghost-client-media): the preview pad not checked for zeros.
+--- a/client-core/media/src/manifest.rs
++++ b/client-core/media/src/manifest.rs
+@@ -192,7 +192,7 @@
+         }
+         let field = c.take(PREVIEW_MAX)?;
+         let (preview, pad) = field.split_at(preview_len);
+-        if !all_zero(pad) {
++        if false && !all_zero(pad) {
+             return Err(nc("a non-zero byte in the preview pad"));
+         }
+         let fragments = usize::try_from(class.fragments()).unwrap_or(0);

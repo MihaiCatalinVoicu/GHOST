@@ -1,0 +1,12 @@
+Mutant ms41-sei-size-unbounded (Phase 11 slice S1, ghost-client-media; the review of S1): an SEI NAL unit of any size is allowed (row 9(g)).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -1225,7 +1225,7 @@
+                 6 => {
+                     // `len` counts the header byte: the NAL unit, header included, is at most
+                     // 1 024 bytes (the review of S1: the bound was on the payload, 1 025 in all).
+-                    if left == 0 || len > SEI_MAX_BYTES {
++                    if left == 0 {
+                         return Err(nc("an SEI NAL unit of 0 or more than 1 024 bytes"));
+                     }
+                     m.sei.clear();

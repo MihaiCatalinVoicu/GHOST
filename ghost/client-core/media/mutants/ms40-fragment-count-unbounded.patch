@@ -1,0 +1,12 @@
+Mutant ms40-fragment-count-unbounded (Phase 11 slice S1, ghost-client-media; the review of S1): more than 1 024 fragments are allowed (row 9(g)).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -835,7 +835,7 @@
+                 collect(Collecting::Moov, self);
+             }
+             (Next::Moof | Next::MoofOrEnd, b"moof") => {
+-                if self.moofs.len() >= MAX_FRAGMENTS {
++                if false && self.moofs.len() >= MAX_FRAGMENTS {
+                     return Err(nc("more than 1 024 fragments"));
+                 }
+                 if size > MOOF_MAX_BYTES {

@@ -1,0 +1,12 @@
+Mutant ms15-level-not-checked (Phase 11 slice S1, ghost-client-media): an SPS level_idc other than 31 accepted (S0-22).
+--- a/client-core/media/src/sps.rs
++++ b/client-core/media/src/sps.rs
+@@ -266,7 +266,7 @@
+     if profile_idc != 66 && profile_idc != 100 {
+         return Err(nc("an SPS profile other than 66 (Baseline) or 100 (High)"));
+     }
+-    if level_idc != 31 {
++    if false && level_idc != 31 {
+         return Err(nc("an SPS level_idc other than 31"));
+     }
+     bounded(b.ue()?, 31, "seq_parameter_set_id above 31")?;

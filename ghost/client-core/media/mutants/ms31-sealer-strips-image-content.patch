@@ -1,0 +1,12 @@
+Mutant ms31-sealer-strips-image-content (Phase 11 slice S1, ghost-client-media; the review of S1): the sealer walks an image's content in strip mode, so it seals EXIF content (X2).
+--- a/client-core/media/src/walk.rs
++++ b/client-core/media/src/walk.rs
+@@ -29,7 +29,7 @@
+     /// The sealer's walker: a video stream ends before the `mfra` the sealer appends.
+     pub(crate) fn for_sealer(kind: MediaKind) -> Self {
+         match kind {
+-            MediaKind::Image => ContentWalker::Image(JpegWalker::new(JpegMode::Check)),
++            MediaKind::Image => ContentWalker::Image(JpegWalker::new(JpegMode::Strip)),
+             MediaKind::Video => ContentWalker::Video(Fmp4Walker::new(Fmp4Mode::Sealer)),
+         }
+     }

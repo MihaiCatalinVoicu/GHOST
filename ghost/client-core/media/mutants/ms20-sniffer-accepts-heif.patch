@@ -1,0 +1,12 @@
+Mutant ms20-sniffer-accepts-heif (Phase 11 slice S1, ghost-client-media): HEIF/AVIF brands accepted as video (S0-4).
+--- a/client-core/media/src/sniff.rs
++++ b/client-core/media/src/sniff.rs
+@@ -88,7 +88,7 @@
+         let major = head.get(8..12);
+         let compatible = head.get(16..size).unwrap_or(&[]);
+         let mut brands = compatible.chunks(4).chain(major);
+-        if brands.any(|b| IMAGE_BRANDS.iter().any(|i| &i[..] == b)) {
++        if false && brands.any(|b| IMAGE_BRANDS.iter().any(|i| &i[..] == b)) {
+             return Err(unsupported("a HEIF or AVIF image brand (S0-4)"));
+         }
+         return Ok(SourceType::IsoBmffVideo);

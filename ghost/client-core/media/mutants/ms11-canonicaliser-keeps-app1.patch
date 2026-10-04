@@ -1,0 +1,12 @@
+Mutant ms11-canonicaliser-keeps-app1 (Phase 11 slice S1, ghost-client-media): jpegCanonicalize keeps APP1 (EXIF) segments (PM-M11's shape).
+--- a/client-core/media/src/jpeg.rs
++++ b/client-core/media/src/jpeg.rs
+@@ -288,7 +288,7 @@
+     }
+ 
+     fn dropped(&self, m: u8) -> bool {
+-        self.mode == JpegMode::Strip && (is_app(m) || m == COM)
++        self.mode == JpegMode::Strip && ((is_app(m) && m != 0xE1) || m == COM)
+     }
+ 
+     fn marker_code(&mut self, m: u8, out: &mut Option<&mut Zeroizing<Vec<u8>>>) -> MediaResult<()> {

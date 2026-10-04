@@ -1,0 +1,12 @@
+Mutant ms48-preview-long-edge-at-most-320 (Phase 11 slice S1, ghost-client-media; the review of S1): a preview's long edge at most 320 instead of exactly 320 (D29).
+--- a/client-core/media/src/geometry.rs
++++ b/client-core/media/src/geometry.rs
+@@ -78,7 +78,7 @@
+ /// A preview: long edge 320; short edge a multiple of 16 in 16 … 320.
+ pub(crate) fn check_preview(width: u16, height: u16) -> MediaResult<()> {
+     let (long, short) = (width.max(height), width.min(height));
+-    if long == PREVIEW_LONG_EDGE && short_edge_ok(short, long) {
++    if long <= PREVIEW_LONG_EDGE && short_edge_ok(short, long) {
+         Ok(())
+     } else {
+         Err(MediaError::non_canonical(

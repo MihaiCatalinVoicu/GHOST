@@ -1,0 +1,12 @@
+Mutant ms02-last-flag-never-sealed (Phase 11 slice S1, ghost-client-media): the sealer never sets the last flag.
+--- a/client-core/media/src/stream.rs
++++ b/client-core/media/src/stream.rs
+@@ -60,7 +60,7 @@
+             "a chunk holds CHUNK_PT bytes",
+         ));
+     }
+-    let nonce = chunk_nonce(index, last);
++    let nonce = chunk_nonce(index, false);
+     #[cfg(any(test, feature = "nonce-registry"))]
+     crate::registry::record_padded(key.as_bytes(), &nonce, ad, plaintext, CHUNK_PT);
+     // Plaintext until it is encrypted in place: wiped if a refusal drops it, moved out once sealed.

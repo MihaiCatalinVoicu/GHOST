@@ -28,6 +28,11 @@ bash "$GATES_DIR/dm-golden-lock.sh" || fail "dm-golden-lock"
 bash "$GATES_DIR/dm-vendored-clock-log.sh" || fail "dm-vendored-clock-log"
 bash "$GATES_DIR/mls-rust-no-logging.sh" || fail "mls-rust-no-logging"
 bash "$GATES_DIR/mls-vendored-clock-log.sh" || fail "mls-vendored-clock-log"
+# Phase 11's media crate (design faza11-media.md §16.1 G-M7; slice S1): G-R4's graph half and G-R8 for
+# its graph (G-R1 and G-R2 are clauses of the allowlist and the feature policy above; its tests run
+# with the workspace's).
+bash "$GATES_DIR/media-rust-no-logging.sh" || fail "media-rust-no-logging"
+bash "$GATES_DIR/media-vendored-clock-log.sh" || fail "media-vendored-clock-log"
 # Licence gates (ADR-37; Phase 9 design §2.10.2): notices of the shipped Rust graphs (G-L1), source
 # headers (G-R5), MPL-2.0 sources and their bundle (G-L4).
 bash "$GATES_DIR/license-notices.sh" rust || fail "license-notices (rust)"

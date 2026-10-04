@@ -1,0 +1,11 @@
+Mutant ms21-ad-without-object-id (Phase 11 slice S1, ghost-client-media): AD_c without object_id.
+--- a/client-core/media/src/stream.rs
++++ b/client-core/media/src/stream.rs
+@@ -40,7 +40,6 @@
+     let mut ad = Vec::with_capacity(labels::AD_CHUNK.len().saturating_add(18));
+     ad.extend_from_slice(labels::AD_CHUNK.as_bytes());
+     ad.push(labels::AD_VERSION);
+-    ad.extend_from_slice(object_id.as_bytes());
+     ad.push(kind.byte());
+     ad
+ }

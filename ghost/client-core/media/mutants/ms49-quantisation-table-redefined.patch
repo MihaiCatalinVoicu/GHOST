@@ -1,0 +1,12 @@
+Mutant ms49-quantisation-table-redefined (Phase 11 slice S1, ghost-client-media; the review of S1): a quantisation table may be defined again (row 9: the bounded table segments).
+--- a/client-core/media/src/jpeg.rs
++++ b/client-core/media/src/jpeg.rs
+@@ -362,7 +362,7 @@
+                 return Err(nc("a DQT table is 8-bit with Tq 0 to 3"));
+             }
+             let bit = 1u8 << (pq_tq & 0x03);
+-            if self.dqt & bit != 0 {
++            if false && self.dqt & bit != 0 {
+                 return Err(nc("a quantisation table defined twice"));
+             }
+             self.dqt |= bit;

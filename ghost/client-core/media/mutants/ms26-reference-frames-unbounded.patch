@@ -1,0 +1,12 @@
+Mutant ms26-reference-frames-unbounded (Phase 11 slice S1, ghost-client-media; the review of S1): max_num_ref_frames bounded at 16, not at level 3.1's 5.
+--- a/client-core/media/src/sps.rs
++++ b/client-core/media/src/sps.rs
+@@ -314,7 +314,7 @@
+     }
+     let max_num_ref_frames = bounded(
+         b.ue()?,
+-        MAX_DPB_FRAMES,
++        16,
+         "max_num_ref_frames above 5 (level 3.1 at 1 280 × 720)",
+     )?;
+     b.u1()?; // gaps_in_frame_num_value_allowed_flag

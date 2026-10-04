@@ -27,7 +27,8 @@
 # GHOST_LICENSE_PACKAGES (a package list in the `packages` format, directories relative to it,
 # instead of cargo), GHOST_LICENSE_EXCEPTIONS (another G-R5 exception file), GHOST_GRADLE_ALLOWLIST
 # (another G-L2 allowlist), GHOST_MPL_SOURCES (another G-L4 manifest), GHOST_LICENSE_TEMPLATE_REVIEWED
-# (another list of the packages reviewed to carry an SPDX template text).
+# (another list of the packages reviewed to carry an SPDX template text), GHOST_LICENSE_GRAPHS
+# (another graphs.txt), GHOST_LICENSE_REQUIRED_OWN (the own crates the graphs must read).
 use strict;
 use warnings;
 use File::Basename qw(basename dirname);
@@ -301,7 +302,7 @@ sub graphs {
   my %g;
   my @order;
   my @notes;
-  for (lines_of("$LIC/graphs.txt")) {
+  for (lines_of($ENV{GHOST_LICENSE_GRAPHS} // "$LIC/graphs.txt")) {
     my @f = split " ";
     if (@f >= 3 && $f[0] eq "note") { push @notes, [$f[1], join(" ", @f[2 .. $#f])]; next }
     die "graphs.txt: malformed line: $_\n" unless @f == 4 && $f[0] eq "graph";
@@ -382,6 +383,15 @@ sub packages {
   }
   for my $p (grep { !$_->{own} } values %pkgs) {
     $p->{dir} = registry_dir($p->{name}, $p->{version}) // die "no extracted sources for $p->{name} $p->{version} under " . cargo_home() . "/registry/src\n";
+  }
+  # GHOST's own crates that a shipped library holds, or will hold once its slice links it, are each
+  # read by the graphs, as a root or inside one (the review of Phase 11's S1: with `,ghost-client-media`
+  # dropped from graphs.txt the header scan read nothing of the crate, passed, and only the notices'
+  # introduction line changed, which `--write` would have blessed). A failure here also stops the
+  # notices from being written.
+  for my $req (split " ", $ENV{GHOST_LICENSE_REQUIRED_OWN} // "ghost-client-net ghost-client-dm ghost-client-mls ghost-client-media ghost-relay-node ghost-issuer ghost-issuer-ops") {
+    fail "licenses/graphs.txt: GHOST's own crate $req is in no shipped graph, so the licence gates read nothing of it (G-R5, G-L1, G-L4; Phase 11 design §22.2 row 19(e))"
+      unless grep { $_->{own} && $_->{name} eq $req } values %pkgs;
   }
   return $PACKAGES = \%pkgs;
 }
@@ -766,7 +776,12 @@ sub cmd_headers {
     my $fields = manifest_fields($p->{dir});
     my $expr = $p->{license} ne "" ? $p->{license} : ($fields->{license} // "");
     if ($p->{own}) {
-      # GHOST's own crates carry LicenseRef-GHOST-Proprietary (root LICENSE); only their sources are scanned.
+      # GHOST's own crates carry LicenseRef-GHOST-Proprietary (root LICENSE); their sources are scanned
+      # below. G-M7 (Phase 11 design faza11-media.md §16.1; slice S1): the declaration is checked, so
+      # an own crate whose manifest declares no licence, or another one, fails (a crate's licence
+      # header is its manifest's `license`, inherited from the workspace).
+      fail "$where: GHOST's own crate declares " . ($expr eq "" ? "no licence" : "'$expr'") . ", not LicenseRef-GHOST-Proprietary (license.workspace = true; G-R5, G-M7)"
+        unless $expr eq "LicenseRef-GHOST-Proprietary";
     } elsif ($expr eq "") {
       if ($exc && $exc->{"Cargo.toml"}) { $exc->{"Cargo.toml"}{used} = 1 } else { fail "$where: declares no SPDX licence expression" }
     } else {

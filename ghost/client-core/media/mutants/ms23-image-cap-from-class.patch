@@ -1,0 +1,12 @@
+Mutant ms23-image-cap-from-class (Phase 11 slice S1, ghost-client-media): an image's bound taken from the requested class, not IMAGE_MAX_CONTENT.
+--- a/client-core/media/src/sealer.rs
++++ b/client-core/media/src/sealer.rs
+@@ -136,7 +136,7 @@
+         max_class: SizeClass,
+     ) -> Sealer {
+         let cap = match kind {
+-            MediaKind::Image => IMAGE_MAX_CONTENT,
++            MediaKind::Image => max_class.capacity(),
+             MediaKind::Video => max_class.capacity(),
+         };
+         let derived = derive(&file_key, &object_id);

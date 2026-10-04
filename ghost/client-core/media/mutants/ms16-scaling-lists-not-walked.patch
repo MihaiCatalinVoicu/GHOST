@@ -1,0 +1,12 @@
+Mutant ms16-scaling-lists-not-walked (Phase 11 slice S1, ghost-client-media): the SPS scaling lists not walked (S0-22).
+--- a/client-core/media/src/sps.rs
++++ b/client-core/media/src/sps.rs
+@@ -286,7 +286,7 @@
+             // seq_scaling_matrix_present_flag: eight lists for chroma_format_idc 1.
+             for i in 0..8u32 {
+                 if b.u1()? == 1 {
+-                    scaling_list(&mut b, if i < 6 { 16 } else { 64 })?;
++                    let _ = i;
+                 }
+             }
+         }

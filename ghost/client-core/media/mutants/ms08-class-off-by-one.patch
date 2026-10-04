@@ -1,0 +1,12 @@
+Mutant ms08-class-off-by-one (Phase 11 slice S1, ghost-client-media): the class function one byte off at every boundary.
+--- a/client-core/media/src/class.rs
++++ b/client-core/media/src/class.rs
+@@ -47,7 +47,7 @@
+         if len == 0 || len > MAX_CONTENT {
+             return None;
+         }
+-        SizeClass::all().find(|c| c.capacity() >= len)
++        SizeClass::all().find(|c| c.capacity() > len)
+     }
+ 
+     /// Every class, smallest first.
