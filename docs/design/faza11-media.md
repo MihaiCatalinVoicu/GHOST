@@ -1518,7 +1518,7 @@ Slice S0 ran the V-M checks of Appendix C.3 on the API 29 and API 35 emulators (
 
 ## Appendix A: ADR drafts (Romanian)
 
-Numerele încep la ADR-44: designul propus al Fazei 10 (ramura `p10-design`) folosește ADR-40 … ADR-43, iar Q38 rezervă de acum ADR-44 … ADR-47 pentru Faza 11 (ADR-21 rămâne rezervat). Toate patru sunt **propuse** 2026-09-25 și devin „propus, aplicat” la aprobarea designului (Q1).
+Numerele încep la ADR-44: designul propus al Fazei 10 (ramura `p10-design`) folosește ADR-40 … ADR-43, iar Q38 rezervă de acum ADR-44 … ADR-47 pentru Faza 11 (ADR-21 rămâne rezervat). Toate patru au fost **propuse** 2026-09-25 și sunt **aprobate de proprietar 2026-10-04** (Q1); depuse ca `docs/adr/ADR-44-…` … `ADR-47-…` (textul de mai jos e ciorna, fișierele din `docs/adr/` fac referință).
 
 > # ADR-44 — Formatul obiectului media: STREAM pe chunk-uri de 256 KiB aliniate la fragmente de 64 KiB, manifest cu angajament de cheie, clase de dimensiune, cheia de fișier ținută nativ
 >
