@@ -74,6 +74,175 @@ private object OutboxObjects {
 }
 
 /**
+ * The shared texts of the five DM tables that Phase 11's migration 8 rebuilds (design faza11-media.md §13.6 steps 2 and
+ * 3, rule (a): "generated from the current shared definitions, never from a copy of v5 frozen in this design"), with
+ * their indexes, triggers and REPLACE guards, **moved here from migration 5 byte for byte** (the migration tests
+ * compare `sqlite_master` rows by (type, name, sql), and `Migration8Test` compares a fresh install of v7 before and
+ * after the move). One text per object, so a rebuilt table cannot drift from the v5 one: the v8 tables are *derived*
+ * from the v5 text by [derived], which refuses a change that does not hit exactly once.
+ *
+ * Why five tables and not the two the design names: `dm_message` is the parent of `dm_outbound_item` and `dm_reaction`
+ * and `dm_outbound_item` of `dm_outbound_op` and `dm_pending_send`, all with `ON DELETE CASCADE`, and a migration runs
+ * with `foreign_keys = ON` inside its transaction (the pragma cannot be changed there). `DROP TABLE` performs an
+ * implicit `DELETE` first, which runs the foreign-key actions, so dropping a parent whose children are not rebuilt
+ * with it deletes their rows. The children are rebuilt and dropped first, the parents after (migration 4's order for
+ * `outbox_delivery` and `outbox_op`), and the references follow the renames (`legacy_alter_table = OFF`, guarded).
+ */
+private object DmObjects {
+    /** Migration 5, as released: kinds 1 and 2, a text of at least 30 bytes, nothing else. */
+    const val MESSAGE_TABLE = """CREATE TABLE dm_message (
+                  message_id             BLOB PRIMARY KEY NOT NULL CHECK (length(message_id) = 16),
+                  conversation_id        BLOB NOT NULL REFERENCES dm_conversation(conversation_id) ON DELETE CASCADE,
+                  direction              TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+                  kind                   INTEGER NOT NULL CHECK (kind IN (1, 2)),
+                  author_minute          INTEGER NOT NULL CHECK (typeof(author_minute) = 'integer' AND author_minute % 60 = 0),
+                  sort_minute            INTEGER NOT NULL CHECK (typeof(sort_minute) = 'integer' AND sort_minute % 60 = 0
+                                                                 AND sort_minute <= author_minute),
+                  minute_index           INTEGER NOT NULL CHECK (minute_index BETWEEN 0 AND 65535),
+                  timer_code             INTEGER NOT NULL CHECK (timer_code BETWEEN 0 AND 5),
+                  body_env               BLOB CHECK (body_env IS NULL OR length(body_env) BETWEEN 30 AND 61485),
+                  state                  TEXT NOT NULL
+                                         CHECK (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate', 'unread', 'read')),
+                  expire_at_minute       INTEGER CHECK (expire_at_minute IS NULL
+                                                        OR (typeof(expire_at_minute) = 'integer' AND expire_at_minute % 60 = 0)),
+                  unread_deadline_minute INTEGER CHECK (unread_deadline_minute IS NULL
+                                                        OR (typeof(unread_deadline_minute) = 'integer'
+                                                            AND unread_deadline_minute % 60 = 0)),
+                  delete_at_minute       INTEGER CHECK (delete_at_minute IS NULL
+                                                        OR (typeof(delete_at_minute) = 'integer' AND delete_at_minute % 60 = 0)),
+                  CHECK ((direction = 'out') = (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate'))),
+                  CHECK (direction = 'in' OR sort_minute = author_minute),
+                  CHECK ((kind = 1) = (body_env IS NOT NULL)),
+                  CHECK (timer_code <> 0 OR (expire_at_minute IS NULL AND unread_deadline_minute IS NULL)),
+                  CHECK (timer_code = 0 OR direction = 'in' OR expire_at_minute IS NOT NULL),
+                  CHECK (timer_code = 0 OR direction = 'out' OR unread_deadline_minute IS NOT NULL),
+                  CHECK (state <> 'read' OR timer_code = 0 OR expire_at_minute IS NOT NULL),
+                  CHECK (delete_at_minute IS (CASE WHEN expire_at_minute IS NOT NULL
+                                                   THEN expire_at_minute ELSE unread_deadline_minute END))
+                ) WITHOUT ROWID"""
+    const val IDX_MESSAGE_ORDER = "CREATE INDEX idx_dm_message_order ON dm_message(conversation_id, sort_minute, minute_index, message_id)"
+    const val IDX_MESSAGE_DELETE = "CREATE INDEX idx_dm_message_delete ON dm_message(delete_at_minute) WHERE delete_at_minute IS NOT NULL"
+    const val OUTBOUND_ITEM_TABLE = """CREATE TABLE dm_outbound_item (
+                  item_id       BLOB PRIMARY KEY NOT NULL CHECK (length(item_id) = 16),
+                  contact_id    BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  message_ref   BLOB REFERENCES dm_message(message_id) ON DELETE CASCADE,
+                  kind          INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 4),
+                  control       TEXT CHECK (control IS NULL OR control IN ('reconnect', 'revocation', 'reset')),
+                  l0_env        BLOB CHECK (l0_env IS NULL OR length(l0_env) BETWEEN 29 AND 65564),
+                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
+                  state         TEXT NOT NULL
+                                CHECK (state IN ('pending', 'enqueued', 'sent', 'degraded', 'failed', 'indeterminate')),
+                  CHECK ((kind = 4) = (control IS NOT NULL)),
+                  CHECK (kind = 4 OR message_ref IS NOT NULL)
+                ) WITHOUT ROWID"""
+    const val OUTBOUND_OP_TABLE = """CREATE TABLE dm_outbound_op (
+                  operation_id  BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
+                  purpose       TEXT NOT NULL CHECK (purpose IN ('item', 'bundle')),
+                  item_id       BLOB REFERENCES dm_outbound_item(item_id) ON DELETE CASCADE,
+                  bundle_week   INTEGER CHECK (bundle_week IS NULL OR (typeof(bundle_week) = 'integer' AND bundle_week >= 0)),
+                  blob          BLOB CHECK (blob IS NULL OR length(blob) IN (4096, 16384, 65536)),
+                  resend_count  INTEGER NOT NULL DEFAULT 0 CHECK (resend_count BETWEEN 0 AND 2),
+                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
+                  CHECK ((purpose = 'item') = (item_id IS NOT NULL)),
+                  CHECK ((purpose = 'bundle') = (bundle_week IS NOT NULL))
+                ) WITHOUT ROWID"""
+    const val IDX_OUTBOUND_OP_ITEM = "CREATE INDEX idx_dm_outbound_op_item ON dm_outbound_op(item_id) WHERE item_id IS NOT NULL"
+    const val PENDING_SEND_TABLE = """CREATE TABLE dm_pending_send (
+                  item_id         BLOB PRIMARY KEY NOT NULL REFERENCES dm_outbound_item(item_id) ON DELETE CASCADE,
+                  contact_id      BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
+                  fail_after_hour INTEGER NOT NULL CHECK (typeof(fail_after_hour) = 'integer' AND fail_after_hour % 3600 = 0)
+                ) WITHOUT ROWID"""
+    const val REACTION_TABLE = """CREATE TABLE dm_reaction (
+                  target_id    BLOB NOT NULL REFERENCES dm_message(message_id) ON DELETE CASCADE,
+                  from_self    INTEGER NOT NULL CHECK (from_self IN (0, 1)),
+                  grapheme_env BLOB NOT NULL CHECK (length(grapheme_env) BETWEEN 29 AND 60),
+                  PRIMARY KEY (target_id, from_self)
+                ) WITHOUT ROWID"""
+
+    const val TRIGGER_MESSAGE_IDENTITY = """CREATE TRIGGER dm_message_identity BEFORE UPDATE ON dm_message
+                WHEN NEW.message_id IS NOT OLD.message_id OR NEW.conversation_id IS NOT OLD.conversation_id
+                  OR NEW.direction IS NOT OLD.direction OR NEW.kind IS NOT OLD.kind
+                  OR NEW.author_minute IS NOT OLD.author_minute OR NEW.sort_minute IS NOT OLD.sort_minute
+                  OR NEW.minute_index IS NOT OLD.minute_index OR NEW.timer_code IS NOT OLD.timer_code
+                  OR NEW.body_env IS NOT OLD.body_env
+                BEGIN SELECT RAISE(ABORT, 'only the state and the three expiry columns of a message change'); END"""
+    const val TRIGGER_MESSAGE_STATE = """CREATE TRIGGER dm_message_state BEFORE UPDATE OF state ON dm_message
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'queued' AND NEW.state IN ('sent', 'degraded', 'failed', 'indeterminate'))
+                       OR (OLD.state = 'failed' AND NEW.state = 'queued')
+                       OR (OLD.state = 'unread' AND NEW.state = 'read'))
+                BEGIN SELECT RAISE(ABORT, 'illegal message state transition'); END"""
+    const val TRIGGER_MESSAGE_EXPIRY = """CREATE TRIGGER dm_message_expiry
+                BEFORE UPDATE OF expire_at_minute, unread_deadline_minute ON dm_message
+                WHEN (OLD.expire_at_minute IS NOT NULL
+                      AND (NEW.expire_at_minute IS NULL OR NEW.expire_at_minute > OLD.expire_at_minute))
+                  OR (OLD.unread_deadline_minute IS NOT NULL
+                      AND (NEW.unread_deadline_minute IS NULL OR NEW.unread_deadline_minute > OLD.unread_deadline_minute))
+                BEGIN SELECT RAISE(ABORT, 'an expiry time only moves earlier'); END"""
+
+    val GUARD_MESSAGE: String = replaceGuardSql("dm_message", "message_id = NEW.message_id")
+    val GUARD_OUTBOUND_ITEM: String = replaceGuardSql("dm_outbound_item", "item_id = NEW.item_id")
+    val GUARD_OUTBOUND_OP: String = replaceGuardSql("dm_outbound_op", "operation_id = NEW.operation_id")
+    val GUARD_PENDING_SEND: String = replaceGuardSql("dm_pending_send", "item_id = NEW.item_id")
+    val GUARD_REACTION: String = replaceGuardSql("dm_reaction", "target_id = NEW.target_id AND from_self = NEW.from_self")
+
+    /** `text` with each pair replaced, every old text occurring **exactly once**: a change that no longer hits fails when the class loads. */
+    private fun String.derived(vararg changes: Pair<String, String>): String {
+        var out = this
+        for ((old, new) in changes) {
+            check(out.split(old).size == 2) { "migration 8: the shared definition does not contain exactly one \"$old\"" }
+            out = out.replace(old, new)
+        }
+        return out
+    }
+
+    /**
+     * `dm_message` as migration 8 rebuilds it (§13.6 step 2): the v5 text, named `dm_message_v8`, with the kind list
+     * `(1, 2, 5)`, the envelope floor of the column CHECK 28 (a caption may be empty: the 28 bytes of
+     * `ContentCipher.OVERHEAD`), `(kind IN (1, 5)) = (body_env IS NOT NULL)`, and two table CHECKs — a text keeps its
+     * floor of 30, a caption is 28 to 1052 bytes (the overhead plus at most `MAX_CAPTION_BYTES` = 1024). Every other
+     * column, CHECK and the `WITHOUT ROWID` are the v5 text's.
+     */
+    val MESSAGE_TABLE_V8: String = MESSAGE_TABLE.derived(
+        "CREATE TABLE dm_message (" to "CREATE TABLE dm_message_v8 (",
+        "CHECK (kind IN (1, 2))," to "CHECK (kind IN (1, 2, 5)),",
+        "length(body_env) BETWEEN 30 AND 61485" to "length(body_env) BETWEEN 28 AND 61485",
+        "CHECK ((kind = 1) = (body_env IS NOT NULL))," to
+            "CHECK ((kind IN (1, 5)) = (body_env IS NOT NULL)),\n" +
+            "                  CHECK (kind <> 1 OR length(body_env) >= 30),\n" +
+            "                  CHECK (kind <> 5 OR length(body_env) BETWEEN 28 AND 1052),",
+    )
+
+    /** `dm_outbound_item` (§13.6 step 3): `kind BETWEEN 1 AND 5` and nothing else (Q27: no Phase 9 column, the owner has not decided). */
+    val OUTBOUND_ITEM_TABLE_V8: String = OUTBOUND_ITEM_TABLE.derived(
+        "CREATE TABLE dm_outbound_item (" to "CREATE TABLE dm_outbound_item_v8 (",
+        "REFERENCES dm_message(message_id)" to "REFERENCES dm_message_v8(message_id)",
+        "CHECK (kind BETWEEN 1 AND 4)," to "CHECK (kind BETWEEN 1 AND 5),",
+    )
+
+    /** The three children, rebuilt unchanged so that dropping their parents cannot delete their rows. */
+    val OUTBOUND_OP_TABLE_V8: String = OUTBOUND_OP_TABLE.derived(
+        "CREATE TABLE dm_outbound_op (" to "CREATE TABLE dm_outbound_op_v8 (",
+        "REFERENCES dm_outbound_item(item_id)" to "REFERENCES dm_outbound_item_v8(item_id)",
+    )
+    val PENDING_SEND_TABLE_V8: String = PENDING_SEND_TABLE.derived(
+        "CREATE TABLE dm_pending_send (" to "CREATE TABLE dm_pending_send_v8 (",
+        "REFERENCES dm_outbound_item(item_id)" to "REFERENCES dm_outbound_item_v8(item_id)",
+    )
+    val REACTION_TABLE_V8: String = REACTION_TABLE.derived(
+        "CREATE TABLE dm_reaction (" to "CREATE TABLE dm_reaction_v8 (",
+        "REFERENCES dm_message(message_id)" to "REFERENCES dm_message_v8(message_id)",
+    )
+}
+
+/** The text of a REPLACE guard (§19.21 point 4); [Schema.replaceGuard] and [DmObjects] build theirs from this one. */
+private fun replaceGuardSql(table: String, conflict: String): String =
+    """CREATE TRIGGER ${table}_no_replace BEFORE INSERT ON $table
+                WHEN EXISTS (SELECT 1 FROM $table WHERE $conflict)
+                BEGIN SELECT RAISE(ABORT, '$table rows are never replaced'); END"""
+
+
+/**
  * Versioned schema (spec v2.0 §8, amended by ADR-04 pseudonyms, ADR-05 invite nonces, ADR-14
  * revocations). Rules enforced here rather than in application code:
  *  - protocol state (Olm, OpenMLS) lives in dedicated tables as opaque serialized records;
@@ -1000,68 +1169,13 @@ object Schema {
                   timer_code      INTEGER NOT NULL DEFAULT 4 CHECK (timer_code BETWEEN 0 AND 5),
                   timer_version   INTEGER NOT NULL DEFAULT 0 CHECK (typeof(timer_version) = 'integer' AND timer_version >= 0)
                 ) WITHOUT ROWID""",
-        """CREATE TABLE dm_message (
-                  message_id             BLOB PRIMARY KEY NOT NULL CHECK (length(message_id) = 16),
-                  conversation_id        BLOB NOT NULL REFERENCES dm_conversation(conversation_id) ON DELETE CASCADE,
-                  direction              TEXT NOT NULL CHECK (direction IN ('in', 'out')),
-                  kind                   INTEGER NOT NULL CHECK (kind IN (1, 2)),
-                  author_minute          INTEGER NOT NULL CHECK (typeof(author_minute) = 'integer' AND author_minute % 60 = 0),
-                  sort_minute            INTEGER NOT NULL CHECK (typeof(sort_minute) = 'integer' AND sort_minute % 60 = 0
-                                                                 AND sort_minute <= author_minute),
-                  minute_index           INTEGER NOT NULL CHECK (minute_index BETWEEN 0 AND 65535),
-                  timer_code             INTEGER NOT NULL CHECK (timer_code BETWEEN 0 AND 5),
-                  body_env               BLOB CHECK (body_env IS NULL OR length(body_env) BETWEEN 30 AND 61485),
-                  state                  TEXT NOT NULL
-                                         CHECK (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate', 'unread', 'read')),
-                  expire_at_minute       INTEGER CHECK (expire_at_minute IS NULL
-                                                        OR (typeof(expire_at_minute) = 'integer' AND expire_at_minute % 60 = 0)),
-                  unread_deadline_minute INTEGER CHECK (unread_deadline_minute IS NULL
-                                                        OR (typeof(unread_deadline_minute) = 'integer'
-                                                            AND unread_deadline_minute % 60 = 0)),
-                  delete_at_minute       INTEGER CHECK (delete_at_minute IS NULL
-                                                        OR (typeof(delete_at_minute) = 'integer' AND delete_at_minute % 60 = 0)),
-                  CHECK ((direction = 'out') = (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate'))),
-                  CHECK (direction = 'in' OR sort_minute = author_minute),
-                  CHECK ((kind = 1) = (body_env IS NOT NULL)),
-                  CHECK (timer_code <> 0 OR (expire_at_minute IS NULL AND unread_deadline_minute IS NULL)),
-                  CHECK (timer_code = 0 OR direction = 'in' OR expire_at_minute IS NOT NULL),
-                  CHECK (timer_code = 0 OR direction = 'out' OR unread_deadline_minute IS NOT NULL),
-                  CHECK (state <> 'read' OR timer_code = 0 OR expire_at_minute IS NOT NULL),
-                  CHECK (delete_at_minute IS (CASE WHEN expire_at_minute IS NOT NULL
-                                                   THEN expire_at_minute ELSE unread_deadline_minute END))
-                ) WITHOUT ROWID""",
-        "CREATE INDEX idx_dm_message_order ON dm_message(conversation_id, sort_minute, minute_index, message_id)",
-        "CREATE INDEX idx_dm_message_delete ON dm_message(delete_at_minute) WHERE delete_at_minute IS NOT NULL",
-        """CREATE TABLE dm_outbound_item (
-                  item_id       BLOB PRIMARY KEY NOT NULL CHECK (length(item_id) = 16),
-                  contact_id    BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
-                  message_ref   BLOB REFERENCES dm_message(message_id) ON DELETE CASCADE,
-                  kind          INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 4),
-                  control       TEXT CHECK (control IS NULL OR control IN ('reconnect', 'revocation', 'reset')),
-                  l0_env        BLOB CHECK (l0_env IS NULL OR length(l0_env) BETWEEN 29 AND 65564),
-                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
-                  state         TEXT NOT NULL
-                                CHECK (state IN ('pending', 'enqueued', 'sent', 'degraded', 'failed', 'indeterminate')),
-                  CHECK ((kind = 4) = (control IS NOT NULL)),
-                  CHECK (kind = 4 OR message_ref IS NOT NULL)
-                ) WITHOUT ROWID""",
-        """CREATE TABLE dm_outbound_op (
-                  operation_id  BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
-                  purpose       TEXT NOT NULL CHECK (purpose IN ('item', 'bundle')),
-                  item_id       BLOB REFERENCES dm_outbound_item(item_id) ON DELETE CASCADE,
-                  bundle_week   INTEGER CHECK (bundle_week IS NULL OR (typeof(bundle_week) = 'integer' AND bundle_week >= 0)),
-                  blob          BLOB CHECK (blob IS NULL OR length(blob) IN (4096, 16384, 65536)),
-                  resend_count  INTEGER NOT NULL DEFAULT 0 CHECK (resend_count BETWEEN 0 AND 2),
-                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
-                  CHECK ((purpose = 'item') = (item_id IS NOT NULL)),
-                  CHECK ((purpose = 'bundle') = (bundle_week IS NOT NULL))
-                ) WITHOUT ROWID""",
-        "CREATE INDEX idx_dm_outbound_op_item ON dm_outbound_op(item_id) WHERE item_id IS NOT NULL",
-        """CREATE TABLE dm_pending_send (
-                  item_id         BLOB PRIMARY KEY NOT NULL REFERENCES dm_outbound_item(item_id) ON DELETE CASCADE,
-                  contact_id      BLOB NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
-                  fail_after_hour INTEGER NOT NULL CHECK (typeof(fail_after_hour) = 'integer' AND fail_after_hour % 3600 = 0)
-                ) WITHOUT ROWID""",
+        DmObjects.MESSAGE_TABLE,
+        DmObjects.IDX_MESSAGE_ORDER,
+        DmObjects.IDX_MESSAGE_DELETE,
+        DmObjects.OUTBOUND_ITEM_TABLE,
+        DmObjects.OUTBOUND_OP_TABLE,
+        DmObjects.IDX_OUTBOUND_OP_ITEM,
+        DmObjects.PENDING_SEND_TABLE,
         """CREATE TABLE dm_bundle_candidate (
                   contact_id   BLOB PRIMARY KEY NOT NULL REFERENCES dm_contact(contact_id) ON DELETE CASCADE,
                   bundle_env   BLOB NOT NULL CHECK (length(bundle_env) = 1421),
@@ -1091,12 +1205,7 @@ object Schema {
                   relay_expiry_hour INTEGER NOT NULL CHECK (typeof(relay_expiry_hour) = 'integer' AND relay_expiry_hour % 3600 = 0),
                   consume_minute    INTEGER NOT NULL CHECK (typeof(consume_minute) = 'integer' AND consume_minute % 60 = 0)
                 ) WITHOUT ROWID""",
-        """CREATE TABLE dm_reaction (
-                  target_id    BLOB NOT NULL REFERENCES dm_message(message_id) ON DELETE CASCADE,
-                  from_self    INTEGER NOT NULL CHECK (from_self IN (0, 1)),
-                  grapheme_env BLOB NOT NULL CHECK (length(grapheme_env) BETWEEN 29 AND 60),
-                  PRIMARY KEY (target_id, from_self)
-                ) WITHOUT ROWID""",
+        DmObjects.REACTION_TABLE,
         """CREATE TABLE dm_seen (
                   tag       BLOB PRIMARY KEY NOT NULL CHECK (length(tag) = 16),
                   until_day INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0 AND until_day % 7 = 0)
@@ -1194,26 +1303,9 @@ object Schema {
                        OR (OLD.trust_state = 'changed'    AND NEW.trust_state IN ('unverified', 'verified', 'blocked', 'revoked'))
                        OR (OLD.trust_state = 'blocked'    AND NEW.trust_state = 'revoked'))
                 BEGIN SELECT RAISE(ABORT, 'illegal trust transition'); END""",
-        """CREATE TRIGGER dm_message_identity BEFORE UPDATE ON dm_message
-                WHEN NEW.message_id IS NOT OLD.message_id OR NEW.conversation_id IS NOT OLD.conversation_id
-                  OR NEW.direction IS NOT OLD.direction OR NEW.kind IS NOT OLD.kind
-                  OR NEW.author_minute IS NOT OLD.author_minute OR NEW.sort_minute IS NOT OLD.sort_minute
-                  OR NEW.minute_index IS NOT OLD.minute_index OR NEW.timer_code IS NOT OLD.timer_code
-                  OR NEW.body_env IS NOT OLD.body_env
-                BEGIN SELECT RAISE(ABORT, 'only the state and the three expiry columns of a message change'); END""",
-        """CREATE TRIGGER dm_message_state BEFORE UPDATE OF state ON dm_message
-                WHEN NOT ((OLD.state = NEW.state)
-                       OR (OLD.state = 'queued' AND NEW.state IN ('sent', 'degraded', 'failed', 'indeterminate'))
-                       OR (OLD.state = 'failed' AND NEW.state = 'queued')
-                       OR (OLD.state = 'unread' AND NEW.state = 'read'))
-                BEGIN SELECT RAISE(ABORT, 'illegal message state transition'); END""",
-        """CREATE TRIGGER dm_message_expiry
-                BEFORE UPDATE OF expire_at_minute, unread_deadline_minute ON dm_message
-                WHEN (OLD.expire_at_minute IS NOT NULL
-                      AND (NEW.expire_at_minute IS NULL OR NEW.expire_at_minute > OLD.expire_at_minute))
-                  OR (OLD.unread_deadline_minute IS NOT NULL
-                      AND (NEW.unread_deadline_minute IS NULL OR NEW.unread_deadline_minute > OLD.unread_deadline_minute))
-                BEGIN SELECT RAISE(ABORT, 'an expiry time only moves earlier'); END""",
+        DmObjects.TRIGGER_MESSAGE_IDENTITY,
+        DmObjects.TRIGGER_MESSAGE_STATE,
+        DmObjects.TRIGGER_MESSAGE_EXPIRY,
         """CREATE TRIGGER dm_held_expiry BEFORE UPDATE OF hold_until_minute ON dm_held
                 WHEN NEW.hold_until_minute > OLD.hold_until_minute
                 BEGIN SELECT RAISE(ABORT, 'a hold deadline only moves earlier'); END""",
@@ -1264,15 +1356,15 @@ object Schema {
         replaceGuard("dm_own_namespace", "namespace_id = NEW.namespace_id OR (role = NEW.role AND card_index = NEW.card_index)"),
         replaceGuard("dm_contact", "contact_id = NEW.contact_id OR identity_pk = NEW.identity_pk"),
         replaceGuard("dm_conversation", "conversation_id = NEW.conversation_id OR contact_id = NEW.contact_id"),
-        replaceGuard("dm_message", "message_id = NEW.message_id"),
-        replaceGuard("dm_outbound_item", "item_id = NEW.item_id"),
-        replaceGuard("dm_outbound_op", "operation_id = NEW.operation_id"),
-        replaceGuard("dm_pending_send", "item_id = NEW.item_id"),
+        DmObjects.GUARD_MESSAGE,
+        DmObjects.GUARD_OUTBOUND_ITEM,
+        DmObjects.GUARD_OUTBOUND_OP,
+        DmObjects.GUARD_PENDING_SEND,
         replaceGuard("dm_bundle_candidate", "contact_id = NEW.contact_id"),
         replaceGuard("dm_orphan_namespace", "namespace_id = NEW.namespace_id"),
         replaceGuard("dm_scheduled", "sched_id = NEW.sched_id OR (contact_id = NEW.contact_id AND what = NEW.what)"),
         replaceGuard("dm_held", "held_id = NEW.held_id"),
-        replaceGuard("dm_reaction", "target_id = NEW.target_id AND from_self = NEW.from_self"),
+        DmObjects.GUARD_REACTION,
         replaceGuard("dm_pair_offer", "contact_id = NEW.contact_id AND root_gen = NEW.root_gen"),
         replaceGuard("olm_session", "(contact_id = NEW.contact_id AND slot = NEW.slot) OR (contact_id = NEW.contact_id AND session_id = NEW.session_id)"),
         // `idx_olm_prekey_gen_current` is a **partial unique index on an expression**: a REPLACE
@@ -1289,10 +1381,7 @@ object Schema {
         replaceGuard("dm_peer_pq", "contact_id = NEW.contact_id AND gen_id = NEW.gen_id"),
     )
 
-    private fun replaceGuard(table: String, conflict: String): String =
-        """CREATE TRIGGER ${table}_no_replace BEFORE INSERT ON $table
-                WHEN EXISTS (SELECT 1 FROM $table WHERE $conflict)
-                BEGIN SELECT RAISE(ABORT, '$table rows are never replaced'); END"""
+    private fun replaceGuard(table: String, conflict: String): String = replaceGuardSql(table, conflict)
 
     /**
      * A [replaceGuard] for a table that has a hidden rowid: it conflicts on the rowid too, because an insert
