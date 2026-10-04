@@ -8,9 +8,14 @@ import org.ghost.sync.api.SyncTransaction
  * `ch_pending_post`, `ch_seen`, `ch_reveal` and `ch_outbound_op`.
  *
  * **Every read of an expiring table carries its filter**, as §8.2 and §10.1 require ("every read query
- * filters expired rows", mutant ME-16 over `ch_*`): `ch_post` and `ch_reveal` by `delete_at_minute IS NULL OR
- * delete_at_minute > :now_e` (a NULL deadline is a channel whose timer is off), `ch_pending_post` by
- * `fail_after_hour > :now`, `ch_seen` by `until_day >= :today`. Physical deletion lags — a frozen process, a
+ * filters expired rows", mutant ME-16 over `ch_*`): `ch_post` by **both** of its deadlines — `delete_at_minute IS
+ * NULL OR delete_at_minute > :now_e` (a NULL deadline is a channel whose timer is off) **and** `relay_expiry_hour
+ * IS NULL OR relay_expiry_hour > :now_e` (the relay expiry E of an unread post, §8.2: "an unread post is deleted at
+ * min(E, consume + bucket + 1 h)"; a display forgets it, so a read post has none and a timer-off post that is
+ * read lives on) —, `ch_reveal` by `delete_at_minute`, `ch_pending_post` by `fail_after_hour > :now`, `ch_seen`
+ * by `until_day >= :today`. The first version applied `delete_at_minute` alone, so an unread post whose E had
+ * passed was shown, counted and kept by the alarm query, and an unread post of a timer-off channel (no
+ * `delete_at_minute` at all) was never swept (the review of S3). Physical deletion lags — a frozen process, a
  * deferred alarm, a reboot — and the filter is the only thing between an expired post and the screen. Every
  * query is spelled out in full, so the lint's static half sees the table, and is registered with `:storage`'s
  * `ChannelExpiredRowLint`, which runs it against a world that still holds expired rows and one that does not
@@ -72,7 +77,7 @@ internal class PostStore {
 
     /** The newest page of a channel, in the order above. */
     fun page(sql: SqlExecutor, channelId: ByteArray, nowMinute: Long, limit: Int): List<PostRow> =
-        posts(sql, PAGE, listOf(channelId, nowMinute, limit.toLong()))
+        posts(sql, PAGE, listOf(channelId, nowMinute, nowMinute, limit.toLong()))
 
     /** The page before a cursor, with the tuple comparison written out. */
     fun pageBefore(sql: SqlExecutor, channelId: ByteArray, nowMinute: Long, limit: Int, cursor: PostCursor): List<PostRow> =
@@ -80,7 +85,7 @@ internal class PostStore {
             sql,
             PAGE_BEFORE,
             listOf(
-                channelId, nowMinute,
+                channelId, nowMinute, nowMinute,
                 cursor.authorMinute, cursor.authorMinute, cursor.author, cursor.authorMinute, cursor.author, cursor.opId,
                 limit.toLong(),
             ),
@@ -89,21 +94,24 @@ internal class PostStore {
     /** One post, if it exists and has not expired: the reaction target and the quote rule (a reply to an expired post renders as expired). */
     fun post(sql: SqlExecutor, opId: ByteArray, nowMinute: Long): PostRow? {
         var row: PostRow? = null
-        sql.query(POST_BY_ID, listOf(opId, nowMinute)) { r -> row = readPost(r) }
+        sql.query(POST_BY_ID, listOf(opId, nowMinute, nowMinute)) { r -> row = readPost(r) }
         return row
     }
 
     /** The unread badge of one channel: a count, which is ME-16's own shape. */
     fun unreadCount(sql: SqlExecutor, channelId: ByteArray, nowMinute: Long): Int {
         var n = 0
-        sql.query(UNREAD_COUNT, listOf(channelId, nowMinute)) { r -> n = r.long(0).toInt() }
+        sql.query(UNREAD_COUNT, listOf(channelId, nowMinute, nowMinute)) { r -> n = r.long(0).toInt() }
         return n
     }
 
-    /** The next deletion time of a live post, for the actor's timer and the alarm (§8.2): over live rows only. */
+    /**
+     * The next deletion time of a live post, for the actor's timer and the alarm (§8.2): over live rows only, and
+     * the earlier of the two deadlines a row has (an unread post dies at its relay expiry E when that comes first).
+     */
     fun nextDeleteAt(sql: SqlExecutor, nowMinute: Long): Long? {
         var next: Long? = null
-        sql.query(NEXT_DELETE_AT, listOf(nowMinute)) { r -> if (!r.isNull(0)) next = r.long(0) }
+        sql.query(NEXT_DELETE_AT, listOf(nowMinute, nowMinute, nowMinute, nowMinute)) { r -> if (!r.isNull(0)) next = r.long(0) }
         return next
     }
 
@@ -210,17 +218,31 @@ internal class PostStore {
     /**
      * `markDisplayed` (§8.2): an unread post becomes read, its countdown starts at [displayedMinute] and ends at
      * [deleteAtMinute] (the minimum of that and the deadline it already has, which the schema holds to "only
-     * earlier"), and the relay expiry it was kept for is forgotten. False when the post is not unread.
+     * earlier"), and the relay expiry it was kept for is forgotten.
+     *
+     * **The minute is kept only where a countdown needs it**: `displayed_minute` is written for a post whose timer
+     * is on and stays NULL for a timer-off post, whose read post has no deadline and no reason to remember when it
+     * was opened (F9's `dm_message` stores no time at all with the timer off, T33; the schema refuses the pair).
+     *
+     * **A post past a deadline is not displayed**: the statement matches only a post that is still live at
+     * [displayedMinute] by both of its deadlines. Forgetting E on a post whose E has passed would give it back the
+     * life the relay copy no longer has (a UI that held a list across the expiry, a phone unfrozen after a day:
+     * the DM `DisplayStep` ignores an expired id for the same reason). False when the post is not unread or is
+     * past a deadline.
      */
     fun markDisplayed(tx: SyncTransaction, opId: ByteArray, displayedMinute: Long, deleteAtMinute: Long?): Boolean {
         Fields.minute("ch_post.displayed_minute", displayedMinute)
         Fields.minuteOrNull("ch_post.delete_at_minute", deleteAtMinute)
         return tx.sql.execUpdate(
-            "UPDATE ch_post SET state = 'read', displayed_minute = ?, relay_expiry_hour = NULL, " +
+            "UPDATE ch_post SET state = 'read', displayed_minute = CASE WHEN timer_code = 0 THEN NULL ELSE ? END, " +
+                "relay_expiry_hour = NULL, " +
                 "delete_at_minute = CASE WHEN ? IS NULL THEN delete_at_minute " +
                 "WHEN delete_at_minute IS NULL OR delete_at_minute > ? THEN ? ELSE delete_at_minute END " +
-                "WHERE op_id = ? AND state = 'unread'",
-            listOf(displayedMinute, deleteAtMinute, deleteAtMinute, deleteAtMinute, opId),
+                "WHERE op_id = ? AND state = 'unread' " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?) AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)",
+            listOf(
+                displayedMinute, deleteAtMinute, deleteAtMinute, deleteAtMinute, opId, displayedMinute, displayedMinute,
+            ),
         ) == 1
     }
 
@@ -247,10 +269,13 @@ internal class PostStore {
         ) == 1
     }
 
-    /** SWEEP's read: a batch of expired posts, by deletion time (at most the transaction bound the caller gives). */
+    /**
+     * SWEEP's read: a batch of expired posts, by the earlier of their two deadlines (at most the transaction bound
+     * the caller gives): a post past its `delete_at_minute`, and an unread one past its relay expiry.
+     */
     fun expiredPosts(sql: SqlExecutor, nowMinute: Long, batch: Int): List<ByteArray> {
         val out = ArrayList<ByteArray>()
-        sql.query(EXPIRED_POSTS, listOf(nowMinute, batch.toLong())) { r -> out += r.blob(0) }
+        sql.query(EXPIRED_POSTS, listOf(nowMinute, nowMinute, batch.toLong())) { r -> out += r.blob(0) }
         return out
     }
 
@@ -289,7 +314,7 @@ internal class PostStore {
      */
     fun reactions(sql: SqlExecutor, target: ByteArray, nowMinute: Long): List<ReactionRow> {
         val out = ArrayList<ReactionRow>()
-        sql.query(REACTIONS, listOf(target, nowMinute)) { r -> out += ReactionRow(r.blob(0), r.blob(1), r.blob(2)) }
+        sql.query(REACTIONS, listOf(target, nowMinute, nowMinute)) { r -> out += ReactionRow(r.blob(0), r.blob(1), r.blob(2)) }
         return out
     }
 
@@ -369,10 +394,15 @@ internal class PostStore {
         return seen
     }
 
-    /** `INSERT OR IGNORE`, which deletes nothing (the table has no guard for that reason); true for a tag that is new. */
+    /**
+     * `INSERT OR IGNORE`, which deletes nothing (the table has no guard for that reason); true for a tag that is
+     * new. [untilDay] is a **week**, `ceil7(day(author_minute) + ceil_days(FRESH(bucket)) + 1)` as `dm_seen`'s
+     * (F9 §7.6 D3): a day that is not a multiple of 7 is [ChannelStoreError.BAD_VALUE], as the schema's CHECK
+     * would refuse it, so that a seized device shows the week a post was displayed in and not the day.
+     */
     fun markSeen(tx: SyncTransaction, channelId: ByteArray, tag: ByteArray, untilDay: Long): Boolean {
         Fields.bytes("ch_seen.tag", tag, 16)
-        Fields.nonNegative("ch_seen.until_day", untilDay)
+        Fields.week("ch_seen.until_day", untilDay)
         return tx.sql.execUpdate(
             "INSERT OR IGNORE INTO ch_seen(channel_id, tag, until_day) VALUES (?, ?, ?)",
             listOf(channelId, tag, untilDay),
@@ -465,17 +495,23 @@ internal class PostStore {
         const val MAX_BODY: Int = 65_564
         const val MAX_PENDING: Int = 256
 
-        /** `ORDER BY author_minute DESC, author DESC, op_id DESC`: the same three values on every device. */
+        /**
+         * `ORDER BY author_minute DESC, author DESC, op_id DESC`: the same three values on every device. A post is
+         * live when **both** of its deadlines are ahead (a NULL is no deadline): `delete_at_minute`, and the relay
+         * expiry `relay_expiry_hour` of an unread post (§8.2).
+         */
         const val PAGE: String =
             "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
                 "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post " +
                 "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+                "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
                 "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?"
 
         const val PAGE_BEFORE: String =
             "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
                 "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post " +
                 "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+                "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
                 "AND (author_minute < ? OR (author_minute = ? AND author < ?) " +
                 "OR (author_minute = ? AND author = ? AND op_id < ?)) " +
                 "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?"
@@ -483,22 +519,37 @@ internal class PostStore {
         const val POST_BY_ID: String =
             "SELECT op_id, channel_id, direction, author, kind, reply_to, timer_code, epoch, body_env, state, " +
                 "author_minute, displayed_minute, delete_at_minute, relay_expiry_hour FROM ch_post " +
-                "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)"
+                "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+                "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)"
 
         const val UNREAD_COUNT: String =
             "SELECT count(*) FROM ch_post WHERE channel_id = ? AND direction = 'in' AND state = 'unread' " +
-                "AND (delete_at_minute IS NULL OR delete_at_minute > ?)"
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?) AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)"
 
+        /**
+         * The earliest deadline of a live post: the smaller of the earliest `delete_at_minute` and the earliest
+         * `relay_expiry_hour` among the live posts (a post is live when both its deadlines are ahead). Two selects,
+         * one per partial index (`idx_ch_post_delete`, `idx_ch_post_expiry`), so that a channel whose timer is off
+         * and holds many posts without a deadline is not scanned by the alarm.
+         */
         const val NEXT_DELETE_AT: String =
-            "SELECT min(delete_at_minute) FROM ch_post WHERE delete_at_minute IS NOT NULL AND delete_at_minute > ?"
+            "SELECT min(t) FROM (" +
+                "SELECT min(delete_at_minute) AS t FROM ch_post WHERE delete_at_minute > ? " +
+                "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
+                "UNION ALL " +
+                "SELECT min(relay_expiry_hour) FROM ch_post WHERE relay_expiry_hour > ? " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?))"
 
-        /** SWEEP's own batch: registered in `ChannelSweepQueries`. */
+        /** SWEEP's own batch: registered in `ChannelSweepQueries`. A post is expired when either deadline has passed. */
         const val EXPIRED_POSTS: String =
-            "SELECT op_id FROM ch_post WHERE delete_at_minute <= ? ORDER BY delete_at_minute, op_id LIMIT ?"
+            "SELECT op_id FROM ch_post WHERE delete_at_minute <= ? OR relay_expiry_hour <= ? " +
+                "ORDER BY CASE WHEN relay_expiry_hour IS NOT NULL AND (delete_at_minute IS NULL OR relay_expiry_hour <= delete_at_minute) " +
+                "THEN relay_expiry_hour ELSE delete_at_minute END, op_id LIMIT ?"
 
         const val REACTIONS: String =
             "SELECT r.target, r.author, r.grapheme_env FROM ch_reaction r JOIN ch_post p ON p.op_id = r.target " +
-                "WHERE r.target = ? AND (p.delete_at_minute IS NULL OR p.delete_at_minute > ?) ORDER BY r.author"
+                "WHERE r.target = ? AND (p.delete_at_minute IS NULL OR p.delete_at_minute > ?) " +
+                "AND (p.relay_expiry_hour IS NULL OR p.relay_expiry_hour > ?) ORDER BY r.author"
 
         const val PENDING: String =
             "SELECT op_id, channel_id, kind, content_env, fail_after_hour FROM ch_pending_post " +

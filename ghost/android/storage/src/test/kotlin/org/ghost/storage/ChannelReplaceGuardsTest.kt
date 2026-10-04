@@ -12,7 +12,8 @@ import org.junit.Test
  * row would delete its posts, keys and generations without one trigger firing. A `BEFORE INSERT` trigger
  * runs before the conflict is resolved, so [ChannelSchema.guards] refuse **every** form of insert for a key
  * that exists, on all 24 tables; `ch_seen` and `ch_kp_seen` have none because they are written with
- * `INSERT OR IGNORE`, which deletes nothing.
+ * `INSERT OR IGNORE`, which deletes nothing. Only two tables keep a hidden rowid (`mls_kv` and
+ * `ch_join_request`, T33 and §19.35), and only their guards compare it; their rowids are positive and never change.
  *
  * That every guard names every key of its table is [ReplaceGuardsTest.everyGuardCoversEveryKeyOfItsTableAndOnlyTwoV2TablesGoWithout]'s,
  * read from the schema; this class **provokes** each of them.
@@ -110,48 +111,25 @@ class ChannelReplaceGuardsTest {
 
     /**
      * A key that differs from the default row's in every key column, so that the only thing a second row can
-     * conflict on is the hidden rowid. A table keyed by the channel alone gets another channel (the test creates
-     * [other]); `ch_channel` itself gets a third.
+     * conflict on is the hidden rowid. Only the two tables that have one.
      */
     private val other = chBytes(32, 0xC2)
     private val otherKeys: Map<String, Map<String, Any?>> = mapOf(
-        "ch_channel" to mapOf("channel_id" to chBytes(32, 0xC3)),
-        "ch_liveness" to mapOf("channel_id" to other),
-        "ch_schedule" to mapOf("channel_id" to other),
-        "ch_generation" to mapOf("generation" to 1L, "namespace_id" to chBytes(32, 0x99), "state" to "pending_switch"),
-        "ch_epoch" to mapOf("epoch" to 1L),
-        "ch_epoch_log" to mapOf("epoch" to 1L),
-        "ch_candidate" to mapOf("hash" to chBytes(32, 0x99), "sender" to chBytes(32, 0x98)),
-        "ch_fork_signal" to mapOf("hash" to chBytes(32, 0x99)),
         "mls_kv" to mapOf("k" to chBytes(20, 99)),
-        "mls_global_kv" to mapOf("k" to chBytes(20, 99)),
-        "ch_post" to mapOf("op_id" to chBytes(16, 0x99)),
-        "ch_reaction" to mapOf("author" to chBytes(32, 0x99)),
-        "ch_pending_post" to mapOf("op_id" to chBytes(16, 0x99)),
-        "ch_outbound_op" to mapOf("operation_id" to chBytes(16, 0x99)),
-        "ch_reveal" to mapOf("peer" to chBytes(32, 0x99)),
-        "ch_join" to mapOf("kp_ref" to chBytes(32, 0x99)),
         "ch_join_request" to mapOf("hash" to chBytes(32, 0x99)),
-        "ch_invite_issued" to mapOf("invite_id" to chBytes(16, 0x99)),
-        "ch_member_seen" to mapOf("member" to chBytes(32, 0x99)),
-        "ch_invite_own" to mapOf("invite_id" to chBytes(16, 0x99)),
-        "ch_sponsor" to mapOf("member" to chBytes(32, 0x99)),
-        "ch_member_refresh" to mapOf("member" to chBytes(32, 0x99)),
-        "ch_request" to mapOf("subject" to chBytes(32, 0x99)),
-        "ch_box_key" to mapOf("box_pk" to chBytes(32, 0x99)),
     )
 
     /**
-     * Every table that has a hidden rowid (the 24 that §9 does not mark WITHOUT ROWID) conflicts on it too, as
-     * the `outbox_op` guard of migration 3 does: an insert that names the rowid of a row with another key would
-     * make REPLACE delete that row, with no trigger to see it. Each table is judged alone, on a fresh database:
-     * the refusal must carry the guard's own message, and the same row with no rowid named must go in, which
-     * shows that the refusal was the rowid and nothing else.
+     * The two tables that have a hidden rowid (`mls_kv` and `ch_join_request`; every other channel table is
+     * WITHOUT ROWID, T33) conflict on it too, as the `outbox_op` guard of migration 3 does: an insert that names the
+     * rowid of a row with another key would make REPLACE delete that row, with no trigger to see it. Each table is
+     * judged alone, on a fresh database: the refusal must carry the guard's own message, and the same row with no
+     * rowid named must go in, which shows that the refusal was the rowid and nothing else.
      */
     @Test
     fun everyRowidTableRefusesAnInsertThatNamesAnExistingRowid() {
         assertEquals(ChannelSchema.rowidTables, otherKeys.keys)
-        assertEquals(ChannelSchema.tables - ChannelSchema.unguarded, ChannelSchema.rowidTables)
+        assertTrue(ChannelSchema.rowidTables.all { it in ChannelSchema.tables - ChannelSchema.unguarded })
         for (table in ChannelSchema.rowidTables) ChannelFixture().use { f ->
             f.put("ch_channel", "channel_id" to other)
             f.put(table)
@@ -165,6 +143,72 @@ class ChannelReplaceGuardsTest {
             val (plain, plainArgs) = f.sql(table, key)
             f.db.exec(plain, plainArgs)
             assertEquals(table, before + 1, f.count(table))
+        }
+    }
+
+    /**
+     * An insert that names no rowid has none for the guard to compare: in a BEFORE trigger `NEW.rowid` is -1, which
+     * the first version took for "matches no row" - true until a row with rowid -1 exists, and then every later plain
+     * insert into the table aborted with "never replaced" (the review of S3 made one with an explicit rowid of -1).
+     * An AFTER INSERT check now refuses any row stored with a rowid below 1, so no such row can exist.
+     */
+    @Test
+    fun aRowidTableNeverHoldsARowidBelowOneSoAnInsertThatNamesNoneNeverCollidesWithOne() {
+        for (table in ChannelSchema.rowidTables) ChannelFixture().use { f ->
+            f.put("ch_channel", "channel_id" to other)
+            f.parents(table)
+            for (rowid in listOf(-1L, 0L, -7L)) {
+                val (sql, args) = f.sql(table, mapOf("rowid" to rowid))
+                f.db.rejects("$table rows have a rowid of 1 or more", sql, *args.toTypedArray())
+                val (replace, replaceArgs) = f.sql(table, mapOf("rowid" to rowid), verb = "INSERT OR REPLACE")
+                f.db.rejects("$table rows have a rowid of 1 or more", replace, *replaceArgs.toTypedArray())
+                assertEquals("$table: the refused row was not stored", 0L, f.count(table))
+            }
+            // the table still takes a plain insert, and a free positive rowid named
+            f.put(table)
+            val key = otherKeys.getValue(table)
+            val (named, namedArgs) = f.sql(table, key + ("rowid" to 1_000L))
+            f.db.exec(named, namedArgs)
+            assertEquals(table, 1_000L, f.db.queryLong("SELECT max(rowid) FROM $table"))
+            assertEquals(table, 2L, f.count(table))
+        }
+    }
+
+    /**
+     * A row keeps the rowid it was numbered with: an UPDATE that moved it - to -1, which would make every later plain
+     * insert "conflict" with it, or onto another row's, which would delete that row (`UPDATE OR REPLACE`), or past
+     * it, which would reorder an arrival order - is refused.
+     */
+    @Test
+    fun aRowKeepsItsRowidAndAnUpdateThatWouldMoveItIsRefused() {
+        for (table in ChannelSchema.rowidTables) ChannelFixture().use { f ->
+            f.put("ch_channel", "channel_id" to other)
+            f.put(table)
+            val key = otherKeys.getValue(table)
+            val (plain, plainArgs) = f.sql(table, key)
+            f.db.exec(plain, plainArgs)
+            val rowids = ArrayList<Long>()
+            f.db.query("SELECT rowid FROM $table ORDER BY rowid") { rowids += it.long(0) }
+            assertEquals(table, 2, rowids.size)
+            for (target in listOf(-1L, 0L, 1_000L, rowids[1])) {
+                f.db.rejects("$table rows keep their rowid", "UPDATE $table SET rowid = $target WHERE rowid = ${rowids[0]}")
+                f.db.rejects("$table rows keep their rowid", "UPDATE OR REPLACE $table SET rowid = $target WHERE rowid = ${rowids[0]}")
+            }
+            val after = ArrayList<Long>()
+            f.db.query("SELECT rowid FROM $table ORDER BY rowid") { after += it.long(0) }
+            assertEquals("$table: no row moved, none was deleted", rowids, after)
+            // an UPDATE that leaves the rowid where it is is no move
+            assertEquals(table, 2, f.db.execUpdate("UPDATE $table SET rowid = rowid"))
+        }
+    }
+
+    /** The other 24 tables have no rowid to name: T33's "random WITHOUT ROWID keys". */
+    @Test
+    fun theOtherTablesHaveNoRowidToName() {
+        for (table in ChannelSchema.withoutRowidTables) ChannelFixture().use { f ->
+            f.parents(table)
+            val (sql, args) = f.sql(table, mapOf("rowid" to 5L))
+            f.db.rejects("has no column named rowid", sql, *args.toTypedArray())
         }
     }
 

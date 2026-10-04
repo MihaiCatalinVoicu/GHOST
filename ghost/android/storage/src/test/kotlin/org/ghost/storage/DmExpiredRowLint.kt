@@ -49,7 +49,12 @@ import java.io.File
  * whose *table name* arrives through a Kotlin template or a constant (`"SELECT … FROM $DM_MESSAGE"`)
  * names no expiring table in its text. Adjacent literals joined by `+` are concatenated before
  * matching ([literalRuns]), so the repo's own house style of splitting a long statement across
- * lines is covered; an interpolated table name is not, and a DM DAO must spell the table out.
+ * lines is covered — also when a `//` or a block comment sits between the literals and the `+`
+ * (review of S3: `"SELECT body_env " + // why` followed by `"FROM ch_post …"` compiles, and was two
+ * literals, neither of which holds a `SELECT` and a table together); an interpolated table name is
+ * not covered, and a DM DAO must spell the table out. **Table names are matched without regard to
+ * case**, as SQLite resolves them (`FROM CH_POST` reads `ch_post`; the first version of the match was
+ * case-sensitive and passed it).
  *
  * **The registry filled in S7** (`:messaging`'s `MessageStore`) and **split in S9**. Both halves
  * are still proved on fixtures as well as on production code, so the mechanism is known to work
@@ -166,14 +171,14 @@ object DmExpiredRowLint {
         val out = ArrayList<Found>()
         for (file in sources) {
             val text = runCatching { file.readText() }.getOrNull() ?: continue
-            if (tables.none { text.contains(it) }) continue
+            if (tables.none { text.contains(it, ignoreCase = true) }) continue
             for (literal in literalRuns(text, stringLiterals(text))) {
                 val sql = literal.text
                 if (!selectLike.containsMatchIn(sql)) continue
                 if (!sql.contains("SELECT", ignoreCase = true)) continue
                 if (schemaStatement.containsMatchIn(sql)) continue
                 if (writeStatement.containsMatchIn(sql)) continue
-                if (tables.none { Regex("\\b$it\\b").containsMatchIn(sql) }) continue
+                if (tables.none { Regex("\\b$it\\b", RegexOption.IGNORE_CASE).containsMatchIn(sql) }) continue
                 out += Found(file, literal.line, sql.replace(Regex("\\s+"), " ").trim())
             }
         }
@@ -182,8 +187,14 @@ object DmExpiredRowLint {
 
     private data class Literal(val line: Int, val text: String, val start: Int, val end: Int)
 
-    /** Only whitespace and a single `+` between two literals: they are one string at runtime. */
-    private val concatenation = Regex("^\\s*\\+\\s*$")
+    /** Whitespace, a `//` comment to the end of its line, or a block comment: none of them separates two literals. */
+    private const val GAP = "(?:\\s|//[^\\n]*(?:\\n|\\z)|/\\*.*?\\*/)*"
+
+    /**
+     * Only whitespace, comments and a single `+` between two literals: they are one string at runtime. A comment
+     * between the literals and the `+` is whitespace to the compiler and is to this scan.
+     */
+    private val concatenation = Regex("^$GAP\\+$GAP$", RegexOption.DOT_MATCHES_ALL)
 
     /**
      * The literals of a source with every `+`-joined run collapsed into the string the runtime

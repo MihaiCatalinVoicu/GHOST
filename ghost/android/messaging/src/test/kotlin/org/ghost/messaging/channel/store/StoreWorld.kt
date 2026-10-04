@@ -16,8 +16,16 @@ import org.ghost.sync.api.SyncTransaction
  * through [ChannelFixture] (plain SQL with valid defaults) where the test needs a state the store would
  * not produce (an expired row, a row at a bound).
  */
-internal class StoreWorld(path: String = ":memory:") : AutoCloseable {
-    val db = JdbcSqlExecutor(path).also { MigrationRunner(it).migrate() }
+internal class StoreWorld(path: String = ":memory:", wal: Boolean = false) : AutoCloseable {
+    /**
+     * With [wal] the database file runs in WAL mode, as the device's does (`GhostDatabase.finishOpen`): an expired
+     * body then outlives its row in the log until a `wal_checkpoint(TRUNCATE)`, which is what the physical half of
+     * the residue tests must model (the review of S3: they ran in rollback-journal mode and scanned the file alone).
+     */
+    val db = JdbcSqlExecutor(path).also {
+        if (wal) it.query("PRAGMA journal_mode = WAL") { }
+        MigrationRunner(it).migrate()
+    }
     val sync = SyncDatabase(db)
     val stores = ChannelStores()
     val fixture = ChannelFixture(db)

@@ -38,11 +38,12 @@ class ChannelExpiredRowLintTest {
     fun theFixtureWorldHoldsTheExpiredAndTheLiveRowsItDescribes() {
         // table -> (rows with the expired ones, rows after the sweep)
         val expected = mapOf(
-            "ch_post" to (6L to 3L), "ch_reaction" to (3L to 2L), "ch_reveal" to (4L to 2L),
+            "ch_post" to (12L to 6L), "ch_reaction" to (3L to 2L), "ch_reveal" to (4L to 2L),
             "ch_pending_post" to (4L to 2L), "ch_seen" to (3L to 2L), "ch_generation" to (5L to 4L),
             "ch_epoch" to (4L to 3L), "ch_join" to (3L to 2L), "ch_join_request" to (3L to 2L),
             "ch_kp_seen" to (2L to 1L), "ch_invite_issued" to (3L to 2L), "ch_invite_own" to (3L to 2L),
-            "ch_request" to (3L to 2L), "mls_global_kv" to (4L to 3L),
+            "ch_request" to (3L to 2L), "mls_global_kv" to (4L to 3L), "ch_fork_signal" to (3L to 2L),
+            "ch_box_key" to (4L to 3L),
         )
         assertEquals(L.expiringTables.keys, expected.keys)
         for ((table, counts) in expected) {
@@ -55,6 +56,16 @@ class ChannelExpiredRowLintTest {
         assertEquals(1L, L.countIn("SELECT count(*) FROM ch_pending_post WHERE fail_after_hour = ?", listOf(now), true))
         assertEquals(1L, L.countIn("SELECT count(*) FROM ch_join WHERE expiry_day = ?", listOf(today), false))
         assertEquals(1L, L.countIn("SELECT count(*) FROM ch_generation WHERE drain_until_day = ?", listOf(today), false))
+        // The week table's rows sit on the week grid, the boundary one exactly on the day the filters are given.
+        assertEquals(0L, today % 7)
+        assertEquals(1L, L.countIn("SELECT count(*) FROM ch_seen WHERE until_day = ?", listOf(today), false))
+        // The relay expiry E is a deadline of its own: five unread posts carry one, three of them past it or past
+        // their other deadline, and one of those (E5) has no other deadline at all, which is what a channel whose
+        // timer is off looks like.
+        assertEquals(5L, L.countIn("SELECT count(*) FROM ch_post WHERE relay_expiry_hour IS NOT NULL", emptyList(), true))
+        assertEquals(2L, L.countIn("SELECT count(*) FROM ch_post WHERE relay_expiry_hour IS NOT NULL", emptyList(), false))
+        assertEquals(1L, L.countIn("SELECT count(*) FROM ch_post WHERE delete_at_minute IS NULL AND relay_expiry_hour <= ?", listOf(now), true))
+        assertEquals(1L, L.countIn("SELECT count(*) FROM ch_post WHERE delete_at_minute > ? AND relay_expiry_hour <= ?", listOf(now, now), true))
     }
 
     // ------------------------------------------------------------------ the behavioural half, proved on fixtures
@@ -63,11 +74,16 @@ class ChannelExpiredRowLintTest {
     fun theLintFailsAReadThatIgnoresExpiryAndPassesOneThatDoesNot() {
         val unfiltered = "SELECT op_id, delete_at_minute FROM ch_post WHERE channel_id = ?"
         assertTrue(L.showsAnExpiredRow(unfiltered, listOf(CH)))
-        val filtered = "SELECT op_id, delete_at_minute FROM ch_post WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)"
-        val compliant = L.outcomeOf(filtered, listOf(CH, now))
-        assertFalse("the filter of §8.2 must hide the expired posts", compliant.showsAnExpiredRow)
-        assertFalse("and it must still return the live ones", compliant.returnsNothing)
-        assertEquals(3, compliant.afterTheSweep.size)
+        // §8.2 gives an unread post two deadlines: its own and the relay expiry E. The filter on the first alone —
+        // the first version of the DAO — shows the posts that only E has expired (E4, E5): the lint fails it.
+        val deadlineOnly = "SELECT op_id, delete_at_minute FROM ch_post WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)"
+        assertTrue("a filter on delete_at_minute alone leaks the posts E has expired", L.showsAnExpiredRow(deadlineOnly, listOf(CH, now)))
+        val filtered = "SELECT op_id, delete_at_minute FROM ch_post WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+            "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)"
+        val compliant = L.outcomeOf(filtered, listOf(CH, now, now))
+        assertFalse("the filters of §8.2 must hide the expired posts", compliant.showsAnExpiredRow)
+        assertFalse("and they must still return the live ones", compliant.returnsNothing)
+        assertEquals(6, compliant.afterTheSweep.size)
     }
 
     /**
@@ -85,6 +101,14 @@ class ChannelExpiredRowLintTest {
                 ("SELECT op_id FROM ch_post WHERE (delete_at_minute IS NULL OR delete_at_minute > ?) OR channel_id = ?" to listOf<Any?>(now, CH)),
             "an unread badge counts expired rows (§10.3: the count is a read like any other)" to
                 ("SELECT count(*) FROM ch_post WHERE channel_id = ? AND direction = 'in' AND state = 'unread'" to listOf<Any?>(CH)),
+            "an unread badge that applies the deadline and forgets the relay expiry (§8.2: E is a deadline too)" to
+                ("SELECT count(*) FROM ch_post WHERE channel_id = ? AND direction = 'in' AND state = 'unread' AND (delete_at_minute IS NULL OR delete_at_minute > ?)" to listOf<Any?>(CH, now)),
+            "a next-deletion time that looks at the deadline alone: E4's later deadline answers a time the post never reaches" to
+                ("SELECT min(delete_at_minute) FROM ch_post WHERE delete_at_minute IS NOT NULL AND delete_at_minute > ?" to listOf<Any?>(now + 60)),
+            "the box keys of a channel are read with no retention (a lagging sweep hands out a leaf the rule gave up)" to
+                ("SELECT box_pk FROM ch_box_key WHERE channel_id = ?" to listOf<Any?>(CH)),
+            "the fork signals of an epoch past its retention are read" to
+                ("SELECT hash FROM ch_fork_signal WHERE channel_id = ?" to listOf<Any?>(CH)),
             "the post id is not the first column, so no id-shaped check would see it" to
                 ("SELECT body_env, op_id FROM ch_post WHERE channel_id = ?" to listOf<Any?>(CH)),
             "the reactions are read without the post's deadline" to
@@ -131,7 +155,7 @@ class ChannelExpiredRowLintTest {
 
     @Test
     fun everyRegisteredReadHidesTheExpiredRowsAndShowsExactlyTheLiveOnes() {
-        assertTrue(ChannelDaoQueries.registered.size >= 40)
+        assertTrue(ChannelDaoQueries.registered.size >= 50)
         for (query in ChannelDaoQueries.registered) {
             val outcome = L.outcomeOf(query.sql, query.args)
             when (query.mode) {
@@ -157,7 +181,7 @@ class ChannelExpiredRowLintTest {
 
     @Test
     fun everyBoundQuerySeesTheExpiredRowsBecauseTheTriggerCountsThem() {
-        assertEquals(5, ChannelBoundQueries.registered.size)
+        assertEquals(8, ChannelBoundQueries.registered.size)
         for (query in ChannelBoundQueries.registered) {
             val outcome = L.outcomeOf(query.sql, query.args)
             assertTrue("${query.name} must count the expired rows too, as the trigger does", outcome.showsAnExpiredRow)
@@ -178,7 +202,10 @@ class ChannelExpiredRowLintTest {
     fun theSweepContractCatchesABoundaryThatIsWrongAndAReadSmuggledIn() {
         // an exclusive boundary misses the post that expires exactly now
         val exclusive = L.outcomeOf("SELECT op_id FROM ch_post WHERE delete_at_minute < ?", listOf(now))
-        assertTrue(exclusive.beforeTheSweep.size < 3)
+        assertTrue(exclusive.beforeTheSweep.size < 6)
+        // a sweep that looks at the deadline alone leaves the posts E expired: it names fewer than the fixture holds
+        val deadlineOnly = L.outcomeOf("SELECT op_id FROM ch_post WHERE delete_at_minute <= ?", listOf(now))
+        assertTrue("the posts only E has expired are not named", deadlineOnly.beforeTheSweep.size < 6)
         // a day table swept with <= would take the row on its last day
         val tooWide = L.outcomeOf("SELECT kp_ref FROM ch_join WHERE expiry_day <= ?", listOf(today))
         assertFalse("a sweep that names live rows still finds them after the sweep", tooWide.afterTheSweep.isEmpty())
@@ -218,6 +245,18 @@ class ChannelExpiredRowLintTest {
                         "FROM ch_join WHERE channel_id = ?",
                 )
 
+                fun shouting() = query("SELECT body_env FROM CH_POST WHERE op_id = ?")
+
+                fun commented() = query(
+                    "SELECT body_env " + // the column
+                        /* and the table */ "FROM ch_post WHERE op_id = ?",
+                )
+
+                fun commentedBeforeThePlus() = query(
+                    "SELECT kp_ref " // the column
+                        + "FROM ch_join WHERE kp_ref = ?",
+                )
+
                 fun insertIfAbsent() = exec("INSERT INTO ch_post(op_id) SELECT ? WHERE NOT EXISTS (SELECT 1 FROM ch_post WHERE op_id = ?)")
 
                 fun sweep(nowE: Long) = exec("DELETE FROM ch_post WHERE op_id IN (SELECT op_id FROM ch_post WHERE delete_at_minute <= ?)")
@@ -247,6 +286,9 @@ class ChannelExpiredRowLintTest {
                 "SELECT op_id FROM ch_post WHERE channel_id = ?",
                 "SELECT author FROM ch_reaction WHERE target = ?",
                 "SELECT kp_ref FROM ch_join WHERE channel_id = ?",
+                "SELECT body_env FROM CH_POST WHERE op_id = ?",
+                "SELECT body_env FROM ch_post WHERE op_id = ?",
+                "SELECT kp_ref FROM ch_join WHERE kp_ref = ?",
             ),
             found,
         )
@@ -267,7 +309,7 @@ class ChannelExpiredRowLintTest {
             sources.any { it.name == "PostStore.kt" && it.invariantSeparatorsPath.contains("/channel/store/") },
         )
         val found = L.readQueriesOverExpiringRows(sources)
-        assertTrue("the scan found only ${found.size} channel reads; it is not looking at the DAOs", found.size >= 45)
+        assertTrue("the scan found only ${found.size} channel reads; it is not looking at the DAOs", found.size >= 52)
         val registered = (ChannelDaoQueries.registered + ChannelBoundQueries.registered + ChannelSweepQueries.registered)
         val registeredSql = registered.map { normalize(it.sql) }.toSet()
         val unregistered = found.filter { normalize(it.sql) !in registeredSql }
@@ -281,6 +323,43 @@ class ChannelExpiredRowLintTest {
         assertEquals("a registered query no longer exists in the sources", emptySet<String>(), stale)
         // No two entries share a name; each name tells a reader which query it judges.
         assertEquals(registered.map { it.name }.toSet().size, registered.size)
+    }
+
+    /**
+     * The scan above reads every module's `src/main` at run time, which Gradle does not know unless the build file
+     * says so: with the build cache on, a pull request that touched `:messaging` alone would find this module's test
+     * task FROM-CACHE and the lint would not run on the query it added (the review of S3). The test task declares the
+     * sources as inputs; this pins the declaration, and the verification of the fix ran the case itself (an
+     * unregistered read added to `:messaging` re-ran the task and failed the lint).
+     */
+    @Test
+    fun theStorageTestTaskDeclaresTheSourcesTheLintReads() {
+        val build = File("build.gradle.kts")
+        assertTrue("the working directory of a unit test is the module directory (:storage)", build.isFile)
+        val text = build.readText()
+        val declaration = Regex("""inputs\.files\(\s*fileTree\(rootProject\.projectDir\)\s*\{(.*?)\}\s*,?\s*\)\s*\.withPropertyName\("androidProductionSources"\)\s*\.withPathSensitivity\(PathSensitivity\.RELATIVE\)""", RegexOption.DOT_MATCHES_ALL)
+            .find(text)
+        assertNotNull("the test task does not declare the production sources of the Android modules as inputs", declaration)
+        val body = declaration!!.groupValues[1]
+        assertTrue("both source languages of a module's src/main", body.contains("**/src/main/**/*.kt") && body.contains("**/src/main/**/*.java"))
+        // every directory the scan prunes is excluded from the inputs as well, so a build output never re-runs the tests
+        for (pruned in listOf("build", "target", ".git", ".gradle", ".idea", "node_modules")) {
+            assertTrue("the directory $pruned is pruned by the scan and must not be an input", body.contains("**/$pruned/**"))
+        }
+    }
+
+    /**
+     * The twin of [DmExpiredRowLintTest.aFileThatNamesTheTableOnlyInCapitalsIsStillScanned] over the channel tables: the
+     * scanner's first look at a file reads a table name without regard to case, and the fixture tree above spells
+     * `ch_post` in lower case in the same file as its capitals.
+     */
+    @Test
+    fun aFileThatNamesAChannelTableOnlyInCapitalsIsStillScanned() {
+        val file = temp.newFile("Shouting.kt")
+        file.writeText("class Shouting { fun all() = query(\"SELECT BODY_ENV FROM CH_POST WHERE OP_ID = ?\") }\n")
+        assertFalse("the fixture must hold no lower-case table name", file.readText().contains("ch_post"))
+        val found = L.readQueriesOverExpiringRows(listOf(file)).map { normalize(it.sql) }
+        assertEquals(listOf("SELECT BODY_ENV FROM CH_POST WHERE OP_ID = ?"), found)
     }
 
     /** `Schema.kt` reads these tables inside triggers (the bounds, the guards): a trigger is no read path. */

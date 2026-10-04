@@ -25,17 +25,27 @@ internal object ChannelSchema {
     /** The two tables written with `INSERT OR IGNORE`, whose rows carry no rule: no REPLACE guard. */
     val unguarded: Set<String> = setOf("ch_seen", "ch_kp_seen")
 
-    /** The 29 state-machine, write-once and bound triggers. */
+    /**
+     * The 36 state-machine, write-once and bound triggers: the 29 of the first version of migration 7 and the seven
+     * the review of S3 added (the end of a drain, a global row's day, a join, an own invite, and the three that keep
+     * a pending post, a join request and a KeyPackage tag in the channel that bounds it).
+     */
     val rules: Set<String> = setOf(
         "ch_channel_identity", "ch_channel_state",
-        "ch_generation_identity", "ch_generation_state", "ch_generation_one_current_insert",
+        "ch_generation_identity", "ch_generation_state", "ch_generation_drain", "ch_generation_one_current_insert",
         "ch_generation_one_current_update", "ch_generation_one_draining_insert", "ch_generation_one_draining_update",
         "ch_epoch_limit", "ch_epoch_anchor_insert", "ch_epoch_anchor_update", "ch_epoch_identity", "ch_epoch_final",
         "ch_epoch_log_limit", "ch_epoch_log_append_only",
         "ch_candidate_limit", "ch_candidate_identity", "ch_fork_signal_limit", "ch_fork_signal_append_only",
-        "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit",
-        "ch_join_request_limit", "ch_invite_issued_identity", "ch_invite_issued_flags", "ch_kp_seen_limit",
-        "ch_box_key_limit", "ch_box_key_replaced",
+        "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit", "ch_pending_post_channel",
+        "ch_join_request_limit", "ch_join_request_channel", "ch_join_fixed", "ch_invite_own_fixed",
+        "ch_invite_issued_identity", "ch_invite_issued_flags", "ch_kp_seen_limit", "ch_kp_seen_channel",
+        "mls_global_kv_fixed", "ch_box_key_limit", "ch_box_key_replaced",
+    )
+
+    /** The rowid invariant of the two rowid tables: no row of theirs is stored with a rowid below 1, or changes its rowid. */
+    val rowidChecks: Set<String> = setOf(
+        "mls_kv_rowid_positive", "mls_kv_rowid_fixed", "ch_join_request_rowid_positive", "ch_join_request_rowid_fixed",
     )
 
     /** The 24 REPLACE guards: every table but [unguarded]. */
@@ -50,16 +60,16 @@ internal object ChannelSchema {
     )
 
     /**
-     * The tables that are `WITHOUT ROWID`: the two tag tables, and only the two, because §9 marks only them
-     * (it says outright that `mls_kv` is not one, and says nothing of the others).
+     * The tables that keep a hidden rowid, which records the order their rows arrived in (T33: "random WITHOUT
+     * ROWID keys", F9 §13.6 step 5; §19.35, F-7): **two**, because the design needs it for them and for nothing
+     * else — `mls_kv`, whose values are 0.1 to 125 KB (S0-6: §9 says it is not WITHOUT ROWID), and
+     * `ch_join_request`, whose rows the committer serves "in arrival order" (§6.2.3). A REPLACE guard of such a
+     * table also refuses an insert that names an existing rowid, and the table never holds a rowid below 1.
      */
-    val withoutRowidTables: Set<String> = setOf("ch_seen", "ch_kp_seen")
+    val rowidTables: Set<String> = setOf("mls_kv", "ch_join_request")
 
-    /**
-     * The tables that keep a hidden rowid, which records the order their rows arrived in (T33; §19.35): the
-     * other 24. A REPLACE guard of such a table also refuses an insert that names an existing rowid.
-     */
-    val rowidTables: Set<String> = tables - withoutRowidTables
+    /** The tables that are `WITHOUT ROWID`: the other 24, so that no table records the order its rows arrived in. */
+    val withoutRowidTables: Set<String> = tables - rowidTables
 
     /**
      * Every time column of §9, as `table.column`: 30 of them. The introspection tests require the
@@ -85,6 +95,13 @@ internal object ChannelSchema {
         "ch_sponsor.admitted_day", "ch_member_refresh.refresh_day",
         "ch_request.until_day",
     )
+
+    /**
+     * The `*_day` columns that are a **week** (`% 7 = 0`), the `ceil7` of F9 §7.6 D3: a seizer learns the week a
+     * post was displayed in and not the day. Only the dedup tag of a post, `dm_seen`'s twin; `ch_kp_seen.until_day`
+     * is `GhostKpBind.day + 11` (§6.2.4 (B)) and is not.
+     */
+    val weekColumns: Set<String> = setOf("ch_seen.until_day")
 
     /**
      * The epoch counters, which match the time-like rule by name and are no time: MLS epoch numbers, `u64`,
@@ -222,7 +239,7 @@ internal class ChannelFixture(
             "ch_outbound_op" to linkedMapOf(
                 "operation_id" to chBytes(16, 23), "channel_id" to CH, "purpose" to "post",
             ),
-            "ch_seen" to linkedMapOf("channel_id" to CH, "tag" to chBytes(16, 24), "until_day" to 20_000L),
+            "ch_seen" to linkedMapOf("channel_id" to CH, "tag" to chBytes(16, 24), "until_day" to 19_999L),
             "ch_reveal" to linkedMapOf("channel_id" to CH, "direction" to "out", "peer" to chBytes(32, 25)),
             "ch_join" to linkedMapOf(
                 "channel_id" to CH, "kp_ref" to chBytes(32, 26), "type" to "join", "invite_id" to chBytes(16, 27),

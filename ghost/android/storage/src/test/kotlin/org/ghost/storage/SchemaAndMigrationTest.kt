@@ -23,13 +23,15 @@ class SchemaAndMigrationTest {
     private val upToV6 = Schema.migrations.filter { it.version <= 6 }
 
     /**
-     * The 26 tables of v7 (Phase 10 design §9, "Migration 7"; slice S3), its 29 state, write-once and bound
-     * triggers and its 24 REPLACE guards. [Migration7Test] and [ChannelSchemaIntrospectionTest] own what
-     * each of them enforces; this class owns the version lists and what an upgrade keeps.
+     * The 26 tables of v7 (Phase 10 design §9, "Migration 7"; slice S3), its 36 state, write-once and bound
+     * triggers, its 24 REPLACE guards and the 4 rowid triggers of the only two tables that have a rowid.
+     * [Migration7Test] and [ChannelSchemaIntrospectionTest] own what each of them enforces; this class owns the
+     * version lists and what an upgrade keeps.
      */
     private val v7Tables = ChannelSchema.tables
     private val v7Triggers = ChannelSchema.rules
     private val v7Guards = ChannelSchema.guards
+    private val v7RowidChecks = ChannelSchema.rowidChecks
 
     /** The four v1 channel tables v7 drops behind its guard (§9 step 0); `media` and `media_blobs` stay. */
     private val v1ChannelTables = listOf("channels", "channel_pseudonyms", "mls_state", "posts")
@@ -246,21 +248,22 @@ class SchemaAndMigrationTest {
             MigrationRunner(db).verifyIntegrity()
             assertEquals(Schema.expectedTables, db.names("table"))
             assertEquals(Schema.expectedTriggers, db.names("trigger"))
-            assertEquals(34 + 6 + 16 + 18 + 4 + 29 + 24, Schema.expectedTriggers.size)
+            assertEquals(34 + 6 + 16 + 18 + 4 + 36 + 24 + 4, Schema.expectedTriggers.size)
             assertTrue(Schema.expectedTables.containsAll(v3Tables))
             assertTrue(Schema.expectedTables.containsAll(v4Tables))
             assertTrue(Schema.expectedTables.containsAll(v5Tables))
             assertTrue(Schema.expectedTables.containsAll(v6Tables))
             assertTrue(Schema.expectedTables.containsAll(v7Tables))
             assertEquals(26, v7Tables.size)
-            assertEquals(29, v7Triggers.size)
+            assertEquals(36, v7Triggers.size)
             assertEquals(24, v7Guards.size)
+            assertEquals(4, v7RowidChecks.size)
             assertEquals(v3Triggers, Schema.expectedTriggers.filter { it.startsWith("ent_") }.toSet())
             assertTrue(Schema.expectedTriggers.containsAll(v3GuardsOfV2Tables))
             assertTrue(Schema.expectedTriggers.containsAll(v4Triggers))
             assertTrue(Schema.expectedTriggers.containsAll(v5Triggers + v5Guards))
             assertTrue(Schema.expectedTriggers.containsAll(v6Triggers))
-            assertTrue(Schema.expectedTriggers.containsAll(v7Triggers + v7Guards))
+            assertTrue(Schema.expectedTriggers.containsAll(v7Triggers + v7Guards + v7RowidChecks))
             assertEquals(9, v3Tables.size)
             assertEquals(13 + 7, v3Triggers.size)
             assertEquals(setOf("idx_ent_token_one_reservation", "idx_ent_claim_one_open"), db.names("index").filter { it.startsWith("idx_ent_") }.toSet())
@@ -312,7 +315,7 @@ class SchemaAndMigrationTest {
         assertEquals(12, v2Triggers.size)
         assertEquals(
             Schema.expectedTriggers - v3Triggers - v3GuardsOfV2Tables - v4Triggers - v5Triggers - v5Guards - v6Triggers -
-                v7Triggers - v7Guards,
+                v7Triggers - v7Guards - v7RowidChecks,
             v2Triggers,
         )
         assertTrue(v2.statements.none { s -> (v3Triggers + v3GuardsOfV2Tables).any { s.contains("CREATE TRIGGER $it ") } })

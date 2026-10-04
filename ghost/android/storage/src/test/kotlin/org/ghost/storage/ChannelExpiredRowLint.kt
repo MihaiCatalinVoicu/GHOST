@@ -11,8 +11,8 @@ import java.io.File
  * for ([DmExpiredRowLint.readQueriesOverExpiringRows]), and its two-world idea is applied here — every
  * registered query runs against a database that still holds the expired rows and against the same database
  * after they were swept, and the two answers must be **identical**, so a compliant read cannot tell whether
- * SWEEP has run yet. What differs from the DM lint is the number of tables (14, each with its own deadline
- * column and unit) and that three kinds of query exist, because three contracts do:
+ * SWEEP has run yet. What differs from the DM lint is the number of tables (16, each with its own deadline
+ * column and unit, or the retention of an epoch) and that three kinds of query exist, because three contracts do:
  *
  *  - [ChannelDaoQueries] **reads** — a user, the engine or a call sees their result: identical in the two
  *    worlds, non-empty in the swept one, and exactly the rows the live fixture holds (so a filter that hides
@@ -27,21 +27,34 @@ import java.io.File
  *    in the world that holds them, nothing after the sweep, and every expired row of the fixture.
  *
  * **The static half** is [DmExpiredRowLint]'s scan with [expiringTables]: every literal in the Android
- * production sources that reads one of the 14 tables must be registered (verbatim, so the string the DAO runs is
+ * production sources that reads one of the 16 tables must be registered (verbatim, so the string the DAO runs is
  * the string the lint runs) and every registered query must still exist. A DAO added by S4 to S9 cannot read
  * an expiring channel table without the lint hearing of it. **What it cannot see** is the same as the DM lint's:
- * a table name that arrives through a template or a constant; the channel DAOs spell the table out.
+ * a table name that arrives through a template or a constant; the channel DAOs spell the table out. The match is
+ * case-insensitive and a comment between `+`-joined literals is whitespace (the review of S3: `FROM CH_POST` and
+ * `"SELECT body_env " + // why` followed by `"FROM ch_post …"` both passed the first version).
+ *
+ * **When it runs.** The scan reads the production sources of every module at run time, which Gradle does not
+ * know: `:storage`'s test task declares them as inputs (`storage/build.gradle.kts`), because with the build
+ * cache on a pull request that touched `:messaging` alone would otherwise find this task FROM-CACHE or UP-TO-DATE
+ * and the lint would not run on the query it added (the review of S3, shown with an unregistered read in
+ * `PostStore`). `ChannelExpiredRowLintTest.theStorageTestTaskDeclaresTheSourcesTheLintReads` pins the declaration.
  */
 object ChannelExpiredRowLint {
 
     /**
      * Table -> the column whose value makes a row expired (§8.2, §8.3, §8.5, §6.5, §6.2.2). `ch_reaction` has no
      * deadline of its own — it dies with its post, by cascade — so a read of it must go through the post's
-     * deadline, which is what the entry says and what the scan therefore also looks for.
+     * deadlines, which is what the entry says and what the scan therefore also looks for. `ch_post` has **two**:
+     * `delete_at_minute`, and the relay expiry `relay_expiry_hour` of an unread post. `ch_fork_signal` and
+     * `ch_box_key` have none of their own either: they go with the retention of the epoch they name (§6.3.5) or
+     * of the epoch that replaced them (§8.3, §19.17), which a read applies by looking at `ch_epoch`.
      */
     val expiringTables: Map<String, String> = mapOf(
-        "ch_post" to "delete_at_minute",
-        "ch_reaction" to "ch_post.delete_at_minute (through the target)",
+        "ch_post" to "delete_at_minute and, while unread, relay_expiry_hour",
+        "ch_reaction" to "ch_post.delete_at_minute and relay_expiry_hour (through the target)",
+        "ch_fork_signal" to "ch_epoch.keep_until_day (through the epoch)",
+        "ch_box_key" to "ch_epoch.keep_until_day (through last_epoch)",
         "ch_reveal" to "delete_at_minute",
         "ch_pending_post" to "fail_after_hour",
         "ch_seen" to "until_day",
@@ -59,8 +72,11 @@ object ChannelExpiredRowLint {
     /** The `now_e` of the fixture world, in seconds: on a minute and on an hour boundary. */
     const val NOW: Long = 1_800_000_000L
 
-    /** The day of [NOW]'s world: what a `*_day` filter is given. */
-    const val TODAY: Long = 20_833L
+    /**
+     * The day of the fixture world: what a `*_day` filter is given. It sits on the week grid (20 839 = 7 × 2 977), so
+     * that `ch_seen.until_day`, which is a week (`% 7 = 0`), can have a row exactly on it.
+     */
+    const val TODAY: Long = 20_839L
 
     val CH: ByteArray = ChannelFixture.CH
     val CH_B: ByteArray = chBytes(32, 0xC2)
@@ -136,13 +152,21 @@ object ChannelExpiredRowLint {
      *
      * | table | expired | live |
      * |---|---|---|
-     * | `ch_post` | `NOW` (E1), `NOW − 60` (E2), `NOW − 7 200` (E3) | `NOW + 60`, `NOW + 3 600`, none |
+     * | `ch_post`, by `delete_at_minute` | `NOW` (E1), `NOW − 60` (E2), `NOW − 7 200` (E3) | `NOW + 60`, `NOW + 7 200`, none |
+     * | `ch_post`, by the relay expiry E of an unread post | E4: E = `NOW`, deadline `NOW + 600`; E5: E = `NOW − 3 600`, no deadline (a timer-off channel); E6: deadline `NOW − 60`, E = `NOW + 3 600` | read, deadline `NOW + 9 000`; unread with E = `NOW + 10 800` and deadline `NOW + 14 400` or none |
      * | `ch_reveal` | `NOW`, `NOW − 60` | `NOW + 60`, none |
      * | `ch_pending_post` | `NOW`, `NOW − 3 600` | `NOW + 3 600`, `NOW + 7 200` |
-     * | `ch_seen`, `ch_join`, `ch_join_request`, `ch_kp_seen`, `ch_invite_issued`, `ch_invite_own`, `ch_request` | `TODAY − 1` | `TODAY`, `TODAY + 7` |
+     * | `ch_join`, `ch_join_request`, `ch_kp_seen`, `ch_invite_issued`, `ch_invite_own`, `ch_request` | `TODAY − 1` | `TODAY`, `TODAY + 7` |
+     * | `ch_seen` (a week) | `TODAY − 7` | `TODAY`, `TODAY + 7` |
      * | `ch_generation` (CH) | a draining one until `TODAY − 1` | a current one, a pending one; (CH_B) a draining one until `TODAY` |
      * | `ch_epoch` | final, kept until `TODAY − 1` | final until `TODAY`, until `TODAY + 1`, and the open one |
+     * | `ch_fork_signal` | of epoch 0 (past its retention) | of epoch 1 (retained, on its last day) and of the open epoch 3 |
+     * | `ch_box_key` | replaced in epoch 0 | replaced in epoch 1 (the oldest retained), in epoch 3, and the current leaf's |
      * | `mls_global_kv` | until `TODAY − 1` | until `TODAY`, none; and one of another channel |
+     *
+     * Every E row is chosen so that dropping one term of a query is seen by a value: E4's other deadline and E6's
+     * E are both earlier than every live post's, so the next-deletion query answers a wrong time (not only a wrong
+     * set) when it forgets either deadline of a row.
      */
     fun seed(db: JdbcSqlExecutor, withExpired: Boolean) {
         val f = ChannelFixture(db)
@@ -154,17 +178,25 @@ object ChannelExpiredRowLint {
             db.exec(sql, args)
         }
         // ---- ch_post, with reactions on an expired and on a live post
-        fun post(n: Int, expired: Boolean, dir: String, state: String, deleteAt: Long?) =
+        fun post(n: Int, expired: Boolean, dir: String, state: String, deleteAt: Long?, relayExpiry: Long? = null) =
             row(
                 expired, "ch_post", "op_id" to id(n), "author" to key(n), "direction" to dir, "state" to state,
-                "delete_at_minute" to deleteAt, "author_minute" to NOW - 3_600L - n * 60L,
+                "delete_at_minute" to deleteAt, "relay_expiry_hour" to relayExpiry, "author_minute" to NOW - 3_600L - n * 60L,
             )
         post(0xE1, true, "in", "unread", NOW)
         post(0xE2, true, "out", "sent", NOW - 60)
         post(0xE3, true, "in", "unread", NOW - 7_200)
+        // expired by the relay expiry E alone (§8.2: an unread post dies at min(E, consume + bucket + 1 h))
+        post(0xE4, true, "in", "unread", NOW + 600, relayExpiry = NOW)
+        post(0xE5, true, "in", "unread", null, relayExpiry = NOW - 3_600)
+        // expired by its deadline, with an E that is still ahead
+        post(0xE6, true, "in", "unread", NOW - 60, relayExpiry = NOW + 3_600)
         post(0x11, false, "in", "unread", NOW + 60)
-        post(0x12, false, "out", "sent", NOW + 3_600)
+        post(0x12, false, "out", "sent", NOW + 7_200)
         post(0x13, false, "in", "unread", null)
+        post(0x14, false, "in", "unread", NOW + 14_400, relayExpiry = NOW + 10_800)
+        post(0x15, false, "in", "unread", null, relayExpiry = NOW + 10_800)
+        post(0x16, false, "in", "read", NOW + 9_000)
         fun reaction(target: Int, author: Int, expired: Boolean) {
             if (expired && !withExpired) return
             db.exec(
@@ -188,7 +220,7 @@ object ChannelExpiredRowLint {
         // ---- the day-keyed tables: expired at TODAY − 1, live on TODAY itself and a week on
         fun tag(n: Int) = chBytes(16, n)
         for ((n, day, expired) in listOf(Triple(0xE1, TODAY - 1, true), Triple(0x11, TODAY, false), Triple(0x12, TODAY + 7, false))) {
-            row(expired, "ch_seen", "tag" to tag(n), "until_day" to day)
+            row(expired, "ch_seen", "tag" to tag(n), "until_day" to day - day % 7)
             row(expired, "ch_join", "kp_ref" to key(n), "expiry_day" to day)
             row(expired, "ch_join_request", "hash" to key(n), "until_day" to day)
             row(expired, "ch_invite_issued", "invite_id" to id(n), "expiry_day" to day)
@@ -208,6 +240,15 @@ object ChannelExpiredRowLint {
         row(false, "ch_epoch", "epoch" to 1L, "state" to "final", "final_day" to TODAY - 5, "keep_until_day" to TODAY)
         row(false, "ch_epoch", "epoch" to 2L, "state" to "final", "final_day" to TODAY - 1, "keep_until_day" to TODAY + 1)
         row(false, "ch_epoch", "epoch" to 3L)
+        // ---- ch_fork_signal and ch_box_key: no deadline of their own; they go with an epoch's retention, and epoch 0
+        // is past its bound while epoch 1, the oldest retained, is on its last day
+        row(true, "ch_fork_signal", "epoch" to 0L, "hash" to key(0xE1), "first_seen_day" to TODAY - 11)
+        row(false, "ch_fork_signal", "epoch" to 1L, "hash" to key(0x11), "first_seen_day" to TODAY - 4)
+        row(false, "ch_fork_signal", "epoch" to 3L, "hash" to key(0x12), "first_seen_day" to TODAY)
+        row(true, "ch_box_key", "box_pk" to key(0xE1), "last_epoch" to 0L)
+        row(false, "ch_box_key", "box_pk" to key(0x11), "last_epoch" to 1L)
+        row(false, "ch_box_key", "box_pk" to key(0x12), "last_epoch" to 3L)
+        row(false, "ch_box_key", "box_pk" to key(0x13))
         // ---- mls_global_kv: rows of CH (one expired, one on its last day, one with no day) and one of CH_B
         row(true, "mls_global_kv", "k" to key(0xE1), "delete_after_day" to TODAY - 1)
         row(false, "mls_global_kv", "k" to key(0x11), "delete_after_day" to TODAY)
@@ -226,7 +267,7 @@ object ChannelExpiredRowLint {
         }
     }
 
-    /** Every read of one of the 14 tables in [sources]: [DmExpiredRowLint]'s scan with the channel set. */
+    /** Every read of one of the 16 tables in [sources]: [DmExpiredRowLint]'s scan with the channel set. */
     fun readQueriesOverExpiringRows(sources: List<File>): List<Found> =
         DmExpiredRowLint.readQueriesOverExpiringRows(sources, expiringTables.keys).map { Found(it.file, it.line, it.sql) }
 }
@@ -257,7 +298,36 @@ object ChannelDaoQueries {
 
     private const val POST_PAGE = POST_COLUMNS +
         "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+        "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
         "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?"
+
+    private const val POST_BY_ID = POST_COLUMNS +
+        "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+        "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)"
+
+    private const val REACTIONS_OF_A_POST =
+        "SELECT r.target, r.author, r.grapheme_env FROM ch_reaction r JOIN ch_post p ON p.op_id = r.target " +
+            "WHERE r.target = ? AND (p.delete_at_minute IS NULL OR p.delete_at_minute > ?) " +
+            "AND (p.relay_expiry_hour IS NULL OR p.relay_expiry_hour > ?) ORDER BY r.author"
+
+    private const val CURRENT_BOX_KEY =
+        "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? AND last_epoch IS NULL"
+
+    private const val BOX_KEYS =
+        "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? " +
+            "AND (last_epoch IS NULL OR last_epoch >= (SELECT min(e.epoch) FROM ch_epoch e WHERE e.channel_id = ? " +
+            "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?))) " +
+            "ORDER BY last_epoch IS NOT NULL, last_epoch DESC, box_pk"
+
+    private const val BOX_KEY =
+        "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? AND box_pk = ? " +
+            "AND (last_epoch IS NULL OR last_epoch >= (SELECT min(e.epoch) FROM ch_epoch e WHERE e.channel_id = ? " +
+            "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?)))"
+
+    private const val FORK_SIGNALS =
+        "SELECT s.channel_id, s.epoch, s.hash, s.first_seen_day FROM ch_fork_signal s WHERE s.channel_id = ? " +
+            "AND EXISTS (SELECT 1 FROM ch_epoch e WHERE e.channel_id = s.channel_id AND e.epoch = s.epoch " +
+            "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?)) ORDER BY s.epoch, s.hash"
 
     private const val GEN_COLUMNS =
         "SELECT channel_id, generation, namespace_id, state, g_env, jk_env, r_join, switch_hour, drain_until_day FROM ch_generation "
@@ -267,47 +337,48 @@ object ChannelDaoQueries {
 
     val registered: List<ChannelExpiredRowLint.Query> = listOf(
         // ---- PostStore
-        read("thePostPage", POST_PAGE, listOf(CH, NOW, 50L), rows = 3),
+        read("thePostPage", POST_PAGE, listOf(CH, NOW, NOW, 50L), rows = 6),
         read(
             "thePostPageBeforeACursor",
             POST_COLUMNS + "WHERE channel_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?) " +
+                "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
                 "AND (author_minute < ? OR (author_minute = ? AND author < ?) " +
                 "OR (author_minute = ? AND author = ? AND op_id < ?)) " +
                 "ORDER BY author_minute DESC, author DESC, op_id DESC LIMIT ?",
-            listOf(CH, NOW, NOW, NOW, L.key(0xFF), NOW, L.key(0xFF), L.id(0xFF), 50L), rows = 3,
+            listOf(CH, NOW, NOW, NOW, NOW, L.key(0xFF), NOW, L.key(0xFF), L.id(0xFF), 50L), rows = 6,
         ),
-        read(
-            "onePostById",
-            POST_COLUMNS + "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
-            listOf(L.id(0x11), NOW), rows = 1,
-        ),
-        hides(
-            "anExpiredPostById",
-            POST_COLUMNS + "WHERE op_id = ? AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
-            listOf(L.id(0xE1), NOW), "ch_post", "op_id = ?", listOf(L.id(0xE1)),
-        ),
+        read("onePostById", POST_BY_ID, listOf(L.id(0x11), NOW, NOW), rows = 1),
+        hides("anExpiredPostById", POST_BY_ID, listOf(L.id(0xE1), NOW, NOW), "ch_post", "op_id = ?", listOf(L.id(0xE1))),
+        // The relay expiry E alone: an unread post of a channel whose timer is off has no deadline of its own, and one
+        // whose deadline is ahead is still gone once its relay copy is (§8.2).
+        hides("aPostPastItsRelayExpiryAlone", POST_BY_ID, listOf(L.id(0xE5), NOW, NOW), "ch_post", "op_id = ?", listOf(L.id(0xE5))),
+        hides("aPostPastItsRelayExpiryOnItsBoundary", POST_BY_ID, listOf(L.id(0xE4), NOW, NOW), "ch_post", "op_id = ?", listOf(L.id(0xE4))),
+        hides("aPostPastItsDeadlineWhoseRelayExpiryIsAhead", POST_BY_ID, listOf(L.id(0xE6), NOW, NOW), "ch_post", "op_id = ?", listOf(L.id(0xE6))),
+        read("anUnreadPostWhoseRelayExpiryIsAhead", POST_BY_ID, listOf(L.id(0x14), NOW, NOW), rows = 1),
+        read("anUnreadPostWithOnlyARelayExpiry", POST_BY_ID, listOf(L.id(0x15), NOW, NOW), rows = 1),
         read(
             "theUnreadCount",
             "SELECT count(*) FROM ch_post WHERE channel_id = ? AND direction = 'in' AND state = 'unread' " +
-                "AND (delete_at_minute IS NULL OR delete_at_minute > ?)",
-            listOf(CH, NOW), rows = 1,
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?) AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?)",
+            listOf(CH, NOW, NOW), rows = 1,
         ),
+        // Bound a minute past the live post whose deadline is NOW + 60, so that it is exactly on the boundary in both
+        // worlds: the earliest live deadline is then a value that E4's other deadline (NOW + 600) and E6's E
+        // (NOW + 3 600) both undercut, and a query that forgets either term of a row answers a wrong time.
         read(
             "theNextDeletionTime",
-            "SELECT min(delete_at_minute) FROM ch_post WHERE delete_at_minute IS NOT NULL AND delete_at_minute > ?",
-            listOf(NOW), rows = 1,
+            "SELECT min(t) FROM (" +
+                "SELECT min(delete_at_minute) AS t FROM ch_post WHERE delete_at_minute > ? " +
+                "AND (relay_expiry_hour IS NULL OR relay_expiry_hour > ?) " +
+                "UNION ALL " +
+                "SELECT min(relay_expiry_hour) FROM ch_post WHERE relay_expiry_hour > ? " +
+                "AND (delete_at_minute IS NULL OR delete_at_minute > ?))",
+            listOf(NOW + 60, NOW + 60, NOW + 60, NOW + 60), rows = 1,
         ),
-        read(
-            "theReactionsOfALivePost",
-            "SELECT r.target, r.author, r.grapheme_env FROM ch_reaction r JOIN ch_post p ON p.op_id = r.target " +
-                "WHERE r.target = ? AND (p.delete_at_minute IS NULL OR p.delete_at_minute > ?) ORDER BY r.author",
-            listOf(L.id(0x11), NOW), rows = 2,
-        ),
+        read("theReactionsOfALivePost", REACTIONS_OF_A_POST, listOf(L.id(0x11), NOW, NOW), rows = 2),
         hides(
-            "theReactionsOfAnExpiredPost",
-            "SELECT r.target, r.author, r.grapheme_env FROM ch_reaction r JOIN ch_post p ON p.op_id = r.target " +
-                "WHERE r.target = ? AND (p.delete_at_minute IS NULL OR p.delete_at_minute > ?) ORDER BY r.author",
-            listOf(L.id(0xE1), NOW), "ch_reaction", "target = ?", listOf(L.id(0xE1)),
+            "theReactionsOfAnExpiredPost", REACTIONS_OF_A_POST,
+            listOf(L.id(0xE1), NOW, NOW), "ch_reaction", "target = ?", listOf(L.id(0xE1)),
         ),
         read(
             "thePendingPosts",
@@ -500,6 +571,18 @@ object ChannelDaoQueries {
                 "WHERE channel_id = ? AND kind = ? AND subject = ? AND until_day >= ?",
             listOf(CH, "leave", L.key(0xE1), TODAY), "ch_request", "subject = ?", listOf(L.key(0xE1)),
         ),
+        // ---- the box keys: no deadline of their own, they go with the epoch that replaced them (§8.3, §19.17).
+        // The oldest retained epoch of the fixture is 1 (epoch 0 is past its bound), so the key replaced in epoch 0 is
+        // gone, the one replaced in epoch 1 is on its last epoch, and the current leaf's has no bound.
+        read("theCurrentBoxKey", CURRENT_BOX_KEY, listOf(CH), rows = 1),
+        read("theBoxKeysOfAChannelWithinTheirRetention", BOX_KEYS, listOf(CH, CH, TODAY), rows = 3),
+        read("oneBoxKeyOnTheLastEpochOfItsRetention", BOX_KEY, listOf(CH, L.key(0x11), CH, TODAY), rows = 1),
+        hides(
+            "aBoxKeyPastItsRetention", BOX_KEY, listOf(CH, L.key(0xE1), CH, TODAY),
+            "ch_box_key", "box_pk = ?", listOf(L.key(0xE1)),
+        ),
+        // ---- the fork signals: they go with the retention of their epoch (§6.3.5)
+        read("theForkSignalsOfRetainedEpochs", FORK_SIGNALS, listOf(CH, TODAY), rows = 2),
         // ---- MlsKvStore
         read(
             "theGlobalRowsOfAChannelWithinTheirDay",
@@ -529,6 +612,12 @@ object ChannelBoundQueries {
             "aKeyPackageTagThatIsThere", "SELECT 1 FROM ch_kp_seen WHERE channel_id = ? AND tag = ?",
             listOf(CH, chBytes(16, 0xE1)),
         ),
+        bound("theBoxKeysOfAChannel", "SELECT count(*) FROM ch_box_key WHERE channel_id = ?", listOf(CH)),
+        bound("theForkSignalsOfAChannel", "SELECT count(*) FROM ch_fork_signal WHERE channel_id = ?", listOf(CH)),
+        bound(
+            "aForkSignalThatIsThere", "SELECT count(*) FROM ch_fork_signal WHERE channel_id = ? AND epoch = ? AND hash = ?",
+            listOf(CH, 0L, L.key(0xE1)),
+        ),
     )
 }
 
@@ -548,8 +637,10 @@ object ChannelSweepQueries {
     val registered: List<ChannelExpiredRowLint.Query> = listOf(
         sweep(
             "oneBatchOfExpiredPosts",
-            "SELECT op_id FROM ch_post WHERE delete_at_minute <= ? ORDER BY delete_at_minute, op_id LIMIT ?",
-            listOf(NOW, 500L), rows = 3,
+            "SELECT op_id FROM ch_post WHERE delete_at_minute <= ? OR relay_expiry_hour <= ? " +
+                "ORDER BY CASE WHEN relay_expiry_hour IS NOT NULL AND (delete_at_minute IS NULL OR relay_expiry_hour <= delete_at_minute) " +
+                "THEN relay_expiry_hour ELSE delete_at_minute END, op_id LIMIT ?",
+            listOf(NOW, NOW, 500L), rows = 6,
         ),
         sweep(
             "oneBatchOfExpiredPendingPosts",

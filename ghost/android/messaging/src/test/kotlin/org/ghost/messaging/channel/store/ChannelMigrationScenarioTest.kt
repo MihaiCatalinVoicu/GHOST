@@ -239,7 +239,7 @@ class ChannelMigrationScenarioTest {
             assertArrayEquals(channel, stores.generations.route(db, ns0.toByteArray(), 20_833)!!.channelId)
             assertEquals(0L, stores.epochs.open(db, channel, 20_833)!!.epoch)
             assertEquals(11, stores.mls.groupRowCount(db, channel))
-            assertEquals(1, stores.members.boxKeys(db, channel).size)
+            assertEquals(1, stores.members.boxKeys(db, channel, 20_833).size)
             // nothing the DM engine owns was touched, and the foreign keys hold
             assertEquals(dmRowsBefore, db.dump().filterKeys { it.startsWith("dm_") || it.startsWith("olm_") })
             assertNull(db.queryLong("PRAGMA foreign_key_check"))

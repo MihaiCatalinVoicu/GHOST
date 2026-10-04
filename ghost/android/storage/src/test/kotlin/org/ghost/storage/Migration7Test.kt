@@ -210,8 +210,8 @@ class Migration7Test {
             Pair(db.schemaSnapshot(), db.dump())
         }
         assertTrue(
-            "step 0 (11), 29 tables and indexes, 29 rules and 24 guards are 93 statements; a change is deliberate: ${v7.statements.size}",
-            v7.statements.size == 93,
+            "step 0 (11), 30 tables and indexes, 36 rules, 24 guards and 4 rowid triggers are 105 statements; a change is deliberate: ${v7.statements.size}",
+            v7.statements.size == 105,
         )
         for (i in v7.statements.indices) {
             populatedV6().use { db ->

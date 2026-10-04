@@ -36,7 +36,7 @@ class Migration6Test {
         val triggers = HashSet<String>()
         db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'") { triggers += it.string(0) }
         val expectedTables = Schema.expectedTables - ChannelSchema.tables + ChannelSchema.v1Tables
-        val expectedTriggers = Schema.expectedTriggers - ChannelSchema.rules - ChannelSchema.guards
+        val expectedTriggers = Schema.expectedTriggers - ChannelSchema.rules - ChannelSchema.guards - ChannelSchema.rowidChecks
         assertEquals(emptySet<String>(), expectedTables - tables)
         assertEquals(emptySet<String>(), expectedTriggers - triggers)
         for ((pragma, expected) in Schema.expectedPragmaValues) assertEquals(pragma, expected, db.queryLong("PRAGMA $pragma"))

@@ -58,12 +58,21 @@ class MlsKvStoreTest {
         assertTrue("MessageSecretsPast" in group && "Tree" in group && "GroupContext" in group)
         // the associated data of a wrapped row: scope, channel id and the hash of the key, under this label
         assertTrue(source.contains("b\"ghost/v1/mls-kv\""))
-        // every key the adapter writes fits the column, whatever the label
+        // One representative key of each label (the JSON of a 32-byte id) fits the column and has its NUL after the
+        // label. This is what is measured, and no more: kv.rs enforces no bound on a key, so the column's CHECK
+        // (2 to 1 024 bytes, a bound of this slice's) is the only one, and a key of a label whose argument is longer
+        // than a 32-byte id would fail the transaction that writes it (the review of S3: the first version of this
+        // comment said that every key the adapter writes fits).
         for (label in group + global) {
             val key = groupKey(label)
             assertTrue("$label key of ${key.size} bytes", key.size in 2..MlsKvStore.MAX_KEY)
             assertEquals(0, key[label.length].toInt())
         }
+        // the one global label whose rows are a KeyPackage's, and so die on a day, is the adapter's L_KEY_PACKAGE
+        assertEquals(
+            String(MlsKvStore.KEY_PACKAGE_LABEL),
+            Regex("const L_KEY_PACKAGE: &\\[u8\\] = b\"([A-Za-z]+)\";").find(source)!!.groupValues[1],
+        )
         // the envelope's floor: nonce(12) ‖ tag(16)
         assertTrue(source.contains("env.len() < 12 + 16"))
         assertEquals(28, MlsKvStore.MIN_ENV)
@@ -136,10 +145,10 @@ class MlsKvStoreTest {
                 globalDeleteAfterDay = 20_007,
             )
         }
-        w.tx { w.stores.mls.apply(it, w.ch2, listOf(change(MlsKvStore.Scope.GLOBAL, groupKey("KeyPackage", 3), env(900, 3)))) }
+        w.tx { w.stores.mls.apply(it, w.ch2, listOf(change(MlsKvStore.Scope.GLOBAL, groupKey("KeyPackage", 3), env(900, 3))), globalDeleteAfterDay = 20_010) }
         assertEquals(2L, w.db.queryLong("SELECT count(*) FROM mls_global_kv WHERE channel_id = ?", listOf(w.ch)))
         assertEquals(20_007L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE channel_id = ? LIMIT 1", listOf(w.ch)))
-        assertEquals(null, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE channel_id = ?", listOf(w.ch2)))
+        assertEquals(20_010L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE channel_id = ?", listOf(w.ch2)))
         // a call on a channel loads its group rows and the global rows tagged with it, and no other channel's
         val rows = w.stores.mls.rows(w.db, w.ch, today)
         assertEquals(2, rows.size)
@@ -148,11 +157,12 @@ class MlsKvStoreTest {
         // the day: kept through it, gone from the next day on (the private keys of an expired KeyPackage are not handed to a call)
         assertEquals(2, w.stores.mls.globalRows(w.db, w.ch, 20_007).size)
         assertEquals(0, w.stores.mls.globalRows(w.db, w.ch, 20_008).size)
-        assertEquals(1, w.stores.mls.rows(w.db, w.ch2, 99_999).size)
+        assertEquals(1, w.stores.mls.rows(w.db, w.ch2, 20_010).size)
+        assertEquals(0, w.stores.mls.rows(w.db, w.ch2, 20_011).size)
         assertEquals(2, w.stores.mls.expiredGlobal(w.db, 20_008, 10).size)
         assertEquals(1, w.stores.mls.expiredGlobal(w.db, 20_008, 1).size)
         assertEquals(0, w.stores.mls.expiredGlobal(w.db, 20_007, 10).size)
-        // an update keeps the row's day unless the call gives one
+        // an update keeps the row's day unless the call gives an earlier one
         w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPackage, env(901, 4)))) }
         assertEquals(20_007L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(keyPackage)))
         w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPackage, env(902, 5))), globalDeleteAfterDay = 20_003) }
@@ -161,17 +171,56 @@ class MlsKvStoreTest {
         assertEquals(1L, w.db.queryLong("SELECT count(*) FROM mls_global_kv WHERE channel_id = ?", listOf(w.ch)))
     }
 
+    /**
+     * The private keys of a KeyPackage live until it is used or expires, and a day that moves later - or is missing -
+     * keeps them. The review of S3 showed both: a re-put moved the day later (`COALESCE` took the call's), and a
+     * `KeyPackage` row stored with no day was loaded at any day and kept until the channel went. A put now keeps the
+     * earlier of the two days, and a new `KeyPackage` row without a day is refused.
+     */
+    @Test
+    fun aKeyPackageRowAlwaysHasADayAndADayNeverMovesLater() = StoreWorld().use { w ->
+        w.channel()
+        val keyPackage = groupKey("KeyPackage", 1)
+        val keyPair = groupKey("EncryptionKeyPair", 2)
+        // no day, no KeyPackage row; nothing of the change-set before or after it stays
+        assertEquals(
+            ChannelStoreError.BAD_VALUE,
+            assertThrows(ChannelStoreException::class.java) {
+                w.tx {
+                    w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPair, env(120, 1)), change(MlsKvStore.Scope.GLOBAL, keyPackage, env(900, 2))))
+                }
+            }.error,
+        )
+        assertEquals(0L, w.count("mls_global_kv"))
+        // a key pair written by a commit's update path has no day of its own: it is deleted when the commit is merged
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPair, env(120, 1)))) }
+        assertEquals(null, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(keyPair)))
+        // the KeyPackage with its day
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPackage, env(900, 2))), globalDeleteAfterDay = 20_007) }
+        // a re-put that names a later day, or none, leaves the day; an earlier one lowers it
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPackage, env(901, 3))), globalDeleteAfterDay = 20_030) }
+        assertEquals(20_007L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(keyPackage)))
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPackage, env(902, 4)))) }
+        assertEquals(20_007L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(keyPackage)))
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPackage, env(903, 5))), globalDeleteAfterDay = 20_001) }
+        assertEquals(20_001L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(keyPackage)))
+        // a row that was written with no day gets the call's first day
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, keyPair, env(121, 6))), globalDeleteAfterDay = 20_005) }
+        assertEquals(20_005L, w.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(keyPair)))
+        assertArrayEquals(env(903, 5), w.stores.mls.globalRows(w.db, w.ch, 20_001).single { it.key.contentEquals(keyPackage) }.env)
+    }
+
     @Test
     fun aGlobalKeyBelongsToOneChannelAndAGroupRowToItsOwn() = StoreWorld().use { w ->
         w.channel()
         w.channel(w.ch2)
         val shared = groupKey("KeyPackage", 5)
-        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, shared, env(100, 1)))) }
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, shared, env(100, 1))), globalDeleteAfterDay = 20_007) }
         // the same key under another channel is the key of someone else's KeyPackage: refused, nothing written
         assertEquals(
             ChannelStoreError.ROW_EXISTS,
             assertThrows(ChannelStoreException::class.java) {
-                w.tx { w.stores.mls.apply(it, w.ch2, listOf(change(MlsKvStore.Scope.GLOBAL, shared, env(100, 2)))) }
+                w.tx { w.stores.mls.apply(it, w.ch2, listOf(change(MlsKvStore.Scope.GLOBAL, shared, env(100, 2))), globalDeleteAfterDay = 20_007) }
             }.error,
         )
         // another channel's delete of it matches nothing
@@ -210,7 +259,7 @@ class MlsKvStoreTest {
         assertEquals(1, w.stores.mls.groupRowCount(w.db, w.ch))
         assertEquals(0L, w.count("mls_global_kv"))
         // a join that expires: the KeyPackage's private keys go
-        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, groupKey("KeyPackage", 2), env(900, 2)))) }
+        w.tx { w.stores.mls.apply(it, w.ch, listOf(change(MlsKvStore.Scope.GLOBAL, groupKey("KeyPackage", 2), env(900, 2))), globalDeleteAfterDay = 20_007) }
         assertEquals(1, w.tx { w.stores.mls.deleteGlobalRows(it, w.ch) })
         assertFalse(w.stores.mls.rows(w.db, w.ch, today).any { it.scope == MlsKvStore.Scope.GLOBAL })
     }

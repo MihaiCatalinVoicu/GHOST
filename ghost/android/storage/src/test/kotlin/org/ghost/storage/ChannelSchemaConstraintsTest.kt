@@ -94,6 +94,9 @@ class ChannelSchemaConstraintsTest {
         add(refused("ch_epoch", "an open epoch with a final day", "state" to "open", "final_day" to 20_000L))
         add(refused("ch_epoch", "a retention bound on an open epoch", "keep_until_day" to 20_002L))
         add(accepted("ch_epoch", "a retention bound on a final epoch", "state" to "final", "final_day" to 20_000L, "keep_until_day" to 20_002L))
+        // A final epoch keeps no count of the member's posts (T33): finality resets it, and none is stored with one.
+        add(accepted("ch_epoch", "an open epoch with a count of own posts", "own_seq" to 25L))
+        add(refused("ch_epoch", "a final epoch with a count of own posts", "state" to "final", "final_day" to 20_000L, "own_seq" to 1L))
         // ---- ch_epoch_log
         addAll(exact("ch_epoch_log", "winner_hash", 32))
         // ---- ch_candidate
@@ -138,10 +141,17 @@ class ChannelSchemaConstraintsTest {
         add(refused("ch_post", "an unknown state", "state" to "bogus"))
         add(refused("ch_post", "an outgoing post that was displayed", "direction" to "out", "state" to "queued", "displayed_minute" to 660L))
         add(refused("ch_post", "an outgoing post with a relay expiry", "direction" to "out", "state" to "queued", "relay_expiry_hour" to 3_600L))
-        add(refused("ch_post", "a read post that was never displayed", "state" to "read"))
+        // The minute a post was read is kept only where a countdown needs it: a read post of a channel with a timer.
+        // With the timer off nothing stores when the user opened a post (F9's dm_message stores no time either, T33).
+        add(accepted("ch_post", "a read post with no displayed minute (what a timer-off channel stores)", "state" to "read", "timer_code" to 0L))
+        add(accepted("ch_post", "a read post with no displayed minute", "state" to "read"))
         add(refused("ch_post", "an unread post that was displayed", "state" to "unread", "displayed_minute" to 660L))
         add(accepted("ch_post", "a read post that was displayed", "state" to "read", "displayed_minute" to 660L, "delete_at_minute" to 3_600L))
+        add(refused("ch_post", "a read post of a timer-off channel with a displayed minute", "state" to "read", "timer_code" to 0L, "displayed_minute" to 660L))
         add(accepted("ch_post", "an unread post with its relay expiry", "relay_expiry_hour" to 3_600L, "delete_at_minute" to 3_600L))
+        // The relay expiry is a deadline of an unread post only: a display forgets it, and a read post has none.
+        add(refused("ch_post", "a read post with a relay expiry", "state" to "read", "relay_expiry_hour" to 3_600L))
+        add(accepted("ch_post", "an unread post of a timer-off channel: a relay expiry and no deadline", "timer_code" to 0L, "relay_expiry_hour" to 3_600L))
         // ---- ch_reaction
         addAll(between("ch_reaction", "grapheme_env", 29, 60))
         addAll(exact("ch_reaction", "author", 32))
@@ -157,6 +167,11 @@ class ChannelSchemaConstraintsTest {
         add(accepted("ch_outbound_op", "no reference"))
         // ---- ch_seen, ch_kp_seen, ch_reveal
         addAll(exact("ch_seen", "tag", 16))
+        // the day is a week, as dm_seen's (F9 section 7.6 D3): a seizer learns the week and not the day
+        add(refused("ch_seen", "a day that is not a week", "until_day" to 19_998L))
+        add(refused("ch_seen", "a day a week and a day on", "until_day" to 20_000L))
+        add(accepted("ch_seen", "a week", "until_day" to 19_999L))
+        add(accepted("ch_seen", "week 0", "until_day" to 0L))
         addAll(exact("ch_kp_seen", "tag", 16))
         addAll(oneOf("ch_reveal", "direction", listOf("in", "out")))
         addAll(exact("ch_reveal", "peer", 32))

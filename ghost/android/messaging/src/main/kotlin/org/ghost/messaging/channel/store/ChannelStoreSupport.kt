@@ -39,6 +39,7 @@ internal enum class ChannelStoreError {
 internal object Fields {
     const val MINUTE: Long = 60L
     const val HOUR: Long = 3_600L
+    const val WEEK_DAYS: Long = 7L
     const val U32_MAX: Long = 4_294_967_295L
 
     private fun bad(where: String): Nothing = throw ChannelStoreException(ChannelStoreError.BAD_VALUE, where)
@@ -75,6 +76,15 @@ internal object Fields {
     /** A `*_day` column, or an epoch or another counter that is `>= 0`. */
     fun nonNegative(where: String, value: Long): Long {
         if (value < 0L) bad(where)
+        return value
+    }
+
+    /**
+     * A weekly `*_day` column, `until_day % 7 = 0` and `>= 0` (`ch_seen.until_day`, the `ceil7` of F9 §7.6 D3): a
+     * seizer learns the week and not the day.
+     */
+    fun week(where: String, value: Long): Long {
+        if (value < 0L || value % WEEK_DAYS != 0L) bad(where)
         return value
     }
 

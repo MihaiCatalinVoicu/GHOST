@@ -11,9 +11,12 @@ import org.ghost.sync.api.SyncTransaction
  * one per leaf it has had that is still within retention, at most 18).
  *
  * **`ch_request` is read with the expiry filter** `until_day >= :today`: a request past its day is dropped,
- * whether or not `CH-SWEEP` has deleted it, and the lint registers the query. The other three tables carry no
- * deadline of their own: a member record lives while the member is in the channel, a box key until the epoch
- * that replaced it leaves retention ([deleteRetiredBefore], which SWEEP calls with the oldest epoch it keeps).
+ * whether or not `CH-SWEEP` has deleted it, and the lint registers the query. The member records carry no
+ * deadline of their own: they live while the member is in the channel. **A box key lives until the epoch that
+ * replaced it leaves retention** ([deleteRetiredBefore], which SWEEP calls with the oldest epoch it keeps), and
+ * its reads apply the same bound — a retired key is offered only while its `last_epoch` is not older than the
+ * oldest retained epoch of `ch_epoch` — so that a sweep that lags does not hand `revealOpen` the secret key of
+ * a leaf the retention rule has already given up (the review of S3: the first version read them with no term).
  *
  * **Every write goes through the caller's [SyncTransaction]**; no `REPLACE`, no upsert (G-DM4).
  */
@@ -106,9 +109,16 @@ internal class MemberStore {
     }
 
     /**
-     * Records a committer's pending work. The work is **recorded once**: its day is what CO-8's work-age rule
-     * measures, so a second record of the same (kind, subject) keeps the first one and returns false. A `policy`
-     * or `class` request names no pseudonym; its subject is the one byte `0x00`.
+     * Records a committer's pending work. The work is **recorded once**: a second record of the same (kind,
+     * subject) keeps the first one and returns false. A `policy` or `class` request names no pseudonym; its
+     * subject is the one byte `0x00`.
+     *
+     * **What the row does not say is when the work was first recorded.** `until_day` is the day the request
+     * *expires*; CO-8's work-age rule (a committer of rank r ≥ 1 includes in a scheduled pass only work it first
+     * recorded at least `r × 48 h` earlier, §19.13 item 4) needs the age of the work, and §9 stores no such day.
+     * If `until_day` is defined as the recorded day plus a constant the age can be derived; otherwise the table
+     * needs a `recorded_day`. Recorded for S5/S7 in §19.35 (F-11); the first version of this comment said the day
+     * *is* what the rule measures, which §9 does not give.
      */
     fun record(tx: SyncTransaction, channelId: ByteArray, kind: RequestKind, subject: ByteArray, payloadEnv: ByteArray?, untilDay: Long): Boolean {
         Fields.bytesBetween("ch_request.subject", subject, 1, 32)
@@ -139,23 +149,27 @@ internal class MemberStore {
 
     // ----------------------------------------------------------------------------------- ch_box_key
 
-    /** The box key of the member's current leaf (`last_epoch` NULL), if it has one. */
+    /** The box key of the member's current leaf (`last_epoch` NULL, so no retention bound), if it has one. */
     fun currentBoxKey(sql: SqlExecutor, channelId: ByteArray): BoxKeyRow? {
         var row: BoxKeyRow? = null
         sql.query(CURRENT_BOX_KEY, listOf(channelId)) { r -> row = readBox(r) }
         return row
     }
 
-    /** Every box key of the channel, current first: `revealOpen` tries the one of the post's epoch (§6.9). */
-    fun boxKeys(sql: SqlExecutor, channelId: ByteArray): List<BoxKeyRow> {
+    /**
+     * Every box key of the channel within its retention, current first: `revealOpen` tries the one of the post's
+     * epoch (§6.9). A retired key whose `last_epoch` is older than the oldest retained epoch is not offered.
+     */
+    fun boxKeys(sql: SqlExecutor, channelId: ByteArray, today: Long): List<BoxKeyRow> {
         val out = ArrayList<BoxKeyRow>()
-        sql.query(BOX_KEYS, listOf(channelId)) { r -> out += readBox(r) }
+        sql.query(BOX_KEYS, listOf(channelId, channelId, today)) { r -> out += readBox(r) }
         return out
     }
 
-    fun boxKey(sql: SqlExecutor, channelId: ByteArray, boxPk: ByteArray): BoxKeyRow? {
+    /** One box key by its public key, if it is within its retention. */
+    fun boxKey(sql: SqlExecutor, channelId: ByteArray, boxPk: ByteArray, today: Long): BoxKeyRow? {
         var row: BoxKeyRow? = null
-        sql.query(BOX_KEY, listOf(channelId, boxPk)) { r -> row = readBox(r) }
+        sql.query(BOX_KEY, listOf(channelId, boxPk, channelId, today)) { r -> row = readBox(r) }
         return row
     }
 
@@ -164,7 +178,7 @@ internal class MemberStore {
         Fields.bytes("ch_box_key.box_pk", boxPk, 32)
         Fields.bytes("ch_box_key.sk_env", skEnv, 60)
         var n = 0
-        tx.sql.query("SELECT count(*) FROM ch_box_key WHERE channel_id = ?", listOf(channelId)) { r -> n = r.long(0).toInt() }
+        tx.sql.query(BOX_KEY_COUNT, listOf(channelId)) { r -> n = r.long(0).toInt() }
         if (n >= MAX_BOX_KEYS) throw ChannelStoreException(ChannelStoreError.LIMIT, "ch_box_key")
         val changed = tx.sql.execUpdate(
             "INSERT INTO ch_box_key(channel_id, box_pk, sk_env) SELECT ?, ?, ? " +
@@ -221,11 +235,22 @@ internal class MemberStore {
         const val CURRENT_BOX_KEY: String =
             "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? AND last_epoch IS NULL"
 
+        /**
+         * The retention of a retired key: its `last_epoch` is not older than the oldest epoch of the channel that is
+         * still within `keep_until_day` (what `deleteRetiredBefore` deletes by). The current leaf's key has none.
+         */
         const val BOX_KEYS: String =
             "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? " +
+                "AND (last_epoch IS NULL OR last_epoch >= (SELECT min(e.epoch) FROM ch_epoch e WHERE e.channel_id = ? " +
+                "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?))) " +
                 "ORDER BY last_epoch IS NOT NULL, last_epoch DESC, box_pk"
 
         const val BOX_KEY: String =
-            "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? AND box_pk = ?"
+            "SELECT channel_id, box_pk, sk_env, last_epoch FROM ch_box_key WHERE channel_id = ? AND box_pk = ? " +
+                "AND (last_epoch IS NULL OR last_epoch >= (SELECT min(e.epoch) FROM ch_epoch e WHERE e.channel_id = ? " +
+                "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?)))"
+
+        /** The bound query: counts every key, retired or not, as the `ch_box_key_limit` trigger does. */
+        const val BOX_KEY_COUNT: String = "SELECT count(*) FROM ch_box_key WHERE channel_id = ?"
     }
 }

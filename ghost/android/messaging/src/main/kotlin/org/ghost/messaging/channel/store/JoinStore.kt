@@ -17,10 +17,11 @@ import org.ghost.sync.api.SyncTransaction
  * reads name the opposite set.
  *
  * **The order of the requests is their arrival order, `ORDER BY rowid`**: §6.2.3 processes a pass's requests "in
- * arrival order", §9 gives `ch_join_request` no arrival column, and the table is an ordinary rowid table (§9 marks
- * only the two tag tables WITHOUT ROWID), so the hidden rowid is the arrival order: a new row is always numbered
- * after the rows that are still there, whatever was deleted. It is the one place where the design asks for an
- * insertion order; what the other rowid tables record by it is §19.35's F-7 (T33).
+ * arrival order", §9 gives `ch_join_request` no arrival column, and the table is one of the two that keep their
+ * hidden rowid (the other is `mls_kv`; every other channel table is WITHOUT ROWID, T33), so the rowid is the
+ * arrival order: a new row is always numbered after the rows that are still there, whatever was deleted. It is the
+ * one place where the design asks for an insertion order, and a declared exception to T33 (§19.35, F-7): the
+ * gaps between the rowids that survive count the requests deleted in between, of every channel.
  *
  * **Every write goes through the caller's [SyncTransaction]**; no `REPLACE`, no upsert (G-DM4); the two
  * tag tables are written with `INSERT OR IGNORE`, which deletes nothing.

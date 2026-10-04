@@ -51,8 +51,12 @@
 #       DDL itself is inside the region of (2)).
 #   (3′) it names a channel table of migration 7 (Phase 10 slice S3, design faza10-forum.md §9): a
 #       word that starts `ch_` (the `ch_*` tables of the forum) or `mls_` (`mls_kv` and
-#       `mls_global_kv`, the rows of `GhostKv`), anywhere else under `android/*/src/main`. The word
-#       is matched at its start (`\bch_`), so `launch_log` and `research_kv` do not match.
+#       `mls_global_kv`, the rows of `GhostKv`), anywhere else under `android/*/src/{main,gate,debug,release}`
+#       of any module. The word is matched at its start (`\bch_`), so `launch_log` and `research_kv` do not
+#       match, and **without regard to case**, as SQLite resolves a table name (`INSERT OR REPLACE INTO CH_POST`
+#       is a REPLACE of `ch_post`). The same holds for (3): the tables of the DM, of migration 6 and of
+#       migration 7 are named in any case, in any module's `main`, `gate`, `debug` or `release` source set
+#       (review of S3; the first version read the last three for `:messaging` and `:crypto-bridge` only).
 #       Twenty-four of the twenty-six channel tables carry a `*_no_replace` guard (`ch_seen` and
 #       `ch_kp_seen` are the two that do not, design §19.35), so a channel writer inserts only a key
 #       that does not exist (the guarded UPDATE-then-INSERT form of the DAOs of
@@ -238,8 +242,12 @@ my @mains = grep { length } split /\n/, `find "$root/android" -maxdepth 3 -type 
 print "VACUOUS android/messaging/src/main: missing (the gate would pass vacuously)\n" unless -d "$root/android/messaging/src/main";
 for my $main (@mains) {
   (my $module = $main) =~ s{^\Q$root\E/android/([^/]+)/src/main$}{$1};
+  # The production source sets of every module, not of the two DM modules alone: src/release is compiled into the
+  # release APK beside src/main (android_main_files in common.sh reads both; Phase 9 review GATES-2), and gate and
+  # debug are installed on the gate devices. The conflict-algorithm APIs below stay a rule of the DM modules.
+  # (No apostrophe in a comment of this block: the whole script is one single-quoted shell string.)
   my @sets = ($main);
-  if ($dm_module{$module}) { for my $s (qw(gate debug release)) { push @sets, "$root/android/$module/src/$s" } }
+  for my $s (qw(gate debug release)) { push @sets, "$root/android/$module/src/$s" }
   for my $set (@sets) {
     for my $file (files_under($set)) {
       (my $rel = $file) =~ s{^\Q$root\E/}{};
@@ -270,7 +278,9 @@ for my $main (@mains) {
         my $in_region = $from && $to && $start >= $from && $start < $to;
         $region_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+dm_/i;
         $region_ch_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+ch_/i;
-        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm|ch|mls)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/;
+        # Table names are matched without regard to case: SQLite resolves them that way, so INSERT OR REPLACE INTO
+        # CH_POST replaces a row of ch_post (the first version of this test was case-sensitive and passed it).
+        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm|ch|mls)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/i;
         next unless $dm;
         $dm_sql_groups++ if $module eq "messaging" && $text =~ $sqlish;
         check($rel, $g);

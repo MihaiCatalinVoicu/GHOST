@@ -122,10 +122,14 @@ private object OutboxObjects {
  *    `channel_pseudonyms`, `mls_state` and `posts` are dropped behind a fail-closed guard; the 26
  *    new tables are `ch_*` (the channel's state, generations, epochs, candidates, posts, joins,
  *    invites, members and keys) and `mls_kv` / `mls_global_kv` (the rows OpenMLS writes through
- *    `GhostKv`, §3.4). The rules are those of v5, but for the row layout: a table is WITHOUT ROWID
- *    only where §9 says so (the tag tables `ch_seen` and `ch_kp_seen`), so the other 24 keep a hidden
- *    rowid (§19.35); `typeof` beside every integer's range and
- *    every time column's grid (`*_minute`, `*_hour`, `*_day`); no created or last-activity column
+ *    `GhostKv`, §3.4). The rules are those of v5, rowid layout included (T33: "random WITHOUT ROWID
+ *    keys", F9 §13.6 step 5): a table is WITHOUT ROWID unless a rule of the design needs an
+ *    insertion order or the rows are too large for it, which are exactly two tables — `mls_kv` (S0-6:
+ *    values of 0.1 to 125 KB) and `ch_join_request` (§6.2.3: the committer serves requests "in
+ *    arrival order") — so the other 24 keep no order of their own (§19.35, F-7 resolved); `typeof`
+ *    beside every integer's range and
+ *    every time column's grid (`*_minute`, `*_hour`, `*_day`, and the weekly `ch_seen.until_day`, as
+ *    `dm_seen`'s); no created or last-activity column
  *    beyond the ones §9 declares; no full-text index; bounded counts and the state machines of §6.11 as
  *    triggers; a `*_no_replace` guard on every table whose writers do not use `INSERT OR IGNORE`.
  *
@@ -1293,10 +1297,31 @@ object Schema {
     /**
      * A [replaceGuard] for a table that has a hidden rowid: it conflicts on the rowid too, because an insert
      * that names an existing rowid would make REPLACE delete that other row, whatever its keys (the
-     * `outbox_op` guard of migration 3 does the same). The rowid of an insert that names none is not yet
-     * assigned in a BEFORE trigger and matches no row.
+     * `outbox_op` guard of migration 3 does the same).
+     *
+     * **An insert that names no rowid has none to compare, and SQLite gives it -1** (`NEW.rowid` in a BEFORE
+     * trigger is undefined until the row is stored; in practice -1). The comparison `rowid = NEW.rowid` is
+     * therefore right only while no row of the table holds a rowid of -1: one row inserted with an explicit
+     * rowid of -1 made every later plain insert "conflict" with it (the review of S3: the first version of this
+     * comment said the rowid "matches no row", which holds only until such a row exists). So the table keeps
+     * the invariant instead of the guard guessing: [rowidPositive] refuses a row stored with a rowid below 1 and
+     * [rowidFixed] a change of the rowid of a row that is there — which is also what an arrival order needs,
+     * since `UPDATE t SET rowid = …` would reorder it. The DAOs never name a rowid.
      */
-    private fun rowidGuard(table: String, conflict: String): String = replaceGuard(table, "($conflict) OR rowid = NEW.rowid")
+    private fun rowidGuard(table: String, conflict: String): String =
+        replaceGuard(table, "($conflict) OR rowid = NEW.rowid")
+
+    /** The AFTER INSERT half of the invariant of [rowidGuard]: a row with a rowid below 1 is never stored. */
+    private fun rowidPositive(table: String): String =
+        """CREATE TRIGGER ${table}_rowid_positive AFTER INSERT ON $table
+                WHEN NEW.rowid < 1
+                BEGIN SELECT RAISE(ABORT, '$table rows have a rowid of 1 or more'); END"""
+
+    /** The UPDATE half: a row keeps the rowid it was numbered with (`outbox_op_rowid` of migration 3 does the same). */
+    private fun rowidFixed(table: String): String =
+        """CREATE TRIGGER ${table}_rowid_fixed BEFORE UPDATE ON $table
+                WHEN NEW.rowid IS NOT OLD.rowid
+                BEGIN SELECT RAISE(ABORT, '$table rows keep their rowid'); END"""
 
     /**
      * Phase 10 design §9, "Migration 6 (`:sync`)" (slice S1a). One transaction, append-only,
@@ -1377,12 +1402,17 @@ object Schema {
 
     /**
      * Migration 7, **step 1**: the 26 tables of §9. Conventions (v5, "following the v4/v5 split of F9
-     * §13.6"): a table is WITHOUT ROWID where §9 says so and only there — the two tag tables `ch_seen`
-     * and `ch_kp_seen` — and an ordinary rowid table everywhere else, as §9 says outright of `mls_kv`
-     * (S0-6: its values are 0.1 to 125 KB) and says nothing of the rest; the hidden rowid of those 24 is an
-     * insertion order, which §19.35 records beside T33, and every REPLACE guard covers it ([rowidGuard]);
+     * §13.6"): **a table is WITHOUT ROWID** (T33 and F9 §13.6 step 5: "random WITHOUT ROWID keys"; the hidden
+     * rowid of a rowid table is the order its rows arrived in, and the gaps between the rowids that survive
+     * count the rows that were swept — of every channel, since the rowid space is the table's), **except two**:
+     * `mls_kv`, which §9 says outright is not (S0-6: its values are 0.1 to 125 KB), and `ch_join_request`,
+     * whose rows the committer serves "in arrival order" (§6.2.3) and which therefore needs the order a rowid
+     * is. Both are declared exceptions to T33 (§19.35, F-7 resolved), both are guarded against a REPLACE that
+     * names a rowid ([rowidGuard]), and neither stores a rowid below 1 ([rowidPositive]) or changes one ([rowidFixed]);
      * an integer's `typeof` is checked beside its range, because `BETWEEN` and `%` admit `x.5`; a time column is a
-     * `*_minute` (`% 60`), a `*_hour` (`% 3600`) or a `*_day`; an envelope column is `nonce(12) ‖
+     * `*_minute` (`% 60`), a `*_hour` (`% 3600`) or a `*_day` (the weekly `ch_seen.until_day` is `% 7`, as
+     * `dm_seen`'s: §6.3.4 retains it "as `dm_seen`", F9 §7.6 D3 — a seizer learns the week and not the day);
+     * an envelope column is `nonce(12) ‖
      * ChaCha20-Poly1305 ‖ tag(16)`, so a value of n bytes takes n + 28 (60 for a 32-byte key, 68 for
      * an epoch key, whose plaintext names its epoch). Secret-bearing columns are wrapped under the
      * channel state key, the ones that hold the user's text under the content key (§9).
@@ -1409,7 +1439,7 @@ object Schema {
                   name_env            BLOB CHECK (name_env IS NULL OR length(name_env) BETWEEN 29 AND 76),
                   last_committer_commit_day INTEGER CHECK (last_committer_commit_day IS NULL
                                       OR (typeof(last_committer_commit_day) = 'integer' AND last_committer_commit_day >= 0))
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_liveness (
                   channel_id              BLOB PRIMARY KEY NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   unopenable_count        INTEGER NOT NULL DEFAULT 0
@@ -1422,7 +1452,7 @@ object Schema {
                   unopenable_first_minute INTEGER CHECK (unopenable_first_minute IS NULL
                                           OR (typeof(unopenable_first_minute) = 'integer' AND unopenable_first_minute % 60 = 0)),
                   CHECK ((unopenable_count = 0) = (unopenable_first_minute IS NULL))
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_schedule (
                   channel_id          BLOB PRIMARY KEY NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   next_selfupdate_day INTEGER NOT NULL
@@ -1431,7 +1461,7 @@ object Schema {
                                       OR (typeof(last_own_commit_day) = 'integer' AND last_own_commit_day >= 0)),
                   next_pass_minute    INTEGER CHECK (next_pass_minute IS NULL
                                       OR (typeof(next_pass_minute) = 'integer' AND next_pass_minute % 60 = 0))
-                )""",
+                ) WITHOUT ROWID""",
         // ---- generations, epochs and the commit candidates (§6.4, §6.5)
         """CREATE TABLE ch_generation (
                   channel_id      BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
@@ -1449,7 +1479,7 @@ object Schema {
                   CHECK (state = 'pending_switch' OR switch_hour IS NULL),
                   CHECK ((state = 'draining') = (drain_until_day IS NOT NULL)),
                   PRIMARY KEY (channel_id, generation)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_epoch (
                   channel_id     BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   epoch          INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
@@ -1466,15 +1496,16 @@ object Schema {
                                  OR (typeof(keep_until_day) = 'integer' AND keep_until_day >= 0)),
                   CHECK ((state = 'final') = (final_day IS NOT NULL)),
                   CHECK (keep_until_day IS NULL OR final_day IS NOT NULL),
+                  CHECK (state = 'open' OR own_seq = 0),
                   PRIMARY KEY (channel_id, epoch)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_epoch_log (
                   channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   epoch       INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
                   winner_hash BLOB NOT NULL CHECK (length(winner_hash) = 32),
                   final_day   INTEGER NOT NULL CHECK (typeof(final_day) = 'integer' AND final_day >= 0),
                   PRIMARY KEY (channel_id, epoch)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_candidate (
                   channel_id        BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   epoch             INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
@@ -1494,15 +1525,17 @@ object Schema {
                   CHECK (own = 1 OR verified = 0),
                   PRIMARY KEY (channel_id, epoch, hash),
                   UNIQUE (channel_id, epoch, sender)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_fork_signal (
                   channel_id     BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   epoch          INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
                   hash           BLOB NOT NULL CHECK (length(hash) = 32),
                   first_seen_day INTEGER NOT NULL CHECK (typeof(first_seen_day) = 'integer' AND first_seen_day >= 0),
                   PRIMARY KEY (channel_id, epoch, hash)
-                )""",
-        // ---- the OpenMLS rows (GhostKv, §3.4). Ordinary rowid tables: S0-6.
+                ) WITHOUT ROWID""",
+        // ---- the OpenMLS rows (GhostKv, §3.4). `mls_kv` is an ordinary rowid table (S0-6: its values are
+        // 0.1 to 125 KB, which SQLite's advice for WITHOUT ROWID rules out); `mls_global_kv` holds KeyPackage and
+        // key-pair rows of a few hundred bytes and is WITHOUT ROWID like the rest.
         """CREATE TABLE mls_kv (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   k          BLOB NOT NULL CHECK (length(k) BETWEEN 2 AND 1024),
@@ -1515,9 +1548,18 @@ object Schema {
                   channel_id       BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   delete_after_day INTEGER CHECK (delete_after_day IS NULL
                                    OR (typeof(delete_after_day) = 'integer' AND delete_after_day >= 0))
-                )""",
+                ) WITHOUT ROWID""",
         "CREATE INDEX idx_mls_global_kv_channel ON mls_global_kv(channel_id)",
         // ---- posts and what hangs on them (§8.2, §8.5)
+        // `relay_expiry_hour` (E) is a deadline of an *unread* post only (§8.2: "an unread post is deleted at
+        // min(E, consume + bucket + 1 h)") and a display forgets it: the CHECK ties it to `state = 'unread'`, and
+        // `ch_post_expiry` lets it go only together with the state. It is a second deadline beside
+        // `delete_at_minute` and is **not folded into it**, because in a channel whose timer is off a read post
+        // has no deadline while an unread one still dies at E; every read, the sweep and the next-deletion query
+        // of `PostStore` apply both (the first version applied `delete_at_minute` alone: review of S3).
+        // `displayed_minute` is kept only while a countdown needs it, a read post of a channel with a timer: with
+        // the timer off F9's `dm_message` stores no time at all (T33), and a read minute that lives as long as the
+        // post would be the one record of when the user opened it.
         """CREATE TABLE ch_post (
                   op_id             BLOB PRIMARY KEY NOT NULL CHECK (length(op_id) = 16),
                   channel_id        BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
@@ -1538,18 +1580,19 @@ object Schema {
                   relay_expiry_hour INTEGER CHECK (relay_expiry_hour IS NULL
                                     OR (typeof(relay_expiry_hour) = 'integer' AND relay_expiry_hour % 3600 = 0)),
                   CHECK ((direction = 'out') = (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate'))),
-                  CHECK (direction = 'in' OR (displayed_minute IS NULL AND relay_expiry_hour IS NULL)),
-                  CHECK (direction = 'out' OR ((state = 'read') = (displayed_minute IS NOT NULL)))
-                )""",
+                  CHECK (relay_expiry_hour IS NULL OR state = 'unread'),
+                  CHECK (displayed_minute IS NULL OR (state = 'read' AND timer_code <> 0))
+                ) WITHOUT ROWID""",
         "CREATE INDEX idx_ch_post_order ON ch_post(channel_id, author_minute, author, op_id)",
         "CREATE INDEX idx_ch_post_delete ON ch_post(delete_at_minute) WHERE delete_at_minute IS NOT NULL",
+        "CREATE INDEX idx_ch_post_expiry ON ch_post(relay_expiry_hour) WHERE relay_expiry_hour IS NOT NULL",
         """CREATE TABLE ch_reaction (
                   target       BLOB NOT NULL REFERENCES ch_post(op_id) ON DELETE CASCADE,
                   author       BLOB NOT NULL CHECK (length(author) = 32),
                   channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   grapheme_env BLOB NOT NULL CHECK (length(grapheme_env) BETWEEN 29 AND 60),
                   PRIMARY KEY (target, author)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_pending_post (
                   op_id           BLOB PRIMARY KEY NOT NULL CHECK (length(op_id) = 16),
                   channel_id      BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
@@ -1557,17 +1600,19 @@ object Schema {
                   content_env     BLOB NOT NULL CHECK (length(content_env) BETWEEN 29 AND 65564),
                   fail_after_hour INTEGER NOT NULL
                                   CHECK (typeof(fail_after_hour) = 'integer' AND fail_after_hour % 3600 = 0)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_outbound_op (
                   operation_id BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
                   channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   purpose      TEXT NOT NULL CHECK (purpose IN ('post', 'commit', 'welcome', 'join', 'rejoin', 'request')),
                   ref          BLOB CHECK (ref IS NULL OR length(ref) BETWEEN 1 AND 64)
-                )""",
+                ) WITHOUT ROWID""",
+        // `until_day` is a week, `ceil7(…)`, as `dm_seen`'s (F9 §7.6 D3; §6.3.4 retains the tag "as `dm_seen`"): a
+        // seizer learns the week a post was displayed in and not the day (L7-D7).
         """CREATE TABLE ch_seen (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   tag        BLOB NOT NULL CHECK (length(tag) = 16),
-                  until_day  INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  until_day  INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0 AND until_day % 7 = 0),
                   PRIMARY KEY (channel_id, tag)
                 ) WITHOUT ROWID""",
         """CREATE TABLE ch_reveal (
@@ -1577,7 +1622,7 @@ object Schema {
                   delete_at_minute INTEGER CHECK (delete_at_minute IS NULL
                                    OR (typeof(delete_at_minute) = 'integer' AND delete_at_minute % 60 = 0)),
                   PRIMARY KEY (channel_id, direction, peer)
-                )""",
+                ) WITHOUT ROWID""",
         // ---- joins, invites and the committer's work (§6.2)
         """CREATE TABLE ch_join (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
@@ -1589,7 +1634,11 @@ object Schema {
                   expiry_day INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0),
                   CHECK ((type = 'rejoin') = (invite_id IS NULL)),
                   PRIMARY KEY (channel_id, kp_ref)
-                )""",
+                ) WITHOUT ROWID""",
+        // The second rowid table (beside `mls_kv`): the committer serves its requests "in arrival order" (§6.2.3) and
+        // the hidden rowid is that order — a new row is numbered after every row that is still there. A declared
+        // exception to T33 (§19.35, F-7): committer side only, at most 64 rows per channel, each deleted at its
+        // invite's expiry or 7 days after its day.
         """CREATE TABLE ch_join_request (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   hash       BLOB NOT NULL CHECK (length(hash) = 32),
@@ -1615,7 +1664,7 @@ object Schema {
                   void              INTEGER NOT NULL DEFAULT 0 CHECK (void IN (0, 1)),
                   expiry_day        INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0),
                   PRIMARY KEY (channel_id, invite_id)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_kp_seen (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   tag        BLOB NOT NULL CHECK (length(tag) = 16),
@@ -1627,13 +1676,13 @@ object Schema {
                   member     BLOB NOT NULL CHECK (length(member) = 32),
                   last_epoch INTEGER NOT NULL CHECK (typeof(last_epoch) = 'integer' AND last_epoch >= 0),
                   PRIMARY KEY (channel_id, member)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_invite_own (
                   invite_id  BLOB PRIMARY KEY NOT NULL CHECK (length(invite_id) = 16),
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   invite_env BLOB CHECK (invite_env IS NULL OR length(invite_env) BETWEEN 29 AND 1024),
                   expiry_day INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_sponsor (
                   channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   member       BLOB NOT NULL CHECK (length(member) = 32),
@@ -1641,13 +1690,13 @@ object Schema {
                   invite_id    BLOB NOT NULL CHECK (length(invite_id) = 16),
                   admitted_day INTEGER NOT NULL CHECK (typeof(admitted_day) = 'integer' AND admitted_day >= 0),
                   PRIMARY KEY (channel_id, member)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_member_refresh (
                   channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   member      BLOB NOT NULL CHECK (length(member) = 32),
                   refresh_day INTEGER NOT NULL CHECK (typeof(refresh_day) = 'integer' AND refresh_day >= 0),
                   PRIMARY KEY (channel_id, member)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_request (
                   channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   kind        TEXT NOT NULL CHECK (kind IN ('leave', 'remove', 'policy', 'class')),
@@ -1655,14 +1704,14 @@ object Schema {
                   payload_env BLOB CHECK (payload_env IS NULL OR length(payload_env) BETWEEN 29 AND 4096),
                   until_day   INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
                   PRIMARY KEY (channel_id, kind, subject)
-                )""",
+                ) WITHOUT ROWID""",
         """CREATE TABLE ch_box_key (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   box_pk     BLOB NOT NULL CHECK (length(box_pk) = 32),
                   sk_env     BLOB NOT NULL CHECK (length(sk_env) = 60),
                   last_epoch INTEGER CHECK (last_epoch IS NULL OR (typeof(last_epoch) = 'integer' AND last_epoch >= 0)),
                   PRIMARY KEY (channel_id, box_pk)
-                )""",
+                ) WITHOUT ROWID""",
     )
 
     /**
@@ -1703,6 +1752,13 @@ object Schema {
                        OR (OLD.state = 'pending_switch' AND NEW.state = 'current')
                        OR (OLD.state = 'current' AND NEW.state = 'draining'))
                 BEGIN SELECT RAISE(ABORT, 'illegal generation transition'); END""",
+        // The end of a drain only moves earlier and is never forgotten while the generation drains: a later one would
+        // keep `G_g` and `JK_g` (what opens the generation's join traffic) past the day the design deletes them
+        // (§6.5, T25, T38). A row that leaves `draining` is the state machine's to refuse (it has no such edge).
+        """CREATE TRIGGER ch_generation_drain BEFORE UPDATE OF drain_until_day ON ch_generation
+                WHEN OLD.drain_until_day IS NOT NULL AND NEW.state IS OLD.state
+                  AND (NEW.drain_until_day IS NULL OR NEW.drain_until_day > OLD.drain_until_day)
+                BEGIN SELECT RAISE(ABORT, 'the end of a drain only moves earlier'); END""",
         """CREATE TRIGGER ch_generation_one_current_insert BEFORE INSERT ON ch_generation
                 WHEN NEW.state = 'current'
                   AND EXISTS (SELECT 1 FROM ch_generation WHERE channel_id = NEW.channel_id AND state = 'current')
@@ -1733,8 +1789,8 @@ object Schema {
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.epoch IS NOT OLD.epoch
                   OR NEW.k_env IS NOT OLD.k_env OR NEW.r_ep IS NOT OLD.r_ep
                   OR (OLD.winner_hash IS NOT NULL AND NEW.winner_hash IS NOT OLD.winner_hash)
-                  OR NEW.own_seq < OLD.own_seq
-                BEGIN SELECT RAISE(ABORT, 'an epoch keeps its keys and its winner, and its sequence never goes back'); END""",
+                  OR (NEW.own_seq < OLD.own_seq AND NOT (OLD.state = 'open' AND NEW.state = 'final' AND NEW.own_seq = 0))
+                BEGIN SELECT RAISE(ABORT, 'an epoch keeps its keys and its winner, and its sequence never goes back (but to 0 at finality)'); END""",
         """CREATE TRIGGER ch_epoch_final BEFORE UPDATE ON ch_epoch
                 WHEN OLD.state = 'final'
                   AND (NEW.state IS NOT 'final' OR NEW.winner_hash IS NOT OLD.winner_hash OR NEW.own_seq IS NOT OLD.own_seq
@@ -1786,19 +1842,52 @@ object Schema {
                        OR (OLD.state = 'failed' AND NEW.state = 'queued')
                        OR (OLD.state = 'unread' AND NEW.state = 'read'))
                 BEGIN SELECT RAISE(ABORT, 'illegal post state transition'); END""",
+        // The relay expiry E of an unread post is a live deadline (§8.2), so it is held like `delete_at_minute`: it only
+        // moves earlier, and it is never forgotten while the post is unread — the comparison `NEW > OLD` is NULL for a
+        // NULL, which the first version let through (`SET relay_expiry_hour = NULL` on an unread post, then `NULL ->
+        // E + 30 d`). A display forgets it in the same statement that makes the post `read`; the CHECK of
+        // `ch_post` then keeps a read post from getting one back.
         """CREATE TRIGGER ch_post_expiry
                 BEFORE UPDATE OF displayed_minute, delete_at_minute, relay_expiry_hour ON ch_post
                 WHEN (OLD.displayed_minute IS NOT NULL AND NEW.displayed_minute IS NOT OLD.displayed_minute)
                   OR (OLD.delete_at_minute IS NOT NULL AND (NEW.delete_at_minute IS NULL OR NEW.delete_at_minute > OLD.delete_at_minute))
-                  OR (OLD.relay_expiry_hour IS NOT NULL AND NEW.relay_expiry_hour > OLD.relay_expiry_hour)
+                  OR (OLD.relay_expiry_hour IS NOT NULL
+                      AND (NEW.relay_expiry_hour > OLD.relay_expiry_hour
+                           OR (NEW.relay_expiry_hour IS NULL AND NEW.state IS NOT 'read')))
                 BEGIN SELECT RAISE(ABORT, 'a post is displayed once and its deletion time only moves earlier'); END""",
         """CREATE TRIGGER ch_pending_post_limit BEFORE INSERT ON ch_pending_post
                 WHEN (SELECT count(*) FROM ch_pending_post WHERE channel_id = NEW.channel_id) >= 256
                 BEGIN SELECT RAISE(ABORT, 'at most 256 pending posts per channel'); END""",
+        // The bounds above count at INSERT, so an UPDATE of `channel_id` would move rows into a channel that is
+        // full (256 pending posts into one that holds 256 made 512: review of S3). The tables whose bound is a
+        // count and whose rows nothing else keeps in place refuse the move; `ch_epoch`, `ch_candidate` and
+        // `ch_box_key` do already (their identity triggers) and `ch_epoch_log` and `ch_fork_signal` refuse every
+        // UPDATE. No store updates the channel of a row.
+        """CREATE TRIGGER ch_pending_post_channel BEFORE UPDATE OF channel_id ON ch_pending_post
+                WHEN NEW.channel_id IS NOT OLD.channel_id
+                BEGIN SELECT RAISE(ABORT, 'a pending post never moves to another channel'); END""",
         // ---- joins, invites and keys (§6.2, §6.3.5, §19.17)
         """CREATE TRIGGER ch_join_request_limit BEFORE INSERT ON ch_join_request
                 WHEN (SELECT count(*) FROM ch_join_request WHERE channel_id = NEW.channel_id) >= 64
                 BEGIN SELECT RAISE(ABORT, 'at most 64 pending join requests per channel'); END""",
+        """CREATE TRIGGER ch_join_request_channel BEFORE UPDATE OF channel_id ON ch_join_request
+                WHEN NEW.channel_id IS NOT OLD.channel_id
+                BEGIN SELECT RAISE(ABORT, 'a join request never moves to another channel'); END""",
+        // A join keeps its KeyPackage, its invite and its generation, and its expiry — the day the KeyPackage's
+        // private keys die (§6.2.2) — only moves earlier.
+        """CREATE TRIGGER ch_join_fixed BEFORE UPDATE ON ch_join
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.kp_ref IS NOT OLD.kp_ref OR NEW.type IS NOT OLD.type
+                  OR NEW.invite_id IS NOT OLD.invite_id OR NEW.generation IS NOT OLD.generation
+                  OR NEW.expiry_day > OLD.expiry_day
+                BEGIN SELECT RAISE(ABORT, 'a join keeps its KeyPackage and its invite, and its expiry only moves earlier'); END""",
+        // The sponsor's own link (Q50 (a)): a password invite stores none, and a row that stored none never gets
+        // one later (a stored password link would be an Argon2id-priced oracle on a seized unlocked device);
+        // the link may be erased, and its expiry only moves earlier.
+        """CREATE TRIGGER ch_invite_own_fixed BEFORE UPDATE ON ch_invite_own
+                WHEN NEW.invite_id IS NOT OLD.invite_id OR NEW.channel_id IS NOT OLD.channel_id
+                  OR NEW.expiry_day > OLD.expiry_day
+                  OR (NEW.invite_env IS NOT OLD.invite_env AND NEW.invite_env IS NOT NULL)
+                BEGIN SELECT RAISE(ABORT, 'an own invite is erased, never rewritten, and its expiry only moves earlier'); END""",
         """CREATE TRIGGER ch_invite_issued_identity BEFORE UPDATE ON ch_invite_issued
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.invite_id IS NOT OLD.invite_id
                   OR NEW.invite_pk IS NOT OLD.invite_pk OR NEW.sponsor IS NOT OLD.sponsor
@@ -1812,6 +1901,18 @@ object Schema {
                 WHEN (SELECT count(*) FROM ch_kp_seen WHERE channel_id = NEW.channel_id) >= 1024
                   AND NOT EXISTS (SELECT 1 FROM ch_kp_seen WHERE channel_id = NEW.channel_id AND tag = NEW.tag)
                 BEGIN SELECT RAISE(ABORT, 'at most 1024 KeyPackage tags per channel'); END""",
+        """CREATE TRIGGER ch_kp_seen_channel BEFORE UPDATE OF channel_id ON ch_kp_seen
+                WHEN NEW.channel_id IS NOT OLD.channel_id
+                BEGIN SELECT RAISE(ABORT, 'a KeyPackage tag never moves to another channel'); END""",
+        // The rows of `GhostKv` that are global (a KeyPackage and its private keys) die on a day, and the day is
+        // held like every other death day: it only moves earlier and, once set, is never forgotten (the first
+        // version let a re-put move it later, or clear it, which kept the private keys of a KeyPackage). The
+        // key and the channel of a row never change.
+        """CREATE TRIGGER mls_global_kv_fixed BEFORE UPDATE ON mls_global_kv
+                WHEN NEW.k IS NOT OLD.k OR NEW.channel_id IS NOT OLD.channel_id
+                  OR (OLD.delete_after_day IS NOT NULL
+                      AND (NEW.delete_after_day IS NULL OR NEW.delete_after_day > OLD.delete_after_day))
+                BEGIN SELECT RAISE(ABORT, 'a global row keeps its key and its channel, and its day only moves earlier'); END""",
         """CREATE TRIGGER ch_box_key_limit BEFORE INSERT ON ch_box_key
                 WHEN (SELECT count(*) FROM ch_box_key WHERE channel_id = NEW.channel_id) >= 18
                 BEGIN SELECT RAISE(ABORT, 'at most 18 box keys per channel'); END""",
@@ -1825,40 +1926,48 @@ object Schema {
         // without one trigger. Every table but the two written with INSERT OR IGNORE (`ch_seen` and
         // `ch_kp_seen`, whose rows carry no rule) refuses an insert that conflicts on any of its keys,
         // so its writers are UPDATE-then-INSERT pairs. `ch_generation` and `ch_candidate` conflict on a
-        // UNIQUE constraint as well (the namespace; one candidate per sender and epoch). All 24 are
-        // rowid tables, so each guard also refuses an insert that names an existing rowid
-        // ([rowidGuard]): REPLACE would delete that other row, whatever its keys.
-        rowidGuard("ch_channel", "channel_id = NEW.channel_id"),
-        rowidGuard("ch_liveness", "channel_id = NEW.channel_id"),
-        rowidGuard("ch_schedule", "channel_id = NEW.channel_id"),
-        rowidGuard(
+        // UNIQUE constraint as well (the namespace; one candidate per sender and epoch). The two rowid
+        // tables, `mls_kv` and `ch_join_request`, also refuse an insert that names an existing rowid
+        // ([rowidGuard]): REPLACE would delete that other row, whatever its keys; their rowids are positive
+        // and never change ([rowidPositive], [rowidFixed]). The guards cover INSERT
+        // forms only; `UPDATE OR REPLACE … SET <key> = <another row's key>` deletes the other row with no
+        // trigger, as it does in every table of this database since migration 3 — gate G-DM4 refuses the
+        // verb in source (an UPDATE OR REPLACE is an `OR REPLACE`).
+        replaceGuard("ch_channel", "channel_id = NEW.channel_id"),
+        replaceGuard("ch_liveness", "channel_id = NEW.channel_id"),
+        replaceGuard("ch_schedule", "channel_id = NEW.channel_id"),
+        replaceGuard(
             "ch_generation",
             "(channel_id = NEW.channel_id AND generation = NEW.generation) OR namespace_id = NEW.namespace_id",
         ),
-        rowidGuard("ch_epoch", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
-        rowidGuard("ch_epoch_log", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
-        rowidGuard(
+        replaceGuard("ch_epoch", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
+        replaceGuard("ch_epoch_log", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
+        replaceGuard(
             "ch_candidate",
             "(channel_id = NEW.channel_id AND epoch = NEW.epoch AND hash = NEW.hash) " +
                 "OR (channel_id = NEW.channel_id AND epoch = NEW.epoch AND sender = NEW.sender)",
         ),
-        rowidGuard("ch_fork_signal", "channel_id = NEW.channel_id AND epoch = NEW.epoch AND hash = NEW.hash"),
+        replaceGuard("ch_fork_signal", "channel_id = NEW.channel_id AND epoch = NEW.epoch AND hash = NEW.hash"),
         rowidGuard("mls_kv", "channel_id = NEW.channel_id AND k = NEW.k"),
-        rowidGuard("mls_global_kv", "k = NEW.k"),
-        rowidGuard("ch_post", "op_id = NEW.op_id"),
-        rowidGuard("ch_reaction", "target = NEW.target AND author = NEW.author"),
-        rowidGuard("ch_pending_post", "op_id = NEW.op_id"),
-        rowidGuard("ch_outbound_op", "operation_id = NEW.operation_id"),
-        rowidGuard("ch_reveal", "channel_id = NEW.channel_id AND direction = NEW.direction AND peer = NEW.peer"),
-        rowidGuard("ch_join", "channel_id = NEW.channel_id AND kp_ref = NEW.kp_ref"),
+        rowidPositive("mls_kv"),
+        rowidFixed("mls_kv"),
+        replaceGuard("mls_global_kv", "k = NEW.k"),
+        replaceGuard("ch_post", "op_id = NEW.op_id"),
+        replaceGuard("ch_reaction", "target = NEW.target AND author = NEW.author"),
+        replaceGuard("ch_pending_post", "op_id = NEW.op_id"),
+        replaceGuard("ch_outbound_op", "operation_id = NEW.operation_id"),
+        replaceGuard("ch_reveal", "channel_id = NEW.channel_id AND direction = NEW.direction AND peer = NEW.peer"),
+        replaceGuard("ch_join", "channel_id = NEW.channel_id AND kp_ref = NEW.kp_ref"),
         rowidGuard("ch_join_request", "channel_id = NEW.channel_id AND hash = NEW.hash"),
-        rowidGuard("ch_invite_issued", "channel_id = NEW.channel_id AND invite_id = NEW.invite_id"),
-        rowidGuard("ch_member_seen", "channel_id = NEW.channel_id AND member = NEW.member"),
-        rowidGuard("ch_invite_own", "invite_id = NEW.invite_id"),
-        rowidGuard("ch_sponsor", "channel_id = NEW.channel_id AND member = NEW.member"),
-        rowidGuard("ch_member_refresh", "channel_id = NEW.channel_id AND member = NEW.member"),
-        rowidGuard("ch_request", "channel_id = NEW.channel_id AND kind = NEW.kind AND subject = NEW.subject"),
-        rowidGuard("ch_box_key", "channel_id = NEW.channel_id AND box_pk = NEW.box_pk"),
+        rowidPositive("ch_join_request"),
+        rowidFixed("ch_join_request"),
+        replaceGuard("ch_invite_issued", "channel_id = NEW.channel_id AND invite_id = NEW.invite_id"),
+        replaceGuard("ch_member_seen", "channel_id = NEW.channel_id AND member = NEW.member"),
+        replaceGuard("ch_invite_own", "invite_id = NEW.invite_id"),
+        replaceGuard("ch_sponsor", "channel_id = NEW.channel_id AND member = NEW.member"),
+        replaceGuard("ch_member_refresh", "channel_id = NEW.channel_id AND member = NEW.member"),
+        replaceGuard("ch_request", "channel_id = NEW.channel_id AND kind = NEW.kind AND subject = NEW.subject"),
+        replaceGuard("ch_box_key", "channel_id = NEW.channel_id AND box_pk = NEW.box_pk"),
     )
 
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
@@ -1927,16 +2036,17 @@ object Schema {
         // v7 (Phase 10 §9 "Migration 7"): the state-machine, write-once and bound triggers of the channel
         // tables ...
         "ch_channel_identity", "ch_channel_state",
-        "ch_generation_identity", "ch_generation_state", "ch_generation_one_current_insert",
+        "ch_generation_identity", "ch_generation_state", "ch_generation_drain", "ch_generation_one_current_insert",
         "ch_generation_one_current_update", "ch_generation_one_draining_insert", "ch_generation_one_draining_update",
         "ch_epoch_limit", "ch_epoch_anchor_insert", "ch_epoch_anchor_update", "ch_epoch_identity", "ch_epoch_final",
         "ch_epoch_log_limit", "ch_epoch_log_append_only",
         "ch_candidate_limit", "ch_candidate_identity", "ch_fork_signal_limit", "ch_fork_signal_append_only",
-        "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit",
-        "ch_join_request_limit", "ch_invite_issued_identity", "ch_invite_issued_flags", "ch_kp_seen_limit",
-        "ch_box_key_limit", "ch_box_key_replaced",
-        // ... and their REPLACE guards (every channel table but ch_seen and ch_kp_seen, which are written
-        // with INSERT OR IGNORE)
+        "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit", "ch_pending_post_channel",
+        "ch_join_request_limit", "ch_join_request_channel", "ch_join_fixed", "ch_invite_own_fixed",
+        "ch_invite_issued_identity", "ch_invite_issued_flags", "ch_kp_seen_limit", "ch_kp_seen_channel",
+        "mls_global_kv_fixed", "ch_box_key_limit", "ch_box_key_replaced",
+        // ... their REPLACE guards (every channel table but ch_seen and ch_kp_seen, which are written with
+        // INSERT OR IGNORE) ...
         "ch_channel_no_replace", "ch_liveness_no_replace", "ch_schedule_no_replace", "ch_generation_no_replace",
         "ch_epoch_no_replace", "ch_epoch_log_no_replace", "ch_candidate_no_replace", "ch_fork_signal_no_replace",
         "mls_kv_no_replace", "mls_global_kv_no_replace", "ch_post_no_replace", "ch_reaction_no_replace",
@@ -1944,6 +2054,8 @@ object Schema {
         "ch_join_request_no_replace", "ch_invite_issued_no_replace", "ch_member_seen_no_replace",
         "ch_invite_own_no_replace", "ch_sponsor_no_replace", "ch_member_refresh_no_replace", "ch_request_no_replace",
         "ch_box_key_no_replace",
+        // ... and the rowid invariant of the only two tables that have a rowid (positive, never changed)
+        "mls_kv_rowid_positive", "mls_kv_rowid_fixed", "ch_join_request_rowid_positive", "ch_join_request_rowid_fixed",
     )
 
     /**

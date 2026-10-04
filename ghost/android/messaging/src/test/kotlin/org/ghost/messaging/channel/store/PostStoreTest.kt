@@ -1,6 +1,7 @@
 package org.ghost.messaging.channel.store
 
 import org.ghost.storage.chBytes
+import org.ghost.storage.queryLong
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,8 +32,9 @@ class PostStoreTest {
         deleteAt: Long? = now + 3_600,
         by: Int = i,
         relay: Long? = null,
+        timer: Int = 4,
     ) = w.tx {
-        insertIncomingIfAbsent(it, id(i), w.ch, author(by), 1, null, 4, 0, chBytes(60, i), authorMinute, deleteAt, relay)
+        insertIncomingIfAbsent(it, id(i), w.ch, author(by), 1, null, timer, 0, chBytes(60, i), authorMinute, deleteAt, relay)
     }
 
     private fun PostStore.outgoing(w: StoreWorld, i: Int, authorMinute: Long = now - 3_600, deleteAt: Long? = now + 3_600) = w.tx {
@@ -92,6 +94,84 @@ class PostStoreTest {
         assertNull(w.stores.posts.post(w.db, id(2), now)!!.deleteAtMinute)
         assertTrue(w.tx { w.stores.posts.lowerDeleteAt(it, id(2), now + 600) })
         assertEquals(now + 600, w.stores.posts.post(w.db, id(2), now)!!.deleteAtMinute)
+    }
+
+    /**
+     * §8.2: "an unread post is deleted at min(relay expiry E, consume + bucket + 1 h)". E is a deadline of its own, and
+     * every read, the unread count, the alarm's next time and the sweep apply it beside `delete_at_minute`. The
+     * review of S3 wrote the row that the first version got wrong: a post whose own deadline is ahead and whose E is
+     * an hour gone was shown as unread, counted, and left out of the sweep's batch; and one of a channel whose timer
+     * is off (no deadline of its own) lived for ever.
+     */
+    @Test
+    fun anUnreadPostIsGoneAtItsRelayExpiryWhateverItsOtherDeadlineIs() = StoreWorld().use { w ->
+        w.channel()
+        w.stores.posts.incoming(w, 1, deleteAt = now + 3_600, relay = now - 3_600)               // E passed, own deadline ahead
+        w.stores.posts.incoming(w, 2, deleteAt = null, relay = now - 3_600, timer = 0)           // timer off: E is the only deadline
+        w.stores.posts.incoming(w, 3, deleteAt = now + 3_600, relay = now + 3_600)               // both ahead
+        w.stores.posts.incoming(w, 4, deleteAt = null, relay = now + 7_200, timer = 0)           // timer off, E ahead
+        w.stores.posts.incoming(w, 5, deleteAt = now - 60, relay = now + 3_600)                  // own deadline passed, E ahead
+        w.stores.posts.incoming(w, 6, deleteAt = now + 3_600, relay = now)                       // E exactly now: gone
+        val live = setOf(3, 4)
+        assertEquals(live, w.stores.posts.page(w.db, w.ch, now, 50).map { it.opId[0].toInt() }.toSet())
+        val cursor = PostStore.PostCursor(now + 60, chBytes(32, 0xFF), id(0xFF))
+        assertEquals(live, w.stores.posts.pageBefore(w.db, w.ch, now, 50, cursor).map { it.opId[0].toInt() }.toSet())
+        for (gone in listOf(1, 2, 5, 6)) assertNull(gone.toString(), w.stores.posts.post(w.db, id(gone), now))
+        for (alive in live) assertEquals(alive.toString(), id(alive).toList(), w.stores.posts.post(w.db, id(alive), now)!!.opId.toList())
+        assertEquals("the unread badge counts the live ones", 2, w.stores.posts.unreadCount(w.db, w.ch, now))
+        // the alarm: the earlier of the two deadlines of the live posts, and nothing past a row's E
+        assertEquals(now + 3_600, w.stores.posts.nextDeleteAt(w.db, now))
+        assertEquals("post 3's E and its deadline are the same hour", now + 7_200, w.stores.posts.nextDeleteAt(w.db, now + 3_600))
+        assertNull(w.stores.posts.nextDeleteAt(w.db, now + 7_200))
+        // the sweep names every post either deadline has expired, soonest first
+        assertEquals(listOf(1, 2, 5, 6), w.stores.posts.expiredPosts(w.db, now, 10).map { it[0].toInt() })
+        assertEquals(listOf(1), w.stores.posts.expiredPosts(w.db, now, 1).map { it[0].toInt() })
+        assertEquals(emptyList<Int>(), w.stores.posts.expiredPosts(w.db, now - 3_601, 10).map { it[0].toInt() })
+        for (id in w.stores.posts.expiredPosts(w.db, now, 10)) assertTrue(w.tx { w.stores.posts.deletePost(it, id) })
+        assertEquals(live, w.stores.posts.page(w.db, w.ch, now, 50).map { it.opId[0].toInt() }.toSet())
+        assertEquals(emptyList<Int>(), w.stores.posts.expiredPosts(w.db, now, 10).map { it[0].toInt() })
+        // later, E of post 4 passes in its turn, and the sweep takes it
+        assertEquals(listOf(3, 4), w.stores.posts.expiredPosts(w.db, now + 7_200, 10).map { it[0].toInt() })
+    }
+
+    @Test
+    fun aPostPastADeadlineIsNotDisplayedAndAUnreadOneKeepsItsRelayExpiryUntilItIs() = StoreWorld().use { w ->
+        w.channel()
+        w.stores.posts.incoming(w, 1, deleteAt = now + 3_600, relay = now - 3_600)   // its relay copy is gone
+        w.stores.posts.incoming(w, 2, deleteAt = now - 60, relay = now + 3_600)      // its own deadline passed
+        w.stores.posts.incoming(w, 3, deleteAt = now + 3_600, relay = now + 3_600)   // live
+        // A stale display (a list held across the expiry, a phone unfrozen after a day) must not forget E and give
+        // the post back the life its relay copy no longer has; nothing is written for it.
+        assertFalse(w.tx { w.stores.posts.markDisplayed(it, id(1), now, now + 600) })
+        assertFalse(w.tx { w.stores.posts.markDisplayed(it, id(2), now, now + 600) })
+        assertTrue(w.tx { w.stores.posts.markDisplayed(it, id(3), now, now + 600) })
+        w.db.query("SELECT op_id, state, relay_expiry_hour FROM ch_post ORDER BY op_id") { r ->
+            val n = r.blob(0)[0].toInt()
+            if (n == 3) assertEquals("read", r.string(1)) else assertEquals("unread", r.string(1))
+            if (n == 3) assertTrue(r.isNull(2)) else assertFalse("E of post $n was forgotten", r.isNull(2))
+        }
+    }
+
+    /**
+     * T33: with the timer off F9's `dm_message` stores no time at all; this table stores the minute a post was read
+     * only where a countdown needs it. The first version stored it for every read post, and the schema made it
+     * permanent (a coherence CHECK, then write-once), so a timer-off channel kept when the user opened each post for
+     * the post's whole life (the review of S3).
+     */
+    @Test
+    fun aTimerOffPostKeepsNoDisplayedMinuteAndATimedOneKeepsIt() = StoreWorld().use { w ->
+        w.channel()
+        w.stores.posts.incoming(w, 1, deleteAt = null, relay = now + 3_600, timer = 0)
+        w.stores.posts.incoming(w, 2, deleteAt = now + 3_600, relay = now + 3_600, timer = 4)
+        assertTrue(w.tx { w.stores.posts.markDisplayed(it, id(1), now - 3_540, null) })
+        assertTrue(w.tx { w.stores.posts.markDisplayed(it, id(2), now - 3_540, now + 600) })
+        val off = w.stores.posts.post(w.db, id(1), now)!!
+        assertEquals(PostState.READ, off.state)
+        assertNull("a read post of a timer-off channel stores no minute", off.displayedMinute)
+        assertNull("and no deadline: it lives on", off.deleteAtMinute)
+        assertNull(off.relayExpiryHour)
+        assertEquals(now - 3_540, w.stores.posts.post(w.db, id(2), now)!!.displayedMinute)
+        assertEquals(1L, w.db.queryLong("SELECT count(*) FROM ch_post WHERE displayed_minute IS NOT NULL"))
     }
 
     @Test
@@ -240,16 +320,40 @@ class PostStoreTest {
     fun aSeenTagIsWrittenWithInsertOrIgnoreAndReadWhileItIsWithinItsDay() = StoreWorld().use { w ->
         w.channel()
         val tag = chBytes(16, 5)
-        assertFalse(w.stores.posts.isSeen(w.db, w.ch, tag, 20_000))
-        assertTrue(w.tx { w.stores.posts.markSeen(it, w.ch, tag, 20_007) })
-        assertFalse("a second sighting adds nothing", w.tx { w.stores.posts.markSeen(it, w.ch, tag, 20_030) })
-        assertTrue(w.stores.posts.isSeen(w.db, w.ch, tag, 20_007))
-        assertFalse("past its day the tag is no evidence", w.stores.posts.isSeen(w.db, w.ch, tag, 20_008))
-        assertFalse("another channel has its own tags", w.stores.posts.isSeen(w.db, w.ch2, tag, 20_000))
-        assertEquals(0, w.tx { w.stores.posts.deleteSeenTags(it, 20_007) })
-        assertEquals(1, w.tx { w.stores.posts.deleteSeenTags(it, 20_008) })
+        val week = 19_999L // 7 x 2 857: the retention of a tag is a week, as dm_seen's (F9 section 7.6 D3)
+        assertFalse(w.stores.posts.isSeen(w.db, w.ch, tag, 19_990))
+        assertTrue(w.tx { w.stores.posts.markSeen(it, w.ch, tag, week) })
+        assertFalse("a second sighting adds nothing", w.tx { w.stores.posts.markSeen(it, w.ch, tag, week + 28) })
+        assertTrue(w.stores.posts.isSeen(w.db, w.ch, tag, week))
+        assertFalse("past its day the tag is no evidence", w.stores.posts.isSeen(w.db, w.ch, tag, week + 1))
+        assertFalse("another channel has its own tags", w.stores.posts.isSeen(w.db, w.ch2, tag, 19_990))
+        assertEquals(0, w.tx { w.stores.posts.deleteSeenTags(it, week) })
+        assertEquals(1, w.tx { w.stores.posts.deleteSeenTags(it, week + 1) })
         assertEquals(0L, w.count("ch_seen"))
-        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.markSeen(it, w.ch, chBytes(15, 1), 20_000) } }.error)
+        assertEquals(ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.posts.markSeen(it, w.ch, chBytes(15, 1), week) } }.error)
+    }
+
+    /**
+     * The retention of a tag is a week (`ceil7`), as `dm_seen`'s: a seizer learns the week a post was displayed in and
+     * not the day. The first version stored any day (the review of S3: 20 833 was accepted where `dm_seen` refuses it).
+     */
+    @Test
+    fun aSeenTagIsKeptUntilAWeekAndNoFinerThanThat() = StoreWorld().use { w ->
+        w.channel()
+        for (day in listOf(20_000L, 20_833L, 20_005L, 1L)) {
+            assertEquals(day.toString(), ChannelStoreError.BAD_VALUE, assertThrows(ChannelStoreException::class.java) {
+                w.tx { w.stores.posts.markSeen(it, w.ch, chBytes(16, 5), day) }
+            }.error)
+        }
+        assertEquals(0L, w.count("ch_seen"))
+        assertTrue(w.tx { w.stores.posts.markSeen(it, w.ch, chBytes(16, 5), 20_832) })
+        assertTrue(w.tx { w.stores.posts.markSeen(it, w.ch, chBytes(16, 6), 0) })
+        // the table says the same: the store is not the only line
+        assertEquals(1, w.db.execUpdate("UPDATE ch_seen SET until_day = 20839 WHERE tag = ?", listOf(chBytes(16, 5))))
+        val refused = assertThrows(java.sql.SQLException::class.java) {
+            w.db.execUpdate("UPDATE ch_seen SET until_day = 20833 WHERE tag = ?", listOf(chBytes(16, 5)))
+        }
+        assertTrue(refused.message.orEmpty(), refused.message.orEmpty().contains("CHECK constraint failed"))
     }
 
     @Test

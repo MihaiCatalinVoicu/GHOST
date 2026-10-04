@@ -1,6 +1,7 @@
 package org.ghost.messaging.channel.store
 
 import org.ghost.storage.chBytes
+import org.ghost.storage.queryLong
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -96,8 +97,11 @@ class EpochStoreTest {
             }
         }
         assertEquals(4L, w.stores.epochs.epoch(w.db, w.ch, 0, today)!!.ownSeq)
-        // a final epoch encrypts nothing; a missing one neither
+        // a final epoch encrypts nothing; a missing one neither - and it keeps no count of the posts the member wrote
+        // in it (T33: the count would show, until the epoch's keys go, how much each past epoch was written in)
         assertTrue(w.tx { w.stores.epochs.finalize(it, w.ch, 0, null, 20_000, 20_002) })
+        assertEquals(0L, w.stores.epochs.epoch(w.db, w.ch, 0, today)!!.ownSeq)
+        assertEquals(0L, w.db.queryLong("SELECT own_seq FROM ch_epoch WHERE epoch = 0"))
         assertEquals(ChannelStoreError.MISSING_ROW, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.epochs.nextOwnSeq(it, w.ch, 0, today) } }.error)
         assertEquals(ChannelStoreError.MISSING_ROW, assertThrows(ChannelStoreException::class.java) { w.tx { w.stores.epochs.nextOwnSeq(it, w.ch, 9, today) } }.error)
         // the u32 of ChannelOrder is spent at 2^32 - 1
@@ -139,14 +143,16 @@ class EpochStoreTest {
     @Test
     fun forkSignalsAreRecordedOnceWithTheirDayAndTheOldestIsDroppedAtSixteen() = StoreWorld().use { w ->
         w.channel()
+        w.stores.epochs.openEpoch(w, 4)
+        w.stores.epochs.openEpoch(w, 5)
         assertTrue(w.tx { w.stores.epochs.addForkSignal(it, w.ch, 4, chBytes(32, 40), 19_990) })
         assertFalse("a repeat is no new signal", w.tx { w.stores.epochs.addForkSignal(it, w.ch, 4, chBytes(32, 40), 19_995) })
-        assertEquals(19_990L, w.stores.epochs.forkSignals(w.db, w.ch).single().firstSeenDay)
+        assertEquals(19_990L, w.stores.epochs.forkSignals(w.db, w.ch, today).single().firstSeenDay)
         for (i in 1 until 16) assertTrue(w.tx { w.stores.epochs.addForkSignal(it, w.ch, 5, chBytes(32, 40 + i), 19_990L + i) })
         assertEquals(16L, w.count("ch_fork_signal"))
         // the 17th drops the oldest: (epoch 4, hash 40, day 19 990)
         assertTrue(w.tx { w.stores.epochs.addForkSignal(it, w.ch, 5, chBytes(32, 99), 20_000) })
-        val signals = w.stores.epochs.forkSignals(w.db, w.ch)
+        val signals = w.stores.epochs.forkSignals(w.db, w.ch, today)
         assertEquals(16, signals.size)
         assertFalse(signals.any { it.epoch == 4L })
         assertTrue(signals.any { it.hash.contentEquals(chBytes(32, 99)) })
@@ -154,6 +160,27 @@ class EpochStoreTest {
         assertEquals(16, w.tx { w.stores.epochs.deleteForkSignals(it, w.ch, 5) })
         assertEquals(0L, w.count("ch_fork_signal"))
         assertRedacted(signals.first(), signals.first().hash, w.ch)
+    }
+
+    /**
+     * A fork signal goes with the key of the epoch it names (§6.3.5): it is read only while that epoch is within its
+     * retention, whether or not `CH-SWEEP` has deleted it yet. The first version read the signals of a channel with
+     * no term at all (the review of S3).
+     */
+    @Test
+    fun aForkSignalIsOfferedOnlyWhileItsEpochIsWithinItsRetention() = StoreWorld().use { w ->
+        w.channel()
+        for (e in 0L..2L) w.stores.epochs.openEpoch(w, e)
+        assertTrue(w.tx { w.stores.epochs.finalize(it, w.ch, 0, chBytes(32, 7), 19_990, today - 1) })   // past its bound
+        assertTrue(w.tx { w.stores.epochs.finalize(it, w.ch, 1, chBytes(32, 8), 19_998, today) })       // on its last day
+        for (e in 0L..2L) assertTrue(w.tx { w.stores.epochs.addForkSignal(it, w.ch, e, chBytes(32, 40 + e.toInt()), 19_995 + e) })
+        assertEquals(listOf(1L, 2L), w.stores.epochs.forkSignals(w.db, w.ch, today).map { it.epoch })
+        assertEquals("the sweep has not run: the row is still there", 3L, w.count("ch_fork_signal"))
+        assertEquals(listOf(2L), w.stores.epochs.forkSignals(w.db, w.ch, today + 1).map { it.epoch })
+        // the epoch's row gone (swept) while its signals are not yet: they are not offered either
+        assertTrue(w.tx { w.stores.epochs.delete(it, w.ch, 2) })
+        assertEquals(3L, w.count("ch_fork_signal"))
+        assertEquals(emptyList<Long>(), w.stores.epochs.forkSignals(w.db, w.ch, today + 1).map { it.epoch })
     }
 
     @Test

@@ -137,6 +137,7 @@ class ChannelStateMachinesTest {
             Probe("ch_channel", "epoch", listOf(-1L, 0L, Long.MAX_VALUE)) { Fields.nonNegative("x", it as Long) },
             Probe("ch_post", "author_minute", listOf(0L, 60L, 61L, 3_599L, 1_800_000_000L, 1_800_000_030L)) { Fields.minute("x", it as Long) },
             Probe("ch_pending_post", "fail_after_hour", listOf(0L, 3_600L, 3_601L, 1_800_000_000L, 1_800_000_060L)) { Fields.hour("x", it as Long) },
+            Probe("ch_seen", "until_day", listOf(-7L, 0L, 1L, 6L, 7L, 19_999L, 20_000L, 20_006L)) { Fields.week("x", it as Long) },
             Probe("ch_candidate", "rank", listOf(-1L, 0L, 255L, 256L)) { Fields.rangeInt("x", (it as Long).toInt(), 0, 255) },
             Probe("ch_channel", "timer_code", listOf(-1L, 0L, 5L, 6L)) { Fields.rangeInt("x", (it as Long).toInt(), 0, 5) },
             Probe("ch_channel", "name_env", listOf(28, 29, 76, 77).map { chBytes(it, 1) }) { Fields.bytesBetween("x", it as ByteArray, 29, 76) },

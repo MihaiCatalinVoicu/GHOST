@@ -22,7 +22,11 @@ import org.ghost.sync.api.SyncTransaction
  * channel of the call) and the day it dies (`delete_after_day`, the KeyPackage's `expiry_day`; 7 days for a
  * rejoin), which the caller supplies for the puts of a call that makes a KeyPackage. [rows] applies the
  * expiry filter to the global rows, so a KeyPackage's private keys past their day are not handed to a call even
- * if `CH-SWEEP` has not deleted them (T25).
+ * if `CH-SWEEP` has not deleted them (T25). **The day only moves earlier and a KeyPackage always has one**: a put
+ * of a row that exists keeps the earlier of the two days (a re-put, which the adapter's net change-set makes of
+ * a row it rewrote, can no longer give a KeyPackage's private keys a longer life; `mls_global_kv_fixed` holds
+ * the same rule in the schema), and a **new** `KeyPackage` row with no day is [ChannelStoreError.BAD_VALUE]
+ * (the review of S3: a row stored with no day was loaded at any day and kept until the channel went).
  *
  * **No `REPLACE`, no upsert** (G-DM4, the `*_no_replace` guards): a put is a guarded `UPDATE` followed by an
  * `INSERT` when no row matched. **Every write goes through the caller's [SyncTransaction].**
@@ -85,7 +89,8 @@ internal class MlsKvStore {
     /**
      * Applies a change-set, in the caller's transaction (§3.4 point 4). A put of a group-scoped key writes
      * `mls_kv`; a put of a global key writes `mls_global_kv` tagged with [channelId] and, for a row that is new,
-     * with [globalDeleteAfterDay] (a row that exists keeps its day unless the call gives one). A key that is
+     * with [globalDeleteAfterDay] (a row that exists keeps its day, or takes the call's when that is earlier or the
+     * row has none; a day never moves later). A key that is
      * already a global row of **another** channel is [ChannelStoreError.ROW_EXISTS]: the key of a KeyPackage or
      * a key pair is unique across channels. A delete of a row that is not there is no error: the adapter's
      * change-set is the net of the call, and a row it created and removed in one call was never written.
@@ -133,11 +138,19 @@ internal class MlsKvStore {
     }
 
     private fun putGlobal(tx: SyncTransaction, channelId: ByteArray, key: ByteArray, env: ByteArray, deleteAfterDay: Long?) {
+        // The day of a row that exists: the call's when the row has none, else the earlier of the two (a row's
+        // death day never moves later; `mls_global_kv_fixed` refuses it too).
         val updated = tx.sql.execUpdate(
-            "UPDATE mls_global_kv SET v_env = ?, delete_after_day = COALESCE(?, delete_after_day) WHERE k = ? AND channel_id = ?",
-            listOf(env, deleteAfterDay, key, channelId),
+            "UPDATE mls_global_kv SET v_env = ?, delete_after_day = CASE WHEN ? IS NULL THEN delete_after_day " +
+                "WHEN delete_after_day IS NULL OR delete_after_day > ? THEN ? ELSE delete_after_day END " +
+                "WHERE k = ? AND channel_id = ?",
+            listOf(env, deleteAfterDay, deleteAfterDay, deleteAfterDay, key, channelId),
         )
         if (updated == 0) {
+            // A KeyPackage's row holds its private keys until the KeyPackage is used or expires: no day, no row.
+            if (deleteAfterDay == null && isKeyPackageRow(key)) {
+                throw ChannelStoreException(ChannelStoreError.BAD_VALUE, "mls_global_kv.delete_after_day")
+            }
             val inserted = tx.sql.execUpdate(
                 "INSERT INTO mls_global_kv(k, v_env, channel_id, delete_after_day) SELECT ?, ?, ?, ? " +
                     "WHERE NOT EXISTS (SELECT 1 FROM mls_global_kv WHERE k = ?)",
@@ -168,7 +181,16 @@ internal class MlsKvStore {
     fun deleteGlobal(tx: SyncTransaction, key: ByteArray): Boolean =
         tx.sql.execUpdate("DELETE FROM mls_global_kv WHERE k = ?", listOf(key)) == 1
 
+    /** Whether [key] is a `KeyPackage` row: the label before the first NUL (`label ‖ 0x00 ‖ json`, `kv.rs`'s `L_KEY_PACKAGE`). */
+    private fun isKeyPackageRow(key: ByteArray): Boolean {
+        val nul = key.indexOf(0)
+        return nul == KEY_PACKAGE_LABEL.size && key.copyOfRange(0, nul).contentEquals(KEY_PACKAGE_LABEL)
+    }
+
     companion object {
+        /** The label of the one global row that is a KeyPackage's: `kv.rs`'s `L_KEY_PACKAGE`, pinned by `MlsKvStoreTest`. */
+        val KEY_PACKAGE_LABEL: ByteArray = "KeyPackage".toByteArray(Charsets.US_ASCII)
+
         /** The longest key a row of §3.4 has is a few hundred bytes (a label and the JSON of a group id or a reference). */
         const val MAX_KEY: Int = 1024
 

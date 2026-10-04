@@ -8,10 +8,12 @@ import org.junit.Test
 /**
  * Every state-machine, write-once and bound trigger of migration 7 (Phase 10 design §6.11, §6.3.5 (CS-C8), §8.2,
  * §9, §19.21; slice S3): **each legal transition succeeds and each illegal one is refused**, for every pair
- * of states of every machine, and every bound is exercised at its edge and one past it.
+ * of states of every machine, and every bound is exercised at its edge and one past it **and in a second channel**
+ * (a bound that counted every channel's rows would pass the first and fail the second: the review of S3 found five
+ * of them that no test told from the right one).
  *
  * The tables of legal edges below are written from §6.11 again, not read from the schema, so a trigger that
- * gains or loses an edge fails here. The 29 triggers are listed in [ChannelSchema.rules]; the last test
+ * gains or loses an edge fails here. The 36 triggers are listed in [ChannelSchema.rules]; the last test
  * of this class requires that each of them was fired (its message was seen) by a test of the class.
  */
 class ChannelTriggersTest {
@@ -28,6 +30,9 @@ class ChannelTriggersTest {
     }
 
     private val ch = ChannelFixture.CH
+
+    /** A second channel: the room of a bound is the channel's own, and a count over every channel's rows would refuse it. */
+    private val other = chBytes(32, 0xC2)
 
     // ------------------------------------------------------------------ the channel
 
@@ -127,7 +132,27 @@ class ChannelTriggersTest {
             f.refuses("ch_generation_identity", "keeps its namespace", "UPDATE ch_generation SET $column = ?", value)
         }
         assertEquals(1, f.upd("UPDATE ch_generation SET state = 'draining', drain_until_day = 20014"))
-        assertEquals(1, f.upd("UPDATE ch_generation SET drain_until_day = 20015"))
+    }
+
+    /**
+     * The end of a drain is the day `G_g` and `JK_g` are deleted (§6.5): it only moves earlier, so a re-write
+     * cannot keep them. The first version accepted `drain_until_day = 99999`, and its test asserted that a later
+     * end is accepted (the review of S3).
+     */
+    @Test
+    fun theEndOfADrainOnlyMovesEarlierAndIsNeverForgotten() = ChannelFixture().use { f ->
+        f.put("ch_generation", "state" to "draining", "drain_until_day" to 20_014L)
+        val message = "only moves earlier"
+        assertEquals(1, f.upd("UPDATE ch_generation SET drain_until_day = 20014"))
+        assertEquals(1, f.upd("UPDATE ch_generation SET drain_until_day = 20010"))
+        f.refuses("ch_generation_drain", message, "UPDATE ch_generation SET drain_until_day = 20011")
+        f.refuses("ch_generation_drain", message, "UPDATE ch_generation SET drain_until_day = 99999")
+        f.refuses("ch_generation_drain", message, "UPDATE ch_generation SET drain_until_day = NULL")
+        assertEquals(20_010L, f.db.queryLong("SELECT drain_until_day FROM ch_generation"))
+        // The end is set once, when a current generation is demoted: NULL -> a day starts the drain.
+        f.put("ch_generation", "generation" to 1L, "namespace_id" to chBytes(32, 2), "state" to "current")
+        assertEquals(1, f.upd("DELETE FROM ch_generation WHERE generation = 0"))
+        assertEquals(1, f.upd("UPDATE ch_generation SET state = 'draining', drain_until_day = 20020 WHERE generation = 1"))
     }
 
     @Test
@@ -214,6 +239,30 @@ class ChannelTriggersTest {
         assertEquals(9L, f.db.queryLong("SELECT own_seq FROM ch_epoch"))
     }
 
+    /**
+     * `own_seq` is the `seq` of the next own post of the open epoch. Nothing reads it afterwards, and left in place
+     * it shows, for as long as the epoch's keys are kept (up to 16 epochs), how many posts the member wrote in each:
+     * an activity counter that outlives the posts (the review of S3: 25 own posts left `own_seq = 25`). Finality
+     * resets it, in the same statement and nowhere else.
+     */
+    @Test
+    fun aFinalEpochKeepsNoSequenceAndOnlyFinalityResetsIt() = ChannelFixture().use { f ->
+        f.put("ch_epoch")
+        assertEquals(1, f.upd("UPDATE ch_epoch SET own_seq = 25"))
+        // finality that keeps the count is refused by the table ...
+        f.db.rejects(CHECK_FAILED, "UPDATE ch_epoch SET state = 'final', final_day = 20000, anchor_minute = NULL, keep_until_day = 20002")
+        // ... the reset of an open epoch's count by the rule that it never goes back ...
+        f.refuses("ch_epoch_identity", "never goes back", "UPDATE ch_epoch SET own_seq = 0")
+        assertEquals(25L, f.db.queryLong("SELECT own_seq FROM ch_epoch"))
+        // ... and finality with the reset is the one write that resets it
+        assertEquals(1, f.upd("UPDATE ch_epoch SET state = 'final', final_day = 20000, anchor_minute = NULL, own_seq = 0, keep_until_day = 20002"))
+        assertEquals(0L, f.db.queryLong("SELECT own_seq FROM ch_epoch"))
+        // a final epoch changes no more (its count stays 0), and none is inserted final with a count
+        f.refuses("ch_epoch_final", "sticky", "UPDATE ch_epoch SET own_seq = 1")
+        val insert = f.sql("ch_epoch", mapOf("epoch" to 1L, "state" to "final", "final_day" to 20_000L, "own_seq" to 3L))
+        f.db.rejects(CHECK_FAILED, insert.first, *insert.second.toTypedArray())
+    }
+
     @Test
     fun aFinalEpochIsStickyAndOnlyItsRetentionMovesAndOnlyEarlier() = ChannelFixture().use { f ->
         f.put("ch_epoch", "state" to "final", "final_day" to 20_000L, "winner_hash" to chBytes(32, 7), "keep_until_day" to 20_002L)
@@ -247,6 +296,10 @@ class ChannelTriggersTest {
         assertEquals(1, f.upd("DELETE FROM ch_epoch_log WHERE epoch = 0"))
         f.put("ch_epoch_log", "epoch" to 1024L)
         assertEquals(1024L, f.count("ch_epoch_log"))
+        // The bound is the channel's: another channel has its own 1024 (a limit over the whole table refuses this).
+        f.put("ch_channel", "channel_id" to other)
+        f.put("ch_epoch_log", "channel_id" to other)
+        assertEquals(1025L, f.count("ch_epoch_log"))
     }
 
     // ------------------------------------------------------------------ candidates and fork signals
@@ -268,6 +321,11 @@ class ChannelTriggersTest {
         assertEquals(1, f.upd("DELETE FROM ch_candidate WHERE epoch = 0 AND hash = ?", chBytes(32, 100)))
         f.candidate(9)
         assertEquals(10L, f.count("ch_candidate"))
+        // The bounds are the channel's: another channel has its own eight foreign candidates and its own commit.
+        f.put("ch_channel", "channel_id" to other)
+        f.put("ch_candidate", "channel_id" to other, "hash" to chBytes(32, 200), "sender" to chBytes(32, 201))
+        f.put("ch_candidate", "channel_id" to other, "hash" to chBytes(32, 202), "sender" to chBytes(32, 203), "own" to 1L)
+        assertEquals(12L, f.count("ch_candidate"))
     }
 
     @Test
@@ -308,6 +366,10 @@ class ChannelTriggersTest {
         assertEquals(4, f.upd("DELETE FROM ch_fork_signal WHERE epoch = 0"))
         for (i in 0 until 4) f.put("ch_fork_signal", "epoch" to 9L, "hash" to chBytes(32, 60 + i))
         assertEquals(16L, f.count("ch_fork_signal"))
+        // The bound is the channel's: another channel has its own 16.
+        f.put("ch_channel", "channel_id" to other)
+        f.put("ch_fork_signal", "channel_id" to other, "hash" to chBytes(32, 98))
+        assertEquals(17L, f.count("ch_fork_signal"))
     }
 
     // ------------------------------------------------------------------ posts
@@ -381,11 +443,24 @@ class ChannelTriggersTest {
         f.refuses("ch_post_expiry", message, "UPDATE ch_post SET delete_at_minute = 3600")
         f.refuses("ch_post_expiry", message, "UPDATE ch_post SET delete_at_minute = NULL")
         assertEquals(3_000L, f.db.queryLong("SELECT delete_at_minute FROM ch_post"))
-        // the relay expiry only moves earlier too, and may be forgotten once the post is displayed
-        f.put("ch_post", "op_id" to chBytes(16, 0x31), "relay_expiry_hour" to 7_200L)
-        assertEquals(1, f.upd("UPDATE ch_post SET relay_expiry_hour = 3600 WHERE op_id = ?", chBytes(16, 0x31)))
-        f.refuses("ch_post_expiry", message, "UPDATE ch_post SET relay_expiry_hour = 7200 WHERE op_id = ?", chBytes(16, 0x31))
-        assertEquals(1, f.upd("UPDATE ch_post SET relay_expiry_hour = NULL WHERE op_id = ?", chBytes(16, 0x31)))
+        // the relay expiry E is a live deadline of an unread post (§8.2), so it only moves earlier too ...
+        val unread = chBytes(16, 0x31)
+        f.put("ch_post", "op_id" to unread, "relay_expiry_hour" to 7_200L)
+        assertEquals(1, f.upd("UPDATE ch_post SET relay_expiry_hour = 3600 WHERE op_id = ?", unread))
+        f.refuses("ch_post_expiry", message, "UPDATE ch_post SET relay_expiry_hour = 7200 WHERE op_id = ?", unread)
+        // ... and an unread post cannot lose it: NULL is not "earlier", and the comparison NEW > OLD is NULL for
+        // it, which the first version let through (SET relay_expiry_hour = NULL, then NULL -> E + 30 d). The
+        // review of S3 found that its test asserted the first step "once displayed" on a post that was unread.
+        f.refuses("ch_post_expiry", message, "UPDATE ch_post SET relay_expiry_hour = NULL WHERE op_id = ?", unread)
+        assertEquals(3_600L, f.db.queryLong("SELECT relay_expiry_hour FROM ch_post WHERE op_id = ?", listOf(unread)))
+        // a display forgets it in the statement that makes the post read, and a read post cannot get one back
+        assertEquals(1, f.upd("UPDATE ch_post SET state = 'read', displayed_minute = 660, relay_expiry_hour = NULL WHERE op_id = ?", unread))
+        f.db.rejects(CHECK_FAILED, "UPDATE ch_post SET relay_expiry_hour = 7200 WHERE op_id = ?", unread)
+        // a post that came with no relay expiry may gain one (a deadline appearing is earlier than none), once
+        val none = chBytes(16, 0x33)
+        f.put("ch_post", "op_id" to none)
+        assertEquals(1, f.upd("UPDATE ch_post SET relay_expiry_hour = 7200 WHERE op_id = ?", none))
+        f.refuses("ch_post_expiry", message, "UPDATE ch_post SET relay_expiry_hour = 10800 WHERE op_id = ?", none)
         // a deletion time is set from NULL once
         f.put("ch_post", "op_id" to chBytes(16, 0x32))
         assertEquals(1, f.upd("UPDATE ch_post SET delete_at_minute = 6000 WHERE op_id = ?", chBytes(16, 0x32)))
@@ -417,6 +492,10 @@ class ChannelTriggersTest {
         assertEquals(1, f.upd("DELETE FROM ch_join_request WHERE hash = ?", chBytes(32, 100)))
         f.put("ch_join_request", "hash" to chBytes(32, 99))
         assertEquals(64L, f.count("ch_join_request"))
+        // The bound is the channel's: another channel has its own 64.
+        f.put("ch_channel", "channel_id" to other)
+        f.put("ch_join_request", "channel_id" to other, "hash" to chBytes(32, 98))
+        assertEquals(65L, f.count("ch_join_request"))
     }
 
     @Test
@@ -471,6 +550,112 @@ class ChannelTriggersTest {
         // SWEEP deletes a key when its last epoch leaves retention, which makes room for the next
         assertEquals(1, f.upd("DELETE FROM ch_box_key WHERE last_epoch = 4"))
         f.put("ch_box_key", "box_pk" to chBytes(32, 99))
+        // The bound is the channel's: another channel has its own 18.
+        f.put("ch_channel", "channel_id" to other)
+        f.put("ch_box_key", "channel_id" to other, "box_pk" to chBytes(32, 98))
+        assertEquals(19L, f.count("ch_box_key"))
+    }
+
+    // ------------------------------------------------------------------ the rows that move, and the death days
+
+    /**
+     * The bounds count at INSERT, so an UPDATE of channel_id would move rows into a channel that is full: the
+     * review of S3 moved 256 pending posts and 64 requests into channels that held as many already. A bounded row
+     * that nothing else keeps in place never changes its channel.
+     */
+    @Test
+    fun aBoundedRowNeverMovesToAnotherChannel() = ChannelFixture().use { f ->
+        f.put("ch_channel")
+        f.put("ch_channel", "channel_id" to other)
+        for ((table, trigger) in listOf(
+            "ch_pending_post" to "ch_pending_post_channel",
+            "ch_join_request" to "ch_join_request_channel",
+            "ch_kp_seen" to "ch_kp_seen_channel",
+        )) {
+            f.put(table)
+            f.refuses(trigger, "never moves to another channel", "UPDATE $table SET channel_id = ?", other)
+            assertEquals(table, 0L, f.db.queryLong("SELECT count(*) FROM $table WHERE channel_id = ?", listOf(other)))
+            // an UPDATE that leaves the channel where it is is not the move
+            assertEquals(table, 1, f.upd("UPDATE $table SET channel_id = ?", ch))
+        }
+        // the full scenario of the review: a channel at its bound takes no row from another
+        f.db.transaction {
+            for (i in 0 until 64) f.put("ch_join_request", "channel_id" to other, "hash" to chBytes(32, 100 + i))
+        }
+        f.refuses("ch_join_request_channel", "never moves to another channel", "UPDATE ch_join_request SET channel_id = ? WHERE channel_id = ?", other, ch)
+        assertEquals(64L, f.db.queryLong("SELECT count(*) FROM ch_join_request WHERE channel_id = ?", listOf(other)))
+    }
+
+    /**
+     * A join keeps its KeyPackage and its invite, and its expiry - the day the KeyPackage's private keys die
+     * (section 6.2.2) - only moves earlier (the review of S3: a later one was accepted).
+     */
+    @Test
+    fun aJoinKeepsItsKeyPackageAndItsInviteAndItsExpiryOnlyMovesEarlier() = ChannelFixture().use { f ->
+        f.put("ch_join")
+        val message = "a join keeps its KeyPackage"
+        f.put("ch_channel", "channel_id" to other)
+        for ((column, value) in listOf("kp_ref" to chBytes(32, 9), "invite_id" to chBytes(16, 9), "generation" to 3L, "channel_id" to other)) {
+            f.refuses("ch_join_fixed", message, "UPDATE ch_join SET $column = ?", value)
+        }
+        f.refuses("ch_join_fixed", message, "UPDATE ch_join SET type = 'restore'")
+        assertEquals(1, f.upd("UPDATE ch_join SET expiry_day = 20007"))
+        assertEquals(1, f.upd("UPDATE ch_join SET expiry_day = 20003"))
+        f.refuses("ch_join_fixed", message, "UPDATE ch_join SET expiry_day = 20004")
+        f.refuses("ch_join_fixed", message, "UPDATE ch_join SET expiry_day = 99999")
+        assertEquals(20_003L, f.db.queryLong("SELECT expiry_day FROM ch_join"))
+    }
+
+    /**
+     * The sponsor's own link (Q50 (a)): a password invite stores none, and a row that stored none never gets one
+     * (a stored password link is an Argon2id-priced oracle on a seized unlocked device); the link of an open invite
+     * can be erased and never replaced, and the expiry only moves earlier.
+     */
+    @Test
+    fun anOwnInviteIsErasedNeverRewrittenAndAPasswordInviteNeverGetsALink() = ChannelFixture().use { f ->
+        val open = chBytes(16, 36)
+        val password = chBytes(16, 0x37)
+        f.put("ch_invite_own")
+        f.put("ch_invite_own", "invite_id" to password, "invite_env" to null)
+        val message = "an own invite is erased"
+        f.refuses("ch_invite_own_fixed", message, "UPDATE ch_invite_own SET invite_env = ? WHERE invite_id = ?", chBytes(363, 5), password)
+        f.refuses("ch_invite_own_fixed", message, "UPDATE ch_invite_own SET invite_env = ? WHERE invite_id = ?", chBytes(363, 6), open)
+        assertEquals(1, f.upd("UPDATE ch_invite_own SET invite_env = NULL WHERE invite_id = ?", open))
+        assertEquals(1, f.upd("UPDATE ch_invite_own SET invite_env = NULL WHERE invite_id = ?", open))
+        f.refuses("ch_invite_own_fixed", message, "UPDATE ch_invite_own SET invite_env = ? WHERE invite_id = ?", chBytes(363, 7), open)
+        f.put("ch_channel", "channel_id" to other)
+        f.refuses("ch_invite_own_fixed", message, "UPDATE ch_invite_own SET invite_id = ? WHERE invite_id = ?", chBytes(16, 9), open)
+        f.refuses("ch_invite_own_fixed", message, "UPDATE ch_invite_own SET channel_id = ? WHERE invite_id = ?", other, open)
+        assertEquals(1, f.upd("UPDATE ch_invite_own SET expiry_day = 20003 WHERE invite_id = ?", open))
+        f.refuses("ch_invite_own_fixed", message, "UPDATE ch_invite_own SET expiry_day = 20004 WHERE invite_id = ?", open)
+        assertEquals(null, f.db.queryBlob("SELECT invite_env FROM ch_invite_own WHERE invite_id = ?", listOf(password)))
+    }
+
+    /**
+     * The rows of GhostKv that are global (a KeyPackage and its private keys) die on a day, held like every death
+     * day: it only moves earlier and, once set, is never forgotten; a row with none may be given one. The key and the
+     * channel of a row never change; its value is rewritten freely (the adapter's put).
+     */
+    @Test
+    fun aGlobalRowKeepsItsKeyAndItsChannelAndItsDayOnlyMovesEarlier() = ChannelFixture().use { f ->
+        val dated = chBytes(20, 14)
+        val undated = chBytes(20, 55)
+        f.put("mls_global_kv", "delete_after_day" to 20_007L)
+        f.put("mls_global_kv", "k" to undated)
+        val message = "a global row keeps its key"
+        f.put("ch_channel", "channel_id" to other)
+        f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET k = ? WHERE k = ?", chBytes(20, 99), dated)
+        f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET channel_id = ? WHERE k = ?", other, dated)
+        assertEquals(1, f.upd("UPDATE mls_global_kv SET v_env = ? WHERE k = ?", chBytes(100, 9), dated))
+        assertEquals(1, f.upd("UPDATE mls_global_kv SET delete_after_day = 20007 WHERE k = ?", dated))
+        assertEquals(1, f.upd("UPDATE mls_global_kv SET delete_after_day = 20003 WHERE k = ?", dated))
+        f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET delete_after_day = 20004 WHERE k = ?", dated)
+        f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET delete_after_day = 99999 WHERE k = ?", dated)
+        f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET delete_after_day = NULL WHERE k = ?", dated)
+        assertEquals(20_003L, f.db.queryLong("SELECT delete_after_day FROM mls_global_kv WHERE k = ?", listOf(dated)))
+        // a row that was written with no day may be given one, once
+        assertEquals(1, f.upd("UPDATE mls_global_kv SET delete_after_day = 20005 WHERE k = ?", undated))
+        f.refuses("mls_global_kv_fixed", message, "UPDATE mls_global_kv SET delete_after_day = 20006 WHERE k = ?", undated)
     }
 
     // ------------------------------------------------------------------ all of them
@@ -504,8 +689,14 @@ class ChannelTriggersTest {
         anIssuedInviteIsImmutableButForItsTwoOneWayFlags()
         aChannelHasAtMostOneThousandAndTwentyFourKeyPackageTagsButARepeatIsNotRefused()
         aChannelHasAtMostEighteenBoxKeysAndAKeyIsReplacedOnceInTheEpochThatReplacedIt()
+        theEndOfADrainOnlyMovesEarlierAndIsNeverForgotten()
+        aFinalEpochKeepsNoSequenceAndOnlyFinalityResetsIt()
+        aBoundedRowNeverMovesToAnotherChannel()
+        aJoinKeepsItsKeyPackageAndItsInviteAndItsExpiryOnlyMovesEarlier()
+        anOwnInviteIsErasedNeverRewrittenAndAPasswordInviteNeverGetsALink()
+        aGlobalRowKeepsItsKeyAndItsChannelAndItsDayOnlyMovesEarlier()
         assertEquals("rules never provoked", emptySet<String>(), ChannelSchema.rules - fired)
         assertEquals("a refusal recorded for a trigger that is not in the schema", emptySet<String>(), fired - ChannelSchema.rules)
-        assertTrue(fired.size == 29)
+        assertTrue(fired.size == 36)
     }
 }

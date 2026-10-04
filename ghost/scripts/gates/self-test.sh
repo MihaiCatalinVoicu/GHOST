@@ -1597,6 +1597,18 @@ evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:16: ON CONFLICT ..
 evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:19: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on ch_post"
 evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:22: REPLACE INTO in DM SQL" "reports a REPLACE INTO on mls_kv"
 evasion_named dm-no-replace "storage/Schema.kt:25: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on ch_channel in a later migration"
+# G-DM4, review of slice S3: a table name is matched without regard to case (SQLite resolves it so) and every
+# module's `gate`, `debug` and `release` source sets are read, not only the two DM modules'. One fixture of six
+# violations the first version passed: three in a `:sync` store in capitals or mixed case, and one in each of
+# `src/release`, `src/gate` and `src/debug` of a module that is not a DM module.
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-casesets"
+evasion_count dm-no-replace negative-dm-replace-casesets 6
+evasion_named dm-no-replace "sync/store/ShoutingStore.kt:12: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on CH_POST"
+evasion_named dm-no-replace "sync/store/ShoutingStore.kt:15: REPLACE INTO in DM SQL" "reports a REPLACE INTO on Mls_Kv"
+evasion_named dm-no-replace "sync/store/ShoutingStore.kt:20: ON CONFLICT ... DO UPDATE in DM SQL" "reports an upsert on MLS_GLOBAL_KV"
+evasion_named dm-no-replace "android/sync/src/release/kotlin/org/ghost/sync/store/ReleaseStore.kt:11: REPLACE INTO in DM SQL" "reads src/release of a module that is not a DM module"
+evasion_named dm-no-replace "android/sync/src/gate/kotlin/org/ghost/sync/store/GateStore.kt:9: ON CONFLICT ... DO UPDATE in DM SQL" "reads src/gate of a module that is not a DM module"
+evasion_named dm-no-replace "android/storage/src/debug/kotlin/org/ghost/storage/DebugSeed.kt:9: OR REPLACE, REPLACE INTO in DM SQL" "reads src/debug of a module that is not a DM module"
 # The scopes of the source gates (design faza10-forum.md 13.1, the row of the hygiene gates; slice S3):
 # anti-placeholder, no-logging, sync-no-catch-all, kotlin-clearnet, G-DM1, G-DM4 and G-DM6 read the package of
 # the channel stores, and the first two the channel crate too. One fixture, one violation of each in

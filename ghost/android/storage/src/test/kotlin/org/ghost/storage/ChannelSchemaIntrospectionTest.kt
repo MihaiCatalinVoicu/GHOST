@@ -22,8 +22,9 @@ import org.junit.Test
  *  - every other integer column is classified: an epoch, a bounded counter, a flag or a closed list,
  *    and nothing else ("no counters per channel except the bounded liveness counters of CO-11");
  *  - no object is or names a virtual table (R-M4; the gate `dm-no-fts.sh` is the source half);
- *  - the shape: WITHOUT ROWID only for the two tag tables §9 marks (the other 24 keep a hidden rowid, an
- *    insertion order), the foreign keys and cascades, the objects that hang on each table.
+ *  - the shape: WITHOUT ROWID for every table but the two whose rows the design needs an order for (T33: no table
+ *    records the order its rows arrived in; `mls_kv` and `ch_join_request` are the declared exceptions), the
+ *    foreign keys and cascades, the objects that hang on each table.
  */
 class ChannelSchemaIntrospectionTest {
 
@@ -128,7 +129,16 @@ class ChannelSchemaIntrospectionTest {
                 if (Regex("\\b${column.name} % \\d+ = 0").containsMatchIn(createSql(db, table))) withGrid += "$table.${column.name}"
             }
         }
-        assertEquals(ChannelSchema.timeColumns.filter { !it.endsWith("_day") }.sorted(), withGrid.sorted())
+        // ... but the weekly dedup tag: `ch_seen.until_day` is a `ceil7` as `dm_seen`'s, and a day column with a
+        // grid is a deliberate one (the review of S3: the first version kept any day, a finer record than F9's).
+        assertEquals(
+            (ChannelSchema.timeColumns.filter { !it.endsWith("_day") } + ChannelSchema.weekColumns).sorted(),
+            withGrid.sorted(),
+        )
+        for (qualified in ChannelSchema.weekColumns) {
+            val (table, column) = qualified.split(".")
+            assertTrue("$qualified needs % 7 = 0", createSql(db, table).contains("$column % 7 = 0"))
+        }
     }
 
     /** One typeof-guarded column with the statement that writes it (the DM test's `TypedColumn`, over the fixture). */
@@ -164,7 +174,7 @@ class ChannelSchemaIntrospectionTest {
         Typed("ch_post.delete_at_minute", 604_800),
         Typed("ch_post.relay_expiry_hour", 3_600),
         Typed("ch_pending_post.fail_after_hour", 3_600),
-        Typed("ch_seen.until_day", 20_000),
+        Typed("ch_seen.until_day", 19_999),
         Typed("ch_reveal.delete_at_minute", 600),
         Typed("ch_join.expiry_day", 20_007),
         Typed("ch_join_request.until_day", 20_007),
@@ -219,7 +229,7 @@ class ChannelSchemaIntrospectionTest {
             rejected("${case.whole}.5", "a fractional value")
             rejected("-1", "a negative value")
             for (value in case.outside) rejected("$value", "a value outside the range")
-            if (column.endsWith("_minute") || column.endsWith("_hour")) {
+            if (column.endsWith("_minute") || column.endsWith("_hour") || case.qualified in ChannelSchema.weekColumns) {
                 offGrid++
                 rejected("${case.whole + 1}", "a value off the grid")
             }
@@ -228,7 +238,7 @@ class ChannelSchemaIntrospectionTest {
             f.db.exec(sql, args)
             assertEquals(case.qualified, "integer", f.db.queryString("SELECT typeof($column) FROM $table WHERE $column IS NOT NULL LIMIT 1"))
         }
-        assertEquals("every minute and hour column was written one unit off its grid", 12, offGrid)
+        assertEquals("every minute, hour and week column was written one unit off its grid", 13, offGrid)
     }
 
     // ------------------------------------------------------------------ no counters beyond the declared ones
@@ -280,16 +290,23 @@ class ChannelSchemaIntrospectionTest {
         assertEquals(emptyList<String>(), offenders)
     }
 
+    /**
+     * T33 and F9 §13.6 step 5: "random WITHOUT ROWID keys". The hidden rowid of a table is the order its rows
+     * arrived in, and the gaps between the rowids that survive count the rows that were swept, of every channel
+     * (the review of S3 showed it with two channels: the gaps of 40 and 7 between the surviving rowids 1, 42 and 50
+     * were the other channel's expired posts). So a table keeps its rowid only where the design needs an order —
+     * `mls_kv` (S0-6: its values are too large for WITHOUT ROWID) and `ch_join_request` (§6.2.3: "in arrival
+     * order") — and those two are the declared exceptions (§19.35, F-7). `SELECT rowid` is the test: a table
+     * that has none refuses the word.
+     */
     @Test
-    fun onlyTheTwoTagTablesSectionNineMarksAreWithoutRowid() = migrated().use { db ->
+    fun everyTableButTheTwoTheDesignNeedsAnOrderForIsWithoutRowid() = migrated().use { db ->
         for (table in ChannelSchema.tables) {
             val withoutRowid = createSql(db, table).trimEnd().endsWith("WITHOUT ROWID")
             assertEquals("$table", table in ChannelSchema.withoutRowidTables, withoutRowid)
         }
-        assertEquals(setOf("ch_seen", "ch_kp_seen"), ChannelSchema.withoutRowidTables)
-        assertEquals(24, ChannelSchema.rowidTables.size)
-        // The hidden rowid of the other 24 is an insertion order: a table that has one answers `rowid`, and
-        // the two that have none refuse the word (T33; the cost is recorded in §19.35, F-7).
+        assertEquals(setOf("mls_kv", "ch_join_request"), ChannelSchema.rowidTables)
+        assertEquals(24, ChannelSchema.withoutRowidTables.size)
         for (table in ChannelSchema.tables) {
             val answers = try {
                 db.queryLong("SELECT count(rowid) FROM $table")
@@ -299,6 +316,12 @@ class ChannelSchemaIntrospectionTest {
             }
             assertEquals("$table", table in ChannelSchema.rowidTables, answers)
         }
+        // ... and the convention is the repository's, not this slice's: every Phase 8 and Phase 9 table with keys
+        // is WITHOUT ROWID (the singleton `dm_self` and the tables of the first versions aside).
+        val dm = ArrayList<String>()
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND (name LIKE 'dm\\_%' ESCAPE '\\' OR name LIKE 'olm\\_%' ESCAPE '\\')") { dm += it.string(0) }
+        assertEquals(20, dm.size)
+        assertEquals(19, dm.count { createSql(db, it).trimEnd().endsWith("WITHOUT ROWID") })
     }
 
     @Test
@@ -325,20 +348,23 @@ class ChannelSchemaIntrospectionTest {
         }
     }
 
-    /** What hangs on each channel table: only its rules and its guard, beside three indexes. */
+    /** What hangs on each channel table: only its rules and its guard, beside four indexes. */
     @Test
-    fun theObjectsOnTheChannelTablesAreTheirRulesGuardsAndThreeIndexes() = migrated().use { db ->
+    fun theObjectsOnTheChannelTablesAreTheirRulesGuardsAndFourIndexes() = migrated().use { db ->
         val triggers = HashSet<String>()
         val indexes = HashSet<String>()
         db.query(
             "SELECT type, name FROM sqlite_master WHERE (tbl_name LIKE 'ch\\_%' ESCAPE '\\' OR tbl_name LIKE 'mls\\_%' ESCAPE '\\') " +
                 "AND type IN ('trigger', 'index') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
         ) { if (it.string(0) == "trigger") triggers += it.string(1) else indexes += it.string(1) }
-        assertEquals(ChannelSchema.rules + ChannelSchema.guards, triggers)
-        assertEquals(setOf("idx_mls_global_kv_channel", "idx_ch_post_order", "idx_ch_post_delete"), indexes)
-        // The partial index on the deletion time carries its predicate, so an undated post is not indexed.
+        assertEquals(ChannelSchema.rules + ChannelSchema.guards + ChannelSchema.rowidChecks, triggers)
+        assertEquals(setOf("idx_mls_global_kv_channel", "idx_ch_post_order", "idx_ch_post_delete", "idx_ch_post_expiry"), indexes)
+        // The partial indexes on the two deadlines carry their predicates, so a post with neither is not indexed.
         assertTrue(
             db.queryString("SELECT sql FROM sqlite_master WHERE name = 'idx_ch_post_delete'")!!.contains("WHERE delete_at_minute IS NOT NULL"),
+        )
+        assertTrue(
+            db.queryString("SELECT sql FROM sqlite_master WHERE name = 'idx_ch_post_expiry'")!!.contains("WHERE relay_expiry_hour IS NOT NULL"),
         )
         // Every guard is a BEFORE INSERT trigger on its own table, named after it.
         for (guard in ChannelSchema.guards) {

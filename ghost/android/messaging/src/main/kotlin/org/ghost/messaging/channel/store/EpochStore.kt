@@ -14,6 +14,9 @@ import org.ghost.sync.api.SyncTransaction
  * its bound is not offered to the recognition step even if `CH-SWEEP` has not deleted its row, which is the
  * only thing between a seized device and a post of an epoch the user was promised was gone (T25). The sweep's
  * own reads, [expired], name the opposite set. Both are registered with `:storage`'s `ChannelExpiredRowLint`.
+ * **The fork signals** have no deadline column; they "go with their epoch's key" (§6.3.5), so [forkSignals]
+ * applies the retention of the epoch they name by a join on `ch_epoch` (the review of S3: the first version
+ * read them with no term at all, and the lint's list of expiring tables did not name `ch_fork_signal`).
  *
  * **Every write goes through the caller's [SyncTransaction]**, with no `REPLACE` and no upsert (G-DM4).
  */
@@ -124,6 +127,13 @@ internal class EpochStore {
     /**
      * The epoch becomes final (`CH-SETTLE`, CO-5): sticky, its anchor cleared (§19.21), its winner and the day it
      * became past recorded, and the day its keys stop being kept (§8.3). False when the epoch is not open.
+     *
+     * **Its sequence number is reset to 0**: `own_seq` is the `seq` of the next own post of the *open* epoch and
+     * nothing reads it afterwards, but left in place it would show, until `keep_until_day` (up to 16 epochs), how
+     * many posts the member wrote in each past epoch — an activity counter T33 does not allow beyond the sweep of
+     * the posts themselves (the review of S3: 25 own posts in a 5-minute channel left `own_seq = 25` for days).
+     * The schema allows the reset at the one transition and nowhere else (`ch_epoch_identity`, and the CHECK
+     * `state = 'open' OR own_seq = 0`).
      */
     fun finalize(
         tx: SyncTransaction,
@@ -137,8 +147,8 @@ internal class EpochStore {
         Fields.nonNegative("ch_epoch.final_day", finalDay)
         Fields.nonNegative("ch_epoch.keep_until_day", keepUntilDay)
         return tx.sql.execUpdate(
-            "UPDATE ch_epoch SET state = 'final', anchor_minute = NULL, winner_hash = ?, final_day = ?, keep_until_day = ? " +
-                "WHERE channel_id = ? AND epoch = ? AND state = 'open'",
+            "UPDATE ch_epoch SET state = 'final', anchor_minute = NULL, own_seq = 0, winner_hash = ?, final_day = ?, " +
+                "keep_until_day = ? WHERE channel_id = ? AND epoch = ? AND state = 'open'",
             listOf(winnerHash, finalDay, keepUntilDay, channelId, epoch),
         ) == 1
     }
@@ -235,10 +245,10 @@ internal class EpochStore {
         Fields.nonNegative("ch_fork_signal.epoch", epoch)
         Fields.bytes("ch_fork_signal.hash", hash, 32)
         Fields.nonNegative("ch_fork_signal.first_seen_day", day)
-        if (count(tx.sql, "SELECT count(*) FROM ch_fork_signal WHERE channel_id = ? AND epoch = ? AND hash = ?", channelId, epoch, hash) == 1) {
+        if (count(tx.sql, FORK_SIGNAL_PRESENT, channelId, epoch, hash) == 1) {
             return false
         }
-        if (count(tx.sql, "SELECT count(*) FROM ch_fork_signal WHERE channel_id = ?", channelId) >= MAX_FORK_SIGNALS) {
+        if (count(tx.sql, FORK_SIGNAL_COUNT, channelId) >= MAX_FORK_SIGNALS) {
             tx.sql.exec(
                 "DELETE FROM ch_fork_signal WHERE channel_id = ? AND (epoch, hash) = " +
                     "(SELECT epoch, hash FROM ch_fork_signal WHERE channel_id = ? ORDER BY first_seen_day, epoch, hash LIMIT 1)",
@@ -252,9 +262,14 @@ internal class EpochStore {
         return true
     }
 
-    fun forkSignals(sql: SqlExecutor, channelId: ByteArray): List<ForkSignalRow> {
+    /**
+     * The fork signals of the epochs still within their retention: a signal goes with its epoch's key (§6.3.5), so
+     * one whose epoch is past `keep_until_day` (or whose row is gone) is not offered even if `CH-SWEEP` has not
+     * deleted it yet.
+     */
+    fun forkSignals(sql: SqlExecutor, channelId: ByteArray, today: Long): List<ForkSignalRow> {
         val out = ArrayList<ForkSignalRow>()
-        sql.query(FORK_SIGNALS, listOf(channelId)) { r -> out += ForkSignalRow(r.blob(0), r.long(1), r.blob(2), r.long(3)) }
+        sql.query(FORK_SIGNALS, listOf(channelId, today)) { r -> out += ForkSignalRow(r.blob(0), r.long(1), r.blob(2), r.long(3)) }
         return out
     }
 
@@ -298,6 +313,16 @@ internal class EpochStore {
         const val LOGGED: String = "SELECT channel_id, epoch, winner_hash, final_day FROM ch_epoch_log WHERE channel_id = ? AND epoch = ?"
 
         const val FORK_SIGNALS: String =
-            "SELECT channel_id, epoch, hash, first_seen_day FROM ch_fork_signal WHERE channel_id = ? ORDER BY epoch, hash"
+            "SELECT s.channel_id, s.epoch, s.hash, s.first_seen_day FROM ch_fork_signal s WHERE s.channel_id = ? " +
+                "AND EXISTS (SELECT 1 FROM ch_epoch e WHERE e.channel_id = s.channel_id AND e.epoch = s.epoch " +
+                "AND (e.keep_until_day IS NULL OR e.keep_until_day >= ?)) ORDER BY s.epoch, s.hash"
+
+        /**
+         * The bound queries: they count every row, expired or not, as the `ch_fork_signal_limit` trigger does (see
+         * `JoinStore.REQUEST_COUNT`).
+         */
+        const val FORK_SIGNAL_COUNT: String = "SELECT count(*) FROM ch_fork_signal WHERE channel_id = ?"
+        const val FORK_SIGNAL_PRESENT: String =
+            "SELECT count(*) FROM ch_fork_signal WHERE channel_id = ? AND epoch = ? AND hash = ?"
     }
 }

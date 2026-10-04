@@ -229,7 +229,7 @@ class JoinInviteMemberStoreTest {
     fun aCommittersPendingWorkIsRecordedOnceReadUntilItsDayAndDroppedAfterIt() = StoreWorld().use { w ->
         w.channel()
         assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_007) })
-        assertFalse("the first record stands: its day is what the work-age rule measures", w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_050) })
+        assertFalse("the first record stands (what CO-8's work-age rule measures is F-11, not this day)", w.tx { w.stores.members.record(it, w.ch, RequestKind.LEAVE, key(1), null, 20_050) })
         assertEquals(20_007L, w.stores.members.request(w.db, w.ch, RequestKind.LEAVE, key(1), today)!!.untilDay)
         assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.POLICY, byteArrayOf(0), chBytes(100, 2), 20_010) })
         assertTrue(w.tx { w.stores.members.record(it, w.ch, RequestKind.REMOVE, key(2), null, 19_999) })
@@ -246,6 +246,9 @@ class JoinInviteMemberStoreTest {
     @Test
     fun theBoxKeysOfAMemberAreCurrentUntilANewLeafReplacesThemAndGoWhenTheirEpochLeavesRetention() = StoreWorld().use { w ->
         w.channel()
+        // the epochs the retention of a retired key is read from: 4 (final, kept through tomorrow) and 5 (open)
+        for (e in 4L..5L) w.tx { w.stores.epochs.insert(it, w.ch, e, chBytes(68, 1), chBytes(32, 1)) }
+        assertTrue(w.tx { w.stores.epochs.finalize(it, w.ch, 4, null, today - 1, today + 1) })
         w.tx { w.stores.members.insertBoxKey(it, w.ch, key(1), chBytes(60, 1)) }
         assertArrayEquals(key(1), w.stores.members.currentBoxKey(w.db, w.ch)!!.boxPk)
         // a new leaf: its key is inserted, the old one retired in the epoch that replaced it
@@ -253,11 +256,19 @@ class JoinInviteMemberStoreTest {
         assertTrue(w.tx { w.stores.members.retireBoxKey(it, w.ch, key(1), 4) })
         assertFalse(w.tx { w.stores.members.retireBoxKey(it, w.ch, key(1), 5) })
         assertArrayEquals(key(2), w.stores.members.currentBoxKey(w.db, w.ch)!!.boxPk)
-        assertEquals(listOf(key(2), key(1)).map { it.toList() }, w.stores.members.boxKeys(w.db, w.ch).map { it.boxPk.toList() })
-        assertEquals(4L, w.stores.members.boxKey(w.db, w.ch, key(1))!!.lastEpoch)
+        assertEquals(listOf(key(2), key(1)).map { it.toList() }, w.stores.members.boxKeys(w.db, w.ch, today).map { it.boxPk.toList() })
+        assertEquals(4L, w.stores.members.boxKey(w.db, w.ch, key(1), today)!!.lastEpoch)
         assertEquals(0, w.tx { w.stores.members.deleteRetiredBefore(it, w.ch, 4) })
+        // A retired key is offered only while its last epoch is within retention, whether or not the sweep has
+        // deleted it: epoch 4 passes its bound, the oldest retained epoch is 5, and the key replaced in 4 is gone
+        // from every read while its row is still there (the review of S3: the reads had no term at all).
+        w.db.exec("UPDATE ch_epoch SET keep_until_day = ? WHERE epoch = 4", listOf(today - 1))
+        assertNull(w.stores.members.boxKey(w.db, w.ch, key(1), today))
+        assertEquals(listOf(key(2).toList()), w.stores.members.boxKeys(w.db, w.ch, today).map { it.boxPk.toList() })
+        assertEquals(2L, w.count("ch_box_key"))
+        assertArrayEquals("the current leaf's key has no bound", key(2), w.stores.members.currentBoxKey(w.db, w.ch)!!.boxPk)
         assertEquals(1, w.tx { w.stores.members.deleteRetiredBefore(it, w.ch, 5) })
-        assertNull(w.stores.members.boxKey(w.db, w.ch, key(1)))
+        assertNull(w.stores.members.boxKey(w.db, w.ch, key(1), today))
         assertArrayEquals("the current leaf's key is never deleted", key(2), w.stores.members.currentBoxKey(w.db, w.ch)!!.boxPk)
         // 18 per channel
         for (i in 3 until 19) w.tx { w.stores.members.insertBoxKey(it, w.ch, key(i), chBytes(60, i)) }
@@ -269,6 +280,6 @@ class JoinInviteMemberStoreTest {
         assertEquals(ChannelStoreError.ROW_EXISTS, assertThrows(ChannelStoreException::class.java) {
             w.tx { w.stores.members.insertBoxKey(it, w.ch, key(2), chBytes(60, 2)) }
         }.error)
-        assertRedacted(w.stores.members.boxKey(w.db, w.ch, key(2))!!, key(2), chBytes(60, 2), w.ch)
+        assertRedacted(w.stores.members.boxKey(w.db, w.ch, key(2), today)!!, key(2), chBytes(60, 2), w.ch)
     }
 }
