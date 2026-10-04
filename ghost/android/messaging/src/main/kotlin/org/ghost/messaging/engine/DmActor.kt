@@ -137,20 +137,43 @@ internal class DmActor(
     private val candidateSince = HashMap<List<Byte>, Long>()
 
     /**
+     * The second the last **time-triggered** pass began — the one kind of pass that may run
+     * `EST-READY` (§21.9 rule 1). A candidate whose `EST-READY` fell due at or before it has been
+     * offered that pass, whatever the pass made of it, so [nextReadySeconds] stops waking for it.
+     * **Actor thread only**, like [candidateSince].
+     */
+    private var lastTimeTriggeredSecond: Long = Long.MIN_VALUE
+
+    /**
      * Seconds until the first `EST-READY` a stored candidate waits for, or null: §21.9 rule 1's
      * "next EST timer" in the actor timer's minimum (phase review MD-3). Without it nothing woke
      * the actor at candidate + 2 min — in a foreground session the relay session had started
      * already — and the first message went out at the fetch window's end, about 15 minutes after
-     * the send. A candidate already due is left to the pass that is due anyway, so a candidate a
-     * pass could not use never turns into a wake loop. **Actor thread only**, like every reader of
-     * [candidateSince]: [ExpirySchedule.afterCommit] runs there.
+     * the send. **Actor thread only**, like every reader of [candidateSince]:
+     * [ExpirySchedule.afterCommit] runs there.
+     *
+     * **A due `EST-READY` keeps its wake until a time-triggered pass has run** (design §22.39). Every
+     * pass ends by re-arming the timer with this minimum, and a pass a listener hint ran may not run
+     * `EST-READY`. The first version kept future terms only ("a candidate already due is left to the
+     * pass that is due anyway"), so a hint pass at or after the due second — a fetch or a store
+     * outcome of the same relay round — re-armed the timer without the term and **cancelled the wake
+     * that was due**: `EST-READY` then waited for the next time trigger, the fetch window's end at
+     * the earliest (MD-3's own symptom) and later when the app was hidden by then, and a timer change
+     * made meanwhile went out as a pending TIMER_SET (§22.21 item 2's open path). The privacy world
+     * on production's triggers met it at the gate scale: its relay rounds fall on the minute and the
+     * delay is two minutes, so the round at the due second ran first whenever it fetched or stored
+     * anything. On a device the race is narrower (the timer fires within the second it is due) and
+     * the same. A due term is now a wake at once, until a time-triggered pass begins at or after it;
+     * from then on it is left to the passes that come anyway, so a candidate a pass could not use —
+     * or one whose contact stopped fetching — wakes the actor once and never turns into a wake loop.
      */
     fun nextReadySeconds(): Long? {
         if (candidateSince.isEmpty()) return null
         val now = clock.nowEpochSeconds()
         return candidateSince.values
-            .map { it + EstablishmentSteps.READY_DELAY_SECONDS - now }
-            .filter { it > 0 }
+            .map { it + EstablishmentSteps.READY_DELAY_SECONDS }
+            .filter { due -> due > now || due > lastTimeTriggeredSecond }
+            .map { due -> maxOf(0L, due - now) }
             .minOrNull()
     }
 
@@ -412,6 +435,9 @@ internal class DmActor(
 
     @Suppress("ReturnCount")
     private fun pass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {
+        // Recorded before anything can return early, so a time-triggered pass that cannot run
+        // `EST-READY` (no DM context) still spends the wake [nextReadySeconds] kept for it.
+        if (timeTriggered) lastTimeTriggeredSecond = clock.nowEpochSeconds()
         // SWEEP first (§13.7's pass order). It runs before the activation check and before every
         // other step, because it is the one step that needs nothing to be true: a device whose DM
         // context is locked, whose identity is half-activated or whose native library is missing

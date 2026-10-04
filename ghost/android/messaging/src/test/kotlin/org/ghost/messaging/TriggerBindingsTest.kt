@@ -155,6 +155,83 @@ class TriggerBindingsTest {
         }
     }
 
+    /**
+     * MD-3's wake survives a hint at its own second (design §22.39). The gate-scale nightlies of the
+     * privacy world failed on JD5 from 2026-09-28 because of this: a listener hint handed to the actor
+     * at the second a candidate's `EST-READY` fell due — a fetch or a store outcome of the relay round
+     * that came first — ran a pass that may not run `EST-READY` (§21.9 rule 1), and that pass's
+     * schedule left the due term out and re-armed the timer for the fetch window's end, cancelling the
+     * wake that was due. Here the timer is still due at once after the hint pass, and its wake
+     * establishes.
+     */
+    @Test
+    fun aHintAtTheDueSecondKeepsTheEstReadyWake() {
+        requireNative()
+        val timer = ManualTimer()
+        DmWorld(aliceWiring = wiring(timer)).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            alice.engine.onActivated()
+            bob.engine.onActivated()
+            assertEquals(AddContactResult.ADDED, alice.engine.addContact(bob.card(), CardSource.QR_IN_PERSON))
+            val contactB = alice.engine.contacts().single().id
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "hello", null))
+            world.advanceTo(alice.clock.now + 30)
+            world.deliver()
+            alice.deliver(setOf(SyncChange.INBOX))
+            assertEquals(1, count(alice, "SELECT count(*) FROM dm_bundle_candidate"))
+            val delay = requireNotNull(timer.delay) { "the timer is not armed" }
+            assertTrue("the timer asks for EST-READY, got $delay", delay in 1..EstablishmentSteps.READY_DELAY_SECONDS)
+
+            // EST-READY falls due, and a hint reaches the actor before the timer's own wake.
+            world.advanceTo(alice.clock.now + delay)
+            alice.deliver(setOf(SyncChange.OUTCOMES))
+            assertEquals(
+                "a hint pass runs no EST-READY (§21.9 rule 1)",
+                Establishment.FETCHING, alice.engine.contacts().single().establishment,
+            )
+            assertEquals("the due EST-READY keeps its wake, at once", 0L, timer.delay)
+            timer.fire()
+            assertEquals(Establishment.READY, alice.engine.contacts().single().establishment)
+            assertEquals("the pending text went out with EST-READY", 0, count(alice, "SELECT count(*) FROM dm_pending_send"))
+        }
+    }
+
+    /**
+     * The other half of the wake [aHintAtTheDueSecondKeepsTheEstReadyWake] keeps: once a time-triggered
+     * pass has run at or after the due second, a candidate it could not use wakes the actor no more.
+     * Alice blocks bob while his candidate waits, so no pass ever establishes with it; the timer may
+     * owe one wake at the due second, and after that wake no wake at once is armed again — a wake
+     * loop is what keeping every due term would make of it.
+     */
+    @Test
+    fun aDueEstReadyThatCannotRunIsNoWakeLoop() {
+        requireNative()
+        val timer = ManualTimer()
+        DmWorld(aliceWiring = wiring(timer)).use { world ->
+            val alice = world.alice
+            val bob = world.bob
+            alice.engine.onActivated()
+            bob.engine.onActivated()
+            assertEquals(AddContactResult.ADDED, alice.engine.addContact(bob.card(), CardSource.QR_IN_PERSON))
+            val contactB = alice.engine.contacts().single().id
+            assertEquals(SendResult.QUEUED, alice.engine.send(contactB, "hello", null))
+            world.advanceTo(alice.clock.now + 30)
+            world.deliver()
+            alice.deliver(setOf(SyncChange.INBOX))
+            assertEquals(1, count(alice, "SELECT count(*) FROM dm_bundle_candidate"))
+            val delay = requireNotNull(timer.delay) { "the timer is not armed" }
+            assertTrue(alice.engine.block(contactB))
+
+            world.advanceTo(alice.clock.now + delay)
+            alice.deliver(setOf(SyncChange.OUTCOMES))
+            if (timer.delay == 0L) timer.fire()
+            assertTrue("a wake at once armed again after the time-triggered pass ran: a wake loop", timer.delay != 0L)
+            alice.deliver(setOf(SyncChange.INBOX))
+            assertTrue("a later hint pass armed a wake at once again", timer.delay != 0L)
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private fun count(device: DmDevice, sql: String): Int {
