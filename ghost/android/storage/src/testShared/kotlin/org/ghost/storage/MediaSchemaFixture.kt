@@ -78,6 +78,9 @@ internal object MediaSchema {
         "media_fragment.ordinal", "media_outbound_op.retry_gen", "media_outbound_op.resend_count",
     )
 
+    /** An integer that is only the second half of a composite foreign key (the fragment it names settles its range). */
+    val referenceColumns: Set<String> = setOf("media_outbound_op.ordinal")
+
     /** The 0/1 flags: `CHECK (x IN (0, 1))`, which admits no fraction either. */
     val flagColumns: Set<String> = setOf("media_object.view_once")
 
@@ -207,7 +210,7 @@ internal class MediaFixture(
     }
 
     /** The parent rows of [table]: the namespace of an upload, the object and the blob of a fragment, the fragment of an op. */
-    fun parents(table: String, row: Map<String, Any?> = emptyMap()) {
+    fun parents(table: String, row: Map<String, Any?> = emptyMap(), blob: Boolean? = null) {
         val objectId = row["object_id"] ?: defaultsOf(table)["object_id"]
         when (table) {
             "media_upload" -> {
@@ -217,7 +220,7 @@ internal class MediaFixture(
             "media_fragment" -> {
                 ensureObject(objectId as ByteArray)
                 val hash = (row["blob_hash"] ?: BLOB) as ByteArray
-                if ((row["state"] ?: "bound") == "bound") ensureBlob(hash)
+                if (blob ?: ((row["state"] ?: "bound") == "bound")) ensureBlob(hash)
             }
             "media_outbound_op" -> {
                 ensureObject(objectId as ByteArray)
@@ -253,8 +256,27 @@ internal class MediaFixture(
         }
     }
 
-    /** A DM contact, conversation and message (a media message, kind 5, with a caption) for the foreign key of `media_object.message_id`. */
-    fun dmMessage(messageId: ByteArray, kind: Long = 5L, direction: String = "out", state: String = "queued", bodyEnvSize: Int = 60) {
+    /**
+     * A DM contact, conversation and message (a media message, kind 5, with a caption) for the foreign key of
+     * `media_object.message_id`; [body] is the `body_env` (null for a reaction).
+     */
+    fun dmMessage(
+        messageId: ByteArray,
+        kind: Long = 5L,
+        direction: String = "out",
+        state: String = "queued",
+        body: ByteArray? = mBytes(60, 0x73),
+    ) {
+        dmConversation()
+        db.exec(
+            "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, sort_minute, minute_index, timer_code, " +
+                "body_env, state) VALUES (?, ?, ?, ?, 600, 600, 0, 0, ?, ?)",
+            listOf(messageId, mBytes(16, 0xC0), direction, kind, body, state),
+        )
+    }
+
+    /** The contact [DEST] and its conversation, once. */
+    fun dmConversation() {
         if (count("dm_contact", "contact_id = ?", DEST) == 0L) {
             db.exec(
                 "INSERT INTO dm_contact(contact_id, identity_pk, card_env, card_index, trust_state, source, establishment) " +
@@ -263,11 +285,6 @@ internal class MediaFixture(
             )
             db.exec("INSERT INTO dm_conversation(conversation_id, contact_id) VALUES (?, ?)", listOf(mBytes(16, 0xC0), DEST))
         }
-        db.exec(
-            "INSERT INTO dm_message(message_id, conversation_id, direction, kind, author_minute, sort_minute, minute_index, timer_code, " +
-                "body_env, state) VALUES (?, ?, ?, ?, 600, 600, 0, 0, ?, ?)",
-            listOf(messageId, mBytes(16, 0xC0), direction, kind, mBytes(bodyEnvSize, 0x73), state),
-        )
     }
 
     private fun count(table: String, where: String, vararg args: Any?): Long =

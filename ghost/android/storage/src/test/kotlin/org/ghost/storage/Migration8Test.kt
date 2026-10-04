@@ -363,7 +363,7 @@ class Migration8Test {
         assertEquals("the bundle operation has no item and stays", 1L, db.queryLong("SELECT count(*) FROM dm_outbound_op WHERE purpose = 'bundle'"))
         assertEquals("a reaction on another message stays", 1L, db.queryLong("SELECT count(*) FROM dm_reaction"))
         // A media message (kind 5, a caption of 28 bytes) and its outbound item (kind 5) are admitted now.
-        MediaFixture(db).dmMessage(bytes(16, 0x95), bodyEnvSize = 28)
+        MediaFixture(db).dmMessage(bytes(16, 0x95), body = bytes(28, 0x73))
         db.exec(
             "INSERT INTO dm_outbound_item(item_id, contact_id, message_ref, kind, deadline_hour, state) VALUES (?, ?, ?, 5, 360000, 'pending')",
             listOf(bytes(16, 0x96), MediaFixture.DEST, bytes(16, 0x95)),
@@ -510,7 +510,7 @@ class Migration8Test {
             assertTrue(midRebuild > 0)
             val rows = JdbcSqlExecutor(file.path).use { db ->
                 assertEquals((1..7).toList(), MigrationRunner(db, upToV7).migrate())
-                MediaFixture(db).dmMessage(bytes(16, 0x91), kind = 1L, bodyEnvSize = 60)
+                MediaFixture(db).dmMessage(bytes(16, 0x91), kind = 1L, body = bytes(60, 0x73))
                 db.exec("INSERT INTO dm_reaction(target_id, from_self, grapheme_env) VALUES (?, 1, ?)", listOf(bytes(16, 0x91), bytes(30, 1)))
                 val rows = db.dump()
                 assertThrows(IllegalStateException::class.java) { MigrationRunner(FailAtExec(db, midRebuild)).migrate() }
