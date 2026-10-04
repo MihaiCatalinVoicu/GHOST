@@ -263,6 +263,33 @@ class Migration8Test {
     // ------------------------------------------------------------------ the rebuild (G-9)
 
     /**
+     * The negative control of the five-table rebuild (finding F-S3-1 of the design's section 22.4). Section 13.6 names two
+     * tables to rebuild, `dm_message` and `dm_outbound_item`; but with foreign keys on — they are, and
+     * `PRAGMA foreign_keys` is a no-op inside a transaction, so the migration cannot turn them off — `DROP TABLE` of a
+     * parent performs an implicit `DELETE` of its rows first, and that fires every `ON DELETE CASCADE` into the children.
+     * A rebuild that drops `dm_message` while its children are alive would silently delete every outbound item, operation,
+     * pending send and reaction of the user. This runs exactly that on the populated v7 and shows the rows go; the
+     * migration under test drops the children first and re-creates them (`aPopulatedV7DatabaseKeepsEveryRow...`), which
+     * is why the rebuilt set is five tables and not two.
+     */
+    @Test
+    fun droppingTheParentFirstWouldHaveCascadedAwayTheChildrenSoTheRebuildCoversTheWholeSubtree() = populatedV7().use { db ->
+        val children = listOf("dm_outbound_item", "dm_outbound_op", "dm_pending_send", "dm_reaction")
+        val rowsOf = { children.associateWith { db.queryLong("SELECT count(*) FROM $it")!! } }
+        assertEquals(mapOf("dm_outbound_item" to 4L, "dm_outbound_op" to 3L, "dm_pending_send" to 1L, "dm_reaction" to 3L), rowsOf())
+        assertEquals("foreign keys are on, as in the application", 1L, db.queryLong("PRAGMA foreign_keys"))
+        db.transaction {
+            db.exec("DROP TABLE dm_message")
+            // the children are still tables with their rows' keys intact, and the rows that named a message are gone
+            val after = rowsOf()
+            assertEquals("the item that names a message went with it; the control item (no message) stayed", 1L, after.getValue("dm_outbound_item"))
+            assertEquals("the operation of a lost item went with it; the bundle operation stayed", 1L, after.getValue("dm_outbound_op"))
+            assertEquals(0L, after.getValue("dm_pending_send"))
+            assertEquals(0L, after.getValue("dm_reaction"))
+        }
+    }
+
+    /**
      * The G-9 test of F9 §21.13 point 9, for the rebuild of Phase 11: the five rebuilt tables differ from v7 in the
      * kind lists and the envelope checks of `dm_message` and `dm_outbound_item` and **in nothing else** — written again
      * here as textual substitutions on the v7 text, so that the migration's own derivation and this list cannot drift

@@ -301,8 +301,15 @@ class DmExpiredRowLintTest {
             sources.any { it.name == "Schema.kt" },
         )
         val found = DmExpiredRowLint.readQueriesOverExpiringRows(sources)
-        val registered = (DmDaoQueries.registered + DmSweepQueries.registered)
-            .map { normalize(it.sql) }.toSet()
+        // The media DAOs (Phase 11 S3) read `dm_message` to apply the message's expiry filter to the objects of that message:
+        // those literals are registered with [MediaExpiredRowLint], which runs each against the media world (rows of the
+        // media tables, their messages) and is armed by its own scan; the ones that name `dm_message` are counted here.
+        val registeredByMedia = MediaExpiredRowLint.allRegistered()
+            .filter { Regex("\\bdm_message\\b", RegexOption.IGNORE_CASE).containsMatchIn(it.sql) }
+        assertTrue("the media registry holds no query over dm_message; the join would be unguarded", registeredByMedia.size >= 14)
+        val registered = (
+            DmDaoQueries.registered.map { it.sql } + DmSweepQueries.registered.map { it.sql } + registeredByMedia.map { it.sql }
+            ).map { normalize(it) }.toSet()
         val unregistered = found.filter { normalize(it.sql) !in registered }
         assertEquals(
             "a DM read path over an expiring table is not registered with the expired-row lint " +
