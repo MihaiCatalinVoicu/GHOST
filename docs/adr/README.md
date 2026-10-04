@@ -66,8 +66,8 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 | [ADR-46](ADR-46-media-hygiene.md) | Igiena media: re-encodare obligatorie, decodare izolată, fără plaintext pe disc |
 | [ADR-47](ADR-47-ephemeral-view-once-media.md) | Media efemeră și „vezi o singură dată” (precizează ADR-27 punctele 10 și 12) |
 | [ADR-58](ADR-58-ci-local.md) | CI-ul rulează local, nu prin GitHub Actions (regulă oficială a proprietarului) |
-| [ADR-59](ADR-59-wallet-sync.md) | Wallet Sync (**propus**, neaprobat; ar suprascrie ADR-02/03/23; obiecții consemnate) |
-| [ADR-60](ADR-60-version-migration-wipe.md) | Migrare între versiuni: ștergere locală și dezinstalare comandate de manifest, `kill_flag` (**propus**, neaprobat; condiții consemnate) |
+| [ADR-59](ADR-59-wallet-sync.md) | Wallet Sync fără issuer: seed-ul wallet-ului local în Keystore + blob criptat client-side din seed pe relay-uri (**aprobat** 2026-10-04; varianta cu issuer respinsă) |
+| [ADR-60](ADR-60-version-migration-wipe.md) | Migrare între versiuni: `kill_flag` în manifestul semnat comandă ștergerea locală automată și, opțional, dezinstalarea (**aprobat** 2026-10-04; reziduu acceptat) |
 
 ## Retrase
 
