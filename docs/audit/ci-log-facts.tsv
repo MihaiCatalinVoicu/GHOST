@@ -1,0 +1,157 @@
+# ci-log-facts.tsv: facts read from the job logs (and, where marked, from the GitHub API) of the runs in ci-runs.tsv, on 2026-10-04. Read-only; the log text itself is not kept.
+# 'value' is a count, a verbatim log line (timestamp removed) or a short summary; 'how_extracted' says exactly how, so the owner can repeat it while the logs still exist (90 days: the oldest cited runs expire around 2026-12-27).
+run_id	job_id	job	fact	value	how_extracted
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	self_test_ok_lines	736	count of log lines containing 'self-test ok:'
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	self_test_fail_lines	0	count of log lines containing 'SELF-TEST FAIL'
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	self_test_skipped_lines	0	count of log lines containing 'self-test skipped:'
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	g_r7_case	self-test ok: dm-golden-lock fails closed on an unreadable base	the log line of the G-R7 unreadable-base case
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_passed	840	sum of 'N passed' over the 'test result:' lines of the step 'cargo test --workspace --locked'
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_failed	0	same, 'N failed'
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_ignored	63	same, 'N ignored'
+36434212692	108967814651	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_result_lines	116	number of 'test result:' lines in that step
+36434212692	108967815891	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_ok_lines	706	count of log lines containing 'self-test ok:'
+36434212692	108967815891	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_fail_lines	1	count of log lines containing 'SELF-TEST FAIL'
+36434212692	108967815891	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_fail_line	SELF-TEST FAIL: dm-golden-lock fails closed on an unreadable base failed without reporting: cannot read Cargo.lock at the base 'no-such-revision'	the log line
+36434212692	108967815891	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_skipped_line	self-test skipped: cargo-deny bans (cargo-deny not installed)	the log line
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	self_test_ok_lines	736	count of log lines containing 'self-test ok:'
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	self_test_fail_lines	0	count of log lines containing 'SELF-TEST FAIL'
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	self_test_skipped_lines	0	count of log lines containing 'self-test skipped:'
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	g_r7_case	self-test ok: dm-golden-lock fails closed on an unreadable base	the log line of the G-R7 unreadable-base case
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_passed	840	sum of 'N passed' over the 'test result:' lines of the step 'cargo test --workspace --locked'
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_failed	0	same, 'N failed'
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_ignored	63	same, 'N ignored'
+37148020925	111275864804	rust (fmt, clippy -D warnings, test, cargo-deny, cargo-audit, client allowlist)	cargo_test_workspace_result_lines	116	number of 'test result:' lines in that step
+37148020925	111275864769	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_ok_lines	706	count of log lines containing 'self-test ok:'
+37148020925	111275864769	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_fail_lines	1	count of log lines containing 'SELF-TEST FAIL'
+37148020925	111275864769	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_fail_line	SELF-TEST FAIL: dm-golden-lock fails closed on an unreadable base failed without reporting: cannot read Cargo.lock at the base 'no-such-revision'	the log line
+37148020925	111275864769	static gates (placeholder, logging, manifest, dependency allowlist, proto)	self_test_skipped_line	self-test skipped: cargo-deny bans (cargo-deny not installed)	the log line
+36411889916	108893798171	NI-DM1..3 twins, JD7 withhold variant, T34, JD8, privacy mutants, S-DM1 controls	job_conclusion	success	job list
+36411889916	108893798456	T32 world at the gate scale (seed pair 0, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798465	T32 world at the gate scale (seed pair 1, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798468	T32 world at the gate scale (seed pair 6, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798470	T32 world at the gate scale (seed pair 9, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798497	T32 world at the gate scale (seed pair 3, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798507	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	report_check_failed_joins	JD5,JD6,JD7	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798519	T32 world at the gate scale (seed pair 5, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798531	T32 world at the gate scale (seed pair 2, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798561	T32 world at the gate scale (seed pair 7, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	108893798593	T32 world at the gate scale (seed pair 8, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36411889916	-	dm-privacy-gate summary	pairs_failing_JD5	10 of 10: 0,1,2,3,4,5,6,7,8,9	aggregation of the per-pair rows above
+36411889916	-	dm-privacy-gate summary	pairs_failing_JD6	7 of 10: 1,2,3,4,5,7,8	aggregation of the per-pair rows above
+36411889916	-	dm-privacy-gate summary	pairs_failing_JD7	1 of 10: 4	aggregation of the per-pair rows above
+36851892860	110335242948	NI-DM1..3 twins, JD7 withhold variant, T34, JD8, privacy mutants, S-DM1 controls	job_conclusion	success	job list
+36851892860	110335243142	T32 world at the gate scale (seed pair 1, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243383	T32 world at the gate scale (seed pair 0, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243389	T32 world at the gate scale (seed pair 9, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243398	T32 world at the gate scale (seed pair 3, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243399	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	report_check_failed_joins	JD5,JD6,JD7	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243401	T32 world at the gate scale (seed pair 5, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243412	T32 world at the gate scale (seed pair 8, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243476	T32 world at the gate scale (seed pair 6, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243477	T32 world at the gate scale (seed pair 2, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	110335243544	T32 world at the gate scale (seed pair 7, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36851892860	-	dm-privacy-gate summary	pairs_failing_JD5	10 of 10: 0,1,2,3,4,5,6,7,8,9	aggregation of the per-pair rows above
+36851892860	-	dm-privacy-gate summary	pairs_failing_JD6	7 of 10: 1,2,3,4,5,7,8	aggregation of the per-pair rows above
+36851892860	-	dm-privacy-gate summary	pairs_failing_JD7	1 of 10: 4	aggregation of the per-pair rows above
+36995511199	110801200725	NI-DM1..3 twins, JD7 withhold variant, T34, JD8, privacy mutants, S-DM1 controls	job_conclusion	success	job list
+36995511199	110801200921	T32 world at the gate scale (seed pair 1, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201010	T32 world at the gate scale (seed pair 5, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201055	T32 world at the gate scale (seed pair 6, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	report_check_failed_joins	JD5,JD6,JD7	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201112	T32 world at the gate scale (seed pair 8, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201148	T32 world at the gate scale (seed pair 2, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201165	T32 world at the gate scale (seed pair 7, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201167	T32 world at the gate scale (seed pair 9, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201231	T32 world at the gate scale (seed pair 0, N = 600, 42 days)	report_check_failed_joins	JD5	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	110801201285	T32 world at the gate scale (seed pair 3, N = 600, 42 days)	report_check_failed_joins	JD5,JD6	distinct 'DM-REPORT-FAIL: JDn failed' lines of the job log
+36995511199	-	dm-privacy-gate summary	pairs_failing_JD5	10 of 10: 0,1,2,3,4,5,6,7,8,9	aggregation of the per-pair rows above
+36995511199	-	dm-privacy-gate summary	pairs_failing_JD6	7 of 10: 1,2,3,4,5,7,8	aggregation of the per-pair rows above
+36995511199	-	dm-privacy-gate summary	pairs_failing_JD7	1 of 10: 4	aggregation of the per-pair rows above
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	    java.lang.AssertionError at DmPrivacyWorldTest.kt:78	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD5: 0 PASS lines over a non-empty sample for 1 seed pairs	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD5 failed	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD6: 0 PASS lines over a non-empty sample for 1 seed pairs	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD6 failed	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD7: 0 PASS lines over a non-empty sample for 1 seed pairs	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD7 failed	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD5: 0 lines that say which TIMER_SET path they covered for 1 seed pairs	grep of DM-REPORT-FAIL and AssertionError
+36995511199	110801201093	T32 world at the gate scale (seed pair 4, N = 600, 42 days)	log_line	DM-REPORT-FAIL: JD7: 0 lines that say by which trigger each later attempt opened, for 1 expected	grep of DM-REPORT-FAIL and AssertionError
+37108461415	111161496202	T2 privacy mutants M1–M24 (release)	job_conclusion	success	job list
+37108461415	111161496284	T2 exit gate (seed pair 5, N = 2000, release)	job_conclusion	success	job list
+37108461415	111161496303	T2 exit gate (seed pair 9, N = 2000, release)	job_conclusion	failure	job list
+37108461415	111161496303	T2 exit gate (seed pair 9, N = 2000, release)	failing_check_line	NI-1 across cells: FAIL relay calls differ before the activation cell: client 424: call 217 at 1820617859 (horizon 1820620800)	grep of 'NI-1... : FAIL'
+37108461415	111161496309	T2 exit gate (seed pair 4, N = 2000, release)	job_conclusion	success	job list
+37108461415	111161496351	T2 exit gate (seed pair 6, N = 2000, release)	job_conclusion	success	job list
+37108461415	111161496353	T2 exit gate (seed pair 3, N = 2000, release)	job_conclusion	failure	job list
+37108461415	111161496353	T2 exit gate (seed pair 3, N = 2000, release)	failing_check_line	NI-1d: FAIL drop writes differ at write 3 (12 and 12 writes)	grep of 'NI-1... : FAIL'
+37108461415	111161496360	T2 exit gate (seed pair 2, N = 2000, release)	job_conclusion	failure	job list
+37108461415	111161496360	T2 exit gate (seed pair 2, N = 2000, release)	failing_check_line	NI-1d: FAIL drop writes differ at write 1 (9 and 9 writes)	grep of 'NI-1... : FAIL'
+37108461415	111161496399	T2 exit gate (seed pair 7, N = 2000, release)	job_conclusion	success	job list
+37108461415	111161496408	T2 exit gate (seed pair 1, N = 2000, release)	job_conclusion	success	job list
+37108461415	111161496421	T2 exit gate (seed pair 0, N = 2000, release)	job_conclusion	success	job list
+37108461415	111161496442	T2 exit gate (seed pair 8, N = 2000, release)	job_conclusion	success	job list
+36294876965	108551761461	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 60 s, 1513396 executions, 24809 exec/s, cov 1220, PASS 1513396	per-target result line of the job log
+36294876965	108551761461	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 60 s, 2118 executions, 2118 exec/s, cov 3858, FAIL crash	per-target result line of the job log
+36294876965	108551761461	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 60 s, 125468 executions, 2056 exec/s, cov 4494, PASS 125468	per-target result line of the job log
+36294876965	108551761461	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 60 s, 22022087 executions, 361017 exec/s, cov 336, PASS 22022087	per-target result line of the job log
+36294876965	108551761461	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 60 s, 2717618 executions, 44551 exec/s, cov 4161, PASS 2717618	per-target result line of the job log
+36294876965	108551761461	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 60 s, 918349 executions, 15054 exec/s, cov 4108, PASS 918349	per-target result line of the job log
+36400466751	108856830813	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 600 s, 11303901 executions, 18808 exec/s, cov 1226, PASS 11303901	per-target result line of the job log
+36400466751	108856830813	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 600 s, 114901 executions, 990 exec/s, cov 3882, FAIL crash	per-target result line of the job log
+36400466751	108856830813	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 600 s, 608972 executions, 1013 exec/s, cov 4500, PASS 608972	per-target result line of the job log
+36400466751	108856830813	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 600 s, 84535505 executions, 140658 exec/s, cov 336, PASS 84535505	per-target result line of the job log
+36400466751	108856830813	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 600 s, 18492229 executions, 30769 exec/s, cov 4197, PASS 18492229	per-target result line of the job log
+36400466751	108856830813	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 600 s, 7393186 executions, 12301 exec/s, cov 4172, PASS 7393186	per-target result line of the job log
+36546563585	109334257085	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 600 s, 23788303 executions, 39581 exec/s, cov 1228, PASS 23788303	per-target result line of the job log
+36546563585	109334257085	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 600 s, 17739 executions, 1971 exec/s, cov 3880, FAIL crash	per-target result line of the job log
+36546563585	109334257085	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 600 s, 940107 executions, 1564 exec/s, cov 4503, PASS 940107	per-target result line of the job log
+36546563585	109334257085	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 600 s, 208411371 executions, 346774 exec/s, cov 336, PASS 208411371	per-target result line of the job log
+36546563585	109334257085	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 600 s, 25717102 executions, 42790 exec/s, cov 4163, PASS 25717102	per-target result line of the job log
+36546563585	109334257085	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 600 s, 8726592 executions, 14520 exec/s, cov 4170, PASS 8726592	per-target result line of the job log
+36693233724	109815076363	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 600 s, 24620498 executions, 40965 exec/s, cov 1228, PASS 24620498	per-target result line of the job log
+36693233724	109815076363	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 600 s, 11683 executions, 2920 exec/s, cov 3880, FAIL crash	per-target result line of the job log
+36693233724	109815076363	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 600 s, 1172648 executions, 1951 exec/s, cov 4503, PASS 1172648	per-target result line of the job log
+36693233724	109815076363	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 600 s, 200714896 executions, 333968 exec/s, cov 336, PASS 200714896	per-target result line of the job log
+36693233724	109815076363	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 600 s, 32277619 executions, 53706 exec/s, cov 4163, PASS 32277619	per-target result line of the job log
+36693233724	109815076363	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 600 s, 8146980 executions, 13555 exec/s, cov 4173, PASS 8146980	per-target result line of the job log
+36842614596	110305024362	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 600 s, 24959115 executions, 41529 exec/s, cov 1228, PASS 24959115	per-target result line of the job log
+36842614596	110305024362	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 600 s, 27325 executions, 3036 exec/s, cov 3880, FAIL crash	per-target result line of the job log
+36842614596	110305024362	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 600 s, 1100903 executions, 1831 exec/s, cov 4503, PASS 1100903	per-target result line of the job log
+36842614596	110305024362	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 600 s, 235930530 executions, 392563 exec/s, cov 336, PASS 235930530	per-target result line of the job log
+36842614596	110305024362	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 600 s, 38230286 executions, 63611 exec/s, cov 4197, PASS 38230286	per-target result line of the job log
+36842614596	110305024362	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 600 s, 8992720 executions, 14962 exec/s, cov 4172, PASS 8992720	per-target result line of the job log
+36987267508	110775030775	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 600 s, 33664110 executions, 56013 exec/s, cov 1228, PASS 33664110	per-target result line of the job log
+36987267508	110775030775	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 600 s, 113490 executions, 2364 exec/s, cov 3882, FAIL crash	per-target result line of the job log
+36987267508	110775030775	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 600 s, 1053498 executions, 1752 exec/s, cov 4503, PASS 1053498	per-target result line of the job log
+36987267508	110775030775	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 600 s, 197439527 executions, 328518 exec/s, cov 336, PASS 197439527	per-target result line of the job log
+36987267508	110775030775	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 600 s, 29837285 executions, 49646 exec/s, cov 4195, PASS 29837285	per-target result line of the job log
+36987267508	110775030775	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 600 s, 8340695 executions, 13878 exec/s, cov 4172, PASS 8340695	per-target result line of the job log
+37110091953	111166136462	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	card: 600 s, 28799216 executions, 47918 exec/s, cov 1228, PASS 28799216	per-target result line of the job log
+37110091953	111166136462	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	bundle: 600 s, 80153 executions, 2585 exec/s, cov 3882, FAIL crash	per-target result line of the job log
+37110091953	111166136462	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	intro_inner: 600 s, 1154870 executions, 1921 exec/s, cov 4503, PASS 1154870	per-target result line of the job log
+37110091953	111166136462	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	l0: 600 s, 256659961 executions, 427054 exec/s, cov 336, PASS 256659961	per-target result line of the job log
+37110091953	111166136462	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	tlvs: 600 s, 24626369 executions, 40975 exec/s, cov 4194, PASS 24626369	per-target result line of the job log
+37110091953	111166136462	dm-fuzz (card, bundle, intro inner layer, L0, TLVs, Olm messages; fixed budget each)	fuzz_target_result	olm_message: 600 s, 8616934 executions, 14337 exec/s, cov 4172, PASS 8616934	per-target result line of the job log
+36993321790	110794281337	DM exit gate (crash enumeration at every event, seeded worlds, mutants)	report_check_line	[dm-report-check] OK (gate)	grep
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	blind_sign stages (RSA-2048): 100000 samples (50127 fixed, 49873 random); |t| above 4.5 fails only the asserted stage	grep of '[asserted]', '[reported]' and the header line
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	[asserted] private-key operation (rsa_decrypt: base blinding, CRT, unblinding): median 1620170 ns; Welch t, all samples: -0.621; below the 90th percentile (45176 fixed, 44825 random): 0.636	grep of '[asserted]', '[reported]' and the header line
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	[reported] range checks (0 < B < n, CheckedSigner and ReferenceSigner; public): median 1603 ns; Welch t, all samples: 0.526; below the 90th percentile (45082 fixed, 44922 random): 2.055	grep of '[asserted]', '[reported]' and the header line
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	[reported] library re-encryption check (s'^e == B in rsa; public): median 65639 ns; Welch t, all samples: -0.743; below the 90th percentile (45033 fixed, 44968 random): 0.915	grep of '[asserted]', '[reported]' and the header line
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	[reported] fault check (CheckedSigner, s'^e == B in num-bigint-dig; public): median 160448 ns; Welch t, all samples: -0.740; below the 90th percentile (45025 fixed, 44976 random): 0.349	grep of '[asserted]', '[reported]' and the header line
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	[reported] whole CheckedSigner<ReferenceSigner>::blind_sign (includes the public stages): median 1876511 ns; Welch t, all samples: -0.363; below the 90th percentile (45134 fixed, 44867 random): -0.259	grep of '[asserted]', '[reported]' and the header line
+37112903139	111174117672	signer timing (Welch t-test, fixed vs random blinded inputs)	signer_timing_line	[reported] CRT exponentiation without base blinding (not a production call): median 1346894 ns; Welch t, all samples: 2.335; below the 90th percentile (45034 fixed, 44967 random): 1.610	grep of '[asserted]', '[reported]' and the header line
+37105038448	111151765891	vodozemac test suite at the pinned version (default and all features)	vendor_tests_line	vodozemac 0.11.0: 337 tests passed over both runs (the library's unit tests: 148 164  with the five fuzz_corpus_ tests filtered out)	grep of 'tests passed'
+37105038448	111151765989	libcrux crates' own suites at the pinned versions (portable build)	vendor_tests_line	libcrux: 160 tests passed over 9 suites (portable build)	grep of 'tests passed'
+37110195190	111166429823	DM state models (EM-1 at three sends per side, EM-2 at three in flight, release)	state_model_line	EM-1: 2296274 states	grep of 'EM-n: N states'
+37110195190	111166429823	DM state models (EM-1 at three sends per side, EM-2 at three in flight, release)	state_model_line	EM-2: 2851029 states, 3567054 seal decisions (wire 3)	grep of 'EM-n: N states'
+37110195190	111166429823	DM state models (EM-1 at three sends per side, EM-2 at three in flight, release)	test_result_line	test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 143.20s	grep
+36434212687	108967815152	PQ1 and PQ5 hold PM-32 (mutant gate)	pq_mutants_unpatched_line	[pq-mutants] unpatched: 16 PQ1 and PQ5 tests passed	grep
+36434212687	108967815152	PQ1 and PQ5 hold PM-32 (mutant gate)	pq_mutants_killed_lines	10	count of '[pq-mutants] <patch> killed by N test(s)' lines
+36434212771	108967817824	ProVerif model (M-1, M-2, M-3, M-6 step 3, M-7 structure; not M-4, M-5)	pq_model_line	pq-model: 48 queries in 8 models checked against expected.txt	grep
+36434212670	108967816635	T2 exit gate (seed pair 0, N = 2000, release)	t2_result_line	T2 RESULT: PASS	grep
+37109290947	111163915623	monero regtest (pinned binaries, digest auth, issuer rail scenario)	test_result_line	test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1103.58s	grep
+37108821939	-	emulator (API 29, x86_64)	failed_steps	KVM (a runner without it reports not run, which is red) | check the emulator report (not run is red)	gh api repos/MihaiCatalinVoicu/GHOST/actions/runs/37108821939/jobs, steps with conclusion failure
+37108821939	-	emulator (API 35, x86_64)	failed_steps	KVM (a runner without it reports not run, which is red) | check the emulator report (not run is red)	gh api repos/MihaiCatalinVoicu/GHOST/actions/runs/37108821939/jobs, steps with conclusion failure
+-	-	repository	actions_artifacts	98 artifacts, 270587903 bytes (270.6 MB; 258.1 MiB), created 2026-10-01T09:22:39Z to 2026-10-03T19:30:51Z	gh api --paginate repos/MihaiCatalinVoicu/GHOST/actions/artifacts
+-	-	repository	artifact_11271989988	dm-fuzz, 149263 bytes, created 2026-10-03T11:12:37Z, expires 2026-10-06T11:12:33Z	same listing
+-	-	repository	log_and_artifact_retention	{"days":90,"maximum_allowed_days":400}	gh api repos/MihaiCatalinVoicu/GHOST/actions/permissions/artifact-and-log-retention

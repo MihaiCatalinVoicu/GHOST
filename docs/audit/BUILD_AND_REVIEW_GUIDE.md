@@ -3,9 +3,10 @@
 | Field | Value |
 |---|---|
 | Purpose | How an auditor under NDA gets the source, builds each component with the pinned toolchains, runs tests and gates, and finds the specification of each module. |
-| Base commit | `a0f3f58ef76bfd4e45f73fd0f1eaf9a89d5750e5` (2026-10-03). The audit itself should use a frozen tag (section 1.2). |
-| Status of the commands | Commands marked **[CI]** are copied from the workflows that ran them on the project's runners; **[doc]** are from repository documents; **[R]** were run for this package (only the gate scripts, `EVIDENCE_INDEX.md` section 1). **No build was run for this package** (documentation-only task), so build commands are as recorded by the project, not re-verified here. |
-| Companion files | `AUDIT_SCOPE.md`, `EVIDENCE_INDEX.md`, `KNOWN_ISSUES.md`, `AUDITOR_RFQ.md`. |
+| Handling | **Confidential, for auditors under NDA.** |
+| Base commit | `a0f3f58ef76bfd4e45f73fd0f1eaf9a89d5750e5` (2026-10-03; revised 2026-10-04 after two adversarial reviews). The audit itself should use a frozen tag (section 1.2). |
+| Status of the commands | Commands marked **[CI]** are copied from the workflows that ran them on the project's runners; **[doc]** are from repository documents; **[R]** were run for this package (on 2026-10-03 the gate scripts, `EVIDENCE_INDEX.md` section 1; on 2026-10-04 the hand-over recipes of section 1.2, the host-library build of section 3.2 on a clean `git archive` copy, test listings, and one self-test case). The Gradle builds, the Android native build and the test suites were **not** re-run for this package, so those commands are as recorded by the project. |
+| Companion files | `AUDIT_SCOPE.md`, `EVIDENCE_INDEX.md`, `KNOWN_ISSUES.md`, `AUDITOR_RFQ.md`; the static CI evidence `ci-runs.tsv` and `ci-log-facts.tsv`; the scripts `tools/measure.sh` and `tools/check-package.sh`. |
 
 ---
 
@@ -21,24 +22,33 @@
 
 **Do not add auditors as GitHub collaborators.** On a repository owned by a personal account GitHub grants collaborators write access only ("Collaborators can't have read-only access", https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-user-account-settings/permission-levels-for-a-personal-account-repository , accessed 2026-10-03), and the CI of this repository runs on **self-hosted runners on the owner's laptop** that execute any workflow a pushed branch contains, with passwordless `sudo` and Docker inside the runner distribution (`docs/ci-self-hosted.md` §10). A collaborator could therefore run code on the owner's machine. Use one of:
 
-1. **A signed source bundle (recommended).** Owner side, from a clean checkout of the frozen commit:
+1. **A signed source bundle (recommended).** Owner side, from a clean checkout of the frozen commit (an annotated tag needs `user.name` and `user.email` to be configured):
 
    ```bash
-   git tag -a audit-rc1 -m "GHOST audit snapshot" <commit>        # sign the tag if the owner has a signing key; commits themselves are unsigned (FR-8.1 gap)
+   git tag -a audit-rc1 -m "GHOST audit snapshot" <commit>        # sign the tag (-s) if the owner has a signing key; commits themselves are unsigned (FR-8.1 gap)
    git bundle create ghost-audit-rc1.bundle audit-rc1               # full history reachable from the tag
    sha256sum ghost-audit-rc1.bundle > ghost-audit-rc1.bundle.sha256
    git rev-parse audit-rc1^{commit}                                  # communicate this id and the SHA-256 over a separate channel
    ```
 
-   Auditor side: `git bundle verify ghost-audit-rc1.bundle && git clone ghost-audit-rc1.bundle ghost && cd ghost && git checkout audit-rc1 && git rev-parse HEAD`, then compare the id with the one received separately. (The bundle is not authenticated by git: commits are unsigned, so the out-of-band hash is the integrity check.)
-2. **A snapshot without history**, for an auditor who does not need `git blame`: `git archive --format=tar.gz --prefix=ghost-audit-rc1/ audit-rc1 ghost docs output .github LICENSE README.md > ghost-audit-rc1.tar.gz` (excludes `legacy/`, 80 files of quarantined prototypes that are not built or shipped).
+   Auditor side, in an empty directory **outside any repository**, with the bundle and its `.sha256` file side by side:
+
+   ```bash
+   sha256sum -c ghost-audit-rc1.bundle.sha256 && git clone ghost-audit-rc1.bundle ghost && cd ghost && git bundle verify ../ghost-audit-rc1.bundle && git checkout audit-rc1 && git rev-parse HEAD
+   ```
+
+   Then compare the printed commit id, and the first field of the `.sha256` file, with the values received through the separate channel. `git clone` prints `warning: remote HEAD refers to nonexistent ref, unable to checkout`: that is expected, the bundle carries only the tag, and the next steps check it out. `git bundle verify` needs a repository, so it comes after the clone (run outside a repository it stops with `error: need a repository to verify a bundle`, and a chain that starts with it never clones). The bundle is not authenticated by git: commits are unsigned, so the out-of-band hash and commit id are the integrity check. [R, 2026-10-04: the owner-side and auditor-side sequences were run end to end on a throwaway clone of this repository; `tools/check-package.sh` repeats them on a small repository.]
+2. **A snapshot without history**, for an auditor who does not need `git blame`: `git archive --format=tar.gz --prefix=ghost-audit-rc1/ audit-rc1 ghost docs output .github .gitattributes .gitignore LICENSE README.md > ghost-audit-rc1.tar.gz` (excludes `legacy/`, 80 files of quarantined prototypes that are not built or shipped; keeps `.gitattributes`, whose `eol=lf` and `binary` rules matter if the tree is committed again on Windows). [R, 2026-10-04: runs as written; without the two dot files in the list they are missing from the archive.]
 3. **A separate private repository in a GitHub organisation** (where read-only roles exist) with **Actions disabled** and no runners registered. This is the only variant that gives an auditor `git` access without a file hand-over; the owner must create the organisation and mirror the tag.
+
+**What option 1 also hands over.** The full history carries the author and committer e-mail addresses of all 391 commits at `a0f3f58`: 371 of them the owner's personal address, 1 a second personal address (`KNOWN_ISSUES.md` KI-SUP-9), although ADR-39 point 4 says future commits use a no-reply identity. Choose option 2 if that is not acceptable.
 
 Deliver by an encrypted channel named in the NDA. Do not give the auditor any CI token, runner credential, signing key, Monero wallet or onion key: **none of these is in the repository** (the entitlement-schedule gate refuses sealed key files, key-load files and onion secret keys outside the test fixtures), and the stagenet schedule key, custody secret and onion keys live outside the repository by design (`ghost/protocol/entitlement/README.md`).
 
 ### 1.3 What to include beside the source
 
 * This `docs/audit/` directory (it is inside the repository), and the output of the gates at the frozen commit (`run-all.sh`, `self-test.sh`, the JUnit XML sums) so the auditor can compare.
+* The **CI evidence**: `ci-runs.tsv` and `ci-log-facts.tsv` are static copies of what this package cites, because the auditor has no account on the private repository and GitHub keeps job logs for only 90 days (artifacts 3 days). If the owner wants to give more, export the logs of the cited runs while they exist (`gh run view <id> --repo MihaiCatalinVoicu/GHOST --log`) and the gate reports of the frozen tag; the retention can be raised up to 400 days (`gh api repos/MihaiCatalinVoicu/GHOST/actions/permissions/artifact-and-log-retention`, an owner setting).
 * A **dependency snapshot** if the auditor works offline or wants byte-identical inputs: `cd ghost && cargo vendor --locked` (the checksums are already in `Cargo.lock`), and a Gradle offline cache; Gradle dependency verification (`ghost/android/gradle/verification-metadata.xml`) pins every Android artefact by SHA-256. (Inferred suggestion; the project has not produced such a snapshot.)
 * Confirmation that the frozen tag embeds an Entitlement Schedule covering the audit period: the committed schedule is stagenet seq 1, access weeks 2957..2989 (ISO 2026-W37 to 2027-W16); a build embedding it must ship by week 2964 (Monday 2026-10-26) and seq 2 is due to releases by week 2982 (`ghost/protocol/entitlement/README.md`). An audit after those dates needs a later schedule signed with the (stagenet) schedule key held by the owner.
 
@@ -53,9 +63,9 @@ Deliver by an encrypted channel named in the NDA. Do not give the auditor any CI
 | cargo-ndk | **4.1.2** (`cargo install cargo-ndk --version 4.1.2 --locked`) | `ghost/scripts/build-native.sh` | The script refuses another version |
 | Android NDK | **30.0.16248370** | CI runner image (`docs/ci-self-hosted.md` §2.2); `ANDROID_NDK_HOME` | |
 | Android SDK | platforms `android-37.0` (and `37.2` on the runners), build-tools `37.0.0` (and `36.0.0`); compile/target SDK **37**, min SDK **29** | `ghost/android/gradle/libs.versions.toml`; runner image | `ANDROID_HOME` or `local.properties` (`sdk.dir=`) |
-| JDK | **17** (Temurin 17 in CI; 17.0.20.1 on the author's machine) | `jvmToolchain(17)` in every module | |
+| JDK | **17** (Temurin 17.0.20 in CI; 17.0.20.1 on the author's machine) | `compileOptions` source and target compatibility `VERSION_17` in each of the nine modules' `build.gradle.kts`; there is **no** `jvmToolchain`, so the JDK that runs Gradle also compiles | `ghost/docs/DEVELOPMENT.md` still says `jvmToolchain(17)` (`KNOWN_ISSUES.md` section 7) |
 | Gradle | **9.7.1** via the wrapper; distribution SHA-256 `acd53f1e…804d20a` | `ghost/android/gradle/wrapper/gradle-wrapper.properties` | `org.gradle.jvmargs=-Xmx3g`, build cache and configuration cache on |
-| AGP / Kotlin | **9.4.0** / **2.4.20** | `libs.versions.toml` | `android.builtInKotlin=false` until migration GHOST-1 |
+| AGP / Kotlin | **9.4.0** / **2.4.20** | `libs.versions.toml` | The modules apply only `com.android.application` or `com.android.library` (AGP 9's built-in Kotlin; no Kotlin plugin), `:app` adds the Compose compiler plugin; `android.builtInKotlin=false` appears only in `ghost/docs/DEVELOPMENT.md`, in no build file |
 | protoc | **36.x** (CI installs 36.1 by hash; winget gave 36.0) | `ghost/scripts/install-protoc.sh <dir>`; PATH | Needed by `tonic-prost-build` (relay, client library) and `proto-check.sh` |
 | cargo-deny | 0.20.2 (the version the design measured) | `EmbarkStudios/cargo-deny-action` in `ci.yml` | `cargo deny check` |
 | cargo-audit | CI installs; `cargo audit --ignore RUSTSEC-2023-0071` | `ci.yml` | |
@@ -79,7 +89,7 @@ All paths from the repository root. `CARGO_TARGET_DIR` may point anywhere (on Wi
 cd ghost
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked                  # last recorded: 836 passed, 63 ignored (2026-09-26)
+cargo test --workspace --locked                  # CI at 197b2b4 and d1a19cd: 840 passed, 0 failed, 63 ignored
 cargo deny check                                  # advisories, bans, licenses, sources
 cargo audit --ignore RUSTSEC-2023-0071
 ```
@@ -94,6 +104,8 @@ DM tests on the JVM call the *real* Rust crate through a host `cdylib`:
 cd ghost && cargo build -p ghost-dm-host --release --locked --features provenance
 # Linux: target/release/libghost_dm_host.so   Windows: ghost_dm_host.dll
 ```
+
+[R, 2026-10-04: this command ran to completion, exit 0, on a `git archive` copy of `a0f3f58` on Windows 11 and produced `ghost_dm_host.dll` (1.5 MB); it reported 5 s because the target directory was warm, and a review of this package reported 2 min 17 s on a cold one.]
 
 Hand it to Gradle with `-Dghost.dm.native=<absolute path to the library>`. **Trap:** without it the DM tests *skip silently*. Always check `skipped=0` in `ghost/android/<module>/build/test-results/**/TEST-*.xml` (`messaging` has 329 tests; if it reports fewer, the native library did not load). Before the Android builds, CI cleans the three libcrux build-script packages so a stale SIMD cfg cannot survive (`cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics …`, gate G-R3 `libcrux-portable.sh` reads cargo's build messages).
 
@@ -140,8 +152,8 @@ bash ghost/scripts/gates/pq-model.sh        # needs the pinned ProVerif on PATH 
 ### 4.1 Static gates (minutes)
 
 ```bash
-bash ghost/scripts/gates/run-all.sh                 # 18 gates; expect "[<gate>] OK" x 18 and exit 0   [R: 17 on Linux in 75 s + proto-check]
-bash ghost/scripts/gates/self-test.sh               # each gate must REJECT its negative fixtures; expect 0 "SELF-TEST FAIL"   [R: 649 ok on Linux, 15 min, cargo/protoc blocks skipped; full run 654 at f2792a7, 2.5-3.8 h on Windows]
+bash ghost/scripts/gates/run-all.sh                 # the 18 source-only gates; expect "[<gate>] OK" x 18 and exit 0   [R: 17 on Linux in 75 s + proto-check]. The other 23 gate scripts need a build output or the git history and run in CI jobs only: table in EVIDENCE_INDEX.md section 1.1
+bash ghost/scripts/gates/self-test.sh               # each gate must REJECT its negative fixtures; expect 0 "SELF-TEST FAIL"   [R: 649 ok on Linux, 15 min, cargo/protoc blocks skipped. A complete run has 736 cases: CI `rust` job, about 5 min on the runner, with the opt-ins below; 2.5-3.8 h on Windows]
 ```
 
 Gates read `GHOST_ROOT` (default `ghost/`); fixtures are in `ghost/test-harness/gates/` (59 roots). CI additionally sets `GHOST_SELFTEST_CLIPPY=1 GHOST_SELFTEST_OPS=1 GHOST_SELFTEST_DENY=1` for the Rust block. Trap: `printf | grep -q` under `pipefail` can SIGPIPE (the gates use here-strings).
@@ -162,7 +174,7 @@ Gates read `GHOST_ROOT` (default `ghost/`); fixtures are in `ghost/test-harness/
 | DM privacy gate, pair `i` | `… -Dghost.dm.privacy=gate -Dghost.dm.privacy.seed=i -Dghost.dm.heap=6g`, then `dm-report-check.sh … privacy-gate` | 52 to 110 min per pair |
 | Monero regtest | workflow `monero-regtest.yml` (downloads the pinned binaries, checks `sha256sum -c`) | about 26 min |
 | Signer timing | `cargo test -p ghost-issuer --release --locked --test signer_timing -- --ignored` (nightly workflow `signer-timing.yml`) | about 9 min |
-| State models (EM-1, EM-2) | part of `cargo test -p ghost-client-dm` (`tests/state_models.rs`); nightly `dm-state-models` | minutes |
+| State models (EM-1, EM-2) | part of `cargo test -p ghost-client-dm` (`tests/state_models.rs`); the nightly `dm-state-models` runs `GHOST_DM_EM_SENDS=3 GHOST_DM_EM_WIRE=3 GHOST_DM_EM_BUDGET=4000000 cargo test --locked --release -p ghost-client-dm --test state_models -- --nocapture` (2,296,274 EM-1 states and 2,851,029 EM-2 states) | minutes; the nightly test 143 s |
 | PQ mutants | `bash ghost/scripts/gates/pq-mutants.sh` | 45 min limit |
 | Fuzzing | `bash ghost/scripts/ci/dm-fuzz.sh <seconds per target> <work dir> [target...]` (targets `card bundle intro_inner l0 tlvs olm_message`) | CI: 600 s each |
 | Vendor suites | `bash ghost/scripts/ci/vendor-tests.sh 0.11.0 <work dir>` and `… libcrux <work dir>` | job limits 60 and 90 min; the libcrux suites ran in under 2 min after the first fetch |
@@ -176,7 +188,7 @@ Always read the report check (`*-report-check.sh`), not only the test exit: the 
 
 ### 4.4 Observing relays and the issuer dynamically
 
-* The relay can write the T1 capture (`ghost-relay serve --capture <file.ndjson>`), validated by `cargo run -p ghost-capture-check -- --schema ghost/test-harness/privacy/allowed-observables.json --capture <file>`.
+* The relay can write the T1 capture (`ghost-relay serve --data-dir <dir> --listen 127.0.0.1:7443 --capture <file.ndjson>`; `--data-dir` and `--listen` are required), validated by `cargo run -p ghost-capture-check -- --schema ghost/test-harness/privacy/allowed-observables.json --capture <file>`.
 * A relay with an in-process peer for tests: `relay/crates/node/tests/{two_nodes,redeem,register,list_cursor}.rs`; issuer end-to-end scenarios use fake chain ports (`issuer/crates/service/tests/common/`) and the regtest chain in `monero_regtest.rs`.
 
 ### 4.5 Android runtime checks that exist
@@ -202,7 +214,7 @@ Sizes in lines; "RO" = Romanian. The design documents are long: read the parts n
 | 0 | `README.md`, `ghost/README.md` (RO), `docs/STATUS.md` (RO, 30 lines of very long rows; **stale in places**, see `KNOWN_ISSUES.md` KI-DOC-1) | What exists. |
 | 0 | `output/pdf/GHOST_Technical_Specification_v2_FINAL.pdf` §2 (principles CP-01..CP-10, guarantee matrix), FR/NFR tables, roadmap and gates | The baseline requirements; v2.1 changes it by delta. |
 | 0 | `docs/GHOST_Master_Plan_v2.1_OPTIMIZAT.md` (RO, 480 lines) §0, §3 (ADR-01..12 summaries), §4 (guarantee matrix), §6 (phases, row 15) | The plan and the audit gate. |
-| 1 | `docs/THREAT_MODEL_v2.1.md` (RO, 194 lines): assets, adversaries AD-1..12, boundaries TB-1..7, exposure matrix per event, scenarios S1-S13 | **The model the audit tests against.** Independent review still owed. |
+| 1 | `docs/THREAT_MODEL_v2.1.md` (RO, 194 lines): assets, adversaries AD-1..12, boundaries TB-1..7, exposure matrix per event, scenarios S1-S13 | **The model the audit tests against.** Independent review still owed. §2 (assets), §3 (adversaries), §4 (boundaries) and §5 (key lifecycle) are digested in English in `AUDIT_SCOPE.md` sections 1.1 and 6; entry points and data flows in sections 1.2 and 1.3. |
 | 1 | `ghost/test-harness/privacy/INVARIANTS.md` (RO, 66 lines): T1-T35 | The claims and their tests. |
 | 1 | `docs/LIMITE_REZIDUALE_SI_MITIGARI.md` (RO, 323 lines): L1-L7, E1-E34, L7-D1..D29 | What is declared not guaranteed. |
 | 1 | `docs/audit/*` (this package, EN) | Digest and index. |
@@ -261,4 +273,4 @@ Sizes in lines; "RO" = Romanian. The design documents are long: read the parts n
 
 ## 8. What the auditor will want that the project must prepare (4 weeks ahead)
 
-See `AUDITOR_RFQ.md` section B3. In short: a frozen tag and bundle with hashes; closed or explicitly waived exit gates for Phases 9-14; the open owner decisions of `KNOWN_ISSUES.md` decided; fresh green evidence at the tag (`run-all.sh`, `self-test.sh`, JUnit sums with `skipped=0`, the report checks), archived by the owner because CI artifacts are kept for only 3 days (`KNOWN_ISSUES.md` KI-SUP-8); a staging environment (three relays and the issuer on stagenet with an ES covering the audit window, a Monero stagenet node, two physical devices of API 29 or higher plus emulators API 29 and 35) or an agreement that the audit uses the in-repo worlds only; a named technical contact with one-business-day answers; English versions of the three Romanian claim documents or a glossary.
+See `AUDITOR_RFQ.md` section B3. In short: a frozen tag and bundle with hashes; closed or explicitly waived exit gates for Phases 9-14; the open owner decisions of `KNOWN_ISSUES.md` decided; fresh green evidence at the tag (`run-all.sh`, `self-test.sh`, JUnit sums with `skipped=0`, the report checks), archived by the owner because CI artifacts are kept for only 3 days and job logs for 90 (`KNOWN_ISSUES.md` KI-SUP-8); a staging environment (three relays and the issuer on stagenet with an ES covering the audit window, a Monero stagenet node, two physical devices of API 29 or higher plus emulators API 29 and 35) or an agreement that the audit uses the in-repo worlds only; a named technical contact with one-business-day answers; English versions of the three Romanian claim documents or a glossary.
