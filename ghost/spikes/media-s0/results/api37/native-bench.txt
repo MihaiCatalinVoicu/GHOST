@@ -1,0 +1,9 @@
+bench: content=52428800 B class=10 fragments=804 (+1 manifest, 52756480 B on relays) appended-early=800
+bench: seal 169.4 ms = 309.6 MB/s (content); open+hash+verify 138.2 ms = 379.3 MB/s; VmHWM=107924 kB
+bench-stream: content=52428800 B class=10 seal 154.2 ms = 340.0 MB/s; VmHWM before=3968 kB after=5228 kB (fragments dropped after hashing, as the product writes them to files)
+bench: content=52428800 B class=10 fragments=804 (+1 manifest, 52756480 B on relays) appended-early=800
+bench: seal 184.4 ms = 284.4 MB/s (content); open+hash+verify 145.3 ms = 360.9 MB/s; VmHWM=107952 kB
+bench-stream: content=52428800 B class=10 seal 160.3 ms = 327.1 MB/s; VmHWM before=3864 kB after=5128 kB (fragments dropped after hashing, as the product writes them to files)
+bench: content=52428800 B class=10 fragments=804 (+1 manifest, 52756480 B on relays) appended-early=800
+bench: seal 175.2 ms = 299.3 MB/s (content); open+hash+verify 157.1 ms = 333.8 MB/s; VmHWM=108036 kB
+bench-stream: content=52428800 B class=10 seal 169.7 ms = 309.0 MB/s; VmHWM before=3900 kB after=5168 kB (fragments dropped after hashing, as the product writes them to files)

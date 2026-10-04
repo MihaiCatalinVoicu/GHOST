@@ -1,0 +1,7 @@
+# V-M7 / V-M14 re-run on 2026-10-04 (API 37 session): the same sources rebuilt with ./gradlew --offline --no-daemon :r8probe:assembleBaseRelease :r8probe:assembleMediaRelease
+# (AGP 9.4.0, Gradle 9.7.1, JDK 17.0.20.1). These are build-time results: they do not depend on the emulator's API level.
+apk base=16454 B, media=1218631 B (committed record: 16454 B, 1218631 B)
+classes.dex media=1178000 B (committed: 1178000), lib/ entries: 0
+mapping.txt kept classes: 1146 (committed: 1146)
+# per-class check against lines 1-96 of results/r8probe-media-classes-2026-10-04.txt (the 2026-10-04 build; lines 97+ are the superseded 2026-09-25 build)
+removed/KEPT lines checked: 53, same as committed: 53, different: 0

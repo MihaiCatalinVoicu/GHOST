@@ -1,0 +1,9 @@
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\?.jpg : not an image (Exception calling "FromFile" with "1" argument(s): "Value cannot be null. (Parameter 'path')")
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\norecents-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\norecents-screen.png : 1080x1920 sampled=129600 magenta=47702 lime=54929 cyan=9804 black=0
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\plain-recents.png : 1080x1920 sampled=129600 magenta=22461 lime=21661 cyan=4557 black=0
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\plain-screen.png : 1080x1920 sampled=129600 magenta=47702 lime=54929 cyan=9804 black=0
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\secure-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\secure-screen.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=129333
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\secure_norecents-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\secure_norecents-screen.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=129328

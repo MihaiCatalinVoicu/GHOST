@@ -1,0 +1,8 @@
+vm20 norecents-49568b9e-b073-471c-a00b-29bdbfbff41a\11.jpg : 128x227 sampled=1824 magenta=0 lime=0 cyan=0 black=0
+vm20 norecents-49568b9e-b073-471c-a00b-29bdbfbff41a\11_reduced.jpg : 80x141 sampled=720 magenta=0 lime=0 cyan=0 black=0
+vm20 plain-49568b9e-b073-471c-a00b-29bdbfbff41a\9.jpg : 864x1536 sampled=82944 magenta=30321 lime=35075 cyan=6244 black=0
+vm20 plain-49568b9e-b073-471c-a00b-29bdbfbff41a\9_reduced.jpg : 540x960 sampled=32400 magenta=11625 lime=13382 cyan=2450 black=0
+vm20 secure-49568b9e-b073-471c-a00b-29bdbfbff41a\10.jpg : 128x227 sampled=1824 magenta=0 lime=0 cyan=0 black=0
+vm20 secure-49568b9e-b073-471c-a00b-29bdbfbff41a\10_reduced.jpg : 80x141 sampled=720 magenta=0 lime=0 cyan=0 black=0
+vm20 secure_norecents-49568b9e-b073-471c-a00b-29bdbfbff41a\12.jpg : 128x227 sampled=1824 magenta=0 lime=0 cyan=0 black=0
+vm20 secure_norecents-49568b9e-b073-471c-a00b-29bdbfbff41a\12_reduced.jpg : 80x141 sampled=720 magenta=0 lime=0 cyan=0 black=0

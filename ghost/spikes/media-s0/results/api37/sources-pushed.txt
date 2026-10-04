@@ -1,0 +1,25 @@
+total 35640
+drwx------ 2 u0_a234 u0_a234     4096 2026-10-04 11:16 .
+drwxrwx--x 3 u0_a234 u0_a234     4096 2026-10-04 11:15 ..
+-rw-rw-rw- 1 u0_a234 u0_a234    10087 2026-10-04 11:16 alpha.png
+-rw-rw-rw- 1 u0_a234 u0_a234  1045309 2026-10-04 11:16 big10000.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234 19498408 2026-10-04 11:16 land1080p60.mp4
+-rw-rw-rw- 1 u0_a234 u0_a234  4623422 2026-10-04 11:16 match720p30.mp4
+-rw-rw-rw- 1 u0_a234 u0_a234  4623403 2026-10-04 11:16 match720p30_709.mp4
+-rw-rw-rw- 1 u0_a234 u0_a234     4269 2026-10-04 11:16 orient1.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4262 2026-10-04 11:16 orient2.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4264 2026-10-04 11:16 orient3.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4261 2026-10-04 11:16 orient4.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4346 2026-10-04 11:16 orient5.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4341 2026-10-04 11:16 orient6.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4343 2026-10-04 11:16 orient7.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     4344 2026-10-04 11:16 orient8.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     2626 2026-10-04 11:16 p3.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234     2205 2026-10-04 11:16 photo.avif
+-rw-rw-rw- 1 u0_a234 u0_a234     1863 2026-10-04 11:16 photo.heic
+-rw-rw-rw- 1 u0_a234 u0_a234     1740 2026-10-04 11:16 photo.webp
+-rw-rw-rw- 1 u0_a234 u0_a234  2510562 2026-10-04 11:16 port720x1280p24.mp4
+-rw-rw-rw- 1 u0_a234 u0_a234     1446 2026-10-04 11:16 preview320.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234  2476878 2026-10-04 11:16 rot90_1280x720p30.mp4
+-rw-rw-rw- 1 u0_a234 u0_a234     6406 2026-10-04 11:16 ultrahdr.jpg
+-rw-rw-rw- 1 u0_a234 u0_a234  1494510 2026-10-04 11:16 vga640x480p30.mp4

@@ -1,0 +1,10 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm23 match720p30.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=4809343839467 meanLuma=106 lumaMin=0 lumaMax=255 error=
+vm23 match720p30.mp4 readerFormat=34 frame=true videoSize=1280x720 rot=0 image 1280x720 format=34 planes=0 ts=4810058573405 error=
+vm23 rot90_1280x720p30.mp4 readerFormat=35 frame=true videoSize=720x1280 rot=0 image 1280x720 format=35 planes=3 ts=4810520605021 meanLuma=106 lumaMin=0 lumaMax=255 error=
+vm23 rot90_1280x720p30.mp4 readerFormat=34 frame=true videoSize=720x1280 rot=0 image 1280x720 format=34 planes=0 ts=4811036370589 error=
+vm23 port720x1280p24.mp4 readerFormat=35 frame=true videoSize=720x1280 rot=0 image 720x1280 format=35 planes=3 ts=4811532692926 meanLuma=105 lumaMin=0 lumaMax=255 error=
+vm23 port720x1280p24.mp4 readerFormat=34 frame=true videoSize=720x1280 rot=0 image 720x1280 format=34 planes=0 ts=4812038901209 error=
+vm23 fileObserverEvents=0 inventoryChanges=0
+probe preview: OK
+

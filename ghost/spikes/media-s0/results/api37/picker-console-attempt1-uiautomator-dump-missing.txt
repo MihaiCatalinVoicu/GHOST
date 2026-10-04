@@ -1,0 +1,5 @@
+#### 2026-10-04T12:03:06 bash scripts/vm21-picker.sh 37 work/api37/src/orient6.jpg
+work\api37\src\orient6.jpg: 1 file pushed, 0 skipped. 0.5 MB/s (4341 bytes in 0.008s)
+Row: 0 _id=19, _display_name=ghost_s0_pick_120320.jpg, owner_package_name=NULL
+adb: error: failed to stat remote object '/data/local/tmp/ui.xml': No such file or directory
+#### exit 1 at 12:03:58

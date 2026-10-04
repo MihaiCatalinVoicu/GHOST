@@ -1,0 +1,21 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm16 dir=/data/user/0/org.ghost.spike.media/no_backup/m fs=/dev/block/dm-6 /data ext4 rw,seclabel,nosuid,nodev,noatime,resgid=1065,errors=panic 0 0
+vm16 b045d58624dec509e08514c7f879e90b size=65536 ino=353294 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 2d01168669a9dab3d77bc725ebc3fe6f size=65536 ino=353295 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 27f81edec2456392d4cda0a203a669f8 size=65536 ino=353298 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 ed882cf45032c8579ac31535c0c449a9 size=65536 ino=353299 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 43a7eb07e426144b890732aa3a925717 size=65536 ino=353300 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 cdb16d9d4cea60d27f4db93189746bdc size=65536 ino=353335 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 9768af0485f17c6638330e4e3f3e806f size=65536 ino=353934 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 baa1543ead2d2e8a3c17b7af05c7ca2a size=65536 ino=353940 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 9595deb01f553fa0992abbe96fdff17c size=65536 ino=353941 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 49a8006dcbc0f4519434fd71738ec718 size=65536 ino=353942 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 3342adc2c7f07ce04951d05188b74b0a size=65536 ino=353943 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 f3eac124935d1a07e6b449f5a4e37bd3 size=65536 ino=353944 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 8116eba4b689194fb3de71e5fa4ffbf3 size=65536 ino=353945 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 85e3162d5d95edd8d3ff4b1f3bf73f29 size=65536 ino=353946 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 d526fca0058e1e1305aff66bb979706c size=65536 ino=353947 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 3b49396ff7ab3425eab3011cfb06f6c9 size=65536 ino=353948 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+vm16 0d93bdffe6a62592967968d713484344 size=65536 ino=353949 setLastModified(0)=true File.lastModified=0 mtime 1791106228->0 ctime 1791106228->1791106228 atime 1791106228->1791106228; after setTimes(0,0): mtime=0 atime=0 ctime=1791106228
+probe mtime: OK
+

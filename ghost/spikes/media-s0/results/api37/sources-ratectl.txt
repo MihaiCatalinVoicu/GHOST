@@ -1,0 +1,7 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+source t10_smooth.mp4: 4819662 B sha256=5d18bfb98cf901babd59dab2740dc0a819faf373110e836a92f5415c0c88fc71 1280x720@30 10.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=smooth canaries=false location=false videoSamples=300 audioSamples=470 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=21337
+source t10_mixed.mp4: 7419563 B sha256=bc6116b16e87f64503ee3fdba21d4ee8f5a297d55ad0fb510a9639a1760bb18d 1280x720@30 10.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=mixed canaries=false location=false videoSamples=300 audioSamples=470 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=39654
+source t10_grain.mp4: 5374983 B sha256=62041bc7e0c5e2dd79d8d7f988ce142d35759643a4c2de4450e259ec0b6f32c2 1280x720@30 10.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=grain canaries=false location=false videoSamples=300 audioSamples=470 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=28270
+source t10_noise.mp4: 141132053 B sha256=3bb378befd22a739aa560882dfb86cacb91dd6e6cdd0aa2b8eedced7b1c2a66b 1280x720@30 10.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=noise canaries=false location=false videoSamples=300 audioSamples=470 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=22935
+probe sources: OK
+

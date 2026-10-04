@@ -1,0 +1,15 @@
+# mediatool profile over every *__golden.mp4 of the FINAL set (API 37, 2026-10-04): the corrected profile of S0-3/S0-13/S0-20/S0-22 as code
+land1080p60__FINAL__golden.mp4: CANONICAL land1080p60__FINAL__golden.mp4 (1648260 B, sha256 c9903615b3caa2ea5a21ca95b03c3b5789b898153cef022e3838d24f5cbed6ac)
+land1080p60__FINAL_noClampFps__golden.mp4: NON_CANONICAL land1080p60__FINAL_noClampFps__golden.mp4: avcC profile 66 level 32 nal_len 4 sps 1 pps 1: not profile 66/100, level 3.1, 4-byte lengths, one SPS and one PPS
+match720p30__FINAL__golden.mp4: CANONICAL match720p30__FINAL__golden.mp4 (4281992 B, sha256 ec8ec2e4304df22a9c004f244095edf56b85b4cd421a1e34136238bec3362106)
+port720x1280p24__FINAL__golden.mp4: CANONICAL port720x1280p24__FINAL__golden.mp4 (1787251 B, sha256 b9d2c1b0ef2565aae730587a465fb84770f0da7e77ba6b0df63269c5c3f89e52)
+quad_land__FINAL__golden.mp4: CANONICAL quad_land__FINAL__golden.mp4 (129806 B, sha256 dbd793c5172e41021f67843f34c3ff4d755416c704a1e3dba4e1ad44af27a90e)
+quad_land__FINAL_noProfilePin__golden.mp4: NON_CANONICAL quad_land__FINAL_noProfilePin__golden.mp4: avcC profile 66 level 41 nal_len 4 sps 1 pps 1: not profile 66/100, level 3.1, 4-byte lengths, one SPS and one PPS
+quad_noaudio__FINAL__golden.mp4: CANONICAL quad_noaudio__FINAL__golden.mp4 (129330 B, sha256 ef81f0e92849e87f177524bb133f4d7a7c9c49ce8555e5c8e7985cc009221169)
+quad_noaudio__FINAL_noForceAudio__golden.mp4: NON_CANONICAL quad_noaudio__FINAL_noForceAudio__golden.mp4: moov children ["mvhd", "trak", "mvex"]; tracks are not one soun and one vide: ["vide"]; track IDs [1], not 1 and 2; mvex is not two trex; mo
+quad_port__FINAL__golden.mp4: CANONICAL quad_port__FINAL__golden.mp4 (125837 B, sha256 ab4186ec96d135cc1dc84cbedb6c015c68233160e2135070dd9b779591fdb5e2)
+quad_rot180__FINAL__golden.mp4: CANONICAL quad_rot180__FINAL__golden.mp4 (127205 B, sha256 3c51523f830a333fd5a2719705958f18b5aad67cb684d3c8fe6f1705a4ec6ae7)
+quad_rot270__FINAL__golden.mp4: CANONICAL quad_rot270__FINAL__golden.mp4 (128013 B, sha256 42b5351d7cccb3bd4c4554c88d9ff073f30af151ac3bf59a57573b23e7b412bd)
+quad_rot90__FINAL__golden.mp4: CANONICAL quad_rot90__FINAL__golden.mp4 (125739 B, sha256 25ef2c27ed3688aec753686edb01bf5baf78dcb5aebfbf3834cf8031ad568dd4)
+rot90_1280x720p30__FINAL__golden.mp4: CANONICAL rot90_1280x720p30__FINAL__golden.mp4 (2211859 B, sha256 998447ab1f847ecfef573693c856e3740cf40cc18394aa3841ca211fcfe7b8b9)
+vga640x480p30__FINAL__golden.mp4: CANONICAL vga640x480p30__FINAL__golden.mp4 (1638049 B, sha256 b732c5074b9733c5f405591158fb0884d8e09c9ecde79d42a0e3c9a3306c0c3b)

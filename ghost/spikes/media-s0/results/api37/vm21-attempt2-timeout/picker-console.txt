@@ -1,0 +1,173 @@
+#### 2026-10-04T12:05:09 bash scripts/vm21-picker.sh 37 work/api37/src/orient6.jpg
+work\api37\src\orient6.jpg: 1 file pushed, 0 skipped. 14.2 MB/s (4341 bytes in 0.000s)
+Row: 1 _id=20, _display_name=ghost_s0_pick_120518.jpg, owner_package_name=NULL
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.6 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 12.4 MB/s (75153 bytes in 0.006s)
+tap attempt 1 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.4 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 1.9 MB/s (75139 bytes in 0.037s)
+tap attempt 2 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.1 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 11.4 MB/s (74734 bytes in 0.006s)
+tap attempt 3 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 1.9 MB/s (12176 bytes in 0.006s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 15.6 MB/s (75325 bytes in 0.005s)
+tap attempt 4 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.5 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 4.5 MB/s (75323 bytes in 0.016s)
+tap attempt 5 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.8 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.8 MB/s (75105 bytes in 0.004s)
+tap attempt 6 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 2.8 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 20.6 MB/s (75141 bytes in 0.003s)
+tap attempt 7 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.5 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 17.6 MB/s (74367 bytes in 0.004s)
+tap attempt 8 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.1 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 18.0 MB/s (74376 bytes in 0.004s)
+tap attempt 9 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.9 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.9 MB/s (73374 bytes in 0.004s)
+tap attempt 10 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.4 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 21.7 MB/s (73374 bytes in 0.003s)
+tap attempt 11 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.2 MB/s (73889 bytes in 0.004s)
+tap attempt 12 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.3 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.2 MB/s (73886 bytes in 0.004s)
+tap attempt 13 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 15.1 MB/s (74451 bytes in 0.005s)
+tap attempt 14 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 2.4 MB/s (12176 bytes in 0.005s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.9 MB/s (74409 bytes in 0.004s)
+tap attempt 15 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.0 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 15.6 MB/s (74409 bytes in 0.005s)
+tap attempt 16 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 11.0 MB/s (73962 bytes in 0.006s)
+tap attempt 17 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.0 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 11.7 MB/s (73962 bytes in 0.006s)
+tap attempt 18 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 22.3 MB/s (73966 bytes in 0.003s)
+tap attempt 19 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.5 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 18.4 MB/s (96137 bytes in 0.005s)
+tap attempt 20 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.8 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 27.5 MB/s (96106 bytes in 0.003s)
+tap attempt 21 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.7 MB/s (17654 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 14.5 MB/s (96356 bytes in 0.006s)
+tap attempt 22 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.9 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 24.8 MB/s (96356 bytes in 0.004s)
+tap attempt 23 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.5 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 18.6 MB/s (95845 bytes in 0.005s)
+tap attempt 24 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.8 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 19.9 MB/s (95786 bytes in 0.005s)
+tap attempt 25 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.9 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 21.9 MB/s (96518 bytes in 0.004s)
+tap attempt 26 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.3 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 21.2 MB/s (96518 bytes in 0.004s)
+tap attempt 27 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.6 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 24.7 MB/s (96354 bytes in 0.004s)
+tap attempt 28 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.6 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 14.1 MB/s (96347 bytes in 0.007s)
+tap attempt 29 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.5 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 19.3 MB/s (96540 bytes in 0.005s)
+tap attempt 30 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.6 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 27.0 MB/s (96519 bytes in 0.003s)
+tap attempt 31 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.3 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 39.8 MB/s (283965 bytes in 0.007s)
+tap attempt 32 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+== changed files
+1c1
+< a6abe75bf1684b35228270b1be959c3e  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+---
+> 3e10f24fd7b46cde557d04595af7c51f  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+5,6c5,6
+< 8499fe1d7f8ac3206310f0301eae2777  /data/data/com.google.android.providers.media.module/databases/external.db-shm
+< feb41d5f015e6bef9c61d4cc3abfc93c  /data/data/com.google.android.providers.media.module/databases/external.db-wal
+---
+> 049f4ea615a4a577ed55fad1c39de6e9  /data/data/com.google.android.providers.media.module/databases/external.db-shm
+> f35e684296626929463ef2d23373a463  /data/data/com.google.android.providers.media.module/databases/external.db-wal
+13,15c13,15
+< c59e8526965471f9a590695de312b30a  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+< 2f562fe3f7aec955228aaabbc18a53bc  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+< 3e33ec8dc2a007c2235943e01dd32b87  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+---
+> af3387a5f310f72755719e951b11b2e9  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+> 15a82531657d4706f2daa9539ed97164  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+> bc21c200f51de556b525467d0908243b  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+20,22c20,22
+< b234d954eaaec7257233133e77b1fac6  /data/system_ce/0/recent_tasks/13_task.xml
+< 9b512415c4297f87dc2744c6791aea52  /data/system_ce/0/usagestats/daily/1791101643245
+< 6ebcfca833aee13d0782ba53e1fbe571  /data/system_ce/0/usagestats/mappings
+---
+> 48bf72cb33f25fcfd36831887213cc9f  /data/system_ce/0/recent_tasks/14_task.xml
+> 3898332e82e2d3fa6f7c2cd41ced74ae  /data/system_ce/0/usagestats/daily/1791101643245
+> e1e669018cff052cfcd393f62b959794  /data/system_ce/0/usagestats/mappings
+24c24
+< 811184914ec83c6fa68d5b2f9904e303  /data/system_ce/0/usagestats/monthly/1791101643245
+---
+> c6b3c936ff4e255695ddbffb33fc4f5c  /data/system_ce/0/usagestats/monthly/1791101643245
+26,27c26,27
+< 811184914ec83c6fa68d5b2f9904e303  /data/system_ce/0/usagestats/weekly/1791101643245
+< 811184914ec83c6fa68d5b2f9904e303  /data/system_ce/0/usagestats/yearly/1791101643245
+---
+> c6b3c936ff4e255695ddbffb33fc4f5c  /data/system_ce/0/usagestats/weekly/1791101643245
+> c6b3c936ff4e255695ddbffb33fc4f5c  /data/system_ce/0/usagestats/yearly/1791101643245
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730: 1 file pulled, 0 skipped. 1.7 MB/s (6420 bytes in 0.004s)
+/data/data/com.google.android.providers.media.module/databases/external.db-shm: 1 file pulled, 0 skipped. 8.0 MB/s (32768 bytes in 0.004s)
+/data/data/com.google.android.providers.media.module/databases/external.db: 1 file pulled, 0 skipped. 31.1 MB/s (159744 bytes in 0.005s)
+/data/data/com.google.android.providers.media.module/databases/external.db-wal: 1 file pulled, 0 skipped. 33.0 MB/s (424392 bytes in 0.012s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb: 1 file pulled, 0 skipped. 21.2 MB/s (176128 bytes in 0.008s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal: 1 file pulled, 0 skipped. 17.5 MB/s (482072 bytes in 0.026s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm: 1 file pulled, 0 skipped. 7.0 MB/s (32768 bytes in 0.004s)
+/data/system_ce/0/recent_tasks/14_task.xml: 1 file pulled, 0 skipped. 0.3 MB/s (900 bytes in 0.003s)
+/data/system_ce/0/usagestats/daily/1791101643245: 1 file pulled, 0 skipped. 2.7 MB/s (7109 bytes in 0.003s)
+/data/system_ce/0/usagestats/mappings: 1 file pulled, 0 skipped. 4.4 MB/s (11031 bytes in 0.002s)
+/data/system_ce/0/usagestats/monthly/1791101643245: 1 file pulled, 0 skipped. 0.3 MB/s (2123 bytes in 0.006s)
+/data/system_ce/0/usagestats/weekly/1791101643245: 1 file pulled, 0 skipped. 0.7 MB/s (2123 bytes in 0.003s)
+/data/system_ce/0/usagestats/yearly/1791101643245: 1 file pulled, 0 skipped. 0.7 MB/s (2123 bytes in 0.003s)
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730 6420 B
+/data/data/com.google.android.providers.media.module/databases/external.db-shm 32768 B
+/data/data/com.google.android.providers.media.module/databases/external.db 159744 B
+/data/data/com.google.android.providers.media.module/databases/external.db-wal 424392 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb 176128 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal 482072 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm 32768 B
+/data/system_ce/0/recent_tasks/14_task.xml 900 B
+/data/system_ce/0/usagestats/daily/1791101643245 7109 B
+/data/system_ce/0/usagestats/mappings 11031 B
+/data/system_ce/0/usagestats/monthly/1791101643245 2123 B
+/data/system_ce/0/usagestats/weekly/1791101643245 2123 B
+/data/system_ce/0/usagestats/yearly/1791101643245 2123 B
+Error: in prepare, no such table: main.album_info
+== /data/data/com.google.android.providers.media.module/databases/external.db
+images||||||||400×600|46.7712326049805|90|||1790310673000|600|0|Pictures|||external_primary|1791104601||||ghost_s0_pick_120320.jpg||1790310673000|image/jpeg|||19|||||/storage/emulated/0/Pictures/ghost_s0_pick_120320.jpg|4341|||ghost_s0_pick_120320|400|23.6234550476074|0|0||||5|0|5|0|1791104603||||||-1617409521|Pictures/|3
+images||||||||400×600|46.7712326049805|90|||1790310673000|600|0|Pictures|||external_primary|1791104726||||ghost_s0_pick_120518.jpg||1790310673000|image/jpeg|||20|||||/storage/emulated/0/Pictures/ghost_s0_pick_120518.jpg|4341|||ghost_s0_pick_120518|400|23.6234550476074|0|0||||12|0|12|0|1791104727||||||-1617409521|Pictures/|3
+files|19|/storage/emulated/0/Pictures/ghost_s0_pick_120320.jpg|4341|14336|9|1791104603|1791104601|image/jpeg|ghost_s0_pick_120320||ghost_s0_pick_120320.jpg||90|46.7712326049805|23.6234550476074|1790310673000||-1617409521|Pictures||||||||||||||||||400×600||||||1||0|400|600|||||||0|0|||0||0|||||||Pictures/|external_primary||||||||||||0|||||||5|5||0||3|0||0|0|||||1790310673000|0
+files|20|/storage/emulated/0/Pictures/ghost_s0_pick_120518.jpg|4341|14336|9|1791104727|1791104726|image/jpeg|ghost_s0_pick_120518||ghost_s0_pick_120518.jpg||90|46.7712326049805|23.6234550476074|1790310673000||-1617409521|Pictures||||||||||||||||||400×600||||||1||0|400|600|||||||0|0|||0||0|||||||Pictures/|external_primary||||||||||||0|||||||12|12||0||3|0||0|0|||||1790310673000|0
+== shared storage written during the pick
+/data/media/0/Pictures/.thumbnails/20.jpg 4283 B mtime=2026-10-04 12:05:57.916099959 +0300
+/data/media/0/Pictures/.thumbnails/20.jpg: 1 file pulled, 0 skipped. 1.4 MB/s (4283 bytes in 0.003s)
+done: /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/vm21
+#### exit 0 at 12:25:17

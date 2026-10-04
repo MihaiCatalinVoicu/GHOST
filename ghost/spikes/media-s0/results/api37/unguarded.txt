@@ -1,0 +1,5 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm19 unguarded (MC-M23: Application work in the isolated process): pid=-1 callback=timeout(none) bindMs=15008.7 result=null
+vm19 guarded control: pid=9899 callback=connected bindMs=285.3
+probe unguarded: OK
+

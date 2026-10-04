@@ -1,0 +1,7 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm21 picker launched at 1791105996620; waiting for the host to pick
+vm21 picked=true intent=android.provider.action.PICK_IMAGES resultCode=-1 uri=content://media/picker/0/com.android.providers.media.photopicker/media/21 bytes=4341 sha256=fe4398d4fd397f9049128a2c18b895ade6b963c1ab04018347d84d5209581c36 flags=0x41
+vm11 read of the picked stream: fileObserverEvents=0 inventoryChanges=0
+vm21 picked bytes saved to files/picked.bin after the watch
+probe pick: OK
+

@@ -1,0 +1,19 @@
+     96 type=1400 audit(T): avc:  denied  { read write } for  comm="MediaCodec_loop" path=2F6D656D66643A4D6573736167655175657565202864656C6574656429 dev="tmpfs"  scontext=u:r:mediacodec:s0 tcontext=u:object_r:untrusted_app:s0:c234,c256,c512,c768 tclass=memfd_file permissive=0 app=org.ghost.spike.media
+      6 type=1400 audit(T): avc:  denied  { search } for  comm="pool-4-thread-2" name="tmp" dev="dm-6"  scontext=u:r:mediaprovider_app:s0:c217,c256,c512,c768 tcontext=u:object_r:shell_data_file:s0 tclass=dir permissive=0 app=com.google.android.providers.media.module
+      3 type=1400 audit(T): avc:  denied  { search } for  comm="pool-4-thread-3" name="tmp" dev="dm-6"  scontext=u:r:mediaprovider_app:s0:c217,c256,c512,c768 tcontext=u:object_r:shell_data_file:s0 tclass=dir permissive=0 app=com.google.android.providers.media.module
+      2 type=1400 audit(T): avc:  denied  { getattr } for  comm="pool-4-thread-3" path="/data/local/tmp" dev="dm-6"  scontext=u:r:mediaprovider_app:s0:c217,c256,c512,c768 tcontext=u:object_r:shell_data_file:s0 tclass=dir permissive=0 app=com.google.android.providers.media.module
+      2 type=1400 audit(T): avc:  denied  { getattr } for  comm="pool-4-thread-2" path="/data/local/tmp" dev="dm-6"  scontext=u:r:mediaprovider_app:s0:c217,c256,c512,c768 tcontext=u:object_r:shell_data_file:s0 tclass=dir permissive=0 app=com.google.android.providers.media.module
+10-04 10:43:55.249 E/libbinder.IPCThreadState( 1661): Binder transaction failure. id: 298162, cmd: BR_FAILED_REPLY (29201), error: -28 (No space left on device - Binder buffer full. Too many or too large transactions.)
+10-04 11:01:23.343 I/binder  (    0): 6180:6153 translate fd failed
+10-04 11:01:23.382 E/libbinder.IPCThreadState(  502): Binder transaction failure. id: 460696, cmd: BR_FAILED_REPLY (29201), error: -1 (Operation not permitted)
+10-04 11:01:23.382 W/Codec2-AIDL-BufferTypes( 6153): registerSender -- returned error: 4.
+10-04 11:01:23.382 E/Codec2-AIDL-BufferTypes( 6153): Failed to send buffer with BufferPool. Error: 4.
+10-04 11:01:23.382 E/Codec2-AIDL-BufferTypes( 6153): Invalid block data in C2ConstLinearBlock.
+10-04 11:01:23.382 E/Codec2-AIDL-BufferTypes( 6153): Invalid C2BufferData::linearBlocks. (Destination index = 0.)
+10-04 11:01:23.382 E/Codec2-AIDL-BufferTypes( 6153): Invalid C2Buffer::data.
+10-04 11:01:23.382 E/Codec2-AIDL-BufferTypes( 6153): Invalid C2FrameData::buffers[0].
+10-04 11:01:23.382 E/Codec2-AIDL-BufferTypes( 6153): Invalid C2Work::input.
+10-04 11:01:23.383 E/MediaCodec( 6153): queueCSDInputBuffer failed w/ error 14
+10-04 11:01:23.354 I/binder  (    0): 6180:6153 translate fd failed
+10-04 11:01:23.394 E/libbinder.IPCThreadState(  502): Binder transaction failure. id: 460711, cmd: BR_FAILED_REPLY (29201), error: -1 (Operation not permitted)
+10-04 11:01:23.395 W/Codec2-AIDL-BufferTypes( 6153): registerSender -- returned error: 4.

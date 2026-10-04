@@ -1,0 +1,4 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+source t10_plain.mp4: 3876411 B sha256=5771a847791d0246064ad54c1458b393a5dba15290528a622c8e441a6080bc33 1280x720@30 10.0s vbitrate=2000000 audio=48000Hz/2ch rotation=0 content=mixed canaries=false location=false videoSamples=300 audioSamples=470 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+probe sources: OK
+

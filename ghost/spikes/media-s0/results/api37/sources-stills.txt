@@ -1,0 +1,18 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+source orient1.jpg: 4269 B stored=600x400 exifOrientation=1 sha256=424c2a0bebc4935b01a558a218bfabfa7fea0a7d0435c62031cd2ce965983265
+source orient2.jpg: 4262 B stored=600x400 exifOrientation=2 sha256=9f473d92f489958846471a6a7db6cdb6ba83591b01524848b6f080f24c36d79a
+source orient3.jpg: 4264 B stored=600x400 exifOrientation=3 sha256=c7b376d26daba145664953474982aeba09133183311c160120b89322fd68f7fa
+source orient4.jpg: 4261 B stored=600x400 exifOrientation=4 sha256=69a4c2bbd1daaf801dafb7890bbe8e83665e9abfdd6c1dd2007647f86e381eb9
+source orient5.jpg: 4346 B stored=400x600 exifOrientation=5 sha256=996da3a46130ce934023ed73774b07b95b68d6ae8d58d5b7312598fd34c7b6fc
+source orient6.jpg: 4341 B stored=400x600 exifOrientation=6 sha256=6922c84d8ddee558f59ebd7a18607caac7eb245b15dca840dfc4a9fbe74e2b06
+source orient7.jpg: 4343 B stored=400x600 exifOrientation=7 sha256=0c70b37875bc375543167a57476e018e46a97b8c35d52ab0ef27cc1e0dffd3e7
+source orient8.jpg: 4344 B stored=400x600 exifOrientation=8 sha256=8f905d35eaa05e4aa6dc01f2313952c0c1460b2cee30951c924396aa426af17c
+source alpha.png: 10087 B
+source photo.webp: 1740 B
+source preview320.jpg: 1446 B
+source photo.heic: 1863 B sha256=29ff38402ab8b0f6d425752f17ed1eee5286736360108db4e8426514499ad85d
+source photo.avif: 2205 B sha256=3d6d38a7cab05855047a373e329fbb92e49b57943163370ac83e18d097936c40
+source p3.jpg: 2626 B
+source ultrahdr.jpg: 6406 B
+probe sources: OK
+

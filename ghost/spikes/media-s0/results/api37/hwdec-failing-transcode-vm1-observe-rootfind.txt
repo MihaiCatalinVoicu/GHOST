@@ -1,0 +1,24 @@
+/data/system/package-dex-usage.pb
+/data/user/0/com.google.android.gms/files/clearcut/funnel
+/data/user/0/com.google.android.gms/files/clearcut/0/PROXIMITY_AUTH_COUNTERS/-2016022465/play_logger_context.pb
+/data/user/0/com.google.android.gms/files/clearcut/0/PROXIMITY_AUTH_COUNTERS/-2016022465/1791100892622.NONE
+/data/user/0/com.google.android.gms/files/clearcut/0/EASY_UNLOCK_COUNTERS/296555065/play_logger_context.pb
+/data/user/0/com.google.android.gms/files/clearcut/0/EASY_UNLOCK_COUNTERS/296555065/1791100892632.NONE
+/data/user/0/com.google.android.gms/files/clearcut/0/WESTINGHOUSE_COUNTERS/-1353385452/play_logger_context.pb
+/data/user/0/com.google.android.gms/files/clearcut/0/WESTINGHOUSE_COUNTERS/-1353385452/1791100892636.NONE
+/data/user/0/com.google.android.gms/files/clearcut/0/PSEUDONYMOUS_ID_COUNTERS/-1275998503/play_logger_context.pb
+/data/user/0/com.google.android.gms/files/clearcut/0/PSEUDONYMOUS_ID_COUNTERS/-1275998503/1791100892639.NONE
+/data/user/0/com.google.android.gms/databases/phenotype.db-wal
+/data/user/0/com.google.android.gms/databases/phenotype.db-shm
+/data/data/com.google.android.gms/files/clearcut/funnel
+/data/data/com.google.android.gms/files/clearcut/0/PROXIMITY_AUTH_COUNTERS/-2016022465/play_logger_context.pb
+/data/data/com.google.android.gms/files/clearcut/0/PROXIMITY_AUTH_COUNTERS/-2016022465/1791100892622.NONE
+/data/data/com.google.android.gms/files/clearcut/0/EASY_UNLOCK_COUNTERS/296555065/play_logger_context.pb
+/data/data/com.google.android.gms/files/clearcut/0/EASY_UNLOCK_COUNTERS/296555065/1791100892632.NONE
+/data/data/com.google.android.gms/files/clearcut/0/WESTINGHOUSE_COUNTERS/-1353385452/play_logger_context.pb
+/data/data/com.google.android.gms/files/clearcut/0/WESTINGHOUSE_COUNTERS/-1353385452/1791100892636.NONE
+/data/data/com.google.android.gms/files/clearcut/0/PSEUDONYMOUS_ID_COUNTERS/-1275998503/play_logger_context.pb
+/data/data/com.google.android.gms/files/clearcut/0/PSEUDONYMOUS_ID_COUNTERS/-1275998503/1791100892639.NONE
+/data/data/com.google.android.gms/databases/phenotype.db-wal
+/data/data/com.google.android.gms/databases/phenotype.db-shm
+(end of a complete list: find exited 0, run as root, -newer /data/local/tmp/vm1.marker or -newercm /data/local/tmp/vm1.marker)

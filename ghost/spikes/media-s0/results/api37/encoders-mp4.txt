@@ -1,0 +1,59 @@
+== D:/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/work/api37/out/encoder_t10_plain.mp4 (3876411 B, sha256 5771a847791d0246064ad54c1458b393a5dba15290528a622c8e441a6080bc33)
+ftyp @0 size=24 major=mp42 minor=0 compat=["isom", "mp42"]
+free @24 size=3192 
+mdat @3216 size=3868717 payload=3868701
+moov @3871933 size=4478 
+  mvhd @3871941 size=108 v0 creation=3873951116 modification=3873951116 timescale=10000 duration=100267 next_track_ID=3
+  meta @3872049 size=118 
+    hdlr @3872057 size=33 handler=mdta name=""
+    keys @3872090 size=43 
+    ilst @3872133 size=34 
+      ???? @3872141 size=26 
+  trak @3872167 size=1829 
+    tkhd @3872175 size=92 v0 flags=0x7 creation=3873951116 modification=3873951116 track_ID=1 duration=100000 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @3872267 size=1729 
+      mdhd @3872275 size=32 v0 creation=3873951116 modification=3873951116 timescale=90000 duration=900000 language=```
+      hdlr @3872307 size=44 handler=vide name="VideoHandle"
+      minf @3872351 size=1645 
+        vmhd @3872359 size=20 
+        dinf @3872379 size=36 
+          dref @3872387 size=28 
+        stbl @3872415 size=1581 
+          stsd @3872423 size=145 
+            avc1 @3872439 size=129 1280x720 compressor=""
+              avcC @3872525 size=43 profile=66 compat=0xc0 level=41 nal_len=4 sps=6742c0298d6805005ba420404040f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(2,2,2)]
+          stts @3872568 size=24 
+          stss @3872592 size=36 
+          stsz @3872628 size=1220 
+          stsc @3873848 size=52 
+          co64 @3873900 size=96 
+  trak @3873996 size=2415 
+    tkhd @3874004 size=92 v0 flags=0x7 creation=3873951116 modification=3873951116 track_ID=2 duration=100267 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @3874096 size=2315 
+      mdhd @3874104 size=32 v0 creation=3873951116 modification=3873951116 timescale=48000 duration=481280 language=```
+      hdlr @3874136 size=44 handler=soun name="SoundHandle"
+      minf @3874180 size=2231 
+        smhd @3874188 size=16 
+        dinf @3874204 size=36 
+          dref @3874212 size=28 
+        stbl @3874240 size=2171 
+          stsd @3874248 size=91 
+            mp4a @3874264 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @3874300 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @3874339 size=24 
+          stsz @3874363 size=1900 
+          stsc @3876263 size=52 
+          co64 @3876315 size=96 
+box inventory (path: count): {"free": 1, "ftyp": 1, "mdat": 1, "moov": 1, "moov/meta": 1, "moov/meta/hdlr": 1, "moov/meta/ilst": 1, "moov/meta/ilst/????": 1, "moov/meta/keys": 1, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/co64": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,free,mdat,moov
+track 1 vide entry=avc1 ts=90000 samples=300 duration=10.000s bytes=3708169 bitrate=2966535bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=5
+  sps 6742c0298d6805005ba420404040f08846a0 [profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(2,2,2)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 295, 5: 5}
+  sei payload types (type: count): {}
+track 2 soun entry=mp4a ts=48000 samples=470 duration=10.027s bytes=160532 bitrate=128084bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 470}
+  aac frame sizes min=226 max=458
+mvhd creation/modification: ["3873951116/3873951116"]

@@ -1,0 +1,16 @@
+1c1
+< 3e10f24fd7b46cde557d04595af7c51f  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+---
+> 74f4e73bfecfc5e0646d186f9302a920  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+12,14c12,14
+< af3387a5f310f72755719e951b11b2e9  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+< 122a6fa67cd55a7cade31bba97e48656  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+< abcc9fb5f115eba584a83f15ff8887fa  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+---
+> 4f625cb7bc5c37f76fb21f97b6e5cdd0  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+> 9b5245218e55e4022a1084dad15fb1a9  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+> 999cdb1ffd395fb74400583c4b50937a  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+19c19
+< 48bf72cb33f25fcfd36831887213cc9f  /data/system_ce/0/recent_tasks/14_task.xml
+---
+> a0c2f84a1ae135325072797fc14f9111  /data/system_ce/0/recent_tasks/15_task.xml

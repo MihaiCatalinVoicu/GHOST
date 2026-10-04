@@ -1,0 +1,60 @@
+10-04 11:44:37.437 I/AconfigPackage( 9952): com.android.media.extractor.flags is mapped to com.android.media
+10-04 11:44:39.862 W/servicemanager(    0): Isolated app with UID 99143 requested 'network_management', but the service is not allowed for isolated apps.
+10-04 11:44:40.563 W/servicemanager(    0): Isolated app with UID 99143 requested 'connectivity', but the service is not allowed for isolated apps.
+10-04 11:44:40.686 W/servicemanager(    0): Isolated app with UID 99143 requested 'content_capture', but the service is not allowed for isolated apps.
+10-04 11:44:41.016 W/servicemanager(    0): Isolated app with UID 99143 requested 'connectivity', but the service is not allowed for isolated apps.
+10-04 11:44:41.120 W/binder:9980_3( 9980): type=1400 audit(0.0:42): avc:  denied  { create } for  scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:r:isolated_app:s0:c512,c768 tclass=tcp_socket permissive=0
+10-04 11:44:41.201 I/ActivityManager(  710): Killing 9980:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:ping_b7bdd0a82b1657e1/u0a234i143 (adj 0): isolated not needed
+10-04 11:44:41.963 W/servicemanager(    0): Isolated app with UID 99144 requested 'network_management', but the service is not allowed for isolated apps.
+10-04 11:44:42.564 W/servicemanager(    0): Isolated app with UID 99144 requested 'connectivity', but the service is not allowed for isolated apps.
+10-04 11:44:42.748 W/servicemanager(    0): Isolated app with UID 99144 requested 'content_capture', but the service is not allowed for isolated apps.
+10-04 11:44:42.914 E/SELinux (    0): avc:  denied  { find } for pid=9995 uid=99144 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:42.925 E/SELinux (    0): avc:  denied  { find } for pid=9995 uid=99144 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:42.981 W/libbinder.ServiceManagerCppClient( 9995): Failed to registerForNotifications in waitForService for media.resource_manager: Status(-1, EX_SECURITY): 'SELinux denied for service.'
+10-04 11:44:42.931 E/SELinux (    0): avc:  denied  { find } for pid=9995 uid=99144 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:42.941 E/SELinux (    0): avc:  denied  { find } for pid=9995 uid=99144 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:42.996 W/libbinder.ServiceManagerCppClient( 9995): Failed to registerForNotifications in waitForService for media.resource_manager: Status(-1, EX_SECURITY): 'SELinux denied for service.'
+10-04 11:44:43.041 I/libbinder.ServiceManagerCppClient( 9995): Waiting for service 'media.player' on '/dev/binder'...
+10-04 11:44:42.981 W/servicemanager(    0): Isolated app with UID 99144 requested 'media.player', but the service is not allowed for isolated apps.
+10-04 11:44:43.993 W/servicemanager(    0): Isolated app with UID 99144 requested 'media.player', but the service is not allowed for isolated apps.
+10-04 11:44:45.004 W/servicemanager(    0): Isolated app with UID 99144 requested 'media.player', but the service is not allowed for isolated apps.
+10-04 11:44:46.013 W/servicemanager(    0): Isolated app with UID 99144 requested 'media.player', but the service is not allowed for isolated apps.
+10-04 11:44:47.017 W/servicemanager(    0): Isolated app with UID 99144 requested 'media.player', but the service is not allowed for isolated apps.
+10-04 11:44:48.083 W/libbinder.ServiceManagerCppClient( 9995): Service media.player didn't start. Returning NULL
+10-04 11:44:48.084 E/HidlServiceManagement( 9995): getService: defaultServiceManager() is null
+10-04 11:44:48.085 E/HidlServiceManagement( 9995): getService: defaultServiceManager() is null
+10-04 11:44:48.085 F/Codec2Client( 9995): client.cpp:2772] Check failed: serviceManager Hardware service manager is not running.
+10-04 11:44:48.026 W/servicemanager(    0): Isolated app with UID 99144 requested 'media.player', but the service is not allowed for isolated apps.
+10-04 11:44:48.080 W/binder:9995_2( 9995): type=1400 audit(0.0:43): avc:  denied  { read } for  name="u:object_r:codec2_config_prop:s0" dev="tmpfs" ino=116 scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:codec2_config_prop:s0 tclass=file permissive=0
+10-04 11:44:48.080 W/binder:9995_2( 9995): type=1400 audit(0.0:44): avc:  denied  { read write } for  name="hwbinder" dev="binder" ino=5 scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:hwbinder_device:s0 tclass=chr_file permissive=0
+10-04 11:44:48.080 W/binder:9995_2( 9995): type=1400 audit(0.0:45): avc:  denied  { read } for  name="u:object_r:codec2_config_prop:s0" dev="tmpfs" ino=116 scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:codec2_config_prop:s0 tclass=file permissive=0
+10-04 11:44:48.080 W/binder:9995_2( 9995): type=1400 audit(0.0:46): avc:  denied  { read write } for  name="hwbinder" dev="binder" ino=5 scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:hwbinder_device:s0 tclass=chr_file permissive=0
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #22 pc 002210c8  /system/lib64/libhwui.so (<crabbyavif::codecs::android_mediacodec::MediaCodec>::initialize_impl+1224) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #23 pc 0025fe77  /system/lib64/libhwui.so (<crabbyavif::codecs::android_mediacodec::MediaCodec as crabbyavif::codecs::Decoder>::get_next_image_grid+263) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #24 pc 0022acc7  /system/lib64/libhwui.so (<crabbyavif::decoder::Decoder>::next_image+11111) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #25 pc 00239805  /system/lib64/libhwui.so (<crabbyavif::decoder::Decoder>::nth_image+309) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #26 pc 002645dd  /system/lib64/libhwui.so (crabby_avifDecoderNthImage+189) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #27 pc 006b3481  /system/lib64/libhwui.so (SkCrabbyAvifCodec::onGetPixels+193) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #21 pc 002210c8  /system/lib64/libhwui.so (<crabbyavif::codecs::android_mediacodec::MediaCodec>::initialize_impl+1224) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #22 pc 0025fe77  /system/lib64/libhwui.so (<crabbyavif::codecs::android_mediacodec::MediaCodec as crabbyavif::codecs::Decoder>::get_next_image_grid+263) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #23 pc 0022acc7  /system/lib64/libhwui.so (<crabbyavif::decoder::Decoder>::next_image+11111) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #24 pc 00239805  /system/lib64/libhwui.so (<crabbyavif::decoder::Decoder>::nth_image+309) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #25 pc 002645dd  /system/lib64/libhwui.so (crabby_avifDecoderNthImage+189) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:48.626 F/4bbf2615f071719( 9995): runtime.cc:761]   native: #26 pc 006b3481  /system/lib64/libhwui.so (SkCrabbyAvifCodec::onGetPixels+193) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:49.547 F/DEBUG   (10012): Abort message: 'Check failed: serviceManager Hardware service manager is not running.'
+10-04 11:44:49.548 F/DEBUG   (10012):       #17 pc 00000000002210c8  /system/lib64/libhwui.so (<crabbyavif::codecs::android_mediacodec::MediaCodec>::initialize_impl+1224) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:49.548 F/DEBUG   (10012):       #18 pc 000000000025fe77  /system/lib64/libhwui.so (<crabbyavif::codecs::android_mediacodec::MediaCodec as crabbyavif::codecs::Decoder>::get_next_image_grid+263) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:49.548 F/DEBUG   (10012):       #19 pc 000000000022acc7  /system/lib64/libhwui.so (<crabbyavif::decoder::Decoder>::next_image+11111) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:49.549 F/DEBUG   (10012):       #20 pc 0000000000239805  /system/lib64/libhwui.so (<crabbyavif::decoder::Decoder>::nth_image+309) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:49.549 F/DEBUG   (10012):       #21 pc 00000000002645dd  /system/lib64/libhwui.so (crabby_avifDecoderNthImage+189) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:49.549 F/DEBUG   (10012):       #22 pc 00000000006b3481  /system/lib64/libhwui.so (SkCrabbyAvifCodec::onGetPixels(SkImageInfo const&, void*, unsigned long, SkCodec::Options const&, int*)+193) (BuildId: b61ca0d56819e23e75cb164617ac4f0f)
+10-04 11:44:50.388 W/servicemanager(    0): Isolated app with UID 99145 requested 'network_management', but the service is not allowed for isolated apps.
+10-04 11:44:50.717 W/servicemanager(    0): Isolated app with UID 99145 requested 'connectivity', but the service is not allowed for isolated apps.
+10-04 11:44:50.793 W/servicemanager(    0): Isolated app with UID 99145 requested 'content_capture', but the service is not allowed for isolated apps.
+10-04 11:44:50.871 E/SELinux (    0): avc:  denied  { find } for pid=10019 uid=99145 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:50.902 E/SELinux (    0): avc:  denied  { find } for pid=10019 uid=99145 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:50.996 W/libbinder.ServiceManagerCppClient(10019): Failed to registerForNotifications in waitForService for media.resource_manager: Status(-1, EX_SECURITY): 'SELinux denied for service.'
+10-04 11:44:51.014 W/libbinder.ServiceManagerCppClient(10019): Failed to registerForNotifications in waitForService for media.resource_manager: Status(-1, EX_SECURITY): 'SELinux denied for service.'
+10-04 11:44:50.948 E/SELinux (    0): avc:  denied  { find } for pid=10019 uid=99145 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:50.955 E/SELinux (    0): avc:  denied  { find } for pid=10019 uid=99145 name=media.resource_manager scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-04 11:44:51.027 I/libbinder.ServiceManagerCppClient(10019): Waiting for service 'media.player' on '/dev/binder'...

@@ -1,0 +1,10 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+configure c2.android.avc.encoder [plain]: OK
+configure c2.android.avc.encoder [profile only]: OK
+configure c2.android.avc.encoder [profile+level]: OK
+configure c2.android.avc.encoder [colour keys (BT.709 limited)]: OK
+configure c2.android.avc.encoder [colour keys (BT.601 full)]: OK
+configure c2.android.avc.encoder [profile+level+max-bframes 0]: OK
+configure c2.android.avc.encoder [High profile+level 3.1]: OK
+probe configure: OK
+
