@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6: a library exporting a JNI symbol of a class no surface gate knows.
+set -euo pipefail
+MLS_NM_EXTRA="Java_org_ghost_crypto_bridge_MlsDebug_dump" exec bash "$(dirname "$0")/exact-nm" "$@"

@@ -49,11 +49,14 @@ class SyncSchemaConstraintsTest {
         // send_delay defaults to 'default' and accepts only the three override values (§11.2 #15).
         assertEquals("default", db.queryString("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", listOf(f.ns)))
         val channel = bytes(32, 12)
+        val media = bytes(32, 13)
+        // Another consumer may turn the delay off; a DM namespace (v4) and a channel namespace (v6) may not.
         for (value in listOf("on", "off", "default")) {
-            assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = ? WHERE namespace_id = ?", value, channel))
+            assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = ? WHERE namespace_id = ?", value, media))
         }
         for (value in listOf("on", "default")) {
             assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = ? WHERE namespace_id = ?", value, f.ns))
+            assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = ? WHERE namespace_id = ?", value, channel))
         }
         // A DM namespace cannot turn the send delay off, at an update or at an insert (Phase 9 §13.6 step 3).
         db.rejects("DM namespaces cannot turn the send delay off", "UPDATE sync_namespace SET send_delay = 'off' WHERE namespace_id = ?", f.ns)
@@ -62,10 +65,35 @@ class SyncSchemaConstraintsTest {
             "INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'dm', 1, 'off')",
             bytes(32, 21),
         )
+        // A channel namespace keeps its send delay too (Phase 10 design §7.5 item 3, §9, migration 6), at an
+        // update, at an insert, and when the consumer changes under an `off` that was legal for the old one.
+        val channelOff = "Channel namespaces cannot turn the send delay off"
+        db.rejects(channelOff, "UPDATE sync_namespace SET send_delay = 'off' WHERE namespace_id = ?", channel)
+        db.rejects(
+            channelOff,
+            "INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'channel', 1, 'off')",
+            bytes(32, 22),
+        )
+        db.rejects(
+            channelOff,
+            "INSERT OR REPLACE INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'channel', 1, 'off')",
+            channel,
+        )
+        assertEquals(1, db.changes("UPDATE sync_namespace SET send_delay = 'off' WHERE namespace_id = ?", media))
+        db.rejects(channelOff, "UPDATE sync_namespace SET consumer = 'channel' WHERE namespace_id = ?", media)
+        assertEquals("media", db.queryString("SELECT consumer FROM sync_namespace WHERE namespace_id = ?", listOf(media)))
+        // Finding S1a-1 (docs/design/faza10-forum.md §19.33): the DM trigger of v4 watches `send_delay` alone, so a row
+        // that is `off` for another consumer becomes a DM namespace by changing the consumer. Nothing in :sync updates
+        // `consumer`, and a frozen version is not amended; this pins the behaviour so that a migration that closes the
+        // path (the channel trigger above watches both columns) has to change this line.
+        assertEquals(1, db.changes("UPDATE sync_namespace SET consumer = 'dm' WHERE namespace_id = ?", media))
+        assertEquals("off", db.queryString("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", listOf(media)))
+        assertEquals(1, db.changes("UPDATE sync_namespace SET consumer = 'media' WHERE namespace_id = ?", media))
         assertEquals(
             1,
-            db.changes("INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'channel', 1, 'off')", bytes(32, 22)),
+            db.changes("INSERT INTO sync_namespace(namespace_id, consumer, listening, send_delay) VALUES (?, 'media', 1, 'off')", bytes(32, 22)),
         )
+        assertEquals("default", db.queryString("SELECT send_delay FROM sync_namespace WHERE namespace_id = ?", listOf(channel)))
         db.rejects(CHECK_FAILED, "UPDATE sync_namespace SET send_delay = 'high' WHERE namespace_id = ?", f.ns)
         db.rejects("NOT NULL constraint failed", "UPDATE sync_namespace SET send_delay = NULL WHERE namespace_id = ?", f.ns)
         // capability_source defaults to 'redeem' and admits only the two values (Phase 9 §13.3 item 3).
@@ -108,6 +136,67 @@ class SyncSchemaConstraintsTest {
         db.rejects(CHECK_FAILED, insert, 2, f.ns, "write", bytes(82, 1), null, "usable", 0)
         db.rejects(FOREIGN_KEY_FAILED, insert, 99, f.ns, "write", bytes(82, 1), null, "usable", 1)
         db.rejects(FOREIGN_KEY_FAILED, insert, 2, bytes(32, 9), "write", bytes(82, 1), null, "usable", 1)
+    }
+
+    /** Migration 6 (Phase 10 design §9): the funding flag is a bare key with a cascade. */
+    @Test
+    fun syncNamespaceFund() = SyncFixture().use { f ->
+        val db = f.db
+        val insert = "INSERT INTO sync_namespace_fund(namespace_id) VALUES (?)"
+        assertEquals(1, db.changes(insert, f.ns))
+        db.rejects("sync_namespace_fund rows are never replaced", insert, f.ns)
+        db.rejects(FOREIGN_KEY_FAILED, insert, bytes(32, 9))
+        db.rejects(CHECK_FAILED, insert, bytes(31, 9))
+        db.rejects(CHECK_FAILED, insert, bytes(33, 9))
+        db.rejects("NOT NULL constraint failed", "INSERT INTO sync_namespace_fund(namespace_id) VALUES (NULL)")
+        assertEquals(1L, f.count("sync_namespace_fund"))
+        // The flag has no other column to write: a funded namespace is a present row.
+        val columns = ArrayList<String>()
+        db.query("PRAGMA table_info(sync_namespace_fund)") { columns += it.string(1) }
+        assertEquals(listOf("namespace_id"), columns)
+        // It goes with its namespace (the row GC removes), and only then.
+        assertEquals(1, db.changes("DELETE FROM sync_namespace WHERE namespace_id = ?", f.ns))
+        assertEquals(0L, f.count("sync_namespace_fund"))
+    }
+
+    /** Migration 6 (Phase 10 design §9): the columns of `relay_capability` (v2) without `kind`, and the v4/v5 `typeof` rule. */
+    @Test
+    fun relayRegisterCapability() = SyncFixture().use { f ->
+        val db = f.db
+        val insert =
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, expires_hour, state, generation) VALUES (?, ?, ?, ?, ?, ?)"
+        assertEquals(1, db.changes(insert, 1, f.ns, bytes(82, 1), 3600L * 500_000, "usable", 1))
+        assertEquals(1, db.changes(insert, 2, f.ns, bytes(1, 1), null, "rejected", 7))
+        f.namespace(bytes(32, 5))
+        assertEquals(1, db.changes(insert, 1, bytes(32, 5), bytes(512, 1), 0, "exhausted", 1))
+        // One capability per pair: the key is (relay, namespace), and the guard names the refusal.
+        db.rejects("relay_register_capability rows are never replaced", insert, 1, f.ns, bytes(82, 2), null, "usable", 2)
+        db.rejects(CHECK_FAILED, insert, 2, bytes(32, 5), ByteArray(0), null, "usable", 1)
+        db.rejects(CHECK_FAILED, insert, 2, bytes(32, 5), bytes(513, 1), null, "usable", 1)
+        db.rejects(CHECK_FAILED, insert, 2, bytes(32, 5), bytes(82, 1), 3601, "usable", 1)
+        db.rejects(CHECK_FAILED, insert, 2, bytes(32, 5), bytes(82, 1), null, "revoked", 1)
+        db.rejects(CHECK_FAILED, insert, 2, bytes(32, 5), bytes(82, 1), null, "usable", 0)
+        db.rejects("NOT NULL constraint failed", insert, 2, bytes(32, 5), null, null, "usable", 1)
+        db.rejects(FOREIGN_KEY_FAILED, insert, 99, bytes(32, 5), bytes(82, 1), null, "usable", 1)
+        db.rejects(FOREIGN_KEY_FAILED, insert, 2, bytes(32, 9), bytes(82, 1), null, "usable", 1)
+        // A time is a whole hour held as an integer: SQLite's % casts a REAL first, so the CHECK pairs the
+        // granularity with typeof (T20, T33), and so does the generation counter.
+        // (The executor refuses to bind a REAL, so the fractional values are written in the statement's text.)
+        fun literal(expires: String, generation: String) =
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, expires_hour, state, generation) " +
+                "VALUES (2, ?, ?, $expires, 'usable', $generation)"
+        db.rejects(CHECK_FAILED, literal("7200.5", "1"), bytes(32, 5), bytes(82, 1))
+        db.rejects(CHECK_FAILED, literal("12600.0 + 0.5", "1"), bytes(32, 5), bytes(82, 1))
+        db.rejects(CHECK_FAILED, literal("NULL", "1.5"), bytes(32, 5), bytes(82, 1))
+        // A whole REAL is coerced to an integer by the columns' affinity, so the stored value is an integer.
+        assertEquals(1, db.changes(literal("7200.0", "2.0"), bytes(32, 5), bytes(82, 1)))
+        assertEquals("integer", db.queryString("SELECT typeof(expires_hour) FROM relay_register_capability WHERE relay_id = 2 AND namespace_id = ?", listOf(bytes(32, 5))))
+        assertEquals("integer", db.queryString("SELECT typeof(generation) FROM relay_register_capability WHERE relay_id = 2 AND namespace_id = ?", listOf(bytes(32, 5))))
+        // No `kind` column: a pair holds at most one registration capability (the write and read tokens of
+        // `relay_capability` are other rows of another table, which the registration step does not mix).
+        val columns = ArrayList<String>()
+        db.query("PRAGMA table_info(relay_register_capability)") { columns += it.string(1) }
+        assertEquals(listOf("relay_id", "namespace_id", "token", "expires_hour", "state", "generation"), columns)
     }
 
     @Test
@@ -288,6 +377,12 @@ class SyncSchemaConstraintsTest {
             listOf(f.ns, bytes(82, 1)),
         )
         db.exec("INSERT INTO relay_cursor(relay_id, namespace_id, cursor) VALUES (1, ?, ?)", listOf(f.ns, bytes(8, 1)))
+        // The funding flag and the registration capability of v6 are cascaded away with the namespace row.
+        db.exec("INSERT INTO sync_namespace_fund(namespace_id) VALUES (?)", listOf(f.ns))
+        db.exec(
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, state, generation) VALUES (1, ?, ?, 'usable', 1)",
+            listOf(f.ns, bytes(82, 2)),
+        )
         f.listed(1)
         db.exec("INSERT INTO inbox_source(namespace_id, blob_hash, relay_id, state) VALUES (?, ?, 1, 'candidate')", listOf(f.ns, hash(1)))
         db.exec("INSERT INTO inbox_blob(namespace_id, blob_hash, state, retain_until_day) VALUES (?, ?, 'done', 14)", listOf(f.ns, hash(2)))
@@ -310,7 +405,7 @@ class SyncSchemaConstraintsTest {
         assertEquals(1, db.changes("DELETE FROM outbox_op WHERE operation_id = ?", opId(3)))
         assertEquals(0L, f.count("outbox_delivery"))
         assertEquals(1, db.changes("DELETE FROM sync_namespace WHERE namespace_id = ?", f.ns))
-        for (table in listOf("inbox_blob", "inbox_source", "namespace_relay", "relay_cursor", "relay_capability")) {
+        for (table in listOf("inbox_blob", "inbox_source", "namespace_relay", "relay_cursor", "relay_capability", "sync_namespace_fund", "relay_register_capability")) {
             assertEquals(table, 0L, f.count(table))
         }
         assertEquals(2L, f.count("relay_directory"))
@@ -330,10 +425,15 @@ class SyncSchemaConstraintsTest {
             listOf(f.ns, bytes(82, 1)),
         )
         db.exec("INSERT INTO relay_cursor(relay_id, namespace_id, cursor) VALUES (3, ?, ?)", listOf(f.ns, bytes(8, 1)))
+        db.exec(
+            "INSERT INTO relay_register_capability(relay_id, namespace_id, token, state, generation) VALUES (3, ?, ?, 'usable', 1)",
+            listOf(f.ns, bytes(82, 2)),
+        )
         f.listed(5)
         db.exec("INSERT INTO inbox_source(namespace_id, blob_hash, relay_id, state) VALUES (?, ?, 3, 'candidate')", listOf(f.ns, hash(5)))
         assertEquals(1, db.changes("DELETE FROM relay_directory WHERE relay_id = 3"))
         assertEquals(0L, f.count("relay_capability"))
+        assertEquals(0L, f.count("relay_register_capability"))
         assertEquals(0L, f.count("relay_cursor"))
         assertEquals(0L, f.count("inbox_source"))
         assertEquals("listed", f.inboxState(5))

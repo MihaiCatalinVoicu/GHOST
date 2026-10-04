@@ -1012,6 +1012,11 @@ lic_case license-notices "rejects a dropped upstream NOTICE" fail "apache-droppe
 lic_case license-notices "rejects an Apache-2.0 package without an upstream NOTICE snapshot entry" fail "apache-nosnapshot 1.0.0: used under Apache-2.0 without an upstream NOTICE snapshot entry" "$(lic_list no-snapshot)" -- rust
 lic_case license-notices "rejects an undecided licence file of vendored sources" fail "undecided-pkg 1.0.0: vendor/lib/LICENSE: a licence file of vendored sources" "$(lic_list undecided-vendored)" -- rust
 lic_case license-notices "rejects a copyleft-only package" fail "gpl-pkg 1.0.0: no alternative of 'GPL-3.0-only' is an allowed licence" "$(lic_list copyleft)" -- rust
+# The SPDX template clause (Phase 10 review of S2a, F1): a package that ships no MIT text would get
+# the template's "<year> <copyright holders>" in place of a copyright line; unreviewed, it fails, and
+# a reviewed line no package needs fails too.
+lic_case license-notices "rejects an unreviewed package that would carry an SPDX template text" fail "template-pkg 1.0.0: ships no MIT text, and the SPDX one is a template without a copyright line" "$(lic_list template)" -- rust
+lic_case license-notices "rejects a template review line no package needs" fail "template-texts-reviewed.txt: mit-pkg 1.0.0 is not needed" "$(lic_list positive)" GHOST_LICENSE_TEMPLATE_REVIEWED="$LIC_FIX/lists/template-reviewed-stale.txt" -- rust
 if grep -q "used under: Apache-2.0" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt" && ! grep -q "LICENSE-APACHE of dual-pkg" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt" \
   && grep -q "NOTICE of https://github.com/fixture/apache-pkg" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt" \
   && grep -q "third_party/zlib/LICENSE of vendored-pkg" "$LIC_FIX/licenses/THIRD_PARTY_NOTICES-fixture.txt"; then
@@ -1342,7 +1347,8 @@ fi
 
 # G-DM2 (Phase 9 design §16.1, §21.7, §21.9; T28, T31): the restricted sync calls are made only
 # from the steps that may make them, an owner pass is started only by what may start one, and a
-# relay-visible step is driven only by what may drive one. Seven single-purpose fixtures — a RECV
+# relay-visible step is driven only by what may drive one. Seven single-purpose fixtures (an eighth,
+# `funding`, is Phase 10 slice S1a's, below) — a RECV
 # that registers (the reflex T28 forbids), a store-layer `Namespaces.remove` (§21.12 point 3 makes
 # it SWEEP's), a RECV that hides its three call sites from a line-by-line reader (a receiver on the
 # line above, a local alias, a scope function, a safe call, a port injected under a name of the
@@ -1367,8 +1373,11 @@ dmenq_case recv 1 "ReceiveStep.kt:9" "refuses a RECV step that registers a names
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-remove"
 dmenq_case remove 1 "ContactDao.kt:10" "refuses Namespaces.remove from the store layer"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-evasion"
-dmenq_case evasion 6 "ReceiveStep.kt:47" \
+dmenq_case evasion 8 "ReceiveStep.kt:47" \
   "sees a call through a line break, an alias, a scope function, a safe call and a typed port"
+# Phase 10 review of S1a: a callable reference to a restricted call and a parenthesized receiver.
+dmenq_case evasion 8 "ReceiveStep.kt:59" "sees a callable reference to a restricted call (sync.funding::set)"
+dmenq_case evasion 8 "ReceiveStep.kt:61" "sees a parenthesized receiver ((sync.funding).set(…))"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-sweeper"
 dmenq_case sweeper 1 "Sweeper.kt:11" "lets SWEEP remove a namespace and nothing else"
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-trigger"
@@ -1380,6 +1389,13 @@ dmenq_case step 2 "a send, a resend, a control or an establishment step is drive
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-vacuous"
 dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
   "refuses a tree whose DM sources make no restricted call"
+# Phase 10, slice S1a: `Funding.set` joins the restricted calls (design §7.5 item 1, item 7; T40).
+# One fixture, three call sites in a RECV step — the port by its name, a local alias, a port injected
+# as a `Funding` under a name of the author's choosing — beside an allowed OwnerSteps that funds (an
+# allowed file may) and a RECV `Inbox.reofferDeferred` that is no violation (it makes no relay call).
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding"
+dmenq_case funding 3 "ReceiveStep.kt:13" \
+  "refuses a RECV step that funds a namespace by name, through an alias and through a typed port (and lets reofferDeferred pass)"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -1450,6 +1466,14 @@ dmrep_case schema 3 "Schema.kt:27: OR REPLACE, REPLACE INTO" \
 expect_fail dm-no-replace "$HARNESS/negative-dm-replace-vacuous"
 dmrep_case vacuous 2 "no SQL string found (the gate would pass vacuously)" \
   "refuses a DM store without SQL and a schema without its migration 5 markers"
+# Phase 10, slice S1a: the two tables migration 6 adds to `:sync` (`sync_namespace_fund`,
+# `relay_register_capability`) are REPLACE-guarded like the DM tables, so the rule reads their writers
+# too. `v6tables` holds an upsert on the one and an INSERT OR REPLACE on the other in a `:sync` store,
+# beside the v2 `relay_capability` upsert, the writers' own UPDATE-then-INSERT form and a longer table
+# name, none of which may count.
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-v6tables"
+dmrep_case v6tables 2 "CapabilityStore.kt:17: ON CONFLICT ... DO UPDATE" \
+  "reads the writers of the two migration-6 sync tables, and not relay_capability's upsert or a longer table name"
 if bash "$DIR/dm-no-replace.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-no-replace accepts the real DM SQL"
 else
@@ -1552,6 +1576,11 @@ near_misses dm-no-replace positive-dm-replace-near-misses
 # G-R4's source half (no-logging): a standard stream without a print macro.
 evasion_count no-logging negative-rust-std-streams 1
 evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
+# The source finder's exemptions are exact (Phase 10 review of S2a, F4): a module directory named
+# target and a module file named main.rs are read; the crate's own src/main.rs stays exempt.
+evasion_count no-logging negative-rust-path-exemptions 2
+evasion_named no-logging "client-core/fx/src/target/mod.rs:3:    eprintln!" "reads a module directory named target"
+evasion_named no-logging "client-core/fx/src/x/main.rs:3:" "reads a module file named main.rs"
 near_misses no-logging positive-rust-std-streams
 # G-DM3's Kotlin half (§22.33 item 17): the split-call evasion, one violation per rule, the allowlist's
 # own checks, and a positive with a listed site and a seed branch both written across lines.
@@ -1577,6 +1606,40 @@ if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
 else
   echo "SELF-TEST FAIL: dm-derivation-inputs rejects the real DM modules" >&2; rc=1
+fi
+# G-M3's script half (Phase 10 design faza10-forum.md §5.2 rule (1), §13.1; slice S2a): a positive with
+# a declaration split over lines, one in a comment and one in a string, the two exports and the hint
+# label in Kotlin; then one fixture per rule (test-harness/gates/ch-derivation/README.md).
+near_misses ch-derivation-inputs ch-derivation/positive
+evasion_count ch-derivation-inputs ch-derivation/raw-key 1
+evasion_named ch-derivation-inputs "src/derive.rs:3: derive_bad takes \`&[u8]\` as its key input" "reports an untyped key input declared across lines"
+evasion_count ch-derivation-inputs ch-derivation/public-elsewhere 1
+evasion_named ch-derivation-inputs "src/derive.rs:4: derive_something_else takes the public OpenInviteSalt" "reports the open invite's public salt keying another derivation"
+evasion_count ch-derivation-inputs ch-derivation/outside 2
+evasion_named ch-derivation-inputs "src/seal.rs:2: derive_hidden is declared outside src/derive.rs" "reports a derivation declared outside the typed module"
+evasion_named ch-derivation-inputs "src/seal.rs:3: HKDF outside src/derive.rs" "reports an HKDF outside the typed module, its path split over lines"
+evasion_count ch-derivation-inputs ch-derivation/exporter 2
+evasion_named ch-derivation-inputs "src/group.rs:3: export_secret with a label other than" "reports an export under another label"
+evasion_named ch-derivation-inputs "src/kv.rs:2: export_secret outside src/group.rs" "reports an export outside group.rs"
+evasion_count ch-derivation-inputs ch-derivation/kotlin 2
+evasion_named ch-derivation-inputs "Channel.kt:3: a channel derivation label in Kotlin (\"ghost/v1/ch-seal\")" "reports a channel label in Kotlin and not the hint label"
+# Rules 2 and 5 as the review of S2a (F6) extended them: an untyped helper, a second parameter as
+# the key, a function a macro generates, HKDF by other names, and T36's own from_bytes scenario.
+evasion_count ch-derivation-inputs ch-derivation/helper-untyped 1
+evasion_named ch-derivation-inputs "src/derive.rs:12: HKDF (\`hkdf32\`) outside a derive_* function" "reports an HKDF helper keyed by untyped bytes"
+evasion_count ch-derivation-inputs ch-derivation/second-param 1
+evasion_named ch-derivation-inputs "src/derive.rs:12: derive_twice keys HKDF with \`ikm\`, not its first parameter \`k\`" "reports a derivation keyed by its second parameter"
+evasion_count ch-derivation-inputs ch-derivation/macro 1
+evasion_named ch-derivation-inputs "src/derive.rs:14: HKDF (\`hkdf32\`) outside a derive_* function" "reports a derivation a macro generates"
+evasion_count ch-derivation-inputs ch-derivation/other-names 2
+evasion_named ch-derivation-inputs "src/seal.rs:3: HKDF outside src/derive.rs" "reports SimpleHkdf outside the typed module"
+evasion_named ch-derivation-inputs "src/group.rs:3: HKDF outside src/derive.rs" "reports the provider's hkdf_expand outside the typed module"
+evasion_count ch-derivation-inputs ch-derivation/from-bytes 1
+evasion_named ch-derivation-inputs "src/seal.rs: EpochExport::from_bytes at 1 site(s), typed-key-sites.txt pins 0" "reports a typed key built from a channel id (T36)"
+if bash "$DIR/ch-derivation-inputs.sh" >/dev/null 2>&1; then
+  echo "self-test ok: ch-derivation-inputs accepts the real channel crate"
+else
+  echo "SELF-TEST FAIL: ch-derivation-inputs rejects the real channel crate" >&2; rc=1
 fi
 
 # G-R3 (ADR-36): the portable-libcrux detector over build outputs. A host build's JSON stream
@@ -1606,6 +1669,13 @@ lcx_case fail 3 "no build script output of libcrux-ml-kem" "refuses a directory 
 lcx_case fail 2 "dir-simd" "checks every build it is given" --json "$LCX/portable.json" --target-dir "$LCX/dir-simd"
 lcx_case pass 0 "[libcrux-portable] OK" "accepts workspace path package ids (upstream's layout, §22.35)" --json "$LCX/portable-path.json"
 lcx_case fail 1 "libcrux-ml-kem enabled SIMD code" "rejects SIMD cfgs under a path package id" --json "$LCX/simd-path.json"
+# G-M9 (Phase 10 design §13.1, S0-8, V10-7; slice S2a): libcrux-aes joins the rule wherever it was
+# built, and `--with-aes` requires it (the builds that compile the OpenMLS provider say so).
+lcx_case pass 0 "[libcrux-portable] OK" "accepts a portable build with libcrux-aes and ignores libcrux-aesgcm (G-M9)" --with-aes --json "$LCX/aes-portable.json"
+lcx_case fail 1 "no build-script-executed message of libcrux-aes" "refuses a host build without libcrux-aes under --with-aes (G-M9)" --with-aes --json "$LCX/portable.json"
+lcx_case fail 1 "libcrux-aes enabled SIMD code" "rejects SIMD cfgs in libcrux-aes, --with-aes or not (G-M9)" --json "$LCX/aes-simd.json"
+lcx_case fail 1 "libcrux-aes-0123456789abcdef/output:2:cargo:rustc-cfg" "rejects SIMD cfgs in libcrux-aes's build script output (G-M9)" --target-dir "$LCX/dir-aes-simd"
+lcx_case fail 1 "no build script output of libcrux-aes" "refuses a profile directory without libcrux-aes under --with-aes (G-M9)" --with-aes --target-dir "$LCX/dir-portable"
 
 # G-R7 (c) (§2.9, V-9): the shipped library carries Olm's KDF labels and none of the HPKE strings
 # the linker drops. Byte files stand in for stripped libraries (test-harness/gates/dm-golden/).
@@ -1622,7 +1692,10 @@ dmg_lib_case() { # $1 = expect pass|fail, $2 = expected violation count, $3 = ex
   fi
 }
 dmg_lib_case pass 0 "[dm-golden-lock] OK" "accepts a library with Olm and without HPKE" hpke-dropped.bin
-dmg_lib_case fail 2 "contains 'HPKE-v1'" "rejects a library the linker left HPKE in" hpke-linked.bin
+dmg_lib_case fail 2 "contains 'HPKEXXYYZZ'" "rejects a library the linker left RustCrypto's hpke and vodozemac's HPKE in" hpke-linked.bin
+# Phase 10 slice S2b (faza10-forum.md §19.32): OpenMLS's HPKE (hpke-rs) is linked on purpose and its
+# RFC 9180 labels no longer count as RustCrypto's hpke.
+dmg_lib_case pass 0 "[dm-golden-lock] OK" "accepts OpenMLS's hpke-rs labels (HPKE-v1, psk_id_hash) beside Olm" hpke-rs-linked.bin
 dmg_lib_case fail 2 "does not contain 'OLM_KEYS'" "refuses a library with no Olm code" no-olm.bin
 # `--library` is the whole of its mode and reads no git base: the `android-native` job's checkout is
 # shallow, and the first CI run fell through to the pin rule after "OK" (design §22.33 item 18). A
@@ -1634,6 +1707,156 @@ else
   echo "SELF-TEST FAIL: dm-golden-lock --library went on to the pin rule" >&2
   printf '%s\n' "$dmg_out" | tail -3 >&2; rc=1
 fi
+
+# G-M6 (Phase 10 design faza10-forum.md §10.2, §13.1; slice S2b): the channel JNI surface is a
+# closed list with function 16 reserved for slice S9 — G-R6's halves for `MlsNative`, its one test
+# entry (`MlsVectors.run`) only in a test library, and one list of allowed classes shared with G-R6.
+MLS_JNI="$HARNESS/mls-jni"
+if env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+     GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: mls-jni-surface accepts a closed list whose entry points and declarations agree"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface rejects the good fixture" >&2; rc=1
+fi
+expect_fail_msg "mls-jni-surface rejects an export outside the closed list" \
+  "the workspace exports 'MlsNative.debugDump', which is not on the closed list" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/undeclared-export.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects function 16 written before slice S9" \
+  "'MlsNative.revealSeal' is reserved on the closed list (a later slice's: Declared) but the workspace already writes its entry point" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/early-reveal.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects an Exported entry with no entry point" \
+  "'MlsNative.ctxClose' is marked Exported on the closed list but the workspace writes no entry point for it" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/missing-export.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a Kotlin declaration the crate does not export" \
+  "MlsNative declares 'external fun debugDump', which the crate does not export" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeExtra.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a Kotlin declaration of the reserved function 16" \
+  "MlsNative declares 'external fun revealSeal', which is reserved for a later slice" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeReveal.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a public native declaration" \
+  "it must be internal" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativePublic.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects an internal declaration Kotlin would mangle" \
+  "would mangle the JNI name" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeMangled.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a missing Kotlin declaration" \
+  "MlsNative does not declare 'external fun ctxClose'" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeMissing.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects an MlsNative entry point written outside the closed list's file" \
+  "the workspace exports 'MlsNative.debugDump'" \
+  env GHOST_MLS_JNI_SCAN="$MLS_JNI/stray" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a JNI entry point of a class no surface gate knows" \
+  "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_MlsDebug_dump'" \
+  env GHOST_MLS_JNI_SCAN="$MLS_JNI/foreign" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+# Review of S2b. The source halves read code, not one spelling (common.sh jni_source_symbols): every
+# MlsNative name of mls-jni/evasions/ is reported — `pub unsafe extern "system"`, no `pub`, `extern
+# "C"`, a line break after `fn`, an `export_name` a macro argument writes, module directories named
+# `target` and `build` under `src/` — with the foreign class a macro exports, and neither the name in
+# a comment nor the build output outside `src/`. G-R6 reads the same files the same way.
+mls_ev_out="$(env GHOST_MLS_JNI_SCAN="$MLS_JNI/evasions" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" 2>&1 || true)"
+mls_ev_missing=""
+for name in debugUnsafe debugPrivate debugC debugSplit debugMacro debugTarget debugBuild; do
+  grep -qF "the workspace exports 'MlsNative.$name', which is not on the closed list" <<<"$mls_ev_out" || mls_ev_missing+="$name "
+done
+if [ -z "$mls_ev_missing" ] && [ "$(grep -c '^GATE-FAIL' <<<"$mls_ev_out" || true)" = "8" ] \
+   && grep -qF "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_DmDebug_dump'" <<<"$mls_ev_out" \
+   && ! grep -qE 'debugComment|debugOutput' <<<"$mls_ev_out"; then
+  echo "self-test ok: mls-jni-surface reads every spelling of an entry point rustc exports, and no comment or build output"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface does not report exactly the eight entry points of mls-jni/evasions/ (missing: ${mls_ev_missing:-none})" >&2
+  printf '%s\n' "$mls_ev_out" | grep '^GATE-FAIL' >&2; rc=1
+fi
+dm_ev_out="$(env GHOST_DM_JNI_SCAN="$MLS_JNI/evasions" bash "$DIR/dm-jni-surface.sh" 2>&1 || true)"
+if grep -qF "the crate exports 'debugDm', which is not on the closed list" <<<"$dm_ev_out" \
+   && grep -qF "the workspace exports the JNI entry point 'Java_org_ghost_crypto_bridge_DmDebug_dump'" <<<"$dm_ev_out" \
+   && ! grep -qE 'debugComment|debugOutput' <<<"$dm_ev_out"; then
+  echo "self-test ok: dm-jni-surface reads the same spellings (a DmNative entry point in src/target/, a foreign class a macro exports)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface misses an entry point of mls-jni/evasions/" >&2
+  printf '%s\n' "$dm_ev_out" | grep '^GATE-FAIL' >&2; rc=1
+fi
+# A closed list with no reserved entry (slice S9 exports function 16): an empty selection ended the
+# gate with no message under pipefail.
+if env GHOST_MLS_JNI_SOURCE="$MLS_JNI/all-exported.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
+     GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: mls-jni-surface accepts a closed list with no reserved entry"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface rejects a closed list with no reserved entry" >&2; rc=1
+fi
+# JNI binds by name: the declarations' parameter types are the entry points' (review of S2b).
+expect_fail_msg "mls-jni-surface rejects a declaration whose parameter types are not its entry point's" \
+  "MlsNative.ctxClose: Kotlin declares (I), its entry point takes (J)" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeRetyped.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "mls-jni-surface rejects a public declaration on its @JvmName's line" \
+  "MlsNative declares 'external fun ctxOpen' outside the module: it must be internal" \
+  env GHOST_MLS_JNI_SOURCE="$MLS_JNI/good.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeOneLine.kt" \
+  GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
+expect_fail_msg "dm-jni-surface rejects a public declaration on its @JvmName's line" \
+  "DmNative declares 'external fun ctxOpen' outside the module: it must be internal" \
+  env GHOST_DM_JNI_KOTLIN="$HARNESS/dm-jni/DmNativeOneLine.kt" bash "$DIR/dm-jni-surface.sh"
+mls_native_out="$(env GHOST_MLS_JNI_ANDROID="$MLS_JNI/android-native" bash "$DIR/mls-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$mls_native_out" || true)" = "2" ] \
+   && grep -qF "MlsDebug.kt:8: declares a native method outside MlsNative" <<<"$mls_native_out" \
+   && grep -qF "ChannelLeak.java:6: declares a native method outside MlsNative" <<<"$mls_native_out"; then
+  echo "self-test ok: mls-jni-surface reports native methods outside the allowed files (Kotlin and Java, comments skipped)"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface does not report exactly the two native declarations of mls-jni/android-native/" >&2
+  printf '%s\n' "$mls_native_out" | tail -4 >&2; rc=1
+fi
+mls_ref_out="$(env GHOST_MLS_JNI_ANDROID="$MLS_JNI/android-ref" bash "$DIR/mls-jni-surface.sh" 2>&1 || true)"
+if [ "$(grep -c '^GATE-FAIL' <<<"$mls_ref_out" || true)" = "2" ] \
+   && grep -qF "ChannelShortcut.kt:9: references MlsNative outside :crypto-bridge src/main" <<<"$mls_ref_out" \
+   && grep -qF "GateChannel.kt:5: references MlsNative outside :crypto-bridge src/main" <<<"$mls_ref_out"; then
+  echo "self-test ok: mls-jni-surface reports MlsNative referenced outside :crypto-bridge src/main (code, not prose)"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface does not report exactly the two code references to MlsNative" >&2
+  printf '%s\n' "$mls_ref_out" | tail -4 >&2; rc=1
+fi
+expect_fail_msg "mls-jni-surface rejects a library that was named but is not there" \
+  "library not found" env GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" "$MLS_JNI/no-such-library.so"
+mls_elf="$(mktemp)"
+printf '\177ELF G-M6 fixture: the symbols come from GHOST_MLS_JNI_NM\n' > "$mls_elf"
+mls_lib_case() { # $1 = expect pass|fail, $2 = expected text ("" for pass), $3 = description, $4 = reader, rest = gate arguments
+  local want="$1" text="$2" desc="$3" reader="$4" out got
+  shift 4
+  if out="$(env GHOST_MLS_JNI_NM="$MLS_JNI/nm/$reader" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh" "$@" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$want" ] && { [ -z "$text" ] || grep -qF "$text" <<<"$out"; }; then
+    echo "self-test ok: mls-jni-surface $desc"
+  else
+    echo "SELF-TEST FAIL: mls-jni-surface $desc ($got)" >&2; printf '%s\n' "$out" | tail -4 >&2; rc=1
+  fi
+}
+mls_lib_case pass "" "accepts a shipped library whose symbols are the closed list minus function 16" exact-nm "$mls_elf"
+mls_lib_case pass "" "accepts a test library with exactly its one test entry point" entry-nm --test "$mls_elf"
+mls_lib_case fail "exports 'MlsNative.debugDump', which is not on the closed list" "rejects a library exporting a symbol outside the closed list" stray-nm "$mls_elf"
+mls_lib_case fail "does not export 'MlsNative.trialCount'" "rejects a library that does not export an Exported entry" missing-nm "$mls_elf"
+mls_lib_case fail "exports 'MlsNative.revealSeal', which is reserved for a later slice (function 16 is S9's)" "rejects a library exporting function 16 early" reveal-nm "$mls_elf"
+mls_lib_case fail "exports the test entry point 'MlsVectors.run': a shipped library never carries it" "rejects the test entry point in a shipped library" entry-nm "$mls_elf"
+mls_lib_case fail "does not export the test entry point 'MlsVectors.run'" "rejects a test library without its test entry point" exact-nm --test "$mls_elf"
+mls_lib_case fail "exports 'MlsVectors.dumpState', which is not its one test entry point" "rejects a test library with a second test entry" entry-extra-nm --test "$mls_elf"
+mls_lib_case fail "exports the JNI symbol 'Java_org_ghost_crypto_bridge_MlsDebug_dump'" "rejects a library exporting a JNI symbol of another class" foreign-nm "$mls_elf"
+mls_lib_case fail "could not read" "rejects a symbol reader that cannot read the library" unreadable-nm "$mls_elf"
+# The two surface gates agree (one class list, common.sh GHOST_JNI_CLASSES): a shipped library with
+# both closed surfaces passes both, and a foreign class fails both.
+mls_lib_case pass "" "accepts a library carrying both closed surfaces" both-nm "$mls_elf"
+if env GHOST_DM_JNI_NM="$MLS_JNI/nm/both-nm" bash "$DIR/dm-jni-surface.sh" "$mls_elf" >/dev/null 2>&1; then
+  echo "self-test ok: dm-jni-surface accepts a library carrying both closed surfaces (the gates agree)"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface rejects a library carrying both closed surfaces" >&2; rc=1
+fi
+expect_fail_msg "dm-jni-surface rejects the channel gate's foreign class too" \
+  "exports the JNI symbol 'Java_org_ghost_crypto_bridge_MlsDebug_dump'" \
+  env GHOST_DM_JNI_NM="$MLS_JNI/nm/foreign-nm" bash "$DIR/dm-jni-surface.sh" "$mls_elf"
+rm -f "$mls_elf"
 
 # dm-fuzz and the libcrux suites (Phase 9 design §16.2 `dm-fuzz` and `vendor-tests`, §22.35): the
 # decisions the nightly jobs apply to a libFuzzer run and to a crate's own `cargo test` suite, over
@@ -1662,6 +1885,33 @@ verdict_case vendor-tests.sh --suite-verdict fail "FAIL exit 101" "rejects a pas
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL a test failed" "rejects a failed test" "$VTV/suite-failed.txt" 101
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL zero tests ran" "rejects a suite that runs no test" "$VTV/suite-zero.txt" 0
 verdict_case vendor-tests.sh --suite-verdict fail "FAIL the suite did not build" "rejects a suite that does not build" "$VTV/suite-build-error.txt" 101
+# The GHSA watch of G-M1 (Phase 10 design §13.1, §13.2, S0-2; slice S2a), offline: GitHub advisories
+# and a RustSec checkout from test-harness/gates/mls-advisories/ over a fixture lock. Fixed advisories
+# and a draft pass, a former-name entry passes only while the reviewed list accounts for it, and an
+# open range fails, under the current name and under the former one.
+ADV="$HARNESS/mls-advisories"
+adv_case() { # $1 = expect pass|fail, $2 = expected text, $3 = description, $4 = GHSA dir, $5 = reviewed list
+  local out got
+  if out="$(GHOST_ADV_LOCK="$ADV/lock.toml" GHOST_ADV_RUSTSEC_DIR="$ADV/clean/rustsec" GHOST_ADV_GHSA_DIR="$4" \
+      GHOST_ADV_REVIEWED="$5" bash "$DIR/../ci/mls-advisories.sh" "$(mktemp -d)" 2>&1)"; then got=pass; else got=fail; fi
+  if [ "$got" = "$1" ] && grep -qF -- "$2" <<<"$out"; then
+    echo "self-test ok: mls-advisories $3"
+  else
+    echo "SELF-TEST FAIL: mls-advisories $3 ($got)" >&2; printf '%s\n' "$out" | tail -4 >&2; rc=1
+  fi
+}
+if command -v perl >/dev/null && perl -MJSON::PP -e 1 2>/dev/null; then
+  adv_case pass "reviewed: RUSTSEC-2026-0209 libcrux-aes 0.0.9 (RustSec crates/libcrux-aesgcm)" \
+    "accepts fixed advisories, a draft, and a reviewed entry under a former name" "$ADV/clean/ghsa" "$ADV/clean/reviewed.txt"
+  adv_case fail "ADVISORY: RUSTSEC-2026-0209 libcrux-aes 0.0.9 (RustSec crates/libcrux-aesgcm)" \
+    "reads RustSec under a former name and refuses an entry nobody reviewed" "$ADV/clean/ghsa" "$ADV/empty-reviewed.txt"
+  adv_case fail "ADVISORY: GHSA-fixt-ure0-0004 openmls 0.9.0" \
+    "refuses a GitHub advisory whose range contains the pin" "$ADV/open-ghsa/ghsa" "$ADV/clean/reviewed.txt"
+  adv_case fail "ADVISORY: GHSA-fixt-ure0-0005 libcrux-aes 0.0.9" \
+    "maps a GitHub advisory under a former name to the pinned crate" "$ADV/former-ghsa/ghsa" "$ADV/clean/reviewed.txt"
+else
+  echo "SELF-TEST FAIL: perl with JSON::PP missing; the GHSA watch is not proven" >&2; rc=1
+fi
 
 # G-DM5 (Phase 9 design §16.1, §21.13 points 5 and 7; slice S12): each source tree and each mapping
 # fixture reports exactly its own violations, the positive mapping passes, and the real tree passes.
@@ -1700,6 +1950,8 @@ dmhooks_case "refuses a harness class in mapping.txt" 1 "from a harness or gate 
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/harness.txt"
 dmhooks_case "refuses the equivalence entry point in mapping.txt" 1 "ships the equivalence-test entry point" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/entry.txt"
+dmhooks_case "refuses the channel vector replay's test entry point (MlsVectors) in mapping.txt (Phase 10 S2b)" 1 "ships the vector-replay test entry point org.ghost.crypto.bridge.MlsVectors" \
+  bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/mls-vectors.txt"
 dmhooks_case "refuses a mapping without an org.ghost. class" 1 "lists no org.ghost. class" \
   bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/no-ghost.txt"
 if bash "$DIR/apk-no-debug-hooks.sh" "$DMH/mapping/positive.txt" >/dev/null 2>&1; then
@@ -1911,11 +2163,184 @@ if command -v cargo >/dev/null; then
   if [ -x "$scanner" ]; then
     vs_case streams "site fixture-streams@0.1.0 src/lib.rs:6 stderr clock-log [lib]"
     vs_case unix-socket "site fixture-unix-socket@0.1.0 src/lib.rs:5 UnixStream network [lib]"
+    # A clock read through the imported constant (review of S2a, F5): std::time found only the import.
+    vs_case clock-epoch "site fixture-clock-epoch@0.1.0 src/lib.rs:3 UNIX_EPOCH clock-log [lib]
+site fixture-clock-epoch@0.1.0 src/lib.rs:3 std::time clock-log [lib]
+site fixture-clock-epoch@0.1.0 src/lib.rs:6 UNIX_EPOCH clock-log [lib]
+site fixture-clock-epoch@0.1.0 src/lib.rs:6 elapsed clock-log [lib]"
     vs_case clean ""
   else
     echo "SELF-TEST FAIL: the G-R8 scanner was not built at $scanner" >&2; rc=1
   fi
   rm -rf "$scan_tmp"
+  # Phase 10's channel gates (design faza10-forum.md §13.1; slice S2a): every clause fires, and the
+  # real graphs pass. G-M1: a copy of the allowlist without openmls, and another package's graph
+  # standing in for the channel crate's (the issuer's brings new versions of names the client has).
+  # G-M2 and G-R2's seeded-stream clauses: a feature the graph really has added to the forbidden list,
+  # a required package it lacks, the KAT exemption given to another package, the stand-in with a
+  # source and with a build script, a source root with forbidden calls across lines (and a KAT crate
+  # that holds them and is skipped), a package of the channel graph named host-only, and a build
+  # configuration naming the backend cfg (test-harness/gates/mls-policy/). G-M4: `log` through a
+  # dependent not on the list, a crate of the graph named forbidden, a missing required package, a
+  # function the crate defines named as a logger installer, and a failing query. G-M8: the G-R8 rules
+  # on the channel baseline. (The GHSA watch runs offline above, without cargo.)
+  # The clauses that do not stop a gate share one run of it: each hook adds exactly its own
+  # violations, and the run must report every expected text and exactly the expected count, so a
+  # clause that never fires, or one that fires twice, fails the case as surely as in a run of its own,
+  # at a fifth of the job's time (a feature-policy run reads some twenty cargo graphs).
+  multi_case() { # $1 = description, $2 = expected violation count, $3 = expected texts (one per line), rest = command
+    local desc="$1" want="$2" texts="$3" out got hits t missing=""
+    shift 3
+    if out="$("$@" 2>&1)"; then got=pass; else got=fail; fi
+    hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      grep -qF -- "$t" <<<"$out" || missing+="[$t] "
+    done <<<"$texts"
+    if [ "$got" = fail ] && [ "$hits" = "$want" ] && [ -z "$missing" ]; then
+      echo "self-test ok: $desc"
+    else
+      echo "SELF-TEST FAIL: $desc ($got, $hits of $want violations; missing: ${missing:-none})" >&2
+      printf '%s\n' "$out" | grep '^GATE-FAIL' | tail -12 >&2; rc=1
+    fi
+  }
+  tmp="$(mktemp)"
+  grep -vx "openmls" "$DIR/../../client-core/rust-dependency-allowlist.txt" > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects an unlisted package of the channel graph (G-M1)" "Rust package 'openmls'" \
+    env GHOST_RUST_ALLOWLIST="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  rm -f "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects a new version of a name the client graph has (G-M1)" \
+    "(G-M1: no second copy of a crate in the library unreviewed)" \
+    env GHOST_ALLOWLIST_MLS_PACKAGE=ghost-issuer bash "$DIR/rust-client-allowlist.sh"
+  # G-M1's duplicate baseline (review of S2a, F2): a duplicate the baseline does not list fails, and
+  # so does a line the graphs no longer reach.
+  tmp="$(mktemp)"
+  grep -v '^getrandom ' "$DIR/../../client-core/rust-duplicate-versions.txt" > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects a duplicate the baseline does not list (G-M1)" \
+    "getrandom is at 2 versions" env GHOST_RUST_DUPLICATES="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  { cat "$DIR/../../client-core/rust-duplicate-versions.txt"; echo "bitflags 2"; } > "$tmp"
+  expect_fail_msg "rust-client-allowlist rejects a stale baseline line (G-M1)" \
+    "bitflags 2 is stale" env GHOST_RUST_DUPLICATES="$tmp" bash "$DIR/rust-client-allowlist.sh"
+  rm -f "$tmp"
+  # The linked state of slice S2b, simulated: a scratch workspace whose root links ghost-client-net
+  # and ghost-client-mls (the lock copied, resolved offline). It passes today's baseline; with a
+  # second bitflags beside it — S2a's rule saw nothing there, since the client graph then contains
+  # every version the MLS graph brings — it fails.
+  linked_case() { # $1 = pass|fail, $2 = extra dependency line ("" for none), $3 = expected text, $4 = description
+    local fx gw out got
+    fx="$(mktemp -d)"
+    gw="$(cd "$DIR/../.." && { pwd -W 2>/dev/null || pwd; })"
+    mkdir -p "$fx/src" && : > "$fx/src/lib.rs"
+    printf '[package]\nname = "ghost-linked-fixture"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n\n[dependencies]\nghost-client-net = { path = "%s/client-core/net" }\nghost-client-mls = { path = "%s/client-core/mls" }\n%s\n\n[workspace]\n' "$gw" "$gw" "$2" > "$fx/Cargo.toml"
+    cp "$DIR/../../Cargo.lock" "$fx/Cargo.lock"
+    { cat "$DIR/../../client-core/rust-dependency-allowlist.txt"; echo ghost-linked-fixture; } > "$fx/allowlist.txt"
+    if ! (cd "$fx" && cargo update -w --offline -q >/dev/null 2>&1); then
+      echo "SELF-TEST FAIL: rust-client-allowlist $4: the linked fixture does not resolve offline" >&2; rc=1; rm -rf "$fx"; return
+    fi
+    if out="$(env GHOST_ALLOWLIST_WORKSPACE="$fx" GHOST_ALLOWLIST_NET_PACKAGE=ghost-linked-fixture \
+        GHOST_RUST_ALLOWLIST="$fx/allowlist.txt" bash "$DIR/rust-client-allowlist.sh" 2>&1)"; then got=pass; else got=fail; fi
+    if [ "$got" = "$1" ] && grep -qF -- "$3" <<<"$out"; then
+      echo "self-test ok: rust-client-allowlist $4"
+    else
+      echo "SELF-TEST FAIL: rust-client-allowlist $4 ($got)" >&2; printf '%s\n' "$out" | tail -5 >&2; rc=1
+    fi
+    rm -rf "$fx"
+  }
+  linked_case pass "" "[rust-client-allowlist] OK" "accepts the linked state of S2b against the baseline (G-M1)"
+  linked_case fail 'bitflags = "=1.3.2"' "bitflags is at 2 versions (1.3.2 2.13.2)" "rejects a second copy of a crate in the linked state (G-M1)"
+  MLSP="$HARNESS/mls-policy"
+  # Since slice S2b links the crate into ghost-client-net, the forbidden-feature and host-only
+  # clauses read both graphs, so their hooks fire twice (the review of S2b found this case still
+  # expecting 17 and failing); and S2b's two shipped-graph clauses get their hooks here.
+  multi_case "rust-feature-policy reports each channel clause (G-M2, G-R2): a forbidden feature the graphs have (the channel crate's and, linked since S2b, the shipped one), a graph without OpenMLS, test-utils outside the KAT crate, a stand-in with a source, forbidden names split over lines (the KAT crate skipped, a module directory named target read), a host-only package in both graphs, a build configuration naming the backend cfg, a patched fork, a lock with sources other than crates.io, a shipped graph without the channel crate and a feature of the crate's own the shipped graph may not carry" 21 \
+"hpke-rs feature 'hazmat' is enabled in ghost-client-mls's graph (G-M2
+hpke-rs feature 'hazmat' is enabled in ghost-client-net's graph (G-M2
+package 'openmls-no-such-crate' is not in ghost-client-mls's graph
+ghost-client-mls-kat enables openmls/test-utils (dev); G-M2 allows it only as a dev-dependency of ghost-client-mls
+the stub's src/lib.rs is not empty
+mls/src/group.rs:3: openmls_memory_storage
+mls/src/group.rs:9: build_with_new_signer
+mls/src/group.rs:11: store_pending_proposal
+mls/src/target/mod.rs:3: export_group_info
+package 'rayon' is in ghost-client-mls's graph: host and test builds only (G-R2
+package 'rayon' is in ghost-client-net's graph: host and test builds only (G-R2
+shipped-config.toml names getrandom_backend
+Cargo.toml:7: [patch.crates-io] names openmls (G-M2
+a [patch.\"https://github.com/example/tls_codec\"] table
+Cargo.toml:13: [replace] names hpke-rs:0.6.0
+Cargo.lock: openmls 0.9.0 has no source and is not a workspace member
+Cargo.lock: tls_codec 0.5.0 comes from git+https://github.com/example/tls_codec
+Cargo.lock: hpke-rs 0.6.0 has no checksum
+package 'ghost-client-mls-no-such-crate' is not in the shipped client graph
+ghost-client-mls feature 'jni-bridge' is enabled in the shipped client graph; G-M2 allows: default" \
+    env GHOST_POLICY_MLS_FORBID_EXTRA=hpke-rs:hazmat GHOST_POLICY_MLS_GRAPH=openmls-no-such-crate \
+      GHOST_POLICY_KAT=ghost-client-mls GHOST_POLICY_STUB_DIR="$MLSP/stub-nonempty" \
+      GHOST_POLICY_MLS_SOURCES="$MLSP/sources" GHOST_POLICY_HOST_ONLY_EXTRA=rayon \
+      GHOST_POLICY_SHIPPED_CONFIGS="$MLSP/shipped-config.toml" \
+      GHOST_POLICY_ROOT_MANIFEST="$MLSP/fork/Cargo.toml" GHOST_POLICY_LOCK="$MLSP/fork/Cargo.lock" \
+      GHOST_POLICY_SHIPPED_MLS=ghost-client-mls-no-such-crate GHOST_POLICY_MLS_SHIPPED_ALLOWED=default \
+      bash "$DIR/rust-feature-policy.sh"
+  multi_case "rust-feature-policy rejects a stand-in with a build script (G-M2)" 1 \
+    "the openmls_sqlite_storage stub holds [Cargo.toml README.md build.rs src/lib.rs ]" \
+    env GHOST_POLICY_STUB_DIR="$MLSP/stub-extra" bash "$DIR/rust-feature-policy.sh"
+  # Fail-closed readers (review of S2a, F3): with a perl that fails on PATH, G-M2's metadata reader,
+  # its patch and lock-source reader (F7) and its source scan each fail the gate, and the two that
+  # count report reading nothing, instead of reading no violation. G-M3's script fails the same way.
+  perl_stub="$(mktemp -d)"
+  printf '#!/bin/sh\necho "perl stub: failing on purpose" >&2\nexit 2\n' > "$perl_stub/perl"
+  chmod +x "$perl_stub/perl"
+  multi_case "rust-feature-policy fails closed when perl fails (G-M2)" 5 \
+"the workspace metadata reader (perl) failed
+the workspace metadata reader read no package
+the patch and lock-source reader (perl) failed
+the GHOST source scan (perl) failed
+the GHOST source scan read no Rust file" \
+    env PATH="$perl_stub:$PATH" bash "$DIR/rust-feature-policy.sh"
+  expect_fail_msg "ch-derivation-inputs fails closed when perl fails (G-M3)" "the channel source reader (perl) failed" \
+    env PATH="$perl_stub:$PATH" bash "$DIR/ch-derivation-inputs.sh"
+  rm -rf "$perl_stub"
+  multi_case "mls-rust-no-logging reports each clause (G-M4): log through a dependent not on the list, a forbidden crate, a graph without OpenMLS, a logger installer in the graph's sources" 6 \
+"'openmls_memory_storage' depends on log directly in ghost-client-mls's graph
+ghost-client-mls links 'rayon'
+openmls-no-such-crate is not in ghost-client-mls's graph
+src/derive.rs:200:pub fn derive_epoch_recognition(" \
+    env GHOST_DMLOG_LOG_VIA="openmls hpke-rs" GHOST_DMLOG_FORBID_EXTRA=rayon \
+      GHOST_DMLOG_REQUIRED=openmls-no-such-crate GHOST_DMLOG_INSTALLER=derive_epoch_recognition \
+      bash "$DIR/mls-rust-no-logging.sh"
+  expect_fail_msg "mls-rust-no-logging fails when its cargo query fails (G-M4)" \
+    "GATE-FAIL: cargo tree -p ghost-client-mls@0.0.0-no-such-version" \
+    env GHOST_DMLOG_BAD_SPEC=ghost-client-mls bash "$DIR/mls-rust-no-logging.sh"
+  if bash "$DIR/mls-rust-no-logging.sh" >/dev/null 2>&1; then
+    echo "self-test ok: mls-rust-no-logging accepts the real channel graph"
+  else
+    echo "SELF-TEST FAIL: mls-rust-no-logging rejects the real channel graph" >&2; rc=1
+  fi
+  tmp="$(mktemp)"
+  gm8="$DIR/mls-vendored-clock-log.baseline"
+  grep -v '^site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log' "$gm8" > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log rejects a site missing from the baseline (G-M8)" \
+    "unjustified: site ghost-client-mls@0.1.0 src/group.rs:14 std::time clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  { cat "$gm8"; echo "site openmls@0.9.0 src/lib.rs:1 SystemTime clock-log [lib]  # fixture: a site the scan does not find"; } > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log rejects a stale baseline entry (G-M8)" \
+    "stale: site openmls@0.9.0 src/lib.rs:1 SystemTime clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  sed 's#^\(site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log \[lib\]\)  \# .*$#\1#' "$gm8" > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log rejects a site without its reason (G-M8)" \
+    "no justification for: site openmls@0.9.0 src/ciphersuite/aead.rs:47 log:: clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  # Slice S2b (faza10-forum.md §19.32): the scan reads the graph as the shipped library links it,
+  # `jni-bridge` on, so the `jni` subtree is in it; a jni site left out of the baseline fails.
+  grep -v '^site jni@0.21.1 src/wrapper/jnienv.rs:9 log::' "$gm8" > "$tmp"
+  expect_fail_msg "mls-vendored-clock-log scans the jni-bridge graph the shipped library links (G-M8, S2b)" \
+    "unjustified: site jni@0.21.1 src/wrapper/jnienv.rs:9 log:: clock-log [lib]" \
+    env GHOST_G_R8_BASELINE="$tmp" bash "$DIR/mls-vendored-clock-log.sh"
+  rm -f "$tmp"
+  if bash "$DIR/mls-vendored-clock-log.sh" >/dev/null 2>&1; then
+    echo "self-test ok: mls-vendored-clock-log accepts the real channel graph against its baseline"
+  else
+    echo "SELF-TEST FAIL: mls-vendored-clock-log rejects the real channel graph" >&2; rc=1
+  fi
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate
   # of each banned name; its lock file must fail with a [banned] diagnostic naming that crate and the

@@ -251,12 +251,14 @@ internal class EntWorld(val w: World, val slotRelays: List<RelayNode>, val confi
     /**
      * After every commit that changed a capability, outbox or topology row: a capability a relay
      * minted for one of this world's tokens is never installed while that token is still held, so
-     * `Capabilities.put` and the token's deletion were one transaction (design §11.5, §13.2).
+     * `Capabilities.put` and the token's deletion were one transaction (design §11.5, §13.2). The
+     * registration capabilities of a funder (Phase 10 design §7.5, `relay_register_capability`) are
+     * capabilities a relay minted for a token too, so the same holds for them.
      */
     fun checkCommit(ec: EntClient) {
         val c = ec.c
         val installed = ArrayList<String>()
-        c.jdbc.query("SELECT token FROM relay_capability") { installed += Bytes.hex(it.blob(0)) }
+        c.jdbc.query("SELECT token FROM relay_capability UNION ALL SELECT token FROM relay_register_capability") { installed += Bytes.hex(it.blob(0)) }
         for (cap in installed) {
             val n = records.minted[cap] ?: continue
             if (count(c, "SELECT count(*) FROM ent_token WHERE nullifier = ?1", listOf(Bytes.unhex(n))) > 0) {

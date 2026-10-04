@@ -5,3 +5,8 @@
 #   <crate> <version> <sha256>
 option-ext 0.2.0 04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d
 priority-queue 2.7.0 93980406f12d9f8140ed5abe7155acb10bb1e69ea55c88960b9c2f117445ef96
+# Phase 10 (design faza10-forum.md §3.9, §13.3; ADR-37 point 2, ADR-40, Q16): the three hpke-rs crates
+# the OpenMLS libcrux provider requires, unmodified; their sources join every release's bundle.
+hpke-rs 0.7.0 812de62ab573b876c6c40d7553bae9402ae3bad95b64af06f964388eecb9b7b1
+hpke-rs-crypto 0.7.0 d2c461da2e0c9c93d875b597f0c78214fb0d2d5c57834b2ef2a2fa057fa20e24
+hpke-rs-libcrux 0.7.0 4c1ace95ef11fbbd84527eada5fc1304f66720fc4c008db30d888d62d3c52613

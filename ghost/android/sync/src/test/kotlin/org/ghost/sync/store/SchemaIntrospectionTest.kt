@@ -19,6 +19,8 @@ class SchemaIntrospectionTest {
         "outbox_op", "outbox_delivery", "inbox_blob", "inbox_source",
         // v4 (Phase 9 design §13.6 step 4)
         "relay_key_registration",
+        // v6 (Phase 10 design §9, slice S1a)
+        "sync_namespace_fund", "relay_register_capability",
     )
 
     /** Durations, counters and grid indices that look numeric but are not points in time. */
@@ -80,10 +82,12 @@ class SchemaIntrospectionTest {
                 "inbox_blob.next_fetch_minute", "inbox_blob.offer_after_minute", "inbox_blob.retain_until_day",
                 "inbox_blob.relay_expiry_hour",
                 "relay_key_registration.lease_hour", "relay_key_registration.next_attempt_minute", "relay_key_registration.valid_until_hour",
+                // Phase 10 design §9 (migration 6): the registration capability's floored expiry, 15 -> 16.
+                "relay_register_capability.expires_hour",
             ),
             timeColumns.toSet(),
         )
-        assertEquals(15, timeColumns.size)
+        assertEquals(16, timeColumns.size)
     }
 
     @Test

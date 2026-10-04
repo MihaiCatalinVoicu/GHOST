@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6: a library that does not export one Exported entry (trialCount).
+set -euo pipefail
+MLS_NM_DROP="trialCount" exec bash "$(dirname "$0")/exact-nm" "$@"

@@ -62,6 +62,12 @@ use tokio::sync::watch;
 // `strip = "symbols"` on arm64-v8a and x86_64.
 ghost_client_dm::export_jni!();
 
+// The channel surface `org.ghost.crypto.bridge.MlsNative` (Phase 10 design §10.1, §10.2; slice
+// S2b), the same pattern: the closed list of G-M6 stays visible here, the bodies live in
+// `ghost_client_mls::jni`. The test-vectors entry point (`MlsVectors.run`) is the host library's
+// alone and is never invoked here (G-M6 refuses a shipped library that exports it).
+ghost_client_mls::export_jni!();
+
 const EXCEPTION: &str = "org/ghost/network/NetworkException";
 const FALLBACK_EXCEPTION: &str = "java/lang/IllegalStateException";
 

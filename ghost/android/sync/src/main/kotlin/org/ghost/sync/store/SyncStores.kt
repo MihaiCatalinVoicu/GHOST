@@ -8,6 +8,7 @@ import org.ghost.sync.api.CapabilityNeed
 import org.ghost.sync.api.CapabilitySource
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.EnqueueResult
+import org.ghost.sync.api.Funding
 import org.ghost.sync.api.Inbox
 import org.ghost.sync.api.InboundBlob
 import org.ghost.sync.api.InstalledCapability
@@ -51,6 +52,7 @@ class SyncStores(
     internal val inboxStore = InboxStore(outboxStore, cursorStore)
     internal val directoryStore = DirectoryStore(outboxStore, capabilityStore)
     internal val registrationStore = RegistrationStore(capabilityStore) { random.requestId() }
+    internal val fundingStore = FundingStore()
     internal val statusStore = StatusStore(capabilityStore, registrationStore)
     internal val gc = Gc(outboxStore, capabilityStore, registrationStore)
 
@@ -96,6 +98,9 @@ class SyncStores(
 
         override fun defer(tx: SyncTransaction, namespace: NamespaceId, hash: BlobHash, seconds: Int): Boolean =
             inboxStore.defer(tx.checked(), namespace, hash, seconds, clock.epochSeconds())
+
+        override fun reofferDeferred(tx: SyncTransaction, namespace: NamespaceId): Int =
+            inboxStore.reofferDeferred(tx.checked(), namespace, clock.epochSeconds())
 
         override fun forgetConsumed(tx: SyncTransaction, namespace: NamespaceId): Int =
             inboxStore.forgetConsumed(tx.checked(), namespace)
@@ -179,10 +184,11 @@ class SyncStores(
             val checked = tx.checked()
             val now = clock.epochSeconds()
             capabilityStore.put(checked, relay, namespace, kind, token, expiresAtEpochSeconds)
-            if (kind == CapabilityKind.WRITE) {
-                outboxStore.rearm(checked, relay, namespace, now)
-                registrationStore.rearmForCapability(checked, relay, namespace, now)
-            }
+            // Parked deliveries wait for a write token; pending registrations for the capability that
+            // serves them (the write token of an unfunded namespace, the registration capability of a
+            // funded one), and a capability that serves the other does not move them (Phase 10 §7.5).
+            if (kind == CapabilityKind.WRITE) outboxStore.rearm(checked, relay, namespace, now)
+            if (kind != CapabilityKind.READ) registrationStore.rearmForCapability(checked, relay, namespace, kind, now)
         }
 
         override fun needed(): List<CapabilityNeed> =
@@ -196,6 +202,17 @@ class SyncStores(
         ): InstalledCapability? = capabilityStore.installed(tx.checked(), relay, namespace, kind)
 
         override fun toString(): String = "Capabilities"
+    }
+
+    val funding: Funding = object : Funding {
+        override fun set(tx: SyncTransaction, namespace: NamespaceId, funded: Boolean) {
+            fundingStore.set(tx.checked(), namespace, funded)
+        }
+
+        override fun isFunded(tx: SyncTransaction, namespace: NamespaceId): Boolean =
+            fundingStore.isFunded(tx.checked(), namespace)
+
+        override fun toString(): String = "Funding"
     }
 
     val relayDirectory: RelayDirectory = object : RelayDirectory {

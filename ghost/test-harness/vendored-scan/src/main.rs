@@ -227,6 +227,11 @@ struct Site {
 const CLOCK_LOG: &[(&str, &[&str])] = &[
     ("SystemTime", &["SystemTime"]),
     ("Instant::now", &["Instant", "::", "now"]),
+    // A clock read through an imported constant or a clock value's method, which the patterns
+    // around them do not name: `use std::time::UNIX_EPOCH;` then `UNIX_EPOCH.elapsed()` (Phase 10
+    // review of S2a, F5).
+    ("UNIX_EPOCH", &["UNIX_EPOCH"]),
+    ("elapsed", &["elapsed"]),
     ("std::time", &["std", "::", "time"]),
     ("chrono", &["chrono"]),
     ("time::", &["time", "::"]),

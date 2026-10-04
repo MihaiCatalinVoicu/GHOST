@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6: a test library exporting a second MlsVectors symbol.
+set -euo pipefail
+MLS_NM_EXTRA="Java_org_ghost_crypto_bridge_MlsVectors_run Java_org_ghost_crypto_bridge_MlsVectors_dumpState" exec bash "$(dirname "$0")/exact-nm" "$@"

@@ -85,6 +85,20 @@ class ExhaustiveScenarioTest {
     @Test
     fun sP_peekAndClaimOne() = both("S-P", doubles = false) { ScenarioPeekClaimOne() }
 
+    /**
+     * Phase 10 slice S1a (design §7.5 item 6): a channel actor defers what it cannot open and brings it
+     * back with `Inbox.reofferDeferred`, in the transaction that consumes the settling blob.
+     */
+    @Test
+    fun sP_reofferDeferred() = both("S-P/reoffer-deferred", doubles = true) { ScenarioReofferDeferred() }
+
+    /**
+     * Phase 10 slice S1a (design §7.5 item 2): a funded channel registers its member keys with the
+     * registration capability, never with the bearer credential of its write slot.
+     */
+    @Test
+    fun sR_fundedChannel() = both("S-R/funded-channel", doubles = true) { ScenarioFundedChannel() }
+
     @Test
     fun sG_verification() = both("S-G", doubles = false) { ScenarioG() }
 
@@ -105,7 +119,7 @@ class ExhaustiveScenarioTest {
             HarnessReport.add("crashes injected=${Harness.injectedCrashes.get()} caught at the top level=${Harness.caughtCrashes.get()}")
             HarnessReport.add(
                 "exhaustive enumeration: ${(System.nanoTime() - started) / 1_000_000_000} s on ${Harness.threads} threads " +
-                    "(mode=${if (Harness.fullExhaustive) "full" else "default"}; budget: default :sync tests under ~10 min on CI)",
+                    "(mode=${if (Harness.fullExhaustive) "full" else "default"}; Phase 7 aimed the default enumeration at ~10 min on CI: not enforced, this line is the measurement)",
             )
         }
     }

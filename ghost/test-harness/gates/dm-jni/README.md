@@ -54,3 +54,12 @@ network surface's three classes may carry a JNI entry point or a native declarat
   `nm/exact-nm` now prints a network-surface symbol beside the list, which the gate accepts.
 - `android-native/`: a Kotlin `external fun` in a second `:crypto-bridge` class and a Java
   `native` method in `:messaging` — exactly two lines, the comment that says "native" not one.
+
+## Review of S2b additions
+
+- `DmNativeOneLine.kt`: a public declaration on the same line as its `@JvmName`, which the
+  visibility check skipped (its `@JvmName` match ended the line's reading).
+- The source half reads code through `common.sh`'s `jni_source_symbols`, shared with G-M6: the
+  spellings it once missed (`pub unsafe extern`, no `pub`, `extern "C"`, a line break after `fn`, an
+  `export_name` written by a macro, a module directory named `target` or `build` under `src/`) are
+  G-M6's fixture `../mls-jni/evasions/`, which `self-test.sh` runs through both gates.

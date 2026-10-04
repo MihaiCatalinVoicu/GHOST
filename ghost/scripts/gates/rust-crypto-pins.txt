@@ -44,7 +44,10 @@ lock hpke 0.14.1
 lock ed25519-dalek 2.2.0 3.0.0
 lock curve25519-dalek 4.1.3 5.0.0
 # The seal, the wrap envelopes and the derivations. hkdf 0.12.4 is Arti's; 0.13.0 is the DM one.
-lock chacha20poly1305 0.11.0
+# chacha20poly1305 0.10.1 entered the lock with Phase 10's KAT crate (slice S2a): openmls/test-utils
+# enables openmls_rust_crypto and hpke-rs-rust-crypto, test-only (ghost-client-mls-kat, G-M2); no
+# shipped graph has it (the graph pins below keep 0.11.0 alone in the client and channel graphs).
+lock chacha20poly1305 0.10.1 0.11.0
 lock hkdf 0.12.4 0.13.0
 lock x25519-dalek 2.0.1 3.0.0
 lock zeroize 1.9.0
@@ -100,3 +103,57 @@ graph ghost-client-dm all ed25519-dalek 2.2.0,3.0.0 required
 graph ghost-client-dm all curve25519-dalek 4.1.3,5.0.0 required
 graph ghost-client-dm all rand 0.10.2 required
 graph ghost-client-dm all zeroize 1.9.0 required
+
+# Phase 10 channels on OpenMLS (design faza10-forum.md §3.2, §13.1 G-M1, §13.3; ADR-40; slice S2a).
+# The exact pins of openmls, openmls_traits, openmls_libcrux_crypto and hpke-rs*, the provider's
+# libcrux primitives (RUSTSEC-2026-0209/-0211 are filed under the former name libcrux-aesgcm and are
+# fixed in libcrux-aes 0.0.9, invisible to cargo-deny and cargo-audit: S0-2, the GHSA watch of
+# scripts/ci/mls-advisories.sh), the codec, the parallel pool and the channel password's Argon2id.
+# The stub openmls_sqlite_storage 0.3.0 is a [patch] that no graph uses (lock: [[patch.unused]]).
+lock openmls 0.9.0
+lock openmls_traits 0.6.0
+lock openmls_libcrux_crypto 0.4.0
+lock openmls_memory_storage 0.6.0
+lock hpke-rs 0.7.0
+lock hpke-rs-crypto 0.7.0
+lock hpke-rs-libcrux 0.7.0
+lock libcrux-aead 0.0.9
+lock libcrux-aes 0.0.9
+lock libcrux-chacha20poly1305 0.0.9
+lock libcrux-ed25519 0.0.9
+lock libcrux-hkdf 0.0.8
+lock libcrux-hmac 0.0.8
+lock libcrux-hmac-drbg 0.0.1
+lock libcrux-poly1305 0.0.6
+lock tls_codec 0.5.0
+lock rayon 1.12.0
+lock rayon-core 1.13.0
+lock crossbeam-epoch 0.9.21
+lock argon2 0.6.0
+lock blake2 0.11.0
+# ghost-client-mls's graph on both shipped ABIs: the stack above at exactly these versions, and the
+# one getrandom of the crate's graph (S0-7 (c): one custom backend symbol covers every draw).
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android openmls 0.9.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android openmls_traits 0.6.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android openmls_libcrux_crypto 0.4.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android hpke-rs 0.7.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android hpke-rs-crypto 0.7.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android hpke-rs-libcrux 0.7.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-aead 0.0.9 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-aes 0.0.9 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-chacha20poly1305 0.0.9 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-ed25519 0.0.9 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-hkdf 0.0.8 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-hmac 0.0.8 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-hmac-drbg 0.0.1 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-poly1305 0.0.6 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android libcrux-sha2 0.0.8 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android tls_codec 0.5.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android argon2 0.6.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android ed25519-dalek 2.2.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android x25519-dalek 2.0.1 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android chacha20poly1305 0.11.0 required
+graph ghost-client-net aarch64-linux-android,x86_64-linux-android chacha20poly1305 0.11.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android hkdf 0.13.0 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android getrandom 0.4.3 required
+graph ghost-client-mls aarch64-linux-android,x86_64-linux-android rand 0.10.2 required

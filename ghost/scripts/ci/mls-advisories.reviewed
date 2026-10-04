@@ -1,0 +1,11 @@
+# Advisories reviewed for scripts/ci/mls-advisories.sh (the GHSA watch of gate G-M1; Phase 10 design
+# faza10-forum.md §13.1, S0-2, V10-2): each line is `<advisory id> <crate> <pinned version>` followed
+# by the reason the pinned version is not affected although the machine-readable range says it is.
+# An entry names one pin: a bump makes it stale, and the watch then reports the advisory again.
+#
+# RUSTSEC-2026-0209 and -0211 are filed under libcrux-aesgcm, the former name of libcrux-aes, with
+# `patched = []`; their text says the fix is "published as libcrux-aes@v0.0.9" (S0-2, checked at
+# RustSec 593df8c1 and e2111519).
+RUSTSEC-2026-0209 libcrux-aes 0.0.9 AES-GCM AAD limits; fixed in libcrux-aes 0.0.9 per the advisory text (filed under the former name libcrux-aesgcm, patched = [])
+RUSTSEC-2026-0211 libcrux-aes 0.0.9 non-constant-time tag check; fixed in libcrux-aes 0.0.9 per the advisory text (filed under the former name libcrux-aesgcm, patched = [])
+RUSTSEC-2026-0210 libcrux-aes 0.0.9 informational (unmaintained): the notice that libcrux-aesgcm was renamed to libcrux-aes, whose 0.0.9 is the pin; no vulnerability (found by this watch in S2a at RustSec f23b768, not listed by S0-2)

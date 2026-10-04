@@ -423,6 +423,36 @@ internal class InboxStore(private val outbox: OutboxStore, private val cursors: 
         ) == 1
     }
 
+    /**
+     * Makes the namespace's **deferred** rows due for an offer at once (Phase 10 design §7.5 item 6,
+     * §19.1): a fetched row whose re-offer time lies ahead and which is not on the poison backoff, so
+     * the consumer's next [peek] returns it in its own arrival order. Returns the number of rows made
+     * due; the [SyncChange.INBOX] hint follows only if there was one.
+     *
+     * What it does and does not touch. It writes `offer_after_minute = 0` and nothing else: the offer
+     * counter, the ciphertext, the hand-off number and the retention stay, so a row that was deferred
+     * (which reset its counter) is re-offered with a counter of 0. A row offered three times without
+     * being consumed or deferred has been backed off by the poison guard (`offers` ≥
+     * [StoreLimits.BACKOFF_OFFERS], §11.2 #3) and keeps its backoff: this call is for blobs the
+     * consumer chose to wait with, not for a blob that failed. Rows that are not fetched, rows of
+     * other namespaces and rows already due are left as they are.
+     *
+     * **It adds no relay call and changes no schedule**: no list, get, store, check, redemption or
+     * registration follows from it, and no schedule is read or changed; the only effect outside the
+     * table is the local consumer hint. What it can do to what a relay sees is delay, and only a GET:
+     * the rows it makes due count against FETCHED_CAP again ([fetchedLoad] skips a row while its
+     * re-offer time lies ahead), so a namespace at the cap fetches no further blob until they are consumed.
+     */
+    fun reofferDeferred(tx: SyncTransaction, ns: NamespaceId, now: Long): Int {
+        val moved = tx.sql.execUpdate(
+            "UPDATE inbox_blob SET offer_after_minute = 0 WHERE namespace_id = ?1 AND state = 'fetched' " +
+                "AND offers < ${StoreLimits.BACKOFF_OFFERS} AND offer_after_minute > ?2",
+            listOf(ns.raw, now),
+        )
+        if (moved > 0) tx.hint(SyncChange.INBOX)
+        return moved
+    }
+
     companion object {
         /** Claim backoff for the n-th offer (n >= 3): 1 h, 2 h, 4 h, ... capped at 24 h. */
         fun offerBackoffSeconds(offers: Int): Long {

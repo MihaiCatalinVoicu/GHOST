@@ -1,0 +1,50 @@
+# The reviewed sites where a typed key input of the channel derivations is built from raw bytes
+# (gate G-M3 rule 5, scripts/gates/ch-derivation-inputs.sh; Phase 10 design faza10-forum.md §5.2
+# rule (1), T36; review of S2a, F6, §19.31). `<file under src/> <type> <sites>`: each file holds
+# exactly that many `<type>::from_bytes` calls. A new site — T36's own scenario is
+# `derive_epoch_recognition(&EpochExport::from_bytes(*channel_id))` — fails the gate until its bytes
+# are reviewed (a secret: an exporter output, an opened envelope, a decoded invite, a CSPRNG draw)
+# and its count is raised here; a count no site reaches fails too.
+#
+# group.rs: K_ep from the exporter and from its envelope; G_g from the exporter, the bootstrap, the
+# envelopes of commit, generation and invite_build; the invite seed from the CSPRNG and (slice S2b)
+# from its own envelope in join_request_wrapped (the invitee's seed, wrapped by invite_parse); JK_g
+# from its envelope.
+group.rs EpochExport 2
+group.rs GenerationSecret 5
+group.rs InviteSeed 2
+group.rs JoinKey 1
+# jni.rs (slice S2b): the password of inviteBuild and inviteParse as it crosses JNI — the NFKD UTF-8
+# bytes Kotlin built from the user's characters (§19.29.3) — in the one helper both calls use.
+jni.rs InvitePassword 1
+# testvec.rs (slice S2b; the host library's vector-replay entry, never in a shipped graph, G-M2):
+# the vectors' keys given in clear so the JDK replays ch_derive, ch_seal and ch_invite through the
+# crate's own derivations — K_ep (DERIVE_EPOCH, SEAL_KEYS, SEAL, the unit test), G (DERIVE_GENERATION),
+# JK (SEAL_KEYS, SEAL, INVITE_BUILD), the invite seed (INVITE_KEY, INVITE_BUILD), RB and DB
+# (INVITE_BUILD), the password (INVITE_SEAL, INVITE_BUILD) and the open invite's salt (INVITE_SEAL).
+testvec.rs EpochExport 4
+testvec.rs GenerationSecret 1
+testvec.rs JoinKey 3
+testvec.rs InviteSeed 2
+testvec.rs ReadBase 1
+testvec.rs DepositBase 1
+testvec.rs InvitePassword 2
+testvec.rs OpenInviteSalt 1
+# invite.rs: the decoded (opened) invite body, and the tests' fixed fields; the open invite's salt
+# from its own header (the one declared public input, §19.29.3); the tests' passwords.
+invite.rs ReadBase 2
+invite.rs DepositBase 2
+invite.rs JoinKey 2
+invite.rs InviteSeed 2
+invite.rs OpenInviteSalt 1
+invite.rs InvitePassword 2
+# Unit tests and the property tests: fixed test keys.
+derive.rs EpochExport 1
+derive.rs InvitePassword 1
+seal.rs JoinKey 1
+props.rs EpochExport 1
+props.rs ReadBase 1
+props.rs DepositBase 1
+props.rs JoinKey 2
+props.rs InviteSeed 1
+props.rs InvitePassword 1

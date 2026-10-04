@@ -15,14 +15,23 @@ import java.nio.ByteBuffer
  *
  * | need | token week | when |
  * |---|---|---|
- * | EXPIRING (write or read), within the last 23 h of week p | p + 1 | `PRF(pair, p)` in `[start(p+1) − 23 h, start(p+1) − 1 h]` |
+ * | EXPIRING (write, read or register), within the last 23 h of week p | p + 1 | `PRF(pair, p)` in `[start(p+1) − 23 h, start(p+1) − 1 h]` |
  * | EXPIRING earlier in week p (a capability that ends before `start(p+1)`) | p | at once |
- * | WRITE MISSING, EXHAUSTED, REJECTED | p | at once (as soon as an eligible token exists) |
+ * | WRITE or REGISTER MISSING, EXHAUSTED, REJECTED | p | at once (as soon as an eligible token exists) |
  * | READ MISSING | p | `PRF(pair, p)` in `[first seen, first seen + 6 h]` |
  * | any, of a namespace whose capabilities are LOCAL | — | never (`LOCAL_SKIPPED`, Phase 9 §13.4) |
  * | any, within ±1 h of a week boundary or without a trusted clock | — | deferred |
  * | any, on a relay listed in no ES slot for the week | — | never (`NO_SLOT`) |
- * | any, whose pair holds a usable write capability reaching `start(target + 1)` | — | skipped |
+ * | any, whose pair holds a usable capability of the need's own class reaching `start(target + 1)` | — | skipped |
+ *
+ * **REGISTER needs** (Phase 10 design §7.5, §7.6) are WRITE needs of a REDEEM namespace in every row
+ * above: the sync layer reports them with source REDEEM whatever the funded namespace's own source is
+ * (a channel's is LOCAL, because its members install the shared bearer credentials themselves), so the
+ * LOCAL row never applies to them. Their "own class" is the registration capability: the covering
+ * expiry the caller passes is the pair's usable **registration** capability, not its write slot, which
+ * holds the channel's DEPOSIT credential and says nothing about whether a token of this week would
+ * extend a registration capability. Their PRF input carries its own kind byte, so a REGISTER need and a
+ * READ or WRITE need of the same pair and week draw different times.
  *
  * The PRF is keyed per process and never persisted (`relay_id ‖ namespace ‖ kind ‖ week`). Every
  * redemption yields a write capability expiring at the end of its token's week plus 1 h (§10.3), and
@@ -64,7 +73,7 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
         relayWeek: Long,
         trusted: Boolean,
         firstSeen: Long,
-        writeExpiryHour: Long?,
+        coveringExpiryHour: Long?,
     ): Decision {
         // A LOCAL need is decided before anything else, so no token is ever reserved for it and no
         // unmet need of it raises ENTITLEMENT_NEEDED (Phase 9 design §13.4, mutant PM-1b).
@@ -89,7 +98,7 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
                 due = nowEst
             }
         }
-        if (writeExpiryHour != null && writeExpiryHour >= Grid.start(target + 1)) return Decision.Skip
+        if (coveringExpiryHour != null && coveringExpiryHour >= Grid.start(target + 1)) return Decision.Skip
         val slots = slotsFor(summary, relay.address, target)
         if (slots.isEmpty()) return Decision.NoSlot
         return Decision.Redeem(need, relay, target, slots, due)
@@ -99,11 +108,22 @@ internal class RedeemPlanner(private val random: EntitlementRandom) {
     private fun prf(need: CapabilityNeed, week: Long): Double {
         val ns = need.namespace.toByteArray()
         val input = ByteBuffer.allocate(8 + ns.size + 1 + 8)
-            .putLong(need.relay.value).put(ns).put(if (need.kind == CapabilityKind.WRITE) 2 else 1).putLong(week).array()
+            .putLong(need.relay.value).put(ns).put(kindByte(need.kind)).putLong(week).array()
         return random.prf(EntitlementRandom.DOMAIN_REDEEM, input)
     }
 
     override fun toString(): String = "RedeemPlanner"
+
+    /**
+     * The kind byte of the PRF input: 1 for READ and 2 for WRITE (Phase 8's; no policy vector pins them, the
+     * vectors take the PRF draw as an input), 3 for REGISTER (Phase 10, a Kotlin-only choice until the shared
+     * vectors and the Rust reference learn REGISTER, §19.33 F-2).
+     */
+    private fun kindByte(kind: CapabilityKind): Byte = when (kind) {
+        CapabilityKind.READ -> 1
+        CapabilityKind.WRITE -> 2
+        CapabilityKind.REGISTER -> 3
+    }
 
     companion object {
         private const val EXPIRING_LEAD: Long = 23 * Grid.HOUR

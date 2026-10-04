@@ -91,8 +91,17 @@ enum class Consumer(val code: String) {
     }
 }
 
+/**
+ * The kinds of capability a pair (relay, namespace) can hold. [READ] and [WRITE] are rows of
+ * `relay_capability`; [REGISTER] (Phase 10 design §7.4, §7.5) is a row of `relay_register_capability`:
+ * the write capability a **funder** redeems for `RegisterKey` and for nothing else. It is installed
+ * and refused like the others ([Capabilities.put], [Capabilities.installed], [Capabilities.needed]),
+ * but only the registration step ever uses it, and only for a namespace [Funding] marks funded:
+ * store, list, get and check never read it, so a token-bought capability is not presented as a writer
+ * or a reader of the channel.
+ */
 enum class CapabilityKind(internal val code: String) {
-    READ("read"), WRITE("write");
+    READ("read"), WRITE("write"), REGISTER("register");
 
     companion object {
         internal fun ofCode(code: String): CapabilityKind =

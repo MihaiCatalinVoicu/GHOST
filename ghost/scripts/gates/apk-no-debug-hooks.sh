@@ -25,7 +25,9 @@
 #     again for their build types) is the release's own class, not a debug one. What the gate twin
 #     alone names — the key-change hook — is still debug-only and still refused;
 #   - **harness and gate packages**: any `org.ghost.…harness…` or `org.ghost.…gate…` package segment;
-#   - **the equivalence-test entry point**: the class `DmEquivalence`, whose one native method is
+#   - **the test entry points**: the class `DmEquivalence` and, since Phase 10 slice S2b, the class
+#     `MlsVectors` (the channel vector replay's entry, `client-core/mls/src/testvec.rs`, declared in
+#     `:crypto-bridge`'s `src/test` only, which the source-set half cannot see), whose native method is
 #     exported only by the test libraries built with the `test-vectors` feature (§15.9 item 7,
 #     §22.8.10 point 6), and any `external fun equivalence`.
 #
@@ -58,7 +60,9 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 MAPPING="${1:-}"
 ANDROID="$GHOST_ROOT/android"
-ENTRY_CLASS='DmEquivalence'
+# The test entry classes (`DmEquivalence`; `MlsVectors` since Phase 10 slice S2b): debug-only by name,
+# because MlsVectors' declaration lives in a JVM unit-test set the source-set half does not read.
+ENTRY_CLASSES="DmEquivalence MlsVectors"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -104,7 +108,7 @@ awk 'FNR == NR { rel[$1] = 1; next } !($1 in rel)' "$work/release-qualified" "$w
 twins="$(awk 'FNR == NR { rel[$1] = 1; next } ($1 in rel)' "$work/release-qualified" "$work/debug-all" | awk '{print $1}' | sort -u | paste -sd' ' -)"
 [ -s "$work/debug" ] || fail "no class is declared in a non-release source set under android/*/src (the gate build type is missing; the gate would pass vacuously)"
 awk '{print $2}' "$work/debug" | sort -u > "$work/simple"
-echo "$ENTRY_CLASS" >> "$work/simple"
+for entry_class in $ENTRY_CLASSES; do echo "$entry_class"; done >> "$work/simple"
 simple_alt="$(paste -sd'|' "$work/simple")"
 
 # ---- half 1: the release source sets, read in one pass. Code only: `/* … */` comments over any
@@ -187,7 +191,7 @@ if [ -n "$MAPPING" ]; then
         COUNT\ *) ghost="${v#COUNT }" ;;
         *) [ -n "$v" ] && fail "$v" ;;
       esac
-    done < <(awk -v entry="$ENTRY_CLASS" '
+    done < <(awk -v entries=" $ENTRY_CLASSES " '
       FNR == NR { debug[$1] = 1; next }
       /^[^ #].* -> .*:$/ {
         original = $1; renamed = $3; sub(/:$/, "", renamed)
@@ -203,7 +207,7 @@ if [ -n "$MAPPING" ]; then
         if (original != renamed && !synthetic && !removed) print "mapping.txt renames " original " to " renamed ": every org.ghost. class maps to itself (-keepnames, G-DM5)"
         outer = original; sub(/\$.*$/, "", outer)
         simple = outer; sub(/^.*\./, "", simple)
-        if (simple == entry) print "mapping.txt ships the equivalence-test entry point " original " (G-DM5)"
+        if (index(entries, " " simple " ") > 0) print "mapping.txt ships the " (simple == "DmEquivalence" ? "equivalence-test" : "vector-replay test") " entry point " original " (G-DM5)"
         else if (outer in debug) print "mapping.txt ships the debug-only class " original " (G-DM5)"
         else if (outer ~ /\.(harness|gate)(\.|$)/) print "mapping.txt ships " original " from a harness or gate package (G-DM5)"
       }

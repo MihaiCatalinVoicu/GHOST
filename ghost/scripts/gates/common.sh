@@ -41,12 +41,107 @@ rust_src_files() {
   # configuration only; every library crate stays free of logging primitives. Under issuer/ every
   # crate is found at any depth (issuer/crates/*) and main.rs is not exempt: the issuer keeps no
   # logs at all (Phase 8 design §14.1, ADR-26).
-  find "$GHOST_ROOT/relay" "$GHOST_ROOT/client-core" -path '*/target' -prune -o -type f -name '*.rs' -not -name main.rs -path '*/src/*' -print 2>/dev/null || true
-  find "$GHOST_ROOT/issuer" -path '*/target' -prune -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true
+  # Exact exemptions only (Phase 10 review of S2a, F4): the entry point is a crate's own
+  # `src/main.rs` (a Cargo.toml next to that src/), not any file named main.rs (`src/x/main.rs` is a
+  # module); a build directory is a `target` directory outside every src/, never `src/target/`.
+  local f
+  { find "$GHOST_ROOT/relay" "$GHOST_ROOT/client-core" -type d -name target -not -path '*/src/*' -prune \
+      -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true; } \
+    | while IFS= read -r f; do
+        case "$f" in
+          */src/main.rs) [ -f "${f%/src/main.rs}/Cargo.toml" ] && continue ;;
+        esac
+        printf '%s\n' "$f"
+      done
+  find "$GHOST_ROOT/issuer" -type d -name target -not -path '*/src/*' -prune -o -type f -name '*.rs' -path '*/src/*' -print 2>/dev/null || true
 }
 manifest_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f -name 'AndroidManifest.xml' -print 2>/dev/null || true
 }
 gradle_files() {
   find "$GHOST_ROOT/android" -path '*/build' -prune -o -type f \( -name '*.gradle.kts' -o -name 'libs.versions.toml' \) -print 2>/dev/null || true
+}
+# The JNI surfaces of GHOST's native libraries (Phase 9 G-R6, Phase 10 G-M6; one list, so the two
+# surface gates agree on what is allowed and each checks its own classes exactly):
+#   - `org.ghost.crypto.bridge.DmNative` (the DM closed list, dm-jni-surface.sh) and
+#     `DmEquivalence` (its test libraries' entry points);
+#   - `org.ghost.crypto.bridge.MlsNative` (the channel closed list, mls-jni-surface.sh) and
+#     `MlsVectors` (its test library's entry point);
+#   - the network surface of Phases 6 and 8 (`TorRelayTransport`, `TorIssuerTransport`,
+#     `EntitlementCrypto`).
+# A JNI entry point of any other class, in the workspace's sources or in a built library, fails both
+# gates; a new class is a change to this list, which is what makes it arrive deliberately.
+GHOST_JNI_CLASSES="org_ghost_crypto_bridge_DmNative org_ghost_crypto_bridge_DmEquivalence org_ghost_crypto_bridge_MlsNative org_ghost_crypto_bridge_MlsVectors org_ghost_network_TorRelayTransport org_ghost_network_TorIssuerTransport org_ghost_network_EntitlementCrypto"
+# The production source files allowed to declare a native method (paths under android/): the two
+# closed-list classes and the network classes. Test-only declarations (`DmEquivalence`, `MlsVectors`)
+# live in test source sets, which no production half reads.
+GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/MlsNative.kt network/src/main/kotlin/org/ghost/network/TorRelayTransport.kt network/src/main/kotlin/org/ghost/network/TorIssuerTransport.kt network/src/main/kotlin/org/ghost/network/EntitlementCrypto.kt"
+# The Rust files the surface gates read under $1 (a directory, or one file): build outputs pruned —
+# a `target` or `build` directory **outside every `src/`**, so a module directory of either name is
+# code and is read (Phase 10 review of S2a F4, review of S2b) — and `.gradle`; the gates' own
+# fixtures (`test-harness/`) too, unless $2 is "with-fixtures" (a fixture is the scan root).
+jni_rust_files() { # $1 = scan root, $2 = "with-fixtures" or empty
+  local fixtures=(-o -name test-harness)
+  [ "${2:-}" = with-fixtures ] && fixtures=()
+  if [ -d "$1" ]; then
+    find "$1" -type d \( \( -name target -o -name build \) -not -path '*/src/*' -o -name .gradle "${fixtures[@]}" \) \
+      -prune -o -type f -name '*.rs' -print 2>/dev/null || true
+  elif [ -f "$1" ]; then
+    printf '%s\n' "$1"
+  fi
+}
+# Every JNI symbol a set of Rust files writes (G-R6, G-M6; review of S2b), read as code with every
+# comment blanked (source-text.pl): a function named `Java_…` **whatever precedes its `fn`** —
+# `pub` or not, `unsafe`, `extern "system"` or `extern "C"` — and wherever its name falls (a line
+# break after `fn`, a raw identifier); and **a string literal that is exactly a `Java_…` symbol** (an
+# `export_name`, or a macro argument that becomes one). S2b's first readers matched
+# `pub extern "system" fn Java_…` and `export_name = "Java_…"` on one line, and five spellings the
+# compiler exports passed them. Reads file paths on stdin, one per line; prints one symbol per line
+# and then `JNI-FILES-READ <n>`; fails when perl does, so a caller can tell "nothing written" from
+# "nothing read". A name computed at compile time (`concat!` in an attribute, a procedural macro) is
+# not seen here: each gate's library half reads what the linker exported.
+jni_source_symbols() {
+  GATES="$GATES_DIR" perl -e '
+    require "$ENV{GATES}/source-text.pl";
+    my $n = 0;
+    while (my $f = <STDIN>) {
+      chomp $f;
+      next unless length $f;
+      my ($w) = views(read_text($f), "rust");
+      $n++;
+      print "$1\n" while $w =~ /\bfn\s+(?:r#)?(Java_[A-Za-z0-9_]+)/g;
+      print "$1\n" while $w =~ /"(Java_[A-Za-z0-9_]+)"/g;
+    }
+    print "JNI-FILES-READ $n\n";'
+}
+# Prints the `Java_…` symbols of stdin that belong to no class of GHOST_JNI_CLASSES.
+jni_foreign() {
+  local alt
+  alt="$(printf '%s|' $GHOST_JNI_CLASSES)"
+  alt="${alt%|}"
+  grep -vE "^Java_(${alt})_" || true
+}
+# Prints `<file>:<line>: declares a native method outside <who>` for every native declaration
+# (Kotlin `external fun`, Java `native`) of the production source sets under $1 (`src/main`,
+# `src/release`, `src/gate`) that is not in GHOST_JNI_NATIVE_FILES. Comment lines are skipped.
+jni_stray_natives() { # $1 = android tree, $2 = the gate's wording for the allowed classes
+  local tree="$1" who="$2" f rel allowed a
+  [ -d "$tree" ] || return 0
+  # One awk over every file (a process per file costs half a second on the Windows hosts).
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="${f#"$tree"/}"
+    allowed=0
+    for a in $GHOST_JNI_NATIVE_FILES; do
+      [ "$rel" = "$a" ] && allowed=1
+    done
+    [ "$allowed" = 1 ] || printf '%s\0' "$f"
+  done < <(find "$tree" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
+             \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' \) -print 2>/dev/null || true) \
+    | xargs -0 -r awk -v who="$who" '
+      { t = $0; sub(/^[ \t]+/, "", t)
+        if (t ~ /^(\*|\/\/|\/\*)/) next
+        if ($0 ~ /(^|[^A-Za-z0-9_])external[ \t]+fun[ \t]/ || (FILENAME ~ /\.java$/ && $0 ~ /(^|[ \t])native[ \t]/))
+          print FILENAME ":" FNR ": declares a native method outside " who
+      }'
 }

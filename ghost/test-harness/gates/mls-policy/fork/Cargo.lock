@@ -1,0 +1,27 @@
+# Fixture (G-M2, review of S2a F7): a lock with a path package outside the workspace, a git
+# source and a registry package without its checksum.
+version = 4
+
+[[package]]
+name = "ghost-client-mls"
+version = "0.1.0"
+
+[[package]]
+name = "openmls"
+version = "0.9.0"
+
+[[package]]
+name = "tls_codec"
+version = "0.5.0"
+source = "git+https://github.com/example/tls_codec#0123456789abcdef0123456789abcdef01234567"
+
+[[package]]
+name = "hpke-rs"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"

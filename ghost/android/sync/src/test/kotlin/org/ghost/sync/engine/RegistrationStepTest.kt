@@ -1,6 +1,8 @@
 package org.ghost.sync.engine
 
 import org.ghost.sync.api.CapabilityKind
+import org.ghost.sync.api.CapabilitySource
+import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.KeyKind
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.PrivacyMode
@@ -11,6 +13,7 @@ import org.ghost.sync.port.RegisterResult
 import org.ghost.sync.store.RegistrationKey
 import org.ghost.sync.store.TestBytes
 import org.ghost.sync.store.Time
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -193,5 +196,108 @@ class RegistrationStepTest {
         assertEquals(2, f.step.round(f.ctx, null, 8))
         assertEquals(0, w.stores.registrations.pendingCount())
         assertEquals(4, w.net.callsOf(TestRelays.Kind.REGISTER).size)
+    }
+
+    /**
+     * A funder's channel (Phase 10 design §7.5 item 2): a LOCAL channel namespace whose write slot
+     * holds the shared DEPOSIT credential (seed 1, declaring a week, as a redeemed capability would) and
+     * whose registrations are served by the registration capability a funder redeemed (seed 2). The
+     * tokens differ per seed, so the capability a call presented says which slot served it.
+     */
+    private fun funded(w: EngineWorld, mode: PrivacyMode = PrivacyMode.HIGH): Fixture {
+        w.mode = mode
+        val relays = w.relays(1, 2)
+        val ns = w.namespace(1, relays, listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
+        val week = Time.week(w.clock.epochSeconds())
+        val expiry = Time.WEEK_ORIGIN + Time.WEEK * (week + 1) + Time.HOUR
+        relays.forEach { w.capability(it, ns, CapabilityKind.WRITE, seed = 1, expiresAt = expiry) }
+        w.fund(ns)
+        relays.forEach { w.capability(it, ns, CapabilityKind.REGISTER, seed = 2, expiresAt = expiry) }
+        val (session, driver) = w.session()
+        driver.runUntil(0)
+        check(session.online)
+        return Fixture(w, session, ns, relays, week)
+    }
+
+    private fun EngineWorld.token(kind: CapabilityKind, relay: RelayId, seed: Int): ByteArray {
+        check(kind != CapabilityKind.READ)
+        return TestBytes.of(82, seed * 17 + relay.value.toInt())
+    }
+
+    @Test
+    fun aFundedRegistrationPresentsTheRegistrationCapabilityOnTheRegistrationCallAlone(): Unit = EngineWorld().use { w ->
+        val f = funded(w)
+        for (period in listOf(f.week, f.week + 1)) w.registration(f.relays[0], f.ns, period, KeyKind.DEPOSIT, verifier)
+        w.registration(f.relays[1], f.ns, f.week, KeyKind.READ, verifier)
+        assertEquals(3, f.step.round(f.ctx, null, 8))
+        val calls = w.net.callsOf(TestRelays.Kind.REGISTER)
+        assertEquals(3, calls.size)
+        for (call in calls) {
+            val relay = f.relays.single { w.address(it) == call.relay }
+            assertArrayEquals("the registration capability", w.token(CapabilityKind.REGISTER, relay, 2), call.capability)
+            assertFalse("never the channel's DEPOSIT credential", call.capability.contentEquals(w.token(CapabilityKind.WRITE, relay, 1)))
+        }
+        assertEquals("done", f.state(f.key()))
+        assertEquals(0, w.stores.registrations.pendingCount())
+        // The read lane made no call of its own for them, and nothing but REGISTER went out (T19; the
+        // session is online and the step ran by hand).
+        assertTrue(w.net.callsOf(TestRelays.Kind.LIST).isEmpty())
+        assertTrue(w.net.callsOf(TestRelays.Kind.STORE).isEmpty())
+    }
+
+    /** A refusal blames the capability that was presented: the registration capability, not the channel's credential. */
+    @Test
+    fun aRefusalOfAFundedRegistrationRejectsTheRegistrationCapabilityOnly(): Unit = EngineWorld().use { w ->
+        val f = funded(w)
+        val key = f.key()
+        w.registration(key.relayId, key.namespace, key.periodId, key.kind, verifier)
+        w.net.failBefore = { if (it.kind == TestRelays.Kind.REGISTER) "unauthorized" else null }
+        assertEquals(RegistrationResult.PARKED, f.attempt(key))
+        assertEquals("rejected", w.string("SELECT state FROM relay_register_capability WHERE relay_id = ?", f.relays[0].value))
+        assertEquals("the channel's credential is untouched", "usable", w.string("SELECT state FROM relay_capability WHERE kind = 'write' AND relay_id = ?", f.relays[0].value))
+        assertEquals("pending", f.state(key))
+        assertNull("no capability, nothing due", f.due(key))
+        // The need is REGISTER, source REDEEM: the planner redeems it, and a WRITE need is not raised.
+        assertEquals(listOf(CapabilityKind.REGISTER), w.stores.capabilities.needed().map { it.kind })
+        // A new registration capability re-arms the row and the relay then records it.
+        w.net.failBefore = { null }
+        val expiry = Time.WEEK_ORIGIN + Time.WEEK * (f.week + 1) + Time.HOUR
+        w.capability(f.relays[0], f.ns, CapabilityKind.REGISTER, seed = 3, expiresAt = expiry)
+        assertEquals(RegistrationResult.RECORDED, f.attempt(key))
+        assertArrayEquals(w.token(CapabilityKind.REGISTER, f.relays[0], 3), w.net.callsOf(TestRelays.Kind.REGISTER).last().capability)
+        assertTrue(w.stores.capabilities.needed().isEmpty())
+    }
+
+    @Test
+    fun aFunderThatStoppedFundingNeverPresentsTheChannelCredentialForARegistration(): Unit = EngineWorld().use { w ->
+        val f = funded(w)
+        val key = f.key()
+        w.registration(key.relayId, key.namespace, key.periodId, key.kind, verifier)
+        w.fund(f.ns, false)
+        assertEquals(0, f.step.round(f.ctx, null, 8))
+        assertTrue(w.net.callsOf(TestRelays.Kind.REGISTER).isEmpty())
+        assertEquals("usable", w.string("SELECT state FROM relay_capability WHERE kind = 'write' AND relay_id = ?", f.relays[0].value))
+        assertEquals("pending", f.state(key))
+        // Funded again, the row is served as before.
+        w.fund(f.ns)
+        assertEquals(1, f.step.round(f.ctx, null, 8))
+    }
+
+    @Test
+    fun aRefusedPeriodOfAFundedRegistrationWaitsForTheNextRegistrationCapability(): Unit = EngineWorld().use { w ->
+        val f = funded(w)
+        val key = f.key()
+        w.registration(key.relayId, key.namespace, key.periodId, key.kind, verifier)
+        w.net.registerOverride = { RegisterAnswer(RegisterResult.WRONG_PERIOD, 0) }
+        assertEquals(RegistrationResult.WRONG_PERIOD, f.attempt(key))
+        assertEquals("usable", w.string("SELECT state FROM relay_register_capability WHERE relay_id = ?", f.relays[0].value))
+        assertNull(f.due(key))
+        // The channel's credential being put again does not wake the row; the registration capability does.
+        val expiry = Time.WEEK_ORIGIN + Time.WEEK * (f.week + 1) + Time.HOUR
+        w.capability(f.relays[0], f.ns, CapabilityKind.WRITE, seed = 7, expiresAt = expiry)
+        assertNull(f.due(key))
+        w.net.registerOverride = { null }
+        w.capability(f.relays[0], f.ns, CapabilityKind.REGISTER, seed = 8, expiresAt = expiry)
+        assertEquals(RegistrationResult.RECORDED, f.attempt(key))
     }
 }

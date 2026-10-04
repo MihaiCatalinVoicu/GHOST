@@ -1,0 +1,62 @@
+[package]
+publish = false
+name = "ghost-client-mls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GHOST channels on OpenMLS 0.9.0: the storage adapter GhostKv, the pseudonym signer, the channel derivations, the outer seal, channel content, invites and join codecs, the group operations and the closed JNI surface MlsNative (Phase 10 design faza10-forum.md §3, §5, §10.1, §10.2; slices S2a and S2b)"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# G-R2/G-M2: no default feature.
+default = []
+# The closed JNI surface `MlsNative` of §10.2 and the `export_jni!` macro `ghost-client-net` and
+# `ghost-dm-host` invoke (§10.1; slice S2b). Off by default so the crate stays testable without a
+# JVM; the shipped `ghost-client-net` enables it (G-M2 allows this one feature in a shipped graph).
+jni-bridge = ["dep:jni"]
+# The vector-replay entry point of the JDK replay (§12.2's Kotlin half; slice S2b): the case runner
+# `testvec::run` and, with `jni-bridge`, the one extra JNI symbol
+# `Java_org_ghost_crypto_bridge_MlsVectors_run`. Only `ghost-dm-host` enables it — the library the
+# JVM tests load. G-M2 keeps it out of every shipped graph; G-M6 checks that no shipped library
+# exports its symbol.
+test-vectors = []
+
+[dependencies]
+# Design §3.2 (ADR-40): exact pins, no feature; the libcrux provider's `CryptoProvider` directly.
+openmls = { workspace = true }
+openmls_traits = { workspace = true }
+openmls_libcrux_crypto = { workspace = true }
+# openmls encrypts path secrets inside rayon `par_iter`; the global pool is pinned to one worker
+# (design §3.6, V10-6).
+rayon = { workspace = true }
+# The channel password (design §19.28.5, Q47 (a)).
+argon2 = { workspace = true }
+# The pseudonym signer (design §3.3: the workspace ed25519-dalek 2.2.0) and the GHOST-side checks.
+ed25519-dalek = { workspace = true }
+# Derivations (§5.2), the seal (§5.6), the invite seal (§19.28.3), the state wrapping (§3.4): the
+# versions ghost-client-dm already uses.
+hkdf = "=0.13.0"
+hmac = { workspace = true }
+sha2 = { workspace = true }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
+# The box keys of §5.1 and §19.17: the public key of a fresh secret, and the F9 §22.8.2 rule on a
+# received `box_pk` (canonical and contributory). The version ghost-client-dm already links.
+x25519-dalek = "=2.0.1"
+# OpenMLS's storage entities are serde values (the memory provider's JSON form), read and written
+# by GhostKv (the day rewrite and the per-epoch rows read OpenMLS's serde layout, design §3.4).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The closed JNI surface (§10.2), behind `jni-bridge`; the version `ghost-client-net` and
+# `ghost-client-dm` already use (no new crate in the shipped graph).
+jni = { workspace = true, optional = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+# The seeded stream of host and test builds (design §12.1, §19.10): only the determinism world
+# (examples/det_world.rs) uses it, built with --cfg getrandom_backend="custom" by
+# scripts/ci/mls-determinism.sh. A dev-dependency: never in the crate's normal graph.
+ghost-host-rng = { path = "../host-rng" }

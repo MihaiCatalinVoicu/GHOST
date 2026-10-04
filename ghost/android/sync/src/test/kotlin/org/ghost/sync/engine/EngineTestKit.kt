@@ -430,6 +430,9 @@ internal class EngineWorld(
     fun capability(relay: RelayId, ns: NamespaceId, kind: CapabilityKind = CapabilityKind.WRITE, seed: Int = 1, expiresAt: Long? = null) =
         tx { stores.capabilities.put(it, relay, ns, kind, TestBytes.of(82, seed * 17 + relay.value.toInt()), expiresAt) }
 
+    /** Marks [ns] funded (Phase 10 design §7.5), or not. */
+    fun fund(ns: NamespaceId, funded: Boolean = true) = tx { stores.funding.set(it, ns, funded) }
+
     /** Three relays of operators 1, 2, 3, a namespace over them and write tokens on each. */
     fun standardSet(listen: Boolean = true, seed: Int = 1): Pair<NamespaceId, List<RelayId>> {
         val relays = relays(1, 2, 3)

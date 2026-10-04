@@ -24,7 +24,16 @@ rc=0
 # job and in rust-gates.sh.
 # dm-derivation-inputs is G-DM3's Kotlin half (design §22.33 item 17: the motivated allowlist, the
 # default pending the owner's word); its Rust half is a unit test of ghost-client-dm, run by cargo test.
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs; do
+# ch-derivation-inputs is G-M3's script half (Phase 10 design faza10-forum.md §5.2 rule (1), §13.1;
+# slice S2a): the channel crate's derivations take typed secret inputs, HKDF and the MLS exporter stay
+# in their modules, and no Android string looks like a channel label; it reads sources only. Its Rust
+# half is ghost-client-mls's derive test. The other channel gates need cargo: G-M1 and G-M2 are clauses
+# of rust-client-allowlist.sh and rust-feature-policy.sh, G-M4 and G-M8 run in rust-gates.sh and the CI
+# rust job, G-M9 wherever a build's messages are read.
+# mls-jni-surface is G-M6 (Phase 10 design §10.2, §13.1; slice S2b), G-R6's method for the channel
+# surface `MlsNative`: its source halves run here without a library; the CI android-native job runs it
+# with the shipped libraries and the android job with the ghost-dm-host build (`--test`).
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

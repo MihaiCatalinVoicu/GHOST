@@ -114,7 +114,7 @@ class EnqueueTest {
         val relays = w.relays(1, 2)
         val nsDefault = w.namespace(1, relays)
         val nsOn = w.namespace(2, relays, sendDelay = SendDelay.ON)
-        val nsOff = w.namespace(3, relays, sendDelay = SendDelay.OFF, consumer = Consumer.CHANNEL)
+        val nsOff = w.namespace(3, relays, sendDelay = SendDelay.OFF, consumer = Consumer.MEDIA)
         w.clock.advance(10)
         w.random.sendDelayValue = 0.25 // 150 s
         val expectedDelayed = Time.ceilMinute(w.now + 150)

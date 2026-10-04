@@ -8,10 +8,11 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * Negative fixtures (design §8.8, §11.5): each of the seventeen mutant engines runs the scenario that
+ * Negative fixtures (design §8.8, §11.5): each of the nineteen mutant engines runs the scenario that
  * must expose it, and the harness must report the expected kind of failure. The same scenario with
  * the real engine passes (fault-free here; its full enumeration runs in [ExhaustiveScenarioTest]).
- * M14 exposes a missing own tombstone (IN-2); M15–M17 are T19 mutants checked on the T19 worlds.
+ * M14 exposes a missing own tombstone (IN-2); M15–M17 are T19 mutants checked on the T19 worlds; M18
+ * and M19 are the two mutants of the Phase 10 slice S1a scenarios (the re-offer and the funded channel).
  */
 class MutantDetectionTest {
 
@@ -156,11 +157,27 @@ class MutantDetectionTest {
         expect(chain, "T19")
     }
 
+    /** S-P/reoffer-deferred without the re-offer: the deferred rows wait out their three days. */
+    @Test
+    fun m18_noReofferDeferred() {
+        faultFree(ScenarioReofferDeferred())
+        val chain = detected("M18 NoReofferDeferred") { faultFree(mutated({ ScenarioReofferDeferred() }, Mutants.M18)()) }
+        expect(chain, "no quiescence")
+    }
+
+    /** S-R/funded-channel with the registration served by the write slot: the bearer credential is refused at RegisterKey. */
+    @Test
+    fun m19_registrationPresentsTheWriteSlot() {
+        faultFree(ScenarioFundedChannel())
+        val chain = detected("M19 RegistrationPresentsTheWriteSlot") { faultFree(mutated({ ScenarioFundedChannel() }, Mutants.M19)()) }
+        expect(chain, "no quiescence", "refused", "invalid_argument")
+    }
+
     companion object {
         @JvmStatic
         @AfterClass
         fun report() {
-            HarnessReport.add("mutants: 17 run")
+            HarnessReport.add("mutants: 19 run")
         }
     }
 }

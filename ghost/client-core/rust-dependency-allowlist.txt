@@ -435,3 +435,46 @@ poly1305
 serde_bytes
 serdect
 vodozemac
+
+# Phase 10 channels on OpenMLS (design faza10-forum.md §3.2, §13.1 G-M1, §13.3; ADR-40; slice S2a).
+# ghost-client-mls's graph on both shipped ABIs, checked by rust-client-allowlist.sh before slice S2b
+# links it into ghost-client-net. Measured in S0 (V10-1, S0-1) and re-measured in S2a: exactly these
+# 22 names of the OpenMLS stack (tls_codec_derive and openmls_serialization_helpers build-time only,
+# so 20 are linked) and, for the channel password (§19.28.5, Q47 (a)), argon2 and blake2 — argon2
+# without its default `password-hash` feature, so password-hash and phc are in the lock only
+# (optional, never compiled). No new version of a name already in the client graph (the gate
+# checks it). hpke-rs, hpke-rs-crypto and hpke-rs-libcrux are MPL-2.0, used unmodified with their
+# source offered (ADR-37 point 2, G-L4).
+#   openmls*           the MLS library, its traits, the libcrux provider, the memory storage the
+#                      provider depends on (never named by GHOST code, G-M2) and the serde helpers
+#   hpke-rs*           RFC 9180 HPKE over libcrux (MPL-2.0)
+#   libcrux-{aead,aes,chacha20poly1305,poly1305,ed25519,hkdf,hmac,hmac-drbg}
+#                      the provider's primitives (portable builds only, G-M9)
+#   rayon*, crossbeam-{deque,epoch}   openmls's parallel tree encryption (one worker, §3.6)
+#   tls_codec*         RFC 9420 TLS presentation-language codec
+#   argon2, blake2     Argon2id (RFC 9106) for the password-sealed invite
+argon2
+blake2
+crossbeam-deque
+crossbeam-epoch
+ghost-client-mls
+hpke-rs
+hpke-rs-crypto
+hpke-rs-libcrux
+libcrux-aead
+libcrux-aes
+libcrux-chacha20poly1305
+libcrux-ed25519
+libcrux-hkdf
+libcrux-hmac
+libcrux-hmac-drbg
+libcrux-poly1305
+openmls
+openmls_libcrux_crypto
+openmls_memory_storage
+openmls_serialization_helpers
+openmls_traits
+rayon
+rayon-core
+tls_codec
+tls_codec_derive

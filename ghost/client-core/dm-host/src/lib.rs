@@ -25,6 +25,12 @@
 //! changes, and the second, perturbed open draws no randomness. `DmPqSpyNativeTest` refuses a host
 //! library built without it.
 //!
+//! **The channel surface** (Phase 10 design §10.1, slice S2b): `ghost_client_mls::export_jni!()`
+//! exports `MlsNative` — the same closed list `libghost_client_net.so` exports, from the same crate
+//! — and `ghost_client_mls::export_vectors_jni!()` its one test entry, `MlsVectors.run`, the case
+//! runner of the JDK vector replay (§12.2). G-M6 checks this library exports exactly those, and the
+//! shipped one no `MlsVectors` symbol.
+//!
 //! This package is **never shipped** and is excluded from the shipped graph, so the client
 //! allowlist and the third-party notices do not see it.
 
@@ -33,3 +39,5 @@
 
 ghost_client_dm::export_jni!();
 ghost_client_dm::export_equivalence_jni!();
+ghost_client_mls::export_jni!();
+ghost_client_mls::export_vectors_jni!();

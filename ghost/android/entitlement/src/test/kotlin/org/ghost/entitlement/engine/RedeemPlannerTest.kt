@@ -139,6 +139,69 @@ class RedeemPlannerTest {
         }
     }
 
+    /**
+     * Phase 10 design §7.5, §7.6: a REGISTER need is planned as a WRITE need of a REDEEM namespace —
+     * the sync layer reports it with source REDEEM although the funded channel's own source is LOCAL —
+     * so MISSING, EXHAUSTED and REJECTED redeem the current week at once and EXPIRING renews inside the
+     * last 23 hours; the clock guard, the slot binding and the missing relay behave as for every need.
+     */
+    @Test
+    fun aRegisterNeedIsPlannedAsAWriteNeedOfARedeemNamespace() {
+        for (reason in listOf(CapabilityNeed.Reason.MISSING, CapabilityNeed.Reason.EXHAUSTED, CapabilityNeed.Reason.REJECTED)) {
+            val d = plan(need(CapabilityKind.REGISTER, reason)) as RedeemPlanner.Decision.Redeem
+            assertEquals(reason.toString(), WEEK0, d.week)
+            assertEquals(listOf(1), d.slots)
+            assertEquals(T0, d.dueSeconds)
+        }
+        val next = Grid.start(WEEK0 + 1)
+        for (u in listOf(0.0, 0.5, 0.9999)) {
+            random.prfValue = u
+            val d = plan(need(CapabilityKind.REGISTER, CapabilityNeed.Reason.EXPIRING), now = next - 20 * 3600) as RedeemPlanner.Decision.Redeem
+            assertEquals(WEEK0 + 1, d.week)
+            assertTrue(d.dueSeconds >= next - 23 * 3600 && d.dueSeconds <= next - 3600)
+        }
+        // An expiring registration capability earlier in the week is renewed with a current-week token at once.
+        val early = plan(need(CapabilityKind.REGISTER, CapabilityNeed.Reason.EXPIRING)) as RedeemPlanner.Decision.Redeem
+        assertEquals(WEEK0, early.week)
+        assertEquals(T0, early.dueSeconds)
+        val register = need(CapabilityKind.REGISTER, CapabilityNeed.Reason.MISSING)
+        assertSame(RedeemPlanner.Decision.Deferred, plan(register, trusted = false))
+        assertSame(RedeemPlanner.Decision.Deferred, plan(register, now = Grid.start(WEEK0) + 3599))
+        assertSame(RedeemPlanner.Decision.Skip, plan(register, on = null))
+        val outsider = SyncTables.Relay(RelayId(9), TestOnions.of(9), ByteArray(16), active = true)
+        assertSame(RedeemPlanner.Decision.NoSlot, plan(register, on = outsider))
+        // The need is the sync layer's to mark: one that came marked LOCAL is skipped like any LOCAL need.
+        assertSame(
+            RedeemPlanner.Decision.LocalSkipped,
+            plan(CapabilityNeed(RelayId(1), ns, CapabilityKind.REGISTER, CapabilityNeed.Reason.MISSING, CapabilitySource.LOCAL)),
+        )
+    }
+
+    /** The covering capability a caller passes is the pair's own class: a registration capability reaching past the week covers a REGISTER need. */
+    @Test
+    fun aRegisterNeedIsCoveredByTheExpiryThePlannerIsGiven() {
+        random.prfValue = 0.0
+        val reaching = Grid.start(WEEK0 + 1) + 3600
+        assertSame(RedeemPlanner.Decision.Skip, plan(need(CapabilityKind.REGISTER, CapabilityNeed.Reason.EXPIRING), writeExpiry = reaching))
+        assertTrue(plan(need(CapabilityKind.REGISTER, CapabilityNeed.Reason.EXPIRING), writeExpiry = T0 + 3600) is RedeemPlanner.Decision.Redeem)
+        // The renewal window targets the next week, which a capability of this week does not reach.
+        val renewal = plan(need(CapabilityKind.REGISTER, CapabilityNeed.Reason.EXPIRING), now = Grid.start(WEEK0 + 1) - 20 * 3600, writeExpiry = reaching)
+        assertEquals(WEEK0 + 1, (renewal as RedeemPlanner.Decision.Redeem).week)
+    }
+
+    /** The PRF input of a REGISTER need carries its own kind byte, so the three kinds of one pair draw their own times. */
+    @Test
+    fun theThreeKindsOfOnePairDrawTheirOwnRenewalTimes() {
+        random.prfValue = null
+        val next = Grid.start(WEEK0 + 1)
+        val due = CapabilityKind.entries.map { kind ->
+            val d = plan(need(kind, CapabilityNeed.Reason.EXPIRING), now = next - 20 * 3600) as RedeemPlanner.Decision.Redeem
+            assertTrue(kind.toString(), d.dueSeconds >= next - 23 * 3600 && d.dueSeconds <= next - 3600)
+            d.dueSeconds
+        }
+        assertEquals("READ, WRITE and REGISTER draw three different times", 3, due.toSet().size)
+    }
+
     @Test
     fun aRelayIsBoundByItsExactOnionFirstThenByItsSingleServiceKeySlot() {
         val base = TestOnions.of(5)

@@ -14,6 +14,10 @@ crate-type = ["lib", "cdylib"]
 # DM cryptography (Phase 9 design §2.3, D2): one Rust runtime in the APK, so the DM crate is
 # linked into this cdylib and its JNI surface is exported from `libghost_client_net.so`.
 ghost-client-dm = { path = "../dm", features = ["jni-bridge"] }
+# Channel cryptography on OpenMLS (Phase 10 design §10.1, slice S2b): the same rule, so the closed
+# `MlsNative` surface of §10.2 is exported from `libghost_client_net.so` beside the DM surface. Only
+# `jni-bridge`: G-M2 keeps `test-vectors` (the host library's replay entry) out of this graph.
+ghost-client-mls = { path = "../mls", features = ["jni-bridge"] }
 ghost-relay-api = { path = "../../relay/crates/api" }
 # Entitlement formats, the ES verifier and seed-derived blinding (ADR-22): workspace crates on
 # packages the library already links (rust-dependency-allowlist.txt).

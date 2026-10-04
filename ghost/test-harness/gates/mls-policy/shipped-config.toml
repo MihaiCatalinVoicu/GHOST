@@ -1,0 +1,4 @@
+# Fixture (G-R2, Phase 10 design §12.1): a shipped build configuration that names the seeded
+# stream's cfg. rust-feature-policy.sh must refuse it.
+[build]
+rustflags = ["--cfg", 'getrandom_backend="custom"']

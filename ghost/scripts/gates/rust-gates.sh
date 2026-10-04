@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # Rust gates (ADR-10): format, lint as errors, tests, cargo-deny (licenses/bans/sources/advisories),
 # the client package allowlist (T7), the Arti feature policy with the per-version rsa scopes and
-# the crypto version pins (ADR-22), the licence gates G-L1 (Rust notices), G-R5 and G-L4 (ADR-37), and
-# the Entitlement Schedule (runs ghost-issuer-ops; needs the git history).
+# the crypto version pins (ADR-22), the licence gates G-L1 (Rust notices), G-R5 and G-L4 (ADR-37), the
+# Entitlement Schedule (runs ghost-issuer-ops; needs the git history), and Phase 10's channel crate:
+# its tests on their own (a workspace build unifies openmls/test-utils from ghost-client-mls-kat into
+# it), V10-6 (mls-determinism.sh) and the graph gates G-M4 and G-M8 (G-M1 and G-M2 are clauses of the
+# allowlist and the feature policy; G-M3 runs in run-all.sh; G-M9 needs a build's messages: the CI job).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 cd "$GHOST_ROOT"
 cargo fmt --all -- --check || fail "rustfmt"
 cargo clippy --locked --workspace --all-targets -- -D warnings || fail "clippy"
-cargo test --locked --workspace || fail "cargo test"
+cargo test --locked --workspace --exclude ghost-client-mls || fail "cargo test"
+cargo test --locked -p ghost-client-mls || fail "cargo test -p ghost-client-mls"
+cargo test --locked -p ghost-client-mls --features jni-bridge,test-vectors --lib -- jni:: testvec:: \
+  || fail "cargo test -p ghost-client-mls (its JNI layer, slice S2b)"
+bash "$GHOST_ROOT/scripts/ci/mls-determinism.sh" || fail "mls-determinism (V10-6)"
 # The issuer crash suite runs in the release profile (Phase 8 design §19.17 point 2; CI job rust).
 cargo test --locked --release -p ghost-issuer --test crash || fail "issuer crash suite (release)"
 if command -v cargo-deny >/dev/null; then cargo deny check || fail "cargo deny"; else echo "cargo-deny missing (install: cargo install cargo-deny)" >&2; FAILURES=$((FAILURES+1)); fi
@@ -19,6 +26,8 @@ bash "$GATES_DIR/rust-crypto-pins.sh" || fail "rust-crypto-pins"
 bash "$GATES_DIR/dm-rust-no-logging.sh" || fail "dm-rust-no-logging"
 bash "$GATES_DIR/dm-golden-lock.sh" || fail "dm-golden-lock"
 bash "$GATES_DIR/dm-vendored-clock-log.sh" || fail "dm-vendored-clock-log"
+bash "$GATES_DIR/mls-rust-no-logging.sh" || fail "mls-rust-no-logging"
+bash "$GATES_DIR/mls-vendored-clock-log.sh" || fail "mls-vendored-clock-log"
 # Licence gates (ADR-37; Phase 9 design §2.10.2): notices of the shipped Rust graphs (G-L1), source
 # headers (G-R5), MPL-2.0 sources and their bundle (G-L4).
 bash "$GATES_DIR/license-notices.sh" rust || fail "license-notices (rust)"

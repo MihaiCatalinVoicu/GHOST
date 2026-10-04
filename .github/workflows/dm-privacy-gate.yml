@@ -119,9 +119,9 @@ jobs:
       - name: build ghost-dm-host with the provenance assertions
         working-directory: ghost
         run: |
-          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
-          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       # `--test`: the host build also exports the equivalence-test entry point (design 15.9 item 7, slice
       # S12), and only that. Without the flag this step failed and the gate never reached its world
@@ -129,6 +129,11 @@ jobs:
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
+      # G-M6 (Phase 10 slice S2b; its review): the host library carries the channel surface too, which
+      # G-R6 accepts by class; G-M6 checks it exactly, wherever G-R6 reads a library.
+      - name: G-M6 closed channel JNI surface (the host build)
+        working-directory: ghost
+        run: bash scripts/gates/mls-jni-surface.sh --test "$GHOST_DM_NATIVE"
       # --rerun: build caching is on and setup-gradle restores the local build cache, so an
       # unchanged test task would be restored FROM-CACHE and the gate would run nothing.
       - name: the privacy world, its joins, S-DM3, S-DM1, S-DM2, S-DM4 and T35
@@ -211,9 +216,9 @@ jobs:
       - name: build ghost-dm-host with the provenance assertions
         working-directory: ghost
         run: |
-          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
-          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       # `--test`: the host build also exports the equivalence-test entry point (design 15.9 item 7, slice
       # S12), and only that. Without the flag this step failed and the gate never reached its world
@@ -221,6 +226,11 @@ jobs:
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
+      # G-M6 (Phase 10 slice S2b; its review): the host library carries the channel surface too, which
+      # G-R6 accepts by class; G-M6 checks it exactly, wherever G-R6 reads a library.
+      - name: G-M6 closed channel JNI surface (the host build)
+        working-directory: ghost
+        run: bash scripts/gates/mls-jni-surface.sh --test "$GHOST_DM_NATIVE"
       - name: NI-DM1, NI-DM2, NI-DM3, JD7 under WITHHOLD_ALL_BUNDLES, T34, its one-reply variant, JD8, the privacy mutants and the S-DM1 controls
         run: |
           ./gradlew --no-daemon :messaging:testDebugUnitTest --rerun \

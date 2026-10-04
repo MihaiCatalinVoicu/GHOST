@@ -86,16 +86,38 @@ jobs:
           echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all -- --check
       # G-R3 (Phase 9 design §16.1, §22.33): every client build is preceded by the libcrux clean — the
-      # three build scripts do not re-run when LIBCRUX_DISABLE_SIMD* change, and rust-cache restores
+      # four build scripts do not re-run when LIBCRUX_DISABLE_SIMD* change, and rust-cache restores
       # target/ — and the host test build's cargo messages are read before any test runs.
       - name: libcrux clean (G-R3)
-        run: cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics
+        run: cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: workspace test build, portable libcrux only (G-R3)
+      # G-M9 (Phase 10 design faza10-forum.md §13.1, S0-8): the OpenMLS provider's libcrux-aes joins
+      # G-R3, and a build that compiles it must show it (--with-aes). ghost-client-mls is built and
+      # tested on its own: in a workspace build, feature unification gives its openmls the
+      # `test-utils` that ghost-client-mls-kat's dev-dependency enables (G-M2 allows it there only), so
+      # the crate's tests would not run on the feature set it ships with.
+      - name: workspace test build, portable libcrux only (G-R3, G-M9)
         run: |
-          cargo test --workspace --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/test-build.json"
-          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/test-build.json"
-      - run: cargo test --workspace --locked
+          cargo test --workspace --exclude ghost-client-mls --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/test-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/test-build.json"
+          cargo test -p ghost-client-mls --locked --no-run --message-format=json-render-diagnostics > "$RUNNER_TEMP/mls-test-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/mls-test-build.json"
+      - run: cargo test --workspace --exclude ghost-client-mls --locked
+      # Phase 10 design §12.2: the channel crate's tests (vectors, GhostKv, admission, CO-2, the
+      # committers anchor, the golden sizes, and the property tests of every GHOST parser with 10^6
+      # inputs from this run's seed, which a failure prints); §12.1, S0-7: V10-6, two processes of the
+      # scripted world byte-identical with the seeded getrandom stream (its own target sub-directory).
+      # Slice S2b: the JNI layer's own unit tests (the closed list against what the export macro
+      # writes, the wire's tags, strict argument decoding, the registry's pointers and its recovery
+      # from a panic, the vector-replay entry) need the crate's two JNI features, so they run on
+      # their own, the library's unit tests only.
+      - name: ghost-client-mls on its shipped feature set; V10-6 determinism; its JNI layer
+        env:
+          GHOST_PROP_SEED: ${{ github.run_id }}
+        run: |
+          cargo test -p ghost-client-mls --locked
+          cargo test -p ghost-client-mls --locked --features jni-bridge,test-vectors --lib -- jni:: testvec::
+          bash scripts/ci/mls-determinism.sh "$RUNNER_TEMP/mls-determinism"
       # Design §19.17 point 2: the issuer crash suite (I-A … I-H, double crashes) runs in the
       # release profile; a debug build lists its tests as ignored.
       - name: issuer crash suite (release profile)
@@ -153,6 +175,17 @@ jobs:
             bash scripts/gates/dm-golden-lock.sh
           fi
           bash scripts/gates/dm-vendored-clock-log.sh
+      # Phase 10 (design faza10-forum.md §13.1; slice S2a): G-M4's graph half (no logging crate in the
+      # channel crate's graph; `log` only under the vendored crates that declare it; nothing installs a
+      # logger) and G-M8 (the clock, logging and network sites of that graph equal their justified
+      # baseline). G-M1 is rust-client-allowlist.sh's channel clause, G-M2 and G-R2's seeded-stream
+      # checks are rust-feature-policy.sh's, G-M3 is ch-derivation-inputs.sh (static gates) with the
+      # crate's derive test, G-M9 the test-build step; mls-vendor-tests.yml runs OpenMLS's own suite
+      # and the GHSA watch.
+      - name: channel graph gates (G-M4 no logging crate, G-M8 vendored clock and logging sites)
+        run: |
+          bash scripts/gates/mls-rust-no-logging.sh
+          bash scripts/gates/mls-vendored-clock-log.sh
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 points 2, 3, 10): the licence gates that need the Rust
       # toolchain and the published sources: the notices of every shipped Rust graph, compared with the
       # committed ghost/licenses/THIRD_PARTY_NOTICES-*.txt (G-L1), the licence declarations of the shipped
@@ -236,12 +269,21 @@ jobs:
           bash scripts/gates/dm-jni-surface.sh \
             "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
             "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
+      # G-M6 (Phase 10 design §10.2, §13.1; slice S2b): the same libraries export exactly the closed
+      # channel list (function 16 reserved for S9) and no MlsVectors test entry.
+      - name: G-M6 closed channel JNI surface (the shipped libraries)
+        run: |
+          bash scripts/gates/mls-jni-surface.sh \
+            "$RUNNER_TEMP/native-a/arm64-v8a/libghost_client_net.so" \
+            "$RUNNER_TEMP/native-a/x86_64/libghost_client_net.so"
       # G-R3 (Phase 9 design §16.1, §22.33): cargo-ndk prints no cargo messages, so the detector reads
       # the build-script outputs of the second build, which ran in a removed-then-recreated target
       # directory after build-native.sh's libcrux clean: exactly one output per package and triple.
+      # `--with-aes` (G-M9): since slice S2b the shipped library links the OpenMLS provider, whose
+      # libcrux-aes must be in both builds and portable (review of S2b: this step still omitted it).
       - name: G-R3 portable libcrux in both shipped triples
         run: |
-          bash scripts/gates/libcrux-portable.sh \
+          bash scripts/gates/libcrux-portable.sh --with-aes \
             --target-dir target/android-native/aarch64-linux-android/release \
             --target-dir target/android-native/x86_64-linux-android/release
       # G-R7 (c) (§2.9, V-9): the shipped libraries hold Olm's KDF labels and none of the strings of the
@@ -326,11 +368,20 @@ jobs:
       - name: build ghost-dm-host (the DM host library the JVM tests load)
         working-directory: ghost
         run: |
-          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics --release || true
+          cargo clean -p libcrux-ml-kem -p libcrux-sha3 -p libcrux-intrinsics -p libcrux-aes --release || true
           cargo build -p ghost-dm-host --release --locked --features provenance --message-format=json-render-diagnostics > "$RUNNER_TEMP/dm-host-build.json"
-          bash scripts/gates/libcrux-portable.sh --json "$RUNNER_TEMP/dm-host-build.json"
+          bash scripts/gates/libcrux-portable.sh --with-aes --json "$RUNNER_TEMP/dm-host-build.json"
           echo "GHOST_DM_NATIVE=$PWD/target/release/libghost_dm_host.so" >> "$GITHUB_ENV"
       - run: ./gradlew build --no-daemon -Dghost.dm.native="$GHOST_DM_NATIVE"
+      # The channel JVM tests skip themselves without the host library (`assumeTrue`, like the DM
+      # ones), so a lost `-Dghost.dm.native` would leave this job green with nothing run (review of
+      # S2b). Each class must have reported, with no test skipped.
+      - name: the channel JVM tests ran (skipped="0")
+        run: |
+          for c in MlsResultCodesTest ChannelCodecTest ChannelVectorReplayTest MlsHandleLifecycleTest ChannelCryptoNativeTest; do
+            f="crypto-bridge/build/test-results/testDebugUnitTest/TEST-org.ghost.crypto.bridge.$c.xml"
+            grep -q 'skipped="0"' "$f" || { echo "$c: no report, or a skipped test ($f)" >&2; exit 1; }
+          done
       # A failed test's message and stack trace in the job summary: the test reports are not uploaded.
       - name: failed tests (job summary)
         if: failure()
@@ -359,6 +410,11 @@ jobs:
       - name: G-R6 closed JNI surface (the host build)
         working-directory: ghost
         run: bash scripts/gates/dm-jni-surface.sh --test "$GHOST_DM_NATIVE"
+      # G-M6 (host half, slice S2b): the host library the channel JVM tests loaded exports the closed
+      # channel list plus its one test entry point, MlsVectors.run (the JDK vector replay).
+      - name: G-M6 closed channel JNI surface (the host build)
+        working-directory: ghost
+        run: bash scripts/gates/mls-jni-surface.sh --test "$GHOST_DM_NATIVE"
       # ADR-37 (Phase 9 design §2.10.2, §22.8.10 point 10): the Gradle part of the third-party notices and
       # the Gradle licence allowlist (G-L1, G-L2), then the notices asset of the release APK (G-L3).
       - name: licence gates (G-L1 Gradle notices, G-L2 licence allowlist, G-L3 notices in the APK)
@@ -398,8 +454,10 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       # Phase 7 design §8.3–§8.8, §8.10: exhaustive crash enumeration of S-A..S-H (single crashes in
-      # DELETE and WAL, double crashes for S-A, S-D, S-F in both), 20 000 seeded worlds, the 13
-      # mutants, T19/T3/T20 and the model-relay conformance replay. World databases go to /dev/shm
+      # DELETE and WAL, double crashes for S-A, S-D, S-F in both; Phase 10 adds S-P/reoffer-deferred and
+      # S-R/funded-channel), 20 000 seeded worlds, the 19 mutants (M1-M13 of Phase 7, M14-M17 of the
+      # reviews and the T19 worlds, M18-M19 of Phase 10 slice S1a), T19/T3/T20 and the model-relay
+      # conformance replay. World databases go to /dev/shm
       # (the crash model is process death, not power loss).
       # --rerun: org.gradle.caching is on and setup-gradle restores the local build cache, so without it
       # an unchanged test task is restored FROM-CACHE and the gate runs nothing; the summary step then
@@ -418,7 +476,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           fail=0
-          for line in '^seeded worlds: 20000 seeds, ' '^mutants: 17 run' '^crashes injected=[0-9]+ caught at the top level=[0-9]+$'; do
+          for line in '^seeded worlds: 20000 seeds, ' '^mutants: 19 run' '^crashes injected=[0-9]+ caught at the top level=[0-9]+$'; do
             if ! grep -Eq "$line" "$report" 2>/dev/null; then echo "::error::sync harness report: no line matching $line"; fail=1; fi
           done
           exit "$fail"

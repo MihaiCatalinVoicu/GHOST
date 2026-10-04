@@ -15,7 +15,18 @@ local.properties
 
 # Rust
 **/target/
+# ... except the gate fixtures whose point is a module directory named `target` (the source finders once
+# pruned every such directory unread; Phase 10 review of S2a F4, whose two fixtures were ignored by the
+# rule above and never committed, found by the review of S1a).
+!ghost/test-harness/gates/**/target/
 Cargo.lock.orig
+# Gate fixtures the build-output patterns above would hide (scripts/gates/self-test.sh): module
+# directories named `target` or `build` under a `src/`, which the gates must read as code (Phase 10
+# review of S2a F4), and the one build output the surface gates must prune (review of S2b). Two S2a
+# fixtures were never committed because of these patterns, and the self-test failed on a clean tree.
+!ghost/test-harness/gates/**/src/target/
+!ghost/test-harness/gates/**/src/build/
+!ghost/test-harness/gates/mls-jni/evasions/target/
 
 # IDE
 .idea/

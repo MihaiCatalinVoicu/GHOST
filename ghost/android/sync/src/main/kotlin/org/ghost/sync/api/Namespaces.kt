@@ -11,7 +11,8 @@ interface Namespaces {
      * [capabilitySource] says who obtains the write access of the namespace (Phase 9 design §13.3
      * item 3); re-registering a known namespace applies it like the other arguments. A DM namespace
      * cannot turn the send delay off (`sendDelay = SendDelay.OFF` with `consumer = Consumer.DM`
-     * throws, and a v4 trigger refuses it as well).
+     * throws, and a v4 trigger refuses it as well), nor can a channel namespace (`Consumer.CHANNEL`,
+     * Phase 10 design §7.5 item 3; a v6 trigger refuses it as well).
      */
     fun register(
         tx: SyncTransaction,
@@ -47,16 +48,18 @@ interface Namespaces {
     fun listening(tx: SyncTransaction, namespace: NamespaceId): Boolean?
 
     /**
-     * Refuses [SendDelay.OFF] for a [Consumer.DM] namespace (Phase 9 design §13.3 item 8): the
-     * ADR-15 delay is what keeps a DM store from naming the moment the user pressed send.
+     * Refuses [SendDelay.OFF] for a [Consumer.DM] namespace (Phase 9 design §13.3 item 8) and for a
+     * [Consumer.CHANNEL] namespace (Phase 10 design §7.5 item 3): the ADR-15 delay is what keeps a
+     * store from naming the moment the user pressed send.
      */
     fun setSendDelay(tx: SyncTransaction, namespace: NamespaceId, sendDelay: SendDelay)
 
     /**
      * False while the namespace has operations or fetched, unconsumed blobs. Otherwise stops
-     * listening, drops its relay set, cursors, capabilities and not-yet-fetched rows, and keeps the
-     * consumed-blob tombstones until their retention day; the namespace row itself is removed by
-     * garbage collection once nothing refers to it (design §11.2 #19).
+     * listening, drops its relay set, cursors, capabilities (registration capabilities too) and
+     * not-yet-fetched rows, ends its funding ([Funding]), and keeps the consumed-blob tombstones until
+     * their retention day; the namespace row itself is removed by garbage collection once nothing
+     * refers to it (design §11.2 #19).
      */
     fun remove(tx: SyncTransaction, namespace: NamespaceId): Boolean
 }

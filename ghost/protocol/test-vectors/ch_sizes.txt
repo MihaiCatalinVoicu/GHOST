@@ -1,0 +1,21 @@
+# GHOST channel golden sizes (design §5.5, §5.7; S0-4, V10-4) in bytes of the MlsMessage the seal
+# carries, measured with ghost-client-mls on OpenMLS 0.9.0, suite 0x0003: a small channel at its cap
+# (32 members, 32 leaves, the blank shape: only the owner's direct path set), GHOST's extensions
+# and evidence, every commit with a forced path. Generated and checked by
+# client-core/mls/tests/sizes.rs; the independent replay checks the KeyPackage's 395 bytes from its
+# structure (mls-kat/tests/spec_replay.rs). C(4096) = 4028, C(16384) = 16316.
+
+[sizes]
+key_package = 395
+post_16000 = 16198 (margin 118 to C(16384))
+post_16000_reply_to = 16218 (margin 98 to C(16384))
+add_31_to_32 = 3745 (margin 283)
+welcome_one_joiner_32 = 8868
+self_update_rank_255 = 1955 (margin 2073)
+pcs_commit = 3185 (margin 843)
+remove_1 = 3110 (margin 918)
+swap_rejoin = 3653 (margin 375)
+swap_restore = 3786 (margin 242)
+context_change_max = 3655 (margin 373)
+remove_1_with_context_change = 3580 (margin 448)
+remove_committer_with_drop_of_its_key = 3548 (margin 480)

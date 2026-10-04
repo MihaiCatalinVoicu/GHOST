@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fixture symbol reader for G-M6: a reader that cannot read the library (a binutils `nm` without the
+# target, a truncated file). The gate must report the reader, not "the library is wrong".
+echo "llvm-nm: error: fixture: not a valid object file" >&2
+exit 1

@@ -31,10 +31,14 @@
 # name one class, `DmNative`: an entry point exported as `Java_org_ghost_crypto_bridge_DmDebug_…`
 # (or under any other package), an `external fun` in another Android class, and a library exporting
 # either passed every half. So the workspace's Rust sources, every production Android source set and
-# every library read here may carry a JNI entry point only of `DmNative` (the closed list),
-# `DmEquivalence.run`, `.bindingHooks`, `.stateWrapHook` and `.sidecarLogHook` (test libraries and
-# `src/equivalence` only) or the three classes of the network surface (`OTHER_JNI_CLASSES`: Phases 6
-# and 8, not DM). A new class is a change to this list, which is what makes it arrive deliberately.
+# every library read here may carry a JNI entry point only of the classes `common.sh` lists in
+# `GHOST_JNI_CLASSES` — `DmNative` (the closed list), `DmEquivalence.run`, `.bindingHooks`,
+# `.stateWrapHook` and `.sidecarLogHook` (test libraries and `src/equivalence` only), the channel
+# surface `MlsNative` and its test entry `MlsVectors` (Phase 10 slice S2b, checked exactly by G-M6,
+# `mls-jni-surface.sh`) and the three classes of the network surface (Phases 6 and 8) — and a native
+# method may be declared only in the files of `GHOST_JNI_NATIVE_FILES`. One list for both surface
+# gates, so they agree on what is allowed; a new class is a change to it, which is what makes it
+# arrive deliberately.
 #
 # **The test-vectors entry points** (§15.9 item 7, §22.8.10 point 6; slice S12) are the symbols a
 # *test* library adds: `Java_org_ghost_crypto_bridge_DmEquivalence_run`, since §22.37
@@ -71,18 +75,10 @@ PREFIX="Java_org_ghost_crypto_bridge_DmNative_"
 # The test libraries' extra symbols (see the header).
 ENTRY_PREFIX="Java_org_ghost_crypto_bridge_DmEquivalence_"
 ENTRY_NAMES="run bindingHooks stateWrapHook sidecarLogHook"
-# The other classes a GHOST library may export JNI entry points for (see the header): the network
-# surface of `ghost-client-net`, whose files are `android/network/src/main/…/<class>.kt`.
-OTHER_JNI_CLASSES="TorRelayTransport TorIssuerTransport EntitlementCrypto"
-OTHER_JNI_PREFIX="Java_org_ghost_network_"
-# A JNI symbol is allowed when it is `DmNative`'s, `DmEquivalence`'s (decided by the halves below)
-# or one of the network classes'. Prints the symbols of stdin that are none of these.
-foreign_jni() {
-  local classes
-  classes="$(printf '%s|' $OTHER_JNI_CLASSES)"
-  classes="${classes%|}"
-  grep -vE "^(${PREFIX}|${ENTRY_PREFIX}|${OTHER_JNI_PREFIX}(${classes})_)" || true
-}
+# A JNI symbol of a class outside `common.sh`'s GHOST_JNI_CLASSES (`DmNative`'s and `DmEquivalence`'s
+# are decided by the halves below, the channel surface's by G-M6). Prints the symbols of stdin that
+# belong to none of them.
+foreign_jni() { jni_foreign; }
 # The Android tree the source-set half reads (self-test hook: GHOST_DM_JNI_ANDROID).
 ANDROID_TREE="${GHOST_DM_JNI_ANDROID:-$GHOST_ROOT/android}"
 
@@ -101,20 +97,21 @@ grep 'Availability::Exported' "$work/entries" \
   | sed -E 's/^\([0-9]+, "([A-Za-z0-9]+)".*$/\1/' | sort -u > "$work/expected"
 
 # The names the export macro really emits: the macro arms of the closed-list file, and every other
-# Rust source of the scan root, so an entry point written by hand somewhere else is caught too.
-prune=(-not -path '*/target/*')
-if [ -z "${GHOST_DM_JNI_SCAN:-}" ]; then
-  prune+=(-not -path '*/test-harness/*')
+# Rust source of the scan root, so an entry point written by hand somewhere else is caught too. Read
+# as code by common.sh's jni_source_symbols — any `fn Java_…` whatever its qualifiers (`unsafe`,
+# `extern "C"`, no `pub`) or line breaks, and any string literal that is a `Java_…` symbol — over
+# jni_rust_files, which prunes a `target` or `build` directory only outside `src/` (review of S2b:
+# the first readers matched `pub extern "system" fn` on one line and filtered every `*/target/*`).
+fixtures=""
+[ -z "${GHOST_DM_JNI_SCAN:-}" ] || fixtures=with-fixtures
+{ printf '%s\n' "$SOURCE"; jni_rust_files "$SCAN" "$fixtures"; } | sort -u > "$work/rust-files"
+if ! jni_source_symbols < "$work/rust-files" > "$work/jni-scan"; then
+  fail "the JNI source reader (perl) failed: the source half is unproven"
 fi
-{
-  grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SOURCE" || true
-  if [ -d "$SCAN" ]; then
-    find "$SCAN" -name '*.rs' "${prune[@]}" -exec \
-      grep -ohE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" {} + || true
-  elif [ "$SCAN" != "$SOURCE" ]; then
-    grep -oE "pub extern \"system\" fn ${PREFIX}[A-Za-z0-9]+" "$SCAN" || true
-  fi
-} | sed -E "s/.*${PREFIX}//" | sort -u > "$work/emitted"
+read_n="$(sed -n 's/^JNI-FILES-READ //p' "$work/jni-scan")"
+[ "${read_n:-0}" -gt 0 ] || fail "the JNI source reader read no Rust file (the source half would pass vacuously)"
+{ grep -v '^JNI-FILES-READ ' "$work/jni-scan" || true; } | sort -u > "$work/jni-source"
+{ grep -E "^${PREFIX}" "$work/jni-source" || true; } | sed -E "s/^${PREFIX}//" | sort -u > "$work/emitted"
 
 while read -r name; do
   [ -n "$name" ] || continue
@@ -131,29 +128,22 @@ while read -r name; do
   fail "'$name' is emitted but not marked Exported on the closed list"
 done < <(comm -13 "$work/expected" "$work/emitted")
 
-# Every other JNI entry point of the scan root, under any class (GATES-3): `pub extern "system" fn
-# Java_…` whatever attributes precede it, and an `export_name` that spells one.
-{
-  if [ -d "$SCAN" ]; then
-    find "$SCAN" -name '*.rs' "${prune[@]}" -exec \
-      grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' {} + || true
-  else
-    grep -ohE 'pub extern "system" fn Java_[A-Za-z0-9_]+|export_name *= *"Java_[A-Za-z0-9_]+' "$SCAN" "$SOURCE" || true
-  fi
-} | grep -oE 'Java_[A-Za-z0-9_]+' | sort -u | foreign_jni > "$work/foreign-source"
+# Every other JNI entry point of the scan root, under any class (GATES-3), from the same reading.
+foreign_jni < "$work/jni-source" > "$work/foreign-source"
 while read -r symbol; do
   [ -n "$symbol" ] || continue
-  fail "the workspace exports the JNI entry point '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
+  fail "the workspace exports the JNI entry point '$symbol', which is not a class of the JNI surfaces (common.sh GHOST_JNI_CLASSES; G-R6)"
 done < "$work/foreign-source"
 
 # Kotlin declares exactly the exported names, and declares them `internal` with an explicit
 # `@JvmName`: `:messaging` must go through the typed facade (§2.6, §13.1), and Kotlin mangles an
 # internal member's JVM name (`ctxClose` -> `ctxClose$crypto_bridge`), which no JNI symbol matches.
 # Both halves are checked, so tightening the visibility cannot turn into an UnsatisfiedLinkError on
-# a device, and loosening it cannot slip past review.
+# a device, and loosening it cannot slip past review. A `@JvmName` and its declaration may share a
+# line, which is read for both (review of S2b: a `next` here skipped the declaration).
 awk '
   match($0, /@JvmName\("[A-Za-z0-9]+"\)/) {
-    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR; next
+    pinned = substr($0, RSTART + 10, RLENGTH - 12); pinned_line = NR
   }
   match($0, /external fun [A-Za-z0-9]+/) {
     name = substr($0, RSTART + 13, RLENGTH - 13)
@@ -180,31 +170,13 @@ while read -r name; do
 done < <(comm -13 "$work/kotlin" "$work/expected")
 
 # No other native declaration in a production source set (GATES-3): an `external fun` (Kotlin) or a
-# `native` method (Java) anywhere but DmNative.kt and the network classes' own files. Without it a
-# second class in `:crypto-bridge` — `DmDebug.exportSessionState` — needed no closed-list entry and
-# was not `DmNative` for the reference rule below, so `:messaging` could call it directly.
-if [ -d "$ANDROID_TREE" ]; then
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    case "$f" in
-      */crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/DmNative.kt) continue ;;
-    esac
-    allowed=0
-    for class in $OTHER_JNI_CLASSES; do
-      case "$f" in */network/src/main/kotlin/org/ghost/network/"$class".kt) allowed=1 ;; esac
-    done
-    [ "$allowed" = 1 ] && continue
-    while IFS= read -r v; do
-      [ -n "$v" ] && fail "$v"
-    done < <(awk '
-      { t = $0; sub(/^[ \t]+/, "", t)
-        if (t ~ /^(\*|\/\/|\/\*)/) next
-        if ($0 ~ /(^|[^A-Za-z0-9_])external[ \t]+fun[ \t]/ || (FILENAME ~ /\.java$/ && $0 ~ /(^|[ \t])native[ \t]/))
-          print FILENAME ":" FNR ": declares a native method outside DmNative and the network classes (G-R6)"
-      }' "$f")
-  done < <(find "$ANDROID_TREE" -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
-             \( -path '*/src/main/*' -o -path '*/src/release/*' -o -path '*/src/gate/*' \) -print 2>/dev/null || true)
-fi
+# `native` method (Java) anywhere but the files of `common.sh`'s GHOST_JNI_NATIVE_FILES (DmNative.kt,
+# MlsNative.kt and the network classes' own files). Without it a second class in `:crypto-bridge` —
+# `DmDebug.exportSessionState` — needed no closed-list entry and was not `DmNative` for the reference
+# rule below, so `:messaging` could call it directly.
+while IFS= read -r v; do
+  [ -n "$v" ] && fail "$v"
+done < <(jni_stray_natives "$ANDROID_TREE" "DmNative, MlsNative and the network classes (G-R6)")
 
 # Only `:crypto-bridge`'s `main` and `gate` source sets reference `DmNative` (see the header). Code
 # lines only: the design's KDoc across `:messaging` names `DmNative` on purpose.
@@ -284,7 +256,7 @@ for LIBRARY in "$@"; do
     grep -oE 'Java_[A-Za-z0-9_]+' "$work/nm-out" | sort -u | foreign_jni > "$work/foreign-symbols"
     while read -r symbol; do
       [ -n "$symbol" ] || continue
-      fail "$LIBRARY exports the JNI symbol '$symbol', which is neither DmNative's closed list nor the network surface (G-R6)"
+      fail "$LIBRARY exports the JNI symbol '$symbol', which is not a class of the JNI surfaces (common.sh GHOST_JNI_CLASSES; G-R6)"
     done < "$work/foreign-symbols"
     # The test-vectors entry points: exactly their symbols in a test library, none in a shipped
     # one (§22.8.10 point 6, §22.37).

@@ -23,9 +23,9 @@ class SendDelayTest {
 
     private fun EngineWorld.set(sendDelay: SendDelay, listen: Boolean = true): Pair<NamespaceId, List<RelayId>> {
         val relays = relays(1, 2, 3)
-        // A DM namespace may not turn the delay off (Phase 9 design §13.3 item 8), so the override
-        // case runs on a channel namespace.
-        val consumer = if (sendDelay == SendDelay.OFF) Consumer.CHANNEL else Consumer.DM
+        // A DM namespace may not turn the delay off (Phase 9 design §13.3 item 8), nor a channel
+        // namespace (Phase 10 design §7.5 item 3), so the override case runs on a media namespace.
+        val consumer = if (sendDelay == SendDelay.OFF) Consumer.MEDIA else Consumer.DM
         val ns = namespace(1, relays, listen = listen, sendDelay = sendDelay, consumer = consumer)
         relays.forEach { capability(it, ns) }
         return Pair(ns, relays)

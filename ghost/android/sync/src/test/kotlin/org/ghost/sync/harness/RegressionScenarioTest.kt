@@ -36,4 +36,15 @@ class RegressionScenarioTest {
     fun sK_clockStepOffline() {
         for (mode in JournalMode.entries) Runner(ScenarioClockStepOffline(), mode).run(RunSpec())
     }
+
+    /**
+     * S-R/funding-flip (Phase 10 review of S1a): a change committed outside any lane item that empties a
+     * background session's work must end the session, as the production runner's wake-up does. The harness
+     * driver took an item only when a lane had a wake time, so the session stayed online for ever and no
+     * later session started: "no quiescence". Fault-free in both journal modes.
+     */
+    @Test
+    fun sR_fundingFlipEndsTheSessionItEmptied() {
+        for (mode in JournalMode.entries) Runner(ScenarioFundingFlip(), mode).run(RunSpec())
+    }
 }

@@ -47,10 +47,21 @@ internal class RegistrationLease(
  * registrations the owner keeps at the relays of its own namespaces, and their write-ahead lease.
  *
  * A row is due when it is pending, idle, its next attempt time has come, its relay is active, and a
- * usable, unexpired **write** capability of week c exists for the pair with `period_id ∈ {c, c + 1}`
+ * usable, unexpired capability of week c exists for the pair with `period_id ∈ {c, c + 1}`
  * — the very rule the relay judges the request by (§4.4 point 3), so client and relay agree without
  * either reading the other's clock. The capability's week comes from its declared expiry
  * ([Time.capabilityWeek]); a capability whose expiry is unknown names no week and makes no row due.
+ *
+ * **Which capability serves a row** (Phase 10 design §7.5 item 2). A namespace this client funds
+ * ([FundingStore]) is served by its **registration** capability (`relay_register_capability`) and by
+ * no other: the write slot of such a namespace holds the channel's DEPOSIT credential, a bearer
+ * credential that `RegisterKey` refuses. Any other namespace is served by its **write** capability as
+ * in Phase 9 — if its source is `redeem`: a LOCAL namespace installs its credentials itself, they are not
+ * redeemed capabilities, and presenting one at `RegisterKey` would only get it refused, which marks the
+ * credential rejected and parks the namespace's stores. (No Phase 9 step requests a registration for a
+ * LOCAL namespace; the rule is what keeps a funder that stopped funding, with rows still pending, from
+ * doing so.) The funded flag decides at each read of the table, so the flag and the capability can
+ * never disagree about which one serves a row.
  *
  * Every state change is guarded by the state it expects, so a result that arrives after the lease
  * was normalized (M1) changes nothing.
@@ -172,18 +183,38 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
         tx.sql.single("SELECT count(*) FROM relay_key_registration WHERE state = 'pending'") { it.int(0) } ?: 0
 
     /**
-     * A new write capability of (relay, namespace) re-arms the pair's pending rows (the M2 idea of
-     * §13.3 item 5): a row the relay refused with `WRONG_PERIOD`, or one whose capability had been
-     * refused, is due again on the new generation. Returns the number of rows moved.
+     * A new capability of (relay, namespace) that serves its registrations re-arms the pair's pending
+     * rows (the M2 idea of §13.3 item 5): a row the relay refused with `WRONG_PERIOD`, or one whose
+     * capability had been refused, is due again on the new generation. Returns the number of rows
+     * moved. Only a capability that serves the pair's rows ([kind] is the kind just installed) re-arms
+     * them: the write capability of an unfunded namespace and the registration capability of a funded
+     * one. Any other — a channel's DEPOSIT credential re-put under the same funder — leaves the rows'
+     * attempts and times alone, so a refreshed credential never moves a registration (nor, with it, a
+     * relay-visible call).
      */
-    fun rearmForCapability(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, now: Long): Int =
-        tx.sql.execUpdate(
+    fun rearmForCapability(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, kind: CapabilityKind, now: Long): Int {
+        if (!serves(tx, ns, kind)) return 0
+        return tx.sql.execUpdate(
             "UPDATE relay_key_registration SET attempts = 0, next_attempt_minute = ?1 " +
                 "WHERE relay_id = ?2 AND namespace_id = ?3 AND state = 'pending' AND inflight = 0",
             listOf(Time.floorMinute(now), relay.value, ns.raw),
         )
+    }
 
-    /** Pairs with pending registration work and a usable write capability (the work-lane snapshot, §13.3 item 5). */
+    /** Whether a capability of [kind] is the kind that serves the registration rows of [ns] (the rule of [SERVING]). */
+    private fun serves(tx: SyncTransaction, ns: NamespaceId, kind: CapabilityKind): Boolean {
+        val funded = tx.sql.single("SELECT 1 FROM sync_namespace_fund WHERE namespace_id = ?1", listOf(ns.raw)) { 1 } != null
+        return when (kind) {
+            CapabilityKind.REGISTER -> funded
+            CapabilityKind.WRITE -> !funded && tx.sql.single(
+                "SELECT 1 FROM sync_namespace WHERE namespace_id = ?1 AND capability_source = 'redeem'",
+                listOf(ns.raw),
+            ) { 1 } != null
+            CapabilityKind.READ -> false
+        }
+    }
+
+    /** Pairs with pending registration work and a usable capability that serves it (the work-lane snapshot, §13.3 item 5). */
     fun workPairs(tx: SyncTransaction, now: Long): List<Pair<RelayId, NamespaceId>> =
         due(tx, now, MAX_WORK_PAIRS, null, null).map { Pair(it.key.relayId, it.key.namespace) }.distinct()
 
@@ -205,14 +236,17 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
             ""
         }
         // The capability's expiry hour comes out with the row so the week rule is decided in Kotlin,
-        // where the grid of Time.week lives.
+        // where the grid of Time.week lives. `c` is the capability that serves the row ([SERVING]).
         return tx.sql.rows(
             "SELECT r.relay_id, r.namespace_id, r.period_id, r.kind, r.attempts, c.expires_hour FROM relay_key_registration r " +
                 "JOIN relay_directory rd ON rd.relay_id = r.relay_id " +
-                "JOIN relay_capability c ON c.relay_id = r.relay_id AND c.namespace_id = r.namespace_id AND c.kind = 'write' " +
+                "JOIN sync_namespace n ON n.namespace_id = r.namespace_id " +
+                "JOIN $SERVING c ON c.relay_id = r.relay_id AND c.namespace_id = r.namespace_id " +
+                "AND c.funded = EXISTS (SELECT 1 FROM sync_namespace_fund f WHERE f.namespace_id = r.namespace_id) " +
                 "WHERE r.state = 'pending' AND r.inflight = 0 " +
                 "AND (r.next_attempt_minute <= ?1 OR r.next_attempt_minute > ?1 + $DUE_CLAMP_SECONDS) " +
                 "AND rd.state = 'active' AND c.state = 'usable' AND c.expires_hour IS NOT NULL AND c.expires_hour > ?1 " +
+                "AND (c.funded = 1 OR n.capability_source = 'redeem') " +
                 pairFilter +
                 "ORDER BY r.period_id, r.relay_id, r.namespace_id, r.kind LIMIT ?2",
             args,
@@ -228,10 +262,14 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
     /**
      * Write-ahead lease (the store pattern of §3.3): attempts + 1, in flight, lease hour, next
      * attempt after [backoffSeconds]. The guard re-checks every planning condition except the week
-     * rule, including a usable, unexpired write capability that declares its week: the caller reads
-     * the due rows in an earlier transaction and makes one call per row, so another writer (or this
-     * pair's own previous answer) can refuse the capability in between. Null when the guard does not
-     * match; the row then stays pending and the next capability generation re-arms it.
+     * rule, including a usable, unexpired capability that declares its week and is the one that serves
+     * the pair (the registration capability of a funded namespace, the write capability of an unfunded
+     * namespace of source `redeem`; see [SERVING]): the caller reads the due rows in an earlier
+     * transaction and makes one call per row, so another writer (or this pair's own previous answer)
+     * can refuse the capability, or change the funding, in between. Null when the guard does not
+     * match; the row then stays pending and the next capability generation re-arms it. The lease's
+     * [RegistrationLease.capability] is the token of that capability, its kind says which table it
+     * came from, and the step refuses exactly that one on `unauthorized`.
      */
     fun lease(tx: SyncTransaction, key: RegistrationKey, now: Long, backoffSeconds: Long): RegistrationLease? {
         require(backoffSeconds in 0..Time.HOUR) { "backoff out of range" }
@@ -241,8 +279,10 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
                 "WHERE relay_id = ?3 AND namespace_id = ?4 AND period_id = ?5 AND kind = ?6 AND state = 'pending' AND inflight = 0 " +
                 "AND (next_attempt_minute <= ?7 OR next_attempt_minute > ?7 + $DUE_CLAMP_SECONDS) " +
                 "AND EXISTS (SELECT 1 FROM relay_directory rd WHERE rd.relay_id = ?3 AND rd.state = 'active') " +
-                "AND EXISTS (SELECT 1 FROM relay_capability c WHERE c.relay_id = ?3 AND c.namespace_id = ?4 " +
-                "AND c.kind = 'write' AND c.state = 'usable' AND c.expires_hour IS NOT NULL AND c.expires_hour > ?7)",
+                "AND EXISTS (SELECT 1 FROM $SERVING c WHERE c.relay_id = ?3 AND c.namespace_id = ?4 " +
+                "AND c.funded = EXISTS (SELECT 1 FROM sync_namespace_fund f WHERE f.namespace_id = ?4) " +
+                "AND c.state = 'usable' AND c.expires_hour IS NOT NULL AND c.expires_hour > ?7 " +
+                "AND (c.funded = 1 OR EXISTS (SELECT 1 FROM sync_namespace n WHERE n.namespace_id = ?4 AND n.capability_source = 'redeem')))",
             listOf(
                 Time.floorHour(now), Time.dueMinute(now, backoffSeconds), key.relayId.value, key.namespace.raw,
                 key.periodId, key.kind.dbCode, now,
@@ -255,9 +295,12 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
                 "WHERE r.relay_id = ?1 AND r.namespace_id = ?2 AND r.period_id = ?3 AND r.kind = ?4",
             listOf(key.relayId.value, key.namespace.raw, key.periodId, key.kind.dbCode),
         ) { Triple(it.blob(0), it.blob(1), it.string(2)) } ?: throw IllegalStateException("leased registration vanished")
-        // Unreachable: the guard above took the lease only over a usable, unexpired write capability.
-        val token = capabilities.usable(tx, key.relayId, key.namespace, CapabilityKind.WRITE, now)
-            ?: throw IllegalStateException("leased registration has no write capability")
+        // Unreachable: the guard above took the lease only over a usable, unexpired capability, the
+        // registration capability of a funded namespace and the write capability of any other.
+        val funded = tx.sql.single("SELECT 1 FROM sync_namespace_fund WHERE namespace_id = ?1", listOf(key.namespace.raw)) { 1 } != null
+        val kind = if (funded) CapabilityKind.REGISTER else CapabilityKind.WRITE
+        val token = capabilities.usable(tx, key.relayId, key.namespace, kind, now)
+            ?: throw IllegalStateException("leased registration has no capability to present")
         return RegistrationLease(key, OnionAddress.parse(row.third), row.first, row.second, token)
     }
 
@@ -310,5 +353,15 @@ internal class RegistrationStore(private val capabilities: CapabilityStore, priv
 
         /** Rows the due statement reads per row it may return, before the week rule of §4.4 point 3. */
         const val PLAN_OVERSAMPLE: Int = 4
+
+        /**
+         * The capabilities that can serve a registration row, with whether each is a registration
+         * capability (`funded` 1) or a write capability (0). A row joins the one whose `funded` equals
+         * the namespace's funding flag, so a funded namespace sees its registration capability only and
+         * any other its write capability only (Phase 10 design §7.5 item 2).
+         */
+        private const val SERVING =
+            "(SELECT relay_id, namespace_id, state, expires_hour, 1 AS funded FROM relay_register_capability " +
+                "UNION ALL SELECT relay_id, namespace_id, state, expires_hour, 0 AS funded FROM relay_capability WHERE kind = 'write')"
     }
 }

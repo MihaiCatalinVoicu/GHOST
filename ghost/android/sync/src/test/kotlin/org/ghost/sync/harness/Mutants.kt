@@ -32,7 +32,9 @@ internal class Mutation(
 
 /**
  * The mutant engines of design §8.8 (M1–M13) and §11.5 (M14 NoOwnTombstone, and the T19 mutants
- * M15 WorkFailureFeedsReadBreaker, M16 WorkPauseSuppressesLists, M17 ContinuationsUseEventWorkers).
+ * M15 WorkFailureFeedsReadBreaker, M16 WorkPauseSuppressesLists, M17 ContinuationsUseEventWorkers), and
+ * the two the Phase 10 review of S1a registered for its scenarios (M18 NoReofferDeferred, M19
+ * RegistrationPresentsTheWriteSlot).
  * Each is a classic bug, substituted as a step, a
  * statement rewrite (for the SQL-level ones) or a consumer change; `MutantDetectionTest` runs the
  * relevant scenario with each and expects the harness to report it.
@@ -266,6 +268,35 @@ internal object Mutants {
             return out
         }
     }))
+
+    /**
+     * M18 NoReofferDeferred (Phase 10 slice S1a, design §7.5 item 6; MU-50 of the notes, registered by the
+     * review): `Inbox.reofferDeferred` moves no row, so a channel blob that was deferred before its epoch
+     * settled stays set aside for the whole deferral (three days in S-P/reoffer-deferred) and the world does
+     * not reach quiescence.
+     */
+    val M18 = Mutation(rewrite = { _ ->
+        { sql, args ->
+            if (sql.startsWith("UPDATE inbox_blob SET offer_after_minute = 0 WHERE namespace_id = ?1 AND state = 'fetched'")) Pair("$sql AND 0", args) else Pair(sql, args)
+        }
+    })
+
+    /**
+     * M19 RegistrationPresentsTheWriteSlot (Phase 10 slice S1a, design §7.5 item 2; MU-51 of the notes,
+     * registered by the review): a funded namespace's registration is served with the token of the write
+     * slot, which holds the channel's bearer DEPOSIT credential, instead of the registration capability. The
+     * harness port refuses a bearer credential at `RegisterKey` (T21), so the rows stay pending for ever and
+     * the world does not reach quiescence.
+     */
+    val M19 = Mutation(rewrite = { _ ->
+        { sql, args ->
+            if (sql.startsWith("SELECT token, generation FROM relay_register_capability WHERE relay_id = ?1 AND namespace_id = ?2")) {
+                Pair(sql.replace("FROM relay_register_capability WHERE relay_id = ?1 AND namespace_id = ?2", "FROM relay_capability WHERE relay_id = ?1 AND namespace_id = ?2 AND kind = 'write'"), args)
+            } else {
+                Pair(sql, args)
+            }
+        }
+    })
 
     private class SharedTick(private val random: RandomSources, private val policy: TrafficPolicy) : PairSchedule(random, policy) {
         private val shared = PairKey(org.ghost.sync.api.RelayId(0), org.ghost.sync.api.NamespaceId(ByteArray(32)))

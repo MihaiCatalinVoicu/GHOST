@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Test-only host build of the DM JNI surface, so JVM tests call the real ratchet on Linux and Windows (Phase 9 design faza9-dm.md §2.3, §2.7, §15.1; evidence V-5), and the emulator's equivalence test library (§15.9 item 7)"
+description = "Test-only host build of the DM and channel JNI surfaces, so JVM tests call the real ratchet and the real OpenMLS on Linux and Windows (Phase 9 design faza9-dm.md §2.3, §2.7, §15.1; evidence V-5; Phase 10 design faza10-forum.md §10.1), and the emulator's equivalence test library (§15.9 item 7)"
 
 [lib]
 # A cdylib the JVM loads with `System.load` through `-Dghost.dm.native=<path>`. Never shipped: on a
@@ -36,4 +36,9 @@ provenance = ["ghost-client-dm/provenance"]
 #    so every JVM world opens its intros under PQ1. `DmPqSpyNativeTest` checks the loaded library
 #    carries it.
 ghost-client-dm = { path = "../dm", features = ["jni-bridge", "test-vectors", "pq-spy"] }
+# The channel surface (Phase 10 design §10.1, slice S2b): `MlsNative` exported from this library
+# too, so the JVM tests load one host library and call exactly the shipped channel code, plus its
+# one test-vectors entry point (`MlsVectors.run`, the JDK vector replay of §12.2), which G-M6 checks
+# this library exports and no shipped one does. G-M2 keeps `test-vectors` out of every shipped graph.
+ghost-client-mls = { path = "../mls", features = ["jni-bridge", "test-vectors"] }
 jni = { workspace = true }
