@@ -1,5 +1,7 @@
 # CI pe runnere self-hosted (ghost-runner)
 
+> **Istoric (ADR-58, 2026-10-04): CI-ul rulează local, nu prin GitHub Actions.** Acest document descrie runnerele self-hosted de până atunci; vezi `docs/CI_LOCAL.md`.
+
 **Decizia proprietarului (2026-09-16):** depozitul GHOST e privat, iar planul GitHub Free dă 2 000 de minute hosted pe lună; CI-ul GHOST cere ore pe fiecare push. Toate joburile din `.github/workflows/` rulează de aceea pe patru runnere self-hosted, pe laptopul proprietarului, într-o distribuție WSL2 dedicată. Acest document spune ce s-a instalat și unde, cum se operează runnerele și cum se anulează totul.
 
 > **CI-ul e consultativ, nu blochează nimic** (review-ul Fazei 9, GATES-4): planul GitHub Free nu oferă protecția ramurilor sau rulesets pentru un depozit privat (API-ul răspunde 403), nu se deschid pull request-uri și push-urile merg direct pe `main`. Un job roșu nu oprește un merge; merge-ul se judecă după rulările commit-ului împins (`gh run list`, citite după push) și după verificarea locală completă (`run-all.sh`, `self-test.sh`, testele Gradle la scara CI). Joburile doar pe `pull_request` (varianta redusă din `dm-emulator.yml`) nu rulează deci niciodată.

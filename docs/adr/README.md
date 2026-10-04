@@ -65,6 +65,7 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 | [ADR-45](ADR-45-media-namespace-transfer.md) | Transferul media: namespace-ul media al destinatarului, descărcare automată, banda media din sync |
 | [ADR-46](ADR-46-media-hygiene.md) | Igiena media: re-encodare obligatorie, decodare izolată, fără plaintext pe disc |
 | [ADR-47](ADR-47-ephemeral-view-once-media.md) | Media efemeră și „vezi o singură dată” (precizează ADR-27 punctele 10 și 12) |
+| [ADR-58](ADR-58-ci-local.md) | CI-ul rulează local, nu prin GitHub Actions (regulă oficială a proprietarului) |
 
 ## Retrase
 
