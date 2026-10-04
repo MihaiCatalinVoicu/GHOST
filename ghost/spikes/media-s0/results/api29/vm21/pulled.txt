@@ -1,0 +1,3 @@
+/data/data/com.android.documentsui/databases/lastAccess.db 20480 B
+/data/data/com.android.documentsui/databases/pickCountRecord.db 20480 B
+/data/system_ce/0/recent_tasks/13_task.xml 829 B

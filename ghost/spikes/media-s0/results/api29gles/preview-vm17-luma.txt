@@ -1,0 +1,13 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm23 match720p30.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1735933688800 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 match720p30_709.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1736886366700 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 vm17_35_DESIGN.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1737548123700 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 vm17_35_DESIGN_bt709.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1738329148000 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 vm17_35_709src.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1739035371900 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 vm17_29_DESIGN.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1739605046700 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 vm17_29_DESIGN_bt709.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1740334181000 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 vm17_29_709src.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=1741111472200 meanLuma=137 lumaMin=16 lumaMax=235 error=
+vm23 fileObserverEvents=1 inventoryChanges=0
+vm23 event: 0x8000 /data/user/0/org.ghost.spike.media/
+probe preview: OK
+

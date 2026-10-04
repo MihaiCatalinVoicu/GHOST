@@ -1,0 +1,7 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm23 match720p30.mp4 readerFormat=34 frame=true videoSize=1280x720 rot=0 image 1280x720 format=34 planes=0 ts=988223661900 error=
+vm23 rot90_1280x720p30.mp4 readerFormat=34 frame=true videoSize= image 1280x720 format=34 planes=0 ts=988898110700 error=
+vm23 port720x1280p24.mp4 readerFormat=34 frame=true videoSize= image 720x1280 format=34 planes=0 ts=989659914500 error=
+vm23 fileObserverEvents=0 inventoryChanges=0
+probe preview: OK
+

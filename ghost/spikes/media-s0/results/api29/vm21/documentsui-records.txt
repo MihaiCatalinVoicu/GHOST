@@ -1,0 +1,43 @@
+# V-M21 (API 29): DocumentsUI's per-package records after the pick (adb root, sqlite3 on the device), 2026-10-04 00:45
+## /data/data/com.android.documentsui/databases/lastAccess.db
+CREATE TABLE lastAccessed (package_name TEXT NOT NULL PRIMARY KEY,stack BLOB DEFAULT NULL,timestamp INTEGER,external INTEGER NOT NULL DEFAULT 0);
+row (package|timestamp ms|external|stack bytes): org.ghost.spike.media|1791063772224|0|520
+stack blob, printable runs (DocumentStack: root, then the documents of the path):
+  android:query-arg-display-name
+  android:query-arg-file-size-over
+  android:query-arg-last-modified-after
+  android:query-arg-mime-types
+  %com.android.providers.media.documents
+  images_root
+  Images
+  images_root
+  image/*
+  %com.android.providers.media.documents
+  images_root
+  vnd.android.document/directory
+  Images
+  %com.android.providers.media.documents
+  images_bucket:-1617409521
+  vnd.android.document/directory
+  Pictures
+## /data/data/com.android.documentsui/databases/pickCountRecord.db
+CREATE TABLE pickCountRecordTable (file_hash_id TEXT NOT NULL PRIMARY KEY,pick_count INTEGER);
+pickCountRecordTable: file_hash_id|pick_count
+pickCountRecordTable: 1436924597|2
+pickCountRecordTable: 1436924598|1
+## /data/data/com.android.documentsui/databases/search_history.db
+CREATE TABLE search_history (keyword TEXT NOT NULL, last_updated_time INTEGER);
+## file_hash_id check: Java String.hashCode() of the picked documents' URIs
+  1436924597  content://com.android.providers.media.documents/document/image%3A14
+  1436924598  content://com.android.providers.media.documents/document/image%3A15
+## shared storage: MediaProvider's thumbnail cache (world-visible external storage)
+total 32
+drwxrwxr-x 2 media_rw media_rw    4096 2026-10-04 00:42 .
+drwxrwxr-x 3 media_rw media_rw    4096 2026-10-04 00:42 ..
+-rw-rw-r-- 1 media_rw media_image 3812 2026-10-04 00:04 14.jpg
+-rw-rw-r-- 1 media_rw media_image 3799 2026-10-04 00:42 15.jpg
+/data/media/0/Pictures/.thumbnails/14.jpg 3812 B mtime=2026-10-04 00:04:25.710000000 +0300
+/data/media/0/Pictures/.thumbnails/15.jpg 3799 B mtime=2026-10-04 00:42:28.970000000 +0300
+Pictures__.thumbnails__15.jpg:
+        712 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+  summary: sof=SOF0 600x400 eoi=true trailing_after_eoi=0 fill_bytes=0 errors=[]

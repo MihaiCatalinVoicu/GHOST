@@ -1,0 +1,39 @@
+# Phase 11 slice S0 evidence tooling (design docs/design/faza11-media.md §17.1 rows S0a/S0b,
+# Appendix C.3 checks V-M1 … V-M24). Evidence: docs/design/faza11-s0-evidence.md.
+#
+# NOT product code and never linked into a shipped library. Like Phase 9's
+# ghost/client-core/dm-spike it has its own workspace root and lock file, so the product lock
+# (ghost/Cargo.lock), the client allowlist, the crypto pins and cargo-deny of the ghost workspace
+# are untouched. It also lives outside client-core/ and android/, so no ghost gate scans it.
+#
+# It holds a reference implementation of the media object of design §3 and §4 (derivations,
+# STREAM chunks, fragments, manifest, descriptor, key_env), the vector generator for
+# protocol/test-vectors/media_object.txt (committed here as vectors/media_object.txt), the
+# aead-stream 0.6.0 differential oracle (V-M8), and host tools that read what the Android probes
+# pulled off the emulators: an MP4/fMP4 box walker (V-M2, V-M3, V-M12, V-M17, V-M22, V-M24), a
+# JPEG marker walker with the §8.2 canonicaliser (V-M6) and a seal/open benchmark (V-M9, host and
+# emulator).
+[package]
+name = "ghost-media-spike"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.98"
+publish = false
+license = "LicenseRef-GHOST-Proprietary"
+description = "Phase 11 S0 evidence tooling (not shipped)"
+
+[workspace]
+
+[dependencies]
+# The pins of design §13.1 / Appendix C.1 (already in ghost/Cargo.lock for ghost-client-dm).
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+hkdf = "=0.13.0"
+hmac = "=0.13.0"
+sha2 = "=0.11.0"
+
+[dev-dependencies]
+# V-M8: the differential oracle of design §3.3 R-O2 / §16.3 (dev graph only).
+aead-stream = { version = "=0.6.0", features = ["alloc"] }
+
+[profile.release]
+debug = false

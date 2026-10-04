@@ -1,0 +1,5 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm19 unguarded (MC-M23: Application work in the isolated process): pid=-1 callback=timeout(none) bindMs=15258.7 result=null
+vm19 guarded control: pid=21693 callback=connected bindMs=2541.1
+probe unguarded: OK
+

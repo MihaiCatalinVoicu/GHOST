@@ -1,0 +1,6 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm21 picker launched at 1791063209262; waiting for the host to pick
+vm21 picked=true intent=android.intent.action.OPEN_DOCUMENT resultCode=-1 uri=content://com.android.providers.media.documents/document/image%3A14 bytes=4341 sha256=6922c84d8ddee558f59ebd7a18607caac7eb245b15dca840dfc4a9fbe74e2b06 flags=0x43
+vm11 read of the picked stream: fileObserverEvents=0 inventoryChanges=0
+probe pick: OK
+

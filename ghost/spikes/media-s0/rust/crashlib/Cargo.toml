@@ -1,0 +1,19 @@
+# V-M20 evidence tooling (not product code): a JNI library for the S0 probe's isolated service that
+# crashes with several registers pointing into a caller-supplied buffer, the way a decoder crashing
+# on a malformed image would crash with registers pointing into its pixel buffer. It answers what
+# a tombstone and a dropbox entry of `:mdec` can contain (design §10.3, L9-M8). Own workspace, no
+# dependencies; built with cargo-ndk for x86_64 only (the emulators).
+[package]
+name = "ghost-spike-crash"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "LicenseRef-GHOST-Proprietary"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+
+[profile.release]
+panic = "abort"

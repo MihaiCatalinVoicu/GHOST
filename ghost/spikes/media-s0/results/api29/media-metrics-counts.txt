@@ -1,0 +1,3 @@
+before: 158 lines, 143 codec/playback/audio lines, 0 session-id lines
+after-diag0: 161 lines, 146 codec/playback/audio lines, 0 session-id lines
+after-diag1: 164 lines, 149 codec/playback/audio lines, 0 session-id lines

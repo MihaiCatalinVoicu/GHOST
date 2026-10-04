@@ -1,0 +1,10 @@
+11:      E: application (line=9)
+15:        A: http://schemas.android.com/apk/res/android:memtagMode(0x01010624)=0
+16:          E: processes (line=14)
+17:              E: process (line=15)
+18:              E: process (line=16)
+19:                A: http://schemas.android.com/apk/res/android:process(0x01010011)=":mdec" (Raw: ":mdec")
+20:                A: http://schemas.android.com/apk/res/android:memtagMode(0x01010624)=2
+21:          E: service (line=21)
+24:            A: http://schemas.android.com/apk/res/android:process(0x01010011)=":mdec" (Raw: ":mdec")
+25:            A: http://schemas.android.com/apk/res/android:isolatedProcess(0x010103a9)=true

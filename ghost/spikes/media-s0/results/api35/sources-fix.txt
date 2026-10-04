@@ -1,0 +1,10 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+source quad_land.mp4: 101394 B sha256=08c6f790a8dddb8242e8e1b16b9b0a3a37fef93bd0ddb68e1dff4b626295265c 1280x720@30 4.0s vbitrate=3000000 audio=48000Hz/2ch rotation=0 content=quad canaries=false location=false videoSamples=120 audioSamples=187 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source quad_rot90.mp4: 102319 B sha256=63f74a1a618d91e95f1807f652ee03de9e204042d35f93265fa63f56a7b94de4 1280x720@30 4.0s vbitrate=3000000 audio=48000Hz/2ch rotation=90 content=quad canaries=false location=false videoSamples=120 audioSamples=187 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source quad_rot180.mp4: 105476 B sha256=4cf5b512d44e41f45a53e5eacdaae6aa4d8bc90be078af90bdd037cc5f26f48e 1280x720@30 4.0s vbitrate=3000000 audio=48000Hz/2ch rotation=180 content=quad canaries=false location=false videoSamples=120 audioSamples=187 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source quad_rot270.mp4: 102055 B sha256=e35e064a330867cb06ab0f93c11d62897900487ca1b3a5beb536a955f18b6879 1280x720@30 4.0s vbitrate=3000000 audio=48000Hz/2ch rotation=270 content=quad canaries=false location=false videoSamples=120 audioSamples=187 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source quad_port.mp4: 99716 B sha256=2f5ca32096e7e6950da9badc8dbb6cce972748f91a9fcf96861303e6cce48a13 720x1280@30 4.0s vbitrate=3000000 audio=48000Hz/2ch rotation=0 content=quad canaries=false location=false videoSamples=120 audioSamples=187 encoders=c2.android.avc.encoder+c2.android.aac.encoder
+source quad_noaudio.mp4: 37564 B sha256=42075e8738353a47a32742740634a6c2030c830f8dcdc7f373b902398b4d2ade 1280x720@30 4.0s vbitrate=3000000 audio=48000Hz/0ch rotation=0 content=quad canaries=false location=false videoSamples=120 audioSamples=0 encoders=c2.android.avc.encoder+no audio
+source clip.webm: 32040 B sha256=32a907338d6842d78493ae9f4c7822b2f35b8b2d3ed9462312954eddfc4cd91b 640x360@30 3.0s VP8 in WebM (Matroska), no audio, encoder=c2.android.vp8.encoder
+probe sources: OK
+

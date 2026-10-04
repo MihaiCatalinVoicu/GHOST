@@ -1,0 +1,11 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm17 luma match720p30.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=0 lumaMax=255 lumaMean=124 outputFormat colorStandard=2 colorRange=1 colorTransfer=3
+vm17 luma match720p30_709.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=0 lumaMax=255 lumaMean=124 outputFormat colorStandard=- colorRange=2 colorTransfer=-
+vm17 luma vm17_35_DESIGN.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=0 lumaMax=255 lumaMean=125 outputFormat colorStandard=2 colorRange=1 colorTransfer=3
+vm17 luma vm17_35_DESIGN_bt709.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=10 lumaMax=242 lumaMean=125 outputFormat colorStandard=1 colorRange=2 colorTransfer=3
+vm17 luma vm17_35_709src.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=10 lumaMax=242 lumaMean=125 outputFormat colorStandard=1 colorRange=2 colorTransfer=3
+vm17 luma vm17_29_DESIGN.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=13 lumaMax=240 lumaMean=123 outputFormat colorStandard=2 colorRange=2 colorTransfer=3
+vm17 luma vm17_29_DESIGN_bt709.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=13 lumaMax=240 lumaMean=123 outputFormat colorStandard=1 colorRange=2 colorTransfer=3
+vm17 luma vm17_29_709src.mp4 decoder=OMX.google.h264.decoder 1280x720 lumaMin=13 lumaMax=240 lumaMean=123 outputFormat colorStandard=1 colorRange=2 colorTransfer=3
+probe luma: OK
+

@@ -1,0 +1,5 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm9 JCA provider=AndroidOpenSSL 1.0
+vm9 JCA ChaCha20-Poly1305 sealed 201 chunks (52687728 B) in 0.337 s = 156.3 MB/s; appVmHWM=233632kB
+probe bench: OK
+

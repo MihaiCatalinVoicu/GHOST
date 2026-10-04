@@ -1,0 +1,6 @@
+== /data/data/com.android.providers.media.module/databases/external.db
+files|1000000018|/storage/emulated/0/Pictures/ghost_s0_pick.jpg|4341|14336|1000000009|1790316585|1790311569|image/jpeg|ghost_s0_pick||ghost_s0_pick.jpg||90|||1790310673000||-1617409521|Pictures||||||||||||||||||400×600||||||1||0|400|600|||||||0|0|||0||0|||||||Pictures/|external_primary||||||||||||0|||||||12|12||0||3|0||0|0
+files|1000000019|/storage/emulated/0/Pictures/ghost_s0_pick_021044.jpg|4341|14336|1000000009|1791069050|1791069050|image/jpeg|ghost_s0_pick_021044||ghost_s0_pick_021044.jpg||90|||1790310673000||-1617409521|Pictures||||||||||||||||||400×600||||||1||0|400|600|||||||0|0|||0||0|||||||Pictures/|external_primary||||||||||||0|||||||21|21||0||3|0||0|0
+images||||||||400×600||90|||600|0|Pictures|||external_primary|1790311569||||ghost_s0_pick.jpg||1790310673000|image/jpeg|||1000000018||||/storage/emulated/0/Pictures/ghost_s0_pick.jpg|4341|||ghost_s0_pick|400||0|0||||12|0|12|0|1790316585||||||-1617409521|Pictures/|3
+images||||||||400×600||90|||600|0|Pictures|||external_primary|1791069050||||ghost_s0_pick_021044.jpg||1790310673000|image/jpeg|||1000000019||||/storage/emulated/0/Pictures/ghost_s0_pick_021044.jpg|4341|||ghost_s0_pick_021044|400||0|0||||21|0|21|0|1791069050||||||-1617409521|Pictures/|3
+== /data/data/com.android.providers.media.module/databases/internal.db

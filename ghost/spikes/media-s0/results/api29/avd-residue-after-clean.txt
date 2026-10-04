@@ -1,0 +1,27 @@
+## removing what S0 created
+uninstall org.ghost.spike.media: Success
+uninstall org.ghost.spike.mte: Failure [DELETE_FAILED_INTERNAL_ERROR]
+removed /data/tombstones/tombstone_00
+removed /data/system/dropbox/system_server_wtf@1791082447632.txt
+
+# 2026-10-04T02:54:20Z emulator-29 Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys uptime=79.59 270.61
+## packages (S0 and the product's suites)
+package:org.ghost.app
+package:org.ghost.app.test
+package:org.ghost.crypto.bridge.test
+package:org.ghost.messaging.test
+## /data/tombstones (S0 = names org.ghost.spike or carries the S0 canary)
+/data/tombstones/tombstone_01 602739 B mode=640 mtime=2026-10-04 05:53:18.661264230 +0300 s0=no
+## /data/system/dropbox entries that name org.ghost.spike or carry an S0 canary
+## shared storage: pictures, thumbnails, transform placeholders
+## MediaStore image rows
+No result found.
+## MediaProvider caches (photo picker's Glide cache) and picker database
+## DocumentsUI records (API 29)
+## usage stats files naming org.ghost.spike
+## /data/local/tmp
+total 3844
+drwxrwx--x 3 shell shell    4096 2026-10-04 05:54 .
+drwxr-x--x 4 root  root     4096 2026-09-24 17:06 ..
+-rwxr-xr-x 1 shell shell 3906728 2026-09-25 08:12 device_probe
+drwxrwxrwx 2 shell shell    4096 2026-10-03 17:12 mls-probe

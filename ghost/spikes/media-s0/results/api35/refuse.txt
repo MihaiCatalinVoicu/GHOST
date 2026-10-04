@@ -1,0 +1,23 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+note: ChannelMixingMatrix.createForConstantGain(3, 2) unsupported (Default channel mixing coefficients for 3->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(4, 2) unsupported (Default channel mixing coefficients for 4->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(5, 2) unsupported (Default channel mixing coefficients for 5->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(6, 2) unsupported (Default channel mixing coefficients for 6->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(7, 2) unsupported (Default channel mixing coefficients for 7->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(8, 2) unsupported (Default channel mixing coefficients for 8->2 are not yet implemented.); explicit matrix supplied
+refuse alpha.png extractors=Mp4Extractor-only ok=false error=ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE:Asset cause=[ExoPlaybackException: Source error <- ContentDataSourceException: null] videoEncoder=null streamBytes=0
+refuse alpha.png extractors=DefaultExtractorsFactory ok=false error=ERROR_CODE_FAILED_RUNTIME_CHECK:Asset cause=[IllegalStateException: The asset loader has no audio or video track to output.] videoEncoder=null streamBytes=0
+refuse photo.heic extractors=Mp4Extractor-only ok=false error=invalid cause=[ExoPlaybackException: Source error <- ParserException: Loading finished before preparation is complete. {contentIsMalformed=true, dataType=1}] videoEncoder=null streamBytes=0
+refuse photo.heic extractors=DefaultExtractorsFactory ok=false error=ERROR_CODE_FAILED_RUNTIME_CHECK:Asset cause=[IllegalStateException: The asset loader has no audio or video track to output.] videoEncoder=null streamBytes=0
+refuse photo.avif extractors=Mp4Extractor-only ok=false error=invalid cause=[ExoPlaybackException: Source error <- ParserException: Loading finished before preparation is complete. {contentIsMalformed=true, dataType=1}] videoEncoder=null streamBytes=0
+refuse photo.avif extractors=DefaultExtractorsFactory ok=false error=ERROR_CODE_FAILED_RUNTIME_CHECK:Asset cause=[IllegalStateException: The asset loader has no audio or video track to output.] videoEncoder=null streamBytes=0
+refuse clip.webm extractors=Mp4Extractor-only ok=false error=ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE:Asset cause=[ExoPlaybackException: Source error <- ContentDataSourceException: null] videoEncoder=null streamBytes=0
+refuse clip.webm extractors=DefaultExtractorsFactory ok=true error=null:null cause=[] videoEncoder=c2.android.avc.encoder streamBytes=243680
+refuse orient1.jpg extractors=Mp4Extractor-only ok=false error=ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE:Asset cause=[ExoPlaybackException: Source error <- ContentDataSourceException: null] videoEncoder=null streamBytes=0
+refuse orient1.jpg extractors=DefaultExtractorsFactory ok=false error=ERROR_CODE_FAILED_RUNTIME_CHECK:Asset cause=[IllegalStateException: The asset loader has no audio or video track to output. Try setting an image duration on input image MediaItems.] videoEncoder=null streamBytes=0
+refuse photo.webp extractors=Mp4Extractor-only ok=false error=ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE:Asset cause=[ExoPlaybackException: Source error <- ContentDataSourceException: null] videoEncoder=null streamBytes=0
+refuse photo.webp extractors=DefaultExtractorsFactory ok=false error=ERROR_CODE_FAILED_RUNTIME_CHECK:Asset cause=[IllegalStateException: The asset loader has no audio or video track to output.] videoEncoder=null streamBytes=0
+refuse quad_land.mp4 extractors=Mp4Extractor-only ok=true error=null:null cause=[] videoEncoder=c2.android.avc.encoder streamBytes=128105
+refuse quad_land.mp4 extractors=DefaultExtractorsFactory ok=true error=null:null cause=[] videoEncoder=c2.android.avc.encoder streamBytes=128105
+probe refuse: OK
+

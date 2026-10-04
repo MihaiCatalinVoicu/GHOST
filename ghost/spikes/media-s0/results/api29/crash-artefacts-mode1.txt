@@ -1,0 +1,13 @@
+# V-M20 (API 29, mode 1): files under /data/tombstones and /data/system/dropbox newer than the crash
+/data/tombstones/tombstone_01: 491293 B raw=0 gunzipped=0
+/data/system/dropbox/data_app_native_crash@1791058759746.txt.gz: 2256 B raw=0 gunzipped=0
+/data/system/dropbox/SYSTEM_TOMBSTONE@1791058759832.txt.gz: 14648 B raw=0 gunzipped=0
+# adb bugreport (taken after the crash, no root needed)
+bugreport: 1965827 B, 151 entries
+  entries naming tombstones or dropbox:
+    FS/data/tombstones/tombstone_01
+    FS/data/tombstones/tombstone_00
+# the text forms (API 29 writes no .pb): lines whose hex dump ASCII column shows 'GHOST-S0-PLAINTE' (the canary is split across 16-byte lines, so the raw search above finds 0)
+tombstone_01 (pulled): 14 lines; Timestamp: 2026-10-03 23:19:19+0300
+SYSTEM_TOMBSTONE (dropbox, gunzipped): 14 lines
+bug report FS/data/tombstones/tombstone_01: 14 lines

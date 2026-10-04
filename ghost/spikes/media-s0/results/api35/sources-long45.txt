@@ -1,0 +1,4 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+source long45_smooth24.mp4: 22026756 B sha256=7f2130e926f9177274cd0b3e7ad856f7a8bd1bfb95d8727b6ccfbf13c12580f1 1280x720@24 45.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=smooth canaries=false location=false videoSamples=1080 audioSamples=2109 encoders=c2.android.avc.encoder+c2.android.aac.encoder genMs=51590
+probe sources: OK
+

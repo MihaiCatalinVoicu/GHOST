@@ -1,0 +1,16 @@
+# API 29, 2026-10-04 00:48: the YUV player run of the seek probe (debuggable APK, JIT) aborted; system log excerpt
+10-04 00:48:23.262 elf_debug_reader.h:64] Check failed: header_->e_ident[0] == 0x7f (header_->e_ident[0]=›, 0x7f=127) 
+10-04 00:48:23.338 runtime.cc:630] Runtime aborting...
+10-04 00:48:23.338 runtime.cc:630]   native: #05 pc 0000000000552eb9  /apex/com.android.runtime/lib64/libart.so (art::Runtime::Abort(char const*)+1529)
+10-04 00:48:23.338 runtime.cc:630]   native: #06 pc 000000000000c873  /system/lib64/libbase.so (android::base::LogMessage::~LogMessage()+611)
+10-04 00:48:23.338 runtime.cc:630]   native: #07 pc 00000000000f746b  /apex/com.android.runtime/lib64/libart-compiler.so (art::ElfDebugReader<art::ElfTypes64>::ElfDebugReader(art::ArrayRef<unsigned char const>)+827)
+10-04 00:48:23.339 runtime.cc:630]   native: #08 pc 00000000000ea849  /apex/com.android.runtime/lib64/libart-compiler.so (art::debug::PackElfFileForJIT(art::InstructionSet, art::InstructionSetFeatures const*, std::__1::vector<art::ArrayRef<unsigned char const>, std::__1::allocator<art::ArrayRef<unsigned char const>>>&, std::__1::vector<void const*, std::__1::allocator<void const*>>&, unsigned long*)+4633)
+10-04 00:48:23.339 runtime.cc:630]   native: #09 pc 00000000003a44da  /apex/com.android.runtime/lib64/libart.so (art::AddNativeDebugInfoForJit(art::Thread*, void const*, std::__1::vector<unsigned char, std::__1::allocator<unsigned char>> const&, std::__1::vector<unsigned char, std::__1::allocator<unsigned char>> (*)(art::InstructionSet, art::InstructionSetFeatures const*, std::__1::vector<art::ArrayRef<unsigned char const>, std::__1::allocator<art::ArrayRef<unsigned char const>>>&, std::__1::vector<void const*, std::__1::allocator<void const*>>&, unsigned long*), art::InstructionSet, art::InstructionSetFeatures const*)+1482)
+10-04 00:48:23.339 runtime.cc:630]   native: #10 pc 00000000001e81dd  /apex/com.android.runtime/lib64/libart-compiler.so (art::OptimizingCompiler::GenerateJitDebugInfo(art::ArtMethod*, art::debug::MethodDebugInfo const&)+173)
+10-04 00:48:23.339 runtime.cc:630]   native: #11 pc 00000000001e7db8  /apex/com.android.runtime/lib64/libart-compiler.so (art::OptimizingCompiler::JitCompile(art::Thread*, art::jit::JitCodeCache*, art::ArtMethod*, bool, bool, art::jit::JitLogger*)+3480)
+10-04 00:48:23.339 runtime.cc:630]   native: #12 pc 000000000013900f  /apex/com.android.runtime/lib64/libart-compiler.so (art::jit::JitCompiler::CompileMethod(art::Thread*, art::ArtMethod*, bool, bool)+623)
+10-04 00:48:23.339 runtime.cc:630]   native: #13 pc 00000000003a99a5  /apex/com.android.runtime/lib64/libart.so (art::jit::Jit::CompileMethod(art::ArtMethod*, art::Thread*, bool, bool)+533)
+10-04 00:48:23.339 runtime.cc:630]   native: #14 pc 00000000003ad26a  /apex/com.android.runtime/lib64/libart.so (art::jit::JitCompileTask::Run(art::Thread*)+586)
+10-04 00:48:23.339 runtime.cc:630]   native: #05 pc 0000000000098fe7  /apex/com.android.runtime/lib64/bionic/libc.so (__start_thread+55)
+10-04 00:48:23.340 runtime.cc:630]   native: #05 pc 0000000000098fe7  /apex/com.android.runtime/lib64/bionic/libc.so (__start_thread+55)
+# after 'cmd package compile -m speed -f org.ghost.spike.media' the same run completed: seek-player-yuv.txt

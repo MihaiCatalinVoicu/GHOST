@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="mteprobe" android:memtagMode="off">
+        <processes>
+            <process />
+            <process android:process=":mdec" android:memtagMode="sync" />
+        </processes>
+        <service android:name=".Iso" android:process=":mdec" android:isolatedProcess="true" android:exported="false" />
+    </application>
+</manifest>

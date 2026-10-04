@@ -1,0 +1,91 @@
+# R8-shrunk release of android/r8probe flavour 'media' (Media3 1.11.1 used as design §8.3/§10.2 use it; proguard-android-optimize, minify + shrinkResources)
+# kept = the original class name appears in R8's mapping.txt (obfuscated names are not searchable in the dex)
+## G-M1 sink classes (design §10.3 / §16.1) kept or removed:
+removed androidx.media3.datasource.cache.SimpleCache
+removed androidx.media3.datasource.cache.CacheDataSource
+removed androidx.media3.datasource.cache.CacheDataSink
+removed androidx.media3.datasource.cache.CacheWriter
+removed androidx.media3.exoplayer.offline.DownloadManager
+removed androidx.media3.exoplayer.offline.DownloadService
+removed androidx.media3.exoplayer.offline.DownloadHelper
+KEPT    androidx.media3.datasource.DefaultDataSource
+KEPT    androidx.media3.datasource.DefaultHttpDataSource
+removed androidx.media3.datasource.HttpEngineDataSource
+KEPT    androidx.media3.datasource.UdpDataSource
+removed androidx.media3.datasource.AesCipherDataSource
+removed androidx.media3.datasource.AesCipherDataSink
+KEPT    androidx.media3.datasource.FileDataSource
+KEPT    androidx.media3.datasource.ContentDataSource
+KEPT    androidx.media3.datasource.AssetDataSource
+KEPT    androidx.media3.datasource.RawResourceDataSource
+removed androidx.media3.datasource.DataSourceInputStream
+KEPT    androidx.media3.transformer.InAppMp4Muxer
+removed androidx.media3.transformer.InAppFragmentedMp4Muxer
+KEPT    androidx.media3.transformer.DefaultMuxer
+KEPT    androidx.media3.extractor.mp4.Mp4Extractor
+KEPT    androidx.media3.extractor.mp4.FragmentedMp4Extractor
+KEPT    androidx.media3.extractor.mkv.MatroskaExtractor
+removed androidx.media3.extractor.jpeg.JpegExtractor
+KEPT    androidx.media3.extractor.jpeg.JpegMotionPhotoExtractor
+removed androidx.media3.extractor.png.PngExtractor
+removed androidx.media3.extractor.webp.WebpExtractor
+KEPT    androidx.media3.extractor.heif.HeifExtractor
+KEPT    androidx.media3.extractor.avif.AvifExtractor
+KEPT    androidx.media3.exoplayer.image.BitmapFactoryImageDecoder
+KEPT    androidx.media3.common.util.BitmapLoader
+KEPT    androidx.media3.datasource.DataSourceBitmapLoader
+KEPT    androidx.exifinterface.media.ExifInterface
+KEPT    androidx.media3.effect.DefaultVideoFrameProcessor
+removed androidx.media3.transformer.FrameExtractor
+removed androidx.media3.exoplayer.util.EventLogger
+KEPT    androidx.media3.exoplayer.analytics.MediaMetricsListener
+KEPT    androidx.media3.exoplayer.analytics.DefaultAnalyticsCollector
+
+## kept classes per package (top-level classes only, no inner classes)
+     40 com.google.common.collect
+     40 androidx.media3.transformer
+     33 androidx.media3.common
+     31 androidx.media3.exoplayer
+     31 androidx.media3.effect
+     30 androidx.media3.exoplayer.source
+     28 androidx.media3.extractor
+     27 androidx.media3.common.util
+     25 androidx.media3.extractor.ts
+     18 androidx.media3.exoplayer.audio
+     15 androidx.media3.datasource
+     14 androidx.media3.extractor.mp4
+     14 androidx.media3.extractor.metadata.id3
+     12 androidx.media3.muxer
+     12 androidx.media3.exoplayer.video
+     11 com.google.common.util.concurrent
+     11 androidx.media3.common.audio
+     10 androidx.media3.exoplayer.mediacodec
+      9 androidx.media3.extractor.text
+      9 androidx.media3.extractor.ogg
+      9 androidx.media3.extractor.mp3
+      8 androidx.media3.extractor.avi
+      7 androidx.media3.exoplayer.trackselection
+      7 androidx.media3.decoder
+      7 androidx.media3.common.text
+      6 com.google.common.primitives
+      6 com.google.common.base
+      6 androidx.media3.extractor.text.ttml
+      6 androidx.media3.exoplayer.drm
+      6 androidx.media3.container
+      5 androidx.media3.extractor.text.webvtt
+      5 androidx.media3.extractor.metadata
+      5 androidx.media3.extractor.flv
+      5 androidx.media3.exoplayer.text
+      5 androidx.media3.exoplayer.analytics
+      4 kotlin.collections
+      4 androidx.media3.extractor.text.cea
+      4 androidx.media3.extractor.metadata.scte35
+      4 androidx.media3.exoplayer.upstream
+      4 androidx.media3.exoplayer.image
+
+## totals
+mapping top-level classes: 577
+mapping all classes: 1189
+base APK: 16454 B; classes.dex 1224 B; native libs: 0
+media APK: 1263831 B; classes.dex 1223200 B; native libs: 0
+dexdump class count: 1092

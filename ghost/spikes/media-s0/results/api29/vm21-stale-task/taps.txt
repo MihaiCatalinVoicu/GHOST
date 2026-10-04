@@ -1,0 +1,2 @@
+tap attempt 1 at bounds="[187,437][322,488]"
+tap attempt 2 at bounds="[64,400][366,702]"

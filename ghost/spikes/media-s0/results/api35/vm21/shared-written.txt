@@ -1,0 +1,2 @@
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media/1000000019.jpg 4341 B mtime=2026-10-04 02:11:33.979286988 +0300
+/data/media/0/Pictures/.thumbnails/1000000019.jpg 4283 B mtime=2026-10-04 02:11:13.715287400 +0300

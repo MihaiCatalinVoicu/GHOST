@@ -1,0 +1,16 @@
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\norecents-9.jpg : 1080x1920 sampled=129600 magenta=49219 lime=49319 cyan=8118 black=12690
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\norecents-9_reduced.jpg : 540x960 sampled=32400 magenta=11960 lime=12095 cyan=2050 black=3105
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\plain-7.jpg : 1080x1920 sampled=129600 magenta=49219 lime=49319 cyan=8118 black=12690
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\plain-7_reduced.jpg : 540x960 sampled=32400 magenta=11960 lime=12095 cyan=2050 black=3105
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure-8.jpg : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=12690
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure-8_reduced.jpg : 540x960 sampled=32400 magenta=0 lime=0 cyan=0 black=3105
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure_norecents-10.jpg : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=12690
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure_norecents-10_reduced.jpg : 540x960 sampled=32400 magenta=0 lime=0 cyan=0 black=3105
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\norecents-recents.png : 1080x1920 sampled=129600 magenta=21902 lime=22014 cyan=3685 black=0
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\norecents-screen.png : 1080x1920 sampled=129600 magenta=49319 lime=49360 cyan=8118 black=12252
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\plain-recents.png : 1080x1920 sampled=129600 magenta=21902 lime=22014 cyan=3685 black=0
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\plain-screen.png : 1080x1920 sampled=129600 magenta=49319 lime=49360 cyan=8118 black=12254
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure-screen.png : not an image (Exception calling "FromFile" with "1" argument(s): "An object could not be created, possibly due to a lack of memory, but most likely due to invalid input.")
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure_norecents-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+D:\Forum\.claude\worktrees\p11-s0\ghost\spikes\media-s0\results\api29\vm20\secure_norecents-screen.png : not an image (Exception calling "FromFile" with "1" argument(s): "An object could not be created, possibly due to a lack of memory, but most likely due to invalid input.")

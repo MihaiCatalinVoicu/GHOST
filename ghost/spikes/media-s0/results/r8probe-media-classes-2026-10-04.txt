@@ -1,0 +1,102 @@
+# R8-shrunk release of android/r8probe flavour 'media', rebuilt 2026-10-04 in the configuration the review asked for (review H2/I2):
+# the player with a renderers factory of one MediaCodecVideoRenderer and one MediaCodecAudioRenderer (G-M3) and a FragmentedMp4Extractor-only
+# extractors factory; Transformer with a ContentDataSource + Mp4Extractor-only asset loader, a refusing BitmapLoader, the sequence's forced
+# silent audio track, VideoEncoderSettings with setEncodingProfileLevel(Baseline, 3.1), setMaxBFrames(0), setiFrameIntervalSeconds(1).
+# Built offline with ./gradlew --offline --no-daemon :r8probe:assembleBaseRelease :r8probe:assembleMediaRelease (AGP 9.4.0, R8 of AGP, proguard-android-optimize).
+# Criteria: KEPT = named in R8's mapping.txt; removed = a whole-class line in R8's usage.txt; absent = in no jar of the resolved
+# mediaReleaseRuntimeClasspath (r8probe-media-runtime-classpath.txt); 'not in mapping, not in usage.txt' = merged into another class by R8.
+apk base=16454 B, media=1218631 B (2026-09-25 probe with DefaultRenderersFactory and the default extractors: 1263831 B)
+classes.dex=1178000 B, class_defs_size=1048 (2026-09-25: 1223200 B, 1092); no lib/ entry (no .so)
+# mapping.txt: 1146 kept classes (546 top-level); usage.txt: 5621 classes removed whole, 1517 kept with members removed
+removed androidx.media3.datasource.cache.SimpleCache
+removed androidx.media3.datasource.cache.CacheDataSource
+removed androidx.media3.datasource.cache.CacheDataSink
+removed androidx.media3.datasource.cache.CacheWriter
+removed androidx.media3.exoplayer.offline.DownloadManager
+removed androidx.media3.exoplayer.offline.DownloadService
+removed androidx.media3.exoplayer.offline.DownloadHelper
+KEPT    androidx.media3.datasource.DefaultDataSource
+KEPT    androidx.media3.datasource.DefaultHttpDataSource
+removed androidx.media3.datasource.HttpEngineDataSource
+KEPT    androidx.media3.datasource.UdpDataSource
+removed androidx.media3.datasource.AesCipherDataSource
+removed androidx.media3.datasource.AesCipherDataSink
+KEPT    androidx.media3.datasource.FileDataSource
+KEPT    androidx.media3.datasource.ContentDataSource
+KEPT    androidx.media3.datasource.AssetDataSource
+KEPT    androidx.media3.datasource.RawResourceDataSource
+removed androidx.media3.datasource.DataSourceInputStream
+KEPT    androidx.media3.transformer.InAppMp4Muxer
+removed androidx.media3.transformer.InAppFragmentedMp4Muxer
+KEPT    androidx.media3.transformer.DefaultMuxer
+KEPT    androidx.media3.extractor.DefaultExtractorsFactory
+KEPT    androidx.media3.extractor.mp4.Mp4Extractor
+KEPT    androidx.media3.extractor.mp4.FragmentedMp4Extractor
+KEPT    androidx.media3.extractor.mkv.MatroskaExtractor
+KEPT    androidx.media3.extractor.avi.AviExtractor
+KEPT    androidx.media3.extractor.flv.FlvExtractor
+KEPT    androidx.media3.extractor.ogg.OggExtractor
+KEPT    androidx.media3.extractor.ts.TsExtractor
+KEPT    androidx.media3.extractor.ts.PsExtractor
+KEPT    androidx.media3.extractor.mp3.Mp3Extractor
+KEPT    androidx.media3.extractor.flac.FlacExtractor
+KEPT    androidx.media3.extractor.amr.AmrExtractor
+KEPT    androidx.media3.extractor.wav.WavExtractor
+not in mapping, not in usage.txt (merged or inlined) androidx.media3.extractor.jpeg.JpegExtractor
+KEPT    androidx.media3.extractor.jpeg.JpegMotionPhotoExtractor
+not in mapping, not in usage.txt (merged or inlined) androidx.media3.extractor.png.PngExtractor
+not in mapping, not in usage.txt (merged or inlined) androidx.media3.extractor.webp.WebpExtractor
+KEPT    androidx.media3.extractor.bmp.BmpExtractor
+KEPT    androidx.media3.extractor.heif.HeifExtractor
+KEPT    androidx.media3.extractor.avif.AvifExtractor
+removed androidx.media3.exoplayer.DefaultRenderersFactory
+removed androidx.media3.exoplayer.image.ImageRenderer
+removed androidx.media3.exoplayer.image.BitmapFactoryImageDecoder
+removed androidx.media3.exoplayer.text.TextRenderer
+removed androidx.media3.exoplayer.metadata.MetadataRenderer
+KEPT    androidx.media3.common.util.BitmapLoader
+KEPT    androidx.media3.datasource.DataSourceBitmapLoader
+KEPT    androidx.exifinterface.media.ExifInterface
+KEPT    androidx.media3.effect.DefaultVideoFrameProcessor
+absent (in no input jar) androidx.media3.transformer.FrameExtractor
+absent (in no input jar) androidx.media3.inspector.frame.FrameExtractor
+removed androidx.media3.exoplayer.util.EventLogger
+KEPT    androidx.media3.exoplayer.analytics.MediaMetricsListener
+KEPT    androidx.media3.exoplayer.analytics.DefaultAnalyticsCollector
+KEPT    androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+removed androidx.media3.database.StandaloneDatabaseProvider
+KEPT    androidx.media3.transformer.ImageAssetLoader
+## kept top-level classes per package (largest 25)
+    40 androidx.media3.transformer
+    39 com.google.common.collect
+    33 androidx.media3.common
+    31 androidx.media3.effect
+    30 androidx.media3.exoplayer
+    30 androidx.media3.exoplayer.source
+    28 androidx.media3.common.util
+    28 androidx.media3.extractor
+    25 androidx.media3.extractor.ts
+    18 androidx.media3.exoplayer.audio
+    15 androidx.media3.datasource
+    14 androidx.media3.extractor.mp4
+    13 androidx.media3.extractor.metadata.id3
+    12 androidx.media3.exoplayer.video
+    11 androidx.media3.common.audio
+    11 androidx.media3.exoplayer.mediacodec
+    11 androidx.media3.muxer
+    11 com.google.common.util.concurrent
+    10 androidx.media3.extractor.mp3
+     9 androidx.media3.extractor.ogg
+     8 androidx.media3.extractor.avi
+     7 androidx.media3.common.text
+     7 androidx.media3.container
+     7 androidx.media3.exoplayer.trackselection
+     6 androidx.media3.exoplayer.drm
+## com.google.common: 171 kept classes (67 top-level); androidx.exifinterface: 10; kotlinx.coroutines.guava: 0; androidx.media3.database: 0
+
+## the same classification for the 2026-09-25 build (DefaultRenderersFactory, one-argument ProgressiveMediaSource.Factory for the source)
+KEPT    androidx.media3.exoplayer.DefaultRenderersFactory
+KEPT    androidx.media3.exoplayer.image.ImageRenderer
+KEPT    androidx.media3.exoplayer.image.BitmapFactoryImageDecoder
+KEPT    androidx.media3.exoplayer.text.TextRenderer
+KEPT    androidx.media3.exoplayer.metadata.MetadataRenderer

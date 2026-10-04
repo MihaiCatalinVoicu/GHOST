@@ -1,0 +1,10 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+configure OMX.google.h264.encoder [plain]: OK
+configure OMX.google.h264.encoder [profile only]: CodecException: Error 0x80001001
+configure OMX.google.h264.encoder [profile+level]: OK
+configure OMX.google.h264.encoder [colour keys (BT.709 limited)]: OK
+configure OMX.google.h264.encoder [colour keys (BT.601 full)]: OK
+configure OMX.google.h264.encoder [profile+level+max-bframes 0]: OK
+configure OMX.google.h264.encoder [High profile+level 3.1]: CodecException: Error 0xffffffc3
+probe configure: OK
+

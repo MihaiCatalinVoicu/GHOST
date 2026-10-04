@@ -1,0 +1,16 @@
+results/api35/vm20/norecents-10.jpg : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/norecents-10_reduced.jpg : 540x960 sampled=32400 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/plain-8.jpg : 1080x1920 sampled=129600 magenta=47701 lime=46623 cyan=9804 black=0
+results/api35/vm20/plain-8_reduced.jpg : 540x960 sampled=32400 magenta=11625 lime=11404 cyan=2450 black=0
+results/api35/vm20/secure-9.jpg : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/secure-9_reduced.jpg : 540x960 sampled=32400 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/secure_norecents-11.jpg : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/secure_norecents-11_reduced.jpg : 540x960 sampled=32400 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/norecents-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/norecents-screen.png : 1080x1920 sampled=129600 magenta=47702 lime=46770 cyan=9804 black=0
+results/api35/vm20/plain-recents.png : 1080x1920 sampled=129600 magenta=20670 lime=20255 cyan=4225 black=0
+results/api35/vm20/plain-screen.png : 1080x1920 sampled=129600 magenta=47702 lime=46770 cyan=9804 black=0
+results/api35/vm20/secure-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/secure-screen.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=129114
+results/api35/vm20/secure_norecents-recents.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=0
+results/api35/vm20/secure_norecents-screen.png : 1080x1920 sampled=129600 magenta=0 lime=0 cyan=0 black=129101

@@ -1,0 +1,7 @@
+== variant=plain secure=false noRecents=false
+total 128
+drwx------  2 system system  4096 2026-09-25 09:07 .
+drwxrwx--- 11 system system  4096 2026-09-25 09:07 ..
+-rw-------  1 system system 66242 2026-09-25 09:07 8.jpg
+-rw-------  1 system system    87 2026-09-25 09:07 8.proto
+-rw-------  1 system system 25949 2026-09-25 09:07 8_reduced.jpg

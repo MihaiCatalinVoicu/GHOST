@@ -1,0 +1,7 @@
+== variant=secure_norecents secure=true noRecents=true
+total 56
+drwx------ 2 system system  4096 2026-10-03 23:29 .
+drwxrwx--- 8 system system  4096 2026-10-03 23:23 ..
+-rw------- 1 system system 16032 2026-10-03 23:29 10.jpg
+-rw------- 1 system system    73 2026-10-03 23:29 10.proto
+-rw------- 1 system system  5462 2026-10-03 23:29 10_reduced.jpg

@@ -1,0 +1,28 @@
+# 2026-10-04T02:53:47Z emulator-29 Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys uptime=50.77 157.56
+## packages (S0 and the product's suites)
+package:org.ghost.app
+package:org.ghost.app.test
+package:org.ghost.crypto.bridge.test
+package:org.ghost.messaging.test
+package:org.ghost.spike.media
+org.ghost.spike.media     firstInstallTime=2026-09-25 09:39:29
+org.ghost.spike.media     lastUpdateTime=2026-09-25 09:39:29
+## /data/tombstones (S0 = names org.ghost.spike or carries the S0 canary)
+/data/tombstones/tombstone_00 704286 B mode=640 mtime=2026-09-25 09:43:46.513514951 +0300 s0=yes
+/data/tombstones/tombstone_01 602739 B mode=640 mtime=2026-10-04 05:53:18.661264230 +0300 s0=no
+## /data/system/dropbox entries that name org.ghost.spike or carry an S0 canary
+## shared storage: pictures, thumbnails, transform placeholders
+## MediaStore image rows
+No result found.
+## MediaProvider caches (photo picker's Glide cache) and picker database
+## DocumentsUI records (API 29)
+## usage stats files naming org.ghost.spike
+## /data/local/tmp
+total 9604
+drwxrwx--x 4 shell shell    4096 2026-10-03 17:12 .
+drwxr-x--x 4 root  root     4096 2026-09-24 17:06 ..
+-rwxr-xr-x 1 shell shell 3906728 2026-09-25 08:12 device_probe
+-rw-rw-rw- 1 root  root  5877982 2026-09-25 09:15 golden.mp4
+drwxrwxrwx 2 shell shell    4096 2026-10-03 17:12 mls-probe
+drwxrwxrwx 2 root  root     4096 2026-09-25 09:40 s0src
+-rw-rw-rw- 1 root  root        0 2026-09-25 09:40 vm1.marker

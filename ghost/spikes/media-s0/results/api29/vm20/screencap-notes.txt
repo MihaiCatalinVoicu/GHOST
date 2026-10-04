@@ -1,0 +1,2 @@
+screencap failed (variant secure)
+screencap failed (variant secure_norecents)

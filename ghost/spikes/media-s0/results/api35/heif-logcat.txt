@@ -1,0 +1,54 @@
+10-03 22:18:24.132 W/servicemanager(    0): Isolated app with UID 99041 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:24.558 W/servicemanager(    0): Isolated app with UID 99041 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:25.412 E/SELinux (    0): avc:  denied  { find } for pid=23260 uid=99041 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:26.504 W/servicemanager(    0): Isolated app with UID 99041 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:26.548 W/binder:23260_3(23260): type=1400 audit(0.0:26): avc:  denied  { create } for  scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:r:isolated_app:s0:c512,c768 tclass=tcp_socket permissive=0
+10-03 22:18:26.865 I/ActivityManager(  587): Killing 23260:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:ping_124f45269a4aa5f9/u0a148i41 (adj 0): isolated not needed
+10-03 22:18:28.176 W/servicemanager(    0): Isolated app with UID 99042 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:28.507 W/servicemanager(    0): Isolated app with UID 99042 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:28.648 E/SELinux (    0): avc:  denied  { find } for pid=23274 uid=99042 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:28.750 W/servicemanager(    0): Isolated app with UID 99042 requested 'media.player', but the service is not allowed for isolated apps.
+10-03 22:18:28.753 E/SELinux (    0): avc:  denied  { find } for pid=23274 uid=99042 name=media.player scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-03 22:18:28.797 W/ServiceManagerCppClient(23274): Failed to registerForNotifications in waitForService for media.player: Status(-1, EX_SECURITY): 'SELinux'
+10-03 22:18:28.798 E/HeifDecoderImpl(23274): failed to set data source!
+10-03 22:18:28.806 I/ActivityManager(  587): Killing 23274:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:dec_d89319be1277b55a/u0a148i42 (adj 0): isolated not needed
+10-03 22:18:31.746 W/servicemanager(    0): Isolated app with UID 99043 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:32.543 W/servicemanager(    0): Isolated app with UID 99043 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:32.962 E/SELinux (    0): avc:  denied  { find } for pid=23286 uid=99043 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:33.070 W/servicemanager(    0): Isolated app with UID 99043 requested 'media.player', but the service is not allowed for isolated apps.
+10-03 22:18:33.072 E/SELinux (    0): avc:  denied  { find } for pid=23286 uid=99043 name=media.player scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-03 22:18:33.111 W/ServiceManagerCppClient(23286): Failed to registerForNotifications in waitForService for media.player: Status(-1, EX_SECURITY): 'SELinux'
+10-03 22:18:33.112 E/HeifDecoderImpl(23286): failed to set data source!
+10-03 22:18:33.118 I/ActivityManager(  587): Killing 23286:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:strip_782c476d95c17e26/u0a148i43 (adj 0): isolated not needed
+10-03 22:18:36.263 W/servicemanager(    0): Isolated app with UID 99044 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:36.752 W/servicemanager(    0): Isolated app with UID 99044 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:37.603 E/SELinux (    0): avc:  denied  { find } for pid=23314 uid=99044 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:37.728 W/servicemanager(    0): Isolated app with UID 99044 requested 'media.player', but the service is not allowed for isolated apps.
+10-03 22:18:37.735 E/SELinux (    0): avc:  denied  { find } for pid=23314 uid=99044 name=media.player scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-03 22:18:37.821 W/ServiceManagerCppClient(23314): Failed to registerForNotifications in waitForService for media.player: Status(-1, EX_SECURITY): 'SELinux'
+10-03 22:18:37.821 E/HeifDecoderImpl(23314): failed to set data source!
+10-03 22:18:37.833 I/ActivityManager(  587): Killing 23314:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:heap_3e638e65653ab263/u0a148i44 (adj 0): isolated not needed
+10-03 22:18:38.113 W/servicemanager(    0): Isolated app with UID 99045 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:38.236 W/servicemanager(    0): Isolated app with UID 99045 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:38.414 E/SELinux (    0): avc:  denied  { find } for pid=23326 uid=99045 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:39.129 W/servicemanager(    0): Isolated app with UID 99045 requested 'media.player', but the service is not allowed for isolated apps.
+10-03 22:18:39.210 W/ServiceManagerCppClient(23326): Failed to registerForNotifications in waitForService for media.player: Status(-1, EX_SECURITY): 'SELinux'
+10-03 22:18:39.211 E/HeifDecoderImpl(23326): failed to set data source!
+10-03 22:18:39.144 E/SELinux (    0): avc:  denied  { find } for pid=23326 uid=99045 name=media.player scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-03 22:18:39.323 I/ActivityManager(  587): Killing 23326:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:dec_052470062d0a6b20/u0a148i45 (adj 0): isolated not needed
+10-03 22:18:40.615 W/servicemanager(    0): Isolated app with UID 99046 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:41.286 W/servicemanager(    0): Isolated app with UID 99046 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:41.595 E/SELinux (    0): avc:  denied  { find } for pid=23339 uid=99046 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:41.951 W/servicemanager(    0): Isolated app with UID 99046 requested 'media.player', but the service is not allowed for isolated apps.
+10-03 22:18:41.999 W/ServiceManagerCppClient(23339): Failed to registerForNotifications in waitForService for media.player: Status(-1, EX_SECURITY): 'SELinux'
+10-03 22:18:42.000 E/HeifDecoderImpl(23339): failed to set data source!
+10-03 22:18:41.959 E/SELinux (    0): avc:  denied  { find } for pid=23339 uid=99046 name=media.player scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-03 22:18:42.076 I/ActivityManager(  587): Killing 23339:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:strip_bc0513c8778f495d/u0a148i46 (adj 0): isolated not needed
+10-03 22:18:44.430 W/servicemanager(    0): Isolated app with UID 99047 requested 'network_management', but the service is not allowed for isolated apps.
+10-03 22:18:45.021 W/servicemanager(    0): Isolated app with UID 99047 requested 'connectivity', but the service is not allowed for isolated apps.
+10-03 22:18:45.381 E/SELinux (    0): avc:  denied  { find } for pid=23364 uid=99047 name=content_capture scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:content_capture_service:s0 tclass=service_manager permissive=0
+10-03 22:18:45.646 W/servicemanager(    0): Isolated app with UID 99047 requested 'media.player', but the service is not allowed for isolated apps.
+10-03 22:18:45.651 E/SELinux (    0): avc:  denied  { find } for pid=23364 uid=99047 name=media.player scontext=u:r:isolated_app:s0:c512,c768 tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager permissive=0
+10-03 22:18:45.744 W/ServiceManagerCppClient(23364): Failed to registerForNotifications in waitForService for media.player: Status(-1, EX_SECURITY): 'SELinux'
+10-03 22:18:45.746 E/HeifDecoderImpl(23364): failed to set data source!
+10-03 22:18:45.753 I/ActivityManager(  587): Killing 23364:org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:heap_d8410e97d204d1a5/u0a148i47 (adj 0): isolated not needed

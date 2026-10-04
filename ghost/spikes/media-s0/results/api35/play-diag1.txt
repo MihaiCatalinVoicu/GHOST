@@ -1,0 +1,4 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm13 played 5878266 B with setUsePlatformDiagnostics(true) from 1790316258978 to 1790316273452
+probe play: OK
+

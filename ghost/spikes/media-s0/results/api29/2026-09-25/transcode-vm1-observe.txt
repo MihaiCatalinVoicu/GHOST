@@ -1,0 +1,131 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm1: FileObserver on 9 directories: /data/user/0/org.ghost.spike.media /data/user/0/org.ghost.spike.media/cache /data/user/0/org.ghost.spike.media/code_cache /data/user/0/org.ghost.spike.media/no_backup /data/user/0/org.ghost.spike.media/files /data/user/0/org.ghost.spike.media/files/src /data/user_de/0/org.ghost.spike.media /data/user_de/0/org.ghost.spike.media/cache /data/user_de/0/org.ghost.spike.media/code_cache
+note: ChannelMixingMatrix.createForConstantGain(3, 2) unsupported (Default channel mixing coefficients for 3->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(4, 2) unsupported (Default channel mixing coefficients for 4->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(5, 2) unsupported (Default channel mixing coefficients for 5->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(6, 2) unsupported (Default channel mixing coefficients for 6->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(7, 2) unsupported (Default channel mixing coefficients for 7->2 are not yet implemented.); explicit matrix supplied
+note: ChannelMixingMatrix.createForConstantGain(8, 2) unsupported (Default channel mixing coefficients for 8->2 are not yet implemented.); explicit matrix supplied
+#0 transcode src=match720p30.mp4 mode=DESIGN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=641 neverWrittenExists=false pathOffered=null appVmHWMkB=177916 (before 157568) outSha256=-
+#0   tracks=[]
+#0   metadataOffered=[] forwarded=[]
+#0   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#0   channel writes=0 bytes=0 largestWrite=0
+#1 transcode src=match720p30.mp4 mode=UNFORCED_EFFECTS landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=254 neverWrittenExists=false pathOffered=null appVmHWMkB=189084 (before 177916) outSha256=-
+#1   tracks=[]
+#1   metadataOffered=[] forwarded=[]
+#1   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#1   channel writes=0 bytes=0 largestWrite=0
+#2 transcode src=match720p30.mp4 mode=PLAIN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=207 neverWrittenExists=false pathOffered=null appVmHWMkB=198068 (before 189084) outSha256=-
+#2   tracks=[]
+#2   metadataOffered=[] forwarded=[]
+#2   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#2   channel writes=0 bytes=0 largestWrite=0
+#3 transcode src=match720p30.mp4 mode=PLAIN_KEEP_HDR landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=245 neverWrittenExists=false pathOffered=null appVmHWMkB=205920 (before 198068) outSha256=-
+#3   tracks=[]
+#3   metadataOffered=[] forwarded=[]
+#3   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#3   channel writes=0 bytes=0 largestWrite=0
+#4 transcode src=match720p30.mp4 mode=PLAIN_DEFAULTS landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=null:null videoEncoder=null audioEncoder=null videoProcess=TRANSMUXED audioProcess=TRANSMUXED out=1280x720 frames=360 durationMs=11968 avgVideoBitrate=2947790 avgAudioBitrate=136868 rate=48000 ch=2 color=ColorInfo(BT601, Full range, SDR SMPTE 170M, false, 8bit Luma, 8bit Chroma) bytes=4608778 streamBytes=4608778 wallMs=899 neverWrittenExists=false pathOffered=never-written-c9f94772.mp4 appVmHWMkB=219764 (before 205920) outSha256=9d4e935350625ebc11617aa6083bce5cb93ce97da1ddee98e4a4bfc653ffa70c
+#4   tracks=[Format(1, null, video/mp4, video/avc, avc1.42C029, 2939602, null, [1280, 720, 30.0, ColorInfo(BT601, Full range, SDR SMPTE 170M, false, 8bit Luma, 8bit Chroma)], [-1, -1, -1]) rotationDegrees=0 colorInfo=ColorInfo(BT601, Full range, SDR SMPTE 170M, false, 8bit Luma, 8bit Chroma), Format(2, null, video/mp4, audio/mp4a-latm, mp4a.40.2, 128000, null, [-1, -1, -1.0, null], [2, -1, 48000]) rotationDegrees=0 colorInfo=null]
+#4   metadataOffered=[MdtaMetadataEntry: mdta: key=com.android.version, value=15, Mp4LocationData: xyz: latitude=46.7712, longitude=23.6235, Mp4TimestampData: Mp4Timestamp: creation time=3873158904, modification time=3873158904, timescale=10000, ThumbnailMetadata: ThumbnailMetadata: presentationTimeUs=0, MdtaMetadataEntry: mdta: key=com.android.version, value=15, Mp4LocationData: xyz: latitude=46.7712, longitude=23.6235, Mp4TimestampData: Mp4Timestamp: creation time=3873158904, modification time=3873158904, timescale=10000] forwarded=[Mp4TimestampData(0,0) [GhostMuxer's own constant]]
+#4   nalTypes={1=354, 5=6, 6=360} seiPayloadTypesSeenBeforeFilter={5=360} seiNalsDropped=360 kept=0 annexB=360 avcc=0 videoSamples=360 audioSamples=562
+#4   channel writes=930 bytes=4608778 largestWrite=89598
+#5 transcode src=land1080p60.mp4 mode=DESIGN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=157 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#5   tracks=[]
+#5   metadataOffered=[] forwarded=[]
+#5   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#5   channel writes=0 bytes=0 largestWrite=0
+#6 transcode src=port720x1280p24.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=122 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#6   tracks=[]
+#6   metadataOffered=[] forwarded=[]
+#6   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#6   channel writes=0 bytes=0 largestWrite=0
+#7 transcode src=port720x1280p24.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=true orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=93 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#7   tracks=[]
+#7   metadataOffered=[] forwarded=[]
+#7   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#7   channel writes=0 bytes=0 largestWrite=0
+#8 transcode src=rot90_1280x720p30.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=134 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#8   tracks=[]
+#8   metadataOffered=[] forwarded=[]
+#8   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#8   channel writes=0 bytes=0 largestWrite=0
+#9 transcode src=rot90_1280x720p30.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=true orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=117 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#9   tracks=[]
+#9   metadataOffered=[] forwarded=[]
+#9   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#9   channel writes=0 bytes=0 largestWrite=0
+#10 transcode src=vga640x480p30.mp4 mode=DESIGN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=137 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#10   tracks=[]
+#10   metadataOffered=[] forwarded=[]
+#10   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#10   channel writes=0 bytes=0 largestWrite=0
+#11 transcode src=match720p30.mp4 mode=DESIGN landscape=true cbrRequested=false cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=152 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#11   tracks=[]
+#11   metadataOffered=[] forwarded=[]
+#11   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#11   channel writes=0 bytes=0 largestWrite=0
+#12 transcode src=match720p30.mp4 mode=DESIGN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=126 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#12   tracks=[]
+#12   metadataOffered=[] forwarded=[]
+#12   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#12   channel writes=0 bytes=0 largestWrite=0
+#13 transcode src=match720p30.mp4 mode=UNFORCED_EFFECTS landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=148 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#13   tracks=[]
+#13   metadataOffered=[] forwarded=[]
+#13   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#13   channel writes=0 bytes=0 largestWrite=0
+#14 transcode src=match720p30.mp4 mode=PLAIN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=89 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#14   tracks=[]
+#14   metadataOffered=[] forwarded=[]
+#14   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#14   channel writes=0 bytes=0 largestWrite=0
+#15 transcode src=match720p30.mp4 mode=PLAIN_KEEP_HDR landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=112 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#15   tracks=[]
+#15   metadataOffered=[] forwarded=[]
+#15   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#15   channel writes=0 bytes=0 largestWrite=0
+#16 transcode src=match720p30.mp4 mode=PLAIN_DEFAULTS landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=null:null videoEncoder=null audioEncoder=null videoProcess=TRANSMUXED audioProcess=TRANSMUXED out=1280x720 frames=360 durationMs=11968 avgVideoBitrate=2947790 avgAudioBitrate=136868 rate=48000 ch=2 color=ColorInfo(BT601, Full range, SDR SMPTE 170M, false, 8bit Luma, 8bit Chroma) bytes=4608778 streamBytes=4608778 wallMs=615 neverWrittenExists=false pathOffered=never-written-4a28973e.mp4 appVmHWMkB=219764 (before 219764) outSha256=9d4e935350625ebc11617aa6083bce5cb93ce97da1ddee98e4a4bfc653ffa70c
+#16   tracks=[Format(1, null, video/mp4, video/avc, avc1.42C029, 2939602, null, [1280, 720, 30.0, ColorInfo(BT601, Full range, SDR SMPTE 170M, false, 8bit Luma, 8bit Chroma)], [-1, -1, -1]) rotationDegrees=0 colorInfo=ColorInfo(BT601, Full range, SDR SMPTE 170M, false, 8bit Luma, 8bit Chroma), Format(2, null, video/mp4, audio/mp4a-latm, mp4a.40.2, 128000, null, [-1, -1, -1.0, null], [2, -1, 48000]) rotationDegrees=0 colorInfo=null]
+#16   metadataOffered=[MdtaMetadataEntry: mdta: key=com.android.version, value=15, Mp4LocationData: xyz: latitude=46.7712, longitude=23.6235, Mp4TimestampData: Mp4Timestamp: creation time=3873158904, modification time=3873158904, timescale=10000, ThumbnailMetadata: ThumbnailMetadata: presentationTimeUs=0, MdtaMetadataEntry: mdta: key=com.android.version, value=15, Mp4LocationData: xyz: latitude=46.7712, longitude=23.6235, Mp4TimestampData: Mp4Timestamp: creation time=3873158904, modification time=3873158904, timescale=10000] forwarded=[Mp4TimestampData(0,0) [GhostMuxer's own constant]]
+#16   nalTypes={1=354, 5=6, 6=360} seiPayloadTypesSeenBeforeFilter={5=360} seiNalsDropped=360 kept=0 annexB=360 avcc=0 videoSamples=360 audioSamples=562
+#16   channel writes=930 bytes=4608778 largestWrite=89598
+#17 transcode src=land1080p60.mp4 mode=DESIGN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=137 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#17   tracks=[]
+#17   metadataOffered=[] forwarded=[]
+#17   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#17   channel writes=0 bytes=0 largestWrite=0
+#18 transcode src=port720x1280p24.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=117 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#18   tracks=[]
+#18   metadataOffered=[] forwarded=[]
+#18   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#18   channel writes=0 bytes=0 largestWrite=0
+#19 transcode src=port720x1280p24.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=true orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=126 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#19   tracks=[]
+#19   metadataOffered=[] forwarded=[]
+#19   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#19   channel writes=0 bytes=0 largestWrite=0
+#20 transcode src=rot90_1280x720p30.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=126 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#20   tracks=[]
+#20   metadataOffered=[] forwarded=[]
+#20   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#20   channel writes=0 bytes=0 largestWrite=0
+#21 transcode src=rot90_1280x720p30.mp4 mode=DESIGN landscape=false cbrRequested=true cbrUsed=false portraitEncoding=true orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=null videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=103 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#21   tracks=[]
+#21   metadataOffered=[] forwarded=[]
+#21   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#21   channel writes=0 bytes=0 largestWrite=0
+#22 transcode src=vga640x480p30.mp4 mode=DESIGN landscape=true cbrRequested=true cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=139 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#22   tracks=[]
+#22   metadataOffered=[] forwarded=[]
+#22   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#22   channel writes=0 bytes=0 largestWrite=0
+#23 transcode src=match720p30.mp4 mode=DESIGN landscape=true cbrRequested=false cbrUsed=false portraitEncoding=null orientationFix=false bt709=false finished=true error=ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED:Video frame processing error videoEncoder=null audioEncoder=OMX.google.aac.encoder videoProcess=NA(0) audioProcess=NA(0) out=-1x-1 frames=0 durationMs=-9223372036854775807 avgVideoBitrate=-2147483647 avgAudioBitrate=-2147483647 rate=-2147483647 ch=-1 color=null bytes=0 streamBytes=0 wallMs=174 neverWrittenExists=false pathOffered=null appVmHWMkB=219764 (before 219764) outSha256=-
+#23   tracks=[]
+#23   metadataOffered=[] forwarded=[]
+#23   nalTypes={} seiPayloadTypesSeenBeforeFilter={} seiNalsDropped=0 kept=0 annexB=0 avcc=0 videoSamples=0 audioSamples=0
+#23   channel writes=0 bytes=0 largestWrite=0
+vm1: transcodes=24 ok=2 fileObserverEvents=0 inventoryChanges=0
+probe transcode: OK
+

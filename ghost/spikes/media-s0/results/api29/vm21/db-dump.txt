@@ -1,0 +1,3 @@
+== /data/data/com.android.documentsui/databases/lastAccess.db
+lastAccessed|org.ghost.spike.media||1791063772224|0
+== /data/data/com.android.documentsui/databases/pickCountRecord.db

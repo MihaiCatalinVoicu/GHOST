@@ -1,0 +1,10 @@
+# host bench re-run 2026-10-04 (review H9): Windows 11, Core Ultra 9 275HX; host CPU load averaged 100 % over 6 s just before (the API 35 emulator was transcoding)
+bench: content=52428800 B class=10 fragments=804 (+1 manifest, 52756480 B on relays) appended-early=800
+bench: seal 244.1 ms = 214.8 MB/s (content); open+hash+verify 91.6 ms = 572.3 MB/s; VmHWM=n/a
+bench-stream: content=52428800 B class=10 seal 155.2 ms = 337.8 MB/s; VmHWM before=n/a after=n/a (fragments dropped after hashing, as the product writes them to files)
+bench: content=52428800 B class=10 fragments=804 (+1 manifest, 52756480 B on relays) appended-early=800
+bench: seal 545.4 ms = 96.1 MB/s (content); open+hash+verify 348.3 ms = 150.5 MB/s; VmHWM=n/a
+bench-stream: content=52428800 B class=10 seal 230.6 ms = 227.3 MB/s; VmHWM before=n/a after=n/a (fragments dropped after hashing, as the product writes them to files)
+bench: content=52428800 B class=10 fragments=804 (+1 manifest, 52756480 B on relays) appended-early=800
+bench: seal 420.6 ms = 124.7 MB/s (content); open+hash+verify 135.5 ms = 387.0 MB/s; VmHWM=n/a
+bench-stream: content=52428800 B class=10 seal 540.0 ms = 97.1 MB/s; VmHWM before=n/a after=n/a (fragments dropped after hashing, as the product writes them to files)

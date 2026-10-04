@@ -1,0 +1,837 @@
+=== src/orient6.jpg (4341 B, sha256 6922c84d8ddee558f59ebd7a18607caac7eb245b15dca840dfc4a9fbe74e2b06)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : orient6.jpg
+  [System]        Directory                       : src
+  [System]        FileSize                        : 4.3 kB
+  [System]        FileModifyDate                  : 2026:09:25 09:15:41+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:19:57+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 09:15:41+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ExifByteOrder                   : Big-endian (Motorola, MM)
+  [File]          ImageWidth                      : 400
+  [File]          ImageHeight                     : 600
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [IFD0]          ImageWidth                      : 400
+  [IFD0]          Model                           : GHOSTCANARYS0-MODEL
+  [IFD0]          ImageHeight                     : 600
+  [IFD0]          Make                            : GHOSTCANARYS0-MAKE
+  [IFD0]          Software                        : GHOSTCANARYS0-SOFTWARE
+  [IFD0]          Orientation                     : Rotate 90 CW
+  [ExifIFD]       DateTimeOriginal                : 2026:09:25 07:31:13
+  [ExifIFD]       ImageUniqueID                   : GHOSTCANARYS0-UNIQUEID
+  [ExifIFD]       SerialNumber                    : GHOSTCANARYS0-SERIAL
+  [ExifIFD]       OffsetTimeOriginal              : +03:00
+  [ExifIFD]       LightSource                     : Unknown
+  [GPS]           GPSLatitude                     : 46 deg 46' 16.44"
+  [GPS]           GPSLatitudeRef                  : North
+  [GPS]           GPSLongitudeRef                 : East
+  [GPS]           GPSLongitude                    : 23 deg 37' 24.44"
+  [JFIF]          JFIFVersion                     : 1.01
+  [JFIF]          ResolutionUnit                  : None
+  [JFIF]          XResolution                     : 1
+  [JFIF]          YResolution                     : 1
+  [ICC-header]    ProfileCMMType                  : 
+  [ICC-header]    ProfileVersion                  : 4.3.0
+  [ICC-header]    ProfileClass                    : Display Device Profile
+  [ICC-header]    ColorSpaceData                  : RGB
+  [ICC-header]    ProfileConnectionSpace          : XYZ
+  [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  [ICC-header]    ProfileFileSignature            : acsp
+  [ICC-header]    PrimaryPlatform                 : Unknown ()
+  [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  [ICC-header]    DeviceManufacturer              : 
+  [ICC-header]    DeviceModel                     : 
+  [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  [ICC-header]    ProfileCreator                  : 
+  [ICC-header]    ProfileID                       : 0
+  [ICC_Profile]   ProfileDescription              : sRGB
+  [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  [Composite]     ImageSize                       : 400x600
+  [Composite]     Megapixels                      : 0.240
+  [Composite]     SubSecDateTimeOriginal          : 2026:09:25 07:31:13+03:00
+  [Composite]     GPSLatitude                     : 46 deg 46' 16.44" N
+  [Composite]     GPSLongitude                    : 23 deg 37' 24.44" E
+  [Composite]     GPSPosition                     : 46 deg 46' 16.44" N, 23 deg 37' 24.44" E
+  -- tags outside the structural allowlist: 49
+  !! [File]          ExifByteOrder                   : Big-endian (Motorola, MM)
+  !! [IFD0]          ImageWidth                      : 400
+  !! [IFD0]          Model                           : GHOSTCANARYS0-MODEL
+  !! [IFD0]          ImageHeight                     : 600
+  !! [IFD0]          Make                            : GHOSTCANARYS0-MAKE
+  !! [IFD0]          Software                        : GHOSTCANARYS0-SOFTWARE
+  !! [IFD0]          Orientation                     : Rotate 90 CW
+  !! [ExifIFD]       DateTimeOriginal                : 2026:09:25 07:31:13
+  !! [ExifIFD]       ImageUniqueID                   : GHOSTCANARYS0-UNIQUEID
+  !! [ExifIFD]       SerialNumber                    : GHOSTCANARYS0-SERIAL
+  !! [ExifIFD]       OffsetTimeOriginal              : +03:00
+  !! [ExifIFD]       LightSource                     : Unknown
+  !! [GPS]           GPSLatitude                     : 46 deg 46' 16.44"
+  !! [GPS]           GPSLatitudeRef                  : North
+  !! [GPS]           GPSLongitudeRef                 : East
+  !! [GPS]           GPSLongitude                    : 23 deg 37' 24.44"
+  !! [JFIF]          JFIFVersion                     : 1.01
+  !! [JFIF]          ResolutionUnit                  : None
+  !! [JFIF]          XResolution                     : 1
+  !! [JFIF]          YResolution                     : 1
+  !! [ICC-header]    ProfileCMMType                  : 
+  !! [ICC-header]    ProfileVersion                  : 4.3.0
+  !! [ICC-header]    ProfileClass                    : Display Device Profile
+  !! [ICC-header]    ColorSpaceData                  : RGB
+  !! [ICC-header]    ProfileConnectionSpace          : XYZ
+  !! [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  !! [ICC-header]    ProfileFileSignature            : acsp
+  !! [ICC-header]    PrimaryPlatform                 : Unknown ()
+  !! [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  !! [ICC-header]    DeviceManufacturer              : 
+  !! [ICC-header]    DeviceModel                     : 
+  !! [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  !! [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  !! [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  !! [ICC-header]    ProfileCreator                  : 
+  !! [ICC-header]    ProfileID                       : 0
+  !! [ICC_Profile]   ProfileDescription              : sRGB
+  !! [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  !! [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  !! [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  !! [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  !! [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  !! [Composite]     SubSecDateTimeOriginal          : 2026:09:25 07:31:13+03:00
+  !! [Composite]     GPSLatitude                     : 46 deg 46' 16.44" N
+  !! [Composite]     GPSLongitude                    : 23 deg 37' 24.44" E
+  !! [Composite]     GPSPosition                     : 46 deg 46' 16.44" N, 23 deg 37' 24.44" E
+  src/orient6.jpg canary "GHOSTCANARYS0": ascii=8 utf16le=0 utf16be=0
+  src/orient6.jpg canary "2026:09:25": ascii=1 utf16le=0 utf16be=0
+  src/orient6.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  src/orient6.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  src/orient6.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  src/orient6.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== jpg/strip_orient6.jpg (2944 B, sha256 37b277dd5db8fac1de029341ec6c89f6e9b29dac1f0ed7ea41ae9ef9276fce75)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient6.jpg
+  [System]        Directory                       : jpg
+  [System]        FileSize                        : 2.9 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:09:11+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:20:05+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:09:11+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [JFIF]          JFIFVersion                     : 1.01
+  [JFIF]          ResolutionUnit                  : None
+  [JFIF]          XResolution                     : 1
+  [JFIF]          YResolution                     : 1
+  [ICC-header]    ProfileCMMType                  : 
+  [ICC-header]    ProfileVersion                  : 4.3.0
+  [ICC-header]    ProfileClass                    : Display Device Profile
+  [ICC-header]    ColorSpaceData                  : RGB
+  [ICC-header]    ProfileConnectionSpace          : XYZ
+  [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  [ICC-header]    ProfileFileSignature            : acsp
+  [ICC-header]    PrimaryPlatform                 : Unknown ()
+  [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  [ICC-header]    DeviceManufacturer              : 
+  [ICC-header]    DeviceModel                     : 
+  [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  [ICC-header]    ProfileCreator                  : 
+  [ICC-header]    ProfileID                       : 0
+  [ICC_Profile]   ProfileDescription              : sRGB
+  [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 29
+  !! [JFIF]          JFIFVersion                     : 1.01
+  !! [JFIF]          ResolutionUnit                  : None
+  !! [JFIF]          XResolution                     : 1
+  !! [JFIF]          YResolution                     : 1
+  !! [ICC-header]    ProfileCMMType                  : 
+  !! [ICC-header]    ProfileVersion                  : 4.3.0
+  !! [ICC-header]    ProfileClass                    : Display Device Profile
+  !! [ICC-header]    ColorSpaceData                  : RGB
+  !! [ICC-header]    ProfileConnectionSpace          : XYZ
+  !! [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  !! [ICC-header]    ProfileFileSignature            : acsp
+  !! [ICC-header]    PrimaryPlatform                 : Unknown ()
+  !! [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  !! [ICC-header]    DeviceManufacturer              : 
+  !! [ICC-header]    DeviceModel                     : 
+  !! [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  !! [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  !! [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  !! [ICC-header]    ProfileCreator                  : 
+  !! [ICC-header]    ProfileID                       : 0
+  !! [ICC_Profile]   ProfileDescription              : sRGB
+  !! [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  !! [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  !! [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  !! [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  !! [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  jpg/strip_orient6.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_orient6.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_orient6.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_orient6.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_orient6.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_orient6.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== jpg/strip_ultrahdr_jpg.jpg (3548 B, sha256 99bafb3912c1db57477eecbb491931616f5420a7f5604bc4cd75cfb8111998ac)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_ultrahdr_jpg.jpg
+  [System]        Directory                       : jpg
+  [System]        FileSize                        : 3.5 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:09:11+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:20:10+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:09:11+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 384
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [JFIF]          JFIFVersion                     : 1.01
+  [JFIF]          ResolutionUnit                  : None
+  [JFIF]          XResolution                     : 1
+  [JFIF]          YResolution                     : 1
+  [ICC-header]    ProfileCMMType                  : 
+  [ICC-header]    ProfileVersion                  : 4.3.0
+  [ICC-header]    ProfileClass                    : Display Device Profile
+  [ICC-header]    ColorSpaceData                  : RGB
+  [ICC-header]    ProfileConnectionSpace          : XYZ
+  [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  [ICC-header]    ProfileFileSignature            : acsp
+  [ICC-header]    PrimaryPlatform                 : Unknown ()
+  [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  [ICC-header]    DeviceManufacturer              : 
+  [ICC-header]    DeviceModel                     : 
+  [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  [ICC-header]    ProfileCreator                  : 
+  [ICC-header]    ProfileID                       : 0
+  [ICC_Profile]   ProfileDescription              : sRGB
+  [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  [Composite]     ImageSize                       : 512x384
+  [Composite]     Megapixels                      : 0.197
+  -- tags outside the structural allowlist: 29
+  !! [JFIF]          JFIFVersion                     : 1.01
+  !! [JFIF]          ResolutionUnit                  : None
+  !! [JFIF]          XResolution                     : 1
+  !! [JFIF]          YResolution                     : 1
+  !! [ICC-header]    ProfileCMMType                  : 
+  !! [ICC-header]    ProfileVersion                  : 4.3.0
+  !! [ICC-header]    ProfileClass                    : Display Device Profile
+  !! [ICC-header]    ColorSpaceData                  : RGB
+  !! [ICC-header]    ProfileConnectionSpace          : XYZ
+  !! [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  !! [ICC-header]    ProfileFileSignature            : acsp
+  !! [ICC-header]    PrimaryPlatform                 : Unknown ()
+  !! [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  !! [ICC-header]    DeviceManufacturer              : 
+  !! [ICC-header]    DeviceModel                     : 
+  !! [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  !! [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  !! [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  !! [ICC-header]    ProfileCreator                  : 
+  !! [ICC-header]    ProfileID                       : 0
+  !! [ICC_Profile]   ProfileDescription              : sRGB
+  !! [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  !! [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  !! [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  !! [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  !! [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  jpg/strip_ultrahdr_jpg.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_ultrahdr_jpg.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_ultrahdr_jpg.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_ultrahdr_jpg.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_ultrahdr_jpg.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  jpg/strip_ultrahdr_jpg.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== jpg/cmp_with_gainmap.jpg (5671 B, sha256 5d7f84e04ff1720e7d9e926aea82cab9be0ce5ccb8fd89558a30dabb5f3a85de)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : cmp_with_gainmap.jpg
+  [System]        Directory                       : jpg
+  [System]        FileSize                        : 5.7 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:09:11+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:20:15+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:09:11+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ExifByteOrder                   : Big-endian (Motorola, MM)
+  [File]          ImageWidth                      : 600
+  [File]          ImageHeight                     : 400
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [JFIF]          JFIFVersion                     : 1.01
+  [JFIF]          ResolutionUnit                  : None
+  [JFIF]          XResolution                     : 1
+  [JFIF]          YResolution                     : 1
+  [ExifIFD]       ExifVersion                     : 0232
+  [MPF0]          MPFVersion                      : 0100
+  [MPF0]          NumberOfImages                  : 2
+  [MPImage1]      MPImageFlags                    : (none)
+  [MPImage1]      MPImageFormat                   : JPEG
+  [MPImage1]      MPImageType                     : Baseline MP Primary Image
+  [MPImage1]      MPImageLength                   : 4689
+  [MPImage1]      MPImageStart                    : 0
+  [MPImage1]      DependentImage1EntryNumber      : 0
+  [MPImage1]      DependentImage2EntryNumber      : 0
+  [MPImage2]      MPImageFlags                    : (none)
+  [MPImage2]      MPImageFormat                   : JPEG
+  [MPImage2]      MPImageType                     : Undefined
+  [MPImage2]      MPImageLength                   : 982
+  [MPImage2]      MPImageStart                    : 4689
+  [MPImage2]      DependentImage1EntryNumber      : 0
+  [MPImage2]      DependentImage2EntryNumber      : 0
+  [MPImage2]      MPImage2                        : (Binary data 982 bytes, use -b option to extract)
+  [XMP-x]         XMPToolkit                      : Adobe XMP Core 5.1.2
+  [XMP-hdrgm]     Version                         : 1.0
+  [XMP-GContainer] DirectoryItemSemantic          : Primary, GainMap
+  [XMP-GContainer] DirectoryItemMime              : image/jpeg, image/jpeg
+  [XMP-GContainer] DirectoryItemLength            : 982
+  [ICC-header]    ProfileCMMType                  : 
+  [ICC-header]    ProfileVersion                  : 4.3.0
+  [ICC-header]    ProfileClass                    : Display Device Profile
+  [ICC-header]    ColorSpaceData                  : RGB
+  [ICC-header]    ProfileConnectionSpace          : XYZ
+  [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  [ICC-header]    ProfileFileSignature            : acsp
+  [ICC-header]    PrimaryPlatform                 : Unknown ()
+  [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  [ICC-header]    DeviceManufacturer              : 
+  [ICC-header]    DeviceModel                     : 
+  [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  [ICC-header]    ProfileCreator                  : 
+  [ICC-header]    ProfileID                       : 0
+  [ICC_Profile]   ProfileDescription              : sRGB
+  [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  [APP2]          UniformResourceName             : urn:iso:std:iso:ts:21496:-1
+  [Google]        GainMapImage                    : (Binary data 982 bytes, use -b option to extract)
+  [Composite]     ImageSize                       : 600x400
+  [Composite]     Megapixels                      : 0.240
+  -- tags outside the structural allowlist: 55
+  !! [File]          ExifByteOrder                   : Big-endian (Motorola, MM)
+  !! [JFIF]          JFIFVersion                     : 1.01
+  !! [JFIF]          ResolutionUnit                  : None
+  !! [JFIF]          XResolution                     : 1
+  !! [JFIF]          YResolution                     : 1
+  !! [ExifIFD]       ExifVersion                     : 0232
+  !! [MPF0]          MPFVersion                      : 0100
+  !! [MPF0]          NumberOfImages                  : 2
+  !! [MPImage1]      MPImageFlags                    : (none)
+  !! [MPImage1]      MPImageFormat                   : JPEG
+  !! [MPImage1]      MPImageType                     : Baseline MP Primary Image
+  !! [MPImage1]      MPImageLength                   : 4689
+  !! [MPImage1]      MPImageStart                    : 0
+  !! [MPImage1]      DependentImage1EntryNumber      : 0
+  !! [MPImage1]      DependentImage2EntryNumber      : 0
+  !! [MPImage2]      MPImageFlags                    : (none)
+  !! [MPImage2]      MPImageFormat                   : JPEG
+  !! [MPImage2]      MPImageType                     : Undefined
+  !! [MPImage2]      MPImageLength                   : 982
+  !! [MPImage2]      MPImageStart                    : 4689
+  !! [MPImage2]      DependentImage1EntryNumber      : 0
+  !! [MPImage2]      DependentImage2EntryNumber      : 0
+  !! [MPImage2]      MPImage2                        : (Binary data 982 bytes, use -b option to extract)
+  !! [XMP-x]         XMPToolkit                      : Adobe XMP Core 5.1.2
+  !! [XMP-hdrgm]     Version                         : 1.0
+  !! [XMP-GContainer] DirectoryItemSemantic          : Primary, GainMap
+  !! [XMP-GContainer] DirectoryItemMime              : image/jpeg, image/jpeg
+  !! [XMP-GContainer] DirectoryItemLength            : 982
+  !! [ICC-header]    ProfileCMMType                  : 
+  !! [ICC-header]    ProfileVersion                  : 4.3.0
+  !! [ICC-header]    ProfileClass                    : Display Device Profile
+  !! [ICC-header]    ColorSpaceData                  : RGB
+  !! [ICC-header]    ProfileConnectionSpace          : XYZ
+  !! [ICC-header]    ProfileDateTime                 : 2016:01:01 00:00:00
+  !! [ICC-header]    ProfileFileSignature            : acsp
+  !! [ICC-header]    PrimaryPlatform                 : Unknown ()
+  !! [ICC-header]    CMMFlags                        : Not Embedded, Independent
+  !! [ICC-header]    DeviceManufacturer              : 
+  !! [ICC-header]    DeviceModel                     : 
+  !! [ICC-header]    DeviceAttributes                : Reflective, Glossy, Positive, Color
+  !! [ICC-header]    RenderingIntent                 : Media-Relative Colorimetric
+  !! [ICC-header]    ConnectionSpaceIlluminant       : 0.9642 1 0.82491
+  !! [ICC-header]    ProfileCreator                  : 
+  !! [ICC-header]    ProfileID                       : 0
+  !! [ICC_Profile]   ProfileDescription              : sRGB
+  !! [ICC_Profile]   RedMatrixColumn                 : 0.43607 0.22249 0.01392
+  !! [ICC_Profile]   GreenMatrixColumn               : 0.38515 0.71687 0.09708
+  !! [ICC_Profile]   BlueMatrixColumn                : 0.14307 0.06061 0.7141
+  !! [ICC_Profile]   MediaWhitePoint                 : 0.9642 1 0.82491
+  !! [ICC_Profile]   RedTRC                          : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   GreenTRC                        : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   BlueTRC                         : (Binary data 40 bytes, use -b option to extract)
+  !! [ICC_Profile]   ProfileCopyright                : Google Inc. 2016
+  !! [APP2]          UniformResourceName             : urn:iso:std:iso:ts:21496:-1
+  !! [Google]        GainMapImage                    : (Binary data 982 bytes, use -b option to extract)
+  jpg/cmp_with_gainmap.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  jpg/cmp_with_gainmap.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  jpg/cmp_with_gainmap.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  jpg/cmp_with_gainmap.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  jpg/cmp_with_gainmap.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  jpg/cmp_with_gainmap.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_alpha_png.canon.jpg (5920 B, sha256 f0f9c9b9975c5a810597b0698d88d46d24877fe6f70c90992da5c86ba016f620)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_alpha_png.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 5.9 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:34+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:20:23+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:34+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 384
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x384
+  [Composite]     Megapixels                      : 0.197
+  -- tags outside the structural allowlist: 0
+  canon/strip_alpha_png.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_alpha_png.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_alpha_png.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_alpha_png.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_alpha_png.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_alpha_png.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_big.canon.jpg (125865 B, sha256 52956be7c2d9e41481067e51cf61ce1084c940da253eb25501928c9ab8c43544)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_big.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 126 kB
+  [System]        FileModifyDate                  : 2026:09:25 08:59:09+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:20:36+03:00
+  [System]        FileInodeChangeDate             : 2026:09:25 08:59:09+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 2048
+  [File]          ImageHeight                     : 2048
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 2048x2048
+  [Composite]     Megapixels                      : 4.2
+  -- tags outside the structural allowlist: 0
+  canon/strip_big.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_big10000_jpg.canon.jpg (125865 B, sha256 52956be7c2d9e41481067e51cf61ce1084c940da253eb25501928c9ab8c43544)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_big10000_jpg.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 126 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:34+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:20:48+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:34+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 2048
+  [File]          ImageHeight                     : 2048
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 2048x2048
+  [Composite]     Megapixels                      : 4.2
+  -- tags outside the structural allowlist: 0
+  canon/strip_big10000_jpg.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big10000_jpg.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big10000_jpg.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big10000_jpg.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big10000_jpg.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_big10000_jpg.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient1.canon.jpg (2436 B, sha256 2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient1.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.4 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:34+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:21:05+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:34+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient1.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient1_jpg.canon.jpg (2436 B, sha256 2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient1_jpg.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.4 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:34+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:21:19+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:34+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient1_jpg.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1_jpg.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1_jpg.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1_jpg.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1_jpg.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient1_jpg.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient2.canon.jpg (2463 B, sha256 8c050daf1389059583e80cb40912862b038064050eaa50ef312c0e661de77974)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient2.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.5 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:35+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:21:29+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:35+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient2.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient2.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient2.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient2.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient2.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient2.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient3.canon.jpg (2463 B, sha256 8c050daf1389059583e80cb40912862b038064050eaa50ef312c0e661de77974)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient3.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.5 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:35+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:21:39+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:35+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient3.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient3.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient3.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient3.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient3.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient3.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient4.canon.jpg (2436 B, sha256 2010468735d6889e72a16c23c1147d31c57176da65ebcd247712a0f1a16d7c1c)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient4.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.4 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:35+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:21:46+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:35+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient4.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient4.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient4.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient4.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient4.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient4.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient5.canon.jpg (2441 B, sha256 80ade938a019548f4f7b8f06e8755f59705016e0bf62490991bb9193cd9efddf)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient5.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.4 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:36+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:22:02+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:36+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient5.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient5.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient5.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient5.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient5.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient5.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient6.canon.jpg (2452 B, sha256 33692d81b893385620606370b8f4e69c6c611356f1a690360dab8ec4006b3a9f)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient6.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.5 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:37+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:22:14+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:37+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient6.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient6.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient6.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient6.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient6.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient6.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient7.canon.jpg (2479 B, sha256 49a1b06385ee6be650e5a79e39384832c6b368f8477783616f4bedbeae391b15)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient7.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.5 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:38+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:22:25+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:38+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient7.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient7.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient7.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient7.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient7.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient7.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_orient8.canon.jpg (2465 B, sha256 2d873082c72b8b2c684bab9fd05503886574ea0244a12af0fdff6c55036b356e)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_orient8.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.5 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:40+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:22:36+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:40+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_orient8.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient8.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient8.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient8.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient8.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_orient8.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_p3_jpg.canon.jpg (1421 B, sha256 b16c650b249793015e000a6190d0880cf1a0b63db6f6eb5ad8e826f1d2c158c1)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_p3_jpg.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 1421 bytes
+  [System]        FileModifyDate                  : 2026:10:03 21:19:43+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:22:51+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:43+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 384
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x384
+  [Composite]     Megapixels                      : 0.197
+  -- tags outside the structural allowlist: 0
+  canon/strip_p3_jpg.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_p3_jpg.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_p3_jpg.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_p3_jpg.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_p3_jpg.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_p3_jpg.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_photo_webp.canon.jpg (2432 B, sha256 85d7d2df22690d539611d0180a838028cf345111c7706bd3bae31db7c4c96920)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_photo_webp.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 2.4 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:43+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:22:58+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:43+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 336
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x336
+  [Composite]     Megapixels                      : 0.172
+  -- tags outside the structural allowlist: 0
+  canon/strip_photo_webp.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_photo_webp.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_photo_webp.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_photo_webp.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_photo_webp.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_photo_webp.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0
+=== canon/strip_ultrahdr_jpg.canon.jpg (3056 B, sha256 2a58d51cc9530d1c2c88c5f398c8e1664ab7ac67b87568ef4c731b372dcf8771)
+  [ExifTool]      ExifToolVersion                 : 13.55
+  [System]        FileName                        : strip_ultrahdr_jpg.canon.jpg
+  [System]        Directory                       : canon
+  [System]        FileSize                        : 3.1 kB
+  [System]        FileModifyDate                  : 2026:10:03 21:19:43+03:00
+  [System]        FileAccessDate                  : 2026:10:03 21:23:11+03:00
+  [System]        FileInodeChangeDate             : 2026:10:03 21:19:43+03:00
+  [System]        FilePermissions                 : -rw-r--r--
+  [File]          FileType                        : JPEG
+  [File]          FileTypeExtension               : jpg
+  [File]          MIMEType                        : image/jpeg
+  [File]          ImageWidth                      : 512
+  [File]          ImageHeight                     : 384
+  [File]          EncodingProcess                 : Baseline DCT, Huffman coding
+  [File]          BitsPerSample                   : 8
+  [File]          ColorComponents                 : 3
+  [File]          YCbCrSubSampling                : YCbCr4:2:0 (2 2)
+  [Composite]     ImageSize                       : 512x384
+  [Composite]     Megapixels                      : 0.197
+  -- tags outside the structural allowlist: 0
+  canon/strip_ultrahdr_jpg.canon.jpg canary "GHOSTCANARYS0": ascii=0 utf16le=0 utf16be=0
+  canon/strip_ultrahdr_jpg.canon.jpg canary "2026:09:25": ascii=0 utf16le=0 utf16be=0
+  canon/strip_ultrahdr_jpg.canon.jpg canary "46.77": ascii=0 utf16le=0 utf16be=0
+  canon/strip_ultrahdr_jpg.canon.jpg canary "23.62": ascii=0 utf16le=0 utf16be=0
+  canon/strip_ultrahdr_jpg.canon.jpg canary "com.android": ascii=0 utf16le=0 utf16be=0
+  canon/strip_ultrahdr_jpg.canon.jpg canary "GHOST-S0": ascii=0 utf16le=0 utf16be=0

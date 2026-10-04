@@ -1,0 +1,4 @@
+/data/misc/profiles/cur/0/org.ghost.spike.media/primary.prof
+/data/system/package-dex-usage.pb
+/data/system_de/0/powerstats/log.powerstats.model.0.1790311311563-
+/data/system_de/0/powerstats/log.powerstats.meter.0.1790311431503-
