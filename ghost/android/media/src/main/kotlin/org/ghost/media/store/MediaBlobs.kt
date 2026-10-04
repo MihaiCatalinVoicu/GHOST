@@ -124,6 +124,24 @@ class MediaBlobs(private val fragments: MediaFragments) {
     }
 
     /**
+     * The **sealed** blobs that no fragment names (§11.1: "the FK from `media_object.message_id` also cascades from any other
+     * deletion of a message, such as a deleted contact; `MediaObjects` deletes the unnamed blobs in that path too"). A sealed
+     * blob is never pooled: `MEDIA-COMMIT` inserts it in the transaction that inserts the fragment rows naming it, so at every
+     * commit boundary one that nothing names is garbage — what a deletion that did not go through
+     * [MediaObjects.deleteObjectsOfMessages] (a contact, a conversation: the foreign keys took the object and its fragments and
+     * knew nothing of the blobs) left behind, with a file that no row would ever release. `MEDIA-GC` calls this on every pass
+     * and after such a deletion; the rows go now and the files with the reconcile. An **ingested** blob that lost its references
+     * the same way is not touched: it is in the pool with its own retention, and [collectExpired] takes it at its day.
+     * Returns the rows deleted.
+     */
+    fun collectUnnamedSealed(tx: SyncTransaction): Int =
+        tx.sql.execUpdate(
+            "DELETE FROM media_blob WHERE origin = 'sealed' " +
+                "AND NOT EXISTS (SELECT 1 FROM media_fragment f WHERE f.blob_hash = media_blob.blob_hash)",
+            emptyList(),
+        )
+
+    /**
      * The pool cap (§7.5): while the pooled files exceed [capBytes], the pooled blobs with the earliest retention (ties by
      * hash) are deleted, rows in this transaction and files by the reconcile. **Never a stop**: ingest keeps claiming and
      * Phase 7 keeps fetching, so the `get`s on `M_0` stay a function of what others stored (T47). Returns the rows deleted.

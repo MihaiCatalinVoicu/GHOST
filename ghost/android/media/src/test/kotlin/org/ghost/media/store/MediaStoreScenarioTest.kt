@@ -257,6 +257,31 @@ class MediaStoreScenarioTest {
         }
     }
 
+    /**
+     * §11.1: a deleted contact takes its messages, and through the foreign key from the message the objects' rows, without a
+     * call to the store; the blobs and their files are what is left. `collectUnnamedSealed` (the `MEDIA-GC` pass) deletes the
+     * rows, the reconcile the files, and a second pass of each finds nothing.
+     */
+    @Test
+    fun aDeletedContactTakesTheObjectsRowsByCascadeAndTheGcAndTheReconcileTakeTheRest() = MediaWorld().use { w ->
+        commit(w, 1)
+        commit(w, 2)
+        assertEquals(34L, w.count("media_blob"))
+        assertEquals(34, w.listed().size)
+        w.db.exec("DELETE FROM dm_contact WHERE contact_id = ?", listOf(id16(0xD1)))
+        assertEquals(0L, w.count("media_object"))
+        assertEquals(0L, w.count("media_upload"))
+        assertEquals(0L, w.count("media_fragment"))
+        assertEquals("the foreign keys know nothing of the blobs", 34L, w.count("media_blob"))
+        assertEquals(34, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+        assertEquals("the files wait for the reconcile", 34, w.listed().size)
+        assertEquals(34, w.reconcile.run(w.database) { emptySet() }.orphansDeleted)
+        assertEquals(emptyList<String>(), w.listed())
+        assertEquals(0L, w.count("media_blob"))
+        assertTrue(w.reconcile.run(w.database) { emptySet() }.clean)
+        assertEquals(0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+    }
+
     @Test
     fun theCrashModelSeesAnObjectCommittedOnFilesThatWereNeverMadeDurable() {
         // without the force every file of the object is empty after a power cut although every row says otherwise

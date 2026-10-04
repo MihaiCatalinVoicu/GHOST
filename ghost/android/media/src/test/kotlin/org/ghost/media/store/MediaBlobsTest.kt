@@ -172,6 +172,41 @@ class MediaBlobsTest {
         assertNotNull(objectId)
     }
 
+    /**
+     * §11.1: the foreign key from the message also takes an object's rows when a message is deleted without a call to the
+     * store (a contact, a conversation). The sealed blobs it named are garbage then, whoever else still names a hash is not
+     * touched, and a pooled blob is the pool's.
+     */
+    @Test
+    fun aDeletionThatBypassedTheStoreLeavesUnnamedSealedBlobsAndOnlyThoseAreCollected() = MediaWorld().use { w ->
+        w.commitOutgoing(1) // 17 sealed blobs, message 0x91
+        w.commitOutgoing(2) // 17 more, message 0x92
+        // an incoming object that names one hash of the first object (D25: any number of objects may name a hash)
+        val shared = w.blobsOf(1).fragments[0]
+        w.receive(3, blobs = MediaWorld.Blobs(hashOfBlob(3000), listOf(shared) + w.blobsOf(3).fragments.drop(1)))
+        w.ingest(listOf(hashOfBlob(700))) // a pooled blob nobody names
+        assertEquals(35L, w.count("media_blob"))
+        assertEquals("nothing is unnamed yet: a commit inserts a blob with the fragments that name it", 0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+        // the first message goes by a plain DELETE: the foreign keys take its object, upload and fragments, not its blobs
+        w.db.exec("DELETE FROM dm_message WHERE message_id = ?", listOf(id16(0x91)))
+        assertEquals(2L, w.count("media_object"))
+        assertEquals(35L, w.count("media_blob"))
+        // 16 of its 17 blobs are named by nothing now; the 17th is named by the incoming object, the second object's 17 by
+        // theirs, and the pooled one is not sealed
+        assertEquals(16, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+        assertEquals(19L, w.count("media_blob"))
+        assertTrue(w.stores.blobs.exists(w.db, shared))
+        assertTrue(w.stores.blobs.exists(w.db, hashOfBlob(700)))
+        for (hash in w.blobsOf(2).all) assertTrue(w.stores.blobs.exists(w.db, hash))
+        assertEquals("a second pass has nothing to do", 0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+        // the incoming object releases the shared hash (it turns corrupt): the release itself deletes a sealed row that nothing
+        // names any more, so the collector finds nothing left to do
+        w.tx { w.stores.objects.markComplete(it, id16(0xB3)) }
+        w.tx { w.stores.objects.markCorrupt(it, id16(0xB3)) }
+        assertFalse(w.stores.blobs.exists(w.db, shared))
+        assertEquals(0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+    }
+
     @Test
     fun theFilesOfALiveObjectAreItsBoundFragmentsInOrder() = MediaWorld().use { w ->
         val objectId = w.commitOutgoing(1)

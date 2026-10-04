@@ -266,6 +266,9 @@ class MediaObjects(private val fragments: MediaFragments) {
      * its upload, fragment and operation rows (the foreign keys cascade) and then every blob no row names any more,
      * whatever its origin — a blob another live object still names stays until that object releases it. The `key_env` of
      * each object goes with its row; the caller checkpoints (§11.1) and the files go with the reconcile. Returns the objects deleted.
+     * A message deleted **without** this call (the foreign keys of a deleted contact) takes the object's rows all the same and
+     * leaves its blobs: [MediaBlobs.collectUnnamedSealed] deletes the sealed ones on the next `MEDIA-GC` pass, the pool's
+     * retention the ingested ones.
      */
     fun deleteObjectsOfMessages(tx: SyncTransaction, messageIds: List<ByteArray>): Int {
         var deleted = 0
