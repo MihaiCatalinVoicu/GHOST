@@ -50,24 +50,6 @@ class RepositoriesTest {
     }
 
     @Test
-    fun channelPseudonymRepositoryTracksRevealState() {
-        val db = db()
-        val channelId = ByteArray(32) { 3 }
-        db.exec("INSERT INTO channels(channel_id, history_policy, created_at) VALUES (?, 'none', ?)", listOf(channelId, now))
-        val repo = ChannelPseudonymRepository(db)
-        val pub = root.channelPseudonymKeyPair(channelId).publicKey
-        repo.upsert(channelId, pub)
-        assertArrayEquals(pub, repo.publicKeyFor(channelId))
-        assertFalse(repo.isRevealed(channelId))
-        repo.markRevealed(channelId)
-        assertTrue(repo.isRevealed(channelId))
-        // Same pseudonym cannot be registered for another channel (unlinkability guard, T14).
-        val other = ByteArray(32) { 4 }
-        db.exec("INSERT INTO channels(channel_id, history_policy, created_at) VALUES (?, 'none', ?)", listOf(other, now))
-        assertThrows(Exception::class.java) { repo.upsert(other, pub) }
-    }
-
-    @Test
     fun revocationRepositoryStoresOnlyVerifiedCertificates() {
         val db = db()
         val repo = RevocationRepository(db) { now }

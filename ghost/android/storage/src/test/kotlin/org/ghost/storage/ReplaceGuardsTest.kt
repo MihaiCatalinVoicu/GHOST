@@ -101,8 +101,15 @@ class ReplaceGuardsTest {
             // generation (the rejection race guard compares generations) and are what forces the
             // UPDATE-then-INSERT writers of FundingStore and CapabilityStore.
             "sync_namespace_fund", "relay_register_capability",
+            // v7 (Phase 10 §9): the channel tables with no UPDATE or DELETE rule, the OpenMLS rows among
+            // them. `ch_seen` and `ch_kp_seen` are the two with no guard at all: they are written with
+            // INSERT OR IGNORE, which deletes nothing, and their rows carry no rule.
+            "ch_liveness", "ch_schedule", "mls_kv", "mls_global_kv", "ch_reaction", "ch_pending_post",
+            "ch_outbound_op", "ch_reveal", "ch_join", "ch_join_request", "ch_member_seen", "ch_invite_own",
+            "ch_sponsor", "ch_member_refresh", "ch_request",
         )
         assertEquals(guardedWithoutRules, guarded - withRules)
+        assertEquals(ChannelSchema.tables - ChannelSchema.unguarded, guarded.filter { it in ChannelSchema.tables }.toSet())
         for (table in guarded) {
             val (name, sql) = triggers.getValue(table).single { it.first.endsWith("_no_replace") }
             assertEquals("${table}_no_replace", name)

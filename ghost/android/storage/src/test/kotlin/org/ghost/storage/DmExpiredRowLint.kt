@@ -157,19 +157,23 @@ object DmExpiredRowLint {
      * Adjacent literals joined by `+` are matched as one string, because that is how this repo
      * writes long SQL (`OutboxStore`, `DirectoryStore`, `StateStore`): the `SELECT` list and the
      * `FROM` clause sit in different literals, and a per-literal test would see neither half.
+     *
+     * [tables] is the set of expiring tables the scan looks for: the DM one by default, and
+     * [ChannelExpiredRowLint] passes the channel tables (Phase 10 design §10.1, slice S3), so the scanner is
+     * one implementation for both families.
      */
-    fun readQueriesOverExpiringRows(sources: List<File>): List<Found> {
+    fun readQueriesOverExpiringRows(sources: List<File>, tables: Set<String> = expiringTables.keys): List<Found> {
         val out = ArrayList<Found>()
         for (file in sources) {
             val text = runCatching { file.readText() }.getOrNull() ?: continue
-            if (expiringTables.keys.none { text.contains(it) }) continue
+            if (tables.none { text.contains(it) }) continue
             for (literal in literalRuns(text, stringLiterals(text))) {
                 val sql = literal.text
                 if (!selectLike.containsMatchIn(sql)) continue
                 if (!sql.contains("SELECT", ignoreCase = true)) continue
                 if (schemaStatement.containsMatchIn(sql)) continue
                 if (writeStatement.containsMatchIn(sql)) continue
-                if (expiringTables.keys.none { Regex("\\b$it\\b").containsMatchIn(sql) }) continue
+                if (tables.none { Regex("\\b$it\\b").containsMatchIn(sql) }) continue
                 out += Found(file, literal.line, sql.replace(Regex("\\s+"), " ").trim())
             }
         }

@@ -116,14 +116,27 @@ private object OutboxObjects {
  *    `sync_namespace.capability_source` cannot be altered), `relay_register_capability` (the
  *    redeemed capabilities of funded namespaces, which only the registration step reads), the two
  *    triggers that refuse `send_delay = 'off'` for a channel namespace, and the REPLACE guards of
- *    the two new tables. The channel tables `ch_*` and `mls_*` are migration 7, a later slice.
+ *    the two new tables.
+ *  - v7 (Phase 10 forum, docs/design/faza10-forum.md §9 "Migration 7", as corrected by §19.28,
+ *    §19.29 and §19.35; slice S3): the channel tables. The unused v1 `channels`,
+ *    `channel_pseudonyms`, `mls_state` and `posts` are dropped behind a fail-closed guard; the 26
+ *    new tables are `ch_*` (the channel's state, generations, epochs, candidates, posts, joins,
+ *    invites, members and keys) and `mls_kv` / `mls_global_kv` (the rows OpenMLS writes through
+ *    `GhostKv`, §3.4). The rules are those of v5, but for the row layout: a table is WITHOUT ROWID
+ *    only where §9 says so (the tag tables `ch_seen` and `ch_kp_seen`), so the other 24 keep a hidden
+ *    rowid (§19.35); `typeof` beside every integer's range and
+ *    every time column's grid (`*_minute`, `*_hour`, `*_day`); no created or last-activity column
+ *    beyond the ones §9 declares; no full-text index; bounded counts and the state machines of §6.11 as
+ *    triggers; a `*_no_replace` guard on every table whose writers do not use `INSERT OR IGNORE`.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
- * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2.
+ * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2. v7 has not
+ * shipped either, so the slices that build the channel engine (S4 to S9) may amend it in place
+ * where their reading of §9 needs a column or a rule this slice could not know.
  */
 object Schema {
-    const val CURRENT_VERSION = 6
+    const val CURRENT_VERSION = 7
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -749,6 +762,10 @@ object Schema {
             version = 6,
             statements = migration6(),
         ),
+        Migration(
+            version = 7,
+            statements = migration7Guard() + migration7Tables() + migration7Triggers(),
+        ),
     )
 
     /**
@@ -1274,6 +1291,14 @@ object Schema {
                 BEGIN SELECT RAISE(ABORT, '$table rows are never replaced'); END"""
 
     /**
+     * A [replaceGuard] for a table that has a hidden rowid: it conflicts on the rowid too, because an insert
+     * that names an existing rowid would make REPLACE delete that other row, whatever its keys (the
+     * `outbox_op` guard of migration 3 does the same). The rowid of an insert that names none is not yet
+     * assigned in a BEFORE trigger and matches no row.
+     */
+    private fun rowidGuard(table: String, conflict: String): String = replaceGuard(table, "($conflict) OR rowid = NEW.rowid")
+
+    /**
      * Phase 10 design §9, "Migration 6 (`:sync`)" (slice S1a). One transaction, append-only,
      * fail-closed like every migration before it; the channel tables are migration 7.
      */
@@ -1328,10 +1353,518 @@ object Schema {
         replaceGuard("relay_register_capability", "relay_id = NEW.relay_id AND namespace_id = NEW.namespace_id"),
     )
 
+    /**
+     * Phase 10 design §9, "Migration 7 (channels)", **step 0** (slice S3): the fail-closed guard and
+     * the drop of the unused v1 channel tables. `ChannelPseudonymRepository` had no caller outside
+     * tests and its rows need a `channels` row that nothing writes, so the four tables never had a
+     * writer; the guard fails the migration, and leaves the database at v6, if one holds a row anyway.
+     * `media` and `media_blobs` stay for Phase 11. Children go first, so no foreign-key cascade
+     * hides a row the guard would have counted.
+     */
+    private fun migration7Guard(): List<String> = listOf(
+        "CREATE TABLE v7_migration_guard (row_count INTEGER NOT NULL CHECK (row_count = 0))",
+        "INSERT INTO v7_migration_guard(row_count) SELECT count(*) FROM channels",
+        "INSERT INTO v7_migration_guard(row_count) SELECT count(*) FROM channel_pseudonyms",
+        "INSERT INTO v7_migration_guard(row_count) SELECT count(*) FROM mls_state",
+        "INSERT INTO v7_migration_guard(row_count) SELECT count(*) FROM posts",
+        "DROP TABLE v7_migration_guard",
+        "DROP INDEX idx_posts_channel",
+        "DROP TABLE posts",
+        "DROP TABLE mls_state",
+        "DROP TABLE channel_pseudonyms",
+        "DROP TABLE channels",
+    )
+
+    /**
+     * Migration 7, **step 1**: the 26 tables of §9. Conventions (v5, "following the v4/v5 split of F9
+     * §13.6"): a table is WITHOUT ROWID where §9 says so and only there — the two tag tables `ch_seen`
+     * and `ch_kp_seen` — and an ordinary rowid table everywhere else, as §9 says outright of `mls_kv`
+     * (S0-6: its values are 0.1 to 125 KB) and says nothing of the rest; the hidden rowid of those 24 is an
+     * insertion order, which §19.35 records beside T33, and every REPLACE guard covers it ([rowidGuard]);
+     * an integer's `typeof` is checked beside its range, because `BETWEEN` and `%` admit `x.5`; a time column is a
+     * `*_minute` (`% 60`), a `*_hour` (`% 3600`) or a `*_day`; an envelope column is `nonce(12) ‖
+     * ChaCha20-Poly1305 ‖ tag(16)`, so a value of n bytes takes n + 28 (60 for a 32-byte key, 68 for
+     * an epoch key, whose plaintext names its epoch). Secret-bearing columns are wrapped under the
+     * channel state key, the ones that hold the user's text under the content key (§9).
+     */
+    private fun migration7Tables(): List<String> = listOf(
+        // ---- the channel, its liveness window and its schedule
+        """CREATE TABLE ch_channel (
+                  channel_id          BLOB PRIMARY KEY NOT NULL CHECK (length(channel_id) = 32),
+                  state               TEXT NOT NULL
+                                      CHECK (state IN ('joining', 'active', 'leaving', 'left', 'removed', 'replaced',
+                                                       'resync_needed', 'reinvite_needed', 'join_expired')),
+                  split_suspected     INTEGER NOT NULL DEFAULT 0 CHECK (split_suspected IN (0, 1)),
+                  partition_suspected INTEGER NOT NULL DEFAULT 0 CHECK (partition_suspected IN (0, 1)),
+                  stale_suspected     INTEGER NOT NULL DEFAULT 0 CHECK (stale_suspected IN (0, 1)),
+                  pw_required         INTEGER NOT NULL DEFAULT 0 CHECK (pw_required IN (0, 1)),
+                  suite               INTEGER NOT NULL DEFAULT 3 CHECK (suite = 3),
+                  generation          INTEGER NOT NULL
+                                      CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
+                  epoch               INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  joined_epoch        INTEGER NOT NULL CHECK (typeof(joined_epoch) = 'integer' AND joined_epoch >= 0),
+                  size_class          INTEGER NOT NULL CHECK (size_class IN (0, 1)),
+                  timer_code          INTEGER NOT NULL CHECK (typeof(timer_code) = 'integer' AND timer_code BETWEEN 0 AND 5),
+                  my_pseudonym        BLOB NOT NULL CHECK (length(my_pseudonym) = 32),
+                  name_env            BLOB CHECK (name_env IS NULL OR length(name_env) BETWEEN 29 AND 76),
+                  last_committer_commit_day INTEGER CHECK (last_committer_commit_day IS NULL
+                                      OR (typeof(last_committer_commit_day) = 'integer' AND last_committer_commit_day >= 0))
+                )""",
+        """CREATE TABLE ch_liveness (
+                  channel_id              BLOB PRIMARY KEY NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  unopenable_count        INTEGER NOT NULL DEFAULT 0
+                                          CHECK (typeof(unopenable_count) = 'integer' AND unopenable_count BETWEEN 0 AND 255),
+                  unopenable_operators    INTEGER NOT NULL DEFAULT 0
+                                          CHECK (typeof(unopenable_operators) = 'integer' AND unopenable_operators BETWEEN 0 AND 255),
+                  sessions                INTEGER NOT NULL DEFAULT 0
+                                          CHECK (typeof(sessions) = 'integer' AND sessions BETWEEN 0 AND 255),
+                  progress_env            BLOB NOT NULL CHECK (length(progress_env) BETWEEN 28 AND 256),
+                  unopenable_first_minute INTEGER CHECK (unopenable_first_minute IS NULL
+                                          OR (typeof(unopenable_first_minute) = 'integer' AND unopenable_first_minute % 60 = 0)),
+                  CHECK ((unopenable_count = 0) = (unopenable_first_minute IS NULL))
+                )""",
+        """CREATE TABLE ch_schedule (
+                  channel_id          BLOB PRIMARY KEY NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  next_selfupdate_day INTEGER NOT NULL
+                                      CHECK (typeof(next_selfupdate_day) = 'integer' AND next_selfupdate_day >= 0),
+                  last_own_commit_day INTEGER CHECK (last_own_commit_day IS NULL
+                                      OR (typeof(last_own_commit_day) = 'integer' AND last_own_commit_day >= 0)),
+                  next_pass_minute    INTEGER CHECK (next_pass_minute IS NULL
+                                      OR (typeof(next_pass_minute) = 'integer' AND next_pass_minute % 60 = 0))
+                )""",
+        // ---- generations, epochs and the commit candidates (§6.4, §6.5)
+        """CREATE TABLE ch_generation (
+                  channel_id      BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  generation      INTEGER NOT NULL
+                                  CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
+                  namespace_id    BLOB NOT NULL UNIQUE CHECK (length(namespace_id) = 32),
+                  state           TEXT NOT NULL CHECK (state IN ('pending_switch', 'current', 'draining')),
+                  g_env           BLOB NOT NULL CHECK (length(g_env) = 60),
+                  jk_env          BLOB NOT NULL CHECK (length(jk_env) = 60),
+                  r_join          BLOB NOT NULL CHECK (length(r_join) = 32),
+                  switch_hour     INTEGER CHECK (switch_hour IS NULL
+                                  OR (typeof(switch_hour) = 'integer' AND switch_hour % 3600 = 0)),
+                  drain_until_day INTEGER CHECK (drain_until_day IS NULL
+                                  OR (typeof(drain_until_day) = 'integer' AND drain_until_day >= 0)),
+                  CHECK (state = 'pending_switch' OR switch_hour IS NULL),
+                  CHECK ((state = 'draining') = (drain_until_day IS NOT NULL)),
+                  PRIMARY KEY (channel_id, generation)
+                )""",
+        """CREATE TABLE ch_epoch (
+                  channel_id     BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  epoch          INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  state          TEXT NOT NULL CHECK (state IN ('open', 'final')),
+                  k_env          BLOB NOT NULL CHECK (length(k_env) = 68),
+                  r_ep           BLOB NOT NULL CHECK (length(r_ep) = 32),
+                  winner_hash    BLOB CHECK (winner_hash IS NULL OR length(winner_hash) = 32),
+                  own_seq        INTEGER NOT NULL DEFAULT 0
+                                 CHECK (typeof(own_seq) = 'integer' AND own_seq BETWEEN 0 AND 4294967295),
+                  anchor_minute  INTEGER CHECK (anchor_minute IS NULL
+                                 OR (typeof(anchor_minute) = 'integer' AND anchor_minute % 60 = 0)),
+                  final_day      INTEGER CHECK (final_day IS NULL OR (typeof(final_day) = 'integer' AND final_day >= 0)),
+                  keep_until_day INTEGER CHECK (keep_until_day IS NULL
+                                 OR (typeof(keep_until_day) = 'integer' AND keep_until_day >= 0)),
+                  CHECK ((state = 'final') = (final_day IS NOT NULL)),
+                  CHECK (keep_until_day IS NULL OR final_day IS NOT NULL),
+                  PRIMARY KEY (channel_id, epoch)
+                )""",
+        """CREATE TABLE ch_epoch_log (
+                  channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  epoch       INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  winner_hash BLOB NOT NULL CHECK (length(winner_hash) = 32),
+                  final_day   INTEGER NOT NULL CHECK (typeof(final_day) = 'integer' AND final_day >= 0),
+                  PRIMARY KEY (channel_id, epoch)
+                )""",
+        """CREATE TABLE ch_candidate (
+                  channel_id        BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  epoch             INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  hash              BLOB NOT NULL CHECK (length(hash) = 32),
+                  sender            BLOB NOT NULL CHECK (length(sender) = 32),
+                  rank              INTEGER NOT NULL CHECK (typeof(rank) = 'integer' AND rank BETWEEN 0 AND 255),
+                  own               INTEGER NOT NULL CHECK (own IN (0, 1)),
+                  verified          INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
+                  body_env          BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 16777216),
+                  welcome_env       BLOB CHECK (welcome_env IS NULL OR length(welcome_env) BETWEEN 29 AND 67108864),
+                  box_env           BLOB CHECK (box_env IS NULL OR length(box_env) = 60),
+                  first_seen_minute INTEGER NOT NULL
+                                    CHECK (typeof(first_seen_minute) = 'integer' AND first_seen_minute % 60 = 0),
+                  store_hour        INTEGER CHECK (store_hour IS NULL
+                                    OR (typeof(store_hour) = 'integer' AND store_hour % 3600 = 0)),
+                  CHECK (own = 1 OR (welcome_env IS NULL AND box_env IS NULL)),
+                  CHECK (own = 1 OR verified = 0),
+                  PRIMARY KEY (channel_id, epoch, hash),
+                  UNIQUE (channel_id, epoch, sender)
+                )""",
+        """CREATE TABLE ch_fork_signal (
+                  channel_id     BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  epoch          INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  hash           BLOB NOT NULL CHECK (length(hash) = 32),
+                  first_seen_day INTEGER NOT NULL CHECK (typeof(first_seen_day) = 'integer' AND first_seen_day >= 0),
+                  PRIMARY KEY (channel_id, epoch, hash)
+                )""",
+        // ---- the OpenMLS rows (GhostKv, §3.4). Ordinary rowid tables: S0-6.
+        """CREATE TABLE mls_kv (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  k          BLOB NOT NULL CHECK (length(k) BETWEEN 2 AND 1024),
+                  v_env      BLOB NOT NULL CHECK (length(v_env) BETWEEN 28 AND 4194304),
+                  PRIMARY KEY (channel_id, k)
+                )""",
+        """CREATE TABLE mls_global_kv (
+                  k                BLOB PRIMARY KEY NOT NULL CHECK (length(k) BETWEEN 2 AND 1024),
+                  v_env            BLOB NOT NULL CHECK (length(v_env) BETWEEN 28 AND 4194304),
+                  channel_id       BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  delete_after_day INTEGER CHECK (delete_after_day IS NULL
+                                   OR (typeof(delete_after_day) = 'integer' AND delete_after_day >= 0))
+                )""",
+        "CREATE INDEX idx_mls_global_kv_channel ON mls_global_kv(channel_id)",
+        // ---- posts and what hangs on them (§8.2, §8.5)
+        """CREATE TABLE ch_post (
+                  op_id             BLOB PRIMARY KEY NOT NULL CHECK (length(op_id) = 16),
+                  channel_id        BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  direction         TEXT NOT NULL CHECK (direction IN ('out', 'in')),
+                  author            BLOB NOT NULL CHECK (length(author) = 32),
+                  kind              INTEGER NOT NULL CHECK (kind IN (1, 2)),
+                  reply_to          BLOB CHECK (reply_to IS NULL OR length(reply_to) = 16),
+                  timer_code        INTEGER NOT NULL CHECK (typeof(timer_code) = 'integer' AND timer_code BETWEEN 0 AND 5),
+                  epoch             INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch >= 0),
+                  body_env          BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 65564),
+                  state             TEXT NOT NULL
+                                    CHECK (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate', 'unread', 'read')),
+                  author_minute     INTEGER NOT NULL CHECK (typeof(author_minute) = 'integer' AND author_minute % 60 = 0),
+                  displayed_minute  INTEGER CHECK (displayed_minute IS NULL
+                                    OR (typeof(displayed_minute) = 'integer' AND displayed_minute % 60 = 0)),
+                  delete_at_minute  INTEGER CHECK (delete_at_minute IS NULL
+                                    OR (typeof(delete_at_minute) = 'integer' AND delete_at_minute % 60 = 0)),
+                  relay_expiry_hour INTEGER CHECK (relay_expiry_hour IS NULL
+                                    OR (typeof(relay_expiry_hour) = 'integer' AND relay_expiry_hour % 3600 = 0)),
+                  CHECK ((direction = 'out') = (state IN ('queued', 'sent', 'degraded', 'failed', 'indeterminate'))),
+                  CHECK (direction = 'in' OR (displayed_minute IS NULL AND relay_expiry_hour IS NULL)),
+                  CHECK (direction = 'out' OR ((state = 'read') = (displayed_minute IS NOT NULL)))
+                )""",
+        "CREATE INDEX idx_ch_post_order ON ch_post(channel_id, author_minute, author, op_id)",
+        "CREATE INDEX idx_ch_post_delete ON ch_post(delete_at_minute) WHERE delete_at_minute IS NOT NULL",
+        """CREATE TABLE ch_reaction (
+                  target       BLOB NOT NULL REFERENCES ch_post(op_id) ON DELETE CASCADE,
+                  author       BLOB NOT NULL CHECK (length(author) = 32),
+                  channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  grapheme_env BLOB NOT NULL CHECK (length(grapheme_env) BETWEEN 29 AND 60),
+                  PRIMARY KEY (target, author)
+                )""",
+        """CREATE TABLE ch_pending_post (
+                  op_id           BLOB PRIMARY KEY NOT NULL CHECK (length(op_id) = 16),
+                  channel_id      BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer' AND kind BETWEEN 1 AND 7),
+                  content_env     BLOB NOT NULL CHECK (length(content_env) BETWEEN 29 AND 65564),
+                  fail_after_hour INTEGER NOT NULL
+                                  CHECK (typeof(fail_after_hour) = 'integer' AND fail_after_hour % 3600 = 0)
+                )""",
+        """CREATE TABLE ch_outbound_op (
+                  operation_id BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
+                  channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  purpose      TEXT NOT NULL CHECK (purpose IN ('post', 'commit', 'welcome', 'join', 'rejoin', 'request')),
+                  ref          BLOB CHECK (ref IS NULL OR length(ref) BETWEEN 1 AND 64)
+                )""",
+        """CREATE TABLE ch_seen (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  tag        BLOB NOT NULL CHECK (length(tag) = 16),
+                  until_day  INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  PRIMARY KEY (channel_id, tag)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE ch_reveal (
+                  channel_id       BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  direction        TEXT NOT NULL CHECK (direction IN ('out', 'in')),
+                  peer             BLOB NOT NULL CHECK (length(peer) = 32),
+                  delete_at_minute INTEGER CHECK (delete_at_minute IS NULL
+                                   OR (typeof(delete_at_minute) = 'integer' AND delete_at_minute % 60 = 0)),
+                  PRIMARY KEY (channel_id, direction, peer)
+                )""",
+        // ---- joins, invites and the committer's work (§6.2)
+        """CREATE TABLE ch_join (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  kp_ref     BLOB NOT NULL CHECK (length(kp_ref) = 32),
+                  type       TEXT NOT NULL CHECK (type IN ('join', 'rejoin', 'restore')),
+                  invite_id  BLOB CHECK (invite_id IS NULL OR length(invite_id) = 16),
+                  generation INTEGER NOT NULL
+                             CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
+                  expiry_day INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0),
+                  CHECK ((type = 'rejoin') = (invite_id IS NULL)),
+                  PRIMARY KEY (channel_id, kp_ref)
+                )""",
+        """CREATE TABLE ch_join_request (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  hash       BLOB NOT NULL CHECK (length(hash) = 32),
+                  generation INTEGER NOT NULL
+                             CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
+                  type       TEXT NOT NULL CHECK (type IN ('join', 'rejoin', 'restore')),
+                  invite_id  BLOB CHECK (invite_id IS NULL OR length(invite_id) = 16),
+                  body_env   BLOB NOT NULL CHECK (length(body_env) BETWEEN 29 AND 4096),
+                  until_day  INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  CHECK ((type = 'rejoin') = (invite_id IS NULL)),
+                  PRIMARY KEY (channel_id, hash)
+                )""",
+        """CREATE TABLE ch_invite_issued (
+                  channel_id        BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  invite_id         BLOB NOT NULL CHECK (length(invite_id) = 16),
+                  invite_pk         BLOB NOT NULL CHECK (length(invite_pk) = 32),
+                  sponsor           BLOB NOT NULL CHECK (length(sponsor) = 32),
+                  sponsor_sig       BLOB NOT NULL CHECK (length(sponsor_sig) = 64),
+                  committers_digest BLOB NOT NULL CHECK (length(committers_digest) = 32),
+                  pw_version        INTEGER CHECK (pw_version IS NULL
+                                    OR (typeof(pw_version) = 'integer' AND pw_version BETWEEN 1 AND 65535)),
+                  consumed          INTEGER NOT NULL DEFAULT 0 CHECK (consumed IN (0, 1)),
+                  void              INTEGER NOT NULL DEFAULT 0 CHECK (void IN (0, 1)),
+                  expiry_day        INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0),
+                  PRIMARY KEY (channel_id, invite_id)
+                )""",
+        """CREATE TABLE ch_kp_seen (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  tag        BLOB NOT NULL CHECK (length(tag) = 16),
+                  until_day  INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  PRIMARY KEY (channel_id, tag)
+                ) WITHOUT ROWID""",
+        """CREATE TABLE ch_member_seen (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  member     BLOB NOT NULL CHECK (length(member) = 32),
+                  last_epoch INTEGER NOT NULL CHECK (typeof(last_epoch) = 'integer' AND last_epoch >= 0),
+                  PRIMARY KEY (channel_id, member)
+                )""",
+        """CREATE TABLE ch_invite_own (
+                  invite_id  BLOB PRIMARY KEY NOT NULL CHECK (length(invite_id) = 16),
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  invite_env BLOB CHECK (invite_env IS NULL OR length(invite_env) BETWEEN 29 AND 1024),
+                  expiry_day INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0)
+                )""",
+        """CREATE TABLE ch_sponsor (
+                  channel_id   BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  member       BLOB NOT NULL CHECK (length(member) = 32),
+                  sponsor      BLOB NOT NULL CHECK (length(sponsor) = 32),
+                  invite_id    BLOB NOT NULL CHECK (length(invite_id) = 16),
+                  admitted_day INTEGER NOT NULL CHECK (typeof(admitted_day) = 'integer' AND admitted_day >= 0),
+                  PRIMARY KEY (channel_id, member)
+                )""",
+        """CREATE TABLE ch_member_refresh (
+                  channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  member      BLOB NOT NULL CHECK (length(member) = 32),
+                  refresh_day INTEGER NOT NULL CHECK (typeof(refresh_day) = 'integer' AND refresh_day >= 0),
+                  PRIMARY KEY (channel_id, member)
+                )""",
+        """CREATE TABLE ch_request (
+                  channel_id  BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  kind        TEXT NOT NULL CHECK (kind IN ('leave', 'remove', 'policy', 'class')),
+                  subject     BLOB NOT NULL CHECK (length(subject) BETWEEN 1 AND 32),
+                  payload_env BLOB CHECK (payload_env IS NULL OR length(payload_env) BETWEEN 29 AND 4096),
+                  until_day   INTEGER NOT NULL CHECK (typeof(until_day) = 'integer' AND until_day >= 0),
+                  PRIMARY KEY (channel_id, kind, subject)
+                )""",
+        """CREATE TABLE ch_box_key (
+                  channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
+                  box_pk     BLOB NOT NULL CHECK (length(box_pk) = 32),
+                  sk_env     BLOB NOT NULL CHECK (length(sk_env) = 60),
+                  last_epoch INTEGER CHECK (last_epoch IS NULL OR (typeof(last_epoch) = 'integer' AND last_epoch >= 0)),
+                  PRIMARY KEY (channel_id, box_pk)
+                )""",
+    )
+
+    /**
+     * Migration 7, **step 2**: the state-machine, write-once, bound and REPLACE-guard triggers.
+     * Comparisons are NULL-safe (`IS NOT`, R-T6): a `WHEN` that evaluates to NULL does not fire, which
+     * would let a write-once column go from a value to NULL unnoticed.
+     *
+     * The bounds are those of §6.3.5 (CS-C8) and §9: the engine keeps its tables under them by
+     * deleting the oldest or the worst row first, and the trigger is the backstop that turns an
+     * engine defect into an abort instead of a table that grows. Every state machine is §6.11's.
+     */
+    private fun migration7Triggers(): List<String> = listOf(
+        // ---- the channel (§6.11: Channel, member view). Entering `joining` again is how a new
+        // invitation reaches a channel the client left, was removed from or let expire (§6.2.2); the
+        // restore of a channel in `resync_needed`, `reinvite_needed` or `replaced` leaves the row in its
+        // state until the Welcome makes it `active`.
+        """CREATE TRIGGER ch_channel_identity BEFORE UPDATE ON ch_channel
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.suite IS NOT OLD.suite
+                  OR NEW.my_pseudonym IS NOT OLD.my_pseudonym
+                BEGIN SELECT RAISE(ABORT, 'a channel keeps its id, its suite and its pseudonym'); END""",
+        """CREATE TRIGGER ch_channel_state BEFORE UPDATE OF state ON ch_channel
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'joining' AND NEW.state IN ('active', 'join_expired'))
+                       OR (OLD.state = 'active' AND NEW.state IN ('leaving', 'removed', 'replaced', 'resync_needed', 'reinvite_needed'))
+                       OR (OLD.state = 'leaving' AND NEW.state IN ('left', 'removed'))
+                       OR (OLD.state = 'resync_needed' AND NEW.state IN ('active', 'reinvite_needed'))
+                       OR (OLD.state IN ('reinvite_needed', 'replaced') AND NEW.state = 'active')
+                       OR (OLD.state IN ('left', 'removed', 'replaced', 'join_expired') AND NEW.state = 'joining'))
+                BEGIN SELECT RAISE(ABORT, 'illegal channel state transition'); END""",
+        // ---- generations (§6.5, §6.11): pending_switch -> current -> draining, one of each kind at a time
+        """CREATE TRIGGER ch_generation_identity BEFORE UPDATE ON ch_generation
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.generation IS NOT OLD.generation
+                  OR NEW.namespace_id IS NOT OLD.namespace_id OR NEW.g_env IS NOT OLD.g_env
+                  OR NEW.jk_env IS NOT OLD.jk_env OR NEW.r_join IS NOT OLD.r_join
+                BEGIN SELECT RAISE(ABORT, 'a generation keeps its namespace and its secrets'); END""",
+        """CREATE TRIGGER ch_generation_state BEFORE UPDATE OF state ON ch_generation
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'pending_switch' AND NEW.state = 'current')
+                       OR (OLD.state = 'current' AND NEW.state = 'draining'))
+                BEGIN SELECT RAISE(ABORT, 'illegal generation transition'); END""",
+        """CREATE TRIGGER ch_generation_one_current_insert BEFORE INSERT ON ch_generation
+                WHEN NEW.state = 'current'
+                  AND EXISTS (SELECT 1 FROM ch_generation WHERE channel_id = NEW.channel_id AND state = 'current')
+                BEGIN SELECT RAISE(ABORT, 'at most one current generation per channel'); END""",
+        """CREATE TRIGGER ch_generation_one_current_update BEFORE UPDATE OF state ON ch_generation
+                WHEN NEW.state = 'current' AND OLD.state <> 'current'
+                  AND EXISTS (SELECT 1 FROM ch_generation WHERE channel_id = NEW.channel_id AND state = 'current')
+                BEGIN SELECT RAISE(ABORT, 'at most one current generation per channel'); END""",
+        """CREATE TRIGGER ch_generation_one_draining_insert BEFORE INSERT ON ch_generation
+                WHEN NEW.state = 'draining'
+                  AND EXISTS (SELECT 1 FROM ch_generation WHERE channel_id = NEW.channel_id AND state = 'draining')
+                BEGIN SELECT RAISE(ABORT, 'at most one draining generation per channel'); END""",
+        """CREATE TRIGGER ch_generation_one_draining_update BEFORE UPDATE OF state ON ch_generation
+                WHEN NEW.state = 'draining' AND OLD.state <> 'draining'
+                  AND EXISTS (SELECT 1 FROM ch_generation WHERE channel_id = NEW.channel_id AND state = 'draining')
+                BEGIN SELECT RAISE(ABORT, 'at most one draining generation per channel'); END""",
+        // ---- epochs (§6.11: open -> final, sticky; §19.21: the anchor is cleared at finality; §9: 17 rows)
+        """CREATE TRIGGER ch_epoch_limit BEFORE INSERT ON ch_epoch
+                WHEN (SELECT count(*) FROM ch_epoch WHERE channel_id = NEW.channel_id) >= 17
+                BEGIN SELECT RAISE(ABORT, 'at most 17 epochs per channel: the current one and 16 past'); END""",
+        """CREATE TRIGGER ch_epoch_anchor_insert BEFORE INSERT ON ch_epoch
+                WHEN NEW.state = 'final' AND NEW.anchor_minute IS NOT NULL
+                BEGIN SELECT RAISE(ABORT, 'the anchor of a final epoch is cleared'); END""",
+        """CREATE TRIGGER ch_epoch_anchor_update BEFORE UPDATE ON ch_epoch
+                WHEN NEW.state = 'final' AND NEW.anchor_minute IS NOT NULL
+                BEGIN SELECT RAISE(ABORT, 'the anchor of a final epoch is cleared'); END""",
+        """CREATE TRIGGER ch_epoch_identity BEFORE UPDATE ON ch_epoch
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.epoch IS NOT OLD.epoch
+                  OR NEW.k_env IS NOT OLD.k_env OR NEW.r_ep IS NOT OLD.r_ep
+                  OR (OLD.winner_hash IS NOT NULL AND NEW.winner_hash IS NOT OLD.winner_hash)
+                  OR NEW.own_seq < OLD.own_seq
+                BEGIN SELECT RAISE(ABORT, 'an epoch keeps its keys and its winner, and its sequence never goes back'); END""",
+        """CREATE TRIGGER ch_epoch_final BEFORE UPDATE ON ch_epoch
+                WHEN OLD.state = 'final'
+                  AND (NEW.state IS NOT 'final' OR NEW.winner_hash IS NOT OLD.winner_hash OR NEW.own_seq IS NOT OLD.own_seq
+                       OR NEW.final_day IS NOT OLD.final_day
+                       OR (OLD.keep_until_day IS NOT NULL
+                           AND (NEW.keep_until_day IS NULL OR NEW.keep_until_day > OLD.keep_until_day)))
+                BEGIN SELECT RAISE(ABORT, 'a final epoch is sticky; only its retention moves, and only earlier'); END""",
+        """CREATE TRIGGER ch_epoch_log_limit BEFORE INSERT ON ch_epoch_log
+                WHEN (SELECT count(*) FROM ch_epoch_log WHERE channel_id = NEW.channel_id) >= 1024
+                BEGIN SELECT RAISE(ABORT, 'at most 1024 epoch log rows per channel'); END""",
+        """CREATE TRIGGER ch_epoch_log_append_only BEFORE UPDATE ON ch_epoch_log
+                BEGIN SELECT RAISE(ABORT, 'the epoch log is append-only'); END""",
+        // ---- commit candidates (§6.3.5: at most 8 per epoch and one per sender, plus the own commit)
+        """CREATE TRIGGER ch_candidate_limit BEFORE INSERT ON ch_candidate
+                WHEN (NEW.own = 0 AND (SELECT count(*) FROM ch_candidate
+                                       WHERE channel_id = NEW.channel_id AND epoch = NEW.epoch AND own = 0) >= 8)
+                  OR (NEW.own = 1 AND EXISTS (SELECT 1 FROM ch_candidate
+                                              WHERE channel_id = NEW.channel_id AND epoch = NEW.epoch AND own = 1))
+                BEGIN SELECT RAISE(ABORT, 'at most 8 foreign candidates and one own commit per epoch'); END""",
+        """CREATE TRIGGER ch_candidate_identity BEFORE UPDATE ON ch_candidate
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.epoch IS NOT OLD.epoch OR NEW.hash IS NOT OLD.hash
+                  OR NEW.sender IS NOT OLD.sender OR NEW.rank IS NOT OLD.rank OR NEW.own IS NOT OLD.own
+                  OR NEW.body_env IS NOT OLD.body_env OR NEW.first_seen_minute IS NOT OLD.first_seen_minute
+                  OR NEW.verified < OLD.verified
+                  OR (OLD.welcome_env IS NULL AND NEW.welcome_env IS NOT NULL)
+                  OR (OLD.welcome_env IS NOT NULL AND NEW.welcome_env IS NOT NULL AND NEW.welcome_env IS NOT OLD.welcome_env)
+                  OR (OLD.box_env IS NULL AND NEW.box_env IS NOT NULL)
+                  OR (OLD.box_env IS NOT NULL AND NEW.box_env IS NOT NULL AND NEW.box_env IS NOT OLD.box_env)
+                  OR (OLD.store_hour IS NOT NULL AND (NEW.store_hour IS NULL OR NEW.store_hour > OLD.store_hour))
+                BEGIN SELECT RAISE(ABORT, 'a candidate changes only by a verified copy, an earlier store hour and the erasure of its Welcomes'); END""",
+        """CREATE TRIGGER ch_fork_signal_limit BEFORE INSERT ON ch_fork_signal
+                WHEN (SELECT count(*) FROM ch_fork_signal WHERE channel_id = NEW.channel_id) >= 16
+                BEGIN SELECT RAISE(ABORT, 'at most 16 fork signals per channel'); END""",
+        """CREATE TRIGGER ch_fork_signal_append_only BEFORE UPDATE ON ch_fork_signal
+                BEGIN SELECT RAISE(ABORT, 'fork signals are diagnostics and are never rewritten'); END""",
+        // ---- posts (§8.2: deadlines only move earlier; the F9 dm_message triggers, for the columns ch_post has).
+        // A retry (failed -> queued) re-encrypts the post under the epoch and the timer then current.
+        """CREATE TRIGGER ch_post_identity BEFORE UPDATE ON ch_post
+                WHEN NEW.op_id IS NOT OLD.op_id OR NEW.channel_id IS NOT OLD.channel_id
+                  OR NEW.direction IS NOT OLD.direction OR NEW.author IS NOT OLD.author
+                  OR NEW.kind IS NOT OLD.kind OR NEW.reply_to IS NOT OLD.reply_to OR NEW.body_env IS NOT OLD.body_env
+                  OR ((NEW.timer_code IS NOT OLD.timer_code OR NEW.epoch IS NOT OLD.epoch
+                       OR NEW.author_minute IS NOT OLD.author_minute)
+                      AND NOT (OLD.state = 'failed' AND NEW.state = 'queued'))
+                BEGIN SELECT RAISE(ABORT, 'only the state and the display and expiry columns of a post change; a retry re-encrypts it'); END""",
+        """CREATE TRIGGER ch_post_state BEFORE UPDATE OF state ON ch_post
+                WHEN NOT ((OLD.state = NEW.state)
+                       OR (OLD.state = 'queued' AND NEW.state IN ('sent', 'degraded', 'failed', 'indeterminate'))
+                       OR (OLD.state = 'failed' AND NEW.state = 'queued')
+                       OR (OLD.state = 'unread' AND NEW.state = 'read'))
+                BEGIN SELECT RAISE(ABORT, 'illegal post state transition'); END""",
+        """CREATE TRIGGER ch_post_expiry
+                BEFORE UPDATE OF displayed_minute, delete_at_minute, relay_expiry_hour ON ch_post
+                WHEN (OLD.displayed_minute IS NOT NULL AND NEW.displayed_minute IS NOT OLD.displayed_minute)
+                  OR (OLD.delete_at_minute IS NOT NULL AND (NEW.delete_at_minute IS NULL OR NEW.delete_at_minute > OLD.delete_at_minute))
+                  OR (OLD.relay_expiry_hour IS NOT NULL AND NEW.relay_expiry_hour > OLD.relay_expiry_hour)
+                BEGIN SELECT RAISE(ABORT, 'a post is displayed once and its deletion time only moves earlier'); END""",
+        """CREATE TRIGGER ch_pending_post_limit BEFORE INSERT ON ch_pending_post
+                WHEN (SELECT count(*) FROM ch_pending_post WHERE channel_id = NEW.channel_id) >= 256
+                BEGIN SELECT RAISE(ABORT, 'at most 256 pending posts per channel'); END""",
+        // ---- joins, invites and keys (§6.2, §6.3.5, §19.17)
+        """CREATE TRIGGER ch_join_request_limit BEFORE INSERT ON ch_join_request
+                WHEN (SELECT count(*) FROM ch_join_request WHERE channel_id = NEW.channel_id) >= 64
+                BEGIN SELECT RAISE(ABORT, 'at most 64 pending join requests per channel'); END""",
+        """CREATE TRIGGER ch_invite_issued_identity BEFORE UPDATE ON ch_invite_issued
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.invite_id IS NOT OLD.invite_id
+                  OR NEW.invite_pk IS NOT OLD.invite_pk OR NEW.sponsor IS NOT OLD.sponsor
+                  OR NEW.sponsor_sig IS NOT OLD.sponsor_sig OR NEW.committers_digest IS NOT OLD.committers_digest
+                  OR NEW.pw_version IS NOT OLD.pw_version OR NEW.expiry_day IS NOT OLD.expiry_day
+                BEGIN SELECT RAISE(ABORT, 'an issued invite is immutable but for its consumed and void flags'); END""",
+        """CREATE TRIGGER ch_invite_issued_flags BEFORE UPDATE OF consumed, void ON ch_invite_issued
+                WHEN NEW.consumed < OLD.consumed OR NEW.void < OLD.void
+                BEGIN SELECT RAISE(ABORT, 'an invite is consumed once and voided once'); END""",
+        """CREATE TRIGGER ch_kp_seen_limit BEFORE INSERT ON ch_kp_seen
+                WHEN (SELECT count(*) FROM ch_kp_seen WHERE channel_id = NEW.channel_id) >= 1024
+                  AND NOT EXISTS (SELECT 1 FROM ch_kp_seen WHERE channel_id = NEW.channel_id AND tag = NEW.tag)
+                BEGIN SELECT RAISE(ABORT, 'at most 1024 KeyPackage tags per channel'); END""",
+        """CREATE TRIGGER ch_box_key_limit BEFORE INSERT ON ch_box_key
+                WHEN (SELECT count(*) FROM ch_box_key WHERE channel_id = NEW.channel_id) >= 18
+                BEGIN SELECT RAISE(ABORT, 'at most 18 box keys per channel'); END""",
+        """CREATE TRIGGER ch_box_key_replaced BEFORE UPDATE ON ch_box_key
+                WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.box_pk IS NOT OLD.box_pk OR NEW.sk_env IS NOT OLD.sk_env
+                  OR (OLD.last_epoch IS NOT NULL AND NEW.last_epoch IS NOT OLD.last_epoch)
+                BEGIN SELECT RAISE(ABORT, 'a box key is replaced once, in the epoch that replaced it'); END""",
+        // REPLACE guards (§19.21 point 4 of Phase 8, §9 of Phase 10): SQLite runs no DELETE trigger for a
+        // row that REPLACE conflict resolution deletes, and the foreign-key cascades of `ch_channel` and
+        // `ch_post` would run: a REPLACE of a channel row would delete its posts, keys and generations
+        // without one trigger. Every table but the two written with INSERT OR IGNORE (`ch_seen` and
+        // `ch_kp_seen`, whose rows carry no rule) refuses an insert that conflicts on any of its keys,
+        // so its writers are UPDATE-then-INSERT pairs. `ch_generation` and `ch_candidate` conflict on a
+        // UNIQUE constraint as well (the namespace; one candidate per sender and epoch). All 24 are
+        // rowid tables, so each guard also refuses an insert that names an existing rowid
+        // ([rowidGuard]): REPLACE would delete that other row, whatever its keys.
+        rowidGuard("ch_channel", "channel_id = NEW.channel_id"),
+        rowidGuard("ch_liveness", "channel_id = NEW.channel_id"),
+        rowidGuard("ch_schedule", "channel_id = NEW.channel_id"),
+        rowidGuard(
+            "ch_generation",
+            "(channel_id = NEW.channel_id AND generation = NEW.generation) OR namespace_id = NEW.namespace_id",
+        ),
+        rowidGuard("ch_epoch", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
+        rowidGuard("ch_epoch_log", "channel_id = NEW.channel_id AND epoch = NEW.epoch"),
+        rowidGuard(
+            "ch_candidate",
+            "(channel_id = NEW.channel_id AND epoch = NEW.epoch AND hash = NEW.hash) " +
+                "OR (channel_id = NEW.channel_id AND epoch = NEW.epoch AND sender = NEW.sender)",
+        ),
+        rowidGuard("ch_fork_signal", "channel_id = NEW.channel_id AND epoch = NEW.epoch AND hash = NEW.hash"),
+        rowidGuard("mls_kv", "channel_id = NEW.channel_id AND k = NEW.k"),
+        rowidGuard("mls_global_kv", "k = NEW.k"),
+        rowidGuard("ch_post", "op_id = NEW.op_id"),
+        rowidGuard("ch_reaction", "target = NEW.target AND author = NEW.author"),
+        rowidGuard("ch_pending_post", "op_id = NEW.op_id"),
+        rowidGuard("ch_outbound_op", "operation_id = NEW.operation_id"),
+        rowidGuard("ch_reveal", "channel_id = NEW.channel_id AND direction = NEW.direction AND peer = NEW.peer"),
+        rowidGuard("ch_join", "channel_id = NEW.channel_id AND kp_ref = NEW.kp_ref"),
+        rowidGuard("ch_join_request", "channel_id = NEW.channel_id AND hash = NEW.hash"),
+        rowidGuard("ch_invite_issued", "channel_id = NEW.channel_id AND invite_id = NEW.invite_id"),
+        rowidGuard("ch_member_seen", "channel_id = NEW.channel_id AND member = NEW.member"),
+        rowidGuard("ch_invite_own", "invite_id = NEW.invite_id"),
+        rowidGuard("ch_sponsor", "channel_id = NEW.channel_id AND member = NEW.member"),
+        rowidGuard("ch_member_refresh", "channel_id = NEW.channel_id AND member = NEW.member"),
+        rowidGuard("ch_request", "channel_id = NEW.channel_id AND kind = NEW.kind AND subject = NEW.subject"),
+        rowidGuard("ch_box_key", "channel_id = NEW.channel_id AND box_pk = NEW.box_pk"),
+    )
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
-        "channels", "channel_pseudonyms", "mls_state", "posts", "media", "media_blobs",
+        "media", "media_blobs",
         "invite_nonces", "revocations",
         // v2 (sync)
         "relay_directory", "sync_namespace", "namespace_relay", "relay_capability", "relay_cursor",
@@ -1349,6 +1882,12 @@ object Schema {
         "dm_seen", "olm_session", "olm_prekey_gen", "olm_prekey_used", "dm_peer_pq",
         // v6 (Phase 10 §9, the `:sync` half): the funding flag and the registration capabilities.
         "sync_namespace_fund", "relay_register_capability",
+        // v7 (Phase 10 §9 "Migration 7"): the v1 channels, channel_pseudonyms, mls_state and posts are
+        // dropped (they are no longer expected), and the channel tables arrive.
+        "ch_channel", "ch_liveness", "ch_schedule", "ch_generation", "ch_epoch", "ch_epoch_log", "ch_candidate",
+        "ch_fork_signal", "mls_kv", "mls_global_kv", "ch_post", "ch_reaction", "ch_pending_post", "ch_outbound_op",
+        "ch_seen", "ch_reveal", "ch_join", "ch_join_request", "ch_invite_issued", "ch_kp_seen", "ch_member_seen",
+        "ch_invite_own", "ch_sponsor", "ch_member_refresh", "ch_request", "ch_box_key",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -1385,6 +1924,26 @@ object Schema {
         // v6 (Phase 10 §9): the channel send-delay rule and the REPLACE guards of the two new tables
         "sync_namespace_channel_delay_update", "sync_namespace_channel_delay_insert",
         "sync_namespace_fund_no_replace", "relay_register_capability_no_replace",
+        // v7 (Phase 10 §9 "Migration 7"): the state-machine, write-once and bound triggers of the channel
+        // tables ...
+        "ch_channel_identity", "ch_channel_state",
+        "ch_generation_identity", "ch_generation_state", "ch_generation_one_current_insert",
+        "ch_generation_one_current_update", "ch_generation_one_draining_insert", "ch_generation_one_draining_update",
+        "ch_epoch_limit", "ch_epoch_anchor_insert", "ch_epoch_anchor_update", "ch_epoch_identity", "ch_epoch_final",
+        "ch_epoch_log_limit", "ch_epoch_log_append_only",
+        "ch_candidate_limit", "ch_candidate_identity", "ch_fork_signal_limit", "ch_fork_signal_append_only",
+        "ch_post_identity", "ch_post_state", "ch_post_expiry", "ch_pending_post_limit",
+        "ch_join_request_limit", "ch_invite_issued_identity", "ch_invite_issued_flags", "ch_kp_seen_limit",
+        "ch_box_key_limit", "ch_box_key_replaced",
+        // ... and their REPLACE guards (every channel table but ch_seen and ch_kp_seen, which are written
+        // with INSERT OR IGNORE)
+        "ch_channel_no_replace", "ch_liveness_no_replace", "ch_schedule_no_replace", "ch_generation_no_replace",
+        "ch_epoch_no_replace", "ch_epoch_log_no_replace", "ch_candidate_no_replace", "ch_fork_signal_no_replace",
+        "mls_kv_no_replace", "mls_global_kv_no_replace", "ch_post_no_replace", "ch_reaction_no_replace",
+        "ch_pending_post_no_replace", "ch_outbound_op_no_replace", "ch_reveal_no_replace", "ch_join_no_replace",
+        "ch_join_request_no_replace", "ch_invite_issued_no_replace", "ch_member_seen_no_replace",
+        "ch_invite_own_no_replace", "ch_sponsor_no_replace", "ch_member_refresh_no_replace", "ch_request_no_replace",
+        "ch_box_key_no_replace",
     )
 
     /**

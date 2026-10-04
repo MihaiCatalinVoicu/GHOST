@@ -1396,6 +1396,10 @@ dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding"
 dmenq_case funding 3 "ReceiveStep.kt:13" \
   "refuses a RECV step that funds a namespace by name, through an alias and through a typed port (and lets reofferDeferred pass)"
+# Phase 10, slice S3: the channel stores (org.ghost.messaging.channel.store) make no port call (design 10.4); the
+# gate reads them like the rest of :messaging, so a store that funds a namespace is refused.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-channel"
+dmenq_case channel 1 "channel/store/MirrorStore.kt:11" "refuses a channel store that funds a namespace"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -1474,6 +1478,20 @@ dmrep_case vacuous 2 "no SQL string found (the gate would pass vacuously)" \
 expect_fail dm-no-replace "$HARNESS/negative-dm-replace-v6tables"
 dmrep_case v6tables 2 "CapabilityStore.kt:17: ON CONFLICT ... DO UPDATE" \
   "reads the writers of the two migration-6 sync tables, and not relay_capability's upsert or a longer table name"
+# Phase 10, slice S3: the channel tables of migration 7 (`ch_*`, `mls_kv`, `mls_global_kv`) are REPLACE-guarded
+# like the DM tables (all but `ch_seen` and `ch_kp_seen`, design faza10-forum.md §9, §19.35), so the rule reads
+# their writers wherever they are and requires the schema region to hold a `ch_` table. `v7tables` holds an
+# upsert on `mls_global_kv`, an INSERT OR REPLACE on `ch_post` and a REPLACE INTO on `mls_kv` in a `:sync` store
+# and an INSERT OR REPLACE on `ch_channel` in a later migration of Schema.kt, beside the writers' own
+# UPDATE-then-INSERT form, tables that only end like a channel table (`launch_log`, `research_kv`), a word that
+# only starts with `ch` (`chart_cache`) and a pre-channel REPLACE, none of which may count; `no-channel` a
+# schema whose migration 5 region holds no `ch_` table. The other fixtures' schemas gained a `ch_channel` line.
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-v7tables"
+dmrep_case v7tables 4 "ChannelMirrorStore.kt:16: ON CONFLICT ... DO UPDATE" \
+  "reads the writers of the channel tables outside :messaging and in a later migration, and not launch_log, research_kv, chart_cache or the pre-channel REPLACE"
+expect_fail dm-no-replace "$HARNESS/negative-dm-replace-no-channel"
+dmrep_case no-channel 1 "no CREATE TABLE ch_ between the migration 5 markers" \
+  "refuses a schema whose migration 5 region holds no channel table"
 if bash "$DIR/dm-no-replace.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-no-replace accepts the real DM SQL"
 else
@@ -1573,6 +1591,37 @@ evasion_named dm-no-replace "$EV_KT/ActionInAValue.kt:5: DO UPDATE held apart fr
 evasion_named dm-no-replace "$EV_KT/ConflictFollowedByValue.kt:6: ON CONFLICT followed by a value" "reports ON CONFLICT followed by a value"
 evasion_named dm-no-replace "$EV_KT/TemplateVerb.kt:5: OR followed by a value" "reports the algorithm as a template"
 near_misses dm-no-replace positive-dm-replace-near-misses
+# G-DM4, slice S3: each violation of the channel-table fixture by line (the writers outside :messaging).
+evasion_count dm-no-replace negative-dm-replace-v7tables 4
+evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:16: ON CONFLICT ... DO UPDATE in DM SQL" "reports an upsert on mls_global_kv"
+evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:19: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on ch_post"
+evasion_named dm-no-replace "sync/store/ChannelMirrorStore.kt:22: REPLACE INTO in DM SQL" "reports a REPLACE INTO on mls_kv"
+evasion_named dm-no-replace "storage/Schema.kt:25: OR REPLACE, REPLACE INTO in DM SQL" "reports an INSERT OR REPLACE on ch_channel in a later migration"
+# The scopes of the source gates (design faza10-forum.md 13.1, the row of the hygiene gates; slice S3):
+# anti-placeholder, no-logging, sync-no-catch-all, kotlin-clearnet, G-DM1, G-DM4 and G-DM6 read the package of
+# the channel stores, and the first two the channel crate too. One fixture, one violation of each in
+# org.ghost.messaging.channel.store (and a TODO and a println! in client-core/mls/src for the two gates that
+# read Rust): a gate whose scope named the DM packages one by one would pass this tree. The other half of each
+# gate (the clean side) is the run against the real tree.
+CHP=negative-channel-packages
+CHS="android/messaging/src/main/kotlin/org/ghost/messaging/channel/store/LeakyChannelStore.kt"
+evasion_count anti-placeholder $CHP 2
+evasion_named anti-placeholder "$CHS:11:" "reads the package of the channel stores"
+evasion_named anti-placeholder "client-core/mls/src/lib.rs:5:" "reads the channel crate"
+evasion_count no-logging $CHP 2
+evasion_named no-logging "$CHS:14:" "reads the package of the channel stores"
+evasion_named no-logging "client-core/mls/src/lib.rs:6:" "reads the channel crate"
+evasion_count sync-no-catch-all $CHP 1
+evasion_named sync-no-catch-all "$CHS:19: catch (e: Exception)" "reads the package of the channel stores against the allowlist"
+evasion_count kotlin-clearnet $CHP 1
+evasion_named kotlin-clearnet "$CHS:3:import java.net.Socket" "reads the package of the channel stores"
+evasion_count messaging-no-network $CHP 2
+evasion_named messaging-no-network "$CHS:3:import java.net.Socket (G-DM1: a DM module names a network package" "reads the package of the channel stores (the package)"
+evasion_named messaging-no-network "$CHS:3:import java.net.Socket (G-DM1: a DM module names a socket, address or HTTP class" "reads the package of the channel stores (the class)"
+evasion_count dm-no-replace $CHP 1
+evasion_named dm-no-replace "$CHS:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the channel stores"
+evasion_count dm-no-fts $CHP 2
+evasion_named dm-no-fts "$CHS:25:" "reads the package of the channel stores (the virtual table and the token)"
 # G-R4's source half (no-logging): a standard stream without a print macro.
 evasion_count no-logging negative-rust-std-streams 1
 evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
@@ -1602,6 +1651,10 @@ evasion_named dm-derivation-inputs "Renamed.kt:11: SecretKeySpec(key, \"HmacSHA2
 evasion_named dm-derivation-inputs "stale site android/crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Gone.kt" "reports a stale allowlist entry"
 evasion_named dm-derivation-inputs "dm-derivation-inputs.allow:5: android/sync/src/main/kotlin/org/ghost/sync/MovedLabel.kt is outside the DM modules" "refuses an allowlist entry outside the DM modules"
 evasion_named dm-derivation-inputs "dm-derivation-inputs.allow:6: malformed entry" "refuses a malformed allowlist entry"
+# Phase 10, slice S3: the package of the channel stores is read like the rest of :messaging.
+evasion_count dm-derivation-inputs dm-derivation/negative-channel-package 1
+evasion_named dm-derivation-inputs "channel/store/ChannelLeak.kt:13: SecretKeySpec(channelId, \"HmacSHA256\") is not on G-DM3's allowlist" \
+  "reports a MAC keyed by a channel identifier in the channel store package"
 if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
 else
