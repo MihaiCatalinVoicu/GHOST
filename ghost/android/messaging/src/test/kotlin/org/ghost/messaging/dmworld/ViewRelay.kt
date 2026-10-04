@@ -47,8 +47,9 @@ internal class ViewEvent(
 
 /**
  * Ground truth of one store: the sender's `dm_outbound_op` and `dm_outbound_item` rows, which name
- * the message an op carries. Which timer that message **should** have is not read from the sender
- * (JD5 derives it from the users' timer changes, [PrivacyWorld.timerChanges]).
+ * the message an op carries — as they were when the op was enqueued, where SWEEP has deleted them
+ * since ([ViewRelay.recordCauses], §22.39). Which timer that message **should** have is not read
+ * from the sender (JD5 derives it from the users' timer changes, [PrivacyWorld.timerChanges]).
  */
 internal class StoreCause(
     val operationId: ByteArray,
@@ -72,6 +73,19 @@ internal class StoreCause(
  * registrations are executed as the `:sync` work lane would, once their period is the current or
  * the next week (the core world's "redeem fairy" of §15.1 variant (a): the owner always holds a
  * capability in time).
+ *
+ * **An op past its deadline is closed, never stored** ([collect]; design §22.39), as Phase 7's work
+ * lane does: it plans no store at or after an op's `deadline_hour` and closes it there (M3, `failed`
+ * with no copy). Until §22.39 the model stored whatever was pending, which did not matter while every
+ * op was stored in the round that enqueued it; on production's triggers (§22.36) an op that a pass
+ * between relay rounds enqueued waits for the next round, and the gate-scale world stored one 8 115 s
+ * after its deadline — a store production never makes, which JD5's deadline half then reported.
+ *
+ * **What caused a store is recorded when the op is enqueued** ([recordCauses]; design §22.39): the
+ * sender's `dm_outbound_op` and `dm_outbound_item` rows, read at the end of the pass or facade call
+ * that enqueued the op. SWEEP deletes those rows with an expired message and never cancels its op
+ * (§10.6: "ops run to their outcome or deadline"), so an op stored after its message expired had no
+ * rows left at the store, and JD6 counted the user's own TIMER_SET as a store no user action caused.
  *
  * **What it does not model, declared in §22.16:** the credential-selection and capability layers of
  * the redeem lane (no token is ever redeemed, so JD3's redemption half and JD8 have no events),
@@ -131,6 +145,17 @@ internal class ViewRelay(private val now: () -> Long) {
     var storesWithoutCredential: Int = 0
         private set
 
+    /** Each op's cause as the sender's rows named it when it was enqueued ([recordCauses]): `client:op hex`. */
+    private val causes = HashMap<String, StoreCause>()
+
+    /** Ops stored after SWEEP had deleted their sender's rows, mapped by the cause [recordCauses] kept. */
+    var storesAfterSweep: Int = 0
+        private set
+
+    /** Ops a round closed at or after their `deadline_hour` instead of storing them (Phase 7's M3). */
+    var closedPastDeadline: Int = 0
+        private set
+
     fun beginSession(client: Int) {
         session.merge(client, 1, Int::plus)
     }
@@ -140,7 +165,11 @@ internal class ViewRelay(private val now: () -> Long) {
 
     // ------------------------------------------------------------------ stores
 
-    /** Takes every pending op off [device]'s outbox and stores it at the relays of its deliveries. */
+    /**
+     * Takes every pending op off [device]'s outbox and stores it at the relays of its deliveries —
+     * or, at or after its `deadline_hour`, closes it without a store, as Phase 7 would. Returns how
+     * many ops it decided either way (each an `OUTCOMES` hint).
+     */
     fun collect(client: Int, device: DmDevice): Int {
         val slotOf = slotMap(device)
         val ops = ArrayList<Array<Any?>>()
@@ -157,8 +186,21 @@ internal class ViewRelay(private val now: () -> Long) {
             val blob = row[2] as ByteArray
             val ttl = row[3] as Long
             val deadline = row[4] as Long?
+            // Decided here either way, so the cause recorded at the enqueue is needed no more.
+            val recorded = causes.remove("$client:${hex(operation)}")
+            if (deadline != null && deadline <= now()) {
+                close(device, operation)
+                closedPastDeadline++
+                n++
+                continue
+            }
             val hash = sha256(blob)
-            val cause = causeOf(device, operation)
+            val live = causeOf(device, operation)
+            val cause = if (live.purpose != null) {
+                live
+            } else {
+                recorded?.also { storesAfterSweep++ } ?: live
+            }
             val relays = ArrayList<Long>()
             device.sql.query(
                 "SELECT relay_id FROM outbox_delivery WHERE operation_id = ? ORDER BY relay_id",
@@ -213,6 +255,37 @@ internal class ViewRelay(private val now: () -> Long) {
             }
         }
         return StoreCause(operation, purpose, messageRef, control)
+    }
+
+    /**
+     * The cause of every op [device] has pending that this model has not seen yet, read from the
+     * sender's rows now: the world calls it at the end of every pass and facade call, before the next
+     * pass's SWEEP can delete the rows of a message that expired while its op waited ([collect]).
+     */
+    fun recordCauses(client: Int, device: DmDevice) {
+        val pending = ArrayList<ByteArray>()
+        device.sql.query("SELECT operation_id FROM outbox_op WHERE outcome = 'pending'") { pending += it.blob(0) }
+        for (operation in pending) {
+            val key = "$client:${hex(operation)}"
+            if (key !in causes) causes[key] = causeOf(device, operation)
+        }
+    }
+
+    /**
+     * Phase 7's M3 closure of an op whose `deadline_hour` passed while it waited (`OutboxStore.close`,
+     * then `decide`): its idle deliveries close, and with no delivery verified and no copy the outcome
+     * is `failed`, its payload wiped.
+     */
+    private fun close(device: DmDevice, operation: ByteArray) {
+        device.sql.exec(
+            "UPDATE outbox_delivery SET state = 'closed' " +
+                "WHERE operation_id = ? AND state IN ('pending', 'wait_capability') AND inflight = 0",
+            listOf(operation),
+        )
+        device.sql.exec(
+            "UPDATE outbox_op SET outcome = 'failed', ciphertext = NULL WHERE operation_id = ? AND outcome = 'pending'",
+            listOf(operation),
+        )
     }
 
     /** The Phase 7 outbox engine's release, the recipe `DmOutcomeTest` pinned in S7. */

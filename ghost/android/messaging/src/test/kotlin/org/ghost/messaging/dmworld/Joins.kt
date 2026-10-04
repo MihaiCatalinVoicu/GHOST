@@ -354,24 +354,46 @@ internal class Joins(private val world: PrivacyWorld) {
 
     /**
      * JD5 (§15.6): "TTL = the §10.1 table, no store after the deadline". Every TTL must be a bucket;
-     * every user text's TTL must be §10.1's table of **the conversation's timer as the users set
-     * it**, and every TIMER_SET's must be the larger of the old and the new bucket (R-T3).
+     * every user text's TTL must be §10.1's table of **the conversation's timer as the users had set
+     * it when the text was written**, and every TIMER_SET's must be the larger of the old and the new
+     * bucket (R-T3).
      *
      * **The timer is not read from the engine.** A conversation starts at 7 d; a timer change
-     * ([PrivacyWorld.timerChanges]) takes effect for the setter's own stores from the minute it was
-     * made, and for the peer's from the first blob the setter stored after it that the peer fetched
-     * (R-T9: the greater version is adopted from any message) — both read off the relay view. So a
-     * responder that ignores a TIMER_SET, or a sender whose `dm_message.timer_code` agrees with its
-     * own wrong TTL, fails here (R-T2: one bucket per conversation, in both directions).
+     * ([PrivacyWorld.timerChanges]) takes effect for the setter's own texts written after it, and for
+     * the peer's from the first blob carrying it that the peer fetched — the TIMER_SET, or a text the
+     * setter wrote after the change (R-T9: the greater version is adopted from any message that
+     * carries it) — read off the relay view. So a responder that ignores a TIMER_SET, or a sender
+     * whose `dm_message.timer_code` agrees with its own wrong TTL, fails here (R-T2: one bucket per
+     * conversation, in both directions).
      *
-     * **Not here:** the deadline half is checked but cannot fail in this world — the model relay
-     * stores every op in the session that enqueued it, and no world has an outage (PM-9's relay-
-     * outage world, §22.16) — and the relay-side "membership expiry ≤ the T30 bound" clause, which
-     * needs a relay model with memberships (§22.16). **Nor the pending path:** the world sets a
-     * conversation's timer after `EST-READY` ([Plan]'s edges), so a TIMER_SET queued for a session
-     * — the path where the engine takes the new timer's TTL, NI-DM2's declared open defect (§22.21
-     * item 2) — is at most an accident here; the line counts those it saw, and a FAILED item's
-     * retry (the defect's other half) is run by no world.
+     * **Written, not stored** (design §22.39). A text is checked against the timer of the moment its
+     * user wrote it ([PrivacyWorld.textWritten]), which is the timer its L0 carries: one queued for
+     * `EST-READY`'s flush keeps it when the users change the timer while it waits, and goes out in
+     * its own bucket. The first version took the store second for the writing one — true while every
+     * text was stored in the round it was written in — and so read such a text as one written after
+     * the change; the gate-scale nightlies from 2026-09-28 failed on exactly that, beside the R-T3
+     * defect below. The same reading took such a text, stored after the change, for a blob the peer
+     * adopts the change from; which message a blob carries is the sender's record of the op, kept
+     * from when it was enqueued ([ViewRelay.recordCauses]).
+     *
+     * **Not here:** the deadline half as an engine check, and the relay-side "membership expiry ≤ the
+     * T30 bound" clause, which needs a relay model with memberships (§22.16). The deadline half is
+     * checked and cannot fail in this world: what it reads is the model relay's rule, which since
+     * §22.39 is Phase 7's — an op at or past its `deadline_hour` is closed, never stored
+     * ([ViewRelay.collect]). On the old cadence every op was stored in the round that enqueued it, and
+     * on production's triggers (§22.36) an op that a pass between relay rounds enqueued waits for the
+     * next round: the model used to store it whatever its deadline, and on the gate scale it once did,
+     * 8 115 s late (§22.39). PM-9's relay-outage world, which would make the half bite on the engine,
+     * is still not built (§22.16).
+     *
+     * **Nor the pending path:** the world sets a conversation's timer after `EST-READY` ([Plan]'s
+     * edges), so a TIMER_SET queued for a session — the path where the engine takes the new timer's
+     * TTL, NI-DM2's declared open defect (§22.21 item 2) — is at most an accident here; the line
+     * counts those it saw, and a FAILED item's retry (the defect's other half) is run by no world.
+     * Until §22.39 that accident was routine at the gate scale: a hint pass at `EST-READY`'s due
+     * second dropped the actor timer's wake for it, and the establishment ran past the timer change;
+     * this join then failed on R-T3's defect, as it must on any TIMER_SET the path takes to a smaller
+     * bucket.
      */
     fun jd5(): JoinResult {
         val violations = ArrayList<String>()
@@ -380,38 +402,61 @@ internal class Joins(private val world: PrivacyWorld) {
         var timerSets = 0
         var queuedTimerSets = 0
         val inboxes = world.truth.clients.values.mapNotNull { t -> t.inboxNamespace?.let { hex(it) to t.index } }.toMap()
-        // When each client first fetched each blob, and what each sender stored into each inbox.
+        // When each client first fetched each blob, and what each sender stored into each inbox
+        // (each blob with the message it carries).
         val firstGet = HashMap<Pair<Int, GroundTruth.Key>, Long>()
-        val storedInto = HashMap<Pair<Int, Int>, MutableList<Pair<Long, GroundTruth.Key>>>()
+        val storedInto = HashMap<Pair<Int, Int>, MutableList<Pair<GroundTruth.Key, String?>>>()
         for (e in events) {
             when (e.op) {
                 ViewOp.GET -> firstGet.putIfAbsent(e.client to GroundTruth.Key(e.blobHash!!), e.second)
                 ViewOp.STORE -> inboxes[hex(e.namespace)]?.let { r ->
-                    storedInto.getOrPut(e.client to r) { ArrayList() } += e.second to GroundTruth.Key(e.blobHash!!)
+                    storedInto.getOrPut(e.client to r) { ArrayList() } +=
+                        GroundTruth.Key(e.blobHash!!) to e.cause?.messageRef?.let(::hex)
                 }
                 else -> Unit
             }
         }
         val changeByMessage = world.timerChanges.filter { it.messageId != null }.associateBy { it.messageId!! }
-        // When a change takes effect for one side of its conversation (null: not yet, for the peer).
-        fun effective(change: PrivacyWorld.TimerChange, side: Int): Long? =
-            if (side == change.setter) {
-                change.at
-            } else {
-                storedInto[change.setter to change.peer].orEmpty()
-                    .filter { it.first >= change.at }
-                    .mapNotNull { firstGet[change.peer to it.second] }
-                    .minOrNull()
-            }
-        fun expectedCode(sender: Int, peer: Int, at: Long): Int {
-            var best: Pair<Long, Int>? = null
+        // When a user text was written (§22.39).
+        fun written(ref: String): PrivacyWorld.Written =
+            requireNotNull(world.textWritten[ref]) { "the world recorded no writing of user text ${ref.take(8)}" }
+        // Whether the message [ref] carries [change]'s timer version: the TIMER_SET itself, or a text its
+        // setter wrote after it. A text written before the change carries the old version, however late
+        // it is stored.
+        fun carries(change: PrivacyWorld.TimerChange, ref: String?): Boolean {
+            ref ?: return false
+            if (ref == change.messageId) return true
+            val (sender, _) = world.userTexts[ref] ?: return false
+            return sender == change.setter && written(ref).order > change.order
+        }
+        // When the peer adopts a change: the first blob carrying it that the peer fetched (null: not yet).
+        fun adopted(change: PrivacyWorld.TimerChange): Long? =
+            storedInto[change.setter to change.peer].orEmpty()
+                .filter { carries(change, it.second) }
+                .mapNotNull { firstGet[change.peer to it.first] }
+                .minOrNull()
+        // The timer code [sender] wrote under in its conversation with [peer], for a text [writing]: the
+        // latest change in force for it — its own changes made before the writing, the peer's adopted
+        // by then (a fetch in the second of the writing comes first: a round's reads precede the
+        // user's actions of its second).
+        fun expectedCode(sender: Int, peer: Int, writing: PrivacyWorld.Written): Int {
+            var best: Triple<Long, Long, Int>? = null
             for (change in world.timerChanges) {
                 val same = (change.setter == sender && change.peer == peer) || (change.setter == peer && change.peer == sender)
                 if (!same) continue
-                val from = effective(change, sender) ?: continue
-                if (from <= at && (best == null || from >= best.first)) best = from to change.newCode
+                val from = if (change.setter == sender) {
+                    if (change.order >= writing.order) continue
+                    change.at
+                } else {
+                    val at = adopted(change) ?: continue
+                    if (at > writing.second) continue
+                    at
+                }
+                if (best == null || from > best.first || (from == best.first && change.order > best.second)) {
+                    best = Triple(from, change.order, change.newCode)
+                }
             }
-            return best?.second ?: org.ghost.messaging.api.Timer.DAYS_7.code
+            return best?.third ?: org.ghost.messaging.api.Timer.DAYS_7.code
         }
         val seen = HashSet<GroundTruth.Key>()
         for (e in events) {
@@ -424,7 +469,7 @@ internal class Joins(private val world: PrivacyWorld) {
             val ref = e.cause?.messageRef?.let(::hex) ?: continue
             world.userTexts[ref]?.let { (sender, peer) ->
                 texts++
-                val code = expectedCode(sender, peer, e.second)
+                val code = expectedCode(sender, peer, written(ref))
                 if (ttl != table(code)) {
                     violations += "a text of c$sender to c$peer stored with TTL $ttl; the timer the users set " +
                         "(code $code) gives ${table(code)}"
@@ -459,7 +504,10 @@ internal class Joins(private val world: PrivacyWorld) {
      * timer change — never anything else the call created); the mapping is the sender's own
      * `dm_outbound_op` row, **bounded**: a user message may reach the relays under one ciphertext
      * only (no store fails in this world, so a second ciphertext is a re-encryption or a copy no user
-     * asked for).
+     * asked for). The row is the one the sender held when the op was enqueued (§22.39,
+     * [ViewRelay.recordCauses]): SWEEP deletes it with a message that expires while its op waits for
+     * a relay round, and the op still goes out (§10.6), so the row read at the store named nothing —
+     * the gate-scale nightlies counted the users' own TIMER_SETs as stores no action caused.
      */
     fun jd6(): JoinResult {
         val violations = ArrayList<String>()
