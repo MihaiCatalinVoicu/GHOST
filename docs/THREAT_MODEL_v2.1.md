@@ -192,3 +192,10 @@ Fiecare invariant T1–T35 are o definiție în `ghost/test-harness/privacy/INVA
 ## 10. Gate de ieșire
 
 Faza 2 se închide prin **review independent** al acestui document și al harness-ului (persoană din afara echipei de implementare). Până atunci statusul rămâne „așteaptă review”, iar nicio afirmație din matricea de garanții nu se consideră validată.
+
+## 11. Addendum propus 2026-10-04 (ADR-59, ADR-60) — neaplicat până la aprobarea proprietarului
+
+| Intrare | Ce se schimbă față de modelul de mai sus | Observație |
+|---|---|---|
+| ADR-59 (Wallet Sync), **varianta cu issuer** | **Clasă nouă de risc, nu incrementală:** custodie de chei de cheltuit la issuer (un issuer compromis sau constrâns legal poate fura fondurile utilizatorilor care au optat); legătură identitate–wallet la issuer (un identificator stabil per identitate), ceea ce rupe T2/ADR-23 (issuer fără identități, plăți nelegabile de tokenuri) pentru cei care optează; TB-5 nu mai protejează spend key pentru wallet-urile sincronizate | Varianta recomandată, fără issuer (blob criptat client-side din seed, în namespace-ul propriu, orb): nu modifică modelul. Starea: propus, neaprobat |
+| ADR-60 (migrare între versiuni, `kill_flag`) | Operatorul de distribuție (AD-1) poate comanda ștergerea locală a datelor tuturor utilizatorilor printr-un bit în manifestul semnat; nu e o clasă nouă de încredere (poate deja publica un update oarecare), dar scade costul abuzului și cere: consimțământ, semnătură de prag, jurnal de transparență, anti-rollback (Faza 14) și dezvăluire în aplicație (CP-10) | Reziduu nou de declarat în `LIMITE_REZIDUALE_SI_MITIGARI.md` la aprobare: pierderea conversațiilor locale la o ștergere necerută. Starea: propus, neaprobat |
