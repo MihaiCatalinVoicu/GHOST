@@ -11,3 +11,6 @@ Used by `scripts/gates/self-test.sh` with `GHOST_ROOT` pointing at each director
 - `negative-rules/`: one violation per rule, each in its own file, and an allowlist with a stale
   entry, an entry outside the DM modules and a malformed one — 13 violations, listed in
   `negative-rules/README.md`.
+- `negative-channel-package/`: Phase 10 slice S3 — an HMAC keyed by a channel identifier in
+  `org.ghost.messaging.channel.store`, which the gate reads like the rest of `:messaging`. Exactly one
+  violation, line 13.

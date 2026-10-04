@@ -20,6 +20,21 @@ class SchemaAndMigrationTest {
     private val v6 = Schema.migrations.single { it.version == 6 }
     private val upToV4 = Schema.migrations.filter { it.version <= 4 }
     private val upToV5 = Schema.migrations.filter { it.version <= 5 }
+    private val upToV6 = Schema.migrations.filter { it.version <= 6 }
+
+    /**
+     * The 26 tables of v7 (Phase 10 design §9, "Migration 7"; slice S3), its 36 state, write-once and bound
+     * triggers, its 24 REPLACE guards and the 4 rowid triggers of the only two tables that have a rowid.
+     * [Migration7Test] and [ChannelSchemaIntrospectionTest] own what each of them enforces; this class owns the
+     * version lists and what an upgrade keeps.
+     */
+    private val v7Tables = ChannelSchema.tables
+    private val v7Triggers = ChannelSchema.rules
+    private val v7Guards = ChannelSchema.guards
+    private val v7RowidChecks = ChannelSchema.rowidChecks
+
+    /** The four v1 channel tables v7 drops behind its guard (§9 step 0); `media` and `media_blobs` stay. */
+    private val v1ChannelTables = listOf("channels", "channel_pseudonyms", "mls_state", "posts")
 
     /** The two tables and the four triggers of v6 (Phase 10 design §9, "Migration 6"; slice S1a). */
     private val v6Tables = setOf("sync_namespace_fund", "relay_register_capability")
@@ -121,10 +136,31 @@ class SchemaAndMigrationTest {
             "INSERT INTO identity(id, public_identity, identity_public_key, derivation_version, created_at) VALUES (1, 'ghost:me', ?, 1, 7)",
             listOf(ByteArray(32) { 1 }),
         )
-        db.exec("INSERT INTO channels(channel_id, history_policy, created_at) VALUES (?, 'none', 1)", listOf(ByteArray(32) { 5 }))
-        db.exec("INSERT INTO channel_pseudonyms(channel_id, pseudonym_public_key) VALUES (?, ?)", listOf(ByteArray(32) { 5 }, ByteArray(32) { 6 }))
         db.exec("INSERT INTO invite_nonces(nonce, seen_at) VALUES (?, 10)", listOf(ByteArray(16) { 7 }))
         db.exec("INSERT INTO revocations(identity_public_key, certificate, received_at) VALUES (?, ?, 11)", listOf(ByteArray(32) { 8 }, ByteArray(64) { 9 }))
+    }
+
+    /**
+     * Rows of the unused v1 channel tables, which no production writer ever wrote (`ChannelPseudonymRepository`
+     * had no caller outside tests, and its rows need a `channels` row nothing writes). v2 to v6 keep them; the
+     * v7 guard refuses to drop a table that holds one, so only the guard test writes them.
+     */
+    private fun seedV1ChannelRow(db: JdbcSqlExecutor, table: String) {
+        val channelId = ByteArray(32) { 5 }
+        db.exec("INSERT INTO channels(channel_id, history_policy, created_at) VALUES (?, 'none', 1)", listOf(channelId))
+        when (table) {
+            "channels" -> Unit
+            "channel_pseudonyms" ->
+                db.exec("INSERT INTO channel_pseudonyms(channel_id, pseudonym_public_key) VALUES (?, ?)", listOf(channelId, ByteArray(32) { 6 }))
+            "mls_state" ->
+                db.exec("INSERT INTO mls_state(channel_id, group_state, updated_at) VALUES (?, ?, 3)", listOf(channelId, ByteArray(40) { 7 }))
+            "posts" -> db.exec(
+                "INSERT INTO posts(operation_id, channel_id, author_pseudonym, envelope, content_type, posted_at_minute, state) " +
+                    "VALUES (?, ?, ?, ?, 'text', 120, 'received')",
+                listOf(ByteArray(16) { 8 }, channelId, ByteArray(32) { 9 }, ByteArray(24) { 10 }),
+            )
+            else -> error(table)
+        }
     }
 
     /**
@@ -158,7 +194,6 @@ class SchemaAndMigrationTest {
 
     private fun assertV1DataIntact(db: JdbcSqlExecutor) {
         assertEquals("ghost:me", db.queryString("SELECT public_identity FROM identity WHERE id = 1"))
-        assertArrayEquals(ByteArray(32) { 6 }, db.queryBlob("SELECT pseudonym_public_key FROM channel_pseudonyms"))
         assertEquals(1L, db.count("invite_nonces"))
         assertEquals(1L, db.count("revocations"))
         assertEquals("1", db.queryString("SELECT value FROM schema_meta WHERE key = 'created_schema_version'"))
@@ -208,26 +243,35 @@ class SchemaAndMigrationTest {
     fun freshDatabaseMigratesToCurrentVersionWithAllTables() {
         fresh().use { db ->
             val applied = MigrationRunner(db).migrate()
-            assertEquals(listOf(1, 2, 3, 4, 5, 6), applied)
+            assertEquals(listOf(1, 2, 3, 4, 5, 6, 7), applied)
             assertEquals(Schema.CURRENT_VERSION, db.userVersion)
             MigrationRunner(db).verifyIntegrity()
             assertEquals(Schema.expectedTables, db.names("table"))
             assertEquals(Schema.expectedTriggers, db.names("trigger"))
-            assertEquals(34 + 6 + 16 + 18 + 4, Schema.expectedTriggers.size)
+            assertEquals(34 + 6 + 16 + 18 + 4 + 36 + 24 + 4, Schema.expectedTriggers.size)
             assertTrue(Schema.expectedTables.containsAll(v3Tables))
             assertTrue(Schema.expectedTables.containsAll(v4Tables))
             assertTrue(Schema.expectedTables.containsAll(v5Tables))
             assertTrue(Schema.expectedTables.containsAll(v6Tables))
+            assertTrue(Schema.expectedTables.containsAll(v7Tables))
+            assertEquals(26, v7Tables.size)
+            assertEquals(36, v7Triggers.size)
+            assertEquals(24, v7Guards.size)
+            assertEquals(4, v7RowidChecks.size)
             assertEquals(v3Triggers, Schema.expectedTriggers.filter { it.startsWith("ent_") }.toSet())
             assertTrue(Schema.expectedTriggers.containsAll(v3GuardsOfV2Tables))
             assertTrue(Schema.expectedTriggers.containsAll(v4Triggers))
             assertTrue(Schema.expectedTriggers.containsAll(v5Triggers + v5Guards))
             assertTrue(Schema.expectedTriggers.containsAll(v6Triggers))
+            assertTrue(Schema.expectedTriggers.containsAll(v7Triggers + v7Guards + v7RowidChecks))
             assertEquals(9, v3Tables.size)
             assertEquals(13 + 7, v3Triggers.size)
             assertEquals(setOf("idx_ent_token_one_reservation", "idx_ent_claim_one_open"), db.names("index").filter { it.startsWith("idx_ent_") }.toSet())
-            // v4 drops the four unused v1 DM tables (§13.6 step 0).
+            // v4 drops the four unused v1 DM tables (§13.6 step 0), v7 the four v1 channel tables (§9 step 0).
             for (gone in v1DmTables) assertFalse("$gone must not survive v4", gone in db.names("table"))
+            for (gone in v1ChannelTables + "idx_posts_channel" + "v7_migration_guard") {
+                assertFalse("$gone must not survive v7", gone in db.names("table") + db.names("index"))
+            }
         }
     }
 
@@ -245,6 +289,7 @@ class SchemaAndMigrationTest {
             "v3" to { atV2WithData().also { MigrationRunner(it, upToV3).migrate() } },
             "v4" to { atV2WithData().also { MigrationRunner(it, upToV4).migrate() } },
             "v5" to { atV2WithData().also { MigrationRunner(it, upToV5).migrate() } },
+            "v6" to { atV2WithData().also { MigrationRunner(it, upToV6).migrate() } },
         )
         for ((from, open) in paths) open().use { db ->
             MigrationRunner(db).migrate()
@@ -269,7 +314,8 @@ class SchemaAndMigrationTest {
         }
         assertEquals(12, v2Triggers.size)
         assertEquals(
-            Schema.expectedTriggers - v3Triggers - v3GuardsOfV2Tables - v4Triggers - v5Triggers - v5Guards - v6Triggers,
+            Schema.expectedTriggers - v3Triggers - v3GuardsOfV2Tables - v4Triggers - v5Triggers - v5Guards - v6Triggers -
+                v7Triggers - v7Guards - v7RowidChecks,
             v2Triggers,
         )
         assertTrue(v2.statements.none { s -> (v3Triggers + v3GuardsOfV2Tables).any { s.contains("CREATE TRIGGER $it ") } })
@@ -282,8 +328,8 @@ class SchemaAndMigrationTest {
 
     @Test
     fun currentVersionIsTheLastMigration() {
-        assertEquals(6, Schema.CURRENT_VERSION)
-        assertEquals(listOf(1, 2, 3, 4, 5, 6), Schema.migrations.map { it.version })
+        assertEquals(7, Schema.CURRENT_VERSION)
+        assertEquals(listOf(1, 2, 3, 4, 5, 6, 7), Schema.migrations.map { it.version })
         assertEquals(Schema.CURRENT_VERSION, Schema.migrations.maxOf { it.version })
     }
 
@@ -313,7 +359,7 @@ class SchemaAndMigrationTest {
     fun v1DatabaseWithDataMigratesToCurrentAndKeepsIt() {
         atV1().use { db ->
             seedV1Data(db)
-            assertEquals(listOf(2, 3, 4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(2, 3, 4, 5, 6, 7), MigrationRunner(db).migrate())
             MigrationRunner(db).verifyIntegrity()
             assertV1DataIntact(db)
             assertEquals(Schema.expectedTables, db.names("table"))
@@ -323,13 +369,13 @@ class SchemaAndMigrationTest {
     @Test
     fun v2DatabaseWithDataMigratesToCurrentAndKeepsIt() {
         atV2WithData().use { db ->
-            assertEquals(listOf(3, 4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(3, 4, 5, 6, 7), MigrationRunner(db).migrate())
             MigrationRunner(db).verifyIntegrity()
             assertV1DataIntact(db)
             assertV2DataIntact(db)
             assertEquals(Schema.expectedTables, db.names("table"))
             assertEquals(Schema.expectedTriggers, db.names("trigger"))
-            for (table in v3Tables + v4Tables + v6Tables) assertEquals(table, 0L, db.count(table))
+            for (table in v3Tables + v4Tables + v6Tables + v7Tables) assertEquals(table, 0L, db.count(table))
         }
     }
 
@@ -356,7 +402,7 @@ class SchemaAndMigrationTest {
                 // Recovery path: once the tables are empty the migration succeeds (children first,
                 // so no cascade of a parent hides a row the guard would have caught).
                 for (empty in v1DmTables) db.exec("DELETE FROM $empty")
-                assertEquals(table, listOf(4, 5, 6), MigrationRunner(db).migrate())
+                assertEquals(table, listOf(4, 5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
@@ -370,6 +416,67 @@ class SchemaAndMigrationTest {
             assertEquals(3, db.userVersion)
             assertV1DmDataIntact(db)
             assertFalse("relay_key_registration" in db.names("table"))
+        }
+    }
+
+    /**
+     * The v7 guard of §9 step 0, the twin of the v4 one: a v1 channel table that holds a row stops the
+     * migration, the database stays at v6 with its schema text and its rows, a half-migrated database is
+     * refused, and emptying the table lets the migration through. All four tables are tried one at a time
+     * and together; the migrations before v7 are not rolled back by it (each commits on its own).
+     */
+    @Test
+    fun guardAbortsV7WhenAV1ChannelTableHasRows() {
+        for (table in v1ChannelTables) {
+            atV2WithData().use { db ->
+                assertEquals(table, listOf(3, 4, 5, 6), MigrationRunner(db, upToV6).migrate())
+                seedV1ChannelRow(db, table)
+                val before = db.schemaSnapshot()
+                val e = assertThrows(table, java.sql.SQLException::class.java) { MigrationRunner(db).migrate() }
+                assertTrue(e.message!!, e.message!!.contains("CHECK constraint failed"))
+                assertEquals(table, 6, db.userVersion)
+                assertEquals(table, before, db.schemaSnapshot())
+                assertEquals(table, 1L, db.count(table))
+                assertTrue("the guard table must not survive a refusal", "v7_migration_guard" !in db.names("table"))
+                assertV1DataIntact(db)
+                assertV2DataIntact(db)
+                assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
+                // Recovery path: once the tables are empty the migration succeeds (children first, so no
+                // cascade of the parent hides a row the guard would have caught).
+                for (empty in v1ChannelTables.reversed()) db.exec("DELETE FROM $empty")
+                assertEquals(table, listOf(7), MigrationRunner(db).migrate())
+                MigrationRunner(db).verifyIntegrity()
+                for (gone in v1ChannelTables) assertFalse(gone, gone in db.names("table"))
+                assertV1DataIntact(db)
+                assertV2DataIntact(db)
+            }
+        }
+        // All four hold rows: the guard still stops, and v6 stays untouched.
+        atV2WithData().use { db ->
+            MigrationRunner(db, upToV6).migrate()
+            for (table in v1ChannelTables) seedV1ChannelRowWithParent(db, table)
+            assertThrows(java.sql.SQLException::class.java) { MigrationRunner(db).migrate() }
+            assertEquals(6, db.userVersion)
+            for (table in v1ChannelTables) assertEquals(table, 1L, db.count(table))
+            assertFalse("ch_channel" in db.names("table"))
+        }
+    }
+
+    /** Rows in all four v1 channel tables at once: the parent row once, then each child's row. */
+    private fun seedV1ChannelRowWithParent(db: JdbcSqlExecutor, table: String) {
+        if (table == "channels") return seedV1ChannelRow(db, "channels")
+        val channelId = ByteArray(32) { 5 }
+        when (table) {
+            "channel_pseudonyms" ->
+                db.exec("INSERT INTO channel_pseudonyms(channel_id, pseudonym_public_key) VALUES (?, ?)", listOf(channelId, ByteArray(32) { 6 }))
+            "mls_state" ->
+                db.exec("INSERT INTO mls_state(channel_id, group_state, updated_at) VALUES (?, ?, 3)", listOf(channelId, ByteArray(40) { 7 }))
+            "posts" -> db.exec(
+                "INSERT INTO posts(operation_id, channel_id, author_pseudonym, envelope, content_type, posted_at_minute, state) " +
+                    "VALUES (?, ?, ?, ?, 'text', 120, 'received')",
+                listOf(ByteArray(16) { 8 }, channelId, ByteArray(32) { 9 }, ByteArray(24) { 10 }),
+            )
+            else -> error(table)
         }
     }
 
@@ -388,7 +495,7 @@ class SchemaAndMigrationTest {
             assertEquals(3, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
             db.exec("PRAGMA legacy_alter_table = OFF")
-            assertEquals(listOf(4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(4, 5, 6, 7), MigrationRunner(db).migrate())
             MigrationRunner(db).verifyIntegrity()
             assertV2DataIntact(db)
         }
@@ -411,7 +518,7 @@ class SchemaAndMigrationTest {
             assertV1DataIntact(db)
             // Recovery path: once the table is empty the migration succeeds.
             db.exec("DELETE FROM relay_queue")
-            assertEquals(listOf(2, 3, 4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(2, 3, 4, 5, 6, 7), MigrationRunner(db).migrate())
             assertV1DataIntact(db)
         }
     }
@@ -445,7 +552,7 @@ class SchemaAndMigrationTest {
                 assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
                 // Recovery path: once the table is empty the migration succeeds.
                 db.exec("DELETE FROM $table")
-                assertEquals(listOf(3, 4, 5, 6), MigrationRunner(db).migrate())
+                assertEquals(listOf(3, 4, 5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
@@ -500,7 +607,7 @@ class SchemaAndMigrationTest {
                 assertEquals("statement $i", before, db.schemaSnapshot())
                 assertV1DataIntact(db)
                 assertFalse(db.inTransaction)
-                assertEquals(listOf(2, 3, 4, 5, 6), MigrationRunner(db).migrate())
+                assertEquals(listOf(2, 3, 4, 5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
             }
@@ -511,7 +618,7 @@ class SchemaAndMigrationTest {
             assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 2)).migrate() }
             assertEquals(1, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
-            assertEquals(listOf(2, 3, 4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(2, 3, 4, 5, 6, 7), MigrationRunner(db).migrate())
         }
     }
 
@@ -528,7 +635,7 @@ class SchemaAndMigrationTest {
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
                 assertFalse(db.inTransaction)
-                assertEquals(listOf(3, 4, 5, 6), MigrationRunner(db).migrate())
+                assertEquals(listOf(3, 4, 5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
@@ -539,7 +646,7 @@ class SchemaAndMigrationTest {
             assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 3)).migrate() }
             assertEquals(2, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
-            assertEquals(listOf(3, 4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(3, 4, 5, 6, 7), MigrationRunner(db).migrate())
             assertV2DataIntact(db)
         }
     }
@@ -559,7 +666,7 @@ class SchemaAndMigrationTest {
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
                 assertFalse(db.inTransaction)
-                assertEquals(listOf(4, 5, 6), MigrationRunner(db).migrate())
+                assertEquals(listOf(4, 5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
@@ -570,7 +677,7 @@ class SchemaAndMigrationTest {
             assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 4)).migrate() }
             assertEquals(3, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
-            assertEquals(listOf(4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(4, 5, 6, 7), MigrationRunner(db).migrate())
             assertV2DataIntact(db)
         }
     }
@@ -593,7 +700,7 @@ class SchemaAndMigrationTest {
                 assertFalse(db.inTransaction)
                 // Until the upgrade completes the database is refused, and then it migrates again.
                 assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
-                assertEquals(listOf(5, 6), MigrationRunner(db).migrate())
+                assertEquals(listOf(5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
@@ -604,7 +711,7 @@ class SchemaAndMigrationTest {
             assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 5)).migrate() }
             assertEquals(4, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
-            assertEquals(listOf(5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(5, 6, 7), MigrationRunner(db).migrate())
             assertV2DataIntact(db)
         }
     }
@@ -631,7 +738,7 @@ class SchemaAndMigrationTest {
                 assertFalse(db.inTransaction)
                 // Until the upgrade completes the database is refused, and then it migrates again.
                 assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
-                assertEquals(listOf(6), MigrationRunner(db).migrate())
+                assertEquals(listOf(6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
                 assertV1DataIntact(db)
                 assertV2DataIntact(db)
@@ -642,7 +749,7 @@ class SchemaAndMigrationTest {
             assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 6)).migrate() }
             assertEquals(5, db.userVersion)
             assertEquals(before, db.schemaSnapshot())
-            assertEquals(listOf(6), MigrationRunner(db).migrate())
+            assertEquals(listOf(6, 7), MigrationRunner(db).migrate())
             assertV2DataIntact(db)
         }
     }
@@ -664,7 +771,7 @@ class SchemaAndMigrationTest {
                 assertV1DataIntact(db)
                 // Until the upgrade completes, the database is refused.
                 assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
-                assertEquals(listOf(3, 4, 5, 6), MigrationRunner(db).migrate())
+                assertEquals(listOf(3, 4, 5, 6, 7), MigrationRunner(db).migrate())
                 MigrationRunner(db).verifyIntegrity()
             }
         }
@@ -680,7 +787,7 @@ class SchemaAndMigrationTest {
             assertTrue("rollback must remove partially created tables, found $tables", tables.isEmpty())
             // Recovery path: the same runner succeeds once the fault is gone.
             db.failOnStatementContaining = null
-            assertEquals(listOf(1, 2, 3, 4, 5, 6), MigrationRunner(db).migrate())
+            assertEquals(listOf(1, 2, 3, 4, 5, 6, 7), MigrationRunner(db).migrate())
         }
     }
 
@@ -694,18 +801,18 @@ class SchemaAndMigrationTest {
             applied
         }
         fresh().use { db ->
-            assertEquals(listOf(1, 2, 3, 4, 5, 6), helperOpen(db))
+            assertEquals(listOf(1, 2, 3, 4, 5, 6, 7), helperOpen(db))
             MigrationRunner(db).verifyIntegrity()
             assertEquals(emptyList<Int>(), MigrationRunner(db).migrate())
         }
         atV1().use { db ->
             seedV1Data(db)
-            assertEquals(listOf(2, 3, 4, 5, 6), helperOpen(db))
+            assertEquals(listOf(2, 3, 4, 5, 6, 7), helperOpen(db))
             MigrationRunner(db).verifyIntegrity()
             assertV1DataIntact(db)
         }
         atV2WithData().use { db ->
-            assertEquals(listOf(3, 4, 5, 6), helperOpen(db))
+            assertEquals(listOf(3, 4, 5, 6, 7), helperOpen(db))
             MigrationRunner(db).verifyIntegrity()
             assertV1DataIntact(db)
             assertV2DataIntact(db)
@@ -758,8 +865,8 @@ class SchemaAndMigrationTest {
             db.userVersion = Schema.CURRENT_VERSION + 1
             assertThrows(MigrationRunner.DowngradeException::class.java) { MigrationRunner(db).migrate() }
         }
-        // An older app (it knows up to v2, v3, v4 or v5) refuses a v6 database and leaves it untouched.
-        for (older in listOf(upToV2, upToV3, upToV4, upToV5)) {
+        // An older app (it knows up to v2, v3, v4, v5 or v6) refuses a v7 database and leaves it untouched.
+        for (older in listOf(upToV2, upToV3, upToV4, upToV5, upToV6)) {
             fresh().use { db ->
                 MigrationRunner(db).migrate()
                 val before = db.schemaSnapshot()
@@ -881,21 +988,19 @@ class SchemaAndMigrationTest {
     fun constraintsRejectBadRows() {
         fresh().use { db ->
             MigrationRunner(db).migrate()
-            db.exec("INSERT INTO channels(channel_id, history_policy, created_at) VALUES (?, 'none', 1)", listOf(ByteArray(32)))
+            val channel = ByteArray(32)
+            db.exec(
+                "INSERT INTO ch_channel(channel_id, state, generation, epoch, joined_epoch, size_class, timer_code, my_pseudonym) " +
+                    "VALUES (?, 'active', 0, 0, 0, 0, 4, ?)",
+                listOf(channel, ByteArray(32) { 1 }),
+            )
+            val insertPost =
+                "INSERT INTO ch_post(op_id, channel_id, direction, author, kind, timer_code, epoch, body_env, state, author_minute) " +
+                    "VALUES (?, ?, 'in', ?, 1, 4, 0, ?, 'unread', ?)"
             // Minute granularity is enforced by the schema (ADR-08).
-            assertThrows(Exception::class.java) {
-                db.exec(
-                    "INSERT INTO posts(operation_id, channel_id, author_pseudonym, envelope, content_type, posted_at_minute, state) VALUES (?, ?, ?, ?, 'text', 61, 'received')",
-                    listOf(ByteArray(16), ByteArray(32), ByteArray(32), ByteArray(8)),
-                )
-            }
+            db.rejects(CHECK_FAILED, insertPost, ByteArray(16), channel, ByteArray(32), ByteArray(40), 61L)
             // Foreign key: a post for an unknown channel is rejected.
-            assertThrows(Exception::class.java) {
-                db.exec(
-                    "INSERT INTO posts(operation_id, channel_id, author_pseudonym, envelope, content_type, posted_at_minute, state) VALUES (?, ?, ?, ?, 'text', 60, 'received')",
-                    listOf(ByteArray(16), ByteArray(32) { 9 }, ByteArray(32), ByteArray(8)),
-                )
-            }
+            db.rejects(FOREIGN_KEY_FAILED, insertPost, ByteArray(16), ByteArray(32) { 9 }, ByteArray(32), ByteArray(40), 60L)
             // Blob size cap: relay payloads above 64 KiB never enter the outbox (only bucket sizes do).
             db.exec("INSERT INTO sync_namespace(namespace_id, consumer, listening) VALUES (?, 'dm', 1)", listOf(ByteArray(32) { 1 }))
             val insertOp =
@@ -908,10 +1013,12 @@ class SchemaAndMigrationTest {
                 assertTrue(e.message!!, e.message!!.contains("CHECK constraint failed"))
             }
             db.exec(insertOp, listOf(ByteArray(16), ByteArray(32) { 1 }, ByteArray(32) { 2 }, ByteArray(65536)))
-            // Cascade: deleting the channel removes its pseudonym and MLS state.
-            db.exec("INSERT INTO channel_pseudonyms(channel_id, pseudonym_public_key) VALUES (?, ?)", listOf(ByteArray(32), ByteArray(32) { 1 }))
-            db.exec("DELETE FROM channels WHERE channel_id = ?", listOf(ByteArray(32)))
-            assertEquals(null, db.queryLong("SELECT 1 FROM channel_pseudonyms"))
+            // Cascade: deleting the channel removes its posts and their reactions.
+            db.exec(insertPost, listOf(ByteArray(16), channel, ByteArray(32), ByteArray(40), 60L))
+            db.exec("INSERT INTO ch_reaction(target, author, channel_id, grapheme_env) VALUES (?, ?, ?, ?)", listOf(ByteArray(16), ByteArray(32) { 2 }, channel, ByteArray(30)))
+            db.exec("DELETE FROM ch_channel WHERE channel_id = ?", listOf(channel))
+            assertEquals(null, db.queryLong("SELECT 1 FROM ch_post"))
+            assertEquals(null, db.queryLong("SELECT 1 FROM ch_reaction"))
         }
     }
 }

@@ -197,6 +197,15 @@ class DmExpiredRowLintTest {
 
                 fun view() = exec("CREATE VIEW dm_visible AS SELECT message_id FROM dm_message")
 
+                // SQLite resolves a table name without regard to case, and a comment between the literals of a
+                // concatenation is whitespace to the compiler (the review of Phase 10 slice S3).
+                fun shouting() = query("SELECT message_id FROM DM_MESSAGE WHERE conversation_id = ?")
+
+                fun commented() = query(
+                    "SELECT message_id " + // the column
+                        /* and the table */ "FROM dm_message WHERE state = 'unread'",
+                )
+
                 fun sweep(nowE: Long) = exec("DELETE FROM dm_message WHERE delete_at_minute <= ?")
 
                 fun unrelated() = query("SELECT tag FROM dm_seen WHERE until_day > ?")
@@ -229,12 +238,29 @@ class DmExpiredRowLintTest {
                 // A view over an expiring table is a read path: a DAO selecting from `dm_visible`
                 // would name no expiring table at all, so the view is where the lint must catch it.
                 normalize("CREATE VIEW dm_visible AS SELECT message_id FROM dm_message"),
+                normalize("SELECT message_id FROM DM_MESSAGE WHERE conversation_id = ?"),
+                normalize("SELECT message_id FROM dm_message WHERE state = 'unread'"),
             ),
             found,
         )
         // The DELETE is SWEEP's own statement and the `dm_seen` read is over a table with no read
         // filter rule: neither is a read path over an expiring table.
         assertTrue(found.none { it.contains("DELETE") || it.contains("dm_seen") })
+    }
+
+    /**
+     * The scanner drops a file at once when it names no expiring table, and that first look must read the names as
+     * SQLite does, without regard to case: a file whose every mention is in capitals is a file of read paths, and
+     * the fixture above cannot show it because it also spells the table in lower case (the review of S3: the first
+     * version compared case-sensitively here and in the match after it).
+     */
+    @Test
+    fun aFileThatNamesTheTableOnlyInCapitalsIsStillScanned() {
+        val file = temp.newFile("Shouting.kt")
+        file.writeText("class Shouting { fun all() = query(\"SELECT MESSAGE_ID FROM DM_MESSAGE WHERE CONVERSATION_ID = ?\") }\n")
+        assertFalse("the fixture must hold no lower-case table name", file.readText().contains("dm_message"))
+        val found = DmExpiredRowLint.readQueriesOverExpiringRows(listOf(file)).map { normalize(it.sql) }
+        assertEquals(listOf("SELECT MESSAGE_ID FROM DM_MESSAGE WHERE CONVERSATION_ID = ?"), found)
     }
 
     /**

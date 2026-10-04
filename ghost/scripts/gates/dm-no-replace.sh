@@ -37,7 +37,8 @@
 #   (1) it is in a production source of `android/messaging` or `android/crypto-bridge` (every SQL
 #       string of the DM stores is DM SQL), or
 #   (2) it is inside migration 5 of `android/storage/.../Schema.kt` — from `fun migration5Tables(`
-#       to `val expectedTables` — where `replaceGuard` builds trigger names from templates, or
+#       to `val expectedTables` — where `replaceGuard` builds trigger names from templates (migration 6
+#       and migration 7, the channel tables of Phase 10 slice S3, sit in the same region), or
 #   (3) it names a DM table (`dm_…` or `olm_…`), or one of the two tables migration 6 of Phase 10 adds
 #       to `:sync` (`sync_namespace_fund` and `relay_register_capability`, design faza10-forum.md §9,
 #       whole words, so `relay_capability` and a longer name do not match), anywhere else under
@@ -48,13 +49,29 @@
 #       flag by an INSERT guarded by `WHERE NOT EXISTS` — and an upsert or a REPLACE there is a
 #       defect that this reads before a test has to reach the statement (slice S1a; the migration 6
 #       DDL itself is inside the region of (2)).
+#   (3′) it names a channel table of migration 7 (Phase 10 slice S3, design faza10-forum.md §9): a
+#       word that starts `ch_` (the `ch_*` tables of the forum) or `mls_` (`mls_kv` and
+#       `mls_global_kv`, the rows of `GhostKv`), anywhere else under `android/*/src/{main,gate,debug,release}`
+#       of any module. The word is matched at its start (`\bch_`), so `launch_log` and `research_kv` do not
+#       match, and **without regard to case**, as SQLite resolves a table name (`INSERT OR REPLACE INTO CH_POST`
+#       is a REPLACE of `ch_post`). The same holds for (3): the tables of the DM, of migration 6 and of
+#       migration 7 are named in any case, in any module's `main`, `gate`, `debug` or `release` source set
+#       (review of S3; the first version read the last three for `:messaging` and `:crypto-bridge` only).
+#       Twenty-four of the twenty-six channel tables carry a `*_no_replace` guard (`ch_seen` and
+#       `ch_kp_seen` are the two that do not, design §19.35), so a channel writer inserts only a key
+#       that does not exist (the guarded UPDATE-then-INSERT form of the DAOs of
+#       `org.ghost.messaging.channel.store`), and an upsert or a REPLACE on any of them is a defect
+#       this reads before a test has to reach the statement. The channel DAOs themselves are in
+#       `android/messaging`, which (1) reads whole, `org.ghost.messaging.channel` included; the
+#       v1 `mls_state` (dropped by migration 7) is matched by the same prefix.
 # `:sync`'s own upserts (cursors, capabilities, the directory) and `:storage`'s pre-DM tables are not
 # DM SQL and are not read against this rule — `relay_capability` is upserted by design — except for
 # the two tables named in (3).
 #
 # Vacuity: `android/messaging/src/main` must exist and hold at least one SQL group, and Schema.kt must
-# carry both region markers with a `CREATE TABLE dm_` between them; otherwise the gate fails rather
-# than pass over a moved schema.
+# carry both region markers with a `CREATE TABLE dm_` and a `CREATE TABLE ch_` between them; otherwise
+# the gate fails rather than pass over a moved schema (the channel tables of migration 7 are what
+# (3′) and the REPLACE guards are about).
 #
 # Usage: dm-no-replace.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-replace-*.
@@ -220,13 +237,17 @@ sub check {
 }
 
 my %dm_module = map { $_ => 1 } ("messaging", "crypto-bridge");
-my ($dm_sql_groups, $region_found, $region_tables) = (0, 0, 0);
+my ($dm_sql_groups, $region_found, $region_tables, $region_ch_tables) = (0, 0, 0, 0);
 my @mains = grep { length } split /\n/, `find "$root/android" -maxdepth 3 -type d -path "*/src/main" 2>/dev/null | sort`;
 print "VACUOUS android/messaging/src/main: missing (the gate would pass vacuously)\n" unless -d "$root/android/messaging/src/main";
 for my $main (@mains) {
   (my $module = $main) =~ s{^\Q$root\E/android/([^/]+)/src/main$}{$1};
+  # The production source sets of every module, not of the two DM modules alone: src/release is compiled into the
+  # release APK beside src/main (android_main_files in common.sh reads both; Phase 9 review GATES-2), and gate and
+  # debug are installed on the gate devices. The conflict-algorithm APIs below stay a rule of the DM modules.
+  # (No apostrophe in a comment of this block: the whole script is one single-quoted shell string.)
   my @sets = ($main);
-  if ($dm_module{$module}) { for my $s (qw(gate debug release)) { push @sets, "$root/android/$module/src/$s" } }
+  for my $s (qw(gate debug release)) { push @sets, "$root/android/$module/src/$s" }
   for my $set (@sets) {
     for my $file (files_under($set)) {
       (my $rel = $file) =~ s{^\Q$root\E/}{};
@@ -256,7 +277,10 @@ for my $main (@mains) {
         my ($start, $text) = @$g;
         my $in_region = $from && $to && $start >= $from && $start < $to;
         $region_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+dm_/i;
-        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/;
+        $region_ch_tables++ if $in_region && $text =~ /CREATE\s+TABLE\s+ch_/i;
+        # Table names are matched without regard to case: SQLite resolves them that way, so INSERT OR REPLACE INTO
+        # CH_POST replaces a row of ch_post (the first version of this test was case-sensitive and passed it).
+        my $dm = $dm_module{$module} || $in_region || $text =~ /\b(?:dm|olm|ch|mls)_[a-z0-9_]+|\b(?:sync_namespace_fund|relay_register_capability)\b/i;
         next unless $dm;
         $dm_sql_groups++ if $module eq "messaging" && $text =~ $sqlish;
         check($rel, $g);
@@ -267,6 +291,7 @@ for my $main (@mains) {
 print "VACUOUS android/messaging/src/main: no SQL string found (the gate would pass vacuously)\n" if -d "$root/android/messaging/src/main" && !$dm_sql_groups;
 print "VACUOUS $schema_rel: missing (the gate would pass vacuously)\n" unless -f "$root/$schema_rel";
 print "VACUOUS $schema_rel: no CREATE TABLE dm_ between the migration 5 markers (the gate would pass vacuously)\n" if $region_found && !$region_tables;
+print "VACUOUS $schema_rel: no CREATE TABLE ch_ between the migration 5 markers (the channel tables of migration 7 would not be read)\n" if $region_found && !$region_ch_tables;
 print "SUMMARY $dm_sql_groups DM SQL strings in android/messaging\n";
 ')" || fail "dm-no-replace.sh lexer stopped (exit $?)"
 
