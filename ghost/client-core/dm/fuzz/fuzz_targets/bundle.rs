@@ -54,8 +54,16 @@ fuzz_target!(|data: &[u8]| {
                     assert_eq!(&parsed.xwing_public[..], &xwing_public[..]);
                     assert_eq!(parsed.identity_pk, sign::public_key(&seed));
                 }
-                // Signed by its own key, a built bundle is refused only for its X-Wing key.
-                Err(_) => assert!(pq::validate_public_key(&xwing_public).is_err()),
+                // Signed by its own key, a built bundle is refused for exactly three reasons: its X-Wing
+                // key, or the Olm identity or the fallback key not being a canonical X25519 encoding
+                // (the phase review's CRY-P9-01: a non-canonical key made every sealIntro to the
+                // contact answer NON_CANONICAL). The property stated only the first of them, so every
+                // nightly run since that fix failed on a one-bit input.
+                Err(_) => assert!(
+                    pq::validate_public_key(&xwing_public).is_err()
+                        || !pq::canonical_u_coordinate(&olm_identity)
+                        || !pq::canonical_u_coordinate(&fallback_key)
+                ),
             }
         }
         2 => {
