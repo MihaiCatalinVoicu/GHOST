@@ -136,7 +136,7 @@ class Migration4Test {
         assertEquals(3, beforeOps.size)
         assertEquals(6, beforeDeliveries.size)
 
-        assertEquals(listOf(4, 5, 6, 7), MigrationRunner(db).migrate())
+        assertEquals(listOf(4, 5, 6, 7, 8), MigrationRunner(db).migrate())
         MigrationRunner(db).verifyIntegrity()
 
         // Trigger and index rows are identical by (type, name, sql); the two table rows differ in
@@ -205,7 +205,7 @@ class Migration4Test {
             listOf(bytes(32, 1), hash(3)),
         )
 
-        assertEquals(listOf(4, 5, 6, 7), MigrationRunner(db).migrate())
+        assertEquals(listOf(4, 5, 6, 7, 8), MigrationRunner(db).migrate())
         MigrationRunner(db).verifyIntegrity()
 
         val fetched = db.queryLong("SELECT relay_expiry_hour FROM inbox_blob WHERE blob_hash = ?", listOf(hash(1)))

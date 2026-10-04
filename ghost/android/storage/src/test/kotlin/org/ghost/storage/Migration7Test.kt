@@ -23,6 +23,27 @@ class Migration7Test {
     private val upToV6 = Schema.migrations.filter { it.version <= 6 }
     private val v7 = Schema.migrations.single { it.version == 7 }
 
+    /** This class tests migration 7 on its own: v8 (Phase 11) is applied by [Migration8Test]. */
+    private val upToV7 = Schema.migrations.filter { it.version <= 7 }
+
+    /**
+     * What `verifyIntegrity` asserts, for a database at v7: the runner's check is against the **current** schema (v8
+     * drops the two v1 media tables and adds five), so a v7 database is verified against the objects of v1 to v7 and
+     * the version it is at. Throws [IllegalStateException] like the runner.
+     */
+    private fun verifyAtV7(db: SqlExecutor) {
+        check(db.userVersion == 7) { "schema version mismatch: ${db.userVersion}" }
+        val tables = HashSet<String>()
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table'") { tables += it.string(0) }
+        val triggers = HashSet<String>()
+        db.query("SELECT name FROM sqlite_master WHERE type = 'trigger'") { triggers += it.string(0) }
+        val expectedTables = Schema.expectedTables - MediaSchema.tables + MediaSchema.v1Tables
+        val expectedTriggers = Schema.expectedTriggers - MediaSchema.rules - MediaSchema.guards
+        check((expectedTables - tables).isEmpty()) { "schema integrity: missing tables ${expectedTables - tables}" }
+        check((expectedTriggers - triggers).isEmpty()) { "schema integrity: missing triggers ${expectedTriggers - triggers}" }
+        for ((pragma, expected) in Schema.expectedPragmaValues) assertEquals(pragma, expected, db.queryLong("PRAGMA $pragma"))
+    }
+
     /** Fails the [failAt]-th `exec` call (0-based); everything else is delegated. */
     private class FailAtExec(private val delegate: SqlExecutor, private val failAt: Int) : SqlExecutor by delegate {
         var calls = 0
@@ -152,8 +173,8 @@ class Migration7Test {
         assertTrue("the fixture must be populated", before.getValue("dm_message").size == 1 && before.getValue("sync_namespace").size == 2)
         assertEquals(setOf("channels", "channel_pseudonyms", "mls_state", "posts"), ChannelSchema.v1Tables)
         for (table in ChannelSchema.v1Tables) assertEquals("$table is empty before the migration", emptyList<String>(), before.getValue(table))
-        assertEquals(listOf(7), MigrationRunner(db).migrate())
-        MigrationRunner(db).verifyIntegrity()
+        assertEquals(listOf(7), MigrationRunner(db, upToV7).migrate())
+        verifyAtV7(db)
         assertEquals(7, db.userVersion)
         val after = db.dump()
         // Every table that v6 has and v7 keeps holds exactly the rows it held ...
@@ -184,7 +205,7 @@ class Migration7Test {
 
     @Test
     fun theChannelTablesWorkRightAfterTheUpgrade() = populatedV6().use { db ->
-        MigrationRunner(db).migrate()
+        MigrationRunner(db, upToV7).migrate()
         ChannelFixture(db).apply {
             for (table in ChannelSchema.tables) put(table)
             for (table in ChannelSchema.tables) assertEquals(table, 1L, count(table))
@@ -208,7 +229,7 @@ class Migration7Test {
     @Test
     fun anInterruptionAtAnyStatementLeavesThePopulatedV6Untouched() {
         val expected = populatedV6().use { db ->
-            MigrationRunner(db).migrate()
+            MigrationRunner(db, upToV7).migrate()
             Pair(db.schemaSnapshot(), db.dump())
         }
         assertTrue(
@@ -222,16 +243,16 @@ class Migration7Test {
                 val schema = db.schemaSnapshot()
                 val rows = db.dump()
                 val faulty = FailAtExec(db, i)
-                assertThrows("statement $i", IllegalStateException::class.java) { MigrationRunner(faulty).migrate() }
+                assertThrows("statement $i", IllegalStateException::class.java) { MigrationRunner(faulty, upToV7).migrate() }
                 assertEquals("statement $i ran", i + 1, faulty.calls)
                 assertEquals("statement $i", 6, db.userVersion)
                 assertEquals("statement $i", schema, db.schemaSnapshot())
                 assertEquals("statement $i", rows, db.dump())
                 assertFalse(db.inTransaction)
                 // A half-migrated database is refused, never used; then the same runner finishes the job.
-                assertThrows(IllegalStateException::class.java) { MigrationRunner(db).verifyIntegrity() }
-                assertEquals("statement $i", listOf(7), MigrationRunner(db).migrate())
-                MigrationRunner(db).verifyIntegrity()
+                assertThrows(IllegalStateException::class.java) { verifyAtV7(db) }
+                assertEquals("statement $i", listOf(7), MigrationRunner(db, upToV7).migrate())
+                verifyAtV7(db)
                 assertEquals("statement $i", expected.first, db.schemaSnapshot())
                 assertEquals("statement $i", expected.second, db.dump())
             }
@@ -239,11 +260,11 @@ class Migration7Test {
         populatedV6().use { db ->
             val schema = db.schemaSnapshot()
             val rows = db.dump()
-            assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 7)).migrate() }
+            assertThrows(IllegalStateException::class.java) { MigrationRunner(FailOnVersionBump(db, 7), upToV7).migrate() }
             assertEquals(6, db.userVersion)
             assertEquals(schema, db.schemaSnapshot())
             assertEquals(rows, db.dump())
-            assertEquals(listOf(7), MigrationRunner(db).migrate())
+            assertEquals(listOf(7), MigrationRunner(db, upToV7).migrate())
             assertEquals(expected.second, db.dump())
         }
     }
@@ -262,14 +283,14 @@ class Migration7Test {
                 assertEquals(listOf(1, 2, 3, 4, 5, 6), MigrationRunner(db, upToV6).migrate())
                 db.exec("INSERT INTO invite_nonces(nonce, seen_at) VALUES (?, 10)", listOf(bytes(16, 7)))
                 val faulty = FailAtExec(db, v7.statements.size / 2)
-                assertThrows(IllegalStateException::class.java) { MigrationRunner(faulty).migrate() }
+                assertThrows(IllegalStateException::class.java) { MigrationRunner(faulty, upToV7).migrate() }
             }
             JdbcSqlExecutor(file.path).use { db ->
                 assertEquals(6, db.userVersion)
                 assertEquals(1L, db.queryLong("SELECT count(*) FROM invite_nonces"))
                 assertFalse("ch_channel" in db.queryNames("table"))
-                assertEquals(listOf(7), MigrationRunner(db).migrate())
-                MigrationRunner(db).verifyIntegrity()
+                assertEquals(listOf(7), MigrationRunner(db, upToV7).migrate())
+                verifyAtV7(db)
             }
         } finally {
             file.delete()
@@ -286,13 +307,13 @@ class Migration7Test {
     @Test
     fun theOpenHelperPathUpgradesInsideTheCallersTransactionAndRollsBackOnAFailure() {
         fun helperOpen(db: SqlExecutor): List<Int> = db.transaction {
-            val applied = MigrationRunner(db).migrateWithinTransaction(db.userVersion)
-            db.userVersion = Schema.CURRENT_VERSION
+            val applied = MigrationRunner(db, upToV7).migrateWithinTransaction(db.userVersion)
+            db.userVersion = 7
             applied
         }
         populatedV6().use { db ->
             assertEquals(listOf(7), helperOpen(db))
-            MigrationRunner(db).verifyIntegrity()
+            verifyAtV7(db)
             assertEquals(ChannelSchema.tables, db.queryNames("table").filter { it.startsWith("ch_") || it.startsWith("mls_") }.toSet())
         }
         populatedV6().use { db ->
@@ -301,7 +322,7 @@ class Migration7Test {
             // The last statement of v7 fails: the tables, the triggers and the drops before it are undone together.
             val faulty = FailAtExec(db, v7.statements.size - 1)
             assertThrows(IllegalStateException::class.java) {
-                faulty.transaction { MigrationRunner(faulty).migrateWithinTransaction(faulty.userVersion) }
+                faulty.transaction { MigrationRunner(faulty, upToV7).migrateWithinTransaction(faulty.userVersion) }
             }
             assertEquals(6, db.userVersion)
             assertEquals(schema, db.schemaSnapshot())
@@ -312,9 +333,9 @@ class Migration7Test {
             val upToV1 = Schema.migrations.filter { it.version <= 1 }
             MigrationRunner(db, upToV1).migrate()
             val schema = db.schemaSnapshot()
-            val faulty = FailAtExec(db, Schema.migrations.filter { it.version > 1 }.sumOf { it.statements.size } - 1)
+            val faulty = FailAtExec(db, upToV7.filter { it.version > 1 }.sumOf { it.statements.size } - 1)
             assertThrows(IllegalStateException::class.java) {
-                faulty.transaction { MigrationRunner(faulty).migrateWithinTransaction(faulty.userVersion) }
+                faulty.transaction { MigrationRunner(faulty, upToV7).migrateWithinTransaction(faulty.userVersion) }
             }
             assertEquals(1, db.userVersion)
             assertEquals(schema, db.schemaSnapshot())
@@ -323,7 +344,7 @@ class Migration7Test {
 
     @Test
     fun anOlderAppRefusesTheUpgradedDatabaseAndLeavesItUntouched() = populatedV6().use { db ->
-        MigrationRunner(db).migrate()
+        MigrationRunner(db, upToV7).migrate()
         val schema = db.schemaSnapshot()
         val rows = db.dump()
         assertThrows(MigrationRunner.DowngradeException::class.java) { MigrationRunner(db, upToV6).migrate() }
@@ -339,11 +360,11 @@ class Migration7Test {
     @Test
     fun anUpgradeFromV6AndAFreshInstallEndWithTheSameSchema() {
         val fresh = JdbcSqlExecutor().use { db ->
-            MigrationRunner(db).migrate()
+            MigrationRunner(db, upToV7).migrate()
             db.schemaSnapshot()
         }
         populatedV6().use { db ->
-            MigrationRunner(db).migrate()
+            MigrationRunner(db, upToV7).migrate()
             assertEquals(fresh, db.schemaSnapshot())
         }
     }

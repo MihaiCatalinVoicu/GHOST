@@ -301,15 +301,27 @@ private fun replaceGuardSql(table: String, conflict: String): String =
  *    `dm_seen`'s); no created or last-activity column
  *    beyond the ones §9 declares; no full-text index; bounded counts and the state machines of §6.11 as
  *    triggers; a `*_no_replace` guard on every table whose writers do not use `INSERT OR IGNORE`.
+ *  - v8 (Phase 11 media, docs/design/faza11-media.md §13.6 "Schema migration M", slice S3; the number
+ *    §13.6 leaves "the next free version at merge": Phase 10's migrations 6 and 7 are on main, and no
+ *    Phase 9 fix migration landed): the unused v1 `media` and `media_blobs` are dropped behind a fail-closed
+ *    guard; `dm_message` and `dm_outbound_item` are rebuilt to admit kind 5 (a media message), together with the
+ *    three tables that cascade from them ([DmObjects] says why); five media tables arrive — `media_object`,
+ *    `media_upload`, `media_blob`, `media_fragment`, `media_outbound_op` — all `WITHOUT ROWID` (no table needs an
+ *    insertion order, so there is no exception to T33 to declare), with `typeof` beside every range and grid, the
+ *    only time columns an hour (`incomplete_after_hour`, `deadline_hour`) and a day (`retain_until_day`), no
+ *    full-text index, the transitions of §7.6 as triggers and a `*_no_replace` guard on each. Q27: the Phase 9
+ *    columns are not folded in (the owner has not decided), so the rebuilds copy the tables as they are at merge.
  *
  * A change to an existing version is forbidden: add a new [Migration] and bump [CURRENT_VERSION].
  * The one exception is a version no release has carried: v3 has never shipped and is amended in
  * place (§19.20); from the first release that carries it, v3 is frozen like v1 and v2. v7 has not
  * shipped either, so the slices that build the channel engine (S4 to S9) may amend it in place
- * where their reading of §9 needs a column or a rule this slice could not know.
+ * where their reading of §9 needs a column or a rule this slice could not know; v8 has not shipped,
+ * so the slices that build the media engine (S5 to S8) may do the same (Phase 9's column for the pending
+ * path of a timer change could be folded into the `dm_outbound_item` rebuild this way).
  */
 object Schema {
-    const val CURRENT_VERSION = 7
+    const val CURRENT_VERSION = 8
 
     class Migration(val version: Int, val statements: List<String>)
 
@@ -938,6 +950,10 @@ object Schema {
         Migration(
             version = 7,
             statements = migration7Guard() + migration7Tables() + migration7Triggers(),
+        ),
+        Migration(
+            version = 8,
+            statements = migration8Guard() + migration8Rebuild() + migration8Tables() + migration8Triggers(),
         ),
     )
 
@@ -2158,10 +2174,278 @@ object Schema {
         replaceGuard("ch_box_key", "channel_id = NEW.channel_id AND box_pk = NEW.box_pk"),
     )
 
+    /**
+     * Phase 11 design §13.6 "Schema migration M" (slice S3), **steps 1–3**: the fail-closed guards, the drop of the
+     * unused v1 media tables and the rebuild of the DM tables that admit a media message. One transaction,
+     * append-only, fail-closed like every migration before it; the media tables are [migration8Tables].
+     *
+     * **(0a)** `ALTER TABLE ... RENAME TO` must rewrite the references of the rebuilt tables, which
+     * `legacy_alter_table` would turn off: the guard of migration 4, repeated (it is 0 only when the pragma function
+     * returns exactly one row holding 0, so a build without pragma functions fails the statement and both fail
+     * closed). **(0b)** `media` and `media_blobs` (v1) never had a writer (the v1 schema; no repository writes them): a CHECK on a guard table aborts the migration, and leaves v7, if one holds a
+     * row; the child goes first, so no foreign-key cascade can hide a row the guard counted.
+     */
+    private fun migration8Guard(): List<String> = listOf(
+        "CREATE TABLE v8_alter_guard (legacy_alter_table INTEGER NOT NULL CHECK (legacy_alter_table = 0))",
+        "INSERT INTO v8_alter_guard(legacy_alter_table) " +
+            "SELECT (SELECT count(*) FROM pragma_legacy_alter_table WHERE legacy_alter_table <> 0) " +
+            "+ (SELECT 1 - count(*) FROM pragma_legacy_alter_table)",
+        "DROP TABLE v8_alter_guard",
+        "CREATE TABLE v8_migration_guard (row_count INTEGER NOT NULL CHECK (row_count = 0))",
+        "INSERT INTO v8_migration_guard(row_count) SELECT count(*) FROM media_blobs",
+        "INSERT INTO v8_migration_guard(row_count) SELECT count(*) FROM media",
+        "DROP TABLE v8_migration_guard",
+        "DROP TABLE media_blobs",
+        "DROP TABLE media",
+    )
+
+    /**
+     * Migration 8, **steps 2 and 3** (§13.6): `dm_message` admits kind 5 (a media message: its `body_env` is the
+     * caption, which may be empty) and `dm_outbound_item` admits kind 5; SQLite cannot alter a CHECK, so both are
+     * rebuilt with the **explicit-column copy** of migration 4's outbox rebuild (G-9, E-5) from the shared texts of
+     * [DmObjects]. **Their three children are rebuilt with them**, unchanged, which §13.6 does not name: a parent
+     * cannot be dropped while foreign keys are on (they are, inside a migration) without its `ON DELETE CASCADE` children
+     * losing their rows ([DmObjects] says why; the finding is in the forward notes, §22.4). The new tables are created
+     * first, copied, and the old ones dropped **children first**; the renames then rewrite the references of the
+     * new children to the final names. Q27: the Phase 9 columns are **not** folded in (the owner has not decided), so
+     * the rebuild copies the tables as they are at merge and adds nothing but the kind.
+     *
+     * Every index, trigger and REPLACE guard of the five tables is recreated from the same constants migration 5
+     * creates them from, and the `pragma_foreign_key_check` guard of migration 4 is repeated: a rebuild that leaves a
+     * dangling reference rolls the migration back.
+     */
+    private fun migration8Rebuild(): List<String> = listOf(
+        DmObjects.MESSAGE_TABLE_V8,
+        DmObjects.OUTBOUND_ITEM_TABLE_V8,
+        DmObjects.OUTBOUND_OP_TABLE_V8,
+        DmObjects.PENDING_SEND_TABLE_V8,
+        DmObjects.REACTION_TABLE_V8,
+        """INSERT INTO dm_message_v8(message_id, conversation_id, direction, kind, author_minute, sort_minute, minute_index,
+                                      timer_code, body_env, state, expire_at_minute, unread_deadline_minute, delete_at_minute)
+                SELECT message_id, conversation_id, direction, kind, author_minute, sort_minute, minute_index,
+                       timer_code, body_env, state, expire_at_minute, unread_deadline_minute, delete_at_minute
+                FROM dm_message""",
+        """INSERT INTO dm_outbound_item_v8(item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state)
+                SELECT item_id, contact_id, message_ref, kind, control, l0_env, deadline_hour, state
+                FROM dm_outbound_item""",
+        """INSERT INTO dm_outbound_op_v8(operation_id, purpose, item_id, bundle_week, blob, resend_count, deadline_hour)
+                SELECT operation_id, purpose, item_id, bundle_week, blob, resend_count, deadline_hour
+                FROM dm_outbound_op""",
+        """INSERT INTO dm_pending_send_v8(item_id, contact_id, fail_after_hour)
+                SELECT item_id, contact_id, fail_after_hour
+                FROM dm_pending_send""",
+        """INSERT INTO dm_reaction_v8(target_id, from_self, grapheme_env)
+                SELECT target_id, from_self, grapheme_env
+                FROM dm_reaction""",
+        // The children go first: with foreign_keys = ON a parent's implicit DELETE would run their cascades. Dropping a
+        // table drops its indexes, its triggers and its REPLACE guard with it.
+        "DROP TABLE dm_outbound_op",
+        "DROP TABLE dm_pending_send",
+        "DROP TABLE dm_reaction",
+        "DROP TABLE dm_outbound_item",
+        "DROP TABLE dm_message",
+        // With legacy_alter_table off (guarded above), SQLite rewrites the references of the renamed parents.
+        "ALTER TABLE dm_message_v8 RENAME TO dm_message",
+        "ALTER TABLE dm_outbound_item_v8 RENAME TO dm_outbound_item",
+        "ALTER TABLE dm_outbound_op_v8 RENAME TO dm_outbound_op",
+        "ALTER TABLE dm_pending_send_v8 RENAME TO dm_pending_send",
+        "ALTER TABLE dm_reaction_v8 RENAME TO dm_reaction",
+        DmObjects.IDX_MESSAGE_ORDER,
+        DmObjects.IDX_MESSAGE_DELETE,
+        DmObjects.IDX_OUTBOUND_OP_ITEM,
+        DmObjects.TRIGGER_MESSAGE_IDENTITY,
+        DmObjects.TRIGGER_MESSAGE_STATE,
+        DmObjects.TRIGGER_MESSAGE_EXPIRY,
+        DmObjects.GUARD_MESSAGE,
+        DmObjects.GUARD_OUTBOUND_ITEM,
+        DmObjects.GUARD_OUTBOUND_OP,
+        DmObjects.GUARD_PENDING_SEND,
+        DmObjects.GUARD_REACTION,
+        // Step 1 point 8 of migration 4, repeated: the rebuild leaves no dangling reference, or the migration rolls back.
+        "CREATE TABLE v8_fk_guard (violations INTEGER NOT NULL CHECK (violations = 0))",
+        "INSERT INTO v8_fk_guard(violations) SELECT count(*) FROM pragma_foreign_key_check",
+        "DROP TABLE v8_fk_guard",
+    )
+
+    /**
+     * Migration 8, **step 4** (§13.6): the five media tables, in the conventions of v5 and v7. Every table is `WITHOUT
+     * ROWID` (T33: "random WITHOUT ROWID keys"; **no table of this migration needs an insertion order**, so there is
+     * no exception to declare, unlike `mls_kv` and `ch_join_request` of v7: an object is named by 16 random bytes, a
+     * blob by its hash, a fragment by (object, ordinal), an operation by its random id); an integer's `typeof` is
+     * checked beside every range and grid (`BETWEEN` and `%` admit `x.5`); the three time columns are an hour
+     * (`incomplete_after_hour`, `deadline_hour`: `% 3600`) and a day (`retain_until_day`) and there is **no other time
+     * column** (T33: no activity history, no created column, no full-text index).
+     *
+     * The text of each table is §13.6's, with `typeof` added where it was missing (`class_code`, `decode_failures`,
+     * `retry_gen`, `resend_count`, `ordinal`, which the design writes as a bare range).
+     */
+    private fun migration8Tables(): List<String> = listOf(
+        """CREATE TABLE media_object (
+                  object_id             BLOB PRIMARY KEY NOT NULL CHECK (length(object_id) = 16),
+                  role                  TEXT NOT NULL CHECK (role IN ('out', 'in')),
+                  dest_id               BLOB NOT NULL CHECK (length(dest_id) = 16),
+                  kind                  INTEGER NOT NULL CHECK (kind IN (1, 2)),
+                  view_once             INTEGER NOT NULL CHECK (view_once IN (0, 1)),
+                  class_code            INTEGER NOT NULL CHECK (typeof(class_code) = 'integer' AND class_code BETWEEN 0 AND 10),
+                  manifest_hash         BLOB NOT NULL CHECK (length(manifest_hash) = 32),
+                  key_env               BLOB CHECK (key_env IS NULL OR length(key_env) = 60),
+                  state                 TEXT NOT NULL
+                                        CHECK (state IN ('uploading', 'uploaded', 'failed', 'awaiting', 'fetching', 'complete',
+                                                         'verified', 'corrupt', 'incomplete', 'undecodable', 'viewing', 'viewed')),
+                  message_id            BLOB REFERENCES dm_message(message_id) ON DELETE CASCADE,
+                  decode_failures       INTEGER NOT NULL DEFAULT 0
+                                        CHECK (typeof(decode_failures) = 'integer' AND decode_failures BETWEEN 0 AND 2),
+                  incomplete_after_hour INTEGER CHECK (incomplete_after_hour IS NULL
+                                                       OR (typeof(incomplete_after_hour) = 'integer' AND incomplete_after_hour % 3600 = 0)),
+                  CHECK (kind <> 1 OR class_code = 0),
+                  CHECK ((role = 'out') = (state IN ('uploading', 'uploaded', 'failed'))),
+                  CHECK (state NOT IN ('viewing', 'viewed', 'corrupt', 'incomplete') OR key_env IS NULL),
+                  CHECK (state NOT IN ('viewing', 'viewed') OR view_once = 1),
+                  CHECK (role = 'out' OR incomplete_after_hour IS NOT NULL)
+                ) WITHOUT ROWID""",
+        "CREATE UNIQUE INDEX idx_media_object_message ON media_object(message_id) WHERE message_id IS NOT NULL",
+        """CREATE TABLE media_upload (
+                  object_id     BLOB PRIMARY KEY NOT NULL REFERENCES media_object(object_id) ON DELETE CASCADE,
+                  namespace_id  BLOB NOT NULL REFERENCES sync_namespace(namespace_id),
+                  ttl_seconds   INTEGER NOT NULL CHECK (ttl_seconds IN (3600, 86400, 604800, 2592000)),
+                  deadline_hour INTEGER NOT NULL CHECK (typeof(deadline_hour) = 'integer' AND deadline_hour % 3600 = 0),
+                  retry_gen     INTEGER NOT NULL DEFAULT 0 CHECK (typeof(retry_gen) = 'integer' AND retry_gen BETWEEN 0 AND 3)
+                ) WITHOUT ROWID""",
+        // One row and one file per distinct ciphertext blob; any number of fragment rows may name it (D25).
+        """CREATE TABLE media_blob (
+                  blob_hash        BLOB PRIMARY KEY NOT NULL CHECK (length(blob_hash) = 32),
+                  file_name        BLOB NOT NULL CHECK (length(file_name) = 16),
+                  origin           TEXT NOT NULL CHECK (origin IN ('sealed', 'ingested')),
+                  retain_until_day INTEGER CHECK (retain_until_day IS NULL
+                                                  OR (typeof(retain_until_day) = 'integer' AND retain_until_day >= 0)),
+                  CHECK ((origin = 'ingested') = (retain_until_day IS NOT NULL))
+                ) WITHOUT ROWID""",
+        "CREATE UNIQUE INDEX idx_media_blob_file ON media_blob(file_name)",
+        "CREATE INDEX idx_media_blob_retention ON media_blob(retain_until_day) WHERE retain_until_day IS NOT NULL",
+        """CREATE TABLE media_fragment (
+                  object_id    BLOB NOT NULL REFERENCES media_object(object_id) ON DELETE CASCADE,
+                  ordinal      INTEGER NOT NULL CHECK (typeof(ordinal) = 'integer' AND ordinal BETWEEN -1 AND 803),
+                  blob_hash    BLOB NOT NULL CHECK (length(blob_hash) = 32),
+                  state        TEXT NOT NULL CHECK (state IN ('expected', 'bound')),
+                  upload_state TEXT CHECK (upload_state IS NULL
+                                           OR upload_state IN ('unsent', 'open', 'sent', 'degraded', 'indeterminate', 'failed')),
+                  PRIMARY KEY (object_id, ordinal)
+                ) WITHOUT ROWID""",
+        "CREATE INDEX idx_media_fragment_hash ON media_fragment(blob_hash)",
+        "CREATE INDEX idx_media_fragment_open ON media_fragment(object_id) WHERE upload_state = 'open'",
+        // Maps a Phase 7 operation back to its blob (the F9 dm_outbound_op pattern).
+        """CREATE TABLE media_outbound_op (
+                  operation_id BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 16),
+                  object_id    BLOB NOT NULL,
+                  ordinal      INTEGER NOT NULL,
+                  retry_gen    INTEGER NOT NULL CHECK (typeof(retry_gen) = 'integer' AND retry_gen BETWEEN 0 AND 3),
+                  resend_count INTEGER NOT NULL CHECK (typeof(resend_count) = 'integer' AND resend_count BETWEEN 0 AND 2),
+                  FOREIGN KEY (object_id, ordinal) REFERENCES media_fragment(object_id, ordinal) ON DELETE CASCADE,
+                  UNIQUE (object_id, ordinal, retry_gen, resend_count)
+                ) WITHOUT ROWID""",
+    )
+
+    /**
+     * Migration 8, **step 5** (§13.6): the write-once, state-machine and REPLACE-guard triggers of the media tables.
+     * Every comparison is NULL-safe (`IS NOT`, R-T6): `<>` is NULL for a NULL operand, a `WHEN` that evaluates to NULL
+     * does not fire, and a write-once column could go from a value to NULL unseen. The transitions of the object are
+     * the table of §7.6, those of a fragment's `upload_state` the path of §6.4 (`unsent` → `open` → one of four final
+     * states, and `failed` → `unsent` only after a retry of the object); a no-op update (the same state) is allowed.
+     *
+     * Beyond §13.6's list (each a write-once rule the design states in prose, §22.4 row 5): a fragment keeps its
+     * object, ordinal and hash (the hash is what the object's authentication binds); the retention and the deadlines
+     * only move earlier and a decode-failure count never decreases (T33 and the poison guard of CS-M8); an upload keeps
+     * its namespace, bucket and deadline (R-MT4) and belongs to an outgoing object; a blob row keeps its identity.
+     * A fragment is `bound` exactly when its blob row exists (§7.2: "bound if a media_blob with that hash exists and
+     * expected otherwise"), and a blob row cannot be deleted while any fragment names it, so "a file goes only when
+     * nothing references it" is a property of the schema.
+     */
+    private fun migration8Triggers(): List<String> = listOf(
+        """CREATE TRIGGER media_object_fixed BEFORE UPDATE ON media_object
+                WHEN NEW.object_id IS NOT OLD.object_id OR NEW.role IS NOT OLD.role OR NEW.dest_id IS NOT OLD.dest_id
+                  OR NEW.kind IS NOT OLD.kind OR NEW.view_once IS NOT OLD.view_once OR NEW.class_code IS NOT OLD.class_code
+                  OR NEW.manifest_hash IS NOT OLD.manifest_hash OR NEW.message_id IS NOT OLD.message_id
+                BEGIN SELECT RAISE(ABORT, 'a media object keeps its identity, role, destination, kind, class, manifest and message'); END""",
+        """CREATE TRIGGER media_object_key BEFORE UPDATE OF key_env ON media_object
+                WHEN NEW.key_env IS NOT NULL AND NEW.key_env IS NOT OLD.key_env
+                BEGIN SELECT RAISE(ABORT, 'a media key is only ever erased'); END""",
+        """CREATE TRIGGER media_object_state BEFORE UPDATE OF state ON media_object
+                WHEN NOT (OLD.state IS NEW.state
+                       OR (OLD.state = 'uploading' AND NEW.state IN ('uploaded', 'failed'))
+                       OR (OLD.state = 'failed'    AND NEW.state = 'uploading')
+                       OR (OLD.state = 'awaiting'  AND NEW.state IN ('fetching', 'corrupt', 'incomplete'))
+                       OR (OLD.state = 'fetching'  AND NEW.state IN ('complete', 'incomplete'))
+                       OR (OLD.state = 'complete'  AND NEW.state IN ('verified', 'corrupt'))
+                       OR (OLD.state = 'verified'  AND NEW.state IN ('corrupt', 'undecodable', 'viewing'))
+                       OR (OLD.state = 'viewing'   AND NEW.state = 'viewed'))
+                BEGIN SELECT RAISE(ABORT, 'illegal media object state transition'); END""",
+        """CREATE TRIGGER media_object_monotonic BEFORE UPDATE OF decode_failures, incomplete_after_hour ON media_object
+                WHEN NEW.decode_failures < OLD.decode_failures
+                  OR (OLD.incomplete_after_hour IS NOT NULL
+                      AND (NEW.incomplete_after_hour IS NULL OR NEW.incomplete_after_hour > OLD.incomplete_after_hour))
+                  OR (OLD.incomplete_after_hour IS NULL AND NEW.incomplete_after_hour IS NOT NULL)
+                BEGIN SELECT RAISE(ABORT, 'the decode-failure count never decreases and the incomplete deadline only moves earlier'); END""",
+        """CREATE TRIGGER media_fragment_state BEFORE UPDATE ON media_fragment
+                WHEN NEW.object_id IS NOT OLD.object_id OR NEW.ordinal IS NOT OLD.ordinal OR NEW.blob_hash IS NOT OLD.blob_hash
+                  OR NOT (OLD.state IS NEW.state OR (OLD.state = 'expected' AND NEW.state = 'bound'))
+                  OR NOT (OLD.upload_state IS NEW.upload_state
+                       OR (OLD.upload_state IS 'unsent' AND NEW.upload_state IS 'open')
+                       OR (OLD.upload_state IS 'open'
+                           AND COALESCE(NEW.upload_state IN ('sent', 'degraded', 'indeterminate', 'failed'), 0))
+                       OR (OLD.upload_state IS 'failed' AND NEW.upload_state IS 'unsent'
+                           AND EXISTS (SELECT 1 FROM media_upload u WHERE u.object_id = OLD.object_id
+                                       AND NOT EXISTS (SELECT 1 FROM media_outbound_op o
+                                                       WHERE o.object_id = OLD.object_id AND o.ordinal = OLD.ordinal
+                                                         AND o.retry_gen = u.retry_gen))))
+                BEGIN SELECT RAISE(ABORT, 'a fragment keeps its identity, becomes bound once and uploads along unsent, open, a final state; failed returns only after a retry of its object'); END""",
+        """CREATE TRIGGER media_fragment_role BEFORE INSERT ON media_fragment
+                WHEN ((SELECT role FROM media_object WHERE object_id = NEW.object_id) = 'out') IS NOT (NEW.upload_state IS NOT NULL)
+                  OR (NEW.upload_state IS NOT NULL AND (NEW.upload_state <> 'unsent' OR NEW.state <> 'bound'))
+                BEGIN SELECT RAISE(ABORT, 'an outgoing fragment starts bound and unsent; an incoming one has no upload state'); END""",
+        """CREATE TRIGGER media_fragment_bound_blob_insert BEFORE INSERT ON media_fragment
+                WHEN (NEW.state = 'bound') IS NOT EXISTS (SELECT 1 FROM media_blob WHERE blob_hash = NEW.blob_hash)
+                BEGIN SELECT RAISE(ABORT, 'a fragment is bound exactly when its blob row exists'); END""",
+        """CREATE TRIGGER media_fragment_bound_blob_update BEFORE UPDATE OF state ON media_fragment
+                WHEN NEW.state = 'bound' AND NOT EXISTS (SELECT 1 FROM media_blob WHERE blob_hash = NEW.blob_hash)
+                BEGIN SELECT RAISE(ABORT, 'a fragment is bound exactly when its blob row exists'); END""",
+        """CREATE TRIGGER media_upload_role BEFORE INSERT ON media_upload
+                WHEN (SELECT role FROM media_object WHERE object_id = NEW.object_id) IS NOT 'out'
+                BEGIN SELECT RAISE(ABORT, 'an upload belongs to an outgoing object'); END""",
+        """CREATE TRIGGER media_upload_fixed BEFORE UPDATE ON media_upload
+                WHEN NEW.object_id IS NOT OLD.object_id OR NEW.namespace_id IS NOT OLD.namespace_id
+                  OR NEW.ttl_seconds IS NOT OLD.ttl_seconds OR NEW.deadline_hour IS NOT OLD.deadline_hour
+                BEGIN SELECT RAISE(ABORT, 'an upload keeps its namespace, bucket and deadline (R-MT4)'); END""",
+        """CREATE TRIGGER media_upload_monotonic BEFORE UPDATE OF retry_gen ON media_upload
+                WHEN NEW.retry_gen < OLD.retry_gen
+                BEGIN SELECT RAISE(ABORT, 'the retry generation never decreases'); END""",
+        """CREATE TRIGGER media_outbound_op_fixed BEFORE UPDATE ON media_outbound_op
+                BEGIN SELECT RAISE(ABORT, 'a media outbound op is never changed'); END""",
+        """CREATE TRIGGER media_blob_referenced BEFORE DELETE ON media_blob
+                WHEN EXISTS (SELECT 1 FROM media_fragment WHERE blob_hash = OLD.blob_hash)
+                BEGIN SELECT RAISE(ABORT, 'a blob that a fragment names is not deleted'); END""",
+        """CREATE TRIGGER media_blob_fixed BEFORE UPDATE ON media_blob
+                WHEN NEW.blob_hash IS NOT OLD.blob_hash OR NEW.file_name IS NOT OLD.file_name OR NEW.origin IS NOT OLD.origin
+                  OR (OLD.retain_until_day IS NOT NULL
+                      AND (NEW.retain_until_day IS NULL OR NEW.retain_until_day > OLD.retain_until_day))
+                BEGIN SELECT RAISE(ABORT, 'a blob keeps its hash, file and origin and its retention only moves earlier'); END""",
+        // REPLACE guards (§19.21 point 4): a REPLACE deletes the old row without running a DELETE trigger, so every
+        // table refuses an insert that conflicts on any key. `media_object` and `media_blob` have a second unique key
+        // (the partial index on `message_id`, the index on `file_name`), and a conflict on it alone would delete the
+        // other row; the guard names it (the lesson of `olm_prekey_gen`, whose partial unique index a REPLACE took out).
+        replaceGuard("media_object", "object_id = NEW.object_id OR message_id = NEW.message_id"),
+        replaceGuard("media_upload", "object_id = NEW.object_id"),
+        replaceGuard("media_blob", "blob_hash = NEW.blob_hash OR file_name = NEW.file_name"),
+        replaceGuard("media_fragment", "object_id = NEW.object_id AND ordinal = NEW.ordinal"),
+        replaceGuard(
+            "media_outbound_op",
+            "operation_id = NEW.operation_id OR (object_id = NEW.object_id AND ordinal = NEW.ordinal " +
+                "AND retry_gen = NEW.retry_gen AND resend_count = NEW.resend_count)",
+        ),
+    )
+
     /** Tables that must exist after all migrations; used by tests and by the integrity self-check. */
     val expectedTables: Set<String> = setOf(
         "schema_meta", "identity", "devices",
-        "media", "media_blobs",
         "invite_nonces", "revocations",
         // v2 (sync)
         "relay_directory", "sync_namespace", "namespace_relay", "relay_capability", "relay_cursor",
@@ -2188,6 +2472,9 @@ object Schema {
         // ... the channel state key's row (amended by slice S4, §19.37) and the rotation history (amended by
         // slice S13c, §19.54 row 12: §19.7 (c)'s spacing reads it).
         "mls_self", "ch_rotation_history",
+        // v8 (Phase 11 §13.6 "Schema migration M"): the v1 media and media_blobs are dropped (no longer expected),
+        // five media tables arrive, and the five DM tables it rebuilds keep their names.
+        "media_object", "media_upload", "media_blob", "media_fragment", "media_outbound_op",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -2250,6 +2537,14 @@ object Schema {
         "ch_box_key_no_replace",
         // ... and the rowid invariant of the only two tables that have a rowid (positive, never changed)
         "mls_kv_rowid_positive", "mls_kv_rowid_fixed", "ch_join_request_rowid_positive", "ch_join_request_rowid_fixed",
+        // v8 (Phase 11 §13.6 step 5): the write-once and state-machine triggers of the media tables ...
+        "media_object_fixed", "media_object_key", "media_object_state", "media_object_monotonic",
+        "media_fragment_state", "media_fragment_role", "media_fragment_bound_blob_insert", "media_fragment_bound_blob_update",
+        "media_upload_role", "media_upload_fixed", "media_upload_monotonic", "media_outbound_op_fixed",
+        "media_blob_referenced", "media_blob_fixed",
+        // ... and their REPLACE guards (the five DM tables migration 8 rebuilds recreate the v5 triggers of the same names).
+        "media_object_no_replace", "media_upload_no_replace", "media_blob_no_replace", "media_fragment_no_replace",
+        "media_outbound_op_no_replace",
     )
 
     /**

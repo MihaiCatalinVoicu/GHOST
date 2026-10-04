@@ -79,7 +79,9 @@ class ReplaceGuardsTest {
         val guarded = tablesWhere { (name, _) -> name.endsWith("_no_replace") }
         val deleteRules = tablesWhere { (_, sql) -> sql.contains("BEFORE DELETE ON") }
         // Every table whose DELETE is restricted is guarded: REPLACE would skip that rule.
-        assertEquals(setOf("ent_key", "ent_schedule_fact", "ent_purchase", "outbox_op"), deleteRules)
+        // (v8: `media_blob` joined them - a blob that a fragment names is not deleted, and its guard keeps a REPLACE
+        // from deleting it without that rule running.)
+        assertEquals(setOf("ent_key", "ent_schedule_fact", "ent_purchase", "outbox_op", "media_blob"), deleteRules)
         assertEquals(emptySet<String>(), deleteRules - guarded)
         // Every table with rules is guarded, except the two v2 tables whose rules are transitions only
         // and whose writers use INSERT OR IGNORE and UPSERT, and the v4 rule on sync_namespace, whose
@@ -116,6 +118,8 @@ class ReplaceGuardsTest {
         )
         assertEquals(guardedWithoutRules, guarded - withRules)
         assertEquals(ChannelSchema.tables - ChannelSchema.unguarded, guarded.filter { it in ChannelSchema.tables }.toSet())
+        // v8 (Phase 11 §13.6): all five media tables carry a guard and an UPDATE or DELETE rule.
+        assertEquals(MediaSchema.tables, guarded.filter { it in MediaSchema.tables }.toSet())
         for (table in guarded) {
             val (name, sql) = triggers.getValue(table).single { it.first.endsWith("_no_replace") }
             assertEquals("${table}_no_replace", name)
