@@ -403,14 +403,19 @@ fn label_prefix_rule() {
             }
         }
     }
-    // The AEAD associated-data prefixes and the op label, together with the HKDF labels.
-    let all: [&[u8]; 6] = [
+    // Review I13 (2026-10-04): the rule ranges over every string the format uses (HKDF infos, the
+    // AEAD associated-data prefixes, the op label, the wrap label). The 2026-09-25 labels used
+    // "ghost/v1/media/manifest" both as K_m's info and as AD_m's prefix; the AD prefixes now live
+    // under "ghost/v1/media/ad/", so no string of the set is a prefix of another.
+    let wrap = [WRAP_LABEL, WRAP_NAME_MEDIA_FILE_KEY].concat();
+    let all: [&[u8]; 7] = [
         LABEL_PAYLOAD,
         LABEL_MANIFEST,
         LABEL_COMMIT,
         AD_CHUNK,
         AD_MANIFEST,
         LABEL_OP,
+        &wrap,
     ];
     let mut shared = Vec::new();
     for (i, a) in all.iter().enumerate() {
@@ -423,12 +428,9 @@ fn label_prefix_rule() {
             }
         }
     }
-    println!(
-        "label pairs where one is a prefix of the other (HKDF info vs AEAD AD vs op): {shared:?}"
-    );
-    assert_eq!(
-        shared.len(),
-        1,
-        "exactly the manifest label is used twice (K_m info and AD_m prefix)"
+    println!("label pairs where one is a prefix of the other, over every label: {shared:?}");
+    assert!(
+        shared.is_empty(),
+        "no label of the format may be a prefix of another"
     );
 }

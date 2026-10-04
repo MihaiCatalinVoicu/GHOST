@@ -33,6 +33,20 @@ class MuxRecord {
     var channelWrites = 0
     var channelBytes = 0L
     var largestWrite = 0
+    /** Presentation times of every video sync sample (the encoder's real IDR spacing; review H1). */
+    val syncTimesUs = ArrayList<Long>()
+    /**
+     * Fragments as GhostMuxer sees them before FragmentedMp4Writer buffers them (review I7): the
+     * writer's flush rule mirrored on the sample stream (a fragment closes at the first video sync
+     * sample once the pending video samples span >= 2 s, first to last presentation time), each
+     * fragment as (video span us, bytes of video + audio samples).
+     */
+    val fragments = ArrayList<Pair<Long, Long>>()
+    var fragmentBoundTripped: String? = null
+    /** The first video sync sample after the SEI filter, and the video track's Format (its csd and
+     *  rotation): the input of the preview taken from the canonical output (review I15/H6). */
+    var firstSync: ByteArray? = null
+    var videoFormat: Format? = null
 }
 
 /** An in-memory, strictly sequential channel: a seek is impossible by construction (design §8.3). */
@@ -69,10 +83,16 @@ class GhostMuxer(
     /** V-M24 fix under test: turn the video Format's rotationDegrees into Mp4OrientationData, as
      *  Media3's own InAppFragmentedMp4Muxer.addTrack does; off = the design text as written. */
     private val orientationFromFormat: Boolean = false,
+    /** Review I7: fail the export as soon as one fragment's samples exceed this many bytes, before
+     *  FragmentedMp4Writer has buffered them (0 = off). */
+    private val fragmentBoundBytes: Long = 0,
 ) : Muxer {
     private val inner: FragmentedMp4Muxer = FragmentedMp4Muxer.Builder(channel).build()
     private val mime = HashMap<Int, String>()
     private val filter = applySeiFilter
+    private var fragStartUs = -1L
+    private var lastVideoUs = -1L
+    private var fragBytes = 0L
 
     init {
         inner.addMetadataEntry(Mp4TimestampData(0, 0))
@@ -84,6 +104,7 @@ class GhostMuxer(
         rec.tracks += "$format rotationDegrees=${format.rotationDegrees} colorInfo=${format.colorInfo}"
         if (m != MimeTypes.VIDEO_H264 && m != MimeTypes.AUDIO_AAC) throw MuxerException("GhostMuxer refuses track $m", IllegalArgumentException(m))
         val id = inner.addTrack(format)
+        if (m == MimeTypes.VIDEO_H264) rec.videoFormat = format
         if (orientationFromFormat && m == MimeTypes.VIDEO_H264 && format.rotationDegrees in listOf(0, 90, 180, 270)) {
             inner.addMetadataEntry(Mp4OrientationData(format.rotationDegrees))
             rec.forwarded += "Mp4OrientationData(${format.rotationDegrees}) [from Format.rotationDegrees]"
@@ -96,10 +117,39 @@ class GhostMuxer(
         if (mime[trackId] == MimeTypes.VIDEO_H264) {
             rec.videoSamples++
             val filtered = filterAvc(data)
+            val sync = info.flags and C.BUFFER_FLAG_KEY_FRAME != 0
+            if (sync) {
+                rec.syncTimesUs += info.presentationTimeUs
+                if (rec.firstSync == null) {
+                    val copy = ByteArray(filtered.remaining())
+                    filtered.duplicate().get(copy)
+                    rec.firstSync = copy
+                }
+            }
+            // FragmentedMp4Writer 1.11.1's flush rule, mirrored: a sync sample closes the pending
+            // fragment once its video samples span >= 2 s (first to last presentation time).
+            if (sync && (fragStartUs < 0 || lastVideoUs - fragStartUs >= 2_000_000L)) {
+                if (fragStartUs >= 0) rec.fragments += Pair(lastVideoUs - fragStartUs, fragBytes)
+                fragStartUs = info.presentationTimeUs
+                fragBytes = 0
+            }
+            lastVideoUs = info.presentationTimeUs
+            fragBytes += filtered.remaining()
+            checkBound()
             inner.writeSampleData(trackId, filtered, BufferInfo(info.presentationTimeUs, filtered.remaining(), info.flags))
         } else {
             rec.audioSamples++
+            fragBytes += data.remaining()
+            checkBound()
             inner.writeSampleData(trackId, data, info)
+        }
+    }
+
+    private fun checkBound() {
+        if (fragmentBoundBytes > 0 && fragBytes > fragmentBoundBytes && rec.fragmentBoundTripped == null) {
+            val msg = "fragment bound: $fragBytes B of samples since the fragment's first sync sample at ${fragStartUs / 1000} ms, video span ${(lastVideoUs - fragStartUs) / 1000} ms (bound $fragmentBoundBytes B)"
+            rec.fragmentBoundTripped = msg
+            throw MuxerException("GhostMuxer $msg", IllegalStateException(msg))
         }
     }
 
@@ -112,6 +162,8 @@ class GhostMuxer(
     }
 
     override fun close() {
+        if (fragStartUs >= 0) rec.fragments += Pair(lastVideoUs - fragStartUs, fragBytes)
+        fragStartUs = -1
         inner.close()
     }
 
@@ -206,12 +258,13 @@ class GhostMuxerFactory(
     private val seiFilter: Boolean = true,
     private val orientationFromFormat: Boolean = false,
     private val keepBytes: Boolean = true,
+    private val fragmentBoundBytes: Long = 0,
 ) : Muxer.Factory {
     lateinit var channel: MemoryChannel
     override fun create(path: String): Muxer {
         rec.pathOffered = path
         channel = MemoryChannel(rec, keepBytes)
-        return GhostMuxer(channel, rec, seiFilter, orientationFromFormat)
+        return GhostMuxer(channel, rec, seiFilter, orientationFromFormat, fragmentBoundBytes)
     }
 
     override fun getSupportedSampleMimeTypes(trackType: Int): ImmutableList<String> = when (trackType) {

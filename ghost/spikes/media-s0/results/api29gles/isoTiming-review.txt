@@ -1,0 +1,7 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+vm18 requests=100 failures=0 distinctPids=100
+vm18 bind(to onServiceConnected): n=100 min=67.6 median=134.9 p90=229.1 max=891.4 ms
+vm18 bind+decode 320px+reply: n=100 min=73.8 median=156.5 p90=255.4 max=933.3 ms
+vm18 unbind->binderDied: n=100 min=0.1 median=12.4 p90=32.3 max=94.7 ms (deaths observed 100/100)
+probe isoTiming: OK
+

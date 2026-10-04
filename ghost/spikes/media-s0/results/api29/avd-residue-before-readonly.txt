@@ -1,0 +1,37 @@
+# 2026-10-04T02:24:34Z emulator-29 Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys uptime=1335.71 3464.47
+## packages (S0 and the product's suites)
+package:org.ghost.app
+package:org.ghost.app.test
+package:org.ghost.crypto.bridge.test
+package:org.ghost.messaging.test
+package:org.ghost.spike.media
+org.ghost.spike.media     firstInstallTime=2026-09-25 09:39:29
+org.ghost.spike.media     lastUpdateTime=2026-10-04 05:07:07
+## /data/tombstones (S0 = names org.ghost.spike or carries the S0 canary)
+/data/tombstones/tombstone_00 704286 B mode=640 mtime=2026-09-25 09:43:46.513514951 +0300 s0=yes
+## /data/system/dropbox entries that name org.ghost.spike or carry an S0 canary
+/data/system/dropbox/data_app_crash@1791080650509.txt 2207 B mode=600 mtime=2026-10-04 05:24:10.500000000 +0300
+/data/system/dropbox/data_app_crash@1791080651907.txt 2207 B mode=600 mtime=2026-10-04 05:24:11.900000000 +0300
+## shared storage: pictures, thumbnails, transform placeholders
+## MediaStore image rows
+No result found.
+## MediaProvider caches (photo picker's Glide cache) and picker database
+## DocumentsUI records (API 29)
+## usage stats files naming org.ghost.spike
+/data/system/usagestats/0/daily/1791079388738
+/data/system/usagestats/0/weekly/1791079388738
+/data/system/usagestats/0/monthly/1790260498928
+/data/system/usagestats/0/yearly/1790260498928
+## /data/local/tmp
+total 9624
+drwxrwx--x 4 shell shell    4096 2026-10-04 05:23 .
+drwxr-x--x 4 root  root     4096 2026-09-24 17:06 ..
+-rwxr-xr-x 1 shell shell 3906728 2026-09-25 08:12 device_probe
+-rw-rw-rw- 1 root  root  5877982 2026-09-25 09:15 golden.mp4
+drwxrwxrwx 2 shell shell    4096 2026-10-03 17:12 mls-probe
+-rw-rw-rw- 1 root  root       25 2026-10-04 05:23 s0-rootfind.err
+-rw-rw-rw- 1 root  root        0 2026-10-04 05:23 s0-rootfind.txt
+drwxrwxrwx 2 root  root     4096 2026-10-04 05:08 s0src
+-rw-rw-rw- 1 root  root        0 2026-09-25 09:40 vm1.marker
+-rw-rw-rw- 1 root  root        0 2026-10-04 05:19 vm1fix.marker
+-rw-rw-rw- 1 root  root        0 2026-10-04 05:23 vm23fix.marker

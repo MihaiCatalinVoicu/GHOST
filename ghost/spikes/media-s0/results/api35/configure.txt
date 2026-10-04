@@ -1,0 +1,10 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+configure c2.android.avc.encoder [plain]: OK
+configure c2.android.avc.encoder [profile only]: OK
+configure c2.android.avc.encoder [profile+level]: OK
+configure c2.android.avc.encoder [colour keys (BT.709 limited)]: OK
+configure c2.android.avc.encoder [colour keys (BT.601 full)]: OK
+configure c2.android.avc.encoder [profile+level+max-bframes 0]: OK
+configure c2.android.avc.encoder [High profile+level 3.1]: OK
+probe configure: OK
+

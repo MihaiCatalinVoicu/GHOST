@@ -1,0 +1,278 @@
+# R8 -whyareyoukeeping for the 2026-10-04 build (./gradlew --offline -PwhyKeeping :r8probe:assembleMediaRelease, android/r8probe/why-kept.pro)
+androidx.media3.datasource.DefaultHttpDataSource
+|- is instantiated in:
+|  androidx.media3.datasource.DataSource androidx.media3.datasource.DefaultHttpDataSource$Factory.createDataSource()
+|- is overriding method:
+|  androidx.media3.datasource.DataSource androidx.media3.datasource.DataSource$Factory.createDataSource()
+|- is invoked from:
+|  androidx.media3.exoplayer.source.MediaPeriod androidx.media3.exoplayer.source.ProgressiveMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is overriding method:
+|  androidx.media3.exoplayer.source.MediaPeriod androidx.media3.exoplayer.source.BaseMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaPeriod.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId)
+|- is invoked from:
+|  androidx.media3.exoplayer.source.MaskingMediaPeriod androidx.media3.exoplayer.source.MaskingMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is invoked from:
+|  void androidx.media3.exoplayer.MediaPeriodHolder.<init>(androidx.media3.exoplayer.BaseRenderer[],long,androidx.media3.exoplayer.trackselection.MappingTrackSelector,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,androidx.media3.exoplayer.MediaSourceList,androidx.media3.exoplayer.MediaPeriodInfo,androidx.media3.exoplayer.trackselection.TrackSelectorResult)
+|- is invoked from:
+|  void androidx.media3.exoplayer.ExoPlayerImplInternal.doSomeWork()
+|- is invoked from:
+|  boolean androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(android.os.Message)
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.ExoPlayerImplInternal
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl.<init>(androidx.media3.exoplayer.ExoPlayer$Builder)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.datasource.UdpDataSource
+|- is referenced from:
+|  androidx.media3.datasource.UdpDataSource androidx.media3.datasource.DefaultDataSource.udpDataSource
+|- is referenced from:
+|  void androidx.media3.datasource.DefaultDataSource.addTransferListener(androidx.media3.datasource.TransferListener)
+|- is overriding method:
+|  void androidx.media3.datasource.DataSource.addTransferListener(androidx.media3.datasource.TransferListener)
+|- is invoked from:
+|  androidx.media3.exoplayer.source.MediaPeriod androidx.media3.exoplayer.source.ProgressiveMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is overriding method:
+|  androidx.media3.exoplayer.source.MediaPeriod androidx.media3.exoplayer.source.BaseMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaPeriod.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId)
+|- is invoked from:
+|  androidx.media3.exoplayer.source.MaskingMediaPeriod androidx.media3.exoplayer.source.MaskingMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is invoked from:
+|  void androidx.media3.exoplayer.MediaPeriodHolder.<init>(androidx.media3.exoplayer.BaseRenderer[],long,androidx.media3.exoplayer.trackselection.MappingTrackSelector,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,androidx.media3.exoplayer.MediaSourceList,androidx.media3.exoplayer.MediaPeriodInfo,androidx.media3.exoplayer.trackselection.TrackSelectorResult)
+|- is invoked from:
+|  void androidx.media3.exoplayer.ExoPlayerImplInternal.doSomeWork()
+|- is invoked from:
+|  boolean androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(android.os.Message)
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.ExoPlayerImplInternal
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl.<init>(androidx.media3.exoplayer.ExoPlayer$Builder)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.datasource.FileDataSource
+|- is referenced from:
+|  androidx.media3.datasource.FileDataSource androidx.media3.datasource.DefaultDataSource.fileDataSource
+|- is referenced from:
+|  void androidx.media3.datasource.DefaultDataSource.addTransferListener(androidx.media3.datasource.TransferListener)
+|- is overriding method:
+|  void androidx.media3.datasource.DataSource.addTransferListener(androidx.media3.datasource.TransferListener)
+|- is invoked from:
+|  androidx.media3.exoplayer.source.MediaPeriod androidx.media3.exoplayer.source.ProgressiveMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is overriding method:
+|  androidx.media3.exoplayer.source.MediaPeriod androidx.media3.exoplayer.source.BaseMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaPeriod.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId)
+|- is invoked from:
+|  androidx.media3.exoplayer.source.MaskingMediaPeriod androidx.media3.exoplayer.source.MaskingMediaSource.createPeriod(androidx.media3.exoplayer.source.MediaSource$MediaPeriodId,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,long)
+|- is invoked from:
+|  void androidx.media3.exoplayer.MediaPeriodHolder.<init>(androidx.media3.exoplayer.BaseRenderer[],long,androidx.media3.exoplayer.trackselection.MappingTrackSelector,androidx.media3.exoplayer.DefaultLoadControl$PlayerIdFilteringAllocatorImpl,androidx.media3.exoplayer.MediaSourceList,androidx.media3.exoplayer.MediaPeriodInfo,androidx.media3.exoplayer.trackselection.TrackSelectorResult)
+|- is invoked from:
+|  void androidx.media3.exoplayer.ExoPlayerImplInternal.doSomeWork()
+|- is invoked from:
+|  boolean androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(android.os.Message)
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.ExoPlayerImplInternal
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl.<init>(androidx.media3.exoplayer.ExoPlayer$Builder)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.transformer.InAppMp4Muxer
+|- is referenced from:
+|  void androidx.media3.transformer.DefaultMuxer.close()
+|- is defined in library method overridden by:
+|  androidx.media3.transformer.DefaultMuxer
+|- is referenced from:
+|  android.media.metrics.LogSessionId androidx.media3.transformer.Transformer.setUpMetricsCollection()
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.exoplayer.analytics.MediaMetricsListener
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl$Api31$$InternalSyntheticLambda$3$597ef681ca96a0f6d21b3edeef25cdd93e6ff01b37d9bd643c98c5df0217b9c3$0.run()
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.ExoPlayerImpl$Api31$$InternalSyntheticLambda$3$597ef681ca96a0f6d21b3edeef25cdd93e6ff01b37d9bd643c98c5df0217b9c3$0
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl.<init>(androidx.media3.exoplayer.ExoPlayer$Builder)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+Nothing is keeping androidx.media3.exoplayer.image.BitmapFactoryImageDecoder
+androidx.media3.extractor.DefaultExtractorsFactory
+|- is referenced from:
+|  androidx.media3.extractor.DefaultExtractorsFactory androidx.media3.exoplayer.source.DefaultMediaSourceFactory$DelegateFactoryLoader.extractorsFactory
+|- is referenced from:
+|  androidx.media3.exoplayer.source.BaseMediaSource androidx.media3.exoplayer.source.DefaultMediaSourceFactory.createMediaSource(androidx.media3.common.MediaItem)
+|- is overriding method:
+|  androidx.media3.exoplayer.source.BaseMediaSource androidx.media3.exoplayer.source.MediaSource$Factory.createMediaSource(androidx.media3.common.MediaItem)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+|- is referenced from:
+|  androidx.media3.exoplayer.source.BaseMediaSource androidx.media3.exoplayer.source.DefaultMediaSourceFactory.createMediaSource(androidx.media3.common.MediaItem)
+|- is overriding method:
+|  androidx.media3.exoplayer.source.BaseMediaSource androidx.media3.exoplayer.source.MediaSource$Factory.createMediaSource(androidx.media3.common.MediaItem)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.extractor.mkv.MatroskaExtractor
+|- is referenced from:
+|  void androidx.media3.extractor.mkv.MatroskaExtractor.release()
+|- is overriding method:
+|  void androidx.media3.extractor.Extractor.release()
+|- is invoked from:
+|  void androidx.media3.exoplayer.upstream.Loader$ReleaseTask.run()
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.upstream.Loader$ReleaseTask
+|- is instantiated in:
+|  void androidx.media3.exoplayer.source.ProgressiveMediaSource.releasePeriod(androidx.media3.exoplayer.source.MediaPeriod)
+|- is overriding method:
+|  void androidx.media3.exoplayer.source.BaseMediaSource.releasePeriod(androidx.media3.exoplayer.source.MediaPeriod)
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaPeriod.releasePeriod()
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaSource.releasePeriod(androidx.media3.exoplayer.source.MediaPeriod)
+|- is invoked from:
+|  void androidx.media3.exoplayer.MediaPeriodHolder.release()
+|- is invoked from:
+|  void androidx.media3.exoplayer.ExoPlayerImplInternal.setPreloadConfigurationInternal(androidx.media3.exoplayer.ExoPlayer$PreloadConfiguration)
+|- is invoked from:
+|  boolean androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(android.os.Message)
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.ExoPlayerImplInternal
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl.<init>(androidx.media3.exoplayer.ExoPlayer$Builder)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.extractor.heif.HeifExtractor
+|- is referenced from:
+|  void androidx.media3.extractor.heif.HeifExtractor.release()
+|- is overriding method:
+|  void androidx.media3.extractor.Extractor.release()
+|- is invoked from:
+|  void androidx.media3.exoplayer.upstream.Loader$ReleaseTask.run()
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.upstream.Loader$ReleaseTask
+|- is instantiated in:
+|  void androidx.media3.exoplayer.source.ProgressiveMediaSource.releasePeriod(androidx.media3.exoplayer.source.MediaPeriod)
+|- is overriding method:
+|  void androidx.media3.exoplayer.source.BaseMediaSource.releasePeriod(androidx.media3.exoplayer.source.MediaPeriod)
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaPeriod.releasePeriod()
+|- is invoked from:
+|  void androidx.media3.exoplayer.source.MaskingMediaSource.releasePeriod(androidx.media3.exoplayer.source.MediaPeriod)
+|- is invoked from:
+|  void androidx.media3.exoplayer.MediaPeriodHolder.release()
+|- is invoked from:
+|  void androidx.media3.exoplayer.ExoPlayerImplInternal.setPreloadConfigurationInternal(androidx.media3.exoplayer.ExoPlayer$PreloadConfiguration)
+|- is invoked from:
+|  boolean androidx.media3.exoplayer.ExoPlayerImplInternal.handleMessage(android.os.Message)
+|- is defined in library method overridden by:
+|  androidx.media3.exoplayer.ExoPlayerImplInternal
+|- is instantiated in:
+|  void androidx.media3.exoplayer.ExoPlayerImpl.<init>(androidx.media3.exoplayer.ExoPlayer$Builder)
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.transformer.ImageAssetLoader
+|- is instantiated in:
+|  androidx.media3.transformer.AssetLoader androidx.media3.transformer.ImageAssetLoader$Factory.createAssetLoader(androidx.media3.transformer.EditedMediaItem,android.os.Looper,androidx.media3.transformer.AssetLoader$Listener,androidx.media3.transformer.AssetLoader$CompositionSettings)
+|- is overriding method:
+|  androidx.media3.transformer.AssetLoader androidx.media3.transformer.AssetLoader$Factory.createAssetLoader(androidx.media3.transformer.EditedMediaItem,android.os.Looper,androidx.media3.transformer.AssetLoader$Listener,androidx.media3.transformer.AssetLoader$CompositionSettings)
+|- is invoked from:
+|  androidx.media3.transformer.AssetLoader androidx.media3.transformer.SequenceAssetLoader$GapInterceptingAssetLoaderFactory.createAssetLoader(androidx.media3.transformer.EditedMediaItem,android.os.Looper,androidx.media3.transformer.AssetLoader$Listener,androidx.media3.transformer.AssetLoader$CompositionSettings)
+|- is invoked from:
+|  void androidx.media3.transformer.SequenceAssetLoader.<init>(androidx.media3.transformer.EditedMediaItemSequence,androidx.media3.transformer.AssetLoader$Factory,androidx.media3.transformer.AssetLoader$CompositionSettings,androidx.media3.transformer.TransformerInternal$SequenceAssetLoaderListener,android.os.Looper)
+|- is invoked from:
+|  void androidx.media3.transformer.TransformerInternal.<init>(android.content.Context,androidx.media3.transformer.Composition,androidx.media3.transformer.TransformationRequest,androidx.media3.transformer.AssetLoader$Factory,androidx.media3.transformer.DefaultAudioMixer$Factory,androidx.media3.effect.DefaultVideoFrameProcessor$Factory,androidx.media3.transformer.Codec$EncoderFactory,com.google.common.collect.ImmutableList,androidx.media3.transformer.MuxerWrapper,androidx.media3.transformer.TransformerInternal$Listener,androidx.media3.transformer.FallbackListener,androidx.media3.common.util.SystemHandlerWrapper,long,android.media.metrics.LogSessionId,boolean)
+|- is invoked from:
+|  void androidx.media3.transformer.DefaultExportOperation.start()
+|- is overriding method:
+|  void androidx.media3.transformer.ExportOperation.start()
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.media3.datasource.DataSourceBitmapLoader
+|- is instantiated in:
+|  void androidx.media3.transformer.DefaultAssetLoaderFactory.<init>(android.content.Context,androidx.media3.transformer.DefaultDecoderFactory,android.media.metrics.LogSessionId)
+|- is invoked from:
+|  void androidx.media3.transformer.TransformerInternal.<init>(android.content.Context,androidx.media3.transformer.Composition,androidx.media3.transformer.TransformationRequest,androidx.media3.transformer.AssetLoader$Factory,androidx.media3.transformer.DefaultAudioMixer$Factory,androidx.media3.effect.DefaultVideoFrameProcessor$Factory,androidx.media3.transformer.Codec$EncoderFactory,com.google.common.collect.ImmutableList,androidx.media3.transformer.MuxerWrapper,androidx.media3.transformer.TransformerInternal$Listener,androidx.media3.transformer.FallbackListener,androidx.media3.common.util.SystemHandlerWrapper,long,android.media.metrics.LogSessionId,boolean)
+|- is invoked from:
+|  void androidx.media3.transformer.DefaultExportOperation.start()
+|- is overriding method:
+|  void androidx.media3.transformer.ExportOperation.start()
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml
+androidx.exifinterface.media.ExifInterface
+|- is instantiated in:
+|  android.graphics.Bitmap androidx.media3.datasource.BitmapUtil.decode(byte[],int,android.graphics.BitmapFactory$Options,int)
+|- is invoked from:
+|  java.lang.Object androidx.media3.datasource.DataSourceBitmapLoader$$InternalSyntheticLambda$3$a581512f3f4e733452948571efbbbfe409d492bfe42ed9b3dca699b1abd6f652$0.call()
+|- is defined in library method overridden by:
+|  androidx.media3.datasource.DataSourceBitmapLoader$$InternalSyntheticLambda$3$a581512f3f4e733452948571efbbbfe409d492bfe42ed9b3dca699b1abd6f652$0
+|- is instantiated in:
+|  com.google.common.util.concurrent.ListenableFuture androidx.media3.datasource.DataSourceBitmapLoader.loadBitmap(android.net.Uri)
+|- is overriding method:
+|  com.google.common.util.concurrent.ListenableFuture androidx.media3.common.util.BitmapLoader.loadBitmap(android.net.Uri)
+|- is invoked from:
+|  void androidx.media3.transformer.ImageAssetLoader.start()
+|- is overriding method:
+|  void androidx.media3.transformer.AssetLoader.start()
+|- is invoked from:
+|  void androidx.media3.transformer.SequenceAssetLoader.start()
+|- is invoked from:
+|  boolean androidx.media3.transformer.TransformerInternal$$InternalSyntheticLambda$2$4e18c07f0f99fdc2ec4e122dee864b7bf7b11a3c8abbe6ba3a218dcc2768d1ed$0.handleMessage(android.os.Message)
+|- is defined in library method overridden by:
+|  androidx.media3.transformer.TransformerInternal$$InternalSyntheticLambda$2$4e18c07f0f99fdc2ec4e122dee864b7bf7b11a3c8abbe6ba3a218dcc2768d1ed$0
+|- is instantiated in:
+|  void androidx.media3.transformer.TransformerInternal.<init>(android.content.Context,androidx.media3.transformer.Composition,androidx.media3.transformer.TransformationRequest,androidx.media3.transformer.AssetLoader$Factory,androidx.media3.transformer.DefaultAudioMixer$Factory,androidx.media3.effect.DefaultVideoFrameProcessor$Factory,androidx.media3.transformer.Codec$EncoderFactory,com.google.common.collect.ImmutableList,androidx.media3.transformer.MuxerWrapper,androidx.media3.transformer.TransformerInternal$Listener,androidx.media3.transformer.FallbackListener,androidx.media3.common.util.SystemHandlerWrapper,long,android.media.metrics.LogSessionId,boolean)
+|- is invoked from:
+|  void androidx.media3.transformer.DefaultExportOperation.start()
+|- is overriding method:
+|  void androidx.media3.transformer.ExportOperation.start()
+|- is invoked from:
+|  void org.ghost.spike.r8.Main.onCreate(android.os.Bundle)
+|- is defined in library method overridden by:
+|  org.ghost.spike.r8.Main
+|- is referenced from xml:
+|  AndroidManifest.xml

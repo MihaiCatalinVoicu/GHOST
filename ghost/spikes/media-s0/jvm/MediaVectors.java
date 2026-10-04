@@ -31,7 +31,7 @@ public class MediaVectors {
     static final int MANIFEST_PT = FRAG - 32 - TAG, PREVIEW_OFFSET = 38, PREVIEW_MAX = 32768;
     static final int HASHES_OFFSET = PREVIEW_OFFSET + PREVIEW_MAX;
 
-    static int compared = 0, equal = 0, negatives = 0, refused = 0;
+    static int compared = 0, equal = 0, negatives = 0, refused = 0, commitChecks = 0, commitDistinct = 0;
     static final List<String> failures = new ArrayList<>();
 
     public static void main(String[] args) throws Exception {
@@ -60,9 +60,10 @@ public class MediaVectors {
             if (e.getKey().startsWith("object ")) replay(e.getKey().substring(7), e.getValue());
         }
         System.out.println("media-vectors (JDK " + System.getProperty("java.version") + "): " + compared
-                + " values compared, " + equal + " equal; " + negatives + " negative cases, " + refused + " refused");
+                + " values compared, " + equal + " equal; " + negatives + " AEAD negative cases, " + refused + " refused; "
+                + commitChecks + " commitment-separation checks, " + commitDistinct + " distinct");
         for (String f : failures) System.out.println("FAIL " + f);
-        System.exit(failures.isEmpty() && compared == equal && negatives == refused && compared > 0 ? 0 : 1);
+        System.exit(failures.isEmpty() && compared == equal && negatives == refused && commitChecks == commitDistinct && compared > 0 ? 0 : 1);
     }
 
     static void replay(String name, Map<String, String> v) throws Exception {
@@ -80,7 +81,7 @@ public class MediaVectors {
         int cls = classFor(content.length);
         check(name + " class_code", v.get("class_code"), Integer.toString(cls));
         int f = CLASSES[cls], n = f / 4;
-        byte[] ad = cat("ghost/v1/media/chunk".getBytes(StandardCharsets.US_ASCII), new byte[] {1}, oid, new byte[] {(byte) kind});
+        byte[] ad = cat("ghost/v1/media/ad/chunk".getBytes(StandardCharsets.US_ASCII), new byte[] {1}, oid, new byte[] {(byte) kind});
         check(name + " chunk_ad", v.get("chunk_ad"), hex(ad));
         byte[] padded = Arrays.copyOf(content, n * CHUNK_PT);
         List<byte[]> fragments = new ArrayList<>();
@@ -103,7 +104,7 @@ public class MediaVectors {
         byte[] mpb = mp.array();
         check(name + " manifest_plaintext_head", v.get("manifest_plaintext_head"), hex(Arrays.copyOf(mpb, 38)));
         check(name + " manifest_plaintext_sha256", v.get("manifest_plaintext_sha256"), hex(sha256(mpb)));
-        byte[] adm = cat("ghost/v1/media/manifest".getBytes(StandardCharsets.US_ASCII), new byte[] {1}, oid, commit);
+        byte[] adm = cat("ghost/v1/media/ad/manifest".getBytes(StandardCharsets.US_ASCII), new byte[] {1}, oid, commit);
         check(name + " manifest_ad", v.get("manifest_ad"), hex(adm));
         byte[] blob = cat(commit, seal(km, new byte[12], adm, mpb));
         check(name + " manifest blob length", "65536", Integer.toString(blob.length));
@@ -142,16 +143,19 @@ public class MediaVectors {
         if (n > 1) negative(name + " chunk 0 opened as last", kp, nLast, ad, ct1);
         byte[] oid2 = oid.clone();
         oid2[0] ^= 1;
-        byte[] adm2 = cat("ghost/v1/media/manifest".getBytes(StandardCharsets.US_ASCII), new byte[] {1}, oid2, commit);
+        byte[] adm2 = cat("ghost/v1/media/ad/manifest".getBytes(StandardCharsets.US_ASCII), new byte[] {1}, oid2, commit);
         negative(name + " manifest under another object_id", km, new byte[12], adm2, Arrays.copyOfRange(blob, 32, FRAG));
         byte[] envOut = unhex(v.get("key_env_out"));
         byte[] bindIn = cat(new byte[] {2}, dest, oid, mh);
         negative(name + " key_env_out under the in binding", sk, Arrays.copyOf(envOut, 12),
                 cat("ghost/v1/wrap/media-file-key".getBytes(StandardCharsets.US_ASCII), bindIn), Arrays.copyOfRange(envOut, 12, 60));
+        // Review H13 (2026-10-04): not an AEAD refusal. It checks only that another K_f derives
+        // another commitment (the comparison a reader makes before opening the manifest), so it is
+        // counted apart from the refusals above, which exercise ChaCha20-Poly1305's tag check.
         byte[] kf2 = kf.clone();
         kf2[31] ^= 1;
-        negatives++;
-        if (!Arrays.equals(hkdfExpand(hmac(oid, kf2), "ghost/v1/media/commit"), commit)) refused++;
+        commitChecks++;
+        if (!Arrays.equals(hkdfExpand(hmac(oid, kf2), "ghost/v1/media/commit"), commit)) commitDistinct++;
         else failures.add(name + " another K_f gave the same commitment");
     }
 

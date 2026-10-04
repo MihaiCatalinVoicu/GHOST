@@ -1,0 +1,7 @@
+# Review H11 (2026-10-04): the two API 29 picks of 2026-10-04 against the files S0 pushed. The probe hashed the stream it read
+# (results/api29/vm21-first/pick.txt, results/api29/vm21/pick.txt); the host hashes the pushed sources (work/api35/src).
+results/api29/vm21-first/pick.txt: uri=content://com.android.providers.media.documents/document/image%3A14 bytes=4341 sha256=6922c84d8ddee558f59ebd7a18607caac7eb245b15dca840dfc4a9fbe74e2b06 equals=orient6.jpg
+results/api29/vm21/pick.txt: uri=content://com.android.providers.media.documents/document/image%3A15 bytes=4264 sha256=c7b376d26daba145664953474982aeba09133183311c160120b89322fd68f7fa equals=orient3.jpg
+# vm21-first pushed orient6.jpg as ghost_s0_pick.jpg (MediaStore _id 14, vm21-first/mediastore-row.txt) and the pick returned _id 14.
+# vm21 pushed a new file, ghost_s0_pick_004202.jpg (MediaStore _id 15, vm21/mediastore-row.txt), and the pick returned _id 15: its bytes are orient3.jpg,
+# so that run was given orient3.jpg, not the orient6.jpg of the README command (its argument was not recorded). Both streams equal the pushed file.

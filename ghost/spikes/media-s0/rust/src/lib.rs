@@ -4,12 +4,14 @@
 //!   from the design text alone, so that every constant, offset and rule is exercised once before
 //!   `ghost-client-media` is built in S1.
 //! * [`jpeg`]: the JPEG marker walker and the §8.2 canonicaliser (V-M6).
+//! * [`profile`]: the canonical fMP4 profile as corrected after the S0 review, as a checker.
 //! * [`mp4`]: an ISO-BMFF box walker for the Media3 outputs pulled from the emulators (V-M2,
 //!   V-M3, V-M12, V-M17, V-M22, V-M24), including the GHOST `mfra` builder of §8.3.
 
 pub mod format;
 pub mod jpeg;
 pub mod mp4;
+pub mod profile;
 pub mod vectors;
 
 /// Lower-case hex of `bytes`.

@@ -90,6 +90,131 @@ object SourceMaker {
         VideoSpec("t10_$it.mp4", 1280, 720, 30, 10.0, 4_000_000, 48_000, 2, content = it, canaries = false, location = false)
     }
 
+    /**
+     * Review fixes (2026-10-04). `quad` sources show a fixed 3 x 2 grid of saturated colours (top
+     * row red, green, blue; bottom row yellow, white, black) **as displayed**, i.e. after the
+     * track's rotation, plus a small grey box moving along the bottom edge; their pixels are coded
+     * BT.601 full range and labelled so (like `match720p30`). They answer: whether the colour fix
+     * converts or only relabels (review H4: the RGB of each cell after the pipeline), how every
+     * rotation leaves Transformer (review I19: 0, 90, 180, 270 and coded portrait), whether a
+     * video without audio gets a silent track (review I10), and the preview taken from the
+     * canonical output (review I15/H6: the cells after decoding the output's first sync sample and
+     * turning it by the output's rotation). `long45_smooth24` is review H1's 45-s 24-fps source
+     * (API 29's software encoder writes an IDR every 1 000 frames).
+     */
+    val fixSpecs = listOf(
+        VideoSpec("quad_land.mp4", 1280, 720, 30, 4.0, 3_000_000, 48_000, 2, rotation = 0, content = "quad", canaries = false, location = false),
+        VideoSpec("quad_rot90.mp4", 1280, 720, 30, 4.0, 3_000_000, 48_000, 2, rotation = 90, content = "quad", canaries = false, location = false),
+        VideoSpec("quad_rot180.mp4", 1280, 720, 30, 4.0, 3_000_000, 48_000, 2, rotation = 180, content = "quad", canaries = false, location = false),
+        VideoSpec("quad_rot270.mp4", 1280, 720, 30, 4.0, 3_000_000, 48_000, 2, rotation = 270, content = "quad", canaries = false, location = false),
+        VideoSpec("quad_port.mp4", 720, 1280, 30, 4.0, 3_000_000, 48_000, 2, rotation = 0, content = "quad", canaries = false, location = false),
+        VideoSpec("quad_noaudio.mp4", 1280, 720, 30, 4.0, 3_000_000, 48_000, 0, rotation = 0, content = "quad", canaries = false, location = false),
+        VideoSpec("long45_smooth24.mp4", 1280, 720, 24, 45.0, 4_000_000, 48_000, 2, content = "smooth", canaries = false, location = false),
+    )
+
+    /** The displayed colours of the `quad` grid: (column, row) -> RGB. */
+    val QUAD = arrayOf(
+        intArrayOf(255, 0, 0), intArrayOf(0, 255, 0), intArrayOf(0, 0, 255),
+        intArrayOf(255, 255, 0), intArrayOf(255, 255, 255), intArrayOf(0, 0, 0),
+    )
+    val QUAD_NAMES = arrayOf("R", "G", "B", "Y", "W", "K")
+
+    /** RGB -> (Y, Cb, Cr) as BT.601 full range or BT.709 limited range. */
+    fun yuvOf(rgb: IntArray, bt601Full: Boolean): IntArray {
+        val r = rgb[0] / 255.0; val g = rgb[1] / 255.0; val b = rgb[2] / 255.0
+        val (kr, kb) = if (bt601Full) Pair(0.299, 0.114) else Pair(0.2126, 0.0722)
+        val y = kr * r + (1 - kr - kb) * g + kb * b
+        val cb = (b - y) / (2 * (1 - kb))
+        val cr = (r - y) / (2 * (1 - kr))
+        return if (bt601Full) intArrayOf((255 * y).roundTo(), (128 + 255 * cb).roundTo(), (128 + 255 * cr).roundTo())
+        else intArrayOf((16 + 219 * y).roundTo(), (128 + 224 * cb).roundTo(), (128 + 224 * cr).roundTo())
+    }
+
+    private fun Double.roundTo(): Int = Math.round(this).toInt().coerceIn(0, 255)
+
+    /** Stored (coded) pixel -> displayed pixel for a clockwise display rotation [r]. */
+    fun displayedOf(sx: Int, sy: Int, ws: Int, hs: Int, r: Int): Pair<Int, Int> = when (r) {
+        90 -> Pair(hs - 1 - sy, sx)
+        180 -> Pair(ws - 1 - sx, hs - 1 - sy)
+        270 -> Pair(sy, ws - 1 - sx)
+        else -> Pair(sx, sy)
+    }
+
+    /** The `quad` grid cell index (0 … 5) of a displayed pixel, or -1 inside the moving box. */
+    fun quadCell(dx: Int, dy: Int, wd: Int, hd: Int, frame: Int): Int {
+        val boxX = (frame * 9) % maxOf(1, wd - 32)
+        if (dy in hd - 40 until hd - 8 && dx in boxX until boxX + 32) return -1
+        return minOf(2, dx * 3 / wd) + 3 * minOf(1, dy * 2 / hd)
+    }
+
+    private fun fillQuad(img: android.media.Image, n: Int, s: VideoSpec) {
+        val ws = s.w; val hs = s.h; val r = s.rotation
+        val wd = if (r == 90 || r == 270) hs else ws
+        val hd = if (r == 90 || r == 270) ws else hs
+        val cols = Array(7) { if (it < 6) yuvOf(QUAD[it], s.bt601Full) else yuvOf(intArrayOf(128, 128, 128), s.bt601Full) }
+        val boxX = (n * 9) % maxOf(1, wd - 32)
+        // Stored (sx, sy) -> displayed (dx, dy) for a clockwise display rotation r, without allocation.
+        fun cell(sx: Int, sy: Int): Int {
+            val dx: Int; val dy: Int
+            when (r) {
+                90 -> { dx = hs - 1 - sy; dy = sx }
+                180 -> { dx = ws - 1 - sx; dy = hs - 1 - sy }
+                270 -> { dx = sy; dy = ws - 1 - sx }
+                else -> { dx = sx; dy = sy }
+            }
+            if (dy >= hd - 40 && dy < hd - 8 && dx >= boxX && dx < boxX + 32) return 6
+            return minOf(2, dx * 3 / wd) + 3 * minOf(1, dy * 2 / hd)
+        }
+        for (pl in 0..2) {
+            val p = img.planes[pl]; val pb = p.buffer; val rs = p.rowStride; val ps = p.pixelStride
+            val sub = if (pl == 0) 1 else 2
+            val row = ByteArray(7) { cols[it][pl].toByte() }
+            for (yy in 0 until hs / sub) for (xx in 0 until ws / sub) pb.put(yy * rs + xx * ps, row[cell(xx * sub, yy * sub)])
+        }
+    }
+
+    /** Review I2: a WebM (Matroska) video for the container-refusal check (VP8, 640 x 360, 3 s). */
+    fun makeWebm(dir: File): String {
+        val out = File(dir, "clip.webm")
+        val s = VideoSpec("clip.webm", 640, 360, 30, 3.0, 1_000_000, 48_000, 0, content = "quad", canaries = false, location = false, bt601Full = false)
+        val vf = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP8, s.w, s.h)
+        vf.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+        vf.setInteger(MediaFormat.KEY_BIT_RATE, s.bitrate)
+        vf.setInteger(MediaFormat.KEY_FRAME_RATE, s.fps)
+        vf.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+        val enc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_VP8)
+        enc.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        enc.start()
+        val muxer = MediaMuxer(out.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM)
+        var track = -1
+        val frames = (s.seconds * s.fps).toInt()
+        var fin = 0
+        var done = false
+        val info = MediaCodec.BufferInfo()
+        while (!done) {
+            if (fin <= frames) {
+                val idx = enc.dequeueInputBuffer(10_000)
+                if (idx >= 0) {
+                    val t = fin * 1_000_000L / s.fps
+                    if (fin == frames) enc.queueInputBuffer(idx, 0, 0, t, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                    else { fillQuad(enc.getInputImage(idx)!!, fin, s); enc.queueInputBuffer(idx, 0, s.w * s.h * 3 / 2, t, 0) }
+                    fin++
+                }
+            }
+            while (true) {
+                val o = enc.dequeueOutputBuffer(info, 10_000)
+                if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) { track = muxer.addTrack(enc.outputFormat); muxer.start(); continue }
+                if (o < 0) break
+                if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0 && track >= 0) muxer.writeSampleData(track, enc.getOutputBuffer(o)!!, info)
+                enc.releaseOutputBuffer(o, false)
+                if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) { done = true; break }
+            }
+        }
+        val name = enc.name
+        enc.stop(); enc.release(); muxer.stop(); muxer.release()
+        return "source ${out.name}: ${out.length()} B sha256=${sha256(out.readBytes())} ${s.w}x${s.h}@${s.fps} ${s.seconds}s VP8 in WebM (Matroska), no audio, encoder=$name"
+    }
+
     fun seiNal(): ByteArray {
         val payload = SEI_UUID + (CANARY + "-SEI-USERDATA").toByteArray()
         return byteArrayOf(0, 0, 0, 1, 0x06, 0x05, payload.size.toByte()) + payload + byteArrayOf(0x80.toByte())
@@ -137,14 +262,17 @@ object SourceMaker {
         }
         val venc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         venc.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, s.audioRate, s.audioChannels)
-        af.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-        af.setInteger(MediaFormat.KEY_BIT_RATE, when (s.audioChannels) { 1 -> 64_000; 2 -> 128_000; else -> 256_000 })
-        af.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 2 * s.audioChannels * 4)
-        val aenc = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        aenc.configure(af, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        // audioChannels = 0: a video-only source (review I10).
+        val hasAudio = s.audioChannels > 0
+        val aenc = if (!hasAudio) null else {
+            val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, s.audioRate, s.audioChannels)
+            af.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            af.setInteger(MediaFormat.KEY_BIT_RATE, when (s.audioChannels) { 1 -> 64_000; 2 -> 128_000; else -> 256_000 })
+            af.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 2 * s.audioChannels * 4)
+            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC).also { it.configure(af, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE) }
+        }
         venc.start()
-        aenc.start()
+        aenc?.start()
         val muxer = MediaMuxer(out.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         muxer.setOrientationHint(s.rotation)
         if (s.location) muxer.setLocation(LAT.toFloat(), LON.toFloat())
@@ -157,7 +285,7 @@ object SourceMaker {
         var vIn = 0
         var aIn = 0
         var vDone = false
-        var aDone = false
+        var aDone = !hasAudio
         var rng = 0x12345678L
         val info = MediaCodec.BufferInfo()
         var videoSamples = 0
@@ -173,7 +301,7 @@ object SourceMaker {
                 val idx = codec.dequeueOutputBuffer(info, 0)
                 if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (isVideo) vTrack = muxer.addTrack(codec.outputFormat) else aTrack = muxer.addTrack(codec.outputFormat)
-                    if (vTrack >= 0 && aTrack >= 0 && !started) {
+                    if (vTrack >= 0 && (aTrack >= 0 || !hasAudio) && !started) {
                         muxer.start()
                         started = true
                         for ((t, b, bi) in pending) write(if (t == -2) vTrack else aTrack, b, bi)
@@ -204,7 +332,7 @@ object SourceMaker {
         while (!vDone || !aDone) {
             val vt = vIn.toDouble() / s.fps
             val at = aIn * 1024.0 / s.audioRate
-            val feedVideo = vIn <= frames && (aIn > audioFrames || vt <= at)
+            val feedVideo = vIn <= frames && (!hasAudio || aIn > audioFrames || vt <= at)
             if (feedVideo) {
                 val idx = venc.dequeueInputBuffer(10_000)
                 if (idx >= 0) {
@@ -212,12 +340,12 @@ object SourceMaker {
                         venc.queueInputBuffer(idx, 0, 0, (vt * 1e6).toLong(), MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                     } else {
                         val img = venc.getInputImage(idx)!!
-                        rng = fillFrame(img, vIn, s, rng)
+                        if (s.content == "quad") fillQuad(img, vIn, s) else rng = fillFrame(img, vIn, s, rng)
                         venc.queueInputBuffer(idx, 0, s.w * s.h * 3 / 2, (vt * 1e6).toLong(), 0)
                     }
                     vIn++
                 }
-            } else if (aIn <= audioFrames) {
+            } else if (aenc != null && aIn <= audioFrames) {
                 val idx = aenc.dequeueInputBuffer(10_000)
                 if (idx >= 0) {
                     if (aIn == audioFrames) {
@@ -238,18 +366,18 @@ object SourceMaker {
                 }
             }
             drain(venc, true)
-            drain(aenc, false)
-            if (vIn > frames && aIn > audioFrames) {
+            if (aenc != null) drain(aenc, false)
+            if (vIn > frames && (!hasAudio || aIn > audioFrames)) {
                 // Inputs finished: drain until both reach end of stream.
                 while (!vDone || !aDone) {
                     if (!vDone) drain(venc, true)
-                    if (!aDone) drain(aenc, false)
+                    if (!aDone && aenc != null) drain(aenc, false)
                     Thread.sleep(2)
                 }
             }
         }
-        val encoders = "${venc.name}+${aenc.name}"
-        venc.stop(); venc.release(); aenc.stop(); aenc.release()
+        val encoders = "${venc.name}+${aenc?.name ?: "no audio"}"
+        venc.stop(); venc.release(); aenc?.stop(); aenc?.release()
         muxer.stop(); muxer.release()
         return "source ${s.name}: ${out.length()} B sha256=${sha256(out.readBytes())} ${s.w}x${s.h}@${s.fps} ${s.seconds}s " +
             "vbitrate=${s.bitrate} audio=${s.audioRate}Hz/${s.audioChannels}ch rotation=${s.rotation} content=${s.content} " +

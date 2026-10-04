@@ -1,0 +1,4 @@
+device: sdk=29 release=10 fingerprint=Android/sdk_phone_x86_64/generic_x86_64:10/QSR1.210820.001/7663313:userdebug/test-keys abi=x86_64,x86
+note: long45_smooth24.mp4 (as specified) failed (CodecException: Error 0x80001001); note: long45_smooth24.mp4 (stereo) failed (CodecException: Error 0x80001001); source long45_smooth24.mp4: 23457041 B sha256=526a8d914b2c718bc692427fb3a1d96ed5af7f8e32d72d49c164d4c776ea12cb 1280x720@24 45.0s vbitrate=4000000 audio=48000Hz/2ch rotation=0 content=smooth canaries=false location=false videoSamples=1080 audioSamples=2110 encoders=OMX.google.h264.encoder+OMX.google.aac.encoder genMs=40471
+probe sources: OK
+

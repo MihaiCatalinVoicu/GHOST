@@ -1,0 +1,10 @@
+device: sdk=35 release=15 fingerprint=Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys abi=x86_64
+vm23 match720p30.mp4 readerFormat=35 frame=true videoSize=1280x720 rot=0 image 1280x720 format=35 planes=3 ts=2671983430100 meanLuma=106 lumaMin=0 lumaMax=255 error=
+vm23 match720p30.mp4 readerFormat=34 frame=true videoSize=1280x720 rot=0 image 1280x720 format=34 planes=0 ts=2672621166800 error=
+vm23 rot90_1280x720p30.mp4 readerFormat=35 frame=true videoSize=720x1280 rot=0 image 1280x720 format=35 planes=3 ts=2673053096100 meanLuma=106 lumaMin=0 lumaMax=255 error=
+vm23 rot90_1280x720p30.mp4 readerFormat=34 frame=true videoSize=720x1280 rot=0 image 1280x720 format=34 planes=0 ts=2673634545200 error=
+vm23 port720x1280p24.mp4 readerFormat=35 frame=true videoSize=720x1280 rot=0 image 720x1280 format=35 planes=3 ts=2674066676500 meanLuma=110 lumaMin=0 lumaMax=255 error=
+vm23 port720x1280p24.mp4 readerFormat=34 frame=true videoSize=720x1280 rot=0 image 720x1280 format=34 planes=0 ts=2674664277100 error=
+vm23 fileObserverEvents=0 inventoryChanges=0
+probe preview: OK
+

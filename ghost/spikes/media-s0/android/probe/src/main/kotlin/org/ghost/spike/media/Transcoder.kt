@@ -24,6 +24,9 @@ import androidx.media3.effect.FrameDropEffect
 import androidx.media3.effect.Presentation
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.mp4.Mp4Extractor
+import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.transformer.AudioEncoderSettings
 import androidx.media3.transformer.Codec
 import androidx.media3.transformer.Composition
@@ -55,7 +58,45 @@ import java.util.concurrent.TimeUnit
  *  - [Mode.PLAIN_KEEP_HDR]: the same without the HDR tone-mapping mode (Transformer's true default).
  */
 object Transcoder {
-    enum class Mode { DESIGN, UNFORCED_EFFECTS, PLAIN, PLAIN_KEEP_HDR, PLAIN_DEFAULTS }
+    /**
+     * [Mode.FINAL] (review fixes, 2026-10-04): DESIGN plus every correction of the evidence document
+     * at once (the BT.709 limited colour of S0-13, the rotation of S0-20, the Mp4Extractor-only
+     * source of review I2, the profile/level and B-frame pins of review I1, Media3's forced silent
+     * audio track of review I10, an explicit 1-s key-frame interval, VBR, and GhostMuxer's fragment
+     * bound of review I7). Every flag can also be set alone through [Opts].
+     */
+    enum class Mode { DESIGN, UNFORCED_EFFECTS, PLAIN, PLAIN_KEEP_HDR, PLAIN_DEFAULTS, FINAL }
+
+    class Opts(
+        /** VideoEncoderSettings.setEncodingProfileLevel(AVCProfileBaseline, AVCLevel31) (review I1). */
+        val profilePin: Boolean = false,
+        /** VideoEncoderSettings.setMaxBFrames(0) (review I1). */
+        val maxB0: Boolean = false,
+        /** VideoEncoderSettings.setiFrameIntervalSeconds(1f), explicitly (Media3's default is 1 s). */
+        val iFrame1: Boolean = false,
+        /** Composition.Builder.experimentalSetForceAudioTrack(true) (review I10). */
+        val forceAudio: Boolean = false,
+        /** The asset loader parses sources with Mp4Extractor only (review I2). */
+        val mp4Only: Boolean = false,
+        val bitrate: Int = 2_000_000,
+        /** GhostMuxer's fragment bound in bytes (0 = off; review I7). */
+        val fragmentBound: Long = 0,
+        /** The encoder gets the output frame rate (<= 30), not the source's (review fix 2026-10-04). */
+        val clampFps: Boolean = false,
+        /** FrameDropEffect target (30 by D29; 15 for the retry experiment of review I5). */
+        val maxFps: Float = 30f,
+        /**
+         * The encoder format's colour is SDR BT.601 limited instead of BT.709 limited (review pass,
+         * 2026-10-04: API 29's `OMX.google.h264.encoder` converts the frame processor's RGB with
+         * BT.601 coefficients whatever is requested, so its BT.709 label was wrong for chroma).
+         */
+        val colour601: Boolean = false,
+    ) {
+        override fun toString() = "profilePin=$profilePin maxB0=$maxB0 iFrame1=$iFrame1 forceAudio=$forceAudio mp4Only=$mp4Only bitrate=$bitrate fragmentBound=$fragmentBound clampFps=$clampFps maxFps=$maxFps colour601=$colour601"
+        companion object {
+            val FINAL = Opts(profilePin = true, maxB0 = true, iFrame1 = true, forceAudio = true, mp4Only = true, fragmentBound = 16L * 1024 * 1024, clampFps = true)
+        }
+    }
 
     class Result(
         val ok: Boolean,
@@ -77,12 +118,31 @@ object Transcoder {
         override fun loadBitmap(uri: Uri): ListenableFuture<Bitmap> = Futures.immediateFailedFuture(UnsupportedOperationException("no images"))
     }
 
-    private class Forcing(private val d: Codec.EncoderFactory, private val bt709: Boolean) : Codec.EncoderFactory {
+    private class Forcing(private val d: Codec.EncoderFactory, private val bt709: Boolean, private val clampFps: Boolean = false, private val maxFps: Float = 30f, private val colour601: Boolean = false) : Codec.EncoderFactory {
         override fun createForAudioEncoding(format: Format, logSessionId: LogSessionId?): Codec = d.createForAudioEncoding(format, logSessionId)
-        override fun createForVideoEncoding(format: Format, logSessionId: LogSessionId?): Codec =
+        override fun createForVideoEncoding(format: Format, logSessionId: LogSessionId?): Codec {
+            var f = format
             // V-M17 fix under test: a fixed SDR BT.709 limited-range colour description instead of
             // the one Transformer carries over from the source.
-            d.createForVideoEncoding(if (bt709) format.buildUpon().setColorInfo(androidx.media3.common.ColorInfo.SDR_BT709_LIMITED).build() else format, logSessionId)
+            if (colour601) {
+                f = f.buildUpon().setColorInfo(
+                    androidx.media3.common.ColorInfo.Builder()
+                        .setColorSpace(androidx.media3.common.C.COLOR_SPACE_BT601)
+                        .setColorRange(androidx.media3.common.C.COLOR_RANGE_LIMITED)
+                        .setColorTransfer(androidx.media3.common.C.COLOR_TRANSFER_SDR)
+                        .build(),
+                ).build()
+            } else if (bt709) {
+                f = f.buildUpon().setColorInfo(androidx.media3.common.ColorInfo.SDR_BT709_LIMITED).build()
+            }
+            // Review fix (2026-10-04, found while running review I1): Transformer configures the
+            // encoder with the *source's* frame rate (60 for a 60-fps source, before FrameDropEffect
+            // drops half the frames), so the 1-s key-frame interval becomes 60 frames = 2 s of the
+            // 30-fps output and the encoder raises the level to 3.2: both tell the recipient that the
+            // source ran above 30 fps. The encoder is given the output's rate instead.
+            if (clampFps && f.frameRate > maxFps) f = f.buildUpon().setFrameRate(maxFps).build()
+            return d.createForVideoEncoding(f, logSessionId)
+        }
         override fun isVideoFormatSupported(format: Format) = d.isVideoFormatSupported(format)
         override fun audioNeedsEncoding() = true
         override fun videoNeedsEncoding() = true
@@ -137,14 +197,22 @@ object Transcoder {
         orientationFix: Boolean = false,
         bt709: Boolean = false,
         keepBytes: Boolean = true,
+        opts0: Opts? = null,
     ): Result {
+        val final = mode == Mode.FINAL
+        val opts = opts0 ?: if (final) Opts.FINAL else Opts()
+        val orientationFix = orientationFix || final
+        val bt709 = bt709 || final
         val rec = MuxRecord()
-        val factory = GhostMuxerFactory(rec, seiFilter, orientationFix, keepBytes)
+        val factory = GhostMuxerFactory(rec, seiFilter, orientationFix, keepBytes, opts.fragmentBound)
         val useCbr = cbr && cbrSupported()
-        val videoSettings = VideoEncoderSettings.Builder()
-            .setBitrate(2_000_000)
+        val vb = VideoEncoderSettings.Builder()
+            .setBitrate(opts.bitrate)
             .setBitrateMode(if (useCbr) MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR else MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
-            .build()
+        if (opts.profilePin) vb.setEncodingProfileLevel(MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+        if (opts.maxB0) vb.setMaxBFrames(0)
+        if (opts.iFrame1) vb.setiFrameIntervalSeconds(1f)
+        val videoSettings = vb.build()
         val audioSettings = AudioEncoderSettings.Builder().setBitrate(128_000).setProfile(MediaCodecInfo.CodecProfileLevel.AACObjectLC).build()
         val defaultEncoders = DefaultEncoderFactory.Builder(ctx)
             .setRequestedVideoEncoderSettings(videoSettings)
@@ -154,16 +222,20 @@ object Transcoder {
         // encoder settings other than the defaults are requested (1.11.1 source), so only
         // PLAIN_DEFAULTS, with no requested settings, can reach Transformer's transmux path.
         val encoders: Codec.EncoderFactory = when (mode) {
-            Mode.DESIGN -> Forcing(defaultEncoders, bt709)
+            Mode.DESIGN, Mode.FINAL -> Forcing(defaultEncoders, bt709, opts.clampFps, opts.maxFps, opts.colour601)
             Mode.PLAIN_DEFAULTS -> DefaultEncoderFactory.Builder(ctx).build()
             else -> defaultEncoders
         }
         val contentOnly = DataSource.Factory { ContentDataSource(ctx) }
+        // Review I2: sources parsed by Mp4Extractor alone (MP4/3GP/QuickTime), never by the
+        // image, Matroska, AVI, FLV, Ogg, TS/PS, MP3, FLAC or AMR extractors that
+        // DefaultExtractorsFactory instantiates.
+        val extractors: ExtractorsFactory = if (opts.mp4Only) ExtractorsFactory { arrayOf(Mp4Extractor(SubtitleParser.Factory.UNSUPPORTED)) } else DefaultExtractorsFactory()
         val assetLoader = DefaultAssetLoaderFactory(
             ctx,
             DefaultDecoderFactory.Builder(ctx).build(),
             Clock.DEFAULT,
-            ProgressiveMediaSource.Factory(contentOnly, DefaultExtractorsFactory()),
+            ProgressiveMediaSource.Factory(contentOnly, extractors),
             NoBitmaps(),
         )
         val item = MediaItem.fromUri(SourceProvider.uri(sourceName))
@@ -175,12 +247,20 @@ object Transcoder {
                 .setEffects(
                     Effects(
                         audioProcessors(),
-                        listOf(Presentation.createForWidthAndHeight(w, h, Presentation.LAYOUT_SCALE_TO_FIT), FrameDropEffect.createDefaultFrameDropEffect(30f)),
+                        listOf(Presentation.createForWidthAndHeight(w, h, Presentation.LAYOUT_SCALE_TO_FIT), FrameDropEffect.createDefaultFrameDropEffect(opts.maxFps)),
                     ),
                 )
                 .build()
         }
-        val cb = Composition.Builder(EditedMediaItemSequence.Builder(edited).build())
+        // Review I10: a source without audio still gets a (silent) AAC track, so every canonical
+        // fMP4 has exactly one audio and one video track. 1.11.1 offers the flag on the sequence
+        // (for a sequence built from items, whose track types are "inferred") and on the
+        // Composition; the Composition's rebuilds the sequences with explicit track types and
+        // throws for an item-built sequence ("trackTypes must only contain TRACK_TYPE_AUDIO and/or
+        // TRACK_TYPE_VIDEO", seen on API 35), so the sequence's is the one that works.
+        val seqBuilder = EditedMediaItemSequence.Builder(edited)
+        if (opts.forceAudio) seqBuilder.experimentalSetForceAudioTrack(true)
+        val cb = Composition.Builder(seqBuilder.build())
         // PLAIN_KEEP_HDR leaves Transformer's default HDR mode (KEEP_HDR): the only configuration in
         // which 1.11.1 may transmux video at all (TransformerUtil.shouldTranscodeVideo returns true
         // for any other HDR mode).
@@ -223,7 +303,7 @@ object Transcoder {
         val e = export
         val conv = { p: Int -> when (p) { ExportResult.CONVERSION_PROCESS_TRANSCODED -> "TRANSCODED"; ExportResult.CONVERSION_PROCESS_TRANSMUXED -> "TRANSMUXED"; ExportResult.CONVERSION_PROCESS_TRANSMUXED_AND_TRANSCODED -> "BOTH"; else -> "NA($p)" } }
         val summary = buildString {
-            append("transcode src=$sourceName mode=$mode landscape=$displayLandscape cbrRequested=$cbr cbrUsed=$useCbr portraitEncoding=$portraitEncoding orientationFix=$orientationFix bt709=$bt709")
+            append("transcode src=$sourceName mode=$mode landscape=$displayLandscape cbrRequested=$cbr cbrUsed=$useCbr portraitEncoding=$portraitEncoding orientationFix=$orientationFix bt709=$bt709 $opts")
             append(" finished=$finished error=${error?.errorCodeName}:${error?.message}")
             // The cause chain (the API 29 emulator answers ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED
             // with the reason two causes down: EGL_BAD_CONFIG, no OpenGL ES 3 context).

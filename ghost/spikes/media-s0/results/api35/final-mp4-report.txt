@@ -1,0 +1,2334 @@
+== land1080p60__FINAL.mp4 (1646607 B, sha256 dd97dcce430daa132bf73d9c54cd8811e977dd2c24c6fad792543fa183eff9ee)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3164 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2008 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1976 flags=0x701 samples=163 data_offset=Some(3172) first_flags=None sum_duration=166912 first_sync=true
+  traf @3179 size=1132 
+    tfhd @3187 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3211 size=1100 flags=0x701 samples=90 data_offset=Some(58809) first_flags=None sum_duration=270000 first_sync=true
+mdat @4311 size=871495 payload=871487
+moof @875806 size=2624 
+  mfhd @875814 size=16 sequence=2
+  traf @875830 size=1468 
+    tfhd @875838 size=24 flags=0x1 track_ID=1 base_data_offset=875806
+    trun @875862 size=1436 flags=0x701 samples=118 data_offset=Some(2632) first_flags=None sum_duration=120832 first_sync=true
+  traf @877298 size=1132 
+    tfhd @877306 size=24 flags=0x1 track_ID=2 base_data_offset=875806
+    trun @877330 size=1100 flags=0x701 samples=90 data_offset=Some(42909) first_flags=None sum_duration=270000 first_sync=true
+mdat @878430 size=768177 payload=768169
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95914 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=180 duration=6.000s bytes=1543742 bitrate=2058323bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 174, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 3.0]
+mvhd creation/modification: ["0/0"]
+== land1080p60__FINAL__golden.mp4 (1646773 B, sha256 6757eda42436eb8356404ffccda41b2de9450e4439511f2f7b688c08159a6378)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3204 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2028 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1976 flags=0x701 samples=163 data_offset=Some(3212) first_flags=None sum_duration=166912 first_sync=true
+  traf @3199 size=1152 
+    tfhd @3207 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3231 size=20 v1 base_media_decode_time=0
+    trun @3251 size=1100 flags=0x701 samples=90 data_offset=Some(58849) first_flags=None sum_duration=270000 first_sync=true
+mdat @4351 size=871495 payload=871487
+moof @875846 size=2664 
+  mfhd @875854 size=16 sequence=2
+  traf @875870 size=1488 
+    tfhd @875878 size=24 flags=0x1 track_ID=1 base_data_offset=875846
+    tfdt @875902 size=20 v1 base_media_decode_time=166912
+    trun @875922 size=1436 flags=0x701 samples=118 data_offset=Some(2672) first_flags=None sum_duration=120832 first_sync=true
+  traf @877358 size=1152 
+    tfhd @877366 size=24 flags=0x1 track_ID=2 base_data_offset=875846
+    tfdt @877390 size=20 v1 base_media_decode_time=270000
+    trun @877410 size=1100 flags=0x701 samples=90 data_offset=Some(42949) first_flags=None sum_duration=270000 first_sync=true
+mdat @878510 size=768177 payload=768169
+mfra @1646687 size=86 
+  tfra @1646695 size=62 track_ID=2 entries=2
+  mfro @1646757 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95914 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=180 duration=6.000s bytes=1543742 bitrate=2058323bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 174, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 3.0]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== land1080p60__FINAL_noClampFps.mp4 (1374928 B, sha256 69c91e02cd46f610f645001f0ff9edfe07fad05dfaf0ff4220588937eb1fdc9a)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=32 nal_len=4 sps=6742c0208d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=32 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=4088 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2572 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=2540 flags=0x701 samples=210 data_offset=Some(4096) first_flags=None sum_duration=215040 first_sync=true
+  traf @3743 size=1492 
+    tfhd @3751 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3775 size=1460 flags=0x701 samples=120 data_offset=Some(75776) first_flags=None sum_duration=360000 first_sync=true
+mdat @5235 size=980202 payload=980194
+moof @985437 size=1700 
+  mfhd @985445 size=16 sequence=2
+  traf @985461 size=904 
+    tfhd @985469 size=24 flags=0x1 track_ID=1 base_data_offset=985437
+    trun @985493 size=872 flags=0x701 samples=71 data_offset=Some(1708) first_flags=None sum_duration=72704 first_sync=true
+  traf @986365 size=772 
+    tfhd @986373 size=24 flags=0x1 track_ID=2 base_data_offset=985437
+    trun @986397 size=740 flags=0x701 samples=60 data_offset=Some(25942) first_flags=None sum_duration=180000 first_sync=true
+mdat @987137 size=387791 payload=387783
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95914 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=180 duration=6.000s bytes=1272063 bitrate=1696084bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=3
+  sps 6742c0208d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=32 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 177, 5: 3}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=1 fragment_durations_s=[4.0, 2.0]
+mvhd creation/modification: ["0/0"]
+== land1080p60__FINAL_noClampFps__golden.mp4 (1375094 B, sha256 c3d5f1d801383ff945b3914fc3e8322af61caad7943ff6b4eb09f58c292f5e92)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=32 nal_len=4 sps=6742c0208d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=32 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=4128 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2592 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=2540 flags=0x701 samples=210 data_offset=Some(4136) first_flags=None sum_duration=215040 first_sync=true
+  traf @3763 size=1512 
+    tfhd @3771 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3795 size=20 v1 base_media_decode_time=0
+    trun @3815 size=1460 flags=0x701 samples=120 data_offset=Some(75816) first_flags=None sum_duration=360000 first_sync=true
+mdat @5275 size=980202 payload=980194
+moof @985477 size=1740 
+  mfhd @985485 size=16 sequence=2
+  traf @985501 size=924 
+    tfhd @985509 size=24 flags=0x1 track_ID=1 base_data_offset=985477
+    tfdt @985533 size=20 v1 base_media_decode_time=215040
+    trun @985553 size=872 flags=0x701 samples=71 data_offset=Some(1748) first_flags=None sum_duration=72704 first_sync=true
+  traf @986425 size=792 
+    tfhd @986433 size=24 flags=0x1 track_ID=2 base_data_offset=985477
+    tfdt @986457 size=20 v1 base_media_decode_time=360000
+    trun @986477 size=740 flags=0x701 samples=60 data_offset=Some(25982) first_flags=None sum_duration=180000 first_sync=true
+mdat @987217 size=387791 payload=387783
+mfra @1375008 size=86 
+  tfra @1375016 size=62 track_ID=2 entries=2
+  mfro @1375078 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95914 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=180 duration=6.000s bytes=1272063 bitrate=1696084bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=3
+  sps 6742c0208d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=32 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 177, 5: 3}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=1 fragment_durations_s=[4.0, 2.0]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== match720p30__FINAL.mp4 (4280175 B, sha256 12e3350e3b22439dae338d8291fcfcc79334905104e84d80cbccbf971b9218b8)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3104 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1948 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1916 flags=0x701 samples=158 data_offset=Some(3112) first_flags=None sum_duration=161792 first_sync=true
+  traf @3119 size=1132 
+    tfhd @3127 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3151 size=1100 flags=0x701 samples=90 data_offset=Some(57043) first_flags=None sum_duration=270000 first_sync=true
+mdat @4251 size=1209568 payload=1209560
+moof @1213819 size=2936 
+  mfhd @1213827 size=16 sequence=2
+  traf @1213843 size=1780 
+    tfhd @1213851 size=24 flags=0x1 track_ID=1 base_data_offset=1213819
+    trun @1213875 size=1748 flags=0x701 samples=144 data_offset=Some(2944) first_flags=None sum_duration=147456 first_sync=true
+  traf @1215623 size=1132 
+    tfhd @1215631 size=24 flags=0x1 track_ID=2 base_data_offset=1213819
+    trun @1215655 size=1100 flags=0x701 samples=90 data_offset=Some(52096) first_flags=None sum_duration=270000 first_sync=true
+mdat @1216755 size=1027454 payload=1027446
+box inventory (path: count): {"ftyp": 1, "mdat": 4, "moof": 4, "moof/mfhd": 4, "moof/traf": 8, "moof/traf/tfhd": 8, "moof/traf/trun": 8, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=562 duration=11.989s bytes=191830 bitrate=128000bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 562}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=359 duration=11.967s bytes=4075602 bitrate=2724636bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=12
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 347, 5: 12}
+  sei payload types (type: count): {}
+  fragments=4 starting_with_sync=4 sync_samples_not_first=8 fragment_durations_s=[3.0, 3.0, 3.0, 2.967]
+mvhd creation/modification: ["0/0"]
+== match720p30__FINAL__golden.mp4 (4280459 B, sha256 f7b7f5a6ca3eb73650e20b6e9829dfc5ff1cac776b48de6836f13c6634b32c9b)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3144 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1968 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1916 flags=0x701 samples=158 data_offset=Some(3152) first_flags=None sum_duration=161792 first_sync=true
+  traf @3139 size=1152 
+    tfhd @3147 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3171 size=20 v1 base_media_decode_time=0
+    trun @3191 size=1100 flags=0x701 samples=90 data_offset=Some(57083) first_flags=None sum_duration=270000 first_sync=true
+mdat @4291 size=1209568 payload=1209560
+moof @1213859 size=2976 
+  mfhd @1213867 size=16 sequence=2
+  traf @1213883 size=1800 
+    tfhd @1213891 size=24 flags=0x1 track_ID=1 base_data_offset=1213859
+    tfdt @1213915 size=20 v1 base_media_decode_time=161792
+    trun @1213935 size=1748 flags=0x701 samples=144 data_offset=Some(2984) first_flags=None sum_duration=147456 first_sync=true
+  traf @1215683 size=1152 
+    tfhd @1215691 size=24 flags=0x1 track_ID=2 base_data_offset=1213859
+    tfdt @1215715 size=20 v1 base_media_decode_time=270000
+    trun @1215735 size=1100 flags=0x701 samples=90 data_offset=Some(52136) first_flags=None sum_duration=270000 first_sync=true
+mdat @1216835 size=1027454 payload=1027446
+mfra @4280335 size=124 
+  tfra @4280343 size=100 track_ID=2 entries=4
+  mfro @4280443 size=16 mfra_size=124
+box inventory (path: count): {"ftyp": 1, "mdat": 4, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 4, "moof/mfhd": 4, "moof/traf": 8, "moof/traf/tfdt": 8, "moof/traf/tfhd": 8, "moof/traf/trun": 8, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=562 duration=11.989s bytes=191830 bitrate=128000bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 562}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=359 duration=11.967s bytes=4075602 bitrate=2724636bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=12
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 347, 5: 12}
+  sei payload types (type: count): {}
+  fragments=4 starting_with_sync=4 sync_samples_not_first=8 fragment_durations_s=[3.0, 3.0, 3.0, 2.967]
+mfra: tfra track 2 entries=4 pointing_at_moof_with_matching_tfdt=4
+mvhd creation/modification: ["0/0"]
+== port720x1280p24__FINAL.mp4 (1786499 B, sha256 90b7f9b32d92b1694f20bc180380955d14aa1c5b84f9f588902729588341a16a)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=2948 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2008 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1976 flags=0x701 samples=163 data_offset=Some(2956) first_flags=None sum_duration=166912 first_sync=true
+  traf @3179 size=916 
+    tfhd @3187 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3211 size=884 flags=0x701 samples=72 data_offset=Some(58594) first_flags=None sum_duration=270000 first_sync=true
+mdat @4095 size=988701 payload=988693
+moof @992796 size=2396 
+  mfhd @992804 size=16 sequence=2
+  traf @992820 size=1468 
+    tfhd @992828 size=24 flags=0x1 track_ID=1 base_data_offset=992796
+    trun @992852 size=1436 flags=0x701 samples=118 data_offset=Some(2404) first_flags=None sum_duration=120832 first_sync=true
+  traf @994288 size=904 
+    tfhd @994296 size=24 flags=0x1 track_ID=2 base_data_offset=992796
+    trun @994320 size=872 flags=0x701 samples=71 data_offset=Some(42681) first_flags=None sum_duration=266250 first_sync=true
+mdat @995192 size=791307 payload=791299
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95915 bitrate=128000bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=270 max=475
+track 2 vide entry=avc1 ts=90000 samples=143 duration=5.958s bytes=1684077 bitrate=2261138bit/s 1280x720 rotation=90
+  video: mean_fps=24.000 sample_duration_min=3750 max=3750 (41.67..41.67 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 137, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 2.958]
+mvhd creation/modification: ["0/0"]
+== port720x1280p24__FINAL__golden.mp4 (1786665 B, sha256 f3500a2a2222c061204716f6fa4fb9af83e28ede3fdcd835a81c64c7b59d4e8f)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=2988 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2028 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1976 flags=0x701 samples=163 data_offset=Some(2996) first_flags=None sum_duration=166912 first_sync=true
+  traf @3199 size=936 
+    tfhd @3207 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3231 size=20 v1 base_media_decode_time=0
+    trun @3251 size=884 flags=0x701 samples=72 data_offset=Some(58634) first_flags=None sum_duration=270000 first_sync=true
+mdat @4135 size=988701 payload=988693
+moof @992836 size=2436 
+  mfhd @992844 size=16 sequence=2
+  traf @992860 size=1488 
+    tfhd @992868 size=24 flags=0x1 track_ID=1 base_data_offset=992836
+    tfdt @992892 size=20 v1 base_media_decode_time=166912
+    trun @992912 size=1436 flags=0x701 samples=118 data_offset=Some(2444) first_flags=None sum_duration=120832 first_sync=true
+  traf @994348 size=924 
+    tfhd @994356 size=24 flags=0x1 track_ID=2 base_data_offset=992836
+    tfdt @994380 size=20 v1 base_media_decode_time=270000
+    trun @994400 size=872 flags=0x701 samples=71 data_offset=Some(42721) first_flags=None sum_duration=266250 first_sync=true
+mdat @995272 size=791307 payload=791299
+mfra @1786579 size=86 
+  tfra @1786587 size=62 track_ID=2 entries=2
+  mfro @1786649 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95915 bitrate=128000bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=270 max=475
+track 2 vide entry=avc1 ts=90000 samples=143 duration=5.958s bytes=1684077 bitrate=2261138bit/s 1280x720 rotation=90
+  video: mean_fps=24.000 sample_duration_min=3750 max=3750 (41.67..41.67 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 137, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 2.958]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_land__FINAL.mp4 (128105 B, sha256 c5a9466785eab1d4100be5a8d1b021c98a09f695ba9b5449de76ad8dbeb44430)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3068 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1912 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1880 flags=0x701 samples=155 data_offset=Some(3076) first_flags=None sum_duration=158720 first_sync=true
+  traf @3083 size=1132 
+    tfhd @3091 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3115 size=1100 flags=0x701 samples=90 data_offset=Some(55983) first_flags=None sum_duration=270000 first_sync=true
+mdat @4215 size=99530 payload=99522
+moof @103745 size=860 
+  mfhd @103753 size=16 sequence=2
+  traf @103769 size=436 
+    tfhd @103777 size=24 flags=0x1 track_ID=1 base_data_offset=103745
+    trun @103801 size=404 flags=0x701 samples=32 data_offset=Some(868) first_flags=None sum_duration=32768 first_sync=true
+  traf @104205 size=400 
+    tfhd @104213 size=24 flags=0x1 track_ID=2 base_data_offset=103745
+    trun @104237 size=368 flags=0x701 samples=29 data_offset=Some(11791) first_flags=None sum_duration=87000 first_sync=true
+mdat @104605 size=23500 payload=23492
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_land__FINAL__golden.mp4 (128271 B, sha256 be328de8e7c79c628edd9e4b01f280042c327ab00b93a6e8834d55566bba7fc7)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3108 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1932 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1880 flags=0x701 samples=155 data_offset=Some(3116) first_flags=None sum_duration=158720 first_sync=true
+  traf @3103 size=1152 
+    tfhd @3111 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3135 size=20 v1 base_media_decode_time=0
+    trun @3155 size=1100 flags=0x701 samples=90 data_offset=Some(56023) first_flags=None sum_duration=270000 first_sync=true
+mdat @4255 size=99530 payload=99522
+moof @103785 size=900 
+  mfhd @103793 size=16 sequence=2
+  traf @103809 size=456 
+    tfhd @103817 size=24 flags=0x1 track_ID=1 base_data_offset=103785
+    tfdt @103841 size=20 v1 base_media_decode_time=158720
+    trun @103861 size=404 flags=0x701 samples=32 data_offset=Some(908) first_flags=None sum_duration=32768 first_sync=true
+  traf @104265 size=420 
+    tfhd @104273 size=24 flags=0x1 track_ID=2 base_data_offset=103785
+    tfdt @104297 size=20 v1 base_media_decode_time=270000
+    trun @104317 size=368 flags=0x701 samples=29 data_offset=Some(11831) first_flags=None sum_duration=87000 first_sync=true
+mdat @104685 size=23500 payload=23492
+mfra @128185 size=86 
+  tfra @128193 size=62 track_ID=2 entries=2
+  mfro @128255 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_land__FINAL_noProfilePin.mp4 (128105 B, sha256 ca1fd1f05e4ae318ccf20b9033e936d52f3043d9385767a976ef2e91a6cd5fd1)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=41 nal_len=4 sps=6742c0298d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3140 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1984 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1952 flags=0x701 samples=161 data_offset=Some(3148) first_flags=None sum_duration=164864 first_sync=true
+  traf @3155 size=1132 
+    tfhd @3163 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3187 size=1100 flags=0x701 samples=90 data_offset=Some(58103) first_flags=None sum_duration=270000 first_sync=true
+mdat @4287 size=101578 payload=101570
+moof @105865 size=788 
+  mfhd @105873 size=16 sequence=2
+  traf @105889 size=364 
+    tfhd @105897 size=24 flags=0x1 track_ID=1 base_data_offset=105865
+    trun @105921 size=332 flags=0x701 samples=26 data_offset=Some(796) first_flags=None sum_duration=26624 first_sync=true
+  traf @106253 size=400 
+    tfhd @106261 size=24 flags=0x1 track_ID=2 base_data_offset=105865
+    trun @106285 size=368 flags=0x701 samples=29 data_offset=Some(9671) first_flags=None sum_duration=87000 first_sync=true
+mdat @106653 size=21452 payload=21444
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c0298d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_land__FINAL_noProfilePin__golden.mp4 (128271 B, sha256 b72f985598a30ac39b32e097d3fed49e51f48a25893fbbc8640c9ca60d3a0ce5)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=41 nal_len=4 sps=6742c0298d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3180 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2004 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1952 flags=0x701 samples=161 data_offset=Some(3188) first_flags=None sum_duration=164864 first_sync=true
+  traf @3175 size=1152 
+    tfhd @3183 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3207 size=20 v1 base_media_decode_time=0
+    trun @3227 size=1100 flags=0x701 samples=90 data_offset=Some(58143) first_flags=None sum_duration=270000 first_sync=true
+mdat @4327 size=101578 payload=101570
+moof @105905 size=828 
+  mfhd @105913 size=16 sequence=2
+  traf @105929 size=384 
+    tfhd @105937 size=24 flags=0x1 track_ID=1 base_data_offset=105905
+    tfdt @105961 size=20 v1 base_media_decode_time=164864
+    trun @105981 size=332 flags=0x701 samples=26 data_offset=Some(836) first_flags=None sum_duration=26624 first_sync=true
+  traf @106313 size=420 
+    tfhd @106321 size=24 flags=0x1 track_ID=2 base_data_offset=105905
+    tfdt @106345 size=20 v1 base_media_decode_time=270000
+    trun @106365 size=368 flags=0x701 samples=29 data_offset=Some(9711) first_flags=None sum_duration=87000 first_sync=true
+mdat @106733 size=21452 payload=21444
+mfra @128185 size=86 
+  tfra @128193 size=62 track_ID=2 entries=2
+  mfro @128255 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c0298d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_noaudio__FINAL.mp4 (128104 B, sha256 c158017bdade1579d72324bdbb51d1253d2f3ac65c504f3a8b1fa3a3c8b9c700)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3068 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1912 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1880 flags=0x701 samples=155 data_offset=Some(3076) first_flags=None sum_duration=158720 first_sync=true
+  traf @3083 size=1132 
+    tfhd @3091 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3115 size=1100 flags=0x701 samples=90 data_offset=Some(55982) first_flags=None sum_duration=270000 first_sync=true
+mdat @4215 size=99529 payload=99521
+moof @103744 size=860 
+  mfhd @103752 size=16 sequence=2
+  traf @103768 size=436 
+    tfhd @103776 size=24 flags=0x1 track_ID=1 base_data_offset=103744
+    trun @103800 size=404 flags=0x701 samples=32 data_offset=Some(868) first_flags=None sum_duration=32768 first_sync=true
+  traf @104204 size=400 
+    tfhd @104212 size=24 flags=0x1 track_ID=2 base_data_offset=103744
+    trun @104236 size=368 flags=0x701 samples=29 data_offset=Some(11791) first_flags=None sum_duration=87000 first_sync=true
+mdat @104604 size=23500 payload=23492
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63829 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_noaudio__FINAL__golden.mp4 (128270 B, sha256 618b5ab62e768dd3d2eace4145b9b2019de3ecd2d47f292ba93ef3c06164ffde)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3108 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1932 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1880 flags=0x701 samples=155 data_offset=Some(3116) first_flags=None sum_duration=158720 first_sync=true
+  traf @3103 size=1152 
+    tfhd @3111 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3135 size=20 v1 base_media_decode_time=0
+    trun @3155 size=1100 flags=0x701 samples=90 data_offset=Some(56022) first_flags=None sum_duration=270000 first_sync=true
+mdat @4255 size=99529 payload=99521
+moof @103784 size=900 
+  mfhd @103792 size=16 sequence=2
+  traf @103808 size=456 
+    tfhd @103816 size=24 flags=0x1 track_ID=1 base_data_offset=103784
+    tfdt @103840 size=20 v1 base_media_decode_time=158720
+    trun @103860 size=404 flags=0x701 samples=32 data_offset=Some(908) first_flags=None sum_duration=32768 first_sync=true
+  traf @104264 size=420 
+    tfhd @104272 size=24 flags=0x1 track_ID=2 base_data_offset=103784
+    tfdt @104296 size=20 v1 base_media_decode_time=270000
+    trun @104316 size=368 flags=0x701 samples=29 data_offset=Some(11831) first_flags=None sum_duration=87000 first_sync=true
+mdat @104684 size=23500 payload=23492
+mfra @128184 size=86 
+  tfra @128192 size=62 track_ID=2 entries=2
+  mfro @128254 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63829 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_noaudio__FINAL_noForceAudio.mp4 (61484 B, sha256 17379b3f140ae0a950755bf7f94b1ce2ad464525dcf378478d7f23680d4ce6d0)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=676 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=2
+  trak @144 size=520 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=420 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @284 size=44 handler=vide name="VideoHandle"
+      minf @328 size=336 
+        vmhd @336 size=20 
+        dinf @356 size=36 
+          dref @364 size=28 
+        stbl @392 size=272 
+          stsd @400 size=180 
+            avc1 @416 size=164 1280x720 compressor=""
+              avcC @502 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @545 size=16 0001000000010000
+              colr @561 size=19 6e636c7800010001000100
+          stts @580 size=16 
+          stsz @596 size=20 
+          stsc @616 size=16 
+          stco @632 size=16 
+          stss @648 size=16 
+  mvex @664 size=40 
+    trex @672 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+moof @704 size=1156 
+  mfhd @712 size=16 sequence=1
+  traf @728 size=1132 
+    tfhd @736 size=24 flags=0x1 track_ID=1 base_data_offset=704
+    trun @760 size=1100 flags=0x701 samples=90 data_offset=Some(1164) first_flags=None sum_duration=270000 first_sync=true
+mdat @1860 size=46623 payload=46615
+moof @48483 size=424 
+  mfhd @48491 size=16 sequence=2
+  traf @48507 size=400 
+    tfhd @48515 size=24 flags=0x1 track_ID=1 base_data_offset=48483
+    trun @48539 size=368 flags=0x701 samples=29 data_offset=Some(432) first_flags=None sum_duration=87000 first_sync=true
+mdat @48907 size=12577 payload=12569
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 2, "moof/traf/tfhd": 2, "moof/traf/trun": 2, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 1, "moov/mvhd": 1, "moov/trak": 1, "moov/trak/mdia": 1, "moov/trak/mdia/hdlr": 1, "moov/trak/mdia/mdhd": 1, "moov/trak/mdia/minf": 1, "moov/trak/mdia/minf/dinf": 1, "moov/trak/mdia/minf/dinf/dref": 1, "moov/trak/mdia/minf/stbl": 1, "moov/trak/mdia/minf/stbl/stco": 1, "moov/trak/mdia/minf/stbl/stsc": 1, "moov/trak/mdia/minf/stbl/stsd": 1, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 1, "moov/trak/mdia/minf/stbl/stts": 1, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 1}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_noaudio__FINAL_noForceAudio__golden.mp4 (61610 B, sha256 10ec863e412903150cf7c915909f6e98c8e020befb4d7ee1c4e6e9491ab176e1)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=676 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=2
+  trak @144 size=520 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=420 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @284 size=44 handler=vide name="VideoHandle"
+      minf @328 size=336 
+        vmhd @336 size=20 
+        dinf @356 size=36 
+          dref @364 size=28 
+        stbl @392 size=272 
+          stsd @400 size=180 
+            avc1 @416 size=164 1280x720 compressor=""
+              avcC @502 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @545 size=16 0001000000010000
+              colr @561 size=19 6e636c7800010001000100
+          stts @580 size=16 
+          stsz @596 size=20 
+          stsc @616 size=16 
+          stco @632 size=16 
+          stss @648 size=16 
+  mvex @664 size=40 
+    trex @672 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+moof @704 size=1176 
+  mfhd @712 size=16 sequence=1
+  traf @728 size=1152 
+    tfhd @736 size=24 flags=0x1 track_ID=1 base_data_offset=704
+    tfdt @760 size=20 v1 base_media_decode_time=0
+    trun @780 size=1100 flags=0x701 samples=90 data_offset=Some(1184) first_flags=None sum_duration=270000 first_sync=true
+mdat @1880 size=46623 payload=46615
+moof @48503 size=444 
+  mfhd @48511 size=16 sequence=2
+  traf @48527 size=420 
+    tfhd @48535 size=24 flags=0x1 track_ID=1 base_data_offset=48503
+    tfdt @48559 size=20 v1 base_media_decode_time=270000
+    trun @48579 size=368 flags=0x701 samples=29 data_offset=Some(452) first_flags=None sum_duration=87000 first_sync=true
+mdat @48947 size=12577 payload=12569
+mfra @61524 size=86 
+  tfra @61532 size=62 track_ID=1 entries=2
+  mfro @61594 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 2, "moof/traf/tfdt": 2, "moof/traf/tfhd": 2, "moof/traf/trun": 2, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 1, "moov/mvhd": 1, "moov/trak": 1, "moov/trak/mdia": 1, "moov/trak/mdia/hdlr": 1, "moov/trak/mdia/mdhd": 1, "moov/trak/mdia/minf": 1, "moov/trak/mdia/minf/dinf": 1, "moov/trak/mdia/minf/dinf/dref": 1, "moov/trak/mdia/minf/stbl": 1, "moov/trak/mdia/minf/stbl/stco": 1, "moov/trak/mdia/minf/stbl/stsc": 1, "moov/trak/mdia/minf/stbl/stsd": 1, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 1, "moov/trak/mdia/minf/stbl/stts": 1, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 1}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 1 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_port__FINAL.mp4 (124096 B, sha256 20655cfba1044f1245b416c5d44e7b7b380cf5f63b8e8939a5c577a06fb6d466)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3104 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1948 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1916 flags=0x701 samples=158 data_offset=Some(3112) first_flags=None sum_duration=161792 first_sync=true
+  traf @3119 size=1132 
+    tfhd @3127 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3151 size=1100 flags=0x701 samples=90 data_offset=Some(57043) first_flags=None sum_duration=270000 first_sync=true
+mdat @4251 size=94985 payload=94977
+moof @99236 size=824 
+  mfhd @99244 size=16 sequence=2
+  traf @99260 size=400 
+    tfhd @99268 size=24 flags=0x1 track_ID=1 base_data_offset=99236
+    trun @99292 size=368 flags=0x701 samples=29 data_offset=Some(832) first_flags=None sum_duration=29696 first_sync=true
+  traf @99660 size=400 
+    tfhd @99668 size=24 flags=0x1 track_ID=2 base_data_offset=99236
+    trun @99692 size=368 flags=0x701 samples=29 data_offset=Some(10731) first_flags=None sum_duration=87000 first_sync=true
+mdat @100060 size=24036 payload=24028
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=55175 bitrate=111277bit/s 1280x720 rotation=90
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_port__FINAL__golden.mp4 (124262 B, sha256 3128cad82ae4c1e14525c69729dee090fb6293c6dae83de1321a24432bf171eb)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3144 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1968 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1916 flags=0x701 samples=158 data_offset=Some(3152) first_flags=None sum_duration=161792 first_sync=true
+  traf @3139 size=1152 
+    tfhd @3147 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3171 size=20 v1 base_media_decode_time=0
+    trun @3191 size=1100 flags=0x701 samples=90 data_offset=Some(57083) first_flags=None sum_duration=270000 first_sync=true
+mdat @4291 size=94985 payload=94977
+moof @99276 size=864 
+  mfhd @99284 size=16 sequence=2
+  traf @99300 size=420 
+    tfhd @99308 size=24 flags=0x1 track_ID=1 base_data_offset=99276
+    tfdt @99332 size=20 v1 base_media_decode_time=161792
+    trun @99352 size=368 flags=0x701 samples=29 data_offset=Some(872) first_flags=None sum_duration=29696 first_sync=true
+  traf @99720 size=420 
+    tfhd @99728 size=24 flags=0x1 track_ID=2 base_data_offset=99276
+    tfdt @99752 size=20 v1 base_media_decode_time=270000
+    trun @99772 size=368 flags=0x701 samples=29 data_offset=Some(10771) first_flags=None sum_duration=87000 first_sync=true
+mdat @100140 size=24036 payload=24028
+mfra @124176 size=86 
+  tfra @124184 size=62 track_ID=2 entries=2
+  mfro @124246 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=55175 bitrate=111277bit/s 1280x720 rotation=90
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_rot180__FINAL.mp4 (125504 B, sha256 e6c1b7fa9657eee0feb56ed12eadab3225b6f3eab2cf1c9b00d226096e153d2f)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[-65536, 0, 0, 0, -65536, 0, 0, 0, 1073741824] rotation=180
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[-65536, 0, 0, 0, -65536, 0, 0, 0, 1073741824] rotation=180
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3140 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1984 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1952 flags=0x701 samples=161 data_offset=Some(3148) first_flags=None sum_duration=164864 first_sync=true
+  traf @3155 size=1132 
+    tfhd @3163 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3187 size=1100 flags=0x701 samples=90 data_offset=Some(58103) first_flags=None sum_duration=270000 first_sync=true
+mdat @4287 size=98758 payload=98750
+moof @103045 size=788 
+  mfhd @103053 size=16 sequence=2
+  traf @103069 size=364 
+    tfhd @103077 size=24 flags=0x1 track_ID=1 base_data_offset=103045
+    trun @103101 size=332 flags=0x701 samples=26 data_offset=Some(796) first_flags=None sum_duration=26624 first_sync=true
+  traf @103433 size=400 
+    tfhd @103441 size=24 flags=0x1 track_ID=2 base_data_offset=103045
+    trun @103465 size=368 flags=0x701 samples=29 data_offset=Some(9671) first_flags=None sum_duration=87000 first_sync=true
+mdat @103833 size=21671 payload=21663
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=56583 bitrate=114117bit/s 1280x720 rotation=180
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_rot180__FINAL__golden.mp4 (125670 B, sha256 e5432c70ee2922de3591dbc351d0ae64ec72dd4dfa2c852793e25d7e6299c7de)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[-65536, 0, 0, 0, -65536, 0, 0, 0, 1073741824] rotation=180
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[-65536, 0, 0, 0, -65536, 0, 0, 0, 1073741824] rotation=180
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3180 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2004 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1952 flags=0x701 samples=161 data_offset=Some(3188) first_flags=None sum_duration=164864 first_sync=true
+  traf @3175 size=1152 
+    tfhd @3183 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3207 size=20 v1 base_media_decode_time=0
+    trun @3227 size=1100 flags=0x701 samples=90 data_offset=Some(58143) first_flags=None sum_duration=270000 first_sync=true
+mdat @4327 size=98758 payload=98750
+moof @103085 size=828 
+  mfhd @103093 size=16 sequence=2
+  traf @103109 size=384 
+    tfhd @103117 size=24 flags=0x1 track_ID=1 base_data_offset=103085
+    tfdt @103141 size=20 v1 base_media_decode_time=164864
+    trun @103161 size=332 flags=0x701 samples=26 data_offset=Some(836) first_flags=None sum_duration=26624 first_sync=true
+  traf @103493 size=420 
+    tfhd @103501 size=24 flags=0x1 track_ID=2 base_data_offset=103085
+    tfdt @103525 size=20 v1 base_media_decode_time=270000
+    trun @103545 size=368 flags=0x701 samples=29 data_offset=Some(9711) first_flags=None sum_duration=87000 first_sync=true
+mdat @103913 size=21671 payload=21663
+mfra @125584 size=86 
+  tfra @125592 size=62 track_ID=2 entries=2
+  mfro @125654 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=56583 bitrate=114117bit/s 1280x720 rotation=180
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_rot270__FINAL.mp4 (126312 B, sha256 2bb1114697613fe03895d8709477e1202f6701aa1f3195759432f611011c2d53)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, -65536, 0, 65536, 0, 0, 0, 0, 1073741824] rotation=270
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, -65536, 0, 65536, 0, 0, 0, 0, 1073741824] rotation=270
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3164 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2008 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1976 flags=0x701 samples=163 data_offset=Some(3172) first_flags=None sum_duration=166912 first_sync=true
+  traf @3179 size=1132 
+    tfhd @3187 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3211 size=1100 flags=0x701 samples=90 data_offset=Some(58810) first_flags=None sum_duration=270000 first_sync=true
+mdat @4311 size=98796 payload=98788
+moof @103107 size=764 
+  mfhd @103115 size=16 sequence=2
+  traf @103131 size=340 
+    tfhd @103139 size=24 flags=0x1 track_ID=1 base_data_offset=103107
+    trun @103163 size=308 flags=0x701 samples=24 data_offset=Some(772) first_flags=None sum_duration=24576 first_sync=true
+  traf @103471 size=400 
+    tfhd @103479 size=24 flags=0x1 track_ID=2 base_data_offset=103107
+    trun @103503 size=368 flags=0x701 samples=29 data_offset=Some(8964) first_flags=None sum_duration=87000 first_sync=true
+mdat @103871 size=22441 payload=22433
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=57391 bitrate=115747bit/s 1280x720 rotation=270
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_rot270__FINAL__golden.mp4 (126478 B, sha256 a6561bffc556a02bc2317d008d37798abaf52c1f359ea1adf1d80f5f76cf09ce)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, -65536, 0, 65536, 0, 0, 0, 0, 1073741824] rotation=270
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, -65536, 0, 65536, 0, 0, 0, 0, 1073741824] rotation=270
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3204 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2028 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1976 flags=0x701 samples=163 data_offset=Some(3212) first_flags=None sum_duration=166912 first_sync=true
+  traf @3199 size=1152 
+    tfhd @3207 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3231 size=20 v1 base_media_decode_time=0
+    trun @3251 size=1100 flags=0x701 samples=90 data_offset=Some(58850) first_flags=None sum_duration=270000 first_sync=true
+mdat @4351 size=98796 payload=98788
+moof @103147 size=804 
+  mfhd @103155 size=16 sequence=2
+  traf @103171 size=360 
+    tfhd @103179 size=24 flags=0x1 track_ID=1 base_data_offset=103147
+    tfdt @103203 size=20 v1 base_media_decode_time=166912
+    trun @103223 size=308 flags=0x701 samples=24 data_offset=Some(812) first_flags=None sum_duration=24576 first_sync=true
+  traf @103531 size=420 
+    tfhd @103539 size=24 flags=0x1 track_ID=2 base_data_offset=103147
+    tfdt @103563 size=20 v1 base_media_decode_time=270000
+    trun @103583 size=368 flags=0x701 samples=29 data_offset=Some(9004) first_flags=None sum_duration=87000 first_sync=true
+mdat @103951 size=22441 payload=22433
+mfra @126392 size=86 
+  tfra @126400 size=62 track_ID=2 entries=2
+  mfro @126462 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=57391 bitrate=115747bit/s 1280x720 rotation=270
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_rot90__FINAL.mp4 (124038 B, sha256 91865109f7a76173d49d78406187657ab224eb77c5017129295f8b137a441019)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3140 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1984 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1952 flags=0x701 samples=161 data_offset=Some(3148) first_flags=None sum_duration=164864 first_sync=true
+  traf @3155 size=1132 
+    tfhd @3163 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3187 size=1100 flags=0x701 samples=90 data_offset=Some(58103) first_flags=None sum_duration=270000 first_sync=true
+mdat @4287 size=95930 payload=95922
+moof @100217 size=788 
+  mfhd @100225 size=16 sequence=2
+  traf @100241 size=364 
+    tfhd @100249 size=24 flags=0x1 track_ID=1 base_data_offset=100217
+    trun @100273 size=332 flags=0x701 samples=26 data_offset=Some(796) first_flags=None sum_duration=26624 first_sync=true
+  traf @100605 size=400 
+    tfhd @100613 size=24 flags=0x1 track_ID=2 base_data_offset=100217
+    trun @100637 size=368 flags=0x701 samples=29 data_offset=Some(9671) first_flags=None sum_duration=87000 first_sync=true
+mdat @101005 size=23033 payload=23025
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=55117 bitrate=111160bit/s 1280x720 rotation=90
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_rot90__FINAL__golden.mp4 (124204 B, sha256 fc2268dbdf651df1953c275d87e491180dc6cabdbfe02c34543f8776909c7c57)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3180 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2004 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1952 flags=0x701 samples=161 data_offset=Some(3188) first_flags=None sum_duration=164864 first_sync=true
+  traf @3175 size=1152 
+    tfhd @3183 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3207 size=20 v1 base_media_decode_time=0
+    trun @3227 size=1100 flags=0x701 samples=90 data_offset=Some(58143) first_flags=None sum_duration=270000 first_sync=true
+mdat @4327 size=95930 payload=95922
+moof @100257 size=828 
+  mfhd @100265 size=16 sequence=2
+  traf @100281 size=384 
+    tfhd @100289 size=24 flags=0x1 track_ID=1 base_data_offset=100257
+    tfdt @100313 size=20 v1 base_media_decode_time=164864
+    trun @100333 size=332 flags=0x701 samples=26 data_offset=Some(836) first_flags=None sum_duration=26624 first_sync=true
+  traf @100665 size=420 
+    tfhd @100673 size=24 flags=0x1 track_ID=2 base_data_offset=100257
+    tfdt @100697 size=20 v1 base_media_decode_time=270000
+    trun @100717 size=368 flags=0x701 samples=29 data_offset=Some(9711) first_flags=None sum_duration=87000 first_sync=true
+mdat @101085 size=23033 payload=23025
+mfra @124118 size=86 
+  tfra @124126 size=62 track_ID=2 entries=2
+  mfro @124188 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=55117 bitrate=111160bit/s 1280x720 rotation=90
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== rot90_1280x720p30__FINAL.mp4 (2210183 B, sha256 c1decc9081386ce4fcbe1ad84bb7a8b965ea274418cd4494004a632536b34bbd)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3164 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2008 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1976 flags=0x701 samples=163 data_offset=Some(3172) first_flags=None sum_duration=166912 first_sync=true
+  traf @3179 size=1132 
+    tfhd @3187 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3211 size=1100 flags=0x701 samples=90 data_offset=Some(58810) first_flags=None sum_duration=270000 first_sync=true
+mdat @4311 size=1215850 payload=1215842
+moof @1220161 size=2612 
+  mfhd @1220169 size=16 sequence=2
+  traf @1220185 size=1468 
+    tfhd @1220193 size=24 flags=0x1 track_ID=1 base_data_offset=1220161
+    trun @1220217 size=1436 flags=0x701 samples=118 data_offset=Some(2620) first_flags=None sum_duration=120832 first_sync=true
+  traf @1221653 size=1120 
+    tfhd @1221661 size=24 flags=0x1 track_ID=2 base_data_offset=1220161
+    trun @1221685 size=1088 flags=0x701 samples=89 data_offset=Some(42897) first_flags=None sum_duration=267000 first_sync=true
+mdat @1222773 size=987410 payload=987402
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95915 bitrate=128000bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=179 duration=5.967s bytes=2107329 bitrate=2825469bit/s 1280x720 rotation=90
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 173, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 2.967]
+mvhd creation/modification: ["0/0"]
+== rot90_1280x720p30__FINAL__golden.mp4 (2210349 B, sha256 643fdd840f74fbc158f662b090dc652de6a06710a23270bef5d09bde29bbe8bb)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[0, 65536, 0, -65536, 0, 0, 0, 0, 1073741824] rotation=90
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3204 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2028 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1976 flags=0x701 samples=163 data_offset=Some(3212) first_flags=None sum_duration=166912 first_sync=true
+  traf @3199 size=1152 
+    tfhd @3207 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3231 size=20 v1 base_media_decode_time=0
+    trun @3251 size=1100 flags=0x701 samples=90 data_offset=Some(58850) first_flags=None sum_duration=270000 first_sync=true
+mdat @4351 size=1215850 payload=1215842
+moof @1220201 size=2652 
+  mfhd @1220209 size=16 sequence=2
+  traf @1220225 size=1488 
+    tfhd @1220233 size=24 flags=0x1 track_ID=1 base_data_offset=1220201
+    tfdt @1220257 size=20 v1 base_media_decode_time=166912
+    trun @1220277 size=1436 flags=0x701 samples=118 data_offset=Some(2660) first_flags=None sum_duration=120832 first_sync=true
+  traf @1221713 size=1140 
+    tfhd @1221721 size=24 flags=0x1 track_ID=2 base_data_offset=1220201
+    tfdt @1221745 size=20 v1 base_media_decode_time=270000
+    trun @1221765 size=1088 flags=0x701 samples=89 data_offset=Some(42937) first_flags=None sum_duration=267000 first_sync=true
+mdat @1222853 size=987410 payload=987402
+mfra @2210263 size=86 
+  tfra @2210271 size=62 track_ID=2 entries=2
+  mfro @2210333 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95915 bitrate=128000bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=179 duration=5.967s bytes=2107329 bitrate=2825469bit/s 1280x720 rotation=90
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 173, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 2.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== vga640x480p30__FINAL.mp4 (1635350 B, sha256 96714df0141fedd06ba87e30da6695821f608d38e7a0ec1846d42761dc176ef3)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3164 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2008 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1976 flags=0x701 samples=163 data_offset=Some(3172) first_flags=None sum_duration=166912 first_sync=true
+  traf @3179 size=1132 
+    tfhd @3187 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3211 size=1100 flags=0x701 samples=90 data_offset=Some(58809) first_flags=None sum_duration=270000 first_sync=true
+mdat @4311 size=840271 payload=840263
+moof @844582 size=2612 
+  mfhd @844590 size=16 sequence=2
+  traf @844606 size=1468 
+    tfhd @844614 size=24 flags=0x1 track_ID=1 base_data_offset=844582
+    trun @844638 size=1436 flags=0x701 samples=118 data_offset=Some(2620) first_flags=None sum_duration=120832 first_sync=true
+  traf @846074 size=1120 
+    tfhd @846082 size=24 flags=0x1 track_ID=2 base_data_offset=844582
+    trun @846106 size=1088 flags=0x701 samples=89 data_offset=Some(42897) first_flags=None sum_duration=267000 first_sync=true
+mdat @847194 size=788156 payload=788148
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95914 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=179 duration=5.967s bytes=1532497 bitrate=2054745bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 173, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 2.967]
+mvhd creation/modification: ["0/0"]
+== vga640x480p30__FINAL__golden.mp4 (1635516 B, sha256 d56009eb50775e854dc8d66954dee1efa504be0d7685e234254d0e85b2b8b912)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=31 nal_len=4 sps=6742c01f8d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3204 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2028 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    tfdt @1203 size=20 v1 base_media_decode_time=0
+    trun @1223 size=1976 flags=0x701 samples=163 data_offset=Some(3212) first_flags=None sum_duration=166912 first_sync=true
+  traf @3199 size=1152 
+    tfhd @3207 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    tfdt @3231 size=20 v1 base_media_decode_time=0
+    trun @3251 size=1100 flags=0x701 samples=90 data_offset=Some(58849) first_flags=None sum_duration=270000 first_sync=true
+mdat @4351 size=840271 payload=840263
+moof @844622 size=2652 
+  mfhd @844630 size=16 sequence=2
+  traf @844646 size=1488 
+    tfhd @844654 size=24 flags=0x1 track_ID=1 base_data_offset=844622
+    tfdt @844678 size=20 v1 base_media_decode_time=166912
+    trun @844698 size=1436 flags=0x701 samples=118 data_offset=Some(2660) first_flags=None sum_duration=120832 first_sync=true
+  traf @846134 size=1140 
+    tfhd @846142 size=24 flags=0x1 track_ID=2 base_data_offset=844622
+    tfdt @846166 size=20 v1 base_media_decode_time=270000
+    trun @846186 size=1088 flags=0x701 samples=89 data_offset=Some(42937) first_flags=None sum_duration=267000 first_sync=true
+mdat @847274 size=788156 payload=788148
+mfra @1635430 size=86 
+  tfra @1635438 size=62 track_ID=2 entries=2
+  mfro @1635500 size=16 mfra_size=86
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "mfra": 1, "mfra/mfro": 1, "mfra/tfra": 1, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfdt": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat,mfra
+track 1 soun entry=mp4a ts=48000 samples=281 duration=5.995s bytes=95914 bitrate=127999bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 281}
+  aac frame sizes min=341 max=342
+track 2 vide entry=avc1 ts=90000 samples=179 duration=5.967s bytes=1532497 bitrate=2054745bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=6
+  sps 6742c01f8d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=31 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 173, 5: 6}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=4 fragment_durations_s=[3.0, 2.967]
+mfra: tfra track 2 entries=2 pointing_at_moof_with_matching_tfdt=2
+mvhd creation/modification: ["0/0"]
+== quad_land__DESIGN_VBR.mp4 (122040 B, sha256 bc963bcf8ea79000458a81979743f1e6465d75d7ee68749e4a355c506897a04a)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=41 nal_len=4 sps=6742c0298d6805005ba460a020c0f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=1 colour=(5,1,6)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800050001000680
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3164 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=2008 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1976 flags=0x701 samples=163 data_offset=Some(3172) first_flags=None sum_duration=166912 first_sync=true
+  traf @3179 size=1132 
+    tfhd @3187 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3211 size=1100 flags=0x701 samples=90 data_offset=Some(58810) first_flags=None sum_duration=270000 first_sync=true
+mdat @4311 size=96108 payload=96100
+moof @100419 size=764 
+  mfhd @100427 size=16 sequence=2
+  traf @100443 size=340 
+    tfhd @100451 size=24 flags=0x1 track_ID=1 base_data_offset=100419
+    trun @100475 size=308 flags=0x701 samples=24 data_offset=Some(772) first_flags=None sum_duration=24576 first_sync=true
+  traf @100783 size=400 
+    tfhd @100791 size=24 flags=0x1 track_ID=2 base_data_offset=100419
+    trun @100815 size=368 flags=0x701 samples=29 data_offset=Some(8964) first_flags=None sum_duration=87000 first_sync=true
+mdat @101183 size=20857 payload=20849
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=53119 bitrate=107131bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c0298d6805005ba460a020c0f08846a0 [profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=1 colour=(5,1,6)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]
+== quad_land__DESIGN_VBR_bt709.mp4 (128105 B, sha256 ca1fd1f05e4ae318ccf20b9033e936d52f3043d9385767a976ef2e91a6cd5fd1)
+ftyp @0 size=28 major=isom minor=131072 compat=["isom", "iso2", "mp41"]
+moov @28 size=1119 
+  mvhd @36 size=108 v0 creation=0 modification=0 timescale=10000 duration=0 next_track_ID=3
+  trak @144 size=411 
+    tkhd @152 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=1 duration=0 0x0 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @244 size=311 
+      mdhd @252 size=32 v0 creation=0 modification=0 timescale=48000 duration=0 language=```
+      hdlr @284 size=44 handler=soun name="SoundHandle"
+      minf @328 size=227 
+        smhd @336 size=16 
+        dinf @352 size=36 
+          dref @360 size=28 
+        stbl @388 size=167 
+          stsd @396 size=91 
+            mp4a @412 size=75 channels=2 samplesize=16 samplerate=48000
+              esds @448 size=39 asc=1190 aot=2(AAC-LC) rate=48000 channel_config=2
+          stts @487 size=16 
+          stsz @503 size=20 
+          stsc @523 size=16 
+          stco @539 size=16 
+  trak @555 size=520 
+    tkhd @563 size=92 v0 flags=0x7 creation=0 modification=0 track_ID=2 duration=0 1280x720 matrix=[65536, 0, 0, 0, 65536, 0, 0, 0, 1073741824] rotation=0
+    mdia @655 size=420 
+      mdhd @663 size=32 v0 creation=0 modification=0 timescale=90000 duration=0 language=```
+      hdlr @695 size=44 handler=vide name="VideoHandle"
+      minf @739 size=336 
+        vmhd @747 size=20 
+        dinf @767 size=36 
+          dref @775 size=28 
+        stbl @803 size=272 
+          stsd @811 size=180 
+            avc1 @827 size=164 1280x720 compressor=""
+              avcC @913 size=43 profile=66 compat=0xc0 level=41 nal_len=4 sps=6742c0298d6805005ba420202020f08846a0 pps=68ce01a835c8 sps_parsed=[profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+              pasp @956 size=16 0001000000010000
+              colr @972 size=19 6e636c7800010001000100
+          stts @991 size=16 
+          stsz @1007 size=20 
+          stsc @1027 size=16 
+          stco @1043 size=16 
+          stss @1059 size=16 
+  mvex @1075 size=72 
+    trex @1083 size=32 track_ID=1 desc=1 dur=0 size=0 flags=0x00000000
+    trex @1115 size=32 track_ID=2 desc=1 dur=0 size=0 flags=0x00000000
+moof @1147 size=3140 
+  mfhd @1155 size=16 sequence=1
+  traf @1171 size=1984 
+    tfhd @1179 size=24 flags=0x1 track_ID=1 base_data_offset=1147
+    trun @1203 size=1952 flags=0x701 samples=161 data_offset=Some(3148) first_flags=None sum_duration=164864 first_sync=true
+  traf @3155 size=1132 
+    tfhd @3163 size=24 flags=0x1 track_ID=2 base_data_offset=1147
+    trun @3187 size=1100 flags=0x701 samples=90 data_offset=Some(58103) first_flags=None sum_duration=270000 first_sync=true
+mdat @4287 size=101578 payload=101570
+moof @105865 size=788 
+  mfhd @105873 size=16 sequence=2
+  traf @105889 size=364 
+    tfhd @105897 size=24 flags=0x1 track_ID=1 base_data_offset=105865
+    trun @105921 size=332 flags=0x701 samples=26 data_offset=Some(796) first_flags=None sum_duration=26624 first_sync=true
+  traf @106253 size=400 
+    tfhd @106261 size=24 flags=0x1 track_ID=2 base_data_offset=105865
+    trun @106285 size=368 flags=0x701 samples=29 data_offset=Some(9671) first_flags=None sum_duration=87000 first_sync=true
+mdat @106653 size=21452 payload=21444
+box inventory (path: count): {"ftyp": 1, "mdat": 2, "moof": 2, "moof/mfhd": 2, "moof/traf": 4, "moof/traf/tfhd": 4, "moof/traf/trun": 4, "moov": 1, "moov/mvex": 1, "moov/mvex/trex": 2, "moov/mvhd": 1, "moov/trak": 2, "moov/trak/mdia": 2, "moov/trak/mdia/hdlr": 2, "moov/trak/mdia/mdhd": 2, "moov/trak/mdia/minf": 2, "moov/trak/mdia/minf/dinf": 2, "moov/trak/mdia/minf/dinf/dref": 2, "moov/trak/mdia/minf/smhd": 1, "moov/trak/mdia/minf/stbl": 2, "moov/trak/mdia/minf/stbl/stco": 2, "moov/trak/mdia/minf/stbl/stsc": 2, "moov/trak/mdia/minf/stbl/stsd": 2, "moov/trak/mdia/minf/stbl/stsd/avc1": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/avcC": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/colr": 1, "moov/trak/mdia/minf/stbl/stsd/avc1/pasp": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a": 1, "moov/trak/mdia/minf/stbl/stsd/mp4a/esds": 1, "moov/trak/mdia/minf/stbl/stss": 1, "moov/trak/mdia/minf/stbl/stsz": 2, "moov/trak/mdia/minf/stbl/stts": 2, "moov/trak/mdia/minf/vmhd": 1, "moov/trak/tkhd": 2}
+top level order: ftyp,moov,moof,mdat,moof,mdat
+track 1 soun entry=mp4a ts=48000 samples=187 duration=3.989s bytes=63830 bitrate=128001bit/s channels=2 rate=48000
+  asc 1190 [aot=2(AAC-LC) rate=48000 channel_config=2]
+  aac first syntactic element id (0 SCE,1 CPE,2 CCE,3 LFE,4 DSE,5 PCE,6 FIL,7 END: count): {1: 187}
+  aac frame sizes min=236 max=447
+track 2 vide entry=avc1 ts=90000 samples=119 duration=3.967s bytes=59184 bitrate=119363bit/s 1280x720 rotation=0
+  video: mean_fps=30.000 sample_duration_min=3000 max=3000 (33.33..33.33 ms) sync_samples=4
+  sps 6742c0298d6805005ba420202020f08846a0 [profile_idc=66 constraints=0xc0 level_idc=41 poc_type=2 max_refs=1 mbs=80x45 frame_mbs_only=1 crop=[0,0,0,0] vui=1 video_format=0 full_range=0 colour=(1,1,1)]
+  pps 68ce01a835c8
+  nal types (type: count): {1: 115, 5: 4}
+  sei payload types (type: count): {}
+  fragments=2 starting_with_sync=2 sync_samples_not_first=2 fragment_durations_s=[3.0, 0.967]
+mvhd creation/modification: ["0/0"]

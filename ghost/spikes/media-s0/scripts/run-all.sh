@@ -43,11 +43,28 @@ probe() { bash "$here/scripts/probe.sh" "$api" "$@"; }
 uid() { a shell "stat -c %u $pkgdata" | tr -d '\r'; }
 # A root-side "what changed under /data" listing; an empty answer is a result, not an error.
 # It refuses to report anything unless adbd really runs as root (an unprivileged `find` sees nothing
-# under /data and would look like a clean result), and it marks the end of a complete listing.
+# under /data and would look like a clean result). Review fix (2026-10-04): it selects by status
+# change as well as by modification time (`-newer` alone cannot see a file whose mtime was set to 0,
+# which S0-12 prescribes for GHOST's ciphertext files; toybox has no `-cnewer`, its `-newercm` is
+# the same test: ctime newer than the marker's mtime), and it writes the end-of-list line only when
+# `find` itself exited 0; any other status is reported as an incomplete listing.
 rootfind() {
+  local marker="/data/local/tmp/$1.marker" st sel age
   if [ "$(a shell whoami | tr -d '\r')" != root ]; then echo "(adbd is not root: no search)" > "$2"; return; fi
-  { a shell "find /data -xdev -newer /data/local/tmp/$1.marker -type f 2>/dev/null | grep -v '^/data/local/tmp'" | tr -d '\r'
-    echo "(end of the list; searched as root)"; } > "$2" || true
+  # API 29's toybox has neither `-cnewer` nor `-newercm` ("bad arg", seen 2026-10-04): there the
+  # status-change test is `-cmin -N`, N the marker's age in whole minutes plus one (a superset of
+  # "ctime after the marker", never a subset).
+  if [ "$(a shell "find /data/local/tmp -maxdepth 0 -newercm $marker >/dev/null 2>&1 && echo yes" | tr -d '\r')" = yes ]; then
+    sel="-newercm $marker"
+  else
+    age="$(a shell "echo \$(( (\$(date +%s) - \$(stat -c %Y $marker)) / 60 + 1 ))" | tr -d '\r')"
+    sel="-cmin -$age"
+  fi
+  st="$(a shell "find /data -xdev -type f \\( -newer $marker -o $sel \\) > /data/local/tmp/s0-rootfind.txt 2>/data/local/tmp/s0-rootfind.err; echo \$?" | tr -d '\r')"
+  { a shell "grep -v '^/data/local/tmp' /data/local/tmp/s0-rootfind.txt; true" | tr -d '\r'
+    if [ "$st" = 0 ]; then echo "(end of a complete list: find exited 0, run as root, -newer $marker or $sel)"
+    else echo "(INCOMPLETE LIST: find exited '$st': $(a shell "head -3 /data/local/tmp/s0-rootfind.err" | tr -d '\r' | tr '\n' ' '))"; fi
+  } > "$2"
 }
 
 a root >/dev/null 2>&1 || true; sleep 2
@@ -76,7 +93,7 @@ step_sources() {
       a push "$(cygpath -w "$f")" /data/local/tmp/s0src/ >/dev/null
     done
     a shell "mkdir -p $pkgdata/files/src && cp /data/local/tmp/s0src/* $pkgdata/files/src/ && chown -R $(uid):$(uid) $pkgdata/files && restorecon -R $pkgdata/files"
-    a shell "ls -la $pkgdata/files/src" | tr -d '\r' > "$res/sources-pushed.txt"
+    a shell "ls -la $pkgdata/files/src" | tr -d '\r' > "$res/sources-pushed${SRC_TAG:+-$SRC_TAG}.txt"
   else
     probe sources -e set video
     TAG=stills probe sources -e set stills
@@ -193,6 +210,56 @@ step_long() {
   TAG=long probe transcode -e set long -e reps "${REPS:-5}"
   TAG=longvbr probe transcode -e set longvbr
 }
+# ---- review fixes (2026-10-04) -------------------------------------------------------------
+# The review sources (quad colour/rotation grid, no-audio, WebM), made on API 35 and pulled into
+# work/api35/src so that `--sources push` gives every level identical inputs.
+step_fixsources() {
+  TAG=fix probe sources -e set fix
+  for f in quad_land.mp4 quad_rot90.mp4 quad_rot180.mp4 quad_rot270.mp4 quad_port.mp4 quad_noaudio.mp4 clip.webm; do
+    a pull "$pkgdata/files/src/$f" "$(cygpath -w "$here/work/api35/src/$f")" >/dev/null || echo "not pulled: $f"
+  done
+}
+# Every correction at once (Mode.FINAL): goldens (with GHOST's tfdt and mfra), the preview taken
+# from the output, the rotations, the silent track, the profile/level pin.
+step_final() {
+  TAG=final probe transcode -e set final -e save 1
+  mkdir -p "$work/final"
+  a pull "$pkgdata/files/out/." "$(cygpath -w "$work/final")" >/dev/null
+  if [ -f "$tool" ]; then
+    ( cd "$work/final" && for f in *__FINAL*.mp4 quad_land__DESIGN*.mp4; do "$tool" mp4 "$f"; done ) > "$res/final-mp4-report.txt" 2>&1 || true
+  fi
+}
+step_colour() {
+  TAG=quad probe colour -e files quad_land.mp4,quad_rot90.mp4,quad_land__DESIGN_VBR.mp4,quad_land__DESIGN_VBR_bt709.mp4,quad_land__FINAL.mp4,quad_rot90__FINAL.mp4,quad_port__FINAL.mp4
+}
+step_refuse() { probe refuse; }
+step_configure() { probe configure; }
+# Review H1/I7: a 45-s 24-fps source made by this level's encoder, through the final configuration.
+step_long45() {
+  TAG=long45 probe sources -e set long45
+  TAG=long45 probe transcode -e set long45 -e save 1
+  mkdir -p "$work/final"
+  a pull "$pkgdata/files/out/long45_smooth24__FINAL.mp4" "$(cygpath -w "$work/final/long45_smooth24__FINAL.mp4")" >/dev/null || true
+  [ -f "$tool" ] && "$tool" mp4 "$work/final/long45_smooth24__FINAL.mp4" > "$res/long45-mp4-report.txt" 2>&1 || true
+}
+# Review H7/I5: the output rate against the requested rate on smooth and hard content.
+step_ratectl() {
+  TAG=ratectl probe sources -e set short
+  TAG=ratectl probe transcode -e set ratectl
+}
+# Review H8: V-M1 and V-M23 again, with the corrected root search.
+step_vm1fix() {
+  a shell "touch /data/local/tmp/vm1fix.marker"; sleep 1
+  TAG=vm1-observe-fix probe transcode -e set basic -e observe 1
+  rootfind vm1fix "$res/transcode-vm1-observe-fix-rootfind.txt"
+}
+step_previewfix() {
+  a shell "touch /data/local/tmp/vm23fix.marker"; sleep 1
+  # shellcheck disable=SC2086
+  TAG=fix probe preview ${PREVIEW_ARGS:-}
+  rootfind vm23fix "$res/preview-fix-rootfind.txt"
+}
+
 # Host analysis of what was pulled.
 step_analyse() {
   if [ -f "$tool" ]; then

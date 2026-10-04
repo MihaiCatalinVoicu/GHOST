@@ -1,0 +1,3 @@
+# Goldens are compared byte for byte (SHA256SUMS): never converted.
+*.fmp4 binary
+*.jpg binary

@@ -26,7 +26,8 @@ gates move to `ghost/scripts/gates`, and the directory is then deleted.
 | `android/probe/` | the probe app `org.ghost.spike.media` (self-instrumenting debug APK): every emulator probe (`Probes.kt`), the isolated service of §9.2 (`IsoService.kt`, `IsoClient.kt`), `GhostMuxer` and the Transformer configuration of §8.3 (`GhostMuxer.kt`, `Transcoder.kt`), the source generator (`SourceMaker.kt`), the `mfra`/`tfdt` tools (`Mp4Mini.kt`), the V-M20 and V-M21 activities |
 | `android/r8probe/` | a minimal app in two flavours (`base`, `media`) built as R8-shrunk releases (V-M7, V-M14); `why-kept.pro` is used only with `-PwhyKeeping` |
 | `android/mteprobe/` | a manifest with a per-process `memtagMode` for an isolated `:mdec` (V-M15, manifest level) |
-| `scripts/` | `probe.sh` (one probe), `run-all.sh` (the emulator steps), `vm20-snapshots.sh` + `count-pattern.ps1` (task snapshots), `vm20-crash.sh` (tombstones, dropbox, bug report), `vm21-picker.sh` (picker residues), `exif-oracle.sh` (ExifTool's T43 reading), `vm22-summary.sh` (bitrate overshoot) |
+| `scripts/` | `probe.sh` (one probe), `run-all.sh` (the emulator steps), `vm20-snapshots.sh` + `count-pattern.ps1` (task snapshots), `vm20-crash.sh` (tombstones, dropbox, bug report), `vm21-picker.sh` (picker residues), `exif-oracle.sh` (ExifTool's T43 reading), `vm22-summary.sh` (bitrate overshoot), `avd-residue.sh` (what S0 left in the shared AVDs; `--clean` removes exactly that, on a writable boot only) |
+| `rust/src/profile.rs` | the corrected canonical fMP4 profile (S0-3, S0-13, S0-20, S0-22) as code: `mediatool profile <file>` accepts or names the first violation; every committed golden passes it |
 | `results/` | the reports the evidence document quotes (text, plus the V-M20 snapshot images and the few files the picker runs pulled); `results/api*/2026-09-25/` holds first-session reports that a later run replaced; `results/api29gles/` the API 29 runs on the OpenGL ES 3 boot; `results/api29/vm21-first/`, `vm21/` and `vm21-stale-task/`, `results/api35/vm21-2026-10-03/` and `vm21/` the picker runs; `work/` (git-ignored) holds pulled media and bug reports |
 
 ## Environment (the owner's Windows workstation)
@@ -73,8 +74,10 @@ Android (from `android/`; build `crashlib` first):
 ./gradlew --no-daemon -PwhyKeeping :r8probe:assembleMediaRelease   # V-M14: R8's keep reasons
 ```
 
-Emulator (one at a time, port 5576, `-read-only` so that another session may run the same AVD;
-the Phase 9 device-suite practice of F9 §22.32):
+Emulator (one at a time, port 5576, `-read-only` so that nothing persists in the AVDs, which the
+product's device suites share, and another session may run the same AVD; the Phase 9 device-suite
+practice of F9 §22.32. The first session, 2026-09-25, booted them writable and left residue there,
+removed on 2026-10-04 with `scripts/avd-residue.sh <api> --clean` on one writable boot each):
 
 ```
 $ANDROID_HOME/emulator/emulator.exe -avd ghost-dm-api35 -port 5576 -read-only -no-window \
@@ -114,7 +117,36 @@ adb -s emulator-5576 emu kill
 ```
 
 `run-all.sh` uses the level argument only as a label for `results/api<label>/` and
-`work/api<label>/`; `vm20-*.sh` and `vm21-picker.sh` take the numeric level.
+`work/api<label>/`; `vm20-*.sh`, `vm21-picker.sh` and `avd-residue.sh` take the numeric level.
+
+**The review pass (2026-10-04)** re-ran what the two reviews of the evidence challenged, with
+the probe's `transcode` sets `final` (every correction at once, `Transcoder.Mode.FINAL`, plus
+one control per correction), `long45` (a 45-s 24-fps source), `ratectl` and `ratectl2` (the
+requested bitrate against the output, and the 15-fps retry), `colour601` and `goldens601` (the
+encoder format labelled BT.601 limited), the `sources` sets `fix` and `long45`, and the probes
+`colour` (the colour grid decoded into buffers), `refuse` (non-MP4 "videos" with each extractors
+factory) and `configure` (raw encoder configurations):
+
+```
+# API 35, -read-only boot as above
+bash scripts/run-all.sh 35 --steps install,fixsources,configure,final,colour,refuse,long45,ratectl,vm1fix,previewfix
+TAG=ratectl2 bash scripts/probe.sh 35 transcode -e set ratectl2
+TAG=colour601 bash scripts/probe.sh 35 transcode -e set colour601 -e save 1
+TAG=review bash scripts/probe.sh 35 isoTiming; TAG=review bash scripts/probe.sh 35 unguarded
+bash scripts/avd-residue.sh 35
+# API 29, -read-only -feature GLESDynamicVersion; the same with the label 29gles, after
+SRC_TAG=review bash scripts/run-all.sh 29gles --steps install,sources
+adb -s emulator-5576 shell cmd package compile -m speed -f org.ghost.spike.media
+TAG=goldens601 bash scripts/probe.sh 29gles transcode -e set goldens601 -e save 1
+bash scripts/avd-residue.sh 29
+# the goldens: every FINAL output, after the sealing channel's tfdt and mfra (*__golden.mp4)
+"$MEDIATOOL" profile work/api35/final/quad_land__FINAL__golden.mp4
+```
+
+Two traps found then: start the emulator with the tool's longest background time limit (a
+boot started with the default limit was stopped after 30 minutes, in the middle of a run), and
+API 29's toybox `find` has no `-newercm`, so `rootfind` falls back to `-cmin` over the marker's
+age there (and reports an incomplete list, never an empty one, if `find` fails).
 
 Host analyses of what was pulled: `bash scripts/exif-oracle.sh work/api35/canon/*.jpg work/api35/out/*.mp4`
 (needs `EXIFTOOL` and `MEDIATOOL`), `bash scripts/vm22-summary.sh results/api35/transcode-*.txt`,
@@ -122,7 +154,8 @@ Host analyses of what was pulled: `bash scripts/exif-oracle.sh work/api35/canon/
 
 A single probe: `bash scripts/probe.sh <api> <probe> [-e key value ...]` with a probe from
 `Probes.run` (`env`, `sources`, `transcode`, `seek`, `orient`, `iso`, `isoTiming`, `unguarded`,
-`crash`, `compress`, `play`, `mtime`, `preview`, `luma`, `bench`, `pick`, `inventory`, `clean`).
+`crash`, `compress`, `play`, `mtime`, `preview`, `luma`, `colour`, `refuse`, `configure`, `bench`,
+`pick`, `inventory`, `clean`).
 
 Picker residues (V-M21, V-M11): `bash scripts/vm21-picker.sh <api> work/api35/src/orient6.jpg`
 (numeric level; it force-stops DocumentsUI first, pushes the picture under a fresh name, drives the

@@ -51,9 +51,11 @@ pub const ROLE_IN: u8 = 0x02;
 pub const LABEL_PAYLOAD: &[u8] = b"ghost/v1/media/payload";
 pub const LABEL_MANIFEST: &[u8] = b"ghost/v1/media/manifest";
 pub const LABEL_COMMIT: &[u8] = b"ghost/v1/media/commit";
-/// Associated-data prefixes (§3.3, §3.5).
-pub const AD_CHUNK: &[u8] = b"ghost/v1/media/chunk";
-pub const AD_MANIFEST: &[u8] = b"ghost/v1/media/manifest";
+/// Associated-data prefixes (§3.3, §3.5). Review I13 (2026-10-04): under `ghost/v1/media/ad/`, so
+/// that no label of the format is a prefix of another (the 2026-09-25 spike used
+/// `ghost/v1/media/manifest`, the HKDF info of `K_m`, as `AD_m`'s prefix too).
+pub const AD_CHUNK: &[u8] = b"ghost/v1/media/ad/chunk";
+pub const AD_MANIFEST: &[u8] = b"ghost/v1/media/ad/manifest";
 /// `op_id` label (§6.4).
 pub const LABEL_OP: &[u8] = b"ghost/v1/media/op";
 /// Wrap prefix and name of `key_env` (§4.2, F9 §2.5).
@@ -118,7 +120,7 @@ pub fn chunk_nonce(i: u32, last: bool) -> [u8; 12] {
     n
 }
 
-/// §3.3: `"ghost/v1/media/chunk" ‖ 0x01 ‖ object_id ‖ u8(kind)`.
+/// §3.3: `"ghost/v1/media/ad/chunk" ‖ 0x01 ‖ object_id ‖ u8(kind)`.
 pub fn chunk_ad(object_id: &[u8; 16], kind: u8) -> Vec<u8> {
     let mut ad = Vec::with_capacity(AD_CHUNK.len() + 18);
     ad.extend_from_slice(AD_CHUNK);
@@ -128,7 +130,7 @@ pub fn chunk_ad(object_id: &[u8; 16], kind: u8) -> Vec<u8> {
     ad
 }
 
-/// §3.5: `"ghost/v1/media/manifest" ‖ 0x01 ‖ object_id ‖ commit`.
+/// §3.5: `"ghost/v1/media/ad/manifest" ‖ 0x01 ‖ object_id ‖ commit`.
 pub fn manifest_ad(object_id: &[u8; 16], commit: &[u8; 32]) -> Vec<u8> {
     let mut ad = Vec::with_capacity(AD_MANIFEST.len() + 49);
     ad.extend_from_slice(AD_MANIFEST);

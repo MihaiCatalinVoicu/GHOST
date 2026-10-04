@@ -1,0 +1,67 @@
+# 2026-10-04T01:02:07Z emulator-35 Android/sdk_phone64_x86_64/emu64x:15/AE3A.240806.019/12368160:userdebug/test-keys uptime=320.19 1198.72
+## packages (S0 and the product's suites)
+package:org.ghost.app
+package:org.ghost.app.test
+package:org.ghost.crypto.bridge.test
+package:org.ghost.messaging.test
+package:org.ghost.spike.media
+package:org.ghost.spike.mte
+org.ghost.spike.media     lastUpdateTime=2026-09-25 09:20:54
+org.ghost.spike.media       firstInstallTime=2026-09-25 07:42:15
+org.ghost.spike.mte     lastUpdateTime=2026-09-25 09:20:53
+org.ghost.spike.mte       firstInstallTime=2026-09-25 09:20:53
+## /data/tombstones (S0 = names org.ghost.spike or carries the S0 canary)
+/data/tombstones/tombstone_00 409274 B mode=664 mtime=2026-09-25 08:52:14.092000000 +0300 s0=yes
+/data/tombstones/tombstone_00.pb 252566 B mode=664 mtime=2026-09-25 08:52:14.064000000 +0300 s0=yes
+## /data/system/dropbox entries that name org.ghost.spike or carry an S0 canary
+## shared storage: pictures, thumbnails, transform placeholders
+/data/media/0/Pictures/.thumbnails/.database_uuid 36 B mode=660 owner=u0_a144:media_rw mtime=2026-09-24 17:41:48.784000000 +0300
+/data/media/0/Pictures/.thumbnails/.nomedia 0 B mode=660 owner=u0_a144:media_rw mtime=2026-09-24 17:42:24.767000000 +0300
+/data/media/0/Pictures/.thumbnails/1000000018.jpg 4283 B mode=660 owner=u0_a144:media_rw mtime=2026-09-25 09:10:00.112000000 +0300
+/data/media/0/Pictures/ghost_s0_pick.jpg 4341 B mode=660 owner=u0_a144:media_rw mtime=2026-09-25 07:46:09.000000000 +0300
+/data/media/0/.transforms/recovery/leveldb-internal/LOG 181 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.572000000 +0300
+/data/media/0/.transforms/recovery/leveldb-internal/LOCK 0 B mode=640 owner=u0_a144:media_rw mtime=2026-09-24 17:41:48.500000000 +0300
+/data/media/0/.transforms/recovery/leveldb-internal/LOG.old 181 B mode=640 owner=u0_a144:media_rw mtime=2026-10-03 17:14:04.927999875 +0300
+/data/media/0/.transforms/recovery/leveldb-internal/CURRENT 16 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.544000000 +0300
+/data/media/0/.transforms/recovery/leveldb-internal/000009.log 0 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.528000000 +0300
+/data/media/0/.transforms/recovery/leveldb-internal/MANIFEST-000008 50 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.528000000 +0300
+/data/media/0/.transforms/recovery/leveldb-external_primary/LOG 181 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.656000000 +0300
+/data/media/0/.transforms/recovery/leveldb-external_primary/LOCK 0 B mode=640 owner=u0_a144:media_rw mtime=2026-09-24 17:41:48.576000000 +0300
+/data/media/0/.transforms/recovery/leveldb-external_primary/LOG.old 181 B mode=640 owner=u0_a144:media_rw mtime=2026-10-03 17:14:04.955999874 +0300
+/data/media/0/.transforms/recovery/leveldb-external_primary/CURRENT 16 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.644000000 +0300
+/data/media/0/.transforms/recovery/leveldb-external_primary/000009.log 0 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.636000000 +0300
+/data/media/0/.transforms/recovery/leveldb-external_primary/MANIFEST-000008 50 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.636000000 +0300
+/data/media/0/.transforms/recovery/leveldb-ownership/LOG 181 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.672000000 +0300
+/data/media/0/.transforms/recovery/leveldb-ownership/LOCK 0 B mode=640 owner=u0_a144:media_rw mtime=2026-09-24 17:41:48.692000000 +0300
+/data/media/0/.transforms/recovery/leveldb-ownership/LOG.old 181 B mode=640 owner=u0_a144:media_rw mtime=2026-10-03 17:14:04.987999873 +0300
+/data/media/0/.transforms/recovery/leveldb-ownership/CURRENT 16 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.668000000 +0300
+/data/media/0/.transforms/recovery/leveldb-ownership/000009.log 0 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.656000000 +0300
+/data/media/0/.transforms/recovery/leveldb-ownership/MANIFEST-000008 50 B mode=640 owner=u0_a144:media_rw mtime=2026-10-04 03:57:05.656000000 +0300
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media/1000000018.jpg 4341 B mode=660 owner=u0_a144:media_rw mtime=2026-09-25 09:10:09.164000000 +0300
+/data/media/0/.transforms/.nomedia 0 B mode=660 owner=u0_a144:media_rw mtime=2026-09-24 17:42:24.715000000 +0300
+## MediaStore image rows
+Row: 0 _id=1000000018, _display_name=ghost_s0_pick.jpg, _data=/storage/emulated/0/Pictures/ghost_s0_pick.jpg, owner_package_name=NULL, date_added=1790316585
+## MediaProvider caches (photo picker's Glide cache) and picker database
+/data/data/com.android.providers.media.module/cache/data/user/0/com.android.providers.media.module/no_backup/androidx.work.workdb.lck 0 B mode=600 mtime=2026-10-04 03:57:05.088000000 +0300
+/data/data/com.android.providers.media.module/cache/oat_primary/x86_64/MediaProvider.art 217872 B mode=600 mtime=2026-09-24 17:41:48.816000000 +0300
+/data/data/com.android.providers.media.module/cache/image_manager_disk_cache/journal 178 B mode=600 mtime=2026-09-25 09:10:00.120000000 +0300
+/data/data/com.android.providers.media.module/cache/image_manager_disk_cache/45cb4131c86e2682eb79e50300ee7aa1246c4a46896ecf1f7b47757e3ab46063.0 4283 B mode=600 mtime=2026-09-25 09:10:00.120000000 +0300
+## DocumentsUI records (API 29)
+## usage stats files naming org.ghost.spike
+/data/system_ce/0/usagestats/mappings
+## /data/local/tmp
+total 1032
+drwxrwx--x 3 shell shell   4096 2026-10-03 17:14 .
+drwxr-x--x 5 root  root    4096 2026-09-24 17:40 ..
+-rw-rw-rw- 1 root  root       0 2026-09-25 08:52 crash1.marker
+-rw-rw-rw- 1 root  root       0 2026-09-25 08:52 crash2.marker
+-rw-rw-rw- 1 root  root       0 2026-09-25 08:52 crash3.marker
+-rwxr-xr-x 1 root  root  843216 2026-09-25 09:01 mediatool
+drwxrwxrwx 2 shell shell   4096 2026-10-03 17:14 mls-probe
+-rw-rw-r-- 1 root  root   56719 2026-09-25 09:10 pick.png
+-rw-rw-rw- 1 root  root   11551 2026-09-25 09:10 ui.xml
+-rw-rw-rw- 1 root  root    9285 2026-09-25 09:10 ui2.xml
+-rw-rw-rw- 1 root  root       0 2026-09-25 09:11 vm1.marker
+-rw-rw-r-- 1 root  root   36132 2026-09-25 09:09 vm20-recents.png
+-rw-rw-r-- 1 root  root   20855 2026-09-25 09:08 vm20-screen.png
+-rw-rw-rw- 1 root  root       0 2026-09-25 08:56 vm23.marker

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! mediatool jpeg <file>...              marker walk, §8.2 canonicaliser verdict (V-M6)
+//! mediatool profile <file>...           the canonical fMP4 profile corrected after the review: violations
 //! mediatool mp4 <file>                  box tree, tracks, fragments, sync starts, frame rate,
 //!                                       NAL and SEI payload types, AAC first elements (V-M2/3/12/24)
 //! mediatool nalcmp <source> <output>    source NAL units / AAC frames found byte for byte in output (V-M17)
@@ -57,6 +58,21 @@ fn main() {
             }
         }
         Some("mp4") => mp4_report(&args[2]),
+        Some("profile") => {
+            // The corrected canonical fMP4 profile (review fixes, 2026-10-04): one line per file.
+            let mut bad = 0;
+            for p in &args[2..] {
+                let d = read(p);
+                let v = ghost_media_spike::profile::check(&d);
+                if v.is_empty() {
+                    println!("CANONICAL {p} ({} B, sha256 {})", d.len(), hex(&sha256(&d)));
+                } else {
+                    bad += 1;
+                    println!("NON_CANONICAL {p}: {}", v.join("; "));
+                }
+            }
+            std::process::exit(if bad == 0 { 0 } else { 1 })
+        }
         Some("nalcmp") => nalcmp(&args[2], &args[3]),
         Some("addmfra") => {
             let d = read(&args[2]);

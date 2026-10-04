@@ -1,0 +1,3 @@
+/data/misc/profiles/cur/0/org.ghost.spike.media/primary.prof
+/data/data/com.android.dialer/cache/persistent_log/plain_text/0
+(end of a complete list: find exited 0, run as root, -newer /data/local/tmp/vm23fix.marker or -cmin -1)
