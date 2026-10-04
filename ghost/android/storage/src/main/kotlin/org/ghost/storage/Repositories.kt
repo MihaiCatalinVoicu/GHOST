@@ -40,27 +40,6 @@ class IdentityRepository(private val db: SqlExecutor) {
     }
 }
 
-/** Per-channel pseudonym public keys and their reveal state (ADR-04). */
-class ChannelPseudonymRepository(private val db: SqlExecutor) {
-    fun upsert(channelId: ByteArray, pseudonymPublicKey: ByteArray) {
-        db.exec(
-            """INSERT INTO channel_pseudonyms(channel_id, pseudonym_public_key, revealed) VALUES (?, ?, 0)
-               ON CONFLICT(channel_id) DO UPDATE SET pseudonym_public_key = excluded.pseudonym_public_key""",
-            listOf(channelId, pseudonymPublicKey),
-        )
-    }
-
-    fun publicKeyFor(channelId: ByteArray): ByteArray? =
-        db.queryBlob("SELECT pseudonym_public_key FROM channel_pseudonyms WHERE channel_id = ?", listOf(channelId))
-
-    fun markRevealed(channelId: ByteArray) {
-        db.exec("UPDATE channel_pseudonyms SET revealed = 1 WHERE channel_id = ?", listOf(channelId))
-    }
-
-    fun isRevealed(channelId: ByteArray): Boolean =
-        db.queryLong("SELECT revealed FROM channel_pseudonyms WHERE channel_id = ?", listOf(channelId)) == 1L
-}
-
 /** Verified revocation certificates received for contacts (ADR-14). Only verified certificates are stored. */
 class RevocationRepository(private val db: SqlExecutor, private val clock: () -> Long) {
     fun store(certificateBytes: ByteArray): RevocationCertificate {

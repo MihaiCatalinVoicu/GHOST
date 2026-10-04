@@ -19,6 +19,10 @@ import org.junit.Test
  * Every column whose name looks like a time must therefore be in one of four declared sets:
  *
  *  - [timeColumnsOfMigration4] and [timeColumnsOfMigration5], the exact enumeration R-M3 gives;
+ *  - [ChannelSchema.timeColumns], [ChannelSchema.epochColumns] and [ChannelSchema.notTimes], the 30 time
+ *    columns, the nine epoch counters and the two timer codes migration 7 adds (Phase 10 design §9;
+ *    [ChannelSchemaIntrospectionTest] owns what each of them enforces, and this test only requires that
+ *    the whole database holds nothing else);
  *  - [timeColumnsBeforeV4], the ones v1, v2 and v3 already carried, each pinned by its own
  *    subsystem test — repeated here only so this test's corpus can be the whole database;
  *  - [periodIndices], integers naming a cell of a grid (a week, an epoch, a period) rather than a
@@ -85,10 +89,10 @@ class DmSchemaIntrospectionTest {
      * next `last_activity_minute` (mutant PM-10) land one table to the left.
      */
     private val timeColumnsBeforeV4 = setOf(
-        // v1 survivors (Phases 3-6). `posts.expires_at` and the `*_at` columns are second-granular
-        // and predate ADR-08; they are declared, not endorsed, and no DM code reads them.
-        "identity.created_at", "devices.added_at", "devices.revoked_at", "channels.created_at",
-        "mls_state.updated_at", "posts.posted_at_minute", "posts.expires_at",
+        // v1 survivors (Phases 3-6). The `*_at` columns are second-granular and predate ADR-08; they
+        // are declared, not endorsed, and no DM code reads them. (`channels`, `mls_state` and `posts`
+        // and their columns are gone since migration 7, `channels.current_epoch` with them.)
+        "identity.created_at", "devices.added_at", "devices.revoked_at",
         "invite_nonces.seen_at", "revocations.received_at",
         // v2 sync (Phase 7 §11.2 #8)
         "relay_directory.retired_day", "relay_capability.expires_hour",
@@ -169,8 +173,6 @@ class DmSchemaIntrospectionTest {
         "dm_conversation.timer_code" to "the disappearing-timer bucket code, 0..5",
         "dm_conversation.timer_version" to "the timer's version counter, monotone, not a time",
         "dm_message.timer_code" to "the bucket code the message was written under",
-        // Phase 3-6 survivors.
-        "channels.current_epoch" to "the MLS epoch counter of a channel",
     )
 
     private fun tables(db: JdbcSqlExecutor): List<String> {
@@ -197,7 +199,10 @@ class DmSchemaIntrospectionTest {
 
     @Test
     fun everyTimeLikeColumnOfEveryTableIsOneTheDesignDeclares() = migrated().use { db ->
-        val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 + timeColumnsBeforeV4
+        val declared = timeColumnsOfMigration4 + timeColumnsOfMigration5 + timeColumnsOfMigration6 +
+            timeColumnsBeforeV4 + ChannelSchema.timeColumns
+        val indices = periodIndices + ChannelSchema.epochColumns
+        val exempt = notTimes + ChannelSchema.notTimes
         val foundTimes = HashSet<String>()
         val foundIndices = HashSet<String>()
         val usedExemptions = HashSet<String>()
@@ -210,8 +215,8 @@ class DmSchemaIntrospectionTest {
                 if (!timeLike.containsMatchIn(column.lowercase())) continue
                 when (qualified) {
                     in declared -> foundTimes += qualified
-                    in periodIndices -> foundIndices += qualified
-                    in notTimes -> usedExemptions += qualified
+                    in indices -> foundIndices += qualified
+                    in exempt -> usedExemptions += qualified
                     else -> undeclared += qualified
                 }
             }
@@ -221,10 +226,10 @@ class DmSchemaIntrospectionTest {
         // cannot drift into decoration. Only the period indices whose *name* trips the rule can be
         // found by this scan — `period_id`, `bundle_rank` and the `gen_id`s do not — and
         // [everyPeriodIndexRankAndRandomIdIsIntegerTyped] is where all of them are required to exist.
-        val namedLikeATime = periodIndices.filter { timeLike.containsMatchIn(it.substringAfter('.').lowercase()) }.toSet()
+        val namedLikeATime = indices.filter { timeLike.containsMatchIn(it.substringAfter('.').lowercase()) }.toSet()
         assertEquals("declared time columns that no table has", declared, foundTimes)
         assertEquals("declared period indices that no table has", namedLikeATime, foundIndices)
-        assertEquals("exemptions that match nothing", notTimes.keys, usedExemptions)
+        assertEquals("exemptions that match nothing", exempt.keys, usedExemptions)
     }
 
     /**

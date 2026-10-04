@@ -84,8 +84,11 @@ class ReplaceGuardsTest {
         // Every table with rules is guarded, except the two v2 tables whose rules are transitions only
         // and whose writers use INSERT OR IGNORE and UPSERT, and the v4 rule on sync_namespace, whose
         // writer upserts and whose rule runs on INSERT as well (sync_namespace_dm_delay_insert), so a
-        // REPLACE cannot skip it (Phase 9 design §13.6 step 3).
-        assertEquals(setOf("outbox_delivery", "inbox_blob", "sync_namespace"), withRules - guarded)
+        // REPLACE cannot skip it (Phase 9 design §13.6 step 3), and the v7 tag table `ch_kp_seen`, whose writer
+        // uses INSERT OR IGNORE and whose one UPDATE rule (a tag never moves to another channel) cannot be
+        // skipped by a REPLACE: the channel is part of its key, so a REPLACE writes a new row in the channel it
+        // names, which the INSERT bound counts (Phase 10 design §19.35, review of S3).
+        assertEquals(setOf("outbox_delivery", "inbox_blob", "sync_namespace", "ch_kp_seen"), withRules - guarded)
         // The v5 DM tables are guarded whether or not they carry an UPDATE or DELETE rule: §13.6
         // step 6 names them one by one, and the guards are what make "no REPLACE, no
         // INSERT OR REPLACE and no UPSERT anywhere in DM code" (gate G-DM4) enforceable by the
@@ -101,8 +104,18 @@ class ReplaceGuardsTest {
             // generation (the rejection race guard compares generations) and are what forces the
             // UPDATE-then-INSERT writers of FundingStore and CapabilityStore.
             "sync_namespace_fund", "relay_register_capability",
+            // v7 (Phase 10 §9): the channel tables with no UPDATE or DELETE rule. (The review of S3 gave
+            // `ch_pending_post`, `ch_join_request`, `ch_join`, `ch_invite_own` and `mls_global_kv` a rule on
+            // UPDATE - their rows may not move channel, or may not live longer - and the two rowid tables,
+            // `mls_kv` and `ch_join_request`, a rule that their rowid never changes.)
+            // `ch_seen` and `ch_kp_seen` are the two with no guard at all: they are written with
+            // INSERT OR IGNORE, which deletes nothing, and `ch_seen`'s rows carry no rule.
+            "ch_liveness", "ch_schedule", "ch_reaction",
+            "ch_outbound_op", "ch_reveal", "ch_member_seen",
+            "ch_sponsor", "ch_member_refresh", "ch_request",
         )
         assertEquals(guardedWithoutRules, guarded - withRules)
+        assertEquals(ChannelSchema.tables - ChannelSchema.unguarded, guarded.filter { it in ChannelSchema.tables }.toSet())
         for (table in guarded) {
             val (name, sql) = triggers.getValue(table).single { it.first.endsWith("_no_replace") }
             assertEquals("${table}_no_replace", name)

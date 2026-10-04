@@ -16,7 +16,7 @@ object Schema {
 
     private fun migration5Tables(): List<String> = listOf(
         "CREATE TABLE dm_contact (contact_id BLOB PRIMARY KEY ON CONFLICT REPLACE)",
-        guard("dm_contact"),
+        guard("dm_contact"), "CREATE TABLE ch_channel (channel_id BLOB PRIMARY KEY)",
         replaceAll("dm_contact"),
     )
 
