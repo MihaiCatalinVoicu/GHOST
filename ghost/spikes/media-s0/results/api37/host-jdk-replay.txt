@@ -1,0 +1,2 @@
+# JDK replay of the vector file (jvm/MediaVectors.java)
+media-vectors (JDK 17.0.20.1): 145 values compared, 145 equal; 12 AEAD negative cases, 12 refused; 3 commitment-separation checks, 3 distinct

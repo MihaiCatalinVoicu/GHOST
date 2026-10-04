@@ -1,0 +1,2 @@
+# host load samples during the API 37 run (Win32_Processor.LoadPercentage at the sampling instant; other builds, CI runners and agents share the machine)
+2026-10-04 12:45:00 [chunk E running] host CPU load 100 %, free RAM 4.5 GiB of 95.4; qemu cpu-s=8634 ws=6615MB; top cumulative-CPU processes: ChatGPT:50741 claude:31160 ChatGPT:17707 claude:13389 ipf_helper:10654

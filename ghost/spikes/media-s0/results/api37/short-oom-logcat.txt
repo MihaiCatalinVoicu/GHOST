@@ -1,0 +1,17 @@
+# V-M22 first run of the 10-s short set (13:24-13:28): the instrumentation died; logcat excerpt (the report file of that run is empty because the probe writes it at the end)
+10-04 11:53:29.218 E/AndroidRuntime(12000): Process: org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:crash_58ff390c63bb3d84, PID: 12000
+10-04 12:04:51.691 W/ActivityManager(  710): Crash of app org.ghost.spike.media running instrumentation ComponentInfo{org.ghost.spike.media/org.ghost.spike.media.SpikeRunner}
+10-04 13:15:16.969 W/ost.spike.media(20478): Throwing OutOfMemoryError "Failed to allocate a 68208012 byte allocation with 8323072 free bytes and 104MB until OOM, target footprint 100100528, growth limit 201326592" (VmSize 16443720 kB)
+10-04 13:18:36.572 W/ost.spike.media(20478): Throwing OutOfMemoryError "Failed to allocate a 68275852 byte allocation with 8388608 free bytes and 104MB until OOM, target footprint 100259024, growth limit 201326592" (VmSize 16424912 kB)
+10-04 13:20:54.479 E/AndroidRuntime(22727): Process: org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:unguarded_167811fbed107612, PID: 22727
+10-04 13:28:31.499 W/ost.spike.media(22971): Throwing OutOfMemoryError "Failed to allocate a 66719123 byte allocation with 8355840 free bytes and 120MB until OOM, target footprint 83843920, growth limit 201326592" (VmSize 16677580 kB)
+10-04 13:28:31.832 W/ost.spike.media(22971): Throwing OutOfMemoryError "Failed to allocate a 66719123 byte allocation with 8388608 free bytes and 120MB until OOM, target footprint 83806672, growth limit 201326592" (VmSize 16680044 kB)
+10-04 13:28:31.851 E/AndroidRuntime(22971): FATAL EXCEPTION: Transformer:Internal
+10-04 13:28:31.851 E/AndroidRuntime(22971): Process: org.ghost.spike.media, PID: 22971
+10-04 13:28:31.851 E/AndroidRuntime(22971): java.lang.OutOfMemoryError: Failed to allocate a 66719123 byte allocation with 8388608 free bytes and 120MB until OOM, target footprint 83806672, growth limit 201326592
+10-04 13:28:31.851 E/AndroidRuntime(22971): 	at androidx.media3.muxer.LinearByteBufferAllocator.allocate(LinearByteBufferAllocator.java:43)
+10-04 13:28:31.851 E/AndroidRuntime(22971): 	at androidx.media3.muxer.AnnexBToAvccConverter$1.process(AnnexBToAvccConverter.java:52)
+10-04 13:28:31.851 E/AndroidRuntime(22971): 	at androidx.media3.muxer.FragmentedMp4Writer.processTrack(FragmentedMp4Writer.java:344)
+10-04 13:28:31.851 E/AndroidRuntime(22971): 	at androidx.media3.muxer.FragmentedMp4Writer.processAllTracks(FragmentedMp4Writer.java:328)
+10-04 13:28:31.851 E/AndroidRuntime(22971): 	at androidx.media3.muxer.FragmentedMp4Writer.createFragment(FragmentedMp4Writer.java:275)
+10-04 13:28:31.851 E/AndroidRuntime(22971): 	at androidx.media3.muxer.FragmentedMp4Writer.writeSampleData(FragmentedMp4Writer.java:165)

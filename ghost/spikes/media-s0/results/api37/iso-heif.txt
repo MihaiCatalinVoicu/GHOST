@@ -1,0 +1,8 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm19 isolated: pid=9980 uid=99143 isIsolated=true processName=org.ghost.spike.media:mdec:org.ghost.spike.media.IsoService:ping_b7bdd0a82b1657e1 applicationOnCreateRan=true sourceProviderCreatedThere=false VmHWMkB=129220 mainPid=9964 mainUid=10234 bindMs=1635.0 deathMs=16.5
+vm19 ghostApp-like operations inside the isolated process: noBackupFilesDir=ok writeNoBackupFile=FileNotFoundException(/data/user/0/org.ghost.spike.media/no_backup/x: open failed: ENOENT (No such file or direc) readDataDir=NullPointerException(null) keystore=ok connectivity=NullPointerException(Attempt to invoke virtual method 'android.net.Network android.net.ConnectivityManager.getA) contentResolverQuery=SecurityException(Isolated process not allowed to call getContentProvider) socket=SocketException(socket failed: EACCES (Permission denied))
+vm19 main process: sourceProviderCreatedHere=true
+vm5 photo.heic (1863 B): pid=9995/10019 decode FAILED: call failed: DeadObjectException null cb=connected+disconnected; strip FAILED: call failed: DeadObjectException null cb=connected+disconnected; mainProcessControl OK 1024x768; mainProcessSharedMemory OK 1024x768; isolatedHeapCopy FAILED: call failed: DeadObjectException null
+vm5 photo.avif (2205 B): pid=10092/10119 decode FAILED: call failed: DeadObjectException null cb=connected; strip FAILED: call failed: DeadObjectException null cb=connected+disconnected; mainProcessControl OK 1024x768; mainProcessSharedMemory OK 1024x768; isolatedHeapCopy FAILED: call failed: DeadObjectException null
+probe iso: OK
+

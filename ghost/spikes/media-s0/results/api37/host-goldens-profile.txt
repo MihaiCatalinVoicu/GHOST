@@ -1,0 +1,30 @@
+# host side re-run for API 37 session (2026-10-04): cargo test + goldens through the profile checker
+## mediatool profile over every committed fMP4 golden
+-- api29-emulator/land1080p60.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/land1080p60.fmp4 (2643787 B, sha256 f0d00513be8cf60fa6e18b11244e5e86456566f92780aaaa41febcf3c9ed6946)
+-- api29-emulator/quad_land.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/quad_land.fmp4 (143216 B, sha256 ece9038f1ba20f2031cfb9f0bd5fb16b2a933d45c5647c70fd76767215dcb4ea)
+-- api29-emulator/quad_noaudio.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/quad_noaudio.fmp4 (143215 B, sha256 2971d6422d55f239dae3e1064567e26f6e8a51f507aec6c7ebb97d55402c07ba)
+-- api29-emulator/quad_port.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/quad_port.fmp4 (145702 B, sha256 495489f47faa0f6fdf7b8444f6fa2c8f4a637eafadb3986e44aee1cc26eb4f42)
+-- api29-emulator/quad_rot180.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/quad_rot180.fmp4 (158209 B, sha256 d72b8e243af982d807923f325c3fa551b8054ed7dee1c48b63c4e75d706fec51)
+-- api29-emulator/quad_rot270.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/quad_rot270.fmp4 (141044 B, sha256 6c87d8bf376e0f3236bb964df2df417335a01d0cd0c216e0df6ca48082af11bd)
+-- api29-emulator/quad_rot90.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api29-emulator/quad_rot90.fmp4 (160182 B, sha256 4da07200a13a9e1e33d91721191a532585c8dccf06bde757f0950c94e64e05d5)
+-- api35-emulator/land1080p60.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/land1080p60.fmp4 (1643727 B, sha256 b53e00a7524716fefb48d1920675194718b7ecc1044f9b65206572d390068e19)
+-- api35-emulator/quad_land.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/quad_land.fmp4 (129540 B, sha256 1b28f0c8b64979d81d400dbaf7b27d32c56532f2040521ca1f6f9e2a1f17e1a0)
+-- api35-emulator/quad_noaudio.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/quad_noaudio.fmp4 (129539 B, sha256 e7e19215d7abec4f053482f00bad18c14381a5d62fc1577f0b674a2549b4e51f)
+-- api35-emulator/quad_port.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/quad_port.fmp4 (122480 B, sha256 8ed939008ade1e592ffec1a82e4e452a8bcd38566c69e1b9206413b4148a1f4b)
+-- api35-emulator/quad_rot180.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/quad_rot180.fmp4 (123907 B, sha256 07c59221540b03bf7f31f273d04fdec05328e3f7ccff1cb3f8eeacf8b981afff)
+-- api35-emulator/quad_rot270.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/quad_rot270.fmp4 (123638 B, sha256 0722a883d63b52e1684c4717bcc19c07b920dfe926a21719e1592e524283f6eb)
+-- api35-emulator/quad_rot90.fmp4
+CANONICAL D:/Forum/.claude/worktrees/p11-api37/ghost/protocol/test-vectors/media-goldens/media3-1.11.1/api35-emulator/quad_rot90.fmp4 (122761 B, sha256 d157764f58258cb4453851ebfcd89ed46df0cd973fbcef621cbe158d8df3e5eb)

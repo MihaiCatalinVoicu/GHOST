@@ -1,0 +1,27 @@
+# V-M20 (API 37, mode 2): files under /data/tombstones and /data/system/dropbox newer than the crash
+/data/system/dropbox/data_app_crash@1791104009233.txt: 801 B raw=0 gunzipped=0
+# adb bugreport (taken after the crash, no root needed)
+bugreport: 8700223 B, 246 entries
+  FS/data/tombstones/tombstone_12.pb: 321864 B raw=79
+  FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103844693.dat.gz: 11547 B gunzipped=79
+  entries naming tombstones or dropbox:
+    FS/data/system/dropbox/system_app_crash@1791101696923.txt
+    FS/data/system/dropbox/system_app_anr@1791101697193.txt.gz
+    FS/data/system/dropbox/SYSTEM_BOOT@1791101711129.txt
+    FS/data/system/dropbox/system_app_anr@1791101734831.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103205142.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103205176.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103205310.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103211140.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103211150.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103211281.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103217376.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103217385.dat.gz
+    FS/data/system/dropbox/data_app_crash@1791103336294.txt
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103217505.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103223370.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103223385.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103223509.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103229585.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103229595.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103229719.txt.gz

@@ -1,0 +1,6 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm21 picker launched at 1791104752240; waiting for the host to pick
+vm21 picked=false intent=android.provider.action.PICK_IMAGES
+vm11 read of the picked stream: fileObserverEvents=0 inventoryChanges=0
+probe pick: OK
+

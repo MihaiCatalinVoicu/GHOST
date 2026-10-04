@@ -1,0 +1,7 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm18 requests=100 failures=0 distinctPids=100
+vm18 bind(to onServiceConnected): n=100 min=382.4 median=510.7 p90=678.9 max=1965.5 ms
+vm18 bind+decode 320px+reply: n=100 min=417.8 median=561.6 p90=734.7 max=2124.3 ms
+vm18 unbind->binderDied: n=100 min=5.9 median=16.3 p90=28.5 max=160.8 ms (deaths observed 100/100)
+probe isoTiming: OK
+

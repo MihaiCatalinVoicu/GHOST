@@ -1,0 +1,17 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+probe seek: FAILED java.io.FileNotFoundException: /data/user/0/org.ghost.spike.media/files/out/match720p30__DESIGN.mp4: open failed: ENOENT (No such file or directory)
+  at libcore.io.IoBridge.open(IoBridge.java:574)
+  at java.io.FileInputStream.<init>(FileInputStream.java:179)
+  at kotlin.io.FilesKt__FileReadWriteKt.readBytes(FileReadWrite.kt:73)
+  at org.ghost.spike.media.Probes.seek(Probes.kt:419)
+  at org.ghost.spike.media.Probes.run(Probes.kt:69)
+  at org.ghost.spike.media.SpikeRunner.onStart(SpikeRunner.kt:30)
+  at android.app.Instrumentation$InstrumentationThread.run(Instrumentation.java:2637)
+  caused by android.system.ErrnoException: open failed: ENOENT (No such file or directory)
+    at libcore.io.Linux.open(Native Method)
+    at libcore.io.ForwardingOs.open(ForwardingOs.java:579)
+    at libcore.io.BlockGuardOs.open(BlockGuardOs.java:274)
+    at libcore.io.ForwardingOs.open(ForwardingOs.java:579)
+    at android.app.AndroidForwardingOs.open(AndroidForwardingOs.java:120)
+    at libcore.io.IoBridge.open(IoBridge.java:560)
+

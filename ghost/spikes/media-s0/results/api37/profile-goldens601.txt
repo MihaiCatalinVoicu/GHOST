@@ -1,0 +1,24 @@
+# mediatool profile over every *__FINAL_601__golden.mp4 (the BT.601 limited label, i.e. the configuration whose outputs are committed as media-goldens/media3-1.11.1/*/*.fmp4), API 37, 2026-10-04
+land1080p60__FINAL_601__golden.mp4: CANONICAL land1080p60__FINAL_601__golden.mp4 (1645214 B, sha256 2155f71b517f54cf4c2aec0654ef870a10f298d90b0e4072a3d42f44c6341593)
+quad_land__FINAL_601__golden.mp4: CANONICAL quad_land__FINAL_601__golden.mp4 (131075 B, sha256 49247eaa2ab8d6526af46f91565663fadd370904f4b550c1e6722bddc86780a8)
+quad_noaudio__FINAL_601__golden.mp4: CANONICAL quad_noaudio__FINAL_601__golden.mp4 (130599 B, sha256 527799a2d68246a1586405bfaa9bfd212dd4d16686053a45fda31d64725646e6)
+quad_port__FINAL_601__golden.mp4: CANONICAL quad_port__FINAL_601__golden.mp4 (124045 B, sha256 75d410f9ff0c5ed13a8f4a23e76c03093c5b96f5d27766f755c2844bd0ca94dd)
+quad_rot180__FINAL_601__golden.mp4: CANONICAL quad_rot180__FINAL_601__golden.mp4 (125442 B, sha256 b2ac7027c5688ed858db67798d3c2c406c9a73a344d6aa659a98746fb86b54f8)
+quad_rot270__FINAL_601__golden.mp4: CANONICAL quad_rot270__FINAL_601__golden.mp4 (125173 B, sha256 b36e3bbfdca388e0cf91d79e74477cf88251cd1cc191b185f9916b8905116f59)
+quad_rot90__FINAL_601__golden.mp4: CANONICAL quad_rot90__FINAL_601__golden.mp4 (124296 B, sha256 356f51bb474d95f90de18922bb4c3f4396bb6f7a20e3f0427774fbfef533dcbb)
+
+# structure signature against the committed API 35 golden of the same name (video track and boxes; AAC block counts and byte sizes aside)
+SAME   land1080p60
+SAME   quad_land
+SAME   quad_noaudio
+SAME   quad_port
+SAME   quad_rot180
+SAME   quad_rot270
+SAME   quad_rot90
+land1080p60    bytes=1540696          bytes=1540696          95914 / 97353 (video identical in size)
+quad_land      bytes=60453            bytes=60453            63830 / 65317 (video identical in size)
+quad_noaudio   bytes=60453            bytes=60453            63829 / 64853 (video identical in size)
+quad_port      bytes=53393            bytes=53423            63830 / 65317 (video differs)
+quad_rot180    bytes=54820            bytes=54820            63830 / 65317 (video identical in size)
+quad_rot270    bytes=54551            bytes=54551            63830 / 65317 (video identical in size)
+quad_rot90     bytes=53674            bytes=53674            63830 / 65317 (video identical in size)

@@ -1,0 +1,43 @@
+# API 37 platform record of the measuring boot, 2026-10-04T07:44:14Z (host UTC); host CPU load at this moment: 100%
+emulator: 37.1.11.0 (build_id 15917651) (CL:N/A)
+avd: ghost-media-api37t (a copy of ghost-media-api37 whose .ini says target=android-37; see boot-diagnosis.txt)
+command: emulator.exe -avd ghost-media-api37t -port 5576 -read-only -no-window -no-snapshot -noaudio -no-boot-anim -memory 4096 -cores 4 -gpu swiftshader_indirect   (TEMP/TMP=D:\AndroidSdkExt\tmp, ANDROID_AVD_HOME=D:\AndroidAvd)
+ro.build.fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys
+ro.build.type=userdebug
+ro.build.tags=dev-keys
+ro.build.version.release=17
+ro.build.version.sdk=37
+ro.build.version.sdk_full=37.0
+ro.build.version.security_patch=2026-05-05
+ro.build.id=CE2A.260420.019
+ro.product.model=sdk_gphone64_x86_64
+ro.product.cpu.abi=x86_64
+ro.opengles.version=196608
+ro.hardware.egl=emulation
+ro.hardware.vulkan=ranchu
+ro.debuggable=1
+ro.secure=1
+ro.boot.hardware.gltransport=pipe
+ro.boot.qemu.hwcodec.avcdec=2
+debug.hwui.renderer=skiagl
+uname=Linux localhost 6.12.58-android16-6-gccafb60de224-ab14828483 #1 SMP PREEMPT Tue Feb  3 03:46:47 UTC 2026 x86_64 Toybox
+pagesize=4096
+selinux=Enforcing
+whoami (adb root)=root
+cpus=4  MemTotal:        4008512 kB
+mount /data: /dev/block/dm-6 /data ext4 rw,seclabel,nosuid,nodev,noatime,resgid=1065,errors=panic 0 0
+df /data: /dev/block/dm-6 5.8G 938M  4.8G  16% /mnt/pass_through/0/emulated
+surfaceflinger GLES: GLES: Google (Google Inc.), Android Emulator OpenGL ES Translator (Google SwiftShader), OpenGL ES 3.0 (OpenGL ES 3.0 SwiftShader 4.0.0.1)
+processes (count): 335
+GMS/Google packages (system): 90  total system packages: 263
+media/picker packages:
+package:com.android.vending
+package:com.google.android.apps.nexuslauncher
+package:com.google.android.apps.photos
+package:com.google.android.documentsui
+package:com.google.android.gms
+package:com.google.android.gms.supervision
+package:com.google.android.overlay.permissioncontroller
+package:com.google.android.permissioncontroller
+package:com.google.android.photopicker
+package:com.google.android.providers.media.module

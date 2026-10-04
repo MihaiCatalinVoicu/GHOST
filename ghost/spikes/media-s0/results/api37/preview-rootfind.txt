@@ -1,0 +1,3 @@
+/data/system/users/0/package-restrictions.xml
+/data/system/users/0/package-restrictions.xml.reservecopy
+(end of a complete list: find exited 0, run as root, -newer /data/local/tmp/vm23.marker or -newercm /data/local/tmp/vm23.marker)

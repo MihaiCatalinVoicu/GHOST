@@ -1,0 +1,11 @@
+/data/system/battery-history/192068.bh
+/data/system/batterystats.bin
+/data/system/monotonic_clock.xml
+/data/system/appops/app_op_history_short_interval.db-wal
+/data/system/appops/app_op_history_short_interval.db-shm
+/data/system/appops/app_op_history_long_interval.db-wal
+/data/system/appops/app_op_history_long_interval.db-shm
+/data/system/package-dex-usage.pb
+/data/system_de/0/powerstats/log.powerstats.model.0.1791101636989-
+/data/system_de/0/powerstats/log.powerstats.meter.0.1791101637003-
+(end of a complete list: find exited 0, run as root, -newer /data/local/tmp/vm1fix.marker or -newercm /data/local/tmp/vm1fix.marker)

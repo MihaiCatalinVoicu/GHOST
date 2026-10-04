@@ -1,0 +1,13 @@
+# SELinux denials in the logcat of the measuring boot (software decoder, -read-only), 2026-10-04 11:13 - 14:51, counted by (permission, source domain, target type, class); the denials of the hardware-decoder boot are in hwdec-avc-denials.txt
+    135 denied { search } scontext=u:r:mediaprovider_app:s0:cX tcontext=u:object_r:shell_data_file:s0 tclass=dir
+     82 denied { getattr } scontext=u:r:mediaprovider_app:s0:cX tcontext=u:object_r:shell_data_file:s0 tclass=dir
+     72 denied { find } scontext=u:r:isolated_app:s0:cX tcontext=u:object_r:mediaserver_service:s0 tclass=service_manager
+     24 denied { read } scontext=u:r:isolated_app:s0:cX tcontext=u:object_r:codec2_config_prop:s0 tclass=file
+     24 denied { read write } scontext=u:r:isolated_app:s0:cX tcontext=u:object_r:hwbinder_device:s0 tclass=chr_file
+      3 denied { read } scontext=u:r:system_server:s0 tcontext=u:object_r:vendor_default_prop:s0 tclass=file
+      2 denied { read } scontext=u:r:lpdumpd:s0 tcontext=u:object_r:vd_device:s0 tclass=blk_file
+      2 denied { read } scontext=u:r:hal_drm_widevine:s0 tcontext=u:object_r:zygote_exec:s0 tclass=file
+      2 denied { getattr } scontext=u:r:su:s0 tcontext=u:object_r:statsd_iouring:s0 tclass=anon_inode
+      2 denied { getattr } scontext=u:r:lpdumpd:s0 tcontext=u:object_r:vd_device:s0 tclass=blk_file
+      2 denied { create } scontext=u:r:isolated_app:s0:cX tcontext=u:r:isolated_app:s0:cX tclass=tcp_socket
+      1 denied { find } scontext=u:r:system_app:s0 tcontext=u:object_r:default_android_service:s0 tclass=service_manager

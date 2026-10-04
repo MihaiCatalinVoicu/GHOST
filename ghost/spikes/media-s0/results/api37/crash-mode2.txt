@@ -1,0 +1,4 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm20 crash mode=2 pid=12000 callback=connected result=call failed: DeadObjectException null deathMs=0.0 wallclockMs=1791104008488
+probe crash: OK
+

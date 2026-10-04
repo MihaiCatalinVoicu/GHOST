@@ -1,0 +1,580 @@
+#### 2026-10-04T10:47:16 bash scripts/run-all.sh 37 --steps install,env,glinfo
+== step install (10:47:29)
+Success
+== step env (10:47:55)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/env.txt (26 lines)
+probe env: OK
+== step glinfo (10:48:04)
+ro.opengles.version=196608
+ro.hardware.egl=emulation
+ro.kernel.qemu.gles=
+Sync configuration: [using: EGL_ANDROID_native_fence_sync]
+ ------------RE GLES (Ganesh)------------
+EGL implementation : 1.4 Android META-EGL
+EGL_ANDROID_front_buffer_auto_refresh EGL_ANDROID_get_native_client_buffer EGL_ANDROID_presentation_time EGL_EXT_surface_CTA861_3_metadata EGL_EXT_surface_SMPTE2086_metadata EGL_KHR_get_all_proc_addresses EGL_KHR_swap_buffers_with_damage EGL_ANDROID_get_frame_timestamps EGL_ANDROID_image_native_buffer EGL_ANDROID_native_fence_sync EGL_ANDROID_recordable EGL_KHR_create_context EGL_KHR_fence_sync EGL_KHR_gl_texture_2D_image EGL_KHR_image EGL_KHR_image_base 
+GLES: Google (Google Inc.), Android Emulator OpenGL ES Translator (Google SwiftShader), OpenGL ES 3.0 (OpenGL ES 3.0 SwiftShader 4.0.0.1)
+GL_EXT_debug_marker GL_EXT_robustness GL_OES_EGL_sync GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_depth24 GL_OES_depth32 GL_OES_element_index_uint GL_OES_texture_float GL_OES_texture_float_linear GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_depth_texture GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_packed_depth_stencil GL_OES_vertex_half_float GL_OES_standard_derivatives GL_OES_texture_npot GL_OES_rgb8_rgba8 GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_texture_format_BGRA8888 GL_APPLE_texture_format_BGRA8888 ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_vulkan_queue_submit_with_commands ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_multi_configs ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+    skia/gpu_resources/resource_4: size[32.00 KB] type[Buffer Object] label[MakeGlBuffer] category[Scratch] purgeable_size[32.00 KB]
+    skia/gpu_resources/resource_6: size[1.88 KB] type[Buffer Object] label[MakeGlBuffer] category[Other] purgeable_size[1.88 KB]
+run-all 37 done: install,env,glinfo
+#### exit 0 at 10:48:18
+#### 2026-10-04T10:49:04 bash scripts/run-all.sh 37 --sources generate --steps sources
+== step sources (10:49:19)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources.txt (9 lines)
+probe sources: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-stills.txt (18 lines)
+probe sources: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-big.txt (4 lines)
+probe sources: OK
+run-all 37 done: sources
+#### exit 0 at 11:00:18
+#### 2026-10-04T11:01:02 bash scripts/run-all.sh 37 --sources generate --steps vm1,goldens,seek
+== step vm1 (11:01:10)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-vm1-observe.txt (155 lines)
+probe transcode: OK
+== step goldens (11:01:49)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-save.txt (153 lines)
+probe transcode: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-fixes.txt (39 lines)
+probe transcode: OK
+/data/data/org.ghost.spike.media/files/out/./: 1 file pulled, 0 skipped. 16.1 MB/s (4609616 bytes in 0.273s)
+== step seek (11:03:40)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/seek.txt (17 lines)
+probe seek: FAILED java.io.FileNotFoundException: /data/user/0/org.ghost.spike.media/files/out/match720p30__DESIGN.mp4: open failed: ENOENT (No such file or directory)
+/data/data/org.ghost.spike.media/files/out/./: 1 file pulled, 0 skipped. 40.3 MB/s (4609616 bytes in 0.109s)
+run-all 37 done: vm1,goldens,seek
+#### exit 0 at 11:04:12
+#### 2026-10-04T11:14:34 bash scripts/run-all.sh 37 --steps install,env,glinfo,sources
+== step install (11:14:42)
+Success
+== step env (11:15:09)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/env.txt (24 lines)
+probe env: OK
+== step glinfo (11:15:35)
+ro.opengles.version=196608
+ro.hardware.egl=emulation
+ro.kernel.qemu.gles=
+Sync configuration: [using: EGL_ANDROID_native_fence_sync]
+ ------------RE GLES (Ganesh)------------
+EGL implementation : 1.4 Android META-EGL
+EGL_ANDROID_front_buffer_auto_refresh EGL_ANDROID_get_native_client_buffer EGL_ANDROID_presentation_time EGL_EXT_surface_CTA861_3_metadata EGL_EXT_surface_SMPTE2086_metadata EGL_KHR_get_all_proc_addresses EGL_KHR_swap_buffers_with_damage EGL_ANDROID_get_frame_timestamps EGL_ANDROID_image_native_buffer EGL_ANDROID_native_fence_sync EGL_ANDROID_recordable EGL_KHR_create_context EGL_KHR_fence_sync EGL_KHR_gl_texture_2D_image EGL_KHR_image EGL_KHR_image_base 
+GLES: Google (Google Inc.), Android Emulator OpenGL ES Translator (Google SwiftShader), OpenGL ES 3.0 (OpenGL ES 3.0 SwiftShader 4.0.0.1)
+GL_EXT_debug_marker GL_EXT_robustness GL_OES_EGL_sync GL_OES_EGL_image GL_OES_EGL_image_external GL_OES_depth24 GL_OES_depth32 GL_OES_element_index_uint GL_OES_texture_float GL_OES_texture_float_linear GL_OES_compressed_paletted_texture GL_OES_compressed_ETC1_RGB8_texture GL_OES_depth_texture GL_OES_texture_half_float GL_OES_texture_half_float_linear GL_OES_packed_depth_stencil GL_OES_vertex_half_float GL_OES_standard_derivatives GL_OES_texture_npot GL_OES_rgb8_rgba8 GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_texture_format_BGRA8888 GL_APPLE_texture_format_BGRA8888 ANDROID_EMU_CHECKSUM_HELPER_v1 ANDROID_EMU_native_sync_v2 ANDROID_EMU_dma_v1 ANDROID_EMU_direct_mem ANDROID_EMU_host_composition_v1 ANDROID_EMU_host_composition_v2 ANDROID_EMU_vulkan ANDROID_EMU_deferred_vulkan_commands ANDROID_EMU_vulkan_null_optional_strings ANDROID_EMU_vulkan_create_resources_with_requirements ANDROID_EMU_YUV_Cache ANDROID_EMU_vulkan_ignored_handles ANDROID_EMU_has_shared_slots_host_memory_allocator ANDROID_EMU_vulkan_free_memory_sync ANDROID_EMU_vulkan_shader_float16_int8 ANDROID_EMU_vulkan_async_queue_submit ANDROID_EMU_vulkan_queue_submit_with_commands ANDROID_EMU_sync_buffer_data ANDROID_EMU_vulkan_async_qsri ANDROID_EMU_read_color_buffer_dma ANDROID_EMU_hwc_multi_configs ANDROID_EMU_hwc_color_transform GL_OES_EGL_image_external_essl3 GL_OES_vertex_array_object GL_KHR_texture_compression_astc_ldr ANDROID_EMU_host_side_tracing ANDROID_EMU_gles_max_version_3_0 
+    skia/gpu_resources/resource_4: size[32.00 KB] type[Buffer Object] label[MakeGlBuffer] purgeable_size[32.00 KB] category[Scratch]
+    skia/gpu_resources/resource_6: size[1.88 KB] type[Buffer Object] label[MakeGlBuffer] purgeable_size[1.88 KB] category[Other]
+== step sources (11:15:46)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\alpha.png: 1 file pushed, 0 skipped. 17.2 MB/s (10087 bytes in 0.001s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\big10000.jpg: 1 file pushed, 0 skipped. 370.2 MB/s (1045309 bytes in 0.003s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\land1080p60.mp4: 1 file pushed, 0 skipped. 32.9 MB/s (19498408 bytes in 0.566s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\match720p30.mp4: 1 file pushed, 0 skipped. 13.0 MB/s (4623422 bytes in 0.340s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\match720p30_709.mp4: 1 file pushed, 0 skipped. 11.5 MB/s (4623403 bytes in 0.385s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient1.jpg: 1 file pushed, 0 skipped. 16.6 MB/s (4269 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient2.jpg: 1 file pushed, 0 skipped. 14.0 MB/s (4262 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient3.jpg: 1 file pushed, 0 skipped. 13.1 MB/s (4264 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient4.jpg: 1 file pushed, 0 skipped. 16.7 MB/s (4261 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient5.jpg: 1 file pushed, 0 skipped. 16.2 MB/s (4346 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient6.jpg: 1 file pushed, 0 skipped. 13.6 MB/s (4341 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient7.jpg: 1 file pushed, 0 skipped. 16.1 MB/s (4343 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\orient8.jpg: 1 file pushed, 0 skipped. 17.1 MB/s (4344 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\p3.jpg: 1 file pushed, 0 skipped. 9.8 MB/s (2626 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\photo.avif: 1 file pushed, 0 skipped. 10.2 MB/s (2205 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\photo.heic: 1 file pushed, 0 skipped. 7.5 MB/s (1863 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\photo.webp: 1 file pushed, 0 skipped. 7.1 MB/s (1740 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\port720x1280p24.mp4: 1 file pushed, 0 skipped. 38.8 MB/s (2510562 bytes in 0.062s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\preview320.jpg: 1 file pushed, 0 skipped. 4.7 MB/s (1446 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\rot90_1280x720p30.mp4: 1 file pushed, 0 skipped. 59.2 MB/s (2476878 bytes in 0.040s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\ultrahdr.jpg: 1 file pushed, 0 skipped. 26.6 MB/s (6406 bytes in 0.000s)
+D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\work\api35\src\vga640x480p30.mp4: 1 file pushed, 0 skipped. 15.7 MB/s (1494510 bytes in 0.091s)
+SELinux: Loaded file context from:
+		/system/etc/selinux/plat_file_contexts
+		/system_ext/etc/selinux/system_ext_file_contexts
+		/product/etc/selinux/product_file_contexts
+		/vendor/etc/selinux/vendor_file_contexts
+		/odm/etc/selinux/odm_file_contexts
+run-all 37 done: install,env,glinfo,sources
+#### exit 0 at 11:16:49
+#### 2026-10-04T11:17:00 bash scripts/run-all.sh 37 --steps vm1,goldens,seek
+== step vm1 (11:17:06)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-vm1-observe.txt (156 lines)
+probe transcode: OK
+== step goldens (11:26:46)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-save.txt (153 lines)
+probe transcode: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-fixes.txt (39 lines)
+probe transcode: OK
+/data/data/org.ghost.spike.media/files/out/./: 16 files pulled, 0 skipped. 36.7 MB/s (66945470 bytes in 1.740s)
+== step seek (11:35:54)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/seek.txt (18 lines)
+probe seek: OK
+/data/data/org.ghost.spike.media/files/out/./: 18 files pulled, 0 skipped. 27.8 MB/s (78704908 bytes in 2.698s)
+run-all 37 done: vm1,goldens,seek
+#### exit 0 at 11:37:46
+#### 2026-10-04T11:38:50 bash scripts/run-all.sh 37 --steps images,heiclog
+== step images (11:39:04)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/orient.txt (12 lines)
+probe orient: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/iso.txt (15 lines)
+probe iso: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/isoTiming.txt (7 lines)
+probe isoTiming: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/unguarded.txt (5 lines)
+probe unguarded: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/compress.txt (15 lines)
+probe compress: OK
+/data/data/org.ghost.spike.media/files/out/./: 44 files pulled, 0 skipped. 47.9 MB/s (78927536 bytes in 1.572s)
+== step heiclog (11:44:18)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/iso-heif.txt (8 lines)
+probe iso: OK
+run-all 37 done: images,heiclog
+#### exit 0 at 11:45:44
+#### 2026-10-04T11:50:19 bash scripts/run-all.sh 37 --steps crash,snapshots
+== step crash (11:50:26)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/crash-mode1.txt (4 lines)
+probe crash: OK
+# V-M20 (API 37, mode 1): files under /data/tombstones and /data/system/dropbox newer than the crash
+/data/tombstones/tombstone_12.pb: 1 file pulled, 0 skipped. 27.6 MB/s (321864 bytes in 0.011s)
+/data/tombstones/tombstone_12.pb: 321864 B raw=79 gunzipped=0
+/data/tombstones/tombstone_12: 1 file pulled, 0 skipped. 27.7 MB/s (602748 bytes in 0.021s)
+/data/tombstones/tombstone_12: 602748 B raw=0 gunzipped=0
+/data/system/dropbox/data_app_native_crash@1791103844681.txt: 1 file pulled, 0 skipped. 3.8 MB/s (12180 bytes in 0.003s)
+/data/system/dropbox/data_app_native_crash@1791103844681.txt: 12180 B raw=0 gunzipped=0
+/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103844693.dat.gz: 1 file pulled, 0 skipped. 4.5 MB/s (11547 bytes in 0.002s)
+/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103844693.dat.gz: 11547 B raw=0 gunzipped=79
+/data/system/dropbox/SYSTEM_TOMBSTONE@1791103844843.txt.gz: 1 file pulled, 0 skipped. 4.1 MB/s (10462 bytes in 0.002s)
+/data/system/dropbox/SYSTEM_TOMBSTONE@1791103844843.txt.gz: 10462 B raw=0 gunzipped=0
+# adb bugreport (taken after the crash, no root needed)
+bugreport: 8590990 B, 247 entries
+  FS/data/tombstones/tombstone_12.pb: 321864 B raw=79
+  FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103844693.dat.gz: 11547 B gunzipped=79
+  entries naming tombstones or dropbox:
+    FS/data/system/dropbox/system_app_crash@1791101696923.txt
+    FS/data/system/dropbox/system_app_anr@1791101697193.txt.gz
+    FS/data/system/dropbox/SYSTEM_BOOT@1791101711129.txt
+    FS/data/system/dropbox/system_app_anr@1791101734831.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103205142.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103205176.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103205310.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103211140.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103211150.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103211281.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103217376.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103217385.dat.gz
+    FS/data/system/dropbox/data_app_crash@1791103336294.txt
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103217505.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103223370.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103223385.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103223509.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103229585.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103229595.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103229719.txt.gz
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/crash-mode2.txt (4 lines)
+probe crash: OK
+# V-M20 (API 37, mode 2): files under /data/tombstones and /data/system/dropbox newer than the crash
+/data/system/dropbox/data_app_crash@1791104009233.txt: 1 file pulled, 0 skipped. 0.3 MB/s (801 bytes in 0.002s)
+/data/system/dropbox/data_app_crash@1791104009233.txt: 801 B raw=0 gunzipped=0
+# adb bugreport (taken after the crash, no root needed)
+bugreport: 8700223 B, 246 entries
+  FS/data/tombstones/tombstone_12.pb: 321864 B raw=79
+  FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103844693.dat.gz: 11547 B gunzipped=79
+  entries naming tombstones or dropbox:
+    FS/data/system/dropbox/system_app_crash@1791101696923.txt
+    FS/data/system/dropbox/system_app_anr@1791101697193.txt.gz
+    FS/data/system/dropbox/SYSTEM_BOOT@1791101711129.txt
+    FS/data/system/dropbox/system_app_anr@1791101734831.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103205142.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103205176.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103205310.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103211140.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103211150.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103211281.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103217376.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103217385.dat.gz
+    FS/data/system/dropbox/data_app_crash@1791103336294.txt
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103217505.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103223370.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103223385.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103223509.txt.gz
+    FS/data/system/dropbox/data_app_native_crash@1791103229585.txt.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS@1791103229595.dat.gz
+    FS/data/system/dropbox/SYSTEM_TOMBSTONE@1791103229719.txt.gz
+== step snapshots (11:56:07)
+rm: /data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a: Is a directory
+== variant=plain secure=false noRecents=false
+total 24
+drwx------  3 system system 4096 2026-10-04 11:14 .
+drwxrwx--- 14 system system 4096 2026-10-04 11:56 ..
+drwx------  2 system system 4096 2026-10-04 11:56 49568b9e-b073-471c-a00b-29bdbfbff41a
+/data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a/: 3 files pulled, 0 skipped. 2.4 MB/s (72188 bytes in 0.028s)
+rm: /data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a: Is a directory
+== variant=secure secure=true noRecents=false
+total 24
+drwx------  3 system system 4096 2026-10-04 11:14 .
+drwxrwx--- 14 system system 4096 2026-10-04 11:56 ..
+drwx------  2 system system 4096 2026-10-04 11:57 49568b9e-b073-471c-a00b-29bdbfbff41a
+/data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a/: 3 files pulled, 0 skipped. 0.1 MB/s (2175 bytes in 0.015s)
+rm: /data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a: Is a directory
+== variant=norecents secure=false noRecents=true
+total 24
+drwx------  3 system system 4096 2026-10-04 11:14 .
+drwxrwx--- 14 system system 4096 2026-10-04 11:56 ..
+drwx------  2 system system 4096 2026-10-04 11:57 49568b9e-b073-471c-a00b-29bdbfbff41a
+/data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a/: 3 files pulled, 0 skipped. 0.2 MB/s (2175 bytes in 0.013s)
+rm: /data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a: Is a directory
+== variant=secure_norecents secure=true noRecents=true
+total 24
+drwx------  3 system system 4096 2026-10-04 11:14 .
+drwxrwx--- 14 system system 4096 2026-10-04 11:56 ..
+drwx------  2 system system 4096 2026-10-04 11:58 49568b9e-b073-471c-a00b-29bdbfbff41a
+/data/system_ce/0/snapshots/49568b9e-b073-471c-a00b-29bdbfbff41a/: 3 files pulled, 0 skipped. 0.2 MB/s (2175 bytes in 0.010s)
+pulled into /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/vm20
+[31;1mResolve-Path: [0mD:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\scripts\count-pattern.ps1:9[0m
+[31;1m[0m[36;1mLine |[0m
+[31;1m[0m[36;1m[36;1m   9 | [0m         $b = [System.Drawing.Bitmap]::FromFile(([36;1mResolve-Path $f[0m))[0m
+[31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m     | [31;1m                                                 ~~~~~~~~~~~~~~~[0m
+[31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m     | [31;1mCannot find path 'D:\Forum\.claude\worktrees\p11-api37\ghost\spikes\media-s0\results\api37\vm20\?.jpg' because[0m
+[31;1m[0m[36;1m[36;1m[0m[36;1m[0m[36;1m[31;1m[31;1m[36;1m[31;1m[36;1m     | [31;1mit does not exist.[0m
+run-all 37 done: crash,snapshots
+#### exit 0 at 11:59:49
+#### 2026-10-04T12:03:06 bash scripts/vm21-picker.sh 37 work/api37/src/orient6.jpg
+work\api37\src\orient6.jpg: 1 file pushed, 0 skipped. 0.5 MB/s (4341 bytes in 0.008s)
+Row: 0 _id=19, _display_name=ghost_s0_pick_120320.jpg, owner_package_name=NULL
+adb: error: failed to stat remote object '/data/local/tmp/ui.xml': No such file or directory
+#### exit 1 at 12:03:58
+#### 2026-10-04T12:05:09 bash scripts/vm21-picker.sh 37 work/api37/src/orient6.jpg
+work\api37\src\orient6.jpg: 1 file pushed, 0 skipped. 14.2 MB/s (4341 bytes in 0.000s)
+Row: 1 _id=20, _display_name=ghost_s0_pick_120518.jpg, owner_package_name=NULL
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.6 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 12.4 MB/s (75153 bytes in 0.006s)
+tap attempt 1 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.4 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 1.9 MB/s (75139 bytes in 0.037s)
+tap attempt 2 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.1 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 11.4 MB/s (74734 bytes in 0.006s)
+tap attempt 3 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 1.9 MB/s (12176 bytes in 0.006s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 15.6 MB/s (75325 bytes in 0.005s)
+tap attempt 4 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.5 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 4.5 MB/s (75323 bytes in 0.016s)
+tap attempt 5 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.8 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.8 MB/s (75105 bytes in 0.004s)
+tap attempt 6 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 2.8 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 20.6 MB/s (75141 bytes in 0.003s)
+tap attempt 7 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.5 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 17.6 MB/s (74367 bytes in 0.004s)
+tap attempt 8 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.1 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 18.0 MB/s (74376 bytes in 0.004s)
+tap attempt 9 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.9 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.9 MB/s (73374 bytes in 0.004s)
+tap attempt 10 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.4 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 21.7 MB/s (73374 bytes in 0.003s)
+tap attempt 11 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.2 MB/s (73889 bytes in 0.004s)
+tap attempt 12 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.3 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.2 MB/s (73886 bytes in 0.004s)
+tap attempt 13 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 15.1 MB/s (74451 bytes in 0.005s)
+tap attempt 14 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 2.4 MB/s (12176 bytes in 0.005s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 16.9 MB/s (74409 bytes in 0.004s)
+tap attempt 15 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.0 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 15.6 MB/s (74409 bytes in 0.005s)
+tap attempt 16 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 11.0 MB/s (73962 bytes in 0.006s)
+tap attempt 17 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.0 MB/s (12176 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 11.7 MB/s (73962 bytes in 0.006s)
+tap attempt 18 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.3 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 22.3 MB/s (73966 bytes in 0.003s)
+tap attempt 19 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 3.5 MB/s (12176 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 18.4 MB/s (96137 bytes in 0.005s)
+tap attempt 20 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.8 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 27.5 MB/s (96106 bytes in 0.003s)
+tap attempt 21 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.7 MB/s (17654 bytes in 0.002s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 14.5 MB/s (96356 bytes in 0.006s)
+tap attempt 22 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.9 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 24.8 MB/s (96356 bytes in 0.004s)
+tap attempt 23 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.5 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 18.6 MB/s (95845 bytes in 0.005s)
+tap attempt 24 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.8 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 19.9 MB/s (95786 bytes in 0.005s)
+tap attempt 25 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.9 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 21.9 MB/s (96518 bytes in 0.004s)
+tap attempt 26 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.3 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 21.2 MB/s (96518 bytes in 0.004s)
+tap attempt 27 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.6 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 24.7 MB/s (96354 bytes in 0.004s)
+tap attempt 28 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.6 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 14.1 MB/s (96347 bytes in 0.007s)
+tap attempt 29 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 4.5 MB/s (17654 bytes in 0.004s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 19.3 MB/s (96540 bytes in 0.005s)
+tap attempt 30 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.6 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 27.0 MB/s (96519 bytes in 0.003s)
+tap attempt 31 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 6.3 MB/s (17654 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 39.8 MB/s (283965 bytes in 0.007s)
+tap attempt 32 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+== changed files
+1c1
+< a6abe75bf1684b35228270b1be959c3e  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+---
+> 3e10f24fd7b46cde557d04595af7c51f  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+5,6c5,6
+< 8499fe1d7f8ac3206310f0301eae2777  /data/data/com.google.android.providers.media.module/databases/external.db-shm
+< feb41d5f015e6bef9c61d4cc3abfc93c  /data/data/com.google.android.providers.media.module/databases/external.db-wal
+---
+> 049f4ea615a4a577ed55fad1c39de6e9  /data/data/com.google.android.providers.media.module/databases/external.db-shm
+> f35e684296626929463ef2d23373a463  /data/data/com.google.android.providers.media.module/databases/external.db-wal
+13,15c13,15
+< c59e8526965471f9a590695de312b30a  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+< 2f562fe3f7aec955228aaabbc18a53bc  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+< 3e33ec8dc2a007c2235943e01dd32b87  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+---
+> af3387a5f310f72755719e951b11b2e9  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+> 15a82531657d4706f2daa9539ed97164  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+> bc21c200f51de556b525467d0908243b  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+20,22c20,22
+< b234d954eaaec7257233133e77b1fac6  /data/system_ce/0/recent_tasks/13_task.xml
+< 9b512415c4297f87dc2744c6791aea52  /data/system_ce/0/usagestats/daily/1791101643245
+< 6ebcfca833aee13d0782ba53e1fbe571  /data/system_ce/0/usagestats/mappings
+---
+> 48bf72cb33f25fcfd36831887213cc9f  /data/system_ce/0/recent_tasks/14_task.xml
+> 3898332e82e2d3fa6f7c2cd41ced74ae  /data/system_ce/0/usagestats/daily/1791101643245
+> e1e669018cff052cfcd393f62b959794  /data/system_ce/0/usagestats/mappings
+24c24
+< 811184914ec83c6fa68d5b2f9904e303  /data/system_ce/0/usagestats/monthly/1791101643245
+---
+> c6b3c936ff4e255695ddbffb33fc4f5c  /data/system_ce/0/usagestats/monthly/1791101643245
+26,27c26,27
+< 811184914ec83c6fa68d5b2f9904e303  /data/system_ce/0/usagestats/weekly/1791101643245
+< 811184914ec83c6fa68d5b2f9904e303  /data/system_ce/0/usagestats/yearly/1791101643245
+---
+> c6b3c936ff4e255695ddbffb33fc4f5c  /data/system_ce/0/usagestats/weekly/1791101643245
+> c6b3c936ff4e255695ddbffb33fc4f5c  /data/system_ce/0/usagestats/yearly/1791101643245
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730: 1 file pulled, 0 skipped. 1.7 MB/s (6420 bytes in 0.004s)
+/data/data/com.google.android.providers.media.module/databases/external.db-shm: 1 file pulled, 0 skipped. 8.0 MB/s (32768 bytes in 0.004s)
+/data/data/com.google.android.providers.media.module/databases/external.db: 1 file pulled, 0 skipped. 31.1 MB/s (159744 bytes in 0.005s)
+/data/data/com.google.android.providers.media.module/databases/external.db-wal: 1 file pulled, 0 skipped. 33.0 MB/s (424392 bytes in 0.012s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb: 1 file pulled, 0 skipped. 21.2 MB/s (176128 bytes in 0.008s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal: 1 file pulled, 0 skipped. 17.5 MB/s (482072 bytes in 0.026s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm: 1 file pulled, 0 skipped. 7.0 MB/s (32768 bytes in 0.004s)
+/data/system_ce/0/recent_tasks/14_task.xml: 1 file pulled, 0 skipped. 0.3 MB/s (900 bytes in 0.003s)
+/data/system_ce/0/usagestats/daily/1791101643245: 1 file pulled, 0 skipped. 2.7 MB/s (7109 bytes in 0.003s)
+/data/system_ce/0/usagestats/mappings: 1 file pulled, 0 skipped. 4.4 MB/s (11031 bytes in 0.002s)
+/data/system_ce/0/usagestats/monthly/1791101643245: 1 file pulled, 0 skipped. 0.3 MB/s (2123 bytes in 0.006s)
+/data/system_ce/0/usagestats/weekly/1791101643245: 1 file pulled, 0 skipped. 0.7 MB/s (2123 bytes in 0.003s)
+/data/system_ce/0/usagestats/yearly/1791101643245: 1 file pulled, 0 skipped. 0.7 MB/s (2123 bytes in 0.003s)
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730 6420 B
+/data/data/com.google.android.providers.media.module/databases/external.db-shm 32768 B
+/data/data/com.google.android.providers.media.module/databases/external.db 159744 B
+/data/data/com.google.android.providers.media.module/databases/external.db-wal 424392 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb 176128 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal 482072 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm 32768 B
+/data/system_ce/0/recent_tasks/14_task.xml 900 B
+/data/system_ce/0/usagestats/daily/1791101643245 7109 B
+/data/system_ce/0/usagestats/mappings 11031 B
+/data/system_ce/0/usagestats/monthly/1791101643245 2123 B
+/data/system_ce/0/usagestats/weekly/1791101643245 2123 B
+/data/system_ce/0/usagestats/yearly/1791101643245 2123 B
+Error: in prepare, no such table: main.album_info
+== /data/data/com.google.android.providers.media.module/databases/external.db
+images||||||||400×600|46.7712326049805|90|||1790310673000|600|0|Pictures|||external_primary|1791104601||||ghost_s0_pick_120320.jpg||1790310673000|image/jpeg|||19|||||/storage/emulated/0/Pictures/ghost_s0_pick_120320.jpg|4341|||ghost_s0_pick_120320|400|23.6234550476074|0|0||||5|0|5|0|1791104603||||||-1617409521|Pictures/|3
+images||||||||400×600|46.7712326049805|90|||1790310673000|600|0|Pictures|||external_primary|1791104726||||ghost_s0_pick_120518.jpg||1790310673000|image/jpeg|||20|||||/storage/emulated/0/Pictures/ghost_s0_pick_120518.jpg|4341|||ghost_s0_pick_120518|400|23.6234550476074|0|0||||12|0|12|0|1791104727||||||-1617409521|Pictures/|3
+files|19|/storage/emulated/0/Pictures/ghost_s0_pick_120320.jpg|4341|14336|9|1791104603|1791104601|image/jpeg|ghost_s0_pick_120320||ghost_s0_pick_120320.jpg||90|46.7712326049805|23.6234550476074|1790310673000||-1617409521|Pictures||||||||||||||||||400×600||||||1||0|400|600|||||||0|0|||0||0|||||||Pictures/|external_primary||||||||||||0|||||||5|5||0||3|0||0|0|||||1790310673000|0
+files|20|/storage/emulated/0/Pictures/ghost_s0_pick_120518.jpg|4341|14336|9|1791104727|1791104726|image/jpeg|ghost_s0_pick_120518||ghost_s0_pick_120518.jpg||90|46.7712326049805|23.6234550476074|1790310673000||-1617409521|Pictures||||||||||||||||||400×600||||||1||0|400|600|||||||0|0|||0||0|||||||Pictures/|external_primary||||||||||||0|||||||12|12||0||3|0||0|0|||||1790310673000|0
+== shared storage written during the pick
+/data/media/0/Pictures/.thumbnails/20.jpg 4283 B mtime=2026-10-04 12:05:57.916099959 +0300
+/data/media/0/Pictures/.thumbnails/20.jpg: 1 file pulled, 0 skipped. 1.4 MB/s (4283 bytes in 0.003s)
+done: /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/vm21
+#### exit 0 at 12:25:17
+#### 2026-10-04T12:26:11 bash scripts/vm21-picker.sh 37 work/api37/src/orient6.jpg
+work\api37\src\orient6.jpg: 1 file pushed, 0 skipped. 12.8 MB/s (4341 bytes in 0.000s)
+Row: 2 _id=21, _display_name=ghost_s0_pick_122618.jpg, owner_package_name=NULL
+/data/local/tmp/ui.xml: 1 file pulled, 0 skipped. 5.5 MB/s (19130 bytes in 0.003s)
+/data/local/tmp/pick.png: 1 file pulled, 0 skipped. 12.4 MB/s (101021 bytes in 0.008s)
+tap attempt 1 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)
+pushed: 4341 B sha256=6922c84d8ddee558f59ebd7a18607caac7eb245b15dca840dfc4a9fbe74e2b06
+picked: 4341 B sha256=fe4398d4fd397f9049128a2c18b895ade6b963c1ab04018347d84d5209581c36
+differing bytes (offset, pushed, picked; octal):
+ 344 116   0
+ 356 105   0
+ 379  56   0
+ 383   1   0
+ 387  56   0
+ 391   1   0
+ 392  11   0
+ 393 314   0
+ 394 351   0
+ 395 100   0
+ 397 230   0
+ 398 226   0
+ 399 200   0
+ 403  27   0
+ 407   1   0
+ 411  45   0
+ 415   1   0
+ 416  16   0
+ 417 221   0
+ 418 176   0
+ 421 230   0
+ 422 226   0
+ 423 200   0
+== changed files
+1c1
+< 3e10f24fd7b46cde557d04595af7c51f  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+---
+> 74f4e73bfecfc5e0646d186f9302a920  /data/data/com.google.android.providers.media.module/app_logs/1791101663730
+12,14c12,14
+< af3387a5f310f72755719e951b11b2e9  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+< 122a6fa67cd55a7cade31bba97e48656  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+< abcc9fb5f115eba584a83f15ff8887fa  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+---
+> 4f625cb7bc5c37f76fb21f97b6e5cdd0  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb
+> 9b5245218e55e4022a1084dad15fb1a9  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm
+> 999cdb1ffd395fb74400583c4b50937a  /data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal
+19c19
+< 48bf72cb33f25fcfd36831887213cc9f  /data/system_ce/0/recent_tasks/14_task.xml
+---
+> a0c2f84a1ae135325072797fc14f9111  /data/system_ce/0/recent_tasks/15_task.xml
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730: 1 file pulled, 0 skipped. 2.2 MB/s (6536 bytes in 0.003s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb: 1 file pulled, 0 skipped. 31.1 MB/s (180224 bytes in 0.006s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal: 1 file pulled, 0 skipped. 18.2 MB/s (482072 bytes in 0.025s)
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm: 1 file pulled, 0 skipped. 7.8 MB/s (32768 bytes in 0.004s)
+/data/system_ce/0/recent_tasks/15_task.xml: 1 file pulled, 0 skipped. 0.4 MB/s (900 bytes in 0.002s)
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730 6536 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb 180224 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal 482072 B
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm 32768 B
+/data/system_ce/0/recent_tasks/15_task.xml 900 B
+== shared storage written during the pick
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media/21.jpg 4341 B mtime=2026-10-04 12:26:52.844125491 +0300
+/data/media/0/Pictures/.thumbnails/21.jpg 4283 B mtime=2026-10-04 12:26:38.892125207 +0300
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media/21.jpg: 1 file pulled, 0 skipped. 1.1 MB/s (4341 bytes in 0.004s)
+done: /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/vm21
+#### exit 0 at 12:28:43
+#### 2026-10-04T12:30:14 bash scripts/run-all.sh 37 --steps mtime,preview,metrics,encoders,bench,mte
+== step mtime (12:30:26)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/mtime.txt (21 lines)
+probe mtime: OK
+== step preview (12:30:32)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/preview.txt (10 lines)
+probe preview: OK
+== step metrics (12:30:48)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/play-diag0.txt (4 lines)
+probe play: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/play-diag1.txt (4 lines)
+probe play: OK
+== step encoders (12:31:32)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-encoders.txt (4 lines)
+probe sources: OK
+/data/data/org.ghost.spike.media/files/src/t10_plain.mp4: 1 file pulled, 0 skipped. 47.3 MB/s (3876411 bytes in 0.078s)
+== step bench (12:31:59)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/bench.txt (5 lines)
+probe bench: OK
+C:\Users\mihai\AppData\Local\Temp\ghost-target-p11-api37\x86_64-linux-android\release\mediatool: 1 file pushed, 0 skipped. 47.6 MB/s (904352 bytes in 0.018s)
+== step mte (12:32:08)
+Success
+run-all 37 done: mtime,preview,metrics,encoders,bench,mte
+#### exit 0 at 12:32:17
+#### 2026-10-04T12:32:34 bash scripts/run-all.sh 37 --steps fixsources,configure,final,colour,refuse,vm1fix,previewfix
+== step fixsources (12:32:40)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-fix.txt (10 lines)
+probe sources: OK
+/data/data/org.ghost.spike.media/files/src/quad_land.mp4: 1 file pulled, 0 skipped. 25.7 MB/s (102162 bytes in 0.004s)
+/data/data/org.ghost.spike.media/files/src/quad_rot90.mp4: 1 file pulled, 0 skipped. 24.0 MB/s (103087 bytes in 0.004s)
+/data/data/org.ghost.spike.media/files/src/quad_rot180.mp4: 1 file pulled, 0 skipped. 33.0 MB/s (106244 bytes in 0.003s)
+/data/data/org.ghost.spike.media/files/src/quad_rot270.mp4: 1 file pulled, 0 skipped. 28.3 MB/s (102823 bytes in 0.003s)
+/data/data/org.ghost.spike.media/files/src/quad_port.mp4: 1 file pulled, 0 skipped. 19.4 MB/s (100484 bytes in 0.005s)
+/data/data/org.ghost.spike.media/files/src/quad_noaudio.mp4: 1 file pulled, 0 skipped. 11.6 MB/s (37564 bytes in 0.003s)
+/data/data/org.ghost.spike.media/files/src/clip.webm: 1 file pulled, 0 skipped. 9.4 MB/s (32040 bytes in 0.003s)
+== step configure (12:33:14)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/configure.txt (10 lines)
+probe configure: OK
+== step final (12:33:17)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-final.txt (133 lines)
+probe transcode: OK
+/data/data/org.ghost.spike.media/files/out/./: 74 files pulled, 0 skipped. 35.4 MB/s (106981025 bytes in 2.880s)
+== step colour (12:35:40)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/colour-quad.txt (10 lines)
+probe colour: OK
+== step refuse (12:35:48)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/refuse.txt (23 lines)
+probe refuse: OK
+== step vm1fix (12:36:10)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-vm1-observe-fix.txt (156 lines)
+probe transcode: OK
+== step previewfix (12:40:52)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/preview-fix.txt (10 lines)
+probe preview: OK
+run-all 37 done: fixsources,configure,final,colour,refuse,vm1fix,previewfix
+#### exit 0 at 12:41:09
+#### 2026-10-04T12:44:20 chunk E (colour601, goldens601, long45, ratectl, ratectl2, isoTiming review, unguarded review)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-colour601.txt (89 lines)
+probe transcode: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-goldens601.txt (25 lines)
+probe transcode: OK
+/data/data/org.ghost.spike.media/files/out/./: 88 files pulled, 0 skipped. 35.6 MB/s (111791551 bytes in 2.992s)
+== step long45 (12:45:58)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-long45.txt (4 lines)
+probe sources: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-long45.txt (17 lines)
+probe transcode: OK
+/data/data/org.ghost.spike.media/files/out/long45_smooth24__FINAL.mp4: 1 file pulled, 0 skipped. 44.1 MB/s (11772615 bytes in 0.255s)
+== step ratectl (12:48:14)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-ratectl.txt (7 lines)
+probe sources: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-ratectl.txt (135 lines)
+probe transcode: OK
+run-all 37 done: long45,ratectl
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-ratectl2.txt (185 lines)
+probe transcode: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/isoTiming-review.txt (7 lines)
+probe isoTiming: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/unguarded-review.txt (5 lines)
+probe unguarded: OK
+#### chunk E exit at 13:21:13
+#### 2026-10-04T13:22:28 REPS=2 bash scripts/run-all.sh 37 --steps short,long   (V-M22)
+== step short (13:22:32)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-short.txt (7 lines)
+probe sources: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-short.txt (0 lines)
+(no probe verdict line: instrumentation crashed?)
+== step long (13:28:33)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/sources-long.txt (6 lines)
+probe sources: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-long.txt (45 lines)
+probe transcode: OK
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-longvbr.txt (27 lines)
+probe transcode: OK
+run-all 37 done: short,long
+#### chunk F exit at 14:40:03
+#### 2026-10-04T14:43:58 V-M22 short again without the 141-MB noise source (the first short run died of an OutOfMemoryError on it, see S0-34)
+== /d/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/results/api37/transcode-short.txt (57 lines)
+probe transcode: OK
+#### short again exit at 14:45:40

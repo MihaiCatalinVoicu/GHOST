@@ -1,0 +1,5 @@
+device: sdk=37 release=17 fingerprint=google/sdk_gphone64_x86_64/emu64xa:17/CE2A.260420.019/15611780:userdebug/dev-keys abi=x86_64,arm64-v8a
+vm9 JCA provider=AndroidOpenSSL 1.0
+vm9 JCA ChaCha20-Poly1305 sealed 201 chunks (52687728 B) in 0.186 s = 283.3 MB/s; appVmHWM=188508kB
+probe bench: OK
+

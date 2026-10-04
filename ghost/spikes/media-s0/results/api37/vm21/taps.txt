@@ -1,0 +1,1 @@
+tap attempt 1 at bounds="[242,608][571,734]" (pattern content-desc="Photo|content-desc="Media item|icon_thumbnail|thumbnail)

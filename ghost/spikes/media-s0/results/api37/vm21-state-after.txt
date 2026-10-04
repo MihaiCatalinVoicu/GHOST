@@ -1,0 +1,107 @@
+# API 37 picker-side state after the third pick (12:26), listed as root on 12:29:28
+## /data/data/com.google.android.providers.media.module (files, size, mtime)
+/data/data/com.google.android.providers.media.module/app_logs/1791101663730 6536 B 2026-10-04 12:26:47.476125382 +0300
+/data/data/com.google.android.providers.media.module/cache/data/user/0/com.google.android.providers.media.module/no_backup/androidx.work.workdb.lck 0 B 2026-10-04 11:14:06.560036659 +0300
+/data/data/com.google.android.providers.media.module/cache/oat_primary/x86_64/MediaProviderGoogle.art 184368 B 2026-10-04 11:14:08.976036708 +0300
+/data/data/com.google.android.providers.media.module/databases/external.db 159744 B 2026-10-04 12:24:41.520122819 +0300
+/data/data/com.google.android.providers.media.module/databases/external.db-wal 0 B 2026-10-04 12:26:28.536124996 +0300
+/data/data/com.google.android.providers.media.module/databases/internal.db 258048 B 2026-10-04 11:16:45.260039887 +0300
+/data/data/com.google.android.providers.media.module/databases/internal.db-shm 32768 B 2026-10-04 11:16:39.396039768 +0300
+/data/data/com.google.android.providers.media.module/databases/internal.db-wal 494432 B 2026-10-04 11:16:45.188039886 +0300
+/data/data/com.google.android.providers.media.module/databases/picker.db 4096 B 2026-10-04 12:03:25.320096855 +0300
+/data/data/com.google.android.providers.media.module/databases/picker.db-shm 32768 B 2026-10-04 12:26:19.848124820 +0300
+/data/data/com.google.android.providers.media.module/databases/picker.db-wal 346112 B 2026-10-04 12:26:19.848124820 +0300
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb 180224 B 2026-10-04 12:26:38.064125190 +0300
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-shm 32768 B 2026-10-04 12:26:37.564125180 +0300
+/data/data/com.google.android.providers.media.module/no_backup/androidx.work.workdb-wal 482072 B 2026-10-04 12:26:47.496125382 +0300
+/data/data/com.google.android.providers.media.module/shared_prefs/MediaUpgradeReceiver.xml 113 B 2026-10-04 11:15:07.756037904 +0300
+/data/data/com.google.android.providers.media.module/shared_prefs/com.google.android.providers.media.module_preferences.xml 134 B 2026-10-04 11:14:12.952036789 +0300
+/data/data/com.google.android.providers.media.module/shared_prefs/picker_sync_prefs.xml 363 B 2026-10-04 12:26:19.888124820 +0300
+/data/data/com.google.android.providers.media.module/shared_prefs/picker_user_prefs.xml 224 B 2026-10-04 12:03:49.400097345 +0300
+## /data/data/com.google.android.photopicker (files, size, mtime)
+/data/data/com.google.android.photopicker/cache/image_manager_disk_cache/6c2e185120fd08a2427df46e6999ac998a356cc428cb357eed8919e48661610b.0 3502 B 2026-10-04 12:05:58.028099962 +0300
+/data/data/com.google.android.photopicker/cache/image_manager_disk_cache/a7130f2f6bbb8ee4ecebda7c2059334a4504ca7c341c26222e6f8b83e792af28.0 3502 B 2026-10-04 12:26:38.916125207 +0300
+/data/data/com.google.android.photopicker/cache/image_manager_disk_cache/ddb060a2f0e725ba08ac8f2501ad049ec3295300f4f84ee75015f4082b7d8a06.0 3502 B 2026-10-04 12:03:53.004097418 +0300
+/data/data/com.google.android.photopicker/cache/image_manager_disk_cache/journal 682 B 2026-10-04 12:26:38.916125207 +0300
+/data/data/com.google.android.photopicker/cache/oat_primary/x86_64/PhotopickerGoogle.art 50224 B 2026-10-04 11:14:47.732037496 +0300
+/data/data/com.google.android.photopicker/cache/photopicker.lck 0 B 2026-10-04 12:26:37.716125183 +0300
+/data/data/com.google.android.photopicker/databases/photopicker 4096 B 2026-10-04 12:03:49.896097355 +0300
+/data/data/com.google.android.photopicker/databases/photopicker-shm 32768 B 2026-10-04 12:26:37.728125183 +0300
+/data/data/com.google.android.photopicker/databases/photopicker-wal 45352 B 2026-10-04 12:03:50.032097357 +0300
+## image_manager_disk_cache
+ls: /data/data/com.google.android.providers.media.module/cache/image_manager_disk_cache: No such file or directory
+## shared storage dotfiles
+/data/media/0/.transforms/transcode
+/data/media/0/.transforms/recovery
+/data/media/0/.transforms/recovery/leveldb-internal
+/data/media/0/.transforms/recovery/leveldb-internal/LOG
+/data/media/0/.transforms/recovery/leveldb-internal/LOCK
+/data/media/0/.transforms/recovery/leveldb-internal/000003.log
+/data/media/0/.transforms/recovery/leveldb-internal/CURRENT
+/data/media/0/.transforms/recovery/leveldb-internal/MANIFEST-000002
+/data/media/0/.transforms/recovery/leveldb-external_primary
+/data/media/0/.transforms/recovery/leveldb-external_primary/LOG
+/data/media/0/.transforms/recovery/leveldb-external_primary/LOCK
+/data/media/0/.transforms/recovery/leveldb-external_primary/000003.log
+/data/media/0/.transforms/recovery/leveldb-external_primary/CURRENT
+/data/media/0/.transforms/recovery/leveldb-external_primary/MANIFEST-000002
+/data/media/0/.transforms/recovery/leveldb-ownership
+/data/media/0/.transforms/recovery/leveldb-ownership/LOG
+/data/media/0/.transforms/recovery/leveldb-ownership/LOCK
+/data/media/0/.transforms/recovery/leveldb-ownership/000003.log
+/data/media/0/.transforms/recovery/leveldb-ownership/CURRENT
+/data/media/0/.transforms/recovery/leveldb-ownership/MANIFEST-000002
+/data/media/0/.transforms/synthetic
+/data/media/0/.transforms/synthetic/redacted
+/data/media/0/.transforms/synthetic/picker
+/data/media/0/.transforms/synthetic/picker/0
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media/21.jpg
+/data/media/0/.transforms/.nomedia
+/data/media/0/Music/.thumbnails/.database_uuid
+/data/media/0/Music/.thumbnails/.nomedia
+## media_grants / picker.db (sqlite3 on device)
+0
+album_media          media_grants         search_request     
+android_metadata     media_in_media_sets  search_result_media
+de_selections        media_sets           search_suggestion  
+media                search_history     
+1|19||1|1790310673000|5|400|600|90|4341|0|image/jpeg|0|0|0|
+2|20||1|1790310673000|12|400|600|90|4341|0|image/jpeg|0|0|0|
+3|21||1|1790310673000|20|400|600|90|4341|0|image/jpeg|0|0|0|
+ls: /data/system/urigrants.xml: No such file or directory
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media:
+total 20
+drwxrws--- 2 u0_a225 media_rw 4096 2026-10-04 12:26 .
+drwxrws--- 3 u0_a225 media_rw 4096 2026-10-04 12:26 ..
+-rw-rw---- 1 u0_a225 media_rw 4341 2026-10-04 12:26 21.jpg
+
+/data/media/0/Pictures/.thumbnails:
+total 64
+drwxrws--- 2 u0_a225 media_rw 4096 2026-10-04 12:26 .
+drwxrws--- 3 u0_a225 media_rw 4096 2026-10-04 12:26 ..
+-rw-rw---- 1 u0_a225 media_rw   36 2026-10-04 11:14 .database_uuid
+-rw-rw---- 1 u0_a225 media_rw    0 2026-10-04 11:16 .nomedia
+-rw-rw---- 1 u0_a225 media_rw 4283 2026-10-04 12:03 19.jpg
+-rw-rw---- 1 u0_a225 media_rw 4283 2026-10-04 12:05 20.jpg
+-rw-rw---- 1 u0_a225 media_rw 4283 2026-10-04 12:26 21.jpg
+/data/media/0/.transforms/synthetic/picker/0/com.android.providers.media.photopicker/media/21.jpg u0_a225 media_rw 660 4341
+/data/media/0/Pictures/.thumbnails/21.jpg u0_a225 media_rw 660 4283
+ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+*
+nonzero bytes in placeholder: 0
+== D:/Forum/.claude/worktrees/p11-api37/ghost/spikes/media-s0/work/api37/vm21x/thumb21.jpg (4283 B, sha256 c8814db2a377a
+        0 SOI    len=2        
+        2 APP0   len=18       id="JFIF"
+       20 APP2   len=474      id="ICC_PROFILE"
+      494 DQT    len=69       T0/8bit
+      563 DQT    len=69       T1/8bit
+      632 SOF0   len=19       8bit 600x400 comps=[c1:2x2q0 c2:1x1q1 c3:1x1q1]
+      651 DHT    len=29       DC0
+      680 DHT    len=48       AC0
+      728 DHT    len=29       DC1
+      757 DHT    len=56       AC1
+      813 SOS    len=14       Ns=3 Ss=0 Se=63 Ah=0 Al=0
+      827 ECS    len=3454     entropy-coded data, 0 RST markers
+     4281 EOI    len=2        
