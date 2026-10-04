@@ -339,6 +339,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
      * when the setter held no session with the peer at the change (by the recorder's
      * [GroundTruth.sessions]), so the TIMER_SET waited as a pending item for `EST-READY`'s flush —
      * the path of NI-DM2's declared open defect (§22.21 item 2) — instead of being sealed at once.
+     * [order] is the change's place among the users' sends and timer changes ([textWritten]).
      */
     class TimerChange(
         val setter: Int,
@@ -348,12 +349,28 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         val newCode: Int,
         val messageId: String?,
         val queued: Boolean,
+        val order: Long,
     )
 
     val timerChanges = ArrayList<TimerChange>()
 
     /** The user texts, `message id hex → (sender, peer)`: JD5 checks each one's TTL. */
     val userTexts = HashMap<String, Pair<Int, Int>>()
+
+    /** When a user wrote a text: the second, and its [order] among every user send and timer change. */
+    class Written(val second: Long, val order: Long)
+
+    /**
+     * When each user text was **written** (`message id hex →` [Written]): the order counts every user
+     * send and timer change of the world, so one second can hold both and still tell which came
+     * first. JD5 checks a text against the timer the users had set when it was written, not when it
+     * was stored: a text queued for `EST-READY`'s flush keeps the timer it was written under (its
+     * L0's, §10.1) when the users change the timer while it waits (design §22.39).
+     */
+    val textWritten = HashMap<String, Written>()
+
+    /** The users' sends and timer changes so far: [TimerChange.order] and [textWritten]'s order. */
+    private var userWrites = 0L
 
     // ---------------------------------------------------------------- running
 
@@ -415,6 +432,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         client.sync()
         client.device.engine.onActivated()
         requireNotNull(client.device.engine.myCard()) { "client $c has no card after ACTIVATE" }
+        relay.recordCauses(c, client.device)
         client.activated = true
         count("activations")
         flushHints(c)
@@ -657,6 +675,9 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
             handing = null
         }
         resolveFetchStarts(c)
+        // What caused each op this pass enqueued, before a later pass's SWEEP can delete the rows of a
+        // message that expires while its op waits for a relay round (§22.39).
+        relay.recordCauses(c, client.device)
         client.checkTurns()
     }
 
@@ -761,6 +782,7 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         val before = outgoingIds(c)
         val result = body()
         resolveFetchStarts(c)
+        relay.recordCauses(c, clients[c].device)
         val created = outgoingIds(c) - before
         if (created.isEmpty()) return result to null
         val contact = peer?.let { contactIdOf(c, it) }
@@ -797,10 +819,14 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
         val contact = contactIdOf(c, peer) ?: return null
         val text = textOf(c, length)
         val at = now
+        val order = ++userWrites
         val establishing = (c to peer) !in truth.sessions
         val (result, id) = userAction(c, peer, Expect.Text(text)) { clients[c].device.engine.send(contact, text, quote) }
         if (establishing) establishments += Establishment(c, peer, at)
-        id?.let { userTexts[it] = c to peer }
+        id?.let {
+            userTexts[it] = c to peer
+            textWritten[it] = Written(at, order)
+        }
         count("sends")
         if (result != SendResult.QUEUED) count("sends not queued: $result")
         return result
@@ -814,12 +840,13 @@ internal class PrivacyWorld(val config: PrivacyWorldConfig) : AutoCloseable {
     fun userSetTimer(c: Int, peer: Int, timer: Timer): SendResult? {
         val contact = contactIdOf(c, peer) ?: return null
         val at = now
+        val order = ++userWrites
         val old = timerCodeOf(c, peer)
         val establishing = (c to peer) !in truth.sessions
         val (result, id) = userAction(c, peer, Expect.TimerSet) { clients[c].device.engine.setTimer(contact, timer) }
         if (establishing) establishments += Establishment(c, peer, at)
         if (result == SendResult.QUEUED && id != null) {
-            timerChanges += TimerChange(c, peer, at, old, timer.code, id, queued = establishing)
+            timerChanges += TimerChange(c, peer, at, old, timer.code, id, queued = establishing, order = order)
         } else {
             count("timers not queued: $result")
         }
