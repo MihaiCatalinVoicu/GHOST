@@ -102,19 +102,28 @@ internal class CapabilityStore {
         }
 
     /**
-     * Lists and gets use the read token, or the write token when no read token is usable (write
-     * grants read). An exhausted write token still reads: the relay charges quota only on store
-     * (design §3.6, `quota` cannot occur on list, get or check), so a store quota running out never
-     * ends a pair's listing. A registration capability never reads (Phase 10 design §7.5 item 2).
+     * Lists and gets use the read token, or — **for a namespace whose write capability is redeemed**
+     * ([CapabilitySource.REDEEM]) — the write token when no read token is usable (write grants read).
+     * An exhausted write token still reads: the relay charges quota only on store (design §3.6, `quota`
+     * cannot occur on list, get or check), so a store quota running out never ends a pair's listing. A
+     * registration capability never reads (Phase 10 design §7.5 item 2).
      *
-     * **Known gap F-6** (Phase 10 review of S1a, design §19.33; S4 decides): the fallback does not look at
-     * the namespace's source, and for a LOCAL channel namespace the write slot holds the bearer DEPOSIT
-     * credential, which no relay lets list. A listened channel whose READ credential is missing or has
-     * lapsed would list with it, be refused before any I/O and stop listing for a day (a BUG flag).
-     * `CapabilityTest.knownGapF6…` pins it.
+     * **F-6, closed by Phase 10 slice S4 (design §19.37; option (a) of §19.33).** A [CapabilitySource.LOCAL]
+     * namespace's write slot holds what its consumer installed, which for a channel is the bearer DEPOSIT
+     * credential: no relay lets it list (design §7.3: it serves store and check), so the fallback would
+     * be refused before any I/O and stop the pair's listing for a day (a BUG flag). A LOCAL namespace
+     * therefore reads with its READ credential or not at all, and [needed] reports READ MISSING for its
+     * listened pairs that hold none (option (c)); the consumer re-installs it.
      */
     fun forReading(tx: SyncTransaction, relay: RelayId, ns: NamespaceId, now: Long): CapabilityToken? =
-        usable(tx, relay, ns, CapabilityKind.READ, now) ?: readableWrite(tx, relay, ns, now)
+        usable(tx, relay, ns, CapabilityKind.READ, now) ?: if (writeReads(tx, ns)) readableWrite(tx, relay, ns, now) else null
+
+    /** Whether the write token may stand in for the read token in [ns]: only where it is redeemed (F-6). */
+    private fun writeReads(tx: SyncTransaction, ns: NamespaceId): Boolean =
+        tx.sql.single(
+            "SELECT capability_source FROM sync_namespace WHERE namespace_id = ?1",
+            listOf(ns.raw),
+        ) { it.string(0) } == CapabilitySource.REDEEM.code
 
     /**
      * Own-copy checks (verification, resolution, design §3.4, §3.5) use the write token, usable or
@@ -205,7 +214,8 @@ internal class CapabilityStore {
      * What Phase 8 should obtain (design §3.8), for relays active in a namespace's set:
      *  - an existing token that is rejected, exhausted, or usable but expiring within 24 h (EXPIRING
      *    also covers an already expired one);
-     *  - READ MISSING for a listening namespace with no token of either kind on that relay;
+     *  - READ MISSING for a listening namespace with no token of either kind on that relay — and, for
+     *    a [CapabilitySource.LOCAL] one, with no READ token (its write token never reads, F-6);
      *  - WRITE MISSING where the outbox still has work at the relay (deliveries waiting to be
      *    stored, acknowledged ones awaiting verification, possible copies still resolvable) and no
      *    write token exists;
@@ -249,7 +259,8 @@ internal class CapabilityStore {
                 "JOIN sync_namespace n ON n.namespace_id = nr.namespace_id " +
                 "JOIN relay_directory rd ON rd.relay_id = nr.relay_id " +
                 "WHERE rd.state = 'active' AND n.listening = 1 AND NOT EXISTS (SELECT 1 FROM relay_capability c " +
-                "WHERE c.relay_id = nr.relay_id AND c.namespace_id = nr.namespace_id) ORDER BY nr.relay_id, nr.namespace_id",
+                "WHERE c.relay_id = nr.relay_id AND c.namespace_id = nr.namespace_id " +
+                "AND (n.capability_source = 'redeem' OR c.kind = 'read')) ORDER BY nr.relay_id, nr.namespace_id",
         ) {
             CapabilityNeed(
                 RelayId(it.long(0)), NamespaceId(it.blob(1)), CapabilityKind.READ, CapabilityNeed.Reason.MISSING,

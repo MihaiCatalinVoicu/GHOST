@@ -1454,15 +1454,32 @@ dmenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously" \
   "refuses a tree whose DM sources make no restricted call"
 # Phase 10, slice S1a: `Funding.set` joins the restricted calls (design §7.5 item 1, item 7; T40).
 # One fixture, three call sites in a RECV step — the port by its name, a local alias, a port injected
-# as a `Funding` under a name of the author's choosing — beside an allowed OwnerSteps that funds (an
-# allowed file may) and a RECV `Inbox.reofferDeferred` that is no violation (it makes no relay call).
+# as a `Funding` under a name of the author's choosing — beside an allowed OwnerSteps that funds and a
+# RECV `Inbox.reofferDeferred` that is no violation (it makes no relay call). Slice S4 gave `Funding.set`
+# a file list of its own, and it is empty: the allowed OwnerSteps that funds is the fourth violation (3 → 4).
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding"
-dmenq_case funding 3 "ReceiveStep.kt:13" \
+dmenq_case funding 4 "ReceiveStep.kt:13" \
   "refuses a RECV step that funds a namespace by name, through an alias and through a typed port (and lets reofferDeferred pass)"
+dmenq_case funding 4 "OwnerSteps.kt:14:        sync.funding.set(tx, ns, true) (G-DM2: no DM step funds a namespace" \
+  "refuses an allowed step that funds a namespace (Funding.set's own list, slice S4)"
+# Phase 10, slice S4: the funding rule reads every shape the restricted rule reads, in a file that may enqueue —
+# an alias, a typed port, a scope function, a callable reference, a parenthesized receiver, a line break with a safe
+# call — and leaves the install, a map's `set` and another port's `setRelays` beside them alone.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-funding-shapes"
+dmenq_case funding-shapes 6 "OwnerSteps.kt:23:            set(tx, ns, true)" \
+  "sees a funding call in an allowed step through an alias, a typed port, a scope, a reference, parentheses and a line break"
+dmenq_case funding-shapes 6 "OwnerSteps.kt:27:        sync.funding?.set(tx, ns, true)" \
+  "sees a funding call written across a line break with a safe call"
 # Phase 10, slice S3: the channel stores (org.ghost.messaging.channel.store) make no port call (design 10.4); the
 # gate reads them like the rest of :messaging, so a store that funds a namespace is refused.
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-channel"
 dmenq_case channel 1 "channel/store/MirrorStore.kt:11" "refuses a channel store that funds a namespace"
+# Phase 10, slice S4: the restricted and the removal calls of the channel engine's files are G-M5's (ch-enqueue-callers,
+# below, which lists them per step); this gate's facade and step rules still read those files. One fixture: a channel
+# step's enqueue, not reported here, and a DM send driven from the same step, reported.
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-channel-engine"
+dmenq_case channel-engine 1 "channel/engine/ChannelPostStep.kt:11:        sendStep.flushPending()" \
+  "leaves a channel step's enqueue to G-M5 and refuses a channel step that drives a DM send"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -1471,6 +1488,60 @@ if bash "$DIR/dm-enqueue-callers.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-enqueue-callers accepts the real DM engine"
 else
   echo "SELF-TEST FAIL: dm-enqueue-callers rejects the real DM engine" >&2; rc=1
+fi
+
+# G-M5 (Phase 10 design faza10-forum.md §13.1, §14 S4; T40): the channel engine's relay-visible calls, step by step.
+# CH-RECV and CH-JOIN make none; every other channel step makes only the calls of its own row (CH-SETTLE enqueues its
+# Welcomes and never funds, the join sweep removes or stops listening and never enqueues); and a channel step that
+# enqueues, admits, settles or sweeps is driven by the channel engine and by nothing else. Five single-purpose
+# fixtures (a CH-RECV that enqueues and registers, two steps that make a call outside their row, a CH-JOIN and a DM
+# RECV that drive channel steps, G-DM2's evasions in CH-RECV, a tree whose channel files make no restricted call),
+# an empty tree, and the real tree.
+chenq_case() { # $1 = fixture suffix, $2 = expected violation count, $3 = expected text, $4 = description
+  local out hits
+  out="$(GHOST_ROOT="$HARNESS/negative-ch-enqueue-$1" bash "$DIR/ch-enqueue-callers.sh" 2>&1 || true)"
+  hits="$(grep -c '^GATE-FAIL' <<<"$out" || true)"
+  if [ "$hits" = "$2" ] && grep -qF -- "$3" <<<"$out"; then
+    echo "self-test ok: ch-enqueue-callers $4"
+  else
+    echo "SELF-TEST FAIL: ch-enqueue-callers $4 (reported $hits of $2 violations)" >&2
+    printf '%s\n' "$out" | tail -5 >&2; rc=1
+  fi
+}
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-recv"
+chenq_case recv 2 "ChannelReceiveStep.kt:9:        sync.outbox.enqueue(tx, blob) (G-M5: ChannelReceiveStep.kt may make no relay-visible call" \
+  "refuses a CH-RECV that enqueues (and lets CH-CREATE register)"
+chenq_case recv 2 "ChannelReceiveStep.kt:10:        sync.namespaces.register(tx, ns)" "refuses a CH-RECV that registers"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-wrongcall"
+chenq_case wrongcall 2 "ChannelSettleStep.kt:10:        sync.funding.set(tx, ns, true) (G-M5: set is not one of ChannelSettleStep.kt's calls (enqueue))" \
+  "refuses a CH-SETTLE that funds, though it may enqueue its Welcomes"
+chenq_case wrongcall 2 "ChannelSweepStep.kt:11:        ob.enqueue(tx, blob) (G-M5: enqueue is not one of ChannelSweepStep.kt's calls (remove setListening))" \
+  "refuses a join sweep that enqueues through a typed port, though it may remove"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-step"
+chenq_case step 3 "ChannelJoinStep.kt:9:        postStep.compose(tx) (G-M5: a channel step that enqueues" "refuses a CH-JOIN that drives a post"
+chenq_case step 3 "ChannelJoinStep.kt:10:        passStep.admit(channel)" "refuses a CH-JOIN that drives an admission"
+chenq_case step 3 "messaging/engine/ReceiveStep.kt:9:        settle.settleDue()" "refuses a DM RECV that drives a channel settle"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-evasion"
+CHEV="android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/ChannelReceiveStep.kt"
+evasion_count ch-enqueue-callers negative-ch-enqueue-evasion 7
+evasion_named ch-enqueue-callers "$CHEV:10:        sync.outbox.enqueue(tx, blob)" "sees a receiver on the line above its call"
+evasion_named ch-enqueue-callers "$CHEV:13:        o.enqueue(tx, blob)" "sees a call through a local alias"
+evasion_named ch-enqueue-callers "$CHEV:14:        with(sync.namespaces) { register(tx, ns) }" "sees a bare call in a scope function"
+evasion_named ch-enqueue-callers "$CHEV:15:        sync.capabilities?.put(tx, ns)" "sees a safe call"
+evasion_named ch-enqueue-callers "$CHEV:16:        ledger.set(tx, ns, true)" "sees a port injected as its type"
+evasion_named ch-enqueue-callers "$CHEV:17:        val fund = sync.funding::set" "sees a callable reference"
+evasion_named ch-enqueue-callers "$CHEV:18:        (sync.registrations).keep(tx, ns)" "sees a parenthesized receiver"
+expect_fail ch-enqueue-callers "$HARNESS/negative-ch-enqueue-vacuous"
+chenq_case vacuous 1 "makes a restricted call (the gate would pass vacuously)" \
+  "refuses a tree whose channel sources make no restricted call"
+chenq_empty="$(mktemp -d)"
+expect_fail_msg "ch-enqueue-callers refuses a tree with no channel production sources at all" \
+  "no channel production sources found" env GHOST_ROOT="$chenq_empty" bash "$DIR/ch-enqueue-callers.sh"
+rmdir "$chenq_empty"
+if bash "$DIR/ch-enqueue-callers.sh" >/dev/null 2>&1; then
+  echo "self-test ok: ch-enqueue-callers accepts the real channel engine"
+else
+  echo "SELF-TEST FAIL: ch-enqueue-callers rejects the real channel engine" >&2; rc=1
 fi
 
 # The S0′ gate slice (Phase 9 design §16.1, §22.33). Each fixture holds one kind of violation and
@@ -1697,6 +1768,26 @@ evasion_count dm-no-replace $CHP 1
 evasion_named dm-no-replace "$CHS:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the channel stores"
 evasion_count dm-no-fts $CHP 2
 evasion_named dm-no-fts "$CHS:25:" "reads the package of the channel stores (the virtual table and the token)"
+# The same scopes over the package of the channel engine (org.ghost.messaging.channel.engine; slice S4, which adds
+# it): one violation of each in one file. The channel crate of this fixture is clean (S3's fixture above holds its
+# violations), so anti-placeholder and no-logging report one each here, not two.
+CHE=negative-channel-engine
+CHF="android/messaging/src/main/kotlin/org/ghost/messaging/channel/engine/LeakyChannelStep.kt"
+evasion_count anti-placeholder $CHE 1
+evasion_named anti-placeholder "$CHF:11:" "reads the package of the channel engine"
+evasion_count no-logging $CHE 1
+evasion_named no-logging "$CHF:14:" "reads the package of the channel engine"
+evasion_count sync-no-catch-all $CHE 1
+evasion_named sync-no-catch-all "$CHF:19: catch (e: Exception)" "reads the package of the channel engine against the allowlist"
+evasion_count kotlin-clearnet $CHE 1
+evasion_named kotlin-clearnet "$CHF:3:import java.net.Socket" "reads the package of the channel engine"
+evasion_count messaging-no-network $CHE 2
+evasion_named messaging-no-network "$CHF:3:import java.net.Socket (G-DM1: a DM module names a network package" "reads the package of the channel engine (the package)"
+evasion_named messaging-no-network "$CHF:3:import java.net.Socket (G-DM1: a DM module names a socket, address or HTTP class" "reads the package of the channel engine (the class)"
+evasion_count dm-no-replace $CHE 1
+evasion_named dm-no-replace "$CHF:24: OR REPLACE, REPLACE INTO in DM SQL" "reads the package of the channel engine"
+evasion_count dm-no-fts $CHE 2
+evasion_named dm-no-fts "$CHF:25:" "reads the package of the channel engine (the virtual table and the token)"
 # G-R4's source half (no-logging): a standard stream without a print macro.
 evasion_count no-logging negative-rust-std-streams 1
 evasion_named no-logging "client-core/dm/src/lib.rs:7:    let _ = writeln!(std::io::stderr()" "reports writeln! to the process's error stream"
@@ -1730,6 +1821,10 @@ evasion_named dm-derivation-inputs "dm-derivation-inputs.allow:6: malformed entr
 evasion_count dm-derivation-inputs dm-derivation/negative-channel-package 1
 evasion_named dm-derivation-inputs "channel/store/ChannelLeak.kt:13: SecretKeySpec(channelId, \"HmacSHA256\") is not on G-DM3's allowlist" \
   "reports a MAC keyed by a channel identifier in the channel store package"
+# Phase 10, slice S4: and the package of the channel engine, whose one listed site is the dedup tags' MAC (ChannelTags.kt).
+evasion_count dm-derivation-inputs dm-derivation/negative-channel-engine 1
+evasion_named dm-derivation-inputs "channel/engine/ChannelLeak.kt:13: SecretKeySpec(channelId, \"HmacSHA256\") is not on G-DM3's allowlist" \
+  "reports a MAC keyed by a channel identifier in the channel engine package"
 if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
 else

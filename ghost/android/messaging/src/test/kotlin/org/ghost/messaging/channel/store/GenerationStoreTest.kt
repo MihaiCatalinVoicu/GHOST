@@ -31,7 +31,7 @@ class GenerationStoreTest {
     ) = w.tx {
         insert(
             it, channel, generation, ns(generation.toInt()), state, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4),
-            switchHour, drainUntilDay,
+            openEpoch = generation * 10, switchHour = switchHour, drainUntilDay = drainUntilDay,
         )
     }
 
@@ -45,6 +45,8 @@ class GenerationStoreTest {
         assertArrayEquals(chBytes(60, 2), row.gEnv)
         assertArrayEquals(chBytes(60, 3), row.jkEnv)
         assertArrayEquals(chBytes(32, 4), row.rJoin)
+        // Slice S4 (§19.37 F-S4-7): the epoch that opened the generation reads back.
+        assertEquals(0L, row.openEpoch)
         assertNull(row.switchHour)
         assertNull(row.drainUntilDay)
         assertEquals(0L, w.stores.generations.current(w.db, w.ch, today)!!.generation)

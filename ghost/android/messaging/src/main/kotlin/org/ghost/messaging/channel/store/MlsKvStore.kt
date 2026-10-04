@@ -95,7 +95,19 @@ internal class MlsKvStore {
      * a key pair is unique across channels. A delete of a row that is not there is no error: the adapter's
      * change-set is the net of the call, and a row it created and removed in one call was never written.
      */
-    fun apply(tx: SyncTransaction, channelId: ByteArray, changes: List<KvChange>, globalDeleteAfterDay: Long? = null): Applied {
+    fun apply(
+        tx: SyncTransaction,
+        channelId: ByteArray,
+        changes: List<KvChange>,
+        globalDeleteAfterDay: Long? = null,
+        /**
+         * Gives [globalDeleteAfterDay] to the `KeyPackage` rows only, and no day to the other global rows (slice S4,
+         * §19.37): `CH-ACCEPT`'s KeyPackage dies at the join's expiry if no Welcome comes, but the leaf's key pairs the same
+         * call writes become the joined group's once the Welcome is processed, and a day — which only moves earlier —
+         * would delete them under a live group. A join that expires deletes every global row of the channel instead.
+         */
+        keyPackagesOnly: Boolean = false,
+    ): Applied {
         Fields.nonNegativeOrNull("mls_global_kv.delete_after_day", globalDeleteAfterDay)
         for (c in changes) {
             Fields.bytesBetween("mls_kv.k", c.key, 2, MAX_KEY)
@@ -115,7 +127,8 @@ internal class MlsKvStore {
                     listOf(channelId, c.key),
                 )
                 env != null -> {
-                    putGlobal(tx, channelId, c.key, env, globalDeleteAfterDay)
+                    val day = if (keyPackagesOnly && !isKeyPackageRow(c.key)) null else globalDeleteAfterDay
+                    putGlobal(tx, channelId, c.key, env, day)
                     puts++
                 }
                 else -> deletes += tx.sql.execUpdate(

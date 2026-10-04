@@ -212,6 +212,7 @@ class ChannelMigrationScenarioTest {
                 )
                 stores.generations.insert(
                     tx, channel, 0, ns0.toByteArray(), GenerationState.CURRENT, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4),
+                    openEpoch = 0,
                 )
                 stores.epochs.insert(tx, channel, 0, chBytes(68, 5), chBytes(32, 6))
                 stores.members.insertBoxKey(tx, channel, chBytes(32, 0x70), chBytes(60, 8))

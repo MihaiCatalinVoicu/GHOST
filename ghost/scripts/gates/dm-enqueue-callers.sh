@@ -153,6 +153,19 @@
 # it writes the re-offer time of local rows and makes no relay call (design §7.5 item 6), which
 # `ChannelSyncNoTrafficTest` pins — it can only delay a GET while the fetched cap binds.
 #
+# **Phase 10, slice S4 (2026-10-04): both, and the split.** S4 builds G-M5 (`ch-enqueue-callers.sh`) and
+# answers the S1a review's question with both of its options (design §19.37, the review's F-7 option (c)):
+#  - **`Funding.set` has a file list of its own here, and it is empty** ([FUNDING_FILES]): no DM file funds a
+#    namespace, the four allowed ones included, so the shared allowlist can no longer let an enqueueing step
+#    fund. `negative-dm-enqueue-funding`'s allowed `OwnerSteps.kt` that funds is now refused too (3 → 4).
+#  - **The restricted and the removal rules of the channel engine's files** (`…/messaging/channel/engine/`) are
+#    G-M5's, which lists each channel step's calls one by one (CH-SETTLE may enqueue its own Welcomes and must
+#    never fund — a shared list could not say it). This gate keeps its **facade and step rules** for those files
+#    (a channel step that drove `sendControl` or `runOwnerMaintenance` is refused here), and keeps every rule for
+#    the channel **stores** (`…/channel/store/`, which make no port call: `negative-dm-enqueue-channel`).
+#    `negative-dm-enqueue-channel-engine` pins the boundary. A channel engine file does not count towards the
+#    vacuity floor, which stays the DM steps'.
+#
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -172,6 +185,10 @@ RECEIVERS='outbox|registrations|namespaces|capabilities|funding'
 # one production file that takes a port as a bare constructor property rather than through `sync.`,
 # so the evading shape is the shape that file already uses.
 RECEIVER_TYPES='Outbox|Registrations|Namespaces|Capabilities|Funding'
+# The funding port alone, by name and by type (Phase 10, slice S4): the funding rule must tell `funding.set(…)`
+# from the `set` or `put` of another port in a file that may make those.
+FUNDING_RECEIVER='funding'
+FUNDING_TYPE='Funding'
 # The scope functions that turn a port into `this`, so a call inside can be bare.
 SCOPES='run|apply'
 # The scope functions that bind the port to a lambda **parameter** instead: the call inside is
@@ -187,6 +204,9 @@ SendStep.kt            SEND, RESEND (slice S7)
 EstablishmentSteps.kt  EST-START, EST-READY, EST-END (slice S7; BUNDLE is BundleStep.kt, not here)
 ContactKeeper.kt       KEEPER, the contact half of §7.2 KEEPER row (slice S7)
 '
+# Files that may call `Funding.set` (Phase 10 slice S4): none. The check applies to the files of ALLOWED_FILES,
+# which the restricted rule would otherwise let fund; every other file is refused the call by that rule already.
+FUNDING_FILES=''
 # Files that may call `Namespaces.remove` and nothing else. `Sweeper.kt` is deliberately **not** in
 # ALLOWED_FILES: §21.12 point 3 gives SWEEP the removal of an orphaned namespace and nothing more,
 # and an entry in both lists would have made the rule this comment states unenforceable (found by
@@ -257,6 +277,13 @@ allowed_file() { # $1 = basename
   return 1
 }
 
+funding_allowed() { # $1 = basename
+  case " $FUNDING_FILES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
 remove_allowed() { # $1 = basename
   allowed_file "$1" && return 0
   case " $REMOVE_ONLY " in
@@ -318,6 +345,12 @@ while IFS= read -r file; do
   rel="${file#"$GHOST_ROOT"/}"
   base="${file##*/}"
   SCANNED=$((SCANNED + 1))
+  # A channel engine file: its restricted and removal calls are G-M5's (see the S4 note above); the facade
+  # and step rules below still read it.
+  channel_engine=0
+  case "$rel" in
+    */messaging/channel/engine/*) channel_engine=1 ;;
+  esac
 
   # Each hit is read from a variable and matched with a here-string, never `producer | grep -q`:
   # under `set -o pipefail` such a pipeline fails whenever grep stops reading early (EPIPE), the
@@ -328,10 +361,34 @@ while IFS= read -r file; do
   # `sync.outbox.run { … }`), both of which let a call site drop the receiver.
   alias_alt=""
   scoped=0
+  # The same two lists for the funding port alone, which the funding rule reads (Phase 10, slice S4).
+  funding_alt=""
+  funding_scoped=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     if [[ "$line" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(:[^=]*)?=[^=]*($RECEIVERS) ]]; then
       alias_alt="${alias_alt:+$alias_alt|}${BASH_REMATCH[2]}"
+    fi
+    if [[ "$line" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(:[^=]*)?=[^=]*($FUNDING_RECEIVER) ]]; then
+      funding_alt="${funding_alt:+$funding_alt|}${BASH_REMATCH[2]}"
+    fi
+    rest="$line"
+    while [[ "$rest" =~ (val|var)[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*:[[:space:]]*($FUNDING_TYPE)([^A-Za-z0-9_]|$) ]]; do
+      funding_alt="${funding_alt:+$funding_alt|}${BASH_REMATCH[2]}"
+      rest="${rest#*"${BASH_REMATCH[0]}"}"
+    done
+    if [[ "$line" =~ with[[:space:]]*\([^\)]*($FUNDING_RECEIVER) ]] ||
+       [[ "$line" =~ ($FUNDING_RECEIVER)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($SCOPES)[[:space:]]*[\{\(] ]]; then
+      funding_scoped=1
+    fi
+    if [[ "$line" =~ ($FUNDING_RECEIVER)[[:space:]]*\??[[:space:]]*\.[[:space:]]*($LAMBDA_SCOPES)[[:space:]]*[\{\(] ]]; then
+      funding_alt="${funding_alt:+$funding_alt|}it"
+      if [[ "$line" =~ \{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
+        funding_alt="$funding_alt|${BASH_REMATCH[1]}"
+      fi
+    fi
+    if [ -n "$funding_alt" ] && [[ "$line" =~ ^[[:space:]]*\{[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*-\> ]]; then
+      funding_alt="$funding_alt|${BASH_REMATCH[1]}"
     fi
     # The same property declared by its **type** and with no initialiser: a constructor parameter
     # (`private val ops: Outbox,`) or a field assigned elsewhere. The name is then free, so only the
@@ -386,14 +443,27 @@ while IFS= read -r file; do
     return 1
   }
 
+  # The funding rule's recognizer (Phase 10, slice S4): `is_call_site` for the one call `set`, with the funding
+  # port as the only receiver and its own aliases and scopes. Bash scopes `local` dynamically, so the call below
+  # reads these three values in place of the file's, every shape above included (a line break, an alias, a typed
+  # port, a scope function, a safe call, a callable reference, a parenthesized receiver).
+  is_funding_call() {
+    local RECEIVERS="$FUNDING_RECEIVER" alias_alt="$funding_alt" scoped="$funding_scoped"
+    is_call_site "$1" 'set'
+  }
+
   restricted_hits=""
   remove_hits=""
+  funding_hits=""
   trigger_hits=""
   step_hits=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    if is_call_site "$line" "$RESTRICTED"; then restricted_hits+="$line"$'\n'; fi
-    if is_call_site "$line" "$REMOVE"; then remove_hits+="$line"$'\n'; fi
+    if [ "$channel_engine" = 0 ]; then
+      if is_call_site "$line" "$RESTRICTED"; then restricted_hits+="$line"$'\n'; fi
+      if is_call_site "$line" "$REMOVE"; then remove_hits+="$line"$'\n'; fi
+      if is_funding_call "$line"; then funding_hits+="$line"$'\n'; fi
+    fi
     # The facade's entry points are matched by name, with or without a receiver: they are unique to
     # this facade, so a line that writes one either declares it or calls it.
     if [[ "$line" =~ (^|[^A-Za-z0-9_])($TRIGGERS)[[:space:]]*\( ]]; then trigger_hits+="$line"$'\n'; fi
@@ -410,6 +480,14 @@ while IFS= read -r file; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen, install or fund)"
     done <<< "$restricted_hits"
+  fi
+  # A file the rule above lets enqueue may still not fund: `Funding.set` has a list of its own (FUNDING_FILES).
+  # Every other file is refused the call by the rule above already, and is not reported twice.
+  if [ -n "$funding_hits" ] && allowed_file "$base" && ! funding_allowed "$base"; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      fail "$rel:$line (G-DM2: no DM step funds a namespace; Funding.set has a file list of its own, and it is empty)"
+    done <<< "$funding_hits"
   fi
   if [ -n "$remove_hits" ] && ! remove_allowed "$base"; then
     while IFS= read -r line; do

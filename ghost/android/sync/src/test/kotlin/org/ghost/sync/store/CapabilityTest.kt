@@ -235,38 +235,43 @@ class CapabilityTest {
     }
 
     /**
-     * KNOWN GAP F-6 (Phase 10 review of S1a, §19.33; S4 closes it; recorded, not decided here). The
-     * write-grants-read fallback of `forReading` applies to every namespace, so a channel's listened
-     * namespace whose READ credential is missing or has lapsed lists with its write slot — the shared
-     * bearer DEPOSIT credential. No relay lets a DEPOSIT credential list (design §7.3: it serves store and
-     * check): the harness port's T21 guard refuses it before any I/O (`invalid_argument`, a BUG), the
-     * pair stops listing for a day, and, when no READ row exists at all, no READ need is reported either
-     * because a write row exists. Pinned so that the change cannot happen unseen; the lines to flip are
-     * marked. The options are in the notes: the fallback for REDEEM-source namespaces only, with a READ need
-     * for a LOCAL one that has no usable READ credential.
+     * F-6 (Phase 10 review of S1a, §19.33), **closed by slice S4** (§19.37, options (a) and (c)). The
+     * write-grants-read fallback of `forReading` applied to every namespace, so a channel's listened
+     * namespace whose READ credential was missing or had lapsed listed with its write slot — the shared
+     * bearer DEPOSIT credential, which no relay lets list (design §7.3): the harness port's T21 guard
+     * refused it before any I/O (`invalid_argument`, a BUG), the pair stopped listing for a day, and with
+     * no READ row at all no READ need was reported, because a write row existed. Now a LOCAL namespace's
+     * write slot never reads, and the pair without a READ credential is reported READ MISSING; a REDEEM
+     * namespace keeps the fallback ([readingPrefersTheReadTokenAndFallsBackToWrite]).
      */
     @Test
-    fun knownGapF6AChannelReadsWithItsDepositCredentialWhenItsReadCredentialIsMissingOrLapsed(): Unit = SyncWorld().use { w ->
+    fun f6ALocalNamespacesWriteSlotNeverReadsAndAMissingReadCredentialIsReported(): Unit = SyncWorld().use { w ->
         val relays = w.relays(1, 2)
         val ns = w.namespace(1, relays, listen = true, consumer = Consumer.CHANNEL, capabilitySource = CapabilitySource.LOCAL)
         // The DEPOSIT credential in the write slot, and no READ credential at all.
         w.capability(relays[0], ns, CapabilityKind.WRITE, expiresAt = w.now + 8 * DAY)
+        assertNull("a LOCAL namespace's write slot never reads", w.tx { w.caps.forReading(it, relays[0], ns, w.now) })
         assertEquals(
-            "F-6: S4 flips this to assertNull (a LOCAL namespace's write slot never reads)",
-            CapabilityKind.WRITE,
-            w.tx { w.caps.forReading(it, relays[0], ns, w.now) }!!.kind,
+            "a READ need for the pair, which holds a write row and no READ row",
+            listOf(CapabilityNeed(relays[0], ns, CapabilityKind.READ, CapabilityNeed.Reason.MISSING, CapabilitySource.LOCAL)),
+            w.needs().filter { it.relay == relays[0] },
         )
-        assertEquals("F-6: a READ need for the pair, once the fallback is gone", emptyList<CapabilityNeed>(), w.needs().filter { it.relay == relays[0] })
-        // A READ credential that lapses: the read lane falls back to the write slot from then on.
+        // A READ credential that lapses: the read lane stops; it never falls back to the write slot.
         w.capability(relays[0], ns, CapabilityKind.READ, expiresAt = w.now + 2 * HOUR)
         assertEquals(CapabilityKind.READ, w.tx { w.caps.forReading(it, relays[0], ns, w.now) }!!.kind)
+        assertEquals("a usable READ credential satisfies the pair", emptyList<CapabilityNeed>(), w.needs().filter { it.relay == relays[0] && it.reason == CapabilityNeed.Reason.MISSING })
         w.clock.advance(2 * HOUR)
-        assertEquals("F-6: S4 flips this to assertNull", CapabilityKind.WRITE, w.tx { w.caps.forReading(it, relays[0], ns, w.now) }!!.kind)
+        assertNull("a lapsed READ credential: no fallback", w.tx { w.caps.forReading(it, relays[0], ns, w.now) })
         assertEquals(
             "the expired READ credential is reported (source LOCAL: the consumer re-installs it)",
             listOf(CapabilityNeed(relays[0], ns, CapabilityKind.READ, CapabilityNeed.Reason.EXPIRING, CapabilitySource.LOCAL)),
             w.needs().filter { it.relay == relays[0] },
         )
+        // A REDEEM namespace in the same database keeps the write-grants-read fallback, and no READ need.
+        val redeemed = w.namespace(2, relays, listen = true)
+        w.capability(relays[0], redeemed, CapabilityKind.WRITE)
+        assertEquals(CapabilityKind.WRITE, w.tx { w.caps.forReading(it, relays[0], redeemed, w.now) }!!.kind)
+        assertEquals(emptyList<CapabilityNeed>(), w.needs().filter { it.relay == relays[0] && it.namespace == redeemed })
     }
 
     private fun SyncWorld.needs(): List<CapabilityNeed> = stores.capabilities.needed()

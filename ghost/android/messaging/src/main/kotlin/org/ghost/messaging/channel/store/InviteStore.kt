@@ -98,6 +98,40 @@ internal class InviteStore {
         if (changed != 1) throw ChannelStoreException(ChannelStoreError.ROW_EXISTS, "ch_invite_issued")
     }
 
+    /**
+     * [insertIssued] for an `INVITE_ISSUED` that arrived (`CH-RECV`): false, with nothing written, when the channel already
+     * records that invite id — the sponsor's own record of `CH-INVITE`, a replay that re-sealed the post, or a member
+     * that reused an id it read (the first record stays; nothing about a record is rewritten, `ch_invite_issued_identity`).
+     */
+    fun recordIssued(
+        tx: SyncTransaction,
+        channelId: ByteArray,
+        inviteId: ByteArray,
+        invitePk: ByteArray,
+        sponsor: ByteArray,
+        sponsorSig: ByteArray,
+        committersDigest: ByteArray,
+        pwVersion: Int?,
+        expiryDay: Long,
+    ): Boolean {
+        Fields.bytes("ch_invite_issued.invite_id", inviteId, 16)
+        Fields.bytes("ch_invite_issued.invite_pk", invitePk, 32)
+        Fields.bytes("ch_invite_issued.sponsor", sponsor, 32)
+        Fields.bytes("ch_invite_issued.sponsor_sig", sponsorSig, 64)
+        Fields.bytes("ch_invite_issued.committers_digest", committersDigest, 32)
+        if (pwVersion != null) Fields.rangeInt("ch_invite_issued.pw_version", pwVersion, 1, 65_535)
+        Fields.nonNegative("ch_invite_issued.expiry_day", expiryDay)
+        return tx.sql.execUpdate(
+            "INSERT INTO ch_invite_issued(channel_id, invite_id, invite_pk, sponsor, sponsor_sig, committers_digest, pw_version, " +
+                "expiry_day) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
+                "(SELECT 1 FROM ch_invite_issued WHERE channel_id = ? AND invite_id = ?)",
+            listOf(
+                channelId, inviteId, invitePk, sponsor, sponsorSig, committersDigest, pwVersion?.toLong(), expiryDay,
+                channelId, inviteId,
+            ),
+        ) == 1
+    }
+
     /** Set at the settle from the `GhostCommitAad` of a merged Add (CO-5): once, never undone. */
     fun markConsumed(tx: SyncTransaction, channelId: ByteArray, inviteId: ByteArray): Boolean =
         tx.sql.execUpdate(

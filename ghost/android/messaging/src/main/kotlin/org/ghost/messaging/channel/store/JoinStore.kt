@@ -28,7 +28,12 @@ import org.ghost.sync.api.SyncTransaction
  */
 internal class JoinStore {
 
-    /** A `ch_join` row: the KeyPackage this client published for a join, a rejoin or a restore. Shows nothing (T3). */
+    /**
+     * A `ch_join` row: the KeyPackage this client published for a join, a rejoin or a restore, and — for a join or a
+     * restore — what its invite carried that nothing else keeps (amended by slice S4, §19.37, §19.35 F-8): the invite's
+     * namespace, its `JK_g` (an invite's class-6 envelope, which seals the request and opens the Welcome only), the
+     * recognition key `R_join(g)` and the committers digest the Welcome must be anchored to (§6.2.5). Shows nothing (T3).
+     */
     class JoinRow(
         val channelId: ByteArray,
         val kpRef: ByteArray,
@@ -36,6 +41,10 @@ internal class JoinStore {
         val inviteId: ByteArray?,
         val generation: Long,
         val expiryDay: Long,
+        val ns: ByteArray? = null,
+        val jkEnv: ByteArray? = null,
+        val rJoin: ByteArray? = null,
+        val committersDigest: ByteArray? = null,
     ) {
         override fun toString(): String = "JoinRow(type=${type.sql})"
     }
@@ -68,6 +77,20 @@ internal class JoinStore {
         return row
     }
 
+    /**
+     * The join or restore whose invite named [ns] (the namespace `CH-RECV` fetched a blob from), if it has not expired:
+     * how a blob of a `joining` channel is routed, since such a channel has no `ch_generation` row yet (§19.35 F-8).
+     */
+    fun joinByNamespace(sql: SqlExecutor, ns: ByteArray, today: Long): JoinRow? {
+        var row: JoinRow? = null
+        sql.query(JOIN_BY_NS, listOf(ns, today)) { r -> row = readJoin(r) }
+        return row
+    }
+
+    /**
+     * Records the client's own join (`CH-ACCEPT`), rejoin or restore. A join or a restore carries its invite's state
+     * ([ns], [jkEnv], [rJoin], [committersDigest], all four or none); a rejoin carries none of it.
+     */
     fun insertJoin(
         tx: SyncTransaction,
         channelId: ByteArray,
@@ -76,16 +99,30 @@ internal class JoinStore {
         inviteId: ByteArray?,
         generation: Long,
         expiryDay: Long,
+        ns: ByteArray? = null,
+        jkEnv: ByteArray? = null,
+        rJoin: ByteArray? = null,
+        committersDigest: ByteArray? = null,
     ) {
         Fields.bytes("ch_join.kp_ref", kpRef, 32)
         Fields.bytesOrNull("ch_join.invite_id", inviteId, 16)
         Fields.u32("ch_join.generation", generation)
         Fields.nonNegative("ch_join.expiry_day", expiryDay)
+        Fields.bytesOrNull("ch_join.ns", ns, 32)
+        Fields.bytesOrNull("ch_join.jk_env", jkEnv, 60)
+        Fields.bytesOrNull("ch_join.r_join", rJoin, 32)
+        Fields.bytesOrNull("ch_join.committers_digest", committersDigest, 32)
         if (type.hasInvite != (inviteId != null)) throw ChannelStoreException(ChannelStoreError.BAD_VALUE, "ch_join.invite_id")
+        val state = listOf(ns, jkEnv, rJoin, committersDigest)
+        if (state.any { (it != null) != type.hasInvite }) throw ChannelStoreException(ChannelStoreError.BAD_VALUE, "ch_join.ns")
         val changed = tx.sql.execUpdate(
-            "INSERT INTO ch_join(channel_id, kp_ref, type, invite_id, generation, expiry_day) SELECT ?, ?, ?, ?, ?, ? " +
-                "WHERE NOT EXISTS (SELECT 1 FROM ch_join WHERE channel_id = ? AND kp_ref = ?)",
-            listOf(channelId, kpRef, type.sql, inviteId, generation, expiryDay, channelId, kpRef),
+            "INSERT INTO ch_join(channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, " +
+                "committers_digest) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? " +
+                "WHERE NOT EXISTS (SELECT 1 FROM ch_join WHERE (channel_id = ? AND kp_ref = ?) OR ns = ?)",
+            listOf(
+                channelId, kpRef, type.sql, inviteId, generation, expiryDay, ns, jkEnv, rJoin, committersDigest,
+                channelId, kpRef, ns,
+            ),
         )
         if (changed != 1) throw ChannelStoreException(ChannelStoreError.ROW_EXISTS, "ch_join")
     }
@@ -111,6 +148,10 @@ internal class JoinStore {
         inviteId = if (r.isNull(3)) null else r.blob(3),
         generation = r.long(4),
         expiryDay = r.long(5),
+        ns = if (r.isNull(6)) null else r.blob(6),
+        jkEnv = if (r.isNull(7)) null else r.blob(7),
+        rJoin = if (r.isNull(8)) null else r.blob(8),
+        committersDigest = if (r.isNull(9)) null else r.blob(9),
     )
 
     // ------------------------------------------------------------------------------ ch_join_request
@@ -125,6 +166,13 @@ internal class JoinStore {
     fun request(sql: SqlExecutor, channelId: ByteArray, hash: ByteArray, today: Long): RequestRow? {
         var row: RequestRow? = null
         sql.query(REQUEST, listOf(channelId, hash, today)) { r -> row = readRequest(r) }
+        return row
+    }
+
+    /** The first pending request that names [inviteId], if any: a second request for one invite is ignored (§6.2.4). */
+    fun requestOfInvite(sql: SqlExecutor, channelId: ByteArray, inviteId: ByteArray, today: Long): RequestRow? {
+        var row: RequestRow? = null
+        sql.query(REQUEST_OF_INVITE, listOf(channelId, inviteId, today)) { r -> row = readRequest(r) }
         return row
     }
 
@@ -218,17 +266,25 @@ internal class JoinStore {
         const val MAX_KP_TAGS: Int = 1024
 
         const val JOINS: String =
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join " +
-                "WHERE channel_id = ? AND expiry_day >= ? ORDER BY expiry_day, kp_ref"
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest " +
+                "FROM ch_join WHERE channel_id = ? AND expiry_day >= ? ORDER BY expiry_day, kp_ref"
 
         const val JOIN: String =
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join " +
-                "WHERE channel_id = ? AND kp_ref = ? AND expiry_day >= ?"
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest " +
+                "FROM ch_join WHERE channel_id = ? AND kp_ref = ? AND expiry_day >= ?"
+
+        const val JOIN_BY_NS: String =
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest " +
+                "FROM ch_join WHERE ns = ? AND expiry_day >= ?"
 
         /** SWEEP's own batch. */
         const val EXPIRED_JOINS: String =
-            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day FROM ch_join WHERE expiry_day < ? " +
-                "ORDER BY expiry_day, channel_id, kp_ref LIMIT ?"
+            "SELECT channel_id, kp_ref, type, invite_id, generation, expiry_day, ns, jk_env, r_join, committers_digest " +
+                "FROM ch_join WHERE expiry_day < ? ORDER BY expiry_day, channel_id, kp_ref LIMIT ?"
+
+        const val REQUEST_OF_INVITE: String =
+            "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +
+                "WHERE channel_id = ? AND invite_id = ? AND until_day >= ? ORDER BY rowid LIMIT 1"
 
         const val REQUESTS: String =
             "SELECT channel_id, hash, generation, type, invite_id, body_env, until_day FROM ch_join_request " +

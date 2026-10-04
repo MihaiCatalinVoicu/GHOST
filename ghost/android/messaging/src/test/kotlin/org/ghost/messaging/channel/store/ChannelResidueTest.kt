@@ -46,9 +46,9 @@ class ChannelResidueTest {
             s.channels.putLiveness(tx, w.ch, 2, 0b011, 1, chBytes(60, 3), now - 3_600)
             s.channels.putSchedule(tx, w.ch, today + 20, today - 3, now + 7_200)
             // generations: g1 drained yesterday, g2 current, g3 pending its switch
-            s.generations.insert(tx, w.ch, 1, key(0xA1), GenerationState.DRAINING, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), drainUntilDay = today - 1)
-            s.generations.insert(tx, w.ch, 2, key(0xA2), GenerationState.CURRENT, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4))
-            s.generations.insert(tx, w.ch, 3, key(0xA3), GenerationState.PENDING_SWITCH, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), switchHour = now + 3_600)
+            s.generations.insert(tx, w.ch, 1, key(0xA1), GenerationState.DRAINING, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), openEpoch = 0, drainUntilDay = today - 1)
+            s.generations.insert(tx, w.ch, 2, key(0xA2), GenerationState.CURRENT, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), openEpoch = 1)
+            s.generations.insert(tx, w.ch, 3, key(0xA3), GenerationState.PENDING_SWITCH, chBytes(60, 2), chBytes(60, 3), chBytes(32, 4), openEpoch = 2, switchHour = now + 3_600)
             // epochs: 0 past its retention, 1 retained, 2 open with candidates; the log and the fork signals
             s.epochs.insert(tx, w.ch, 0, chBytes(68, 5), chBytes(32, 6))
             s.epochs.finalize(tx, w.ch, 0, key(7), today - 12, today - 1)
@@ -84,7 +84,10 @@ class ChannelResidueTest {
             s.posts.insertOp(tx, id(5), w.ch, OpPurpose.POST, id(3))
             s.posts.insertOp(tx, id(6), w.ch, OpPurpose.COMMIT, key(40))
             // joins, requests, invites, tags: all past their day
-            s.joins.insertJoin(tx, w.ch, key(0x91), JoinType.JOIN, id(0x31), 0, today - 1)
+            s.joins.insertJoin(
+                tx, w.ch, key(0x91), JoinType.JOIN, id(0x31), 0, today - 1,
+                ns = key(0x92), jkEnv = chBytes(60, 0x93), rJoin = key(0x94), committersDigest = key(0x95),
+            )
             s.joins.insertRequest(tx, w.ch, key(0x92), 0, JoinType.JOIN, id(0x31), chBytes(500, 1), today - 1)
             s.joins.markKpSeen(tx, w.ch, chBytes(16, 7), today - 1)
             s.invites.insertIssued(tx, w.ch, id(0x31), key(0x93), key(0x94), chBytes(64, 1), chBytes(32, 2), null, today - 1)
@@ -94,6 +97,8 @@ class ChannelResidueTest {
             s.invites.putSponsor(tx, w.ch, key(0x82), key(0x94), id(0x31), today - 20)
             s.members.putRefresh(tx, w.ch, key(0x82), today - 2)
             s.members.noteMemberSeen(tx, w.ch, key(0x82), 1)
+            // the channel state key (slice S4, §10.4 "State key"): one for every channel, never swept
+            s.self.insertIfAbsent(tx, chBytes(48, 0x66))
         }
     }
 
@@ -143,7 +148,7 @@ class ChannelResidueTest {
     @Test
     fun afterTheSweepTheDumpShowsOnlyWhatTheDesignDeclaresAsResidue() = StoreWorld().use { w ->
         live(w)
-        // before: every one of the 26 tables has a row (the world is lived-in)
+        // before: every one of the 27 tables has a row (the world is lived-in)
         assertEquals(ChannelSchema.tables, w.db.nonEmpty().keys)
         sweep(w)
         val residue = w.db.nonEmpty()
@@ -157,6 +162,8 @@ class ChannelResidueTest {
                 "mls_kv", "ch_box_key",
                 // membership metadata the design declares (§8.5): sponsor, refresh days, last epochs
                 "ch_sponsor", "ch_member_refresh", "ch_member_seen",
+                // the wrapped channel state key (slice S4, §10.4): it lives as long as the database's channels can
+                "mls_self",
             ),
             residue.keys,
         )

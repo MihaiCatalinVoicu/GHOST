@@ -192,7 +192,9 @@ class Migration7Test {
         // The sync and DM rows beside them are untouched by a delete of the channel: no cascade crosses over.
         val dmRows = db.queryLong("SELECT count(*) FROM dm_message")
         db.exec("DELETE FROM ch_channel")
-        for (table in ChannelSchema.tables) assertEquals("$table is gone with its channel", 0L, db.queryLong("SELECT count(*) FROM $table"))
+        // `mls_self` (slice S4) is the one table no channel owns: the state key of every channel, kept when one goes.
+        for (table in ChannelSchema.tables - "mls_self") assertEquals("$table is gone with its channel", 0L, db.queryLong("SELECT count(*) FROM $table"))
+        assertEquals("the channel state key is no channel's", 1L, db.queryLong("SELECT count(*) FROM mls_self"))
         assertEquals(dmRows, db.queryLong("SELECT count(*) FROM dm_message"))
         assertEquals(1L, db.queryLong("SELECT count(*) FROM sync_namespace WHERE consumer = 'channel'"))
     }
@@ -210,8 +212,9 @@ class Migration7Test {
             Pair(db.schemaSnapshot(), db.dump())
         }
         assertTrue(
-            "step 0 (11), 30 tables and indexes, 36 rules, 24 guards and 4 rowid triggers are 105 statements; a change is deliberate: ${v7.statements.size}",
-            v7.statements.size == 105,
+            "step 0 (11), 31 tables and indexes, 37 rules, 25 guards and 4 rowid triggers are 108 statements (105 before slice " +
+                "S4 added `mls_self`, its rule and its guard, §19.37); a change is deliberate: ${v7.statements.size}",
+            v7.statements.size == 108,
         )
         for (i in v7.statements.indices) {
             populatedV6().use { db ->

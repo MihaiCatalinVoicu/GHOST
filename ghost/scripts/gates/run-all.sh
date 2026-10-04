@@ -33,7 +33,9 @@ rc=0
 # mls-jni-surface is G-M6 (Phase 10 design §10.2, §13.1; slice S2b), G-R6's method for the channel
 # surface `MlsNative`: its source halves run here without a library; the CI android-native job runs it
 # with the shipped libraries and the android job with the ghost-dm-host build (`--test`).
-for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface; do
+# ch-enqueue-callers is G-M5 (Phase 10 design §13.1, §7.7; slice S4), the channel engine's G-DM2: each
+# channel step makes only the relay-visible calls of its row, CH-RECV and CH-JOIN none. It reads sources only.
+for g in anti-placeholder no-logging issuer-output monero-pin manifest-lint dependency-allowlist proto-check sync-no-catch-all kotlin-clearnet no-public-binaries dm-jni-surface dm-no-fts dm-enqueue-callers ch-enqueue-callers apk-no-debug-hooks workflow-yaml messaging-no-network dm-no-replace dm-derivation-inputs ch-derivation-inputs mls-jni-surface; do
   bash "$DIR/$g.sh" || rc=1
 done
 exit $rc

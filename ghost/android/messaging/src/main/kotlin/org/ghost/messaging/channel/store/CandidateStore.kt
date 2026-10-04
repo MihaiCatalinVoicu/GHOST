@@ -37,6 +37,12 @@ internal class CandidateStore {
         val boxEnv: ByteArray?,
         val firstSeenMinute: Long,
         val storeHour: Long?,
+        /**
+         * The candidate removes a pseudonym (a Remove, a leave, an eviction or a swap): while a valid one is held for the
+         * current epoch the channel is not current for posting, the removal hold of CO-13 (amended by slice S4, §19.37,
+         * §19.35 F-1). Set from the validation summary when the candidate is recorded; never changes.
+         */
+        val removes: Boolean = false,
     ) {
         override fun toString(): String = "CandidateRow(epoch=$epoch, rank=$rank, own=$own)"
     }
@@ -104,6 +110,7 @@ internal class CandidateStore {
         welcomeEnv: ByteArray? = null,
         boxEnv: ByteArray? = null,
         verified: Boolean = false,
+        removes: Boolean = false,
     ) {
         Fields.nonNegative("ch_candidate.epoch", epoch)
         Fields.bytes("ch_candidate.hash", hash, 32)
@@ -128,14 +135,25 @@ internal class CandidateStore {
         if ((!own && foreign >= MAX_FOREIGN) || (own && ownRows >= 1)) throw ChannelStoreException(ChannelStoreError.LIMIT, "ch_candidate")
         val changed = tx.sql.execUpdate(
             "INSERT INTO ch_candidate(channel_id, epoch, hash, sender, rank, own, verified, body_env, welcome_env, box_env, " +
-                "first_seen_minute, store_hour) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
+                "first_seen_minute, store_hour, removes) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS " +
                 "(SELECT 1 FROM ch_candidate WHERE channel_id = ? AND epoch = ? AND (hash = ? OR sender = ?))",
             listOf(
                 channelId, epoch, hash, sender, rank.toLong(), Fields.flag(own), Fields.flag(verified), bodyEnv,
-                welcomeEnv, boxEnv, firstSeenMinute, storeHour, channelId, epoch, hash, sender,
+                welcomeEnv, boxEnv, firstSeenMinute, storeHour, Fields.flag(removes), channelId, epoch, hash, sender,
             ),
         )
         if (changed != 1) throw ChannelStoreException(ChannelStoreError.ROW_EXISTS, "ch_candidate")
+    }
+
+    /**
+     * Whether a **valid** candidate the member holds for [epoch] removes a pseudonym: the removal hold of CO-13 (§6.3.1,
+     * §19.6). Only valid candidates are recorded (`CH-RECV` drops an invalid one); the own commit counts too, whose native
+     * backstop is `PENDING_COMMIT`.
+     */
+    fun holdsRemoval(sql: SqlExecutor, channelId: ByteArray, epoch: Long): Boolean {
+        var held = false
+        sql.query(REMOVING, listOf(channelId, epoch)) { held = true }
+        return held
     }
 
     /** The own commit's copy was verified at a relay (CO-4): once true it stays true. */
@@ -185,6 +203,7 @@ internal class CandidateStore {
         boxEnv = if (r.isNull(9)) null else r.blob(9),
         firstSeenMinute = r.long(10),
         storeHour = if (r.isNull(11)) null else r.long(11),
+        removes = r.long(12) == 1L,
     )
 
     companion object {
@@ -193,12 +212,13 @@ internal class CandidateStore {
         const val MAX_WELCOMES: Int = 67_108_864
 
         private const val COLUMNS =
-            "channel_id, epoch, hash, sender, rank, own, verified, body_env, welcome_env, box_env, first_seen_minute, store_hour"
+            "channel_id, epoch, hash, sender, rank, own, verified, body_env, welcome_env, box_env, first_seen_minute, store_hour, removes"
 
         const val OF_EPOCH: String = "SELECT $COLUMNS FROM ch_candidate WHERE channel_id = ? AND epoch = ? ORDER BY rank, hash"
         const val BY_HASH: String = "SELECT $COLUMNS FROM ch_candidate WHERE channel_id = ? AND epoch = ? AND hash = ?"
         const val BY_SENDER: String = "SELECT $COLUMNS FROM ch_candidate WHERE channel_id = ? AND epoch = ? AND sender = ?"
         const val OWN: String = "SELECT $COLUMNS FROM ch_candidate WHERE channel_id = ? AND epoch = ? AND own = 1"
         const val OWN_OF_CHANNEL: String = "SELECT $COLUMNS FROM ch_candidate WHERE channel_id = ? AND own = 1 ORDER BY epoch"
+        const val REMOVING: String = "SELECT 1 FROM ch_candidate WHERE channel_id = ? AND epoch = ? AND removes = 1 LIMIT 1"
     }
 }

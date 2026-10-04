@@ -1401,7 +1401,10 @@ object Schema {
     )
 
     /**
-     * Migration 7, **step 1**: the 26 tables of §9. Conventions (v5, "following the v4/v5 split of F9
+     * Migration 7, **step 1**: the 26 tables of §9 and `mls_self`, amended by slice S4 (Phase 10 design §19.37: the
+     * wrapped channel state key, §19.35 F-9; the invite state of `ch_join`, F-8; `ch_candidate.removes`, F-1;
+     * `ch_channel.committers_digest`, F-S4-2; `ch_generation.open_epoch`, F-S4-7 — migration 7 had not shipped, so it is
+     * amended in place, still one transaction). Conventions (v5, "following the v4/v5 split of F9
      * §13.6"): **a table is WITHOUT ROWID** (T33 and F9 §13.6 step 5: "random WITHOUT ROWID keys"; the hidden
      * rowid of a rowid table is the order its rows arrived in, and the gaps between the rowids that survive
      * count the rows that were swept — of every channel, since the rowid space is the table's), **except two**:
@@ -1438,7 +1441,8 @@ object Schema {
                   my_pseudonym        BLOB NOT NULL CHECK (length(my_pseudonym) = 32),
                   name_env            BLOB CHECK (name_env IS NULL OR length(name_env) BETWEEN 29 AND 76),
                   last_committer_commit_day INTEGER CHECK (last_committer_commit_day IS NULL
-                                      OR (typeof(last_committer_commit_day) = 'integer' AND last_committer_commit_day >= 0))
+                                      OR (typeof(last_committer_commit_day) = 'integer' AND last_committer_commit_day >= 0)),
+                  committers_digest   BLOB CHECK (committers_digest IS NULL OR length(committers_digest) = 32)
                 ) WITHOUT ROWID""",
         """CREATE TABLE ch_liveness (
                   channel_id              BLOB PRIMARY KEY NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
@@ -1472,6 +1476,7 @@ object Schema {
                   g_env           BLOB NOT NULL CHECK (length(g_env) = 60),
                   jk_env          BLOB NOT NULL CHECK (length(jk_env) = 60),
                   r_join          BLOB NOT NULL CHECK (length(r_join) = 32),
+                  open_epoch      INTEGER NOT NULL CHECK (typeof(open_epoch) = 'integer' AND open_epoch >= 0),
                   switch_hour     INTEGER CHECK (switch_hour IS NULL
                                   OR (typeof(switch_hour) = 'integer' AND switch_hour % 3600 = 0)),
                   drain_until_day INTEGER CHECK (drain_until_day IS NULL
@@ -1521,6 +1526,7 @@ object Schema {
                                     CHECK (typeof(first_seen_minute) = 'integer' AND first_seen_minute % 60 = 0),
                   store_hour        INTEGER CHECK (store_hour IS NULL
                                     OR (typeof(store_hour) = 'integer' AND store_hour % 3600 = 0)),
+                  removes           INTEGER NOT NULL DEFAULT 0 CHECK (removes IN (0, 1)),
                   CHECK (own = 1 OR (welcome_env IS NULL AND box_env IS NULL)),
                   CHECK (own = 1 OR verified = 0),
                   PRIMARY KEY (channel_id, epoch, hash),
@@ -1550,6 +1556,14 @@ object Schema {
                                    OR (typeof(delete_after_day) = 'integer' AND delete_after_day >= 0))
                 ) WITHOUT ROWID""",
         "CREATE INDEX idx_mls_global_kv_channel ON mls_global_kv(channel_id)",
+        // The channel state key (§10.4 "State key", amended by slice S4, §19.37, §19.35 F-9): 32 random bytes created at
+        // the first channel use, stored wrapped by a non-exportable Keystore key with the database key's authentication
+        // policy — the F9 §2.5 `session_state_key` pattern, one row as `dm_self` holds the DM's — and unwrapped only into
+        // the native channel context. One key for all channels; a wipe deletes it with the database.
+        """CREATE TABLE mls_self (
+                  id                INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+                  state_key_wrapped BLOB NOT NULL CHECK (length(state_key_wrapped) BETWEEN 40 AND 256)
+                ) WITHOUT ROWID""",
         // ---- posts and what hangs on them (§8.2, §8.5)
         // `relay_expiry_hour` (E) is a deadline of an *unread* post only (§8.2: "an unread post is deleted at
         // min(E, consume + bucket + 1 h)") and a display forgets it: the CHECK ties it to `state = 'unread'`, and
@@ -1624,6 +1638,12 @@ object Schema {
                   PRIMARY KEY (channel_id, direction, peer)
                 ) WITHOUT ROWID""",
         // ---- joins, invites and the committer's work (§6.2)
+        // `ns`, `jk_env`, `r_join` and `committers_digest` are the invitee's join state (amended by slice S4, §19.37,
+        // §19.35 F-8): what an invite carries and nothing else keeps, because a password invite's link is never
+        // stored (Q50 (a)) and an invite never carries `G_g` (§5.2 rule 3), so no `ch_generation` row can hold it.
+        // The namespace routes the blobs fetched from it, `JK_g` (an invite's class-6 envelope) opens the Welcome,
+        // `R_join` recognises it, and the digest is the committers anchor (§6.2.5). A rejoin has no invite and none
+        // of the four: it listens to its own generations (§6.7).
         """CREATE TABLE ch_join (
                   channel_id BLOB NOT NULL REFERENCES ch_channel(channel_id) ON DELETE CASCADE,
                   kp_ref     BLOB NOT NULL CHECK (length(kp_ref) = 32),
@@ -1632,7 +1652,14 @@ object Schema {
                   generation INTEGER NOT NULL
                              CHECK (typeof(generation) = 'integer' AND generation BETWEEN 0 AND 4294967295),
                   expiry_day INTEGER NOT NULL CHECK (typeof(expiry_day) = 'integer' AND expiry_day >= 0),
+                  ns         BLOB UNIQUE CHECK (ns IS NULL OR length(ns) = 32),
+                  jk_env     BLOB CHECK (jk_env IS NULL OR length(jk_env) = 60),
+                  r_join     BLOB CHECK (r_join IS NULL OR length(r_join) = 32),
+                  committers_digest BLOB CHECK (committers_digest IS NULL OR length(committers_digest) = 32),
                   CHECK ((type = 'rejoin') = (invite_id IS NULL)),
+                  CHECK ((type = 'rejoin') = (ns IS NULL)),
+                  CHECK ((ns IS NULL) = (jk_env IS NULL) AND (ns IS NULL) = (r_join IS NULL)
+                         AND (ns IS NULL) = (committers_digest IS NULL)),
                   PRIMARY KEY (channel_id, kp_ref)
                 ) WITHOUT ROWID""",
         // The second rowid table (beside `mls_kv`): the committer serves its requests "in arrival order" (§6.2.3) and
@@ -1746,6 +1773,7 @@ object Schema {
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.generation IS NOT OLD.generation
                   OR NEW.namespace_id IS NOT OLD.namespace_id OR NEW.g_env IS NOT OLD.g_env
                   OR NEW.jk_env IS NOT OLD.jk_env OR NEW.r_join IS NOT OLD.r_join
+                  OR NEW.open_epoch IS NOT OLD.open_epoch
                 BEGIN SELECT RAISE(ABORT, 'a generation keeps its namespace and its secrets'); END""",
         """CREATE TRIGGER ch_generation_state BEFORE UPDATE OF state ON ch_generation
                 WHEN NOT ((OLD.state = NEW.state)
@@ -1813,6 +1841,7 @@ object Schema {
         """CREATE TRIGGER ch_candidate_identity BEFORE UPDATE ON ch_candidate
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.epoch IS NOT OLD.epoch OR NEW.hash IS NOT OLD.hash
                   OR NEW.sender IS NOT OLD.sender OR NEW.rank IS NOT OLD.rank OR NEW.own IS NOT OLD.own
+                  OR NEW.removes IS NOT OLD.removes
                   OR NEW.body_env IS NOT OLD.body_env OR NEW.first_seen_minute IS NOT OLD.first_seen_minute
                   OR NEW.verified < OLD.verified
                   OR (OLD.welcome_env IS NULL AND NEW.welcome_env IS NOT NULL)
@@ -1878,6 +1907,8 @@ object Schema {
         """CREATE TRIGGER ch_join_fixed BEFORE UPDATE ON ch_join
                 WHEN NEW.channel_id IS NOT OLD.channel_id OR NEW.kp_ref IS NOT OLD.kp_ref OR NEW.type IS NOT OLD.type
                   OR NEW.invite_id IS NOT OLD.invite_id OR NEW.generation IS NOT OLD.generation
+                  OR NEW.ns IS NOT OLD.ns OR NEW.jk_env IS NOT OLD.jk_env OR NEW.r_join IS NOT OLD.r_join
+                  OR NEW.committers_digest IS NOT OLD.committers_digest
                   OR NEW.expiry_day > OLD.expiry_day
                 BEGIN SELECT RAISE(ABORT, 'a join keeps its KeyPackage and its invite, and its expiry only moves earlier'); END""",
         // The sponsor's own link (Q50 (a)): a password invite stores none, and a row that stored none never gets
@@ -1913,6 +1944,10 @@ object Schema {
                   OR (OLD.delete_after_day IS NOT NULL
                       AND (NEW.delete_after_day IS NULL OR NEW.delete_after_day > OLD.delete_after_day))
                 BEGIN SELECT RAISE(ABORT, 'a global row keeps its key and its channel, and its day only moves earlier'); END""",
+        // The channel state key is written once, at the first channel use, and never rewritten (slice S4, §19.37): every
+        // envelope of every channel is bound to it, so a second key would orphan them all.
+        """CREATE TRIGGER mls_self_fixed BEFORE UPDATE ON mls_self
+                BEGIN SELECT RAISE(ABORT, 'the channel state key is written once and never rewritten'); END""",
         """CREATE TRIGGER ch_box_key_limit BEFORE INSERT ON ch_box_key
                 WHEN (SELECT count(*) FROM ch_box_key WHERE channel_id = NEW.channel_id) >= 18
                 BEGIN SELECT RAISE(ABORT, 'at most 18 box keys per channel'); END""",
@@ -1952,12 +1987,13 @@ object Schema {
         rowidPositive("mls_kv"),
         rowidFixed("mls_kv"),
         replaceGuard("mls_global_kv", "k = NEW.k"),
+        replaceGuard("mls_self", "id = NEW.id"),
         replaceGuard("ch_post", "op_id = NEW.op_id"),
         replaceGuard("ch_reaction", "target = NEW.target AND author = NEW.author"),
         replaceGuard("ch_pending_post", "op_id = NEW.op_id"),
         replaceGuard("ch_outbound_op", "operation_id = NEW.operation_id"),
         replaceGuard("ch_reveal", "channel_id = NEW.channel_id AND direction = NEW.direction AND peer = NEW.peer"),
-        replaceGuard("ch_join", "channel_id = NEW.channel_id AND kp_ref = NEW.kp_ref"),
+        replaceGuard("ch_join", "(channel_id = NEW.channel_id AND kp_ref = NEW.kp_ref) OR ns = NEW.ns"),
         rowidGuard("ch_join_request", "channel_id = NEW.channel_id AND hash = NEW.hash"),
         rowidPositive("ch_join_request"),
         rowidFixed("ch_join_request"),
@@ -1997,6 +2033,8 @@ object Schema {
         "ch_fork_signal", "mls_kv", "mls_global_kv", "ch_post", "ch_reaction", "ch_pending_post", "ch_outbound_op",
         "ch_seen", "ch_reveal", "ch_join", "ch_join_request", "ch_invite_issued", "ch_kp_seen", "ch_member_seen",
         "ch_invite_own", "ch_sponsor", "ch_member_refresh", "ch_request", "ch_box_key",
+        // ... and the channel state key's row (amended by slice S4, §19.37).
+        "mls_self",
     )
 
     /** State-machine, write-once and REPLACE-guard triggers of v2 and v3; a missing one fails [MigrationRunner.verifyIntegrity]. */
@@ -2045,11 +2083,13 @@ object Schema {
         "ch_join_request_limit", "ch_join_request_channel", "ch_join_fixed", "ch_invite_own_fixed",
         "ch_invite_issued_identity", "ch_invite_issued_flags", "ch_kp_seen_limit", "ch_kp_seen_channel",
         "mls_global_kv_fixed", "ch_box_key_limit", "ch_box_key_replaced",
+        // (slice S4, §19.37: the channel state key is written once)
+        "mls_self_fixed",
         // ... their REPLACE guards (every channel table but ch_seen and ch_kp_seen, which are written with
         // INSERT OR IGNORE) ...
         "ch_channel_no_replace", "ch_liveness_no_replace", "ch_schedule_no_replace", "ch_generation_no_replace",
         "ch_epoch_no_replace", "ch_epoch_log_no_replace", "ch_candidate_no_replace", "ch_fork_signal_no_replace",
-        "mls_kv_no_replace", "mls_global_kv_no_replace", "ch_post_no_replace", "ch_reaction_no_replace",
+        "mls_kv_no_replace", "mls_global_kv_no_replace", "mls_self_no_replace", "ch_post_no_replace", "ch_reaction_no_replace",
         "ch_pending_post_no_replace", "ch_outbound_op_no_replace", "ch_reveal_no_replace", "ch_join_no_replace",
         "ch_join_request_no_replace", "ch_invite_issued_no_replace", "ch_member_seen_no_replace",
         "ch_invite_own_no_replace", "ch_sponsor_no_replace", "ch_member_refresh_no_replace", "ch_request_no_replace",
