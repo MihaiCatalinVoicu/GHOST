@@ -1,8 +1,8 @@
-# GHOST Phase 11: Media — Design (proposed)
+# GHOST Phase 11: Media — Design (approved 2026-10-04)
 
 | Field | Value |
 |---|---|
-| Status | **Proposed, 2026-09-25; revision 4 of 2026-10-04 folds in the S0 evidence; for the owner's approval before any code** (the owner's rule: an approved design before implementation). ADR-44 … ADR-47 (Appendix A, Romanian) are "propus"; they become "propus, aplicat" only if the owner approves this design or lets the question defaults of §19 stand under the standing instruction to continue between phases. |
+| Status | **Approved by the owner on 2026-10-04: Q1 … Q38 and the five questions of the S0 evidence (Q-S1 … Q-S5 = Q39 … Q43), each with its proposed default** (§19, "Owner decision"). Proposed 2026-09-25; revision 4 of 2026-10-04 folds in the S0 evidence. ADR-44 … ADR-47 (Appendix A, Romanian) are approved with Q1 and are filed in S0a. Q44 … Q48 (Q-S6 … Q-S10) were raised by the reviews of the S0 evidence and were not part of that answer: their defaults stand under §19's rule unless the owner objects, except Q47, whose download needs an explicit go-ahead. |
 | Revision | 3 (branch `p11-design`, based on `f244b80`): revision 1 (`4bd01ec`) was reviewed adversarially in three lenses (protocol and cryptography; privacy and metadata; feasibility, testability and scope); revision 2 (`539f9da`) applied the findings its author could read (the review texts reached it cut at 10 000 characters); revision 3 read the three reviews in full and applies the rest (§21.2). **Revision 4** (branch `p11-s0`, 2026-10-04) folds in slice S0's evidence (`docs/design/faza11-s0-evidence.md`: the V-M checks run on the API 29 and API 35 emulators, two adversarial reviews of that evidence, 34 findings, and a re-run of every challenged measurement): corrections S0-1 … S0-24, listed with where each landed in §21.3. Every finding, whether it was verified, and what changed is in §21; the normative sections below already carry the corrections |
 | Date | 2026-09-25; revision 4: 2026-10-04 |
 | Phase | 11 (plan §6.2 row 11, the authoritative scope): "Media: AEAD per chunk 256 KiB, fragmentare 64 KiB, strip metadata, Media3 fără cache plaintext, media efemeră și «vezi o singură dată» (P1; ADR-27)" (plan:315) |
@@ -1340,6 +1340,8 @@ With S1 ∥ S3 ∥ S4-sync after S0a, S4-owner after S2, and S7 ∥ S8 (revision
 ---
 
 ## 19. Owner questions (the proposed default applies unless the owner objects)
+
+**Owner decision (2026-10-04).** The owner approved **Q1 … Q38 with their proposed defaults and the five questions of the S0 evidence, Q-S1 … Q-S5 (Q39 … Q43 here), with theirs**: ADR-44 … ADR-47 approved; still images and video only; `M_i` media namespace paid by the recipient; automatic download; ×1.5 size classes; canonical JPEG and H.264 + AAC re-encoding; native key custody; view-once in the gate; files for the ciphertext store; the calibrated estimate and the slice order with no scope cut; HEIC/HEIF and AVIF sources refused (Q39 a); one fresh isolated process per request with the p90 ≤ 250 ms criterion (Q40); the class cap enforced while writing with one 15-fps retry (Q41); the picker residues declared (Q42); the four annotation-only artifacts excluded if S1 shows the build unchanged (Q43). **Not part of that answer:** Q44 … Q48 (Q-S6 … Q-S10), raised by the reviews of the S0 evidence; their defaults stand under this section's rule unless the owner objects (Q44 High profile where Media3 chooses it, Q45 rotation declared, Q46 the 16 MiB fragment bound accepted, Q48 colour label (a)), and **Q47 (the API 37 emulator image, a system-image download whose size `sdkmanager --list` reports before it starts) waits for an explicit go-ahead**; S1 does not depend on it.
 
 | # | Question | Proposed default | Pe scurt (RO) |
 |---|---|---|---|
