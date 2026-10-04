@@ -1,0 +1,12 @@
+Mutant ms44-pps-header-not-checked (Phase 11 slice S1, ghost-client-media; the review of S1): a PPS NAL header with the forbidden bit or nal_ref_idc 0 is allowed.
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -543,7 +543,7 @@
+         ));
+     }
+     let pps_header = pps_nal.first().copied().unwrap_or(0);
+-    if pps_header & 0x80 != 0 || pps_header & 0x1F != 8 || pps_header & 0x60 == 0 {
++    if pps_header & 0x1F != 8 {
+         return Err(nc("a PPS NAL header that is not a reference NAL of type 8"));
+     }
+     // A High-profile avcC may carry the ISO/IEC 14496-15 extension for 4:2:0 8-bit and no SPS

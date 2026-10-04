@@ -175,6 +175,11 @@ fn cs_m1_no_nonce_reuse_across_call_sequences() {
                 registry::violations_for(&kp).is_empty(),
                 "trial {trial}: nonce reuse"
             );
+            // §3.7 point 5: "any repeat fails the run" — a fresh key seals each pair once.
+            assert!(
+                registry::repeats_for(&kp).is_empty(),
+                "trial {trial}: a (key, nonce) sealed twice"
+            );
         }
     }
     eprintln!("CS-M1: {objects} objects, {finished} finished, {abandoned} abandoned attempts, {refused} refused");
@@ -197,6 +202,83 @@ fn cs_m1_a_resumed_preparation_under_the_same_key_is_caught() {
         !registry::violations_for(&kp).is_empty(),
         "the registry missed a resumed preparation"
     );
+}
+
+#[test]
+fn cs_m1_one_key_sealed_as_two_kinds_is_caught_on_every_chunk() {
+    // The review of S1: one K_f and object_id sealed as an image and as a video. K_p does not
+    // depend on the kind, so chunks 1 … 3 — zero padding in both — have one plaintext under one
+    // (key, nonce) and associated data that differ in the kind byte: identical ciphertexts and
+    // different tags, a reused Poly1305 one-time key. The registry must report them, not only
+    // chunk 0 (whose plaintexts differ).
+    let key = FileKey::from_bytes([0x73; 32]);
+    let id = ObjectId::from_bytes([0x74; 16]);
+    let kp = registry::key_digest(derive(&key, &id).payload.as_bytes());
+    for (kind, content) in [
+        (MediaKind::Image, golden("api35-emulator/strip_orient1.jpg")),
+        (MediaKind::Video, golden("api35-emulator/quad_land.fmp4")),
+    ] {
+        let mut s = Sealer::begin(key.clone(), id, kind, false, SizeClass::LARGEST);
+        s.append(&input_of(kind, &content)).expect("append");
+        assert_eq!(
+            s.finish(&[])
+                .expect("finish")
+                .manifest
+                .fields
+                .class
+                .chunks(),
+            4
+        );
+    }
+    let mut reported: Vec<[u8; 12]> = registry::violations_for(&kp)
+        .into_iter()
+        .map(|v| v.nonce)
+        .collect();
+    reported.sort_unstable();
+    assert_eq!(
+        reported,
+        finished_nonces(4),
+        "every chunk of the second kind"
+    );
+}
+
+#[test]
+fn the_sealer_never_seals_a_refused_byte() {
+    // An image whose content carries EXIF (APP1) is refused at the append that brings the segment
+    // (the review of S1: no test noticed a sealer walking images in strip mode), and the sealer is
+    // spent. A refusal in a later append leaves the chunks sealed before it — they hold only bytes
+    // the walker accepted (§22.2 row 2: no refused byte is sealed, not "no chunk").
+    let golden = golden("api35-emulator/strip_orient1.jpg");
+    let mut exif = golden[..2].to_vec();
+    exif.extend_from_slice(&[0xFF, 0xE1, 0x00, 0x12]);
+    exif.extend_from_slice(b"Exif\0\0GPS-CANARY");
+    exif.extend_from_slice(&golden[2..]);
+    let mut s = Sealer::begin(
+        FileKey::from_bytes([0x75; 32]),
+        ObjectId::from_bytes([0x76; 16]),
+        MediaKind::Image,
+        false,
+        SizeClass::LARGEST,
+    );
+    assert_eq!(s.append(&exif).unwrap_err().code(), Code::NonCanonical);
+    assert_eq!(s.append(&golden).unwrap_err().code(), Code::Sequence);
+    // A long canonical prefix seals chunk 0; the refused marker after it seals nothing more.
+    let long = jpeg_of_len(1024, 768, 600_000);
+    let mut s = Sealer::begin(
+        FileKey::from_bytes([0x77; 32]),
+        ObjectId::from_bytes([0x78; 16]),
+        MediaKind::Image,
+        false,
+        SizeClass::LARGEST,
+    );
+    let sealed = s
+        .append(&long[..CHUNK_PT + 10])
+        .expect("a canonical prefix");
+    assert_eq!(sealed.len(), 1, "chunk 0 sealed once chunk 1 began");
+    let mut refused = vec![0xFF, 0xE1, 0x00, 0x04, 0x00, 0x00];
+    refused.extend_from_slice(&long[CHUNK_PT + 10..]);
+    assert_eq!(s.append(&refused).unwrap_err().code(), Code::NonCanonical);
+    assert_eq!(s.finish(&[]).unwrap_err().code(), Code::Sequence);
 }
 
 struct Object {
@@ -519,4 +601,34 @@ fn the_walk_does_not_depend_on_piece_sizes() {
             assert_eq!(c.finish(), whole);
         }
     }
+}
+
+#[test]
+fn no_debug_renders_a_preview_a_caption_or_a_walker_buffer() {
+    // The review of S1: `Descriptor` printed its caption and `Manifest` and `SealedObject` the
+    // preview into any panic payload or assertion message; the walkers' buffers likewise.
+    let mut s = Sealer::begin(
+        FileKey::from_bytes([0x61; 32]),
+        ObjectId::from_bytes([0x62; 16]),
+        MediaKind::Image,
+        false,
+        SizeClass::LARGEST,
+    );
+    s.append(&golden("api35-emulator/strip_orient1.jpg"))
+        .expect("append");
+    let preview = grey_jpeg(320, 208);
+    let sealed = s.finish(&preview).expect("finish");
+    // A byte vector renders as decimals: the preview's SOI and DQT markers would show.
+    let shown = format!("{sealed:?} {:?}", sealed.manifest);
+    assert!(!shown.contains("255, 216, 255, 219"), "{shown}");
+    assert!(shown.contains("preview_len: "), "{shown}");
+    // The checkers in the middle of a table and of a moov.
+    let mut j = JpegChecker::new();
+    j.feed(&preview[..40]).expect("a prefix");
+    let quad = golden("api35-emulator/quad_land.fmp4");
+    let mut f = Fmp4Checker::new();
+    f.feed(&quad[..600]).expect("a prefix");
+    let shown = format!("{j:?} {f:?}");
+    assert!(!shown.contains("16, 11, 10, 16"), "{shown}");
+    assert!(!shown.contains("109, 118, 104, 100"), "{shown}"); // "mvhd"
 }

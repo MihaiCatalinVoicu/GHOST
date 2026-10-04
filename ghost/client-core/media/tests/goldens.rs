@@ -85,7 +85,7 @@ fn every_jpeg_golden_is_canonical_and_a_fixed_point() {
         assert!([512, 1024, 2048].contains(&long), "{name}: {info:?}");
         assert_eq!(info.width.min(info.height) % 16, 0, "{name}: {info:?}");
         assert_eq!(
-            jpeg::canonicalize(&data).expect("canonical"),
+            *jpeg::canonicalize(&data).expect("canonical"),
             data,
             "{name}"
         );

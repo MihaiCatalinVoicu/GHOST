@@ -46,7 +46,8 @@
 # Runs in the CI `rust` job (it needs cargo, the lock and the unpacked registry sources, not a build
 # of the library) and on every pin change through it.
 # Self-test hooks (scripts/gates/self-test.sh): GHOST_G_R8_BASELINE replaces the baseline file;
-# GHOST_G_R8_TRIPLES replaces the triple list.
+# GHOST_G_R8_TRIPLES replaces the triple list; GHOST_G_R8_MEDIA_LINKER replaces the package whose
+# graph decides where the media scan reads the features (`--graph media` only).
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 command -v cargo >/dev/null || { echo "cargo not found" >&2; exit 2; }
 # cargo's output is parsed here, so it must be plain. With CARGO_TERM_COLOR=always, which the CI
@@ -71,9 +72,11 @@ case "$GRAPH" in
     FEATURES_PKG=ghost-client-net REQUIRED_CRATES="ghost-client-mls openmls jni" ;;
   media)
     # G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1): the media crate and its
-    # graph, each package with the features it has in the crate's own graph — the shipped library does
-    # not link it before slice S2, which switches FEATURES_PKG to ghost-client-net when ghost-client-dm
-    # gains the dependency (as S2b did for the channel crate; design §22.2).
+    # graph, each package with the features it has in the crate's own graph while the shipped library
+    # does not link it, and with the features it has in ghost-client-net's graph from the commit whose
+    # library does (slice S2, through ghost-client-dm): the switch is read from the graph below, not
+    # made by hand (the review of S1 found a manual switch left for S2 with no tripwire; S2b had made
+    # the channel crate's by hand). GHOST_G_R8_MEDIA_LINKER names the linking package (self-test).
     NAME=media-vendored-clock-log ROOT_PKG=ghost-client-media ROOT_FEATURES=()
     FEATURES_PKG=ghost-client-media REQUIRED_CRATES="ghost-client-media chacha20poly1305 sha2" ;;
   *) echo "usage: dm-vendored-clock-log.sh [--graph dm|mls|media]" >&2; exit 2 ;;
@@ -90,6 +93,16 @@ run() { # a command whose failure fails the gate with its stderr shown
     finish "$NAME"
   fi
 }
+if [ "$GRAPH" = media ]; then
+  linker="${GHOST_G_R8_MEDIA_LINKER:-ghost-client-net}"
+  run cargo tree --locked -q -p "$linker" -e normal --target all --prefix none -f '{p}' > "$work/linker.txt"
+  if grep -q '^ghost-client-media ' "$work/linker.txt"; then
+    FEATURES_PKG="$linker"
+    echo "[$NAME] $linker links ghost-client-media: each package's features as $linker's graph has them"
+  else
+    echo "[$NAME] $linker does not link ghost-client-media yet: each package's features as the crate's own graph has them"
+  fi
+fi
 run cargo build --locked -q --release -p ghost-vendored-scan
 # Where cargo put it: CARGO_TARGET_DIR when set (a private target directory), `.exe` on Windows.
 SCANNER="${CARGO_TARGET_DIR:-$GHOST_ROOT/target}/release/vendored-scan"

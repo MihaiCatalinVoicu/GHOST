@@ -1,5 +1,5 @@
-//! Hostile inputs for the sniffer, the JPEG walker and the fMP4 walker (design §15.1, §15.2 item 6;
-//! the S1 brief): deeply nested boxes, huge declared sizes, zero sizes, overlapping boxes, 32-bit
+//! Hostile inputs for the sniffer, the JPEG walker and the fMP4 walker (design §15.1, §15.2 item 6,
+//! §22.2 row 16): deeply nested boxes, huge declared sizes, zero sizes, overlapping boxes, 32-bit
 //! overflow, truncation at every offset, and seeded random bytes. Every one is refused with a typed
 //! code, quickly, without a panic; nothing allocates more than the input's own bounds.
 #![allow(clippy::disallowed_methods)]
@@ -205,7 +205,7 @@ fn seeded_random_bytes_are_refused_quickly() {
         let c = jpeg::canonicalize(&data);
         assert_eq!(
             j.is_ok(),
-            c.as_ref().map(|c| c == &data).unwrap_or(false),
+            c.as_ref().map(|c| **c == data).unwrap_or(false),
             "check and canonicalize agree"
         );
         let _ = sniff(&data);
@@ -265,7 +265,7 @@ fn hostile_jpeg_segments() {
             "case {i}"
         );
     }
-    assert_eq!(jpeg::canonicalize(&cases[5]).expect("COM dropped"), base);
+    assert_eq!(*jpeg::canonicalize(&cases[5]).expect("COM dropped"), base);
 }
 
 #[test]

@@ -451,7 +451,11 @@ done
 # Hooks: GHOST_POLICY_MEDIA_QUERY_FEATURES passes --features to the own-graph query (a feature that
 # reaches the graph); GHOST_POLICY_MEDIA_GRAPH replaces the packages that graph must hold;
 # GHOST_POLICY_MEDIA_LINKER names the package whose dependency makes the shipped graph required;
-# GHOST_POLICY_MEDIA_SHIPPED_REQUIRED=1 requires it now.
+# GHOST_POLICY_MEDIA_SHIPPED_REQUIRED=1 requires it now; GHOST_POLICY_MEDIA_METADATA replaces the
+# workspace metadata the S2 detection reads (a fixture where the linker declares the crate, so the
+# detection itself runs: the review of S1 found the self-test bypassing it with the hook above); and
+# GHOST_POLICY_MEDIA_SHIPPED names the package the shipped-graph feature clause checks (one with a
+# non-default feature there, so the clause's query and comparison run before S2 links the crate).
 media_query=(-p ghost-client-media -e features,no-dev -i ghost-client-media --target all)
 [ -n "${GHOST_POLICY_MEDIA_QUERY_FEATURES:-}" ] && media_query+=(--features "$GHOST_POLICY_MEDIA_QUERY_FEATURES")
 if media_raw="$(tree -p ghost-client-media -e normal --target all --prefix none -f '{p}')"; then
@@ -472,7 +476,11 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 media_required="${GHOST_POLICY_MEDIA_SHIPPED_REQUIRED:-}"
-if [ -z "$media_required" ] && [ -n "${meta:-}" ]; then
+media_meta="${meta:-}"
+if [ -n "${GHOST_POLICY_MEDIA_METADATA:-}" ]; then
+  media_meta="$(cat "$GHOST_POLICY_MEDIA_METADATA")" || { fail "$GHOST_POLICY_MEDIA_METADATA: unreadable"; media_meta=""; }
+fi
+if [ -z "$media_required" ] && [ -n "$media_meta" ]; then
   if ! media_declared="$(LINKER="${GHOST_POLICY_MEDIA_LINKER:-ghost-client-dm}" perl -MJSON::PP -e '
       local $/; my $m = JSON::PP->new->decode(<STDIN>);
       for my $p (@{ $m->{packages} }) {
@@ -480,7 +488,7 @@ if [ -z "$media_required" ] && [ -n "${meta:-}" ]; then
         for my $d (@{ $p->{dependencies} }) {
           print "yes\n" if $d->{name} eq "ghost-client-media" && !defined $d->{kind};
         }
-      }' <<< "$meta")"; then
+      }' <<< "$media_meta")"; then
     fail "the workspace metadata reader (perl) failed: G-M7's shipped-graph clause is unproven"
     media_declared=""
   fi
@@ -489,10 +497,11 @@ fi
 if [ -n "$media_required" ] && ! has "$pkgs" ghost-client-media; then
   fail "package 'ghost-client-media' is not in the shipped client graph although ${GHOST_POLICY_MEDIA_LINKER:-ghost-client-dm} declares it (G-M7: slice S2 links it)"
 fi
-if has "$pkgs" ghost-client-media; then
+media_shipped="${GHOST_POLICY_MEDIA_SHIPPED:-ghost-client-media}"
+if has "$pkgs" "$media_shipped"; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    [ "$f" = default ] || fail "ghost-client-media feature '$f' is enabled in the shipped client graph; G-M7 allows: default"
-  done <<< "$(features ghost-client-media)"
+    [ "$f" = default ] || fail "$media_shipped feature '$f' is enabled in the shipped client graph; G-M7 allows: default"
+  done <<< "$(features "$media_shipped")"
 fi
 finish rust-feature-policy

@@ -92,28 +92,7 @@ fn set_body(nodes: &mut [Node], p: &[&str], off: usize, bytes: &[u8]) {
     b[off..off + bytes.len()].copy_from_slice(bytes);
 }
 
-/// The avcC body of `sps` and `pps`, with the High extension when `ext`.
-fn avcc(sps: &[u8], pps: &[u8], ext: bool) -> Vec<u8> {
-    let mut v = vec![1, sps[1], sps[2], sps[3], 0xFF, 0xE1];
-    v.extend_from_slice(&(sps.len() as u16).to_be_bytes());
-    v.extend_from_slice(sps);
-    v.push(1);
-    v.extend_from_slice(&(pps.len() as u16).to_be_bytes());
-    v.extend_from_slice(pps);
-    if ext {
-        v.extend_from_slice(&[0xFD, 0xF8, 0xF8, 0x00]);
-    }
-    v
-}
-
 const PPS: [u8; 6] = [0x68, 0xce, 0x01, 0xa8, 0x35, 0xc8];
-const AVCC: [&str; 9] = [
-    "moov", "trak#1", "mdia", "minf", "stbl", "stsd", "avc1", "avcC", "",
-];
-
-fn avcc_path() -> Vec<&'static str> {
-    AVCC[..8].to_vec()
-}
 
 // ---------------------------------------------------------------------------------------------
 // SPS fixtures.
@@ -164,6 +143,189 @@ impl BitWriter {
     }
 }
 
+/// An SPS to build: every option the walker reads, with the values of a canonical Baseline SPS
+/// by default.
+#[derive(Clone)]
+struct SpsSpec {
+    header: u8,
+    profile: u64,
+    level: u64,
+    chroma: u64,
+    depth: u64,
+    scaling: bool,
+    refs: u64,
+    frame_mbs_only: u64,
+    mbs: (u64, u64),
+    /// Frame cropping offsets (left, right, top, bottom), in 2-sample units.
+    crop: Option<(u64, u64, u64, u64)>,
+    /// VUI `aspect_ratio_idc`, and `(sar_width, sar_height)` for idc 255.
+    aspect: Option<(u64, (u64, u64))>,
+    full_range: u64,
+    colour: Option<(u64, u64, u64)>,
+    /// NAL HRD with `cpb_cnt_minus1` and the bit lengths of the last CPB's two values (padding).
+    hrd: Option<(u64, u32, u32)>,
+    /// VUI bitstream restriction `(max_num_reorder_frames, max_dec_frame_buffering)`.
+    restriction: Option<(u64, u64)>,
+}
+
+impl Default for SpsSpec {
+    fn default() -> Self {
+        SpsSpec {
+            header: 0x67,
+            profile: 66,
+            level: 31,
+            chroma: 1,
+            depth: 0,
+            scaling: false,
+            refs: 1,
+            frame_mbs_only: 1,
+            mbs: (80, 45),
+            crop: None,
+            aspect: None,
+            full_range: 0,
+            colour: Some((5, 1, 6)),
+            hrd: None,
+            restriction: None,
+        }
+    }
+}
+
+/// A Exp-Golomb value of `bits` significant bits, alternating ones and zeros (few zero runs).
+fn wide(bits: u32) -> u64 {
+    if bits == 0 {
+        0
+    } else {
+        (((1u64 << bits) - 1) / 3 * 2) | (1 << (bits - 1))
+    }
+}
+
+impl SpsSpec {
+    fn nal(&self) -> Vec<u8> {
+        let mut w = BitWriter::default();
+        w.u(8, self.profile)
+            .u(8, if self.profile == 66 { 0xc0 } else { 0 })
+            .u(8, self.level)
+            .ue(0);
+        if self.profile == 100 {
+            w.ue(self.chroma)
+                .ue(self.depth)
+                .ue(self.depth)
+                .u(1, 0)
+                .u(1, u64::from(self.scaling));
+            if self.scaling {
+                for i in 0..8 {
+                    w.u(1, 1);
+                    for j in 0..(if i < 6 { 16 } else { 64 }) {
+                        w.se(if j % 2 == 0 { 1 } else { -1 });
+                    }
+                }
+            }
+        }
+        w.ue(0)
+            .ue(2)
+            .ue(self.refs)
+            .u(1, 0)
+            .ue(self.mbs.0 - 1)
+            .ue(self.mbs.1 - 1)
+            .u(1, self.frame_mbs_only);
+        if self.frame_mbs_only == 0 {
+            w.u(1, 0);
+        }
+        w.u(1, 1); // direct_8x8
+        match self.crop {
+            Some((l, r, t, b)) => {
+                w.u(1, 1).ue(l).ue(r).ue(t).ue(b);
+            }
+            None => {
+                w.u(1, 0);
+            }
+        }
+        w.u(1, 1); // VUI
+        match self.aspect {
+            Some((idc, (sw, sh))) => {
+                w.u(1, 1).u(8, idc);
+                if idc == 255 {
+                    w.u(16, sw).u(16, sh);
+                }
+            }
+            None => {
+                w.u(1, 0);
+            }
+        }
+        w.u(1, 0); // no overscan
+        match self.colour {
+            Some((p, t, m)) => {
+                w.u(1, 1)
+                    .u(3, 5)
+                    .u(1, self.full_range)
+                    .u(1, 1)
+                    .u(8, p)
+                    .u(8, t)
+                    .u(8, m);
+            }
+            None => {
+                w.u(1, 1).u(3, 5).u(1, self.full_range).u(1, 0);
+            }
+        }
+        w.u(1, 0).u(1, 0); // chroma loc, timing
+        match self.hrd {
+            Some((cpb, last_rate, last_size)) => {
+                w.u(1, 1).ue(cpb).u(4, 0).u(4, 0);
+                for c in 0..=cpb {
+                    let (r, z) = if c == cpb {
+                        (last_rate, last_size)
+                    } else {
+                        (31, 31)
+                    };
+                    w.ue(wide(r)).ue(wide(z)).u(1, 0);
+                }
+                w.u(5, 23).u(5, 23).u(5, 23).u(5, 24);
+                w.u(1, 0); // no VCL HRD
+                w.u(1, 0); // low_delay_hrd_flag
+            }
+            None => {
+                w.u(1, 0).u(1, 0); // no HRD
+            }
+        }
+        w.u(1, 0); // pic_struct
+        match self.restriction {
+            Some((reorder, buffering)) => {
+                w.u(1, 1)
+                    .u(1, 1)
+                    .ue(0)
+                    .ue(0)
+                    .ue(16)
+                    .ue(16)
+                    .ue(reorder)
+                    .ue(buffering);
+            }
+            None => {
+                w.u(1, 0);
+            }
+        }
+        w.nal(self.header)
+    }
+
+    /// The SPS padded by its NAL HRD to exactly `len` bytes.
+    fn of_len(&self, len: usize) -> Vec<u8> {
+        for cpb in 0..=31 {
+            for r in 0..=31 {
+                for z in 0..=31 {
+                    let nal = SpsSpec {
+                        hrd: Some((cpb, r, z)),
+                        ..self.clone()
+                    }
+                    .nal();
+                    if nal.len() == len {
+                        return nal;
+                    }
+                }
+            }
+        }
+        panic!("no SPS of {len} bytes");
+    }
+}
+
 /// An SPS of the given profile with every option the walker reads, for fixtures.
 #[allow(clippy::too_many_arguments)]
 fn sps(
@@ -177,55 +339,19 @@ fn sps(
     full_range: u64,
     colour: Option<(u64, u64, u64)>,
 ) -> Vec<u8> {
-    let mut w = BitWriter::default();
-    w.u(8, profile)
-        .u(8, if profile == 66 { 0xc0 } else { 0 })
-        .u(8, level)
-        .ue(0);
-    if profile == 100 {
-        w.ue(chroma)
-            .ue(depth)
-            .ue(depth)
-            .u(1, 0)
-            .u(1, u64::from(scaling));
-        if scaling {
-            for i in 0..8 {
-                w.u(1, 1);
-                for j in 0..(if i < 6 { 16 } else { 64 }) {
-                    w.se(if j % 2 == 0 { 1 } else { -1 });
-                }
-            }
-        }
+    SpsSpec {
+        profile,
+        level,
+        chroma,
+        depth,
+        scaling,
+        frame_mbs_only,
+        mbs,
+        full_range,
+        colour,
+        ..SpsSpec::default()
     }
-    w.ue(0)
-        .ue(2)
-        .ue(1)
-        .u(1, 0)
-        .ue(mbs.0 - 1)
-        .ue(mbs.1 - 1)
-        .u(1, frame_mbs_only);
-    if frame_mbs_only == 0 {
-        w.u(1, 0);
-    }
-    w.u(1, 1).u(1, 0); // direct_8x8, no cropping
-    w.u(1, 1); // VUI
-    w.u(1, 0).u(1, 0); // no aspect, no overscan
-    match colour {
-        Some((p, t, m)) => {
-            w.u(1, 1)
-                .u(3, 5)
-                .u(1, full_range)
-                .u(1, 1)
-                .u(8, p)
-                .u(8, t)
-                .u(8, m);
-        }
-        None => {
-            w.u(1, 1).u(3, 5).u(1, full_range).u(1, 0);
-        }
-    }
-    w.u(1, 0).u(1, 0).u(1, 0).u(1, 0).u(1, 0).u(1, 0); // chroma loc, timing, hrd x2, pic_struct, restriction
-    w.nal(0x67)
+    .nal()
 }
 
 fn baseline_sps() -> Vec<u8> {
@@ -236,55 +362,29 @@ fn high_sps() -> Vec<u8> {
     sps(100, 31, 1, 0, true, 1, (80, 45), 0, Some((5, 1, 6)))
 }
 
+/// A recovery-point SEI NAL unit of exactly `len` bytes, header and trailing bits included.
+fn sei_nal(len: usize) -> Vec<u8> {
+    for size in 0..len {
+        let mut v = vec![0x06, 6];
+        let mut left = size;
+        while left >= 255 {
+            v.push(0xFF);
+            left -= 255;
+        }
+        v.push(left as u8);
+        v.extend(std::iter::repeat_n(0x11, size));
+        v.push(0x80);
+        if v.len() == len {
+            return v;
+        }
+    }
+    panic!("no SEI NAL unit of {len} bytes");
+}
+
 fn with_sps(g: &[u8], sps_nal: &[u8], ext: bool) -> Vec<u8> {
     with_head(g, |n| {
         *at(n, &avcc_path()).body_mut() = avcc(sps_nal, &PPS, ext)
     })
-}
-
-/// The same edit with the fragments restamped to the new `moov` size (a positive case).
-fn restamped(
-    g: &[u8],
-    f: impl FnOnce(&mut Vec<Node>),
-    frag_edit: impl Fn(usize, &mut Fragment),
-) -> Vec<u8> {
-    let (head, mut frags) = split(g);
-    let mut nodes = boxes::parse(&head);
-    f(&mut nodes);
-    let head = boxes::serialize(&nodes);
-    for (i, fr) in frags.iter_mut().enumerate() {
-        frag_edit(i, fr);
-    }
-    restamp(&head, &frags, true)
-}
-
-/// Inserts NAL units (with 4-byte lengths) at the start of the first video sample of a fragment.
-fn prepend_to_first_video_sample(fr: &mut Fragment, nals: &[Vec<u8>]) {
-    let mut bytes = Vec::new();
-    for n in nals {
-        bytes.extend_from_slice(&(n.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(n);
-    }
-    let tr = trafs(&fr.moof);
-    let (_, _, vtrun) = tr[1];
-    let data_offset = get_u32(&fr.moof, vtrun + 16) as usize;
-    let first_size = get_u32(&fr.moof, vtrun + 20 + 4);
-    let at_mdat = data_offset - fr.moof.len();
-    fr.moof[vtrun + 24..vtrun + 28]
-        .copy_from_slice(&(first_size + bytes.len() as u32).to_be_bytes());
-    let mut mdat = fr.mdat[..at_mdat].to_vec();
-    mdat.extend_from_slice(&bytes);
-    mdat.extend_from_slice(&fr.mdat[at_mdat..]);
-    let size = mdat.len() as u32;
-    mdat[..4].copy_from_slice(&size.to_be_bytes());
-    fr.mdat = mdat;
-}
-
-fn sei(payload_type: u8, payload: &[u8]) -> Vec<u8> {
-    let mut v = vec![0x06, payload_type, payload.len() as u8];
-    v.extend_from_slice(payload);
-    v.push(0x80);
-    v
 }
 
 /// The stream with the video track first: traks, trafs and the `mdat` layout swapped.
@@ -424,7 +524,71 @@ fn positive_structures_the_profile_allows() {
             (5, 1, 6),
         ),
     ];
-    for (name, data, profile, colour) in cases {
+    // The bounds' other side (the review of S1): what each refused case's bound still allows.
+    let head_with = |sps_nal: Vec<u8>, pps: Vec<u8>| {
+        restamped(
+            &g,
+            move |n| *at(n, &avcc_path()).body_mut() = avcc(&sps_nal, &pps, false),
+            |_, _| {},
+        )
+    };
+    let spec = SpsSpec::default;
+    let bounds: Vec<Case> = vec![
+        (
+            "sps_of_512_bytes",
+            head_with(spec().of_len(512), PPS.to_vec()),
+            66,
+            (5, 1, 6),
+        ),
+        (
+            "pps_of_512_bytes",
+            head_with(baseline_sps(), [[0x68u8].as_slice(), &[0xAA; 511]].concat()),
+            66,
+            (5, 1, 6),
+        ),
+        (
+            "sps_level_3_1_buffer_of_5_frames",
+            head_with(
+                SpsSpec {
+                    refs: 5,
+                    restriction: Some((5, 5)),
+                    ..spec()
+                }
+                .nal(),
+                PPS.to_vec(),
+            ),
+            66,
+            (5, 1, 6),
+        ),
+        (
+            "sps_vui_square_sample_aspect",
+            head_with(
+                SpsSpec {
+                    aspect: Some((255, (7, 7))),
+                    ..spec()
+                }
+                .nal(),
+                PPS.to_vec(),
+            ),
+            66,
+            (5, 1, 6),
+        ),
+        (
+            "sei_nal_of_1024_bytes",
+            restamped(
+                &g,
+                |_| {},
+                |i, fr| {
+                    if i == 0 {
+                        prepend_to_first_video_sample(fr, &[sei_nal(1024)]);
+                    }
+                },
+            ),
+            66,
+            (5, 1, 6),
+        ),
+    ];
+    for (name, data, profile, colour) in cases.into_iter().chain(bounds) {
         let info = fmp4::check(&data).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(info.profile_idc, profile, "{name}");
         assert_eq!(info.colour, colour, "{name}");
@@ -432,6 +596,56 @@ fn positive_structures_the_profile_allows() {
             assert_eq!(info.video_track, 1);
         }
     }
+}
+
+/// One fragment of one audio and one video sample (an IDR NAL unit), from the golden's first.
+fn tiny_fragment(g: &[u8]) -> Fragment {
+    let (_, frags) = split(g);
+    let mut nodes = boxes::parse(&frags[0].moof);
+    let audio = vec![0x21u8; 6];
+    let mut video = 6u32.to_be_bytes().to_vec();
+    video.extend_from_slice(&[0x65, 0x88, 0x84, 0x00, 0x21, 0x32]);
+    for (traf, duration, size) in [
+        ("traf#0", 1024u32, audio.len() as u32),
+        ("traf#1", 3000, video.len() as u32),
+    ] {
+        let trun = at(&mut nodes, &["moof", traf, "trun"]).body_mut();
+        trun.truncate(12);
+        trun[4..8].copy_from_slice(&1u32.to_be_bytes());
+        trun.extend_from_slice(&duration.to_be_bytes());
+        trun.extend_from_slice(&size.to_be_bytes());
+        trun.extend_from_slice(&0x0200_0000u32.to_be_bytes());
+    }
+    let moof_len = boxes::serialize(&nodes).len() as u32;
+    at(&mut nodes, &["moof", "traf#0", "trun"]).body_mut()[8..12]
+        .copy_from_slice(&(moof_len + 8).to_be_bytes());
+    at(&mut nodes, &["moof", "traf#1", "trun"]).body_mut()[8..12]
+        .copy_from_slice(&(moof_len + 8 + audio.len() as u32).to_be_bytes());
+    let mut mdat = ((8 + audio.len() + video.len()) as u32)
+        .to_be_bytes()
+        .to_vec();
+    mdat.extend_from_slice(b"mdat");
+    mdat.extend(audio);
+    mdat.extend(video);
+    Fragment {
+        moof: boxes::serialize(&nodes),
+        mdat,
+    }
+}
+
+#[test]
+fn the_fragment_bound_is_1024() {
+    // Row 9(g): at most 1 024 fragments (the review of S1: no case reached the bound). Fragments of
+    // one 33-ms video sample each, so 1 025 of them stay far inside VIDEO_MAX_MS.
+    let g = golden(BASE);
+    let (head, _) = split(&g);
+    let frag = tiny_fragment(&g);
+    let ok = restamp(&head, &vec![frag.clone(); 1024], true);
+    let info = fmp4::check(&ok).expect("1 024 fragments");
+    assert_eq!(info.moofs.len(), 1024);
+    let over = restamp(&head, &vec![frag; 1025], true);
+    let e = fmp4::check(&over).expect_err("1 025 fragments");
+    assert_eq!(e.rule(), "more than 1 024 fragments");
 }
 
 /// The negative corpus: `(name, base golden, mutated input)`; every one must be NON_CANONICAL.
@@ -786,6 +1000,188 @@ fn corpus_with_recipes() -> Corpus {
         "avcc_two_byte_lengths",
         patch(&g, avcc_off + 8 + 4, &[0xFD]),
     );
+    // The coded frame is exactly 80 × 45 macroblocks, uncropped, and level 3.1 bounds the picture
+    // buffer at that size (the review of S1: a 1 048 560² frame cropped to 1 280 × 720 walked).
+    let spec = SpsSpec::default;
+    add(
+        &mut out,
+        "sps_coded_1296x736_cropped",
+        with_sps(
+            &g,
+            &SpsSpec {
+                mbs: (81, 46),
+                crop: Some((0, 8, 0, 8)),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_coded_1048560_square_cropped",
+        with_sps(
+            &g,
+            &SpsSpec {
+                mbs: (65_535, 65_535),
+                crop: Some((0, 523_640, 0, 523_920)),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_cropping_flag_without_cropping",
+        with_sps(
+            &g,
+            &SpsSpec {
+                crop: Some((0, 0, 0, 0)),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_coded_720x1280",
+        with_sps(
+            &g,
+            &SpsSpec {
+                mbs: (45, 80),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_max_num_ref_frames_6",
+        with_sps(&g, &SpsSpec { refs: 6, ..spec() }.nal(), false),
+    );
+    add(
+        &mut out,
+        "sps_vui_max_dec_frame_buffering_6",
+        with_sps(
+            &g,
+            &SpsSpec {
+                restriction: Some((0, 6)),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_vui_reorder_above_buffering",
+        with_sps(
+            &g,
+            &SpsSpec {
+                restriction: Some((2, 1)),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_vui_buffering_below_ref_frames",
+        with_sps(
+            &g,
+            &SpsSpec {
+                refs: 3,
+                restriction: Some((0, 2)),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    // A VUI sample aspect ratio is square, like pasp (row 9(e); the review of S1: no case).
+    add(
+        &mut out,
+        "sps_vui_aspect_12_11",
+        with_sps(
+            &g,
+            &SpsSpec {
+                aspect: Some((2, (0, 0))),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_vui_aspect_extended_4_3",
+        with_sps(
+            &g,
+            &SpsSpec {
+                aspect: Some((255, (4, 3))),
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    // NAL headers of the parameter sets: a reference NAL of type 7 or 8, forbidden bit clear.
+    add(
+        &mut out,
+        "sps_header_ref_idc_0",
+        with_sps(
+            &g,
+            &SpsSpec {
+                header: 0x07,
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    add(
+        &mut out,
+        "sps_header_forbidden_bit",
+        with_sps(
+            &g,
+            &SpsSpec {
+                header: 0xE7,
+                ..spec()
+            }
+            .nal(),
+            false,
+        ),
+    );
+    let with_pps = |pps: &[u8]| {
+        with_head(&g, |n| {
+            *at(n, &avcc_path()).body_mut() = avcc(&baseline_sps(), pps, false)
+        })
+    };
+    add(
+        &mut out,
+        "pps_header_ref_idc_0",
+        with_pps(&[0x08, 0xce, 0x01, 0xa8, 0x35, 0xc8]),
+    );
+    add(
+        &mut out,
+        "pps_header_forbidden_bit",
+        with_pps(&[0xE8, 0xce, 0x01, 0xa8, 0x35, 0xc8]),
+    );
+    // The parameter-set bound of 512 bytes (row 9(g)): 513 refused (512 is a positive structure).
+    add(
+        &mut out,
+        "sps_above_512_bytes",
+        with_sps(&g, &spec().of_len(513), false),
+    );
+    add(
+        &mut out,
+        "pps_above_512_bytes",
+        with_pps(&[[0x68u8].as_slice(), &[0xAA; 512]].concat()),
+    );
     add(&mut out, "esds_asc_44100", {
         let esds = find_box(&g, 0, hl, b"esds").unwrap();
         patch(&g, esds + 8 + 26, &[0x12, 0x10])
@@ -916,11 +1312,6 @@ fn corpus_with_recipes() -> Corpus {
     );
     add(
         &mut out,
-        "audio_duration_1023",
-        patch(&g, atrun + 20, &1023u32.to_be_bytes()),
-    );
-    add(
-        &mut out,
         "audio_sample_not_sync",
         patch(&g, atrun + 20 + 8, &[0x01, 0x01, 0x00, 0x00]),
     );
@@ -928,16 +1319,6 @@ fn corpus_with_recipes() -> Corpus {
         &mut out,
         "audio_sample_empty",
         patch(&g, atrun + 20 + 4, &0u32.to_be_bytes()),
-    );
-    add(
-        &mut out,
-        "audio_sample_1537_bytes",
-        patch(&g, atrun + 20 + 4, &1537u32.to_be_bytes()),
-    );
-    add(
-        &mut out,
-        "video_sample_zero_duration",
-        patch(&g, vtrun + 20, &0u32.to_be_bytes()),
     );
     add(
         &mut out,
@@ -1037,6 +1418,86 @@ fn corpus_with_recipes() -> Corpus {
         "aud_two_bytes",
         with_nals(vec![vec![0x09, 0x10, 0x00]]),
     );
+    // The review of S1: rules no case reached, each in the last fragment so that a walker without
+    // the rule accepts the stream.
+    add_edited(
+        &mut out,
+        "aud_without_stop_bit",
+        with_nals(vec![vec![0x09, 0x00]]),
+    );
+    add_edited(
+        &mut out,
+        "sei_nal_of_1025_bytes",
+        with_nals(vec![sei_nal(1025)]),
+    );
+    // Sample rules on the last fragment's trun rows (S1 had them on the first fragment, where a
+    // walker without the rule still refused the stream, at the next fragment's tfdt).
+    let atrun2 = moof2 + tr2[0].2;
+    add(
+        &mut out,
+        "video_sample_zero_duration",
+        patch(&g, vtrun2 + 20, &0u32.to_be_bytes()),
+    );
+    add(
+        &mut out,
+        "audio_duration_1023",
+        patch(&g, atrun2 + 20, &1023u32.to_be_bytes()),
+    );
+    // A video sample too short to hold a NAL unit: refused at the moof (a walker without the rule
+    // refuses it later, at the NAL lengths; the own-reason test tells them apart).
+    add(
+        &mut out,
+        "video_sample_4_bytes",
+        patch(&g, vtrun2 + 20 + 4, &4u32.to_be_bytes()),
+    );
+    {
+        // An AAC frame of 1 537 bytes that tiles: the audio sample grows in the mdat, the video
+        // data offset and the mdat size with it.
+        let row = atrun2 + 20 + 4;
+        let size = get_u32(&g, row);
+        let d = 1537 - size;
+        let vdo = vtrun2 + 16;
+        add_edited(
+            &mut out,
+            "audio_sample_1537_bytes",
+            edits(
+                &g,
+                &[
+                    (row, 4, 1537u32.to_be_bytes().to_vec()),
+                    (vdo, 4, (get_u32(&g, vdo) + d).to_be_bytes().to_vec()),
+                    (mdat2, 4, (get_u32(&g, mdat2) + d).to_be_bytes().to_vec()),
+                    (mdat2 + 8 + size as usize, 0, vec![0x21; d as usize]),
+                ],
+            ),
+        );
+    }
+    add(&mut out, "trun_without_samples", {
+        // The last fragment's audio trun with no sample: its rows and its data leave the moof and
+        // the mdat, and the video data offset follows; the mfra is unchanged.
+        let moof2_size = top_boxes(&g)[4].1;
+        let mut nodes = boxes::parse(&g[moof2..moof2 + moof2_size]);
+        let audio_bytes: u32 = {
+            let trun = at(&mut nodes, &["moof", "traf#0", "trun"]).body_mut();
+            let n = get_u32(trun, 4) as usize;
+            let sum = (0..n).map(|k| get_u32(trun, 12 + 12 * k + 4)).sum();
+            trun.truncate(12);
+            trun[4..8].copy_from_slice(&0u32.to_be_bytes());
+            sum
+        };
+        let moof_len = boxes::serialize(&nodes).len() as u32;
+        at(&mut nodes, &["moof", "traf#0", "trun"]).body_mut()[8..12]
+            .copy_from_slice(&(moof_len + 8).to_be_bytes());
+        at(&mut nodes, &["moof", "traf#1", "trun"]).body_mut()[8..12]
+            .copy_from_slice(&(moof_len + 8).to_be_bytes());
+        let mut m = g[..moof2].to_vec();
+        m.extend(boxes::serialize(&nodes));
+        let video = &g[mdat2 + 8 + audio_bytes as usize..mfra];
+        m.extend_from_slice(&((video.len() + 8) as u32).to_be_bytes());
+        m.extend_from_slice(b"mdat");
+        m.extend_from_slice(video);
+        m.extend_from_slice(&g[mfra..]);
+        m
+    });
     add(&mut out, "fragment_above_16_mib", {
         // The last video sample of fragment 1 grown past the bound; the walker refuses at the
         // mdat header, so the input ends there.
@@ -1226,6 +1687,87 @@ fn every_corpus_case_fails_for_its_own_reason() {
         ("video_longer_than_max", "a video longer than VIDEO_MAX_MS"),
         ("missing_mfra", "ends inside a box or before"),
         ("byte_after_mfra", "bytes after the mfra"),
+        // The review of S1.
+        (
+            "sps_coded_1296x736_cropped",
+            "an SPS with frame cropping (the coded frame is exactly 1 280 × 720)",
+        ),
+        (
+            "sps_coded_1048560_square_cropped",
+            "an SPS with frame cropping",
+        ),
+        (
+            "sps_cropping_flag_without_cropping",
+            "an SPS with frame cropping",
+        ),
+        (
+            "sps_coded_720x1280",
+            "an SPS coded size other than 1 280 × 720 (80 × 45 macroblocks)",
+        ),
+        ("sps_max_num_ref_frames_6", "max_num_ref_frames above 5"),
+        (
+            "sps_vui_max_dec_frame_buffering_6",
+            "max_dec_frame_buffering above 5",
+        ),
+        (
+            "sps_vui_reorder_above_buffering",
+            "max_num_reorder_frames or max_num_ref_frames above max_dec_frame_buffering",
+        ),
+        (
+            "sps_vui_buffering_below_ref_frames",
+            "max_num_reorder_frames or max_num_ref_frames above max_dec_frame_buffering",
+        ),
+        (
+            "sps_vui_aspect_12_11",
+            "an SPS sample aspect ratio that is not square",
+        ),
+        (
+            "sps_vui_aspect_extended_4_3",
+            "an SPS sample aspect ratio that is not square",
+        ),
+        (
+            "sps_header_ref_idc_0",
+            "an SPS NAL header that is not a reference NAL of type 7",
+        ),
+        (
+            "sps_header_forbidden_bit",
+            "an SPS NAL header that is not a reference NAL of type 7",
+        ),
+        (
+            "pps_header_ref_idc_0",
+            "a PPS NAL header that is not a reference NAL of type 8",
+        ),
+        (
+            "pps_header_forbidden_bit",
+            "a PPS NAL header that is not a reference NAL of type 8",
+        ),
+        ("sps_above_512_bytes", "an SPS length outside 1 … 512"),
+        ("pps_above_512_bytes", "a PPS length outside 2 … 512"),
+        (
+            "aud_without_stop_bit",
+            "an access unit delimiter without its stop bit",
+        ),
+        (
+            "sei_nal_of_1025_bytes",
+            "an SEI NAL unit of 0 or more than 1 024 bytes",
+        ),
+        (
+            "video_sample_zero_duration",
+            "a video sample of zero duration or without a NAL unit",
+        ),
+        (
+            "video_sample_4_bytes",
+            "a video sample of zero duration or without a NAL unit",
+        ),
+        (
+            "audio_duration_1023",
+            "an audio sample that is not one AAC-LC access unit",
+        ),
+        (
+            "audio_sample_1537_bytes",
+            "an AAC access unit of 0 or more than 1 536 bytes",
+        ),
+        ("trun_without_samples", "a trun without samples"),
     ];
     let all = corpus();
     for (name, rule) in want {

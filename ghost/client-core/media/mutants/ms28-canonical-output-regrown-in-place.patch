@@ -1,0 +1,21 @@
+Mutant ms28-canonical-output-regrown-in-place (Phase 11 slice S1, ghost-client-media; the review of S1): jpegCanonicalize's output starts empty and grows in place, freeing the picture's partial copies unwiped.
+--- a/client-core/media/src/jpeg.rs
++++ b/client-core/media/src/jpeg.rs
+@@ -153,7 +153,7 @@
+ 
+     fn emit(out: &mut Option<&mut Zeroizing<Vec<u8>>>, bytes: &[u8]) {
+         if let Some(o) = out.as_mut() {
+-            extend_wiped(o, bytes);
++            o.extend_from_slice(bytes);
+         }
+     }
+ 
+@@ -557,7 +557,7 @@
+ /// what was written before it (§10.5).
+ pub fn canonicalize(bytes: &[u8]) -> MediaResult<Zeroizing<Vec<u8>>> {
+     let mut w = JpegWalker::new(JpegMode::Strip);
+-    let mut out = Zeroizing::new(Vec::with_capacity(bytes.len()));
++    let mut out = Zeroizing::new(Vec::new());
+     w.feed(bytes, Some(&mut out))?;
+     w.finish()?;
+     Ok(out)

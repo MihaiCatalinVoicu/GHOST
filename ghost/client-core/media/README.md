@@ -13,19 +13,22 @@ exports it as the closed JNI class `MediaNative` (§13.2) and wraps `K_f` into `
 | `stream` | STREAM chunks in `aead-stream`'s `StreamBE32` layout (§3.3) |
 | `manifest`, `descriptor` | the 65 536-byte manifest blob with the key commitment (§3.5); the L0 kind 0x05 body (§4.1, R-D3) |
 | `sealer`, `reader` | §3.7's discipline (CS-M1: one seal per index, the last flag on `n − 1` only, a one-chunk lookahead, the walker before every seal); §3.4's checks (CS-M2), the in-order validation pass and random-access reads that expose nothing on refusal |
-| `sniff` | the source allowlist of §6.1 (JPEG, PNG, static WebP, ISO-BMFF without HEIF/AVIF brands) |
+| `sniff` | the source allowlist of §6.1 (JPEG, PNG, static WebP, ISO-BMFF naming none of the 32 listed HEIF, MIAF and AVIF brands) |
 | `jpeg` | the canonical JPEG profile and `jpegCanonicalize` (§8.2), streaming |
 | `fmp4`, `sps` | the canonical fMP4 profile (S0-2, S0-3, S0-13, S0-20, S0-22), streaming, with the `mfra` builder; the H.264 SPS walked in full |
 
 Untrusted bytes cannot make it panic: outside tests the crate denies `unwrap`, `expect`, `panic`,
 indexing and unchecked arithmetic (`clippy::indexing_slicing`, `clippy::arithmetic_side_effects`), and
 `#![forbid(unsafe_code)]`. Secrets (`FileKey`, `PayloadKey`, `ManifestKey`, `KeySlot`) are zeroised
-on drop and never render in `Debug`; every plaintext buffer the crate owns is `Zeroizing`.
+on drop; every buffer the crate owns that holds key material or content is wiped when freed and
+never grown in place (`tests/zeroize.rs` scans freed blocks for planted canaries); no `Debug` renders
+a key, a caption, a preview or a walker's buffer. What it does not wipe (the caller's buffers, the
+key copies inside the AEAD and HKDF instances) is in §22.2 row 21.
 
 ## Tests
 
 ```
-cargo test -p ghost-client-media                     # unit, goldens, vectors, oracle, properties, hostile, sweep
+cargo test -p ghost-client-media                     # unit, goldens, vectors, oracle (aead-stream), properties, hostile, sweep, zeroize
 GHOST_WRITE_VECTORS=1 cargo test -p ghost-client-media --test vectors --test fmp4_vectors   # rewrite media_*.txt
 GHOST_MEDIA_PROPERTY_OBJECTS=10000 GHOST_MEDIA_FLIPS=4096 cargo test --release -p ghost-client-media --test properties
 GHOST_MEDIA_SWEEP=full cargo test --release -p ghost-client-media --test sweep

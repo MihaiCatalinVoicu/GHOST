@@ -1,0 +1,12 @@
+Mutant ms52-preview-in-debug (Phase 11 slice S1, ghost-client-media; the review of S1): the manifest's Debug renders the preview (a picture of the content).
+--- a/client-core/media/src/manifest.rs
++++ b/client-core/media/src/manifest.rs
+@@ -78,7 +78,7 @@
+         // a caught assertion never carries it.
+         f.debug_struct("Manifest")
+             .field("fields", &self.fields)
+-            .field("preview_len", &self.preview.len())
++            .field("preview", &self.preview)
+             .field("hashes", &self.hashes.len())
+             .finish()
+     }

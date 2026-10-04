@@ -1,0 +1,12 @@
+Mutant ms51-caption-in-debug (Phase 11 slice S1, ghost-client-media; the review of S1): the descriptor's Debug renders the caption (the user's message) into a panic payload.
+--- a/client-core/media/src/descriptor.rs
++++ b/client-core/media/src/descriptor.rs
+@@ -102,7 +102,7 @@
+             .field("class", &self.class)
+             .field("object_id", &self.object_id)
+             .field("key_slot", &self.key_slot)
+-            .field("caption_len", &self.caption.len())
++            .field("caption", &self.caption)
+             .finish_non_exhaustive()
+     }
+ }

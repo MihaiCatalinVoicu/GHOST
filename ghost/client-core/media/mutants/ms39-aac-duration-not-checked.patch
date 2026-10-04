@@ -1,0 +1,12 @@
+Mutant ms39-aac-duration-not-checked (Phase 11 slice S1, ghost-client-media; the review of S1): an audio sample need not last 1 024 ticks (X10).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -1000,7 +1000,7 @@
+                     }
+                     samples.push((size, sync));
+                 } else {
+-                    if duration != AAC_FRAME_DURATION || flags != SYNC_FLAGS {
++                    if flags != SYNC_FLAGS {
+                         return Err(nc("an audio sample that is not one AAC-LC access unit"));
+                     }
+                     if size == 0 || size > AAC_MAX_FRAME_BYTES {

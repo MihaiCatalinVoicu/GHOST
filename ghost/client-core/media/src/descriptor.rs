@@ -18,7 +18,7 @@
 //! surface's (`encrypt`, `decrypt`, `sessionInbound`), and `l0Decode` there accepts kind 5 only with
 //! a zero slot.
 
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::bytes::Cursor;
 use crate::class::SizeClass;
@@ -67,8 +67,9 @@ impl core::fmt::Debug for KeySlot {
     }
 }
 
-/// A MEDIA descriptor.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A MEDIA descriptor. Its caption is message text, held like F9's `DmContent` body (not wiped);
+/// its `Debug` renders the caption's length only, as `DmContent`'s renders the body's.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Descriptor {
     /// `kind`.
     pub kind: MediaKind,
@@ -90,6 +91,22 @@ fn nc(rule: &'static str) -> MediaError {
     MediaError::non_canonical(rule)
 }
 
+impl core::fmt::Debug for Descriptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The caption is the message the user wrote: only its length renders, so a panic payload
+        // or a caught assertion never carries it (the DM crate's `DmContent` rule); the slot
+        // renders as zero or filled, never its bytes.
+        f.debug_struct("Descriptor")
+            .field("kind", &self.kind)
+            .field("view_once", &self.view_once)
+            .field("class", &self.class)
+            .field("object_id", &self.object_id)
+            .field("key_slot", &self.key_slot)
+            .field("caption_len", &self.caption.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Descriptor {
     fn check(&self) -> MediaResult<()> {
         if self.kind == MediaKind::Image && self.class != SizeClass::SMALLEST {
@@ -101,13 +118,16 @@ impl Descriptor {
         Ok(())
     }
 
-    /// The body (R-D1: at most 1 110 bytes).
-    pub fn encode(&self) -> MediaResult<Vec<u8>> {
+    /// The body (R-D1: at most 1 110 bytes). A wiped buffer, sized once: inside S2's `encrypt` the
+    /// key slot carries `K_f` (§4.2), and the caption is the message.
+    pub fn encode(&self) -> MediaResult<Zeroizing<Vec<u8>>> {
         self.check()?;
         let caption = self.caption.as_bytes();
         let caption_len =
             u16::try_from(caption.len()).map_err(|_| nc("a caption above 1 024 bytes"))?;
-        let mut out = Vec::with_capacity(DESCRIPTOR_FIXED.saturating_add(caption.len()));
+        let mut out = Zeroizing::new(Vec::with_capacity(
+            DESCRIPTOR_FIXED.saturating_add(caption.len()),
+        ));
         out.push(D_VERSION);
         out.push(self.kind.byte());
         out.push(u8::from(self.view_once));
@@ -159,5 +179,32 @@ impl Descriptor {
         };
         d.check()?;
         Ok(d)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_renders_neither_the_caption_nor_the_slot() {
+        let d = Descriptor {
+            kind: MediaKind::Image,
+            view_once: false,
+            class: SizeClass::SMALLEST,
+            object_id: ObjectId::from_bytes([1; 16]),
+            key_slot: KeySlot::from_bytes([0x5a; 32]),
+            manifest_hash: [2; 32],
+            caption: "o fotografie secretă".to_owned(),
+        };
+        let shown = format!("{d:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains("caption_len: 21"), "{shown}");
+        assert!(
+            shown.contains("KeySlot(..)") && !shown.contains("90, 90"),
+            "{shown}"
+        );
+        let body = d.encode().expect("encode");
+        assert_eq!(Descriptor::decode(&body).expect("decode"), d);
     }
 }

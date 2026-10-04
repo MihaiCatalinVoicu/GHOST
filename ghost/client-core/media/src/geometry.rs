@@ -118,6 +118,10 @@ mod tests {
         assert!(check_preview(176, 320).is_ok());
         assert!(check_preview(320, 180).is_err());
         assert!(check_preview(512, 320).is_err());
+        // The long edge is exactly 320, not at most 320 (D29, §3.5; the review of S1).
+        assert!(check_preview(240, 160).is_err());
+        assert!(check_preview(160, 304).is_err());
+        assert!(check_preview(320, 320).is_ok());
         assert!(check_video(1280, 720).is_ok());
         assert!(check_video(720, 1280).is_ok());
         assert!(check_video(1280, 1280).is_err());

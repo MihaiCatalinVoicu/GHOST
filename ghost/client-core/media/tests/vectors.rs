@@ -14,9 +14,11 @@
 //! `GHOST_WRITE_VECTORS=1 cargo test -p ghost-client-media --test vectors` rewrites the files; without
 //! it the test regenerates every value and compares the files byte for byte. Either way every
 //! negative case is replayed here and must produce its code, and every positive case its values.
-//! No two vectors are sealed under one `(key, nonce)` pair: each object has its own `K_f`; the
-//! negative recipes that re-seal run inside the replays, under the object's own keys, and their
-//! outputs are not written to any file.
+//! No two vectors are sealed under one `(key, nonce)` pair (§3.9), and the crate's nonce registry
+//! says so: after the run it holds, for each object's `K_p` and `K_m`, exactly the object's nonces,
+//! no violation and no repeat (§3.7 point 5). The negative recipes that re-seal are an attacker
+//! holding the keys: they run inside the replays with the tests' own AEAD calls (never the
+//! crate's sealer, so never the registry), and their outputs are not written to any file.
 #![allow(clippy::disallowed_methods)]
 
 mod support;
@@ -31,6 +33,7 @@ use ghost_client_media::jpeg;
 use ghost_client_media::keys::{derive, op_id, sha256, MANIFEST_ORDINAL};
 use ghost_client_media::labels;
 use ghost_client_media::manifest::manifest_ad;
+use ghost_client_media::registry;
 use ghost_client_media::stream::{chunk_ad, chunk_nonce};
 use ghost_client_media::{sniff, Code, FileKey, KeySlot, MediaKind, ObjectId, SourceType};
 use support::replay::{honest, recipe, specs, Honest, State};
@@ -120,10 +123,15 @@ every step before the one named must pass, and that step must give `expect`.
   expect field value             the descriptor's kind | view_once | class_code := value
   truncate_class c               MP's class := c, content_len := min(content_len, cap(c)), the hashes
                                  after F(c) := zero, only the first c.chunks chunks; reseal MP
+  reseal_content recipe          the content := the recipe (the rest of the line), cut into the
+                                 object's chunks and zero padded, each chunk sealed with its index and
+                                 honest last flag; MP's content_len := its length; reseal MP (the hash
+                                 list is rehash's)
 \"Reseal MP\" also sets the descriptor's manifest_hash to the new blob's. Steps: `open` (readerOpen:
 hash, commitment, tag, every §3.5 rule, agreement with the descriptor), `read i` (readerChunk in
 read mode: index range, fragment hashes, tag with the last flag of index n - 1 only, zero pad; a
-refused chunk exposes nothing), `validate` (every chunk in order, then the walked width, height
+refused chunk exposes nothing), `validate` (every chunk in order through the content's walker —
+media_jpeg.txt's `check` for an image, media_fmp4.txt's for a video — then the walked width, height
 and duration against the manifest's).
 MP offsets: m_version 0, kind 1, flags 2, class_code 3, object_id 4, content_len 20, width 28,
 height 30, duration_ms 32, preview_len 36, preview 38, hashes 32806.
@@ -173,6 +181,11 @@ fn negatives(objs: &[Honest]) -> Vec<Neg> {
     let quad_preview = grey_jpeg(320, 176);
     let preview_set = |p: &[u8]| format!("manifest_set 36 {}{}", be16(p.len() as u16), h(p));
     let tail_at = HASHES_OFFSET + 32 * 16 + 5;
+    let g = "api35-emulator/strip_orient1.jpg";
+    let image_with_app1 = format!(
+        "reseal_content golden:{g}[0..2] + hex:{} + golden:{g}[2..]",
+        h(&seg(0xE1, b"Exif\0\0MM\0*\0\0\0\x08\0\0GPS-CANARY"))
+    );
     let _ = vid;
     use Code::*;
     vec![
@@ -520,6 +533,31 @@ fn negatives(objs: &[Honest]) -> Vec<Neg> {
             "read 0",
             NonCanonical,
         ),
+        // The review of S1: a chunk that is all padding has its pad checked too (R-O3).
+        neg(
+            "padding_chunk_not_zero",
+            "image_class0",
+            &["reseal_chunk_pad 3 0 1", "rehash"],
+            "read 3",
+            NonCanonical,
+        ),
+        // The review of S1: the reader walks an image's content in the canonical profile, so an
+        // EXIF segment a modified sender sealed (the crate's sealer refuses it) fails validation.
+        neg(
+            "image_content_with_app1",
+            "image_class0",
+            &[&image_with_app1, "rehash"],
+            "validate",
+            NonCanonical,
+        ),
+        // D29: a preview's long edge is exactly 320, not at most 320.
+        neg(
+            "preview_long_edge_240",
+            "image_class0",
+            &[&preview_set(&grey_jpeg(240, 160))],
+            "open",
+            NonCanonical,
+        ),
     ]
 }
 
@@ -747,7 +785,24 @@ fn media_object_vectors() {
     out.kv("other_object_id", h(other_id.as_bytes()));
     out.kv("other_object_id_k_p", h(d2.payload.as_bytes()));
     out.kv("other_object_id_commit", h(d2.commitment.as_bytes()));
-    assert!(negs.len() >= 40);
+    assert!(negs.len() >= 50);
+    // §3.7 point 5 and §3.9, read: the crate sealed each vector object's pairs once each — its n
+    // chunk nonces under K_p and nonce 0 under K_m — with no violation and no repeat; every
+    // negative case's re-seal was the attacker's (the tests' own AEAD), not the crate's.
+    for o in &objs {
+        for (key, nonces) in [
+            (o.derived.payload.as_bytes(), o.chunks.len()),
+            (o.derived.manifest.as_bytes(), 1),
+        ] {
+            let d = registry::key_digest(key);
+            assert_eq!(registry::nonces_for(&d).len(), nonces, "{}", o.spec.name);
+            assert!(
+                registry::violations_for(&d).is_empty() && registry::repeats_for(&d).is_empty(),
+                "{}: a (key, nonce) of the vectors sealed twice",
+                o.spec.name
+            );
+        }
+    }
     out.finish();
 }
 
@@ -832,7 +887,7 @@ fn media_descriptor_vectors() {
     ];
     for (name, body) in ok_cases {
         let d = Descriptor::decode(&body).expect(name);
-        assert_eq!(d.encode().expect("encode"), body, "{name}");
+        assert_eq!(*d.encode().expect("encode"), body, "{name}");
         out.section(&format!("desc {name}"));
         out.kv("body", h(&body));
         out.kv("expect", "OK");
@@ -880,8 +935,17 @@ JPEG, PNG, WEBP, ISO_BMFF_VIDEO or UNSUPPORTED. The rules: JPEG starts FF D8 FF;
 chunk 'VP8 ' or 'VP8L', or 'VP8X' whose flags byte (offset 20) has the animation bit 0x02 clear;
 ISO_BMFF_VIDEO is a box 'ftyp' at offset 4 whose size is a multiple of 4 in 16 … the bytes read
 (the whole ftyp inside the 64 bytes) and whose major brand (offset 8) and compatible brands
-(offset 16 to the size) include none of the HEIF, MIAF and AVIF image brands heic heix heim heis
-hevc hevx hevm hevs mif1 mif2 msf1 miaf avif avis avio MiHE; anything else is UNSUPPORTED.";
+(offset 16 to the size) include none of the HEIF, MIAF and AVIF brands mif1 mif2 mif3 msf1 miaf
+1pic heic heix heim heis hevc hevx hevm hevs avci avcs jpeg jpgs vvic vvis evbi evbs j2ki j2is
+avif avis avio MA1A MA1B MiHA MiHB MiHE (the list S1 knows, not every brand a specification may
+define: Phase 11 design §22.2); anything else is UNSUPPORTED.";
+
+/// The image brands, written out apart from the crate's list (`sniff::IMAGE_BRANDS`).
+const IMAGE_BRANDS: [&str; 32] = [
+    "mif1", "mif2", "mif3", "msf1", "miaf", "1pic", "heic", "heix", "heim", "heis", "hevc", "hevx",
+    "hevm", "hevs", "avci", "avcs", "jpeg", "jpgs", "vvic", "vvis", "evbi", "evbs", "j2ki", "j2is",
+    "avif", "avis", "avio", "MA1A", "MA1B", "MiHA", "MiHB", "MiHE",
+];
 
 fn source_name(r: Result<SourceType, ghost_client_media::MediaError>) -> &'static str {
     match r {
@@ -1007,6 +1071,20 @@ fn media_sniff_vectors() {
         ),
         ("empty", "hex:".into(), "UNSUPPORTED"),
     ];
+    let mut cases: Vec<(String, String, &str)> = cases
+        .into_iter()
+        .map(|(n, i, e)| (n.to_string(), i, e))
+        .collect();
+    // Every image brand as a compatible brand of an otherwise ordinary MP4 ftyp (the review of
+    // S1: nine of the first sixteen were in no test or vector).
+    for b in IMAGE_BRANDS {
+        let brand: &[u8; 4] = b.as_bytes().try_into().expect("four bytes");
+        cases.push((
+            format!("image_brand_{b}"),
+            ftyp_box(b"isom", &[b"iso2", brand]),
+            "UNSUPPORTED",
+        ));
+    }
     for (name, input, expect) in cases {
         let got = source_name(sniff(&recipe(&input)));
         assert_eq!(got, expect, "{name}");
@@ -1029,7 +1107,9 @@ as `sha256:<digest>`, or NON_CANONICAL; `width`/`height` are SOF0's when either 
 Allowed: SOI, DQT (8-bit, 1 to 4 tables), SOF0 (8-bit, 1 or 3 components), DHT (classes and numbers
 0 or 1), DRI, SOS (Ss 0, Se 63, Ah = Al = 0), entropy data with RST0 … RST7 (in order, only with a
 non-zero DRI), EOI. Dropped by jpegCanonicalize: APP0 … APP15, COM. Refused: everything else,
-fill bytes, a second SOI, a byte after EOI, a missing EOI.";
+fill bytes, a second SOI, a byte after EOI, a missing EOI; a quantisation table (Tq), a Huffman
+table (class, number) or a DRI defined twice; a SOF0 component coded by two scans or by none; a
+scan whose components' quantisation or Huffman tables are not defined before it.";
 
 fn seg(marker: u8, payload: &[u8]) -> Vec<u8> {
     let mut v = vec![0xFF, marker];
@@ -1151,6 +1231,92 @@ fn media_jpeg_vectors() {
         ("empty", "hex:".into()),
         ("soi_only", "hex:ffd8".into()),
         ("not_a_jpeg", "hex:89504e47".into()),
+        // The baseline scan parameters (the review of S1: no case had them).
+        (
+            "sos_spectral_start_1",
+            format!("{} + hex:01 + golden:{g}[{}..]", at(sos + 11), sos + 12),
+        ),
+        (
+            "sos_spectral_end_62",
+            format!("{} + hex:3e + golden:{g}[{}..]", at(sos + 12), sos + 13),
+        ),
+        (
+            "sos_successive_approximation",
+            format!("{} + hex:01 + golden:{g}[{}..]", at(sos + 13), sos + 14),
+        ),
+        // Tables once, components once, tables before their scan (S1's reading, §22.2 row 9).
+        (
+            "dqt_table_redefined",
+            format!(
+                "{} + hex:{} + {}",
+                at(sos),
+                h(&seg(0xDB, &[[0u8].as_slice(), &[1u8; 64]].concat())),
+                from(sos)
+            ),
+        ),
+        (
+            "dht_table_redefined",
+            format!(
+                "{} + hex:{} + {}",
+                at(sos),
+                h(&seg(
+                    0xC4,
+                    &[0x00, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00]
+                )),
+                from(sos)
+            ),
+        ),
+        (
+            "dri_twice",
+            format!(
+                "{} + hex:{}{} + {}",
+                at(sos),
+                h(&seg(0xDD, &[0, 0])),
+                h(&seg(0xDD, &[0, 0])),
+                from(sos)
+            ),
+        ),
+        (
+            "component_scanned_twice",
+            format!(
+                "golden:{g}[0..{}] + hex:{}00ffd9",
+                len - 2,
+                h(&seg(0xDA, &[1, 1, 0x00, 0, 63, 0]))
+            ),
+        ),
+        (
+            "component_never_scanned",
+            format!(
+                "{} + hex:{} + golden:{g}[{}..]",
+                at(sos),
+                h(&seg(0xDA, &[2, 1, 0x00, 2, 0x11, 0, 63, 0])),
+                sos + 14
+            ),
+        ),
+        (
+            "scan_huffman_table_undefined",
+            format!(
+                "hex:{}",
+                h(&{
+                    let mut v = grey.clone();
+                    let at = v.windows(2).position(|w| w == [0xFF, 0xDA]).expect("SOS");
+                    v[at + 6] = 0x11;
+                    v
+                })
+            ),
+        ),
+        (
+            "scan_quant_table_undefined",
+            format!(
+                "hex:{}",
+                h(&{
+                    let mut v = grey.clone();
+                    let at = v.windows(2).position(|w| w == [0xFF, 0xC0]).expect("SOF0");
+                    v[at + 12] = 0x01;
+                    v
+                })
+            ),
+        ),
     ];
     for (name, input) in cases {
         let bytes = recipe(&input);
@@ -1195,7 +1361,7 @@ fn media_jpeg_vectors() {
         assert_eq!(canonical.is_ok(), expect_canonical_ok, "{name}");
         if name.ends_with("_dropped") {
             assert_eq!(
-                canonical.as_ref().unwrap(),
+                &**canonical.as_ref().unwrap(),
                 &golden_bytes,
                 "{name}: PM-M11's canary"
             );

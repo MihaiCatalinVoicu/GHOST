@@ -28,9 +28,12 @@ import javax.crypto.spec.SecretKeySpec
  *   operations and must give its code (and every step before it must pass); the separation checks
  *   are recomputed apart.
  * - `media_descriptor.txt`, `media_sniff.txt`, `media_jpeg.txt`: every case.
- * - `media_fmp4.txt` is the Rust walker's alone (no second fMP4 walker; design §22.2). The objects'
- *   `width`, `height` and `duration_ms` are what that walker reported: this reader compares the
- *   manifest against them where the Rust reader compares it against its own walk.
+ * - `media_fmp4.txt` is the Rust walker's alone (no second fMP4 walker; design §22.2). A video
+ *   object's `width`, `height` and `duration_ms` are what that walker reported: this reader
+ *   compares the manifest against them where the Rust reader compares it against its own walk. An
+ *   **image** object's content is walked here, by this file's canonical-JPEG walker (the review of
+ *   S1: the replay took the image's geometry from the file and accepted EXIF-bearing content), so
+ *   its geometry is this walk's and an APPn segment in it fails validation.
  */
 class MediaVectorReplayTest {
 
@@ -309,12 +312,17 @@ class MediaVectorReplayTest {
             return pt.copyOf(content)
         }
 
-        /** Every chunk in order, then the manifest against the walked values. */
-        fun validate(chunks: List<ByteArray>, walked: Triple<Int, Int, Long>): ByteArray {
+        /**
+         * Every chunk in order, then the manifest against the walked values: an image's content is
+         * walked here (media_jpeg.txt's check), a video's values are the Rust walker's.
+         */
+        fun validate(chunks: List<ByteArray>, videoWalked: Triple<Int, Int, Long>): ByteArray {
             val all = java.io.ByteArrayOutputStream()
             for (i in 0 until n) all.write(read(i, chunks.getOrNull(i)))
+            val content = all.toByteArray()
+            val walked = if (e.kind == 1) imageWalk(content) else videoWalked
             if (Triple(mp.width, mp.height, mp.durationMs) != walked) refuse("NON_CANONICAL")
-            return all.toByteArray()
+            return content
         }
     }
 
@@ -330,14 +338,20 @@ class MediaVectorReplayTest {
         var p = 2
         var sof: IntArray? = null
         var ids = IntArray(0)
+        var tqs = IntArray(0)
         var scans = 0
         var restart = 0
+        var dqt = 0 // bit Tq: that quantisation table is defined
+        var dht = 0 // bit 2 * Tc + Th: that Huffman table is defined
+        var dri = false
+        val scanned = HashSet<Int>()
         while (true) {
             if (p + 1 >= data.size || u8(data, p) != 0xFF) nc()
             val m = u8(data, p + 1)
             when {
                 m == 0xD9 -> {
                     if (scans == 0) nc()
+                    if (scanned.size != ids.size) nc() // every SOF0 component coded by one scan
                     if (p + 2 != data.size) nc()
                     out.write(data, p, 2)
                     val s = sof ?: nc()
@@ -360,6 +374,9 @@ class MediaVectorReplayTest {
                     for (t in 0 until seg.size / 65) {
                         val pq = u8(seg, 65 * t)
                         if (pq shr 4 != 0 || pq and 15 > 3) nc()
+                        val bit = 1 shl (pq and 3)
+                        if (dqt and bit != 0) nc() // a table defined twice
+                        dqt = dqt or bit
                     }
                 }
                 0xC0 -> {
@@ -368,6 +385,7 @@ class MediaVectorReplayTest {
                     if (u8(seg, 0) != 8 || u16(seg, 1) == 0 || u16(seg, 3) == 0 || (nf != 1 && nf != 3)) nc()
                     if (seg.size != 6 + 3 * nf) nc()
                     ids = IntArray(nf) { u8(seg, 6 + 3 * it) }
+                    tqs = IntArray(nf) { u8(seg, 8 + 3 * it) }
                     for (c in 0 until nf) {
                         val hv = u8(seg, 7 + 3 * c)
                         if (hv shr 4 !in 1..4 || hv and 15 !in 1..4 || u8(seg, 8 + 3 * c) > 3) nc()
@@ -385,11 +403,15 @@ class MediaVectorReplayTest {
                         var total = 0
                         for (k in 1..16) total += u8(seg, q + k)
                         if (total == 0 || total > 256 || q + 17 + total > seg.size) nc()
+                        val bit = 1 shl (2 * (tcth shr 4) + (tcth and 15))
+                        if (dht and bit != 0) nc() // a table defined twice
+                        dht = dht or bit
                         q += 17 + total
                     }
                 }
                 0xDD -> {
-                    if (seg.size != 2) nc()
+                    if (seg.size != 2 || dri) nc()
+                    dri = true
                     restart = u16(seg, 0)
                 }
                 0xDA -> {
@@ -403,6 +425,14 @@ class MediaVectorReplayTest {
                         if (cs !in ids || !seen.add(cs) || tdta shr 4 > 1 || tdta and 15 > 1) nc()
                     }
                     if (u8(seg, 1 + 2 * ns) != 0 || u8(seg, 2 + 2 * ns) != 63 || u8(seg, 3 + 2 * ns) != 0) nc()
+                    // Each component in one scan only, its tables defined before it.
+                    for (c in 0 until ns) {
+                        val cs = u8(seg, 1 + 2 * c)
+                        val tdta = u8(seg, 2 + 2 * c)
+                        if (!scanned.add(cs)) nc()
+                        if (dqt and (1 shl tqs[ids.indexOf(cs)]) == 0) nc()
+                        if (dht and (1 shl (tdta shr 4)) == 0 || dht and (1 shl (2 + (tdta and 15))) == 0) nc()
+                    }
                     scans++
                     // Entropy-coded data: FF 00 stuffing and RSTn in order, up to the next marker.
                     var rst = 0
@@ -436,11 +466,20 @@ class MediaVectorReplayTest {
         }
     }
 
+    /** An image object's content: a canonical JPEG with the geometry of D29; its (width, height, 0). */
+    private fun imageWalk(content: ByteArray): Triple<Int, Int, Long> {
+        val info = jpegWalk(content, strip = false).second
+        if (!imageGeometry(info[0], info[1])) refuse("NON_CANONICAL")
+        return Triple(info[0], info[1], 0L)
+    }
+
     // ---------------------------------------------------------------------------------------------
     // The sniffer (§6.1, §13.2 M10), from media_sniff.txt's header.
 
     private val imageBrands = setOf(
-        "heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs", "mif1", "mif2", "msf1", "miaf", "avif", "avis", "avio", "MiHE",
+        "mif1", "mif2", "mif3", "msf1", "miaf", "1pic", "heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs",
+        "avci", "avcs", "jpeg", "jpgs", "vvic", "vvis", "evbi", "evbs", "j2ki", "j2is",
+        "avif", "avis", "avio", "MA1A", "MA1B", "MiHA", "MiHB", "MiHE",
     )
 
     private fun sniff(input: ByteArray): String {
@@ -516,7 +555,12 @@ class MediaVectorReplayTest {
         val viewOnce = s.get("view_once") == "1"
         val content = recipe(s.get("content"))
         val preview = recipe(s.get("preview"))
-        val walked = Triple(s.get("width").toInt(), s.get("height").toInt(), s.get("duration_ms").toLong())
+        /** An image's walk is this file's; a video's is the Rust walker's (the file's values). */
+        val walked = if (s.get("kind").toInt() == 1) {
+            imageWalk(content)
+        } else {
+            Triple(s.get("width").toInt(), s.get("height").toInt(), s.get("duration_ms").toLong())
+        }
         val keys = derive(kf, oid)
         val clazz = classFor(content.size.toLong())!!
         val n = classes[clazz] / 4
@@ -575,6 +619,9 @@ class MediaVectorReplayTest {
             val o = Obj(s)
             objects[s.name.removePrefix("object ")] = o
             check("content_len", s.get("content_len"), o.content.size.toString())
+            check("width", s.get("width"), o.walked.first.toString())
+            check("height", s.get("height"), o.walked.second.toString())
+            check("duration_ms", s.get("duration_ms"), o.walked.third.toString())
             check("content_sha256", s.get("content_sha256"), hex(sha256(o.content)))
             check("k_p", s.get("k_p"), hex(o.keys.kp))
             check("k_m", s.get("k_m"), hex(o.keys.km))
@@ -627,7 +674,7 @@ class MediaVectorReplayTest {
         check("other_object_id_commit", sep.get("other_object_id_commit"), hex(otherId.commit))
         assertTrue(!other.commit.contentEquals(img.keys.commit) && !otherId.kp.contentEquals(img.keys.kp))
         println("media_object.txt: $compared values compared and equal; $negatives negative cases refused with their codes; 3 separation values")
-        assertTrue(negatives >= 40)
+        assertTrue(negatives >= 50)
     }
 
     /** A negative case's state (media_object.txt's header). */
@@ -652,6 +699,24 @@ class MediaVectorReplayTest {
             seal(base.keys.kp, nonce(i, last), chunkAd(o, k), p)
 
         fun apply(op: String, objects: Map<String, Obj>) {
+            if (op.startsWith("reseal_content ")) {
+                // The content := the recipe (the rest of the line), cut into the object's chunks and
+                // zero padded, each sealed with its index and honest last flag; content_len := its
+                // length; reseal MP (the hash list is rehash's).
+                val content = recipe(op.removePrefix("reseal_content "))
+                val n = plaintexts.size
+                require(content.size <= n * chunkPt) { "reseal_content: more than the class" }
+                for (i in 0 until n) {
+                    val from = minOf(i * chunkPt, content.size)
+                    val to = minOf((i + 1) * chunkPt, content.size)
+                    val p = content.copyOfRange(from, to).copyOf(chunkPt)
+                    plaintexts[i] = p
+                    chunks[i] = sealChunk(i, i == n - 1, oid, kind, p)
+                }
+                be(content.size.toLong(), 8).copyInto(mp, 20)
+                resealManifest()
+                return
+            }
             val w = op.split(" ")
             fun n(k: Int) = w[k].toInt()
             when (w[0]) {
@@ -762,7 +827,7 @@ class MediaVectorReplayTest {
             assertEquals(s.name, s.get("expect"), sniff(recipe(s.get("input"))))
             n++
         }
-        assertTrue(n >= 26)
+        assertTrue(n >= 58)
     }
 
     @Test
@@ -790,6 +855,6 @@ class MediaVectorReplayTest {
             assertEquals("${s.name} canonical", s.get("canonical"), canonical)
             n++
         }
-        assertTrue(n >= 25)
+        assertTrue(n >= 35)
     }
 }

@@ -22,6 +22,19 @@
 //! Untrusted bytes reach the walkers, the codecs and the reader; none of them can panic (checked
 //! arithmetic and checked indexing are enforced by the lints below outside tests), and each is
 //! bounded in time (one pass) and memory (the bounds of [`consts`]).
+//!
+//! **RAM (§10.5, §15.2 item 8).** Every buffer the crate owns that holds key material or content is
+//! wiped when it is freed — `K_f`, `K_p`, `K_m`, the sealer's held chunk, decrypted chunks, manifest
+//! plaintexts and previews, the walkers' segment, box, SEI and parameter-set buffers, the canonical
+//! JPEG `jpeg::canonicalize` returns and the descriptor body `Descriptor::encode` returns (its slot
+//! carries `K_f` inside S2's `encrypt`) — and none is grown in place, since a `Vec` that grows frees
+//! its old block unwiped: each is sized once or grows by moving (`bytes::extend_wiped`).
+//! `tests/zeroize.rs` scans every block freed while sealing, reading, canonicalising and encoding
+//! for a planted canary. **Not wiped by the crate:** the caller's buffers (its input slices and the
+//! reader's `out`), the ciphertext it returns, the walked structure (`Fmp4Info`'s offsets and times,
+//! the `mfra` built from them), a decoded descriptor's caption (message text, held like F9's
+//! `DmContent` body) and the key copies inside the AEAD and HKDF instances (§22.2 row 21). No
+//! `Debug` of the crate renders a key, a caption, a preview or a walker's buffer.
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]

@@ -1,0 +1,16 @@
+Mutant ms37-vui-aspect-not-checked (Phase 11 slice S1, ghost-client-media; the review of S1): a VUI sample aspect ratio need not be square (X11, row 9(e)).
+--- a/client-core/media/src/sps.rs
++++ b/client-core/media/src/sps.rs
+@@ -186,10 +186,10 @@
+         let idc = b.u(8)?;
+         if idc == 255 {
+             let (w, h) = (b.u(16)?, b.u(16)?);
+-            if w == 0 || w != h {
++            if false && (w == 0 || w != h) {
+                 return Err(nc("an SPS sample aspect ratio that is not square"));
+             }
+-        } else if idc > 1 {
++        } else if false && idc > 1 {
+             return Err(nc("an SPS sample aspect ratio that is not square"));
+         }
+     }

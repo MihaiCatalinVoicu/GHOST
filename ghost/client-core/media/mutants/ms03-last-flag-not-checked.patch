@@ -1,7 +1,7 @@
 Mutant ms03-last-flag-not-checked (Phase 11 slice S1, ghost-client-media): the reader accepts either last flag (MC-M3's shape).
 --- a/client-core/media/src/reader.rs
 +++ b/client-core/media/src/reader.rs
-@@ -173,7 +173,8 @@
+@@ -181,7 +181,8 @@
              }
          }
          let last = index == self.chunks.saturating_sub(1);

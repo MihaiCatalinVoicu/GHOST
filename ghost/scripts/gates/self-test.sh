@@ -52,8 +52,10 @@ done
 # G-M7 (Phase 11 design faza11-media.md §13.1, §16.1 G-M7; slice S1): the media crate is pure. Each
 # fixture of media-purity/ breaks one rule and must fail for that rule's reason alone (every GATE-FAIL
 # line of the run names it); the good fixture, with the near misses (banned names in comments and
-# strings, core::time, the registry's static in src/registry.rs), passes. A logging macro in the
-# crate is no-logging.sh's, which reads every client-core crate.
+# strings, core::time, a 'static lifetime, a use of std::collections, the registry's static in
+# src/registry.rs, crate-type rlib), passes. The fixtures after build-script are the evasions the
+# review of S1 found in the first version (each passed it). A logging macro in the crate is
+# no-logging.sh's, which reads every client-core crate.
 MPUR="$HARNESS/media-purity"
 if GHOST_ROOT="$MPUR/good" bash "$DIR/media-crate-purity.sh" >/dev/null 2>&1; then
   echo "self-test ok: media-crate-purity accepts the near misses"
@@ -71,7 +73,22 @@ for mp_case in \
   "extern-crate|dependency 'base64' (an external crate" \
   "target-dependency|no build or target-specific dependency" \
   "feature|feature 'simd' = [] (a feature" \
-  "build-script|a build script"; do
+  "build-script|a build script" \
+  "io-nested-import|I/O (the media crate does no I/O" \
+  "io-glob-import|I/O (the media crate does no I/O" \
+  "io-extern-crate|I/O (the media crate does no I/O" \
+  "io-std-path|I/O (the media crate does no I/O" \
+  "state-alias|state (the media crate keeps none" \
+  "state-once|state (the media crate keeps none" \
+  "path-attribute|a source outside src/ (#[path] or include!" \
+  "include-macro|a source outside src/ (#[path] or include!" \
+  "forbid-in-string|no #![forbid(unsafe_code)]" \
+  "package-build|package.build = \"gen.rs\" (a build script or a native library" \
+  "package-links|package.links = \"native\" (a build script or a native library" \
+  "spaced-features|feature 'simd' = [] (a feature" \
+  "spaced-dependencies|dependency 'base64' (an external crate" \
+  "crate-type|lib.crate-type = [\"rlib\",\"cdylib\"] (the crate is one rlib" \
+  "bin-target|[[bin]] (a target other than the library"; do
   mp_name="${mp_case%%|*}"
   mp_want="${mp_case#*|}"
   if mp_out="$(GHOST_ROOT="$MPUR/$mp_name" bash "$DIR/media-crate-purity.sh" 2>&1)"; then
@@ -2459,6 +2476,49 @@ media-no-such-crate is not in ghost-client-media's graph" \
     echo "self-test ok: media-vendored-clock-log accepts the real media graph against its baseline"
   else
     echo "SELF-TEST FAIL: media-vendored-clock-log rejects the real media graph" >&2; rc=1
+  fi
+  # The review of S1 (finding 7): three G-M7 mechanisms no case reached, and the S2 switch of the
+  # clock-log scan. (1) The shipped-graph feature clause, run on a package the shipped graph holds
+  # with a non-default feature (the media crate is not linked before S2). (2) S2's link detected
+  # from the workspace metadata — a normal and an optional dependency of ghost-client-dm require the
+  # crate in the shipped graph, a dev-dependency does not — instead of forced by
+  # GHOST_POLICY_MEDIA_SHIPPED_REQUIRED. (3) The licence gates refuse a graphs.txt that drops the
+  # media crate, which the header scan used to pass. (4) The clock-log scan reads the features where
+  # the library links the crate, decided from the graph.
+  multi_case "rust-feature-policy runs the media shipped-graph feature clause (G-M7)" 1 \
+"ghost-client-mls feature 'jni-bridge' is enabled in the shipped client graph; G-M7 allows: default" \
+    env GHOST_POLICY_MEDIA_SHIPPED=ghost-client-mls bash "$DIR/rust-feature-policy.sh"
+  for mp_link in normal optional; do
+    multi_case "rust-feature-policy detects S2's link from the metadata: ghost-client-dm's $mp_link dependency on the crate (G-M7)" 1 \
+"package 'ghost-client-media' is not in the shipped client graph although ghost-client-dm declares it" \
+      env GHOST_POLICY_MEDIA_METADATA="$HARNESS/media-policy/linked-$mp_link.json" bash "$DIR/rust-feature-policy.sh"
+  done
+  if GHOST_POLICY_MEDIA_METADATA="$HARNESS/media-policy/linked-dev.json" bash "$DIR/rust-feature-policy.sh" >/dev/null 2>&1; then
+    echo "self-test ok: rust-feature-policy requires nothing of a dev-dependency on the media crate (G-M7)"
+  else
+    echo "SELF-TEST FAIL: rust-feature-policy treats a dev-dependency on the media crate as S2's link" >&2; rc=1
+  fi
+  tmp="$(mktemp)"
+  sed 's/^graph client-net ghost-client-net,ghost-client-media /graph client-net ghost-client-net /' \
+    "$DIR/../../licenses/graphs.txt" > "$tmp"
+  if cmp -s "$tmp" "$DIR/../../licenses/graphs.txt"; then
+    echo "SELF-TEST FAIL: the graphs.txt fixture did not drop the media crate" >&2; rc=1
+  else
+    expect_fail_msg "rust-license-headers rejects a graphs.txt without the media crate (G-R5, G-M7)" \
+      "GHOST's own crate ghost-client-media is in no shipped graph" \
+      env GHOST_LICENSE_GRAPHS="$tmp" bash "$DIR/rust-license-headers.sh"
+    expect_fail_msg "license-notices rust rejects a graphs.txt without the media crate (G-L1, G-M7)" \
+      "GHOST's own crate ghost-client-media is in no shipped graph" \
+      env GHOST_LICENSE_GRAPHS="$tmp" bash "$DIR/license-notices.sh" rust
+  fi
+  rm -f "$tmp"
+  if mp_out="$(GHOST_G_R8_MEDIA_LINKER=ghost-client-media bash "$DIR/media-vendored-clock-log.sh" 2>&1)" \
+    && grep -qF "ghost-client-media links ghost-client-media: each package's features as ghost-client-media's graph has them" <<<"$mp_out" \
+    && mp_out="$(bash "$DIR/media-vendored-clock-log.sh" 2>&1)" \
+    && grep -qF "ghost-client-net does not link ghost-client-media yet" <<<"$mp_out"; then
+    echo "self-test ok: media-vendored-clock-log reads the features where the linking graph has them (G-M7, S2)"
+  else
+    echo "SELF-TEST FAIL: media-vendored-clock-log does not switch its features by the linking graph" >&2; rc=1
   fi
   # ADR-37 (design §2.10.2, §22.8.10 point 1): cargo-deny takes package specs, not globs, so every
   # named ban of the libsignal family must fire on its own. A scratch package depends on a local crate

@@ -62,8 +62,9 @@ pub(crate) fn seal_chunk(
     }
     let nonce = chunk_nonce(index, last);
     #[cfg(any(test, feature = "nonce-registry"))]
-    crate::registry::record_padded(key.as_bytes(), &nonce, plaintext, CHUNK_PT);
-    let mut out = vec![0u8; CHUNK_CT];
+    crate::registry::record_padded(key.as_bytes(), &nonce, ad, plaintext, CHUNK_PT);
+    // Plaintext until it is encrypted in place: wiped if a refusal drops it, moved out once sealed.
+    let mut out = Zeroizing::new(vec![0u8; CHUNK_CT]);
     let (body, tag_out) = out.split_at_mut(CHUNK_PT);
     for (dst, src) in body.iter_mut().zip(plaintext.iter()) {
         *dst = *src;
@@ -73,7 +74,7 @@ pub(crate) fn seal_chunk(
         .encrypt_inout_detached(&Nonce::from(nonce), ad, body.into())
         .map_err(|_| MediaError::new(Code::Oversize, "ChaCha20-Poly1305 refused the chunk"))?;
     tag_out.copy_from_slice(tag.as_slice());
-    Ok(out)
+    Ok(core::mem::take(&mut *out))
 }
 
 /// Opens one chunk's `CHUNK_CT` bytes into a zeroising buffer of `CHUNK_PT` bytes; `NOT_OPEN` when

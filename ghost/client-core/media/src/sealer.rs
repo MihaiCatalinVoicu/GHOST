@@ -12,12 +12,19 @@
 //!    spent. `width`, `height` and `duration_ms` come from the walk, never from the caller (§3.5,
 //!    MC-M21); for a video, `finish` appends the `mfra` built from the walked fragments (§8.3).
 //! 4. A sealer is spent by `finish`, by `abort` (dropping it) or by any refusal; a spent sealer
-//!    seals nothing more (`SEQUENCE`). `K_f` and the held plaintext are zeroised on drop. Resuming an
-//!    interrupted preparation always begins a new sealer with a new `K_f` and `object_id` (§3.7
-//!    point 3): the caller draws both, this crate has no randomness.
+//!    seals nothing more (`SEQUENCE`). Resuming an interrupted preparation always begins a new
+//!    sealer with a new `K_f` and `object_id` (§3.7 point 3): the caller draws both, this crate has
+//!    no randomness.
+//! 5. RAM (§10.5, §15.2 item 8): `K_f`, the derived keys and the held chunk are wiped when they are
+//!    dropped, and the held chunk is never reallocated in place: a full chunk moves out to be sealed
+//!    and a new buffer of a whole chunk's capacity replaces it, so no freed block keeps plaintext
+//!    (the walkers' buffers grow the same way, `bytes::extend_wiped`; `tests/zeroize.rs` scans every
+//!    freed block for a canary). Not wiped here: the caller's input slices, and the key copies inside
+//!    the AEAD and HKDF instances (§22.2 row 21).
 
 use zeroize::Zeroizing;
 
+use crate::bytes::extend_wiped;
 use crate::class::SizeClass;
 use crate::consts::{
     MediaKind, CHUNK_PT, FRAG, FRAGMENTS_PER_CHUNK, HASH_BYTES, IMAGE_MAX_CONTENT, PREVIEW_MAX,
@@ -58,7 +65,6 @@ impl core::fmt::Debug for SealedChunk {
 
 /// What `finish` returns: the last chunks, the manifest and the walked fields. `K_f` stays inside
 /// (the S2 native surface wraps it into `key_env`, §4.2, and drops this value).
-#[derive(Debug)]
 pub struct SealedObject {
     /// The chunks `finish` sealed: the held chunk and the zero padding chunks.
     pub chunks: Vec<SealedChunk>,
@@ -75,6 +81,19 @@ impl SealedObject {
     /// `K_f`, for the S2 wrap into `key_env` (and the tests) only.
     pub fn file_key(&self) -> &FileKey {
         &self.file_key
+    }
+}
+
+impl core::fmt::Debug for SealedObject {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The manifest's preview is a picture of the content: the manifest renders without it (its
+        // own Debug), the key never renders, and the blob is not dumped.
+        f.debug_struct("SealedObject")
+            .field("chunks", &self.chunks)
+            .field("manifest", &self.manifest)
+            .field("manifest_blob_len", &self.manifest_blob.len())
+            .field("file_key", &self.file_key)
+            .finish_non_exhaustive()
     }
 }
 
@@ -184,7 +203,12 @@ impl Sealer {
         let mut rest = data;
         while !rest.is_empty() {
             if self.held.len() == CHUNK_PT {
-                let held = Zeroizing::new(core::mem::take(&mut *self.held));
+                // The full chunk moves out (wiped when sealed) and a buffer of a whole chunk's
+                // capacity takes its place, so the held chunk never grows in place.
+                let held = core::mem::replace(
+                    &mut self.held,
+                    Zeroizing::new(Vec::with_capacity(CHUNK_PT)),
+                );
                 let index = self.next_index;
                 out.push(self.seal_index(index, false, &held)?);
                 self.next_index = index.saturating_add(1);
@@ -192,7 +216,7 @@ impl Sealer {
             let room = CHUNK_PT.saturating_sub(self.held.len());
             let n = room.min(rest.len());
             let (now, later) = rest.split_at(n);
-            self.held.extend_from_slice(now);
+            extend_wiped(&mut self.held, now);
             rest = later;
         }
         Ok(out)
@@ -257,7 +281,7 @@ impl Sealer {
         let class = SizeClass::for_content_len(self.content_len)
             .ok_or(MediaError::non_canonical("an empty object"))?;
         let n = class.chunks();
-        let held = Zeroizing::new(core::mem::take(&mut *self.held));
+        let held = core::mem::take(&mut self.held);
         let mut index = self.next_index;
         let last_index = n.saturating_sub(1);
         if index > last_index {
@@ -303,7 +327,7 @@ impl Sealer {
         })
     }
 
-    /// `sealAbort` (§13.2 M4): drops the sealer, zeroising `K_f` and the held plaintext.
+    /// `sealAbort` (§13.2 M4): drops the sealer, wiping `K_f`, the derived keys and the held chunk.
     pub fn abort(self) {}
 
     /// Test hook: seals `index` again, which the used-index set must refuse.

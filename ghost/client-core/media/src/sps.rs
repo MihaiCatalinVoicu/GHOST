@@ -4,9 +4,27 @@
 //! and §7.3.2.1.1.1) to its VUI (Annex E.1.1), whose colour description is absent or exactly the
 //! `colr` box's values, with `video_full_range_flag` 0, and which ends exactly at the RBSP trailing
 //! bits. Every read is checked; Exp-Golomb codes longer than 32 bits are refused.
+//!
+//! **The coded size is the coded frame itself** (§3.5, §8.3 "`avc1` (coded 1 280 × 720)", §15.2
+//! item 6): exactly 80 × 45 macroblocks with no frame cropping, as both emulators' encoders write
+//! it. Revision 1 of S1 accepted any frame that cropping brought to 1 280 × 720, so an SPS declaring
+//! 1 048 560 × 1 048 560 samples (65 535² macroblocks) cropped back reached the recipient's decoder
+//! (the review of S1). Level 3.1 at that size allows a decoded picture buffer of
+//! `MaxDpbMbs / (80 · 45) = 18 000 / 3 600 = 5` frames (H.264 Table A-1, A.3.1), so
+//! `max_num_ref_frames` and the VUI's `max_dec_frame_buffering` are at most 5, with
+//! `max_num_reorder_frames ≤ max_dec_frame_buffering` and `max_num_ref_frames ≤
+//! max_dec_frame_buffering` (E.2.1).
 
-use crate::consts::{VIDEO_CODED_HEIGHT, VIDEO_CODED_WIDTH};
+use zeroize::Zeroizing;
+
 use crate::error::{MediaError, MediaResult};
+
+/// `pic_width_in_mbs_minus1` of a 1 280-sample-wide frame.
+const WIDTH_MBS_MINUS1: u32 = 79;
+/// `pic_height_in_map_units_minus1` of a 720-sample-high progressive frame.
+const HEIGHT_MAP_UNITS_MINUS1: u32 = 44;
+/// The frames level 3.1's decoded picture buffer holds at 3 600 macroblocks a frame.
+const MAX_DPB_FRAMES: u32 = 5;
 
 /// What the walk reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,9 +40,10 @@ fn nc(rule: &'static str) -> MediaError {
 }
 
 /// The RBSP of a NAL unit's payload (after its one-byte header): every `00 00 03` loses its `03`,
-/// and a `00 00` followed by `00`, `01` or `02` is refused (H.264 §7.4.1).
-pub(crate) fn rbsp(payload: &[u8]) -> MediaResult<Vec<u8>> {
-    let mut out = Vec::with_capacity(payload.len());
+/// and a `00 00` followed by `00`, `01` or `02` is refused (H.264 §7.4.1). A wiped buffer sized
+/// once to the payload (the RBSP is never longer).
+pub(crate) fn rbsp(payload: &[u8]) -> MediaResult<Zeroizing<Vec<u8>>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(payload.len()));
     let mut zeros = 0usize;
     for &b in payload {
         if zeros >= 2 {
@@ -160,7 +179,7 @@ fn hrd(b: &mut Bits<'_>) -> MediaResult<()> {
     Ok(())
 }
 
-fn vui(b: &mut Bits<'_>) -> MediaResult<Option<(u8, u8, u8)>> {
+fn vui(b: &mut Bits<'_>, max_num_ref_frames: u32) -> MediaResult<Option<(u8, u8, u8)>> {
     let mut colour = None;
     if b.u1()? == 1 {
         // aspect_ratio_info: square pixels only, like the `pasp` box (65 536 : 65 536).
@@ -216,8 +235,17 @@ fn vui(b: &mut Bits<'_>) -> MediaResult<Option<(u8, u8, u8)>> {
         b.ue()?; // max_bits_per_mb_denom
         b.ue()?; // log2_max_mv_length_horizontal
         b.ue()?; // log2_max_mv_length_vertical
-        b.ue()?; // max_num_reorder_frames
-        b.ue()?; // max_dec_frame_buffering
+        let reorder = b.ue()?;
+        let buffering = bounded(
+            b.ue()?,
+            MAX_DPB_FRAMES,
+            "max_dec_frame_buffering above 5 (level 3.1 at 1 280 × 720)",
+        )?;
+        if reorder > buffering || max_num_ref_frames > buffering {
+            return Err(nc(
+                "max_num_reorder_frames or max_num_ref_frames above max_dec_frame_buffering",
+            ));
+        }
     }
     Ok(colour)
 }
@@ -284,27 +312,33 @@ pub(crate) fn walk(nal: &[u8]) -> MediaResult<SpsInfo> {
         2 => {}
         _ => return Err(nc("pic_order_cnt_type above 2")),
     }
-    bounded(b.ue()?, 16, "max_num_ref_frames above 16")?;
+    let max_num_ref_frames = bounded(
+        b.ue()?,
+        MAX_DPB_FRAMES,
+        "max_num_ref_frames above 5 (level 3.1 at 1 280 × 720)",
+    )?;
     b.u1()?; // gaps_in_frame_num_value_allowed_flag
-    let width_mbs = u64::from(b.ue()?).saturating_add(1);
-    let height_units = u64::from(b.ue()?).saturating_add(1);
+    let width_mbs_minus1 = b.ue()?;
+    let height_units_minus1 = b.ue()?;
     if b.u1()? != 1 {
         return Err(nc("frame_mbs_only_flag 0 (interlaced coding)"));
     }
     b.u1()?; // direct_8x8_inference_flag
-    let (mut crop_x, mut crop_y) = (0u64, 0u64);
-    if b.u1()? == 1 {
-        // 4:2:0 frame coding: crop units of 2 × 2 samples.
-        let (l, r, t, bt) = (b.ue()?, b.ue()?, b.ue()?, b.ue()?);
-        crop_x = (u64::from(l).saturating_add(u64::from(r))).saturating_mul(2);
-        crop_y = (u64::from(t).saturating_add(u64::from(bt))).saturating_mul(2);
+    if b.u1()? != 0 {
+        return Err(nc(
+            "an SPS with frame cropping (the coded frame is exactly 1 280 × 720)",
+        ));
     }
-    let width = width_mbs.saturating_mul(16).saturating_sub(crop_x);
-    let height = height_units.saturating_mul(16).saturating_sub(crop_y);
-    if width != u64::from(VIDEO_CODED_WIDTH) || height != u64::from(VIDEO_CODED_HEIGHT) {
-        return Err(nc("an SPS coded size other than 1 280 × 720"));
+    if (width_mbs_minus1, height_units_minus1) != (WIDTH_MBS_MINUS1, HEIGHT_MAP_UNITS_MINUS1) {
+        return Err(nc(
+            "an SPS coded size other than 1 280 × 720 (80 × 45 macroblocks)",
+        ));
     }
-    let colour = if b.u1()? == 1 { vui(&mut b)? } else { None };
+    let colour = if b.u1()? == 1 {
+        vui(&mut b, max_num_ref_frames)?
+    } else {
+        None
+    };
     b.trailing()?;
     Ok(SpsInfo {
         profile_idc,
@@ -435,5 +469,135 @@ pub(crate) mod tests {
         let mut extra = high_sps(1, 0, 0, (1, 1, 1));
         extra.push(0x80);
         assert!(walk(&extra).is_err(), "a byte after the trailing bits");
+    }
+
+    /// A Baseline SPS of `mbs` macroblocks with frame cropping `crop` (left, right, top, bottom, in
+    /// 2-sample units), `refs` reference frames and, when given, a VUI bitstream restriction of
+    /// `(max_num_reorder_frames, max_dec_frame_buffering)`.
+    fn baseline(
+        mbs: (u64, u64),
+        crop: Option<(u64, u64, u64, u64)>,
+        refs: u64,
+        restriction: Option<(u64, u64)>,
+    ) -> Vec<u8> {
+        let mut w = BitWriter::default();
+        w.u(8, 66).u(8, 0xc0).u(8, 31).ue(0); // profile, constraints, level, sps id
+        w.ue(0).ue(2).ue(refs).u(1, 0); // frame_num bits, POC type 2, refs, no gaps
+        w.ue(mbs.0 - 1).ue(mbs.1 - 1).u(1, 1).u(1, 1); // size, frame_mbs_only, direct_8x8
+        match crop {
+            Some((l, r, t, b)) => {
+                w.u(1, 1).ue(l).ue(r).ue(t).ue(b);
+            }
+            None => {
+                w.u(1, 0);
+            }
+        }
+        match restriction {
+            Some((reorder, buffering)) => {
+                w.u(1, 1); // VUI
+                w.u(1, 0).u(1, 0).u(1, 0).u(1, 0).u(1, 0); // aspect, overscan, signal, chroma loc, timing
+                w.u(1, 0).u(1, 0).u(1, 0); // no HRD, pic_struct
+                w.u(1, 1)
+                    .u(1, 1)
+                    .ue(0)
+                    .ue(0)
+                    .ue(16)
+                    .ue(16)
+                    .ue(reorder)
+                    .ue(buffering);
+            }
+            None => {
+                w.u(1, 0);
+            }
+        }
+        let mut nal = vec![0x67];
+        nal.extend(w.trailing());
+        nal
+    }
+
+    fn rule(nal: &[u8]) -> &'static str {
+        walk(nal).expect_err("refused").rule()
+    }
+
+    #[test]
+    fn the_coded_frame_is_exactly_80_by_45_macroblocks() {
+        walk(&baseline((80, 45), None, 1, None)).expect("1 280 × 720, no cropping");
+        // The review of S1: a larger coded frame cropped back to 1 280 × 720, up to 65 535².
+        for (mbs, crop) in [
+            ((81, 46), (0, 8, 0, 8)),
+            ((512, 512), (0, 3456, 0, 3736)),
+            ((65_535, 65_535), (0, 523_640, 0, 523_920)),
+        ] {
+            assert_eq!(
+                rule(&baseline(mbs, Some(crop), 1, None)),
+                "an SPS with frame cropping (the coded frame is exactly 1 280 × 720)",
+                "{mbs:?}"
+            );
+        }
+        assert_eq!(
+            rule(&baseline((80, 45), Some((0, 0, 0, 0)), 1, None)),
+            "an SPS with frame cropping (the coded frame is exactly 1 280 × 720)",
+            "a cropping flag with no cropping"
+        );
+        for mbs in [(81, 45), (80, 46), (120, 68), (45, 80)] {
+            assert_eq!(
+                rule(&baseline(mbs, None, 1, None)),
+                "an SPS coded size other than 1 280 × 720 (80 × 45 macroblocks)",
+                "{mbs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn level_3_1_bounds_the_reference_frames_and_the_picture_buffer() {
+        walk(&baseline((80, 45), None, 5, Some((0, 5)))).expect("5 frames, the bound");
+        walk(&baseline((80, 45), None, 1, Some((1, 1)))).expect("reorder = buffering");
+        assert_eq!(
+            rule(&baseline((80, 45), None, 6, None)),
+            "max_num_ref_frames above 5 (level 3.1 at 1 280 × 720)"
+        );
+        assert_eq!(
+            rule(&baseline((80, 45), None, 1, Some((0, 6)))),
+            "max_dec_frame_buffering above 5 (level 3.1 at 1 280 × 720)"
+        );
+        for (refs, restriction) in [(1, (2, 1)), (3, (0, 2))] {
+            assert_eq!(
+                rule(&baseline((80, 45), None, refs, Some(restriction))),
+                "max_num_reorder_frames or max_num_ref_frames above max_dec_frame_buffering",
+                "{refs} {restriction:?}"
+            );
+        }
+    }
+
+    /// A Baseline 80 × 45 SPS whose VUI holds only an aspect ratio: `idc`, and the sample sides
+    /// for idc 255.
+    fn with_aspect(idc: u64, sides: (u64, u64)) -> Vec<u8> {
+        let mut w = BitWriter::default();
+        w.u(8, 66).u(8, 0xc0).u(8, 31).ue(0);
+        w.ue(0).ue(2).ue(1).u(1, 0);
+        w.ue(79).ue(44).u(1, 1).u(1, 1).u(1, 0);
+        w.u(1, 1).u(1, 1).u(8, idc); // VUI, aspect_ratio_info
+        if idc == 255 {
+            w.u(16, sides.0).u(16, sides.1);
+        }
+        w.u(8, 0); // no overscan, signal type, chroma location, timing, HRD, pic_struct or restriction
+        let mut nal = vec![0x67];
+        nal.extend(w.trailing());
+        nal
+    }
+
+    #[test]
+    fn a_vui_sample_aspect_ratio_is_square() {
+        // Row 9(e), like `pasp` (65 536 : 65 536); the review of S1 found no case of it.
+        for (idc, sides) in [(0, (0, 0)), (1, (0, 0)), (255, (7, 7))] {
+            walk(&with_aspect(idc, sides)).expect("square");
+        }
+        for (idc, sides) in [(2, (0, 0)), (16, (0, 0)), (255, (4, 3)), (255, (0, 0))] {
+            assert_eq!(
+                rule(&with_aspect(idc, sides)),
+                "an SPS sample aspect ratio that is not square",
+                "{idc} {sides:?}"
+            );
+        }
     }
 }

@@ -446,3 +446,87 @@ pub fn resize_last_video_sample(f: &mut Fragment, delta: i64) {
     let mdat_size = f.mdat.len() as u32;
     put_u32(&mut f.mdat, 0, mdat_size);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Builders shared by the fMP4 vectors and the RAM test.
+
+/// The avcC body of `sps` and `pps`, with the High extension when `ext`.
+pub fn avcc(sps: &[u8], pps: &[u8], ext: bool) -> Vec<u8> {
+    let mut v = vec![1, sps[1], sps[2], sps[3], 0xFF, 0xE1];
+    v.extend_from_slice(&(sps.len() as u16).to_be_bytes());
+    v.extend_from_slice(sps);
+    v.push(1);
+    v.extend_from_slice(&(pps.len() as u16).to_be_bytes());
+    v.extend_from_slice(pps);
+    if ext {
+        v.extend_from_slice(&[0xFD, 0xF8, 0xF8, 0x00]);
+    }
+    v
+}
+
+/// The path of the video track's `avcC` in a golden's box tree (the video track is the second).
+pub fn avcc_path() -> Vec<&'static str> {
+    vec![
+        "moov", "trak#1", "mdia", "minf", "stbl", "stsd", "avc1", "avcC",
+    ]
+}
+
+/// The SPS and PPS NAL units of a stream's `avcC`.
+pub fn parameter_sets(head: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let off = find_box(head, 0, head.len(), b"avcC").expect("avcC");
+    let body = &head[off + 8..off + get_u32(head, off) as usize];
+    let sps_len = u16::from_be_bytes([body[6], body[7]]) as usize;
+    let sps = body[8..8 + sps_len].to_vec();
+    let at = 8 + sps_len + 1;
+    let pps_len = u16::from_be_bytes([body[at], body[at + 1]]) as usize;
+    let pps = body[at + 2..at + 2 + pps_len].to_vec();
+    (sps, pps)
+}
+
+/// An SEI NAL unit with one message of `payload_type` (payload under 255 bytes).
+pub fn sei(payload_type: u8, payload: &[u8]) -> Vec<u8> {
+    let mut v = vec![0x06, payload_type, payload.len() as u8];
+    v.extend_from_slice(payload);
+    v.push(0x80);
+    v
+}
+
+/// The edit of a golden's `moov` (`head_edit`) and fragments (`frag_edit`), the fragments
+/// restamped to the new `moov` size, with the `mfra`: a canonical stream when the edits are.
+pub fn restamped(
+    g: &[u8],
+    head_edit: impl FnOnce(&mut Vec<boxes::Node>),
+    frag_edit: impl Fn(usize, &mut Fragment),
+) -> Vec<u8> {
+    let (head, mut frags) = split(g);
+    let mut nodes = boxes::parse(&head);
+    head_edit(&mut nodes);
+    let head = boxes::serialize(&nodes);
+    for (i, fr) in frags.iter_mut().enumerate() {
+        frag_edit(i, fr);
+    }
+    restamp(&head, &frags, true)
+}
+
+/// Inserts NAL units (with 4-byte lengths) at the start of the first video sample of a fragment
+/// of a golden whose video track is the second (`trafs()[1]`).
+pub fn prepend_to_first_video_sample(fr: &mut Fragment, nals: &[Vec<u8>]) {
+    let mut bytes = Vec::new();
+    for n in nals {
+        bytes.extend_from_slice(&(n.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(n);
+    }
+    let tr = trafs(&fr.moof);
+    let (_, _, vtrun) = tr[1];
+    let data_offset = get_u32(&fr.moof, vtrun + 16) as usize;
+    let first_size = get_u32(&fr.moof, vtrun + 20 + 4);
+    let at_mdat = data_offset - fr.moof.len();
+    fr.moof[vtrun + 24..vtrun + 28]
+        .copy_from_slice(&(first_size + bytes.len() as u32).to_be_bytes());
+    let mut mdat = fr.mdat[..at_mdat].to_vec();
+    mdat.extend_from_slice(&bytes);
+    mdat.extend_from_slice(&fr.mdat[at_mdat..]);
+    let size = mdat.len() as u32;
+    mdat[..4].copy_from_slice(&size.to_be_bytes());
+    fr.mdat = mdat;
+}

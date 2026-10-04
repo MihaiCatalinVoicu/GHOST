@@ -4,13 +4,21 @@
 //!
 //! Accepted: JPEG; PNG (signature and an `IHDR` first chunk); static WebP (`VP8 `, `VP8L`, or `VP8X`
 //! without the animation flag); an ISO-BMFF file whose `ftyp` box lies inside the 64 bytes and names
-//! no HEIF or AVIF image brand (the six §6.1 names, `heic`, `heix`, `mif1`, `msf1`, `avif`, `avis`,
-//! and the other registered HEIF and MIAF image and sequence brands, which no video container
-//! carries). Refused (`UNSUPPORTED`): HEIC/HEIF/AVIF (no sandbox decoder reaches them, S0-4), GIF,
-//! animated WebP, DNG and other TIFF-based RAW, BMP, ICO, WBMP, SVG and anything else, including an
-//! `ftyp` the 64 bytes do not hold whole. That a "video" is really one is Media3's `Mp4Extractor`'s
-//! to establish (S0-21); a static/animated PNG cannot be told apart in 64 bytes (`acTL` may follow
-//! later chunks), and the sandbox's re-encode keeps one frame either way.
+//! none of the [`IMAGE_BRANDS`] among its major and compatible brands. Refused (`UNSUPPORTED`):
+//! HEIC/HEIF/AVIF (no sandbox decoder reaches them, S0-4), GIF, animated WebP, DNG and other
+//! TIFF-based RAW, BMP, ICO, WBMP, SVG and anything else, including an `ftyp` the 64 bytes do not
+//! hold whole.
+//!
+//! **What the brand list is, and is not.** It is the HEIF structural, image, sequence and profile
+//! brands S1 knows (ISO/IEC 23008-12 with its HEVC, AVC, JPEG, VVC, EVC and JPEG 2000 bindings;
+//! MIAF, ISO/IEC 23000-22; the AV1 image file format), 32 of them; it is not every brand any
+//! specification will ever define. An image file whose `ftyp` names only brands outside the list
+//! is classified as video here (the review of S1 found `jpeg`, `avci`, `avcs`, `vvic`, `j2ki`, `MiHB`
+//! and `MA1B` missing from S1's first list of 16), and Media3's `Mp4Extractor`, the only extractor
+//! a picked source reaches, then refuses it (S0-21 measured HEIF and AVIF failing there): the list
+//! decides which refusal the user sees, not whether an image reaches a decoder. That a "video" is
+//! really one is `Mp4Extractor`'s to establish (S0-21); a static/animated PNG cannot be told apart in
+//! 64 bytes (`acTL` may follow later chunks), and the sandbox's re-encode keeps one frame either way.
 
 use crate::consts::SNIFF_BYTES;
 use crate::error::{Code, MediaError, MediaResult};
@@ -28,11 +36,17 @@ pub enum SourceType {
     IsoBmffVideo,
 }
 
-/// The HEIF, MIAF and AVIF brands that mark an image file (ISO/IEC 23008-12, 23000-22; AV1 image
-/// file format).
-pub const IMAGE_BRANDS: [&[u8; 4]; 16] = [
-    b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"mif2",
-    b"msf1", b"miaf", b"avif", b"avis", b"avio", b"MiHE",
+/// The HEIF, MIAF and AVIF brands that mark an image or image-sequence file (ISO/IEC 23008-12 and
+/// its codec bindings, 23000-22; the AV1 image file format). A video container carries none.
+pub const IMAGE_BRANDS: [&[u8; 4]; 32] = [
+    // HEIF structural brands, and MIAF's.
+    b"mif1", b"mif2", b"mif3", b"msf1", b"miaf", b"1pic",
+    // HEVC images and sequences.
+    b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs",
+    // AVC, JPEG, VVC, EVC and JPEG 2000 images and sequences.
+    b"avci", b"avcs", b"jpeg", b"jpgs", b"vvic", b"vvis", b"evbi", b"evbs", b"j2ki", b"j2is",
+    // AVIF, and the MIAF and AVIF profile brands.
+    b"avif", b"avis", b"avio", b"MA1A", b"MA1B", b"MiHA", b"MiHB", b"MiHE",
 ];
 
 fn unsupported(rule: &'static str) -> MediaError {
@@ -99,6 +113,32 @@ mod tests {
         }
         v.extend_from_slice(&[0, 0, 0, 8, b'f', b'r', b'e', b'e']);
         v
+    }
+
+    /// Every image brand, written out apart from [`IMAGE_BRANDS`] so that a brand dropped from the
+    /// list fails here (the review of S1: nine of the first sixteen were in no test).
+    const EVERY_IMAGE_BRAND: [&str; 32] = [
+        "mif1", "mif2", "mif3", "msf1", "miaf", "1pic", "heic", "heix", "heim", "heis", "hevc",
+        "hevx", "hevm", "hevs", "avci", "avcs", "jpeg", "jpgs", "vvic", "vvis", "evbi", "evbs",
+        "j2ki", "j2is", "avif", "avis", "avio", "MA1A", "MA1B", "MiHA", "MiHB", "MiHE",
+    ];
+
+    #[test]
+    fn every_image_brand_is_refused_as_major_and_as_compatible() {
+        assert_eq!(IMAGE_BRANDS.len(), EVERY_IMAGE_BRAND.len());
+        for b in EVERY_IMAGE_BRAND {
+            let brand: &[u8; 4] = b.as_bytes().try_into().expect("four bytes");
+            assert_eq!(
+                sniff(&ftyp(brand, &[b"isom"])).map_err(|e| e.code()),
+                Err(Code::Unsupported),
+                "major {b}"
+            );
+            assert_eq!(
+                sniff(&ftyp(b"isom", &[b"iso2", brand])).map_err(|e| e.code()),
+                Err(Code::Unsupported),
+                "compatible {b}"
+            );
+        }
     }
 
     #[test]

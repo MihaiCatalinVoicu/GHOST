@@ -6,8 +6,10 @@
 # chunk 'VP8 ' or 'VP8L', or 'VP8X' whose flags byte (offset 20) has the animation bit 0x02 clear;
 # ISO_BMFF_VIDEO is a box 'ftyp' at offset 4 whose size is a multiple of 4 in 16 … the bytes read
 # (the whole ftyp inside the 64 bytes) and whose major brand (offset 8) and compatible brands
-# (offset 16 to the size) include none of the HEIF, MIAF and AVIF image brands heic heix heim heis
-# hevc hevx hevm hevs mif1 mif2 msf1 miaf avif avis avio MiHE; anything else is UNSUPPORTED.
+# (offset 16 to the size) include none of the HEIF, MIAF and AVIF brands mif1 mif2 mif3 msf1 miaf
+# 1pic heic heix heim heis hevc hevx hevm hevs avci avcs jpeg jpgs vvic vvis evbi evbs j2ki j2is
+# avif avis avio MA1A MA1B MiHA MiHB MiHE (the list S1 knows, not every brand a specification may
+# define: Phase 11 design §22.2); anything else is UNSUPPORTED.
 
 [sniff jpeg_golden]
 input = golden:api35-emulator/strip_orient1.jpg[0..64]
@@ -111,4 +113,132 @@ expect = UNSUPPORTED
 
 [sniff empty]
 input = hex:
+expect = UNSUPPORTED
+
+[sniff image_brand_mif1]
+input = hex:000000186674797069736f6d0000020069736f326d696631000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_mif2]
+input = hex:000000186674797069736f6d0000020069736f326d696632000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_mif3]
+input = hex:000000186674797069736f6d0000020069736f326d696633000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_msf1]
+input = hex:000000186674797069736f6d0000020069736f326d736631000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_miaf]
+input = hex:000000186674797069736f6d0000020069736f326d696166000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_1pic]
+input = hex:000000186674797069736f6d0000020069736f3231706963000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_heic]
+input = hex:000000186674797069736f6d0000020069736f3268656963000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_heix]
+input = hex:000000186674797069736f6d0000020069736f3268656978000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_heim]
+input = hex:000000186674797069736f6d0000020069736f326865696d000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_heis]
+input = hex:000000186674797069736f6d0000020069736f3268656973000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_hevc]
+input = hex:000000186674797069736f6d0000020069736f3268657663000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_hevx]
+input = hex:000000186674797069736f6d0000020069736f3268657678000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_hevm]
+input = hex:000000186674797069736f6d0000020069736f326865766d000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_hevs]
+input = hex:000000186674797069736f6d0000020069736f3268657673000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_avci]
+input = hex:000000186674797069736f6d0000020069736f3261766369000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_avcs]
+input = hex:000000186674797069736f6d0000020069736f3261766373000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_jpeg]
+input = hex:000000186674797069736f6d0000020069736f326a706567000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_jpgs]
+input = hex:000000186674797069736f6d0000020069736f326a706773000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_vvic]
+input = hex:000000186674797069736f6d0000020069736f3276766963000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_vvis]
+input = hex:000000186674797069736f6d0000020069736f3276766973000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_evbi]
+input = hex:000000186674797069736f6d0000020069736f3265766269000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_evbs]
+input = hex:000000186674797069736f6d0000020069736f3265766273000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_j2ki]
+input = hex:000000186674797069736f6d0000020069736f326a326b69000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_j2is]
+input = hex:000000186674797069736f6d0000020069736f326a326973000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_avif]
+input = hex:000000186674797069736f6d0000020069736f3261766966000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_avis]
+input = hex:000000186674797069736f6d0000020069736f3261766973000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_avio]
+input = hex:000000186674797069736f6d0000020069736f326176696f000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_MA1A]
+input = hex:000000186674797069736f6d0000020069736f324d413141000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_MA1B]
+input = hex:000000186674797069736f6d0000020069736f324d413142000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_MiHA]
+input = hex:000000186674797069736f6d0000020069736f324d694841000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_MiHB]
+input = hex:000000186674797069736f6d0000020069736f324d694842000000086d646174
+expect = UNSUPPORTED
+
+[sniff image_brand_MiHE]
+input = hex:000000186674797069736f6d0000020069736f324d694845000000086d646174
 expect = UNSUPPORTED

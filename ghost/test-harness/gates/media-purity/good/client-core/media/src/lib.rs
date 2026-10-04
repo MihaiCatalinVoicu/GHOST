@@ -11,3 +11,14 @@ pub const NOTE: &str = "std::time::SystemTime and extern \"C\"";
 pub fn span(ms: u64) -> core::time::Duration {
     core::time::Duration::from_millis(ms)
 }
+
+/// Near misses of the rules the review of S1 added: a `'static` lifetime is not a static item, a
+/// `use std` that names no I/O, clock or thread module, and a comment that names
+/// `#[path = "x.rs"]`, `include!`, `std::path`, `fs::read` and `extern crate`.
+pub fn label() -> &'static str {
+    "static X: u32 = 0; fs::read(\"x\"); std::path::Path"
+}
+use std::collections::BTreeMap;
+pub fn empty() -> BTreeMap<u8, u8> {
+    BTreeMap::new()
+}

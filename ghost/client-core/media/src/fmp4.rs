@@ -21,11 +21,18 @@
 //!
 //! [`Fmp4Walker`] reads the stream in one pass with bounded memory (the `moov`, one `moof` and
 //! one SEI at a time): the sealer feeds it the muxer's output (no `mfra` yet: the sealer appends the
-//! one it builds), the reader the decrypted content (with the `mfra`).
+//! one it builds), the reader the decrypted content (with the `mfra`). Each buffer is sized once to
+//! the box or NAL unit it collects and wiped when dropped (§10.5); none renders in `Debug`.
+//!
+//! Bytes the profile does not constrain, each decoder syntax rather than a metadata field (declared,
+//! §22.2 row 9): slice data, the PPS after its header (at most 512 B, the in-band copies
+//! byte-identical to it), the bodies of the allowed SEI messages (at most 1 KiB per NAL unit), the
+//! SPS values the walk reads without bounding, the `esds` buffer size and bitrates (11 B), and the
+//! AAC frames (Q35).
 
 use zeroize::Zeroizing;
 
-use crate::bytes::{add, be_u32, Cursor};
+use crate::bytes::{add, be_u32, extend_wiped, reserve_wiped, Cursor};
 use crate::consts::{
     AAC_MAX_FRAME_BYTES, FRAGMENT_MAX_BYTES, MAX_FRAGMENTS, MOOF_MAX_BYTES, MOOV_MAX_BYTES,
     PARAMETER_SET_MAX_BYTES, SEI_MAX_BYTES, VIDEO_CODED_HEIGHT, VIDEO_CODED_WIDTH, VIDEO_MAX_MS,
@@ -160,15 +167,15 @@ pub fn check(bytes: &[u8]) -> MediaResult<Fmp4Info> {
 // ---------------------------------------------------------------------------------------------
 // The moov.
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Moov {
     /// `video[i]`: whether track ID `i + 1` is the video track.
     video: [bool; 2],
     rotation: u16,
     colour: (u16, u16, u16),
     profile_idc: u8,
-    sps: Vec<u8>,
-    pps: Vec<u8>,
+    sps: Zeroizing<Vec<u8>>,
+    pps: Zeroizing<Vec<u8>>,
 }
 
 impl Moov {
@@ -317,12 +324,15 @@ fn rotation_of(matrix: &[u32; 9]) -> Option<u16> {
     }
 }
 
+/// An `avcC`'s profile and its two parameter sets.
+type Avc = (u8, Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
+
 struct Trak {
     id: u32,
     video: bool,
     matrix: [u32; 9],
     colour: Option<(u16, u16, u16)>,
-    avc: Option<(u8, Vec<u8>, Vec<u8>)>,
+    avc: Option<Avc>,
 }
 
 fn parse_trak(body: &[u8]) -> MediaResult<Trak> {
@@ -503,7 +513,7 @@ fn parse_esds(body: &[u8]) -> MediaResult<()> {
     Ok(())
 }
 
-fn parse_avcc(body: &[u8], colour: (u16, u16, u16)) -> MediaResult<(u8, Vec<u8>, Vec<u8>)> {
+fn parse_avcc(body: &[u8], colour: (u16, u16, u16)) -> MediaResult<Avc> {
     let mut c = Cursor::new(body, "a malformed avcC");
     let version = c.u8()?;
     let indication = c.array::<3>()?;
@@ -517,7 +527,7 @@ fn parse_avcc(body: &[u8], colour: (u16, u16, u16)) -> MediaResult<(u8, Vec<u8>,
     if sps_len == 0 || sps_len > PARAMETER_SET_MAX_BYTES {
         return Err(nc("an SPS length outside 1 … 512"));
     }
-    let sps_nal = c.take(usize::from(sps_len))?.to_vec();
+    let sps_nal = Zeroizing::new(c.take(usize::from(sps_len))?.to_vec());
     if c.u8()? != 1 {
         return Err(nc("an avcC with other than one PPS"));
     }
@@ -525,7 +535,7 @@ fn parse_avcc(body: &[u8], colour: (u16, u16, u16)) -> MediaResult<(u8, Vec<u8>,
     if !(2..=PARAMETER_SET_MAX_BYTES).contains(&pps_len) {
         return Err(nc("a PPS length outside 2 … 512"));
     }
-    let pps_nal = c.take(usize::from(pps_len))?.to_vec();
+    let pps_nal = Zeroizing::new(c.take(usize::from(pps_len))?.to_vec());
     let info = sps::walk(&sps_nal)?;
     if sps_nal.get(1..4) != Some(indication.as_slice()) {
         return Err(nc(
@@ -633,7 +643,7 @@ enum Nal {
     Aud,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Mdat {
     runs: Vec<Run>,
     run: usize,
@@ -670,7 +680,7 @@ enum Stage {
 }
 
 /// The streaming walker of the canonical fMP4 profile.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Fmp4Walker {
     mode: Fmp4Mode,
     pos: u64,
@@ -688,6 +698,19 @@ pub(crate) struct Fmp4Walker {
     mdat: Option<Mdat>,
     /// The first refusal: every later call repeats it.
     failed: Option<MediaError>,
+}
+
+impl core::fmt::Debug for Fmp4Walker {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The box, SEI and parameter-set buffers hold the stream's own bytes: none renders.
+        f.debug_struct("Fmp4Walker")
+            .field("mode", &self.mode)
+            .field("pos", &self.pos)
+            .field("next", &self.next)
+            .field("fragments", &self.moofs.len())
+            .field("failed", &self.failed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Fmp4Walker {
@@ -755,7 +778,7 @@ impl Fmp4Walker {
                 }
                 Stage::Collect { what, left } => {
                     let n = usize::try_from(left).unwrap_or(usize::MAX).min(rest.len());
-                    self.boxbuf.extend_from_slice(rest.get(..n).unwrap_or(&[]));
+                    extend_wiped(&mut self.boxbuf, rest.get(..n).unwrap_or(&[]));
                     let left = left.saturating_sub(u32::try_from(n).unwrap_or(u32::MAX));
                     self.stage = Stage::Collect { what, left };
                     if left == 0 {
@@ -791,7 +814,10 @@ impl Fmp4Walker {
         }
         let body = size.saturating_sub(8);
         let collect = |what: Collecting, s: &mut Self| {
+            // The whole box's room at once (each box's size is bounded before this): the buffer
+            // never grows while it fills.
             s.boxbuf.clear();
+            reserve_wiped(&mut s.boxbuf, usize::try_from(size).unwrap_or(0));
             s.boxbuf.extend_from_slice(&buf);
             s.stage = Stage::Collect { what, left: body };
         };
@@ -850,8 +876,8 @@ impl Fmp4Walker {
     }
 
     fn collected(&mut self, what: Collecting) -> MediaResult<()> {
-        let whole = core::mem::take(&mut *self.boxbuf);
-        let whole = Zeroizing::new(whole);
+        // Moved out whole and wiped when it drops at the end of this call.
+        let whole = core::mem::take(&mut self.boxbuf);
         let body = whole.get(8..).unwrap_or(&[]);
         match what {
             Collecting::Ftyp => {
@@ -1197,10 +1223,13 @@ fn nal_step(moov: &Moov, m: &mut Mdat, data: &[u8], sample_left: u32) -> MediaRe
                     Nal::Skip { left }
                 }
                 6 => {
-                    if left == 0 || left > SEI_MAX_BYTES {
+                    // `len` counts the header byte: the NAL unit, header included, is at most
+                    // 1 024 bytes (the review of S1: the bound was on the payload, 1 025 in all).
+                    if left == 0 || len > SEI_MAX_BYTES {
                         return Err(nc("an SEI NAL unit of 0 or more than 1 024 bytes"));
                     }
                     m.sei.clear();
+                    reserve_wiped(&mut m.sei, usize::try_from(left).unwrap_or(0));
                     Nal::Sei { left }
                 }
                 7 | 8 => {
@@ -1240,7 +1269,7 @@ fn nal_step(moov: &Moov, m: &mut Mdat, data: &[u8], sample_left: u32) -> MediaRe
         }
         Nal::Sei { left } => {
             let n = usize::try_from(left).unwrap_or(usize::MAX).min(data.len());
-            m.sei.extend_from_slice(data.get(..n).unwrap_or(&[]));
+            extend_wiped(&mut m.sei, data.get(..n).unwrap_or(&[]));
             let left = left.saturating_sub(u32::try_from(n).unwrap_or(u32::MAX));
             if left == 0 {
                 check_sei(&m.sei)?;

@@ -1,0 +1,13 @@
+Mutant ms32-padding-chunk-pad-not-checked (Phase 11 slice S1, ghost-client-media; the review of S1): the pad of a chunk that is all padding is not checked (X3; R-O3).
+--- a/client-core/media/src/reader.rs
++++ b/client-core/media/src/reader.rs
+@@ -190,7 +190,8 @@
+             .saturating_sub(start)
+             .min(CHUNK_PT as u64);
+         let content = usize::try_from(content).map_err(|_| nc("a chunk too large"))?;
+-        if !plaintext
++        if content > 0
++            && !plaintext
+             .get(content..)
+             .unwrap_or(&[])
+             .iter()

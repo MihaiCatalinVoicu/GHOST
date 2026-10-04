@@ -30,10 +30,14 @@ zeroize = { version = "=1.9.0", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 hex = { workspace = true }
-# The tests' own chunk layer (re-sealing negative cases, and the StreamBE32 re-derivation that
-# stands in for the aead-stream oracle the S1 brief does not allow, §22.2): the normal
-# dependency's version and features, so the dev graph adds no crate.
+# The tests' own chunk layer (the attacker's re-seals of the negative cases, and the StreamBE32
+# re-derivation from §3.3's text): the normal dependency's version and features.
 chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc"] }
+# The differential oracle of the chunk layer (design §3.3 R-O2, §3.9, §15.2 item 1, §16.3; ADR-44
+# point 10, approved 2026-10-04): RustCrypto's STREAM, dev graph only, as the S0 spike ran it (V-M8:
+# the same `aead` 0.6.1, no duplicated package). G-R1, G-R2, G-R4, G-R8 and the licence gates read
+# normal edges only, so no shipped graph changes.
+aead-stream = { version = "=0.6.0", features = ["alloc"] }
 # The integration tests read the nonce registry (§3.7 point 5, CS-M1): the crate itself with the
 # test feature, through the dev graph only (G-R2 reads `-e no-dev`).
 ghost-client-media = { path = ".", features = ["nonce-registry"] }

@@ -1,0 +1,12 @@
+Mutant ms36-scan-parameters-not-checked (Phase 11 slice S1, ghost-client-media; the review of S1): a scan's Ss, Se, Ah and Al are not checked (X6).
+--- a/client-core/media/src/jpeg.rs
++++ b/client-core/media/src/jpeg.rs
+@@ -472,7 +472,7 @@
+             seen.push((cs, tq, td_ta));
+         }
+         let (ss, se, a) = (c.u8()?, c.u8()?, c.u8()?);
+-        if ss != 0 || se != 63 || a != 0 {
++        if false && (ss != 0 || se != 63 || a != 0) {
+             return Err(nc("a baseline scan has Ss 0, Se 63, Ah = Al = 0"));
+         }
+         c.finish()?;

@@ -1,5 +1,5 @@
-//! The no-panic sweep (design §15.1: "never panics, never over-reads, NON_CANONICAL or OK only"; the
-//! S1 brief): every prefix and single-byte mutations at every offset of the goldens, and of the
+//! The no-panic sweep (design §15.1: "never panics, never over-reads, NON_CANONICAL or OK only";
+//! §22.2 row 16): every prefix and single-byte mutations at every offset of the goldens, and of the
 //! vector inputs (descriptors, manifest plaintexts, sniffer and JPEG inputs), through every parser
 //! that reads them. A panic fails the test (the harness reports it); every refusal is a typed code.
 //!

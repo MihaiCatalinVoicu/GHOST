@@ -13,6 +13,14 @@
 //! duration must be the manifest's. Nothing is exposed by it. [`Reader::read_chunk`] (playback and
 //! display, any order) writes a chunk's content into the caller's buffer only once every check of
 //! that chunk passed: a refused chunk leaves the buffer untouched.
+//!
+//! **Read mode does not walk** and does not ask whether a validation pass ran: it authenticates the
+//! chunk (hashes, tag, last flag, pad) and exposes it. That is what §7.4 needs — every display after
+//! `MEDIA-VERIFY` opens a new reader, and the sender's own objects are read without one (the sealer
+//! walked every byte) — so the gate before exposure is the caller's: S2's `readerChunk(mode = read)`
+//! runs only for an object the database has `verified`, or for the sender's own (`out`); an object
+//! whose validation failed still decrypts here (the review of S1: an EXIF-bearing image's chunk read
+//! back), and only that state keeps it from a decoder (§22.2 row 3, the S2 note).
 
 use zeroize::Zeroizing;
 
@@ -261,7 +269,9 @@ impl Reader {
     }
 
     /// `readerChunk` in `read` mode (§13.2 M6): the chunk's content bytes into `out`, which must hold
-    /// them; returns how many. `out` is written only when every check passed.
+    /// them; returns how many. `out` is written only when every check passed. No walk runs here:
+    /// call it only for an object the caller knows `verified`, or for the sender's own (module
+    /// docs).
     pub fn read_chunk(&self, index: u32, fragments: &[u8], out: &mut [u8]) -> MediaResult<usize> {
         let (plaintext, content) = self.open_index(index, fragments)?;
         let src = plaintext

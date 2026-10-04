@@ -1,9 +1,12 @@
 # `ghost-client-media` does no I/O, reads no clock, starts no thread and asks the environment
 # nothing (design §13.1: "no JNI, no I/O, no clock, no logging, no state"). clippy reads the
 # clippy.toml nearest the crate's own manifest, so the bans of client-core/net and client-core/dm do
-# not reach this crate; these are the `std` paths of the rule that clippy can resolve (a path it
-# cannot resolve is ignored silently, so only `std` paths are named). The source half of the same
-# rule, which also covers the paths clippy cannot see, is scripts/gates/media-crate-purity.sh (G-M7).
+# not reach this crate; these are the `std` paths of the rule that clippy can resolve. This is the
+# compiled half of the rule: clippy resolves each call to its path after macro expansion, renames and
+# glob imports, which a token scan cannot (the review of S1); the source half, which also covers what
+# clippy has no path for (a `static`, `unsafe`, a build script, the manifest), is
+# scripts/gates/media-crate-purity.sh (G-M7). The crate's tests allow these calls (they read the
+# goldens and the vector files).
 disallowed-methods = [
     { path = "std::net::TcpStream::connect", reason = "the media crate does no I/O: no sockets" },
     { path = "std::net::TcpListener::bind", reason = "the media crate does no I/O: no sockets" },
@@ -11,10 +14,28 @@ disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "the media crate reads no clock" },
     { path = "std::time::Instant::now", reason = "the media crate reads no clock" },
     { path = "std::fs::read", reason = "the media crate does no I/O: bytes come from the caller" },
+    { path = "std::fs::read_to_string", reason = "the media crate does no I/O: bytes come from the caller" },
+    { path = "std::fs::read_dir", reason = "the media crate does no I/O" },
+    { path = "std::fs::metadata", reason = "the media crate does no I/O" },
     { path = "std::fs::write", reason = "the media crate does no I/O: bytes go to the caller" },
+    { path = "std::fs::remove_file", reason = "the media crate does no I/O" },
+    { path = "std::fs::create_dir_all", reason = "the media crate does no I/O" },
     { path = "std::fs::File::open", reason = "the media crate does no I/O" },
     { path = "std::fs::File::create", reason = "the media crate does no I/O" },
+    { path = "std::fs::OpenOptions::open", reason = "the media crate does no I/O" },
+    { path = "std::path::Path::exists", reason = "the media crate does no I/O" },
+    { path = "std::io::stdin", reason = "the media crate does no I/O" },
+    { path = "std::io::stdout", reason = "the media crate prints nothing (no-logging.sh)" },
+    { path = "std::io::stderr", reason = "the media crate prints nothing (no-logging.sh)" },
     { path = "std::env::var", reason = "the media crate reads no environment" },
+    { path = "std::env::var_os", reason = "the media crate reads no environment" },
+    { path = "std::env::vars", reason = "the media crate reads no environment" },
+    { path = "std::env::args", reason = "the media crate reads no environment" },
+    { path = "std::env::current_dir", reason = "the media crate reads no environment" },
     { path = "std::process::Command::new", reason = "the media crate starts no process" },
+    { path = "std::process::exit", reason = "the media crate ends no process" },
     { path = "std::thread::spawn", reason = "the media crate starts no thread" },
+    { path = "std::thread::sleep", reason = "the media crate starts no thread and reads no clock" },
+    { path = "std::panic::set_hook", reason = "the media crate keeps no state (the S2 surface owns the panic hook)" },
+    { path = "std::panic::take_hook", reason = "the media crate keeps no state (the S2 surface owns the panic hook)" },
 ]

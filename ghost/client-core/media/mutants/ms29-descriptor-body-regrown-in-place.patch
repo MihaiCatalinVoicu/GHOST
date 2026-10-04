@@ -1,0 +1,15 @@
+Mutant ms29-descriptor-body-regrown-in-place (Phase 11 slice S1, ghost-client-media; the review of S1): the descriptor body (K_f in its slot inside S2's encrypt) starts empty and grows in place, freeing a copy of the slot unwiped.
+--- a/client-core/media/src/descriptor.rs
++++ b/client-core/media/src/descriptor.rs
+@@ -125,9 +125,8 @@
+         let caption = self.caption.as_bytes();
+         let caption_len =
+             u16::try_from(caption.len()).map_err(|_| nc("a caption above 1 024 bytes"))?;
+-        let mut out = Zeroizing::new(Vec::with_capacity(
+-            DESCRIPTOR_FIXED.saturating_add(caption.len()),
+-        ));
++        let _ = DESCRIPTOR_FIXED;
++        let mut out = Zeroizing::new(Vec::new());
+         out.push(D_VERSION);
+         out.push(self.kind.byte());
+         out.push(u8::from(self.view_once));

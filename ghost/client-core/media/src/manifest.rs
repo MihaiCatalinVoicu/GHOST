@@ -62,7 +62,7 @@ pub struct ManifestFields {
 }
 
 /// A manifest: its fields, its preview and its fragment hashes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Manifest {
     /// The fixed fields.
     pub fields: ManifestFields,
@@ -70,6 +70,18 @@ pub struct Manifest {
     pub preview: Zeroizing<Vec<u8>>,
     /// SHA-256 of fragments 0 … F − 1.
     pub hashes: Vec<[u8; HASH_BYTES]>,
+}
+
+impl core::fmt::Debug for Manifest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The preview is a picture of the content: only its length renders, so a panic payload or
+        // a caught assertion never carries it.
+        f.debug_struct("Manifest")
+            .field("fields", &self.fields)
+            .field("preview_len", &self.preview.len())
+            .field("hashes", &self.hashes.len())
+            .finish()
+    }
 }
 
 fn nc(rule: &'static str) -> MediaError {
@@ -227,12 +239,13 @@ pub fn seal_blob(derived: &Derived, object_id: &ObjectId, mp: &[u8]) -> MediaRes
         return Err(nc("a manifest plaintext that is not 65 488 bytes"));
     }
     let nonce = [0u8; 12];
+    let ad = manifest_ad(object_id, &derived.commitment);
     #[cfg(any(test, feature = "nonce-registry"))]
-    crate::registry::record_padded(derived.manifest.as_bytes(), &nonce, mp, MANIFEST_PT);
-    let mut blob = Vec::with_capacity(FRAG);
+    crate::registry::record_padded(derived.manifest.as_bytes(), &nonce, &ad, mp, MANIFEST_PT);
+    // Plaintext until it is encrypted in place: wiped if a refusal drops it, moved out once sealed.
+    let mut blob = Zeroizing::new(Vec::with_capacity(FRAG));
     blob.extend_from_slice(derived.commitment.as_bytes());
     blob.extend_from_slice(mp);
-    let ad = manifest_ad(object_id, &derived.commitment);
     let body = blob
         .get_mut(COMMIT_BYTES..)
         .ok_or_else(|| nc("a manifest plaintext that is not 65 488 bytes"))?;
@@ -240,7 +253,7 @@ pub fn seal_blob(derived: &Derived, object_id: &ObjectId, mp: &[u8]) -> MediaRes
         .encrypt_inout_detached(&Nonce::from(nonce), &ad, body.into())
         .map_err(|_| MediaError::new(Code::Oversize, "ChaCha20-Poly1305 refused the manifest"))?;
     blob.extend_from_slice(tag.as_slice());
-    Ok(blob)
+    Ok(core::mem::take(&mut *blob))
 }
 
 /// Opens a manifest blob: `COMMIT_MISMATCH` when its commitment is not the one the key derives

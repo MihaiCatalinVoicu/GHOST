@@ -1,7 +1,7 @@
 Mutant ms06-commitment-not-checked (Phase 11 slice S1, ghost-client-media): the key commitment not checked (MC-M11's shape).
 --- a/client-core/media/src/manifest.rs
 +++ b/client-core/media/src/manifest.rs
-@@ -258,7 +258,7 @@
+@@ -271,7 +271,7 @@
          ));
      }
      let (commit, rest) = blob.split_at(COMMIT_BYTES);

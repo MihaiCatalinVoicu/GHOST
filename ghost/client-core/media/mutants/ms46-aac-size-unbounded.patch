@@ -1,0 +1,12 @@
+Mutant ms46-aac-size-unbounded (Phase 11 slice S1, ghost-client-media; the review of S1): an AAC access unit above 1 536 bytes is allowed (row 9(b)).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -1003,7 +1003,7 @@
+                     if duration != AAC_FRAME_DURATION || flags != SYNC_FLAGS {
+                         return Err(nc("an audio sample that is not one AAC-LC access unit"));
+                     }
+-                    if size == 0 || size > AAC_MAX_FRAME_BYTES {
++                    if size == 0 {
+                         return Err(nc("an AAC access unit of 0 or more than 1 536 bytes"));
+                     }
+                     samples.push((size, true));

@@ -10,7 +10,7 @@ use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
 use ghost_client_media::class::SizeClass;
 use ghost_client_media::consts::{CHUNK_CT, CHUNK_PT, FRAG, HASHES_OFFSET, MANIFEST_PT};
 use ghost_client_media::keys::{derive, sha256, Derived};
-use ghost_client_media::manifest::seal_blob;
+use ghost_client_media::manifest::manifest_ad;
 use ghost_client_media::stream::{chunk_ad, chunk_nonce};
 use ghost_client_media::{
     Code, Descriptor, Expected, FileKey, KeySlot, MediaKind, ObjectId, Reader, Sealer,
@@ -183,7 +183,8 @@ pub fn honest(spec: &ObjSpec) -> Honest {
         caption: spec.caption.to_string(),
     }
     .encode()
-    .expect("descriptor");
+    .expect("descriptor")
+    .to_vec();
     let f = sealed.manifest.fields;
     Honest {
         spec: spec.clone(),
@@ -242,8 +243,21 @@ impl State {
         }
     }
 
+    /// "Reseal MP": the attacker's own seal under the object's `K_m` and nonce 0, with the test's
+    /// AEAD, as the chunk re-seals below are. The crate's nonce registry records the crate's
+    /// seals only, so these deliberate repeats of `(K_m, 0)` are not in it, and the vector run
+    /// requires it to hold no violation and no repeat for the vector keys (§3.7 point 5, §3.9).
     fn reseal_manifest(&mut self) {
-        self.blob = seal_blob(&self.derived, &self.object_id, &self.mp).expect("seal");
+        let ad = manifest_ad(&self.object_id, &self.derived.commitment);
+        let mut body = self.mp.clone();
+        let tag = ChaCha20Poly1305::new(self.derived.manifest.as_bytes().into())
+            .encrypt_inout_detached(&Nonce::from([0u8; 12]), &ad, body.as_mut_slice().into())
+            .expect("seal");
+        let mut blob = self.derived.commitment.as_bytes().to_vec();
+        blob.extend_from_slice(&body);
+        blob.extend_from_slice(tag.as_slice());
+        assert_eq!(blob.len(), FRAG);
+        self.blob = blob;
         self.expected.manifest_hash = sha256(&self.blob);
     }
 
@@ -275,6 +289,28 @@ impl State {
 
     /// Applies one operation of the vocabulary.
     pub fn apply(&mut self, op: &str, others: &[Honest]) {
+        if let Some(r) = op.strip_prefix("reseal_content ") {
+            // The content := a recipe (the rest of the line), cut into the object's chunks and
+            // zero padded, every chunk resealed with its index and honest last flag; MP's
+            // content_len := its length (reseal MP). The hash list is `rehash`'s.
+            let content = recipe(r);
+            let n = self.plaintexts.len();
+            assert!(
+                content.len() <= n * CHUNK_PT,
+                "reseal_content: more than the class"
+            );
+            for i in 0..n {
+                let start = (i * CHUNK_PT).min(content.len());
+                let end = ((i + 1) * CHUNK_PT).min(content.len());
+                let mut p = content[start..end].to_vec();
+                p.resize(CHUNK_PT, 0);
+                self.chunks[i] = self.seal(i, i + 1 == n, &self.object_id.clone(), self.kind, &p);
+                self.plaintexts[i] = p;
+            }
+            self.mp[20..28].copy_from_slice(&(content.len() as u64).to_be_bytes());
+            self.reseal_manifest();
+            return;
+        }
         let w: Vec<&str> = op.split_whitespace().collect();
         let num = |k: usize| -> usize { w[k].parse().expect("number") };
         match w[0] {

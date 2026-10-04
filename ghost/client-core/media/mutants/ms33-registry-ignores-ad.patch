@@ -1,0 +1,13 @@
+Mutant ms33-registry-ignores-ad (Phase 11 slice S1, ghost-client-media; the review of S1): the nonce registry digests the plaintext only, so a second associated data under one (key, nonce) goes unreported.
+--- a/client-core/media/src/registry.rs
++++ b/client-core/media/src/registry.rs
+@@ -59,8 +59,7 @@
+     padded_len: usize,
+ ) {
+     let mut h = Sha256::new();
+-    h.update(u64::try_from(ad.len()).unwrap_or(u64::MAX).to_be_bytes());
+-    h.update(ad);
++    let _ = ad;
+     h.update(plaintext);
+     let pad = padded_len.saturating_sub(plaintext.len());
+     let zeros = [0u8; 4096];

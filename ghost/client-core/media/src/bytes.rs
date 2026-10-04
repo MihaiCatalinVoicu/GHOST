@@ -1,8 +1,31 @@
 //! Checked reading of untrusted bytes: every read is bounds-checked and every failure is a typed
 //! refusal, so no parser of the crate can over-read or panic (§15.1's "never panics, never
-//! over-reads").
+//! over-reads"); and the growth of the crate's wiped buffers.
+
+use zeroize::Zeroizing;
 
 use crate::error::{MediaError, MediaResult};
+
+/// Makes room for `additional` more bytes in a wiped buffer without freeing an unwiped copy of it
+/// (§10.5, §15.2 item 8): a `Vec` that grows moves its bytes to a new block and frees the old one
+/// as it is, so when `buf` lacks the room its bytes move here instead, to a new buffer of at least
+/// twice the capacity, and the old buffer is wiped as it is dropped.
+pub(crate) fn reserve_wiped(buf: &mut Zeroizing<Vec<u8>>, additional: usize) {
+    let need = buf.len().saturating_add(additional);
+    if need > buf.capacity() {
+        let mut grown = Zeroizing::new(Vec::with_capacity(
+            need.max(buf.capacity().saturating_mul(2)),
+        ));
+        grown.extend_from_slice(buf.as_slice());
+        core::mem::swap(buf, &mut grown);
+    }
+}
+
+/// Appends `data` to a wiped buffer, growing it as [`reserve_wiped`] does.
+pub(crate) fn extend_wiped(buf: &mut Zeroizing<Vec<u8>>, data: &[u8]) {
+    reserve_wiped(buf, data.len());
+    buf.extend_from_slice(data);
+}
 
 /// A forward reader over a byte slice.
 #[derive(Clone, Copy)]
@@ -101,4 +124,25 @@ pub(crate) fn add(a: u64, b: u64, rule: &'static str) -> MediaResult<u64> {
 /// Whether every byte is zero.
 pub(crate) fn all_zero(data: &[u8]) -> bool {
     data.iter().all(|b| *b == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wiped_buffer_grows_by_moving_and_never_in_place() {
+        let mut b = Zeroizing::new(Vec::with_capacity(4));
+        extend_wiped(&mut b, b"abcd");
+        let before = b.as_ptr();
+        assert_eq!(b.capacity(), 4);
+        extend_wiped(&mut b, b"e");
+        assert_ne!(b.as_ptr(), before, "the bytes moved to a new block");
+        assert!(b.capacity() >= 8);
+        assert_eq!(b.as_slice(), b"abcde");
+        let cap = b.capacity();
+        let room = cap - b.len();
+        reserve_wiped(&mut b, room);
+        assert_eq!(b.capacity(), cap, "room enough: no move");
+    }
 }

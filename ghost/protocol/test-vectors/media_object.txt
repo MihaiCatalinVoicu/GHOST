@@ -29,10 +29,15 @@
 #   expect field value             the descriptor's kind | view_once | class_code := value
 #   truncate_class c               MP's class := c, content_len := min(content_len, cap(c)), the hashes
 #                                  after F(c) := zero, only the first c.chunks chunks; reseal MP
+#   reseal_content recipe          the content := the recipe (the rest of the line), cut into the
+#                                  object's chunks and zero padded, each chunk sealed with its index and
+#                                  honest last flag; MP's content_len := its length; reseal MP (the hash
+#                                  list is rehash's)
 # "Reseal MP" also sets the descriptor's manifest_hash to the new blob's. Steps: `open` (readerOpen:
 # hash, commitment, tag, every §3.5 rule, agreement with the descriptor), `read i` (readerChunk in
 # read mode: index range, fragment hashes, tag with the last flag of index n - 1 only, zero pad; a
-# refused chunk exposes nothing), `validate` (every chunk in order, then the walked width, height
+# refused chunk exposes nothing), `validate` (every chunk in order through the content's walker —
+# media_jpeg.txt's `check` for an image, media_fmp4.txt's for a video — then the walked width, height
 # and duration against the manifest's).
 # MP offsets: m_version 0, kind 1, flags 2, class_code 3, object_id 4, content_len 20, width 28,
 # height 30, duration_ms 32, preview_len 36, preview 38, hashes 32806.
@@ -599,6 +604,26 @@ object = image_class0
 op1 = reseal_chunk_pad 0 2437 1
 op2 = rehash
 step = read 0
+expect = NON_CANONICAL
+
+[negative padding_chunk_not_zero]
+object = image_class0
+op1 = reseal_chunk_pad 3 0 1
+op2 = rehash
+step = read 3
+expect = NON_CANONICAL
+
+[negative image_content_with_app1]
+object = image_class0
+op1 = reseal_content golden:api35-emulator/strip_orient1.jpg[0..2] + hex:ffe1001c4578696600004d4d002a0000000800004750532d43414e415259 + golden:api35-emulator/strip_orient1.jpg[2..]
+op2 = rehash
+step = validate
+expect = NON_CANONICAL
+
+[negative preview_long_edge_240]
+object = image_class0
+op1 = manifest_set 36 02f6ffd8ffdb004300100b0a101828333d0c0c0e131a3a3c370e0d1018283945380e11161d3357503e12162538446d674d182337405168715c31404e5767797865485c5f6270646763ffc0000b0800a000f001011100ffc400d20000010501010101010100000000000000000102030405060708090a0b100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f0028a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28a28affd9
+step = open
 expect = NON_CANONICAL
 
 [separation]

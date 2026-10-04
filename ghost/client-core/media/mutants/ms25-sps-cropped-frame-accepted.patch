@@ -1,0 +1,25 @@
+Mutant ms25-sps-cropped-frame-accepted (Phase 11 slice S1, ghost-client-media; the review of S1): any coded frame that cropping brings to 1 280 × 720 is accepted (S1's first SPS rule).
+--- a/client-core/media/src/sps.rs
++++ b/client-core/media/src/sps.rs
+@@ -324,12 +324,16 @@
+         return Err(nc("frame_mbs_only_flag 0 (interlaced coding)"));
+     }
+     b.u1()?; // direct_8x8_inference_flag
+-    if b.u1()? != 0 {
+-        return Err(nc(
+-            "an SPS with frame cropping (the coded frame is exactly 1 280 × 720)",
+-        ));
++    let (mut crop_x, mut crop_y) = (0u64, 0u64);
++    if b.u1()? == 1 {
++        let (l, r, t, bt) = (b.ue()?, b.ue()?, b.ue()?, b.ue()?);
++        crop_x = (u64::from(l) + u64::from(r)) * 2;
++        crop_y = (u64::from(t) + u64::from(bt)) * 2;
+     }
+-    if (width_mbs_minus1, height_units_minus1) != (WIDTH_MBS_MINUS1, HEIGHT_MAP_UNITS_MINUS1) {
++    let w = ((u64::from(width_mbs_minus1) + 1) * 16).saturating_sub(crop_x);
++    let h = ((u64::from(height_units_minus1) + 1) * 16).saturating_sub(crop_y);
++    let _ = (WIDTH_MBS_MINUS1, HEIGHT_MAP_UNITS_MINUS1);
++    if (w, h) != (1280, 720) {
+         return Err(nc(
+             "an SPS coded size other than 1 280 × 720 (80 × 45 macroblocks)",
+         ));

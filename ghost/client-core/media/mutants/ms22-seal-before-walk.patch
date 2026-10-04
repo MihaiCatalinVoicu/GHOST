@@ -1,7 +1,7 @@
 Mutant ms22-seal-before-walk (Phase 11 slice S1, ghost-client-media): the sealer seals bytes before the walker has accepted them (D16).
 --- a/client-core/media/src/sealer.rs
 +++ b/client-core/media/src/sealer.rs
-@@ -219,8 +219,8 @@
+@@ -243,8 +243,8 @@
          }
          let result = self
              .grow(data.len())

@@ -1,0 +1,1 @@
+{"packages":[{"name":"ghost-client-dm","dependencies":[{"name":"ghost-client-media","kind":"dev","optional":false}]}]}

@@ -1,0 +1,24 @@
+Mutant ms27-held-chunk-regrown-in-place (Phase 11 slice S1, ghost-client-media; the review of S1): the held chunk is emptied with mem::take and regrown in place, freeing its old blocks unwiped (S1's first sealer).
+--- a/client-core/media/src/sealer.rs
++++ b/client-core/media/src/sealer.rs
+@@ -205,10 +205,7 @@
+             if self.held.len() == CHUNK_PT {
+                 // The full chunk moves out (wiped when sealed) and a buffer of a whole chunk's
+                 // capacity takes its place, so the held chunk never grows in place.
+-                let held = core::mem::replace(
+-                    &mut self.held,
+-                    Zeroizing::new(Vec::with_capacity(CHUNK_PT)),
+-                );
++                let held = Zeroizing::new(core::mem::take(&mut *self.held));
+                 let index = self.next_index;
+                 out.push(self.seal_index(index, false, &held)?);
+                 self.next_index = index.saturating_add(1);
+@@ -216,7 +213,7 @@
+             let room = CHUNK_PT.saturating_sub(self.held.len());
+             let n = room.min(rest.len());
+             let (now, later) = rest.split_at(n);
+-            extend_wiped(&mut self.held, now);
++            self.held.extend_from_slice(now);
+             rest = later;
+         }
+         Ok(out)

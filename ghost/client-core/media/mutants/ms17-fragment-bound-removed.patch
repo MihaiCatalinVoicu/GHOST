@@ -1,7 +1,7 @@
 Mutant ms17-fragment-bound-removed (Phase 11 slice S1, ghost-client-media): the 16 MiB fragment bound removed (Q46).
 --- a/client-core/media/src/fmp4.rs
 +++ b/client-core/media/src/fmp4.rs
-@@ -822,7 +822,7 @@
+@@ -848,7 +848,7 @@
                  if u64::from(size) != self.mdat_payload.saturating_add(8) {
                      return Err(nc("an mdat whose size is not its trafs' samples"));
                  }

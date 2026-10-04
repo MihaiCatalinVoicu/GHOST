@@ -1,0 +1,12 @@
+Mutant ms34-empty-trun-allowed (Phase 11 slice S1, ghost-client-media; the review of S1): a trun without samples is allowed (X8).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -973,7 +973,7 @@
+             }
+             let count = c.u32()?;
+             let data_offset = c.u32()?;
+-            if count == 0 {
++            if false && count == 0 {
+                 return Err(nc("a trun without samples"));
+             }
+             let start = add(moof_offset, u64::from(data_offset), "a stream too long")?;

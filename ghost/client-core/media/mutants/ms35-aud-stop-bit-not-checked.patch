@@ -1,0 +1,12 @@
+Mutant ms35-aud-stop-bit-not-checked (Phase 11 slice S1, ghost-client-media; the review of S1): an access unit delimiter's stop bit is not checked (X4).
+--- a/client-core/media/src/fmp4.rs
++++ b/client-core/media/src/fmp4.rs
+@@ -1301,7 +1301,7 @@
+             Ok(n)
+         }
+         Nal::Aud => {
+-            if b & 0x1F != 0x10 {
++            if false && b & 0x1F != 0x10 {
+                 return Err(nc("an access unit delimiter without its stop bit"));
+             }
+             m.nal = Nal::Len { have: 0, value: 0 };

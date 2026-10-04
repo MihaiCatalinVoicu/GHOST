@@ -1,7 +1,7 @@
 Mutant ms24-sei-user-data-allowed (Phase 11 slice S1, ghost-client-media): user-data SEI (payload types 4 and 5) allowed (§8.3 GhostMuxer point 3).
 --- a/client-core/media/src/fmp4.rs
 +++ b/client-core/media/src/fmp4.rs
-@@ -1303,7 +1303,7 @@
+@@ -1332,7 +1332,7 @@
                  break;
              }
          }

@@ -1,7 +1,7 @@
 Mutant ms12-tfdt-value-not-checked (Phase 11 slice S1, ghost-client-media): a tfdt that is not the running sum accepted (S0-2).
 --- a/client-core/media/src/fmp4.rs
 +++ b/client-core/media/src/fmp4.rs
-@@ -929,7 +929,7 @@
+@@ -955,7 +955,7 @@
              )?;
              let time = self.decode_time.get(t).copied().unwrap_or(0);
              let mut want_tfdt = vec![1, 0, 0, 0];

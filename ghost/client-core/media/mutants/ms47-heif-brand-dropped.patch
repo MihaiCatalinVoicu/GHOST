@@ -1,0 +1,12 @@
+Mutant ms47-heif-brand-dropped (Phase 11 slice S1, ghost-client-media; the review of S1): one HEIF brand (heim) dropped from the list.
+--- a/client-core/media/src/sniff.rs
++++ b/client-core/media/src/sniff.rs
+@@ -42,7 +42,7 @@
+     // HEIF structural brands, and MIAF's.
+     b"mif1", b"mif2", b"mif3", b"msf1", b"miaf", b"1pic",
+     // HEVC images and sequences.
+-    b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs",
++    b"heic", b"heix", b"heic", b"heis", b"hevc", b"hevx", b"hevm", b"hevs",
+     // AVC, JPEG, VVC, EVC and JPEG 2000 images and sequences.
+     b"avci", b"avcs", b"jpeg", b"jpgs", b"vvic", b"vvis", b"evbi", b"evbs", b"j2ki", b"j2is",
+     // AVIF, and the MIAF and AVIF profile brands.
