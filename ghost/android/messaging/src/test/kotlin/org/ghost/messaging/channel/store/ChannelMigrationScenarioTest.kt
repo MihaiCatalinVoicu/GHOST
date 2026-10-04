@@ -1,5 +1,7 @@
 package org.ghost.messaging.channel.store
 
+import org.ghost.messaging.channel.ChannelAdmissionTest
+import org.ghost.messaging.channel.ChannelWorld
 import org.ghost.messaging.store.MessageStore
 import org.ghost.storage.JdbcSqlExecutor
 import org.ghost.storage.MigrationRunner
@@ -24,6 +26,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
@@ -173,6 +176,27 @@ class ChannelMigrationScenarioTest {
                 f.schemaText()
             }
             assertEquals(fresh, db.schemaText())
+        }
+    }
+
+    /**
+     * **SCN-CI's group half** (slice S4, §19.37): the populated v5 database upgraded to v7, then SCN-CA on it — a real MLS
+     * group created over the upgraded schema, a member invited, admitted and joined, a post each way — and every DM row
+     * as it was before the upgrade.
+     */
+    @Test
+    fun scnCiThenScnCaOnTheUpgradedDatabaseKeepsEveryDmRow() {
+        assumeTrue("ghost-dm-host is not loaded (-Dghost.dm.native)", ChannelWorld.nativeAvailable())
+        populatedV5().use { db ->
+            assertEquals(listOf(6, 7), MigrationRunner(db).migrate())
+            val dmTables = setOf("dm_self", "dm_contact", "dm_conversation", "dm_message", "dm_reaction", "olm_session", "dm_seen")
+            val before = db.dump().filterKeys { it in dmTables }
+            assertEquals(dmTables, before.keys)
+            ChannelWorld().use { w ->
+                ChannelAdmissionTest.scnCa(w, w.client("owner", db), w.client("bob"))
+            }
+            assertEquals(before, db.dump().filterKeys { it in dmTables })
+            MigrationRunner(db).verifyIntegrity()
         }
     }
 

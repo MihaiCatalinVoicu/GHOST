@@ -154,6 +154,8 @@ class ChannelCrashTest {
             }
         }
         assertTrue("CH-ACCEPT raised $events events", events >= 10)
+        // the measurement §19.37 reports (the JUnit report's system-out)
+        println("SCN-CA crash singles: CH-ACCEPT raises $events events")
         var crashed = 0
         for (k in 1..events) {
             val t = thaw(frozen, 1)
@@ -214,6 +216,7 @@ class ChannelCrashTest {
             }
         }
         assertTrue("the join pass raised $events events", events >= 10)
+        println("SCN-CA crash singles: the join pass (CH-JOIN) raises $events events")
         var crashed = 0
         for (k in 1..events) {
             val t = thaw(frozen, 1)

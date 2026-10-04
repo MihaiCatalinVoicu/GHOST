@@ -99,5 +99,92 @@ internal object ChannelAdversary {
     /** The namespace of the channel's current generation at [member]. */
     fun namespace(member: ChannelClient, id: ChannelId): ByteArray = view(member, id).gNs
 
+    // ------------------------------------------------------------------------------- mode 0x11 (posts and commits)
+
+    /** The epoch keys the member holds, newest first: `(epoch, K_ep envelope)`. */
+    private fun epochKeys(member: ChannelClient, id: ChannelId, day: Long): List<Pair<Long, ByteArray>> =
+        member.database.transaction { tx -> member.channelStores.epochs.retained(tx.sql, id.toByteArray(), day) }
+            .map { it.epoch to it.kEnv }
+
+    /** Opens a mode-0x11 blob as any member of its epoch can (every epoch key it holds is tried): its order and MLS body. */
+    fun openEpochBlob(member: ChannelClient, id: ChannelId, blob: ByteArray): ChannelCrypto.OpenedBlob {
+        val v = view(member, id)
+        for ((_, kEnv) in epochKeys(member, id, v.day)) {
+            val o = v.crypto.open(id.toByteArray(), kEnv, ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, ChannelCrypto.MODE_EPOCH, blob)
+            if (o is MlsOutcome.Ok) return o.value
+        }
+        throw AssertionError("no epoch key of ${member.name} opens the blob")
+    }
+
+    /**
+     * A member **re-seals** a mode-0x11 blob: its MLS body, changed by [mutate], sealed again under the epoch's key with
+     * [order] (the original's when null) and a fresh salt — new bytes, a new blob hash, so no tombstone stops it. With the
+     * body and the order unchanged this is the replay of §6.3.4 layer 2 (and FORGE_OWN when served to the post's author);
+     * with a false order it is RESEAL_ORDER (§19.18); [asProposal] and [corrupt] are the other two mutations.
+     */
+    fun reseal(
+        member: ChannelClient,
+        id: ChannelId,
+        blob: ByteArray,
+        order: ChannelCrypto.SealOrder? = null,
+        mutate: (ByteArray) -> ByteArray = { it },
+        /** The epoch whose key seals it (the order's when null): another epoch's key is the forgery CS-S7 refuses. */
+        keyEpoch: Long? = null,
+    ): ByteArray {
+        val v = view(member, id)
+        val opened = openEpochBlob(member, id, blob)
+        val o = order ?: opened.order
+        val sealEpoch = keyEpoch ?: o.epoch
+        val kEnv = epochKeys(member, id, v.day).firstOrNull { it.first == sealEpoch }?.second
+            ?: throw AssertionError("${member.name} holds no key of epoch $sealEpoch")
+        val body = mutate(opened.body.copyOf())
+        val bucket = ChannelTime.bucket(body.size, 0) ?: error("a body larger than any bucket")
+        return v.crypto.seal(id.toByteArray(), kEnv, ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, bucket, ChannelCrypto.MODE_EPOCH, o, body).ok()
+    }
+
+    /** The facade's answer when a member asks it to seal [blob]'s body, with its own order, under [keyEpoch]'s key. */
+    fun trySealUnder(member: ChannelClient, id: ChannelId, blob: ByteArray, keyEpoch: Long): MlsOutcome<ByteArray> {
+        val v = view(member, id)
+        val opened = openEpochBlob(member, id, blob)
+        val kEnv = epochKeys(member, id, v.day).first { it.first == keyEpoch }.second
+        val bucket = ChannelTime.bucket(opened.body.size, 0) ?: error("a body larger than any bucket")
+        return v.crypto.seal(id.toByteArray(), kEnv, ChannelCrypto.KEY_CLASS_EPOCH, v.gNs, bucket, ChannelCrypto.MODE_EPOCH, opened.order, opened.body)
+    }
+
+    /**
+     * The offset of a PrivateMessage's `content_type` in its `MLSMessage` encoding (RFC 9420 §6.3.2): `version(2) ‖
+     * wire_format(2) ‖ group_id<V> ‖ epoch(8)`, the length of `group_id` an MLS variable-length integer (§2.1.2).
+     */
+    private fun contentTypeOffset(mls: ByteArray): Int {
+        val first = mls[4].toInt() and 0xff
+        val (lengthBytes, length) = when (first ushr 6) {
+            0 -> 1 to (first and 0x3f)
+            1 -> 2 to (((first and 0x3f) shl 8) or (mls[5].toInt() and 0xff))
+            else -> throw AssertionError("a group id longer than this harness reads")
+        }
+        return 4 + lengthBytes + length + 8
+    }
+
+    /**
+     * PROPOSE (§19.16), as far as the facade lets a member build one (finding F-S4-6: no proposal function): the message's
+     * header content type set to `proposal` (RFC 9420: 2), to be sealed with the order `(epoch, 0, 0)` a handshake
+     * message carries. Its ciphertext no longer decrypts (the content type is authenticated); the engine must drop it by
+     * its header before `process_message`, which is what the counter tells apart from a decryption failure.
+     */
+    fun asProposal(mls: ByteArray): ByteArray {
+        val out = mls.copyOf()
+        val at = contentTypeOffset(out)
+        check(out[at].toInt() == 1) { "not an application message" }
+        out[at] = 2
+        return out
+    }
+
+    /** An undecryptable copy: the last byte of the ciphertext (its AEAD tag) flipped; the header and the order intact. */
+    fun corrupt(mls: ByteArray): ByteArray {
+        val out = mls.copyOf()
+        out[out.size - 1] = (out[out.size - 1].toInt() xor 1).toByte()
+        return out
+    }
+
     private fun apply(rows: List<MlsRow>, changes: List<MlsChange>): List<MlsRow> = MlsRows.applied(rows, changes)
 }

@@ -7,6 +7,8 @@ import org.ghost.crypto.bridge.MlsCode
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.api.InviteResult
 import org.ghost.messaging.channel.store.ChannelState
+import org.ghost.messaging.channel.store.ChannelStoreError
+import org.ghost.messaging.channel.store.ChannelStoreException
 import org.ghost.messaging.engine.DmTime
 import org.ghost.storage.StorageFullException
 import org.ghost.sync.api.InsufficientReplicasException
@@ -110,6 +112,10 @@ internal class ChannelInviteStep(
             InviteResult(InviteResult.Status.NO_REPLICAS, null)
         } catch (e: StorageFullException) {
             InviteResult(InviteResult.Status.STORAGE_FULL, null)
+        } catch (e: ChannelStoreException) {
+            // §6.3.5: the INVITE_ISSUED post would be the 257th pending one; the transaction rolled the invite back.
+            if (e.error != ChannelStoreError.LIMIT) throw e
+            InviteResult(InviteResult.Status.LIMIT_REACHED, null)
         } finally {
             encoded.fill(0)
         }

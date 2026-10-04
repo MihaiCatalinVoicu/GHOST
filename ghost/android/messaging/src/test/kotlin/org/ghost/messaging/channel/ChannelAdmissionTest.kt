@@ -17,7 +17,8 @@ import org.junit.Test
 /**
  * **SCN-CA without faults** (Phase 10 design §12.4; slice S4): create, invite, accept, the join request, the committer's
  * pass, the settle, the Welcome, the join — and a post each way, over the real OpenMLS. The crash singles of the same
- * scenario are [ChannelCrashTest]'s.
+ * scenario are [ChannelCrashTest]'s; SCN-CI's group half runs [scnCa] on a database upgraded from a populated v5
+ * (`ChannelMigrationScenarioTest`).
  */
 class ChannelAdmissionTest {
 
@@ -27,35 +28,8 @@ class ChannelAdmissionTest {
     }
 
     @Test
-    fun createInviteAcceptAdmitJoinAndPostBothWays() = ChannelWorld().use { w ->
-        val owner = w.client("owner")
-        val bob = w.client("bob")
-        val id = create(owner)
-        val link = invite(owner, id)
-        assertEquals(AcceptResult.PENDING, bob.engine.accept(link, null))
-        assertEquals(ChannelState.JOINING, bob.channel(id)!!.state)
-        w.quiesce()
-        assertEquals("the owner recorded the request", 1L, owner.count("ch_join_request"))
-        w.admissionPass(owner)
-        assertEquals("the pass committed", 1L, owner.count("ch_candidate", "own = 1"))
-        w.quiesce()
-        assertEquals("the commit's copy is verified (CO-4)", 1L, owner.count("ch_candidate", "own = 1 AND verified = 1"))
-        w.pastSettleWindow()
-        assertEquals("the owner settled its own commit", 1L, owner.channel(id)!!.epoch)
-        w.quiesce()
-        assertEquals(ChannelState.ACTIVE, bob.channel(id)!!.state)
-        assertEquals(1L, bob.channel(id)!!.epoch)
-        assertTrue(bob.integrity().isEmpty())
-        assertTrue(owner.integrity().isEmpty())
-
-        assertEquals(PostResult.QUEUED, bob.engine.post(id, "salut".toByteArray(), null))
-        w.quiesce()
-        assertEquals(listOf("salut"), owner.displayed(id))
-        w.advance(DmWorld.MINUTE)
-        assertEquals(PostResult.QUEUED, owner.engine.post(id, "bună".toByteArray(), null))
-        w.quiesce()
-        assertEquals(listOf("bună", "salut"), bob.displayed(id))
-        assertEquals(listOf("bună", "salut"), owner.displayed(id))
+    fun createInviteAcceptAdmitJoinAndPostBothWays() {
+        ChannelWorld().use { w -> scnCa(w, w.client("owner"), w.client("bob")) }
     }
 
     companion object {
@@ -70,6 +44,37 @@ class ChannelAdmissionTest {
             val invite = sponsor.engine.invite(id, 7, password)
             assertEquals(InviteResult.Status.CREATED, invite.status)
             return invite.link!!
+        }
+
+        /** SCN-CA from [owner]'s create to a post each way with [bob], every step asserted. */
+        internal fun scnCa(w: ChannelWorld, owner: ChannelClient, bob: ChannelClient): ChannelId {
+            val id = create(owner)
+            val link = invite(owner, id)
+            assertEquals(AcceptResult.PENDING, bob.engine.accept(link, null))
+            assertEquals(ChannelState.JOINING, bob.channel(id)!!.state)
+            w.quiesce()
+            assertEquals("the owner recorded the request", 1L, owner.count("ch_join_request"))
+            w.admissionPass(owner)
+            assertEquals("the pass committed", 1L, owner.count("ch_candidate", "own = 1"))
+            w.quiesce()
+            assertEquals("the commit's copy is verified (CO-4)", 1L, owner.count("ch_candidate", "own = 1 AND verified = 1"))
+            w.pastSettleWindow()
+            assertEquals("the owner settled its own commit", 1L, owner.channel(id)!!.epoch)
+            w.quiesce()
+            assertEquals(ChannelState.ACTIVE, bob.channel(id)!!.state)
+            assertEquals(1L, bob.channel(id)!!.epoch)
+            assertTrue(bob.integrity().isEmpty())
+            assertTrue(owner.integrity().isEmpty())
+
+            assertEquals(PostResult.QUEUED, bob.engine.post(id, "salut".toByteArray(), null))
+            w.quiesce()
+            assertEquals(listOf("salut"), owner.displayed(id))
+            w.advance(DmWorld.MINUTE)
+            assertEquals(PostResult.QUEUED, owner.engine.post(id, "bună".toByteArray(), null))
+            w.quiesce()
+            assertEquals(listOf("bună", "salut"), bob.displayed(id))
+            assertEquals(listOf("bună", "salut"), owner.displayed(id))
+            return id
         }
     }
 }

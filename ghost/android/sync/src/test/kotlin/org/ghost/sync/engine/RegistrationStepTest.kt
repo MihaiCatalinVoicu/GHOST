@@ -257,15 +257,21 @@ class RegistrationStepTest {
         assertEquals("the channel's credential is untouched", "usable", w.string("SELECT state FROM relay_capability WHERE kind = 'write' AND relay_id = ?", f.relays[0].value))
         assertEquals("pending", f.state(key))
         assertNull("no capability, nothing due", f.due(key))
-        // The need is REGISTER, source REDEEM: the planner redeems it, and a WRITE need is not raised.
-        assertEquals(listOf(CapabilityKind.REGISTER), w.stores.capabilities.needed().map { it.kind })
+        // The need is REGISTER, source REDEEM: the planner redeems it, and a WRITE need is not raised. The fixture's
+        // channel holds no READ credential, so since Phase 10 slice S4 (§19.33 F-6 (a), closed in §19.37) each of its
+        // listening LOCAL pairs also reports READ MISSING, with source LOCAL: the consumer's to supply, never the planner's.
+        val needs = w.stores.capabilities.needed()
+        assertEquals(listOf(CapabilityKind.REGISTER), needs.filter { it.kind != CapabilityKind.READ }.map { it.kind })
+        val reads = needs.filter { it.kind == CapabilityKind.READ }
+        assertEquals(f.relays.toSet(), reads.map { it.relay }.toSet())
+        assertTrue(reads.all { it.source == CapabilitySource.LOCAL })
         // A new registration capability re-arms the row and the relay then records it.
         w.net.failBefore = { null }
         val expiry = Time.WEEK_ORIGIN + Time.WEEK * (f.week + 1) + Time.HOUR
         w.capability(f.relays[0], f.ns, CapabilityKind.REGISTER, seed = 3, expiresAt = expiry)
         assertEquals(RegistrationResult.RECORDED, f.attempt(key))
         assertArrayEquals(w.token(CapabilityKind.REGISTER, f.relays[0], 3), w.net.callsOf(TestRelays.Kind.REGISTER).last().capability)
-        assertTrue(w.stores.capabilities.needed().isEmpty())
+        assertTrue(w.stores.capabilities.needed().all { it.kind == CapabilityKind.READ })
     }
 
     @Test

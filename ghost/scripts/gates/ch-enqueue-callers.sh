@@ -22,7 +22,7 @@
 # listed file, is refused until then, which is what makes it arrive on purpose.
 #
 # **A second rule, one frame lower** (the S8 review's `STEP_TRIGGERS` of G-DM2, for the channel steps): the entry
-# points that reach those calls — `ChannelPostStep.compose`/`encryptPending`, `ChannelPassStep.admit`/
+# points that reach those calls — `ChannelPostStep.compose`/`encryptPending`/`retryPost`, `ChannelPassStep.admit`/
 # `runScheduledPasses`/`scheduleAtSessionStart`, `ChannelSettleStep.settleDue`, `ChannelSweepStep.sweepJoins` — are
 # written only in the files that declare them, in `ChannelEngine.kt` (the user actions and the actor's pass, whose
 # time-triggered steps it gates) and in `ChannelInviteStep.kt` (CH-INVITE's post). A receive or join step that held a
@@ -70,7 +70,7 @@ ChannelSweepStep.kt|remove setListening|CH-SWEEP, an expired join (§6.2.2 step 
 NEVER='ChannelReceiveStep.kt ChannelJoinStep.kt'
 
 # The second rule's entry points and the files that may write them.
-CH_STEP_TRIGGERS='compose|encryptPending|admit|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins'
+CH_STEP_TRIGGERS='compose|encryptPending|retryPost|admit|runScheduledPasses|scheduleAtSessionStart|settleDue|sweepJoins'
 CH_STEP_ALLOWED='ChannelEngine.kt ChannelInviteStep.kt ChannelPostStep.kt ChannelPassStep.kt ChannelSettleStep.kt ChannelSweepStep.kt'
 
 # Sets ALLOWED_CALLS to the calls the file [$1] may make, or to nothing. (A variable, not a command substitution: a

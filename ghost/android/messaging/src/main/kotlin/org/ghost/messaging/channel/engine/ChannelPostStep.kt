@@ -6,8 +6,12 @@ import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.api.PostResult
 import org.ghost.messaging.channel.store.ChannelState
 import org.ghost.messaging.channel.store.ChannelStore
+import org.ghost.messaging.channel.store.ChannelStoreError
+import org.ghost.messaging.channel.store.ChannelStoreException
+import org.ghost.messaging.channel.store.Direction
 import org.ghost.messaging.channel.store.GenerationState
 import org.ghost.messaging.channel.store.OpPurpose
+import org.ghost.messaging.channel.store.PostState
 import org.ghost.messaging.engine.DmTime
 import org.ghost.messaging.engine.DmTimers
 import org.ghost.messaging.store.ContentCipher
@@ -90,10 +94,74 @@ internal class ChannelPostStep(
             PostResult.NO_REPLICAS
         } catch (e: StorageFullException) {
             PostResult.STORAGE_FULL
+        } catch (e: ChannelStoreException) {
+            limitOrThrow(e)
         } finally {
             encoded.fill(0)
         }
     }
+
+    /**
+     * The user's **retry** of a failed post (§6.11's `failed → queued`, a `CH-POST`): the post keeps its op id — §6.3.4 layer
+     * 4 is what drops the second copy at a member the first one reached (an op that ended FAILED may still have been stored
+     * by a relay) — and is re-encrypted under the epoch, the timer and the minute of now ([PostStore.retry], S3's contract).
+     * A channel that is not current keeps it pending like any post, and the row stays `failed` until it is encrypted; a
+     * second retry while it waits changes nothing.
+     */
+    fun retryPost(channelId: ByteArray, opId: ByteArray): PostResult {
+        val now = env.now()
+        val content = env.keys.content() ?: return PostResult.CRYPTO_UNAVAILABLE
+        val row = env.database.transaction { tx -> stores.channels.channel(tx.sql, channelId) }
+        if (row == null || row.state != ChannelState.ACTIVE) return PostResult.NOT_MEMBER
+        val post = env.database.transaction { tx -> stores.posts.post(tx.sql, opId, now) }
+        if (post == null || !post.channelId.contentEquals(channelId) || post.direction != Direction.OUT ||
+            post.state != PostState.FAILED || post.kind != KIND_POST
+        ) {
+            return PostResult.NOT_FAILED
+        }
+        val opened = env.contexts.open(channelId) ?: return PostResult.CRYPTO_UNAVAILABLE
+        if (!opened.pseudonym.contentEquals(row.myPseudonym)) return PostResult.CRYPTO_UNAVAILABLE
+        val text = content.open(post.bodyEnv, ChannelAd.postBody(opId)) ?: return PostResult.CRYPTO_UNAVAILABLE
+        val fields = ChannelContentFields(
+            kind = KIND_POST,
+            opId = opId,
+            authorMinute = Math.floorDiv(now, DmTime.MINUTE),
+            timerCode = row.timerCode,
+            text = text,
+            replyTo = post.replyTo,
+            target = null,
+            grapheme = null,
+        )
+        val encoded = when (val e = ChannelCrypto.contentEncode(fields)) {
+            is MlsOutcome.Ok -> e.value
+            is MlsOutcome.Refused -> {
+                text.fill(0)
+                return PostResult.CRYPTO_UNAVAILABLE
+            }
+        }
+        return try {
+            env.database.transaction { tx ->
+                val fresh = stores.channels.channel(tx.sql, channelId)
+                if (fresh == null || fresh.state != ChannelState.ACTIVE) return@transaction PostResult.NOT_MEMBER
+                val waiting = stores.posts.pending(tx.sql, channelId, DmTime.floorHour(now)).any { it.opId.contentEquals(opId) }
+                if (!waiting) compose(tx, fresh, opened, content, fields, encoded, handshake = false, now = now)
+                PostResult.QUEUED
+            }
+        } catch (e: InsufficientReplicasException) {
+            PostResult.NO_REPLICAS
+        } catch (e: StorageFullException) {
+            PostResult.STORAGE_FULL
+        } catch (e: ChannelStoreException) {
+            limitOrThrow(e)
+        } finally {
+            encoded.fill(0)
+            text.fill(0)
+        }
+    }
+
+    /** §6.3.5's 256 pending posts of a channel, reached: a result; any other store refusal is a defect, rethrown. */
+    private fun limitOrThrow(e: ChannelStoreException): PostResult =
+        if (e.error == ChannelStoreError.LIMIT) PostResult.LIMIT_REACHED else throw e
 
     /**
      * Encrypts [encoded] and enqueues it in [tx] when the channel is current, else keeps it pending. Throws what
@@ -183,19 +251,25 @@ internal class ChannelPostStep(
         val purpose = if (fields.kind == KIND_POST || fields.kind == KIND_REACTION) OpPurpose.POST else OpPurpose.REQUEST
         stores.posts.insertOp(tx, operationId, c, purpose, fields.opId)
         when (fields.kind) {
-            KIND_POST -> stores.posts.insertOutgoing(
-                tx = tx,
-                opId = fields.opId,
-                channelId = c,
-                author = opened.pseudonym,
-                kind = KIND_POST,
-                replyTo = fields.replyTo,
-                timerCode = fields.timerCode,
-                epoch = epoch.epoch,
-                bodyEnv = env.seal(content, ChannelAd.postBody(fields.opId), fields.text ?: ByteArray(0)),
-                authorMinute = authorSeconds,
-                deleteAtMinute = DmTimers.senderExpireMinute(now, fields.timerCode),
-            )
+            KIND_POST -> {
+                val deleteAt = DmTimers.senderExpireMinute(now, fields.timerCode)
+                // A retry (§6.11's failed → queued) re-encrypts a row that exists; a new post inserts its row.
+                if (!stores.posts.retry(tx, fields.opId, epoch.epoch, fields.timerCode, authorSeconds, deleteAt)) {
+                    stores.posts.insertOutgoing(
+                        tx = tx,
+                        opId = fields.opId,
+                        channelId = c,
+                        author = opened.pseudonym,
+                        kind = KIND_POST,
+                        replyTo = fields.replyTo,
+                        timerCode = fields.timerCode,
+                        epoch = epoch.epoch,
+                        bodyEnv = env.seal(content, ChannelAd.postBody(fields.opId), fields.text ?: ByteArray(0)),
+                        authorMinute = authorSeconds,
+                        deleteAtMinute = deleteAt,
+                    )
+                }
+            }
             KIND_REACTION -> {
                 val target = fields.target ?: throw IllegalStateException("a reaction without a target")
                 val grapheme = fields.grapheme ?: ByteArray(0)

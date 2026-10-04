@@ -93,6 +93,10 @@ internal class ChannelEngine(
             postStep.post(channel.toByteArray(), ChannelPostStep.KIND_REACTION, null, null, target.toByteArray(), grapheme)
         }
 
+    /** The user's retry of an own failed post (§6.11, `CH-POST`): the same op id, re-encrypted now. */
+    fun retry(channel: ChannelId, post: PostId): PostResult =
+        actor.call { postStep.retryPost(channel.toByteArray(), post.toByteArray()) }
+
     // ------------------------------------------------------------------------------------------- the pass
 
     override fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {

@@ -21,23 +21,38 @@ import java.security.MessageDigest
  *  - [Mode.REPLAY_JOIN] — the injected re-wrapped or re-sealed join request is served after the honest one was admitted
  *    (an insider replays a request; the committer must refuse it);
  *  - and, for the receive suites: [Mode.SHUFFLE] (a deterministic scramble of each round's order), [Mode.REPEATS]
- *    (each blob served twice; the second copy dies at the tombstone, [repeatsRefused] counts it) and [hold] (blobs a
- *    predicate keeps back while it holds).
+ *    (each blob served once per relay of [relayCount]: the copies die at the tombstone, [repeatsRefused] counts them),
+ *    [Mode.COPY_NAMESPACE] (every post also stored into every other namespace the relay knows: the seal binds the
+ *    namespace, and another channel's keys do not match its hint, §6.3.4 layer 3), [resurrect] (blobs stored again, the
+ *    F7 resurrection: the tombstone, or MLS, or `ch_seen` must stop them) and [hold] (blobs a predicate keeps back while
+ *    it holds).
  *
  * **Why the receipts are written on the raw rows.** The outcome is what Phase 7 would decide; writing it is the model's
  * whole job (the same two statements `ModelDmRelay.release` writes, in the order the triggers require).
  */
 internal class ModelChannelRelay {
 
-    enum class Mode { DROP_WELCOME, COPY_JOIN, FAKE_WELCOME, REPLACE_BOOTSTRAP, REPLAY_JOIN, SHUFFLE, REPEATS }
+    enum class Mode { DROP_WELCOME, COPY_JOIN, FAKE_WELCOME, REPLACE_BOOTSTRAP, REPLAY_JOIN, SHUFFLE, REPEATS, COPY_NAMESPACE }
 
     var modes: Set<Mode> = emptySet()
+
+    /** Under [Mode.REPEATS], how many relays serve each blob (a store reaches every relay of its set). */
+    var relayCount: Int = 2
 
     /** What the relay says a store's outcome was, by client and op purpose (`sent` unless a test says otherwise). */
     var outcomeFor: (ChannelClient, String?) -> String = { _, _ -> "sent" }
 
+    /**
+     * A store whose op ends `failed` and that a relay kept all the same (a quorum missed, one replica written): what makes
+     * a retry after FAILED a second copy of one op id (§6.3.4 layer 4). False unless a test says otherwise.
+     */
+    var storedThoughFailed: (ChannelClient, String?) -> Boolean = { _, _ -> false }
+
     /** Blobs this predicate holds are not served while it holds (a WITHHOLD of the test's choosing). */
     var hold: (Stored) -> Boolean = { false }
+
+    /** The same, from one client only (by its name): a relay that withholds a blob from a subset. */
+    var holdAt: (String, Stored) -> Boolean = { _, _ -> false }
 
     /** How far past the store the relay claims a blob expires (`InboundBlob.relayExpiryHour`): its TTL, honestly. */
     var expiryFor: (Stored) -> Long = { it.storedAt + it.ttl }
@@ -76,8 +91,11 @@ internal class ModelChannelRelay {
     fun copy(): ModelChannelRelay {
         val out = ModelChannelRelay()
         out.modes = modes
+        out.relayCount = relayCount
         out.outcomeFor = outcomeFor
+        out.storedThoughFailed = storedThoughFailed
         out.hold = hold
+        out.holdAt = holdAt
         out.expiryFor = expiryFor
         out.stored += stored
         out.collected += collected
@@ -89,6 +107,20 @@ internal class ModelChannelRelay {
     /** An adversary's blob, stored now in [namespace] and served like any other (or first, under FAKE_WELCOME). */
     fun inject(namespace: ByteArray, ciphertext: ByteArray, now: Long, label: String, ttl: Long = 7 * DmWorld.DAY) {
         stored += Stored(namespace, sha256(ciphertext), ciphertext, now, ttl, ADVERSARY, label, injected = true)
+    }
+
+    /**
+     * The F7 resurrection (§6.3.4): every stored blob [which] selects is stored again now, the same bytes in the same
+     * namespace, and offered again to every listener — a client that still holds its `(namespace, hash)` tombstone refuses
+     * it at the insert (layer 1); one whose tombstone is gone hands it to the engine. Returns how many were resurrected.
+     */
+    fun resurrect(now: Long, which: (Stored) -> Boolean): Int {
+        val again = stored.filter(which).map {
+            Stored(it.namespace, it.hash, it.ciphertext, now, it.ttl, it.from, it.purpose, it.injected)
+        }
+        for (blob in again) served.removeAll { key -> key.startsWith(hex(blob.namespace) + hex(blob.hash) + "@") }
+        stored += again
+        return again.size
     }
 
     /** One round: every client's pending stores reach the relay, then every stored blob reaches every listener. */
@@ -121,12 +153,13 @@ internal class ModelChannelRelay {
             val key = hex(operation) + "@" + client.name
             if (!collected.add(key)) continue
             val outcome = outcomeFor(client, purpose)
-            if (outcome != "failed") {
+            if (outcome != "failed" || storedThoughFailed(client, purpose)) {
                 if (Mode.DROP_WELCOME in modes && purpose == "welcome") {
                     dropped++
                 } else {
                     stored += Stored(namespace, sha256(ciphertext), ciphertext, now, ttl, client.name, purpose)
                     if (Mode.COPY_JOIN in modes && purpose == "join") copyJoin(namespace, ciphertext, now, ttl, client.name)
+                    if (Mode.COPY_NAMESPACE in modes && purpose == "post") copyInto(namespace, ciphertext, now, ttl, client.name, "post-copy")
                 }
             }
             release(client, operation, outcome, now)
@@ -134,10 +167,14 @@ internal class ModelChannelRelay {
     }
 
     /** COPY_JOIN: the request into every other namespace the relay knows (the seal binds the namespace, CS-S3). */
-    private fun copyJoin(namespace: ByteArray, ciphertext: ByteArray, now: Long, ttl: Long, from: String) {
+    private fun copyJoin(namespace: ByteArray, ciphertext: ByteArray, now: Long, ttl: Long, from: String) =
+        copyInto(namespace, ciphertext, now, ttl, from, "join-copy")
+
+    /** The blob into every other namespace the relay knows, labelled [label]. */
+    private fun copyInto(namespace: ByteArray, ciphertext: ByteArray, now: Long, ttl: Long, from: String, label: String) {
         val others = stored.map { hex(it.namespace) }.toSet() - hex(namespace)
         for (other in others) {
-            stored += Stored(unhex(other), sha256(ciphertext), ciphertext, now, ttl, from, "join-copy")
+            stored += Stored(unhex(other), sha256(ciphertext), ciphertext, now, ttl, from, label)
             copies++
         }
     }
@@ -170,15 +207,17 @@ internal class ModelChannelRelay {
         if (Mode.SHUFFLE in modes) candidates = candidates.sortedBy { hex(sha256(it.hash + (shuffle++).toByte())) }
         var moved = 0
         for (blob in candidates) {
-            if (hold(blob)) continue
+            if (hold(blob) || holdAt(client.name, blob)) continue
             if (Mode.REPLACE_BOOTSTRAP in modes && !blob.injected && blob.purpose == "welcome") continue
             val key = hex(blob.namespace) + hex(blob.hash) + "@" + client.name
             val fresh = served.add(key)
             if (!fresh && Mode.REPEATS !in modes) continue
             if (insert(client, blob, now)) moved++
             if (Mode.REPEATS in modes) {
-                repeatsOffered++
-                if (insert(client, blob, now)) moved++ else repeatsRefused++
+                repeat(relayCount - 1) {
+                    repeatsOffered++
+                    if (insert(client, blob, now)) moved++ else repeatsRefused++
+                }
             }
         }
         return moved
