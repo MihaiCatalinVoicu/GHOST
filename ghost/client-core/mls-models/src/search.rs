@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-use crate::model::World;
+use crate::model::{World, NA};
 use crate::props::{self, Violation};
 use crate::step::{successors, Action, Cfg, Succ};
 
@@ -59,6 +59,49 @@ pub struct Outcome {
     pub terminal: usize,
     pub events: u64,
     pub max_depth: usize,
+    /// Per terminal property (by the bit position of its `props::T_*`): the quiescent states
+    /// where its premise held, so that it could have failed there.
+    pub live: [usize; 32],
+    /// The bounds the run reached.
+    pub reached: Reached,
+}
+
+/// The largest values the explored states reached, to compare with the scenario's bounds: epoch
+/// transitions merged by any member, commits and posts per actor, days.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reached {
+    pub epochs: usize,
+    pub commits: [u8; NA],
+    pub posts: [u8; NA],
+    pub days: u8,
+}
+
+impl Reached {
+    fn absorb(&mut self, w: &World) {
+        for (m, me) in w.m.iter().enumerate() {
+            self.epochs = self.epochs.max(me.chain.len());
+            self.commits[m] = self.commits[m].max(me.seq);
+            self.posts[m] = self.posts[m].max(me.posts + me.beacons);
+        }
+        self.days = self.days.max(w.day);
+    }
+}
+
+impl Outcome {
+    fn terminal_state(&mut self, live: u32) {
+        self.terminal += 1;
+        for (bit, count) in self.live.iter_mut().enumerate() {
+            if live & (1 << bit) != 0 {
+                *count += 1;
+            }
+        }
+    }
+
+    /// The quiescent states where the premise of terminal property `t` (a `props::T_*` bit)
+    /// held.
+    pub fn live_of(&self, t: u32) -> usize {
+        self.live[t.trailing_zeros() as usize]
+    }
 }
 
 /// A 128-bit state fingerprint: two 64-bit multiply-rotate mixes, finalised with the MurmurHash3
@@ -140,7 +183,9 @@ struct Frame {
 /// Explores every state reachable from `start` under `cfg` within `budget` states, checking every
 /// property at every transition and quiescent state.
 pub fn explore(cfg: &Cfg, start: World, budget: usize) -> Result<Outcome, Stop> {
+    cfg.check_bounds();
     let mut out = Outcome::default();
+    out.reached.absorb(&start);
     let mut seen: HashSet<u128> = HashSet::new();
     seen.insert(fingerprint(&start));
     out.states = 1;
@@ -157,11 +202,13 @@ pub fn explore(cfg: &Cfg, start: World, budget: usize) -> Result<Outcome, Stop> 
         }
     }
     if quiescent(&buf) {
-        out.terminal += 1;
-        props::check_terminal(&start, cfg, cfg.terminal).map_err(|violation| Stop::Property {
-            violation,
-            trace: Vec::new(),
+        let live = props::check_terminal(&start, cfg, cfg.terminal).map_err(|violation| {
+            Stop::Property {
+                violation,
+                trace: Vec::new(),
+            }
         })?;
+        out.terminal_state(live);
     }
     stack.push(Frame {
         succs: std::mem::take(&mut buf),
@@ -191,6 +238,7 @@ pub fn explore(cfg: &Cfg, start: World, budget: usize) -> Result<Outcome, Stop> 
         if out.states > budget {
             return Err(Stop::Budget(budget));
         }
+        out.reached.absorb(&world);
         path.push(action);
         out.max_depth = out.max_depth.max(path.len());
         let mut next = Vec::new();
@@ -200,12 +248,14 @@ pub fn explore(cfg: &Cfg, start: World, budget: usize) -> Result<Outcome, Stop> 
             return Err(Stop::Property { violation, trace });
         }
         if quiescent(&next) {
-            out.terminal += 1;
-            if let Err(violation) = props::check_terminal(&world, cfg, cfg.terminal) {
-                return Err(Stop::Property {
-                    violation,
-                    trace: path.clone(),
-                });
+            match props::check_terminal(&world, cfg, cfg.terminal) {
+                Ok(live) => out.terminal_state(live),
+                Err(violation) => {
+                    return Err(Stop::Property {
+                        violation,
+                        trace: path.clone(),
+                    })
+                }
             }
         }
         stack.push(Frame {
@@ -217,9 +267,12 @@ pub fn explore(cfg: &Cfg, start: World, budget: usize) -> Result<Outcome, Stop> 
 }
 
 /// The same exploration breadth-first, so that a counter-example is a shortest one (the finding
-/// probes print it). It holds every state of the current depth in memory: for the probes only.
+/// probes print it at the PR bound). It holds every state of the current depth in memory: for the
+/// probes only.
 pub fn explore_shortest(cfg: &Cfg, start: World, budget: usize) -> Result<Outcome, Stop> {
+    cfg.check_bounds();
     let mut out = Outcome::default();
+    out.reached.absorb(&start);
     let mut seen: HashMap<u128, u32> = HashMap::new();
     // Each reached state's parent and the action that reached it (state 0 is the start).
     let mut nodes: Vec<(u32, Action)> = vec![(0, Action::Observe)];
@@ -246,12 +299,14 @@ pub fn explore_shortest(cfg: &Cfg, start: World, budget: usize) -> Result<Outcom
                 return Err(Stop::Property { violation, trace });
             }
             if quiescent(&buf) {
-                out.terminal += 1;
-                if let Err(violation) = props::check_terminal(&w, cfg, cfg.terminal) {
-                    return Err(Stop::Property {
-                        violation,
-                        trace: path(&nodes, idx),
-                    });
+                match props::check_terminal(&w, cfg, cfg.terminal) {
+                    Ok(live) => out.terminal_state(live),
+                    Err(violation) => {
+                        return Err(Stop::Property {
+                            violation,
+                            trace: path(&nodes, idx),
+                        })
+                    }
                 }
             }
             for s in buf.drain(..) {
@@ -271,6 +326,7 @@ pub fn explore_shortest(cfg: &Cfg, start: World, budget: usize) -> Result<Outcom
                 if out.states > budget {
                     return Err(Stop::Budget(budget));
                 }
+                out.reached.absorb(&s.world);
                 next.push((i, s.world));
             }
         }

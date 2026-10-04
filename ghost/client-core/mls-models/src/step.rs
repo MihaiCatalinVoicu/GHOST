@@ -81,6 +81,40 @@ pub struct Cfg {
     pub resigner: u8,
     /// Terminal properties checked on quiescent states (bits `T_*` of `props`).
     pub terminal: u32,
+    /// Check sites (or whole properties) switched off: empty in every control and mutant run; a
+    /// probe switches a decision-time check off to show the consequence it hides (F-4's fork
+    /// behind P-FRESH, §19.34.1 item 5).
+    pub off: &'static [&'static str],
+}
+
+impl Cfg {
+    /// The scenario's bounds fit the model's slots (§19.34.1 item 14): at most `MAX_DEPTH` epoch
+    /// transitions, each actor's commits within its commit slots (`commit_capacity`), its posts
+    /// within its post slots.
+    pub fn check_bounds(&self) {
+        assert!(
+            self.depth <= MAX_DEPTH,
+            "{}: depth {} above MAX_DEPTH",
+            self.name,
+            self.depth
+        );
+        for (m, actor) in ACTOR_NAMES.iter().enumerate() {
+            assert!(
+                self.commit_budget[m] as usize <= commit_capacity(m),
+                "{}: {actor} has a commit budget of {} but {} commit slots",
+                self.name,
+                self.commit_budget[m],
+                commit_capacity(m)
+            );
+            assert!(
+                self.post_budget[m] as usize <= POSTS_PER_ACTOR,
+                "{}: {actor} has a post budget of {} but {} post slots",
+                self.name,
+                self.post_budget[m],
+                POSTS_PER_ACTOR
+            );
+        }
+    }
 }
 
 /// An action, for the trace of a counter-example.
@@ -258,11 +292,9 @@ pub const EV_RESIGN: u64 = 1 << 16;
 pub const EV_LEFT: u64 = 1 << 17;
 pub const EV_DEPTH_MAX: u64 = 1 << 18;
 pub const EV_OWN_CLEARED: u64 = 1 << 19;
-pub const EV_LOSER_REPASS: u64 = 1 << 20;
 pub const EV_WAIT: u64 = 1 << 21;
 pub const EV_ROTATED: u64 = 1 << 22;
 pub const EV_REJOIN_REFUSED: u64 = 1 << 23;
-pub const EV_INVALID_HELD: u64 = 1 << 24;
 pub const EV_GROUND_LATE: u64 = 1 << 25;
 pub const EV_RANK255_PASS: u64 = 1 << 26;
 pub const EV_PROGRESS_RESET: u64 = 1 << 27;
@@ -275,8 +307,6 @@ pub const EV_CATCHUP: u64 = 1 << 33;
 pub const EV_DRAIN_SPAM: u64 = 1 << 34;
 pub const EV_REPLACED_OWN: u64 = 1 << 35;
 pub const EV_CLEAR_INDETERMINATE: u64 = 1 << 36;
-pub const EV_REMOVED_READS: u64 = 1 << 37;
-pub const EV_SPAM_RESYNC: u64 = 1 << 38;
 pub const EV_REMOVAL_MERGED: u64 = 1 << 39;
 pub const EV_SETTLE_PASS: u64 = 1 << 40;
 pub const EV_OWN_FETCHED: u64 = 1 << 41;
@@ -291,12 +321,25 @@ pub struct Succ {
     pub settles: u32,
 }
 
-/// One transaction under construction.
+/// One transaction under construction. Besides the world it carries what happened inside the
+/// transaction and no state keeps: the messages each member first opened in it and who merged
+/// another member's commit, which CO-11 and CO-12 consume at the member's next evaluation in the
+/// same transaction (`liveness`).
+#[derive(Clone)]
 pub struct Step<'a> {
     pub cfg: &'a Cfg,
     pub w: World,
     pub ev: u64,
     pub settles: u32,
+    /// Senders of other members' messages (posts, commits) each member first opened in this
+    /// transaction: of the epoch that was its current one when it opened them (CO-11 (b)); of any
+    /// epoch (CO-12's stale clock); of any epoch since its last merge of a committer's commit in
+    /// this transaction (CO-12's partition count).
+    fresh_cur: [u8; NA],
+    fresh_any: [u8; NA],
+    fresh_msgs: [u8; NA],
+    /// Members that merged another member's commit in this transaction (CO-11 (b)'s progress).
+    merged: u8,
 }
 
 impl<'a> Step<'a> {
@@ -306,6 +349,10 @@ impl<'a> Step<'a> {
             w: *w,
             ev: 0,
             settles: 0,
+            fresh_cur: [0; NA],
+            fresh_any: [0; NA],
+            fresh_msgs: [0; NA],
+            merged: 0,
         }
     }
 
@@ -404,6 +451,9 @@ impl<'a> Step<'a> {
             visible_mask(&self.w, &self.cfg.genesis, self.rules(), m) & !self.w.m[m].fetched;
         self.w.m[m].fetched |= newly;
         self.w.m[m].listed = true;
+        // CH-RECV (§6.3.2): what opens under the present keys is processed before any settle of
+        // this pass; the settle's re-offer (§7.5) opens the rest (`pump`).
+        self.mark_opened(m);
         self.late_blobs(m, newly)?;
         self.welcomes(m)?;
         // CO-4 (ii): this pass completes after (i) held when (i) holds now.
@@ -498,7 +548,9 @@ impl<'a> Step<'a> {
 
     /// Marks every fetched blob that opens under the member's present keys as processed (its first
     /// sighting, or the re-offer after a settle or a Welcome, §7.5): CO-11 (a) counts only blobs
-    /// that stayed unopenable, so a post read under a retained past epoch never counts later.
+    /// that stayed unopenable, so a post read under a retained past epoch never counts later. A
+    /// message of another member opened here for the first time is recorded for CO-11 (b) and
+    /// CO-12 (`Step::fresh_*`): it counts once, now, and never again.
     fn mark_opened(&mut self, m: usize) {
         let me = self.w.m[m];
         let mut opened = me.opened;
@@ -508,6 +560,18 @@ impl<'a> Step<'a> {
                 && opens(&self.w, &self.cfg.genesis, self.rules(), m, i)
             {
                 opened |= bit(i);
+                let b = self.w.b[i];
+                if matches!(b.kind, B_POST | B_COMMIT)
+                    && b.author != m as u8
+                    && (b.author as usize) < NA
+                {
+                    let a = abit(b.author as usize);
+                    self.fresh_any[m] |= a;
+                    self.fresh_msgs[m] |= a;
+                    if epoch_chain(&self.w, i) == Some(me.chain) {
+                        self.fresh_cur[m] |= a;
+                    }
+                }
             }
         }
         self.w.m[m].opened = opened;
@@ -519,7 +583,29 @@ impl<'a> Step<'a> {
         let g = self.group(before.chain);
         let k = self.w.c[s];
         props::check_merge(&self.w, self.cfg, m, s, choice, &g)?;
+        let own = before.own;
+        if own != NONE && own as usize != s && self.w.c[own as usize].parent == before.chain {
+            // CO-4 (b) clears the own commit below; its successor senders are those of the trial
+            // settle from the epoch being settled, so the check runs before the branch moves
+            // (§19.34.1 item 12: run after it, it counted none and could never fail).
+            props::check_settle_clear(&self.w, self.cfg, m, own as usize, s)?;
+        }
         self.settles += 1;
+        // Ghost (P-LATE-HARMLESS's premise): a member that holds a late candidate for this epoch
+        // and no successor sender of a winner another member merged for it before.
+        if (0..NC).any(|x| choice.candidates & (1 << x) != 0 && self.w.b[x].late) {
+            let p = before.chain;
+            for n in 0..NA {
+                let c = self.w.m[n].chain;
+                if n == m || !p.is_prefix_of(c) || c.len() <= p.len() {
+                    continue;
+                }
+                let won = c.at(p.len());
+                if !self.w.b[won].late && successor_senders(&self.w, m, won) == 0 {
+                    self.w.h.late_unanchored = true;
+                }
+            }
+        }
         if choice.candidates.count_ones() > 1 {
             self.ev |= EV_SETTLE_CONCURRENT;
             let succ: Vec<u8> = (0..NC)
@@ -535,7 +621,6 @@ impl<'a> Step<'a> {
         if choice.abandoned != 0 {
             self.ev |= EV_ABANDONED;
         }
-        let own = before.own;
         let chain = before.chain.push(s);
         {
             let day = self.w.day;
@@ -560,7 +645,6 @@ impl<'a> Step<'a> {
         } else if own != NONE && self.w.c[own as usize].parent == before.chain {
             // CO-4 (b): another candidate won at a settle point; the own commit is cleared and its
             // work stays pending for the next pass (CO-10).
-            props::check_settle_clear(&self.w, m, own as usize, s)?;
             let o = own as usize;
             let verified = before.op == Op::Verified
                 || (self.rules().fixed(Fix::FetchedOwnCopy) && before.fetched & bit(o) != 0);
@@ -673,15 +757,17 @@ impl<'a> Step<'a> {
             {
                 me.tries = 0;
             }
-            // CO-12: a committer commit merged resets the partition and stale clocks.
+            // CO-12: a committer commit merged restarts the partition clock and its count (the
+            // messages opened before it in this transaction do not count after it).
             if g.rank(k.author as usize) != 255 {
                 me.qd = 0;
                 me.msgs = 0;
+                self.fresh_msgs[m] = 0;
             }
-            // CO-11 (b): a commit from another member merged is progress.
-            if k.author != m as u8 {
-                me.prog = true;
-            }
+        }
+        // CO-11 (b): a commit from another member merged is progress (`liveness` takes it).
+        if k.author != m as u8 {
+            self.merged |= abit(m);
         }
         Ok(())
     }
@@ -763,7 +849,7 @@ impl<'a> Step<'a> {
                 self.ev |= EV_WELCOME_REFUSED;
                 continue;
             }
-            props::check_welcome(&self.w, s)?;
+            props::check_welcome(&self.w, self.cfg, s)?;
             let inc = joined.inc[m];
             let day = self.w.day;
             let me = &mut self.w.m[m];
@@ -780,6 +866,7 @@ impl<'a> Step<'a> {
             me.dw = 0;
             me.ds = 0;
             me.prog = false;
+            me.wsend = 0;
             me.flags = 0;
             me.qd = 0;
             me.sd = 0;
@@ -890,7 +977,7 @@ impl<'a> Step<'a> {
                         && (g.rank(k.author as usize), k.hash)
                             < (g.rank(winner.author as usize), winner.hash);
                     if better {
-                        props::check_sticky(me.chain, p.push(i), m)?;
+                        props::check_sticky(self.cfg, me.chain, p.push(i), m)?;
                     }
                 }
             }
@@ -898,25 +985,26 @@ impl<'a> Step<'a> {
         Ok(())
     }
 
-    /// CO-11 and CO-12 when the member's view changes (fetch, settle, session, day).
+    /// CO-11 and CO-12 when the member's view changes (a fetch, a settle, a session, a day). A
+    /// message counts when it is first opened (`Step::fresh_*`), once: a message fetched long ago
+    /// neither restarts CO-12's stale clock nor counts as CO-11 (b)'s progress at a later window
+    /// (§19.34.1 item 1; EM-3 first recounted every message of the epoch at every evaluation).
     fn liveness(&mut self, m: usize) {
+        let fresh_cur = std::mem::take(&mut self.fresh_cur[m]);
+        let fresh_any = std::mem::take(&mut self.fresh_any[m]);
+        let fresh_msgs = std::mem::take(&mut self.fresh_msgs[m]);
+        let merged = self.merged & abit(m) != 0;
+        self.merged &= !abit(m);
         let me = self.w.m[m];
         if !me.status.holds_state() {
             return;
         }
         let g = self.group(me.chain);
-        // Messages of other members that open in its current epoch (CO-11 (b), CO-12).
-        let mut senders = 0u8;
-        for i in 0..NB {
-            if me.fetched & bit(i) != 0
-                && matches!(self.w.b[i].kind, B_POST | B_COMMIT)
-                && self.w.b[i].author != m as u8
-                && epoch_chain(&self.w, i) == Some(me.chain)
-            {
-                senders |= abit(self.w.b[i].author as usize);
-            }
-        }
-        let (u, u_split) = if self.cfg.acts & A_DAY != 0 {
+        // CO-11 and CO-12 matter only where days pass, CO-12's 9-day clocks only where the horizon
+        // reaches 9 days; elsewhere their counters stay at rest (no property or flow can read them).
+        let day_scale = self.cfg.acts & A_DAY != 0;
+        let co12 = day_scale && self.cfg.days >= 9;
+        let (u, u_split) = if day_scale {
             let u = unopenable_foreign(&self.w, &self.cfg.genesis, self.rules(), m);
             let us = if self.rules().fixed(Fix::SplitCountsDraining) {
                 u + unopenable_draining(&self.w, &self.cfg.genesis, self.rules(), m)
@@ -927,67 +1015,111 @@ impl<'a> Step<'a> {
         } else {
             (0, 0)
         };
-        // F-3's ghost window: both namespaces, whatever the rule set.
-        let u_any = if self.cfg.terminal & props::T_SCN_CL != 0 {
-            unopenable_any(&self.w, &self.cfg.genesis, self.rules(), m)
+        // CO-11 (b): messages from at least min(2, members of its branch − 1) other members.
+        let need = g.members().saturating_sub(1).min(2);
+        let progress = |senders: u8| need > 0 && senders.count_ones() >= need;
+        // The mutants of §19.34.1 item 1 recount every fetched message of the current epoch.
+        let recount =
+            self.rules().is(Mutant::RecountProgress) || self.rules().is(Mutant::RecountStale);
+        let mut held_cur = 0u8;
+        if recount {
+            for i in 0..NB {
+                if me.fetched & bit(i) != 0
+                    && matches!(self.w.b[i].kind, B_POST | B_COMMIT)
+                    && self.w.b[i].author != m as u8
+                    && epoch_chain(&self.w, i) == Some(me.chain)
+                {
+                    held_cur |= abit(self.w.b[i].author as usize);
+                }
+            }
+        }
+        let fresh_cur = if self.rules().is(Mutant::RecountProgress) {
+            fresh_cur | held_cur
         } else {
-            0
+            fresh_cur
+        };
+        let fresh_any = if self.rules().is(Mutant::RecountStale) {
+            fresh_any | held_cur
+        } else {
+            fresh_any
         };
         let mut ev = 0;
         {
             let me = &mut self.w.m[m];
-            if senders != 0 {
-                me.sd = 0;
-                me.msgs |= senders;
+            // CO-12: a message first opened restarts the stale clock, and its sender joins those
+            // heard since the last committer commit (the partition count).
+            if co12 {
+                if fresh_any != 0 {
+                    me.sd = 0;
+                }
+                me.msgs |= fresh_msgs;
             }
-            // CO-11 (b): messages from at least min(2, members of its branch − 1) other members.
-            let need = g.members().saturating_sub(1).min(2);
-            let progress_now = need > 0 && senders.count_ones() >= need;
             // CO-11 (a): the liveness window starts at the first unopenable foreign blob of the
-            // current generation's namespace.
+            // current generation's namespace (F-3 (a)'s correction: or of the draining one's).
+            // (b): progress is another member's commit merged, or messages of its current epoch
+            // first opened in the window from `need` other members; a member in resync_needed
+            // counts it from its entry there.
             if me.dw == 0 && u_split > 0 {
                 me.dw = 1;
                 me.ds = u8::from(me.online);
-                me.prog = progress_now;
+                me.wsend = fresh_cur;
+                me.prog = merged || progress(me.wsend);
+            } else if me.dw > 0 || me.status == Status::Resync {
+                me.wsend |= fresh_cur;
+                if merged || progress(me.wsend) {
+                    me.prog = true;
+                }
             }
-            if me.gw == 0 && u_any > 0 {
-                me.gw = 1;
-                me.gs = u8::from(me.online);
-            }
-            if progress_now {
-                me.prog = true;
-            }
-            // Progress returns a member in resync_needed to active (CO-11).
+            // Progress returns a member in resync_needed to active (CO-11); its window restarts.
             if me.prog && me.status == Status::Resync {
                 me.status = Status::Active;
+                me.dw = 0;
+                me.ds = 0;
+                me.prog = false;
+                me.wsend = 0;
                 ev |= EV_PROGRESS_RESET;
             }
-            // CO-11: at least 72 h of first sightings covering at least 3 sessions.
-            if me.dw >= 3 && me.ds >= 3 {
+            // CO-11: at least 72 h of first sightings (three day events) covering at least 3
+            // sessions.
+            if me.dw >= WINDOW_72H && me.ds >= 3 {
                 if u >= 3 && !me.prog {
                     if me.status == Status::Active && !self.cfg.rules.is(Mutant::NoBranchDeath) {
                         me.status = Status::Resync;
+                        me.wsend = 0;
                         ev |= EV_RESYNC;
                     }
-                } else if u_split >= 3 && (me.prog || u < 3) {
-                    me.flags |= FL_SPLIT;
-                    ev |= EV_SPLIT;
+                } else {
+                    // The member does not enter resync_needed here. CO-12 as written:
+                    // `split_suspected` when CO-11 (a) holds while progress continues. F-3 (a)'s
+                    // correction (§19.34.1 item 4): CO-11 (a) over the current and the draining
+                    // namespace, whether or not progress continues; `SplitNeedsProgress` is the
+                    // correction as first worded ("while progress continues"), kept as evidence.
+                    let split = if self.cfg.rules.fixed(Fix::SplitCountsDraining) {
+                        u_split >= 3 && (me.prog || !self.cfg.rules.fixed(Fix::SplitNeedsProgress))
+                    } else {
+                        u >= 3 && me.prog
+                    };
+                    if split {
+                        me.flags |= FL_SPLIT;
+                        ev |= EV_SPLIT;
+                    }
                 }
                 if me.prog {
                     me.dw = 0;
                     me.ds = 0;
                     me.prog = false;
+                    me.wsend = 0;
                 }
             }
             // CO-12: nine days without a committer commit merged.
             if me.qd >= 9 {
                 let others = me.msgs & !abit(m);
-                let need = if self.cfg.rules.fixed(Fix::PartitionOneOther) {
+                let need_p = if self.cfg.rules.fixed(Fix::PartitionOneOther) {
                     1
                 } else {
                     2
                 };
-                if others.count_ones() >= need && !self.cfg.rules.is(Mutant::NoPartition) {
+                if others.count_ones() >= need_p && !self.cfg.rules.is(Mutant::NoPartition) {
                     me.flags |= FL_PARTITION;
                     ev |= EV_PARTITION;
                 }
@@ -1004,7 +1136,14 @@ impl<'a> Step<'a> {
     /// A new own (or adversarial) commit.
     fn new_commit(&mut self, m: usize, k: Commit, pos: u8) -> Result<(), Violation> {
         let seq = self.w.m[m].seq as usize;
-        let slot = m * PER_ACTOR_COMMITS + seq;
+        let slot = commit_slot(m, seq).unwrap_or_else(|| {
+            panic!(
+                "{}: {} commits past its {} commit slots",
+                self.cfg.name,
+                ACTOR_NAMES[m],
+                commit_capacity(m)
+            )
+        });
         props::check_own_commit(&self.w, self.cfg, m, &k)?;
         // T1 covers blind passes only: a commit built while its author held no foreign candidate
         // for that epoch. A pass over a held candidate may be stored after another member's
@@ -1102,7 +1241,9 @@ pub fn unopenable_any(w: &World, gen: &Genesis, rules: Rules, m: usize) -> u32 {
     n
 }
 
-fn unopenable_in(w: &World, gen: &Genesis, rules: Rules, m: usize, ns: Chain) -> u32 {
+/// CO-11 (a)'s count in namespace `ns`: fetched blobs, not the member's own and from at least two
+/// operators, that it never opened and does not open now.
+pub fn unopenable_in(w: &World, gen: &Genesis, rules: Rules, m: usize, ns: Chain) -> u32 {
     let me = &w.m[m];
     (0..NB)
         .filter(|&i| {
@@ -1188,9 +1329,6 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                     if st.w.m[m].dw > 0 && st.w.m[m].ds < 3 {
                         st.w.m[m].ds += 1;
                     }
-                    if st.w.m[m].gw > 0 && st.w.m[m].gs < 3 {
-                        st.w.m[m].gs += 1;
-                    }
                     st.liveness(m);
                     Ok(Some(st))
                 });
@@ -1243,6 +1381,7 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                     // CO-4 (ii) dropped: it settles on what it fetched before the window elapsed.
                     st.w.m[m].after = true;
                     st.pump(m)?;
+                    st.liveness(m);
                 } else {
                     st.list(m)?;
                 }
@@ -1267,12 +1406,7 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                                 actor: m as u8,
                                 hash: pos,
                             };
-                            let mut st2 = Step {
-                                cfg,
-                                w: st.w,
-                                ev: st.ev,
-                                settles: st.settles,
-                            };
+                            let mut st2 = st.clone();
                             let r =
                                 note_pass(&mut st2, m, &k).and_then(|_| st2.new_commit(m, k, pos));
                             if let Err(v) = r {
@@ -1324,7 +1458,9 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                         let mut st = Step::new(cfg, w);
                         st.w.b[i].stored = true;
                         st.w.b[i].withheld = mask & !abit(author);
-                        if i < NC && w.c[i].flags & F_ADVERSARY == 0 {
+                        if i < NC {
+                            // A commit stored after some member settled its epoch is late (a ghost,
+                            // `Blob::late`); an honest one is a late copy (F-1, F-2).
                             let p = w.c[i].parent;
                             let settled = (0..NA).any(|n| {
                                 w.m[n].status != Status::Absent
@@ -1332,7 +1468,10 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                                     && w.m[n].chain.len() > p.len()
                             });
                             if settled {
-                                st.w.h.late_copy = true;
+                                st.w.b[i].late = true;
+                                if w.c[i].flags & F_ADVERSARY == 0 {
+                                    st.w.h.late_copy = true;
+                                }
                             }
                         }
                         if mask != 0 {
@@ -1350,6 +1489,7 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                             } else {
                                 st.w.m[author].op = Op::Verified;
                                 st.pump(author)?;
+                                st.liveness(author);
                             }
                         }
                         Ok(Some(st))
@@ -1548,8 +1688,9 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
             };
             let ok = normative(&g, &k) == Verdict::Valid;
             let (held, _) = st0.cands(m);
-            // The F-1 correction holds a self-update too while a candidate is held.
-            let blocked = cfg.rules.fixed(Fix::SettleBeforePass) && held != 0;
+            // F-1's correction, CO-9's half (§19.34.1 item 3): a member that holds a candidate
+            // self-updates only after it settles that epoch.
+            let blocked = cfg.rules.fixed(Fix::SelfUpdateAfterSettle) && held != 0;
             if (ok || cfg.rules.is(Mutant::NoSkip)) && !blocked && !late_blind {
                 for pos in st0.hash_positions(me.chain, m) {
                     attempt!(
@@ -1624,6 +1765,11 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                     };
                 }
                 st.w.m[m].kp |= 1 << KP_REJOIN;
+                if me.status == Status::Active {
+                    // Entering resync_needed from a flag: CO-11 (b)'s progress counts from here.
+                    st.w.m[m].prog = false;
+                    st.w.m[m].wsend = 0;
+                }
                 st.w.m[m].status = Status::Resync;
                 Ok(Some(st))
             });
@@ -1687,14 +1833,13 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
                     continue;
                 }
                 let me = &mut st.w.m[m];
-                if me.dw > 0 && me.dw < 3 {
+                if me.dw > 0 && me.dw < WINDOW_72H {
                     me.dw += 1;
                 }
-                if me.gw > 0 && me.gw < 3 {
-                    me.gw += 1;
+                if cfg.days >= 9 {
+                    me.qd = (me.qd + 1).min(9);
+                    me.sd = (me.sd + 1).min(9);
                 }
-                me.qd = (me.qd + 1).min(9);
-                me.sd = (me.sd + 1).min(9);
                 st.liveness(m);
             }
             Ok(Some(st))
@@ -1727,7 +1872,132 @@ pub fn successors(w: &World, cfg: &Cfg, out: &mut Vec<Succ>) -> Result<(), (Acti
     }
 
     adversary(w, cfg, out)?;
+    if cfg.terminal & (props::T_DETECT | props::T_SCN_CL) != 0 {
+        for s in out.iter_mut() {
+            ghost_update(cfg, w, &mut s.world);
+        }
+    }
     Ok(())
+}
+
+/// The ghosts of P-DETECT's premises and of F-3's probe (`Member::g1` … `gm`, `gw`, `gs`),
+/// kept from the world before and after each action and never from the rule's counters
+/// (§19.34.1 item 1): a first opening is a new bit of `opened` (a message of another member, any
+/// epoch), a merge a commit appended to the member's branch, a session a start of `online`, a
+/// day a step of `World::day`; a Welcome (a new `joined` or leaf) starts them over. The windows
+/// start at the first unopenable foreign blob — of the current namespace (`g1`, CO-11 (a) as
+/// written) or of both listened namespaces (`gw`) — and never restart: a ghost window that saw
+/// progress keeps no premise.
+pub fn ghost_update(cfg: &Cfg, before: &World, after: &mut World) {
+    // Each ghost is kept only where a property reads it.
+    let resync = cfg.terminal & props::T_DETECT_RESYNC != 0;
+    let clocks = cfg.terminal & (props::T_DETECT_PARTITION | props::T_DETECT_STALE) != 0;
+    let scn = cfg.terminal & props::T_SCN_CL != 0;
+    let day = after.day > before.day;
+    for m in 0..NA {
+        let (b, a) = (before.m[m], after.m[m]);
+        if !a.status.holds_state() {
+            continue;
+        }
+        let mut n = a;
+        let replaced = a.joined != b.joined || a.inc != b.inc;
+        if replaced {
+            n.g1 = 0;
+            n.g1s = 0;
+            n.g1p = false;
+            n.gq = 0;
+            n.gc = 0;
+            n.gm = 0;
+            n.gw = 0;
+            n.gs = 0;
+        }
+        // Commits this action merged on the member's branch (a catch-up merges several): another
+        // member's, and the depth after its last merge of a committer's commit.
+        let mut merged_other = false;
+        let mut committer_cut: Option<usize> = None;
+        if !replaced && b.chain.is_prefix_of(a.chain) {
+            for d in b.chain.len()..a.chain.len() {
+                let k = after.c[a.chain.at(d)];
+                if k.author != m as u8 {
+                    merged_other = true;
+                }
+                let g = group_of(after, &cfg.genesis, a.chain.prefix(d), cfg.rules);
+                if g.rank(k.author as usize) != 255 {
+                    committer_cut = Some(d + 1);
+                }
+            }
+        }
+        // Other members' messages first opened by this action (any epoch), and those of an epoch
+        // after that cut.
+        let opened = a.opened & !b.opened;
+        let mut senders = 0u8;
+        let mut senders_after_cut = 0u8;
+        for i in 0..NB {
+            let blob = after.b[i];
+            if opened & bit(i) == 0
+                || !matches!(blob.kind, B_POST | B_COMMIT)
+                || blob.author == m as u8
+                || blob.author as usize >= NA
+            {
+                continue;
+            }
+            let s = abit(blob.author as usize);
+            senders |= s;
+            let cut = committer_cut.unwrap_or(0);
+            if epoch_chain(after, i).is_some_and(|e| e.len() >= cut) {
+                senders_after_cut |= s;
+            }
+        }
+        if clocks {
+            if day {
+                n.gq = (n.gq + 1).min(9);
+                n.gc = (n.gc + 1).min(9);
+            }
+            if senders != 0 {
+                n.gq = 0;
+            }
+            if committer_cut.is_some() {
+                n.gc = 0;
+                n.gm = senders_after_cut;
+            } else {
+                n.gm |= senders;
+            }
+        }
+        if resync {
+            if day && n.g1 > 0 && n.g1 < WINDOW_72H {
+                n.g1 += 1;
+            }
+            if !b.online && a.online && n.g1 > 0 && n.g1s < 3 {
+                n.g1s += 1;
+            }
+            let progress = senders != 0 || merged_other;
+            if n.g1 > 0 && progress {
+                n.g1p = true;
+            }
+            if n.g1 == 0 {
+                let ns = group_of(after, &cfg.genesis, a.chain, cfg.rules).ns;
+                if unopenable_in(after, &cfg.genesis, cfg.rules, m, ns) > 0 {
+                    n.g1 = 1;
+                    n.g1s = u8::from(a.online);
+                    // Progress in the very action that started it counts as inside the window.
+                    n.g1p = progress;
+                }
+            }
+        }
+        if scn {
+            if day && n.gw > 0 && n.gw < WINDOW_72H {
+                n.gw += 1;
+            }
+            if !b.online && a.online && n.gw > 0 && n.gs < 3 {
+                n.gs += 1;
+            }
+            if n.gw == 0 && unopenable_any(after, &cfg.genesis, cfg.rules, m) > 0 {
+                n.gw = 1;
+                n.gs = u8::from(a.online);
+            }
+        }
+        after.m[m] = n;
+    }
 }
 
 /// §12.3 "a flooding member never blocks a committer's pass" (CO-7, §19.5), checked on every state:
@@ -1760,24 +2030,15 @@ fn check_pass_gate(st: &Step) -> Result<(), Violation> {
         if lower {
             continue;
         }
-        let ignoring = Step {
-            cfg: st.cfg,
-            w: st.w,
-            ev: 0,
-            settles: 0,
-        };
-        let want = build_pass_items(&ignoring, m, true).is_some();
+        let want = build_pass_items(st, m, true).is_some();
         let got = build_pass(st, m).is_some();
-        if want && !got {
-            return Err(Violation {
-                property: "P-PASS",
-                detail: format!(
-                    "{} is current with work to commit and holds only rank-255 candidates, but its \
-                     pass is blocked",
-                    ACTOR_NAMES[m]
-                ),
-            });
-        }
+        props::check(st.cfg, "P-PASS", !(want && !got), || {
+            format!(
+                "{} is current with work to commit and holds only rank-255 candidates, but its \
+                 pass is blocked",
+                ACTOR_NAMES[m]
+            )
+        })?;
     }
     Ok(())
 }
@@ -1814,16 +2075,13 @@ fn note_pass(st: &mut Step, m: usize, k: &Commit) -> Result<(), Violation> {
         let carries_fresh = (k.admit && fresh & W_JOIN != 0)
             || (k.swap != NONE && fresh & W_REJOIN != 0)
             || (k.remove != NONE && me.work & W_REMOVE == 0 && fresh & W_LEAVE != 0);
-        if carries_fresh {
-            return Err(Violation {
-                property: "P-WORKAGE",
-                detail: format!(
-                    "{} (rank {rank}) commits a request it recorded less than {} h ago",
-                    ACTOR_NAMES[m],
-                    48 * rank as u32
-                ),
-            });
-        }
+        props::check(st.cfg, "P-WORKAGE", !carries_fresh, || {
+            format!(
+                "{} (rank {rank}) commits a request it recorded less than {} h ago",
+                ACTOR_NAMES[m],
+                48 * rank as u32
+            )
+        })?;
     }
     // §12.3's "a moderator and the owner acting on the same aged request": two committers' Adds of
     // the same request for one epoch.
@@ -1840,12 +2098,10 @@ fn note_pass(st: &mut Step, m: usize, k: &Commit) -> Result<(), Violation> {
     }
     if m == C0 && (k.admit || k.remove != NONE || k.swap != NONE) {
         st.w.m[m].tries = st.w.m[m].tries.saturating_add(1);
-        if st.w.m[m].tries > 2 && !st.w.h.disturbed {
-            return Err(Violation {
-                property: "P-LIVENESS",
-                detail: "the owner passes a third time on the same pending request".to_string(),
-            });
-        }
+        let third = st.w.m[m].tries > 2 && !st.w.h.disturbed;
+        props::check(st.cfg, "P-LIVENESS/third-pass", !third, || {
+            "the owner passes a third time on the same pending request".to_string()
+        })?;
     }
     Ok(())
 }
@@ -1952,6 +2208,9 @@ fn build_pass_items(st: &Step, m: usize, ignore_rank255: bool) -> Option<Commit>
 /// unconsumed on its branch and not void (the committer set of its issue), the sponsor is still a
 /// member.
 fn join_policy(st: &Step, g: &Group) -> bool {
+    if st.rules().is(Mutant::NoAdmission) {
+        return false;
+    }
     let set = st.cfg.genesis.invite_committers();
     !g.invite_consumed && !g.is_member(J) && g.is_member(C0) && g.committer_set() == set
 }
@@ -1962,6 +2221,12 @@ fn join_policy(st: &Step, g: &Group) -> bool {
 /// from the pseudonym's current leaf opened on its branch after the claimed epoch (a live leaf is
 /// never replaced). A request whose KeyPackage is not the pseudonym's own rejoin KeyPackage carries
 /// no valid `rejoin_sig` (`joinVerify` refuses it). MM-20 drops the freshness clauses.
+///
+/// "The commit that closed `last_epoch` was finalized more than one handshake TTL ago" (§6.7) is
+/// read as the committer's winner **for** epoch `last_epoch` — the commit after the claimed epoch,
+/// which the requester lacks — being past its TTL (`expired`): the commit that produced
+/// `last_epoch`, which the requester holds, tells nothing about whether it can catch up. The text
+/// does not say which; §19.34.1 item 6 records the reading as a text finding.
 fn rejoin_policy(st: &Step, m: usize, g: &Group) -> Option<(usize, usize)> {
     let me = &st.w.m[m];
     for req in [B_REJOIN, B_REJOIN + 1, B_REPLAY] {

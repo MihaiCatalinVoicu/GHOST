@@ -24,9 +24,34 @@ pub const BASE_EPOCH: u8 = 16;
 pub const MAX_DEPTH: usize = 4;
 
 /// Commit slots: three per actor, assigned by (author, sequence number), so that the same commits
-/// created in another interleaving are the same state.
+/// created in another interleaving are the same state (`commit_slot`).
 pub const PER_ACTOR_COMMITS: usize = 3;
 pub const NC: usize = NA * PER_ACTOR_COMMITS;
+
+/// The commit slot of `m`'s commit number `seq` (from 0): slots `3m … 3m + 2`; the invitee never
+/// commits, so its three slots are free and the owner's fourth commit (SC-CATCHUP's fourth epoch at
+/// the full bound) takes slot 12. `None` past the actor's capacity (`commit_capacity`).
+pub const fn commit_slot(m: usize, seq: usize) -> Option<usize> {
+    if m == J {
+        None
+    } else if seq < PER_ACTOR_COMMITS {
+        Some(m * PER_ACTOR_COMMITS + seq)
+    } else if m == C0 && seq == PER_ACTOR_COMMITS {
+        Some(J * PER_ACTOR_COMMITS)
+    } else {
+        None
+    }
+}
+
+/// How many commits actor `m` can make in one run: 4 for the owner, none for the invitee, 3 for
+/// the others. A scenario's commit budget never exceeds it (`Cfg::check_bounds`).
+pub const fn commit_capacity(m: usize) -> usize {
+    match m {
+        C0 => PER_ACTOR_COMMITS + 1,
+        J => 0,
+        _ => PER_ACTOR_COMMITS,
+    }
+}
 
 /// Blob slots (a `u32` mask per member records what it fetched). A commit's blob shares its slot.
 pub const NB: usize = 32;
@@ -222,6 +247,9 @@ pub struct Blob {
     pub aux: u8,
     /// The author's leaf incarnation when it sealed the blob.
     pub inc: u8,
+    /// Ghost (a property premise; no rule reads it): a commit stored when some member had already
+    /// settled its epoch (a late copy or a ground commit, §19.1, F-2).
+    pub late: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -268,6 +296,10 @@ pub enum Op {
 pub const FL_SPLIT: u8 = 1;
 pub const FL_PARTITION: u8 = 2;
 pub const FL_STALE: u8 = 4;
+
+/// A day-counted window that started at 1 has run 72 h (three day events) at this value
+/// (`Member::dw`, `gw`, `g1`; §19.34.1 item 9: it once ran out after two).
+pub const WINDOW_72H: u8 = 4;
 
 /// A committer's pending work (§6.2.3, §6.6, §6.7; CO-8): requests it recorded, user actions.
 pub const W_JOIN: u8 = 1;
@@ -320,15 +352,20 @@ pub struct Member {
     pub invite_record: bool,
     /// Its device clock is past a finite KeyPackage bound (only Q42 (b)'s world reads it).
     pub clock_late: bool,
-    /// CO-11: days of the liveness window (saturating at 3 = 72 h), sessions in it (at 3), and
-    /// whether progress was seen in it.
+    /// CO-11's liveness window: 0 while none runs, otherwise 1 + the days elapsed since it started
+    /// (saturating at [`WINDOW_72H`]: 72 h are three day events); the sessions it covers (at 3);
+    /// whether progress was seen in it (or, in `resync_needed`, since the member entered it); and
+    /// the other members whose messages of its current epoch it first opened in it (CO-11 (b)).
     pub dw: u8,
     pub ds: u8,
     pub prog: bool,
-    /// CO-12: days without a committer commit merged and without another member's message (at 9).
+    pub wsend: u8,
+    /// CO-12 (kept only where the horizon reaches 9 days: elsewhere no flag can rise): days since a
+    /// committer's commit was merged (at 9), days since a message of another member was first
+    /// opened (at 9), and the other members whose messages were first opened since a committer's
+    /// commit was merged. A message counts once, when it is first opened (§19.34.1 item 1).
     pub qd: u8,
     pub sd: u8,
-    /// CO-12: other members whose messages arrived in those days.
     pub msgs: u8,
     /// Ghost (no rule reads it): the owner's passes that carried a pending request, for §12.3's
     /// "every pending request is committed within two passes".
@@ -343,10 +380,24 @@ pub struct Member {
     /// so CO-11 (a) never counts them ("stayed unopenable").
     pub opened: u32,
     /// Ghost (F-3's probe): the CO-11 window over the current and the draining namespace together,
-    /// whatever the rule set: days (at 3) and sessions (at 3) since the member first held such a
-    /// blob unopenable.
+    /// whatever the rule set: 1 + the days (at [`WINDOW_72H`]) and the sessions (at 3) since the
+    /// member first held such a blob unopenable.
     pub gw: u8,
     pub gs: u8,
+    /// Ghosts of P-DETECT's premises (§19.34.1 item 1), kept by `step::ghost_update` from the state
+    /// before and after each action and never from the rule's counters: `g1` is 1 + the days since
+    /// the member first held an unopenable foreign blob of its current namespace (at
+    /// [`WINDOW_72H`]), `g1s` the sessions since (at 3), `g1p` whether it made progress since
+    /// (merged another member's commit or first opened another member's message, any epoch); `gq`
+    /// the days since it first opened another member's message (at 9); `gc` the days since it
+    /// merged a committer's commit (at 9); `gm` the other members whose messages it first opened
+    /// since then.
+    pub g1: u8,
+    pub g1s: u8,
+    pub g1p: bool,
+    pub gq: u8,
+    pub gc: u8,
+    pub gm: u8,
     /// Session changes so far (a scenario bounds them per actor; one death and one return already
     /// place a process death after every step of the run).
     pub toggles: u8,
@@ -380,6 +431,11 @@ pub struct History {
     /// A committer cleared an own commit whose copy the relays hold only because CO-3 demoted it as
     /// unverified (it would have won otherwise): finding F-5.
     pub demoted_copy: bool,
+    /// A member settled an epoch while it held a late candidate for it (a commit stored after some
+    /// member had settled that epoch, `Blob::late`) and held no successor sender of a winner that
+    /// another member merged for that epoch before (F-2 as §19.34.1 item 2 words it: such a member
+    /// decides by `(rank, hash)` alone). P-LATE-HARMLESS's premise.
+    pub late_unanchored: bool,
     /// Ghost: committers whose user asked for a Remove (P-LIVENESS reads it).
     pub asked: u8,
 }
@@ -541,7 +597,8 @@ pub fn apply(g: &mut Group, k: &Commit, at: Chain, rules: Rules) {
         // A new leaf; the pseudonym keeps its place in `committers` and `funders` (§19.13).
         g.inc[x] = (g.inc[x] + 1) & 3;
         g.refresh[x] = 0;
-        restore = k.swap_kind == SWAP_RESTORE;
+        // A restore swap rotates, a rejoin swap does not (§6.5); the mutant rotates on both.
+        restore = k.swap_kind == SWAP_RESTORE || rules.is(Mutant::RejoinRotates);
     }
     match k.ctx {
         CTX_RESIGN => {
@@ -905,6 +962,9 @@ pub fn candidates(w: &World, gen: &Genesis, rules: Rules, m: usize) -> (u16, boo
         if k.parent != me.chain {
             continue;
         }
+        if rules.is(Mutant::Rank255NeverCandidate) && g.rank(k.author as usize) == 255 {
+            continue;
+        }
         match verdict(&g, k, rules, me.judge()) {
             Verdict::Valid => {
                 // One per sender: the lowest hash.
@@ -942,7 +1002,12 @@ pub fn decide(w: &World, gen: &Genesis, rules: Rules, m: usize) -> Choice {
     // the member fetched).
     let own_verified = me.op == Op::Verified
         || (rules.fixed(Fix::FetchedOwnCopy) && own.is_some_and(|s| me.fetched & bit(s) != 0));
-    let (cands, pending) = candidates(w, gen, rules, m);
+    let (mut cands, pending) = candidates(w, gen, rules, m);
+    if rules.is(Mutant::UnverifiedOwnNoCandidate) && !own_verified {
+        if let Some(s) = own {
+            cands &= !(1 << s);
+        }
+    }
     let mut choice = Choice {
         candidates: cands,
         ..Choice::default()
@@ -1138,6 +1203,22 @@ mod tests {
         let mut k = commit(C0);
         k.flags = F_NEW_SIGNER;
         assert_eq!(ok(&k), Verdict::Invalid(Reason::Continuity));
+    }
+
+    #[test]
+    fn commit_slots_never_overlap() {
+        // Every (actor, sequence) within the actor's capacity has its own slot below NC (the
+        // owner's fourth commit takes the invitee's first slot); nothing beyond the capacity has one.
+        let mut seen = [false; NC];
+        for m in 0..NA {
+            for seq in 0..commit_capacity(m) {
+                let s = commit_slot(m, seq).expect("a slot within the capacity");
+                assert!(s < NC && !seen[s], "slot {s} of {m}/{seq}");
+                seen[s] = true;
+            }
+            assert_eq!(commit_slot(m, commit_capacity(m)), None);
+        }
+        assert_eq!(commit_slot(C0, 3), Some(12));
     }
 
     #[test]

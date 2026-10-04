@@ -176,12 +176,13 @@ done
 t2r_case pass mutants-ok.txt mutants "accepts 26 detected mutants"
 t2r_case pass mutants-interleaved.txt mutants "accepts a detected mutant whose ok line another test's output ran into"
 t2r_case fail mutants-short.txt mutants "rejects 25 detected mutants" "25 of 26 mutants detected"
-# Phase 10 EM-3 (design faza10-forum.md §12.3, §19.34): the report check accepts only a complete
-# report of its scale — every control scenario with its flows reached, every registered mutant killed
-# by its named property, every finding reproduced (and corrected where a correction is proposed), the
-# corrections' rerun clean. pass-pr.txt is a measured report (the `EM-3` lines and libtest's result
-# of a PR-bound run); every negative fixture is one change from it, and each case names the
-# CH-STATE-MODELS-FAIL text it must fail with.
+# Phase 10 EM-3 (design faza10-forum.md §12.3, §19.34, §19.34.1): the report check accepts only a
+# complete report of its scale — every control scenario with at least its pinned states, its flows
+# reached and its premises live, every registered mutant killed by its named check site, every check
+# site broken by a registered run, every finding reproduced (and corrected where a correction is
+# proposed), the corrections' rerun clean. pass-pr.txt and pass-full.txt are measured reports (the
+# `EM-3` lines and libtest's result of a PR-bound and a full-bound run); every negative fixture is
+# one change from its base, and each case names the CH-STATE-MODELS-FAIL text it must fail with.
 CHSM="$HARNESS/ch-state-models"
 chsm_case() { # $1 = expect pass|fail, $2 = report, $3 = scale, $4 = description, $5 = the failure text (fail only)
   local err fails
@@ -196,26 +197,46 @@ chsm_case() { # $1 = expect pass|fail, $2 = report, $3 = scale, $4 = description
   fi
 }
 chsm_case pass pass-pr.txt pr "accepts a measured PR-bound report"
-chsm_case fail pass-pr.txt full "rejects a PR-bound report as the full bound's" "no 'EM-3 controls (full): 19 scenarios' line"
+chsm_case pass pass-full.txt full "accepts a measured full-bound report"
+chsm_case fail pass-pr.txt full "rejects a PR-bound report as the full bound's" "no 'EM-3 controls (full): 20 scenarios' line"
+chsm_case fail pass-full.txt pr "rejects a full-bound report as the PR bound's" "no 'EM-3 controls (pr): 19 scenarios' line"
 chsm_case fail missing-control.txt pr "rejects a report without a control (SC-REMOVE)" "no line for the control SC-REMOVE"
 chsm_case fail failed-control.txt pr "rejects a failed control (SC-GOV)" "the report names a failed control or a surviving mutant"
 chsm_case fail unreached-flow.txt pr "rejects a control with an unreached flow (SC-JOIN, 1 of 2)" "SC-JOIN reached 1 of its 2 flows"
 chsm_case fail vacuous-control.txt pr "rejects a control with no reachability query (SC-ADV, 0 of 0)" "SC-ADV names no reachability query"
+chsm_case fail dead-premise.txt pr "rejects a control whose property never had its premise (SC-CONC's P-CONC)" "SC-CONC: P-CONC never had its premise"
+chsm_case fail shrunk-control.txt pr "rejects a control that explored fewer states than pinned (SC-LATE)" "SC-LATE explored 1000 states, fewer than the"
+chsm_case fail missing-bounds.txt pr "rejects a report without the bounds line" "no 'EM-3 bounds (pr)' line"
 chsm_case fail survived-mutant.txt pr "rejects a surviving mutant (NoHold)" "the mutant NoHold was not killed"
 chsm_case fail missing-mutant.txt pr "rejects a report without a registered mutant (OwnAnchorAtPass)" "the mutant OwnAnchorAtPass was not killed"
+chsm_case fail uncovered-site.txt pr "rejects a check site no registered run breaks" "no 'EM-3 sites: … 0 by none' line"
 chsm_case fail missing-finding.txt pr "rejects a report without a finding's correction line (F-5)" "no line 'EM-3 finding F-5 corrected'"
-chsm_case fail corrections-failed.txt pr "rejects a corrections rerun with a failure" "no 'EM-3 corrections: 18 controls rerun"
+chsm_case fail corrections-failed.txt pr "rejects a corrections rerun with a failure" "no 'EM-3 corrections: 19 controls rerun"
 chsm_case fail missing-arithmetic.txt pr "rejects a report without the arithmetic line" "no 'EM-3 arithmetic: 7 checks hold' line"
-chsm_case fail no-result.txt pr "rejects a report without libtest's result" "no 'test result: ok. 9 passed; 0 failed'"
+chsm_case fail no-result.txt pr "rejects a report without libtest's result" "no 'test result: ok. 10 passed; 0 failed'"
 chsm_case fail no-such-report.txt pr "rejects a missing report" "no report at"
-# "One change from the base": every negative fixture differs from pass-pr.txt in at most two lines.
-for neg in missing-control failed-control unreached-flow vacuous-control survived-mutant missing-mutant \
-  missing-finding corrections-failed missing-arithmetic no-result; do
-  changed="$(diff "$CHSM/pass-pr.txt" "$CHSM/$neg.txt" | grep -cE '^[<>]' || true)"
+chsm_case fail full-no-mm2.txt full "rejects a full-bound report without MM-2's rerun" "no line 'EM-3 finding F-5 leaves MM-2 equivalent'"
+chsm_case fail full-beacons-failed.txt full "rejects a full-bound report whose beacons rerun failed" "19 with F-2's beacons too (pr)"
+# A report captured with CRLF line ends (on Windows) is the same report (§19.34.1 item 19).
+chsm_crlf="$(mktemp -d)"
+sed 's/$/\r/' "$CHSM/pass-pr.txt" > "$chsm_crlf/pass-pr-crlf.txt"
+if bash "$DIR/ch-state-models-check.sh" "$chsm_crlf/pass-pr-crlf.txt" pr >/dev/null 2>&1; then
+  echo "self-test ok: ch-state-models-check accepts the PR-bound report with CRLF line ends"
+else
+  echo "SELF-TEST FAIL: ch-state-models-check rejects the PR-bound report with CRLF line ends" >&2; rc=1
+fi
+rm -rf "$chsm_crlf"
+# "One change from the base": every negative fixture differs from its base in at most two lines.
+for neg in missing-control failed-control unreached-flow vacuous-control dead-premise shrunk-control \
+  missing-bounds survived-mutant missing-mutant uncovered-site missing-finding corrections-failed \
+  missing-arithmetic no-result full-no-mm2 full-beacons-failed; do
+  base=pass-pr.txt
+  [[ $neg == full-* ]] && base=pass-full.txt
+  changed="$(diff "$CHSM/$base" "$CHSM/$neg.txt" | grep -cE '^[<>]' || true)"
   if [ "$changed" -ge 1 ] && [ "$changed" -le 4 ]; then
-    echo "self-test ok: ch-state-models fixture $neg.txt is one change from pass-pr.txt ($changed diff lines)"
+    echo "self-test ok: ch-state-models fixture $neg.txt is one change from $base ($changed diff lines)"
   else
-    echo "SELF-TEST FAIL: ch-state-models fixture $neg.txt is not one change from pass-pr.txt ($changed diff lines)" >&2; rc=1
+    echo "SELF-TEST FAIL: ch-state-models fixture $neg.txt is not one change from $base ($changed diff lines)" >&2; rc=1
   fi
 done
 # Phase 9 S10 (design §15.3, §15.4, §15.6, §15.7): the DM exit-gate report check accepts only a

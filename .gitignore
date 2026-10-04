@@ -16,6 +16,9 @@ local.properties
 # Rust
 **/target/
 Cargo.lock.orig
+# A gate fixture whose module directory is named target on purpose (self-test.sh, Phase 10 review of
+# S2a F4): not a build output.
+!ghost/test-harness/gates/negative-rust-path-exemptions/client-core/fx/src/target/
 
 # IDE
 .idea/

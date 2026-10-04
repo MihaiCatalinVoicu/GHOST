@@ -1,6 +1,7 @@
 //! EM-3: the exhaustive commit-arbitration model of the channel design (Phase 10 design
-//! `docs/design/faza10-forum.md` §12.3; what it found is in §19.34). Test-only: no dependency,
-//! outside every shipped and host graph; `tests/state_models.rs` runs it.
+//! `docs/design/faza10-forum.md` §12.3; what it found is in §19.34, and the review's fixes in
+//! §19.34.1). Test-only: no dependency, outside every shipped and host graph;
+//! `tests/state_models.rs` runs it.
 //!
 //! # What it is
 //!
@@ -37,7 +38,10 @@
 //!   (mode 0x11) with the key of an epoch of its branch from its join epoch on (history "none",
 //!   §8.4), a past epoch for two days after it became past (R = 2, §8.3), and join traffic under
 //!   `JK_g` of a generation it lists (§5.6); a blob it opened once is processed (CO-11 (a) counts
-//!   only blobs that "stayed unopenable").
+//!   only blobs that "stayed unopenable"). A message of another member counts for CO-11 (b) and
+//!   CO-12 once, when the member first opens it (CO-11 (b): of the epoch current at that moment;
+//!   CO-12: of any epoch): a message fetched long ago neither restarts the stale clock nor counts as
+//!   progress in a later window (§19.34.1 item 1).
 //! - **Members**: every field the design persists (CS-C1); a process death clears only the session
 //!   (`online`, `listed`).
 //!
@@ -47,9 +51,10 @@
 //!   CO-4 and CO-8 … CO-12 read. `Tick(m)` is m's settle window elapsing (CO-4 (i): 20 minutes
 //!   after its anchor) together with the listing pass of CO-4 (ii) (a member that lists later is
 //!   the same member listing again; listing is idempotent). `Age(k)` is k's store-hour anchor
-//!   passing (store hour + 60 + 20 minutes, CO-4). `Day` is 24 hours: CO-11's 72 hours and CO-12's
-//!   9 days are counted in days with saturating counters, and a past epoch's key is kept for R = 2
-//!   days (§8.3). `WorkAge`, `PcsDue` and `SlotDue` are CO-8's 48 hours of rank 1, CO-8's 7-day PCS
+//!   passing (store hour + 60 + 20 minutes, CO-4). `Day` is 24 hours: CO-11's 72 hours (three day
+//!   events after the window starts, `model::WINDOW_72H`) and CO-12's 9 days are counted in days
+//!   with saturating counters, and a past epoch's key is kept for R = 2 days (§8.3). CO-12's 9-day
+//!   counters are kept only where the horizon reaches 9 days (elsewhere no flag can rise). `WorkAge`, `PcsDue` and `SlotDue` are CO-8's 48 hours of rank 1, CO-8's 7-day PCS
 //!   commit and CO-9's slot. The quantitative facts the orderings rest on are proven exhaustively,
 //!   in minutes and days, by `arith`.
 //! - **A2 The window's argument (T1).** A blind pass — its committer held no candidate for the
@@ -73,37 +78,55 @@
 //!   process death before it is the same successor as not taking it, so death is `Offline`, which
 //!   ends the session and clears what a session holds. `online` means that the process is alive, in
 //!   the foreground or not: a member may list late (a backgrounded app lists only at its jobs,
-//!   CO-8), so no listing cadence is assumed. Session changes are bounded per scenario.
+//!   CO-8), so no listing cadence is assumed. Session changes are bounded per scenario, and only
+//!   the scenario's session actors (`Cfg::session_actors`) change session: "process death at
+//!   every step" holds for them, not for every actor of every scenario (§19.34.1 item 10).
 //! - **A6 Relays.** A store reaches every relay of the set at once. The relays may withhold a
 //!   stored commit from chosen members (FORK, WITHHOLD_COMMIT, a partition, §12.1) for good or, in
 //!   SC-FORK at full scale, until they end the partition; they drop a copy (its TTL, EXPIRE_LOG); an
 //!   op may close INDETERMINATE with or without a copy (Phase 7, §19.13). Reordering is the
 //!   interleaving itself; loss is withholding for good, expiry or a lost store; duplication is
 //!   REPLAY_JOIN's re-stored copy (the copies of one blob at two operators are one blob: processing
-//!   is idempotent).
+//!   is idempotent). Every blob is served by two operators, so CO-11 (a)'s "from at least 2
+//!   operators" is always met (not exercised).
 //! - **A7 Posts** are stored at once (their send delay is not modelled): here a post is a successor
 //!   sender (CO-3), progress (CO-11, CO-12) or the object of the removal hold (CO-13).
 //! - **A8 Bounds.** At most 4 epoch transitions from epoch 16 (§12.3: "epochs ≤ 4"; epoch 16 so that
-//!   CO-14's `min(8, n)` lies in the past), 3 commits and 2 posts per actor, per-scenario commit, post
-//!   and session budgets, and a horizon of 9 or 10 days. A finding is a counter-example within the
-//!   bounds; "holds" means "holds within the bounds".
+//!   CO-14's `min(8, n)` lies in the past), 3 commit slots per actor (the owner 4, the invitee none:
+//!   `model::commit_slot`) and 2 post slots, per-scenario epoch, commit, post, session and day
+//!   bounds (`step::Cfg::check_bounds` keeps them within the slots). Those are maxima: each control
+//!   prints the bounds it reached (`bounds`), and most reach far less — one epoch transition at the
+//!   PR bound and two at the full one for the concurrency scenarios, four only in SC-CATCHUP at the
+//!   full bound, 9 or 10 days only in SC-SILENT, SC-PARTITION and F-3's probe (§19.34.1 item 14). A
+//!   finding is a counter-example within the bounds; "holds" means "holds within the bounds reached".
 //! - **A9 The search** (`search`). Depth-first, every reached state stored as a 128-bit fingerprint
 //!   (hash compaction: a collision could hide states, never invent a violation, and its probability
 //!   at the largest run is far below 10⁻¹⁸). No symmetry reduction: the actors differ in rank,
 //!   budget and role, and commit and blob slots are already canonical (by author and sequence). The
-//!   finding probes run breadth-first and print a shortest counter-example. A run that reaches its
-//!   state budget fails (EM-1's rule: an overflow is not a verdict).
+//!   finding probes run breadth-first at the PR bound and print a shortest counter-example; at the
+//!   full bound depth-first (a breadth-first frontier of full-bound worlds held gigabytes). A run that
+//!   reaches its state budget fails (EM-1's rule: an overflow is not a verdict).
 //! - **A10 Terminal properties** run at quiescent states (nothing is left but ending a session), so
-//!   "eventually" claims — liveness, detection — are checked within the bounds.
-//! - **A11 Ghost variables** (`History`, `Member::tries`, `Member::gw`, `Member::gs`) are premises of
-//!   conditional properties and probes; no rule reads them.
+//!   "eventually" claims — liveness, detection — are checked within the bounds. Each control prints,
+//!   per terminal property, the quiescent states where its premise held (`live`); every one but
+//!   P-DETECT's obligations must be live somewhere (a property whose premise never holds is vacuous).
+//! - **A11 Ghost variables** (`History`, `Blob::late`, `Member::tries`, `Member::gw`, `gs`,
+//!   `g1` … `gm`) are premises of conditional properties and probes; no rule reads them. P-DETECT's
+//!   ghosts are kept by `step::ghost_update` from the state before and after each action (first
+//!   openings, merges, sessions, days), never from the rule's counters, so a defect in CO-11's or
+//!   CO-12's counting cannot hide from it (§19.34.1 item 1).
+//! - **A12 The generation switch** (§6.5, `CH-SWITCH`) is not modelled: after a rotating winner a
+//!   member may post and pass at once, where the design waits for the switch hour. Every later
+//!   moment stays enabled, so the model's behaviours include the design's and its safety results
+//!   carry over; a timing claim after a rotating winner (F-1's "in the same actor step") does not
+//!   (§19.34.1 item 8).
 //!
 //! # The adversaries of §12.3 and where each runs (`scenarios`)
 //!
 //! | Adversary (§12.3, the section it comes from) | Scenario |
 //! |---|---|
-//! | a late but better commit, stored after every honest member settled (§19.1) | SC-LATE; F-2 (b) |
-//! | a member that keeps an old epoch's state and grinds a self-update below a settled winner (§19.1) | SC-GRIND; F-2 (a) |
+//! | a late but better commit, stored after every honest member settled (§19.1) | SC-LATE; F-2 (b); F-4's probe |
+//! | a member that keeps an old epoch's state and grinds a self-update below a settled winner (§19.1) | SC-GRIND; F-2 (a), (c) |
 //! | a returning member catching up across epochs, with and without successors (§19.1) | SC-CATCHUP (without), SC-LATE and SC-GRIND (with) |
 //! | a member flooding self-updates (§19.5) | SC-FLOOD |
 //! | a member or invite holder storing unopenable blobs (§19.15, L8-C11) | SC-SPAM-DRAIN; SC-SPAM-CURRENT (full scale) |
@@ -116,48 +139,58 @@
 //! | a moderator and the owner acting on the same aged request (§19.13, CO-8) | SC-JOIN (full scale) |
 //! | a commit installing a leaf with a new signature key (§19.14) | SC-ADV |
 //! | a member that misses a rotating commit for good: the silent orphan (§19.15) | SC-SILENT |
+//! | a member that misses a non-rotating commit past its TTL, holding old messages of its epoch (§6.7's table) | SC-MISSED |
 //! | members with different device and trusted clocks (S0-12, revised §19.29.1) | SC-CLOCKS |
 //! | a member storing a commit that carries a non-canonical, expired KeyPackage (§19.29.1, E-70) | SC-JUNK |
 //!
 //! And §12.3's setting: message loss, duplication and reordering (A6), a partition of either side
 //! for an interval or for good (SC-FORK, SC-PARTITION, F-3's probe), settle timers with store-hour
-//! anchors (every scenario; A1, A2), process death at every step (A5), one removal (SC-REMOVE), one
-//! join (SC-JOIN, SC-CLOCKS) and one rejoin (SC-FORK, SC-OWNER, SC-REPLAY).
+//! anchors (every scenario; A1, A2), process death at every step of each scenario's session actors
+//! (A5), one removal (SC-REMOVE), one join (SC-JOIN, SC-CLOCKS) and one rejoin (SC-FORK, SC-MISSED,
+//! SC-SILENT, SC-OWNER, SC-REPLAY).
 //!
 //! # Properties (`props`, `step`)
 //!
 //! §12.3's properties, by the identifiers the reports print: **convergence** — P-VALID-SAME (T41,
-//! CS-C3), P-RANK, P-FOLLOW, P-FRESH, P-CONC (D8), P-STICKY (CO-6); **detection** — P-DETECT,
-//! P-NO-FALSE-RESYNC (CO-11, CO-12, §19.15); **no stranded committer** — P-STRANDED, P-CUSTODY
-//! (§19.13); **no invalid merge** — P-NO-INVALID-MERGE, P-OWN-VALID; **liveness** — P-LIVENESS (two
-//! passes per request, the asked Remove merged), P-PASS (a flooding member never blocks a pass),
-//! P-JOINED, P-GOVERNANCE, P-OWNER-BACK; **catch-up latency** — P-CATCHUP; **Welcomes** — P-WELCOME;
-//! **removal hold** — P-HOLD; **rotation** — P-ROTATION; **lifetimes** — P-VALID-SAME, P-LIFETIME,
-//! P-NO-INVALID-MERGE; and the rules' own decision-time checks P-VERIFIED (CO-4 (a)), P-WORKAGE
-//! (CO-8), P-REJOIN-SAFE (§6.7). The finding probes add P-ONE-BRANCH (no two honest members on
-//! different branches) and P-SCN-CL-PARTITION / P-SCN-CL-SPLIT (SCN-CL's detection claims).
+//! CS-C3; true by construction under the design's rules, whose `verdict` reads no member-local
+//! input: its runs show it catches one, §19.34.1 item 7), P-RANK, P-FOLLOW, P-FRESH, P-CONC (D8;
+//! only under its premise), P-LATE-HARMLESS (§19.1 as F-2 corrects it), P-STICKY (CO-6);
+//! **detection** — P-DETECT (on ghost premises), P-NO-FALSE-RESYNC (CO-11, CO-12, §19.15); **no
+//! stranded committer** — P-STRANDED (only under its premise), P-CUSTODY (§19.13); **no invalid
+//! merge** — P-NO-INVALID-MERGE, P-OWN-VALID; **liveness** — P-LIVENESS (two passes per request,
+//! the asked Remove merged, nothing left pending at the owner), P-PASS (a flooding member never
+//! blocks a pass), P-JOINED, P-GOVERNANCE, P-OWNER-BACK; **catch-up latency** — P-CATCHUP;
+//! **Welcomes** — P-WELCOME; **removal hold** — P-HOLD; **rotation** — P-ROTATION; **lifetimes** —
+//! P-VALID-SAME, P-LIFETIME, P-NO-INVALID-MERGE; and the rules' own decision-time checks P-VERIFIED
+//! (CO-4 (a)), P-WORKAGE (CO-8), P-REJOIN-SAFE (§6.7). The finding probes add P-ONE-BRANCH (no two
+//! honest members on different branches) and P-SCN-CL-PARTITION / P-SCN-CL-SPLIT (SCN-CL's
+//! detection claims). Every check site (`props::SITES`) is the first violation of a registered run
+//! (a mutant's row, a probe, or a hand-built world), which a test checks.
 //!
 //! # Mutants and findings (`rules`)
 //!
 //! `rules::Mutant` holds one deliberate defect per rule — MM-2, MM-3, MM-4, MM-5, MM-7, MM-8,
-//! MM-16, MM-19 … MM-21, MM-23 … MM-26, MM-31 … MM-34, MM-36, MM-37, MM-46 and the rules §12.9 has
-//! no number for — and `tests/state_models.rs` names, for each, the scenario and the property that
-//! kill it in a real run whose control (the same scenario under the design's rules) passes.
-//! `rules::Fix` holds the corrections EM-3 proposes for its findings (§19.34): F-1 a committer
-//! passing over a held candidate forks or strands; F-2 a late or ground commit diverts members
-//! settling later in a quiet channel; F-3 SCN-CL's detection claims fail; F-4 CO-4 (i)'s own-commit
-//! anchor must be the fetched copy; F-5 an INDETERMINATE own copy that others hold strands its
-//! committer.
+//! MM-16, MM-19 … MM-21, MM-23 … MM-26, MM-31 … MM-34, MM-36, MM-37, MM-46, the rules §12.9 has no
+//! number for, and EM-3's own first counting of CO-11 (b) and CO-12 (§19.34.1 item 1) — and
+//! `tests/state_models.rs` names, for each, the scenario and the check site that kill it in a real
+//! run whose control (the same scenario under the design's rules) passes. `rules::Fix` holds the
+//! corrections EM-3 proposes for its findings (§19.34, §19.34.1): F-1 a member passing or
+//! self-updating over a held candidate forks or strands (CO-7's and CO-9's halves); F-2 a late or
+//! ground commit diverts the members that settle after it without a successor of the winner; F-3
+//! SCN-CL's detection claims fail; F-4 CO-4 (i)'s own-commit anchor must be the fetched copy; F-5
+//! an INDETERMINATE own copy that others hold strands its committer.
 //!
 //! # Scale
 //!
-//! The pull-request bound (the default; the `rust` job of `ci.yml`): 18 control scenarios, about
-//! one million states, the 9 tests in under a minute in the debug profile (the crate is built at
-//! opt-level 3). The full bound (`EM3_SCALE=full`; `channel-state-models.yml`, weekly, on
-//! dispatch and on pushes to `main`): 19 scenarios, about 35 million states, the 9 tests in about
-//! six minutes in the release profile with 8 explorations at once (`EM3_THREADS`; each holds its
+//! The pull-request bound (the default; the `rust` job of `ci.yml`, whose report
+//! `ch-state-models-check.sh` checks in its `pr` mode): 19 control scenarios, about 1.5 million
+//! states, the 10 tests in some three to four minutes in the debug profile on 24 threads (the
+//! crate is built at opt-level 3). The full bound (`EM3_SCALE=full`; `channel-state-models.yml`,
+//! weekly, on dispatch and on pushes to `main` that touch EM-3): 20 scenarios, and the reruns
+//! the PR job leaves out (F-2's beacons and MM-2 under the corrections, at the PR bound's
+//! scenarios), in the release profile with 8 explorations at once (`EM3_THREADS`; each holds its
 //! own fingerprint set). Every exploration has a state budget (`EM3_BUDGET`: 5 million at the PR
-//! bound, 100 million at the full one); reaching it fails the run.
+//! bound, 55 million at the full one); reaching it fails the run. §19.34.1 gives the counts.
 
 pub mod arith;
 pub mod model;
