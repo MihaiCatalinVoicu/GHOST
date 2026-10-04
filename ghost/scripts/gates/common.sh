@@ -79,12 +79,19 @@ GHOST_JNI_NATIVE_FILES="crypto-bridge/src/main/kotlin/org/ghost/crypto/bridge/Dm
 # The Rust files the surface gates read under $1 (a directory, or one file): build outputs pruned —
 # a `target` or `build` directory **outside every `src/`**, so a module directory of either name is
 # code and is read (Phase 10 review of S2a F4, review of S2b) — and `.gradle`; the gates' own
-# fixtures (`test-harness/`) too, unless $2 is "with-fixtures" (a fixture is the scan root).
+# fixtures (`test-harness/`) too, unless $2 is "with-fixtures" (a fixture is the scan root). The one
+# directory `spikes/` directly under the scan root is evidence tooling, not product (Phase 11 S0: the
+# media spike has its own workspace and lock and a crash-probe crate that exports a `Java_…` symbol on
+# purpose, to prove a native crash is contained): it is never linked into a shipped library, and what
+# a built library exports is read by each gate's library half whatever its sources are. Only that one
+# path is exempt: the same export in any other directory, `client-core/spikes/` included, still fails.
 jni_rust_files() { # $1 = scan root, $2 = "with-fixtures" or empty
-  local fixtures=(-o -name test-harness)
+  local root="${1%/}" fixtures=(-o -name test-harness)
   [ "${2:-}" = with-fixtures ] && fixtures=()
+  root="$(printf '%s' "$root" | sed 's/[][*?\\]/\\&/g')" # -path takes a pattern, a path is not one
   if [ -d "$1" ]; then
-    find "$1" -type d \( \( -name target -o -name build \) -not -path '*/src/*' -o -name .gradle "${fixtures[@]}" \) \
+    find "$1" -type d \( \( -name target -o -name build \) -not -path '*/src/*' -o -name .gradle \
+      -o -path "$root/spikes" "${fixtures[@]}" \) \
       -prune -o -type f -name '*.rs' -print 2>/dev/null || true
   elif [ -f "$1" ]; then
     printf '%s\n' "$1"

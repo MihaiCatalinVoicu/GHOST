@@ -1783,6 +1783,27 @@ else
   echo "SELF-TEST FAIL: dm-jni-surface misses an entry point of mls-jni/evasions/" >&2
   printf '%s\n' "$dm_ev_out" | grep '^GATE-FAIL' >&2; rc=1
 fi
+# Phase 11 S0: `spikes/` directly under the scan root is evidence tooling (its crash probe exports a
+# `Java_…` symbol on purpose); the same export anywhere else — `client-core/spikes/` included — is
+# still a JNI entry point of the workspace. Both source halves, one fixture each.
+SPIKES="$HARNESS/jni-spikes"
+if env GHOST_DM_JNI_SCAN="$SPIKES/exempt" bash "$DIR/dm-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: dm-jni-surface does not read the spikes/ evidence tooling"
+else
+  echo "SELF-TEST FAIL: dm-jni-surface rejects an export under spikes/" >&2; rc=1
+fi
+if env GHOST_MLS_JNI_SCAN="$SPIKES/exempt" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" \
+     bash "$DIR/mls-jni-surface.sh" >/dev/null 2>&1; then
+  echo "self-test ok: mls-jni-surface does not read the spikes/ evidence tooling"
+else
+  echo "SELF-TEST FAIL: mls-jni-surface rejects an export under spikes/" >&2; rc=1
+fi
+expect_fail_msg "dm-jni-surface still reports the same export outside the one exempt path" \
+  "the workspace exports the JNI entry point 'Java_org_ghost_spike_media_NativeCrash_crashIn'" \
+  env GHOST_DM_JNI_SCAN="$SPIKES/nested" bash "$DIR/dm-jni-surface.sh"
+expect_fail_msg "mls-jni-surface still reports the same export outside the one exempt path" \
+  "the workspace exports the JNI entry point 'Java_org_ghost_spike_media_NativeCrash_crashIn'" \
+  env GHOST_MLS_JNI_SCAN="$SPIKES/nested" GHOST_MLS_JNI_ANDROID="$MLS_JNI/no-such-tree" bash "$DIR/mls-jni-surface.sh"
 # A closed list with no reserved entry (slice S9 exports function 16): an empty selection ended the
 # gate with no message under pipefail.
 if env GHOST_MLS_JNI_SOURCE="$MLS_JNI/all-exported.rs" GHOST_MLS_JNI_KOTLIN="$MLS_JNI/MlsNativeSmall.kt" \
