@@ -11,7 +11,7 @@
   - Kotlin: from `ghost/android`, `./gradlew --no-daemon clean` then `./gradlew --no-daemon --continue --no-build-cache build -Dghost.dm.native=<ghost_dm_host.dll>` (host library built with `cargo build -p ghost-dm-host --release --locked --features provenance`); JUnit sums per module with `skipped=0`; `dm-report-check.sh` on `report.txt` (`pr`) and `privacy.txt` (`privacy-pr`).
   - Gates: `GHOST_YAML_VIA_WSL=ghost-runner bash ghost/scripts/gates/run-all.sh`, and the WHOLE `self-test.sh` in WSL on a `git archive` of HEAD (`.claude/scratch/selftest-wsl.sh`), expecting 0 failures. (`proto-check` needs `protoc`, which only the Windows side has.)
   - Long jobs (privacy worlds, fuzzing, state models, emulator suites) run on request or on a schedule the owner approves, as local scripts; their reports are checked with the matching `*-report-check.sh`.
-- The existing `.github/workflows/*.yml` and the self-hosted runners are **legacy**: do not extend them, do not rely on them, migrate their content to local scripts (see `docs/CI_LOCAL.md`, ADR-58). Their removal and the repository-level disabling of Actions are the owner's to approve.
+- The existing `.github/workflows/*.yml` and the self-hosted runners are **legacy**: do not extend them, do not rely on them, migrate their content to local scripts (see `docs/CI_LOCAL.md`, ADR-58). Actions is disabled on the repository and the runners are stopped (owner's decision, 2026-10-05); the workflow files are deleted when their content is migrated.
 
 ## Working rules (see the memory files for the reasons)
 

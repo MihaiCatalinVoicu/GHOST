@@ -65,6 +65,11 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 | [ADR-45](ADR-45-media-namespace-transfer.md) | Transferul media: namespace-ul media al destinatarului, descărcare automată, banda media din sync |
 | [ADR-46](ADR-46-media-hygiene.md) | Igiena media: re-encodare obligatorie, decodare izolată, fără plaintext pe disc |
 | [ADR-47](ADR-47-ephemeral-view-once-media.md) | Media efemeră și „vezi o singură dată” (precizează ADR-27 punctele 10 și 12) |
+| [ADR-48](ADR-48-cheile-distributiei-roluri-custodie-hardware-ceremonii.md) | Cheile distribuției: roluri, custodie hardware, ceremonii, rădăcina de încredere (**aprobat** 2026-10-05) |
+| [ADR-49](ADR-49-manifestul-semnat-jurnalul-de-transparenta-binara.md) | Manifestul semnat, jurnalul de transparență binară și actualizările legate de atestări (**aprobat** 2026-10-05) |
+| [ADR-50](ADR-50-build-reproductibil-din-doua-medii-reteta.md) | Build reproductibil din două medii: rețeta cu căi fixe, setul de artefacte, simboluri și SBOM (**aprobat** 2026-10-05) |
+| [ADR-51](ADR-51-actualizatorul-din-aplicatie-rulari-de-actualizare.md) | Actualizatorul din aplicație: rulări de actualizare, anti-rollback, lansare în trepte, instalare, directorul de relee (**aprobat** 2026-10-05) |
+| [ADR-52](ADR-52-canalele-de-distributie-si-identitatea-aplicatiei.md) | Canalele de distribuție și identitatea aplicației (**aprobat** 2026-10-05) |
 | [ADR-58](ADR-58-ci-local.md) | CI-ul rulează local, nu prin GitHub Actions (regulă oficială a proprietarului) |
 | [ADR-59](ADR-59-wallet-sync.md) | Wallet Sync fără issuer: seed-ul wallet-ului local în Keystore + blob criptat client-side din seed pe relay-uri (**aprobat** 2026-10-04; varianta cu issuer respinsă) |
 | [ADR-60](ADR-60-version-migration-wipe.md) | Migrare între versiuni: `kill_flag` în manifestul semnat comandă ștergerea locală automată și, opțional, dezinstalarea (**aprobat** 2026-10-04; reziduu acceptat) |

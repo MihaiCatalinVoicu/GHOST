@@ -40,7 +40,9 @@ Echivalentul local al unui job: un script `ghost/scripts/ci/<nume>.sh` cu pașii
 | `t2-exit-gate.yml` | push, pull_request, schedule, workflow_dispatch | `17 2 * * *` | `gate`, `mutants` | 240 min | `ghost/scripts/ci/…` (de scris) |
 | `vendor-tests.yml` | schedule, push, pull_request, workflow_dispatch | `37 1 * * *` | `vodozemac`, `libcrux` | 90 min | `ghost/scripts/ci/…` (de scris) |
 
-## 5. Aplicare tehnică (cere acordul explicit al proprietarului; neaplicat la data ADR-58)
+## 5. Aplicare tehnică (acordul proprietarului 2026-10-05; **aplicată**)
 1. Dezactivarea GitHub Actions pe depozit (`gh api -X PUT repos/MihaiCatalinVoicu/GHOST/actions/permissions -F enabled=false`); reversibilă cu `-F enabled=true`.
 2. Oprirea celor 4 servicii runner din distribuția `ghost-runner` (`actions.runner.MihaiCatalinVoicu-GHOST.ghost-runner-N.service`) și scoaterea task-ului programat `GHOST ghost-runner keepalive`; distribuția WSL `ghost-runner` rămâne ca mediu Linux local pentru `self-test.sh` și `run-all.sh`.
 3. Eventuala dezînregistrare a runnerelor din depozit (`docs/ci-self-hosted.md`, secțiunea de dezînregistrare).
+
+**Aplicat 2026-10-05:** Actions dezactivat pe depozit (`enabled=false`); cele 4 servicii `actions.runner.MihaiCatalinVoicu-GHOST.ghost-runner-N.service` dezactivate și oprite în `ghost-runner`; task-ul `GHOST ghost-runner keepalive` oprit și dezactivat (nu șters); distribuția `ghost-runner` rămâne ca mediu local. Reversibil: `gh api -X PUT repos/MihaiCatalinVoicu/GHOST/actions/permissions -F enabled=true`, `systemctl enable --now <unitate>`, `Enable-ScheduledTask`.
