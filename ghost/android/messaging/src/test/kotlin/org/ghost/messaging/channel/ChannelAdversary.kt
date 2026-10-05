@@ -99,6 +99,19 @@ internal object ChannelAdversary {
     /** The namespace of the channel's current generation at [member]. */
     fun namespace(member: ChannelClient, id: ChannelId): ByteArray = view(member, id).gNs
 
+    /**
+     * A member posts content of its own choosing — any kind, any op id, any `INVITE_ISSUED` record — through its own
+     * engine's `CH-POST` (`compose`): what a modified client can send, encrypted and enqueued like any post of its.
+     */
+    fun postAs(member: ChannelClient, id: ChannelId, fields: org.ghost.crypto.bridge.ChannelContentFields, handshake: Boolean) {
+        val encoded = ChannelCrypto.contentEncode(fields).ok()
+        member.database.transaction { tx ->
+            val channel = member.channelStores.channels.channel(tx.sql, id.toByteArray()) ?: error("not a member")
+            val opened = member.contexts.open(id.toByteArray()) ?: error("the member's channel does not open")
+            member.engine.postStep.compose(tx, channel, opened, member.content, fields, encoded, handshake, member.clock.now)
+        }
+    }
+
     // ------------------------------------------------------------------------------- mode 0x11 (posts and commits)
 
     /** The epoch keys the member holds, newest first: `(epoch, K_ep envelope)`. */

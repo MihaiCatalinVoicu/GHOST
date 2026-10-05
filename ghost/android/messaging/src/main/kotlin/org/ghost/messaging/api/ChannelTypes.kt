@@ -84,6 +84,7 @@ enum class AcceptResult {
 /**
  * `Channels.post` and `react` (§10.3), and the retry of a failed post (§6.11). Beyond §10.3's list: `NO_REPLICAS` (the DM
  * send's), `LIMIT_REACHED` (a channel already holds the 256 pending posts of §6.3.5) and `NOT_FAILED` (a retry of a post that
- * is not an own failed one) — recorded in §19.37.
+ * is not an own failed one) — recorded in §19.37 —, and `INVALID` (an empty post, text that is not UTF-8, a target that is
+ * no post id: §19.38; `TOO_LARGE` is a text or a grapheme longer than §5.5 allows, and nothing else).
  */
-enum class PostResult { QUEUED, TOO_LARGE, NOT_MEMBER, STORAGE_FULL, CRYPTO_UNAVAILABLE, NO_REPLICAS, LIMIT_REACHED, NOT_FAILED }
+enum class PostResult { QUEUED, TOO_LARGE, NOT_MEMBER, STORAGE_FULL, CRYPTO_UNAVAILABLE, NO_REPLICAS, LIMIT_REACHED, NOT_FAILED, INVALID }

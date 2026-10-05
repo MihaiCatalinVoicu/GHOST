@@ -22,7 +22,9 @@ import org.junit.Test
  * again, and the epoch's `open → final`. The channel's `joining → active`, `joining → join_expired` and `join_expired →
  * joining` are [ChannelJoinTest]'s and [ChannelAdmissionTest]'s; the join request's `pending → admitted` SCN-CA's and its
  * `ignored` edges JN's refusals. Not driven in S4 (§19.37): `active → leaving → left | removed | replaced`, the role, the
- * generation's rotation and the invite's expiry, whose transactions are slices S5 … S8's.
+ * generation's rotation and the invite's expiry, whose transactions are slices S5 … S8's. Since §19.38: an own commit
+ * waiting for its outcome is no wake, a hint pass runs no time-triggered step (T40), an expired pending post does not
+ * stop the pass, and `post` names each refusal.
  */
 class ChannelTransitionsTest {
 
@@ -110,6 +112,136 @@ class ChannelTransitionsTest {
         // and a retry of a post that is not an own failed one is refused
         assertEquals(PostResult.NOT_FAILED, bob.engine.retry(id, again))
         assertEquals(emptyList<String>(), bob.integrity())
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 3): an own commit whose outcome has not come — INDETERMINATE here; every commit is
+     * in this state between its pass and its outcome — past its settle point. CO-4 waits for the outcome, which comes as a
+     * hint; the first version made the settle point a wake at once, for ever (`nextWakeSeconds` 0 after every pass, two
+     * days later still), and the actor spun.
+     */
+    @Test
+    fun anOwnCommitWaitingForItsOutcomeIsNoWakeAfterItsSettlePoint() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelAdmissionTest.create(owner)
+        assertEquals(AcceptResult.PENDING, bob.engine.accept(ChannelAdmissionTest.invite(owner, id), null))
+        w.quiesce()
+        w.relay.outcomeFor = { client, purpose -> if (client.name == "owner" && purpose == "commit") "indeterminate" else "sent" }
+        w.admissionPass(owner)
+        w.quiesce()
+        assertEquals("the own commit waits for its outcome", 1L, owner.count("ch_candidate", "own = 1 AND verified = 0"))
+        w.advance(21 * DmWorld.MINUTE)
+        owner.timePass()
+        assertEquals(0L, owner.channel(id)!!.epoch)
+        val wake = owner.engine.nextWakeSeconds()
+        assertTrue("no wake at once after the settle point: $wake", wake == null || wake > 0)
+        w.advance(2 * DmWorld.DAY)
+        owner.timePass()
+        val later = owner.engine.nextWakeSeconds()
+        assertTrue("nor two days later: $later", later == null || later > 0)
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 10): T40's rule in `runPass` — a pass a listener hint ran never runs the scheduled
+     * admission pass or the join expiry, which only a time-triggered pass may — held by no test until now. A scheduled
+     * admission is due and a join is past its expiry: a hint pass does neither and enqueues nothing; the next
+     * time-triggered pass does both.
+     */
+    @Test
+    fun aHintPassRunsNeitherTheScheduledAdmissionNorTheJoinExpiry() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val dave = w.client("dave")
+        val id = ChannelAdmissionTest.create(owner)
+        assertEquals(AcceptResult.PENDING, bob.engine.accept(ChannelAdmissionTest.invite(owner, id), null))
+        // dave's join will expire: an invite of one day, and the relay drops its request
+        w.relay.hold = { it.from == "dave" }
+        assertEquals(AcceptResult.PENDING, dave.engine.accept(owner.engine.invite(id, 1, null).link!!, null))
+        w.quiesce()
+        assertEquals(1L, owner.count("ch_join_request"))
+        // a relay session start scheduled the owner's pass (CO-8); it is due once U[0, 5 min] has passed
+        owner.engine.passStep.scheduleAtSessionStart()
+        w.advance(2 * DmWorld.DAY)
+        val ownerOps = owner.count("outbox_op")
+        val daveOps = dave.count("outbox_op")
+        owner.hintPass()
+        dave.hintPass()
+        assertEquals("a hint pass commits nothing (T40)", 0L, owner.count("ch_candidate", "own = 1"))
+        assertEquals("and enqueues nothing", ownerOps, owner.count("outbox_op"))
+        assertEquals("a hint pass expires no join", ChannelState.JOINING, dave.channel(id)!!.state)
+        assertEquals(daveOps, dave.count("outbox_op"))
+        owner.timePass()
+        dave.timePass()
+        assertEquals("the time-triggered pass admits", 1L, owner.count("ch_candidate", "own = 1"))
+        assertEquals("…and expires the join", ChannelState.JOIN_EXPIRED, dave.channel(id)!!.state)
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 11): a pending post whose op deadline has passed while its `fail_after_hour`
+     * (rounded up to the hour) still shows it — a 5-minute-timer channel, whose post deadline is the author minute plus
+     * an hour, held by a removal hold past it. Phase 7 refuses a deadline in the past by throwing, and the first version let
+     * that stop the whole pass: the scheduled admission and the join expiry behind it never ran. The post now stays
+     * pending (the sweep fails it, S8) and the pass goes on.
+     */
+    @Test
+    fun aPendingPostPastItsDeadlineNeitherThrowsNorStopsThePass() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        // a channel of 5-minute posts with bob in it
+        val quick = owner.engine.create("repede".toByteArray(), 1, 0, false).channel!!
+        assertEquals(AcceptResult.PENDING, bob.engine.accept(ChannelAdmissionTest.invite(owner, quick), null))
+        w.quiesce()
+        w.admissionPass(owner)
+        w.quiesce()
+        w.pastSettleWindow()
+        w.quiesce()
+        assertEquals(ChannelState.ACTIVE, bob.channel(quick)!!.state)
+        // and a channel bob is joining whose join will have expired when the post below is past its deadline
+        w.advance(DmWorld.MINUTE)
+        val other = ChannelAdmissionTest.create(owner)
+        w.relay.hold = { it.from == "bob" && it.purpose == "join" }
+        assertEquals(AcceptResult.PENDING, bob.engine.accept(owner.engine.invite(other, 1, null).link!!, null))
+        // bob's post waits behind a removal hold (CO-13), written at half past an hour: its deadline is an hour later
+        // (the 5-minute timer's bucket), its pending row lives to the next full hour after that
+        w.advance(2 * DmWorld.DAY)
+        w.advance(Math.floorMod(30 * DmWorld.MINUTE - Math.floorMod(w.now, DmWorld.HOUR), DmWorld.HOUR))
+        val q = quick.toByteArray()
+        val epoch = bob.channel(quick)!!.epoch
+        val hash = ChannelWorld.sha256("a removing candidate")
+        bob.database.transaction { tx ->
+            bob.channelStores.candidates.insert(
+                tx, q, epoch, hash, ChannelWorld.sha256("someone"), 0, false,
+                bob.env.seal(bob.content, ChannelAd.candidate(q, epoch, hash), ByteArray(64)), DmTime.floorMinute(w.now),
+                removes = true,
+            )
+        }
+        ChannelScenes.post(bob, quick, "too late")
+        assertEquals(1L, bob.count("ch_pending_post"))
+        w.advance(61 * DmWorld.MINUTE)
+        bob.database.transaction { tx -> bob.channelStores.candidates.delete(tx, q, epoch, hash) }
+        // the deadline has passed and the hour has not: the pass must not throw, and must reach the join expiry
+        bob.timePass()
+        assertEquals("the expired pending post is not enqueued", 1L, bob.count("ch_pending_post"))
+        assertEquals(0L, bob.count("ch_post", "direction = 'out'"))
+        assertEquals("the pass went on to the join expiry", ChannelState.JOIN_EXPIRED, bob.channel(other)!!.state)
+        assertEquals(emptyList<String>(), bob.integrity())
+    }
+
+    /** §19.38 (the review of S4, finding 13): what `post` and `react` answer for content they refuse. */
+    @Test
+    fun postRefusesEmptyMalformedAndOversizedContentEachByItsName() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        assertEquals("empty", PostResult.INVALID, owner.engine.post(id, ByteArray(0), null))
+        assertEquals("not UTF-8", PostResult.INVALID, owner.engine.post(id, byteArrayOf(0xC3.toByte(), 0x28), null))
+        assertEquals("16 001 bytes", PostResult.TOO_LARGE, owner.engine.post(id, ByteArray(16_001) { 'a'.code.toByte() }, null))
+        assertEquals("16 000 bytes", PostResult.QUEUED, owner.engine.post(id, ByteArray(16_000) { 'a'.code.toByte() }, null))
+        val target = PostId(ByteArray(16) { 9 })
+        assertEquals("a grapheme of 33 bytes", PostResult.TOO_LARGE, owner.engine.react(id, target, ByteArray(33) { 'x'.code.toByte() }))
+        assertEquals("a grapheme that is not UTF-8", PostResult.INVALID, owner.engine.react(id, target, byteArrayOf(0xFF.toByte())))
+        assertEquals("one post queued, nothing else", 1L, owner.count("ch_post", "direction = 'out'"))
     }
 
     @Test

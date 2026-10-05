@@ -7,6 +7,7 @@ import org.ghost.messaging.api.ChannelId
 import org.ghost.messaging.channel.ChannelScenes.get
 import org.ghost.messaging.channel.engine.ChannelCounters.Reason
 import org.ghost.storage.JdbcSqlExecutor
+import org.ghost.sync.store.StoreLimits
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -21,7 +22,9 @@ import org.junit.rules.TemporaryFolder
  * ratchet-range loss, §6.3.6, counted); a batch with a replayed and an undecryptable message in its middle (the rest of
  * the batch decrypts, the failed items leave no state, the reload oracle agrees; MM-43); a member's re-seal of a late post
  * under a false `order` (RESEAL_ORDER, MM-35); a post of the next epoch that arrives before its commit settles (deferred,
- * re-offered by the settle, §7.5 item 6); a committer posting while its own non-removing commit is pending (§19.13).
+ * re-offered by the settle, §7.5 item 6); a committer posting while its own non-removing commit is pending (§19.13); and
+ * (§19.38) a backlog of 300 posts behind Phase 7's fetched cap and one wider than the peek window, neither of which may
+ * lose a post.
  *
  * **Not here, and why** (§19.37): "bursts of 40 over 3 relays with HIGH delays" needs HIGH mode's send delays in the
  * world, a Phase 9 harness debt moved to S11 (§19.33 item B3) — the burst over SHUFFLE is [ChannelPostsTest]'s; posts
@@ -142,6 +145,79 @@ class ChannelReorderTest {
         val shown = bob.displayed(id).toSet()
         for (i in 24..29) assertTrue("b$i", "b$i" in shown)
         for (i in 10..23) assertTrue("b$i", "b$i" !in shown)
+    }
+
+    /**
+     * Relay rounds and passes until [done]: each round a relay round with its hint passes, another hint pass of every
+     * client, then a minute and a time-triggered pass of every client — at most [rounds] times, an hour less than the
+     * pressure hold of §19.38 when [rounds] is 59, so nothing here waits a hold out.
+     */
+    private fun drain(w: ChannelWorld, rounds: Int = 59, done: () -> Boolean) {
+        repeat(rounds) {
+            if (done()) return
+            w.quiesce()
+            for (c in w.clients) c.hintPass()
+            if (done()) return
+            w.advance(DmWorld.MINUTE)
+            for (c in w.clients) c.timePass()
+        }
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 1): carol is away while the owner writes 300 posts; the relay then serves them in a
+     * scrambled order, and Phase 7's fetched cap lets carol hold at most 256 of them at a time — so the blob after a gap
+     * is often not fetched yet, and no held row is consumed to make room. The first version held the gaps for 12 minutes
+     * in a window of 128, then decrypted past them, and the posts it had not seen fell out of the ratchet's range (the
+     * review measured 18 of 160, 68 of 200 lost). Now the namespace is under pressure: the entries a gap holds are
+     * deferred, the fetch resumes, and the missing `seq` re-offers them.
+     */
+    @Test
+    fun aBacklogOfThreeHundredPostsBehindTheFetchedCapLosesNothing() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        w.relay.holdAt = { client, s -> client == "carol" && s.purpose == "post" }
+        val texts = (0 until 300).map { "p$it" }
+        for (t in texts) ChannelScenes.post(owner, id, t)
+        w.quiesce()
+        assertEquals("bob, with no backlog, shows them all", 300, bob.displayed(id).size)
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SHUFFLE)
+        w.relay.fetchedCap = StoreLimits.FETCHED_CAP
+        w.relay.holdAt = { _, _ -> false }
+        drain(w) { carol.displayed(id).size == 300 }
+        assertEquals(texts.toSet(), carol.displayed(id).toSet())
+        assertEquals("none fell out of the ratchet's range", 0, carol[Reason.UNDECRYPTABLE])
+        assertTrue("the cap bound, and the gaps were deferred", carol[Reason.GAP_DEFERRED] > 0)
+        assertEquals("one order (CS-C6)", bob.displayed(id), carol.displayed(id))
+        assertEquals(emptyList<String>(), carol.integrity())
+    }
+
+    /**
+     * §19.38: the same with a peek window narrower than the backlog — two senders' 150 posts each behind a window of 64 —
+     * so the next blob of a sender is often one the window does not show. The window advances as the entries a gap holds
+     * are deferred; nothing is decrypted past a gap the window may hide.
+     */
+    @Test
+    fun aBacklogWiderThanThePeekWindowLosesNothing() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol", peekLimit = 64)
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        w.relay.holdAt = { client, s -> client == "carol" && s.purpose == "post" }
+        val texts = (0 until 150).flatMap { listOf("o$it", "b$it") }
+        for (i in 0 until 150) {
+            ChannelScenes.post(owner, id, "o$i")
+            ChannelScenes.post(bob, id, "b$i")
+        }
+        w.quiesce()
+        w.relay.modes = setOf(ModelChannelRelay.Mode.SHUFFLE)
+        w.relay.holdAt = { _, _ -> false }
+        drain(w) { carol.displayed(id).size == 300 }
+        assertEquals(texts.toSet(), carol.displayed(id).toSet())
+        assertEquals("none fell out of the ratchet's range", 0, carol[Reason.UNDECRYPTABLE])
+        assertTrue("the window was full, and the gaps were deferred", carol[Reason.GAP_DEFERRED] > 0)
+        assertEquals("one order (CS-C6)", owner.displayed(id), carol.displayed(id))
     }
 
     @Test

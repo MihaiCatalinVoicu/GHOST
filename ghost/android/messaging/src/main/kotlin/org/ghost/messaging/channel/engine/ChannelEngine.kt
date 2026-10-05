@@ -52,6 +52,10 @@ internal class ChannelEngine(
     private val env: ChannelEnv,
     sync: ChannelSyncPorts,
     private val actor: ChannelActor,
+    /** The receive step's peek window (§19.38); production keeps the default, a world may narrow it. */
+    peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
+    /** Phase 7's fetched cap of a namespace, as the receive step reads pressure from it (§19.38). */
+    fetchedCap: Int = org.ghost.sync.store.StoreLimits.FETCHED_CAP,
 ) : ChannelPassSteps {
     private val peekOrder = ChannelPeekOrder()
     val postStep = ChannelPostStep(env, sync)
@@ -59,11 +63,18 @@ internal class ChannelEngine(
     val inviteStep = ChannelInviteStep(env, postStep)
     val acceptStep = ChannelAcceptStep(env, sync)
     val joinStep = ChannelJoinStep(env, sync)
-    val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder)
+    val receiveStep = ChannelReceiveStep(env, sync, joinStep, peekOrder, peekLimit, fetchedCap)
     val passStep = ChannelPassStep(env, sync, postStep)
     val settleStep = ChannelSettleStep(env, sync)
     val outcomeStep = ChannelOutcomeStep(env, sync)
     val sweepStep = ChannelSweepStep(env, sync)
+
+    /**
+     * The second the last **time-triggered** pass began (§19.38, the DM actor's `lastTimeTriggeredSecond`): a wake term
+     * that fell due at or before it was offered to that pass, whatever the pass made of it, so [nextWakeSeconds] stops
+     * waking for it — a settle point whose only candidate is an own commit still unverified, a hold the pass could not end.
+     */
+    private var lastTimeTriggered: Long = Long.MIN_VALUE
 
     /** The counters (counts only, T3). */
     val counters: ChannelCounters get() = env.counters
@@ -101,6 +112,7 @@ internal class ChannelEngine(
 
     override fun runPass(timeTriggered: Boolean, deadlineMonotonicMillis: Long?, sessionStart: Boolean) {
         if (env.keys.content() == null) return
+        if (timeTriggered) lastTimeTriggered = env.now()
         outcomeStep.run()
         var rounds = 0
         while (rounds < CATCH_UP_ROUNDS) {
@@ -116,9 +128,17 @@ internal class ChannelEngine(
         }
     }
 
+    /**
+     * A due term is a wake at once **until a time-triggered pass has begun at or after it** (§19.38): every actor pass
+     * ends by re-arming the timer with this minimum, so a term at or before now that the pass could not clear — the settle
+     * point of an own commit whose outcome has not come (CO-4 waits for it, and the outcome arrives as a hint), the end of
+     * a hold the pass found still needed — would otherwise re-arm a wake at once, for ever: the actor spun (638 passes in
+     * two seconds, measured by the review of S4). From then on the term is left to the passes that come anyway.
+     */
     override fun nextWakeSeconds(): Long? {
         val now = env.now()
         return listOfNotNull(settleStep.nextDue(), passStep.nextDue(), peekOrder.holdEnds())
+            .filter { due -> due > now || due > lastTimeTriggered }
             .minOrNull()
             ?.let { maxOf(0L, it - now) }
     }
@@ -127,6 +147,8 @@ internal class ChannelEngine(
         env.contexts.close()
         peekOrder.clear()
         passStep.clear()
+        receiveStep.clear()
+        lastTimeTriggered = Long.MIN_VALUE
     }
 
     override fun toString(): String = "ChannelEngine"

@@ -59,6 +59,19 @@ internal class ChannelPostStep(
      * and the timer are this step's. Encrypted at once when the channel is current, else pending.
      */
     fun post(channelId: ByteArray, kind: Int, text: ByteArray?, replyTo: ByteArray?, target: ByteArray?, grapheme: ByteArray?): PostResult {
+        // §19.38: what the caller can be told apart — an empty post or a target that is no post id is INVALID, a text or
+        // a grapheme longer than §5.5 allows is TOO_LARGE; whatever else the codec refuses (text that is not UTF-8) is
+        // INVALID too. The first version answered TOO_LARGE for all of them.
+        when (kind) {
+            KIND_POST -> {
+                if (text == null || text.isEmpty()) return PostResult.INVALID
+                if (text.size > MAX_TEXT) return PostResult.TOO_LARGE
+            }
+            KIND_REACTION -> {
+                if (target == null || target.size != OP_ID_BYTES) return PostResult.INVALID
+                if ((grapheme?.size ?: 0) > ChannelReceiveStep.MAX_GRAPHEME) return PostResult.TOO_LARGE
+            }
+        }
         val now = env.now()
         val content = env.keys.content() ?: return PostResult.CRYPTO_UNAVAILABLE
         val row = env.database.transaction { tx -> stores.channels.channel(tx.sql, channelId) }
@@ -80,7 +93,8 @@ internal class ChannelPostStep(
             is MlsOutcome.Refused -> return if (e.code == org.ghost.crypto.bridge.MlsCode.CRYPTO_UNAVAILABLE) {
                 PostResult.CRYPTO_UNAVAILABLE
             } else {
-                PostResult.TOO_LARGE
+                // The sizes were checked above: what the codec refuses now is the form (§19.38).
+                PostResult.INVALID
             }
         }
         return try {
@@ -210,6 +224,13 @@ internal class ChannelPostStep(
         day: Long,
     ): Boolean {
         val c = channel.channelId
+        val authorSeconds = fields.authorMinute * DmTime.MINUTE
+        val ttl = if (handshake) ChannelTime.handshakeTtl(channel.timerCode) else ChannelTime.postTtl(channel.timerCode)
+        val deadline = if (handshake) ChannelTime.handshakeDeadline(authorSeconds) else ChannelTime.postDeadline(authorSeconds, channel.timerCode)
+        // §19.38: a pending post whose op deadline has passed is not encrypted (Phase 7 refuses a deadline in the past, and
+        // that refusal — an exception — stopped the whole pass, its admissions and join expiries with it). It stays pending
+        // until its `fail_after_hour`; turning it into FAILED is the sweep's (§6.3.1, slice S8).
+        if (deadline <= now) return false
         val epoch = stores.epochs.open(tx.sql, c, day) ?: return false
         val generation = stores.generations.current(tx.sql, c, day) ?: return false
         val rows = MlsRows.of(stores.mls.rows(tx.sql, c, day))
@@ -240,9 +261,6 @@ internal class ChannelPostStep(
             is MlsOutcome.Ok -> s.value
             is MlsOutcome.Refused -> throw IllegalStateException("channel seal refused: ${s.code}")
         }
-        val authorSeconds = fields.authorMinute * DmTime.MINUTE
-        val ttl = if (handshake) ChannelTime.handshakeTtl(channel.timerCode) else ChannelTime.postTtl(channel.timerCode)
-        val deadline = if (handshake) ChannelTime.handshakeDeadline(authorSeconds) else ChannelTime.postDeadline(authorSeconds, channel.timerCode)
         val operationId = env.random.bytes(OperationId.SIZE)
         sync.outbox.enqueue(
             tx,

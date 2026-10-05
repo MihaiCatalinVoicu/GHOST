@@ -26,6 +26,7 @@ import org.ghost.sync.api.SyncDatabase
 import org.ghost.sync.store.SyncStores
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
@@ -40,6 +41,9 @@ class MessagingRuntimeChannelsTest {
 
     private lateinit var sql: JdbcSqlExecutor
     private lateinit var runtime: MessagingRuntime
+
+    /** Every pass ends by re-arming the alarm (`ExpirySchedule.afterCommit`): its requests count the actor's passes. */
+    private val alarm = RecordingWake()
 
     private val rootBytes = ByteArray(32) { (it * 11 + 5).toByte() }
 
@@ -66,7 +70,7 @@ class MessagingRuntimeChannelsTest {
             esSlots = EsSlots { slots },
             clock = clock,
             random = SequentialRandom(stream = "runtime-channels"),
-            alarm = RecordingWake(),
+            alarm = alarm,
             checkpoint = RecordingCheckpoint { org.ghost.storage.Checkpoint.truncate(sql) },
             channelPorts = ChannelPorts(
                 seeds = ChannelSeeds { c -> ChannelWorld.sha256("seed:" + ChannelWorld.hex(c)) },
@@ -121,5 +125,35 @@ class MessagingRuntimeChannelsTest {
         // the lock closes the channel context with the DM's
         runtime.lock()
         assertEquals(PostResult.CRYPTO_UNAVAILABLE, engine.post(id, "après".toByteArray(), null))
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 3), on the runtime's real actor and in-process timer: an own commit still waiting
+     * for its outcome past its settle point. The first version made the settle point a wake at once after every pass — the
+     * review counted 638 actor passes in two seconds; a quiet runtime makes none.
+     */
+    @Test
+    fun anOwnCommitWaitingForItsOutcomeDoesNotSpinTheActor() {
+        assertEquals(DmKeys.Opened.OPENED, runtime.unlock(::root))
+        runtime.onTimeTrigger()
+        barrier()
+        val engine = requireNotNull(runtime.channelEngine)
+        val created = engine.create("salon".toByteArray(), 4, 0, false)
+        assertEquals(CreateResult.Status.CREATED, created.status)
+        val c = requireNotNull(created.channel).toByteArray()
+        // the state every admission commit is in between its pass and its outcome, an hour past its settle point
+        val minute = Math.floorDiv(DmWorld.WEEK_ORIGIN + 2_870 * DmWorld.WEEK + 2 * DmWorld.DAY, DmWorld.MINUTE) * DmWorld.MINUTE
+        val stores = ChannelStores()
+        SyncDatabase(sql).transaction { tx ->
+            stores.candidates.insert(tx, c, 0, ChannelWorld.sha256("an own commit"), ChannelWorld.sha256("me"), 0, true, ByteArray(64), minute - 3_600)
+            stores.epochs.setAnchor(tx, c, 0, minute - 3_600)
+        }
+        runtime.onTimeTrigger()
+        barrier()
+        val before = alarm.requested.size
+        Thread.sleep(1_500)
+        barrier()
+        val passes = alarm.requested.size - before
+        assertTrue("the actor spun: $passes passes in 1.5 s", passes <= 3)
     }
 }

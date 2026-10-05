@@ -14,6 +14,7 @@ import org.ghost.messaging.channel.engine.ChannelCounters
 import org.ghost.messaging.channel.engine.ChannelEngine
 import org.ghost.messaging.channel.engine.ChannelEnv
 import org.ghost.messaging.channel.engine.ChannelLocalKeys
+import org.ghost.messaging.channel.engine.ChannelReceiveStep
 import org.ghost.messaging.channel.engine.ChannelSyncPorts
 import org.ghost.messaging.channel.store.ChannelStore
 import org.ghost.messaging.channel.store.ChannelStores
@@ -63,8 +64,15 @@ internal class ChannelWorld(
      * A new client, named; its database in memory, or in the file [path] (which the client then owns and closes: what a
      * crash enumeration freezes, [ChannelWorld.restore]), or over the executor [sql] the caller owns.
      */
-    fun client(name: String, sql: SqlExecutor? = null, boot: Int = 0, path: String? = null): ChannelClient {
-        val client = ChannelClient(this, name, sql, boot, path)
+    fun client(
+        name: String,
+        sql: SqlExecutor? = null,
+        boot: Int = 0,
+        path: String? = null,
+        /** The receive step's peek window: a narrower one puts the client's passes under pressure (§19.38). */
+        peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
+    ): ChannelClient {
+        val client = ChannelClient(this, name, sql, boot, path, peekLimit)
         clients.removeAll { it.name == name }
         clients += client
         return client
@@ -155,6 +163,7 @@ internal class ChannelClient(
     val boot: Int = 0,
     /** A database file the client opens and owns (closed by [close], so the file can then be copied whole). */
     path: String? = null,
+    peekLimit: Int = ChannelReceiveStep.PEEK_LIMIT,
 ) : AutoCloseable {
 
     private val ownExecutor: JdbcSqlExecutor? =
@@ -207,6 +216,7 @@ internal class ChannelClient(
             env,
             ChannelSyncPorts(stores.namespaces, stores.capabilities, stores.registrations, stores.outbox, stores.inbox, stores.funding),
             InlineActor,
+            peekLimit = peekLimit,
         )
     }
 

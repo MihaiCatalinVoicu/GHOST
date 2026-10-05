@@ -1,5 +1,6 @@
 package org.ghost.messaging.channel
 
+import org.ghost.crypto.bridge.ChannelContentFields
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.AcceptResult
 import org.ghost.messaging.api.ChannelId
@@ -9,6 +10,7 @@ import org.ghost.messaging.channel.ChannelAdmissionTest.Companion.create
 import org.ghost.messaging.channel.ChannelAdmissionTest.Companion.invite
 import org.ghost.messaging.channel.engine.ChannelCounters.Reason
 import org.ghost.messaging.channel.store.ChannelState
+import org.ghost.messaging.engine.DmTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -22,7 +24,8 @@ import org.junit.Test
  * Welcome (REPLACE_BOOTSTRAP, PC-17), a lost Welcome and the join's expiry (DROP_WELCOME), a request copied into another
  * namespace (COPY_JOIN), a request replayed by an insider (REPLAY_JOIN), the password of §19.28, the single use of an
  * invite, a member's invite admitted by the owner, a request that reaches the committer before its `INVITE_ISSUED`, and
- * the refusals of `CH-ACCEPT`.
+ * the refusals of `CH-ACCEPT`; and (§19.38) a member's `INVITE_ISSUED` planted under a lower id with the real key, which
+ * must not capture the request, and the records no admission could use, which are not kept.
  */
 class ChannelJoinTest {
 
@@ -250,6 +253,76 @@ class ChannelJoinTest {
         assertEquals("the record re-offered the request", 1L, owner.count("ch_join_request"))
         admitPending(w, owner)
         assertEquals(ChannelState.ACTIVE, bob.channel(id)!!.state)
+    }
+
+    /** An `INVITE_ISSUED` record as a modified member's client could post it. */
+    private fun issued(w: ChannelWorld, inviteId: ByteArray, invitePk: ByteArray, expiryDay: Long, digest: ByteArray, pwVersion: Int? = null) =
+        ChannelContentFields(
+            kind = 3, opId = ChannelWorld.sha256("op:" + ChannelWorld.hex(inviteId)).copyOf(16), authorMinute = Math.floorDiv(w.now, DmWorld.MINUTE),
+            timerCode = 4, inviteId = inviteId, invitePk = invitePk, expiryDay = expiryDay, sponsorSig = ByteArray(64) { 1 },
+            committersDigest = digest, pwVersion = pwVersion,
+        )
+
+    /**
+     * §19.38 (the review of S4, finding 2): bob, a member, plants an `INVITE_ISSUED` under an invite id that sorts first,
+     * with the real invite's public key. The first version bound dave's request to the first record whose key verified
+     * it — bob's — and the admission then refused it (the invitee's signature names the real id) and spent dave's
+     * KeyPackage: any member could capture any invite for the price of one post. The request is bound to the record of
+     * the id the invitee signed.
+     */
+    @Test
+    fun aRecordPlantedUnderALowerInviteIdDoesNotCaptureTheJoinRequest() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val dave = w.client("dave")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        val link = invite(owner, id)
+        w.quiesce()
+        val real = bob.database.transaction { tx -> bob.channelStores.invites.issuedOf(tx.sql, id.toByteArray(), DmTime.day(w.now)) }.single()
+        ChannelAdversary.postAs(bob, id, issued(w, ByteArray(16), real.invitePk, real.expiryDay, real.committersDigest), handshake = true)
+        w.quiesce()
+        assertEquals("the owner records both (bob may invite: members may)", 2L, owner.count("ch_invite_issued", "consumed = 0"))
+        assertEquals(AcceptResult.PENDING, dave.engine.accept(link, null))
+        w.quiesce()
+        assertEquals("the request names the invite dave signed", 1L, owner.count("ch_join_request", "invite_id = ?", real.inviteId))
+        admitPending(w, owner)
+        assertEquals(ChannelState.ACTIVE, dave.channel(id)!!.state)
+        assertEquals(0, owner.counters[Reason.ADMISSION_REFUSED])
+        assertEquals("the real invite is spent", 1L, owner.count("ch_invite_issued", "consumed = 1 AND invite_id = ?", real.inviteId))
+        assertEquals("the planted record admitted nobody", 1L, owner.count("ch_invite_issued", "consumed = 0"))
+    }
+
+    /**
+     * §19.38: a record no admission could use is not recorded — an expiry beyond §5.9's `issue day + 7` (the first version
+     * kept such a record for ever), and in a password channel a member's, who may not invite there (Q46 (b), CO-2 (A)).
+     */
+    @Test
+    fun anInviteIssuedNoAdmissionCouldUseIsNotRecorded() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        val day = DmTime.day(w.now)
+        val held = owner.count("ch_invite_issued")
+        ChannelAdversary.postAs(bob, id, issued(w, ByteArray(16) { 3 }, ByteArray(32) { 5 }, day + 4_000_000L, ByteArray(32) { 6 }), handshake = true)
+        w.quiesce()
+        assertEquals("an expiry past issue day + 7", held, owner.count("ch_invite_issued"))
+        assertEquals(1, owner.counters[Reason.INVITE_REFUSED])
+        // a password channel of the owner's, carol a member who is no committer
+        val carol = w.client("carol")
+        w.advance(DmWorld.MINUTE)
+        val pid = create(owner, password = true)
+        val password = "cabin frost ladder margin orbit".toCharArray()
+        join(w, owner, carol, invite(owner, pid, password), password)
+        assertEquals(ChannelState.ACTIVE, carol.channel(pid)!!.state)
+        val pc = pid.toByteArray()
+        val before = owner.count("ch_invite_issued", "channel_id = ?", pc)
+        ChannelAdversary.postAs(
+            carol, pid, issued(w, ByteArray(16) { 4 }, ByteArray(32) { 5 }, DmTime.day(w.now) + 7, ByteArray(32) { 6 }, pwVersion = 1),
+            handshake = true,
+        )
+        w.quiesce()
+        assertEquals("a member's record in a password channel", before, owner.count("ch_invite_issued", "channel_id = ?", pc))
+        assertEquals(2, owner.counters[Reason.INVITE_REFUSED])
     }
 
     @Test

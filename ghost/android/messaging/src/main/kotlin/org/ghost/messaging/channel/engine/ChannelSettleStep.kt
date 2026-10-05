@@ -66,12 +66,23 @@ internal class ChannelSettleStep(
         return settled
     }
 
-    /** The second the earliest settle point of an epoch with candidates comes (the actor's next wake), or null. */
+    /**
+     * The second the earliest settle point of an epoch with candidates comes (the actor's next wake), or null. An epoch
+     * whose only candidate is the member's **own commit with no verified copy** is no wake (§19.38): CO-4 waits for that
+     * commit's outcome, which arrives as a hint and runs the settle in that pass; a wake at its settle point could only
+     * find it waiting still.
+     */
     fun nextDue(): Long? {
         val day = DmTime.day(env.now())
         return env.database.transaction { tx ->
             (stores.channels.channelsIn(tx.sql, ChannelState.ACTIVE) + stores.channels.channelsIn(tx.sql, ChannelState.LEAVING))
-                .mapNotNull { ch -> stores.epochs.open(tx.sql, ch.channelId, day)?.anchorMinute?.let { it + ChannelTime.SETTLE_WINDOW_SECONDS } }
+                .mapNotNull { ch ->
+                    val epoch = stores.epochs.open(tx.sql, ch.channelId, day) ?: return@mapNotNull null
+                    val anchor = epoch.anchorMinute ?: return@mapNotNull null
+                    val candidates = stores.candidates.candidates(tx.sql, ch.channelId, epoch.epoch)
+                    if (candidates.none { !it.own || it.verified }) return@mapNotNull null
+                    anchor + ChannelTime.SETTLE_WINDOW_SECONDS
+                }
                 .minOrNull()
         }
     }

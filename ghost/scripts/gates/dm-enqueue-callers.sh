@@ -166,6 +166,16 @@
 #    `negative-dm-enqueue-channel-engine` pins the boundary. A channel engine file does not count towards the
 #    vacuity floor, which stays the DM steps'.
 #
+# **The review of S4 (2026-10-05, design §19.38).** Three holes, each now closed and pinned by
+# `negative-dm-enqueue-placement`: (a) the boundary above matched `*/messaging/channel/engine/` anywhere, so an `:app`
+# file under such a package path enqueued unseen by both gates (G-M5 read `:messaging` alone) — it is now the channel
+# engine's own directory in `:messaging` and nothing else; (b) only `src/main` and `src/release` were read, so a file of
+# the `debug` or `gate` build type passed — every source set but the test ones is read now (the `gate` set ships on the
+# gate devices, `debug` on every debug build); (c) an allowed file was allowed by its name wherever it sat, so an
+# `OwnerSteps.kt` in a new directory could enqueue — `ALLOWED_FILES`, `REMOVE_ONLY` and `STEP_ALLOWED` name files of the
+# DM engine's directory (`android/messaging/src/<set>/kotlin/org/ghost/messaging/engine/`) now. `TRIGGER_ALLOWED` still
+# goes by name: its files sit in four directories of two modules (declared).
+#
 # Usage: dm-enqueue-callers.sh        (scans GHOST_ROOT, default: the ghost/ monorepo)
 # Self-test: scripts/gates/self-test.sh points GHOST_ROOT at test-harness/gates/negative-dm-enqueue-*.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -268,8 +278,19 @@ STEP_TRIGGERS='sendControl|flushPending|resend|estStart|estReady|estEnd'
 # establishment passes, the facade's user actions, OUTCOME's resend, and the due scheduled control.
 STEP_ALLOWED='SendStep.kt EstablishmentSteps.kt DmActor.kt MessagingEngine.kt OutcomeStep.kt ScheduledSteps.kt'
 
-allowed_file() { # $1 = basename
+# The DM engine's own directory (relative to GHOST_ROOT; the source set is any): the files the allowlists below name
+# are files of it, and of no other directory (the review of S4, §19.38).
+DM_ENGINE_GLOB='android/messaging/src/*/org/ghost/messaging/engine/*'
+
+in_dm_engine() { # $1 = path relative to GHOST_ROOT
+  # shellcheck disable=SC2254
+  case "$1" in $DM_ENGINE_GLOB) return 0 ;; esac
+  return 1
+}
+
+allowed_file() { # $1 = basename, $2 = path relative to GHOST_ROOT
   local name
+  in_dm_engine "$2" || return 1
   while read -r name _; do
     [ -n "$name" ] || continue
     [ "$name" = "$1" ] && return 0
@@ -284,8 +305,9 @@ funding_allowed() { # $1 = basename
   return 1
 }
 
-remove_allowed() { # $1 = basename
-  allowed_file "$1" && return 0
+remove_allowed() { # $1 = basename, $2 = path relative to GHOST_ROOT
+  allowed_file "$1" "$2" && return 0
+  in_dm_engine "$2" || return 1
   case " $REMOVE_ONLY " in
     *" $1 "*) return 0 ;;
   esac
@@ -299,7 +321,8 @@ trigger_allowed() { # $1 = basename
   return 1
 }
 
-step_allowed() { # $1 = basename
+step_allowed() { # $1 = basename, $2 = path relative to GHOST_ROOT
+  in_dm_engine "$2" || return 1
   case " $STEP_ALLOWED " in
     *" $1 "*) return 0 ;;
   esac
@@ -308,11 +331,13 @@ step_allowed() { # $1 = basename
 
 # The production sources of the two modules that drive the DM engine. `find` at any depth, like
 # dm-no-fts.sh: a nested module must not go unscanned while the others satisfy the vacuity floor.
-# `src/release` too: it ships beside `src/main` (Phase 9 review GATES-2).
+# `src/release` too: it ships beside `src/main` (Phase 9 review GATES-2); and since the review of S4 (§19.38) every
+# other source set but the test ones — `debug`, `gate`, a build type or flavour added later.
 dm_caller_files() {
   find "$GHOST_ROOT/android/messaging" "$GHOST_ROOT/android/app" \
-    -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) \
-    \( -path '*/src/main/*' -o -path '*/src/release/*' \) -print 2>/dev/null || true
+    -path '*/build' -prune -o -type f \( -name '*.kt' -o -name '*.java' \) -path '*/src/*' \
+    ! -path '*/src/test/*' ! -path '*/src/test[A-Z]*' ! -path '*/src/androidTest*' ! -path '*/src/testFixtures*' \
+    -print 2>/dev/null || true
 }
 
 # `<first line number>:<text>`, with every continuation line (one that begins with `.`) folded into
@@ -346,10 +371,10 @@ while IFS= read -r file; do
   base="${file##*/}"
   SCANNED=$((SCANNED + 1))
   # A channel engine file: its restricted and removal calls are G-M5's (see the S4 note above); the facade
-  # and step rules below still read it.
+  # and step rules below still read it. The channel engine's own directory in `:messaging`, and no other (§19.38).
   channel_engine=0
   case "$rel" in
-    */messaging/channel/engine/*) channel_engine=1 ;;
+    android/messaging/src/*/org/ghost/messaging/channel/engine/*) channel_engine=1 ;;
   esac
 
   # Each hit is read from a variable and matched with a here-string, never `producer | grep -q`:
@@ -475,7 +500,7 @@ while IFS= read -r file; do
     WITH_CALL=$((WITH_CALL + 1))
   fi
 
-  if [ -n "$restricted_hits" ] && ! allowed_file "$base"; then
+  if [ -n "$restricted_hits" ] && ! allowed_file "$base" "$rel"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: only the SEND, RESEND, EST-*, OWNER-WEEK, ACTIVATE, KEEPER and REGROWS steps may enqueue, register, listen, install or fund)"
@@ -483,13 +508,13 @@ while IFS= read -r file; do
   fi
   # A file the rule above lets enqueue may still not fund: `Funding.set` has a list of its own (FUNDING_FILES).
   # Every other file is refused the call by the rule above already, and is not reported twice.
-  if [ -n "$funding_hits" ] && allowed_file "$base" && ! funding_allowed "$base"; then
+  if [ -n "$funding_hits" ] && allowed_file "$base" "$rel" && ! funding_allowed "$base"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: no DM step funds a namespace; Funding.set has a file list of its own, and it is empty)"
     done <<< "$funding_hits"
   fi
-  if [ -n "$remove_hits" ] && ! remove_allowed "$base"; then
+  if [ -n "$remove_hits" ] && ! remove_allowed "$base" "$rel"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: only those steps and SWEEP may call Namespaces.remove)"
@@ -501,7 +526,7 @@ while IFS= read -r file; do
       fail "$rel:$line (G-DM2: an owner pass starts from the actor timer, a database open, a relay session start or the K20 hook, and from nothing else)"
     done <<< "$trigger_hits"
   fi
-  if [ -n "$step_hits" ] && ! step_allowed "$base"; then
+  if [ -n "$step_hits" ] && ! step_allowed "$base" "$rel"; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       fail "$rel:$line (G-DM2: a send, a resend, a control or an establishment step is driven by the actor, the facade, OUTCOME or the due scheduled control, and by nothing else)"

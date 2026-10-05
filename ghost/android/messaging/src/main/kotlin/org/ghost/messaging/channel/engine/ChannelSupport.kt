@@ -104,8 +104,20 @@ internal class ChannelCounters {
         /** A post that reuses another member's op id (§19.35 F-10, recorded): the first stays. */
         OP_ID_CLASH,
 
-        /** A reaction whose post is not on this device (§19.35 F-4): dropped. */
+        /** A post whose relay copy expired while it waited on the device (§19.38; the DM's): not inserted. */
+        EXPIRED_WHILE_HELD,
+
+        /** A reaction whose post is not on this device yet (§19.38): held in memory until the post lands. */
+        REACTION_HELD,
+
+        /** A held reaction dropped before its post came (§19.35 F-4, §19.38: the bound of the held ones). */
         REACTION_ORPHAN,
+
+        /** An `INVITE_ISSUED` no admission could use (§19.38): its sender may not invite, or its expiry is too far. */
+        INVITE_REFUSED,
+
+        /** An application message deferred behind a gap while its namespace is under pressure (§19.38). */
+        GAP_DEFERRED,
 
         /** A post kind this slice consumes without effect (LEAVE: S6; REVEAL: S9). */
         DEFERRED_KIND,

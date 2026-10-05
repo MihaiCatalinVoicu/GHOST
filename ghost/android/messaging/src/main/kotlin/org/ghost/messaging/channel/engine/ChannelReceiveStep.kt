@@ -4,6 +4,7 @@ import org.ghost.crypto.bridge.ChannelCrypto
 import org.ghost.crypto.bridge.ChannelRecognition
 import org.ghost.crypto.bridge.CommitSummary
 import org.ghost.crypto.bridge.MlsCode
+import org.ghost.crypto.bridge.MlsField
 import org.ghost.crypto.bridge.MlsOutcome
 import org.ghost.messaging.channel.store.CandidateStore
 import org.ghost.messaging.channel.store.ChannelState
@@ -15,26 +16,32 @@ import org.ghost.messaging.channel.store.JoinType
 import org.ghost.messaging.engine.DmTime
 import org.ghost.messaging.engine.DmTimers
 import org.ghost.messaging.store.ContentCipher
+import org.ghost.sync.api.BlobHash
 import org.ghost.sync.api.Consumer
 import org.ghost.sync.api.InboundBlob
 import org.ghost.sync.api.NamespaceId
 import org.ghost.sync.api.PeekedBlob
 import org.ghost.sync.api.SyncTransaction
+import org.ghost.sync.store.StoreLimits
 import java.security.MessageDigest
 
 /**
  * **`CH-RECV`** (Phase 10 design §6.3.2 … §6.3.4, §10.4): the messaging actor drains `Consumer.CHANNEL` as it drains
- * `Consumer.DM` (D16). Each pass `peek`s up to 128 fetched rows, routes each by its namespace — a listened generation
- * (`ch_generation`) or a pending join (`ch_join`, §19.35 F-8) — and classifies it by the one hint that matches (CS-S5:
- * `R_ep(e)` with mode 0x11 for the current and every retained epoch, `R_join(g)` with 0x12 and 0x13 for the namespace's
- * generation). Then, in this order, each in its own transaction after `Inbox.claimOne` (whose offer counter commits
- * first, the F9 §7.8 poison guard: a blob offered for the fourth time is consumed unprocessed and counted):
+ * `Consumer.DM` (D16). Each round `peek`s up to [peekLimit] fetched rows (512, §19.38: §6.3.5's 128 is below Phase 7's
+ * `FETCHED_CAP` of one namespace), routes each by its namespace — a listened generation (`ch_generation`) or a pending
+ * join (`ch_join`, §19.35 F-8) — and classifies it by the one hint that matches (CS-S5: `R_ep(e)` with mode 0x11 for the
+ * current and every retained epoch, `R_join(g)` with 0x12 and 0x13 for the namespace's generation). Then, in this order,
+ * each in its own transaction after `Inbox.claimOne` (whose offer counter commits first, the F9 §7.8 poison guard: a blob
+ * offered for the fourth time is consumed unprocessed and counted):
  *
  *  1. **Application messages** of each epoch, in peek order ([ChannelPeekOrder]) and **in batches of up to 32**, one
  *     `receive` call and one transaction per batch (S0-17); a message that fails rolls back alone inside the batch (§3.4
- *     point 9) and is consumed and counted; posts are applied before reactions (§19.35 F-4: a reaction whose post is not
- *     on the device is dropped and counted); a batch whose `receive` throws (`INTERNAL`) is retried blob by blob, and a
- *     blob that throws alone is left to the poison guard.
+ *     point 9) and is consumed and counted; posts are applied before reactions (§19.35 F-4), and a reaction whose post is
+ *     not on the device yet is **held in memory** until the post lands (§19.38: bounded, lost at a restart, and dropped
+ *     and counted when evicted); a batch whose `receive` throws (`INTERNAL`) is retried blob by blob, and a blob that
+ *     throws alone is left to the poison guard. A namespace **under pressure** — a full window, or as many due rows as
+ *     `FETCHED_CAP` — defers the entries a gap holds instead of holding them in place (§19.38, [ChannelPeekOrder]), and a
+ *     batch that decrypts the `seq` they wait for re-offers them; the round is then repeated (≤ [RECEIVE_ROUNDS]).
  *  2. **Commits**, alone: for the current epoch a validation run (CO-2, native), recorded as a candidate with its sighting
  *     and its relay store hour, its removal-hold mark (§19.35 F-1) and the CO-4 anchor of the epoch, within the bounds of
  *     §6.3.5 (one per sender, the lowest hash; the best 8 by `(rank, hash)`); for a retained past epoch a **late
@@ -52,8 +59,9 @@ import java.security.MessageDigest
  *
  * **Dedup** (§6.3.4): layer 1 is Phase 7's `(namespace, hash)` tombstone (a copy never reaches this step); layer 2 is
  * MLS (a replayed message fails to decrypt, a resurrected commit of a settled epoch has the winner's hash); layer 3 is
- * the seal (a copy into another namespace does not open, CS-S3); layer 4 is `ch_seen`, the keyed tag of the op id, kept
- * as `dm_seen` with the post's bucket: an op id already received is dropped even after its post was swept.
+ * the seal (a copy into another namespace does not open, CS-S3); layer 4 is `ch_seen`, the keyed tag of the author and
+ * the op id (§19.38), kept as `dm_seen` with the post's bucket: an op id an author already used is dropped even after
+ * its post was swept, and another author's reuse of it is counted as the clash it is.
  *
  * **Remote data cannot fail a batch.** Every value a member chose is checked before it reaches a store (a store refuses a
  * bad value with an exception, which would roll the whole batch back and, at the fourth offer, poison every post in it).
@@ -66,11 +74,42 @@ internal class ChannelReceiveStep(
     private val sync: ChannelSyncPorts,
     private val joinStep: ChannelJoinStep,
     private val peekOrder: ChannelPeekOrder,
+    /** The rows one round peeks (§19.38); a world passes a smaller one to put a pass under pressure. */
+    private val peekLimit: Int = PEEK_LIMIT,
+    /** Phase 7's fetched cap of a namespace, whose reach puts the namespace under pressure (§19.38). */
+    private val fetchedCap: Int = StoreLimits.FETCHED_CAP,
 ) {
     private val stores = env.stores
 
-    /** `(namespace ‖ hash)` → the next deferral in seconds (in memory: a restart starts the backoff over, T33). */
-    private val backoff = HashMap<List<Byte>, Int>()
+    /**
+     * `(namespace ‖ hash)` → the next deferral in seconds of a blob no key opens yet (in memory: a restart starts the
+     * backoff over, T33). Kept across passes while the blob waits — a deferred blob is not in the next peek — and bounded
+     * by eviction of the least recently used entry (§19.38: pruning it to each peek reset every backoff to 60 s).
+     */
+    private val backoff = object : LinkedHashMap<List<Byte>, Int>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Byte>, Int>?): Boolean = size > MAX_BACKOFF_ENTRIES
+    }
+
+    /**
+     * Reactions whose post is not on the device yet, `(channel ‖ target ‖ author)` → the reaction (§19.38): a reaction can
+     * arrive in an earlier batch than its post, or while its post is held behind a gap. Bounded (the eldest is dropped
+     * and counted as an orphan); in memory, so a restart loses what it held (declared, §19.38).
+     */
+    private val heldReactions = object : LinkedHashMap<List<Byte>, HeldReaction>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<List<Byte>, HeldReaction>?): Boolean {
+            val drop = size > MAX_HELD_REACTIONS
+            if (drop) env.counters.count(ChannelCounters.Reason.REACTION_ORPHAN)
+            return drop
+        }
+    }
+
+    /** A held reaction: its grapheme already sealed for the row it will be written to. */
+    private class HeldReaction(val channelId: ByteArray, val target: ByteArray, val author: ByteArray, val graphemeEnv: ByteArray) {
+        override fun toString(): String = "HeldReaction(redacted)"
+    }
+
+    /** Whether a batch of the current round re-offered rows a gap had deferred (the round is then repeated). */
+    private var reoffered = false
 
     /** What the hint said a blob is. */
     private sealed class Kind {
@@ -88,7 +127,8 @@ internal class ChannelReceiveStep(
         val join: JoinStore.JoinRow?,
         val kind: Kind,
     ) {
-        val key: List<Byte> = blob.namespace.toByteArray().toList() + blob.hash.toByteArray().toList()
+        val namespace: List<Byte> = blob.namespace.toByteArray().toList()
+        val key: List<Byte> = namespace + blob.hash.toByteArray().toList()
     }
 
     /** A mode-0x11 blob opened in memory. */
@@ -110,19 +150,33 @@ internal class ChannelReceiveStep(
 
     /**
      * One pass over the fetched channel blobs; returns how many were consumed, so the engine can repeat it after a settle
-     * re-offered deferred blobs (CO-4's catch-up). Stops at [deadlineMonotonicMillis] (the consumer tail's, Phase 9 §21.12
-     * point 1: a claimed blob is never abandoned half-applied).
+     * re-offered deferred blobs (CO-4's catch-up). A round that re-offered rows a gap had deferred is followed by another
+     * at once, up to [RECEIVE_ROUNDS]. Stops at [deadlineMonotonicMillis] (the consumer tail's, Phase 9 §21.12 point 1: a
+     * claimed blob is never abandoned half-applied).
      */
     fun consume(deadlineMonotonicMillis: Long?): Int {
-        val peeked = sync.inbox.peek(Consumer.CHANNEL, PEEK_LIMIT)
+        var consumed = 0
+        repeat(RECEIVE_ROUNDS) {
+            reoffered = false
+            consumed += consumeRound(deadlineMonotonicMillis)
+            if (!reoffered || outOfTime(deadlineMonotonicMillis)) return consumed
+        }
+        return consumed
+    }
+
+    private fun consumeRound(deadlineMonotonicMillis: Long?): Int {
+        val peeked = sync.inbox.peek(Consumer.CHANNEL, peekLimit)
         if (peeked.isEmpty()) {
-            backoff.clear()
+            peekOrder.idle(env.now())
             return 0
         }
         val now = env.now()
         val day = DmTime.day(now)
         val present = peeked.map { it.namespace.toByteArray().toList() + it.hash.toByteArray().toList() }.toSet()
-        backoff.keys.retainAll(present)
+        // §19.38: a full window may hide the next blob of a sender, and a namespace at Phase 7's fetched cap fetches no
+        // further blob until rows are consumed — under either, a gap is deferred, not held in place.
+        val windowFull = peeked.size >= peekLimit
+        val dueByNamespace = peeked.groupingBy { it.namespace.toByteArray().toList() }.eachCount()
         val classified = env.database.transaction { tx -> peeked.map { classify(tx, it, day) } }
         var consumed = 0
         val apps = ArrayList<ChannelPeekOrder.Entry<Opened>>()
@@ -138,8 +192,10 @@ internal class ChannelReceiveStep(
                     is OpenResult.Ok -> {
                         val o = r.opened
                         when (o.contentType) {
-                            CONTENT_APPLICATION ->
-                                apps += ChannelPeekOrder.Entry(c.channel!!.channelId, o.epoch, o.leaf, o.seq, c.key, o)
+                            CONTENT_APPLICATION -> {
+                                val pressure = windowFull || (dueByNamespace[c.namespace] ?: 0) >= fetchedCap
+                                apps += ChannelPeekOrder.Entry(c.channel!!.channelId, o.epoch, o.leaf, o.seq, c.key, c.namespace, o, pressure)
+                            }
                             CONTENT_COMMIT -> commits += o
                             // §6.3.2, §19.16: a proposal is dropped before `process_message`, never stored.
                             else -> if (drop(c, ChannelCounters.Reason.PROPOSAL)) consumed++
@@ -151,9 +207,23 @@ internal class ChannelReceiveStep(
                 Kind.Unknown -> unknown += c
             }
         }
-        for (batch in peekOrder.batches(apps, present, now)) {
+        val plan = peekOrder.plan(apps, present, now)
+        for ((entry, waitingFor) in plan.deferrals) {
             if (outOfTime(deadlineMonotonicMillis)) return consumed
-            consumed += applicationBatch(batch.map { it.value }, now, day)
+            val opened = entry.value
+            val deferred = if (opened != null) {
+                deferClaimed(opened.c, ChannelPeekOrder.GAP_DEFER_SECONDS)
+            } else {
+                deferKey(entry.key, ChannelPeekOrder.GAP_DEFER_SECONDS)
+            }
+            if (deferred) {
+                peekOrder.deferred(entry, waitingFor, now + ChannelPeekOrder.GAP_DEFER_SECONDS)
+                env.counters.count(ChannelCounters.Reason.GAP_DEFERRED)
+            }
+        }
+        for (batch in plan.batches) {
+            if (outOfTime(deadlineMonotonicMillis)) return consumed
+            consumed += applicationBatch(batch, now, day)
         }
         for (o in commits) {
             if (outOfTime(deadlineMonotonicMillis)) return consumed
@@ -173,6 +243,12 @@ internal class ChannelReceiveStep(
             consumed += unmatched(c, now)
         }
         return consumed
+    }
+
+    /** Forgets what the passes kept in memory (the backoffs, the held reactions): the context closed. */
+    fun clear() {
+        backoff.clear()
+        heldReactions.clear()
     }
 
     // ------------------------------------------------------------------------------------ classification
@@ -252,20 +328,42 @@ internal class ChannelReceiveStep(
 
     // ------------------------------------------------------------------------------- application messages
 
-    private fun applicationBatch(batch: List<Opened>, now: Long, day: Long): Int {
+    /** A claimed application message of a batch: its MLS body and its inbox row. */
+    private class Ready(val key: List<Byte>, val body: ByteArray, val blob: InboundBlob)
+
+    private fun applicationBatch(batch: List<ChannelPeekOrder.Entry<Opened>>, now: Long, day: Long): Int {
         if (batch.isEmpty()) return 0
-        val channelId = batch.first().c.channel?.channelId ?: return 0
+        val channelId = batch.first().channelId
         val epoch = batch.first().epoch
         val content = env.keys.content() ?: return 0
         val seenKey = env.keys.seenKey() ?: return 0
         try {
             var consumed = 0
-            val claimed = ArrayList<Pair<Opened, InboundBlob>>()
-            for (o in batch) {
-                when (val r = claim(o.c)) {
-                    Claim.Poisoned -> consumed++
-                    Claim.Gone -> Unit
-                    is Claim.Held -> claimed += o to r.blob
+            val claimed = ArrayList<Ready>()
+            for (e in batch) {
+                val o = e.value
+                // A row the window showed is claimed as peeked; a deferred one offered back by its key, by its key (§19.38).
+                when (val r = if (o != null) claim(o.c) else claimKey(e.key)) {
+                    Claim.Poisoned -> {
+                        consumed++
+                        peekOrder.forget(e.key)
+                    }
+                    Claim.Gone -> peekOrder.forget(e.key)
+                    is Claim.Held -> {
+                        if (o != null) {
+                            claimed += Ready(e.key, o.body, r.blob)
+                        } else {
+                            when (val b = openClaimed(channelId, e, r.blob, day)) {
+                                is Reopened.Body -> claimed += Ready(e.key, b.body, r.blob)
+                                Reopened.Unavailable -> Unit
+                                Reopened.Bad -> {
+                                    env.database.transaction { tx -> consume(tx, r.blob, ChannelCounters.Reason.NON_CANONICAL) }
+                                    peekOrder.forget(e.key)
+                                    consumed++
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (claimed.isEmpty()) return consumed
@@ -282,26 +380,58 @@ internal class ChannelReceiveStep(
         }
     }
 
+    /** What re-opening a row claimed by its key gave. */
+    private sealed class Reopened {
+        class Body(val body: ByteArray) : Reopened()
+        object Unavailable : Reopened()
+        object Bad : Reopened()
+    }
+
+    /**
+     * Opens a row deferred behind a gap and claimed by its key (§19.38): the seal again, under the epoch's key — the row
+     * was opened as this message before it was deferred, so anything else is a store that changed under it.
+     */
+    private fun openClaimed(channelId: ByteArray, e: ChannelPeekOrder.Entry<Opened>, blob: InboundBlob, day: Long): Reopened {
+        val epochRow = env.database.transaction { tx -> stores.epochs.epoch(tx.sql, channelId, e.epoch, day) } ?: return Reopened.Bad
+        val opened = env.contexts.open(channelId) ?: return Reopened.Unavailable
+        return when (
+            val o = opened.crypto.open(
+                channelId, epochRow.kEnv, ChannelCrypto.KEY_CLASS_EPOCH, blob.namespace.toByteArray(), ChannelCrypto.MODE_EPOCH,
+                blob.ciphertext,
+            )
+        ) {
+            is MlsOutcome.Ok -> {
+                val v = o.value
+                if (v.headerEpoch == e.epoch && v.contentType == CONTENT_APPLICATION && v.aadLeaf == e.leaf && v.aadSeq == e.seq) {
+                    Reopened.Body(v.body)
+                } else {
+                    Reopened.Bad
+                }
+            }
+            is MlsOutcome.Refused -> if (o.code == MlsCode.CRYPTO_UNAVAILABLE) Reopened.Unavailable else Reopened.Bad
+        }
+    }
+
     /** One transaction for one batch; null when the native call threw (`INTERNAL`), with nothing written. */
     private fun applyBatch(
         channelId: ByteArray,
         epoch: Long,
-        claimed: List<Pair<Opened, InboundBlob>>,
+        claimed: List<Ready>,
         content: ContentCipher,
         seenKey: ByteArray,
         now: Long,
         day: Long,
     ): Int? {
         val opened = env.contexts.open(channelId) ?: return 0
-        return env.database.transaction { tx ->
+        val done = env.database.transaction { tx ->
             val channel = stores.channels.channel(tx.sql, channelId)
             if (channel == null || (channel.state != ChannelState.ACTIVE && channel.state != ChannelState.LEAVING)) {
-                for ((_, blob) in claimed) consume(tx, blob, ChannelCounters.Reason.UNROUTED)
+                for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.UNROUTED)
                 return@transaction claimed.size
             }
-            val rows = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
+            val stored = MlsRows.of(stores.mls.rows(tx.sql, channelId, day))
             val received = try {
-                opened.crypto.receive(channelId, rows, epoch, claimed.map { it.first.body }, day.toInt())
+                opened.crypto.receive(channelId, stored, epoch, claimed.map { it.body }, day.toInt())
             } catch (e: IllegalStateException) {
                 // `INTERNAL` (a caught Rust panic) or a reply the facade could not decode: retried blob by blob.
                 return@transaction null
@@ -311,12 +441,12 @@ internal class ChannelReceiveStep(
                 is MlsOutcome.Refused -> when (received.code) {
                     MlsCode.CRYPTO_UNAVAILABLE -> return@transaction 0
                     MlsCode.STATE_CORRUPT -> {
-                        for ((_, blob) in claimed) sync.inbox.defer(tx, blob.namespace, blob.hash, STATE_CORRUPT_DEFER_SECONDS)
+                        for (r in claimed) sync.inbox.defer(tx, r.blob.namespace, r.blob.hash, STATE_CORRUPT_DEFER_SECONDS)
                         env.counters.count(ChannelCounters.Reason.STATE_CORRUPT)
                         return@transaction 0
                     }
                     else -> {
-                        for ((_, blob) in claimed) consume(tx, blob, ChannelCounters.Reason.NON_CANONICAL)
+                        for (r in claimed) consume(tx, r.blob, ChannelCounters.Reason.NON_CANONICAL)
                         return@transaction claimed.size
                     }
                 }
@@ -324,6 +454,9 @@ internal class ChannelReceiveStep(
             // One item per message, in order (§10.2 fn 6): another count is the facade's contract broken, INTERNAL.
             if (items.items.size != claimed.size) return@transaction null
             stores.mls.apply(tx, channelId, MlsRows.changes(items.changes))
+            // The context an INVITE_ISSUED is judged against, read once and only when the batch holds one (§19.38).
+            var inviters: Inviters? = null
+            val judge = { inviters ?: readInviters(opened, channelId, stored, day).also { inviters = it } }
             // Posts and records first, reactions second (§19.35 F-4): a reaction of a lower leaf to a post of a higher one
             // sits before its target in the peek order.
             val reactions = ArrayList<ChannelCrypto.Item.App>()
@@ -334,8 +467,8 @@ internal class ChannelReceiveStep(
                         when (item.content.kind) {
                             ChannelPostStep.KIND_REACTION -> reactions += item
                             ChannelPostStep.KIND_POST ->
-                                applyPost(tx, channel, epoch, item, claimed[index].second, content, seenKey, now, day)
-                            ChannelPostStep.KIND_INVITE_ISSUED -> applyInviteIssued(tx, channel, item, day)
+                                applyPost(tx, channel, epoch, item, claimed[index].blob, content, seenKey, now, day)
+                            ChannelPostStep.KIND_INVITE_ISSUED -> applyInviteIssued(tx, channel, item, judge(), day)
                             // LEAVE is slice S6's (a committer's pending work), REVEAL slice S9's (the box keys).
                             ChannelPostStep.KIND_LEAVE, ChannelPostStep.KIND_REVEAL ->
                                 env.counters.count(ChannelCounters.Reason.DEFERRED_KIND)
@@ -349,9 +482,15 @@ internal class ChannelReceiveStep(
                 }
             }
             for (item in reactions) applyReaction(tx, channel, item, content)
-            for ((_, blob) in claimed) sync.inbox.markConsumed(tx, blob.namespace, blob.hash)
+            for (r in claimed) sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash)
+            // §19.38: the rows a gap had deferred under pressure come back once the `seq` they waited for decrypted.
+            for (ns in peekOrder.reofferDue(channelId)) {
+                if (sync.inbox.reofferDeferred(tx, NamespaceId(ns.toByteArray())) > 0) reoffered = true
+            }
             claimed.size
         }
+        if (done == claimed.size) for (r in claimed) peekOrder.forget(r.key)
+        return done
     }
 
     private fun applyPost(
@@ -374,9 +513,9 @@ internal class ChannelReceiveStep(
             return env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
         }
         val c = channel.channelId
-        val tag = ChannelTags.opTag(seenKey, c, fields.opId)
-        // Layer 4 (§6.3.4): an op id already received — a re-encryption after FAILED keeps its op id — is dropped, even
-        // once its post was swept.
+        val tag = ChannelTags.opTag(seenKey, c, item.sender, fields.opId)
+        // Layer 4 (§6.3.4): an op id its author already used — a re-encryption after FAILED keeps its op id — is dropped,
+        // even once its post was swept.
         if (stores.posts.isSeen(tx.sql, c, tag, day)) {
             env.counters.count(ChannelCounters.Reason.DUPLICATE)
             return
@@ -384,6 +523,14 @@ internal class ChannelReceiveStep(
         // §5.5: a receiver deletes a post after the shorter of its own timer and the channel's.
         val timer = ChannelTime.shorterTimer(fields.timerCode, channel.timerCode)
         val authorSeconds = fields.authorMinute * DmTime.MINUTE
+        // §8.2: an unread post dies at min(E, consume + bucket + 1 h); E is its blob's relay expiry.
+        val deleteAt = DmTimers.unreadDeadlineMinute(now, blob.relayExpiryHour, timer)
+        // §19.38 (the DM's EXPIRED_WHILE_HELD, F9 §21.10 point 5): a post whose relay copy expired while it waited here —
+        // behind a gap, a deferral, a closed process — is past both its lives and is not inserted, only counted.
+        if (blob.relayExpiryHour <= now || (deleteAt != null && deleteAt <= now)) {
+            env.counters.count(ChannelCounters.Reason.EXPIRED_WHILE_HELD)
+            return
+        }
         val inserted = stores.posts.insertIncomingIfAbsent(
             tx = tx,
             opId = fields.opId,
@@ -395,18 +542,26 @@ internal class ChannelReceiveStep(
             epoch = epoch,
             bodyEnv = env.seal(content, ChannelAd.postBody(fields.opId), text),
             authorMinute = authorSeconds,
-            // §8.2: an unread post dies at min(E, consume + bucket + 1 h); E is its blob's relay expiry.
-            deleteAtMinute = DmTimers.unreadDeadlineMinute(now, blob.relayExpiryHour, timer),
+            deleteAtMinute = deleteAt,
             relayExpiryHour = blob.relayExpiryHour,
         )
         if (!inserted) {
-            // §19.35 F-10: the first holder of an op id keeps it; another author reusing it is counted, not shown.
+            // §19.35 F-10: the first holder of an op id keeps it; another author reusing it is counted, not shown (and
+            // can suppress the later holder's post: recorded in §19.38, F-S4-15).
             val existing = stores.posts.post(tx.sql, fields.opId, now)
             val sameAuthor = existing == null || existing.author.contentEquals(item.sender)
             env.counters.count(if (sameAuthor) ChannelCounters.Reason.DUPLICATE else ChannelCounters.Reason.OP_ID_CLASH)
             return
         }
         stores.posts.markSeen(tx, c, tag, DmTimers.seenUntilDay(authorSeconds, ChannelTime.postTtl(timer)))
+        // The reactions that reached the device before this post (§19.38) land with it.
+        val prefix = c.toList() + fields.opId.toList()
+        val waiting = heldReactions.entries.filter { it.key.size > prefix.size && it.key.subList(0, prefix.size) == prefix }
+        for (held in waiting) {
+            val r = held.value
+            stores.posts.putReaction(tx, r.target, r.author, r.channelId, r.graphemeEnv)
+            heldReactions.remove(held.key)
+        }
     }
 
     private fun applyReaction(tx: SyncTransaction, channel: ChannelStore.ChannelRow, item: ChannelCrypto.Item.App, content: ContentCipher) {
@@ -416,22 +571,54 @@ internal class ChannelReceiveStep(
         if (target == null || target.size != ChannelPostStep.OP_ID_BYTES || grapheme.size > MAX_GRAPHEME) {
             return env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
         }
+        val heldKey = channel.channelId.toList() + target.toList() + item.sender.toList()
         if (grapheme.isEmpty()) {
+            // A withdrawal: of the stored reaction, or of one still waiting for its post.
+            heldReactions.remove(heldKey)
             stores.posts.deleteReaction(tx, target, item.sender)
             return
         }
-        val put = stores.posts.putReaction(
-            tx, target, item.sender, channel.channelId, env.seal(content, ChannelAd.grapheme(target, item.sender), grapheme),
+        val graphemeEnv = env.seal(content, ChannelAd.grapheme(target, item.sender), grapheme)
+        if (!stores.posts.putReaction(tx, target, item.sender, channel.channelId, graphemeEnv)) {
+            // The post is not on the device yet: held until it lands (a later reaction of the same author replaces it).
+            heldReactions.remove(heldKey)
+            heldReactions[heldKey] = HeldReaction(channel.channelId, target, item.sender, graphemeEnv)
+            env.counters.count(ChannelCounters.Reason.REACTION_HELD)
+        }
+    }
+
+    /** Who may sponsor an invite in the current context (§6.2.1, Q46 (b)): its members and whether each may invite. */
+    private class Inviters(val members: Set<List<Byte>>, val committers: Set<List<Byte>>, val membersMayInvite: Boolean) {
+        fun mayInvite(sponsor: ByteArray): Boolean {
+            val p = sponsor.toList()
+            return p in members && (p in committers || membersMayInvite)
+        }
+
+        override fun toString(): String = "Inviters(redacted)"
+    }
+
+    private fun readInviters(opened: ChannelContexts.Opened, channelId: ByteArray, rows: List<org.ghost.crypto.bridge.MlsRow>, day: Long): Inviters? {
+        val roster = opened.crypto.roster(channelId, rows, day.toInt()).valueOrNull() ?: return null
+        val flags = roster.context.flags
+        return Inviters(
+            members = roster.members.mapTo(HashSet()) { it.pseudonym.toList() },
+            committers = roster.context.committers.mapTo(HashSet()) { it.toList() },
+            membersMayInvite = flags and ChannelEnv.FLAG_MEMBERS_MAY_INVITE != 0 && flags and ChannelEnv.FLAG_PASSWORD == 0,
         )
-        if (!put) env.counters.count(ChannelCounters.Reason.REACTION_ORPHAN)
     }
 
     /**
      * §6.2.1: every member records an `INVITE_ISSUED` (`ch_invite_issued`); the sponsor is the post's MLS sender, whose
      * `sponsor_sig` CO-2 (A) verifies at admission. The namespace's deferred blobs are re-offered: a join request that
      * arrived before the invite it names was deferred for want of it ([joinRequest]).
+     *
+     * **What is recorded** (§19.38): only a record that could admit anyone — its sponsor a current member who may invite
+     * (a committer, or any member where members may and the channel has no password: CO-2 (A)'s own rule, which would
+     * refuse the admission later) and its `expiry_day` no later than §5.9's `issue day + 7` allows, with a day of clock
+     * skew. Without these a member could plant records no invite stands behind, without end. `sponsor_sig` itself is
+     * verified only at admission: no native function verifies it alone (recorded, §19.38).
      */
-    private fun applyInviteIssued(tx: SyncTransaction, channel: ChannelStore.ChannelRow, item: ChannelCrypto.Item.App, day: Long) {
+    private fun applyInviteIssued(tx: SyncTransaction, channel: ChannelStore.ChannelRow, item: ChannelCrypto.Item.App, inviters: Inviters?, day: Long) {
         val f = item.content
         val inviteId = f.inviteId
         val invitePk = f.invitePk
@@ -444,6 +631,9 @@ internal class ChannelReceiveStep(
             expiryDay == null || expiryDay < 0 || (pwVersion != null && pwVersion !in 1..MAX_PW_VERSION)
         ) {
             return env.counters.count(ChannelCounters.Reason.NON_CANONICAL)
+        }
+        if (expiryDay > day + ChannelInviteStep.MAX_EXPIRY_DAYS + EXPIRY_SKEW_DAYS || inviters == null || !inviters.mayInvite(item.sender)) {
+            return env.counters.count(ChannelCounters.Reason.INVITE_REFUSED)
         }
         val recorded = stores.invites.recordIssued(
             tx = tx,
@@ -604,12 +794,15 @@ internal class ChannelReceiveStep(
     // -------------------------------------------------------------------------------------- join requests
 
     /**
-     * §6.3.2's 0x12 row. A committer opens the request with `JK_g` and finds the invite it names by verifying it under
-     * each live invite it holds: `joinVerify` (§10.2 fn 15) needs the invite's public key before it says which invite the
-     * request names (finding F-S4-3 of §19.37). A request refused for its KeyPackage, purpose or binding is consumed and
-     * counted; one no held invite signs is **deferred** — the `INVITE_ISSUED` may arrive later — until its relay expiry.
-     * A request for a spent or void invite, a second request for one invite and a 65th request are ignored (§6.2.4,
-     * §6.3.5). The policy of §6.2.4 (B) is the pass's (`CH-PASS`), on the stored request.
+     * §6.3.2's 0x12 row. A committer opens the request with `JK_g` and finds the invite it names: `joinVerify` (§10.2
+     * fn 15) needs the invite's public key before it says which invite the request names (finding F-S4-3 of §19.37), so
+     * the request is verified under each distinct `invite_pk` of the live invites the member holds, and then bound to the
+     * record whose `invite_id` is **the one the invitee signed** (`auth.INVITE_ID`; §19.38: binding it to the first record
+     * that merely shares the key let any member plant a record under a lower id and capture the request). A request
+     * refused for its KeyPackage, purpose or binding is consumed and counted; one no held invite signs is **deferred** —
+     * the `INVITE_ISSUED` may arrive later — until its relay expiry. A request for a spent or void invite, a second request
+     * for one invite and a 65th request are ignored (§6.2.4, §6.3.5). The policy of §6.2.4 (B) is the pass's (`CH-PASS`),
+     * on the stored request.
      */
     private fun joinRequest(c: Classified, committers: MutableMap<List<Byte>, Boolean>, now: Long, day: Long): Int {
         val channel = c.channel
@@ -637,9 +830,12 @@ internal class ChannelReceiveStep(
         }
         val invites = env.database.transaction { tx -> stores.invites.issuedOf(tx.sql, channel.channelId, day) }
         var found: Pair<InviteStore.IssuedRow, ChannelCrypto.JoinVerified>? = null
-        for (invite in invites) {
-            when (val v = opened.crypto.joinVerify(channel.channelId, body, invite.invitePk, null, generation.generation.toInt())) {
+        // One verification per key: records that share an `invite_pk` cost one `joinVerify` together.
+        for (sharing in invites.groupBy { it.invitePk.toList() }.values) {
+            when (val v = opened.crypto.joinVerify(channel.channelId, body, sharing.first().invitePk, null, generation.generation.toInt())) {
                 is MlsOutcome.Ok -> {
+                    val signed = v.value.auth.bytesOrNull(MlsField.INVITE_ID) ?: continue
+                    val invite = sharing.firstOrNull { it.inviteId.contentEquals(signed) } ?: continue
                     found = invite to v.value
                     break
                 }
@@ -737,8 +933,14 @@ internal class ChannelReceiveStep(
      * the fourth time died unconsumed three times — a native crash, a full disk, a defect — and is consumed unprocessed
      * and counted, so no crash loop can hold the channel (R2's rule for DMs, with the same constant).
      */
-    private fun claim(c: Classified): Claim {
-        val blob = sync.inbox.claimOne(Consumer.CHANNEL, c.blob.namespace, c.blob.hash) ?: return Claim.Gone
+    private fun claim(c: Classified): Claim = claim(c.blob.namespace, c.blob.hash)
+
+    /** [claim] of a row known by its `(namespace ‖ hash)` key alone: a deferred row offered back by the plan (§19.38). */
+    private fun claimKey(key: List<Byte>): Claim =
+        claim(NamespaceId(key.subList(0, NamespaceId.SIZE).toByteArray()), BlobHash(key.subList(NamespaceId.SIZE, key.size).toByteArray()))
+
+    private fun claim(namespace: NamespaceId, hash: BlobHash): Claim {
+        val blob = sync.inbox.claimOne(Consumer.CHANNEL, namespace, hash) ?: return Claim.Gone
         if (blob.offers >= POISON_OFFERS) {
             env.database.transaction { tx -> sync.inbox.markConsumed(tx, blob.namespace, blob.hash) }
             env.counters.count(ChannelCounters.Reason.POISONED)
@@ -747,12 +949,25 @@ internal class ChannelReceiveStep(
         return Claim.Held(blob)
     }
 
+    /** Claims and defers the row [key] by [seconds]; true when deferred (a row gone is forgotten). */
+    private fun deferKey(key: List<Byte>, seconds: Int): Boolean = when (val r = claimKey(key)) {
+        Claim.Poisoned, Claim.Gone -> {
+            peekOrder.forget(key)
+            false
+        }
+        is Claim.Held -> {
+            env.database.transaction { tx -> sync.inbox.defer(tx, r.blob.namespace, r.blob.hash, seconds) }
+            true
+        }
+    }
+
     /** Claims and consumes a blob; [reason] null consumes without counting (traffic the member ignores). True when consumed. */
     private fun drop(c: Classified, reason: ChannelCounters.Reason?): Boolean = when (val r = claim(c)) {
         Claim.Poisoned -> true
         Claim.Gone -> false
         is Claim.Held -> {
             env.database.transaction { tx -> sync.inbox.markConsumed(tx, r.blob.namespace, r.blob.hash) }
+            backoff.remove(c.key)
             reason?.let { env.counters.count(it) }
             true
         }
@@ -780,8 +995,14 @@ internal class ChannelReceiveStep(
     override fun toString(): String = "ChannelReceiveStep"
 
     companion object {
-        /** §6.3.5: the peek limit of a pass. */
-        const val PEEK_LIMIT: Int = 128
+        /**
+         * The rows one round peeks: §6.3.5's 128 raised to twice Phase 7's `FETCHED_CAP` of a namespace (§19.38), so one
+         * namespace's whole due set fits; beyond it a pass is under pressure ([ChannelPeekOrder]).
+         */
+        const val PEEK_LIMIT: Int = 512
+
+        /** At most this many rounds a pass, each after one that re-offered rows a gap had deferred (§19.38). */
+        const val RECEIVE_ROUNDS: Int = 16
 
         /** §6.3.5: at most 64 pending join requests per channel. */
         const val MAX_JOIN_REQUESTS: Int = 64
@@ -792,6 +1013,12 @@ internal class ChannelReceiveStep(
         /** §6.3.2: the first deferral, doubled to [MAX_DEFER_SECONDS]. */
         const val FIRST_DEFER_SECONDS: Int = 60
         const val MAX_DEFER_SECONDS: Int = 6 * 3_600
+
+        /** The blobs whose deferral backoff is remembered (the least recently used one is forgotten first). */
+        const val MAX_BACKOFF_ENTRIES: Int = 4_096
+
+        /** The reactions held for a post that has not arrived (§19.38). */
+        const val MAX_HELD_REACTIONS: Int = 256
 
         /** A blob whose stored state did not load waits an hour, never consumed (it is not the blob's fault). */
         const val STATE_CORRUPT_DEFER_SECONDS: Int = 3_600
@@ -812,6 +1039,9 @@ internal class ChannelReceiveStep(
         /** `joinVerify`'s request types: 1 join, 2 rejoin, 3 restore. */
         const val REQUEST_JOIN: Int = 1
         const val REQUEST_RESTORE: Int = 3
+
+        /** The clock skew an `INVITE_ISSUED`'s expiry may carry beyond §5.9's `issue day + 7` (§19.38). */
+        const val EXPIRY_SKEW_DAYS: Long = 1
 
         private const val INVITE_ID_BYTES: Int = 16
         private const val KEY_BYTES: Int = 32

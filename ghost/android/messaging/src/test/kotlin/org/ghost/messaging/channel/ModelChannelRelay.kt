@@ -24,8 +24,9 @@ import java.security.MessageDigest
  *    (each blob served once per relay of [relayCount]: the copies die at the tombstone, [repeatsRefused] counts them),
  *    [Mode.COPY_NAMESPACE] (every post also stored into every other namespace the relay knows: the seal binds the
  *    namespace, and another channel's keys do not match its hint, §6.3.4 layer 3), [resurrect] (blobs stored again, the
- *    F7 resurrection: the tombstone, or MLS, or `ch_seen` must stop them) and [hold] (blobs a predicate keeps back while
- *    it holds).
+ *    F7 resurrection: the tombstone, or MLS, or `ch_seen` must stop them), [hold] (blobs a predicate keeps back while
+ *    it holds) and [fetchedCap] (Phase 7's `FETCHED_CAP`: a client at the cap of a namespace is served nothing more of
+ *    it until it consumes or defers rows, §19.38).
  *
  * **Why the receipts are written on the raw rows.** The outcome is what Phase 7 would decide; writing it is the model's
  * whole job (the same two statements `ModelDmRelay.release` writes, in the order the triggers require).
@@ -56,6 +57,13 @@ internal class ModelChannelRelay {
 
     /** How far past the store the relay claims a blob expires (`InboundBlob.relayExpiryHour`): its TTL, honestly. */
     var expiryFor: (Stored) -> Long = { it.storedAt + it.ttl }
+
+    /**
+     * Phase 7's `FETCHED_CAP` at each client (§19.38), or null for none: a blob of a namespace is fetched only while the
+     * client holds fewer due fetched rows of it than the cap — `InboxStore.fetchedLoad`'s count (a deferred row, or one
+     * the poison guard backed off, does not count) — and is otherwise left at the relay for a later round, unserved.
+     */
+    var fetchedCap: Int? = null
 
     class Stored(
         val namespace: ByteArray,
@@ -97,6 +105,7 @@ internal class ModelChannelRelay {
         out.hold = hold
         out.holdAt = holdAt
         out.expiryFor = expiryFor
+        out.fetchedCap = fetchedCap
         out.stored += stored
         out.collected += collected
         out.served += served
@@ -204,12 +213,18 @@ internal class ModelChannelRelay {
         var candidates = stored.filter { hex(it.namespace) in listening && it.from != client.name && now < it.storedAt + it.ttl }
         // FAKE_WELCOME: the adversary's blobs first; otherwise in the order they were stored.
         candidates = if (Mode.FAKE_WELCOME in modes) candidates.sortedBy { !it.injected } else candidates
-        if (Mode.SHUFFLE in modes) candidates = candidates.sortedBy { hex(sha256(it.hash + (shuffle++).toByte())) }
+        if (Mode.SHUFFLE in modes) {
+            // Each blob's key is drawn once, then sorted: a selector that drew a new key at every comparison broke the
+            // comparator's contract, and TimSort refused a round of 150 blobs (the review of S4).
+            val keyed = candidates.map { it to hex(sha256(it.hash + (shuffle++).toByte())) }
+            candidates = keyed.sortedBy { it.second }.map { it.first }
+        }
         var moved = 0
         for (blob in candidates) {
             if (hold(blob) || holdAt(client.name, blob)) continue
             if (Mode.REPLACE_BOOTSTRAP in modes && !blob.injected && blob.purpose == "welcome") continue
             val key = hex(blob.namespace) + hex(blob.hash) + "@" + client.name
+            if (key !in served && atCap(client, blob.namespace, now)) continue
             val fresh = served.add(key)
             if (!fresh && Mode.REPEATS !in modes) continue
             if (insert(client, blob, now)) moved++
@@ -221,6 +236,21 @@ internal class ModelChannelRelay {
             }
         }
         return moved
+    }
+
+    /**
+     * Whether [client] holds [fetchedCap] due fetched rows of [namespace]: `InboxStore.fetchedLoad`'s count — a row
+     * offered fewer than `BACKOFF_OFFERS` (3) times whose re-offer time is not ahead (a deferral clamps at 7 days).
+     */
+    private fun atCap(client: ChannelClient, namespace: ByteArray, now: Long): Boolean {
+        val cap = fetchedCap ?: return false
+        var load = 0L
+        client.sql.query(
+            "SELECT count(*) FROM inbox_blob WHERE namespace_id = ? AND state = 'fetched' AND offers < 3 " +
+                "AND (offer_after_minute <= ? OR offer_after_minute > ? + 604800)",
+            listOf(namespace, now, now),
+        ) { load = it.long(0) }
+        return load >= cap
     }
 
     /**

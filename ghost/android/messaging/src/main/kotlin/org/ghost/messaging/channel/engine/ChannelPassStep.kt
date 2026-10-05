@@ -28,7 +28,8 @@ import java.nio.ByteBuffer
  *
  * **The admission policy (§6.2.4 (B)),** applied by the admitting committer only, to each request in arrival order: the
  * committer holds the `INVITE_ISSUED` (an unexpired `ch_invite_issued` row on its trusted day), the invite is neither
- * consumed nor void, its sponsor is a current member, its `committers_digest` equals the digest of the committer's
+ * consumed nor void, its sponsor is a current member who may invite (CO-2 (A)'s own rule, checked before the native call
+ * refuses it, §19.38), its `committers_digest` equals the digest of the committer's
  * current committers (`ch_channel.committers_digest`; **unknown means no admission**, fail closed — finding F-S4-2 of
  * §19.37: `roster` does not return the digest, so the engine knows it only from its own `inviteBuild` or its join anchor),
  * the KeyPackage is canonical with `GhostKpBind.day` in `[day − 7, day + 3]` (`joinVerify` checks the form, purpose,
@@ -178,6 +179,10 @@ internal class ChannelPassStep(
         if (snapshot.candidates.any { it.own || it.rank <= rank }) return Result.NOTHING
         val members = roster.members.map { it.pseudonym.toList() }.toSet()
         val passwordChannel = roster.context.flags and ChannelEnv.FLAG_PASSWORD != 0
+        // CO-2 (A)'s sponsor rule, applied before the native call refuses it (§19.38): a committer, or any member where
+        // members may invite and the channel has no password (Q46 (b)).
+        val committerSet = roster.context.committers.map { it.toList() }.toSet()
+        val membersMayInvite = roster.context.flags and ChannelEnv.FLAG_MEMBERS_MAY_INVITE != 0 && !passwordChannel
         // The digest of the committer's current committers (S0-15): kept, or — forgotten by a settle that changed the
         // committers, or never learnt — learnt again from a throwaway open invite; a password channel's stays unknown
         // until its committer's next invite, and then nothing is admitted (fail closed, §19.37 F-S4-2).
@@ -221,6 +226,7 @@ internal class ChannelPassStep(
                 verified.requestType == ChannelReceiveStep.REQUEST_JOIN &&
                 kpDay in (day - KP_DAYS_BEFORE)..(day + KP_DAYS_AFTER) &&
                 invite.sponsor.toList() in members &&
+                (invite.sponsor.toList() in committerSet || membersMayInvite) &&
                 digest != null && digest.contentEquals(invite.committersDigest) &&
                 (!passwordChannel || invite.pwVersion == roster.context.pwVersion) &&
                 verified.pseudonym.toList() !in members &&

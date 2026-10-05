@@ -1,5 +1,6 @@
 package org.ghost.messaging.channel
 
+import org.ghost.crypto.bridge.ChannelContentFields
 import org.ghost.crypto.bridge.ChannelCrypto
 import org.ghost.messaging.DmWorld
 import org.ghost.messaging.api.PostId
@@ -17,7 +18,9 @@ import org.junit.Test
  * the copy stopped by that layer and by none before it, which the counters tell apart — a resurrected commit, a member's
  * proposal (dropped unprocessed; the receiver's next post is not refused, MM-30) and a forged "own" message (dropped and
  * counted, FORGE_OWN). Layer 3 (a copy into another namespace) is [ChannelPostsTest]'s COPY_NAMESPACE case; a copied and a
- * replayed join request are [ChannelJoinTest]'s (COPY_JOIN, REPLAY_JOIN).
+ * replayed join request are [ChannelJoinTest]'s (COPY_JOIN, REPLAY_JOIN). Since §19.38: another author's reuse of an op id
+ * (a clash, not a duplicate, and the known gap F-S4-15), the deferral backoff of a blob no key opens, and a post whose
+ * relay copy expired before it was received.
  */
 class ChannelReplayTest {
 
@@ -106,6 +109,106 @@ class ChannelReplayTest {
         w.quiesce()
         assertEquals("the swept post does not come back", emptyList<String>(), owner.displayed(id))
         assertEquals(1, owner[Reason.DUPLICATE])
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 4): a member reuses another member's op id. Layer 4's tag now names the author, so
+     * the reuse is not taken for a duplicate: it reaches the insert, the first holder keeps the id, and the reuse is
+     * counted as the clash it is (`OP_ID_CLASH`, which no test reached before). **The known gap** (recorded in §19.38,
+     * F-S4-13, for the owner): whichever copy a member holds first keeps the id, so a reuse that arrives first suppresses
+     * the real post at that member — `ch_post` and the reactions are keyed by the op id alone, and the wire names a
+     * reaction's target by the op id alone.
+     */
+    @Test
+    fun layerFourAnotherAuthorsReuseOfAnOpIdIsAClashNotADuplicate() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val dave = w.client("dave")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol, dave)
+        // dave is served bob's post only after the reuse below
+        w.relay.holdAt = { client, s -> client == "dave" && s.from == "bob" && s.purpose == "post" }
+        ChannelScenes.post(bob, id, "the real post")
+        w.quiesce()
+        val x = ChannelScenes.opIdOf(carol, id, "the real post")
+        // the owner, a member, posts under bob's op id (its own engine keeps one row per id, so its copy goes first)
+        owner.database.transaction { tx -> owner.channelStores.posts.deletePost(tx, x) }
+        ChannelAdversary.postAs(
+            owner, id,
+            ChannelContentFields(kind = 1, opId = x, authorMinute = Math.floorDiv(w.now, DmWorld.MINUTE), timerCode = 4, text = "reused".toByteArray()),
+            handshake = false,
+        )
+        w.quiesce()
+        assertEquals("the first holder keeps the id", listOf("the real post"), carol.displayed(id))
+        assertEquals("another author's reuse is a clash", 1, carol[Reason.OP_ID_CLASH])
+        assertEquals("…and no duplicate", 0, carol[Reason.DUPLICATE])
+        // The known gap, pinned (F-S4-13): at dave the reuse came first, and the real post is the one that clashes.
+        w.relay.holdAt = { _, _ -> false }
+        w.quiesce()
+        assertEquals(listOf("reused"), dave.displayed(id))
+        assertEquals(1, dave[Reason.OP_ID_CLASH])
+        assertEquals(0, dave[Reason.DUPLICATE])
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 6): a blob no key opens is deferred 60 s, then 120 s, 240 s … up to 6 h. The first
+     * version pruned the backoff to each pass's peek, and a deferred blob is in no peek until it is due, so every deferral
+     * started over at 60 s: a junk blob was claimed and re-written each minute until its relay expiry.
+     */
+    @Test
+    fun aBlobNoKeyOpensIsDeferredForLongerEachTime() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        val junk = ByteArray(4096) { (it * 31 + 7).toByte() }
+        w.relay.inject(ChannelAdversary.namespace(owner, id), junk, w.now, "junk", ttl = 30 * DmWorld.DAY)
+        w.quiesce()
+        val hash = ModelChannelRelay.sha256(junk)
+        val ns = ChannelAdversary.namespace(owner, id)
+        val offerAfter = {
+            var at = 0L
+            bob.sql.query("SELECT offer_after_minute FROM inbox_blob WHERE blob_hash = ?", listOf(hash)) { at = it.long(0) }
+            at
+        }
+        val delays = ArrayList<Long>()
+        repeat(6) { i ->
+            val due = offerAfter()
+            // `Inbox.defer` counts from the minute the deferral was written
+            delays += due - (w.now - Math.floorMod(w.now, DmWorld.MINUTE))
+            // a pass while the blob waits (any hint): the first version forgot the blob's backoff there — pruned it to the
+            // peek when the peek held another blob (every other round a fresh one arrives), cleared it when the peek was empty
+            if (i % 2 == 0) {
+                w.relay.inject(ns, ByteArray(4096) { ((it * 17 + i) % 251).toByte() }, w.now, "junk-$i", ttl = 30 * DmWorld.DAY)
+                w.pump()
+            }
+            bob.hintPass()
+            w.advance(due - w.now + 1)
+            bob.timePass()
+        }
+        assertEquals(listOf(60L, 120L, 240L, 480L, 960L, 1920L), delays)
+        assertEquals("waiting, never consumed", 0, bob[Reason.UNOPENABLE])
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 12): a post fetched before its relay expiry and received after it — held behind a
+     * gap, deferred, or the process closed — is past both its lives (the relay copy, and the unread post's `min(E, …)`).
+     * The DM drops such a message (`EXPIRED_WHILE_HELD`); the first version inserted the post, hidden by the read filters
+     * until a sweep.
+     */
+    @Test
+    fun aPostWhoseRelayCopyExpiredBeforeItWasReceivedIsNotInserted() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val id = ChannelScenes.channelOf(w, owner, bob)
+        w.relay.expiryFor = { if (it.purpose == "post") it.storedAt + DmWorld.HOUR else it.storedAt + it.ttl }
+        ChannelScenes.post(bob, id, "short-lived")
+        w.pump()
+        assertEquals("fetched, not yet received", 1L, owner.count("inbox_blob", "state = 'fetched'"))
+        w.advance(3 * DmWorld.HOUR)
+        owner.hintPass()
+        assertEquals(0L, owner.count("ch_post"))
+        assertEquals(1, owner[Reason.EXPIRED_WHILE_HELD])
+        assertEquals("consumed", 0L, owner.count("inbox_blob", "state = 'fetched'"))
     }
 
     @Test

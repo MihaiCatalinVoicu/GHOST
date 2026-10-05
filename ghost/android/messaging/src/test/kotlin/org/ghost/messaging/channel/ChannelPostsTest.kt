@@ -14,7 +14,8 @@ import org.junit.Test
 /**
  * **SCN-CB** (Phase 10 design §12.4, CS-C2, CS-C5, CS-C6; slice S4), over the real OpenMLS: three members, 30 posts with
  * SHUFFLE and REPEATS across 3 relays, a burst of 40 from one sender (peek ordering, §6.3.3), a RESURRECTed post and a
- * COPY_NAMESPACE'd post — every post shown **once** by every member, in **one order** everywhere.
+ * COPY_NAMESPACE'd post — every post shown **once** by every member, in **one order** everywhere; and (§19.38) a reaction
+ * that arrives a pass before its post.
  */
 class ChannelPostsTest {
 
@@ -95,6 +96,33 @@ class ChannelPostsTest {
         assertEquals(listOf("a post"), bob.displayed(id))
         assertEquals(0, bob[Reason.REACTION_ORPHAN])
         assertEquals(1L, bob.count("ch_reaction"))
+    }
+
+    /**
+     * §19.38 (the review of S4, finding 7): a reaction that reaches a member in an earlier pass than its post — the post
+     * withheld from carol by a relay — is held until the post lands. The first version applied reactions after the posts of
+     * the same batch only, and dropped one whose post was not on the device (`REACTION_ORPHAN`): carol never saw it.
+     */
+    @Test
+    fun aReactionThatArrivesBeforeItsPostInAnEarlierPassLandsWithThePost() = ChannelWorld().use { w ->
+        val owner = w.client("owner")
+        val bob = w.client("bob")
+        val carol = w.client("carol")
+        val id = ChannelScenes.channelOf(w, owner, bob, carol)
+        w.relay.holdAt = { client, s -> client == "carol" && s.purpose == "post" && s.from == "owner" }
+        ChannelScenes.post(owner, id, "a post")
+        w.quiesce()
+        val target = PostId(ChannelScenes.opIdOf(bob, id, "a post"))
+        assertEquals(PostResult.QUEUED, bob.engine.react(id, target, "👍".toByteArray()))
+        w.quiesce()
+        assertEquals("held at carol, not dropped", 1, carol[Reason.REACTION_HELD])
+        assertEquals(0L, carol.count("ch_reaction"))
+        w.relay.holdAt = { _, _ -> false }
+        w.quiesce()
+        assertEquals(listOf("a post"), carol.displayed(id))
+        assertEquals("the reaction landed with its post", 1L, carol.count("ch_reaction"))
+        assertEquals(0, carol[Reason.REACTION_ORPHAN])
+        assertEquals(owner.count("ch_reaction"), carol.count("ch_reaction"))
     }
 
     @Test
