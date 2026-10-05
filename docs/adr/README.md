@@ -70,6 +70,11 @@ Propuse 2026-09-12 și aplicate în Faza 8 (design `docs/design/faza8-issuer.md`
 | [ADR-50](ADR-50-build-reproductibil-din-doua-medii-reteta.md) | Build reproductibil din două medii: rețeta cu căi fixe, setul de artefacte, simboluri și SBOM (**aprobat** 2026-10-05) |
 | [ADR-51](ADR-51-actualizatorul-din-aplicatie-rulari-de-actualizare.md) | Actualizatorul din aplicație: rulări de actualizare, anti-rollback, lansare în trepte, instalare, directorul de relee (**aprobat** 2026-10-05) |
 | [ADR-52](ADR-52-canalele-de-distributie-si-identitatea-aplicatiei.md) | Canalele de distribuție și identitatea aplicației (**aprobat** 2026-10-05) |
+| [ADR-53](ADR-53-stratul-de-interfata-modulul-ui-porti.md) | Stratul de interfață: modulul `:ui`, porți de acces, flux unidirecțional, coroutines doar în interfață, navigare proprie, sesiuni la deblocare (**aprobat** 2026-10-05) |
+| [ADR-54](ADR-54-protectia-ecranului-si-a-textului-implementata.md) | Protecția ecranului și a textului, implementată (precizează ADR-27 punctele 1–6) (**aprobat** 2026-10-05) |
+| [ADR-55](ADR-55-blocarea-aplicatiei-stergerea-locala-copia-si.md) | Blocarea aplicației, ștergerea locală, copia și restaurarea cuvintelor (blocarea strictă amânată) (**aprobat** 2026-10-05) |
+| [ADR-56](ADR-56-afirmatii-si-disclosure-uri-in-interfata.md) | Afirmații și disclosure-uri în interfață (CP-10) (**aprobat** 2026-10-05) |
+| [ADR-57](ADR-57-componente-si-permisiuni-noi-notificari-camera.md) | Componente și permisiuni noi: notificări, camera pentru QR, zxing, legături `ghost://` (**aprobat** 2026-10-05) |
 | [ADR-58](ADR-58-ci-local.md) | CI-ul rulează local, nu prin GitHub Actions (regulă oficială a proprietarului) |
 | [ADR-59](ADR-59-wallet-sync.md) | Wallet Sync fără issuer: seed-ul wallet-ului local în Keystore + blob criptat client-side din seed pe relay-uri (**aprobat** 2026-10-04; varianta cu issuer respinsă) |
 | [ADR-60](ADR-60-version-migration-wipe.md) | Migrare între versiuni: `kill_flag` în manifestul semnat comandă ștergerea locală automată și, opțional, dezinstalarea (**aprobat** 2026-10-04; reziduu acceptat) |
