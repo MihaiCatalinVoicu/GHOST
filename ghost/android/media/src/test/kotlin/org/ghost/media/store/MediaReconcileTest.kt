@@ -19,7 +19,7 @@ class MediaReconcileTest {
     fun filesNoRowNamesAreDeletedAndTheDirectoryIsSyncedAfterwards() = MediaWorld().use { w ->
         val kept = (1..3).map { w.putBlob(it) }
         // two orphan blobs (a crash between a file write and its transaction) and a leftover temp file
-        val orphans = (10..11).map { (w.files.write(blobOf(it), enforceFloor = false) as WriteResult.Written).fileName }
+        val orphans = (10..11).map { (w.files.writeFresh(blobOf(it), enforceFloor = false) as WriteResult.Written).fileName }
         File(w.files.directory, CiphertextFiles.TEMP_PREFIX + "ab".repeat(16)).writeBytes(ByteArray(100))
         w.disk.reset()
         val report = w.reconcile.run(w.database) { emptySet() }
@@ -43,7 +43,7 @@ class MediaReconcileTest {
     @Test
     fun aFileASealerIsStillWritingIsKeptAndIsAnOrphanOnceItIsNotInPreparing() = MediaWorld().use { w ->
         w.putBlob(1)
-        val writing = (w.files.write(blobOf(2), enforceFloor = false) as WriteResult.Written).fileName
+        val writing = (w.files.writeFresh(blobOf(2), enforceFloor = false) as WriteResult.Written).fileName
         val report = w.reconcile.run(w.database) { setOf(hexOf(writing)) }
         assertEquals(0, report.orphansDeleted)
         assertTrue(w.files.exists(writing))
@@ -52,7 +52,7 @@ class MediaReconcileTest {
         assertTrue(w.reconcile.run(w.database) { emptySet() }.clean)
         assertTrue(w.files.exists(writing))
         // an abandoned preparation (the user left): the name is dropped from `preparing` without a row, and the file goes
-        val abandoned = (w.files.write(blobOf(3), enforceFloor = false) as WriteResult.Written).fileName
+        val abandoned = (w.files.writeFresh(blobOf(3), enforceFloor = false) as WriteResult.Written).fileName
         assertEquals(0, w.reconcile.run(w.database) { setOf(hexOf(abandoned)) }.orphansDeleted)
         assertEquals(1, w.reconcile.run(w.database) { emptySet() }.orphansDeleted)
         assertFalse(w.files.exists(abandoned))
@@ -68,14 +68,14 @@ class MediaReconcileTest {
         // (a) a file created after the listing: the snapshot callback runs after the listing, so it writes one there
         var lateName: ByteArray? = null
         val late = w.reconcile.run(w.database) {
-            lateName = (w.files.write(blobOf(5), enforceFloor = false) as WriteResult.Written).fileName
+            lateName = (w.files.writeFresh(blobOf(5), enforceFloor = false) as WriteResult.Written).fileName
             emptySet()
         }
         assertEquals(0, late.orphansDeleted)
         assertTrue(w.files.exists(lateName!!))
-        w.files.delete(lateName!!)
+        w.files.delete(lateName)
         // (b) a file created before the listing, in preparing at the snapshot or already committed by the time the rows are read
-        val early = (w.files.write(blobOf(6), enforceFloor = false) as WriteResult.Written).fileName
+        val early = (w.files.writeFresh(blobOf(6), enforceFloor = false) as WriteResult.Written).fileName
         val committedDuringSnapshot = w.reconcile.run(w.database) {
             // MEDIA-COMMIT lands while the snapshot is taken: the row is committed, then the name leaves `preparing`
             w.tx { w.stores.blobs.insert(it, MediaBlob(hashOfBlob(6), early, BlobOrigin.SEALED, null)) }
@@ -84,6 +84,57 @@ class MediaReconcileTest {
         assertEquals("the row was read after the snapshot, so it names the file", 0, committedDuringSnapshot.orphansDeleted)
         assertTrue(w.files.exists(early))
         assertEquals(1L, w.count("media_blob"))
+    }
+
+    /**
+     * A temp file `.t<x>` belongs to the final name `<x>`: one reservation covers both. A name that merely looks like a temp
+     * name (not hex, the wrong length) is no one's and goes, and so does a temp file whose name nobody reserves. (The race
+     * itself is [MediaReconcileRaceTest]'s.)
+     */
+    @Test
+    fun aTempFileIsKeptWhileItsFinalNameIsReservedAndNotOtherwise() = MediaWorld().use { w ->
+        val name = w.preparing.reserve(w.files)
+        File(w.files.directory, CiphertextFiles.TEMP_PREFIX + hex(name)).writeBytes(ByteArray(10))
+        val junk = listOf(".tzz", CiphertextFiles.TEMP_PREFIX + hex(name).substring(1), "readme")
+        for (entry in junk) File(w.files.directory, entry).writeBytes(ByteArray(1))
+        val first = w.reconcile.run(w.database, w.preparing::snapshot)
+        assertEquals("only the junk goes", junk.size, first.orphansDeleted)
+        assertTrue(File(w.files.directory, CiphertextFiles.TEMP_PREFIX + hex(name)).exists())
+        w.preparing.release(name)
+        assertEquals("released, the temp file is an orphan", 1, w.reconcile.run(w.database, w.preparing::snapshot).orphansDeleted)
+        assertEquals(emptyList<String>(), w.listed())
+    }
+
+    /**
+     * A `MEDIA-COMMIT` that lands between the listing and the row read: its files were written after the listing (so they are not
+     * in it) and its rows are committed before the rows are read (so they are). A row whose file is not in the listing is not
+     * lost until the file is looked for, and it is there: without that look every such row is dropped (a bare one) or reported
+     * lost (one an object names), and the engine would corrupt a healthy object and erase its key.
+     */
+    @Test
+    fun aRowCommittedAfterTheListingIsNotLostBecauseItsFileIsNotInTheListing() = MediaWorld().use { w ->
+        // a bare row: one sealed blob
+        var late: ByteArray? = null
+        val bare = w.reconcile.run(w.database) {
+            late = w.files.writeFresh(blobOf(5), enforceFloor = false).let { (it as WriteResult.Written).fileName }
+            w.tx { tx -> w.stores.blobs.insert(tx, MediaBlob(hashOfBlob(5), late, BlobOrigin.SEALED, null)) }
+            emptySet()
+        }
+        assertEquals("the row is not dropped", 0, bare.rowsDropped)
+        assertTrue(bare.lostNamed.isEmpty())
+        assertTrue(bare.clean)
+        assertTrue(w.files.exists(late!!))
+        assertEquals(1L, w.count("media_blob"))
+        // a whole object: 17 files and rows, named by fragments
+        val committed = w.reconcile.run(w.database) {
+            for (hash in w.blobsOf(1).all) File(w.files.directory, hex(w.nameOf(hash))).writeBytes(blobOf(1))
+            w.commitOutgoing(1)
+            emptySet()
+        }
+        assertEquals(0, committed.rowsDropped)
+        assertTrue("an object that a fragment names is not reported lost: ${committed.lostNamed}", committed.lostNamed.isEmpty())
+        assertEquals(18L, w.count("media_blob"))
+        assertEquals(17L, w.count("media_fragment"))
     }
 
     @Test
@@ -138,7 +189,7 @@ class MediaReconcileTest {
 
     /** The test world's helper: a file for a blob row that an incoming object (not a pool entry) names, with the row ingested and the fragments bound. */
     private fun MediaWorld.putBlobIngestedFor(n: Int, hash: ByteArray): ByteArray {
-        val written = files.write(blobOf(n + 100), enforceFloor = false) as WriteResult.Written
+        val written = files.writeFresh(blobOf(n + 100), enforceFloor = false) as WriteResult.Written
         tx { stores.blobs.ingest(it, hash, written.fileName, 20_100L) }
         return written.fileName
     }

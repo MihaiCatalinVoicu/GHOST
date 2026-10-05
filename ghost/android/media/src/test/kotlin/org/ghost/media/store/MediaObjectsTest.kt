@@ -130,6 +130,7 @@ class MediaObjectsTest {
         expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.markFetching(it, objectId) } }
         expectStoreError(MediaStoreError.MISSING_ROW) { w.tx { w.stores.objects.markFetching(it, id16(0x01)) } }
         expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.markUploaded(it, objectId) } } // an outgoing edge on an incoming row
+        w.ingest(w.blobsOf(1).all) // every blob arrived: the last expected row was bound
         w.tx { w.stores.objects.markComplete(it, objectId) }
         assertEquals(listOf(objectId.toList()), w.stores.objects.toVerify(w.db, now, 10).map { it.toList() })
         w.tx { w.stores.objects.markVerified(it, objectId) }
@@ -143,6 +144,33 @@ class MediaObjectsTest {
         expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.recordDecodeFailure(it, objectId) } }
         // nothing a refused write began is left
         assertEquals(2, w.stores.objects.byId(w.db, objectId, now)!!.decodeFailures)
+    }
+
+    /** SCN-MC: complete only with `F + 1` rows of the object's class, every one bound; the store says so, the schema has no trigger for it. */
+    @Test
+    fun anObjectIsCompleteOnlyWhenEveryRowOfItsClassIsBound() = MediaWorld().use { w ->
+        // no fragment rows at all (a MEDIA-BIND that did not run): fetching, and not complete
+        val bare = w.receive(1, bind = false)
+        w.tx { w.stores.objects.markFetching(it, bare) }
+        expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.markComplete(it, bare) } }
+        assertEquals("fetching", w.rawState(bare))
+        // class 1 has 24 fragments: 25 rows. 24 bound is not enough, and 25 is.
+        val blobs = w.blobsOf(2, classCode = 1)
+        val sized = w.receive(2, classCode = 1, blobs = blobs)
+        w.ingest(blobs.all.take(24))
+        expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.markComplete(it, sized) } }
+        assertEquals("a refused write left the object as it was", "fetching", w.rawState(sized))
+        w.ingest(blobs.all.drop(24))
+        w.tx { w.stores.objects.markComplete(it, sized) }
+        assertEquals(ObjectState.COMPLETE, w.stores.objects.byId(w.db, sized, now)!!.state)
+        // it moves once, from fetching; a row that is not there is a missing row
+        expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.markComplete(it, sized) } }
+        expectStoreError(MediaStoreError.MISSING_ROW) { w.tx { w.stores.objects.markComplete(it, id16(0x01)) } }
+        // an object with fewer rows than its class (a defective BIND) is not complete however bound they are
+        val short = w.receive(3)
+        w.ingest(w.blobsOf(3).all)
+        w.db.exec("DELETE FROM media_fragment WHERE object_id = ? AND ordinal = 15", listOf(short))
+        expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.objects.markComplete(it, short) } }
     }
 
     // ------------------------------------------------------------------ releases and erasures
@@ -172,16 +200,21 @@ class MediaObjectsTest {
     }
 
     @Test
-    fun anObjectThatTurnsIncompleteOrCorruptDeletesItsSealedBlobsAndKeepsTheOnesAnotherObjectNames() = MediaWorld().use { w ->
-        // a sealed blob only an incoming object names cannot exist; the sealed rule is the sender's release path (an outgoing
-        // object released the same way is not in the machine), so it is exercised through the policy directly
+    fun aReleaseDeletesTheSealedBlobsOfAnObjectAndKeepsTheOnesAnotherObjectNames() = MediaWorld().use { w ->
+        // the sealed rule is the sender's release path (an outgoing object released the same way is not in the machine), so it is
+        // exercised through the policy directly; an incoming object that names one of the object's hashes (D25) keeps it
         val objectId = w.commitOutgoing(1)
         val hashes = w.stores.fragments.hashesOf(w.db, objectId)
         assertEquals(17, hashes.size)
+        val shared = w.blobsOf(1).fragments[3]
+        val squatter = w.receive(2, blobs = MediaWorld.Blobs(hashOfBlob(2000), listOf(shared) + w.blobsOf(2).fragments.drop(1)))
         val deletedRelease = w.tx { w.stores.fragments.release(it, listOf(objectId), ReleasePolicy.RELEASE) }
-        assertEquals("sealed blobs are deleted by a release", 17, deletedRelease)
-        assertEquals(0L, w.count("media_blob"))
-        assertEquals(0L, w.count("media_fragment"))
+        assertEquals("sealed blobs are deleted by a release, but not the one another object names", 16, deletedRelease)
+        assertTrue(w.stores.blobs.exists(w.db, shared))
+        assertTrue(w.stores.blobs.isNamed(w.db, shared))
+        assertEquals(1L, w.count("media_blob"))
+        assertEquals(17L, w.count("media_fragment")) // the squatter's own rows
+        assertEquals(ObjectState.FETCHING, w.stores.objects.byId(w.db, squatter, now)!!.state)
     }
 
     @Test

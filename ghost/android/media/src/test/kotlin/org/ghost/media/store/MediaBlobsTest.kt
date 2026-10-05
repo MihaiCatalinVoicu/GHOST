@@ -73,6 +73,27 @@ class MediaBlobsTest {
         assertEquals("a blob nobody waits for", emptyList<List<Byte>>(), w.tx { w.stores.blobs.ingest(it, hashOfBlob(55), id16(0x55), 20_200L) }.map { it.toList() })
     }
 
+    /**
+     * What "bound exactly when its blob row exists" is, as a property of the store: the schema refuses a `bound` row without a blob
+     * row (insert and update), and a blob row cannot be deleted while a fragment names it; it does **not** bind an `expected` row
+     * when the blob row appears. Inserting a row binds nothing; ingesting it does (review finding 10 of the first lens).
+     */
+    @Test
+    fun insertingARowBindsNothingAndIngestingDoes() = MediaWorld().use { w ->
+        val objectId = w.receive(1)
+        val blobs = w.blobsOf(1)
+        w.tx { w.stores.blobs.insert(it, MediaBlob(blobs.manifest, w.nameOf(blobs.manifest), BlobOrigin.SEALED, null)) }
+        assertEquals("the row is there and the fragment that waits for it is not bound", 17, w.stores.fragments.expectedCount(w.db, objectId))
+        assertEquals(0, w.stores.fragments.boundCount(w.db, objectId))
+        // the arrival of a blob is insert + bind
+        w.tx { w.stores.blobs.ingest(it, blobs.fragments[0], w.nameOf(blobs.fragments[0]), 20_200L) }
+        assertEquals(16, w.stores.fragments.expectedCount(w.db, objectId))
+        assertEquals(1, w.stores.fragments.boundCount(w.db, objectId))
+        // ... and the bind of the first one is a separate call that finds the row waiting
+        assertEquals(1, w.tx { w.stores.fragments.bindExpected(it, blobs.manifest) })
+        assertEquals(2, w.stores.fragments.boundCount(w.db, objectId))
+    }
+
     // ------------------------------------------------------------------ the pool
 
     @Test
@@ -201,6 +222,7 @@ class MediaBlobsTest {
         assertEquals("a second pass has nothing to do", 0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
         // the incoming object releases the shared hash (it turns corrupt): the release itself deletes a sealed row that nothing
         // names any more, so the collector finds nothing left to do
+        w.ingest(listOf(hashOfBlob(3000)) + w.blobsOf(3).fragments.drop(1)) // the rest of its blobs arrive: it is complete
         w.tx { w.stores.objects.markComplete(it, id16(0xB3)) }
         w.tx { w.stores.objects.markCorrupt(it, id16(0xB3)) }
         assertFalse(w.stores.blobs.exists(w.db, shared))

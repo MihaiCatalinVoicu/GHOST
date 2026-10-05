@@ -78,6 +78,17 @@ class MediaFragments {
         return out
     }
 
+    /** The retry generation of an object's upload, whatever the age of the object (a bound: the feeder numbers its operations by it); null when there is no upload row. */
+    fun uploadGenerationOf(sql: SqlExecutor, objectId: ByteArray): Int? {
+        var out: Int? = null
+        sql.query(UPLOAD_GENERATION_OF, listOf(Fields.objectId(objectId))) { out = it.long(0).toInt() }
+        return out
+    }
+
+    /** Whether the operation of (object, ordinal, generation, resend) exists, whatever the age of its object (a bound). */
+    fun operationExists(sql: SqlExecutor, objectId: ByteArray, ordinal: Int, retryGen: Int, resendCount: Int): Boolean =
+        sql.queryCount(OP_EXISTS, listOf(Fields.objectId(objectId), Fields.ordinal(ordinal).toLong(), retryGen.toLong(), resendCount.toLong())) > 0
+
     /** The objects (live or not) with a fragment row that names [blobHash]: who loses the blob if its file is gone (the reconcile report). */
     fun objectsNaming(sql: SqlExecutor, blobHash: ByteArray): List<ByteArray> {
         val out = ArrayList<ByteArray>()
@@ -110,6 +121,12 @@ class MediaFragments {
      * `MEDIA-BIND` (§7.2): one row per ordinal of an incoming object, `bound` if a blob row with that hash exists and
      * `expected` otherwise, **whether or not another object names the same hash** (D25). The manifest's own row (ordinal
      * -1) comes first. The caller then moves the object to `fetching` ([MediaObjects.markFetching]).
+     *
+     * **The blob row is looked for whatever its retention day** (the schema's `media_fragment_bound_blob_insert` demands exactly
+     * that: a row for a blob that exists is `bound`): a pooled blob past its last day that `MEDIA-GC` has not collected yet is
+     * adopted by a late descriptor, and one the collector has taken is waited for. The outcome depends on when the maintenance
+     * ran and on nothing a relay sees; judged and accepted, and pinned by
+     * `MediaFragmentsTest.aLateDescriptorAdoptsAPooledBlobPastItsDayUntilTheCollectorHasRunAndWaitsForTheBlobAfterIt` (§22.4 row 30).
      */
     fun insertIncoming(tx: SyncTransaction, objectId: ByteArray, classCode: Int, manifestHash: ByteArray, fragmentHashes: List<ByteArray>) {
         Fields.objectId(objectId)
@@ -152,6 +169,11 @@ class MediaFragments {
      */
     fun enqueue(tx: SyncTransaction, op: MediaOp) {
         checkOp(op)
+        // The first operation of an ordinal in a generation is resend 0, and a fresh feed happens in the object's current
+        // generation: the op id is derived from both (§6.4), and a feeder with a stale one would re-feed a past generation.
+        if (op.resendCount != 0) throw MediaStoreException(MediaStoreError.BAD_VALUE, "media_outbound_op.resend_count")
+        val generation = uploadGenerationOf(tx.sql, op.objectId) ?: throw MediaStoreException(MediaStoreError.MISSING_ROW, "media_upload")
+        if (op.retryGen != generation) throw MediaStoreException(MediaStoreError.BAD_VALUE, "media_outbound_op.retry_gen")
         if (openCount(tx.sql, op.objectId) >= MediaLimits.OPEN_PER_OBJECT) throw MediaStoreException(MediaStoreError.LIMIT, "media_fragment.upload_state")
         if (openCountOfDevice(tx.sql) >= MediaLimits.OPEN_PER_DEVICE) throw MediaStoreException(MediaStoreError.LIMIT, "media_fragment.upload_state")
         // The ordinal first: a fragment that is not `unsent` (already open, or acknowledged) is a feeder defect, and no
@@ -167,13 +189,19 @@ class MediaFragments {
     /**
      * `MEDIA-OUTCOME` (§6.4): an INDETERMINATE outcome with a resend left is the Phase 7 identical-bytes resend as a new
      * operation of the **same** ordinal and retry generation, `resend_count + 1`; the ordinal stays `open`. At most
-     * [MediaLimits.MAX_RESENDS] resends per ordinal and generation.
+     * [MediaLimits.MAX_RESENDS] resends per ordinal and generation. **The previous operation must exist** (same ordinal and
+     * generation, `resend_count - 1`): the generation of a resend is the one of the operation it repeats, which is not the
+     * upload's current one when the user retried while the ordinal was still in flight (`failed` ordinals go back to `unsent`,
+     * the `open` ones keep their operations).
      */
     fun insertResend(tx: SyncTransaction, op: MediaOp) {
         checkOp(op)
         if (op.resendCount < 1) throw MediaStoreException(MediaStoreError.BAD_VALUE, "media_outbound_op.resend_count")
         if (uploadStateOf(tx.sql, op.objectId, op.ordinal) != UploadState.OPEN) {
             throw MediaStoreException(MediaStoreError.ILLEGAL_TRANSITION, "media_fragment.upload_state")
+        }
+        if (!operationExists(tx.sql, op.objectId, op.ordinal, op.retryGen, op.resendCount - 1)) {
+            throw MediaStoreException(MediaStoreError.ILLEGAL_TRANSITION, "media_outbound_op.resend_count")
         }
         insertOp(tx, op)
     }
@@ -296,6 +324,9 @@ class MediaFragments {
         const val OBJECTS_NAMING = "SELECT DISTINCT object_id FROM media_fragment WHERE blob_hash = ? ORDER BY object_id"
         const val OBJECTS_EXPECTING = "SELECT DISTINCT object_id FROM media_fragment WHERE blob_hash = ? AND state = 'expected' ORDER BY object_id"
         const val UPLOAD_STATE_OF = "SELECT upload_state FROM media_fragment WHERE object_id = ? AND ordinal = ?"
+        const val UPLOAD_GENERATION_OF = "SELECT retry_gen FROM media_upload WHERE object_id = ?"
+        const val OP_EXISTS =
+            "SELECT count(*) FROM media_outbound_op WHERE object_id = ? AND ordinal = ? AND retry_gen = ? AND resend_count = ?"
         const val ROWS_OF_OBJECT = "SELECT count(*) FROM media_fragment WHERE object_id = ?"
         const val HASHES_OF_OBJECT = "SELECT DISTINCT blob_hash FROM media_fragment WHERE object_id = ?"
         const val ACKNOWLEDGED_OF_OBJECT =

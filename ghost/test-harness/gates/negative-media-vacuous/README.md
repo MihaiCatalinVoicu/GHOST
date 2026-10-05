@@ -12,4 +12,9 @@ fail for that reason alone, rather than pass over a module it no longer reads:
 | `sync-no-catch-all.sh` | 1: `android/media/src/main: missing` |
 | `dm-no-replace.sh` (G-DM4) | 1: `android/media/src/main: missing` |
 
+G-DM2 (`dm-enqueue-callers.sh`) and G-DM3 (`dm-derivation-inputs.sh`) read the module too and refuse a tree without it (the review
+of slice S3 found they did not), each with a fixture of its own — `negative-dm-enqueue-no-media` and `dm-derivation/negative-no-media` —
+because each needs a file of the other kind to be non-vacuous in every other respect (an allowed restricted call, a seed-branch
+declaration).
+
 Nothing here is compiled or shipped.

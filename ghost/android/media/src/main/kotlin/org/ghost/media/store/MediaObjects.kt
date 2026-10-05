@@ -177,8 +177,17 @@ class MediaObjects(private val fragments: MediaFragments) {
     /** `MEDIA-BIND` (§7.2): the fragment rows are in, the object is `fetching`. */
     fun markFetching(tx: SyncTransaction, objectId: ByteArray) = move(tx, objectId, listOf(ObjectState.AWAITING), ObjectState.FETCHING)
 
-    /** The last `expected` fragment row was bound: the object is `complete` and `MEDIA-VERIFY` is due (§7.2). */
-    fun markComplete(tx: SyncTransaction, objectId: ByteArray) = move(tx, objectId, listOf(ObjectState.FETCHING), ObjectState.COMPLETE)
+    /**
+     * The last `expected` fragment row was bound: the object is `complete` and `MEDIA-VERIFY` is due (§7.2). **Only with
+     * every row of the object bound** — `F + 1` rows of its class and none `expected` (SCN-MC) — in the one guarded statement,
+     * so a caller that asks too early meets [MediaStoreError.ILLEGAL_TRANSITION] in its transaction and the object stays
+     * `fetching` (the schema has no trigger for this: it would need the class table in SQL).
+     */
+    fun markComplete(tx: SyncTransaction, objectId: ByteArray) {
+        check(ObjectState.FETCHING.allows(ObjectState.COMPLETE)) { "a transition the machine of §7.6 does not have" }
+        val changed = tx.sql.execUpdate(COMPLETE, listOf(Fields.objectId(objectId)))
+        if (changed != 1) throw missing(tx.sql, objectId)
+    }
 
     /** `MEDIA-VERIFY` passed (§7.3): the object may be shown. */
     fun markVerified(tx: SyncTransaction, objectId: ByteArray) = move(tx, objectId, listOf(ObjectState.COMPLETE), ObjectState.VERIFIED)
@@ -267,8 +276,10 @@ class MediaObjects(private val fragments: MediaFragments) {
      * whatever its origin — a blob another live object still names stays until that object releases it. The `key_env` of
      * each object goes with its row; the caller checkpoints (§11.1) and the files go with the reconcile. Returns the objects deleted.
      * A message deleted **without** this call (the foreign keys of a deleted contact) takes the object's rows all the same and
-     * leaves its blobs: [MediaBlobs.collectUnnamedSealed] deletes the sealed ones on the next `MEDIA-GC` pass, the pool's
-     * retention the ingested ones.
+     * leaves its blobs: [MediaBlobs.collectUnnamedSealed] deletes the sealed ones on the next `MEDIA-GC` pass, and **the ingested
+     * ones stay in the pool until their retention day, at most eight days, with no key** (a declared bound, §22.4 row 26,
+     * pinned by `MediaStoreScenarioTest.aDeletedContactLeavesItsIngestedBlobsInThePoolForAtMostTheRetention`): a contact, a
+     * conversation or a message must be deleted through this call, with every message id it takes, to be erased at once.
      */
     fun deleteObjectsOfMessages(tx: SyncTransaction, messageIds: List<ByteArray>): Int {
         var deleted = 0
@@ -330,6 +341,15 @@ class MediaObjects(private val fragments: MediaFragments) {
 
     private companion object {
         const val CHUNK = 400
+
+        /** `WHEN 0 THEN 17 WHEN 1 THEN 25 ...`: the number of blobs of each size class (`F + 1`), from the one table the store keeps. */
+        val BLOBS_OF_CLASS: String = MediaLimits.CLASSES.withIndex().joinToString(" ") { (code, fragments) -> "WHEN $code THEN ${fragments + 1}" }
+
+        val COMPLETE: String =
+            "UPDATE media_object SET state = 'complete' WHERE object_id = ? AND state = 'fetching' " +
+                "AND NOT EXISTS (SELECT 1 FROM media_fragment f WHERE f.object_id = media_object.object_id AND f.state = 'expected') " +
+                "AND (SELECT count(*) FROM media_fragment f WHERE f.object_id = media_object.object_id AND f.state = 'bound') = " +
+                "CASE class_code $BLOBS_OF_CLASS END"
 
         const val BY_ID =
             "SELECT o.object_id, o.role, o.dest_id, o.kind, o.view_once, o.class_code, o.manifest_hash, " +

@@ -80,6 +80,11 @@ class MediaBlobs(private val fragments: MediaFragments) {
     /**
      * Inserts a blob row. The file is already on disk (written, forced and renamed, with the directory synced). A hash that
      * has a row is [MediaStoreError.ROW_EXISTS]: ingest checks [byHash] first and consumes a duplicate without writing a file.
+     *
+     * **It binds nothing**: an `expected` fragment row that names the hash stays `expected` (the schema refuses a `bound` row
+     * without a blob row, not the converse; `MediaBlobsTest.insertingARowBindsNothingAndIngestingDoes` pins it). [ingest] is
+     * this and the binding; a sealed blob's hash is one nobody can have expected, because it is the hash of ciphertext that
+     * did not exist before the sealer made it.
      */
     fun insert(tx: SyncTransaction, blob: MediaBlob) {
         Fields.hash("media_blob.blob_hash", blob.blobHash)
@@ -130,8 +135,13 @@ class MediaBlobs(private val fragments: MediaFragments) {
      * commit boundary one that nothing names is garbage — what a deletion that did not go through
      * [MediaObjects.deleteObjectsOfMessages] (a contact, a conversation: the foreign keys took the object and its fragments and
      * knew nothing of the blobs) left behind, with a file that no row would ever release. `MEDIA-GC` calls this on every pass
-     * and after such a deletion; the rows go now and the files with the reconcile. An **ingested** blob that lost its references
-     * the same way is not touched: it is in the pool with its own retention, and [collectExpired] takes it at its day.
+     * and after such a deletion; the rows go now and the files with the reconcile.
+     *
+     * **An ingested blob that lost its references the same way is not touched, and that is a declared bound, not a safe
+     * default** (§22.4 row 26): once the cascade took the fragment rows, the store cannot tell it from a stranger's pooled blob,
+     * so it stays in the pool, counted in [MediaLimits.POOL_CAP_BYTES], until [collectExpired] takes it at its retention day
+     * (at most [MediaLimits.POOL_MAX_DAYS] days), with no key anywhere. The caller that deletes a contact, a conversation or a
+     * message by any path other than [MediaObjects.deleteObjectsOfMessages] closes the gap by calling that first.
      * Returns the rows deleted.
      */
     fun collectUnnamedSealed(tx: SyncTransaction): Int =

@@ -118,24 +118,33 @@ class MediaResidueTest {
         assertFalse(f.holds(late))
     }
 
-    /** R-M1: what is left of a media world after everything has expired, swept and been checkpointed shows only what the design declares. */
+    /**
+     * R-M1: what is left of a media world after everything has expired, swept and been checkpointed shows only what the design
+     * declares. The three declared time columns hold, while the rows live, values whose bytes are distinctive (the six-byte
+     * big-endian form a record stores a five-byte integer in); the control shows the scan sees them in the file, and after the sweep
+     * and the checkpoint no byte of any of them is in the main file or the log (the first version asserted that a constant set had
+     * three elements and that a 16-byte id was not empty).
+     */
     @Test
-    fun afterTheSweepOnlyTheDeclaredNothingIsLeftInTheRows() = FileWorld().use { f ->
+    fun afterTheSweepNoRowAndNoTimeOfTheObjectsIsLeftInTheFileOrTheLog() = FileWorld().use { f ->
         val w = f.world
-        w.commitOutgoing(1, keyEnv = canary)
-        val received = w.receive(2)
-        w.ingest(w.blobsOf(2).all.take(5) + hashOfBlob(900))
+        val deadlineHour = 3_600L * 7_654_321L // media_upload.deadline_hour
+        val incompleteAfterHour = 3_600L * 8_765_432L // media_object.incomplete_after_hour
+        val retainUntilDay = 98_765_432_101L // media_blob.retain_until_day
+        val times = listOf(deadlineHour, incompleteAfterHour, retainUntilDay).map { beBytes(it) }
+        w.commitOutgoing(1, keyEnv = canary, deadlineHour = deadlineHour)
+        w.receive(2, incompleteAfterHour = incompleteAfterHour)
+        w.ingest(w.blobsOf(2).all.take(5) + hashOfBlob(900), retainUntilDay = retainUntilDay)
+        assertTrue(f.checkpoint())
+        for (time in times) assertTrue("the control: the scan sees ${time.toList()} in the main file", f.inMainFile(time))
         w.tx { w.stores.objects.deleteObjectsOfMessages(it, listOf(id16(0x91), id16(0x92))) }
-        w.tx { w.stores.blobs.collectExpired(it, 1_900_000_000L, 100) }
+        w.tx { w.stores.blobs.evictOverCap(it, capBytes = 0L) } // the pooled stranger, whose retention is not near
         assertTrue(f.checkpoint())
         for (table in listOf("media_object", "media_upload", "media_blob", "media_fragment", "media_outbound_op")) {
             assertEquals("$table is empty", 0L, w.count(table))
         }
         assertFalse(f.holds(canary))
-        // the time columns are three, and none holds a value now
-        val timeColumns = setOf("media_object.incomplete_after_hour", "media_upload.deadline_hour", "media_blob.retain_until_day")
-        assertEquals(3, timeColumns.size)
-        assertTrue(received.isNotEmpty())
+        for (time in times) assertFalse("a time of the objects is still in the file or the log: ${time.toList()}", f.holds(time))
     }
 
     /** The files of the store hold ciphertext only: the 64 KiB blobs the tests wrote are not the plaintext a canary stands for. */
@@ -152,6 +161,9 @@ class MediaResidueTest {
         assertEquals(listOf("m"), w.dir.list()!!.toList())
     }
 }
+
+/** The [size] low bytes of [value], big-endian: how a record stores an integer that needs that many bytes (five bytes use six). */
+private fun beBytes(value: Long, size: Int = 6): ByteArray = ByteArray(size) { (value shr (8 * (size - 1 - it))).toByte() }
 
 private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
     outer@ for (i in 0..haystack.size - needle.size) {

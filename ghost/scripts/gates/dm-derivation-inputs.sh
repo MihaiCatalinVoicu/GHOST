@@ -117,6 +117,7 @@ if (-d "$root/android") {
 my $DM_LABEL = qr{^ghost/v\d+/(?:dm|card/|gate/)|-verifier$};
 my $good_branch = qr/\.\s*deriveBranch\s*\(\s*(?:org\s*\.\s*ghost\s*\.\s*identity\s*\.\s*)?DerivationLabels\s*\.\s*[A-Z][A-Z0-9_]*\s*\)/;
 my ($scanned, $declarations) = (0, 0);
+my %scanned_in;
 for my $file (sort @files) {
   (my $rel = $file) =~ s{^\Q$root\E/}{};
   next unless $rel =~ m{^android/([^/]+)/src/([^/]+)/};
@@ -145,6 +146,7 @@ for my $file (sort @files) {
     next;
   }
   $scanned++;
+  $scanned_in{$module}++ if $set eq "main";
 
   # Rule 1: the sites. The argument list is balanced on the code view (strings blanked) and read
   # back from the view that keeps them, at the same offsets.
@@ -215,18 +217,25 @@ for my $k (sort keys %label) {
 }
 report("no RootEntropy.deriveBranch declaration found in android/identity/src/main (rule 2 would hold vacuously)") unless $declarations == 1;
 print "SCANNED\t$scanned\n";
+print "MODULE\t$_ $scanned_in{$_}\n" for sort keys %scanned_in;
 ')" || { echo "dm-derivation-inputs: the scanner stopped" >&2; exit 2; }
 
 scanned=0
+declare -A in_module=()
 while IFS= read -r line; do
   kind="${line%%$'\t'*}"
   rest="${line#*$'\t'}"
   case "$kind" in
     VIOLATION) fail "$rest" ;;
     SCANNED) scanned="$rest" ;;
+    MODULE) in_module["${rest% *}"]="${rest##* }" ;;
   esac
 done <<< "$out"
 [ "$scanned" -gt 0 ] || fail "no production source of the DM modules found under $GHOST_ROOT (the gate would pass vacuously)"
+# The media module is read as a DM module (Phase 11 slice S3 and its review): the floor above is met by the other three, so a tree
+# whose android/media moved away must fail on its own account.
+[ -d "$GHOST_ROOT/android/media/src/main" ] || fail "android/media/src/main: missing (the gate would pass vacuously)"
+[ ! -d "$GHOST_ROOT/android/media/src/main" ] || [ "${in_module[media]:-0}" -gt 0 ] || fail "android/media/src/main: no sources found (the gate would pass vacuously)"
 [ -f "$ALLOW" ] || fail "scripts/gates/dm-derivation-inputs.allow: missing (every site would fail)"
 echo "[dm-derivation-inputs] $scanned production sources of android/{messaging,crypto-bridge,app,media} read"
 finish dm-derivation-inputs

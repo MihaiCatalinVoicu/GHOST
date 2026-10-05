@@ -143,6 +143,9 @@ class MediaSchemaConstraintsTest {
                 listOf("an outgoing fragment starts bound and unsent", "a fragment is bound exactly when its blob row exists"), blob = true,
             ),
         )
+        // With no blob row there is nothing for the bound-blob rule to say (expected and no blob is its own answer), so only the
+        // starting-state rule of the role trigger refuses this one (review of slice S3: the clause was pinned by no test).
+        add(refusedWithBlob("media_fragment", "an outgoing fragment that is only expected, with no blob row", "an outgoing fragment starts bound and unsent", false, "state" to "expected"))
         add(refusedBy("media_fragment", "an outgoing fragment with no upload state", "an outgoing fragment starts bound and unsent", "upload_state" to null))
         add(refusedWithBlob("media_fragment", "a bound fragment whose blob is not there", "a fragment is bound exactly when its blob row exists", false, "blob_hash" to mBytes(32, 0x96)))
         // An incoming fragment is expected (no blob yet) or bound (the blob is there), and has no upload state.

@@ -19,6 +19,12 @@ internal fun hash32(n: Int) = bytes(32, n)
 /** A 64 KiB "ciphertext" blob whose bytes are a function of [n] (the store treats it as opaque). */
 internal fun blobOf(n: Int): ByteArray = ByteArray(MediaLimits.FRAGMENT_BYTES) { ((it * 31 + n * 7 + (it ushr 8)) and 0xFF).toByte() }
 
+/**
+ * A fresh name, then the write: the shape of the media actor's own ingest, which needs no reservation because the reconcile
+ * runs on the same thread. A sealer that a reconcile can overtake reserves the name first ([PreparingFiles.reserve]).
+ */
+internal fun CiphertextFiles.writeFresh(blob: ByteArray, enforceFloor: Boolean): WriteResult = write(newName(), blob, enforceFloor)
+
 /** The hash the world gives blob [n]: distinct per [n] (the store never computes one: ingest and sealing hand it in). */
 internal fun hashOfBlob(n: Int): ByteArray = ByteArray(32) { if (it < 4) ((n ushr (8 * it)) and 0xFF).toByte() else 0x5A }
 
@@ -56,16 +62,19 @@ internal class MediaWorld(
     val database = SyncDatabase(wrap(db))
     val stores = MediaStores()
     val dir: File = directory ?: java.nio.file.Files.createTempDirectory("ghost-media-store").toFile()
-    val disk = CrashableFileSystem(NioCiphertextFileSystem(directorySyncSupported = false))
+    // The platform's own port: where the host can open a directory for `force` (Linux, Android) the real directory sync runs in
+    // every test of the store; on Windows it is skipped, as in production there is nothing to skip.
+    val disk = CrashableFileSystem(NioCiphertextFileSystem())
     val names = SequentialNames()
     val files = CiphertextFiles(File(dir, "m"), disk, names, freeFloorBytes).also { it.open() }
+    val preparing = PreparingFiles()
     val reconcile = MediaReconcile(files, stores.blobs, stores.fragments)
 
     fun <T> tx(block: (org.ghost.sync.api.SyncTransaction) -> T): T = database.transaction(block)
 
     /** Writes the blob [n] under a new name and inserts its row (sealed, or ingested with a retention day) in one transaction. */
     fun putBlob(n: Int, origin: BlobOrigin = BlobOrigin.SEALED, retainUntilDay: Long? = null): ByteArray {
-        val written = files.write(blobOf(n), enforceFloor = false) as WriteResult.Written
+        val written = files.writeFresh(blobOf(n), enforceFloor = false) as WriteResult.Written
         tx { stores.blobs.insert(it, MediaBlob(hashOfBlob(n), written.fileName, origin, retainUntilDay)) }
         return written.fileName
     }

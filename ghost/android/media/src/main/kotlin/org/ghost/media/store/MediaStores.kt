@@ -14,7 +14,8 @@ package org.ghost.media.store
  * | [fragments] | `media_fragment`, `media_outbound_op` |
  * | [blobs] | `media_blob` |
  *
- * The files are [CiphertextFiles]'s, and [MediaReconcile] makes the two agree.
+ * The files are [CiphertextFiles]'s, and [MediaReconcile] makes the two agree. A sealer that a reconcile can overtake reserves the
+ * names of its files in [PreparingFiles] before it writes them.
  */
 class MediaStores {
     val fragments = MediaFragments()

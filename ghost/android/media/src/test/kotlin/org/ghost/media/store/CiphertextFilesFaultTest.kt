@@ -23,7 +23,7 @@ class CiphertextFilesFaultTest {
     @Test
     fun aWriteIsFiveCallsInTheOrderThatSurvivesACrash() = MediaWorld().use { w ->
         w.disk.reset()
-        w.files.write(blobOf(1), enforceFloor = false)
+        w.files.writeFresh(blobOf(1), enforceFloor = false)
         assertEquals(listOf("write", "setTimes", "force", "rename", "syncDirectory"), w.disk.trace)
         assertEquals("two kill points per call: before and after", 10, w.disk.points)
     }
@@ -36,12 +36,12 @@ class CiphertextFilesFaultTest {
      */
     @Test
     fun everyKillPointOfAWriteLeavesNoPartialFileUnderAFinalName() {
-        val total = MediaWorld().use { w -> w.disk.reset(); w.files.write(blobOf(1), false); w.disk.points }
+        val total = MediaWorld().use { w -> w.disk.reset(); w.files.writeFresh(blobOf(1), false); w.disk.points }
         assertEquals(10, total)
         for (point in 0 until total) MediaWorld().use { w ->
             w.disk.reset()
             w.disk.arm(point)
-            val crash = runCatchingCrash { w.files.write(blobOf(1), enforceFloor = false) }
+            val crash = runCatchingCrash { w.files.writeFresh(blobOf(1), enforceFloor = false) }
             assertTrue("point $point must be reached", crash != null)
             w.disk.reboot()
             val finals = w.listed().filter { CiphertextFiles.isFinalName(it) }
@@ -67,14 +67,14 @@ class CiphertextFilesFaultTest {
     fun theCrashModelSeesARenameWithoutAForceAndARenameWithoutADirectorySync() {
         // the real order: whole and named after a reboot
         MediaWorld().use { w ->
-            val written = w.files.write(blobOf(1), enforceFloor = false) as WriteResult.Written
+            val written = w.files.writeFresh(blobOf(1), enforceFloor = false) as WriteResult.Written
             w.disk.reboot()
             assertEquals(MediaLimits.FRAGMENT_BYTES.toLong(), File(w.files.directory, hex(written.fileName)).length())
         }
         // no force: the name survives and the bytes do not (an empty file under the final name)
         MediaWorld().use { w ->
             w.disk.skipForce = true
-            val written = w.files.write(blobOf(1), enforceFloor = false) as WriteResult.Written
+            val written = w.files.writeFresh(blobOf(1), enforceFloor = false) as WriteResult.Written
             w.disk.reboot()
             assertTrue(File(w.files.directory, hex(written.fileName)).exists())
             assertEquals("the unforced bytes are lost", 0L, File(w.files.directory, hex(written.fileName)).length())
@@ -82,7 +82,7 @@ class CiphertextFilesFaultTest {
         // no directory sync: the bytes survive and the name does not
         MediaWorld().use { w ->
             w.disk.skipDirectorySync = true
-            val written = w.files.write(blobOf(1), enforceFloor = false) as WriteResult.Written
+            val written = w.files.writeFresh(blobOf(1), enforceFloor = false) as WriteResult.Written
             w.disk.reboot()
             assertFalse("the unsynced rename is reverted", File(w.files.directory, hex(written.fileName)).exists())
         }

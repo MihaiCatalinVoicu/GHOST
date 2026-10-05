@@ -181,6 +181,73 @@ class MediaFragmentsTest {
         expectStoreError(MediaStoreError.BAD_VALUE) { w.tx { w.stores.fragments.enqueue(it, MediaOp(id16(1).copyOf(15), objectId, 0, 0, 0)) } }
     }
 
+    /**
+     * §6.4: the first operation of an ordinal in a generation is resend 0 and a feed is in the object's current generation; a
+     * resend is `resend_count + 1` of an operation that exists, **in that operation's generation** — which is not the upload's when
+     * the user retried while the ordinal was still in flight (only the `failed` ordinals go back to `unsent`).
+     */
+    @Test
+    fun aFeedIsInTheObjectsCurrentGenerationAndAResendRepeatsAnOperationThatExists() = MediaWorld().use { w ->
+        val objectId = w.commitOutgoing(1)
+        // a generation the upload is not in, a resend counted as a first operation, an object with no upload row
+        expectStoreError(MediaStoreError.BAD_VALUE) { w.tx { w.stores.fragments.enqueue(it, op(0x11, objectId, 0, gen = 1)) } }
+        expectStoreError(MediaStoreError.BAD_VALUE) { w.tx { w.stores.fragments.enqueue(it, op(0x12, objectId, 0, resend = 1)) } }
+        expectStoreError(MediaStoreError.MISSING_ROW) { w.tx { w.stores.fragments.enqueue(it, op(0x13, id16(0x01), 0)) } }
+        assertEquals(0L, w.count("media_outbound_op"))
+        assertEquals(UploadState.UNSENT, w.stores.fragments.uploadStateOf(w.db, objectId, 0))
+        // ordinals 0 and 1 go out in generation 0; ordinal 1 fails and so does the object; the user retries
+        w.tx { tx ->
+            w.stores.fragments.enqueue(tx, op(0x21, objectId, 0))
+            w.stores.fragments.enqueue(tx, op(0x22, objectId, 1))
+            w.stores.fragments.settle(tx, objectId, 1, UploadState.FAILED)
+            w.stores.objects.markFailed(tx, objectId)
+        }
+        assertEquals(RetryResult.RETRIED, w.tx { w.stores.objects.retryUpload(it, objectId, now) })
+        assertEquals(1, w.stores.fragments.uploadGenerationOf(w.db, objectId))
+        assertEquals(UploadState.OPEN, w.stores.fragments.uploadStateOf(w.db, objectId, 0))
+        assertEquals(UploadState.UNSENT, w.stores.fragments.uploadStateOf(w.db, objectId, 1))
+        // ordinal 0 is still in flight in generation 0: its resend is generation 0's, not the upload's generation 1
+        w.tx { w.stores.fragments.insertResend(it, op(0x23, objectId, 0, gen = 0, resend = 1)) }
+        // ordinal 1 goes out again in generation 1; generation 0 is stale for a feed
+        expectStoreError(MediaStoreError.BAD_VALUE) { w.tx { w.stores.fragments.enqueue(it, op(0x24, objectId, 1, gen = 0)) } }
+        w.tx { w.stores.fragments.enqueue(it, op(0x25, objectId, 1, gen = 1)) }
+        // a resend follows the operation it repeats: resend 2 needs resend 1 of the same generation, and a generation with no operation of the ordinal has none to repeat
+        expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.fragments.insertResend(it, op(0x26, objectId, 1, gen = 1, resend = 2)) } }
+        w.tx { w.stores.fragments.insertResend(it, op(0x27, objectId, 1, gen = 1, resend = 1)) }
+        w.tx { w.stores.fragments.insertResend(it, op(0x28, objectId, 1, gen = 1, resend = 2)) }
+        expectStoreError(MediaStoreError.ILLEGAL_TRANSITION) { w.tx { w.stores.fragments.insertResend(it, op(0x29, objectId, 0, gen = 2, resend = 1)) } }
+        assertEquals(6L, w.count("media_outbound_op"))
+        assertTrue(w.stores.fragments.operationExists(w.db, objectId, 0, 0, 1))
+        assertFalse(w.stores.fragments.operationExists(w.db, objectId, 0, 1, 0))
+        assertEquals(null, w.stores.fragments.uploadGenerationOf(w.db, id16(0x01)))
+    }
+
+    /**
+     * The one read of a media table that a **write** decides on and the lint does not scan (an `INSERT ... SELECT`, anchored on its
+     * write verb like every statement of the DAOs that writes): `insertIncomingRow` binds a fragment to a blob whose row exists,
+     * **whatever its retention day** — the schema's `media_fragment_bound_blob_insert` requires exactly that (a row for a blob that
+     * exists is `bound`, one for a blob that does not is `expected`). A pooled blob past its last day that `MEDIA-GC` has not
+     * collected yet is therefore adopted by a late descriptor, and a descriptor after the collector finds the blob gone and waits.
+     * The two outcomes differ by when the maintenance ran; neither is visible to a relay (the fetches do not depend on local
+     * state, T47), and the first is the better (§22.4 row 30: judged, accepted).
+     */
+    @Test
+    fun aLateDescriptorAdoptsAPooledBlobPastItsDayUntilTheCollectorHasRunAndWaitsForTheBlobAfterIt() = MediaWorld().use { w ->
+        val today = MediaLimits.day(now)
+        val a = w.blobsOf(1)
+        val b = w.blobsOf(2)
+        w.tx { w.stores.blobs.ingest(it, a.manifest, w.nameOf(a.manifest), today - 2) } // pooled, two days past its last day
+        w.tx { w.stores.blobs.ingest(it, b.manifest, w.nameOf(b.manifest), today - 2) }
+        val adopted = w.receive(1, blobs = a) // before the collector: the manifest's row is bound to the blob that is still there
+        assertEquals(1, w.stores.fragments.boundCount(w.db, adopted))
+        assertEquals("the collector takes the one nobody named", 1, w.tx { w.stores.blobs.collectExpired(it, now, 10) })
+        assertTrue(w.stores.blobs.exists(w.db, a.manifest))
+        assertFalse(w.stores.blobs.exists(w.db, b.manifest))
+        val waiting = w.receive(2, blobs = b) // after the collector: the blob is gone and the row waits for it
+        assertEquals(0, w.stores.fragments.boundCount(w.db, waiting))
+        assertEquals(17, w.stores.fragments.expectedCount(w.db, waiting))
+    }
+
     @Test
     fun theObjectIsReadyWhenEveryOrdinalIsFinalInTheAcknowledgedStates() = MediaWorld().use { w ->
         val objectId = w.commitOutgoing(1)

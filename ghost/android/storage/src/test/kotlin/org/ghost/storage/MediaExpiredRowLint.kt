@@ -32,10 +32,14 @@ import java.io.File
  *  - [MediaSweepQueries] **sweeps** — the maintenance passes' own selects, which name exactly the expired rows: something in the
  *    world that holds them, nothing after the sweep, and every expired row of the fixture.
  *
- * **The static half** is [DmExpiredRowLint]'s scan with [expiringTables]: every literal in the Android production sources that
- * reads one of the five tables must be registered (verbatim, so the string the DAO runs is the string the lint runs) and every
- * registered query must still exist. The registry's SQL is **copied** from the three DAOs into [MediaQueryTexts], and the arming
- * test proves the copy against the source in both directions. The DM lint reads `dm_message` too, and the media queries join it
+ * **The static half** is [DmExpiredRowLint]'s scan with [expiringTables], strict: every literal in the Android production sources
+ * that reads one of the five tables — also through a constant of its file, and also a write that returns rows with `RETURNING` —
+ * must be registered (verbatim, so the string the DAO runs is the string the lint runs) and every registered query must still
+ * exist. The registry's SQL is **copied** from the three DAOs into [MediaQueryTexts], and the arming test proves the copy against
+ * the source in both directions. **What it does not see**, so that it is not mistaken for coverage: a constant declared in another
+ * file, a name computed by a call, and the subqueries of a write (an `INSERT … SELECT`, a `DELETE … WHERE … NOT EXISTS (SELECT …)`):
+ * the S9 rule of the DM lint applies — a write is not a read path — and the one read of a media table that a write decides on
+ * (`insertIncomingRow` binds to a blob row whatever its retention day) is judged by `MediaFragmentsTest`, not scanned. The DM lint reads `dm_message` too, and the media queries join it
  * to apply the message's filter, so [DmExpiredRowLintTest] counts the registered media queries that name `dm_message` as
  * registered.
  */
@@ -320,9 +324,14 @@ object MediaExpiredRowLint {
         }
     }
 
-    /** Every read of one of the five tables in [sources]: [DmExpiredRowLint]'s scan with the media set. */
+    /**
+     * Every read of one of the five tables in [sources]: [DmExpiredRowLint]'s scan with the media set, in its **strict** mode — a
+     * write with a `RETURNING` clause is a read, a table name from a constant of the same file is resolved, and a table position
+     * the scan cannot resolve is a finding (review of slice S3: a production file with four unfiltered reads of that shape passed
+     * the first version of this scan; the registry holds no entry for them, so they fail until registered or spelled out).
+     */
     fun readQueriesOverExpiringRows(sources: List<File>): List<Found> =
-        DmExpiredRowLint.readQueriesOverExpiringRows(sources, expiringTables.keys).map { Found(it.file, it.line, it.sql) }
+        DmExpiredRowLint.readQueriesOverExpiringRows(sources, expiringTables.keys, strict = true).map { Found(it.file, it.line, it.sql) }
 
     /** Every registered query of the three registries. */
     fun allRegistered(): List<Query> = MediaDaoQueries.registered + MediaBoundQueries.registered + MediaSweepQueries.registered
@@ -464,6 +473,12 @@ internal object MediaQueryTexts {
     const val FRAGMENTS_ACKNOWLEDGED_OF_OBJECT =
         "SELECT count(*) FROM media_fragment WHERE object_id = ? AND upload_state IN ('sent', 'degraded', 'indeterminate')"
 
+    const val FRAGMENTS_UPLOAD_GENERATION_OF =
+        "SELECT retry_gen FROM media_upload WHERE object_id = ?"
+
+    const val FRAGMENTS_OP_EXISTS =
+        "SELECT count(*) FROM media_outbound_op WHERE object_id = ? AND ordinal = ? AND retry_gen = ? AND resend_count = ?"
+
     const val BLOBS_BY_HASH =
         "SELECT blob_hash, file_name, origin, retain_until_day FROM media_blob WHERE blob_hash = ?"
 
@@ -598,6 +613,8 @@ object MediaBoundQueries {
         bound("theRowsOfADeadObject", MediaQueryTexts.FRAGMENTS_ROWS_OF_OBJECT, listOf(L.O4)),
         bound("theHashesOfADeadObject", MediaQueryTexts.FRAGMENTS_HASHES_OF_OBJECT, listOf(L.O4)),
         bound("theAcknowledgedOrdinalsOfADeadUpload", MediaQueryTexts.FRAGMENTS_ACKNOWLEDGED_OF_OBJECT, listOf(L.O5)),
+        bound("theRetryGenerationOfADeadUpload", MediaQueryTexts.FRAGMENTS_UPLOAD_GENERATION_OF, listOf(L.O4)),
+        bound("whetherTheOperationOfADeadUploadExists", MediaQueryTexts.FRAGMENTS_OP_EXISTS, listOf(L.O4, -1L, 0L, 0L)),
         bound("whetherADeadObjectExists", MediaQueryTexts.OBJECTS_EXISTS, listOf(L.O4)),
         bound("whetherAnObjectOfADeadMessageExists", MediaQueryTexts.OBJECTS_EXISTS_FOR_MESSAGE, listOf(L.M_E1)),
         bound("theObjectsOfADeadMessage", MediaQueryTexts.OBJECTS_OBJECTS_OF_MESSAGE, listOf(L.M_E1)),

@@ -175,7 +175,7 @@ class MediaExpiredRowLintTest {
 
     @Test
     fun everyBoundQuerySeesTheExpiredRowsBecauseTheTriggerAndTheReconcileCountThem() {
-        assertEquals(21, MediaBoundQueries.registered.size)
+        assertEquals(23, MediaBoundQueries.registered.size)
         for (query in MediaBoundQueries.registered) {
             val outcome = L.outcomeOf(query.sql, query.args)
             assertTrue("${query.name} must see the expired rows too, as the trigger and the reconcile do", outcome.showsAnExpiredRow)
@@ -260,8 +260,58 @@ class MediaExpiredRowLintTest {
             }
             """.trimIndent(),
         )
+        // The shapes the first version of the scan let through (review of slice S3): the table name from a template, from a
+        // constant joined with `+` (in the middle, at the end, at the start), and a write that returns rows with RETURNING;
+        // then the decoys that must stay unreported and the table positions nobody can resolve, which must be reported.
+        File(packageDir, "Templated.kt").writeText(
+            """
+            package org.ghost.features
+
+            class Templated(private val db: Any) {
+                private companion object {
+                    const val OBJECTS = "media_object"
+                    const val BLOBS = "media_blob"
+                    const val LEAD = "SELECT file_name FROM "
+                    const val SERVING = "(SELECT x FROM relay_capability UNION ALL SELECT y FROM relay_register_capability)"
+                }
+
+                fun fromATemplate() = query("SELECT state FROM ${'$'}OBJECTS WHERE object_id = ?")
+
+                fun fromABracedTemplate() = query("SELECT state FROM ${'$'}{OBJECTS} WHERE object_id = ?")
+
+                fun fromAConstantJoinedWithPlus() = query("SELECT state FROM " + OBJECTS + " WHERE object_id = ?")
+
+                fun fromATrailingConstant() = query("SELECT file_name FROM " + BLOBS)
+
+                fun fromALeadingConstant() = query(LEAD + "media_blob WHERE blob_hash = ?")
+
+                fun updateReturning() = query("UPDATE media_object SET state = 'viewing' WHERE object_id = ? RETURNING key_env")
+
+                fun deleteReturning() = query("DELETE FROM media_blob WHERE blob_hash = ? RETURNING file_name")
+
+                fun aTableNobodyCanResolve(table: String) = query("SELECT x FROM " + table + " WHERE y = ?")
+
+                fun aTemplateNobodyCanResolve(table: String) = query("SELECT x FROM ${'$'}table WHERE y = ?")
+
+                fun aDerivedTableOfOtherTables() = query("SELECT a FROM ${'$'}SERVING c WHERE c.id = ?")
+
+                fun aWriteThatReturnsNothing() = exec("UPDATE media_object SET state = 'viewing' WHERE object_id = ?")
+
+                fun theTemplateIsInTheListNotTheTable(n: Int) = query("SELECT state FROM media_object WHERE object_id IN (${'$'}{marks(n)})")
+            }
+            """.trimIndent(),
+        )
         return root
     }
+
+    private val objectDaoReads = listOf(
+        "SELECT o.state FROM media_object o LEFT JOIN dm_message m ON m.message_id = o.message_id WHERE o.object_id = ? AND (m.delete_at_minute IS NULL OR m.delete_at_minute > ?)",
+        "SELECT state FROM media_object WHERE object_id = ?",
+        "SELECT ordinal FROM media_fragment WHERE object_id = ?",
+        "SELECT f.ordinal FROM media_fragment f JOIN media_blob b ON b.blob_hash = f.blob_hash",
+        "SELECT state FROM MEDIA_OBJECT WHERE object_id = ?",
+        "SELECT file_name FROM media_blob WHERE blob_hash = ?",
+    )
 
     @Test
     fun theScannerFindsEveryReadOfAnExpiringMediaTableAndNothingElse() {
@@ -270,16 +320,37 @@ class MediaExpiredRowLintTest {
         assertNotNull(sources)
         val found = L.readQueriesOverExpiringRows(sources!!).map { normalize(it.sql) }
         assertEquals(
-            listOf(
-                "SELECT o.state FROM media_object o LEFT JOIN dm_message m ON m.message_id = o.message_id WHERE o.object_id = ? AND (m.delete_at_minute IS NULL OR m.delete_at_minute > ?)",
+            objectDaoReads + listOf(
+                // the table from a template, braced, joined with `+` in the middle, at the end and at the start
                 "SELECT state FROM media_object WHERE object_id = ?",
-                "SELECT ordinal FROM media_fragment WHERE object_id = ?",
-                "SELECT f.ordinal FROM media_fragment f JOIN media_blob b ON b.blob_hash = f.blob_hash",
-                "SELECT state FROM MEDIA_OBJECT WHERE object_id = ?",
+                "SELECT state FROM media_object WHERE object_id = ?",
+                "SELECT state FROM media_object WHERE object_id = ?",
+                "SELECT file_name FROM media_blob",
                 "SELECT file_name FROM media_blob WHERE blob_hash = ?",
+                // a write that answers rows is a read
+                "UPDATE media_object SET state = 'viewing' WHERE object_id = ? RETURNING key_env",
+                "DELETE FROM media_blob WHERE blob_hash = ? RETURNING file_name",
+                // a table position nobody can resolve is reported: the DAO must spell the table out
+                "SELECT x FROM",
+                "SELECT x FROM ${'$'}table WHERE y = ?",
+                // (a derived table of other tables, `$SERVING`, and a write that returns nothing are not reads of a media table)
+                "SELECT state FROM media_object WHERE object_id IN (${'$'}{marks(n)})",
             ),
             found,
         )
+    }
+
+    /** The strict mode only adds: the DM and channel lints call the default mode, and see exactly what they saw before. */
+    @Test
+    fun theDefaultScanIsTheOldOneAndTheStrictScanFindsEverythingItFindsAndMore() {
+        val root = fixtureTree()
+        val sources = DmExpiredRowLint.androidProductionSources(File(root, "features/media"))!!
+        val lenient = DmExpiredRowLint.readQueriesOverExpiringRows(sources, L.expiringTables.keys).map { normalize(it.sql) }
+        val strict = L.readQueriesOverExpiringRows(sources).map { normalize(it.sql) }
+        // the hole of the old scan: of the nine new shapes it sees only the one that spells the table out
+        assertEquals(objectDaoReads + "SELECT state FROM media_object WHERE object_id IN (${'$'}{marks(n)})", lenient)
+        assertTrue(strict.containsAll(lenient))
+        assertEquals(strict.size, lenient.size + 9)
     }
 
     /**
@@ -299,7 +370,7 @@ class MediaExpiredRowLintTest {
             },
         )
         val found = L.readQueriesOverExpiringRows(sources)
-        assertTrue("the scan found only ${found.size} media reads; it is not looking at the DAOs", found.size >= 36)
+        assertTrue("the scan found only ${found.size} media reads; it is not looking at the DAOs", found.size >= 38)
         val registered = L.allRegistered()
         val registeredSql = registered.map { normalize(it.sql) }.toSet()
         val unregistered = found.filter { normalize(it.sql) !in registeredSql }

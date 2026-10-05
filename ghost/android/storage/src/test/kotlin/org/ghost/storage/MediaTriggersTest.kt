@@ -138,6 +138,12 @@ class MediaTriggersTest {
         assertEquals(1, f.upd("UPDATE media_object SET decode_failures = 1"))
         assertEquals(1, f.upd("UPDATE media_object SET decode_failures = 2"))
         f.refuses("media_object_monotonic", message, "UPDATE media_object SET decode_failures = 1")
+        // NULL is not a way round the bound (review of slice S3): the column is NOT NULL DEFAULT 0, `NEW < OLD` is NULL for a NULL,
+        // a WHEN that is NULL does not fire, and REPLACE then writes the default — which reset the count from 2 to 0.
+        for (verb in listOf("UPDATE", "UPDATE OR REPLACE", "UPDATE OR IGNORE", "UPDATE OR ROLLBACK", "UPDATE OR FAIL")) {
+            f.refuses("media_object_monotonic", message, "$verb media_object SET decode_failures = NULL")
+            assertEquals("after $verb", 2L, f.db.queryLong("SELECT decode_failures FROM media_object"))
+        }
         f.refuses("media_object_monotonic", message, "UPDATE media_object SET incomplete_after_hour = 10800")
         f.refuses("media_object_monotonic", message, "UPDATE media_object SET incomplete_after_hour = NULL")
         assertEquals(1, f.upd("UPDATE media_object SET incomplete_after_hour = 7200"))
@@ -340,6 +346,11 @@ class MediaTriggersTest {
         f.refuses("media_upload_monotonic", "the retry generation never decreases", "UPDATE media_upload SET retry_gen = 0")
         assertEquals(1, f.upd("UPDATE media_upload SET retry_gen = 2"))
         assertEquals(1, f.upd("UPDATE media_upload SET retry_gen = 3"))
+        // ... and neither does NULL (the same reset through REPLACE's default: 3 retries gone, the op ids of generation 0 reused)
+        for (verb in listOf("UPDATE", "UPDATE OR REPLACE", "UPDATE OR IGNORE", "UPDATE OR ROLLBACK", "UPDATE OR FAIL")) {
+            f.refuses("media_upload_monotonic", "the retry generation never decreases", "$verb media_upload SET retry_gen = NULL")
+            assertEquals("after $verb", 3L, f.db.queryLong("SELECT retry_gen FROM media_upload"))
+        }
         // A second object has its own generation.
         f.put("media_object", "object_id" to mBytes(16, 0xA2))
         f.put("media_upload", "object_id" to mBytes(16, 0xA2))
@@ -400,6 +411,11 @@ class MediaTriggersTest {
         // A second blob has its own retention.
         f.put("media_blob", "blob_hash" to mBytes(32, 0xC2), "file_name" to mBytes(16, 0xF2), "origin" to "ingested", "retain_until_day" to 20_100L)
         assertEquals(1, f.upd("UPDATE media_blob SET retain_until_day = 20050 WHERE blob_hash = ?", mBytes(32, 0xC2)))
+        // The origin has a clause of its own: a sealed blob (no retention) that becomes an ingested one with a retention day
+        // satisfies the CHECK and the retention clause, and only the origin clause refuses it (it would put a blob of ours in the pool).
+        f.put("media_blob", "blob_hash" to mBytes(32, 0xC3), "file_name" to mBytes(16, 0xF3))
+        f.refuses("media_blob_fixed", message, "UPDATE media_blob SET origin = 'ingested', retain_until_day = 5 WHERE blob_hash = ?", mBytes(32, 0xC3))
+        assertEquals("sealed", f.db.queryString("SELECT origin FROM media_blob WHERE blob_hash = ?", listOf(mBytes(32, 0xC3))))
     }
 
     // ------------------------------------------------------------------ the cascades

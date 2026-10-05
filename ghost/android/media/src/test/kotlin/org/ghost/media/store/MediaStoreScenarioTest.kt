@@ -73,7 +73,7 @@ class MediaStoreScenarioTest {
     /** The files of the commit of a class-0 object (§6.3): 17 blobs, each written, forced and renamed, the directory synced. */
     private fun writeObjectFiles(w: MediaWorld, n: Int): List<Pair<ByteArray, ByteArray>> =
         w.blobsOf(n).all.mapIndexed { i, hash ->
-            hash to (w.files.write(blobOf(n * 1000 + i), enforceFloor = false) as WriteResult.Written).fileName
+            hash to (w.files.writeFresh(blobOf(n * 1000 + i), enforceFloor = false) as WriteResult.Written).fileName
         }
 
     /** The transaction of the commit: every row of the object at once. */
@@ -164,7 +164,7 @@ class MediaStoreScenarioTest {
     /** The ingest of one blob (§7.2): the file first (the floor enforced), then the transaction that inserts the row and binds. */
     private fun ingestOne(w: MediaWorld, n: Int, hash: ByteArray): Boolean {
         if (w.stores.blobs.exists(w.db, hash)) return false // a duplicate is consumed without a file
-        val written = w.files.write(blobOf(n), enforceFloor = true) as? WriteResult.Written ?: return false
+        val written = w.files.writeFresh(blobOf(n), enforceFloor = true) as? WriteResult.Written ?: return false
         w.tx { w.stores.blobs.ingest(it, hash, written.fileName, 20_200L) }
         return true
     }
@@ -280,6 +280,57 @@ class MediaStoreScenarioTest {
         assertEquals(0L, w.count("media_blob"))
         assertTrue(w.reconcile.run(w.database) { emptySet() }.clean)
         assertEquals(0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+    }
+
+    /**
+     * The other half of §11.1's "MediaObjects deletes the unnamed blobs in that path too" (review finding 2, §22.4 row 26): a
+     * contact deleted **by its foreign keys** leaves the **ingested** blobs of its received objects — 17 rows and 17 files, each
+     * holding ciphertext whose key went with the object's row — in the pool, where nothing can tell them from a stranger's, until
+     * their retention day (at most eight days) and counted in the cap meanwhile. This pins that bound; the way to erase them at
+     * once is the one SWEEP uses, [MediaObjects.deleteObjectsOfMessages] with the contact's message ids **before** the cascade,
+     * which the second half shows to work.
+     */
+    @Test
+    fun aDeletedContactLeavesItsIngestedBlobsInThePoolForAtMostTheRetention() {
+        val now = 1_800_000_000L
+        val retention = MediaBlobs.retentionDay(now + 30 * 86_400L, now) // the eight-day cap
+        assertEquals(MediaLimits.day(now) + MediaLimits.POOL_MAX_DAYS, retention)
+        fun received(w: MediaWorld): ByteArray {
+            val objectId = w.receive(1)
+            for ((i, hash) in w.blobsOf(1).all.withIndex()) {
+                val written = w.files.writeFresh(blobOf(i), enforceFloor = true) as WriteResult.Written
+                w.tx { w.stores.blobs.ingest(it, hash, written.fileName, retention) }
+            }
+            w.tx { w.stores.objects.markComplete(it, objectId) }
+            w.tx { w.stores.objects.markVerified(it, objectId) }
+            return objectId
+        }
+        // bypassed: the foreign keys take the object, its fragments and its key; the blobs and the files stay
+        MediaWorld().use { w ->
+            received(w)
+            w.db.exec("DELETE FROM dm_contact WHERE contact_id = ?", listOf(id16(0xD1)))
+            assertEquals(0L, w.count("media_object"))
+            assertEquals(0L, w.count("media_fragment"))
+            assertEquals(0, w.tx { w.stores.blobs.collectUnnamedSealed(it) })
+            assertEquals("not yet: the last day is a live day", 0, w.tx { w.stores.blobs.collectExpired(it, now + 8 * 86_400L, 100) })
+            assertEquals(17L, w.count("media_blob"))
+            assertEquals("the pool counts them against POOL_CAP", 17, w.stores.blobs.pooledCount(w.db))
+            assertEquals("and their files stay", 0, w.reconcile.run(w.database) { emptySet() }.orphansDeleted)
+            assertEquals(17, w.listed().size)
+            // the retention day passes: the collector and the reconcile take them
+            assertEquals(17, w.tx { w.stores.blobs.collectExpired(it, now + 9 * 86_400L, 100) })
+            assertEquals(17, w.reconcile.run(w.database) { emptySet() }.orphansDeleted)
+            assertEquals(emptyList<String>(), w.listed())
+        }
+        // through the store before the cascade: gone at once
+        MediaWorld().use { w ->
+            received(w)
+            w.tx { w.stores.objects.deleteObjectsOfMessages(it, listOf(id16(0x91))) }
+            w.db.exec("DELETE FROM dm_contact WHERE contact_id = ?", listOf(id16(0xD1)))
+            assertEquals(0L, w.count("media_blob"))
+            assertEquals(17, w.reconcile.run(w.database) { emptySet() }.orphansDeleted)
+            assertEquals(emptyList<String>(), w.listed())
+        }
     }
 
     @Test

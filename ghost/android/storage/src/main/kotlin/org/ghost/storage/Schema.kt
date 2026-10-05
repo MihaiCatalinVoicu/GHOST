@@ -85,7 +85,8 @@ private object OutboxObjects {
  * and `dm_outbound_item` of `dm_outbound_op` and `dm_pending_send`, all with `ON DELETE CASCADE`, and a migration runs
  * with `foreign_keys = ON` inside its transaction (the pragma cannot be changed there). `DROP TABLE` performs an
  * implicit `DELETE` first, which runs the foreign-key actions, so dropping a parent whose children are not rebuilt
- * with it deletes their rows. The children are rebuilt and dropped first, the parents after (migration 4's order for
+ * with it deletes their rows. So the children are rebuilt with their parents: all five are copied before any old table is
+ * dropped (that is what keeps the rows), the old ones go children first, the parents after (migration 4's order for
  * `outbox_delivery` and `outbox_op`), and the references follow the renames (`legacy_alter_table = OFF`, guarded).
  */
 private object DmObjects {
@@ -2206,9 +2207,12 @@ object Schema {
      * [DmObjects]. **Their three children are rebuilt with them**, unchanged, which §13.6 does not name: a parent
      * cannot be dropped while foreign keys are on (they are, inside a migration) without its `ON DELETE CASCADE` children
      * losing their rows ([DmObjects] says why; the finding is in the forward notes, §22.4). The new tables are created
-     * first, copied, and the old ones dropped **children first**; the renames then rewrite the references of the
-     * new children to the final names. Q27: the Phase 9 columns are **not** folded in (the owner has not decided), so
-     * the rebuild copies the tables as they are at merge and adds nothing but the kind.
+     * first and **every row is copied before any old table is dropped**: that copy, not the order of the drops, is what keeps
+     * the rows (the review dropped the parents first in a throwaway mutant: no row was lost, only the textual order test
+     * failed). The old ones are then dropped children first, so that no parent's implicit `DELETE` cascades over old children
+     * that still exist (needless work); the renames rewrite the references of the new children to the final names. Q27: the
+     * Phase 9 columns are **not** folded in (the owner has not decided), so the rebuild copies the tables as they are at
+     * merge and adds nothing but the kind.
      *
      * Every index, trigger and REPLACE guard of the five tables is recreated from the same constants migration 5
      * creates them from, and the `pragma_foreign_key_check` guard of migration 4 is repeated: a rebuild that leaves a
@@ -2237,7 +2241,8 @@ object Schema {
         """INSERT INTO dm_reaction_v8(target_id, from_self, grapheme_env)
                 SELECT target_id, from_self, grapheme_env
                 FROM dm_reaction""",
-        // The children go first: with foreign_keys = ON a parent's implicit DELETE would run their cascades. Dropping a
+        // Every row is copied above, so no drop loses one. The children go first anyway: with foreign_keys = ON a parent's
+        // implicit DELETE would run the cascades over old children that are about to be dropped (needless work). Dropping a
         // table drops its indexes, its triggers and its REPLACE guard with it.
         "DROP TABLE dm_outbound_op",
         "DROP TABLE dm_pending_send",
@@ -2348,17 +2353,26 @@ object Schema {
     /**
      * Migration 8, **step 5** (§13.6): the write-once, state-machine and REPLACE-guard triggers of the media tables.
      * Every comparison is NULL-safe (`IS NOT`, R-T6): `<>` is NULL for a NULL operand, a `WHEN` that evaluates to NULL
-     * does not fire, and a write-once column could go from a value to NULL unseen. The transitions of the object are
-     * the table of §7.6, those of a fragment's `upload_state` the path of §6.4 (`unsent` → `open` → one of four final
-     * states, and `failed` → `unsent` only after a retry of the object); a no-op update (the same state) is allowed.
+     * does not fire, and a write-once column could go from a value to NULL unseen. **A bound written with `<` is not safe
+     * on a `NOT NULL DEFAULT` column**: `UPDATE OR REPLACE t SET c = NULL` evaluates `NEW.c < OLD.c` to NULL, the trigger
+     * stays silent, and REPLACE then substitutes the column's DEFAULT (0), which is how the first version of this migration
+     * let `decode_failures` and `retry_gen` be reset (adversarial review, §22.4 row 28); the two monotonic triggers test
+     * `NEW.c IS NULL` first. The transitions of the object are the table of §7.6, those of a fragment's `upload_state` the
+     * path of §6.4 (`unsent` → `open` → one of four final states, and `failed` → `unsent` only after a retry of the
+     * object); a no-op update (the same state) is allowed. What the schema leaves to the DAOs (the first state of an object,
+     * the states an object may have when a fragment or an operation is added, the generation a retry moves to) is recorded in
+     * §22.4 row 29, not enforced here.
      *
      * Beyond §13.6's list (each a write-once rule the design states in prose, §22.4 row 5): a fragment keeps its
      * object, ordinal and hash (the hash is what the object's authentication binds); the retention and the deadlines
      * only move earlier and a decode-failure count never decreases (T33 and the poison guard of CS-M8); an upload keeps
      * its namespace, bucket and deadline (R-MT4) and belongs to an outgoing object; a blob row keeps its identity.
-     * A fragment is `bound` exactly when its blob row exists (§7.2: "bound if a media_blob with that hash exists and
-     * expected otherwise"), and a blob row cannot be deleted while any fragment names it, so "a file goes only when
-     * nothing references it" is a property of the schema.
+     * A fragment is **inserted** `bound` exactly when its blob row exists (§7.2: "bound if a media_blob with that hash exists
+     * and expected otherwise"), an `expected` one becomes `bound` only if the blob row exists, and a blob row cannot be deleted
+     * while any fragment names it, so "a file goes only when nothing references it" is a property of the schema. What the
+     * schema does **not** do is bind an `expected` row when its blob row appears later: that is the store's
+     * (`MediaBlobs.ingest`; a bare `insert` leaves the row `expected`, which `MediaBlobsTest.insertingARowBindsNothingAndIngestingDoes`
+     * pins).
      */
     private fun migration8Triggers(): List<String> = listOf(
         """CREATE TRIGGER media_object_fixed BEFORE UPDATE ON media_object
@@ -2380,7 +2394,7 @@ object Schema {
                        OR (OLD.state = 'viewing'   AND NEW.state = 'viewed'))
                 BEGIN SELECT RAISE(ABORT, 'illegal media object state transition'); END""",
         """CREATE TRIGGER media_object_monotonic BEFORE UPDATE OF decode_failures, incomplete_after_hour ON media_object
-                WHEN NEW.decode_failures < OLD.decode_failures
+                WHEN NEW.decode_failures IS NULL OR NEW.decode_failures < OLD.decode_failures
                   OR (OLD.incomplete_after_hour IS NOT NULL
                       AND (NEW.incomplete_after_hour IS NULL OR NEW.incomplete_after_hour > OLD.incomplete_after_hour))
                   OR (OLD.incomplete_after_hour IS NULL AND NEW.incomplete_after_hour IS NOT NULL)
@@ -2416,7 +2430,7 @@ object Schema {
                   OR NEW.ttl_seconds IS NOT OLD.ttl_seconds OR NEW.deadline_hour IS NOT OLD.deadline_hour
                 BEGIN SELECT RAISE(ABORT, 'an upload keeps its namespace, bucket and deadline (R-MT4)'); END""",
         """CREATE TRIGGER media_upload_monotonic BEFORE UPDATE OF retry_gen ON media_upload
-                WHEN NEW.retry_gen < OLD.retry_gen
+                WHEN NEW.retry_gen IS NULL OR NEW.retry_gen < OLD.retry_gen
                 BEGIN SELECT RAISE(ABORT, 'the retry generation never decreases'); END""",
         """CREATE TRIGGER media_outbound_op_fixed BEFORE UPDATE ON media_outbound_op
                 BEGIN SELECT RAISE(ABORT, 'a media outbound op is never changed'); END""",

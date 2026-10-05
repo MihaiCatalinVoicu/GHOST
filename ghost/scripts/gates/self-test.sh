@@ -1627,6 +1627,10 @@ dmenq_case placement 4 "android/app/src/gate/kotlin/org/ghost/app/gate/Reflex.kt
 # (org.ghost.media.send) will have to be put on the allowlist on purpose.
 expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-media"
 dmenq_case media 1 "media/store/MediaMirror.kt:11" "refuses a media store that enqueues an operation"
+# A tree whose media module moved away (review of slice S3): the other two modules meet the floor of sources and the fixture holds the
+# one allowed restricted call, so G-DM2 must fail for the missing module alone (the first version passed this tree).
+expect_fail dm-enqueue-callers "$HARNESS/negative-dm-enqueue-no-media"
+dmenq_case no-media 1 "android/media/src/main: missing" "refuses a tree whose media module moved away"
 dmenq_empty="$(mktemp -d)"
 expect_fail_msg "dm-enqueue-callers refuses a tree with no DM production sources at all" \
   "no DM production sources found" env GHOST_ROOT="$dmenq_empty" bash "$DIR/dm-enqueue-callers.sh"
@@ -2045,6 +2049,10 @@ evasion_named dm-derivation-inputs "media/store/MediaLeak.kt:14: SecretKeySpec(o
   "reports a MAC keyed by an object identifier in the media store package"
 evasion_named dm-derivation-inputs "media/store/MediaLeak.kt:19: \"ghost/v1/media/fragment\": a DM label that is not on G-DM3's allowlist for this file" \
   "reports a media label in the media store package"
+# The media module moved away (review of slice S3): messaging, crypto-bridge and identity meet the floor, so G-DM3 must fail for the
+# missing module alone (the first version passed this tree).
+evasion_count dm-derivation-inputs dm-derivation/negative-no-media 1
+evasion_named dm-derivation-inputs "android/media/src/main: missing" "refuses a tree whose media module moved away"
 if bash "$DIR/dm-derivation-inputs.sh" >/dev/null 2>&1; then
   echo "self-test ok: dm-derivation-inputs accepts the real DM modules against their allowlist"
 else

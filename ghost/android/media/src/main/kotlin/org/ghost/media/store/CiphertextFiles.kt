@@ -26,11 +26,21 @@ import java.security.SecureRandom
  * a call of the [CiphertextFileSystem] port, which the tests wrap with a fault-injecting implementation that crashes before
  * and after every call and loses what a power loss loses (§15.3).
  *
+ * **The name belongs to the caller, and is reserved before the first byte is written** ([newName], then [write]). The
+ * reconcile runs on another thread than a sealer (§13.7) and deletes every entry of the directory that no row names and that
+ * is not in `preparing`, so a name that is generated inside the write and returned after it can never be in `preparing` in
+ * time: the file is listable under its temp name from the first call and under its final name from the rename, and the
+ * adversarial review of this slice made the reconcile delete both (§22.4 row 25). The temp file is therefore named after the
+ * final name (`.t` + its hex, [TEMP_PREFIX]): one reservation covers both names, and the reconcile keeps `.t<x>` while `<x>`
+ * is reserved ([PreparingFiles]).
+ *
  * **The times (S0-12, §10.4).** `setTimes(0, 0)` zeroes `mtime` **and** `atime` (`setLastModified(0)` leaves `atime` at the
  * creation second, and `/data` is mounted `noatime`, so it would never move again). It is applied to the temp file, before
  * the force and the rename, so a file never has its final name with a real time; a crash between the write and the call
  * leaves only a temp file. The reconcile re-applies it to every file it keeps ([reapplyTimes]). What an app cannot set is
- * declared (L9-M6): `ctime`, the birth time and the inode numbers.
+ * declared (L9-M6): `ctime`, the birth time and the inode numbers — and, **after the unlink, what the file system keeps in
+ * the freed inode**: its birth time (the write time), its deletion time and a `ctime` and `mtime` stamped by the unlink itself,
+ * measured on ext4 (§22.4 row 27); the directory's own times move at every write and every unlink.
  *
  * **The free-space floor (§7.5).** Below [MediaLimits.FREE_FLOOR_BYTES] of free storage an ingest consumes a blob without
  * writing a file ([WriteResult.BelowFloor]), so that local state never changes what is fetched; a sealer writing its own
@@ -39,7 +49,8 @@ import java.security.SecureRandom
  *
  * **Deletion removes the name and nothing more.** The design asks for no overwrite of a ciphertext file: the key of a deleted
  * blob is erased (crypto-shredding, D19), the bytes are ciphertext whose key exists nowhere, and an in-place overwrite
- * promises nothing on flash with a log-structured file system (declared, §11.1). `delete` therefore unlinks the file.
+ * promises nothing on flash with a log-structured file system (declared, §11.1). `delete` therefore unlinks the file — and
+ * overwriting the contents first would change none of the metadata the unlink leaves (§22.4 row 27).
  */
 class CiphertextFiles(
     val directory: File,
@@ -58,16 +69,28 @@ class CiphertextFiles(
     }
 
     /**
-     * Writes one blob under a fresh random name and returns the name, or [WriteResult.BelowFloor] when [enforceFloor] holds
-     * and the free storage is below the floor. The caller inserts the `media_blob` row **after** this returns, in its
-     * transaction, and a file whose row never commits is an orphan the reconcile deletes.
+     * A fresh random name for a file to write. **A sealer reserves it in `preparing` before it passes it to [write]**
+     * ([PreparingFiles.reserve] does both); the media actor's own ingest needs no reservation, because the reconcile runs on
+     * the same thread.
      */
-    fun write(blob: ByteArray, enforceFloor: Boolean): WriteResult {
+    fun newName(): ByteArray = names.next16()
+
+    /**
+     * Writes one blob under [name] and returns it, or [WriteResult.BelowFloor] when [enforceFloor] holds and the free
+     * storage is below the floor. [name] is 16 bytes, from [newName], and **already reserved by a caller that a concurrent
+     * reconcile can overtake** (see the class comment). The caller inserts the `media_blob` row **after** this returns, in
+     * its transaction, and releases the name after that commit (or when it gives the preparation up); a file whose row never
+     * commits is an orphan the reconcile deletes once the name is released.
+     *
+     * A directory that is not there is [CiphertextFilesError.IO] whatever [enforceFloor] says (a missing store reads as no
+     * free space, which would consume every blob as "below the floor" without a file).
+     */
+    fun write(name: ByteArray, blob: ByteArray, enforceFloor: Boolean): WriteResult {
+        requireName(name)
         if (blob.size != MediaLimits.FRAGMENT_BYTES) throw CiphertextFilesException(CiphertextFilesError.BAD_SIZE, "write", null)
         if (enforceFloor && freeSpace() < freeFloorBytes) return WriteResult.BelowFloor
-        val name = names.next16()
         val target = File(directory, hex(name))
-        val temp = File(directory, TEMP_PREFIX + hex(names.next16()))
+        val temp = File(directory, TEMP_PREFIX + hex(name))
         try {
             fileSystem.writeNew(temp, blob)
             fileSystem.setTimes(temp, 0L, 0L)
@@ -78,7 +101,7 @@ class CiphertextFiles(
             discard(temp)
             throw CiphertextFilesException(if (isDiskFull(e)) CiphertextFilesError.DISK_FULL else CiphertextFilesError.IO, "write", e)
         }
-        return WriteResult.Written(name)
+        return WriteResult.Written(name.copyOf())
     }
 
     /** The blob in the file [fileName]: exactly [MediaLimits.FRAGMENT_BYTES] bytes or a typed error (a file of another length is corrupt). */
@@ -107,7 +130,7 @@ class CiphertextFiles(
         }
     }
 
-    /** Every entry of the directory by name (final files are 32 hex characters, a temp file starts with `.t`), sorted. */
+    /** Every entry of the directory by name (final files are 32 hex characters, a temp file is `.t` and the hex of the final name it will get), sorted. */
     fun list(): List<String> {
         try {
             return fileSystem.list(directory)
@@ -141,8 +164,14 @@ class CiphertextFiles(
         }
     }
 
-    /** Free storage on the volume of the store, in bytes. */
-    fun freeSpace(): Long = fileSystem.freeSpace(directory)
+    /** Free storage on the volume of the store, in bytes; [CiphertextFilesError.IO] when the store directory is not there. */
+    fun freeSpace(): Long {
+        try {
+            return fileSystem.freeSpace(directory)
+        } catch (e: IOException) {
+            throw CiphertextFilesException(CiphertextFilesError.IO, "freeSpace", e)
+        }
+    }
 
     private fun fileOf(fileName: ByteArray): File = File(directory, hex(requireName(fileName)))
 
@@ -172,11 +201,15 @@ class CiphertextFiles(
         /** The length of a file name in bytes (`media_blob.file_name`); its hex is the name on disk. */
         const val NAME_BYTES: Int = 16
 
-        /** A temp file starts with this; no final name does (those are hex). */
+        /** A temp file is this and the hex of its final name; no final name starts with it (those are hex). */
         const val TEMP_PREFIX: String = ".t"
 
         /** Whether [listed] is the name of a final file (32 lower-case hex characters). */
         fun isFinalName(listed: String): Boolean = listed.length == NAME_BYTES * 2 && listed.all { it in '0'..'9' || it in 'a'..'f' }
+
+        /** The final name (hex) that the temp file [listed] belongs to, or null when [listed] is not a temp name of the store. */
+        fun finalNameOfTemp(listed: String): String? =
+            if (listed.startsWith(TEMP_PREFIX)) listed.substring(TEMP_PREFIX.length).takeIf { isFinalName(it) } else null
     }
 }
 
@@ -193,9 +226,25 @@ sealed class WriteResult {
     }
 }
 
-/** A failure of the file store, typed and carrying no name, path or byte (T3); the cause is kept for the stack. */
+/**
+ * A failure of the file store, typed and carrying no name, path or byte (T3). The cause is kept for the stack **as its class and
+ * its stack trace only**: a file system's message names the path and the file (`NoSuchFileException: C:\...\m\ab12...`), and a
+ * crash report prints the whole chain, so the original is replaced by a [RedactedIOException] (the adversarial review of this
+ * slice read the name in the `Caused by:` line).
+ */
 class CiphertextFilesException(val error: CiphertextFilesError, val where: String, cause: IOException?) :
-    RuntimeException("${error.name} at $where", cause)
+    RuntimeException("${error.name} at $where", cause?.let { RedactedIOException(it) })
+
+/**
+ * What is left of an I/O failure once the message that named a file is gone: the class of the failure, the reason a
+ * `FileSystemException` gives (an errno text such as "No such file or directory", never a path), and the original stack frames.
+ */
+class RedactedIOException internal constructor(original: IOException) :
+    IOException(original.javaClass.name + ((original as? java.nio.file.FileSystemException)?.reason?.let { ": $it" } ?: "")) {
+    init {
+        stackTrace = original.stackTrace
+    }
+}
 
 enum class CiphertextFilesError {
     /** A blob that is not [MediaLimits.FRAGMENT_BYTES] long, or a name that is not 16 bytes. */
@@ -315,5 +364,9 @@ class NioCiphertextFileSystem(
         FileChannel.open(directory.toPath(), StandardOpenOption.READ).use { it.force(true) }
     }
 
-    override fun freeSpace(directory: File): Long = directory.usableSpace
+    override fun freeSpace(directory: File): Long {
+        // `usableSpace` of a path that is not there is 0, which is indistinguishable from a full disk.
+        if (!directory.isDirectory) throw IOException("the store directory is missing")
+        return directory.usableSpace
+    }
 }

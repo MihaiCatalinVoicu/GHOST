@@ -269,8 +269,9 @@ class Migration8Test {
      * parent performs an implicit `DELETE` of its rows first, and that fires every `ON DELETE CASCADE` into the children.
      * A rebuild that drops `dm_message` while its children are alive would silently delete every outbound item, operation,
      * pending send and reaction of the user. This runs exactly that on the populated v7 and shows the rows go; the
-     * migration under test drops the children first and re-creates them (`aPopulatedV7DatabaseKeepsEveryRow...`), which
-     * is why the rebuilt set is five tables and not two.
+     * migration under test copies all five tables before it drops any (`aPopulatedV7DatabaseKeepsEveryRow...`), which is
+     * why the rebuilt set is five tables and not two. (The order of the drops, children first, is not what keeps the rows: a
+     * throwaway mutant of the review dropped the parents first and lost none, because the copies were already made.)
      */
     @Test
     fun droppingTheParentFirstWouldHaveCascadedAwayTheChildrenSoTheRebuildCoversTheWholeSubtree() = populatedV7().use { db ->
@@ -473,6 +474,33 @@ class Migration8Test {
     }
 
     /**
+     * The last statements of the rebuild repeat migration 4's guard: `pragma_foreign_key_check` must be empty, and it counts
+     * **every** dangling reference of the database, not only those the rebuild could have made. A correct rebuild cannot make
+     * one (the copies meet the constraints first, `anOrphanRowOfARebuiltTableFailsTheMigrationAndLeavesV7`), so the guard is
+     * the one thing that stops a run only when a row of a table the rebuild leaves alone already dangles — which is what this
+     * writes, with the keys off, as an old bug or a restore could have. It is red when the guard is neutered (the review's
+     * mutant `SELECT 0` passed every other test of the migration).
+     */
+    @Test
+    fun aDanglingReferenceAnywhereInTheDatabaseIsStoppedByTheForeignKeyGuardAndLeavesV7() = populatedV7().use { db ->
+        db.exec("PRAGMA foreign_keys = OFF")
+        db.exec("INSERT INTO namespace_relay(namespace_id, relay_id) VALUES (?, 1)", listOf(bytes(32, 0xEE))) // a namespace that is not there
+        db.exec("PRAGMA foreign_keys = ON")
+        assertEquals("the row dangles", 1L, db.queryLong("SELECT count(*) FROM pragma_foreign_key_check"))
+        val schema = db.schemaSnapshot()
+        val rows = db.dump()
+        val e = assertThrows(java.sql.SQLException::class.java) { MigrationRunner(db).migrate() }
+        assertTrue(e.message, e.message.orEmpty().contains("CHECK constraint failed"))
+        assertEquals(7, db.userVersion)
+        assertEquals(schema, db.schemaSnapshot())
+        assertEquals(rows, db.dump())
+        assertFalse(db.inTransaction)
+        db.exec("DELETE FROM namespace_relay WHERE namespace_id = ?", listOf(bytes(32, 0xEE)))
+        assertEquals(listOf(8), MigrationRunner(db).migrate())
+        assertNull(db.queryLong("PRAGMA foreign_key_check"))
+    }
+
+    /**
      * The migration's own failure modes (SCN-MF, CS-9 over v7 to v8): an interruption at every one of its statements,
      * and at the version bump, leaves the populated v7 database untouched — schema text, every row, version — and the
      * next run succeeds with the same result as an uninterrupted one. The statements include the guards' inserts, the
@@ -642,7 +670,7 @@ class Migration8Test {
         assertTrue(creates.all { it >= 0 } && copies.all { it >= 0 })
         assertTrue("every new table exists before the first copy", creates.max() < copies.min())
         val drops = listOf("dm_outbound_op", "dm_pending_send", "dm_reaction", "dm_outbound_item", "dm_message").map { exact("DROP TABLE $it") }
-        assertEquals("children first: the order is the one listed", drops.sorted(), drops)
+        assertEquals("children first, as migration 4 does (the copies above are what keep the rows; this is the tidy order)", drops.sorted(), drops)
         assertTrue(drops.all { it >= 0 })
         assertTrue(copies.max() < drops.min())
         val renames = MediaSchema.rebuilt.map { at("ALTER TABLE ${it}_v8 RENAME TO $it") }

@@ -380,6 +380,7 @@ joined_lines() { # $1 = file
 }
 
 SCANNED=0
+MEDIA_SCANNED=0
 WITH_CALL=0
 while IFS= read -r file; do
   [ -n "$file" ] || continue
@@ -391,6 +392,8 @@ while IFS= read -r file; do
   channel_engine=0
   case "$rel" in
     android/messaging/src/*/org/ghost/messaging/channel/engine/*) channel_engine=1 ;;
+    # Phase 11 S3: the media module is read like the DM modules; counted for the vacuity floor below.
+    android/media/*) MEDIA_SCANNED=$((MEDIA_SCANNED + 1)) ;;
   esac
 
   # Each hit is read from a variable and matched with a here-string, never `producer | grep -q`:
@@ -550,10 +553,16 @@ while IFS= read -r file; do
   fi
 done < <(dm_caller_files)
 
-# Vacuity, twice over, because a gate that scans nothing passes. At least one production source of
-# the DM modules must be found, and at least one of them must really make one of the restricted
-# calls — the day `OwnerSteps.kt` moves or is renamed, this gate must fail rather than go quiet.
+# Vacuity, three times over, because a gate that scans nothing passes. At least one production source of
+# the DM modules must be found, one of them in `android/media` (below), and at least one of them must
+# really make one of the restricted calls — the day `OwnerSteps.kt` moves or is renamed, this gate must
+# fail rather than go quiet.
 [ "$SCANNED" -gt 0 ] || fail "no DM production sources found under $GHOST_ROOT/android (the gate would pass vacuously)"
+# ... and the media module is one of them (Phase 11 slice S3 and its review: the three modules were scanned as a set, so a tree whose
+# android/media moved away still satisfied the floor with the other two, and the gate went on passing over the module that holds the
+# media stores and, later, MediaFeeder; G-DM1 and the source gates that name the module had the check already).
+[ -d "$GHOST_ROOT/android/media/src/main" ] || fail "android/media/src/main: missing (the gate would pass vacuously)"
+[ ! -d "$GHOST_ROOT/android/media/src/main" ] || [ "$MEDIA_SCANNED" -gt 0 ] || fail "android/media/src/main: no sources found (the gate would pass vacuously)"
 [ "$WITH_CALL" -gt 0 ] || \
   fail "none of the $SCANNED scanned DM sources makes a restricted call (the gate would pass vacuously; see the S6 note in this script)"
 

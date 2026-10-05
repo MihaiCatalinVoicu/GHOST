@@ -6,11 +6,12 @@ import org.ghost.sync.api.SyncDatabase
  * The reconcile (Phase 11 design §10.4, §13.5): the startup pass, and the pass after every transaction that deletes media
  * rows, that makes the files in `noBackupFilesDir/m/` and the `media_blob` rows agree, **in both directions**.
  *
- *  1. **Files no row names** are deleted: every entry of the directory that no `media_blob` row names and that is not in
- *     `preparing` (the files a sealer wrote and `MEDIA-COMMIT` has not yet referenced), whether an orphan blob (a crash
- *     between a file write and its transaction, or between a deletion's commit and its file removal) or a leftover temp
- *     file. A crash between a deletion's commit and the reconcile leaves ciphertext whose key is already erased; the next
- *     reconcile removes it.
+ *  1. **Files no row names** are deleted: every entry of the directory that no `media_blob` row names and whose name is not
+ *     in `preparing` (the names a sealer reserved for files it is writing or has written and `MEDIA-COMMIT` has not yet
+ *     referenced; a temp file `.t<x>` is kept while `<x>` is reserved, [CiphertextFiles.finalNameOfTemp]), whether an orphan
+ *     blob (a crash between a file write and its transaction, or between a deletion's commit and its file removal) or a
+ *     leftover temp file. A crash between a deletion's commit and the reconcile leaves ciphertext whose key is already
+ *     erased; the next reconcile removes it.
  *  2. **The times are re-applied** to every file that is kept (S0-12): a crash between a write and `setTimes` left a file
  *     with real times, and a restore or an older build may have too.
  *  3. **Rows no file backs** are found. A row that **no fragment names** (a pooled blob whose file is gone) is garbage and is
@@ -18,11 +19,13 @@ import org.ghost.sync.api.SyncDatabase
  *     ([ReconcileReport.lostNamed]) with the objects affected, because what the engine does about it (turn the object
  *     `corrupt` or `incomplete`, which erases its key and needs F9 §10.7's checkpoint) is the media actor's (S6, S8).
  *
- * **Why the order of the reads is what it is.** A concurrent sealer writes a file, `MEDIA-COMMIT` inserts the row and only
- * then drops the name from `preparing`. The reconcile lists the directory **first**, then takes the `preparing` snapshot,
- * then reads the rows: a file created before the listing is in `preparing` until after its row commits, so it is in the
- * snapshot or in the rows (or both) — never in neither — and a file created after the listing is not in the listing. Any
- * other order can delete a file whose row commits a moment later.
+ * **Why the order of the reads is what it is.** A concurrent sealer reserves a name in `preparing` **before** it creates any
+ * file of it, writes the file, `MEDIA-COMMIT` inserts the row, and only then the name leaves `preparing` ([PreparingFiles]).
+ * The reconcile lists the directory **first**, then takes the `preparing` snapshot, then reads the rows: a file created before
+ * the listing was reserved before the listing and is in `preparing` until after its row commits, so it is in the snapshot or
+ * in the rows (or both) — never in neither — and a file created after the listing is not in the listing. Any other order, or a
+ * sealer that reserves after the write (the first version of the store: it could not do otherwise, the name came out of
+ * `write`), can delete a file whose row commits a moment later.
  *
  * **Crash-safe and idempotent.** Every step is a single file operation or a single transaction that can be repeated:
  * a crash after any deletion leaves a directory a second run finishes, and a run on a consistent store changes nothing and
@@ -35,21 +38,25 @@ class MediaReconcile(
 ) {
 
     /**
-     * Runs one reconcile. [preparing] returns the names (as listed: 32 hex characters) of the files a sealer has written for
-     * an object that is not committed yet; it is called once, after the directory was listed and before the rows are read.
-     * The database is touched in short transactions of its own: never call this from inside one.
+     * Runs one reconcile. [preparing] returns the names (as listed: 32 hex characters) a sealer has **reserved** for files it
+     * is writing, or has written and `MEDIA-COMMIT` has not yet referenced ([PreparingFiles.snapshot]); it is called once,
+     * after the directory was listed and before the rows are read. The database is touched in short transactions of its own:
+     * never call this from inside one.
      */
     fun run(database: SyncDatabase, preparing: () -> Set<String>): ReconcileReport {
         val listing = files.list()
+        val listed = listing.toHashSet()
         val inProgress = preparing()
         val rows = database.transaction { tx -> blobs.fileNames(tx.sql) }
         val named = HashMap<String, ByteArray>()
         for (row in rows) named[hex(row.fileName)] = row.blobHash
 
-        // 1. files no row names (and no sealer is writing)
+        // 1. files no row names (and no sealer has reserved)
         var deleted = 0
         for (entry in listing) {
-            if (entry in named || entry in inProgress) continue
+            if (entry in named) continue
+            // a temp file `.t<x>` is its final name's: one reservation covers both
+            if ((CiphertextFiles.finalNameOfTemp(entry) ?: entry) in inProgress) continue
             if (files.deleteNamed(entry)) deleted++
         }
         if (deleted > 0) files.syncDirectory()
@@ -58,8 +65,10 @@ class MediaReconcile(
         var retimed = 0
         for (entry in listing) if (entry in named && files.reapplyTimes(entry)) retimed++
 
-        // 3. rows no file backs (re-checked right before, for a file written after the listing)
-        val gone = named.filter { (name, _) -> name !in listing && !files.exists(unhex(name)) }
+        // 3. rows no file backs. The existence check repeats the listing's answer for a row that is not in it: a MEDIA-COMMIT that
+        // lands between the listing and the row read inserts rows whose files were written after the listing (or are in it, if
+        // they were written before), and a row whose file exists is not lost.
+        val gone = named.filter { (name, _) -> name !in listed && !files.exists(unhex(name)) }
         var dropped = 0
         val lostNamed = ArrayList<LostBlob>()
         if (gone.isNotEmpty()) {
